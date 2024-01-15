@@ -1,0 +1,39 @@
+{
+  "name": "aooth",
+  "version": "0.0.0",
+  "description": "aooth",
+  "main": "dist/index.cjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aoothjs/aoothjs.git",
+    "directory": "packages/aooth"
+  },
+  "keywords": [
+    "aooth",
+    "aoothjs",
+    "auth",
+    "authentication"
+  ],
+  "author": "Artem Maltsev",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/aoothjs/aoothjs/issues"
+  },
+  "homepage": "https://github.com/aoothjs/aoothjs/tree/main/packages/aooth#readme",
+  "dependencies": {
+    "@prostojs/ftring": "^0.0.2"
+  }
+}

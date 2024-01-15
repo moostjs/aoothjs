@@ -1,0 +1,8 @@
+node_modules
+explorations
+package-lock.json
+packages/**/dist
+dist
+temp
+.npmrc
+docs/.vitepress/cache
