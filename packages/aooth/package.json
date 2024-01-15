@@ -1,6 +1,6 @@
 {
   "name": "aooth",
-  "version": "0.0.0",
+  "version": "0.0.1-alpha.1",
   "description": "aooth",
   "main": "dist/index.cjs",
   "module": "dist/index.mjs",
@@ -34,6 +34,6 @@
   },
   "homepage": "https://github.com/aoothjs/aoothjs/tree/main/packages/aooth#readme",
   "dependencies": {
-    "@prostojs/ftring": "^0.0.2"
+    "@prostojs/ftring": "^0.0.3"
   }
 }
