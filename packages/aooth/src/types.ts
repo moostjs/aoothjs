@@ -24,7 +24,7 @@ export interface TAoothUserCredentials {
             address: string
             confirmed: boolean
         },
-        phone: {
+        sms: {
             confirmed: boolean
             number: string
         },

@@ -50,7 +50,7 @@ export class UserCredentials extends Changeable {
                     address: isEmail.exec(this.username) ? this.username : '',
                     confirmed: false,
                 },
-                phone: {
+                sms: {
                     confirmed: false,
                     number: '',
                 },
@@ -147,7 +147,7 @@ export class UserCredentials extends Changeable {
     }
 
     getPhoneMasked() {
-        const s = this.getData().mfa?.phone?.number || ''
+        const s = this.getData().mfa?.sms?.number || ''
         return mask(s)
     }
 
@@ -155,7 +155,7 @@ export class UserCredentials extends Changeable {
         const { mfa } = this.getData()
         const options = []
         if (mfa.email.confirmed) options.push({ type: 'email', value: mfa.email.address, masked: this.getEmailMasked(), isDefault: mfa.default === 'email' })
-        if (mfa.phone.confirmed) options.push({ type: 'sms', value: mfa.phone.number, masked: this.getPhoneMasked(), isDefault: mfa.default === 'sms' })
+        if (mfa.sms.confirmed) options.push({ type: 'sms', value: mfa.sms.number, masked: this.getPhoneMasked(), isDefault: mfa.default === 'sms' })
         if (mfa.totp.secretKey) options.push({ type: 'totp', value: mfa.totp.secretKey, masked: '', isDefault: mfa.default === 'totp' })
         return options
     }
