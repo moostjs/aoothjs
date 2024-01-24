@@ -69,7 +69,10 @@ export class Password extends Changeable {
 
     isInHistory(password: string, n?: number) {
         let count = 0
-        for (const { hash, algorithm } of (this.data.history || [])) {
+        for (const { hash, algorithm } of [
+            this.data,
+            ...(this.data.history || []),
+        ]) {
             count++
             if (typeof n === 'number' && count > n) break
             if (hash === this.hash(password, algorithm)) return true
