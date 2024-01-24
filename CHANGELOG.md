@@ -1,3 +1,12 @@
+## [0.0.1-alpha.4](https://github.com/aoothjs/aoothjs/compare/v0.0.1-alpha.3...v0.0.1-alpha.4) (2024-01-24)
+
+
+### Bug Fixes
+
+* fix pepper in no repeat password policy ([e33185c](https://github.com/aoothjs/aoothjs/commit/e33185c1c673d5d78dd5db826b77911f3184615d))
+
+
+
 ## [0.0.1-alpha.3](https://github.com/aoothjs/aoothjs/compare/v0.0.1-alpha.2...v0.0.1-alpha.3) (2024-01-24)
 
 

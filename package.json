@@ -1,6 +1,6 @@
 {
   "name": "aoothjs",
-  "version": "0.0.1-alpha.3",
+  "version": "0.0.1-alpha.4",
   "description": "User Authentication Framework",
   "main": "index.js",
   "type": "module",
