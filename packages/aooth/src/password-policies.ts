@@ -38,12 +38,12 @@ export const ppMaxRepeatedChars = (maxRepeated = 2): TPasswordPolicy => ({
 })
 
 export const ppNoRepeatedPasswords = (n: number): TPasswordPolicy => ({
-    rule: (v, password) => {
-        if (password) {
-            const p = new Password({ algorithm: 'sha3-224' }, password)
-            return !p.isInHistory(v, n)
+    rule: (v, password, passwordConfig) => {
+        if (!passwordConfig || !passwordConfig) {
+            throw new Error('[Aooth][Fatal] Policy "ppNoRepeatedPasswords" required password object and password config to be passed during validation')
         }
-        return true
+        const p = new Password(passwordConfig, password)
+        return !p.isInHistory(v, n)
     },
     description: `None of the last ${ n } passwords`,
     errorMessage: `Password can not match any of the last ${ n } used passwords.`,
