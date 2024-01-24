@@ -1,3 +1,12 @@
+## [0.0.1-alpha.3](https://github.com/aoothjs/aoothjs/compare/v0.0.1-alpha.2...v0.0.1-alpha.3) (2024-01-24)
+
+
+### Bug Fixes
+
+* max repeat count rule ([1d2a501](https://github.com/aoothjs/aoothjs/commit/1d2a501c96d4caea516b9ec95fe57221ffb6bc01))
+
+
+
 ## [0.0.1-alpha.2](https://github.com/aoothjs/aoothjs/compare/v0.0.1-alpha.1...v0.0.1-alpha.2) (2024-01-19)
 
 
