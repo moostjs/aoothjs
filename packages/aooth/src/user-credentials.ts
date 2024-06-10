@@ -6,11 +6,11 @@ import { getValue, setValue, unsetAll } from './utils/get-set'
 
 const isEmail = /^[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,6}$/
 
-export class UserCredentials extends Changeable {
-    protected data!: TAoothUserCredentials
+export class UserCredentials<T extends object = {id: string}> extends Changeable {
+    protected data!: TAoothUserCredentials & T
 
     constructor(
-        protected store: UsersStore,
+        protected store: UsersStore<T>,
         protected username: string,
         changes?: TCumulativeChanges,
     ) {
@@ -60,7 +60,7 @@ export class UserCredentials extends Changeable {
                 default: '',
                 autoSend: false,
             },
-        }
+        } as TAoothUserCredentials & T
         const pw = this.password(config)
         pw.generate()
         this.data.password = pw.getData()
@@ -124,7 +124,7 @@ export class UserCredentials extends Changeable {
 
     protected ensureDataExists() {
         if (!this.data) {
-            this.data = { username: this.username } as TAoothUserCredentials
+            this.data = { username: this.username } as TAoothUserCredentials & T
         }
     }
 

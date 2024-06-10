@@ -5,14 +5,14 @@ import { TAoothConfig } from './types'
 import { UserCredentials } from './user-credentials'
 import { UsersStore } from './users-store/users-store'
 
-export class Aooth {
+export class Aooth<T extends object = {id: string}> {
     protected config: {
         password: Required<Required<TAoothConfig>['password']>
         lockout: Required<Required<TAoothConfig>['lockout']>
         mfa: Required<Required<TAoothConfig>['mfa']>
     }
 
-    constructor(protected store: UsersStore, config?: TAoothConfig) {
+    constructor(protected store: UsersStore<T>, config?: TAoothConfig) {
         const policies = []
         for (const policy of config?.password?.policies || []) {
             if (policy instanceof PasswordPolicy) {
@@ -48,7 +48,7 @@ export class Aooth {
     }
 
     user(username: string) {
-        return new UserCredentials(this.store, username)
+        return new UserCredentials<T>(this.store, username)
     }
 
     password() {
@@ -73,7 +73,7 @@ export class Aooth {
     }
 
     async createUser(username: string) {
-        const user = new UserCredentials(this.store, username)
+        const user = new UserCredentials<T>(this.store, username)
         await user.create(this.config.password)
         return user
     }
