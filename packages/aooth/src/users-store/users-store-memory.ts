@@ -2,8 +2,8 @@ import { TCumulativeChanges, TAoothUserCredentials } from '../types'
 import { UsersStore } from './users-store'
 import { deepClone, setValue } from '../utils/get-set'
 
-export class UsersStoreMemory extends UsersStore {
-    constructor(protected _store: Record<string, TAoothUserCredentials> = {}) {
+export class UsersStoreMemory<T extends object = {id: string}> extends UsersStore<T> {
+    constructor(protected _store: Record<string, TAoothUserCredentials & T> = {}) {
         super()
     }
 
@@ -11,7 +11,7 @@ export class UsersStoreMemory extends UsersStore {
         return Promise.resolve(!!this._store[username])
     }
 
-    async read(username: string): Promise<TAoothUserCredentials> {
+    async read(username: string): Promise<TAoothUserCredentials & T> {
         if (await this.exists(username)) {
             return deepClone(this._store[username])
         }
@@ -52,7 +52,7 @@ export class UsersStoreMemory extends UsersStore {
         throw new Error('Not found')
     }
 
-    async create(data: TAoothUserCredentials) {
+    async create(data: TAoothUserCredentials & T) {
         if (await this.exists(data.username)) {
             throw new Error(`User with id "${ data.username }" already exists.`)
         }
