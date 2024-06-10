@@ -1,3 +1,12 @@
+## [0.0.1-alpha.6](https://github.com/aoothjs/aoothjs/compare/v0.0.1-alpha.5...v0.0.1-alpha.6) (2024-06-10)
+
+
+### Features
+
+* add generic to user schema ([eb65913](https://github.com/aoothjs/aoothjs/commit/eb65913cadedd3835366b64899a8fe81f5d3417a))
+
+
+
 ## [0.0.1-alpha.5](https://github.com/aoothjs/aoothjs/compare/v0.0.1-alpha.4...v0.0.1-alpha.5) (2024-01-24)
 
 
