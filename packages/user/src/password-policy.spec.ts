@@ -9,7 +9,7 @@ import {
   ppMaxRepeatedChars,
   ppNoRepeatedPasswords,
 } from "./password-policies";
-import { PasswordPolicy } from "./password-policy";
+import { PasswordPolicy, normalizePolicies } from "./password-policy";
 import { UsersStoreMemory } from "./users-store";
 
 describe("password-policy", () => {
@@ -98,5 +98,108 @@ describe("password-policy", () => {
     expect(await p.evaluate("test4", user.getData().password, pc)).toBe(false);
     expect(await p.evaluate("test5", user.getData().password, pc)).toBe(false);
     expect(await p.evaluate("test6", user.getData().password, pc)).toBe(false);
+  });
+
+  describe("transferable", () => {
+    it("must be true for string rules", () => {
+      const p = new PasswordPolicy({ rule: "v.length > 5" });
+      expect(p.transferable).toBe(true);
+    });
+
+    it("must be false for function rules", () => {
+      const p = new PasswordPolicy({ rule: (v) => v.length > 5 });
+      expect(p.transferable).toBe(false);
+    });
+  });
+
+  describe("rule getter", () => {
+    it("must return string rule", () => {
+      const p = new PasswordPolicy({ rule: "v.length > 5" });
+      expect(p.rule).toBe("v.length > 5");
+    });
+
+    it("must throw for non-transferable rule", () => {
+      const p = new PasswordPolicy({ rule: (v) => v.length > 5 });
+      expect(() => p.rule).toThrow("Password Policy rule is not transferable");
+    });
+  });
+
+  describe("description / errorMessage getters", () => {
+    it("must return description", () => {
+      const p = new PasswordPolicy({
+        rule: "true",
+        description: "Always passes",
+        errorMessage: "Never fails",
+      });
+      expect(p.description).toBe("Always passes");
+      expect(p.errorMessage).toBe("Never fails");
+    });
+
+    it("must default to empty string", () => {
+      const p = new PasswordPolicy({ rule: "true" });
+      expect(p.description).toBe("");
+      expect(p.errorMessage).toBe("");
+    });
+  });
+
+  it("must evaluate empty rule as true", async () => {
+    const p = new PasswordPolicy({ rule: "" });
+    expect(await p.evaluate("anything")).toBe(true);
+  });
+
+  it("must throw ppNoRepeatedPasswords when missing password context", async () => {
+    const p = new PasswordPolicy(ppNoRepeatedPasswords(3));
+    await expect(async () => p.evaluate("test")).rejects.toThrow("[Aooth][Fatal]");
+  });
+
+  describe("normalizePolicies", () => {
+    it("must return empty array for undefined", () => {
+      const result = normalizePolicies(undefined);
+      expect(result).toEqual([]);
+    });
+
+    it("must pass through PasswordPolicy instances", () => {
+      const p = new PasswordPolicy({ rule: "true" });
+      const result = normalizePolicies([p]);
+      expect(result[0]).toBe(p);
+    });
+
+    it("must wrap plain objects in PasswordPolicy", () => {
+      const result = normalizePolicies([{ rule: "v.length > 3" }]);
+      expect(result[0]).toBeInstanceOf(PasswordPolicy);
+      expect(result[0].rule).toBe("v.length > 3");
+    });
+  });
+
+  describe("policy factory defaults", () => {
+    it("ppHasMinLength defaults to 8", async () => {
+      const p = new PasswordPolicy(ppHasMinLength());
+      expect(await p.evaluate("1234567")).toBe(false);
+      expect(await p.evaluate("12345678")).toBe(true);
+    });
+
+    it("ppHasUpperCase defaults to 1", async () => {
+      const p = new PasswordPolicy(ppHasUpperCase());
+      expect(await p.evaluate("lowercase")).toBe(false);
+      expect(await p.evaluate("Uppercase")).toBe(true);
+    });
+
+    it("ppHasLowerCase defaults to 1", async () => {
+      const p = new PasswordPolicy(ppHasLowerCase());
+      expect(await p.evaluate("UPPERCASE")).toBe(false);
+      expect(await p.evaluate("lOWERCASE")).toBe(true);
+    });
+
+    it("ppHasNumber defaults to 1", async () => {
+      const p = new PasswordPolicy(ppHasNumber());
+      expect(await p.evaluate("nodigits")).toBe(false);
+      expect(await p.evaluate("has1digit")).toBe(true);
+    });
+
+    it("ppHasSpecialChar defaults to 1", async () => {
+      const p = new PasswordPolicy(ppHasSpecialChar());
+      expect(await p.evaluate("nospecial")).toBe(false);
+      expect(await p.evaluate("special!")).toBe(true);
+    });
   });
 });

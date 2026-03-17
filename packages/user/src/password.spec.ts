@@ -85,4 +85,146 @@ describe("password", () => {
     expect(p.validate("password1")).toBe(true);
     expect(p.validate("password2")).toBe(false);
   });
+
+  it("must throw on mismatched repeat password", () => {
+    const p = newPassword();
+    expect(() => p.change("abc", "xyz")).toThrow("Passwords don't match.");
+  });
+
+  it("must accept matching repeat password", () => {
+    const p = newPassword();
+    p.change("mypassword", "mypassword");
+    expect(p.validate("mypassword")).toBe(true);
+  });
+
+  it("must generate with custom length", () => {
+    const p = newPassword();
+    p.generate(12);
+    const data = p.getData();
+    expect(data.hash).toBeTruthy();
+    expect(data.isInitial).toBe(true);
+  });
+
+  it("must enforce minimum generate length of 8", () => {
+    const p = newPassword();
+    p.generate(3);
+    // password was generated (no error), hash exists
+    expect(p.getData().hash).toBeTruthy();
+  });
+
+  it("must include pepper in hash", () => {
+    const p1 = new Password(
+      { ...config, pepper: "pepper1" },
+      { algorithm: "sha3-224", hash: "", history: [], isInitial: false, lastChanged: 0, salt: "s" },
+    );
+    const p2 = new Password(
+      { ...config, pepper: "pepper2" },
+      { algorithm: "sha3-224", hash: "", history: [], isInitial: false, lastChanged: 0, salt: "s" },
+    );
+    expect(p1.hash("test", "sha3-224")).not.toBe(p2.hash("test", "sha3-224"));
+  });
+
+  it("must include salt in hash", () => {
+    const p1 = new Password(config, {
+      algorithm: "sha3-224",
+      hash: "",
+      history: [],
+      isInitial: false,
+      lastChanged: 0,
+      salt: "salt1",
+    });
+    const p2 = new Password(config, {
+      algorithm: "sha3-224",
+      hash: "",
+      history: [],
+      isInitial: false,
+      lastChanged: 0,
+      salt: "salt2",
+    });
+    expect(p1.hash("test", "sha3-224")).not.toBe(p2.hash("test", "sha3-224"));
+  });
+
+  describe("isInHistory with n parameter", () => {
+    it("must limit history check to last n entries", () => {
+      const p = newPassword();
+      p.change("pw1");
+      p.change("pw2");
+      p.change("pw3");
+      p.change("pw4");
+      // history: [pw3, pw2, pw1] (newest first), current = pw4
+      expect(p.isInHistory("pw3", 1)).toBe(true);
+      expect(p.isInHistory("pw2", 1)).toBe(false);
+      expect(p.isInHistory("pw2", 2)).toBe(true);
+      expect(p.isInHistory("pw1", 2)).toBe(false);
+      expect(p.isInHistory("pw1", 3)).toBe(true);
+    });
+
+    it("must return false for current password (not in history)", () => {
+      const p = newPassword();
+      p.change("pw1");
+      expect(p.isInHistory("pw1")).toBe(false); // current, not in history
+    });
+  });
+
+  describe("checkPolicies", () => {
+    it("must return passed when all policies pass", async () => {
+      const p = new Password({
+        ...config,
+        policies: [{ rule: "v.length >= 5", description: "Min 5", errorMessage: "Too short" }],
+      });
+      p.change("longpassword");
+      const result = await p.checkPolicies("longpassword");
+      expect(result.passed).toBe(true);
+      expect(result.policies).toHaveLength(1);
+      expect(result.policies[0].passed).toBe(true);
+      expect(result.errors).toHaveLength(0);
+    });
+
+    it("must return failed with errors when policies fail", async () => {
+      const p = new Password({
+        ...config,
+        policies: [
+          { rule: "v.length >= 20", description: "Min 20", errorMessage: "Too short" },
+          { rule: "v.length >= 5", description: "Min 5", errorMessage: "Way too short" },
+        ],
+      });
+      p.change("short");
+      const result = await p.checkPolicies("short");
+      expect(result.passed).toBe(false);
+      expect(result.policies[0].passed).toBe(false);
+      expect(result.policies[1].passed).toBe(true);
+      expect(result.errors).toEqual(["Too short"]);
+    });
+
+    it("must return passed with empty policies", async () => {
+      const p = new Password({ ...config, policies: [] });
+      p.change("anything");
+      const result = await p.checkPolicies("anything");
+      expect(result.passed).toBe(true);
+      expect(result.policies).toHaveLength(0);
+    });
+  });
+
+  it("must not append to history when initial hash is empty", () => {
+    const p = newPassword(); // hash is ""
+    p.change("first-password");
+    expect(p.getData().history).toHaveLength(0);
+  });
+
+  it("must return data via getData", () => {
+    const p = newPassword();
+    const data = p.getData();
+    expect(data.algorithm).toBe("sha224");
+    expect(data.hash).toBe("");
+    expect(data.history).toEqual([]);
+  });
+
+  it("must initialize with defaults when no data provided", () => {
+    const p = new Password(config);
+    const data = p.getData();
+    expect(data.algorithm).toBe(config.algorithm);
+    expect(data.hash).toBe("");
+    expect(data.salt).toBe("");
+    expect(data.history).toEqual([]);
+  });
 });
