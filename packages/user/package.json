@@ -1,0 +1,50 @@
+{
+  "name": "@aoothjs/user",
+  "version": "0.0.1-alpha.6",
+  "description": "User credential primitives for aoothjs",
+  "keywords": [
+    "aoothjs",
+    "auth",
+    "authentication",
+    "user"
+  ],
+  "homepage": "https://github.com/aoothjs/aoothjs/tree/main/packages/user#readme",
+  "bugs": {
+    "url": "https://github.com/aoothjs/aoothjs/issues"
+  },
+  "license": "MIT",
+  "author": "Artem Maltsev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aoothjs/aoothjs.git",
+    "directory": "packages/user"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "dist/index.mjs",
+  "module": "./dist/index.mjs",
+  "types": "dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "vp pack",
+    "dev": "vp pack --watch",
+    "test": "vp test",
+    "check": "vp check"
+  },
+  "dependencies": {
+    "@prostojs/ftring": "^0.0.3"
+  }
+}
