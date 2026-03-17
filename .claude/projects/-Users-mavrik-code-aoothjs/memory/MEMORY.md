@@ -1,0 +1,2 @@
+- [project_vision.md](project_vision.md) — High-level vision for the @aoothjs/\* monorepo and key design decisions
+- [reference_external_code.md](reference_external_code.md) — Locations of source code to migrate/reference (prostojs/arbac, moostjs/arbac, rvmode/app-portal)
