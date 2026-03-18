@@ -10,3 +10,4 @@ docs/.vitepress/dist
 *.tgz
 *.log
 .DS_Store
+TODO.md
