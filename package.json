@@ -31,6 +31,7 @@
     "docs-serve": "vitepress serve docs"
   },
   "devDependencies": {
+    "@atscript/core": "catalog:",
     "@prostojs/dye": "^0.3.0",
     "@prostojs/ftring": "^0.0.3",
     "@prostojs/wf": "^0.0.10",
@@ -49,5 +50,12 @@
   "engines": {
     "node": ">=22.12.0"
   },
-  "packageManager": "pnpm@10.32.1"
+  "packageManager": "pnpm@10.32.1",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "@atscript/db",
+      "@atscript/db-sqlite"
+    ]
+  }
 }
