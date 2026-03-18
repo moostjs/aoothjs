@@ -11,19 +11,13 @@ import type { TAtscriptTypeObject, TAtscriptTypeComplex, TAtscriptTypeFinal, TAt
 
 /**
  * Atscript interface **AoothUserCredentials**
- * @see {@link ./user.as:2:18}
+ * @see {@link ./user.as:1:18}
  */
 export declare class AoothUserCredentials {
-  id: string
   username: string
   password: {
     hash: string
-    salt: string
-    algorithm: string
-    history: {
-      algorithm: string
-      hash: string
-    }[]
+    history: string[]
     lastChanged: number /* timestamp */
     isInitial: boolean
   }
@@ -36,18 +30,12 @@ export declare class AoothUserCredentials {
     lastLogin: number /* timestamp */
   }
   mfa: {
-    email: {
-      address: string
+    methods: {
+      name: string
       confirmed: boolean
-    }
-    sms: {
-      confirmed: boolean
-      number: string
-    }
-    totp: {
-      secretKey: string
-    }
-    default: string
+      value: string
+    }[]
+    defaultMethod: string
     autoSend: boolean
   }
   static __is_atscript_annotated_type: true
@@ -58,65 +46,5 @@ export declare class AoothUserCredentials {
   static toJsonSchema: () => any
   /** @deprecated Example Data support is disabled. To enable, set `exampleData: true` in tsPlugin options. */
   static toExampleData?: () => any
-  static __flat: {
-    "id": string
-    "username": string
-    "password": never
-    "password.hash": string
-    "password.salt": string
-    "password.algorithm": string
-    "password.history": string
-    "password.lastChanged": number /* timestamp */
-    "password.isInitial": boolean
-    "account": never
-    "account.active": boolean
-    "account.locked": boolean
-    "account.lockReason": string
-    "account.lockEnds": number /* timestamp */
-    "account.failedLoginAttempts": number
-    "account.lastLogin": number /* timestamp */
-    "mfa": never
-    "mfa.email": never
-    "mfa.email.address": string
-    "mfa.email.confirmed": boolean
-    "mfa.sms": never
-    "mfa.sms.confirmed": boolean
-    "mfa.sms.number": string
-    "mfa.totp": never
-    "mfa.totp.secretKey": string
-    "mfa.default": string
-    "mfa.autoSend": boolean
-  }
-  static __ownProps: {
-    "id": string
-    "username": string
-    "password": never
-    "password.hash": string
-    "password.salt": string
-    "password.algorithm": string
-    "password.history": string
-    "password.lastChanged": number /* timestamp */
-    "password.isInitial": boolean
-    "account": never
-    "account.active": boolean
-    "account.locked": boolean
-    "account.lockReason": string
-    "account.lockEnds": number /* timestamp */
-    "account.failedLoginAttempts": number
-    "account.lastLogin": number /* timestamp */
-    "mfa": never
-    "mfa.email": never
-    "mfa.email.address": string
-    "mfa.email.confirmed": boolean
-    "mfa.sms": never
-    "mfa.sms.confirmed": boolean
-    "mfa.sms.number": string
-    "mfa.totp": never
-    "mfa.totp.secretKey": string
-    "mfa.default": string
-    "mfa.autoSend": boolean
-  }
-  
-  static __pk: string | string
 }
 // prettier-ignore-end

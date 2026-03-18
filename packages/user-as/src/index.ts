@@ -1,2 +1,1 @@
-export { UsersStoreAs } from "./users-store-as";
-export { translateChanges } from "./change-translator";
+export { UserStoreAs } from "./users-store-as";

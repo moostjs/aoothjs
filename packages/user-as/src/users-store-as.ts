@@ -1,9 +1,8 @@
 import { type AtscriptDbTable, DbError } from "@atscript/db";
-import type { TAoothUserCredentials, TCumulativeChanges } from "@aoothjs/user";
-import { UsersStore } from "@aoothjs/user";
-import { translateChanges } from "./change-translator";
+import type { UserCredentials, UserStoreUpdate } from "@aoothjs/user";
+import { UserStore, UserAuthError, setAtPath } from "@aoothjs/user";
 
-export class UsersStoreAs<T extends object = { id: string }> extends UsersStore<T> {
+export class UserStoreAs<T extends object = object> extends UserStore<T> {
   constructor(protected table: AtscriptDbTable) {
     super();
   }
@@ -13,33 +12,39 @@ export class UsersStoreAs<T extends object = { id: string }> extends UsersStore<
     return count > 0;
   }
 
-  async read(username: string): Promise<TAoothUserCredentials & T> {
+  async findByUsername(username: string): Promise<(UserCredentials & T) | null> {
     const result = await this.table.findOne({ filter: { username } });
-    if (!result) {
-      throw new Error("Not found");
-    }
-    return result as TAoothUserCredentials & T;
+    return (result as (UserCredentials & T) | null) ?? null;
   }
 
-  async create(data: TAoothUserCredentials & T): Promise<void> {
+  async create(data: UserCredentials & T): Promise<void> {
     try {
       await this.table.insertOne(data as Record<string, unknown>);
     } catch (e: unknown) {
       if (e instanceof DbError && e.code === "CONFLICT") {
-        throw new Error(`User with id "${data.username}" already exists.`);
+        throw new UserAuthError("ALREADY_EXISTS", `User "${data.username}" already exists`);
       }
       throw e;
     }
   }
 
-  async change(username: string, changes: TCumulativeChanges): Promise<void> {
-    const patch = translateChanges(changes);
-    if (!patch) return;
+  async update(username: string, update: UserStoreUpdate): Promise<boolean> {
+    const patch: Record<string, unknown> = { username };
 
-    patch.username = username;
-    const result = await this.table.updateOne(patch as any);
-    if (result.matchedCount === 0) {
-      throw new Error("Not found");
+    if (update.set) {
+      Object.assign(patch, update.set);
     }
+
+    if (update.inc) {
+      for (const [path, amount] of Object.entries(update.inc)) {
+        setAtPath(patch, path, { $inc: amount });
+      }
+    }
+
+    // If only username was set (no actual changes), no-op
+    if (Object.keys(patch).length <= 1) return true;
+
+    const result = await this.table.updateOne(patch as any);
+    return result.matchedCount > 0;
   }
 }

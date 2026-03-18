@@ -36,30 +36,10 @@ $("object", AoothUserCredentials)
           .tags("string")
           .$type
       ).prop(
-        "salt",
-        $().designType("string")
-          .tags("string")
-          .$type
-      ).prop(
-        "algorithm",
-        $().designType("string")
-          .tags("string")
-          .$type
-      ).prop(
         "history",
         $("array")
-          .of($("object")
-              .prop(
-                "algorithm",
-                $().designType("string")
-                  .tags("string")
-                  .$type
-              ).prop(
-                "hash",
-                $().designType("string")
-                  .tags("string")
-                  .$type
-              )
+          .of($().designType("string")
+              .tags("string")
               .$type)
           .annotate("db.json", true)
           .$type
@@ -119,50 +99,29 @@ $("object", AoothUserCredentials)
     "mfa",
     $("object")
       .prop(
-        "email",
-        $("object")
-          .prop(
-            "address",
-            $().designType("string")
-              .tags("string")
-              .$type
-          ).prop(
-            "confirmed",
-            $().designType("boolean")
-              .tags("boolean")
-              .$type
-          )
-          .annotate("db.patch.strategy", "merge")
+        "methods",
+        $("array")
+          .of($("object")
+              .prop(
+                "name",
+                $().designType("string")
+                  .tags("string")
+                  .$type
+              ).prop(
+                "confirmed",
+                $().designType("boolean")
+                  .tags("boolean")
+                  .$type
+              ).prop(
+                "value",
+                $().designType("string")
+                  .tags("string")
+                  .$type
+              )
+              .$type)
           .$type
       ).prop(
-        "sms",
-        $("object")
-          .prop(
-            "confirmed",
-            $().designType("boolean")
-              .tags("boolean")
-              .$type
-          ).prop(
-            "number",
-            $().designType("string")
-              .tags("string")
-              .$type
-          )
-          .annotate("db.patch.strategy", "merge")
-          .$type
-      ).prop(
-        "totp",
-        $("object")
-          .prop(
-            "secretKey",
-            $().designType("string")
-              .tags("string")
-              .$type
-          )
-          .annotate("db.patch.strategy", "merge")
-          .$type
-      ).prop(
-        "default",
+        "defaultMethod",
         $().designType("string")
           .tags("string")
           .$type

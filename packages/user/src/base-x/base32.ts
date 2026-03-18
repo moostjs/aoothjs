@@ -59,3 +59,24 @@ export const encode = function (plain: Buffer | string) {
   }
   return encoded;
 };
+
+export function decode(input: string): Buffer {
+  const cleaned = input.toUpperCase().replace(/=+$/, "");
+  let bits = 0;
+  let value = 0;
+  let index = 0;
+  const output = Buffer.alloc(Math.floor((cleaned.length * 5) / 8));
+
+  for (const ch of cleaned) {
+    const val = charTable.indexOf(ch);
+    if (val === -1) continue;
+    value = (value << 5) | val;
+    bits += 5;
+    if (bits >= 8) {
+      output[index++] = (value >>> (bits - 8)) & 0xff;
+      bits -= 8;
+    }
+  }
+
+  return output.subarray(0, index);
+}

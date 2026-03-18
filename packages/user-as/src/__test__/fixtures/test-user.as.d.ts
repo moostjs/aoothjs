@@ -18,12 +18,7 @@ export declare class AoothUserCredentials {
   username: string
   password: {
     hash: string
-    salt: string
-    algorithm: string
-    history: {
-      algorithm: string
-      hash: string
-    }[]
+    history: string[]
     lastChanged: number /* timestamp */
     isInitial: boolean
   }
@@ -36,18 +31,12 @@ export declare class AoothUserCredentials {
     lastLogin: number /* timestamp */
   }
   mfa: {
-    email: {
-      address: string
+    methods: {
+      name: string
       confirmed: boolean
-    }
-    sms: {
-      confirmed: boolean
-      number: string
-    }
-    totp: {
-      secretKey: string
-    }
-    default: string
+      value: string
+    }[]
+    defaultMethod: string
     autoSend: boolean
   }
   static __is_atscript_annotated_type: true
@@ -63,8 +52,6 @@ export declare class AoothUserCredentials {
     "username": string
     "password": never
     "password.hash": string
-    "password.salt": string
-    "password.algorithm": string
     "password.history": string
     "password.lastChanged": number /* timestamp */
     "password.isInitial": boolean
@@ -76,15 +63,11 @@ export declare class AoothUserCredentials {
     "account.failedLoginAttempts": number
     "account.lastLogin": number /* timestamp */
     "mfa": never
-    "mfa.email": never
-    "mfa.email.address": string
-    "mfa.email.confirmed": boolean
-    "mfa.sms": never
-    "mfa.sms.confirmed": boolean
-    "mfa.sms.number": string
-    "mfa.totp": never
-    "mfa.totp.secretKey": string
-    "mfa.default": string
+    "mfa.methods": never
+    "mfa.methods.name": string
+    "mfa.methods.confirmed": boolean
+    "mfa.methods.value": string
+    "mfa.defaultMethod": string
     "mfa.autoSend": boolean
   }
   static __ownProps: {
@@ -92,8 +75,6 @@ export declare class AoothUserCredentials {
     "username": string
     "password": never
     "password.hash": string
-    "password.salt": string
-    "password.algorithm": string
     "password.history": string
     "password.lastChanged": number /* timestamp */
     "password.isInitial": boolean
@@ -105,15 +86,11 @@ export declare class AoothUserCredentials {
     "account.failedLoginAttempts": number
     "account.lastLogin": number /* timestamp */
     "mfa": never
-    "mfa.email": never
-    "mfa.email.address": string
-    "mfa.email.confirmed": boolean
-    "mfa.sms": never
-    "mfa.sms.confirmed": boolean
-    "mfa.sms.number": string
-    "mfa.totp": never
-    "mfa.totp.secretKey": string
-    "mfa.default": string
+    "mfa.methods": never
+    "mfa.methods.name": string
+    "mfa.methods.confirmed": boolean
+    "mfa.methods.value": string
+    "mfa.defaultMethod": string
     "mfa.autoSend": boolean
   }
   

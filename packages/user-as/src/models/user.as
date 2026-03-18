@@ -1,20 +1,12 @@
-@db.table 'aooth_users'
 export interface AoothUserCredentials {
-    @meta.id
-    @db.default.uuid
-    id: string
-
     @db.index.unique 'username_idx'
     username: string
 
     @db.patch.strategy 'merge'
     password: {
         hash: string
-        salt: string
-        algorithm: string
 
-        @db.json
-        history: { algorithm: string, hash: string }[]
+        history: string[]
 
         lastChanged: number.timestamp
         isInitial: boolean
@@ -32,21 +24,9 @@ export interface AoothUserCredentials {
 
     @db.patch.strategy 'merge'
     mfa: {
-        @db.patch.strategy 'merge'
-        email: {
-            address: string
-            confirmed: boolean
-        }
-        @db.patch.strategy 'merge'
-        sms: {
-            confirmed: boolean
-            number: string
-        }
-        @db.patch.strategy 'merge'
-        totp: {
-            secretKey: string
-        }
-        default: string
+        methods: { name: string, confirmed: boolean, value: string }[]
+
+        defaultMethod: string
         autoSend: boolean
     }
 }

@@ -1,22 +1,20 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vite-plus/test";
 import { AtscriptDbTable } from "@atscript/db";
 import { SqliteAdapter, BetterSqlite3Driver } from "@atscript/db-sqlite";
-import { Aooth } from "@aoothjs/user";
-import type { TAoothUserCredentials } from "@aoothjs/user";
+import { UserAuthError, UserService } from "@aoothjs/user";
+import type { UserCredentials } from "@aoothjs/user";
 
-import { UsersStoreAs } from "../users-store-as";
+import { UserStoreAs } from "../users-store-as";
 import { prepareFixtures } from "./test-utils";
 
 let AoothUserCredentials: any;
 
-function makeUserData(overrides?: Partial<TAoothUserCredentials>): TAoothUserCredentials {
+function makeUserData(overrides?: Partial<UserCredentials>): UserCredentials {
   return {
     id: "test-id-1",
     username: "alice",
     password: {
-      hash: "abc123",
-      salt: "salt1",
-      algorithm: "sha3-224",
+      hash: "$scrypt$N=1024,r=1,p=1,l=32$dGVzdHNhbHQ$dGVzdGhhc2g",
       history: [],
       lastChanged: 1000,
       isInitial: true,
@@ -30,21 +28,19 @@ function makeUserData(overrides?: Partial<TAoothUserCredentials>): TAoothUserCre
       lastLogin: 0,
     },
     mfa: {
-      email: { address: "", confirmed: false },
-      sms: { confirmed: false, number: "" },
-      totp: { secretKey: "" },
-      default: "",
+      methods: [],
+      defaultMethod: "",
       autoSend: false,
     },
     ...overrides,
   };
 }
 
-describe("UsersStoreAs", () => {
+describe("UserStoreAs", () => {
   let driver: BetterSqlite3Driver;
   let adapter: SqliteAdapter;
   let table: AtscriptDbTable;
-  let store: UsersStoreAs;
+  let store: UserStoreAs;
 
   beforeAll(async () => {
     await prepareFixtures();
@@ -58,7 +54,7 @@ describe("UsersStoreAs", () => {
     table = new AtscriptDbTable(AoothUserCredentials, adapter);
     await table.ensureTable();
     await table.syncIndexes();
-    store = new UsersStoreAs(table);
+    store = new UserStoreAs(table);
   });
 
   afterEach(() => {
@@ -79,168 +75,162 @@ describe("UsersStoreAs", () => {
   describe("create", () => {
     it("stores a record", async () => {
       await store.create(makeUserData());
-      const data = await store.read("alice");
-      expect(data.username).toBe("alice");
-      expect(data.password.hash).toBe("abc123");
-      expect(data.account.active).toBe(false);
+      const data = await store.findByUsername("alice");
+      expect(data).not.toBeNull();
+      expect(data!.username).toBe("alice");
+      expect(data!.password.hash).toContain("$scrypt$");
+      expect(data!.account.active).toBe(false);
     });
 
-    it("throws on duplicate username", async () => {
+    it("throws ALREADY_EXISTS on duplicate username", async () => {
       await store.create(makeUserData());
-      await expect(store.create(makeUserData())).rejects.toThrow(
-        'User with id "alice" already exists.',
-      );
+      try {
+        await store.create(makeUserData());
+        expect.unreachable();
+      } catch (e) {
+        expect(e).toBeInstanceOf(UserAuthError);
+        expect((e as UserAuthError).type).toBe("ALREADY_EXISTS");
+      }
     });
   });
 
-  describe("read", () => {
+  describe("findByUsername", () => {
     it("returns full record", async () => {
       await store.create(makeUserData());
-      const data = await store.read("alice");
-      expect(data.id).toBe("test-id-1");
-      expect(data.username).toBe("alice");
-      expect(data.password.salt).toBe("salt1");
-      expect(data.password.algorithm).toBe("sha3-224");
-      expect(data.password.history).toEqual([]);
-      expect(data.password.lastChanged).toBe(1000);
-      expect(data.password.isInitial).toBe(true);
-      expect(data.account.failedLoginAttempts).toBe(0);
-      expect(data.mfa.email.address).toBe("");
-      expect(data.mfa.default).toBe("");
+      const data = await store.findByUsername("alice");
+      expect(data).not.toBeNull();
+      expect(data!.id).toBe("test-id-1");
+      expect(data!.username).toBe("alice");
+      expect(data!.password.history).toEqual([]);
+      expect(data!.password.lastChanged).toBe(1000);
+      expect(data!.password.isInitial).toBe(true);
+      expect(data!.account.failedLoginAttempts).toBe(0);
+      expect(data!.mfa.methods).toEqual([]);
+      expect(data!.mfa.defaultMethod).toBe("");
     });
 
-    it("throws Not found for unknown user", async () => {
-      await expect(store.read("nobody")).rejects.toThrow("Not found");
+    it("returns null for unknown user", async () => {
+      expect(await store.findByUsername("nobody")).toBeNull();
     });
   });
 
-  describe("change", () => {
+  describe("update", () => {
     beforeEach(async () => {
       await store.create(makeUserData());
     });
 
     it("applies set operation", async () => {
-      await store.change("alice", {
-        "account.active": { oldValue: false, value: true, op: "set" },
+      await store.update("alice", {
+        set: { account: { active: true } } as any,
       });
-      const data = await store.read("alice");
-      expect(data.account.active).toBe(true);
+      const data = await store.findByUsername("alice");
+      expect(data!.account.active).toBe(true);
     });
 
     it("applies multiple set operations", async () => {
-      await store.change("alice", {
-        "account.locked": { oldValue: false, value: true, op: "set" },
-        "account.lockReason": { oldValue: "", value: "too many attempts", op: "set" },
-        "account.lockEnds": { oldValue: 0, value: 9999, op: "set" },
+      await store.update("alice", {
+        set: {
+          account: { locked: true, lockReason: "too many attempts", lockEnds: 9999 },
+        } as any,
       });
-      const data = await store.read("alice");
-      expect(data.account.locked).toBe(true);
-      expect(data.account.lockReason).toBe("too many attempts");
-      expect(data.account.lockEnds).toBe(9999);
-    });
-
-    it("applies deeply nested set", async () => {
-      await store.change("alice", {
-        "mfa.email.address": { oldValue: "", value: "alice@test.com", op: "set" },
-        "mfa.email.confirmed": { oldValue: false, value: true, op: "set" },
-      });
-      const data = await store.read("alice");
-      expect(data.mfa.email.address).toBe("alice@test.com");
-      expect(data.mfa.email.confirmed).toBe(true);
+      const data = await store.findByUsername("alice");
+      expect(data!.account.locked).toBe(true);
+      expect(data!.account.lockReason).toBe("too many attempts");
+      expect(data!.account.lockEnds).toBe(9999);
     });
 
     it("applies inc operation", async () => {
-      await store.change("alice", {
-        "account.failedLoginAttempts": { oldValue: 0, value: 1, op: "inc" },
+      await store.update("alice", {
+        inc: { "account.failedLoginAttempts": 1 },
       });
-      const data = await store.read("alice");
-      expect(data.account.failedLoginAttempts).toBe(1);
+      const data1 = await store.findByUsername("alice");
+      expect(data1!.account.failedLoginAttempts).toBe(1);
 
-      // increment again
-      await store.change("alice", {
-        "account.failedLoginAttempts": { oldValue: 1, value: 1, op: "inc" },
+      await store.update("alice", {
+        inc: { "account.failedLoginAttempts": 1 },
       });
-      const data2 = await store.read("alice");
-      expect(data2.account.failedLoginAttempts).toBe(2);
+      const data2 = await store.findByUsername("alice");
+      expect(data2!.account.failedLoginAttempts).toBe(2);
     });
 
     it("applies mixed set and inc operations", async () => {
-      await store.change("alice", {
-        "account.locked": { oldValue: false, value: true, op: "set" },
-        "account.failedLoginAttempts": { oldValue: 0, value: 1, op: "inc" },
+      await store.update("alice", {
+        set: { account: { locked: true } } as any,
+        inc: { "account.failedLoginAttempts": 3 },
       });
-      const data = await store.read("alice");
-      expect(data.account.locked).toBe(true);
-      expect(data.account.failedLoginAttempts).toBe(1);
+      const data = await store.findByUsername("alice");
+      expect(data!.account.locked).toBe(true);
+      expect(data!.account.failedLoginAttempts).toBe(3);
     });
 
     it("applies set on password history (JSON field)", async () => {
-      const newHistory = [{ algorithm: "sha3-224", hash: "oldhash" }];
-      await store.change("alice", {
-        "password.history": { oldValue: [], value: newHistory, op: "set" },
+      const newHistory = ["$scrypt$N=1024,r=1,p=1,l=32$oldsalt$oldhash"];
+      await store.update("alice", {
+        set: { password: { history: newHistory } } as any,
       });
-      const data = await store.read("alice");
-      expect(data.password.history).toEqual(newHistory);
+      const data = await store.findByUsername("alice");
+      expect(data!.password.history).toEqual(newHistory);
     });
 
-    it("no-ops for empty changes", async () => {
-      await store.change("alice", {});
-      const data = await store.read("alice");
-      expect(data.username).toBe("alice");
+    it("no-ops for empty update", async () => {
+      const result = await store.update("alice", {});
+      expect(result).toBe(true);
+      const data = await store.findByUsername("alice");
+      expect(data!.username).toBe("alice");
     });
 
-    it("throws Not found for unknown user", async () => {
-      await expect(
-        store.change("nobody", {
-          "account.active": { oldValue: false, value: true, op: "set" },
-        }),
-      ).rejects.toThrow("Not found");
+    it("returns false for unknown user", async () => {
+      const result = await store.update("nobody", {
+        set: { account: { active: true } } as any,
+      });
+      expect(result).toBe(false);
     });
   });
 
-  describe("Aooth integration", () => {
-    it("works as a drop-in replacement for UsersStoreMemory", async () => {
-      const aooth = new Aooth(store);
+  describe("UserService integration", () => {
+    it("works as a drop-in UserStore for UserService", async () => {
+      const svc = new UserService(store, {
+        password: { scryptN: 1024, scryptR: 1, scryptP: 1, keyLength: 32 },
+      });
 
       // Create user
-      const user = await aooth.createUser("bob");
-      const data = user.getData();
-      expect(data.username).toBe("bob");
-      expect(data.password.hash).toBeTruthy();
-      expect(data.password.isInitial).toBe(true);
-      expect(data.account.active).toBe(false);
+      const user = await svc.createUser("bob", "Secret1!");
+      expect(user.username).toBe("bob");
+      expect(user.password.hash).toContain("$scrypt$");
+      expect(user.password.isInitial).toBe(false);
 
       // Read back
-      const readData = await aooth.getUserData("bob");
-      expect(readData.username).toBe("bob");
-      expect(readData.password.hash).toBe(data.password.hash);
+      const readUser = await svc.getUser("bob");
+      expect(readUser.username).toBe("bob");
+      expect(readUser.password.hash).toBe(user.password.hash);
 
       // Activate account
-      const u = aooth.user("bob");
-      await u.read();
-      u.activateAccount();
-      await u.save();
-      const activated = await aooth.getUserData("bob");
+      await svc.activateAccount("bob");
+      const activated = await svc.getUser("bob");
       expect(activated.account.active).toBe(true);
 
+      // Login
+      const result = await svc.login("bob", "Secret1!");
+      expect(result.user.username).toBe("bob");
+      expect(result.user.account.lastLogin).toBeGreaterThan(0);
+
       // Duplicate throws
-      await expect(aooth.createUser("bob")).rejects.toThrow('User with id "bob" already exists');
+      try {
+        await svc.createUser("bob");
+        expect.unreachable();
+      } catch (e) {
+        expect((e as UserAuthError).type).toBe("ALREADY_EXISTS");
+      }
     });
 
     it("validates password through the store", async () => {
-      const aooth = new Aooth(store);
-      await aooth.createUser("carol");
+      const svc = new UserService(store, {
+        password: { scryptN: 1024, scryptR: 1, scryptP: 1, keyLength: 32 },
+      });
+      await svc.createUser("carol", "Secret1!");
 
-      // Set a known password
-      const u = aooth.user("carol");
-      await u.read();
-      const cfg = aooth.getConfig().password;
-      u.changePassword(cfg, "Secret1!", "Secret1!");
-      await u.save();
-
-      // Validate
-      expect(await aooth.validatePassword("carol", "Secret1!")).toBe(true);
-      expect(await aooth.validatePassword("carol", "wrong")).toBe(false);
+      expect(await svc.verifyPassword("carol", "Secret1!")).toBe(true);
+      expect(await svc.verifyPassword("carol", "wrong")).toBe(false);
     });
   });
 });
