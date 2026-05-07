@@ -60,7 +60,15 @@ export interface IssueResult {
 export interface RefreshConfig {
   /** Refresh token lifetime in milliseconds. */
   ttl: number;
-  /** Rotation strategy. Defaults to 'sliding'. */
+  /**
+   * Rotation strategy. Defaults to 'sliding'.
+   *
+   * Note: 'sliding' grace-period replay tolerance only works against stateful
+   * stores (e.g. {@link CredentialStoreMemory}). Stateless stores (JWT,
+   * Encapsulated) cannot mutate an issued token in place; after the first
+   * rotation the old refresh becomes unusable, so 'sliding' degrades to
+   * 'always' semantics. Use 'always' explicitly for stateless deployments.
+   */
   rotation?: "none" | "always" | "sliding";
   /** Grace period for sliding rotation, in milliseconds. Defaults to 30_000. */
   rotationGraceMs?: number;

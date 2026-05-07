@@ -97,6 +97,14 @@ describe("CredentialStoreMemory", () => {
       expect(await store.listForUser("alice")).toHaveLength(0);
       expect(await store.listForUser("bob")).toHaveLength(1);
     });
+
+    it("is a no-op for unknown tokens (does not resurrect revoked entries)", async () => {
+      const store = new CredentialStoreMemory();
+      const returned = await store.update("does-not-exist", makeState("alice"));
+      expect(returned).toBe("does-not-exist");
+      expect(await store.retrieve("does-not-exist")).toBeNull();
+      expect(await store.listForUser("alice")).toHaveLength(0);
+    });
   });
 
   describe("revoke", () => {

@@ -57,10 +57,14 @@ export class CredentialStoreMemory<
 
   async update(token: string, state: CredentialState<TClaims>): Promise<string> {
     const existing = this.states.get(token);
-    if (existing && existing.userId !== state.userId) {
+    if (!existing) {
+      // No-op for unknown tokens — `update()` is for mutating an already
+      // persisted credential; resurrecting a forgotten token would silently
+      // bypass revocation.
+      return token;
+    }
+    if (existing.userId !== state.userId) {
       this.indexRemove(existing.userId, token);
-      this.indexAdd(state.userId, token);
-    } else if (!existing) {
       this.indexAdd(state.userId, token);
     }
     this.states.set(token, { ...state });
