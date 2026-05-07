@@ -33,6 +33,11 @@ export interface CredentialState<TClaims extends object = object> {
   expiresAt: number;
   claims?: TClaims;
   metadata?: CredentialMetadata;
+  /**
+   * Discriminant between access and refresh credentials persisted in the same store.
+   * Defaults to "access" when omitted.
+   */
+  kind?: "access" | "refresh";
   /** For rotated refresh tokens — id of the parent credential this one replaced */
   parentCredentialId?: string;
   /** Timestamp of rotation; used by sliding rotation grace period */
