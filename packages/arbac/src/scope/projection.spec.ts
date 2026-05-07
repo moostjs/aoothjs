@@ -101,8 +101,34 @@ describe("unionProjections", () => {
     expect(unionProjections({ password: 0 }, { secret: 0 })).toStrictEqual({});
   });
 
-  it("must return empty for mixed include and exclude", () => {
-    expect(unionProjections({ name: 1 }, { password: 0 })).toStrictEqual({});
+  it("must throw for mixed include and exclude", () => {
+    expect(() => unionProjections({ name: 1 }, { password: 0 })).toThrow(
+      "cannot union mixed include and exclude",
+    );
+  });
+
+  it("must throw for three+ projections in different modes", () => {
+    expect(() => unionProjections({ name: 1 }, { email: 1, age: 1 }, { password: 0 })).toThrow(
+      "cannot union mixed include and exclude",
+    );
+  });
+
+  it("must union three include projections", () => {
+    expect(unionProjections({ name: 1 }, { email: 1 }, { age: 1, name: 1 })).toStrictEqual({
+      name: 1,
+      email: 1,
+      age: 1,
+    });
+  });
+
+  it("must intersect three exclude projections", () => {
+    expect(
+      unionProjections(
+        { password: 0, secret: 0 },
+        { password: 0, token: 0 },
+        { password: 0, ssn: 0 },
+      ),
+    ).toStrictEqual({ password: 0 });
   });
 });
 
@@ -139,6 +165,37 @@ describe("restrictProjection", () => {
     expect(restrictProjection({ secret: 0 }, { name: 1, email: 1, secret: 1 })).toStrictEqual({
       name: 1,
       email: 1,
+    });
+  });
+
+  describe("nested-path interaction", () => {
+    it("must keep nested desired key when its parent is allowed by access control", () => {
+      // desired wants only user.email; access control allows the whole `user` subtree
+      expect(restrictProjection({ "user.email": 1 }, { user: 1 })).toStrictEqual({
+        "user.email": 1,
+      });
+    });
+
+    it("must drop nested desired key when its parent is excluded by access control", () => {
+      // access control excludes the whole `user` subtree; desired's user.email is therefore disallowed
+      expect(restrictProjection({ "user.email": 1, name: 1 }, { user: 0 })).toStrictEqual({
+        name: 1,
+      });
+    });
+
+    it("must keep parent desired key when access control includes a nested child", () => {
+      // desired wants `user`; access control allows it via the nested `user.email` entry
+      // (isFieldAllowed("user", {"user.email": 1}) is true). The result keeps the desired key
+      // as-is — narrowing further is the caller's responsibility.
+      expect(restrictProjection({ user: 1 }, { "user.email": 1 })).toStrictEqual({
+        user: 1,
+      });
+    });
+
+    it("must keep nested key on both sides when both narrow to the same parent", () => {
+      expect(
+        restrictProjection({ "user.email": 1, "user.name": 1 }, { "user.email": 1 }),
+      ).toStrictEqual({ "user.email": 1 });
     });
   });
 });

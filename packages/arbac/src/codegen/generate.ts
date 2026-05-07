@@ -11,10 +11,24 @@ export interface TCodegenOptions {
   header?: string;
 }
 
+/**
+ * Escape a string for safe embedding inside a TypeScript double-quoted literal.
+ * Handles backslashes, double quotes, and control chars so resource/action
+ * names containing these characters can't break the generated source.
+ */
+function escapeForTsString(value: string): string {
+  return value
+    .replace(/\\/gu, "\\\\")
+    .replace(/"/gu, '\\"')
+    .replace(/\n/gu, "\\n")
+    .replace(/\r/gu, "\\r")
+    .replace(/\t/gu, "\\t");
+}
+
 function toUnion(values: Iterable<string>): string {
   const sorted = [...values].toSorted();
   if (sorted.length === 0) return "never";
-  return sorted.map((v) => `"${v}"`).join(" | ");
+  return sorted.map((v) => `"${escapeForTsString(v)}"`).join(" | ");
 }
 
 /**
@@ -40,7 +54,7 @@ export function generateResourceTypes(map: TResourceActionMap, options?: TCodege
     lines.push(`export type ${resourceType}ActionMap = {`);
     const sorted = [...map.resources.entries()].toSorted(([a], [b]) => a.localeCompare(b));
     for (const [resource, actions] of sorted) {
-      lines.push(`  "${resource}": ${toUnion(actions)};`);
+      lines.push(`  "${escapeForTsString(resource)}": ${toUnion(actions)};`);
     }
     lines.push("};");
   }

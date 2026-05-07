@@ -91,6 +91,46 @@ describe("defineRole", () => {
     expect(role.rules).toStrictEqual([]);
   });
 
+  it("must overwrite id when .id() is called twice (last call wins)", () => {
+    const role = defineRole().id("first").id("second").allow("res", "act").build();
+    expect(role.id).toBe("second");
+  });
+
+  it("must preserve rule order across .use() and .allow()", () => {
+    const priv: TPrivilegeFunction<object, object> = () => [
+      { resource: "a", action: "read" },
+      { resource: "a", action: "update" },
+    ];
+
+    const role = defineRole().id("ordered").use(priv).allow("b", "delete").build();
+
+    expect(role.rules).toStrictEqual([
+      { resource: "a", action: "read" },
+      { resource: "a", action: "update" },
+      { resource: "b", action: "delete" },
+    ]);
+  });
+
+  it("must preserve both deny and allow rules in call order", () => {
+    const role = defineRole()
+      .id("mixed")
+      .deny("articles", "delete")
+      .allow("articles", "delete")
+      .build();
+
+    // The builder emits both rules — the engine decides precedence.
+    expect(role.rules).toHaveLength(2);
+    expect(role.rules[0]).toStrictEqual({
+      resource: "articles",
+      action: "delete",
+      effect: "deny",
+    });
+    expect(role.rules[1]).toStrictEqual({
+      resource: "articles",
+      action: "delete",
+    });
+  });
+
   it("must work end-to-end with Arbac", async () => {
     const role = defineRole<TestAttrs, TestScope>()
       .id("employee")

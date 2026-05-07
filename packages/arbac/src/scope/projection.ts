@@ -3,8 +3,10 @@ import type { TProjection } from "./types";
 export type TProjectionMode = "include" | "exclude" | "empty";
 
 /**
- * Determine if a projection is inclusion (all 1s), exclusion (all 0s), or empty.
- * Throws if a single projection mixes 0 and 1 values.
+ * Determine whether a projection is in inclusion mode (all 1s),
+ * exclusion mode (all 0s), or empty (`{}`, no restriction).
+ *
+ * @throws when a single projection mixes 0 and 1 values
  */
 export function getProjectionMode(proj: TProjection): TProjectionMode {
   const values = Object.values(proj);
@@ -20,8 +22,12 @@ export function getProjectionMode(proj: TProjection): TProjectionMode {
 }
 
 /**
- * Check if a field is allowed by a projection.
- * Supports dot-path fields — parent exclusion propagates to children.
+ * Check whether a dot-path field is allowed by a projection.
+ *
+ * Inclusion mode: a field is allowed if it, any of its parents, or any of its children
+ *   is explicitly listed.
+ * Exclusion mode: a field is allowed unless it or any of its parents is excluded.
+ * Empty projection: every field is allowed.
  */
 export function isFieldAllowed(field: string, projection: TProjection): boolean {
   const mode = getProjectionMode(projection);
@@ -57,10 +63,17 @@ export function isFieldAllowed(field: string, projection: TProjection): boolean 
  * Union multiple projections — most permissive merge for RBAC.
  * If any scope allows a field, the union allows it.
  *
+ * Semantics:
  * - empty ∪ anything = empty (unrestricted)
  * - include ∪ include = union of included keys
- * - exclude ∪ exclude = intersection of excluded keys
- * - mixed include + exclude = empty (unrestricted — safe for RBAC)
+ * - exclude ∪ exclude = intersection of excluded keys (only fields excluded by ALL remain excluded)
+ * - mixed include + exclude = **throws** — the union is ambiguous
+ *
+ * Mixed-mode merging silently widening to unrestricted is a security footgun for RBAC,
+ * so callers must normalize their projections (e.g. convert all to one mode) before
+ * unioning.
+ *
+ * @throws when projections mix `include` and `exclude` modes
  */
 export function unionProjections(...projections: TProjection[]): TProjection {
   if (projections.length === 0) return {};
@@ -73,8 +86,13 @@ export function unionProjections(...projections: TProjection[]): TProjection {
   const hasInclude = modes.has("include");
   const hasExclude = modes.has("exclude");
 
-  // Mixed modes — conservatively return unrestricted
-  if (hasInclude && hasExclude) return {};
+  // Mixed modes — explicit error to avoid silently widening access
+  if (hasInclude && hasExclude) {
+    throw new Error(
+      "unionProjections: cannot union mixed include and exclude projections — " +
+        "the result is ambiguous. Normalize all projections to a single mode before merging.",
+    );
+  }
 
   if (hasInclude) {
     // Union of included keys
@@ -99,7 +117,14 @@ export function unionProjections(...projections: TProjection[]): TProjection {
 
 /**
  * Restrict a desired projection to only fields allowed by an access-control projection.
- * This is an intersection — the result only includes fields that pass both projections.
+ *
+ * The result is the intersection of the two projections: only fields that pass both
+ * `desired` and `accessControl` survive. Either side may be empty (unrestricted), in
+ * which case the other side is returned. Mixed include/exclude modes are normalized
+ * to a single result projection.
+ *
+ * @param desired - the projection the caller asked for
+ * @param accessControl - the projection allowed by RBAC
  */
 export function restrictProjection(desired: TProjection, accessControl: TProjection): TProjection {
   const desiredMode = getProjectionMode(desired);

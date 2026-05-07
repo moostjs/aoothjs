@@ -62,4 +62,17 @@ describe("mergeScopeFilters", () => {
       status: { $in: [null, "active"] },
     });
   });
+
+  it("must fall through to $or when filters contain $and / $or branches", () => {
+    const filters = [
+      { $and: [{ department: "sales" }, { active: true }] },
+      { $or: [{ region: "west" }, { region: "east" }] },
+    ];
+    expect(mergeScopeFilters(filters)).toStrictEqual({ $or: filters });
+  });
+
+  it("must use $or even when one of the filters is logically nested", () => {
+    const filters = [{ department: "sales" }, { $and: [{ region: "west" }, { active: true }] }];
+    expect(mergeScopeFilters(filters)).toStrictEqual({ $or: filters });
+  });
 });

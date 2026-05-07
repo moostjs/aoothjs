@@ -1,12 +1,19 @@
 import type { TScopeFilter } from "./types";
 
 /**
- * Merge multiple scope filters into a single filter using $or semantics.
- * In RBAC, if multiple roles grant access with different filters,
- * the user can see records matching ANY of them.
+ * Merge multiple scope filters into a single filter using `$or` semantics.
  *
- * Optimizes single-key same-field case to `{ field: { $in: [...] } }`.
- * Returns `undefined` when the result is unrestricted (no filter).
+ * In RBAC, if multiple roles grant access with different filters,
+ * the user can see records matching ANY of them — hence `$or`.
+ *
+ * Behaviour:
+ * - Empty input → `undefined` (no filter)
+ * - Any empty filter → `undefined` (one role grants unrestricted access)
+ * - Single filter → returned as-is
+ * - All filters single-keyed on the same primitive field → `{ field: { $in: [...] } }`
+ * - Otherwise → `{ $or: [...] }`
+ *
+ * @returns the merged filter, or `undefined` for unrestricted access
  */
 export function mergeScopeFilters(scopes: TScopeFilter[]): TScopeFilter | undefined {
   if (scopes.length === 0) return undefined;

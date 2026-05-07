@@ -58,18 +58,36 @@ describe("canAccess", () => {
 });
 
 describe("canCrud", () => {
-  it("must generate four CRUD rules", () => {
+  it("must generate five CRUD+list rules", () => {
     const rules = canCrud("articles")();
-    expect(rules).toHaveLength(4);
-    expect(rules.map((r) => r.action)).toStrictEqual(["create", "read", "update", "delete"]);
+    expect(rules).toHaveLength(5);
+    expect(rules.map((r) => r.action)).toStrictEqual([
+      "create",
+      "read",
+      "update",
+      "delete",
+      "list",
+    ]);
     for (const rule of rules) {
       expect(rule.resource).toBe("articles");
     }
   });
 
-  it("must apply scope to all CRUD rules", () => {
+  it("must include `list` action distinct from `read`", () => {
+    const rules = canCrud("articles")();
+    const actions = rules.map((r) => r.action);
+    expect(actions).toContain("read");
+    expect(actions).toContain("list");
+    expect(rules.find((r) => r.action === "list")).toStrictEqual({
+      resource: "articles",
+      action: "list",
+    });
+  });
+
+  it("must apply scope to all CRUD+list rules", () => {
     const scopeFn = (attrs: TestAttrs) => ({ dept: attrs.department });
     const rules = canCrud<TestAttrs, TestScope>("articles", scopeFn)();
+    expect(rules).toHaveLength(5);
     for (const rule of rules) {
       expect(rule).toHaveProperty("scope", scopeFn);
     }
@@ -91,7 +109,7 @@ describe("privilege composition in roles", () => {
       .use(canAccess("reports", "read"))
       .build();
 
-    expect(role.rules).toHaveLength(5);
+    expect(role.rules).toHaveLength(6);
   });
 
   it("must work end-to-end with Arbac", async () => {

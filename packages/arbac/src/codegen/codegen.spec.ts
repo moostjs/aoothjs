@@ -2,6 +2,8 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { TArbacRole } from "@aoothjs/arbac-core";
 
+import { canCrud } from "../define-privilege";
+import { defineRole } from "../define-role";
 import { extractResourceActions } from "./extract";
 import { generateResourceTypes } from "./generate";
 
@@ -128,5 +130,82 @@ describe("generateResourceTypes", () => {
 
     expect(output).toContain("export type Resource = never;");
     expect(output).toContain("export type Action = never;");
+  });
+
+  it("must escape double quotes in resource and action names", () => {
+    const map = extractResourceActions([
+      { id: "r", rules: [{ resource: 'has"q', action: 'do"it' }] } as TArbacRole<unknown, unknown>,
+    ]);
+    const output = generateResourceTypes(map);
+
+    // Generated source must remain valid TS — quotes inside the literals
+    // must be backslash-escaped, not embedded raw.
+    expect(output).toContain('"has\\"q"');
+    expect(output).toContain('"do\\"it"');
+    expect(output).not.toContain('"has"q"');
+  });
+
+  it("must escape backslashes in resource and action names", () => {
+    const map = extractResourceActions([
+      {
+        id: "r",
+        rules: [{ resource: "ns\\sub", action: "back\\slash" }],
+      } as TArbacRole<unknown, unknown>,
+    ]);
+    const output = generateResourceTypes(map);
+
+    // Each backslash in source must become \\ in the emitted TS literal.
+    expect(output).toContain('"ns\\\\sub"');
+    expect(output).toContain('"back\\\\slash"');
+  });
+
+  it("must omit ResourceActionMap entry for literal resource with only wildcard actions", () => {
+    // A resource whose only rule has a wildcard action would otherwise emit
+    // a misleading `"foo": never` entry — skip it instead.
+    const map = extractResourceActions([
+      { id: "admin", rules: [{ resource: "foo", action: "*" }] } as TArbacRole<unknown, unknown>,
+    ]);
+
+    expect(map.allResources.has("foo")).toBe(true);
+    expect(map.resources.has("foo")).toBe(false);
+
+    const output = generateResourceTypes(map);
+    expect(output).toContain('export type Resource = "foo";');
+    expect(output).not.toContain('"foo": never;');
+  });
+});
+
+describe("codegen integration with defineRole", () => {
+  it("must extract and emit types end-to-end from real role builders", () => {
+    const editor = defineRole()
+      .id("editor")
+      .use(canCrud("articles"))
+      .allow("comments", "moderate")
+      .build() as TArbacRole<unknown, unknown>;
+
+    const viewer = defineRole().id("viewer").allow("articles", "read").build() as TArbacRole<
+      unknown,
+      unknown
+    >;
+
+    const map = extractResourceActions([editor, viewer]);
+    const output = generateResourceTypes(map);
+
+    // canCrud now emits 5 actions including `list`
+    expect([...map.allActions].toSorted()).toStrictEqual([
+      "create",
+      "delete",
+      "list",
+      "moderate",
+      "read",
+      "update",
+    ]);
+    expect([...map.allResources].toSorted()).toStrictEqual(["articles", "comments"]);
+    expect(output).toContain(
+      'export type Action = "create" | "delete" | "list" | "moderate" | "read" | "update";',
+    );
+    expect(output).toContain('export type Resource = "articles" | "comments";');
+    expect(output).toContain('"articles": "create" | "delete" | "list" | "read" | "update";');
+    expect(output).toContain('"comments": "moderate";');
   });
 });

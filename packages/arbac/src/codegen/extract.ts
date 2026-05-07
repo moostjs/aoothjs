@@ -35,10 +35,14 @@ export function extractResourceActions(
 
       if (!skipResource) {
         allResources.add(rule.resource);
-        if (!resources.has(rule.resource)) {
-          resources.set(rule.resource, new Set());
-        }
+        // Only create an entry in the resource → actions map when there is at
+        // least one concrete action to associate with it. A literal resource
+        // whose only actions are wildcards would otherwise emit a misleading
+        // `"foo": never` entry in the generated ResourceActionMap.
         if (!skipAction) {
+          if (!resources.has(rule.resource)) {
+            resources.set(rule.resource, new Set());
+          }
           resources.get(rule.resource)!.add(rule.action);
         }
       }

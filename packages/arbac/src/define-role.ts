@@ -6,17 +6,44 @@ import type { TArbacRole, TArbacRule } from "@aoothjs/arbac-core";
  */
 export type TPrivilegeFunction<TUserAttrs, TScope> = () => TArbacRule<TUserAttrs, TScope>[];
 
+/**
+ * Fluent builder produced by {@link defineRole}.
+ *
+ * All methods return `this` so they can be chained. Rules are emitted in the order
+ * the corresponding `.allow()`, `.deny()`, and `.use()` calls were made — this matters
+ * for engines that respect rule order (deny-first / first-match-wins variants).
+ */
 export interface RoleBuilder<TUserAttrs, TScope> {
+  /**
+   * Set the role id (required). Calling `.id()` more than once overwrites the
+   * previous value — the last call wins.
+   */
   id(id: string): RoleBuilder<TUserAttrs, TScope>;
+  /** Set the human-readable role name. Optional. */
   name(name: string): RoleBuilder<TUserAttrs, TScope>;
+  /** Set the role description. Optional. */
   describe(description: string): RoleBuilder<TUserAttrs, TScope>;
+  /**
+   * Append an allow rule for a (resource, action) pair, with an optional scope
+   * function that derives a scope object from user attrs.
+   */
   allow(
     resource: string,
     action: string,
     scope?: (attrs: TUserAttrs) => TScope,
   ): RoleBuilder<TUserAttrs, TScope>;
+  /** Append a deny rule (`effect: 'deny'`) for a (resource, action) pair. */
   deny(resource: string, action: string): RoleBuilder<TUserAttrs, TScope>;
+  /**
+   * Splice in rules from one or more privilege functions (see
+   * {@link definePrivilege}, {@link canAccess}, {@link canCrud}). Privileges
+   * are expanded inline in call order.
+   */
   use(...privileges: TPrivilegeFunction<TUserAttrs, TScope>[]): RoleBuilder<TUserAttrs, TScope>;
+  /**
+   * Finalize and return a plain {@link TArbacRole} object suitable for
+   * `Arbac.registerRole`. Throws if `.id()` was never called.
+   */
   build(): TArbacRole<TUserAttrs, TScope>;
 }
 
@@ -77,6 +104,17 @@ class RoleBuilderImpl<TUserAttrs, TScope> implements RoleBuilder<TUserAttrs, TSc
   }
 }
 
+/**
+ * Start building a new role.
+ *
+ * @example
+ * const editor = defineRole<MyAttrs, MyScope>()
+ *   .id("editor")
+ *   .name("Editor")
+ *   .use(canCrud("articles"))
+ *   .deny("articles", "publish")
+ *   .build();
+ */
 export function defineRole<
   TUserAttrs extends object = object,
   TScope extends object = object,
