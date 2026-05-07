@@ -146,52 +146,31 @@ export class CredentialStoreJwt<
   }
 
   async consume(token: string): Promise<CredentialState<TClaims> | null> {
-    if (!this.denylist) {
-      throw new AuthError(
-        "STATELESS_OPERATION_UNSUPPORTED",
-        "consume requires a denylist on stateless JWT store",
-      );
-    }
+    const denylist = this.requireDenylist("consume");
     const verified = await this.verify(token);
     if (!verified) return null;
     const jti = verified.payload.jti;
     if (jti) {
-      if (await this.denylist.has(jti)) return null;
-      const expSec = verified.payload.exp;
-      const expiresAtMs = typeof expSec === "number" ? expSec * 1000 : this.clock.now() + 60_000;
-      await this.denylist.add(jti, expiresAtMs);
+      if (await denylist.has(jti)) return null;
+      await denylist.add(jti, this.payloadExpMs(verified.payload));
     }
     return this.payloadToState(verified.payload);
   }
 
   async update(token: string, state: CredentialState<TClaims>): Promise<string> {
-    if (!this.denylist) {
-      throw new AuthError(
-        "STATELESS_OPERATION_UNSUPPORTED",
-        "update requires a denylist on stateless JWT store",
-      );
-    }
+    const denylist = this.requireDenylist("update");
     const verified = await this.verify(token);
     if (verified?.payload.jti) {
-      const expSec = verified.payload.exp;
-      const expiresAtMs = typeof expSec === "number" ? expSec * 1000 : this.clock.now() + 60_000;
-      await this.denylist.add(verified.payload.jti, expiresAtMs);
+      await denylist.add(verified.payload.jti, this.payloadExpMs(verified.payload));
     }
     return this.persist(state);
   }
 
   async revoke(token: string): Promise<void> {
-    if (!this.denylist) {
-      throw new AuthError(
-        "STATELESS_OPERATION_UNSUPPORTED",
-        "revoke requires a denylist on stateless JWT store",
-      );
-    }
+    const denylist = this.requireDenylist("revoke");
     const verified = await this.verify(token);
     if (!verified?.payload.jti) return;
-    const expSec = verified.payload.exp;
-    const expiresAtMs = typeof expSec === "number" ? expSec * 1000 : this.clock.now() + 60_000;
-    await this.denylist.add(verified.payload.jti, expiresAtMs);
+    await denylist.add(verified.payload.jti, this.payloadExpMs(verified.payload));
   }
 
   async revokeAllForUser(_userId: string): Promise<number> {
@@ -202,6 +181,21 @@ export class CredentialStoreJwt<
   }
 
   // --- internal helpers -------------------------------------------------
+
+  private requireDenylist(op: string): DenylistStore {
+    if (!this.denylist) {
+      throw new AuthError(
+        "STATELESS_OPERATION_UNSUPPORTED",
+        `${op} requires a denylist on stateless JWT store`,
+      );
+    }
+    return this.denylist;
+  }
+
+  /** Convert payload `exp` (seconds) to ms; fall back to a 60s window. */
+  private payloadExpMs(payload: JWTPayload): number {
+    return typeof payload.exp === "number" ? payload.exp * 1000 : this.clock.now() + 60_000;
+  }
 
   private async verify(token: string): Promise<{ payload: JWTPayload } | null> {
     try {

@@ -4,6 +4,11 @@ import type { CredentialState } from "../credential/types";
  * Pluggable credential storage. Implementations: Memory, JWT, Encapsulated.
  * Same shape works for stateful and stateless stores. Stateless stores treat
  * the token as the state itself (sign/encrypt on persist, verify/decrypt on retrieve).
+ *
+ * `TClaims` is constrained to `extends object`, which TypeScript widens to
+ * include arrays, class instances, and `Function`. Pass a plain object type
+ * (e.g. `{ role: string; tenant: string }`); using arrays/classes will type-
+ * check but won't survive JSON-serialised stateless storage round-trips.
  */
 export interface CredentialStore<TClaims extends object = object> {
   /** Persist state, return token. For stateless stores, token IS the state. */

@@ -38,6 +38,16 @@ interface EncryptedPayload<TClaims extends object> extends CredentialState<TClai
  * Same denylist semantics as {@link CredentialStoreJwt}: revocation /
  * single-use consume / update require a denylist; otherwise these operations
  * throw STATELESS_OPERATION_UNSUPPORTED.
+ *
+ * Key derivation:
+ * - A 32-byte `Buffer`/`Uint8Array` `secret` is used as the AES key directly
+ *   (no KDF).
+ * - Any other secret (string, shorter/longer buffer) is run through scrypt
+ *   with a fixed library-scoped salt to produce a 32-byte key. The salt is
+ *   intentionally fixed so keys remain stable across process restarts; if it
+ *   were random, every previously issued token would become undecryptable.
+ *   For maximum protection against rainbow tables on weak passphrases,
+ *   provide a 32-byte random buffer as `secret` (the KDF path is skipped).
  */
 export class CredentialStoreEncapsulated<
   TClaims extends object = object,
@@ -78,44 +88,29 @@ export class CredentialStoreEncapsulated<
   }
 
   async consume(token: string): Promise<CredentialState<TClaims> | null> {
-    if (!this.denylist) {
-      throw new AuthError(
-        "STATELESS_OPERATION_UNSUPPORTED",
-        "consume requires a denylist on stateless encapsulated store",
-      );
-    }
+    const denylist = this.requireDenylist("consume");
     const decrypted = this.decrypt(token);
     if (!decrypted) return null;
     if (decrypted.expiresAt <= this.clock.now()) return null;
-    if (await this.denylist.has(decrypted.jti)) return null;
-    await this.denylist.add(decrypted.jti, decrypted.expiresAt);
+    if (await denylist.has(decrypted.jti)) return null;
+    await denylist.add(decrypted.jti, decrypted.expiresAt);
     return stripJti(decrypted);
   }
 
   async update(token: string, state: CredentialState<TClaims>): Promise<string> {
-    if (!this.denylist) {
-      throw new AuthError(
-        "STATELESS_OPERATION_UNSUPPORTED",
-        "update requires a denylist on stateless encapsulated store",
-      );
-    }
+    const denylist = this.requireDenylist("update");
     const decrypted = this.decrypt(token);
     if (decrypted) {
-      await this.denylist.add(decrypted.jti, decrypted.expiresAt);
+      await denylist.add(decrypted.jti, decrypted.expiresAt);
     }
     return this.persist(state);
   }
 
   async revoke(token: string): Promise<void> {
-    if (!this.denylist) {
-      throw new AuthError(
-        "STATELESS_OPERATION_UNSUPPORTED",
-        "revoke requires a denylist on stateless encapsulated store",
-      );
-    }
+    const denylist = this.requireDenylist("revoke");
     const decrypted = this.decrypt(token);
     if (!decrypted) return;
-    await this.denylist.add(decrypted.jti, decrypted.expiresAt);
+    await denylist.add(decrypted.jti, decrypted.expiresAt);
   }
 
   async revokeAllForUser(_userId: string): Promise<number> {
@@ -123,6 +118,16 @@ export class CredentialStoreEncapsulated<
     // theft-response path (which best-effort revokes-all before throwing
     // REFRESH_REUSE_DETECTED) succeed when only a denylist is available.
     return 0;
+  }
+
+  private requireDenylist(op: string): DenylistStore {
+    if (!this.denylist) {
+      throw new AuthError(
+        "STATELESS_OPERATION_UNSUPPORTED",
+        `${op} requires a denylist on stateless encapsulated store`,
+      );
+    }
+    return this.denylist;
   }
 
   private decrypt(token: string): EncryptedPayload<TClaims> | null {

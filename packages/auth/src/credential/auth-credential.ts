@@ -30,11 +30,18 @@ export interface AuthCredentialOptions<TClaims extends object = object> {
   store: CredentialStore<TClaims>;
   /** Default 'token' — distinguishes session-style from token-style use. */
   method?: "session" | "token";
-  /** Access token TTL in milliseconds. Defaults to 1 hour. */
+  /** Access token TTL in milliseconds. Defaults to 1 hour. Must be > 0. */
   accessTtl?: number;
   /** If provided, refresh tokens are enabled. */
   refresh?: RefreshConfig;
-  /** Optional denylist (used during validate); stateful stores may ignore. */
+  /**
+   * Optional denylist consulted by `validate` keyed on the raw token.
+   *
+   * Note: stateless stores (JWT, Encapsulated) maintain their own denylist
+   * keyed on `jti` for `revoke`/`update`/`consume`. Sharing a single
+   * `DenylistStore` instance across both is safe (the keyspaces are disjoint:
+   * raw tokens vs UUID jti) but conceptually they serve different purposes.
+   */
   denylist?: DenylistStore;
   /** Maximum concurrent active access credentials per user. */
   maxConcurrent?: number;
@@ -85,6 +92,18 @@ export class AuthCredential<TClaims extends object = object> {
     this.maxConcurrent = opts.maxConcurrent;
     this.onLimit = opts.onLimit ?? "reject";
     this.clock = opts.clock ?? defaultClock;
+
+    // Catch the misconfiguration at boot rather than producing tokens that
+    // fail validate() the moment they are issued.
+    if (this.accessTtl <= 0) {
+      throw new AuthError("INVALID_CONFIG", `accessTtl must be > 0 (got ${this.accessTtl})`);
+    }
+    if (this.refreshConfig && this.refreshConfig.ttl <= 0) {
+      throw new AuthError(
+        "INVALID_CONFIG",
+        `refresh.ttl must be > 0 (got ${this.refreshConfig.ttl})`,
+      );
+    }
   }
 
   async issue(userId: string, options?: IssueOptions<TClaims>): Promise<IssueResult> {

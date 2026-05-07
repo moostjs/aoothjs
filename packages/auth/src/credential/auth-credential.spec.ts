@@ -105,17 +105,17 @@ describe("AuthCredential", () => {
       expect(await auth.validate(issued.refreshToken!)).toBeNull();
     });
 
-    it("treats accessTtl<=0 as already-expired (caller must validate config)", async () => {
-      // Pin: the current orchestrator does not validate accessTtl, so a
-      // misconfigured 0 / negative TTL produces tokens that fail validate()
-      // immediately. Captured here so the behavior cannot silently change.
-      const { auth: zero } = makeAuth({ accessTtl: 0 });
-      const a = await zero.issue("alice");
-      expect(await zero.validate(a.accessToken)).toBeNull();
+    it("rejects accessTtl<=0 at construction (INVALID_CONFIG)", () => {
+      // Misconfigured 0 / negative TTL would produce tokens that immediately
+      // fail validate(). The constructor surfaces the bad config eagerly so
+      // bootstrap fails loudly instead of issuing tokens that never work.
+      expect(() => makeAuth({ accessTtl: 0 })).toThrow(AuthError);
+      expect(() => makeAuth({ accessTtl: -100 })).toThrow(AuthError);
+    });
 
-      const { auth: neg } = makeAuth({ accessTtl: -100 });
-      const b = await neg.issue("alice");
-      expect(await neg.validate(b.accessToken)).toBeNull();
+    it("rejects refresh.ttl<=0 at construction (INVALID_CONFIG)", () => {
+      expect(() => makeAuth({ refresh: { ttl: 0, rotation: "none" } })).toThrow(AuthError);
+      expect(() => makeAuth({ refresh: { ttl: -1, rotation: "none" } })).toThrow(AuthError);
     });
   });
 
