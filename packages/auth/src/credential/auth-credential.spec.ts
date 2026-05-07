@@ -93,6 +93,30 @@ describe("AuthCredential", () => {
       const ctx = await auth.validate(accessToken);
       expect(ctx?.method).toBe("session");
     });
+
+    it("rejects a refresh token used as an access token (kind discriminant)", async () => {
+      // Pin: validate() must filter out kind==='refresh' even on stateful
+      // stores so a refresh credential cannot be replayed as a bearer access
+      // token. Previously only covered for stateless stores in the
+      // integration spec.
+      const { auth } = makeAuth({ refresh: { ttl: 60_000, rotation: "none" } });
+      const issued = await auth.issue("alice");
+      expect(issued.refreshToken).toBeTruthy();
+      expect(await auth.validate(issued.refreshToken!)).toBeNull();
+    });
+
+    it("treats accessTtl<=0 as already-expired (caller must validate config)", async () => {
+      // Pin: the current orchestrator does not validate accessTtl, so a
+      // misconfigured 0 / negative TTL produces tokens that fail validate()
+      // immediately. Captured here so the behavior cannot silently change.
+      const { auth: zero } = makeAuth({ accessTtl: 0 });
+      const a = await zero.issue("alice");
+      expect(await zero.validate(a.accessToken)).toBeNull();
+
+      const { auth: neg } = makeAuth({ accessTtl: -100 });
+      const b = await neg.issue("alice");
+      expect(await neg.validate(b.accessToken)).toBeNull();
+    });
   });
 
   describe("revoke + revokeAllForUser", () => {

@@ -193,10 +193,23 @@ describe("CredentialStoreJwt", () => {
       });
       const token = await store.persist(state, 1000);
       const round = await store.retrieve(token);
-      // expiresAt rounded to seconds (jose stores `exp` in seconds).
-      expect(round?.expiresAt).toBe(Math.floor((clock.now() + 1000) / 1000) * 1000);
+      // expiresAt is preserved at full ms precision via the state claim
+      // (jose's `exp` is second-resolution, but we mirror full ms in `state.expMs`).
+      expect(round?.expiresAt).toBe(clock.now() + 1000);
       clock.advance(1500);
       expect(await store.retrieve(token)).toBeNull();
+    });
+
+    it("preserves ms precision across persist/retrieve (no second-rounding)", async () => {
+      // Pin: previously, retrieve returned `exp * 1000` which truncated to a
+      // whole second and disagreed with IssueResult.accessExpiresAt by up to
+      // 999ms. Now expMs is mirrored in the state claim.
+      const offsetClock = new FakeClock(1_700_000_000_500);
+      const store = new CredentialStoreJwt({ secret: SECRET, clock: offsetClock });
+      const token = await store.persist(makeState("alice", offsetClock.now()), 60_000);
+      const round = await store.retrieve(token);
+      expect(round?.issuedAt).toBe(1_700_000_000_500);
+      expect(round?.expiresAt).toBe(1_700_000_060_500);
     });
 
     it("roundtrips parentCredentialId, rotatedAt and kind", async () => {
@@ -245,6 +258,22 @@ describe("CredentialStoreJwt", () => {
       } catch (e) {
         expect((e as AuthError).type).toBe("INVALID_CONFIG");
       }
+    });
+  });
+
+  describe("algorithm confusion", () => {
+    it("rejects tokens signed with a different HS algorithm than configured", async () => {
+      // Pin: jose's default with a Uint8Array key accepts ANY HS* algorithm.
+      // The store now restricts verify to the configured `algorithm`, so a
+      // token forged by an attacker who knows the secret but switches alg
+      // (HS256 -> HS384/HS512) is rejected.
+      const clock = new FakeClock();
+      const hs256 = new CredentialStoreJwt({ algorithm: "HS256", secret: SECRET, clock });
+      const hs512 = new CredentialStoreJwt({ algorithm: "HS512", secret: SECRET, clock });
+      const tokenHS512 = await hs512.persist(makeState("alice", clock.now()));
+      // The HS256-configured store must reject the HS512-signed token even
+      // though the underlying secret is identical.
+      expect(await hs256.retrieve(tokenHS512)).toBeNull();
     });
   });
 

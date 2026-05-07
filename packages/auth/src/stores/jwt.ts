@@ -49,6 +49,14 @@ interface StateClaim {
   metadata?: unknown;
   parentCredentialId?: string;
   rotatedAt?: number;
+  /**
+   * Millisecond-precision issuedAt / expiresAt. JWT's `iat` and `exp` claims
+   * are second-resolution per RFC 7519, so we mirror them inside the state
+   * payload to preserve sub-second precision for callers comparing the
+   * `validate()` result with the `IssueResult` they originally received.
+   */
+  iatMs?: number;
+  expMs?: number;
 }
 
 /**
@@ -104,7 +112,10 @@ export class CredentialStoreJwt<
     const now = this.clock.now();
     const expiresAtMs = typeof ttl === "number" ? now + ttl : state.expiresAt;
 
-    const stateClaim: StateClaim = {};
+    const stateClaim: StateClaim = {
+      iatMs: state.issuedAt,
+      expMs: expiresAtMs,
+    };
     if (state.kind !== undefined) stateClaim.kind = state.kind;
     if (state.claims !== undefined) stateClaim.claims = state.claims;
     if (state.metadata !== undefined) stateClaim.metadata = state.metadata;
@@ -195,6 +206,11 @@ export class CredentialStoreJwt<
   private async verify(token: string): Promise<{ payload: JWTPayload } | null> {
     try {
       const result = await jwtVerify(token, this.verifyingKey, {
+        // Restrict to the configured algorithm so an attacker who shares the
+        // HMAC secret cannot cross-sign with HS384/HS512 and still verify
+        // (jose's default infers a set of algs from the key, which would
+        // accept any HS* for a Uint8Array secret).
+        algorithms: [this.algorithm],
         issuer: this.issuer,
         audience: this.audience,
         currentDate: new Date(this.clock.now()),
@@ -212,10 +228,14 @@ export class CredentialStoreJwt<
     if (typeof payload.iat !== "number" || typeof payload.exp !== "number") return null;
 
     const stateClaim = (payload.state ?? {}) as StateClaim;
+    // Prefer ms-precision values if present; fall back to second-precision
+    // `iat`/`exp` for backward compatibility with externally minted tokens.
+    const issuedAt = typeof stateClaim.iatMs === "number" ? stateClaim.iatMs : payload.iat * 1000;
+    const expiresAt = typeof stateClaim.expMs === "number" ? stateClaim.expMs : payload.exp * 1000;
     const out: CredentialState<TClaims> = {
       userId: payload.sub,
-      issuedAt: payload.iat * 1000,
-      expiresAt: payload.exp * 1000,
+      issuedAt,
+      expiresAt,
     };
     if (stateClaim.kind !== undefined) out.kind = stateClaim.kind;
     if (stateClaim.claims !== undefined) out.claims = stateClaim.claims as TClaims;
