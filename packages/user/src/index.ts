@@ -45,7 +45,7 @@ export {
   ppMaxRepeatedChars,
 } from "./password/policies";
 
-// TOTP
+// MFA — TOTP + code helpers + backup codes
 export {
   generateTotpSecret,
   generateTotpUri,
@@ -53,6 +53,8 @@ export {
   verifyTotpCode,
   generateMfaCode,
 } from "./mfa/totp";
+export { hashMfaCode, verifyMfaCode } from "./mfa/codes";
+export { generateBackupCodePlaintext } from "./mfa/backup-codes";
 
 // Utilities
 export { maskEmail, maskPhone, maskMfaValue, setAtPath } from "./utils";

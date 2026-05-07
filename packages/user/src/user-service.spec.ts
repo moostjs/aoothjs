@@ -589,4 +589,97 @@ describe("UserService", () => {
       }
     });
   });
+
+  describe("backup codes", () => {
+    beforeEach(async () => {
+      await svc.createUser("alice", "pass123");
+    });
+
+    it("should generate plaintext codes and persist their hashes", async () => {
+      const codes = await svc.generateBackupCodes("alice", 5);
+      expect(codes).toHaveLength(5);
+      // Plaintext format check
+      for (const c of codes) {
+        expect(c).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{2}$/);
+      }
+      const user = await svc.getUser("alice");
+      expect(user.backupCodes).toBeDefined();
+      expect(user.backupCodes).toHaveLength(5);
+      // Hashes should be hex SHA-256 — never the plaintext.
+      for (const h of user.backupCodes!) {
+        expect(h).toMatch(/^[0-9a-f]{64}$/);
+      }
+      for (const c of codes) {
+        expect(user.backupCodes).not.toContain(c);
+      }
+    });
+
+    it("should default to 10 codes", async () => {
+      const codes = await svc.generateBackupCodes("alice");
+      expect(codes).toHaveLength(10);
+    });
+
+    it("should replace previous codes when called again", async () => {
+      const first = await svc.generateBackupCodes("alice", 4);
+      const second = await svc.generateBackupCodes("alice", 6);
+      expect(first).not.toEqual(second);
+      const user = await svc.getUser("alice");
+      expect(user.backupCodes).toHaveLength(6);
+      // None of the first batch's codes should still verify.
+      for (const c of first) {
+        expect(await svc.consumeBackupCode("alice", c)).toBe(false);
+      }
+    });
+
+    it("should throw NOT_FOUND when generating for an unknown user", async () => {
+      try {
+        await svc.generateBackupCodes("unknown");
+        expect.unreachable();
+      } catch (e) {
+        expect((e as UserAuthError).type).toBe("NOT_FOUND");
+      }
+    });
+
+    it("should consume a matching backup code and remove its hash", async () => {
+      const codes = await svc.generateBackupCodes("alice", 4);
+      const before = await svc.getUser("alice");
+      expect(before.backupCodes).toHaveLength(4);
+
+      const ok = await svc.consumeBackupCode("alice", codes[1]);
+      expect(ok).toBe(true);
+
+      const after = await svc.getUser("alice");
+      expect(after.backupCodes).toHaveLength(3);
+    });
+
+    it("should return false for a non-matching code without modifying storage", async () => {
+      await svc.generateBackupCodes("alice", 3);
+      const before = await svc.getUser("alice");
+      const ok = await svc.consumeBackupCode("alice", "ZZZZ-ZZZZ-ZZ");
+      expect(ok).toBe(false);
+      const after = await svc.getUser("alice");
+      expect(after.backupCodes).toEqual(before.backupCodes);
+    });
+
+    it("should not allow re-using an already-consumed code", async () => {
+      const codes = await svc.generateBackupCodes("alice", 3);
+      expect(await svc.consumeBackupCode("alice", codes[0])).toBe(true);
+      expect(await svc.consumeBackupCode("alice", codes[0])).toBe(false);
+    });
+
+    it("should return false when user has no backup codes", async () => {
+      // No generateBackupCodes call — backupCodes is undefined.
+      const ok = await svc.consumeBackupCode("alice", "ZZZZ-ZZZZ-ZZ");
+      expect(ok).toBe(false);
+    });
+
+    it("should throw NOT_FOUND when consuming for an unknown user", async () => {
+      try {
+        await svc.consumeBackupCode("unknown", "ANY-CODE-HE");
+        expect.unreachable();
+      } catch (e) {
+        expect((e as UserAuthError).type).toBe("NOT_FOUND");
+      }
+    });
+  });
 });

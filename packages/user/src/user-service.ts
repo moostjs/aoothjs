@@ -1,4 +1,6 @@
 import { UserAuthError } from "./errors";
+import { generateBackupCodePlaintext } from "./mfa/backup-codes";
+import { hashMfaCode, verifyMfaCode } from "./mfa/codes";
 import { PasswordHasher } from "./password/hasher";
 import { normalizePolicies, PasswordPolicy } from "./password/policy";
 import type {
@@ -317,6 +319,50 @@ export class UserService<T extends object = object> {
         isDefault: mfa.defaultMethod === m.name,
         masked: maskMfaValue(m),
       }));
+  }
+
+  /**
+   * Generate `count` plaintext backup codes (default 10), persist their
+   * hashes (replacing any existing batch), and return the plaintext codes
+   * once for the caller to deliver to the user. Plaintext is never
+   * recoverable after this call returns.
+   *
+   * Throws `UserAuthError("NOT_FOUND")` if the user does not exist.
+   */
+  async generateBackupCodes(username: string, count = 10): Promise<string[]> {
+    const codes = generateBackupCodePlaintext(count);
+    const hashes = codes.map(hashMfaCode);
+    const found = await this.store.update(username, {
+      set: { backupCodes: hashes } as DeepPartial<UserCredentials>,
+    });
+    if (!found) throw new UserAuthError("NOT_FOUND");
+    return codes;
+  }
+
+  /**
+   * Consume a backup code: returns `true` and removes the matching hash
+   * from storage if `code` matches a stored backup code; returns `false`
+   * if no match (without modifying storage).
+   *
+   * Read-then-write is not atomic at this layer: two concurrent consumes
+   * of the same code may both succeed, with the last write winning. The
+   * underlying store API does not expose an atomic match-and-remove, so
+   * this is acceptable at the intended scale (backup codes are a fallback
+   * path, not a hot one). Wrap in your store's transaction primitive if a
+   * stricter guarantee is required.
+   *
+   * Throws `UserAuthError("NOT_FOUND")` if the user does not exist.
+   */
+  async consumeBackupCode(username: string, code: string): Promise<boolean> {
+    const user = await this.getUser(username);
+    const hashes = user.backupCodes ?? [];
+    const idx = hashes.findIndex((h) => verifyMfaCode(code, h));
+    if (idx < 0) return false;
+    const remaining = hashes.filter((_, i) => i !== idx);
+    await this.store.update(username, {
+      set: { backupCodes: remaining } as DeepPartial<UserCredentials>,
+    });
+    return true;
   }
 
   getPasswordHasher(): PasswordHasher {
