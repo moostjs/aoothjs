@@ -11,3 +11,5 @@ docs/.vitepress/dist
 *.log
 .DS_Store
 TODO.md
+.claude
+.agents

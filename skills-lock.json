@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "skills": {
+    "atscript": {
+      "source": "moostjs/atscript",
+      "sourceType": "github",
+      "skillPath": "skills/atscript/SKILL.md",
+      "computedHash": "3db743dbbc67bf8189b9ad670c9543b03462c2480ba272d7644ad182156af839"
+    },
+    "atscript-db": {
+      "source": "moostjs/atscript-db",
+      "sourceType": "github",
+      "skillPath": "skills/atscript-db/SKILL.md",
+      "computedHash": "fe6012022f2967ee98b608b39689d700963eb7bc371f7f9906ed5457a15d80a1"
+    },
+    "moostjs": {
+      "source": "moostjs/moostjs",
+      "sourceType": "github",
+      "skillPath": "skills/moostjs/SKILL.md",
+      "computedHash": "9e022e59813c7027ce50f88e78f4e299a60ebea5fcce2fc5137a675d91c5dd61"
+    },
+    "wooksjs": {
+      "source": "wooksjs/wooksjs",
+      "sourceType": "github",
+      "skillPath": "skills/wooksjs/SKILL.md",
+      "computedHash": "286561edaf96fdca2cd713bcb41e29d690df86e0cd33acb792c8ed0bae905df7"
+    }
+  }
+}
