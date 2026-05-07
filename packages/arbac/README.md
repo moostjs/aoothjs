@@ -68,8 +68,25 @@ unionProjections({ name: 1, email: 1 }, { name: 1, age: 1 });
 // → { name: 1, email: 1, age: 1 }
 ```
 
-`unionProjections` throws when given a mix of include and exclude
-projections — silently widening to unrestricted is a security footgun.
+`unionProjections` follows **additive RBAC** semantics — more roles = broader
+access. Each projection represents a set of allowed fields: include-mode
+`{a:1}` allows `{a}`; exclude-mode `{a:0}` allows `universe \ {a}`; empty
+`{}` allows the universe. The union allows a field if any input grants it.
+
+```ts
+// Editor allows {name, email}; auditor allows everything except `secret`.
+// Union: editor's grants are already covered, so the union is "universe \ {secret}".
+unionProjections({ name: 1, email: 1 }, { secret: 0 });
+// → { secret: 0 }
+
+// Editor explicitly grants `secret`; auditor excludes it. Union = universe.
+unionProjections({ secret: 1 }, { secret: 0 });
+// → {}
+```
+
+Within a single projection, mixing `1` and `0` keys is still an error — call
+sites should normalize first. Mixing modes **across** projections is
+supported and resolves via the additive rule above.
 
 ## Codegen CLI
 

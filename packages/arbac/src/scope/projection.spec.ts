@@ -72,52 +72,73 @@ describe("unionProjections", () => {
     expect(unionProjections()).toStrictEqual({});
   });
 
-  it("must return empty when any projection is empty", () => {
+  it("must return empty for a single empty projection", () => {
+    expect(unionProjections({})).toStrictEqual({});
+  });
+
+  it("must passthrough sole include projection", () => {
+    expect(unionProjections({ a: 1, b: 1 })).toStrictEqual({ a: 1, b: 1 });
+  });
+
+  it("must passthrough sole exclude projection", () => {
+    expect(unionProjections({ c: 0 })).toStrictEqual({ c: 0 });
+  });
+
+  it("must return empty when any projection is empty (universal grant wins)", () => {
     expect(unionProjections({ name: 1 }, {})).toStrictEqual({});
   });
 
   it("must union include projections", () => {
     expect(unionProjections({ name: 1 }, { email: 1 })).toStrictEqual({
-      name: 1,
       email: 1,
+      name: 1,
     });
   });
 
   it("must deduplicate include keys", () => {
     expect(unionProjections({ name: 1, email: 1 }, { email: 1, age: 1 })).toStrictEqual({
-      name: 1,
-      email: 1,
       age: 1,
+      email: 1,
+      name: 1,
     });
   });
 
-  it("must intersect exclude projections", () => {
-    expect(unionProjections({ password: 0, secret: 0 }, { password: 0, token: 0 })).toStrictEqual({
-      password: 0,
-    });
+  it("must return empty for two excludes with no shared exclusions", () => {
+    // {c:0} grants universe \ {c}; {d:0} grants universe \ {d}; together = universe
+    expect(unionProjections({ c: 0 }, { d: 0 })).toStrictEqual({});
   });
 
-  it("must return empty for exclude with no common keys", () => {
-    expect(unionProjections({ password: 0 }, { secret: 0 })).toStrictEqual({});
+  it("must intersect identical exclude keys", () => {
+    expect(unionProjections({ c: 0 }, { c: 0 })).toStrictEqual({ c: 0 });
   });
 
-  it("must throw for mixed include and exclude", () => {
-    expect(() => unionProjections({ name: 1 }, { password: 0 })).toThrow(
-      "cannot union mixed include and exclude",
-    );
+  it("must intersect exclude projections (only commonly excluded fields remain)", () => {
+    expect(unionProjections({ c: 0, d: 0 }, { c: 0 })).toStrictEqual({ c: 0 });
   });
 
-  it("must throw for three+ projections in different modes", () => {
-    expect(() => unionProjections({ name: 1 }, { email: 1, age: 1 }, { password: 0 })).toThrow(
-      "cannot union mixed include and exclude",
-    );
+  it("must produce exclude-mode result for mixed include + exclude (additive)", () => {
+    // {a:1, b:1} grants {a, b}; {c:0} grants universe \ {c} — union = universe \ {c}
+    expect(unionProjections({ a: 1, b: 1 }, { c: 0 })).toStrictEqual({ c: 0 });
+  });
+
+  it("must collapse to universe when an include grants the only excluded field", () => {
+    // {a:1, b:1} grants {a, b}; {b:0} grants universe \ {b}; union = universe
+    expect(unionProjections({ a: 1, b: 1 }, { b: 0 })).toStrictEqual({});
+  });
+
+  it("must collapse to universe when include cancels exclude", () => {
+    expect(unionProjections({ e: 0 }, { e: 1 })).toStrictEqual({});
+  });
+
+  it("must collapse to universe when includes cover all excluded fields", () => {
+    expect(unionProjections({ a: 1, b: 1 }, { a: 0, b: 0 })).toStrictEqual({});
   });
 
   it("must union three include projections", () => {
     expect(unionProjections({ name: 1 }, { email: 1 }, { age: 1, name: 1 })).toStrictEqual({
-      name: 1,
-      email: 1,
       age: 1,
+      email: 1,
+      name: 1,
     });
   });
 
@@ -129,6 +150,18 @@ describe("unionProjections", () => {
         { password: 0, ssn: 0 },
       ),
     ).toStrictEqual({ password: 0 });
+  });
+
+  it("must throw when a single projection mixes 1 and 0 keys", () => {
+    expect(() => unionProjections({ a: 1, b: 0 })).toThrow(
+      "projection mixes 1 and 0 within itself",
+    );
+  });
+
+  it("must throw for invalid projection value", () => {
+    expect(() =>
+      unionProjections({ a: "x" } as unknown as Parameters<typeof unionProjections>[0]),
+    ).toThrow("invalid projection value");
   });
 });
 

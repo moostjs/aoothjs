@@ -60,59 +60,88 @@ export function isFieldAllowed(field: string, projection: TProjection): boolean 
 }
 
 /**
- * Union multiple projections — most permissive merge for RBAC.
- * If any scope allows a field, the union allows it.
+ * Combines projections from multiple RBAC role grants under additive semantics:
+ * more roles = broader access. Each projection represents a set of allowed fields:
+ * include-mode `{a:1}` allows `{a}`; exclude-mode `{a:0}` allows `universe \ {a}`;
+ * empty `{}` allows the universe.
  *
- * Semantics:
- * - empty ∪ anything = empty (unrestricted)
- * - include ∪ include = union of included keys
- * - exclude ∪ exclude = intersection of excluded keys (only fields excluded by ALL remain excluded)
- * - mixed include + exclude = **throws** — the union is ambiguous
+ * A field is effectively allowed if any input grants it. Equivalently, a field
+ * stays excluded only if (a) no include-mode role grants it explicitly, AND (b)
+ * every exclude-mode role excludes it.
  *
- * Mixed-mode merging silently widening to unrestricted is a security footgun for RBAC,
- * so callers must normalize their projections (e.g. convert all to one mode) before
- * unioning.
+ * Output mode:
+ * - All-include input → include-mode result (union of include keys)
+ * - At least one exclude-mode → exclude-mode result (or `{}` if no fields excluded)
+ * - Empty input or any universal grant `{}` → `{}` (universe)
  *
- * @throws when projections mix `include` and `exclude` modes
+ * Within a single projection, mixing 1 and 0 keys is an error (call sites should
+ * normalize first). Across projections, mixing modes is supported and resolves
+ * via the additive rule above.
+ *
+ * @throws when a single projection mixes 1 and 0 keys, or contains an invalid value
  */
 export function unionProjections(...projections: TProjection[]): TProjection {
+  // Empty input → universe (no constraint)
   if (projections.length === 0) return {};
 
-  const modes = new Set(projections.map((p) => getProjectionMode(p)));
+  const includeKeys = new Set<string>();
+  const excludeKeys: Set<string>[] = []; // one set per exclude-mode projection
+  let hasUniverseGrant = false; // any {} input
 
-  // If any is empty (unrestricted), the union is unrestricted
-  if (modes.has("empty")) return {};
-
-  const hasInclude = modes.has("include");
-  const hasExclude = modes.has("exclude");
-
-  // Mixed modes — explicit error to avoid silently widening access
-  if (hasInclude && hasExclude) {
-    throw new Error(
-      "unionProjections: cannot union mixed include and exclude projections — " +
-        "the result is ambiguous. Normalize all projections to a single mode before merging.",
-    );
-  }
-
-  if (hasInclude) {
-    // Union of included keys
-    const result: TProjection = {};
-    for (const proj of projections) {
-      for (const key of Object.keys(proj)) {
-        result[key] = 1;
+  for (const p of projections) {
+    const entries = Object.entries(p);
+    if (entries.length === 0) {
+      // Empty projection {} → universe → unioned with anything = universe
+      hasUniverseGrant = true;
+      continue;
+    }
+    let mode: "include" | "exclude" | null = null;
+    const localExcludes = new Set<string>();
+    for (const [k, v] of entries) {
+      if (v === 1) {
+        if (mode === "exclude") {
+          throw new Error(
+            `unionProjections: projection mixes 1 and 0 within itself: ${JSON.stringify(p)}`,
+          );
+        }
+        mode = "include";
+        includeKeys.add(k);
+      } else if (v === 0) {
+        if (mode === "include") {
+          throw new Error(
+            `unionProjections: projection mixes 1 and 0 within itself: ${JSON.stringify(p)}`,
+          );
+        }
+        mode = "exclude";
+        localExcludes.add(k);
+      } else {
+        throw new Error(
+          `unionProjections: invalid projection value ${String(v)} for key ${k} (must be 0 or 1)`,
+        );
       }
     }
-    return result;
+    if (mode === "exclude") excludeKeys.push(localExcludes);
   }
 
-  // All exclude — intersection of excluded keys (only fields excluded by ALL remain excluded)
-  const excludeSets = projections.map((p) => new Set(Object.keys(p)));
-  const intersection = [...excludeSets[0]].filter((key) => excludeSets.every((s) => s.has(key)));
-  const result: TProjection = {};
-  for (const key of intersection) {
-    result[key] = 0;
+  if (hasUniverseGrant) return {}; // universe wins
+
+  if (excludeKeys.length === 0) {
+    // All-include only
+    if (includeKeys.size === 0) return {}; // nothing? treat as universe (no constraint)
+    return Object.fromEntries([...includeKeys].toSorted().map((k) => [k, 1]));
   }
-  return result;
+
+  // Intersect all exclude-mode key sets — only fields denied by EVERY exclude role
+  let denyAcc = new Set(excludeKeys[0]);
+  for (let i = 1; i < excludeKeys.length; i++) {
+    denyAcc = new Set([...denyAcc].filter((k) => excludeKeys[i].has(k)));
+  }
+
+  // Subtract include keys (a field explicitly granted by some include is no longer denied)
+  const effectivelyExcluded = [...denyAcc].filter((k) => !includeKeys.has(k)).toSorted();
+
+  if (effectivelyExcluded.length === 0) return {}; // universe — all denials covered by some include
+  return Object.fromEntries(effectivelyExcluded.map((k) => [k, 0]));
 }
 
 /**
