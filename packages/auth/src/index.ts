@@ -31,7 +31,3 @@ export type { AuthCredentialOptions, IssueOptions } from "./credential/auth-cred
 // Shared time abstraction
 export type { Clock } from "./utils/clock";
 export { defaultClock } from "./utils/clock";
-
-// Password reset
-export { PasswordReset } from "./password-reset/password-reset";
-export type { PasswordResetOptions, RequestResult } from "./password-reset/password-reset";
