@@ -1,0 +1,59 @@
+{
+  "name": "@aoothjs/arbac-moost",
+  "version": "0.0.1-alpha.0",
+  "description": "Moost RBAC integration for aoothjs (migrated from @moostjs/arbac)",
+  "keywords": [
+    "abac",
+    "access-control",
+    "aoothjs",
+    "arbac",
+    "authorization",
+    "moost",
+    "permissions",
+    "rbac"
+  ],
+  "homepage": "https://github.com/aoothjs/aoothjs/tree/main/packages/arbac-moost#readme",
+  "bugs": {
+    "url": "https://github.com/aoothjs/aoothjs/issues"
+  },
+  "license": "MIT",
+  "author": "Artem Maltsev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aoothjs/aoothjs.git",
+    "directory": "packages/arbac-moost"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "dist/index.mjs",
+  "module": "./dist/index.mjs",
+  "types": "dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "vp pack",
+    "dev": "vp pack --watch",
+    "test": "vp test",
+    "check": "vp check"
+  },
+  "dependencies": {
+    "@aoothjs/arbac-core": "workspace:*"
+  },
+  "peerDependencies": {
+    "@wooksjs/event-core": ">=0.7.11",
+    "@wooksjs/event-http": ">=0.7.11",
+    "moost": ">=0.6.8"
+  }
+}
