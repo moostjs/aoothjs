@@ -12,11 +12,20 @@ export interface CredentialStore<TClaims extends object = object> {
   retrieve(token: string): Promise<CredentialState<TClaims> | null>;
   /** Retrieve + invalidate (single-use). For stateless: needs denylist. */
   consume(token: string): Promise<CredentialState<TClaims> | null>;
-  /** Update state in-place. For stateless: re-issue token (consume + persist). */
+  /**
+   * Update state. The returned token MAY differ from the input — stateful
+   * stores typically return the same token, while stateless stores re-issue
+   * a new token (denylisting the old). Callers must use the returned value.
+   */
   update(token: string, state: CredentialState<TClaims>): Promise<string>;
   /** Revoke a single token. For stateless: requires denylist; otherwise throws. */
   revoke(token: string): Promise<void>;
-  /** Revoke all credentials for a user. Returns count revoked. */
+  /**
+   * Revoke all credentials for a user. Returns count revoked.
+   * Stateless stores cannot enumerate and return 0 (best-effort no-op) — this
+   * keeps the orchestrator's theft-response path working when stateless stores
+   * are mixed with denylists.
+   */
   revokeAllForUser(userId: string): Promise<number>;
   /** List active credentials for a user (stateful only). */
   listForUser?(userId: string): Promise<Array<CredentialState<TClaims> & { token: string }>>;

@@ -18,6 +18,12 @@ export type { CredentialStore, DenylistStore } from "./stores/store";
 export { CredentialStoreMemory } from "./stores/memory";
 export { DenylistStoreMemory } from "./stores/denylist-memory";
 
+// Stateless store implementations
+export { CredentialStoreJwt } from "./stores/jwt";
+export type { CredentialStoreJwtOptions, JwtAlgorithm } from "./stores/jwt";
+export { CredentialStoreEncapsulated } from "./stores/encapsulated";
+export type { CredentialStoreEncapsulatedOptions } from "./stores/encapsulated";
+
 // AuthCredential orchestrator
 export { AuthCredential } from "./credential/auth-credential";
 export type { AuthCredentialOptions, IssueOptions } from "./credential/auth-credential";
