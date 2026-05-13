@@ -1,16 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import {
-  EmailIdentifierForm,
-  InviteForm,
-  LoginCredentialsForm,
-  MfaCodeForm,
-  SetPasswordForm,
-} from "../atscript/index";
 import type { EmailSender } from "../email";
 import type { BuildMagicLinkUrl } from "../magic-link";
 import {
-  type AuthWorkflowFormsOverrides,
   type AuthWorkflowsOptions,
   DEFAULT_INVITE_TOKEN_TTL_MS,
   DEFAULT_MFA_CODE_TTL_MS,
@@ -22,14 +14,6 @@ const noopSender: EmailSender = { send: async () => undefined };
 const noopBuildUrl: BuildMagicLinkUrl = (_kind, token) => `https://x.test/${token}`;
 const fakeStore = { id: "fake-wfstate-store" };
 
-const baseDefaults: Required<AuthWorkflowFormsOverrides> = {
-  loginCredentials: LoginCredentialsForm,
-  mfaCode: MfaCodeForm,
-  emailIdentifier: EmailIdentifierForm,
-  setPassword: SetPasswordForm,
-  invite: InviteForm,
-};
-
 const baseOpts: AuthWorkflowsOptions = {
   emailSender: noopSender,
   buildMagicLinkUrl: noopBuildUrl,
@@ -38,7 +22,7 @@ const baseOpts: AuthWorkflowsOptions = {
 
 function configured(opts: AuthWorkflowsOptions): MoostAuthWorkflowConfig {
   const c = new MoostAuthWorkflowConfig();
-  c.configure(opts, baseDefaults);
+  c.configure(opts);
   return c;
 }
 
@@ -55,33 +39,21 @@ describe("MoostAuthWorkflowConfig.configure", () => {
     expect(cfg.mfaCodeTtlMs).toBe(DEFAULT_MFA_CODE_TTL_MS);
 
     expect(cfg.workflows).toEqual({ login: true, recovery: true, invite: true });
-
-    expect(cfg.forms.loginCredentials).toBe(LoginCredentialsForm);
-    expect(cfg.forms.mfaCode).toBe(MfaCodeForm);
-    expect(cfg.forms.emailIdentifier).toBe(EmailIdentifierForm);
-    expect(cfg.forms.setPassword).toBe(SetPasswordForm);
-    expect(cfg.forms.invite).toBe(InviteForm);
   });
 
   it("uses overrides over defaults", () => {
-    // Stand-in for a user-supplied annotated type. Identity is all we test.
-    const CustomLogin = { __is_atscript_annotated_type: true } as const;
     const cfg = configured({
       ...baseOpts,
       recoveryTokenTtlMs: 60_000,
       inviteTokenTtlMs: 7_200_000,
       mfaCodeTtlMs: 30_000,
       workflows: { login: false, invite: false },
-      // biome-ignore lint/suspicious/noExplicitAny: test override using non-annotated stand-in
-      forms: { loginCredentials: CustomLogin as any },
     }).config;
 
     expect(cfg.recoveryTokenTtlMs).toBe(60_000);
     expect(cfg.inviteTokenTtlMs).toBe(7_200_000);
     expect(cfg.mfaCodeTtlMs).toBe(30_000);
     expect(cfg.workflows).toEqual({ login: false, recovery: true, invite: false });
-    expect(cfg.forms.loginCredentials).toBe(CustomLogin);
-    expect(cfg.forms.mfaCode).toBe(MfaCodeForm);
   });
 
   it("throws on missing emailSender / buildMagicLinkUrl / wfStateStore", () => {

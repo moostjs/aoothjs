@@ -1,0 +1,110 @@
+/**
+ * Internal helpers for the three auth workflows.
+ *
+ * Co-locates two patterns the @atscript/moost-wf reference docs tell consumers
+ * to copy into their own projects (`httpInputRequired` + `validateFormInput`)
+ * with auth-specific glue for cookie + finished-response building.
+ */
+import type { IssueResult } from "@aoothjs/auth";
+import { UserAuthError } from "@aoothjs/user";
+import { extractPassContext, serializeFormSchema } from "@atscript/moost-wf";
+import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
+import { HttpError } from "@moostjs/event-http";
+import { outletHttp } from "@moostjs/event-wf";
+import type { WfFinishedResponse } from "@wooksjs/event-wf";
+
+import type { MoostAuthConfig } from "../auth.config";
+import { cookieAttrs } from "../auth.cookies";
+
+/**
+ * Special error keys:
+ *   - `__form` — top-level form-wide error (e.g. "Invalid credentials").
+ *   - everything else — keyed by field path.
+ */
+export function httpInputRequired(
+  type: TAtscriptAnnotatedType,
+  wfContext: object,
+  errors?: Record<string, string>,
+): ReturnType<typeof outletHttp> {
+  const context: Record<string, unknown> = {
+    ...extractPassContext(type, wfContext as Record<string, unknown>),
+  };
+  if (errors) context.errors = errors;
+  return outletHttp(serializeFormSchema(type), context);
+}
+
+/**
+ * Returns `null` when valid, or a flat `field → message` map. Top-level errors
+ * land on `__form`. `partial: 'deep'` validates only the fields the caller
+ * supplied (action-with-data submits).
+ */
+export function validateFormInput(
+  type: TAtscriptAnnotatedType,
+  input: unknown,
+  opts: { partial?: "deep" } = {},
+): Record<string, string> | null {
+  const validator = type.validator({
+    unknownProps: "strip",
+    ...(opts.partial === "deep" && { partial: "deep" }),
+  });
+  try {
+    validator.validate(input);
+    return null;
+  } catch (err) {
+    if (
+      err !== null &&
+      typeof err === "object" &&
+      "errors" in err &&
+      Array.isArray((err as { errors: unknown }).errors)
+    ) {
+      const out: Record<string, string> = {};
+      for (const e of (err as { errors: Array<{ path: string; message: string }> }).errors) {
+        out[e.path || "__form"] = e.message;
+      }
+      return out;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Build the `cookies` map for `useWfFinished({ cookies })`. The outlet
+ * trigger's HTTP layer turns the entries into `Set-Cookie` headers, mirroring
+ * what `writeAuthCookies()` does for the REST controller.
+ */
+export function buildFinishedCookies(
+  config: MoostAuthConfig,
+  issue: IssueResult,
+): WfFinishedResponse["cookies"] {
+  if (!config.enableCookie) return undefined;
+  const cookies: NonNullable<WfFinishedResponse["cookies"]> = {
+    [config.cookie.name]: { value: issue.accessToken, options: cookieAttrs(config.cookie) },
+  };
+  if (issue.refreshToken) {
+    cookies[config.refreshCookie.name] = {
+      value: issue.refreshToken,
+      options: cookieAttrs(config.refreshCookie),
+    };
+  }
+  return cookies;
+}
+
+/**
+ * Translate password-mutation errors from `UserService.setPassword` /
+ * `createUser` into the matching HTTP status. Mirrors `translatePasswordError`
+ * in `auth.controller.ts`; kept here so workflow steps don't import from the
+ * controller module.
+ */
+export function translatePasswordSetError(err: unknown): never {
+  if (err instanceof UserAuthError) {
+    switch (err.type) {
+      case "POLICY_VIOLATION":
+      case "PASSWORD_IN_HISTORY":
+      case "PASSWORDS_MISMATCH":
+        throw new HttpError(400, err.message);
+      default:
+        throw new HttpError(400, err.message);
+    }
+  }
+  throw err;
+}

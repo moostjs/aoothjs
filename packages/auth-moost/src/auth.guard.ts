@@ -1,5 +1,5 @@
 import { AuthCredential } from "@aoothjs/auth";
-import { current } from "@wooksjs/event-core";
+import { current, eventTypeKey } from "@wooksjs/event-core";
 import { HttpError } from "@wooksjs/event-http";
 import { defineBeforeInterceptor, TInterceptorPriority, useControllerContext } from "moost";
 
@@ -17,9 +17,16 @@ import { extractAccessToken } from "./auth.token";
  * on protected routes it throws `HttpError(401)`.
  *
  * Never auto-refreshes — refresh is a separate REST endpoint.
+ *
+ * No-ops on non-HTTP event contexts (workflow steps, CLI, WS messages). The
+ * guard reads tokens from HTTP headers/cookies; nothing to read elsewhere.
+ * Authorization for workflow steps is the step's own responsibility (e.g.
+ * an admin-only invite endpoint protects its outlet HTTP route, not the
+ * step handler).
  */
 export const authGuardInterceptor = defineBeforeInterceptor(async () => {
   const ctx = current();
+  if (ctx.get(eventTypeKey) !== "http") return;
   const cc = useControllerContext(ctx);
 
   const cMeta = cc.getControllerMeta<TAuthMeta>();

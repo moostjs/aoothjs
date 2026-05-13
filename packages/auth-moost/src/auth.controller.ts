@@ -2,11 +2,12 @@ import { type AuthContext, AuthCredential, AuthError, type IssueResult } from "@
 import { UserAuthError, UserService } from "@aoothjs/user";
 import { current } from "@wooksjs/event-core";
 import { Body, Get, HttpError, Post } from "@moostjs/event-http";
-import { type TCookieAttributesInput, useCookies, useResponse } from "@wooksjs/event-http";
+import { useCookies } from "@wooksjs/event-http";
 import { Controller, useControllerContext } from "moost";
 
 import { MoostAuthConfig } from "./auth.config";
 import { useAuth } from "./auth.composables";
+import { buildLoginResponse, clearAuthCookies, writeAuthCookies } from "./auth.cookies";
 import { Public } from "./auth.decorator";
 import type {
   AuthLoginBody,
@@ -199,66 +200,4 @@ export class AuthController {
     }
     return { ok: true };
   }
-}
-
-/**
- * Build Set-Cookie attributes for the wooks response. `sameSite` is upper-cased
- * because wooks accepts `'Lax' | 'Strict' | 'None'` while {@link MoostAuthConfig}
- * stores lower-case for ergonomics.
- */
-function cookieAttrs(
-  c: MoostAuthConfig["cookie"],
-  extra?: TCookieAttributesInput,
-): TCookieAttributesInput {
-  return {
-    httpOnly: c.httpOnly,
-    secure: c.secure,
-    sameSite: (c.sameSite.charAt(0).toUpperCase() + c.sameSite.slice(1)) as
-      | "Lax"
-      | "Strict"
-      | "None",
-    path: c.path,
-    domain: c.domain,
-    ...extra,
-  };
-}
-
-function writeAuthCookies(config: MoostAuthConfig, issue: IssueResult): void {
-  if (!config.enableCookie) return;
-  const response = useResponse(current());
-  response.setCookie(config.cookie.name, issue.accessToken, cookieAttrs(config.cookie));
-  if (issue.refreshToken) {
-    response.setCookie(
-      config.refreshCookie.name,
-      issue.refreshToken,
-      cookieAttrs(config.refreshCookie),
-    );
-  }
-}
-
-function clearAuthCookies(config: MoostAuthConfig): void {
-  if (!config.enableCookie) return;
-  const response = useResponse(current());
-  response.setCookie(config.cookie.name, "", cookieAttrs(config.cookie, { maxAge: 0 }));
-  response.setCookie(
-    config.refreshCookie.name,
-    "",
-    cookieAttrs(config.refreshCookie, { maxAge: 0 }),
-  );
-}
-
-function buildLoginResponse(
-  config: MoostAuthConfig,
-  userId: string,
-  issue: IssueResult,
-): AuthLoginResponse {
-  return {
-    userId,
-    accessExpiresAt: issue.accessExpiresAt,
-    ...(issue.refreshExpiresAt !== undefined && { refreshExpiresAt: issue.refreshExpiresAt }),
-    ...(config.enableBearer && {
-      accessToken: issue.accessToken,
-      ...(issue.refreshToken && { refreshToken: issue.refreshToken }),
-    }),
-  };
 }

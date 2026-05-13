@@ -1,30 +1,12 @@
-import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { Injectable } from "moost";
 
 import type { EmailSender } from "./email";
 import type { BuildMagicLinkUrl } from "./magic-link";
 
-// biome-ignore lint/suspicious/noExplicitAny: form types are user-supplied; we never inspect the field shape here
-type AnyAtscriptType = TAtscriptAnnotatedType<any, any>;
-
 /**
- * Per-form overrides. Any unset form falls back to the default model shipped
- * under `@aoothjs/auth-moost/atscript`.
- */
-export interface AuthWorkflowFormsOverrides {
-  loginCredentials?: AnyAtscriptType;
-  mfaCode?: AnyAtscriptType;
-  emailIdentifier?: AnyAtscriptType;
-  setPassword?: AnyAtscriptType;
-  invite?: AnyAtscriptType;
-}
-
-/**
- * Options accepted by `setupAuthWorkflows()`.
- *
- * `wfStateStore` is typed `unknown` so this package's public surface does
- * not pull `@atscript/moost-wf` into consumers' type-check at the boundary —
- * Aooth never inspects it, the 6.5b workflow steps do.
+ * `wfStateStore` is typed `unknown` so this package's public surface does not
+ * pull `@atscript/moost-wf` into consumers' type-check at the boundary —
+ * Aooth never inspects it, the workflow steps do.
  */
 export interface AuthWorkflowsOptions {
   emailSender: EmailSender;
@@ -38,7 +20,6 @@ export interface AuthWorkflowsOptions {
     recovery?: boolean;
     invite?: boolean;
   };
-  forms?: AuthWorkflowFormsOverrides;
 }
 
 export interface ResolvedAuthWorkflowsConfig {
@@ -49,7 +30,6 @@ export interface ResolvedAuthWorkflowsConfig {
   inviteTokenTtlMs: number;
   mfaCodeTtlMs: number;
   workflows: { login: boolean; recovery: boolean; invite: boolean };
-  forms: Required<AuthWorkflowFormsOverrides>;
 }
 
 export const DEFAULT_RECOVERY_TOKEN_TTL_MS = 60 * 60 * 1000;
@@ -58,8 +38,8 @@ export const DEFAULT_MFA_CODE_TTL_MS = 5 * 60 * 1000;
 
 /**
  * DI singleton carrying the resolved workflow configuration. Populated once
- * at boot by `setupAuthWorkflows()`; 6.5b workflow steps read from
- * {@link config} via Moost DI.
+ * at boot by `setupAuthWorkflows()`; workflow steps read from {@link config}
+ * via Moost DI.
  */
 @Injectable()
 export class MoostAuthWorkflowConfig {
@@ -74,7 +54,7 @@ export class MoostAuthWorkflowConfig {
     return this.#cfg;
   }
 
-  configure(opts: AuthWorkflowsOptions, defaults: Required<AuthWorkflowFormsOverrides>): void {
+  configure(opts: AuthWorkflowsOptions): void {
     if (!opts.emailSender || typeof opts.emailSender.send !== "function") {
       throw new Error("setupAuthWorkflows: `emailSender.send` is required and must be a function");
     }
@@ -88,7 +68,6 @@ export class MoostAuthWorkflowConfig {
     }
 
     const wf = opts.workflows ?? {};
-    const forms = opts.forms ?? {};
     this.#cfg = {
       emailSender: opts.emailSender,
       buildMagicLinkUrl: opts.buildMagicLinkUrl,
@@ -108,13 +87,6 @@ export class MoostAuthWorkflowConfig {
         login: wf.login ?? true,
         recovery: wf.recovery ?? true,
         invite: wf.invite ?? true,
-      },
-      forms: {
-        loginCredentials: forms.loginCredentials ?? defaults.loginCredentials,
-        mfaCode: forms.mfaCode ?? defaults.mfaCode,
-        emailIdentifier: forms.emailIdentifier ?? defaults.emailIdentifier,
-        setPassword: forms.setPassword ?? defaults.setPassword,
-        invite: forms.invite ?? defaults.invite,
       },
     };
   }
