@@ -21,6 +21,9 @@
     "url": "git+https://github.com/aoothjs/aoothjs.git",
     "directory": "packages/arbac"
   },
+  "bin": {
+    "aoothjs-arbac-codegen": "./scripts/codegen.mjs"
+  },
   "files": [
     "dist",
     "scripts"
@@ -30,9 +33,6 @@
   "main": "dist/index.mjs",
   "module": "./dist/index.mjs",
   "types": "dist/index.d.mts",
-  "bin": {
-    "aoothjs-arbac-codegen": "./scripts/codegen.mjs"
-  },
   "exports": {
     ".": {
       "types": "./dist/index.d.mts",

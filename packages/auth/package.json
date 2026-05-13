@@ -6,11 +6,11 @@
     "aoothjs",
     "auth",
     "authentication",
-    "session",
-    "token",
     "jwt",
     "mfa",
-    "password-reset"
+    "password-reset",
+    "session",
+    "token"
   ],
   "homepage": "https://github.com/aoothjs/aoothjs/tree/main/packages/auth#readme",
   "bugs": {

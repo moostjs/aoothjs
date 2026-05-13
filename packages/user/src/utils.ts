@@ -42,10 +42,7 @@ export function generateSecureRandom(length: number, charset = DEFAULT_CHARSET):
   return result.join("");
 }
 
-export function deepMerge(
-  target: object,
-  source: Record<string, unknown>,
-): void {
+export function deepMerge(target: object, source: Record<string, unknown>): void {
   const t = target as Record<string, unknown>;
   for (const key of Object.keys(source)) {
     const sv = source[key];
