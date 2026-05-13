@@ -133,6 +133,24 @@ importers:
         specifier: ^6.2.3
         version: 6.2.3
 
+  packages/auth-moost:
+    dependencies:
+      '@aoothjs/auth':
+        specifier: workspace:*
+        version: link:../auth
+      '@aoothjs/user':
+        specifier: workspace:*
+        version: link:../user
+      '@wooksjs/event-core':
+        specifier: '>=0.7.11'
+        version: 0.7.11
+      '@wooksjs/event-http':
+        specifier: '>=0.7.11'
+        version: 0.7.11(@prostojs/logger@0.4.3)(@prostojs/router@0.3.3)(@wooksjs/event-core@0.7.11)(wooks@0.7.11)
+      moost:
+        specifier: '>=0.6.8'
+        version: 0.6.8
+
   packages/user:
     dependencies:
       '@prostojs/ftring':
@@ -1273,10 +1291,6 @@ packages:
 
   '@wooksjs/event-core@0.7.11':
     resolution: {integrity: sha512-4HdwSFG6kWQZvS+1+t6BdHsZaipPQseJxJCBwl2rGWGNCaF28hAaMvMBkl9eDBAiFRFZPYkWzcz2emCxib8/eQ==}
-
-  '@wooksjs/event-core@0.7.4':
-    resolution: {integrity: sha512-Iqd8/h1d3zSFmAK8b+xpt9rIbYck3PD6wCZfdo5cNGS7Dfyugvb0s2TJH6P4IdvntxKFvzJgVkfhppXBDBdJpg==}
-    hasBin: true
 
   '@wooksjs/event-http@0.4.37':
     resolution: {integrity: sha512-adA+zsKX0EWkYNNTcQtmZsLTMpCUv6xVNbwCkA4lA9ixiEx/0rselfUbhdJRmZTO2mGVvWRrTWjQ5hzswnc3UQ==}
@@ -3053,8 +3067,6 @@ snapshots:
 
   '@wooksjs/event-core@0.7.11': {}
 
-  '@wooksjs/event-core@0.7.4': {}
-
   '@wooksjs/event-http@0.4.37(@prostojs/router@0.3.3)(@wooksjs/event-core@0.4.37)(wooks@0.4.37)':
     dependencies:
       '@prostojs/logger': 0.4.3
@@ -3506,7 +3518,7 @@ snapshots:
       '@prostojs/infact': 0.4.1
       '@prostojs/logger': 0.4.3
       '@prostojs/mate': 0.4.0
-      '@wooksjs/event-core': 0.7.4
+      '@wooksjs/event-core': 0.7.11
       hookable: 5.5.3
       wooks: 0.7.4
 
@@ -4090,7 +4102,7 @@ snapshots:
     dependencies:
       '@prostojs/logger': 0.4.3
       '@prostojs/router': 0.3.3
-      '@wooksjs/event-core': 0.7.4
+      '@wooksjs/event-core': 0.7.11
 
   wordwrap@1.0.0: {}
 
