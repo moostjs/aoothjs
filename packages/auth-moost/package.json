@@ -25,7 +25,9 @@
     "directory": "packages/auth-moost"
   },
   "files": [
-    "dist"
+    "dist",
+    "src/atscript/models/forms.as",
+    "src/atscript/models/forms.as.d.ts"
   ],
   "type": "module",
   "sideEffects": false,
@@ -37,12 +39,19 @@
       "types": "./dist/index.d.mts",
       "import": "./dist/index.mjs"
     },
+    "./atscript": {
+      "types": "./dist/atscript/index.d.mts",
+      "import": "./dist/atscript/index.mjs"
+    },
+    "./atscript/models": "./src/atscript/models/forms.as",
+    "./atscript/models.as": "./src/atscript/models/forms.as",
     "./package.json": "./package.json"
   },
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
+    "gen:atscript": "node --experimental-strip-types scripts/gen-as.mjs",
     "build": "vp pack",
     "dev": "vp pack --watch",
     "test": "vp test",
@@ -50,16 +59,31 @@
   },
   "dependencies": {
     "@aoothjs/auth": "workspace:*",
-    "@aoothjs/user": "workspace:*"
+    "@aoothjs/user": "workspace:*",
+    "@atscript/moost-wf": "catalog:"
   },
   "devDependencies": {
+    "@atscript/core": "catalog:",
+    "@atscript/typescript": "catalog:",
+    "@atscript/ui": "catalog:",
     "@moostjs/event-http": "catalog:",
+    "@moostjs/event-wf": "catalog:",
+    "moost": "^0.6.9",
+    "unplugin-atscript": "catalog:",
     "wooks": ">=0.7.11"
   },
   "peerDependencies": {
-    "@moostjs/event-http": ">=0.6.8",
+    "@atscript/moost-wf": ">=0.1.58",
+    "@atscript/typescript": ">=0.1.54",
+    "@moostjs/event-http": ">=0.6.9",
+    "@moostjs/event-wf": ">=0.6.9",
     "@wooksjs/event-core": ">=0.7.11",
     "@wooksjs/event-http": ">=0.7.11",
-    "moost": ">=0.6.8"
+    "moost": ">=0.6.9"
+  },
+  "peerDependenciesMeta": {
+    "@atscript/typescript": {
+      "optional": true
+    }
   }
 }

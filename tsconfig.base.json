@@ -21,6 +21,7 @@
       "arbac-core": ["./packages/arbac-core/src"],
       "@aoothjs/arbac-moost/atscript": ["./packages/arbac-moost/src/atscript/index.ts"],
       "@aoothjs/arbac-moost/plugin": ["./packages/arbac-moost/src/plugin.ts"],
+      "@aoothjs/auth-moost/atscript": ["./packages/auth-moost/src/atscript/index.ts"],
       "@aoothjs/*": ["./packages/*/src"]
     }
   }

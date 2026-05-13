@@ -2,8 +2,16 @@ packages:
   - packages/*
 
 catalog:
-  "@atscript/core": ^0.1.40
+  "@atscript/core": ^0.1.54
+  "@atscript/typescript": ^0.1.54
+  "@atscript/db": ^0.1.75
+  "@atscript/db-sqlite": ^0.1.75
+  "@atscript/db-sql-tools": ^0.1.75
+  "@atscript/moost-wf": ^0.1.58
+  "@atscript/ui": ^0.1.58
+  "unplugin-atscript": ^0.1.50
   "@moostjs/event-http": ^0.6.9
+  "@moostjs/event-wf": ^0.6.9
   "@types/node": ^22
   typescript: ^5
   vite: npm:@voidzero-dev/vite-plus-core@latest

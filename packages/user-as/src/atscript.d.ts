@@ -30,22 +30,12 @@ declare global {
     "expect.array.uniqueItems": { message?: string }
     "expect.array.key": { message?: string }
     "emit.jsonSchema": boolean
-    "ui.placeholder": string
-    "ui.component": string
-    "ui.hidden": boolean
-    "ui.group": string
-    "ui.order": number
-    "ui.width": string
-    "ui.icon": string
-    "ui.hint": string
-    "ui.disabled": boolean
-    "ui.type": string
-    "ui.attr": ({ key: string, value: string })[]
-    "ui.class": (string)[]
-    "ui.style": (string)[]
     "db.patch.strategy": string
     "db.table": string | true
+    "db.table.filterable": string | true
+    "db.table.sortable": string | true
     "db.table.renamed": string
+    "db.table.preferredId.uniqueIndex": string | true
     "db.schema": string
     "db.index.plain": ({ name?: string, sort?: string })[]
     "db.index.unique": (string | true)[]
@@ -56,13 +46,17 @@ declare global {
     "db.column.precision": { precision: number, scale: number }
     "db.column.dimension": boolean
     "db.column.measure": boolean
+    "db.column.filterable": boolean
+    "db.column.sortable": boolean
     "db.default": string
     "db.default.increment": number | true
     "db.default.uuid": boolean
     "db.default.now": boolean
     "db.json": boolean
     "db.ignore": boolean
+    "db.http.path": string
     "db.sync.method": string
+    "db.depth.limit": number
     "db.rel.FK": string | true
     "db.rel.to": string | true
     "db.rel.from": string | true
@@ -85,7 +79,11 @@ declare global {
     "db.search.vector": { dimensions: number, similarity?: string, indexName?: string }
     "db.search.vector.threshold": number
     "db.search.filter": (string)[]
+    "db.amount.currency": string
+    "db.amount.currency.ref": string
+    "db.unit": string
+    "db.unit.ref": string
   }
-  type AtscriptPrimitiveTags = "never" | "string" | "email" | "phone" | "date" | "isoDate" | "uuid" | "url" | "ipv4" | "ipv6" | "ip" | "char" | "required" | "number" | "positive" | "negative" | "single" | "double" | "int" | "int8" | "int16" | "int32" | "int64" | "uint8" | "byte" | "uint16" | "port" | "uint32" | "uint64" | "timestamp" | "created" | "updated" | "decimal" | "boolean" | "true" | "false" | "null" | "void" | "undefined" | "phantom" | "db" | "vector"
+  type AtscriptPrimitiveTags = "never" | "string" | "email" | "phone" | "date" | "isoDate" | "uuid" | "url" | "ipv4" | "ipv6" | "ip" | "char" | "required" | "number" | "positive" | "negative" | "single" | "double" | "int" | "int8" | "int16" | "int32" | "int64" | "uint8" | "byte" | "uint16" | "port" | "uint32" | "uint64" | "timestamp" | "created" | "updated" | "decimal" | "boolean" | "true" | "false" | "null" | "void" | "undefined" | "phantom" | "db" | "vector" | "currencyCode"
 }
 // prettier-ignore-end

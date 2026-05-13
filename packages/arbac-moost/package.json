@@ -65,21 +65,22 @@
     "@aoothjs/user-as": "workspace:*"
   },
   "devDependencies": {
-    "@atscript/core": "^0.1.41",
-    "@atscript/db": "^0.1.42",
-    "@atscript/db-sqlite": "^0.1.42",
-    "@atscript/typescript": "^0.1.41",
+    "@atscript/core": "catalog:",
+    "@atscript/db": "catalog:",
+    "@atscript/db-sql-tools": "catalog:",
+    "@atscript/db-sqlite": "catalog:",
+    "@atscript/typescript": "catalog:",
     "@types/better-sqlite3": "^7.6.13",
-    "@uniqu/core": "^0.1.2",
+    "@uniqu/core": "^0.1.6",
     "better-sqlite3": "^12.6.2",
-    "unplugin-atscript": "^0.1.39"
+    "unplugin-atscript": "catalog:"
   },
   "peerDependencies": {
-    "@atscript/db": ">=0.1.42",
-    "@atscript/typescript": ">=0.1.41",
+    "@atscript/db": ">=0.1.75",
+    "@atscript/typescript": ">=0.1.54",
     "@wooksjs/event-core": ">=0.7.11",
     "@wooksjs/event-http": ">=0.7.11",
-    "moost": ">=0.6.8"
+    "moost": ">=0.6.9"
   },
   "peerDependenciesMeta": {
     "@atscript/db": {

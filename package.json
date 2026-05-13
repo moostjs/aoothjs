@@ -34,18 +34,18 @@
     "@atscript/core": "catalog:",
     "@prostojs/dye": "^0.3.0",
     "@prostojs/ftring": "^0.0.3",
-    "@prostojs/wf": "^0.0.10",
+    "@prostojs/wf": "^0.1.1",
     "@types/node": "catalog:",
-    "@wooksjs/event-core": "^0.4.13",
-    "@wooksjs/event-http": "^0.4.13",
-    "@wooksjs/event-wf": "^0.4.13",
-    "@wooksjs/http-body": "^0.4.13",
+    "@wooksjs/event-core": "^0.7.11",
+    "@wooksjs/event-http": "^0.7.11",
+    "@wooksjs/event-wf": "^0.7.11",
+    "@wooksjs/http-body": "^0.7.11",
     "conventional-changelog": "^5.1.0",
     "conventional-changelog-cli": "^4.1.0",
     "typescript": "catalog:",
     "vite-plus": "catalog:",
     "vitepress": "^1.0.0-beta.1",
-    "wooks": "^0.4.13"
+    "wooks": "^0.7.11"
   },
   "engines": {
     "node": ">=22.12.0"
