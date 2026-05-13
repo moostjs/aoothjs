@@ -229,6 +229,55 @@ describe("setupArbacFromAtscript", () => {
     expect(reads).toBe(1);
   });
 
+  it("caches per userId — different subjects in the same event do not collide", async () => {
+    const moost = new Moost();
+    const reads: string[] = [];
+    const records: Record<string, UserRow> = {
+      u1: {
+        id: "u1",
+        roles: ["admin"],
+        extraRoles: [],
+        tenantId: "acme",
+        department: "eng",
+      },
+      u2: {
+        id: "u2",
+        roles: ["viewer"],
+        extraRoles: [],
+        tenantId: "globex",
+        department: "ops",
+      },
+    };
+    const store = {
+      read: async (id: string) => {
+        reads.push(id);
+        return records[id] ?? null;
+      },
+    };
+    setupArbacFromAtscript(moost, {
+      userType: TestUser,
+      getUserId: () => "u1",
+      store,
+      warn: () => {},
+    });
+
+    const provider = new AutoArbacUserProvider(TestUser, () => "u1");
+    await withLogger(async () => {
+      // Two different subjects in the same event. Without per-userId caching,
+      // the second call would return u1's record.
+      const r1 = await provider.getRoles("u1");
+      const r2 = await provider.getRoles("u2");
+      const a1 = await provider.getAttrs("u1");
+      const a2 = await provider.getAttrs("u2");
+      expect(r1).toEqual(["admin"]);
+      expect(r2).toEqual(["viewer"]);
+      expect(a1).toMatchObject({ tenantId: "acme" });
+      expect(a2).toMatchObject({ tenantId: "globex" });
+    });
+    // Each user fetched exactly once; the second read of u1 / u2 is a cache hit.
+    expect(reads).toEqual(["u1", "u2"]);
+  });
+
   it("integrates end-to-end with the real Arbac engine", async () => {
     const moost = new Moost();
     const store = new InMemoryStore();

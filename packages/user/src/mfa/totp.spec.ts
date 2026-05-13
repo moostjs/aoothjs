@@ -87,6 +87,24 @@ describe("generateTotpCode / verifyTotpCode", () => {
     expect(code).toMatch(/^\d{8}$/);
     expect(verifyTotpCode(secret, code, { clock: fixedClock, digits: 8 })).toBe(true);
   });
+
+  it("rejects codes of the wrong length (digit-count probe defence)", () => {
+    // Wrong length is a quick-reject path; ensures `timingSafeEqual` never
+    // sees a length-mismatched buffer pair.
+    expect(verifyTotpCode(secret, "12345", { clock: fixedClock })).toBe(false);
+    expect(verifyTotpCode(secret, "1234567", { clock: fixedClock })).toBe(false);
+    expect(verifyTotpCode(secret, "", { clock: fixedClock })).toBe(false);
+  });
+
+  it("rejects non-string inputs without throwing", () => {
+    // Defensive: handler boundaries should be the validator, but the function
+    // must not crash on a coerced wrong-type input either.
+    expect(verifyTotpCode(secret, undefined as unknown as string, { clock: fixedClock })).toBe(
+      false,
+    );
+    expect(verifyTotpCode(secret, null as unknown as string, { clock: fixedClock })).toBe(false);
+    expect(verifyTotpCode(secret, 123 as unknown as string, { clock: fixedClock })).toBe(false);
+  });
 });
 
 describe("generateMfaCode", () => {

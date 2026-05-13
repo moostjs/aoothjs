@@ -1,4 +1,4 @@
-import { createHmac, randomBytes } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { base32 } from "../base-x";
 import type { TotpConfig } from "../types";
 import { generateSecureRandom } from "../utils";
@@ -37,10 +37,22 @@ export function verifyTotpCode(secret: string, code: string, config?: TotpConfig
 
   // Decode once, reuse across window checks
   const key = base32.decode(secret);
+  // Submitted code must match expected `digits` length; reject otherwise so
+  // `timingSafeEqual` (equal-length-buffer requirement) receives a clean input
+  // and an attacker can't probe digit-count via a length-mismatch shortcut.
+  if (typeof code !== "string" || code.length !== digits) return false;
+  const submitted = Buffer.from(code, "utf8");
+
+  // Constant-time per-window check: iterate the full window unconditionally so
+  // a valid early-window match doesn't return faster than a late-window one.
+  let matched = false;
   for (let i = -window; i <= window; i++) {
-    if (hotpCode(key, counter + i, digits) === code) return true;
+    const expected = Buffer.from(hotpCode(key, counter + i, digits), "utf8");
+    if (expected.length === submitted.length && timingSafeEqual(expected, submitted)) {
+      matched = true;
+    }
   }
-  return false;
+  return matched;
 }
 
 export function generateMfaCode(length = 6): string {

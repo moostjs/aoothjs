@@ -82,9 +82,12 @@ export function setupArbacFromAtscript<T extends object>(
         filter: { [userIdField]: userId },
         controls: { $select: projection },
       });
-  } else {
-    const store = opts.store as ArbacUserReader<T>;
+  } else if (opts.store) {
+    const store = opts.store;
     fetcher = (userId) => store.read(userId);
+  } else {
+    // Unreachable: the `hasTable !== hasStore` guard above ensures one is set.
+    throw new Error("setupArbacFromAtscript: internal — neither table nor store resolved");
   }
   setUserRecordFetcher(fetcher);
 

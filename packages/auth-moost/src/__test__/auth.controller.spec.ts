@@ -115,6 +115,9 @@ describe("AuthController", () => {
       const out = await app.request("/auth/logout", {
         method: "POST",
         headers: { authorization: `Bearer ${accessToken}` },
+        // `@Body()` requires a request body to parse — empty body would stall
+        // the body composable. Real clients send `{}` (or a refreshToken).
+        json: {},
       });
       expect(out.status).toBe(201);
 
@@ -130,6 +133,34 @@ describe("AuthController", () => {
       const app = await prepareControllerApp();
       const res = await app.request("/auth/logout", { method: "POST" });
       expect(res.status).toBe(401);
+    });
+
+    it("revokes the refresh token when supplied in the body", async () => {
+      const app = await prepareControllerApp();
+      await seedActiveUser(app.users, "alice", "Password123");
+      const login = (
+        await app.request("/auth/login", {
+          method: "POST",
+          json: { username: "alice", password: "Password123" },
+        })
+      ).body as AuthLoginResponse;
+
+      const accessToken = login.accessToken as string;
+      const refreshToken = login.refreshToken as string;
+
+      const out = await app.request("/auth/logout", {
+        method: "POST",
+        headers: { authorization: `Bearer ${accessToken}` },
+        json: { refreshToken },
+      });
+      expect(out.status).toBe(201);
+
+      // The refresh token can no longer be used to mint a new access token.
+      const refreshed = await app.request("/auth/refresh", {
+        method: "POST",
+        json: { refreshToken },
+      });
+      expect(refreshed.status).toBe(401);
     });
   });
 
@@ -270,6 +301,27 @@ describe("AuthController", () => {
       // The new password works for verification.
       const ok = await app.users.verifyPassword("alice", "AnotherSecret9");
       expect(ok).toBe(true);
+    });
+
+    it("revokes all tokens for the user on successful password change", async () => {
+      const { app, accessToken } = await loginAlice();
+      // Issue a second token for alice to simulate a parallel session.
+      const second = await app.auth.issue("alice");
+      expect(await app.auth.validate(second.accessToken)).not.toBeNull();
+
+      const res = await app.request("/auth/password", {
+        method: "POST",
+        headers: { authorization: `Bearer ${accessToken}` },
+        json: { currentPassword: "Password123", newPassword: "AnotherSecret9" },
+      });
+      expect(res.status).toBe(201);
+
+      // Both the caller's token AND the parallel session are revoked.
+      expect(await app.auth.validate(accessToken)).toBeNull();
+      expect(await app.auth.validate(second.accessToken)).toBeNull();
+      // Cookies are cleared so the browser drops its session.
+      expect(res.setCookies.some((c) => /aooth_session=;.*Max-Age=0/i.test(c))).toBe(true);
+      expect(res.setCookies.some((c) => /aooth_refresh=;.*Max-Age=0/i.test(c))).toBe(true);
     });
 
     it("returns 401 when current password is wrong", async () => {

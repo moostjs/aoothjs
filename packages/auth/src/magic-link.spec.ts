@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { generateMagicLinkToken } from "../magic-link";
+import { generateMagicLinkToken } from "./magic-link";
 
 describe("generateMagicLinkToken", () => {
   it("returns a base64url string of at least 40 characters", () => {

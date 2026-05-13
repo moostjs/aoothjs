@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import type { AuthEmailEvent, AuthEmailKind, EmailSender } from "../email";
+import type { AuthEmailEvent, AuthEmailKind, EmailSender } from "./email";
 
 describe("EmailSender contract", () => {
   it("accepts each known AuthEmailKind value via a typed fixture", async () => {

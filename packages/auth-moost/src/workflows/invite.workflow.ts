@@ -8,10 +8,30 @@
  *   3. `accept`       — collects + sets the new password, creates + activates
  *                       the user, issues tokens.
  *
- * **Admin protection is the consumer's responsibility.** The HTTP outlet
- * trigger does not auto-apply `ArbacAuthorize` — wrap your outlet route with
- * the appropriate guard before mounting it. The workflow itself does NOT
- * authenticate the admin.
+ * **CRITICAL — Admin protection is the consumer's responsibility.**
+ *
+ * The workflow itself does NOT authenticate the caller of step 1
+ * (`createInvite`). Mounting an HTTP outlet trigger with `'auth.invite'` in
+ * `allow:` exposes an unauthenticated **invite-email-spam** vector: any
+ * caller can submit arbitrary `email` + `roles` form values and cause your
+ * configured `EmailSender` to dispatch an invite email to that address.
+ *
+ * Mitigations the consumer MUST apply when mounting the outlet trigger:
+ *
+ *  1. Mount a SEPARATE outlet trigger route for `auth.invite` and guard it
+ *     with admin RBAC (e.g. `@ArbacAuthorize({ resource: 'user', action: 'invite' })`).
+ *  2. OR exclude `'auth.invite'` from the public trigger's `allow:` list and
+ *     drive invite creation from an admin-only endpoint that calls the
+ *     workflow programmatically.
+ *
+ * The `accept` step (step 3) is intentionally reachable without admin auth —
+ * the magic-link token IS the authorisation to complete the invite.
+ *
+ * `ctx.roles` from step 1 is currently NOT applied to the new user — role
+ * assignment is left to a consumer-supplied post-step hook (e.g. by
+ * subclassing `InviteWorkflow.accept`). This prevents accidental privilege
+ * escalation by misconfigured deployments; do not weaken this default
+ * without considering the implications.
  */
 import { AuthCredential } from "@aoothjs/auth";
 import { UserAuthError, UserService } from "@aoothjs/user";

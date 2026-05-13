@@ -25,6 +25,8 @@ export const useAuth = defineWook((ctx: EventContext): AuthBindings => {
     TClaims extends object = Record<string, unknown>,
   >(): AuthContext<TClaims> | null => {
     if (!ctx.has(authContextKey)) return null;
+    // The slot is erased to `AuthContext<object>` at boot; caller asserts the
+    // specific TClaims shape they expect. No runtime check — caller's risk.
     return ctx.get(authContextKey) as AuthContext<TClaims> | null;
   };
 
@@ -44,5 +46,7 @@ export function setAuthContext<TClaims extends object>(
   ctx: EventContext,
   value: AuthContext<TClaims> | null,
 ): void {
-  ctx.set(authContextKey, value as AuthContext | null);
+  // `AuthContext<TClaims>` is structurally assignable to `AuthContext<object>`
+  // because `claims?: TClaims` is covariant when TClaims extends object.
+  ctx.set(authContextKey, value);
 }

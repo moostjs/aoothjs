@@ -9,6 +9,16 @@ export interface AuthRefreshBody {
   refreshToken?: string;
 }
 
+/**
+ * Optional POST /auth/logout body. The refresh cookie's narrow `path:
+ * '/auth/refresh'` keeps the browser from sending it to `/auth/logout`, so
+ * token-style clients (or clients that want to revoke a paired refresh in the
+ * same call) submit it explicitly here.
+ */
+export interface AuthLogoutBody {
+  refreshToken?: string;
+}
+
 /** POST /auth/password request body. */
 export interface AuthPasswordChangeBody {
   currentPassword: string;

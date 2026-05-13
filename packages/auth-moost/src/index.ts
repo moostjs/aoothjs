@@ -1,4 +1,6 @@
-export type { AuthContext } from "@aoothjs/auth";
+// Re-exported from @aoothjs/auth — exposed in the public surface (handler
+// returns + helper parameters) so consumers don't need a second import.
+export type { AuthContext, IssueResult } from "@aoothjs/auth";
 
 export { MoostAuthConfig, type ResolvedAuthCookieConfig } from "./auth.config";
 export { authGuardInterceptor } from "./auth.guard";
@@ -22,9 +24,16 @@ export {
   writeAuthCookies,
 } from "./auth.cookies";
 
-export type { AuthEmailEvent, AuthEmailKind, EmailSender } from "./email";
-export type { BuildMagicLinkUrl, MagicLinkKind } from "./magic-link";
-export { generateMagicLinkToken } from "./magic-link";
+// Re-exported from @aoothjs/auth for ergonomic single-import setup; the
+// definitions are framework-agnostic and live in the core package.
+export type {
+  AuthEmailEvent,
+  AuthEmailKind,
+  BuildMagicLinkUrl,
+  EmailSender,
+  MagicLinkKind,
+} from "@aoothjs/auth";
+export { generateMagicLinkToken } from "@aoothjs/auth";
 export {
   DEFAULT_INVITE_TOKEN_TTL_MS,
   DEFAULT_MFA_CODE_TTL_MS,

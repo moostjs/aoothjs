@@ -12,6 +12,7 @@ import { Public } from "./auth.decorator";
 import type {
   AuthLoginBody,
   AuthLoginResponse,
+  AuthLogoutBody,
   AuthOkResponse,
   AuthPasswordChangeBody,
   AuthRefreshBody,
@@ -119,15 +120,35 @@ export class AuthController {
   }
 
   @Post("logout")
-  async logout(): Promise<AuthOkResponse> {
+  async logout(@Body() body: AuthLogoutBody): Promise<AuthOkResponse> {
     const { auth, config } = await resolveDeps();
-    const token = extractAccessToken(current(), config);
-    if (token) {
-      // Best-effort: the guard already validated this token; if revocation
-      // fails (e.g. store unreachable) we still clear cookies so the client's
-      // session ends.
+    const ctx = current();
+    const accessToken = extractAccessToken(ctx, config);
+    // Revoke the refresh side too — otherwise a stolen device could mint a
+    // fresh access token via `/auth/refresh` after the user "logged out".
+    // The refresh cookie's narrow path keeps it OUT of `/auth/logout`, so we
+    // prefer an explicit body field and fall back to the cookie just in case
+    // a consumer widened the path.
+    let refreshToken =
+      body && typeof body === "object" && typeof body.refreshToken === "string"
+        ? body.refreshToken
+        : undefined;
+    if (!refreshToken && config.enableCookie) {
+      refreshToken = useCookies(ctx).getCookie(config.refreshCookie.name) ?? undefined;
+    }
+    // Best-effort: the guard already validated the access token; if either
+    // revocation fails (e.g. store unreachable) we still clear cookies so the
+    // client's session ends.
+    if (accessToken) {
       try {
-        await auth.revoke(token);
+        await auth.revoke(accessToken);
+      } catch {
+        /* swallow — see comment */
+      }
+    }
+    if (refreshToken) {
+      try {
+        await auth.revoke(refreshToken);
       } catch {
         /* swallow — see comment */
       }
@@ -181,7 +202,7 @@ export class AuthController {
     if (!body || typeof body.currentPassword !== "string" || typeof body.newPassword !== "string") {
       throw new HttpError(400, "currentPassword and newPassword are required");
     }
-    const { users } = await resolveDeps();
+    const { auth, config, users } = await resolveDeps();
     const username = useAuth().getCurrentUserId();
 
     let valid: boolean;
@@ -198,6 +219,18 @@ export class AuthController {
     } catch (err) {
       translatePasswordError(err);
     }
+    // Best-practice session invalidation: a successful password change implies
+    // the prior password is no longer trusted, so any token derived from a
+    // session opened with it (including the caller's own) is revoked. The
+    // client must re-authenticate. Failure here is non-fatal — the password
+    // is already changed, and the worst outcome is a brief window of stale
+    // tokens that will expire on their natural TTL.
+    try {
+      await auth.revokeAllForUser(username);
+    } catch {
+      /* swallow — see comment */
+    }
+    clearAuthCookies(config);
     return { ok: true };
   }
 }

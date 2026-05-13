@@ -1,8 +1,7 @@
 import { formInputInterceptor } from "@atscript/moost-wf";
 import { describe, expect, it } from "vite-plus/test";
 
-import type { EmailSender } from "../email";
-import type { BuildMagicLinkUrl } from "../magic-link";
+import type { BuildMagicLinkUrl, EmailSender } from "@aoothjs/auth";
 import {
   DEFAULT_INVITE_TOKEN_TTL_MS,
   DEFAULT_MFA_CODE_TTL_MS,

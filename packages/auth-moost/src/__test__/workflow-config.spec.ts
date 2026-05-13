@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import type { EmailSender } from "../email";
-import type { BuildMagicLinkUrl } from "../magic-link";
+import type { BuildMagicLinkUrl, EmailSender } from "@aoothjs/auth";
 import {
   type AuthWorkflowsOptions,
   DEFAULT_INVITE_TOKEN_TTL_MS,

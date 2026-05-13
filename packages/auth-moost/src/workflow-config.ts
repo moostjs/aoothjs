@@ -1,7 +1,5 @@
+import type { BuildMagicLinkUrl, EmailSender } from "@aoothjs/auth";
 import { Injectable } from "moost";
-
-import type { EmailSender } from "./email";
-import type { BuildMagicLinkUrl } from "./magic-link";
 
 /**
  * `wfStateStore` is typed `unknown` so this package's public surface does not

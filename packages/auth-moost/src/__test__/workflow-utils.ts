@@ -33,10 +33,10 @@ import { createHttpApp } from "@wooksjs/event-http";
 import { Controller, getMoostInfact, Moost, useControllerContext } from "moost";
 import { Wooks } from "wooks";
 
+import type { BuildMagicLinkUrl, EmailSender } from "@aoothjs/auth";
+
 import { setupAuthMoost } from "../auth.setup";
 import { Public } from "../auth.decorator";
-import type { EmailSender } from "../email";
-import type { BuildMagicLinkUrl } from "../magic-link";
 import { setupAuthWorkflows } from "../workflow-setup";
 import { createAuthEmailOutlet } from "../workflows/auth-email-outlet";
 import { MoostAuthWorkflowConfig } from "../workflow-config";
