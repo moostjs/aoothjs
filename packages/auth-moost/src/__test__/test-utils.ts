@@ -75,7 +75,10 @@ export async function prepareTestApp(
 
   const store = new CredentialStoreMemory<MyClaims>();
   const auth = new AuthCredentialClass<MyClaims>({ store, method: "token", accessTtl: 60_000 });
-  setupAuthMoost(moost, { authCredential: auth, ...opts });
+  // Existing guard-focused tests don't care about endpoints; default off here
+  // so callers don't have to pass a UserService. They can still opt-in by
+  // setting `endpoints: true` in opts.
+  setupAuthMoost(moost, { authCredential: auth, endpoints: false, ...opts });
 
   await moost.init();
   return { moost, adapter, auth };

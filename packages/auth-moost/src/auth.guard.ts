@@ -1,11 +1,12 @@
 import { AuthCredential } from "@aoothjs/auth";
 import { current } from "@wooksjs/event-core";
-import { HttpError, useAuthorization, useCookies } from "@wooksjs/event-http";
+import { HttpError } from "@wooksjs/event-http";
 import { defineBeforeInterceptor, TInterceptorPriority, useControllerContext } from "moost";
 
 import { MoostAuthConfig } from "./auth.config";
 import { setAuthContext } from "./auth.composables";
 import type { TAuthMeta } from "./auth.mate";
+import { extractAccessToken } from "./auth.token";
 
 /**
  * `GUARD`-priority interceptor that authenticates incoming requests.
@@ -30,14 +31,7 @@ export const authGuardInterceptor = defineBeforeInterceptor(async () => {
     cc.instantiate(MoostAuthConfig),
   ]);
 
-  let token: string | undefined;
-  if (config.enableBearer) {
-    const auth = useAuthorization(ctx);
-    if (auth.is("bearer")) token = auth.credentials() ?? undefined;
-  }
-  if (!token && config.enableCookie) {
-    token = useCookies(ctx).getCookie(config.cookie.name) ?? undefined;
-  }
+  const token = extractAccessToken(ctx, config);
 
   if (!token) {
     if (isPublic) {

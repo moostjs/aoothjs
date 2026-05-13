@@ -3,6 +3,7 @@ packages:
 
 catalog:
   "@atscript/core": ^0.1.40
+  "@moostjs/event-http": ^0.6.9
   "@types/node": ^22
   typescript: ^5
   vite: npm:@voidzero-dev/vite-plus-core@latest

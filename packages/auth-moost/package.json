@@ -52,7 +52,12 @@
     "@aoothjs/auth": "workspace:*",
     "@aoothjs/user": "workspace:*"
   },
+  "devDependencies": {
+    "@moostjs/event-http": "catalog:",
+    "wooks": ">=0.7.11"
+  },
   "peerDependencies": {
+    "@moostjs/event-http": ">=0.6.8",
     "@wooksjs/event-core": ">=0.7.11",
     "@wooksjs/event-http": ">=0.7.11",
     "moost": ">=0.6.8"
