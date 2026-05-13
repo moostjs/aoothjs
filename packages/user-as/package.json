@@ -21,7 +21,9 @@
     "directory": "packages/user-as"
   },
   "files": [
-    "dist"
+    "dist",
+    "src/models/user.as",
+    "src/models/user.as.d.ts"
   ],
   "type": "module",
   "sideEffects": false,
@@ -38,6 +40,7 @@
       "types": "./dist/models/user.as.d.ts",
       "import": "./dist/models/user.as.js"
     },
+    "./models.as": "./src/models/user.as",
     "./package.json": "./package.json"
   },
   "publishConfig": {

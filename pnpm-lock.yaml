@@ -86,6 +86,9 @@ importers:
       '@aoothjs/arbac-core':
         specifier: workspace:*
         version: link:../arbac-core
+      '@aoothjs/user-as':
+        specifier: workspace:*
+        version: link:../user-as
       '@wooksjs/event-core':
         specifier: '>=0.7.11'
         version: 0.7.11
@@ -95,6 +98,31 @@ importers:
       moost:
         specifier: '>=0.6.8'
         version: 0.6.8
+    devDependencies:
+      '@atscript/core':
+        specifier: ^0.1.41
+        version: 0.1.41
+      '@atscript/db':
+        specifier: ^0.1.42
+        version: 0.1.42(@atscript/core@0.1.41)(@atscript/typescript@0.1.41)(@uniqu/core@0.1.2)
+      '@atscript/db-sqlite':
+        specifier: ^0.1.42
+        version: 0.1.42(@atscript/core@0.1.41)(@atscript/db-sql-tools@0.1.40(@atscript/db@0.1.42)(@uniqu/core@0.1.2))(@atscript/db@0.1.42)(@atscript/typescript@0.1.41)(@uniqu/core@0.1.2)(better-sqlite3@12.8.0)
+      '@atscript/typescript':
+        specifier: ^0.1.41
+        version: 0.1.41(@atscript/core@0.1.41)(@atscript/db@0.1.42)(@prostojs/logger@0.4.3)(@prostojs/router@0.3.3)(@wooksjs/event-core@0.7.11)(wooks@0.7.11)
+      '@types/better-sqlite3':
+        specifier: ^7.6.13
+        version: 7.6.13
+      '@uniqu/core':
+        specifier: ^0.1.2
+        version: 0.1.2
+      better-sqlite3:
+        specifier: ^12.6.2
+        version: 12.8.0
+      unplugin-atscript:
+        specifier: ^0.1.39
+        version: 0.1.40(@atscript/core@0.1.41)(@atscript/typescript@0.1.41)
 
   packages/auth:
     dependencies:
@@ -358,8 +386,8 @@ packages:
     resolution: {integrity: sha512-Rg8Wlt5dCbXhQnsXPrkOjL1DTSvXLgb2R/KYfnf1/K+R0k6UMLEmbQXPM+kwrWqSmWA2t0B1EtHy2/3zikQpvQ==}
     engines: {node: ^20.19.0 || >=22.12.0}
 
-  '@oxc-project/runtime@0.127.0':
-    resolution: {integrity: sha512-UQYLxAhDDPHm++szfa4z0RTdcPq5vaywrAoEA2n1YaAKeanXQdjHsoT6x1gP3U97RN8LZ7yHsSOrKPCcA6mCqw==}
+  '@oxc-project/runtime@0.129.0':
+    resolution: {integrity: sha512-0+S67blQakgeNqoKGozOUp5rQBrz2ynXZ2QIINXZPiafsD0YL0UogB9hAWc1S7k6VSNwKYC/N7MqT0V6IzpHkQ==}
     engines: {node: ^20.19.0 || >=22.12.0}
 
   '@oxc-project/types@0.113.0':
@@ -368,8 +396,8 @@ packages:
   '@oxc-project/types@0.115.0':
     resolution: {integrity: sha512-4n91DKnebUS4yjUHl2g3/b2T+IUdCfmoZGhmwsovZCDaJSs+QkVAM+0AqqTxHSsHfeiMuueT75cZaZcT/m0pSw==}
 
-  '@oxc-project/types@0.127.0':
-    resolution: {integrity: sha512-aIYXQBo4lCbO4z0R3FHeucQHpF46l2LbMdxRvqvuRuW2OxdnSkcng5B8+K12spgLDj93rtN3+J2Vac/TIO+ciQ==}
+  '@oxc-project/types@0.129.0':
+    resolution: {integrity: sha512-3oz8m3FGdr2nDXVqmFUw7jolKliC4MoyXYIG2c7gpjBnzUWQpUGIYcXYKxTdTi+N2jusvt610ckTMkxdwHkYEg==}
 
   '@oxfmt/binding-android-arm-eabi@0.40.0':
     resolution: {integrity: sha512-S6zd5r1w/HmqR8t0CTnGjFTBLDq2QKORPwriCHxo4xFNuhmOTABGjPaNvCJJVnrKBLsohOeiDX3YqQfJPF+FXw==}
@@ -1017,19 +1045,19 @@ packages:
       yaml:
         optional: true
 
-  '@voidzero-dev/vite-plus-core@0.1.20':
-    resolution: {integrity: sha512-4KmzRfzwTeG3JuvDijrdqWusSgRvLMKDPrVsDdtbDVVjEMq0VnM8lSH+Nvepd6Pg+SuSVUP212OIfH/3Yn1bfA==}
+  '@voidzero-dev/vite-plus-core@0.1.21':
+    resolution: {integrity: sha512-BEnqw8h2vxgKkzBjmmW4e1kwPwzoWc+jXJQB+7e0Dm1/1AkdTaQ9FgUMFzDfYrwTDkGzCZHSSsHDOl3RERQFTA==}
     engines: {node: ^20.19.0 || >=22.12.0}
     peerDependencies:
       '@arethetypeswrong/core': ^0.18.1
-      '@tsdown/css': 0.21.10
-      '@tsdown/exe': 0.21.10
+      '@tsdown/css': 0.22.0
+      '@tsdown/exe': 0.22.0
       '@types/node': ^20.19.0 || >=22.12.0
-      '@vitejs/devtools': ^0.1.0
+      '@vitejs/devtools': ^0.1.18
       esbuild: ^0.27.0 || ^0.28.0
       jiti: '>=1.21.0'
       less: ^4.0.0
-      publint: ^0.3.0
+      publint: ^0.3.8
       sass: ^1.70.0
       sass-embedded: ^1.70.0
       stylus: '>=0.54.8'
@@ -1038,6 +1066,7 @@ packages:
       tsx: ^4.8.1
       typescript: ^5.0.0 || ^6.0.0
       unplugin-unused: ^0.5.0
+      unrun: '*'
       yaml: ^2.4.2
     peerDependenciesMeta:
       '@arethetypeswrong/core':
@@ -1073,6 +1102,8 @@ packages:
       typescript:
         optional: true
       unplugin-unused:
+        optional: true
+      unrun:
         optional: true
       yaml:
         optional: true
@@ -2454,13 +2485,13 @@ snapshots:
 
   '@oxc-project/runtime@0.115.0': {}
 
-  '@oxc-project/runtime@0.127.0': {}
+  '@oxc-project/runtime@0.129.0': {}
 
   '@oxc-project/types@0.113.0': {}
 
   '@oxc-project/types@0.115.0': {}
 
-  '@oxc-project/types@0.127.0': {}
+  '@oxc-project/types@0.129.0': {}
 
   '@oxfmt/binding-android-arm-eabi@0.40.0':
     optional: true
@@ -2823,9 +2854,9 @@ snapshots:
 
   '@uniqu/core@0.1.2': {}
 
-  '@vitejs/plugin-vue@5.2.4(@voidzero-dev/vite-plus-core@0.1.20(@types/node@22.19.15)(typescript@5.9.3))(vue@3.5.30(typescript@5.9.3))':
+  '@vitejs/plugin-vue@5.2.4(@voidzero-dev/vite-plus-core@0.1.21(@types/node@22.19.15)(typescript@5.9.3))(vue@3.5.30(typescript@5.9.3))':
     dependencies:
-      vite: '@voidzero-dev/vite-plus-core@0.1.20(@types/node@22.19.15)(typescript@5.9.3)'
+      vite: '@voidzero-dev/vite-plus-core@0.1.21(@types/node@22.19.15)(typescript@5.9.3)'
       vue: 3.5.30(typescript@5.9.3)
 
   '@voidzero-dev/vite-plus-core@0.1.12(@types/node@22.19.15)(typescript@5.9.3)':
@@ -2839,10 +2870,10 @@ snapshots:
       fsevents: 2.3.3
       typescript: 5.9.3
 
-  '@voidzero-dev/vite-plus-core@0.1.20(@types/node@22.19.15)(typescript@5.9.3)':
+  '@voidzero-dev/vite-plus-core@0.1.21(@types/node@22.19.15)(typescript@5.9.3)':
     dependencies:
-      '@oxc-project/runtime': 0.127.0
-      '@oxc-project/types': 0.127.0
+      '@oxc-project/runtime': 0.129.0
+      '@oxc-project/types': 0.129.0
       lightningcss: 1.32.0
       postcss: 8.5.8
     optionalDependencies:
@@ -3977,7 +4008,7 @@ snapshots:
       '@shikijs/transformers': 2.5.0
       '@shikijs/types': 2.5.0
       '@types/markdown-it': 14.1.2
-      '@vitejs/plugin-vue': 5.2.4(@voidzero-dev/vite-plus-core@0.1.20(@types/node@22.19.15)(typescript@5.9.3))(vue@3.5.30(typescript@5.9.3))
+      '@vitejs/plugin-vue': 5.2.4(@voidzero-dev/vite-plus-core@0.1.21(@types/node@22.19.15)(typescript@5.9.3))(vue@3.5.30(typescript@5.9.3))
       '@vue/devtools-api': 7.7.9
       '@vue/shared': 3.5.30
       '@vueuse/core': 12.8.2(typescript@5.9.3)
@@ -3986,7 +4017,7 @@ snapshots:
       mark.js: 8.11.1
       minisearch: 7.2.0
       shiki: 2.5.0
-      vite: '@voidzero-dev/vite-plus-core@0.1.20(@types/node@22.19.15)(typescript@5.9.3)'
+      vite: '@voidzero-dev/vite-plus-core@0.1.21(@types/node@22.19.15)(typescript@5.9.3)'
       vue: 3.5.30(typescript@5.9.3)
     optionalDependencies:
       postcss: 8.5.8
@@ -4024,6 +4055,7 @@ snapshots:
       - typescript
       - universal-cookie
       - unplugin-unused
+      - unrun
       - yaml
 
   vue@3.5.30(typescript@5.9.3):

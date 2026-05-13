@@ -24,7 +24,9 @@
     "directory": "packages/arbac-moost"
   },
   "files": [
-    "dist"
+    "dist",
+    "src/atscript/models/user.as",
+    "src/atscript/models/user.as.d.ts"
   ],
   "type": "module",
   "sideEffects": false,
@@ -34,8 +36,17 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.mts",
-      "import": "./dist/index.mjs",
-      "require": "./dist/index.cjs"
+      "import": "./dist/index.mjs"
+    },
+    "./atscript": {
+      "types": "./dist/atscript/index.d.mts",
+      "import": "./dist/atscript/index.mjs"
+    },
+    "./atscript/models": "./src/atscript/models/user.as",
+    "./atscript/models.as": "./src/atscript/models/user.as",
+    "./plugin": {
+      "types": "./dist/plugin.d.mts",
+      "import": "./dist/plugin.mjs"
     },
     "./package.json": "./package.json"
   },
@@ -43,17 +54,39 @@
     "access": "public"
   },
   "scripts": {
+    "gen:atscript": "node --experimental-strip-types scripts/gen-as.mjs",
     "build": "vp pack",
     "dev": "vp pack --watch",
     "test": "vp test",
     "check": "vp check"
   },
   "dependencies": {
-    "@aoothjs/arbac-core": "workspace:*"
+    "@aoothjs/arbac-core": "workspace:*",
+    "@aoothjs/user-as": "workspace:*"
+  },
+  "devDependencies": {
+    "@atscript/core": "^0.1.41",
+    "@atscript/db": "^0.1.42",
+    "@atscript/db-sqlite": "^0.1.42",
+    "@atscript/typescript": "^0.1.41",
+    "@types/better-sqlite3": "^7.6.13",
+    "@uniqu/core": "^0.1.2",
+    "better-sqlite3": "^12.6.2",
+    "unplugin-atscript": "^0.1.39"
   },
   "peerDependencies": {
+    "@atscript/db": ">=0.1.42",
+    "@atscript/typescript": ">=0.1.41",
     "@wooksjs/event-core": ">=0.7.11",
     "@wooksjs/event-http": ">=0.7.11",
     "moost": ">=0.6.8"
+  },
+  "peerDependenciesMeta": {
+    "@atscript/db": {
+      "optional": true
+    },
+    "@atscript/typescript": {
+      "optional": true
+    }
   }
 }
