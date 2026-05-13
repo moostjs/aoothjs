@@ -1,0 +1,61 @@
+{
+  "name": "@aoothjs/auth-moost",
+  "version": "0.0.1-alpha.0",
+  "description": "Moost auth integration for aoothjs — AuthGuard interceptor, useAuth composable, REST endpoints, workflows",
+  "keywords": [
+    "aoothjs",
+    "auth",
+    "authentication",
+    "guard",
+    "interceptor",
+    "moost",
+    "session",
+    "token",
+    "workflow"
+  ],
+  "homepage": "https://github.com/aoothjs/aoothjs/tree/main/packages/auth-moost#readme",
+  "bugs": {
+    "url": "https://github.com/aoothjs/aoothjs/issues"
+  },
+  "license": "MIT",
+  "author": "Artem Maltsev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aoothjs/aoothjs.git",
+    "directory": "packages/auth-moost"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "dist/index.mjs",
+  "module": "./dist/index.mjs",
+  "types": "dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "vp pack",
+    "dev": "vp pack --watch",
+    "test": "vp test",
+    "check": "vp check"
+  },
+  "dependencies": {
+    "@aoothjs/auth": "workspace:*",
+    "@aoothjs/user": "workspace:*"
+  },
+  "peerDependencies": {
+    "@wooksjs/event-core": ">=0.7.11",
+    "@wooksjs/event-http": ">=0.7.11",
+    "moost": ">=0.6.8"
+  }
+}
