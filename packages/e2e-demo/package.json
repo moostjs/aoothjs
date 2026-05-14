@@ -1,0 +1,45 @@
+{
+  "name": "@aoothjs/e2e-demo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "End-to-end test harness for @aoothjs/* packages",
+  "type": "module",
+  "scripts": {
+    "dev": "vite-node --watch src/main.ts",
+    "start": "vite-node src/main.ts",
+    "test": "vp test",
+    "check": "vp check",
+    "gen:atscript": "asc -f dts",
+    "db:init": "vite-node src/scripts/init-db.ts"
+  },
+  "dependencies": {
+    "@aoothjs/arbac": "workspace:*",
+    "@aoothjs/arbac-core": "workspace:*",
+    "@aoothjs/arbac-moost": "workspace:*",
+    "@aoothjs/auth": "workspace:*",
+    "@aoothjs/auth-moost": "workspace:*",
+    "@aoothjs/user": "workspace:*",
+    "@aoothjs/user-as": "workspace:*",
+    "@atscript/core": "catalog:",
+    "@atscript/db": "catalog:",
+    "@atscript/db-sqlite": "catalog:",
+    "@atscript/db-sql-tools": "catalog:",
+    "@atscript/moost-db": "^0.1.75",
+    "@atscript/moost-wf": "catalog:",
+    "@atscript/typescript": "catalog:",
+    "@atscript/ui": "catalog:",
+    "@moostjs/event-http": "catalog:",
+    "@moostjs/event-wf": "catalog:",
+    "@wooksjs/event-core": "^0.7.11",
+    "@wooksjs/event-http": "^0.7.11",
+    "@uniqu/core": "^0.1.6",
+    "better-sqlite3": "^12.6.2",
+    "@types/better-sqlite3": "^7.6.13",
+    "moost": "^0.6.9"
+  },
+  "devDependencies": {
+    "unplugin-atscript": "catalog:",
+    "vite-node": "^3.0.0",
+    "vite-plus": "0.1.12"
+  }
+}
