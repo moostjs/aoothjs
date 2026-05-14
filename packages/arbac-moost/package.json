@@ -61,6 +61,7 @@
     "check": "vp check"
   },
   "dependencies": {
+    "@aoothjs/arbac": "workspace:*",
     "@aoothjs/arbac-core": "workspace:*",
     "@aoothjs/user-as": "workspace:*"
   },
@@ -69,7 +70,9 @@
     "@atscript/db": "catalog:",
     "@atscript/db-sql-tools": "catalog:",
     "@atscript/db-sqlite": "catalog:",
+    "@atscript/moost-db": "^0.1.75",
     "@atscript/typescript": "catalog:",
+    "@moostjs/event-http": "catalog:",
     "@types/better-sqlite3": "^7.6.13",
     "@uniqu/core": "^0.1.6",
     "better-sqlite3": "^12.6.2",
@@ -77,13 +80,18 @@
   },
   "peerDependencies": {
     "@atscript/db": ">=0.1.75",
+    "@atscript/moost-db": ">=0.1.75",
     "@atscript/typescript": ">=0.1.54",
+    "@moostjs/event-http": ">=0.6.9",
     "@wooksjs/event-core": ">=0.7.11",
     "@wooksjs/event-http": ">=0.7.11",
     "moost": ">=0.6.9"
   },
   "peerDependenciesMeta": {
     "@atscript/db": {
+      "optional": true
+    },
+    "@atscript/moost-db": {
       "optional": true
     },
     "@atscript/typescript": {

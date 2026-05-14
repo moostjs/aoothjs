@@ -30,7 +30,7 @@ export interface RoleBuilder<TUserAttrs, TScope> {
   allow(
     resource: string,
     action: string,
-    scope?: (attrs: TUserAttrs) => TScope,
+    scope?: (attrs: TUserAttrs, userId: string) => TScope,
   ): RoleBuilder<TUserAttrs, TScope>;
   /** Append a deny rule (`effect: 'deny'`) for a (resource, action) pair. */
   deny(resource: string, action: string): RoleBuilder<TUserAttrs, TScope>;
@@ -68,7 +68,11 @@ class RoleBuilderImpl<TUserAttrs, TScope> implements RoleBuilder<TUserAttrs, TSc
     return this;
   }
 
-  allow(resource: string, action: string, scope?: (attrs: TUserAttrs) => TScope): this {
+  allow(
+    resource: string,
+    action: string,
+    scope?: (attrs: TUserAttrs, userId: string) => TScope,
+  ): this {
     if (scope) {
       this._rules.push({ resource, action, scope });
     } else {

@@ -29,9 +29,15 @@ import {
 } from "@aoothjs/arbac-moost";
 
 class MyArbacUserProvider extends ArbacUserProvider<{ tenantId: string }> {
-  getUserId() { return useAuth().getCurrentUserId(); }
-  async getRoles(id: string) { return (await db.users.find(id)).roles; }
-  async getAttrs(id: string) { return { tenantId: (await db.users.find(id)).tenantId }; }
+  getUserId() {
+    return useAuth().getCurrentUserId();
+  }
+  async getRoles(id: string) {
+    return (await db.users.find(id)).roles;
+  }
+  async getAttrs(id: string) {
+    return { tenantId: (await db.users.find(id)).tenantId };
+  }
 }
 
 const moost = new Moost();
@@ -45,12 +51,12 @@ arbac.registerRole(editorRole);
 
 ## Decorators
 
-| Decorator           | Target          | Effect                                                                 |
-| ------------------- | --------------- | ---------------------------------------------------------------------- |
-| `@ArbacAuthorize()` | Method / class  | Applies the authorize interceptor                                      |
-| `@ArbacResource(s)` | Method / class  | Sets the resource id for evaluation                                    |
-| `@ArbacAction(a)`   | Method / class  | Sets the action id for evaluation                                      |
-| `@ArbacPublic()`    | Method / class  | Bypasses authorization                                                 |
+| Decorator           | Target               | Effect                                                              |
+| ------------------- | -------------------- | ------------------------------------------------------------------- |
+| `@ArbacAuthorize()` | Method / class       | Applies the authorize interceptor                                   |
+| `@ArbacResource(s)` | Method / class       | Sets the resource id for evaluation                                 |
+| `@ArbacAction(a)`   | Method / class       | Sets the action id for evaluation                                   |
+| `@ArbacPublic()`    | Method / class       | Bypasses authorization                                              |
 | `@ArbacScopes()`    | Parameter / property | Injects evaluated `scopes` returned by the role's `scope(attrs)` fn |
 
 ```ts
@@ -87,11 +93,11 @@ annotated with `@arbac.*` to an auto-built `ArbacUserProvider`.
 
 ### Annotation namespace
 
-| Annotation         | Targets | Purpose                                                                  |
-| ------------------ | ------- | ------------------------------------------------------------------------ |
+| Annotation         | Targets | Purpose                                                                     |
+| ------------------ | ------- | --------------------------------------------------------------------------- |
 | `@arbac.role`      | prop    | Source of role identifiers. `string` or `string[]`. Multiple roles unioned. |
-| `@arbac.attribute` | prop    | Field becomes a user attribute keyed by its prop name                    |
-| `@arbac.userId`    | prop    | Overrides the userId source (defaults to `@meta.id`)                     |
+| `@arbac.attribute` | prop    | Field becomes a user attribute keyed by its prop name                       |
+| `@arbac.userId`    | prop    | Overrides the userId source (defaults to `@meta.id`)                        |
 
 Register the plugin in your `atscript.config.ts`:
 
@@ -136,19 +142,19 @@ import { MyUser } from "./models/user.as";
 
 setupArbacFromAtscript(moost, {
   userType: MyUser,
-  table: usersTable,                       // @atscript/db Table<MyUser>
+  table: usersTable, // @atscript/db Table<MyUser>
   // OR: store: usersStore,                // @aoothjs/user UserStore<MyUser>
   getUserId: () => useAuth().getCurrentUserId(),
 });
 ```
 
-| Option       | Required          | Notes                                                          |
-| ------------ | ----------------- | -------------------------------------------------------------- |
-| `userType`   | yes               | Atscript runtime type token for the user model                 |
-| `table`      | one-of (`table` ⊕ `store`) | `@atscript/db` table; SELECT projection optimised for arbac fields |
-| `store`      | one-of (`table` ⊕ `store`) | Any `{ read(id): Promise<T \| null> }` (matches `UserStore`)   |
-| `getUserId`  | yes               | Resolves the current event's subject id                        |
-| `warn`       | no                | Warning sink (default `console.warn`)                          |
+| Option      | Required                   | Notes                                                              |
+| ----------- | -------------------------- | ------------------------------------------------------------------ |
+| `userType`  | yes                        | Atscript runtime type token for the user model                     |
+| `table`     | one-of (`table` ⊕ `store`) | `@atscript/db` table; SELECT projection optimised for arbac fields |
+| `store`     | one-of (`table` ⊕ `store`) | Any `{ read(id): Promise<T \| null> }` (matches `UserStore`)       |
+| `getUserId` | yes                        | Resolves the current event's subject id                            |
+| `warn`      | no                         | Warning sink (default `console.warn`)                              |
 
 Internally it:
 
@@ -176,30 +182,27 @@ attribute updates) must reflect immediately on the next request.
 
 ```ts
 // Main export
-export { Arbac, arbacPatternToRegex }                  // re-exports @aoothjs/arbac-core
-export { MoostArbac }
-export { ArbacUserProvider }
-export {
-  ArbacAuthorize, ArbacResource, ArbacAction, ArbacPublic,
-  ArbacScopes, CurrentArbacScopes,
-}
-export { arbacAuthorizeInterceptor }
-export { useArbac }
-export type {
-  TArbacCompiledRule, TArbacEvalResult, TArbacRole,
-  TArbacRoleForResource, TArbacRule,
-}
+export { Arbac, arbacPatternToRegex }; // re-exports @aoothjs/arbac-core
+export { MoostArbac };
+export { ArbacUserProvider };
+export { ArbacAuthorize, ArbacResource, ArbacAction, ArbacPublic, ArbacScopes, CurrentArbacScopes };
+export { arbacAuthorizeInterceptor };
+export { useArbac };
+export type { TArbacCompiledRule, TArbacEvalResult, TArbacRole, TArbacRoleForResource, TArbacRule };
 
 // /atscript sub-export
 export {
   AutoArbacUserProvider,
-  extractArbacAttrs, extractArbacRoles, extractArbacUserId,
+  extractArbacAttrs,
+  extractArbacRoles,
+  extractArbacUserId,
   getArbacProjection,
   setupArbacFromAtscript,
-  setUserRecordFetcher, useUserRecord,
+  setUserRecordFetcher,
+  useUserRecord,
   AoothArbacUserCredentials,
-}
+};
 
 // /plugin sub-export (atscript compile-time plugin)
-export default function arbacPlugin(): TAtscriptPlugin
+export default function arbacPlugin(): TAtscriptPlugin;
 ```

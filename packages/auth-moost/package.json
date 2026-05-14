@@ -58,6 +58,7 @@
     "check": "vp check"
   },
   "dependencies": {
+    "@aoothjs/arbac-moost": "workspace:^",
     "@aoothjs/auth": "workspace:*",
     "@aoothjs/user": "workspace:*",
     "@atscript/moost-wf": "catalog:"

@@ -108,6 +108,33 @@ describe("arbac", () => {
       scopes: [{ entities: ["1111", "2222"] }],
     });
   });
+  it("must pass userId as the second arg to scope functions", async () => {
+    const arbac = new Arbac<{ assignment: string[]; userId: string }, { owner: string }>();
+    const seen: Array<{ attrs: { assignment: string[]; userId: string }; userId: string }> = [];
+    arbac.registerRole({
+      id: "com.role.owner",
+      rules: [
+        {
+          action: "read",
+          resource: "com.resource.db.docs",
+          scope: (attrs, userId) => {
+            seen.push({ attrs, userId });
+            return { owner: userId };
+          },
+        },
+      ],
+    });
+    const result = await arbac.evaluate(
+      { action: "read", resource: "com.resource.db.docs" },
+      {
+        id: "alice",
+        roles: ["com.role.owner"],
+        attrs: { userId: "alice", assignment: ["a", "b"] },
+      },
+    );
+    expect(result).toStrictEqual({ allowed: true, scopes: [{ owner: "alice" }] });
+    expect(seen).toEqual([{ attrs: { userId: "alice", assignment: ["a", "b"] }, userId: "alice" }]);
+  });
   it("must respect double asterisk in wildcard", async () => {
     const arbac = newArbac();
     expect(
@@ -187,7 +214,7 @@ function newArbac() {
       {
         action: "read",
         resource: "com.resource.db.leads",
-        scope: (userAttrs) => ({ entities: userAttrs.assignment }),
+        scope: (userAttrs, _userId) => ({ entities: userAttrs.assignment }),
       },
     ],
   });

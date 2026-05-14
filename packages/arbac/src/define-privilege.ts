@@ -10,7 +10,7 @@ import type { TPrivilegeFunction } from "./define-role";
  *
  * @example
  * const canManageUsers = definePrivilege<MyAttrs, MyScope>()(
- *   (scope: (attrs: MyAttrs) => MyScope) => [
+ *   (scope: (attrs: MyAttrs, userId: string) => MyScope) => [
  *     { resource: "users", action: "read", scope },
  *     { resource: "users", action: "update", scope },
  *   ]
@@ -44,7 +44,7 @@ export function definePrivilege<
 export function canAccess<TUserAttrs extends object = object, TScope extends object = object>(
   resource: string,
   action: string,
-  scope?: (attrs: TUserAttrs) => TScope,
+  scope?: (attrs: TUserAttrs, userId: string) => TScope,
 ): TPrivilegeFunction<TUserAttrs, TScope> {
   return () => (scope ? [{ resource, action, scope }] : [{ resource, action }]);
 }
@@ -66,7 +66,7 @@ const CRUD_ACTIONS = ["create", "read", "update", "delete", "list"] as const;
  */
 export function canCrud<TUserAttrs extends object = object, TScope extends object = object>(
   resource: string,
-  scope?: (attrs: TUserAttrs) => TScope,
+  scope?: (attrs: TUserAttrs, userId: string) => TScope,
 ): TPrivilegeFunction<TUserAttrs, TScope> {
   return () =>
     CRUD_ACTIONS.map((action) => (scope ? { resource, action, scope } : { resource, action }));

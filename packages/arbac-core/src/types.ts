@@ -27,7 +27,7 @@ export type TArbacRule<TUserAttrs, TScope> =
   | {
       resource: string;
       action: string;
-      scope?: (userAttrs: TUserAttrs) => TScope;
+      scope?: (userAttrs: TUserAttrs, userId: string) => TScope;
       effect?: never;
     }
   | {

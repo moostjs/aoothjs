@@ -19,11 +19,14 @@ export default defineConfig({
     plugins: [atscriptRolldown()],
     deps: {
       neverBundle: [
+        "@aoothjs/arbac",
         "@aoothjs/arbac-core",
         "@aoothjs/user-as",
         "@atscript/core",
         "@atscript/db",
+        "@atscript/moost-db",
         "@atscript/typescript",
+        "@moostjs/event-http",
         "moost",
         "@wooksjs/event-core",
         "@wooksjs/event-http",

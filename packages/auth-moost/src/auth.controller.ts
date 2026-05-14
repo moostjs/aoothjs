@@ -1,3 +1,4 @@
+import { ArbacPublic } from "@aoothjs/arbac-moost";
 import { type AuthContext, AuthCredential, AuthError, type IssueResult } from "@aoothjs/auth";
 import { UserAuthError, UserService } from "@aoothjs/user";
 import { current } from "@wooksjs/event-core";
@@ -97,6 +98,7 @@ async function resolveDeps(): Promise<Deps> {
  * (e.g. `/v1`) if `/v1/auth/...` is needed — moost does not expose runtime
  * prefix overrides on the `@Controller(...)` decorator.
  */
+@ArbacPublic()
 @Controller("auth")
 export class AuthController {
   @Post("login")

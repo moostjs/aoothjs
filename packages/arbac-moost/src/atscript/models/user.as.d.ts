@@ -12,7 +12,7 @@ import { AoothUserCredentials } from "@aoothjs/user-as/models.as"
 
 /**
  * Atscript interface **AoothArbacUserCredentials**
- * @see {@link ./user.as:10:18}
+ * @see {@link ./user.as:7:18}
  */
 export declare class AoothArbacUserCredentials extends AoothUserCredentials {
   roles: string[]

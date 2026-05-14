@@ -5,19 +5,67 @@
       "source": "moostjs/atscript",
       "sourceType": "github",
       "skillPath": "skills/atscript/SKILL.md",
-      "computedHash": "3db743dbbc67bf8189b9ad670c9543b03462c2480ba272d7644ad182156af839"
+      "computedHash": "153fe7576f73180006c37ede529f1b229d55d2d8f3436dd288b86c81750e4ab9"
     },
     "atscript-db": {
       "source": "moostjs/atscript-db",
       "sourceType": "github",
       "skillPath": "skills/atscript-db/SKILL.md",
-      "computedHash": "fe6012022f2967ee98b608b39689d700963eb7bc371f7f9906ed5457a15d80a1"
+      "computedHash": "82dcc6a951399ab42d83e765d7bf8cf681682d96eb93e6a10ca502ec7441e109"
+    },
+    "atscript-ui": {
+      "source": "moostjs/atscript-ui",
+      "sourceType": "github",
+      "skillPath": "skills/atscript-ui/SKILL.md",
+      "computedHash": "07f7372a2d066d00875eccf8edd1487ece34bf53b437883c8df9765a8fc9625a"
+    },
+    "atscript-ui-forms": {
+      "source": "moostjs/atscript-ui",
+      "sourceType": "github",
+      "skillPath": "skills/atscript-ui-forms/SKILL.md",
+      "computedHash": "7e71a3ef9378e7b330c470baf3cc9a4732fb566a3ce979c2942806706e6cdc9d"
+    },
+    "atscript-ui-styles": {
+      "source": "moostjs/atscript-ui",
+      "sourceType": "github",
+      "skillPath": "skills/atscript-ui-styles/SKILL.md",
+      "computedHash": "2b3e0049c589eb3c6ec54998423c9b847bbb9b87fc56efd7430da879f72a48c5"
+    },
+    "atscript-ui-tables": {
+      "source": "moostjs/atscript-ui",
+      "sourceType": "github",
+      "skillPath": "skills/atscript-ui-tables/SKILL.md",
+      "computedHash": "a1a9d6a34c5c353de7926c4b9de736e8c7ab0662966e977c3d2867c144b4e6e4"
+    },
+    "atscript-ui-wf": {
+      "source": "moostjs/atscript-ui",
+      "sourceType": "github",
+      "skillPath": "skills/atscript-ui-wf/SKILL.md",
+      "computedHash": "cc284f4c3fb156e41e4cc711b415d5b64a4615d2ab88484201e6d206ad0c7d34"
+    },
+    "frontend-design": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "skillPath": "skills/frontend-design/SKILL.md",
+      "computedHash": "063a0e6448123cd359ad0044cc46b0e490cc7964d45ef4bb9fd842bd2ffbca67"
     },
     "moostjs": {
       "source": "moostjs/moostjs",
       "sourceType": "github",
       "skillPath": "skills/moostjs/SKILL.md",
       "computedHash": "9e022e59813c7027ce50f88e78f4e299a60ebea5fcce2fc5137a675d91c5dd61"
+    },
+    "playwright-cli": {
+      "source": "microsoft/playwright-cli",
+      "sourceType": "github",
+      "skillPath": "skills/playwright-cli/SKILL.md",
+      "computedHash": "84495cfda62b6c012afc4cc34a0c35bfc7923ba35983b8c04ce4cace0f35a5d8"
+    },
+    "vunor": {
+      "source": "mav-rik/vunor",
+      "sourceType": "github",
+      "skillPath": "skills/vunor/SKILL.md",
+      "computedHash": "6880f16e966d1e6429941b601320c9484e1b1eb139176677bf25ea96d657fb39"
     },
     "wooksjs": {
       "source": "wooksjs/wooksjs",

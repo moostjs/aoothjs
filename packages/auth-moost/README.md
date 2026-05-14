@@ -13,15 +13,15 @@ pnpm add @aoothjs/auth-moost @aoothjs/auth @aoothjs/user
 
 Peer dependencies:
 
-| Peer                  | Required for                                  |
-| --------------------- | --------------------------------------------- |
-| `moost`               | always                                        |
-| `@moostjs/event-http` | always (REST endpoints + cookie reads)        |
-| `@wooksjs/event-core` | always                                        |
-| `@wooksjs/event-http` | always                                        |
-| `@moostjs/event-wf`   | workflows (`setupAuthWorkflows`)              |
-| `@atscript/moost-wf`  | workflows (`@FormInput()` form metadata)      |
-| `@atscript/typescript`| atscript form types (optional, type-only)     |
+| Peer                   | Required for                              |
+| ---------------------- | ----------------------------------------- |
+| `moost`                | always                                    |
+| `@moostjs/event-http`  | always (REST endpoints + cookie reads)    |
+| `@wooksjs/event-core`  | always                                    |
+| `@wooksjs/event-http`  | always                                    |
+| `@moostjs/event-wf`    | workflows (`setupAuthWorkflows`)          |
+| `@atscript/moost-wf`   | workflows (`@FormInput()` form metadata)  |
+| `@atscript/typescript` | atscript form types (optional, type-only) |
 
 ## Minimal setup
 
@@ -64,20 +64,20 @@ and falls back to a cookie when a Bearer header is absent. The refresh token
 travels in a separate cookie scoped to `/auth/refresh`. Both transports are
 configurable per app.
 
-| Option          | Default                                                              | Notes                              |
-| --------------- | -------------------------------------------------------------------- | ---------------------------------- |
-| `enableCookie`  | `true`                                                               | Read access/refresh from cookies   |
-| `enableBearer`  | `true`                                                               | Read access from `Authorization`   |
+| Option          | Default                                                                               | Notes                              |
+| --------------- | ------------------------------------------------------------------------------------- | ---------------------------------- |
+| `enableCookie`  | `true`                                                                                | Read access/refresh from cookies   |
+| `enableBearer`  | `true`                                                                                | Read access from `Authorization`   |
 | `cookie`        | `{ name: 'aooth_session', secure: true, sameSite: 'lax', httpOnly: true, path: '/' }` | Access-token cookie attributes     |
-| `refreshCookie` | `{ name: 'aooth_refresh', path: '/auth/refresh', ... }`              | Inherits secure/sameSite/httpOnly  |
-| `endpoints`     | `true`                                                               | Skip `AuthController` registration |
+| `refreshCookie` | `{ name: 'aooth_refresh', path: '/auth/refresh', ... }`                               | Inherits secure/sameSite/httpOnly  |
+| `endpoints`     | `true`                                                                                | Skip `AuthController` registration |
 
 ```ts
 setupAuthMoost(moost, {
   authCredential: auth,
   userService: users,
   cookie: { secure: false }, // dev only
-  enableBearer: false,        // cookie-only deployment
+  enableBearer: false, // cookie-only deployment
 });
 ```
 
@@ -127,11 +127,11 @@ class OrdersController {
 }
 ```
 
-| Method               | Behavior                                                            |
-| -------------------- | ------------------------------------------------------------------- |
-| `getCurrentUser()`   | Returns `AuthContext` or `null` (e.g. on `@Public()` routes)        |
-| `getCurrentUserId()` | Returns the userId; throws `HttpError(401)` when no AuthContext     |
-| `isAuthenticated()`  | `true` when `getCurrentUser()` is non-null                          |
+| Method               | Behavior                                                        |
+| -------------------- | --------------------------------------------------------------- |
+| `getCurrentUser()`   | Returns `AuthContext` or `null` (e.g. on `@Public()` routes)    |
+| `getCurrentUserId()` | Returns the userId; throws `HttpError(401)` when no AuthContext |
+| `isAuthenticated()`  | `true` when `getCurrentUser()` is non-null                      |
 
 `useAuth()` reads from the slot populated by the guard. On `@Public()` routes
 with an invalid token, `getCurrentUser()` returns `null` rather than throwing.
@@ -145,7 +145,9 @@ import { Public } from "@aoothjs/auth-moost";
 class DocsController {
   @Get("public")
   @Public()
-  async docs() { /* runs even without a valid token */ }
+  async docs() {
+    /* runs even without a valid token */
+  }
 }
 ```
 
@@ -155,13 +157,13 @@ Method-level decoration overrides class-level.
 
 `AuthController` is mounted at `/auth` when `endpoints: true` (the default).
 
-| Method | Path              | Visibility   | Purpose                                            |
-| ------ | ----------------- | ------------ | -------------------------------------------------- |
-| `POST` | `/auth/login`     | `@Public()`  | Verify credentials, issue tokens, write cookies    |
-| `POST` | `/auth/logout`    | Protected    | Revoke access + refresh, clear cookies             |
-| `POST` | `/auth/refresh`   | `@Public()`  | Rotate refresh token, issue new access             |
-| `GET`  | `/auth/status`    | Protected    | Return current `AuthContext`                       |
-| `POST` | `/auth/password`  | Protected    | Verify current password, set new, revoke all       |
+| Method | Path             | Visibility  | Purpose                                         |
+| ------ | ---------------- | ----------- | ----------------------------------------------- |
+| `POST` | `/auth/login`    | `@Public()` | Verify credentials, issue tokens, write cookies |
+| `POST` | `/auth/logout`   | Protected   | Revoke access + refresh, clear cookies          |
+| `POST` | `/auth/refresh`  | `@Public()` | Rotate refresh token, issue new access          |
+| `GET`  | `/auth/status`   | Protected   | Return current `AuthContext`                    |
+| `POST` | `/auth/password` | Protected   | Verify current password, set new, revoke all    |
 
 ### Request / response bodies
 
@@ -208,11 +210,7 @@ configured separately via `setupAuthWorkflows()`.
 
 ```ts
 import { AsWfStore } from "@atscript/moost-wf/store";
-import {
-  setupAuthWorkflows,
-  type EmailSender,
-  type BuildMagicLinkUrl,
-} from "@aoothjs/auth-moost";
+import { setupAuthWorkflows, type EmailSender, type BuildMagicLinkUrl } from "@aoothjs/auth-moost";
 
 const emailSender: EmailSender = {
   async send(event) {
@@ -228,9 +226,9 @@ setupAuthWorkflows(moost, {
   buildMagicLinkUrl,
   wfStateStore: new AsWfStore({ table: wfStateTable }),
   // Optional knobs:
-  recoveryTokenTtlMs: 60 * 60 * 1000,        // 1h
-  inviteTokenTtlMs:   7 * 24 * 60 * 60 * 1000, // 7d
-  mfaCodeTtlMs:       5 * 60 * 1000,         // 5m
+  recoveryTokenTtlMs: 60 * 60 * 1000, // 1h
+  inviteTokenTtlMs: 7 * 24 * 60 * 60 * 1000, // 7d
+  mfaCodeTtlMs: 5 * 60 * 1000, // 5m
   workflows: { login: true, recovery: true, invite: false },
 });
 ```
@@ -245,11 +243,11 @@ applies `formInputInterceptor()` globally, and conditionally registers
 
 ### The three workflows
 
-| Workflow ID      | Steps                                                | Final response                              |
-| ---------------- | ---------------------------------------------------- | ------------------------------------------- |
-| `auth.login`     | `credentials` → (optional `mfa`) → `issue`            | Login response + cookies                    |
-| `auth.recovery`  | `recoveryRequest` → `recoverySendLink` → `recoverySetPassword` | Login response + cookies                    |
-| `auth.invite`    | `inviteCreate` → `inviteSendLink` → `inviteAccept`    | Login response + cookies                    |
+| Workflow ID     | Steps                                                          | Final response           |
+| --------------- | -------------------------------------------------------------- | ------------------------ |
+| `auth.login`    | `credentials` → (optional `mfa`) → `issue`                     | Login response + cookies |
+| `auth.recovery` | `recoveryRequest` → `recoverySendLink` → `recoverySetPassword` | Login response + cookies |
+| `auth.invite`   | `inviteCreate` → `inviteSendLink` → `inviteAccept`             | Login response + cookies |
 
 Each workflow yields atscript form schemas to the client between steps via
 the HTTP outlet. The frontend renders them with `<AsWfForm name="auth.login" />`
@@ -263,9 +261,9 @@ import type { AuthEmailEvent, EmailSender } from "@aoothjs/auth-moost";
 interface AuthEmailEvent {
   kind: "recovery.magicLink" | "invite.magicLink" | "mfa.code";
   recipient: string;
-  url?: string;           // magic-link events only
-  code?: string;          // mfa.code only (v2, not emitted in v1)
-  expiresAt: number;      // Unix ms
+  url?: string; // magic-link events only
+  code?: string; // mfa.code only (v2, not emitted in v1)
+  expiresAt: number; // Unix ms
   username?: string;
   metadata?: Record<string, unknown>; // invites carry { roles }
 }
@@ -288,13 +286,13 @@ resume the paused workflow.
 
 The bundled `.as` form models ship under `@aoothjs/auth-moost/atscript`:
 
-| Form                    | Used by                            |
-| ----------------------- | ---------------------------------- |
-| `LoginCredentialsForm`  | `auth.login` step 1                |
-| `MfaCodeForm`           | `auth.login` step 2 (conditional)  |
-| `EmailIdentifierForm`   | `auth.recovery` step 1             |
-| `SetPasswordForm`       | `auth.recovery` step 3, `auth.invite` step 3 |
-| `InviteForm`            | `auth.invite` step 1               |
+| Form                   | Used by                                      |
+| ---------------------- | -------------------------------------------- |
+| `LoginCredentialsForm` | `auth.login` step 1                          |
+| `MfaCodeForm`          | `auth.login` step 2 (conditional)            |
+| `EmailIdentifierForm`  | `auth.recovery` step 1                       |
+| `SetPasswordForm`      | `auth.recovery` step 3, `auth.invite` step 3 |
+| `InviteForm`           | `auth.invite` step 1                         |
 
 ```ts
 import { LoginCredentialsForm } from "@aoothjs/auth-moost/atscript";
@@ -336,11 +334,7 @@ import {
 import { AsWfStore } from "@atscript/moost-wf/store";
 import { Controller, Inject, useControllerContext } from "moost";
 import { ArbacAuthorize } from "@aoothjs/arbac-moost";
-import {
-  createAuthEmailOutlet,
-  MoostAuthWorkflowConfig,
-  Public,
-} from "@aoothjs/auth-moost";
+import { createAuthEmailOutlet, MoostAuthWorkflowConfig, Public } from "@aoothjs/auth-moost";
 
 const wfStore = new AsWfStore({ table: wfStateTable });
 const handleStrategy = new HandleStateStrategy({ store: wfStore });
@@ -402,16 +396,16 @@ unsafe for invites.
 
 ## Security
 
-| Concern                         | Built-in behavior                                                                    |
-| ------------------------------- | ------------------------------------------------------------------------------------ |
-| Cookie defaults                 | `httpOnly: true`, `secure: true`, `sameSite: 'lax'`; refresh scoped to `/auth/refresh` |
-| Logout revokes both tokens      | Access + refresh both revoked (refresh accepted via body if cookie path is narrowed) |
-| Password change cascade         | `/auth/password` revokes ALL credentials for the user — defends against the stolen-token + password-change race |
-| TOTP comparison                 | Constant-time inside `@aoothjs/user`'s `verifyTotpCode`                              |
-| Login / recovery enumeration    | Uniform error responses (`Invalid credentials`) and uniform recovery success message |
-| Magic-link tokens               | 256 bits of CSPRNG (`base64url`, 43 chars). Single-use via `HandleStateStrategy.consume()` |
-| CSRF                            | **Not** included — consumer adds CSRF tokens / `SameSite=Strict` per threat model    |
-| Invite admin protection         | **Consumer-side** — see workflow trigger recipe                                      |
+| Concern                      | Built-in behavior                                                                                               |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Cookie defaults              | `httpOnly: true`, `secure: true`, `sameSite: 'lax'`; refresh scoped to `/auth/refresh`                          |
+| Logout revokes both tokens   | Access + refresh both revoked (refresh accepted via body if cookie path is narrowed)                            |
+| Password change cascade      | `/auth/password` revokes ALL credentials for the user — defends against the stolen-token + password-change race |
+| TOTP comparison              | Constant-time inside `@aoothjs/user`'s `verifyTotpCode`                                                         |
+| Login / recovery enumeration | Uniform error responses (`Invalid credentials`) and uniform recovery success message                            |
+| Magic-link tokens            | 256 bits of CSPRNG (`base64url`, 43 chars). Single-use via `HandleStateStrategy.consume()`                      |
+| CSRF                         | **Not** included — consumer adds CSRF tokens / `SameSite=Strict` per threat model                               |
+| Invite admin protection      | **Consumer-side** — see workflow trigger recipe                                                                 |
 
 The invite workflow does **not** authenticate the caller of step 1. Putting
 `'auth.invite'` in a public trigger's `allow:` list exposes an
@@ -445,55 +439,66 @@ Documented learnings from the workflow implementation:
 
 ```ts
 // Setup
-export { setupAuthMoost, type SetupAuthMoostOptions }
-export { setupAuthWorkflows, type AuthWorkflowsOptions }
-export { MoostAuthConfig, type ResolvedAuthCookieConfig }
-export { MoostAuthWorkflowConfig, type ResolvedAuthWorkflowsConfig }
-export {
-  DEFAULT_RECOVERY_TOKEN_TTL_MS,
-  DEFAULT_INVITE_TOKEN_TTL_MS,
-  DEFAULT_MFA_CODE_TTL_MS,
-}
+export { setupAuthMoost, type SetupAuthMoostOptions };
+export { setupAuthWorkflows, type AuthWorkflowsOptions };
+export { MoostAuthConfig, type ResolvedAuthCookieConfig };
+export { MoostAuthWorkflowConfig, type ResolvedAuthWorkflowsConfig };
+export { DEFAULT_RECOVERY_TOKEN_TTL_MS, DEFAULT_INVITE_TOKEN_TTL_MS, DEFAULT_MFA_CODE_TTL_MS };
 
 // Composables + decorators
-export { useAuth, type AuthBindings }
-export { Public }
+export { useAuth, type AuthBindings };
+export { Public };
 
 // Guard (auto-applied by setupAuthMoost; export for testing)
-export { authGuardInterceptor }
+export { authGuardInterceptor };
 
 // Controllers
-export { AuthController }              // subclass for non-username userId mapping
+export { AuthController }; // subclass for non-username userId mapping
 export {
-  LoginWorkflow,    type LoginWfCtx,
-  RecoveryWorkflow, type RecoveryWfCtx,
-  InviteWorkflow,   type InviteWfCtx,
+  LoginWorkflow,
+  type LoginWfCtx,
+  RecoveryWorkflow,
+  type RecoveryWfCtx,
+  InviteWorkflow,
+  type InviteWfCtx,
   parseInviteRoles,
-}
+};
 
 // Email outlet
-export { createAuthEmailOutlet }
+export { createAuthEmailOutlet };
 
 // Cookie + token helpers (rarely used directly)
-export { buildLoginResponse, clearAuthCookies, writeAuthCookies, cookieAttrs }
-export { extractAccessToken }
+export { buildLoginResponse, clearAuthCookies, writeAuthCookies, cookieAttrs };
+export { extractAccessToken };
 
 // Re-exports from @aoothjs/auth for ergonomic single-import
 export type {
-  AuthContext, IssueResult,
-  AuthEmailEvent, AuthEmailKind, BuildMagicLinkUrl, EmailSender, MagicLinkKind,
-}
-export { generateMagicLinkToken }
+  AuthContext,
+  IssueResult,
+  AuthEmailEvent,
+  AuthEmailKind,
+  BuildMagicLinkUrl,
+  EmailSender,
+  MagicLinkKind,
+};
+export { generateMagicLinkToken };
 
 // DTOs
 export type {
-  AuthLoginBody, AuthLoginResponse, AuthOkResponse,
-  AuthRefreshBody, AuthLogoutBody, AuthPasswordChangeBody,
-}
+  AuthLoginBody,
+  AuthLoginResponse,
+  AuthOkResponse,
+  AuthRefreshBody,
+  AuthLogoutBody,
+  AuthPasswordChangeBody,
+};
 
 // Form metadata sub-export
 export {
-  LoginCredentialsForm, MfaCodeForm, EmailIdentifierForm,
-  SetPasswordForm, InviteForm,
-} from "@aoothjs/auth-moost/atscript"
+  LoginCredentialsForm,
+  MfaCodeForm,
+  EmailIdentifierForm,
+  SetPasswordForm,
+  InviteForm,
+} from "@aoothjs/auth-moost/atscript";
 ```

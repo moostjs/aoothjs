@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  applyArbacGuardGlobally,
   Arbac,
   ArbacAction,
   ArbacAuthorize,
@@ -36,11 +37,17 @@ describe("@aoothjs/arbac-moost", () => {
     await expect(Promise.resolve(provider.getUserId())).rejects.toBeInstanceOf(Error);
   });
 
-  it("exports arbacAuthorizeInterceptor as a TInterceptorDef", () => {
+  it("exports arbacAuthorizeInterceptor as a moost auth-guard def", () => {
     expect(arbacAuthorizeInterceptor).toBeDefined();
     expect(typeof arbacAuthorizeInterceptor).toBe("object");
     expect(typeof arbacAuthorizeInterceptor.before).toBe("function");
     expect(arbacAuthorizeInterceptor.priority).toBeDefined();
+    // swagger-readable transport metadata marker
+    expect(arbacAuthorizeInterceptor.__authTransports).toEqual({});
+  });
+
+  it("exports applyArbacGuardGlobally helper", () => {
+    expect(typeof applyArbacGuardGlobally).toBe("function");
   });
 
   it("exports decorator factories that return functions", () => {

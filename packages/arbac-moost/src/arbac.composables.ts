@@ -16,12 +16,20 @@ import { ArbacUserProvider } from "./user.provider";
  */
 const arbacScopesKey = key<unknown[] | undefined>("arbac.scopes");
 
+// getOne/getOneComposite/removeComposite are AsDbController's HTTP-shape splits
+// of the canonical CRUD ops `one` / `remove`.
+function normalizeAutoCrudMethod(method: string): string {
+  if (method === "getOne" || method === "getOneComposite") return "one";
+  if (method === "removeComposite") return "remove";
+  return method;
+}
+
 interface ArbacBindings {
   getScopes: <TScope extends object>() => TScope[] | undefined;
   setScopes: <TScope extends object>(scope: TScope[] | undefined) => void;
-  evaluate: <TScope extends object>(opts: {
-    resource: string;
-    action: string;
+  evaluate: <TScope extends object>(opts?: {
+    resource?: string;
+    action?: string;
   }) => Promise<{ allowed: boolean; scopes?: TScope[]; userId: string }>;
   resource: string;
   action: string;
@@ -46,23 +54,6 @@ export const useArbac = defineWook((ctx: EventContext): ArbacBindings => {
     ctx.set(arbacScopesKey, scope);
   };
 
-  const evaluate = async <TScope extends object>(opts: {
-    resource: string;
-    action: string;
-  }): Promise<{ allowed: boolean; scopes?: TScope[]; userId: string }> => {
-    const [user, arbac] = (await Promise.all([
-      cc.instantiate(ArbacUserProvider),
-      cc.instantiate(MoostArbac),
-    ])) as [ArbacUserProvider, MoostArbac<object, TScope>];
-    const userId = await user.getUserId();
-    const result = await arbac.evaluate(opts, {
-      id: userId,
-      roles: await user.getRoles(userId),
-      attrs: (id: string) => user.getAttrs(id),
-    });
-    return { ...result, userId };
-  };
-
   const cMeta = cc.getControllerMeta<TArbacMeta>();
   const mMeta = cc.getMethodMeta<TArbacMeta>();
 
@@ -71,8 +62,44 @@ export const useArbac = defineWook((ctx: EventContext): ArbacBindings => {
     cMeta?.arbacResourceId ||
     cMeta?.id ||
     getConstructor(cc.getController()).name;
-  const action = mMeta?.arbacActionId || mMeta?.id || cc.getMethod() || "";
+  const action =
+    mMeta?.arbacActionId ||
+    (mMeta as { atscript_db_action?: { name?: string } } | undefined)?.atscript_db_action?.name ||
+    mMeta?.id ||
+    normalizeAutoCrudMethod(cc.getMethod() ?? "");
   const isPublic = mMeta?.arbacPublic || cMeta?.arbacPublic || false;
+
+  const evaluate = async <TScope extends object>(opts?: {
+    resource?: string;
+    action?: string;
+  }): Promise<{ allowed: boolean; scopes?: TScope[]; userId: string }> => {
+    const effectiveResource = opts?.resource || resource;
+    const effectiveAction = opts?.action || action;
+    if (!effectiveResource) {
+      throw new Error(
+        "useArbac().evaluate(): `resource` is required — could not be resolved from controller/method metadata. Pass it explicitly.",
+      );
+    }
+    if (!effectiveAction) {
+      throw new Error(
+        "useArbac().evaluate(): `action` is required — could not be resolved from controller/method metadata. Pass it explicitly.",
+      );
+    }
+    const [user, arbac] = (await Promise.all([
+      cc.instantiate(ArbacUserProvider),
+      cc.instantiate(MoostArbac),
+    ])) as [ArbacUserProvider, MoostArbac<object, TScope>];
+    const userId = await user.getUserId();
+    const result = await arbac.evaluate(
+      { resource: effectiveResource, action: effectiveAction },
+      {
+        id: userId,
+        roles: await user.getRoles(userId),
+        attrs: (id: string) => user.getAttrs(id),
+      },
+    );
+    return { ...result, userId };
+  };
 
   return {
     getScopes,

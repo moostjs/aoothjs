@@ -141,7 +141,7 @@ export class Arbac<TUserAttrs extends object, TScope extends object> {
             if (!userAttrs) {
               userAttrs = typeof user.attrs === "function" ? await user.attrs(user.id) : user.attrs;
             }
-            scopes.push(rule.scope(userAttrs));
+            scopes.push(rule.scope(userAttrs, String(user.id)));
           }
         }
       }

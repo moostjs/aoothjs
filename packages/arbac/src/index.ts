@@ -6,6 +6,13 @@ export type { RoleBuilder, TPrivilegeFunction } from "./define-role";
 export { canAccess, canCrud, definePrivilege } from "./define-privilege";
 
 export {
+  tableActionPrivilege,
+  tableActionsPrivilege,
+  tableReadPrivilege,
+  tableWritePrivilege,
+} from "./db-privileges";
+
+export {
   getProjectionMode,
   isFieldAllowed,
   restrictProjection,
