@@ -1,5 +1,6 @@
 import {
   canAccess,
+  type ControlGate,
   defineRole,
   tableActionsPrivilege,
   tableReadPrivilege,
@@ -9,13 +10,22 @@ import type { ArbacDbScope, UserAttrs } from "./attrs"
 import { PROJ_TASK_MEMBER, PROJ_USER_MEMBER } from "./projections"
 import { tenantFilter, tenantSet } from "./scopes"
 
+const memberControls: Record<string, ControlGate> = {
+  $groupBy: false,
+  $having: false,
+}
+
 export const memberRole = defineRole<UserAttrs, ArbacDbScope>()
   .id("member")
   .name("Contributor")
   .describe("Tenant-scoped reads via project membership; act on assigned tasks; own comments")
   .use(
     tableReadPrivilege<UserAttrs, ArbacDbScope>("users", {
-      scope: (attrs) => ({ filter: tenantFilter(attrs), projection: PROJ_USER_MEMBER }),
+      scope: (attrs) => ({
+        filter: tenantFilter(attrs),
+        projection: PROJ_USER_MEMBER,
+        controls: memberControls,
+      }),
     }),
     // Owner-self branch deliberately spans tenants so the UNION test can observe broadening.
     tableReadPrivilege<UserAttrs, ArbacDbScope>("projects", {
@@ -26,6 +36,7 @@ export const memberRole = defineRole<UserAttrs, ArbacDbScope>()
             { ownerUsername: userId },
           ],
         },
+        controls: memberControls,
       }),
     }),
     tableReadPrivilege<UserAttrs, ArbacDbScope>("tasks", {
@@ -35,6 +46,7 @@ export const memberRole = defineRole<UserAttrs, ArbacDbScope>()
           $or: [{ creatorUsername: userId }, { assigneeUsername: userId }],
         },
         projection: PROJ_TASK_MEMBER,
+        controls: memberControls,
       }),
     }),
     tableActionsPrivilege<UserAttrs, ArbacDbScope>("tasks", ["markDone", "markInProgress"], {
@@ -54,7 +66,7 @@ export const memberRole = defineRole<UserAttrs, ArbacDbScope>()
       }),
     }),
     tableReadPrivilege<UserAttrs, ArbacDbScope>("comments", {
-      scope: (attrs) => ({ filter: tenantFilter(attrs) }),
+      scope: (attrs) => ({ filter: tenantFilter(attrs), controls: memberControls }),
     }),
     tableActionsPrivilege<UserAttrs, ArbacDbScope>("comments", ["insert", "update", "remove"], {
       scope: (attrs, userId) => ({
@@ -65,6 +77,7 @@ export const memberRole = defineRole<UserAttrs, ArbacDbScope>()
     tableReadPrivilege<UserAttrs, ArbacDbScope>("documents", {
       scope: (attrs) => ({
         filter: { ...tenantFilter(attrs), classification: { $ne: "confidential" } },
+        controls: memberControls,
       }),
     }),
     canAccess<UserAttrs, ArbacDbScope>("auth", "handover.trigger"),

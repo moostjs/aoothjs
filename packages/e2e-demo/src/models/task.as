@@ -1,3 +1,6 @@
+import { Tenant } from './tenant'
+import { Project } from './project'
+
 @db.table 'tasks'
 @db.http.path '/tasks'
 export interface Task {
@@ -6,12 +9,14 @@ export interface Task {
     id: string
 
     @meta.required
+    @db.rel.FK
     @db.index.plain 'tasks_tenant_idx'
-    tenantId: string
+    tenantId: Tenant.id
 
     @meta.required
+    @db.rel.FK
     @db.index.plain 'tasks_project_idx'
-    projectId: string
+    projectId: Project.id
 
     @meta.required
     @expect.maxLength 200

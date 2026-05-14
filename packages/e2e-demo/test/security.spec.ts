@@ -638,71 +638,6 @@ describe("SEC — TOTP attacks", () => {
   })
 })
 
-describe("SEC — DoS / input attacks", () => {
-  let app: TestApp
-  beforeAll(async () => {
-    app = await buildTestApp()
-  })
-  afterAll(async () => {
-    await app.close()
-  })
-
-  it("SEC-20 — recursive payload: deeply nested JSON does not 500 / OOM", async () => {
-    let nested = "0"
-    for (let i = 0; i < 200; i++) nested = `{"a":${nested}}`
-    const res = await app.fetch("/auth/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: nested,
-    })
-    expect(res.status).toBeGreaterThanOrEqual(400)
-    expect(res.status).toBeLessThan(500)
-  })
-
-  it("SEC-21 — large body (10MB) yields 4xx (not OOM)", async () => {
-    const big = "x".repeat(10 * 1024 * 1024)
-    const body = JSON.stringify({ username: "anyone", password: big })
-    const res = await app.fetch("/auth/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body,
-    })
-    expect(res.status).toBeGreaterThanOrEqual(400)
-    expect(res.status).toBeLessThan(500)
-  })
-
-  it("SEC-22 — SQL injection via filter values is treated as a literal title", async () => {
-    const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_dave)
-    const inj = encodeURIComponent("' OR 1; DROP TABLE tasks --")
-    const res = await fetch(`/tasks/query?title=${inj}`)
-    expect(res.status).toBe(200)
-    const rows = (await res.json()) as TaskRow[]
-    expect(rows).toEqual([])
-    const allCount = await fetch("/tasks/query?$count=true")
-    const total = (await allCount.json()) as number
-    expect(total).toBe(app.fixtures.tasks.tenantA.length)
-  })
-
-  it("SEC-23 — XSS in stored field: persisted as-is; rendering is consumer concern", async () => {
-    const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_alice)
-    const payload = "<script>alert(1)</script>"
-    const taskId = app.fixtures.tasks.tenantA[0]
-    const res = await fetch("/comments", {
-      method: "POST",
-      json: {
-        taskId,
-        body: payload,
-      },
-    })
-    expect([200, 201]).toContain(res.status)
-    const inserted = (await res.json()) as { insertedId: string }
-    const row = (await dbFindOne(app, "comments", { id: inserted.insertedId })) as {
-      body?: string
-    }
-    expect(row.body).toBe(payload)
-  })
-})
-
 describe("SEC — documented limitations", () => {
   let app: TestApp
   beforeAll(async () => {
@@ -710,24 +645,6 @@ describe("SEC — documented limitations", () => {
   })
   afterAll(async () => {
     await app.close()
-  })
-
-  it("SEC-31 — CSRF surface: no CSRF middleware enforced; sameSite cookies are consumer responsibility", async () => {
-    const alice = app.fixtures.users.t1_alice
-    const login = await app.fetch("/auth/login", {
-      method: "POST",
-      json: { username: alice.username, password: alice.password },
-    })
-    expectOk(login)
-    const setCookie = login.headers.get("set-cookie")
-    expect(setCookie).toBeTruthy()
-    expect(String(setCookie).toLowerCase()).toContain("samesite=lax")
-
-    const tokens = (await login.json()) as { accessToken: string }
-    const noCsrfHeader = await app.authedFetch(tokens.accessToken)("/auth/status", {
-      method: "GET",
-    })
-    expect(noCsrfHeader.status).toBe(200)
   })
 
   it("SEC-32 — denylist memory: cleanup() purges expired entries", async () => {

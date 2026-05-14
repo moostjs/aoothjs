@@ -8,15 +8,17 @@
  */
 
 import type { TAtscriptTypeObject, TAtscriptTypeComplex, TAtscriptTypeFinal, TAtscriptTypeArray, TAtscriptAnnotatedType, TMetadataMap, Validator, TValidatorOptions } from "@atscript/typescript/utils"
+import { Tenant } from "./tenant.as"
+import { Task } from "./task.as"
 
 /**
  * Atscript interface **Comment**
- * @see {@link ./comment.as:3:18}
+ * @see {@link ./comment.as:6:18}
  */
 export declare class Comment {
   id: string
-  tenantId: string
-  taskId: string
+  tenantId: string /* id */
+  taskId: string /* id */
   authorUsername: string
   body: string
   createdAt: number /* timestamp */
@@ -30,16 +32,16 @@ export declare class Comment {
   static toExampleData?: () => any
   static __flat: {
     "id": string
-    "tenantId": string
-    "taskId": string
+    "tenantId": string /* id */
+    "taskId": string /* id */
     "authorUsername": string
     "body": string
     "createdAt": number /* timestamp */
   }
   static __ownProps: {
     "id": string
-    "tenantId": string
-    "taskId": string
+    "tenantId": string /* id */
+    "taskId": string /* id */
     "authorUsername": string
     "body": string
     "createdAt": number /* timestamp */

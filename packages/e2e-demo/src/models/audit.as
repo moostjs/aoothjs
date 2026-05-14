@@ -1,3 +1,5 @@
+import { Tenant } from './tenant'
+
 @db.table 'audit_log'
 @db.http.path '/audit'
 export interface AuditEntry {
@@ -6,8 +8,9 @@ export interface AuditEntry {
     id: string
 
     @meta.required
+    @db.rel.FK
     @db.index.plain 'audit_tenant_idx'
-    tenantId: string
+    tenantId: Tenant.id
 
     @meta.required
     @expect.maxLength 128

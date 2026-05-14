@@ -1,4 +1,6 @@
 import { AoothArbacUserCredentials } from '@aoothjs/arbac-moost/atscript/models'
+import { Tenant } from './tenant'
+import { Department } from './department'
 
 @db.table 'users'
 @db.http.path '/users'
@@ -9,12 +11,12 @@ export interface DemoUser extends AoothArbacUserCredentials {
 
     @arbac.attribute
     @meta.required
-    @expect.maxLength 64
-    tenantId: string
+    @db.rel.FK
+    tenantId: Tenant.id
 
     @arbac.attribute
-    @expect.maxLength 64
-    departmentId?: string
+    @db.rel.FK
+    departmentId?: Department.id
 
     @expect.maxLength 128
     email?: string

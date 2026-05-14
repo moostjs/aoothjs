@@ -88,6 +88,12 @@ export async function seedAll(handle: AppHandle): Promise<SeedFixtures> {
     tables.tenants.insertOne({ name: "Globex", plan: "enterprise" }),
   )
 
+  // Synthetic sentinel tenant so `_super` (`tenantId: '_global'`) satisfies
+  // the FK declared in `user.as`. The superadmin role's scope is `none`, so
+  // this row is never queried by tenant-scoped business logic; it exists
+  // purely to keep PRAGMA foreign_keys happy on insert.
+  await tables.tenants.insertOne({ id: "_global", name: "_global", plan: "free" } as never)
+
   const deptA = await seedDepartments(handle, tenantAId)
   const deptB = await seedDepartments(handle, tenantBId)
 

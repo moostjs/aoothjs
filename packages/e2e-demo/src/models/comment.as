@@ -1,3 +1,6 @@
+import { Tenant } from './tenant'
+import { Task } from './task'
+
 @db.table 'comments'
 @db.http.path '/comments'
 export interface Comment {
@@ -6,11 +9,13 @@ export interface Comment {
     id: string
 
     @meta.required
-    tenantId: string
+    @db.rel.FK
+    tenantId: Tenant.id
 
     @meta.required
+    @db.rel.FK
     @db.index.plain 'comments_task_idx'
-    taskId: string
+    taskId: Task.id
 
     @meta.required
     @expect.maxLength 128

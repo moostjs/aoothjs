@@ -9,15 +9,17 @@
 
 import type { TAtscriptTypeObject, TAtscriptTypeComplex, TAtscriptTypeFinal, TAtscriptTypeArray, TAtscriptAnnotatedType, TMetadataMap, Validator, TValidatorOptions } from "@atscript/typescript/utils"
 import { AoothArbacUserCredentials } from "@aoothjs/arbac-moost/atscript/models.as"
+import { Tenant } from "./tenant.as"
+import { Department } from "./department.as"
 
 /**
  * Atscript interface **DemoUser**
- * @see {@link ./user.as:5:18}
+ * @see {@link ./user.as:7:18}
  */
 export declare class DemoUser extends AoothArbacUserCredentials {
   id: string
-  tenantId: string
-  departmentId?: string
+  tenantId: string /* id */
+  departmentId?: string /* id */
   email?: string
   secretNotes?: string
   createdAt: number /* timestamp */
@@ -52,8 +54,8 @@ export declare class DemoUser extends AoothArbacUserCredentials {
     "mfa.autoSend": boolean
     "roles": string[]
     "id": string
-    "tenantId": string
-    "departmentId"?: string
+    "tenantId": string /* id */
+    "departmentId"?: string /* id */
     "email"?: string
     "secretNotes"?: string
     "createdAt": number /* timestamp */
@@ -81,8 +83,8 @@ export declare class DemoUser extends AoothArbacUserCredentials {
     "mfa.autoSend": boolean
     "roles": string[]
     "id": string
-    "tenantId": string
-    "departmentId"?: string
+    "tenantId": string /* id */
+    "departmentId"?: string /* id */
     "email"?: string
     "secretNotes"?: string
     "createdAt": number /* timestamp */
@@ -93,7 +95,7 @@ export declare class DemoUser extends AoothArbacUserCredentials {
 
 /**
  * Atscript interface **AssignRolesForm**
- * @see {@link ./user.as:29:18}
+ * @see {@link ./user.as:31:18}
  */
 export declare class AssignRolesForm {
   roles: string[]
@@ -109,7 +111,7 @@ export declare class AssignRolesForm {
 
 /**
  * Atscript interface **LockForm**
- * @see {@link ./user.as:34:18}
+ * @see {@link ./user.as:36:18}
  */
 export declare class LockForm {
   reason: string

@@ -8,17 +8,19 @@
  */
 
 import type { TAtscriptTypeObject, TAtscriptTypeComplex, TAtscriptTypeFinal, TAtscriptTypeArray, TAtscriptAnnotatedType, TMetadataMap, Validator, TValidatorOptions } from "@atscript/typescript/utils"
+import { Tenant } from "./tenant.as"
+import { Department } from "./department.as"
 
 /**
  * Atscript interface **Project**
- * @see {@link ./project.as:3:18}
+ * @see {@link ./project.as:6:18}
  */
 export declare class Project {
   id: string
-  tenantId: string
+  tenantId: string /* id */
   name: string
   ownerUsername: string
-  departmentId?: string
+  departmentId?: string /* id */
   visibility: "public" | "team" | "private"
   secretBudget?: number
   createdAt: number /* timestamp */
@@ -32,20 +34,20 @@ export declare class Project {
   static toExampleData?: () => any
   static __flat: {
     "id": string
-    "tenantId": string
+    "tenantId": string /* id */
     "name": string
     "ownerUsername": string
-    "departmentId"?: string
+    "departmentId"?: string /* id */
     "visibility": "public" | "team" | "private"
     "secretBudget"?: number
     "createdAt": number /* timestamp */
   }
   static __ownProps: {
     "id": string
-    "tenantId": string
+    "tenantId": string /* id */
     "name": string
     "ownerUsername": string
-    "departmentId"?: string
+    "departmentId"?: string /* id */
     "visibility": "public" | "team" | "private"
     "secretBudget"?: number
     "createdAt": number /* timestamp */

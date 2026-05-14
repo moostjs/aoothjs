@@ -1,3 +1,6 @@
+import { Tenant } from './tenant'
+import { Department } from './department'
+
 @db.table 'projects'
 @db.http.path '/projects'
 export interface Project {
@@ -6,8 +9,9 @@ export interface Project {
     id: string
 
     @meta.required
+    @db.rel.FK
     @db.index.plain 'projects_tenant_idx'
-    tenantId: string
+    tenantId: Tenant.id
 
     @meta.required
     @expect.maxLength 200
@@ -17,7 +21,8 @@ export interface Project {
     @expect.maxLength 128
     ownerUsername: string
 
-    departmentId?: string
+    @db.rel.FK
+    departmentId?: Department.id
 
     @meta.required
     @ui.form.options 'public', 'public'

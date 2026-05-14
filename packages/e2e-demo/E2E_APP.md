@@ -486,6 +486,25 @@ export const WRITEABLE_USER_FIELDS_ADMIN = ['email','tenantId','departmentId','s
 
 `roles` is NOT writeable via plain PATCH /users — only via `users.assignRoles` action.
 
+### 5.7b Per-role `controls` gating (Uniquery `$with` / `$groupBy` / `$having`)
+
+Each `ArbacDbScope` may carry a `controls?: Record<string, ControlGate>` map.
+`AsArbacDbController.validateControls` enforces it on every read endpoint
+(`/query`, `/pages`, `/one` where applicable). Per-role gates union additively
+across roles (silence wins → allowed).
+
+| Role          | $with    | $groupBy | $having | Notes                                              |
+| ------------- | -------- | -------- | ------- | -------------------------------------------------- |
+| superadmin    | silent   | silent   | silent  | no `controls` map → fully allowed                  |
+| admin         | silent   | silent   | silent  | no `controls` map → fully allowed                  |
+| manager       | silent   | silent   | silent  | no `controls` map → fully allowed                  |
+| member        | silent   | denied   | denied  | `{ $groupBy: false, $having: false }` on all reads |
+| viewer        | denied   | denied   | denied  | `{ $with: false, $groupBy: false, $having: false }` on all reads |
+| guest         | silent   | silent   | silent  | restricted by filter/projection alone              |
+
+Multi-role union: e.g. `t1_alice` is `[member, viewer]`. Member is silent on
+`$with` (allowed); viewer denies it. Union → silence wins → `$with` is allowed.
+
 ### 5.8 Cross-role-union test cases
 
 To exercise union semantics, the seed creates:

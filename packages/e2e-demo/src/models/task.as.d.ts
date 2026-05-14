@@ -8,15 +8,17 @@
  */
 
 import type { TAtscriptTypeObject, TAtscriptTypeComplex, TAtscriptTypeFinal, TAtscriptTypeArray, TAtscriptAnnotatedType, TMetadataMap, Validator, TValidatorOptions } from "@atscript/typescript/utils"
+import { Tenant } from "./tenant.as"
+import { Project } from "./project.as"
 
 /**
  * Atscript interface **Task**
- * @see {@link ./task.as:3:18}
+ * @see {@link ./task.as:6:18}
  */
 export declare class Task {
   id: string
-  tenantId: string
-  projectId: string
+  tenantId: string /* id */
+  projectId: string /* id */
   title: string
   creatorUsername: string
   status: "open" | "in_progress" | "done"
@@ -37,8 +39,8 @@ export declare class Task {
   static toExampleData?: () => any
   static __flat: {
     "id": string
-    "tenantId": string
-    "projectId": string
+    "tenantId": string /* id */
+    "projectId": string /* id */
     "title": string
     "creatorUsername": string
     "status": "open" | "in_progress" | "done"
@@ -52,8 +54,8 @@ export declare class Task {
   }
   static __ownProps: {
     "id": string
-    "tenantId": string
-    "projectId": string
+    "tenantId": string /* id */
+    "projectId": string /* id */
     "title": string
     "creatorUsername": string
     "status": "open" | "in_progress" | "done"
@@ -71,7 +73,7 @@ export declare class Task {
 
 /**
  * Atscript interface **NewTaskForm**
- * @see {@link ./task.as:54:18}
+ * @see {@link ./task.as:59:18}
  */
 export declare class NewTaskForm {
   projectId: string
@@ -92,7 +94,7 @@ export declare class NewTaskForm {
 
 /**
  * Atscript interface **AssignTaskForm**
- * @see {@link ./task.as:76:18}
+ * @see {@link ./task.as:81:18}
  */
 export declare class AssignTaskForm {
   assigneeUsername: string

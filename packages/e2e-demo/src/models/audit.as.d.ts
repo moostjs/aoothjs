@@ -8,14 +8,15 @@
  */
 
 import type { TAtscriptTypeObject, TAtscriptTypeComplex, TAtscriptTypeFinal, TAtscriptTypeArray, TAtscriptAnnotatedType, TMetadataMap, Validator, TValidatorOptions } from "@atscript/typescript/utils"
+import { Tenant } from "./tenant.as"
 
 /**
  * Atscript interface **AuditEntry**
- * @see {@link ./audit.as:3:18}
+ * @see {@link ./audit.as:5:18}
  */
 export declare class AuditEntry {
   id: string
-  tenantId: string
+  tenantId: string /* id */
   actor: string
   action: string
   resource: string
@@ -32,7 +33,7 @@ export declare class AuditEntry {
   static toExampleData?: () => any
   static __flat: {
     "id": string
-    "tenantId": string
+    "tenantId": string /* id */
     "actor": string
     "action": string
     "resource": string
@@ -42,7 +43,7 @@ export declare class AuditEntry {
   }
   static __ownProps: {
     "id": string
-    "tenantId": string
+    "tenantId": string /* id */
     "actor": string
     "action": string
     "resource": string

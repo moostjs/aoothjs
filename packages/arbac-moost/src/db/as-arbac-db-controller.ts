@@ -1,5 +1,10 @@
-import { mergeScopeFilters, restrictProjection, unionProjections } from "@aoothjs/arbac";
-import type { TProjection, TScopeFilter } from "@aoothjs/arbac";
+import {
+  mergeScopeFilters,
+  restrictProjection,
+  unionControlsPolicy,
+  unionProjections,
+} from "@aoothjs/arbac";
+import type { ControlGate, TProjection, TScopeFilter } from "@aoothjs/arbac";
 import type { TCrudOp, TMetaResponse } from "@atscript/db";
 import { AsDbController } from "@atscript/moost-db";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
@@ -14,6 +19,24 @@ export interface ArbacDbScope {
   projection?: TProjection;
   set?: Record<string, unknown>;
   allowedFields?: string[];
+  /**
+   * Per-control gates for Uniquery URL controls (`$with`, `$groupBy`, `$having`, …).
+   * Evaluated by {@link AsArbacDbController.validateControls} before query execution;
+   * a violation throws `HttpError(403)`.
+   *
+   * Per-key semantics ({@link ControlGate}):
+   *   - absent / `true` — allowed.
+   *   - `false` — denied entirely.
+   *   - `readonly string[]` — whitelist (e.g. `{ $with: ['comments'] }` allows
+   *     `?$with=comments`, rejects `?$with=tasks`). Supported only for `$with`
+   *     (relation names) and `$groupBy` (column names) in v1.
+   *
+   * Across roles, gates union additively (silence wins) via {@link unionControlsPolicy}.
+   *
+   * @example `{ controls: { $with: false } }` — disable $with for this role.
+   * @example `{ controls: { $with: ['comments', 'owner'] } }` — restrict relations.
+   */
+  controls?: Record<string, ControlGate>;
 }
 
 const DENY_FILTER: TScopeFilter = { $or: [] };
@@ -64,6 +87,33 @@ export class AsArbacDbController<
       return projection;
     }
     return restrictProjection(projection ?? {}, allowed);
+  }
+
+  /**
+   * Enforce per-role `ArbacDbScope.controls` gates against the parsed Uniquery
+   * controls of a request. Runs after the base validator (which checks the
+   * controls DTO shape) and BEFORE the query/aggregation pipeline executes.
+   *
+   * `transformFilter` runs first on every read endpoint and caches the
+   * evaluated scopes via `arbac.setScopes(...)`, so we read those scopes
+   * directly here without re-evaluating ARBAC.
+   *
+   * On a violation we throw `HttpError(403)`. moost-db's `query` / `pages` /
+   * `getOne` handlers do NOT wrap `validateParsed` in try/catch, so the
+   * thrown error bubbles to moost which translates it to a 403 response.
+   */
+  protected validateControls(
+    controls: Record<string, unknown>,
+    type: "query" | "pages" | "getOne",
+  ): string | undefined {
+    const baseErr = super.validateControls(controls, type);
+    if (baseErr) return baseErr;
+
+    const scopes = useArbac().getScopes<ArbacDbScope>() ?? [];
+    if (scopes.length === 0) return undefined;
+
+    enforceControlsPolicy(unionControlsPolicy(scopes), controls);
+    return undefined;
   }
 
   protected async applyMetaOverlay(meta: TMetaResponse): Promise<TMetaResponse> {
@@ -130,6 +180,78 @@ function collectActionMetaByName(): Map<string, ActionResolutionMeta> {
   }
 
   return map;
+}
+
+/**
+ * Enforce a per-control policy against a parsed Uniquery `controls` map.
+ *
+ * Throws `HttpError(403)` on the first violation. Pure (no DI) so it is
+ * trivially unit-testable; `validateControls` wires it up to the controller's
+ * cached scopes.
+ *
+ * Semantics per gate (see {@link ControlGate}):
+ *   - `true` (or absent — dropped by `unionControlsPolicy`): allow.
+ *   - `false`: deny if the control is used at all.
+ *   - `readonly string[]`: allow only the listed values; reject any other.
+ *
+ * "Used" means the control key is present AND non-empty (an empty array is
+ * treated as not used, matching how the parser leaves missing controls).
+ */
+export function enforceControlsPolicy(
+  policy: Record<string, ControlGate>,
+  controls: Record<string, unknown>,
+): void {
+  if (Object.keys(policy).length === 0) return;
+  for (const [key, gate] of Object.entries(policy)) {
+    const used = controls[key];
+    if (used === undefined || used === null) continue;
+    if (Array.isArray(used) && used.length === 0) continue;
+
+    if (gate === false) {
+      throw new HttpError(403, `Control "${key}" is not allowed for your role`);
+    }
+    if (Array.isArray(gate)) {
+      const usedValues = extractUsedControlValues(key, used);
+      for (const v of usedValues) {
+        if (!gate.includes(v)) {
+          throw new HttpError(403, `Control "${key}=${v}" is not allowed for your role`);
+        }
+      }
+    }
+    // gate === true: dropped by union helper; defensive no-op here.
+  }
+}
+
+/**
+ * Extract the set of "named values" from a Uniquery control payload, for
+ * use against a whitelist gate.
+ *
+ * Currently supported (matches `WHITELISTABLE_CONTROLS` in `unionControlsPolicy`):
+ *   - `$with` — array of `{ name, … }` objects (per `TypedWithRelation`,
+ *     see `@uniqu/core` parser at `parseWithSegment`); we extract `name`.
+ *     Bare strings are tolerated for forward compatibility.
+ *   - `$groupBy` — array of column names (strings). Returned as-is.
+ *
+ * For unknown controls we return an empty array; the caller then enforces
+ * `false`-only semantics (controlled by `unionControlsPolicy`'s whitelist
+ * gate, which throws if a non-whitelistable control receives a string[]).
+ */
+export function extractUsedControlValues(key: string, value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  if (key === "$with") {
+    const out: string[] = [];
+    for (const entry of value) {
+      if (typeof entry === "string") out.push(entry);
+      else if (typeof (entry as { name?: unknown } | null)?.name === "string") {
+        out.push((entry as { name: string }).name);
+      }
+    }
+    return out;
+  }
+  if (key === "$groupBy") {
+    return value.filter((x): x is string => typeof x === "string");
+  }
+  return [];
 }
 
 export function applyAllowedFieldsAndSet(data: unknown, scopes: ArbacDbScope[]): unknown {

@@ -1,3 +1,5 @@
+import { Tenant } from './tenant'
+
 @db.table 'departments'
 @db.http.path '/departments'
 export interface Department {
@@ -6,9 +8,9 @@ export interface Department {
     id: string
 
     @meta.required
-    @expect.maxLength 64
+    @db.rel.FK
     @db.index.plain 'departments_tenant_idx'
-    tenantId: string
+    tenantId: Tenant.id
 
     @meta.required
     @expect.maxLength 64

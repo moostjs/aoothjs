@@ -7,7 +7,8 @@ async function main(): Promise<void> {
   const { tables } = handle.appDb
 
   const checks: Array<[string, number, number]> = [
-    ["tenants", await tables.tenants.count({ filter: {} }), 2],
+    // 2 real + 1 synthetic `_global` sentinel for the `_super` FK.
+    ["tenants", await tables.tenants.count({ filter: {} }), 3],
     ["departments", await tables.departments.count({ filter: {} }), 6],
     ["users", await tables.users.count({ filter: {} }), 10],
     ["projects", await tables.projects.count({ filter: {} }), 10],

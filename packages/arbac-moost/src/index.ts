@@ -6,6 +6,7 @@ export type {
   TArbacRule,
 } from "@aoothjs/arbac-core";
 export { Arbac, arbacPatternToRegex } from "@aoothjs/arbac-core";
+export type { ControlGate } from "@aoothjs/arbac";
 
 export * from "./arbac.composables";
 export * from "./arbac.decorator";

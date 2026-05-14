@@ -5,14 +5,20 @@ Output of running the e2e-demo suite against the current `@aoothjs/*` packages o
 ## Suite stats
 
 ```
-Test Files  15  (4 failed, 11 passed)
-Tests      137  (5 failed, 7 skipped, 125 passed)
-Duration   8.12s
+e2e-demo:                Test Files  16  (4 failed, 12 passed)
+                         Tests      130  (5 failed, 9 skipped, 116 passed)
+                         Duration    8.15s
+
+@aoothjs/arbac:          Test Files   8  (8 passed)
+                         Tests      126  (126 passed)
+
+@aoothjs/arbac-moost:    Test Files   8  (8 passed)
+                         Tests       79  (79 passed)
 ```
 
 - **5 failing tests** are tagged `BUG-SHAPE: <one-line>` — they assert the documented contract; failures pinpoint real library bugs. Each will flip to passing once the underlying bug is fixed.
-- **7 skipped tests** are documented gaps (capability genuinely missing or out-of-scope).
-- **125 passing tests** validate working behavior across auth REST, workflows, ARBAC isolation/projection/actions/writes, `$controls`, attack vectors, and DX.
+- **9 skipped tests** are documented gaps (capability genuinely missing or out-of-scope, including 2 skips caused by an upstream moost-db quirk on `$groupBy` queries — see CAPABILITIES section).
+- **116 passing tests** validate working behavior across auth REST, workflows, ARBAC isolation/projection/actions/writes/control-gating, attack vectors, and DX. The unit suites in `@aoothjs/arbac` and `@aoothjs/arbac-moost` add 205 passing tests covering scope helpers and integration hooks.
 
 Story coverage by domain:
 
@@ -26,9 +32,61 @@ Story coverage by domain:
 | META (meta overlay) | 4 | 0 | 0 | 4 |
 | ACT (per-action gating) | 7 | 0 | 0 | 7 |
 | WRITE (allowedFields + set) | 6 | 0 | 0 | 6 |
-| CTRL (`$controls`) | 16 | 1 | 1 | 18 |
-| SEC (attack vectors) | 31 | 1 | 0 | 32 |
+| CTRL (`$controls` scope preservation) | 7 | 1 | 1 | 9 |
+| CTRL-EX (per-control gating — NEW feature) | 6 | 0 | 2 | 8 |
+| SEC (attack vectors) | 26 | 1 | 0 | 27 |
 | DX (developer ergonomics) | 8 | 0 | 0 | 8 |
+
+CTRL/SEC counts shrank in the e2e-demo refocus pass: stories that test other repos' concerns (moost-db / @uniqu/core operator semantics + pagination shape; @wooksjs body-parser DoS; @atscript/db SQL parameterization; render-side XSS; CSRF middleware) were removed because they belong in those repos' suites. CTRL-EX-* is a new story group covering the per-control gating feature added in Phase 3 — see the Capabilities section.
+
+---
+
+## Capabilities added (post-initial-audit)
+
+### CAP-1 — Per-control scope gating (`ArbacDbScope.controls`)
+
+A new field on `ArbacDbScope` lets a role's scope deny or whitelist specific Uniquery `$controls`:
+
+```ts
+interface ArbacDbScope {
+  filter?: TScopeFilter
+  projection?: TProjection
+  set?: Record<string, unknown>
+  allowedFields?: string[]
+  controls?: Record<string, ControlGate>   // NEW
+}
+
+type ControlGate = boolean | readonly string[]
+// false: deny entirely (403); string[]: whitelist values; true / absent: allow
+```
+
+Multi-role union semantics match the rest of arbac (additive — silence in any role grants full allow). Currently whitelisted on `$with` and `$groupBy`; boolean-only for the rest.
+
+**Demo wiring:** viewer denies `{$with: false, $groupBy: false, $having: false}`; member denies `{$groupBy: false, $having: false}` (silence on `$with` → allowed). Manager / admin / superadmin are silent on all controls (full allow).
+
+**Repro:** [packages/e2e-demo/test/controls-policy.spec.ts](packages/e2e-demo/test/controls-policy.spec.ts) — CTRL-EX-01..08 (6 active, 2 skipped on the moost-db `$groupBy` quirk).
+
+**Implementation:** [packages/arbac/src/scope/controls.ts](packages/arbac/src/scope/controls.ts) (`unionControlsPolicy` helper), [packages/arbac-moost/src/db/as-arbac-db-controller.ts](packages/arbac-moost/src/db/as-arbac-db-controller.ts) (`validateControls` override + `enforceControlsPolicy` + `extractUsedControlValues`).
+
+### CAP-2 — `@db.rel.FK` foreign keys on demo models
+
+Phase 2 added FK chain-ref types on every cross-table reference (`tenantId`, `departmentId`, `projectId`, `taskId`). Better-sqlite3's `PRAGMA foreign_keys = ON` is unconditional in atscript-db's adapter, so the seed insert order is now FK-validated at runtime. A synthetic `_global` tenant row exists to satisfy the `_super` user's `tenantId='_global'` sentinel under FK enforcement.
+
+Nav props (`@db.rel.to` / `@db.rel.from`) were intentionally NOT declared because `@atscript/moost-db@0.1.75`'s `@TableController` typing has a variance issue with non-empty `NavType`. This is an upstream typing limitation (moost-db, not aoothjs) — when fixed, declaring nav props will unblock real `$with` relation expansion in the demo and let the CTRL-EX-* whitelist tests cover `$with: ['comments']` cases.
+
+---
+
+## Upstream quirks (NOT aoothjs bugs — documented for context)
+
+### QUIRK-1 — moost-db's `$groupBy` short-circuit bypasses `validateControls`
+
+`@atscript/moost-db@0.1.75`'s `query(url)` handler dispatches to `aggregate(...)` whenever `controls.$groupBy?.length > 0`, BEFORE running `validateParsed` (which is what calls `validateControls`). Result: the `validateControls` hook is never invoked for `$groupBy` queries — per-control gating cannot fire on aggregate paths. Affects CTRL-EX-02 (viewer denies `$groupBy`) and CTRL-EX-05 (multi-role both deny `$groupBy`); both are skipped with a moost-db-quirk comment.
+
+Whitelist + deny semantics for `$groupBy` ARE covered by 18 unit tests in `@aoothjs/arbac/src/scope/controls.spec.ts`. The e2e gap is upstream.
+
+### QUIRK-2 — moost-db's `@TableController` variance issue with nav props
+
+See CAP-2 above. Adding `@db.rel.to` / `@db.rel.from` annotations to `.as` models breaks `@TableController(table)`'s type inference because `AtscriptDbTable<T-with-nav>` is no longer assignable to bare `AtscriptDbTable`. Forces consumers to either skip nav props (current demo state) or add `as never` casts at every controller declaration. Upstream fix needed.
 
 ---
 
@@ -178,7 +236,6 @@ Build-time globals (`__DYE_YELLOW__`, etc.) referenced as runtime values in the 
 | GAP-4 | CTRL-05 | skip | Same — `$with` requires DB relations. |
 | GAP-5 | ISO-09 | skip | Tenant cascade is documented as out-of-scope for ARBAC; arbac doesn't manage cascade. |
 | GAP-6 | SEC-29 | documented | No library-level "preserve at least one admin" invariant. Admins can self-demote. Add an org-level invariant if undesired. |
-| GAP-7 | SEC-31 | documented | No CSRF middleware. Consumers configure `sameSite: 'strict'` or add their own CSRF tokens. |
 | GAP-8 | SEC-11 | documented | Magic links ARE the credential. Defense is email delivery security; nothing in-band can prevent cross-user replay if the link is exfiltrated. |
 | GAP-9 | SEC-18 | documented | TOTP replay within a 30s period is RFC-6238-compliant; not a gap to "fix". |
 | GAP-10 | DX-08 | documented | `setupAuthMoost({ endpoints: false })` causes `/auth/login` to return 401 (auth guard runs first) instead of 404 (route miss). DX wart, not a security issue. Worth a JSDoc note on `endpoints` option. |
@@ -229,7 +286,6 @@ In addition to the 125 passing tests, the broader observations:
 - **Custom workflows** with persistent state via `AsWfStore` resume across server restart (WF-CUSTOM-02 confirmed).
 - **Lockout** correctly triggers on failed-login threshold and auto-unlocks after duration (AUTH-05).
 - **JWT alg=none / forged tokens** are rejected (AUTH-14, SEC-07).
-- **SQL injection** via filter values is parameterized away (SEC-22).
 - **Mass-assignment** via `roles: ['admin']` in body is filtered by `allowedFields` (WRITE-01, SEC-06).
 - **Login enumeration resistance** is uniform between unknown user and wrong password (AUTH-02 / AUTH-03).
 - **Recovery enumeration resistance** is uniform — unknown email returns the same shape as known email (WF-RECOVERY-02).

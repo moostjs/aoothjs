@@ -1,8 +1,14 @@
-import { defineRole, tableReadPrivilege } from "@aoothjs/arbac"
+import { type ControlGate, defineRole, tableReadPrivilege } from "@aoothjs/arbac"
 
 import type { ArbacDbScope, UserAttrs } from "./attrs"
 import { PROJ_TASK_VIEWER, PROJ_USER_VIEWER } from "./projections"
 import { tenantFilter } from "./scopes"
+
+const viewerControls: Record<string, ControlGate> = {
+  $with: false,
+  $groupBy: false,
+  $having: false,
+}
 
 export const viewerRole = defineRole<UserAttrs, ArbacDbScope>()
   .id("viewer")
@@ -10,22 +16,32 @@ export const viewerRole = defineRole<UserAttrs, ArbacDbScope>()
   .describe("Read-only on the tenant with the heaviest projection mask")
   .use(
     tableReadPrivilege<UserAttrs, ArbacDbScope>("users", {
-      scope: (attrs) => ({ filter: tenantFilter(attrs), projection: PROJ_USER_VIEWER }),
+      scope: (attrs) => ({
+        filter: tenantFilter(attrs),
+        projection: PROJ_USER_VIEWER,
+        controls: viewerControls,
+      }),
     }),
     tableReadPrivilege<UserAttrs, ArbacDbScope>("projects", {
       scope: (attrs) => ({
         filter: { ...tenantFilter(attrs), visibility: { $ne: "private" } },
+        controls: viewerControls,
       }),
     }),
     tableReadPrivilege<UserAttrs, ArbacDbScope>("tasks", {
-      scope: (attrs) => ({ filter: tenantFilter(attrs), projection: PROJ_TASK_VIEWER }),
+      scope: (attrs) => ({
+        filter: tenantFilter(attrs),
+        projection: PROJ_TASK_VIEWER,
+        controls: viewerControls,
+      }),
     }),
     tableReadPrivilege<UserAttrs, ArbacDbScope>("comments", {
-      scope: (attrs) => ({ filter: tenantFilter(attrs) }),
+      scope: (attrs) => ({ filter: tenantFilter(attrs), controls: viewerControls }),
     }),
     tableReadPrivilege<UserAttrs, ArbacDbScope>("documents", {
       scope: (attrs) => ({
         filter: { ...tenantFilter(attrs), classification: "public" },
+        controls: viewerControls,
       }),
     }),
   )

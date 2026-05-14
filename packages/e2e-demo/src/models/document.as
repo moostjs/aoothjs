@@ -1,3 +1,6 @@
+import { Tenant } from './tenant'
+import { Project } from './project'
+
 @db.table 'documents'
 @db.http.path '/documents'
 export interface Document {
@@ -6,8 +9,9 @@ export interface Document {
     id: string
 
     @meta.required
+    @db.rel.FK
     @db.index.plain 'documents_tenant_idx'
-    tenantId: string
+    tenantId: Tenant.id
 
     @meta.required
     @expect.maxLength 200
@@ -23,7 +27,8 @@ export interface Document {
     @expect.maxLength 128
     ownerUsername: string
 
-    projectId?: string
+    @db.rel.FK
+    projectId?: Project.id
 
     @expect.maxLength 65000
     body?: string
