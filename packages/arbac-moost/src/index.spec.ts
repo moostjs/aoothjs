@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  applyArbacGuardGlobally,
   Arbac,
   ArbacAction,
   ArbacAuthorize,
@@ -46,10 +45,6 @@ describe("@aoothjs/arbac-moost", () => {
     expect(arbacAuthorizeInterceptor.__authTransports).toEqual({});
   });
 
-  it("exports applyArbacGuardGlobally helper", () => {
-    expect(typeof applyArbacGuardGlobally).toBe("function");
-  });
-
   it("exports decorator factories that return functions", () => {
     expect(typeof ArbacAuthorize).toBe("function");
     expect(typeof ArbacScopes).toBe("function");
@@ -82,6 +77,13 @@ describe("@aoothjs/arbac-moost", () => {
     // Any re-introduction of the alias would silently add a second way to do the same
     // thing and break the hard-cut contract — this test catches that regression.
     expect("CurrentArbacScopes" in indexModule).toBe(false);
+  });
+
+  it("applyArbacGuardGlobally is NOT exported (hard-cut removal — ISSUE-7)", () => {
+    // The wrapper was deleted; callers must use app.applyGlobalInterceptors(arbacAuthorizeInterceptor)
+    // directly. Keeping this test ensures no one silently re-introduces the helper and
+    // re-creates an abstraction that adds zero value over the bare Moost API.
+    expect("applyArbacGuardGlobally" in indexModule).toBe(false);
   });
 
   it("ArbacResource decorator writes resource id metadata", () => {

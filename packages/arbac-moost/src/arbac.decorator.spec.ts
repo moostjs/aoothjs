@@ -14,7 +14,6 @@ import {
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
-  applyArbacGuardGlobally,
   ArbacAction,
   ArbacAuthorize,
   arbacAuthorizeInterceptor,
@@ -114,7 +113,7 @@ async function bootstrap(opts: { user: TestUserProvider; global?: boolean }): Pr
     createProvideRegistry([TestUserProvider, () => opts.user], [MoostArbac, () => arbac]),
   );
   if (opts.global) {
-    applyArbacGuardGlobally(app);
+    app.applyGlobalInterceptors(arbacAuthorizeInterceptor);
   }
   const http = new MoostHttp();
   app.adapter(http);
@@ -145,14 +144,14 @@ describe("arbacAuthorizeInterceptor (auth-guard primitive)", () => {
     expect(found).toBeDefined();
   });
 
-  it("applyArbacGuardGlobally registers the interceptor on the Moost app", () => {
+  it("app.applyGlobalInterceptors registers arbacAuthorizeInterceptor", () => {
     const app = new Moost();
     expect(
       (app as unknown as { interceptors: { handler: unknown }[] }).interceptors.find(
         (i) => i.handler === arbacAuthorizeInterceptor,
       ),
     ).toBeUndefined();
-    applyArbacGuardGlobally(app);
+    app.applyGlobalInterceptors(arbacAuthorizeInterceptor);
     const found = (app as unknown as { interceptors: { handler: unknown }[] }).interceptors.find(
       (i) => i.handler === arbacAuthorizeInterceptor,
     );
@@ -231,7 +230,7 @@ describe("arbac authorize HTTP integration", () => {
         [MoostArbac, () => arbac],
       ),
     );
-    applyArbacGuardGlobally(app);
+    app.applyGlobalInterceptors(arbacAuthorizeInterceptor);
     const http = new MoostHttp();
     app.adapter(http);
     app.registerControllers(GetOneController);

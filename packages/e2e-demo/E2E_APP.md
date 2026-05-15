@@ -368,8 +368,8 @@ The shape that flows into every scope function. Derived from `@arbac.attribute` 
 
 ```ts
 export interface UserAttrs {
-    tenantId: string;
-    departmentId?: string;
+  tenantId: string;
+  departmentId?: string;
 }
 ```
 
@@ -382,6 +382,7 @@ export interface UserAttrs {
 Six roles. Each entry shows the privilege factory used and the scope it computes. Rows show resource permissions. Columns: `R` = read (query/pages/one/meta), `W` = write (insert/update/replace/remove), `A` = custom actions. Field projection given where applicable.
 
 ### Legend
+
 - `tenantFilter(attrs) = { tenantId: attrs.tenantId }`
 - `selfOwner(attrs, uid) = { ownerUsername: uid }`
 - `selfAssignee(attrs, uid) = { assigneeUsername: uid }`
@@ -393,16 +394,16 @@ Six roles. Each entry shows the privilege factory used and the scope it computes
 
 ### 5.1 superadmin
 
-| Resource     | Privilege                                      | Scope                       |
-| ------------ | ---------------------------------------------- | --------------------------- |
-| tenants      | `tableWritePrivilege("tenants")`               | none (universe)             |
-| users        | `tableWritePrivilege("users")`                 | none                        |
-| departments  | `tableWritePrivilege("departments")`           | none                        |
-| projects     | `tableWritePrivilege("projects")`              | none                        |
-| tasks        | `tableWritePrivilege("tasks")` + actions       | none                        |
-| comments     | `tableWritePrivilege("comments")`              | none                        |
-| documents    | `tableWritePrivilege("documents")`             | none                        |
-| audit        | `tableReadPrivilege("audit")`                  | none                        |
+| Resource    | Privilege                                | Scope           |
+| ----------- | ---------------------------------------- | --------------- |
+| tenants     | `tableWritePrivilege("tenants")`         | none (universe) |
+| users       | `tableWritePrivilege("users")`           | none            |
+| departments | `tableWritePrivilege("departments")`     | none            |
+| projects    | `tableWritePrivilege("projects")`        | none            |
+| tasks       | `tableWritePrivilege("tasks")` + actions | none            |
+| comments    | `tableWritePrivilege("comments")`        | none            |
+| documents   | `tableWritePrivilege("documents")`       | none            |
+| audit       | `tableReadPrivilege("audit")`            | none            |
 
 Custom actions on `tasks`: `new`, `markDone`, `markInProgress`, `archive`, `assign`, `delete`. Custom actions on `users`: `assignRoles`, `lock`, `unlock`.
 
@@ -410,78 +411,92 @@ Custom actions on `tasks`: `new`, `markDone`, `markInProgress`, `archive`, `assi
 
 Tenant-scoped god mode within own tenant; cannot touch other tenants; cannot modify roles via PATCH `/users` (role changes only via the dedicated `assignRoles` action).
 
-| Resource     | Privilege                                                                              | Scope filter                                                                                       |
-| ------------ | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| tenants      | `tableReadPrivilege("tenants", { scope: a => ({ filter: { id: a.tenantId } }) })`      | own tenant only                                                                                    |
-| users        | `tableWritePrivilege("users", { scope: a => ({ filter: tenantFilter(a), allowedFields: WRITEABLE_USER_FIELDS_ADMIN, projection: PROJ_USER_ADMIN }) })` | tenant + whitelist (excl. `roles`) + projection masking `password.history`/`mfa.value`             |
-| departments  | `tableWritePrivilege("departments", { scope: a => ({ filter: tenantFilter(a), set: { tenantId: a.tenantId } }) })`                 |                                                                                                    |
-| projects     | `tableWritePrivilege("projects", { scope: a => ({ filter: tenantFilter(a), set: { tenantId: a.tenantId } }) })`                    |                                                                                                    |
-| tasks        | `tableWritePrivilege("tasks", { scope: a => ({ filter: tenantFilter(a) }) })` + `tableActionsPrivilege("tasks", ALL_TASK_ACTIONS, ...)` | per-action scopes force `tenantId`/`creatorUsername` on `new`                                      |
-| comments     | `tableWritePrivilege("comments", { scope: a => ({ filter: tenantFilter(a) }) })`       |                                                                                                    |
-| documents    | `tableWritePrivilege("documents", { scope: a => ({ filter: tenantFilter(a) }) })`      |                                                                                                    |
-| audit        | `tableReadPrivilege("audit", { scope: a => ({ filter: tenantFilter(a) }) })`            |                                                                                                    |
-| auth         | `canAccess("auth", "admin.invite")`                                                    | enables `/wf/admin` for `auth.invite`                                                              |
-| users action | `tableActionsPrivilege("users", ["assignRoles", "lock", "unlock"], { scope: ... })`     | tenant-scoped                                                                                       |
+| Resource     | Privilege                                                                                                                                              | Scope filter                                                                           |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
+| tenants      | `tableReadPrivilege("tenants", { scope: a => ({ filter: { id: a.tenantId } }) })`                                                                      | own tenant only                                                                        |
+| users        | `tableWritePrivilege("users", { scope: a => ({ filter: tenantFilter(a), allowedFields: WRITEABLE_USER_FIELDS_ADMIN, projection: PROJ_USER_ADMIN }) })` | tenant + whitelist (excl. `roles`) + projection masking `password.history`/`mfa.value` |
+| departments  | `tableWritePrivilege("departments", { scope: a => ({ filter: tenantFilter(a), set: { tenantId: a.tenantId } }) })`                                     |                                                                                        |
+| projects     | `tableWritePrivilege("projects", { scope: a => ({ filter: tenantFilter(a), set: { tenantId: a.tenantId } }) })`                                        |                                                                                        |
+| tasks        | `tableWritePrivilege("tasks", { scope: a => ({ filter: tenantFilter(a) }) })` + `tableActionsPrivilege("tasks", ALL_TASK_ACTIONS, ...)`                | per-action scopes force `tenantId`/`creatorUsername` on `new`                          |
+| comments     | `tableWritePrivilege("comments", { scope: a => ({ filter: tenantFilter(a) }) })`                                                                       |                                                                                        |
+| documents    | `tableWritePrivilege("documents", { scope: a => ({ filter: tenantFilter(a) }) })`                                                                      |                                                                                        |
+| audit        | `tableReadPrivilege("audit", { scope: a => ({ filter: tenantFilter(a) }) })`                                                                           |                                                                                        |
+| auth         | `canAccess("auth", "admin.invite")`                                                                                                                    | enables `/wf/admin` for `auth.invite`                                                  |
+| users action | `tableActionsPrivilege("users", ["assignRoles", "lock", "unlock"], { scope: ... })`                                                                    | tenant-scoped                                                                          |
 
 ### 5.3 manager
 
 Read across own tenant; write within own department. Custom task actions on tasks in department.
 
-| Resource     | Privilege                                                                              | Scope                                                                                              |
-| ------------ | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| users        | `tableReadPrivilege("users", { scope: a => ({ filter: tenantFilter(a), projection: PROJ_USER_MANAGER }) })` | tenant + projection excluding `password.*`, `mfa.value`, `account.*`                               |
-| departments  | `tableReadPrivilege("departments", { scope: a => ({ filter: tenantFilter(a) }) })`     |                                                                                                    |
-| projects     | `tableReadPrivilege("projects", { scope: a => ({ filter: tenantFilter(a) }) })` + `tableActionsPrivilege("projects", ["update"], { scope: a => ({ filter: { ...tenantFilter(a), departmentId: a.departmentId } }) })` | read all in tenant; write own dept                                                                 |
-| tasks        | `tableReadPrivilege("tasks", { scope: a => ({ filter: tenantFilter(a) }) })` + `tableActionsPrivilege("tasks", ["insert","update","markDone","markInProgress","archive","assign","new"], { scope: a => ({ filter: { ...tenantFilter(a), ... }, set: { tenantId: a.tenantId } }) })` | read all in tenant; write department-scoped tasks                                                  |
-| comments     | `tableReadPrivilege("comments")` + `tableActionsPrivilege("comments", ["insert","update"], { scope: (a,u) => ({ filter: { ...tenantFilter(a), authorUsername: u }, set: { tenantId: a.tenantId, authorUsername: u } }) })` | read tenant; write own only                                                                        |
-| documents    | `tableReadPrivilege("documents", { scope: a => ({ filter: { ...tenantFilter(a), classification: { $in: ["public","internal"] } } }) })` | tenant + non-confidential                                                                          |
+| Resource    | Privilege                                                                                                                                                                                                                                                                           | Scope                                                                |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| users       | `tableReadPrivilege("users", { scope: a => ({ filter: tenantFilter(a), projection: PROJ_USER_MANAGER }) })`                                                                                                                                                                         | tenant + projection excluding `password.*`, `mfa.value`, `account.*` |
+| departments | `tableReadPrivilege("departments", { scope: a => ({ filter: tenantFilter(a) }) })`                                                                                                                                                                                                  |                                                                      |
+| projects    | `tableReadPrivilege("projects", { scope: a => ({ filter: tenantFilter(a) }) })` + `tableActionsPrivilege("projects", ["update"], { scope: a => ({ filter: { ...tenantFilter(a), departmentId: a.departmentId } }) })`                                                               | read all in tenant; write own dept                                   |
+| tasks       | `tableReadPrivilege("tasks", { scope: a => ({ filter: tenantFilter(a) }) })` + `tableActionsPrivilege("tasks", ["insert","update","markDone","markInProgress","archive","assign","new"], { scope: a => ({ filter: { ...tenantFilter(a), ... }, set: { tenantId: a.tenantId } }) })` | read all in tenant; write department-scoped tasks                    |
+| comments    | `tableReadPrivilege("comments")` + `tableActionsPrivilege("comments", ["insert","update"], { scope: (a,u) => ({ filter: { ...tenantFilter(a), authorUsername: u }, set: { tenantId: a.tenantId, authorUsername: u } }) })`                                                          | read tenant; write own only                                          |
+| documents   | `tableReadPrivilege("documents", { scope: a => ({ filter: { ...tenantFilter(a), classification: { $in: ["public","internal"] } } }) })`                                                                                                                                             | tenant + non-confidential                                            |
 
 ### 5.4 member
 
 The narrow contributor role. Tenant-scoped reads via project membership (modeled as: tasks where caller is creator OR assignee, comments where caller is author, projects where caller is owner OR public visibility).
 
-| Resource     | Privilege                                                                              | Scope                                                                                              |
-| ------------ | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| users        | `tableReadPrivilege("users", { scope: a => ({ filter: tenantFilter(a), projection: PROJ_USER_MEMBER }) })` | tenant + projection limited to `{id, username, email, departmentId}`                               |
-| projects     | `tableReadPrivilege("projects", { scope: (a,u) => ({ filter: { $or: [{ ...tenantFilter(a), visibility: { $in: ["public","team"] } }, { ownerUsername: u }] } }) })` | OR of (tenant + visible) and (owned)                                                                |
-| tasks        | `tableReadPrivilege("tasks", { scope: (a,u) => ({ filter: { ...tenantFilter(a), $or: [{ creatorUsername: u }, { assigneeUsername: u }] }, projection: PROJ_TASK_MEMBER }) })` + `tableActionsPrivilege("tasks", ["markDone","markInProgress","new"], { scope: (a,u) => ({ filter: { ...tenantFilter(a), assigneeUsername: u }, set: { tenantId: a.tenantId, creatorUsername: u, assigneeUsername: u, status: "open" } }) })` | read assigned/created; act on assigned; new task auto-assigns to self                              |
-| comments     | `tableReadPrivilege("comments", { scope: a => ({ filter: tenantFilter(a) }) })` + `tableActionsPrivilege("comments", ["insert","update","remove"], { scope: (a,u) => ({ filter: { ...tenantFilter(a), authorUsername: u }, set: { tenantId: a.tenantId, authorUsername: u } }) })` | read tenant; write own                                                                              |
-| documents    | `tableReadPrivilege("documents", { scope: a => ({ filter: { ...tenantFilter(a), classification: { $ne: "confidential" } } }) })` | tenant + non-confidential                                                                          |
-| auth         | `canAccess("auth", "handover.trigger")`                                                | gates custom workflow                                                                              |
+| Resource  | Privilege                                                                                                                                                                                                                                                                                                                                                                                                                    | Scope                                                                 |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| users     | `tableReadPrivilege("users", { scope: a => ({ filter: tenantFilter(a), projection: PROJ_USER_MEMBER }) })`                                                                                                                                                                                                                                                                                                                   | tenant + projection limited to `{id, username, email, departmentId}`  |
+| projects  | `tableReadPrivilege("projects", { scope: (a,u) => ({ filter: { $or: [{ ...tenantFilter(a), visibility: { $in: ["public","team"] } }, { ownerUsername: u }] } }) })`                                                                                                                                                                                                                                                          | OR of (tenant + visible) and (owned)                                  |
+| tasks     | `tableReadPrivilege("tasks", { scope: (a,u) => ({ filter: { ...tenantFilter(a), $or: [{ creatorUsername: u }, { assigneeUsername: u }] }, projection: PROJ_TASK_MEMBER }) })` + `tableActionsPrivilege("tasks", ["markDone","markInProgress","new"], { scope: (a,u) => ({ filter: { ...tenantFilter(a), assigneeUsername: u }, set: { tenantId: a.tenantId, creatorUsername: u, assigneeUsername: u, status: "open" } }) })` | read assigned/created; act on assigned; new task auto-assigns to self |
+| comments  | `tableReadPrivilege("comments", { scope: a => ({ filter: tenantFilter(a) }) })` + `tableActionsPrivilege("comments", ["insert","update","remove"], { scope: (a,u) => ({ filter: { ...tenantFilter(a), authorUsername: u }, set: { tenantId: a.tenantId, authorUsername: u } }) })`                                                                                                                                           | read tenant; write own                                                |
+| documents | `tableReadPrivilege("documents", { scope: a => ({ filter: { ...tenantFilter(a), classification: { $ne: "confidential" } } }) })`                                                                                                                                                                                                                                                                                             | tenant + non-confidential                                             |
+| auth      | `canAccess("auth", "handover.trigger")`                                                                                                                                                                                                                                                                                                                                                                                      | gates custom workflow                                                 |
 
 ### 5.5 viewer
 
 Read-only on the tenant with the heaviest projection mask.
 
-| Resource     | Privilege                                                                              | Scope                                                                                              |
-| ------------ | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| users        | `tableReadPrivilege("users", { scope: a => ({ filter: tenantFilter(a), projection: PROJ_USER_VIEWER }) })` | only `{id, username, departmentId}` (no email, no secret notes, no password/mfa/account)            |
-| projects     | `tableReadPrivilege("projects", { scope: a => ({ filter: { ...tenantFilter(a), visibility: { $ne: "private" } } }) })` | tenant + non-private                                                                               |
-| tasks        | `tableReadPrivilege("tasks", { scope: a => ({ filter: tenantFilter(a), projection: PROJ_TASK_VIEWER }) })` | tenant; no `internalNotes`                                                                         |
-| comments     | `tableReadPrivilege("comments", { scope: a => ({ filter: tenantFilter(a) }) })`        |                                                                                                    |
-| documents    | `tableReadPrivilege("documents", { scope: a => ({ filter: { ...tenantFilter(a), classification: "public" } }) })` | only public                                                                                        |
+| Resource  | Privilege                                                                                                              | Scope                                                                                    |
+| --------- | ---------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| users     | `tableReadPrivilege("users", { scope: a => ({ filter: tenantFilter(a), projection: PROJ_USER_VIEWER }) })`             | only `{id, username, departmentId}` (no email, no secret notes, no password/mfa/account) |
+| projects  | `tableReadPrivilege("projects", { scope: a => ({ filter: { ...tenantFilter(a), visibility: { $ne: "private" } } }) })` | tenant + non-private                                                                     |
+| tasks     | `tableReadPrivilege("tasks", { scope: a => ({ filter: tenantFilter(a), projection: PROJ_TASK_VIEWER }) })`             | tenant; no `internalNotes`                                                               |
+| comments  | `tableReadPrivilege("comments", { scope: a => ({ filter: tenantFilter(a) }) })`                                        |                                                                                          |
+| documents | `tableReadPrivilege("documents", { scope: a => ({ filter: { ...tenantFilter(a), classification: "public" } }) })`      | only public                                                                              |
 
 ### 5.6 guest
 
 Login only; read own user record (for `/auth/status`).
 
-| Resource     | Privilege                                                                              | Scope                                                                                              |
-| ------------ | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| users        | `tableReadPrivilege("users", { scope: (a,u) => ({ filter: { username: u }, projection: PROJ_USER_SELF }) })` | self only; `{id, username, email}`                                                                 |
+| Resource | Privilege                                                                                                    | Scope                              |
+| -------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------------- |
+| users    | `tableReadPrivilege("users", { scope: (a,u) => ({ filter: { username: u }, projection: PROJ_USER_SELF }) })` | self only; `{id, username, email}` |
 
 ### 5.7 Field-projection constants
 
 ```ts
-export const PROJ_USER_ADMIN: TProjection      = { 'password.history': 0, 'mfa.methods': 0 };
-export const PROJ_USER_MANAGER: TProjection    = { password: 0, 'mfa.value': 0, account: 0, secretNotes: 0 };
-export const PROJ_USER_MEMBER: TProjection     = { id: 1, username: 1, email: 1, departmentId: 1 };
-export const PROJ_USER_VIEWER: TProjection     = { id: 1, username: 1, departmentId: 1 };
-export const PROJ_USER_SELF: TProjection       = { id: 1, username: 1, email: 1 };
+export const PROJ_USER_ADMIN: TProjection = { "password.history": 0, "mfa.methods": 0 };
+export const PROJ_USER_MANAGER: TProjection = {
+  password: 0,
+  "mfa.value": 0,
+  account: 0,
+  secretNotes: 0,
+};
+export const PROJ_USER_MEMBER: TProjection = { id: 1, username: 1, email: 1, departmentId: 1 };
+export const PROJ_USER_VIEWER: TProjection = { id: 1, username: 1, departmentId: 1 };
+export const PROJ_USER_SELF: TProjection = { id: 1, username: 1, email: 1 };
 
-export const PROJ_TASK_MEMBER: TProjection     = { internalNotes: 0 };
-export const PROJ_TASK_VIEWER: TProjection     = { internalNotes: 0 };
+export const PROJ_TASK_MEMBER: TProjection = { internalNotes: 0 };
+export const PROJ_TASK_VIEWER: TProjection = { internalNotes: 0 };
 
-export const WRITEABLE_USER_FIELDS_ADMIN = ['email','tenantId','departmentId','secretNotes','account.active','account.locked','mfa.defaultMethod','mfa.autoSend'];
+export const WRITEABLE_USER_FIELDS_ADMIN = [
+  "email",
+  "tenantId",
+  "departmentId",
+  "secretNotes",
+  "account.active",
+  "account.locked",
+  "mfa.defaultMethod",
+  "mfa.autoSend",
+];
 ```
 
 `roles` is NOT writeable via plain PATCH /users — only via `users.assignRoles` action.
@@ -493,14 +508,14 @@ Each `ArbacDbScope` may carry a `controls?: Record<string, ControlGate>` map.
 (`/query`, `/pages`, `/one` where applicable). Per-role gates union additively
 across roles (silence wins → allowed).
 
-| Role          | $with    | $groupBy | $having | Notes                                              |
-| ------------- | -------- | -------- | ------- | -------------------------------------------------- |
-| superadmin    | silent   | silent   | silent  | no `controls` map → fully allowed                  |
-| admin         | silent   | silent   | silent  | no `controls` map → fully allowed                  |
-| manager       | silent   | silent   | silent  | no `controls` map → fully allowed                  |
-| member        | silent   | denied   | denied  | `{ $groupBy: false, $having: false }` on all reads |
-| viewer        | denied   | denied   | denied  | `{ $with: false, $groupBy: false, $having: false }` on all reads |
-| guest         | silent   | silent   | silent  | restricted by filter/projection alone              |
+| Role       | $with  | $groupBy | $having | Notes                                                            |
+| ---------- | ------ | -------- | ------- | ---------------------------------------------------------------- |
+| superadmin | silent | silent   | silent  | no `controls` map → fully allowed                                |
+| admin      | silent | silent   | silent  | no `controls` map → fully allowed                                |
+| manager    | silent | silent   | silent  | no `controls` map → fully allowed                                |
+| member     | silent | denied   | denied  | `{ $groupBy: false, $having: false }` on all reads               |
+| viewer     | denied | denied   | denied  | `{ $with: false, $groupBy: false, $having: false }` on all reads |
+| guest      | silent | silent   | silent  | restricted by filter/projection alone                            |
 
 Multi-role union: e.g. `t1_alice` is `[member, viewer]`. Member is silent on
 `$with` (allowed); viewer denies it. Union → silence wins → `$with` is allowed.
@@ -533,14 +548,21 @@ export class HealthController {
   @Get()
   @Public()
   @ArbacPublic()
-  health(): { ok: true } { return { ok: true }; }
+  health(): { ok: true } {
+    return { ok: true };
+  }
 
   @Get("protected")
-  protected(): { user: string } { return { user: useAuth().getCurrentUserId() }; }
+  protected(): { user: string } {
+    return { user: useAuth().getCurrentUserId() };
+  }
 
   @Get("admin-only")
-  @ArbacResource("health") @ArbacAction("admin")
-  adminOnly(): { ok: true; user: string } { return { ok: true, user: useAuth().getCurrentUserId() }; }
+  @ArbacResource("health")
+  @ArbacAction("admin")
+  adminOnly(): { ok: true; user: string } {
+    return { ok: true, user: useAuth().getCurrentUserId() };
+  }
 }
 ```
 
@@ -612,6 +634,7 @@ Since the role matrix only grants read on `audit`, the writes are guarded by ARB
 ### 6.10 `wf-trigger.controller.ts`
 
 Two routes:
+
 - `POST /wf/public` — auth-Public + ARBAC-Public; allow-list = `["auth.login", "auth.recovery", "project.handover"]`. Magic-link resume via `?wfs=<token>`. (Handover resume token uses `?wfs=...` too.)
 - `POST /wf/admin` — protected. ARBAC `@ArbacResource("auth") @ArbacAction("admin.invite")`; allow-list = `["auth.invite"]`.
 
@@ -632,6 +655,7 @@ The audit table is **read-only via HTTP** — no role has write privilege; write
 ## 8. Workflows
 
 ### 8.1 Bundled (from `@aoothjs/auth-moost`)
+
 - `auth.login` (+ MFA branch)
 - `auth.recovery`
 - `auth.invite`
@@ -671,6 +695,7 @@ export class HandoverWorkflow {
 ```
 
 Why this workflow exists:
+
 - **Persistent state:** `selectTarget` + `confirm` data must survive through the email-out-and-back resume.
 - **Transient state:** after `commit`, the `wf_states` row must be purged.
 - **Outlets + email + magic link:** `notify` step writes a magic-link URL.
@@ -688,14 +713,24 @@ Two implementations, selected at boot:
 
 ```ts
 // console-email-sender.ts (default for `pnpm dev`)
-class ConsoleEmailSender implements EmailSender { async send(e) { console.log("[EMAIL]", e); } }
+class ConsoleEmailSender implements EmailSender {
+  async send(e) {
+    console.log("[EMAIL]", e);
+  }
+}
 
 // capture-email-sender.ts (default in tests)
 class CaptureEmailSender implements EmailSender {
   events: AuthEmailEvent[] = [];
-  async send(e: AuthEmailEvent) { this.events.push(e); }
-  drain(): AuthEmailEvent[] { return this.events.splice(0, this.events.length); }
-  next(filter?: (e: AuthEmailEvent) => boolean): AuthEmailEvent { /* wait until match or timeout */ }
+  async send(e: AuthEmailEvent) {
+    this.events.push(e);
+  }
+  drain(): AuthEmailEvent[] {
+    return this.events.splice(0, this.events.length);
+  }
+  next(filter?: (e: AuthEmailEvent) => boolean): AuthEmailEvent {
+    /* wait until match or timeout */
+  }
 }
 ```
 
@@ -709,9 +744,9 @@ class CaptureEmailSender implements EmailSender {
 // env.ts
 export const ENV = {
   PORT: Number(process.env.PORT ?? 3001),
-  DB_PATH: process.env.DB_PATH ?? ':memory:',   // tests default to in-memory
-  FRONTEND_URL: process.env.FRONTEND_URL ?? 'http://localhost:5173',
-  JWT_SECRET: process.env.JWT_SECRET ?? 'e2e-demo-secret-do-not-use-in-prod',
+  DB_PATH: process.env.DB_PATH ?? ":memory:", // tests default to in-memory
+  FRONTEND_URL: process.env.FRONTEND_URL ?? "http://localhost:5173",
+  JWT_SECRET: process.env.JWT_SECRET ?? "e2e-demo-secret-do-not-use-in-prod",
   ACCESS_TTL_MS: Number(process.env.ACCESS_TTL_MS ?? 60_000 * 60),
   REFRESH_TTL_MS: Number(process.env.REFRESH_TTL_MS ?? 30 * 24 * 60 * 60 * 1000),
   LOCKOUT_THRESHOLD: Number(process.env.LOCKOUT_THRESHOLD ?? 3),
@@ -735,7 +770,9 @@ export interface BuildAppOptions {
   env?: Partial<typeof ENV>;
 }
 
-export async function buildApp(opts: BuildAppOptions = {}): Promise<{ app: Moost; baseUrl: string; close: () => Promise<void> }> {
+export async function buildApp(
+  opts: BuildAppOptions = {},
+): Promise<{ app: Moost; baseUrl: string; close: () => Promise<void> }> {
   // 1. resolve env
   // 2. create DbSpace + sync tables
   // 3. wire AuthCredential, UserService, ArbacUserReader, EmailSender (default = capture in tests)
@@ -743,7 +780,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<{ app: Moost
   // 5. setupAuthMoost; setupAuthWorkflows
   // 6. replace registry for ArbacUserProvider
   // 7. registerControllers(...)
-  // 8. applyArbacGuardGlobally
+  // 8. app.applyGlobalInterceptors(arbacAuthorizeInterceptor)
   // 9. app.init()
   // 10. arbac.registerRole(...) for all roles
   // returns base URL (with chosen port) + close handle
@@ -778,6 +815,7 @@ Phase A — App scaffolding:
 2. **Step 2:** write all `.as` models. Run `pnpm gen:atscript` to verify they compile to `.as.d.ts`.
 3. **Step 3:** infra wiring (`db.ts`, `aooth.ts`, `wf-store.ts`, `email/*.ts`, `env.ts`). DB sync verified by a one-shot init.
 4. **Step 4:** role catalog under `src/roles/`. Per-role file + index. Verified by adding a smoke test that registers them on a `MoostArbac` instance.
+
 - **SIMPLIFY pass** after step 4.
 
 Phase B — App glue:
@@ -785,22 +823,29 @@ Phase B — App glue:
 5. **Step 5:** controllers (`src/controllers/*.ts`). Empty subclasses + custom actions per spec.
 6. **Step 6:** `handover.workflow.ts` + `wf-trigger.controller.ts` + `app.ts` factory + `main.ts`. Boots a real Moost app on a port; smoke-check via `curl /health`.
 7. **Step 7:** `seed.ts`. Verified by running `pnpm db:init` and inspecting row counts.
+
 - **SIMPLIFY pass** after step 7.
 
 Phase C — Tests:
 
 8. **Step 8:** `test/harness.ts` — `buildAppForTest({ emailSender })`, login helpers (`asAdmin()`, `asMember()`, ...), fetch helper that wires bearer.
-9. **Test A:** `auth.spec.ts` (AUTH-*).
+9. **Test A:** `auth.spec.ts` (AUTH-\*).
 10. **Test B:** workflow tests (`wf-login.spec.ts`, `wf-recovery.spec.ts`, `wf-invite.spec.ts`, `wf-handover.spec.ts`).
+
 - **SIMPLIFY pass.**
+
 11. **Test C:** `arbac-isolation.spec.ts` + `arbac-union.spec.ts`.
 12. **Test D:** `arbac-projection.spec.ts` + `arbac-meta.spec.ts`.
 13. **Test E:** `arbac-actions.spec.ts` + `arbac-write.spec.ts`.
 14. **Test F:** `controls.spec.ts`.
+
 - **SIMPLIFY pass.**
+
 15. **Test G:** `security.spec.ts` (the big one — may split by sub-area).
 16. **Test H:** `dx.spec.ts`.
+
 - **SIMPLIFY pass.**
+
 17. **Final:** run full suite. Capture failures, classify as **bug** (library issue) vs **gap** (missing feature) vs **test bug** (assertion wrong). Write a report.
 
 Each step delegated to a subagent with a verbose self-contained prompt and required skill loads.

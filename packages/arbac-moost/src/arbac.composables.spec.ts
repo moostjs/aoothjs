@@ -12,8 +12,8 @@ import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { useArbac } from "./arbac.composables";
 import {
-  applyArbacGuardGlobally,
   ArbacAction,
+  arbacAuthorizeInterceptor,
   ArbacResource,
   ArbacUserProvider,
   MoostArbac,
@@ -338,7 +338,7 @@ describe("useArbac integration: @DbAction('new') resolves to action 'new'", () =
     app.setProvideRegistry(
       createProvideRegistry([TestUserProvider, () => user], [MoostArbac, () => arbac]),
     );
-    applyArbacGuardGlobally(app);
+    app.applyGlobalInterceptors(arbacAuthorizeInterceptor);
     const http = new MoostHttp();
     app.adapter(http);
     app.registerControllers(TasksController);

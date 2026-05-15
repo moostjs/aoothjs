@@ -1,7 +1,6 @@
 import { current } from "@wooksjs/event-core";
 import type { TAuthGuardDef, TAuthTransportDeclaration } from "@moostjs/event-http";
 import { Authenticate, HttpError } from "@moostjs/event-http";
-import type { Moost } from "moost";
 import { defineBeforeInterceptor, Resolve, TInterceptorPriority, useLogger } from "moost";
 
 import { useArbac } from "./arbac.composables";
@@ -50,11 +49,6 @@ export const arbacAuthorizeInterceptor: TAuthGuardDef = Object.assign(
 
 /** Wrapped via `Authenticate` so `@moostjs/swagger` picks up the auth-guard metadata. */
 export const ArbacAuthorize = () => Authenticate(arbacAuthorizeInterceptor);
-
-/** Gate every route globally; pair with `@ArbacPublic()` for opt-out. */
-export function applyArbacGuardGlobally(app: Moost): void {
-  app.applyGlobalInterceptors(arbacAuthorizeInterceptor);
-}
 
 /**
  * Resolves the evaluated ARBAC scopes for the current event. Use as a
