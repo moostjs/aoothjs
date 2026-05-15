@@ -2,7 +2,7 @@ import type { TArbacRole, TArbacRule } from "@aoothjs/arbac-core";
 
 /**
  * A privilege function produces an array of rules when called.
- * Created by `definePrivilege()`, `canAccess()`, `canCrud()`, or manually.
+ * Created by `definePrivilege()` or manually.
  */
 export type TPrivilegeFunction<TUserAttrs, TScope> = () => TArbacRule<TUserAttrs, TScope>[];
 
@@ -36,8 +36,7 @@ export interface RoleBuilder<TUserAttrs, TScope> {
   deny(resource: string, action: string): RoleBuilder<TUserAttrs, TScope>;
   /**
    * Splice in rules from one or more privilege functions (see
-   * {@link definePrivilege}, {@link canAccess}, {@link canCrud}). Privileges
-   * are expanded inline in call order.
+   * {@link definePrivilege}). Privileges are expanded inline in call order.
    */
   use(...privileges: TPrivilegeFunction<TUserAttrs, TScope>[]): RoleBuilder<TUserAttrs, TScope>;
   /**
@@ -115,7 +114,7 @@ class RoleBuilderImpl<TUserAttrs, TScope> implements RoleBuilder<TUserAttrs, TSc
  * const editor = defineRole<MyAttrs, MyScope>()
  *   .id("editor")
  *   .name("Editor")
- *   .use(canCrud("articles"))
+ *   .use(allowTableWrite("articles"))
  *   .deny("articles", "publish")
  *   .build();
  */

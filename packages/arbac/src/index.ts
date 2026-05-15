@@ -3,14 +3,9 @@ export * from "@aoothjs/arbac-core";
 export { defineRole } from "./define-role";
 export type { RoleBuilder, TPrivilegeFunction } from "./define-role";
 
-export { canAccess, canCrud, definePrivilege } from "./define-privilege";
+export { definePrivilege } from "./define-privilege";
 
-export {
-  tableActionPrivilege,
-  tableActionsPrivilege,
-  tableReadPrivilege,
-  tableWritePrivilege,
-} from "./db-privileges";
+export { allowTableAction, allowTableRead, allowTableWrite } from "./db-privileges";
 
 export {
   getProjectionMode,

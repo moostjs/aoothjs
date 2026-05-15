@@ -1,24 +1,19 @@
-import {
-  defineRole,
-  tableActionsPrivilege,
-  tableReadPrivilege,
-  tableWritePrivilege,
-} from "@aoothjs/arbac"
+import { allowTableAction, allowTableRead, allowTableWrite, defineRole } from "@aoothjs/arbac";
 
-import type { ArbacDbScope, UserAttrs } from "./attrs"
+import type { ArbacDbScope, UserAttrs } from "./attrs";
 
 export const superadminRole = defineRole<UserAttrs, ArbacDbScope>()
   .id("superadmin")
   .name("Super Admin")
   .describe("Cross-tenant god mode; for ops & migration")
   .use(
-    tableWritePrivilege<UserAttrs, ArbacDbScope>("tenants"),
-    tableWritePrivilege<UserAttrs, ArbacDbScope>("users"),
-    tableActionsPrivilege<UserAttrs, ArbacDbScope>("users", ["assignRoles", "lock", "unlock"]),
-    tableWritePrivilege<UserAttrs, ArbacDbScope>("departments"),
-    tableWritePrivilege<UserAttrs, ArbacDbScope>("projects"),
-    tableWritePrivilege<UserAttrs, ArbacDbScope>("tasks"),
-    tableActionsPrivilege<UserAttrs, ArbacDbScope>("tasks", [
+    allowTableWrite<UserAttrs, ArbacDbScope>("tenants"),
+    allowTableWrite<UserAttrs, ArbacDbScope>("users"),
+    allowTableAction<UserAttrs, ArbacDbScope>("users", ["assignRoles", "lock", "unlock"]),
+    allowTableWrite<UserAttrs, ArbacDbScope>("departments"),
+    allowTableWrite<UserAttrs, ArbacDbScope>("projects"),
+    allowTableWrite<UserAttrs, ArbacDbScope>("tasks"),
+    allowTableAction<UserAttrs, ArbacDbScope>("tasks", [
       "new",
       "markDone",
       "markInProgress",
@@ -26,8 +21,8 @@ export const superadminRole = defineRole<UserAttrs, ArbacDbScope>()
       "assign",
       "delete",
     ]),
-    tableWritePrivilege<UserAttrs, ArbacDbScope>("comments"),
-    tableWritePrivilege<UserAttrs, ArbacDbScope>("documents"),
-    tableReadPrivilege<UserAttrs, ArbacDbScope>("audit"),
+    allowTableWrite<UserAttrs, ArbacDbScope>("comments"),
+    allowTableWrite<UserAttrs, ArbacDbScope>("documents"),
+    allowTableRead<UserAttrs, ArbacDbScope>("audit"),
   )
-  .build()
+  .build();

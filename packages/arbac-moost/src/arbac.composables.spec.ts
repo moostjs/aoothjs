@@ -95,6 +95,14 @@ class RemoveCompositeController {
 }
 
 @Controller()
+class MetaFormController {
+  @Get("a")
+  metaForm(@ResolvedAction() action?: string) {
+    return { action };
+  }
+}
+
+@Controller()
 class FooController {
   @Get("a")
   foo(@ResolvedAction() action?: string) {
@@ -151,27 +159,35 @@ async function bootResolver(controller: new () => unknown): Promise<MoostHttp> {
   return http;
 }
 
-describe("normalizeAutoCrudMethod (via useArbac action chain)", () => {
+describe("useArbac action — literal method name passthrough", () => {
   beforeEach(() => {
     clearGlobalWooks();
   });
 
-  it("maps getOne -> one", async () => {
+  it("resolves getOne as literal 'getOne'", async () => {
     const http = await bootResolver(GetOneController);
     const res = await http.request("/a");
-    expect(await readAction(res)).toBe("one");
+    expect(await readAction(res)).toBe("getOne");
   });
 
-  it("maps getOneComposite -> one", async () => {
+  it("resolves getOneComposite as literal 'getOneComposite'", async () => {
     const http = await bootResolver(GetOneCompositeController);
     const res = await http.request("/a");
-    expect(await readAction(res)).toBe("one");
+    expect(await readAction(res)).toBe("getOneComposite");
   });
 
-  it("maps removeComposite -> remove", async () => {
+  it("resolves removeComposite as literal 'removeComposite'", async () => {
     const http = await bootResolver(RemoveCompositeController);
     const res = await http.request("/a");
-    expect(await readAction(res)).toBe("remove");
+    expect(await readAction(res)).toBe("removeComposite");
+  });
+
+  it("resolves metaForm as literal 'metaForm' — NOT normalized to 'meta' (ISSUE-13)", async () => {
+    // normalizeAutoCrudMethod was deleted; metaForm must pass through unchanged
+    // so that allowTableRead's action list (which contains 'metaForm') matches.
+    const http = await bootResolver(MetaFormController);
+    const res = await http.request("/a");
+    expect(await readAction(res)).toBe("metaForm");
   });
 
   it("passes through arbitrary method names like 'foo'", async () => {
@@ -204,10 +220,10 @@ describe("useArbac action-resolution priority", () => {
     expect(await readAction(res)).toBe("methodId");
   });
 
-  it("falls back to normalized method when nothing else is set", async () => {
+  it("falls back to literal method name when nothing else is set", async () => {
     const http = await bootResolver(GetOneController);
     const res = await http.request("/a");
-    expect(await readAction(res)).toBe("one");
+    expect(await readAction(res)).toBe("getOne");
   });
 });
 

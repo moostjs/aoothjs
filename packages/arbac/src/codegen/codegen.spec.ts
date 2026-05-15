@@ -2,7 +2,6 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { TArbacRole } from "@aoothjs/arbac-core";
 
-import { canCrud } from "../define-privilege";
 import { defineRole } from "../define-role";
 import { extractResourceActions } from "./extract";
 import { generateResourceTypes } from "./generate";
@@ -179,7 +178,11 @@ describe("codegen integration with defineRole", () => {
   it("must extract and emit types end-to-end from real role builders", () => {
     const editor = defineRole()
       .id("editor")
-      .use(canCrud("articles"))
+      .allow("articles", "create")
+      .allow("articles", "read")
+      .allow("articles", "update")
+      .allow("articles", "delete")
+      .allow("articles", "list")
       .allow("comments", "moderate")
       .build() as TArbacRole<unknown, unknown>;
 
@@ -191,7 +194,6 @@ describe("codegen integration with defineRole", () => {
     const map = extractResourceActions([editor, viewer]);
     const output = generateResourceTypes(map);
 
-    // canCrud now emits 5 actions including `list`
     expect([...map.allActions].toSorted()).toStrictEqual([
       "create",
       "delete",

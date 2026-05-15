@@ -94,13 +94,13 @@ describe("ACT — read-mostly per-action gating", () => {
     expect((await fetch("/health/protected")).status).toBe(200);
   });
 
-  it("ACT-06 — `tasks.one` covers both /tasks/one/:id and /tasks/one?... (normalizeAutoCrudMethod)", async () => {
+  it("ACT-06 — `allowTableRead` covers both /users/one/:id (getOne) and /users/one?... (getOneComposite)", async () => {
     // Tasks have no secondary unique index, so the composite-key route on
     // /tasks/one isn't exercisable for that resource. We instead use /users
     // (where `username` is `@db.index.unique`) to verify both the
     // primary-key path (`getOne`) and the composite-key path
-    // (`getOneComposite`) collapse to the same ARBAC action `one`. Eve
-    // (viewer) holds `users.one`; both routes must succeed.
+    // (`getOneComposite`) are granted by `allowTableRead`. Eve
+    // (viewer) holds `users` read; both routes must succeed.
     const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_eve);
 
     const targetId = app.fixtures.users.t1_dave.id;

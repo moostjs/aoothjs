@@ -205,12 +205,12 @@ describe("arbac authorize HTTP integration", () => {
     expect(res?.status).toBe(200);
   });
 
-  it("a controller method literally named getOne is gated as canonical action 'one'", async () => {
+  it("a controller method literally named getOne is gated as literal action 'getOne'", async () => {
     @Controller()
     @ArbacResource("demo")
     class GetOneController {
       @Get("item")
-      // No @ArbacAction, no @DbAction — relies on normalizeAutoCrudMethod.
+      // No @ArbacAction, no @DbAction — method name used as-is.
       getOne() {
         return { ok: true };
       }
@@ -219,7 +219,7 @@ describe("arbac authorize HTTP integration", () => {
     const arbac = new MoostArbac<DemoAttrs, DemoScope>();
     arbac.registerRole({
       id: "viewer",
-      rules: [{ resource: "demo", action: "one" }],
+      rules: [{ resource: "demo", action: "getOne" }],
     });
 
     const app = new Moost();

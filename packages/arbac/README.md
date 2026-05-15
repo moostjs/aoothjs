@@ -15,7 +15,7 @@ pnpm add @aoothjs/arbac
 ## Define a role
 
 ```ts
-import { Arbac, defineRole, canCrud } from "@aoothjs/arbac";
+import { Arbac, defineRole, allowTableRead, allowTableWrite } from "@aoothjs/arbac";
 
 type MyAttrs = { department: string };
 type MyScope = { dept: string };
@@ -23,7 +23,7 @@ type MyScope = { dept: string };
 const editor = defineRole<MyAttrs, MyScope>()
   .id("editor")
   .name("Editor")
-  .use(canCrud("articles", (attrs) => ({ dept: attrs.department })))
+  .use(allowTableWrite("articles", { scope: (attrs) => ({ dept: attrs.department }) }))
   .deny("articles", "publish")
   .allow("comments", "moderate")
   .build();
@@ -32,8 +32,22 @@ const arbac = new Arbac<MyAttrs, MyScope>();
 arbac.registerRole(editor);
 ```
 
-`canCrud` emits five rules — `create`, `read`, `update`, `delete`, `list` —
-because list-of-many is commonly scoped differently than read-of-one.
+`allowTableWrite` grants all read + write actions that `AsDbController` exposes:
+`query`, `pages`, `getOne`, `getOneComposite`, `meta`, `metaForm`,
+`insert`, `update`, `replace`, `remove`, `removeComposite`.
+
+Use `allowTableRead` for read-only access, and `allowTableAction` for individual
+or grouped custom actions:
+
+```ts
+import { allowTableAction } from "@aoothjs/arbac";
+
+// single action
+allowTableAction("tasks", "markDone", { scope: (attrs) => ({ dept: attrs.department }) });
+
+// multiple actions sharing a scope
+allowTableAction("tasks", ["markDone", "archive", "assign"], { scope: ... });
+```
 
 ## Reusable privileges
 

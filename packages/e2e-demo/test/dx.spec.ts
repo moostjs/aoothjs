@@ -24,9 +24,9 @@ describe("DX — read-only ergonomics (shared app)", () => {
   });
 
   it("DX-01 — empty subclass via factory: every db-resource serves /meta + /query for admin", async () => {
-    // Admin (`t1_dave`) holds tableWritePrivilege on most resources and a
+    // Admin (`t1_dave`) holds allowTableWrite on most resources and a
     // read privilege on `audit`. `tenants` is read by admin via
-    // tableReadPrivilege scoped to `id == attrs.tenantId`. Superadmin covers
+    // allowTableRead scoped to `id == attrs.tenantId`. Superadmin covers
     // the resources admin doesn't see (none here, but kept for safety).
     const { fetch: adminFetch } = await loginAndFetch(app, app.fixtures.users.t1_dave);
     const { fetch: superFetch } = await loginAndFetch(app, app.fixtures.users._super);
@@ -118,15 +118,15 @@ describe("DX — read-only ergonomics (shared app)", () => {
     // arbacAuthorizeInterceptor → useArbac().evaluate() with no explicit
     // {resource, action} arg, resolving them from the controller decorators
     // (@ArbacResource("tasks")) and the db method (@DbAction or @TableController
-    // CRUD). Admin has `tableWritePrivilege("tasks")`, which includes `query`.
+    // CRUD). Admin has `allowTableWrite("tasks")`, which includes `query`.
     const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_dave);
     const res = await fetch("/tasks/query");
     expectOk(res);
   });
 
   it("DX-06 — privilege factories compose (admin has both tasks.query AND tasks.markDone)", async () => {
-    // adminRole composes `tableWritePrivilege("tasks")` (read+write CRUD)
-    // with `tableActionsPrivilege("tasks", ["markDone", ...])`. A single role
+    // adminRole composes `allowTableWrite("tasks")` (read+write CRUD)
+    // with `allowTableAction("tasks", ["markDone", ...])`. A single role
     // therefore yields both `tasks.query` and `tasks.markDone`. Both routes
     // must succeed for the same caller — proves `.use(...)` chains union
     // their rules without one stomping the other.

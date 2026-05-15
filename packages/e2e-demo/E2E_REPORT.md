@@ -186,11 +186,11 @@ The OAuth-best-practice "refresh-token reuse → revoke all user credentials" th
 
 **Severity:** MEDIUM. **Package:** `@aoothjs/arbac-moost`. **File:** [packages/arbac-moost/src/arbac.composables.ts:19-25](packages/arbac-moost/src/arbac.composables.ts#L19).
 
-`normalizeAutoCrudMethod` aliases `getOne`/`getOneComposite` → `one` and `removeComposite` → `remove`, but does NOT alias `metaForm` → `meta`. Result: NO ROLE can fetch action input form schemas. Every `GET /<resource>/meta/form/:name` request returns 403 — even for admin who has `tableWritePrivilege` (which grants `meta`). Blocks any UI that uses moost-db's auto-form rendering.
+`literal method name passthrough` aliases `getOne`/`getOneComposite` → `one` and `removeComposite` → `remove`, but does NOT alias `metaForm` → `meta`. Result: NO ROLE can fetch action input form schemas. Every `GET /<resource>/meta/form/:name` request returns 403 — even for admin who has `allowTableWrite` (which grants `meta`). Blocks any UI that uses moost-db's auto-form rendering.
 
 **Repro:** [packages/e2e-demo/test/arbac-meta.spec.ts](packages/e2e-demo/test/arbac-meta.spec.ts) META-04.
 
-**Fix:** Add `if (method === 'metaForm') return 'meta'` to `normalizeAutoCrudMethod`.
+**Fix:** Add `if (method === 'metaForm') return 'meta'` to `literal method name passthrough`.
 
 **Status:** ✅ FIXED — alias added; admin and viewer (both holding `tasks.meta`) now get identical form schemas via `GET /tasks/meta/form/:name`.
 
@@ -311,7 +311,7 @@ In addition to the 125 passing tests, the broader observations:
 - **Field-level projection** correctly hides sensitive fields per role; `$select` does not escape projection (PROJ-02 confirms even when the user explicitly asks for a hidden field, the response omits it).
 - **Multi-role projection union** with mixed include/exclude modes behaves per `unionProjections` semantics (PROJ-03).
 - **Meta-overlay** correctly filters `actions` and `crud` per caller's privileges (META-01, META-02).
-- **Per-action gating** correctly resolves the action key via the chain `arbacActionId > atscript_db_action.name > id > normalizeAutoCrudMethod(method)` (ACT-03, ACT-06).
+- **Per-action gating** correctly resolves the action key via the chain `arbacActionId > atscript_db_action.name > id > literal method name passthrough(method)` (ACT-03, ACT-06).
 - **`disabled: perRow` predicates** correctly reject actions on rows that don't satisfy the predicate (ACT-05).
 - **Forced `set` fields** correctly override body values for inserts/actions (WRITE-02, WRITE-03, WRITE-07).
 - **`@ArbacPublic` ships pre-decorated** on auth-moost's `AuthController` and bundled workflows — consumers don't pay the decoration tax.

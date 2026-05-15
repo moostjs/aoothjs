@@ -337,7 +337,7 @@ _(or — if we add cascade — flip the assertion. For v1, assert current behavi
 
 ### ACT-01 — read action allowed, write denied
 
-**Setup:** `viewer` with `tableReadPrivilege`.
+**Setup:** `viewer` with `allowTableRead`.
 **Acceptance:** GET/query/pages/one/meta succeed; POST/PATCH/PUT/DELETE → 403.
 
 ### ACT-02 — custom action gated by name
@@ -362,7 +362,7 @@ _(this exists to document the auth/arbac orthogonality — `@ArbacPublic` does N
 
 ### ACT-06 — moost-db method-name aliases
 
-**Acceptance:** ARBAC rule `tasks.one` allows BOTH `getOne` and `getOneComposite` HTTP routes (verify `normalizeAutoCrudMethod`).
+**Acceptance:** ARBAC rule `tasks.one` allows BOTH `getOne` and `getOneComposite` HTTP routes (verify `literal method name passthrough`).
 
 ### ACT-07 — `tasks.remove` rule allows BOTH `removeComposite` and `remove`
 
@@ -473,7 +473,7 @@ _(this exists to document the auth/arbac orthogonality — `@ArbacPublic` does N
 
 ### META-03 — `meta` itself requires `meta` privilege
 
-**Setup:** `tableReadPrivilege` includes `meta`. Role without read.
+**Setup:** `allowTableRead` includes `meta`. Role without read.
 **Acceptance:** `GET /tasks/meta` → 403.
 
 ### META-04 — `meta/form/:name` schema is unchanged regardless of role
@@ -639,7 +639,7 @@ _(documented: in-memory denylist grows; `cleanup()` purges expired. Test that ca
 
 ### DX-06 — privilege factories compose
 
-**Acceptance:** `defineRole().use(tableReadPrivilege("x"), tableActionPrivilege("x", "publish"))` works and yields the union.
+**Acceptance:** `defineRole().use(allowTableRead("x"), allowTableAction("x", "publish"))` works and yields the union.
 
 ### DX-07 — `setupAuthWorkflows` `workflows: { invite: false }` skips registration
 

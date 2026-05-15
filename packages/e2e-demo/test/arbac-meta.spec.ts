@@ -78,8 +78,8 @@ describe("META — meta endpoint overlay", () => {
   });
 
   it("META-04 — meta/form/:name schema is reachable for any role holding `meta`", async () => {
-    // SPEC: form schemas are global metadata served via `metaForm` (aliased to
-    // `meta` in normalizeAutoCrudMethod). Both admin and viewer hold `tasks.meta`
+    // SPEC: form schemas are global metadata served via `metaForm`, which is
+    // included in `allowTableRead`. Both admin and viewer hold `tasks.metaForm`
     // and must get identical bodies.
     const { fetch: daveFetch } = await loginAndFetch(app, app.fixtures.users.t1_dave);
     const daveRes = await daveFetch("/tasks/meta/form/NewTaskForm");

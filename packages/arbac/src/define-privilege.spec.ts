@@ -2,7 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { Arbac } from "@aoothjs/arbac-core";
 
-import { canAccess, canCrud, definePrivilege } from "./define-privilege";
+import { definePrivilege } from "./define-privilege";
 import { defineRole } from "./define-role";
 
 type TestAttrs = { department: string };
@@ -39,86 +39,34 @@ describe("definePrivilege", () => {
   });
 });
 
-describe("canAccess", () => {
-  it("must return a single allow rule", () => {
-    const rules = canAccess("reports", "read")();
-    expect(rules).toStrictEqual([{ resource: "reports", action: "read" }]);
-  });
-
-  it("must include scope when provided", () => {
-    const scopeFn = (attrs: TestAttrs) => ({ dept: attrs.department });
-    const rules = canAccess<TestAttrs, TestScope>("reports", "read", scopeFn)();
-    expect(rules).toStrictEqual([{ resource: "reports", action: "read", scope: scopeFn }]);
-  });
-
-  it("must omit scope when not provided", () => {
-    const rules = canAccess("reports", "read")();
-    expect(rules[0]).not.toHaveProperty("scope");
-  });
-});
-
-describe("canCrud", () => {
-  it("must generate five CRUD+list rules", () => {
-    const rules = canCrud("articles")();
-    expect(rules).toHaveLength(5);
-    expect(rules.map((r) => r.action)).toStrictEqual([
-      "create",
-      "read",
-      "update",
-      "delete",
-      "list",
-    ]);
-    for (const rule of rules) {
-      expect(rule.resource).toBe("articles");
-    }
-  });
-
-  it("must include `list` action distinct from `read`", () => {
-    const rules = canCrud("articles")();
-    const actions = rules.map((r) => r.action);
-    expect(actions).toContain("read");
-    expect(actions).toContain("list");
-    expect(rules.find((r) => r.action === "list")).toStrictEqual({
-      resource: "articles",
-      action: "list",
-    });
-  });
-
-  it("must apply scope to all CRUD+list rules", () => {
-    const scopeFn = (attrs: TestAttrs) => ({ dept: attrs.department });
-    const rules = canCrud<TestAttrs, TestScope>("articles", scopeFn)();
-    expect(rules).toHaveLength(5);
-    for (const rule of rules) {
-      expect(rule).toHaveProperty("scope", scopeFn);
-    }
-  });
-
-  it("must omit scope when not provided", () => {
-    const rules = canCrud("articles")();
-    for (const rule of rules) {
-      expect(rule).not.toHaveProperty("scope");
-    }
-  });
-});
-
 describe("privilege composition in roles", () => {
   it("must compose privileges into a role via .use()", () => {
+    const privRead = definePrivilege<TestAttrs, TestScope>()(() => [
+      { resource: "articles", action: "read" },
+    ]);
+    const privWrite = definePrivilege<TestAttrs, TestScope>()(() => [
+      { resource: "articles", action: "write" },
+    ]);
+
     const role = defineRole<TestAttrs, TestScope>()
       .id("editor")
-      .use(canCrud("articles"))
-      .use(canAccess("reports", "read"))
+      .use(privRead(), privWrite())
       .build();
 
-    expect(role.rules).toHaveLength(6);
+    expect(role.rules).toHaveLength(2);
   });
 
   it("must work end-to-end with Arbac", async () => {
     const scopeFn = (attrs: TestAttrs) => ({ dept: attrs.department });
 
+    const canReadReports = definePrivilege<TestAttrs, TestScope>()(
+      (scope: (attrs: TestAttrs) => TestScope) => [{ resource: "reports", action: "read", scope }],
+    );
+
     const role = defineRole<TestAttrs, TestScope>()
       .id("manager")
-      .use(canAccess("reports", "read", scopeFn))
-      .use(canCrud("articles"))
+      .use(canReadReports(scopeFn))
+      .allow("articles", "create")
       .build();
 
     const arbac = new Arbac<TestAttrs, TestScope>();

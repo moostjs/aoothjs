@@ -29,17 +29,17 @@ describe("unionControlsPolicy", () => {
   });
 
   it("single scope: whitelist gate is preserved (sorted)", () => {
-    expect(
-      unionControlsPolicy([{ controls: { $with: ["tasks", "comments"] } }]),
-    ).toStrictEqual({ $with: ["comments", "tasks"] });
+    expect(unionControlsPolicy([{ controls: { $with: ["tasks", "comments"] } }])).toStrictEqual({
+      $with: ["comments", "tasks"],
+    });
   });
 
   // Two-scope cases ----------------------------------------------------------
 
   it("two scopes: silence + false → key not in result (silence wins → allowed)", () => {
-    expect(
-      unionControlsPolicy([{ controls: {} }, { controls: { $with: false } }]),
-    ).toStrictEqual({});
+    expect(unionControlsPolicy([{ controls: {} }, { controls: { $with: false } }])).toStrictEqual(
+      {},
+    );
   });
 
   it("two scopes: silence + whitelist → silence wins → key not in result", () => {
@@ -50,19 +50,13 @@ describe("unionControlsPolicy", () => {
 
   it("two scopes: false + false → false", () => {
     expect(
-      unionControlsPolicy([
-        { controls: { $with: false } },
-        { controls: { $with: false } },
-      ]),
+      unionControlsPolicy([{ controls: { $with: false } }, { controls: { $with: false } }]),
     ).toStrictEqual({ $with: false });
   });
 
   it("two scopes: false + whitelist → whitelist (false roles don't contribute positively)", () => {
     expect(
-      unionControlsPolicy([
-        { controls: { $with: false } },
-        { controls: { $with: ["comments"] } },
-      ]),
+      unionControlsPolicy([{ controls: { $with: false } }, { controls: { $with: ["comments"] } }]),
     ).toStrictEqual({ $with: ["comments"] });
   });
 
@@ -77,10 +71,7 @@ describe("unionControlsPolicy", () => {
 
   it("two scopes: explicit true beats false on the same key", () => {
     expect(
-      unionControlsPolicy([
-        { controls: { $with: false } },
-        { controls: { $with: true } },
-      ]),
+      unionControlsPolicy([{ controls: { $with: false } }, { controls: { $with: true } }]),
     ).toStrictEqual({});
   });
 

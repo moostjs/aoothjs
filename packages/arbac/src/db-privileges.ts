@@ -2,8 +2,15 @@ import type { TArbacRule } from "@aoothjs/arbac-core";
 
 import type { TPrivilegeFunction } from "./define-role";
 
-const TABLE_READ_ACTIONS = ["query", "pages", "one", "meta"] as const;
-const TABLE_WRITE_ACTIONS = ["insert", "update", "replace", "remove"] as const;
+const TABLE_READ_ACTIONS = [
+  "query",
+  "pages",
+  "getOne",
+  "getOneComposite",
+  "meta",
+  "metaForm",
+] as const;
+const TABLE_WRITE_ACTIONS = ["insert", "update", "replace", "remove", "removeComposite"] as const;
 
 type ScopeFn<TUserAttrs, TScope> = (attrs: TUserAttrs, userId: string) => TScope;
 
@@ -19,42 +26,31 @@ function rulesFor<TUserAttrs, TScope>(
   return actions.map((action) => (scope ? { resource, action, scope } : { resource, action }));
 }
 
-/** Read-side actions on an `AsDbController` table: `query`, `pages`, `one`, `meta`. */
-export function tableReadPrivilege<
-  TUserAttrs extends object = object,
-  TScope extends object = object,
->(resource: string, opts?: ScopeOpts<TUserAttrs, TScope>): TPrivilegeFunction<TUserAttrs, TScope> {
+/** Read-side actions on an `AsDbController` table: `query`, `pages`, `getOne`, `getOneComposite`, `meta`, `metaForm`. */
+export function allowTableRead<TUserAttrs extends object = object, TScope extends object = object>(
+  resource: string,
+  opts?: ScopeOpts<TUserAttrs, TScope>,
+): TPrivilegeFunction<TUserAttrs, TScope> {
   return () => rulesFor(resource, TABLE_READ_ACTIONS, opts?.scope);
 }
 
-/** All actions on an `AsDbController` table: read + `insert`, `update`, `replace`, `remove`. */
-export function tableWritePrivilege<
-  TUserAttrs extends object = object,
-  TScope extends object = object,
->(resource: string, opts?: ScopeOpts<TUserAttrs, TScope>): TPrivilegeFunction<TUserAttrs, TScope> {
+/** All actions on an `AsDbController` table: read + `insert`, `update`, `replace`, `remove`, `removeComposite`. */
+export function allowTableWrite<TUserAttrs extends object = object, TScope extends object = object>(
+  resource: string,
+  opts?: ScopeOpts<TUserAttrs, TScope>,
+): TPrivilegeFunction<TUserAttrs, TScope> {
   return () => rulesFor(resource, [...TABLE_READ_ACTIONS, ...TABLE_WRITE_ACTIONS], opts?.scope);
 }
 
-/** Multiple declarative actions on the same table, sharing a scope. */
-export function tableActionsPrivilege<
+/** One or more declarative actions on the same table, sharing a scope. */
+export function allowTableAction<
   TUserAttrs extends object = object,
   TScope extends object = object,
 >(
   resource: string,
-  actionNames: string[],
+  name: string | string[],
   opts?: ScopeOpts<TUserAttrs, TScope>,
 ): TPrivilegeFunction<TUserAttrs, TScope> {
-  return () => rulesFor(resource, actionNames, opts?.scope);
-}
-
-/** Single declarative action on a table — typically a row/rows-level `@DbAction*` like `markDone`. */
-export function tableActionPrivilege<
-  TUserAttrs extends object = object,
-  TScope extends object = object,
->(
-  resource: string,
-  actionName: string,
-  opts?: ScopeOpts<TUserAttrs, TScope>,
-): TPrivilegeFunction<TUserAttrs, TScope> {
-  return tableActionsPrivilege<TUserAttrs, TScope>(resource, [actionName], opts);
+  const actions = typeof name === "string" ? [name] : name;
+  return () => rulesFor(resource, actions, opts?.scope);
 }

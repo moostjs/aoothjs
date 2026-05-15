@@ -2,23 +2,19 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { Arbac } from "@aoothjs/arbac-core";
 
-import {
-  tableActionPrivilege,
-  tableActionsPrivilege,
-  tableReadPrivilege,
-  tableWritePrivilege,
-} from "./db-privileges";
+import { allowTableAction, allowTableRead, allowTableWrite } from "./db-privileges";
+import * as dbPrivilegesModule from "./db-privileges";
 import { defineRole } from "./define-role";
 
 type TestAttrs = { tenant: string };
 type TestScope = { tenant: string };
 
-const READ_ACTIONS = ["query", "pages", "one", "meta"];
-const WRITE_ACTIONS = ["insert", "update", "replace", "remove"];
+const READ_ACTIONS = ["query", "pages", "getOne", "getOneComposite", "meta", "metaForm"];
+const WRITE_ACTIONS = ["insert", "update", "replace", "remove", "removeComposite"];
 
-describe("tableReadPrivilege", () => {
-  it("must produce rules for query/pages/one/meta and not for write actions", () => {
-    const rules = tableReadPrivilege("tasks")();
+describe("allowTableRead", () => {
+  it("must produce rules for all read actions and not for write actions", () => {
+    const rules = allowTableRead("tasks")();
     expect(rules.map((r) => r.action)).toStrictEqual(READ_ACTIONS);
     for (const rule of rules) {
       expect(rule.resource).toBe("tasks");
@@ -28,7 +24,7 @@ describe("tableReadPrivilege", () => {
 
   it("must attach the scope function to every rule when opts.scope is given", () => {
     const scope = (attrs: TestAttrs) => ({ tenant: attrs.tenant });
-    const rules = tableReadPrivilege<TestAttrs, TestScope>("tasks", { scope })();
+    const rules = allowTableRead<TestAttrs, TestScope>("tasks", { scope })();
     expect(rules).toHaveLength(READ_ACTIONS.length);
     for (const rule of rules) {
       expect(rule).toHaveProperty("scope", scope);
@@ -36,10 +32,10 @@ describe("tableReadPrivilege", () => {
   });
 });
 
-describe("tableWritePrivilege", () => {
-  it("must cover all 8 actions (read 4 + write 4)", () => {
-    const rules = tableWritePrivilege("tasks")();
-    expect(rules).toHaveLength(8);
+describe("allowTableWrite", () => {
+  it("must cover all read + write actions", () => {
+    const rules = allowTableWrite("tasks")();
+    expect(rules).toHaveLength(READ_ACTIONS.length + WRITE_ACTIONS.length);
     expect(rules.map((r) => r.action)).toStrictEqual([...READ_ACTIONS, ...WRITE_ACTIONS]);
     for (const rule of rules) {
       expect(rule.resource).toBe("tasks");
@@ -49,30 +45,30 @@ describe("tableWritePrivilege", () => {
 
   it("must attach the scope function to every rule when opts.scope is given", () => {
     const scope = (attrs: TestAttrs) => ({ tenant: attrs.tenant });
-    const rules = tableWritePrivilege<TestAttrs, TestScope>("tasks", { scope })();
-    expect(rules).toHaveLength(8);
+    const rules = allowTableWrite<TestAttrs, TestScope>("tasks", { scope })();
+    expect(rules).toHaveLength(READ_ACTIONS.length + WRITE_ACTIONS.length);
     for (const rule of rules) {
       expect(rule).toHaveProperty("scope", scope);
     }
   });
 });
 
-describe("tableActionPrivilege", () => {
+describe("allowTableAction — single name (string)", () => {
   it("must produce exactly one rule for the named action", () => {
-    const rules = tableActionPrivilege("tasks", "markDone")();
+    const rules = allowTableAction("tasks", "markDone")();
     expect(rules).toStrictEqual([{ resource: "tasks", action: "markDone" }]);
   });
 
   it("must attach the scope function when opts.scope is given", () => {
     const scope = (attrs: TestAttrs) => ({ tenant: attrs.tenant });
-    const rules = tableActionPrivilege<TestAttrs, TestScope>("tasks", "markDone", { scope })();
+    const rules = allowTableAction<TestAttrs, TestScope>("tasks", "markDone", { scope })();
     expect(rules).toStrictEqual([{ resource: "tasks", action: "markDone", scope }]);
   });
 });
 
-describe("tableActionsPrivilege", () => {
+describe("allowTableAction — multiple names (array)", () => {
   it("must produce one rule per supplied action", () => {
-    const rules = tableActionsPrivilege("tasks", ["markDone", "archive", "duplicate"])();
+    const rules = allowTableAction("tasks", ["markDone", "archive", "duplicate"])();
     expect(rules.map((r) => r.action)).toStrictEqual(["markDone", "archive", "duplicate"]);
     for (const rule of rules) {
       expect(rule.resource).toBe("tasks");
@@ -81,7 +77,7 @@ describe("tableActionsPrivilege", () => {
 
   it("must attach the scope function to every rule when opts.scope is given", () => {
     const scope = (attrs: TestAttrs) => ({ tenant: attrs.tenant });
-    const rules = tableActionsPrivilege<TestAttrs, TestScope>("tasks", ["markDone", "archive"], {
+    const rules = allowTableAction<TestAttrs, TestScope>("tasks", ["markDone", "archive"], {
       scope,
     })();
     expect(rules).toHaveLength(2);
@@ -91,8 +87,37 @@ describe("tableActionsPrivilege", () => {
   });
 
   it("must produce zero rules for an empty action list", () => {
-    const rules = tableActionsPrivilege("tasks", [])();
+    const rules = allowTableAction("tasks", [])();
     expect(rules).toStrictEqual([]);
+  });
+});
+
+describe("allowTableAction — string/array parity (ISSUE-21)", () => {
+  // Design contract: allowTableAction(r, "x") must produce identical rules to
+  // allowTableAction(r, ["x"]). The merged signature must not silently diverge
+  // based on whether the caller passes a string vs a single-element array.
+  it("allowTableAction(r, 'insert') and allowTableAction(r, ['insert']) produce identical rules", () => {
+    const fromString = allowTableAction("tasks", "insert")();
+    const fromArray = allowTableAction("tasks", ["insert"])();
+    expect(fromString).toStrictEqual(fromArray);
+  });
+});
+
+describe("db-privileges module — removed names absent (ISSUE-21)", () => {
+  // Hard-cut contract: the old privilege factories were renamed.
+  // These tests make any re-introduction of the old names a test failure,
+  // preventing silent breakage of downstream callers who expect the new API.
+  it("tableReadPrivilege is NOT exported from db-privileges", () => {
+    expect("tableReadPrivilege" in dbPrivilegesModule).toBe(false);
+  });
+  it("tableWritePrivilege is NOT exported from db-privileges", () => {
+    expect("tableWritePrivilege" in dbPrivilegesModule).toBe(false);
+  });
+  it("tableActionsPrivilege is NOT exported from db-privileges", () => {
+    expect("tableActionsPrivilege" in dbPrivilegesModule).toBe(false);
+  });
+  it("tableActionPrivilege is NOT exported from db-privileges", () => {
+    expect("tableActionPrivilege" in dbPrivilegesModule).toBe(false);
   });
 });
 
@@ -100,7 +125,7 @@ describe("composition with defineRole + end-to-end with Arbac", () => {
   it("must compose with defineRole().use(...) and gate read actions correctly", async () => {
     const role = defineRole<TestAttrs, TestScope>()
       .id("tasks-reader")
-      .use(tableReadPrivilege("tasks"))
+      .use(allowTableRead("tasks"))
       .build();
 
     const arbac = new Arbac<TestAttrs, TestScope>();
@@ -116,7 +141,7 @@ describe("composition with defineRole + end-to-end with Arbac", () => {
       allowed: true,
       scopes: [{}],
     });
-    expect(await arbac.evaluate({ resource: "tasks", action: "one" }, user)).toStrictEqual({
+    expect(await arbac.evaluate({ resource: "tasks", action: "getOne" }, user)).toStrictEqual({
       allowed: true,
       scopes: [{}],
     });
@@ -128,10 +153,10 @@ describe("composition with defineRole + end-to-end with Arbac", () => {
     });
   });
 
-  it("must propagate scope from tableWritePrivilege through Arbac.evaluate", async () => {
+  it("must propagate scope from allowTableWrite through Arbac.evaluate", async () => {
     const role = defineRole<TestAttrs, TestScope>()
       .id("tasks-writer")
-      .use(tableWritePrivilege("tasks", { scope: (attrs) => ({ tenant: attrs.tenant }) }))
+      .use(allowTableWrite("tasks", { scope: (attrs) => ({ tenant: attrs.tenant }) }))
       .build();
 
     const arbac = new Arbac<TestAttrs, TestScope>();
@@ -145,10 +170,10 @@ describe("composition with defineRole + end-to-end with Arbac", () => {
     });
   });
 
-  it("must compose tableActionPrivilege via .use() and gate exactly that action", async () => {
+  it("must compose allowTableAction via .use() and gate exactly that action", async () => {
     const role = defineRole<TestAttrs, TestScope>()
       .id("task-mark-done")
-      .use(tableActionPrivilege("tasks", "markDone"))
+      .use(allowTableAction("tasks", "markDone"))
       .build();
 
     const arbac = new Arbac<TestAttrs, TestScope>();

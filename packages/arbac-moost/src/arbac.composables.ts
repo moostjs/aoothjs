@@ -16,15 +16,6 @@ import { ArbacUserProvider } from "./user.provider";
  */
 const arbacScopesKey = key<unknown[] | undefined>("arbac.scopes");
 
-// getOne/getOneComposite/removeComposite are AsDbController's HTTP-shape splits
-// of the canonical CRUD ops `one` / `remove`.
-function normalizeAutoCrudMethod(method: string): string {
-  if (method === "getOne" || method === "getOneComposite") return "one";
-  if (method === "removeComposite") return "remove";
-  if (method === "metaForm") return "meta";
-  return method;
-}
-
 interface ArbacBindings {
   getScopes: <TScope extends object>() => TScope[] | undefined;
   setScopes: <TScope extends object>(scope: TScope[] | undefined) => void;
@@ -78,9 +69,11 @@ export const useArbac = defineWook((ctx: EventContext): ArbacBindings => {
     getConstructor(cc.getController()).name;
   const action =
     mMeta?.arbacActionId ||
+    // atscript_db_action is set by @atscript/moost-db on method metadata; TArbacMeta does not
+    // include it because arbac-moost doesn't depend on atscript-db — side-channel read only.
     (mMeta as { atscript_db_action?: { name?: string } } | undefined)?.atscript_db_action?.name ||
     mMeta?.id ||
-    normalizeAutoCrudMethod(cc.getMethod() ?? "");
+    (cc.getMethod() ?? "");
   const isPublic = mMeta?.arbacPublic || cMeta?.arbacPublic || false;
 
   const evaluate = async <TScope extends object>(opts?: {
