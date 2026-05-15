@@ -1,6 +1,7 @@
 import { UserAuthError } from "./errors";
 import { generateBackupCodePlaintext } from "./mfa/backup-codes";
 import { hashMfaCode, verifyMfaCode } from "./mfa/codes";
+import { verifyTotpCode } from "./mfa/totp";
 import { PasswordHasher } from "./password/hasher";
 import { normalizePolicies, PasswordPolicy } from "./password/policy";
 import type {
@@ -14,6 +15,7 @@ import type {
   PasswordConfig,
   PasswordData,
   PolicyCheckResult,
+  TotpConfig,
   TransferablePolicy,
   UserCredentials,
   UserServiceConfig,
@@ -58,11 +60,24 @@ export class UserService<T extends object = object> {
     this.hasher = new PasswordHasher(this.config.password);
   }
 
-  async createUser(username: string, password?: string): Promise<UserCredentials & T> {
+  /**
+   * @param extras Optional partial user fields merged AFTER the base
+   *   `UserCredentials` shape, so callers can populate consumer-specific
+   *   required fields (e.g. `tenantId`) without subclassing the store.
+   *   Because the merge is shallow and extras win, overlapping top-level
+   *   keys (`id`, `account`, `mfa`, ...) replace the defaults entirely —
+   *   pass nested objects with all required sub-fields if you intend to
+   *   override them.
+   */
+  async createUser(
+    username: string,
+    password?: string,
+    extras?: Partial<T>,
+  ): Promise<UserCredentials & T> {
     const pw = password ?? this.hasher.generatePassword();
     const hash = await this.hasher.hash(pw);
 
-    const userData: UserCredentials = {
+    const base: UserCredentials = {
       id: "",
       username,
       password: {
@@ -86,8 +101,9 @@ export class UserService<T extends object = object> {
       },
     };
 
-    await this.store.create(userData as UserCredentials & T);
-    return userData as UserCredentials & T;
+    const userData = { ...base, ...extras } as UserCredentials & T;
+    await this.store.create(userData);
+    return userData;
   }
 
   async getUser(username: string): Promise<UserCredentials & T> {
@@ -100,27 +116,11 @@ export class UserService<T extends object = object> {
     const user = await this.store.findByUsername(username);
     if (!user) throw new UserAuthError("NOT_FOUND");
 
-    // Check active status
     if (!user.account.active) {
       throw new UserAuthError("INACTIVE");
     }
 
-    // Check and potentially auto-unlock expired lock
-    const lockStatus = this.getLockStatus(user.account);
-    if (lockStatus.locked) {
-      if (lockStatus.expired) {
-        await this.store.update(username, {
-          set: {
-            account: { locked: false, lockReason: "", lockEnds: 0 },
-          } as DeepPartial<UserCredentials>,
-        });
-      } else {
-        throw new UserAuthError("LOCKED", undefined, {
-          reason: user.account.lockReason,
-          lockEnds: user.account.lockEnds,
-        });
-      }
-    }
+    await this.ensureNotLockedOrThrow(username, user.account);
 
     const valid = await this.hasher.verify(password, user.password.hash);
 
@@ -139,26 +139,7 @@ export class UserService<T extends object = object> {
       return { user, mfaRequired };
     }
 
-    // Failed login — combine inc + lock into single update when possible
-    const newAttempts = user.account.failedLoginAttempts + 1;
-    const { threshold, duration } = this.config.lockout;
-    const shouldLock = threshold > 0 && newAttempts >= threshold;
-
-    if (shouldLock) {
-      const lockEnds = duration ? this.config.clock() + duration : 0;
-      await this.store.update(username, {
-        inc: { "account.failedLoginAttempts": 1 },
-        set: {
-          account: { locked: true, lockReason: "Too many login attempts", lockEnds },
-        } as DeepPartial<UserCredentials>,
-      });
-    } else {
-      await this.store.update(username, {
-        inc: { "account.failedLoginAttempts": 1 },
-      });
-    }
-
-    throw new UserAuthError("INVALID_CREDENTIALS");
+    await this.incrementAndMaybeLock(username, user.account, "INVALID_CREDENTIALS");
   }
 
   async verifyPassword(username: string, password: string): Promise<boolean> {
@@ -365,6 +346,38 @@ export class UserService<T extends object = object> {
     return true;
   }
 
+  /**
+   * Verify a TOTP code against the user's confirmed `totp` MFA method.
+   * Failures bump the same `failedLoginAttempts` counter as `login` so an
+   * attacker who knows the password but not the TOTP gets `lockout.threshold`
+   * total tries across BOTH factors, not `2 * threshold`.
+   */
+  async verifyMfa(username: string, code: string, config?: TotpConfig): Promise<void> {
+    const user = await this.getUser(username);
+
+    if (!user.account.active) {
+      throw new UserAuthError("INACTIVE");
+    }
+
+    await this.ensureNotLockedOrThrow(username, user.account);
+
+    const totp = user.mfa.methods.find((m) => m.name === "totp" && m.confirmed);
+    if (!totp) throw new UserAuthError("MFA_NOT_CONFIGURED");
+
+    if (verifyTotpCode(totp.value, code, config)) {
+      if (user.account.failedLoginAttempts > 0) {
+        await this.store.update(username, {
+          set: {
+            account: { failedLoginAttempts: 0 },
+          } as DeepPartial<UserCredentials>,
+        });
+      }
+      return;
+    }
+
+    await this.incrementAndMaybeLock(username, user.account, "MFA_INVALID");
+  }
+
   getPasswordHasher(): PasswordHasher {
     return this.hasher;
   }
@@ -419,5 +432,64 @@ export class UserService<T extends object = object> {
 
   private hasConfirmedMfaMethods(mfa: MfaData): boolean {
     return mfa.methods.some((m) => m.confirmed);
+  }
+
+  /**
+   * If `account.locked`: auto-unlock when the lock has expired (mutating
+   * `account` in place), or throw `LOCKED` otherwise.
+   */
+  private async ensureNotLockedOrThrow(
+    username: string,
+    account: UserCredentials["account"],
+  ): Promise<void> {
+    const lockStatus = this.getLockStatus(account);
+    if (!lockStatus.locked) return;
+    if (lockStatus.expired) {
+      await this.store.update(username, {
+        set: {
+          account: { locked: false, lockReason: "", lockEnds: 0 },
+        } as DeepPartial<UserCredentials>,
+      });
+      account.locked = false;
+      account.lockEnds = 0;
+      account.lockReason = "";
+      return;
+    }
+    throw new UserAuthError("LOCKED", undefined, {
+      reason: account.lockReason,
+      lockEnds: account.lockEnds,
+    });
+  }
+
+  /**
+   * Bump `failedLoginAttempts`, locking the account when threshold is hit,
+   * and always throw `errorCode` (with `details.lockEnds` when the lockout
+   * just tripped). Used by both `login` and `verifyMfa` so the two factors
+   * share one counter.
+   */
+  private async incrementAndMaybeLock(
+    username: string,
+    account: UserCredentials["account"],
+    errorCode: "INVALID_CREDENTIALS" | "MFA_INVALID",
+  ): Promise<never> {
+    const newAttempts = account.failedLoginAttempts + 1;
+    const { threshold, duration } = this.config.lockout;
+    const shouldLock = threshold > 0 && newAttempts >= threshold;
+
+    if (shouldLock) {
+      const lockEnds = duration ? this.config.clock() + duration : 0;
+      await this.store.update(username, {
+        inc: { "account.failedLoginAttempts": 1 },
+        set: {
+          account: { locked: true, lockReason: "Too many login attempts", lockEnds },
+        } as DeepPartial<UserCredentials>,
+      });
+      throw new UserAuthError(errorCode, undefined, { lockEnds });
+    }
+
+    await this.store.update(username, {
+      inc: { "account.failedLoginAttempts": 1 },
+    });
+    throw new UserAuthError(errorCode);
   }
 }

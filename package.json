@@ -56,6 +56,12 @@
       "better-sqlite3",
       "@atscript/db",
       "@atscript/db-sqlite"
-    ]
+    ],
+    "overrides": {
+      "@atscript/db": "^0.1.78",
+      "@atscript/db-sqlite": "^0.1.78",
+      "@atscript/db-sql-tools": "^0.1.78",
+      "@atscript/moost-db": "^0.1.78"
+    }
   }
 }

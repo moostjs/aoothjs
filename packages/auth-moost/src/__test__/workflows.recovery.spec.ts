@@ -100,8 +100,10 @@ describe("RecoveryWorkflow", () => {
     expect(errors).toMatchObject({ confirmPassword: "Passwords do not match" });
   });
 
-  it("expired token: returns 410 on resume", async () => {
-    // Force a tiny TTL so the token is unusable by the time we try to resume.
+  it("expired token: returns 410 on resume (TTL config-driven)", async () => {
+    // Tiny TTL so the persisted wf-state token expires by the time we resume.
+    // BUG-12 fix: `recoveryTokenTtlMs` now drives the actual replay window,
+    // not just the email envelope.
     const app = await prepareWfApp({ recoveryTokenTtlMs: 1000 });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
     const r1 = await app.trigger({ wfid: "auth.recovery" });
@@ -111,13 +113,49 @@ describe("RecoveryWorkflow", () => {
     });
     const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
 
-    // Advance the store's clock by deleting the entry to simulate expiry.
-    // (`WfStateStoreMemory` honours `expiresAt` via `get`/`getAndDelete` — but
-    // we can't mock the clock here, so directly delete the row.)
-    await app.store.delete(token);
+    // Wait past the TTL — `WfStateStoreMemory.get()` honours `expiresAt`.
+    await new Promise((resolve) => setTimeout(resolve, 1100));
 
     const r3 = await app.resumeViaQuery(token);
     expect(r3.status).toBe(410);
+  });
+
+  it("emailToUserId resolver: separate username/email maps recovery successfully", async () => {
+    // BUG-11 fix: when the user model separates `username` from `email`, the
+    // consumer wires `emailToUserId` so recovery can resolve the user.
+    const app = await prepareWfApp({
+      emailToUserId: async (email) => {
+        // Simulate a directory lookup: email "alice@corp.example" → handle "alice42".
+        if (email === "alice@corp.example") return "alice42";
+        return null;
+      },
+    });
+    await seedActiveUser(app.users, "alice42", "OldPassword1");
+
+    const r1 = await app.trigger({ wfid: "auth.recovery" });
+    const r2 = await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { email: "alice@corp.example" },
+    });
+    expect(r2.status).toBe(201);
+    expect(app.emails).toHaveLength(1);
+    expect(app.emails[0].kind).toBe("recovery.magicLink");
+    expect(app.emails[0].recipient).toBe("alice@corp.example");
+    expect(app.emails[0].username).toBe("alice42");
+  });
+
+  it("emailToUserId resolver returning null: enumeration-resistant short-circuit", async () => {
+    const app = await prepareWfApp({
+      emailToUserId: async () => null,
+    });
+    await seedActiveUser(app.users, "alice42", "OldPassword1");
+    const r1 = await app.trigger({ wfid: "auth.recovery" });
+    const r2 = await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { email: "anyone@nowhere.test" },
+    });
+    expect(r2.body?.sent).toBe(true);
+    expect(app.emails).toHaveLength(0);
   });
 
   it("weak password (policy violation) returns 400", async () => {

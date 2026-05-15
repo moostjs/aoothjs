@@ -20,7 +20,6 @@ import { UserAuthError, UserService } from "@aoothjs/user";
 import {
   outletEmail,
   Step,
-  StepTTL,
   useWfFinished,
   Workflow,
   WorkflowParam,
@@ -72,14 +71,22 @@ export class RecoveryWorkflow {
     if (errors) return httpInputRequired(EmailIdentifierForm, ctx, errors);
 
     const cc = useControllerContext();
-    const users = await cc.instantiate(UserService);
+    const [users, wfConfig] = await Promise.all([
+      cc.instantiate(UserService),
+      cc.instantiate(MoostAuthWorkflowConfig),
+    ]);
 
-    // Resolve user; lookup uses `email` as username — recovery on apps that
-    // separate email from username should ship a custom workflow.
+    // `emailToUserId` is required when the user model separates `username` and
+    // `email`; without it we treat the email as the username (resolver === null
+    // result intentionally short-circuits → enumeration-resistant response).
     let username: string | undefined;
     try {
-      const user = await users.getUser(input.email as string);
-      username = user.username;
+      const userId = await (wfConfig.config.emailToUserId?.(input.email as string) ??
+        (input.email as string));
+      if (userId) {
+        const user = await users.getUser(userId);
+        username = user.username;
+      }
     } catch (err) {
       if (!(err instanceof UserAuthError) || err.type !== "NOT_FOUND") throw err;
     }
@@ -100,7 +107,6 @@ export class RecoveryWorkflow {
   }
 
   @Step("recoverySendLink")
-  @StepTTL(60 * 60 * 1000) // override at outlet level if needed
   async sendLink(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<unknown> {
     // First run: emit outletEmail; engine persists state and our email outlet
     // ships the magic link. Resume run (link clicked): `linkSent` is set
@@ -111,10 +117,15 @@ export class RecoveryWorkflow {
     const cc = useControllerContext();
     const wfConfig = await cc.instantiate(MoostAuthWorkflowConfig);
     const config = wfConfig.config;
-    return outletEmail(ctx.email as string, "recovery.magicLink", {
-      username: ctx.username,
-      expiresAtMs: config.recoveryTokenTtlMs,
-    });
+    // Runtime TTL — `@StepTTL` resolves at class-definition time, so we attach
+    // `expires` to the outlet result (MoostWf only overrides when `@StepTTL`).
+    return {
+      ...outletEmail(ctx.email as string, "recovery.magicLink", {
+        username: ctx.username,
+        expiresAtMs: config.recoveryTokenTtlMs,
+      }),
+      expires: Date.now() + config.recoveryTokenTtlMs,
+    };
   }
 
   @Step("recoverySetPassword")

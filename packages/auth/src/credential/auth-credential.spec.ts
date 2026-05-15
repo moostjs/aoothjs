@@ -179,17 +179,31 @@ describe("AuthCredential", () => {
   });
 
   describe("refresh: rotation 'always'", () => {
-    it("consumes old refresh; new pair issued; old refresh fails", async () => {
+    it("consumes old refresh; new pair issued; replay triggers theft response", async () => {
+      // Reuse-after-rotation must fire the OAuth theft response in 'always'
+      // mode — same signal as 'sliding' beyond grace. Sibling sessions for
+      // the same user must be revoked, not just the replayed token rejected.
+      let reuseFired = 0;
       const { auth } = makeAuth({
         accessTtl: 1000,
-        refresh: { ttl: 60_000, rotation: "always" },
+        refresh: {
+          ttl: 60_000,
+          rotation: "always",
+          onRotationReuse: () => {
+            reuseFired++;
+          },
+        },
       });
+      const sibling = await auth.issue("alice");
       const initial = await auth.issue("alice");
       const refreshed = await auth.refresh(initial.refreshToken!);
       expect(refreshed.refreshToken).not.toBe(initial.refreshToken);
       await expect(auth.refresh(initial.refreshToken!)).rejects.toMatchObject({
-        type: "INVALID_TOKEN",
+        type: "REFRESH_REUSE_DETECTED",
       });
+      expect(reuseFired).toBe(1);
+      // Sibling session for the same user must be revoked too.
+      expect(await auth.validate(sibling.accessToken)).toBeNull();
     });
   });
 

@@ -53,6 +53,22 @@ describe("applyAllowedFieldsAndSet", () => {
       { a: 3, b: 4, tenantId: "t1" },
     ]);
   });
+
+  it("auto-preserves identifier fields so callers don't need 'id' in allowedFields (BUG-8)", () => {
+    const data = { id: "row-1", title: "x", secret: "nope" };
+    const scopes: ArbacDbScope[] = [{ allowedFields: ["title"] }];
+    expect(applyAllowedFieldsAndSet(data, scopes, ["id"])).toEqual({ id: "row-1", title: "x" });
+  });
+
+  it("auto-preserves composite + unique-index fields (passed by the controller)", () => {
+    const data = { tenantId: "t1", code: "A1", title: "x", secret: "nope" };
+    const scopes: ArbacDbScope[] = [{ allowedFields: ["title"] }];
+    expect(applyAllowedFieldsAndSet(data, scopes, ["tenantId", "code"])).toEqual({
+      tenantId: "t1",
+      code: "A1",
+      title: "x",
+    });
+  });
 });
 
 describe("extractUsedControlValues", () => {

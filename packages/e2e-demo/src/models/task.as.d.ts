@@ -10,10 +10,11 @@
 import type { TAtscriptTypeObject, TAtscriptTypeComplex, TAtscriptTypeFinal, TAtscriptTypeArray, TAtscriptAnnotatedType, TMetadataMap, Validator, TValidatorOptions } from "@atscript/typescript/utils"
 import { Tenant } from "./tenant.as"
 import { Project } from "./project.as"
+import { Comment } from "./comment.as"
 
 /**
  * Atscript interface **Task**
- * @see {@link ./task.as:6:18}
+ * @see {@link ./task.as:7:18}
  */
 export declare class Task {
   id: string
@@ -29,6 +30,7 @@ export declare class Task {
   internalNotes?: string
   createdAt: number /* timestamp */
   updatedAt: number /* timestamp */
+  comments?: Comment[]
   static __is_atscript_annotated_type: true
   static type: TAtscriptTypeObject<keyof Task, Task>
   static metadata: TMetadataMap<AtscriptMetadata>
@@ -51,6 +53,28 @@ export declare class Task {
     "internalNotes"?: string
     "createdAt": number /* timestamp */
     "updatedAt": number /* timestamp */
+    "comments"?: never
+    "comments.id"?: string
+    "comments.tenantId"?: string /* id */
+    "comments.taskId"?: string /* id */
+    "comments.authorUsername"?: string
+    "comments.body"?: string
+    "comments.createdAt"?: number /* timestamp */
+    "comments.task"?: never
+    "comments.task.id"?: string
+    "comments.task.tenantId"?: string /* id */
+    "comments.task.projectId"?: string /* id */
+    "comments.task.title"?: string
+    "comments.task.creatorUsername"?: string
+    "comments.task.status"?: "open" | "in_progress" | "done"
+    "comments.task.description"?: string
+    "comments.task.assigneeUsername"?: string
+    "comments.task.priority"?: "low" | "medium" | "high"
+    "comments.task.dueDate"?: number /* timestamp */
+    "comments.task.internalNotes"?: string
+    "comments.task.createdAt"?: number /* timestamp */
+    "comments.task.updatedAt"?: number /* timestamp */
+    "comments.task.comments"?: Comment[]
   }
   static __ownProps: {
     "id": string
@@ -68,12 +92,16 @@ export declare class Task {
     "updatedAt": number /* timestamp */
   }
   
+  static __navProps: {
+    "comments"?: Comment[]
+  }
+  
   static __pk: string
 }
 
 /**
  * Atscript interface **NewTaskForm**
- * @see {@link ./task.as:59:18}
+ * @see {@link ./task.as:63:18}
  */
 export declare class NewTaskForm {
   projectId: string
@@ -94,7 +122,7 @@ export declare class NewTaskForm {
 
 /**
  * Atscript interface **AssignTaskForm**
- * @see {@link ./task.as:81:18}
+ * @see {@link ./task.as:85:18}
  */
 export declare class AssignTaskForm {
   assigneeUsername: string

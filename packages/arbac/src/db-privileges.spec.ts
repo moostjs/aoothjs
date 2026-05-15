@@ -110,15 +110,15 @@ describe("composition with defineRole + end-to-end with Arbac", () => {
 
     expect(await arbac.evaluate({ resource: "tasks", action: "query" }, user)).toStrictEqual({
       allowed: true,
-      scopes: [],
+      scopes: [{}],
     });
     expect(await arbac.evaluate({ resource: "tasks", action: "pages" }, user)).toStrictEqual({
       allowed: true,
-      scopes: [],
+      scopes: [{}],
     });
     expect(await arbac.evaluate({ resource: "tasks", action: "one" }, user)).toStrictEqual({
       allowed: true,
-      scopes: [],
+      scopes: [{}],
     });
     expect(await arbac.evaluate({ resource: "tasks", action: "insert" }, user)).toStrictEqual({
       allowed: false,
@@ -158,7 +158,7 @@ describe("composition with defineRole + end-to-end with Arbac", () => {
 
     expect(await arbac.evaluate({ resource: "tasks", action: "markDone" }, user)).toStrictEqual({
       allowed: true,
-      scopes: [],
+      scopes: [{}],
     });
     expect(await arbac.evaluate({ resource: "tasks", action: "archive" }, user)).toStrictEqual({
       allowed: false,

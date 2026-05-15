@@ -213,7 +213,7 @@ describe("AUTH — refresh", () => {
     expect(replay.status).toBe(401)
   })
 
-  it("AUTH-07 — refresh reuse rejected (theft response gap with stateless JWT store)", async () => {
+  it("AUTH-07 — refresh reuse triggers OAuth theft response (revoke all sibling sessions)", async () => {
     const tokensA = await app.loginAs(app.fixtures.users.t1_alice)
     const tokensB = await app.loginAs(app.fixtures.users.t1_alice)
 
@@ -229,8 +229,9 @@ describe("AUTH — refresh", () => {
     })
     expect(replayA.status).toBe(401)
 
-    const deviceBStillWorks = await app.authedFetch(tokensB.accessToken)("/auth/status")
-    expect(deviceBStillWorks.status).toBe(200)
+    // After theft response, sibling device tokens must also be revoked.
+    const deviceBAfter = await app.authedFetch(tokensB.accessToken)("/auth/status")
+    expect(deviceBAfter.status).toBe(401)
   })
 })
 
@@ -328,7 +329,7 @@ describe("AUTH — password change", () => {
     expectOk(newPwLogin)
   })
 
-  it("AUTH-13 — password change SHOULD revoke all sessions (gap: stateless JWT store does not enumerate)", async () => {
+  it("AUTH-13 — password change revokes all prior sessions via per-user epoch", async () => {
     const alice = app.fixtures.users.t1_alice
     const deviceA = await app.loginAs(alice)
     const deviceB = await app.loginAs(alice)
@@ -339,26 +340,21 @@ describe("AUTH — password change", () => {
     })
     expectOk(change)
 
+    // Prior tokens must be rejected after the password change (epoch bump).
+    const stillA = await app.authedFetch(deviceA.accessToken)("/auth/status")
+    const stillB = await app.authedFetch(deviceB.accessToken)("/auth/status")
+    expect(stillA.status).toBe(401)
+    expect(stillB.status).toBe(401)
+
+    // A fresh login with the new password produces a working token.
     const newLogin = await app.fetch("/auth/login", {
       method: "POST",
       json: { username: alice.username, password: STRONG_NEW_PASSWORD },
     })
     expectOk(newLogin)
-
-    const stillA = await app.authedFetch(deviceA.accessToken)("/auth/status")
-    const stillB = await app.authedFetch(deviceB.accessToken)("/auth/status")
-    if (stillA.status === 200 || stillB.status === 200) {
-      // GAP: CredentialStoreJwt.revokeAllForUser() is a no-op (stateless).
-      // The controller calls auth.revokeAllForUser(), but no enumeration is
-      // possible without per-user index — pre-existing tokens remain valid
-      // until natural expiry. Logged for follow-up; failure here would tighten
-      // the assertion once a per-user index lands (Memory store / Redis).
-      expect(stillA.status).toBe(200)
-      expect(stillB.status).toBe(200)
-    } else {
-      expect(stillA.status).toBe(401)
-      expect(stillB.status).toBe(401)
-    }
+    const { accessToken: freshToken } = await newLogin.json()
+    const fresh = await app.authedFetch(freshToken)("/auth/status")
+    expect(fresh.status).toBe(200)
   })
 })
 

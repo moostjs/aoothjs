@@ -82,6 +82,18 @@ export class AuthCredential<TClaims extends object = object> {
   private readonly maxConcurrent?: number;
   private readonly onLimit: "reject" | "evict-oldest";
   private readonly clock: Clock;
+  /**
+   * Recently-consumed refresh tokens, keyed by the raw refresh token string.
+   * Lets `'always'` rotation detect reuse: stateful stores forget the token
+   * after `consume`, and stateless (JWT) stores hide it behind a denylist hit
+   * on `retrieve`. Without this map the orchestrator can no longer distinguish
+   * "fake token" from "previously valid token replayed". Pruned lazily on
+   * access; bounded by refresh TTL.
+   */
+  private readonly consumedRefreshes = new Map<
+    string,
+    { userId: string; iat: number; exp: number }
+  >();
 
   constructor(opts: AuthCredentialOptions<TClaims>) {
     this.store = opts.store;
@@ -172,6 +184,13 @@ export class AuthCredential<TClaims extends object = object> {
 
     const oldState = await this.store.retrieve(refreshToken);
     if (!oldState) {
+      // Stateful stores drop the consumed token; JWT stores hide it behind a
+      // denylist hit on retrieve. The consumed-refreshes map preserves the
+      // reuse signal across both so 'always' rotation can fire theft response.
+      const consumed = this.lookupConsumedRefresh(refreshToken);
+      if (consumed) {
+        await this.fireRefreshReuseTheftResponse(consumed, refreshToken);
+      }
       throw new AuthError("INVALID_TOKEN");
     }
     if (oldState.kind !== "refresh") {
@@ -182,10 +201,16 @@ export class AuthCredential<TClaims extends object = object> {
       case "none":
         // Issue new access only; keep the refresh token in place.
         return await this.refreshNone(oldState, refreshToken, now);
-      case "always":
+      case "always": {
         // Single-use refresh: consume old, issue new pair.
         await this.store.consume(refreshToken);
+        this.consumedRefreshes.set(refreshToken, {
+          userId: oldState.userId,
+          iat: oldState.issuedAt,
+          exp: oldState.expiresAt,
+        });
         return await this.issueRotatedPair(oldState, refreshToken, /* rotateOld */ false, now);
+      }
       case "sliding":
         return await this.refreshSliding(oldState, refreshToken, now);
       default: {
@@ -339,5 +364,32 @@ export class AuthCredential<TClaims extends object = object> {
       refreshToken: newRefreshToken,
       refreshExpiresAt: now + this.refreshConfig.ttl,
     };
+  }
+
+  private lookupConsumedRefresh(
+    token: string,
+  ): { userId: string; iat: number; exp: number } | null {
+    const entry = this.consumedRefreshes.get(token);
+    if (!entry) return null;
+    if (entry.exp <= this.clock.now()) {
+      this.consumedRefreshes.delete(token);
+      return null;
+    }
+    return entry;
+  }
+
+  private async fireRefreshReuseTheftResponse(
+    consumed: { userId: string; iat: number; exp: number },
+    refreshToken: string,
+  ): Promise<void> {
+    this.refreshConfig?.onRotationReuse?.({
+      userId: consumed.userId,
+      issuedAt: consumed.iat,
+      expiresAt: consumed.exp,
+      kind: "refresh",
+    });
+    await this.store.revokeAllForUser(consumed.userId);
+    this.consumedRefreshes.delete(refreshToken);
+    throw new AuthError("REFRESH_REUSE_DETECTED", undefined, { userId: consumed.userId });
   }
 }

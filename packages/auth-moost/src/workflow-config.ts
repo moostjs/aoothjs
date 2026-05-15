@@ -2,6 +2,16 @@ import type { BuildMagicLinkUrl, EmailSender } from "@aoothjs/auth";
 import { Injectable } from "moost";
 
 /**
+ * Input passed to {@link AuthWorkflowsOptions.prepareUser}: the validated
+ * invite-step `email` plus the parsed `roles[]` array the workflow already
+ * computed (empty when the admin did not specify any roles).
+ */
+export interface InvitePrepareUserInput {
+  email: string;
+  roles: string[];
+}
+
+/**
  * `wfStateStore` is typed `unknown` so this package's public surface does not
  * pull `@atscript/moost-wf` into consumers' type-check at the boundary —
  * Aooth never inspects it, the workflow steps do.
@@ -18,6 +28,24 @@ export interface AuthWorkflowsOptions {
     recovery?: boolean;
     invite?: boolean;
   };
+  /**
+   * Called by `InviteWorkflow.accept` immediately before
+   * `userService.createUser` to populate consumer-specific required user
+   * fields (e.g. `tenantId`) without subclassing the user store. The returned
+   * object is forwarded as the `extras` argument to `createUser`.
+   */
+  prepareUser?: (
+    input: InvitePrepareUserInput,
+  ) => Record<string, unknown> | Promise<Record<string, unknown>>;
+  /**
+   * Resolves the recovery-step `email` input to the `username` (user-id) that
+   * `UserService.getUser` expects. Apps whose user model separates `username`
+   * and `email` MUST provide this — otherwise `RecoveryWorkflow.requestRecovery`
+   * falls back to `userService.getUser(email)`, which delegates to
+   * `userStore.findByUsername(email)` and silently misses for any user whose
+   * `username !== email`. Return `null` when no user matches that email.
+   */
+  emailToUserId?: (email: string) => Promise<string | null> | string | null;
 }
 
 export interface ResolvedAuthWorkflowsConfig {
@@ -28,6 +56,10 @@ export interface ResolvedAuthWorkflowsConfig {
   inviteTokenTtlMs: number;
   mfaCodeTtlMs: number;
   workflows: { login: boolean; recovery: boolean; invite: boolean };
+  prepareUser?: (
+    input: InvitePrepareUserInput,
+  ) => Record<string, unknown> | Promise<Record<string, unknown>>;
+  emailToUserId?: (email: string) => Promise<string | null> | string | null;
 }
 
 export const DEFAULT_RECOVERY_TOKEN_TTL_MS = 60 * 60 * 1000;
@@ -86,6 +118,8 @@ export class MoostAuthWorkflowConfig {
         recovery: wf.recovery ?? true,
         invite: wf.invite ?? true,
       },
+      prepareUser: opts.prepareUser,
+      emailToUserId: opts.emailToUserId,
     };
   }
 }

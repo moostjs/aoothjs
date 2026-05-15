@@ -1,5 +1,6 @@
 import { Tenant } from './tenant'
 import { Project } from './project'
+import { Comment } from './comment'
 
 @db.table 'tasks'
 @db.http.path '/tasks'
@@ -54,6 +55,9 @@ export interface Task {
 
     @db.default.now
     updatedAt: number.timestamp
+
+    @db.rel.from
+    comments?: Comment[]
 }
 
 export interface NewTaskForm {

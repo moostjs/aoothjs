@@ -135,17 +135,14 @@ export function makeHandoverWorkflow(tables: HandoverWfTables): HandoverWorkflow
 
       const currentUser = useAuth().getCurrentUserId()
       const isOwner = project.ownerUsername === currentUser
-      let isAdmin = false
       if (!isOwner) {
-        try {
-          const result = await useArbac().evaluate({ resource: "projects", action: "replace" })
-          isAdmin = result.allowed === true
-        } catch {
-          isAdmin = false
+        const { allowed } = await useArbac().evaluate({
+          resource: "projects",
+          action: "replace",
+        })
+        if (!allowed) {
+          throw new HttpError(403, "Only project owner or admin can transfer ownership")
         }
-      }
-      if (!isOwner && !isAdmin) {
-        throw new HttpError(403, "Only project owner or admin can transfer ownership")
       }
 
       ctx.projectId = project.id

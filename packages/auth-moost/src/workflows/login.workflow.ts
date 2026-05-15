@@ -12,7 +12,7 @@
  */
 import { ArbacPublic } from "@aoothjs/arbac-moost";
 import { AuthCredential } from "@aoothjs/auth";
-import { UserAuthError, UserService, verifyTotpCode } from "@aoothjs/user";
+import { UserAuthError, UserService } from "@aoothjs/user";
 import { HttpError } from "@moostjs/event-http";
 import { Step, useWfFinished, Workflow, WorkflowParam, WorkflowSchema } from "@moostjs/event-wf";
 import { Controller, Injectable, useControllerContext } from "moost";
@@ -91,15 +91,31 @@ export class LoginWorkflow {
 
     const cc = useControllerContext();
     const users = await cc.instantiate(UserService);
-    const user = await users.getUser(ctx.username);
 
-    const totp = user.mfa.methods.find((m) => m.name === "totp" && m.confirmed);
-    if (!totp) {
-      // Reachable only if MFA methods were deleted between login & mfa step.
-      throw new HttpError(400, "No TOTP MFA configured");
-    }
-    if (!verifyTotpCode(totp.value, input.code as string)) {
-      return httpInputRequired(MfaCodeForm, ctx, { code: "Invalid code" });
+    try {
+      await users.verifyMfa(ctx.username, input.code as string);
+    } catch (err) {
+      if (err instanceof UserAuthError) {
+        if (err.type === "LOCKED") {
+          throw new HttpError(423, "Account locked");
+        }
+        if (err.type === "INACTIVE") {
+          // Account deactivated between credentials & mfa step.
+          throw new HttpError(401, "Invalid credentials");
+        }
+        if (err.type === "MFA_NOT_CONFIGURED") {
+          // Reachable only if MFA methods were deleted between login & mfa step.
+          throw new HttpError(400, "No TOTP MFA configured");
+        }
+        if (err.type === "MFA_INVALID") {
+          // Lockout was just tripped — surface 423 so the client stops retrying.
+          if (err.details?.lockEnds !== undefined) {
+            throw new HttpError(423, "Account locked");
+          }
+          return httpInputRequired(MfaCodeForm, ctx, { code: "Invalid code" });
+        }
+      }
+      throw err;
     }
     return undefined;
   }

@@ -211,6 +211,105 @@ describe("useArbac action-resolution priority", () => {
   });
 });
 
+describe("useArbac().evaluateOrThrow", () => {
+  beforeEach(() => {
+    clearGlobalWooks();
+  });
+
+  function buildArbacAllowing(): MoostArbac<Record<string, never>, DemoScope> {
+    const arbac = new MoostArbac<Record<string, never>, DemoScope>();
+    arbac.registerRole({
+      id: "creator",
+      rules: [
+        {
+          resource: "tasks",
+          action: "new",
+          scope: () => ({ filter: { ok: true } }),
+        },
+      ],
+    });
+    return arbac;
+  }
+
+  /**
+   * Captures the `evaluateOrThrow` outcome (resolved value or thrown HttpError
+   * status+message) into the response body so tests can assert on either path.
+   */
+  const ProbeEvaluateOrThrow = (resource: string, action: string) =>
+    Resolve(async () => {
+      try {
+        const r = await useArbac().evaluateOrThrow({ resource, action });
+        return { ok: true as const, allowed: r.allowed, userId: r.userId };
+      } catch (err) {
+        const e = err as { code?: number; message?: string };
+        return { ok: false as const, status: e.code, message: e.message };
+      }
+    });
+
+  @Controller("probe-allow")
+  class ProbeAllowController {
+    @Get("a")
+    handler(@ProbeEvaluateOrThrow("tasks", "new") result?: unknown) {
+      return { result };
+    }
+  }
+
+  @Controller("probe-deny")
+  class ProbeDenyController {
+    @Get("a")
+    handler(@ProbeEvaluateOrThrow("tasks", "remove") result?: unknown) {
+      return { result };
+    }
+  }
+
+  it("returns { allowed: true, userId } when arbac evaluates allow", async () => {
+    const arbac = buildArbacAllowing();
+    const app = new Moost();
+    const user = new TestUserProvider("u1", ["creator"]);
+    app.setReplaceRegistry(createReplaceRegistry([ArbacUserProvider, TestUserProvider]));
+    app.setProvideRegistry(
+      createProvideRegistry([TestUserProvider, () => user], [MoostArbac, () => arbac]),
+    );
+    const http = new MoostHttp();
+    app.adapter(http);
+    app.registerControllers(ProbeAllowController);
+    await app.init();
+
+    const res = await http.request("/probe-allow/a");
+    expect(res?.status).toBe(200);
+    const body = (await res!.json()) as {
+      result: { ok: true; allowed: boolean; userId: string };
+    };
+    expect(body.result.ok).toBe(true);
+    expect(body.result.allowed).toBe(true);
+    expect(body.result.userId).toBe("u1");
+  });
+
+  it("throws HttpError(403) when arbac evaluates deny", async () => {
+    const arbac = buildArbacAllowing();
+    const app = new Moost();
+    const user = new TestUserProvider("u1", ["creator"]);
+    app.setReplaceRegistry(createReplaceRegistry([ArbacUserProvider, TestUserProvider]));
+    app.setProvideRegistry(
+      createProvideRegistry([TestUserProvider, () => user], [MoostArbac, () => arbac]),
+    );
+    const http = new MoostHttp();
+    app.adapter(http);
+    app.registerControllers(ProbeDenyController);
+    await app.init();
+
+    const res = await http.request("/probe-deny/a");
+    expect(res?.status).toBe(200);
+    const body = (await res!.json()) as {
+      result: { ok: false; status: number; message: string };
+    };
+    expect(body.result.ok).toBe(false);
+    expect(body.result.status).toBe(403);
+    expect(body.result.message).toContain("tasks");
+    expect(body.result.message).toContain("remove");
+  });
+});
+
 describe("useArbac integration: @DbAction('new') resolves to action 'new'", () => {
   beforeEach(() => {
     clearGlobalWooks();

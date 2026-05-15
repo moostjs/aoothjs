@@ -124,10 +124,31 @@ describe("WF-RECOVERY — single-use + session-survival", () => {
 })
 
 describe("WF-RECOVERY — TTL expiry", () => {
-  // GAP: `recoveryTokenTtlMs` only feeds the email's `expiresAt` display + the
-  // outlet URL helpers; the persisted wf-state token expiry is hardcoded by
-  // `@StepTTL(60 * 60 * 1000)` on `RecoveryWorkflow.sendLink`. Without
-  // overriding the workflow source there's no env override that shortens the
-  // actual replay window. Re-enable when `@StepTTL` becomes config-driven.
-  it.skip("WF-RECOVERY-04 — magic link expires after TTL (gap: @StepTTL hardcoded to 1h)", () => {})
+  it("WF-RECOVERY-04 — magic link expires after TTL (config-driven)", async () => {
+    // BUG-12 fix: `recoveryTokenTtlMs` (env.RECOVERY_TTL_MS) now drives the
+    // persisted wf-state token expiry, not just the email envelope display.
+    const app = await buildTestApp({ envOverrides: { RECOVERY_TTL_MS: 1000 } })
+    try {
+      const bob = app.fixtures.users.t1_bob
+      const start = await app.triggerWf("public", { wfid: "auth.recovery" })
+      const startBody = await readWfPause(start)
+      await app.triggerWf("public", {
+        wfid: "auth.recovery",
+        wfs: startBody.wfs,
+        input: { email: bob.email },
+      })
+      const email = await app.emailSender.next(
+        (e) => e.kind === "recovery.magicLink" && e.recipient === bob.email,
+        2000,
+      )
+
+      // Wait past the TTL so the persisted token expires before resume.
+      await sleep(1100)
+
+      const replay = await app.resumeWfFromUrl(email.url as string)
+      expect(replay.status).toBe(410)
+    } finally {
+      await app.close()
+    }
+  })
 })

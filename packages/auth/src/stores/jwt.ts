@@ -77,6 +77,15 @@ export class CredentialStoreJwt<
   private readonly audience?: string;
   private readonly denylist?: DenylistStore;
   private readonly clock: Clock;
+  /**
+   * Per-user revocation epoch (ms). `revokeAllForUser` sets this to
+   * `clock.now()`; `retrieve` rejects any token whose `iatMs` is not strictly
+   * greater than the user's epoch. Compensates for JWT statelessness so
+   * password-change cascades invalidate tokens minted before the change.
+   * In-memory: resets on process restart (a known JWT limitation — production
+   * deployments needing durability should back this with an external store).
+   */
+  private readonly epochs = new Map<string, number>();
 
   constructor(opts: CredentialStoreJwtOptions) {
     this.algorithm = opts.algorithm ?? "HS256";
@@ -142,6 +151,7 @@ export class CredentialStoreJwt<
     if (this.denylist && verified.payload.jti) {
       if (await this.denylist.has(verified.payload.jti)) return null;
     }
+    if (!this.passesEpoch(verified.payload)) return null;
     return this.payloadToState(verified.payload);
   }
 
@@ -149,6 +159,7 @@ export class CredentialStoreJwt<
     const denylist = this.requireDenylist("consume");
     const verified = await this.verify(token);
     if (!verified) return null;
+    if (!this.passesEpoch(verified.payload)) return null;
     const jti = verified.payload.jti;
     if (jti) {
       if (await denylist.has(jti)) return null;
@@ -173,11 +184,12 @@ export class CredentialStoreJwt<
     await denylist.add(verified.payload.jti, this.payloadExpMs(verified.payload));
   }
 
-  async revokeAllForUser(_userId: string): Promise<number> {
-    // Stateless: nothing to enumerate. Returning 0 lets the orchestrator's
-    // theft-response path (which best-effort revokes-all before throwing
-    // REFRESH_REUSE_DETECTED) succeed when only a denylist is available.
-    return 0;
+  async revokeAllForUser(userId: string): Promise<number> {
+    // Stateless: bump a per-user epoch; tokens with iatMs <= epoch are rejected
+    // (strictly-greater gate covers same-ms collisions). Returns 1 to signal
+    // "revocation took effect" without claiming a precise count.
+    this.epochs.set(userId, this.clock.now());
+    return 1;
   }
 
   // --- internal helpers -------------------------------------------------
@@ -195,6 +207,25 @@ export class CredentialStoreJwt<
   /** Convert payload `exp` (seconds) to ms; fall back to a 60s window. */
   private payloadExpMs(payload: JWTPayload): number {
     return typeof payload.exp === "number" ? payload.exp * 1000 : this.clock.now() + 60_000;
+  }
+
+  /**
+   * Reject tokens minted before the user's revocation epoch. `iatMs` mirrors
+   * `iat` at ms precision; we fall back to `iat * 1000` for tokens that
+   * predate the mirror field.
+   */
+  private passesEpoch(payload: JWTPayload): boolean {
+    if (typeof payload.sub !== "string") return true;
+    const epoch = this.epochs.get(payload.sub);
+    if (epoch === undefined) return true;
+    const stateClaim = (payload.state ?? {}) as StateClaim;
+    const iatMs =
+      typeof stateClaim.iatMs === "number"
+        ? stateClaim.iatMs
+        : typeof payload.iat === "number"
+          ? payload.iat * 1000
+          : 0;
+    return iatMs > epoch;
   }
 
   private async verify(token: string): Promise<{ payload: JWTPayload } | null> {

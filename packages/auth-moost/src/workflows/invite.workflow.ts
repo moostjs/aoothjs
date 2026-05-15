@@ -40,7 +40,6 @@ import { HttpError } from "@moostjs/event-http";
 import {
   outletEmail,
   Step,
-  StepTTL,
   useWfFinished,
   Workflow,
   WorkflowParam,
@@ -119,7 +118,6 @@ export class InviteWorkflow {
   }
 
   @Step("inviteSendLink")
-  @StepTTL(7 * 24 * 60 * 60 * 1000)
   async sendLink(@WorkflowParam("context") ctx: InviteWfCtx): Promise<unknown> {
     if (ctx.linkSent) return undefined;
     ctx.linkSent = true;
@@ -127,10 +125,15 @@ export class InviteWorkflow {
     const cc = useControllerContext();
     const wfConfig = await cc.instantiate(MoostAuthWorkflowConfig);
     const config = wfConfig.config;
-    return outletEmail(ctx.email as string, "invite.magicLink", {
-      ...(ctx.roles && { roles: ctx.roles }),
-      expiresAtMs: config.inviteTokenTtlMs,
-    });
+    // Runtime TTL — `@StepTTL` resolves at class-definition time, so we attach
+    // `expires` to the outlet result (MoostWf only overrides when `@StepTTL`).
+    return {
+      ...outletEmail(ctx.email as string, "invite.magicLink", {
+        ...(ctx.roles && { roles: ctx.roles }),
+        expiresAtMs: config.inviteTokenTtlMs,
+      }),
+      expires: Date.now() + config.inviteTokenTtlMs,
+    };
   }
 
   @Step("inviteAccept")
@@ -153,14 +156,20 @@ export class InviteWorkflow {
     }
 
     const cc = useControllerContext();
-    const [users, auth, config] = await Promise.all([
+    const [users, auth, config, wfConfig] = await Promise.all([
       cc.instantiate(UserService),
       cc.instantiate(AuthCredential),
       cc.instantiate(MoostAuthConfig),
+      cc.instantiate(MoostAuthWorkflowConfig),
     ]);
 
+    const prepareUser = wfConfig.config.prepareUser;
+    const extras = prepareUser
+      ? await prepareUser({ email: ctx.email, roles: ctx.roles ?? [] })
+      : undefined;
+
     try {
-      await users.createUser(ctx.email, input.newPassword as string);
+      await users.createUser(ctx.email, input.newPassword as string, extras);
     } catch (err) {
       translatePasswordSetError(err);
     }

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test"
 
-import { buildTestApp, expectOk, installDyeStubs, readWfPause, type TestApp } from "./harness"
+import { buildTestApp, expectOk, installDyeStubs, readWfPause, sleep, type TestApp } from "./harness"
 
 installDyeStubs()
 
@@ -146,10 +146,37 @@ describe("WF-INVITE — admin-gated invite", () => {
 })
 
 describe("WF-INVITE — TTL expiry", () => {
-  // GAP: `inviteTokenTtlMs` only feeds the email's `expiresAt` display; the
-  // persisted wf-state token expiry is hardcoded by
-  // `@StepTTL(7 * 24 * 60 * 60 * 1000)` on `InviteWorkflow.sendLink`. Without
-  // overriding the workflow source there's no env override that shortens the
-  // actual replay window. Re-enable when `@StepTTL` becomes config-driven.
-  it.skip("WF-INVITE-04 — invite link expires after TTL (gap: @StepTTL hardcoded to 7d)", () => {})
+  it("WF-INVITE-04 — invite link expires after TTL (config-driven)", async () => {
+    // BUG-12 fix: `inviteTokenTtlMs` (env.INVITE_TTL_MS) now drives the
+    // persisted wf-state token expiry, not just the email envelope display.
+    const app = await buildTestApp({ envOverrides: { INVITE_TTL_MS: 1000 } })
+    try {
+      const dave = app.fixtures.users.t1_dave
+      const daveTokens = await app.loginAs(dave)
+      const inviteEmail = "ttl-test@acme.test"
+
+      const start = await app.triggerWf("admin", { wfid: "auth.invite" }, {
+        token: daveTokens.accessToken,
+      })
+      const startBody = await readWfPause(start)
+      await app.triggerWf("admin", {
+        wfid: "auth.invite",
+        wfs: startBody.wfs,
+        input: { email: inviteEmail },
+      }, { token: daveTokens.accessToken })
+
+      const captured = await app.emailSender.next(
+        (e) => e.kind === "invite.magicLink" && e.recipient === inviteEmail,
+        2000,
+      )
+
+      // Wait past the TTL so the persisted token expires before resume.
+      await sleep(1100)
+
+      const replay = await app.resumeWfFromUrl(captured.url as string)
+      expect(replay.status).toBe(410)
+    } finally {
+      await app.close()
+    }
+  })
 })

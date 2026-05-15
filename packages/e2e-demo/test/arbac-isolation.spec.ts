@@ -109,7 +109,7 @@ describe("ISO — write isolation (mutations; isolated app per test)", () => {
     await app.close()
   })
 
-  it("ISO-05 — PATCH cross-tenant by id MUST NOT modify (BUG-SHAPE: fails until scope is ANDed with body.id)", async () => {
+  it("ISO-05 — PATCH cross-tenant by id MUST NOT modify (scope ANDed with body.id)", async () => {
     const tenantB = app.fixtures.tenants["tenant-b"]
     const tB = app.fixtures.tasks.tenantB[0]
 
@@ -125,22 +125,14 @@ describe("ISO — write isolation (mutations; isolated app per test)", () => {
 
     const after = (await dbFindOne(app, "tasks", { id: tB })) as TaskRow
 
-    // SPEC: scope filter MUST AND with body.id; tenant-A admin cannot touch
-    // tenant-B rows. Expected: { matchedCount: 0 } (or 404). Current
-    // implementation sends `table.updateOne(payload)` without intersecting
-    // with the scope filter — the row is mutated AND admin's `set` overwrites
-    // its tenantId to A, silently moving the row across tenants.
-    if (res.status === 202 || res.status === 200) {
-      const body = (await res.json()) as { matchedCount?: number }
-      expect(body.matchedCount ?? 0).toBe(0)
-    } else {
-      expect(res.status).toBe(404)
-    }
+    // SPEC: scope filter is ANDed with body.id; tenant-A admin cannot touch
+    // tenant-B rows. The PATCH is rejected with 404 (out of scope).
+    expect(res.status).toBe(404)
     expect(after.tenantId).toBe(tenantB)
     expect(after.title).toBe(originalTitle)
   })
 
-  it("ISO-06 — DELETE cross-tenant by id MUST NOT delete (BUG-SHAPE: fails until scope gates delete)", async () => {
+  it("ISO-06 — DELETE cross-tenant by id MUST NOT delete (scope gates delete)", async () => {
     const tB = app.fixtures.tasks.tenantB[1]
 
     const before = await dbFindOne(app, "tasks", { id: tB })
@@ -149,15 +141,8 @@ describe("ISO — write isolation (mutations; isolated app per test)", () => {
     const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_dave)
     const res = await fetch(`/tasks/${tB}`, { method: "DELETE" })
 
-    // SPEC: scope MUST gate delete by tenant. Expected: 404 / deletedCount=0.
-    // Current implementation: `table.deleteOne(id)` with no scope filter; row
-    // is removed.
-    if (res.status === 202 || res.status === 200) {
-      const body = (await res.json()) as { deletedCount?: number }
-      expect(body.deletedCount ?? 0).toBe(0)
-    } else {
-      expect(res.status).toBe(404)
-    }
+    // SPEC: scope gates delete by tenant. Out-of-scope id rejected with 404.
+    expect(res.status).toBe(404)
     const after = await dbFindOne(app, "tasks", { id: tB })
     expect(after).toBeTruthy()
   })

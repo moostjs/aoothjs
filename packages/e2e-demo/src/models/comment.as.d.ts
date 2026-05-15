@@ -22,6 +22,7 @@ export declare class Comment {
   authorUsername: string
   body: string
   createdAt: number /* timestamp */
+  task?: Task
   static __is_atscript_annotated_type: true
   static type: TAtscriptTypeObject<keyof Comment, Comment>
   static metadata: TMetadataMap<AtscriptMetadata>
@@ -37,6 +38,43 @@ export declare class Comment {
     "authorUsername": string
     "body": string
     "createdAt": number /* timestamp */
+    "task"?: never
+    "task.id"?: string
+    "task.tenantId"?: string /* id */
+    "task.projectId"?: Project["id"]
+    "task.title"?: string
+    "task.creatorUsername"?: string
+    "task.status"?: "open" | "in_progress" | "done"
+    "task.description"?: string
+    "task.assigneeUsername"?: string
+    "task.priority"?: "low" | "medium" | "high"
+    "task.dueDate"?: number /* timestamp */
+    "task.internalNotes"?: string
+    "task.createdAt"?: number /* timestamp */
+    "task.updatedAt"?: number /* timestamp */
+    "task.comments"?: never
+    "task.comments.id"?: string
+    "task.comments.tenantId"?: string /* id */
+    "task.comments.taskId"?: string /* id */
+    "task.comments.authorUsername"?: string
+    "task.comments.body"?: string
+    "task.comments.createdAt"?: number /* timestamp */
+    "task.comments.task"?: {
+      id: string
+      tenantId: string /* id */
+      projectId: Project["id"]
+      title: string
+      creatorUsername: string
+      status: "open" | "in_progress" | "done"
+      description?: string
+      assigneeUsername?: string
+      priority?: "low" | "medium" | "high"
+      dueDate?: number /* timestamp */
+      internalNotes?: string
+      createdAt: number /* timestamp */
+      updatedAt: number /* timestamp */
+      comments?: Comment[]
+    }
   }
   static __ownProps: {
     "id": string
@@ -45,6 +83,10 @@ export declare class Comment {
     "authorUsername": string
     "body": string
     "createdAt": number /* timestamp */
+  }
+  
+  static __navProps: {
+    "task"?: Task
   }
   
   static __pk: string

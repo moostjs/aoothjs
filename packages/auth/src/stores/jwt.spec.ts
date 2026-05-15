@@ -128,12 +128,28 @@ describe("CredentialStoreJwt", () => {
       }
     });
 
-    it("revokeAllForUser is a best-effort no-op (returns 0)", async () => {
+    it("revokeAllForUser bumps epoch and rejects tokens minted before it", async () => {
       const store = new CredentialStoreJwt({ secret: SECRET, clock });
-      // Stateless cannot enumerate; orchestrator's theft-response relies on
-      // this returning rather than throwing so the caller still sees the
-      // intended REFRESH_REUSE_DETECTED error.
-      expect(await store.revokeAllForUser("alice")).toBe(0);
+      const oldToken = await store.persist(makeState("alice", clock.now()));
+      // Tokens minted before the revoke must be rejected after the epoch bump.
+      clock.advance(1);
+      expect(await store.revokeAllForUser("alice")).toBe(1);
+      expect(await store.retrieve(oldToken)).toBeNull();
+
+      // A freshly issued token (iat >= epoch) is accepted.
+      clock.advance(1);
+      const newToken = await store.persist(makeState("alice", clock.now()));
+      expect(await store.retrieve(newToken)).not.toBeNull();
+    });
+
+    it("revokeAllForUser is scoped per-user (other users unaffected)", async () => {
+      const store = new CredentialStoreJwt({ secret: SECRET, clock });
+      const aliceToken = await store.persist(makeState("alice", clock.now()));
+      const bobToken = await store.persist(makeState("bob", clock.now()));
+      clock.advance(1);
+      await store.revokeAllForUser("alice");
+      expect(await store.retrieve(aliceToken)).toBeNull();
+      expect(await store.retrieve(bobToken)).not.toBeNull();
     });
 
     it("consume requires a denylist (otherwise throws)", async () => {

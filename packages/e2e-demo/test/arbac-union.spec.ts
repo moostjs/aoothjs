@@ -101,21 +101,14 @@ describe("UNION-04 — superadmin overlapped with viewer", () => {
     await app.close()
   })
 
-  it("UNION-04 — superadmin + viewer still sees all tenants (BUG-SHAPE: empty filter must win union)", async () => {
+  it("UNION-04 — superadmin + viewer still sees all tenants", async () => {
     const { fetch } = await loginAndFetch(app, app.fixtures.users._super)
     const res = await fetch("/tasks/query")
     expect(res.status).toBe(200)
     const rows = (await res.json()) as Array<{ tenantId: string }>
     const tenantIds = new Set(rows.map((r) => r.tenantId))
-    // SPEC: superadmin grants universe access (no scope); viewer adds a tenant
-    // filter. Union must yield universe — empty filter beats any scoped filter
-    // per `mergeScopeFilters` semantics. Currently fails: rules without a
-    // `scope` function contribute NOTHING to the scopes array (see
-    // arbac-core's evaluate loop), so the viewer's tenantId filter is the
-    // only contributor and the superadmin grant is effectively dropped from
-    // filter merging. A no-scope `allow` rule should inject `{}` (universe
-    // sentinel) into scopes so that `mergeScopeFilters` short-circuits to
-    // undefined.
+    // SPEC: no-scope `allow` is universe; under multi-role union universe must
+    // beat any scoped filter.
     expect(tenantIds.has(app.fixtures.tenants["tenant-a"])).toBe(true)
     expect(tenantIds.has(app.fixtures.tenants["tenant-b"])).toBe(true)
     expect(rows.length).toBe(

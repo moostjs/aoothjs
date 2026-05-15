@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach } from "vite-plus/test";
 import { UserAuthError } from "./errors";
+import { generateTotpCode, generateTotpSecret } from "./mfa/totp";
 import { ppHasMinLength, ppHasUpperCase } from "./password/policies";
 import { UserService } from "./user-service";
 import { UserStoreMemory } from "./store/memory";
@@ -52,6 +53,38 @@ describe("UserService", () => {
         expect(e).toBeInstanceOf(UserAuthError);
         expect((e as UserAuthError).type).toBe("ALREADY_EXISTS");
       }
+    });
+
+    it("should merge extras into the created user", async () => {
+      interface CustomUser {
+        tenantId?: string;
+        roles?: string[];
+      }
+      const customStore = new UserStoreMemory<CustomUser>();
+      const customSvc = new UserService<CustomUser>(customStore, {
+        password: { ...FAST_SCRYPT },
+        clock: () => now,
+      });
+      const user = await customSvc.createUser("alice", "pass123", {
+        tenantId: "acme",
+        roles: ["admin"],
+      });
+      expect(user.tenantId).toBe("acme");
+      expect(user.roles).toEqual(["admin"]);
+      // Base shape is preserved (extras merge AFTER base, but don't clobber
+      // unrelated fields).
+      expect(user.username).toBe("alice");
+      expect(user.account.active).toBe(false);
+    });
+
+    it("extras can override base UserCredentials fields", async () => {
+      // `id` is the canonical case — consumers' DB schemas often replace the
+      // empty-string default with a UUID/ID generator.
+      const user = await svc.createUser("alice", "pass123", {
+        // biome-ignore lint/suspicious/noExplicitAny: cross-extending base shape in test
+        id: "user-123",
+      } as any);
+      expect(user.id).toBe("user-123");
     });
   });
 
@@ -676,6 +709,149 @@ describe("UserService", () => {
     it("should throw NOT_FOUND when consuming for an unknown user", async () => {
       try {
         await svc.consumeBackupCode("unknown", "ANY-CODE-HE");
+        expect.unreachable();
+      } catch (e) {
+        expect((e as UserAuthError).type).toBe("NOT_FOUND");
+      }
+    });
+  });
+
+  describe("verifyMfa", () => {
+    let mfaSvc: UserService;
+    let secret: string;
+
+    beforeEach(async () => {
+      mfaSvc = new UserService(store, {
+        password: { ...FAST_SCRYPT },
+        lockout: { threshold: 3, duration: 60000 },
+        clock: () => now,
+      });
+      await createActiveUser(mfaSvc, "alice", "pass123");
+      secret = generateTotpSecret();
+      await mfaSvc.addMfaMethod("alice", { name: "totp", confirmed: true, value: secret });
+    });
+
+    it("should accept a valid TOTP code", async () => {
+      const code = generateTotpCode(secret, { clock: () => now });
+      await mfaSvc.verifyMfa("alice", code, { clock: () => now });
+    });
+
+    it("should throw MFA_INVALID on a wrong code", async () => {
+      try {
+        await mfaSvc.verifyMfa("alice", "000000", { clock: () => now });
+        expect.unreachable();
+      } catch (e) {
+        expect((e as UserAuthError).type).toBe("MFA_INVALID");
+      }
+    });
+
+    it("should throw MFA_NOT_CONFIGURED when user has no confirmed TOTP", async () => {
+      await mfaSvc.removeMfaMethod("alice", "totp");
+      try {
+        await mfaSvc.verifyMfa("alice", "123456", { clock: () => now });
+        expect.unreachable();
+      } catch (e) {
+        expect((e as UserAuthError).type).toBe("MFA_NOT_CONFIGURED");
+      }
+    });
+
+    it("should increment failedLoginAttempts on wrong code", async () => {
+      try {
+        await mfaSvc.verifyMfa("alice", "000000", { clock: () => now });
+      } catch {}
+      try {
+        await mfaSvc.verifyMfa("alice", "111111", { clock: () => now });
+      } catch {}
+      const user = await mfaSvc.getUser("alice");
+      expect(user.account.failedLoginAttempts).toBe(2);
+    });
+
+    it("should lock the account after threshold MFA failures", async () => {
+      for (let i = 0; i < 3; i++) {
+        try {
+          await mfaSvc.verifyMfa("alice", "000000", { clock: () => now });
+        } catch {}
+      }
+      const user = await mfaSvc.getUser("alice");
+      expect(user.account.locked).toBe(true);
+      expect(user.account.lockReason).toBe("Too many login attempts");
+      expect(user.account.lockEnds).toBe(now + 60000);
+    });
+
+    it("should surface lockEnds in MFA_INVALID details when the failure trips the lock", async () => {
+      try {
+        await mfaSvc.verifyMfa("alice", "000000", { clock: () => now });
+      } catch {}
+      try {
+        await mfaSvc.verifyMfa("alice", "000000", { clock: () => now });
+      } catch {}
+      try {
+        await mfaSvc.verifyMfa("alice", "000000", { clock: () => now });
+        expect.unreachable();
+      } catch (e) {
+        expect((e as UserAuthError).type).toBe("MFA_INVALID");
+        expect((e as UserAuthError).details?.lockEnds).toBe(now + 60000);
+      }
+    });
+
+    it("should throw LOCKED on subsequent attempts when account is already locked", async () => {
+      for (let i = 0; i < 3; i++) {
+        try {
+          await mfaSvc.verifyMfa("alice", "000000", { clock: () => now });
+        } catch {}
+      }
+      try {
+        await mfaSvc.verifyMfa("alice", "999999", { clock: () => now });
+        expect.unreachable();
+      } catch (e) {
+        expect((e as UserAuthError).type).toBe("LOCKED");
+      }
+    });
+
+    it("should reset failedLoginAttempts on successful verification", async () => {
+      try {
+        await mfaSvc.verifyMfa("alice", "000000", { clock: () => now });
+      } catch {}
+      try {
+        await mfaSvc.verifyMfa("alice", "111111", { clock: () => now });
+      } catch {}
+      const code = generateTotpCode(secret, { clock: () => now });
+      await mfaSvc.verifyMfa("alice", code, { clock: () => now });
+      const user = await mfaSvc.getUser("alice");
+      expect(user.account.failedLoginAttempts).toBe(0);
+    });
+
+    it("should share the failure counter with login (one threshold across both factors)", async () => {
+      // Two wrong passwords + one wrong MFA = 3 total → lock.
+      try {
+        await mfaSvc.login("alice", "wrong");
+      } catch {}
+      try {
+        await mfaSvc.login("alice", "wrong");
+      } catch {}
+      try {
+        await mfaSvc.verifyMfa("alice", "000000", { clock: () => now });
+      } catch {}
+      const user = await mfaSvc.getUser("alice");
+      expect(user.account.locked).toBe(true);
+    });
+
+    it("should auto-unlock after lock duration expires before verifying", async () => {
+      for (let i = 0; i < 3; i++) {
+        try {
+          await mfaSvc.verifyMfa("alice", "000000", { clock: () => now });
+        } catch {}
+      }
+      now += 61000;
+      const code = generateTotpCode(secret, { clock: () => now });
+      await mfaSvc.verifyMfa("alice", code, { clock: () => now });
+      const user = await mfaSvc.getUser("alice");
+      expect(user.account.locked).toBe(false);
+    });
+
+    it("should throw NOT_FOUND for unknown user", async () => {
+      try {
+        await mfaSvc.verifyMfa("unknown", "123456", { clock: () => now });
         expect.unreachable();
       } catch (e) {
         expect((e as UserAuthError).type).toBe("NOT_FOUND");

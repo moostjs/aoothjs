@@ -27,9 +27,9 @@ export interface CredentialStore<TClaims extends object = object> {
   revoke(token: string): Promise<void>;
   /**
    * Revoke all credentials for a user. Returns count revoked.
-   * Stateless stores cannot enumerate and return 0 (best-effort no-op) — this
-   * keeps the orchestrator's theft-response path working when stateless stores
-   * are mixed with denylists.
+   * Stateless stores cannot enumerate individual tokens; they MAY implement
+   * the cascade via a per-user revocation epoch (see `CredentialStoreJwt`)
+   * and return a sentinel `1` to indicate "revocation took effect".
    */
   revokeAllForUser(userId: string): Promise<number>;
   /** List active credentials for a user (stateful only). */

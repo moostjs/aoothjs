@@ -103,6 +103,19 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     recoveryTokenTtlMs: env.RECOVERY_TTL_MS,
     inviteTokenTtlMs: env.INVITE_TTL_MS,
     workflows: opts.workflowsEnabled,
+    // Demonstrates the `prepareUser` hook: populate the consumer-required
+    // `tenantId` field before `userService.createUser` runs. Admins re-tenant
+    // invitees later via the user-management UI.
+    prepareUser: () => ({ tenantId: "_global" }),
+    // Demonstrates the `emailToUserId` resolver: maps a recovery-step email
+    // to the canonical username. In this demo `DemoUser.username` happens to
+    // equal `DemoUser.email` for seeded users, so a direct email lookup is
+    // enough — but the indirection is what makes recovery work for any user
+    // model where `username !== email`.
+    emailToUserId: async (email) => {
+      const user = await aooth.userStore.findByUsername(email)
+      return user ? user.username : null
+    },
   })
 
   setUserRecordFetcher((userId) => aooth.arbacUserReader.read(userId))

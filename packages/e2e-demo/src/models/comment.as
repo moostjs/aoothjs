@@ -27,4 +27,7 @@ export interface Comment {
 
     @db.default.now
     createdAt: number.timestamp
+
+    @db.rel.to
+    task?: Task
 }

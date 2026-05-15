@@ -137,7 +137,7 @@ describe("privilege composition in roles", () => {
 
     expect(await arbac.evaluate({ resource: "articles", action: "create" }, user)).toStrictEqual({
       allowed: true,
-      scopes: [],
+      scopes: [{}],
     });
 
     expect(await arbac.evaluate({ resource: "reports", action: "write" }, user)).toStrictEqual({

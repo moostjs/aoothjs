@@ -40,6 +40,7 @@ export {
   DEFAULT_RECOVERY_TOKEN_TTL_MS,
   MoostAuthWorkflowConfig,
   type AuthWorkflowsOptions,
+  type InvitePrepareUserInput,
   type ResolvedAuthWorkflowsConfig,
 } from "./workflow-config";
 export { setupAuthWorkflows } from "./workflow-setup";

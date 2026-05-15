@@ -4,11 +4,12 @@ packages:
   - explorations/*/backend
 
 catalog:
-  "@atscript/core": ^0.1.54
-  "@atscript/typescript": ^0.1.54
-  "@atscript/db": ^0.1.75
-  "@atscript/db-sqlite": ^0.1.75
-  "@atscript/db-sql-tools": ^0.1.75
+  "@atscript/core": ^0.1.55
+  "@atscript/typescript": ^0.1.55
+  "@atscript/db": ^0.1.78
+  "@atscript/db-sqlite": ^0.1.78
+  "@atscript/db-sql-tools": ^0.1.78
+  "@atscript/moost-db": ^0.1.78
   "@atscript/moost-wf": ^0.1.61
   "@atscript/ui": ^0.1.61
   "@atscript/ui-fns": ^0.1.61

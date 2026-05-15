@@ -39,7 +39,7 @@ import { setupAuthMoost } from "../auth.setup";
 import { Public } from "../auth.decorator";
 import { setupAuthWorkflows } from "../workflow-setup";
 import { createAuthEmailOutlet } from "../workflows/auth-email-outlet";
-import { MoostAuthWorkflowConfig } from "../workflow-config";
+import { MoostAuthWorkflowConfig, type AuthWorkflowsOptions } from "../workflow-config";
 
 export interface CapturedEmail {
   kind: string;
@@ -91,6 +91,10 @@ export interface PrepareWfOpts {
   /** Override the recovery / invite / mfa TTLs (e.g. for expiry tests). */
   recoveryTokenTtlMs?: number;
   inviteTokenTtlMs?: number;
+  /** Forwarded to `setupAuthWorkflows` — populates extras on invite-accept. */
+  prepareUser?: AuthWorkflowsOptions["prepareUser"];
+  /** Forwarded to `setupAuthWorkflows` — maps recovery email → username. */
+  emailToUserId?: AuthWorkflowsOptions["emailToUserId"];
 }
 
 /**
@@ -163,6 +167,8 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     workflows: opts.workflows,
     recoveryTokenTtlMs: opts.recoveryTokenTtlMs,
     inviteTokenTtlMs: opts.inviteTokenTtlMs,
+    prepareUser: opts.prepareUser,
+    emailToUserId: opts.emailToUserId,
   });
 
   // Mount a single trigger endpoint that calls `wf.handleOutlet` with our

@@ -15,6 +15,10 @@ import type { DemoUser } from "./models/user.as"
  * default `roles` (inherited array) and mirror `username` → `email` so the
  * bundled invite flow gets a usable contact field.
  *
+ * `tenantId` defaults are wired via `setupAuthWorkflows({ prepareUser })` for
+ * the bundled invite flow; this store-level fallback covers programmatic
+ * `createUser` calls (seeders, admin scripts) that bypass the workflow hook.
+ *
  * `findByUsername` falls back to email lookup so the bundled recovery flow
  * (which calls `userService.getUser(input.email)`) can resolve users in this
  * app where username is a short handle and email is the canonical contact.
@@ -27,9 +31,6 @@ class DemoUserStore extends UserStoreAs<DemoUser> {
       ...rest,
       roles: Array.isArray(rec.roles) ? rec.roles : [],
       email: typeof rec.email === "string" ? rec.email : data.username,
-      // Bundled invite/recovery workflows construct rows with only the base
-      // `UserCredentials` shape; the DemoUser schema requires `tenantId`.
-      // Default to the `_global` sentinel — admins re-tenant invitees later.
       tenantId: typeof rec.tenantId === "string" && rec.tenantId.length > 0 ? rec.tenantId : "_global",
     } as unknown as UserCredentials & DemoUser
     return super.create(patched)

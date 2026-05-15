@@ -41,20 +41,11 @@ describe("CTRL-EX — per-control policy gating (Phase 3b)", () => {
     await expect403Containing(res, "$with")
   })
 
-  it.skip(
-    "CTRL-EX-02 — viewer $groupBy denied (SKIP: moost-db@0.1.75 query() short-circuits to aggregate before validateParsed → validateControls never runs)",
-    async () => {
-      // moost-db quirk: in `query(url)`, when `controls.$groupBy?.length > 0`
-      // the handler dispatches directly to `readable.aggregate(...)` and
-      // SKIPS `validateParsed`. Our `validateControls` override is therefore
-      // never invoked for $groupBy queries, so the per-control gate cannot
-      // fire. Re-enable when moost-db routes the aggregate path through
-      // `validateParsed` (or exposes a separate hook for $groupBy gating).
-      const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_eve)
-      const res = await fetch("/tasks/query?$groupBy=status&$select=status,count(*):cnt")
-      await expect403Containing(res, "$groupBy")
-    },
-  )
+  it("CTRL-EX-02 — viewer $groupBy denied", async () => {
+    const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_eve)
+    const res = await fetch("/tasks/query?$groupBy=status&$select=status,count(*):cnt")
+    await expect403Containing(res, "$groupBy")
+  })
 
   it("CTRL-EX-03 — admin can use $with (no controls map → silence wins)", async () => {
     const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_dave)
@@ -68,17 +59,11 @@ describe("CTRL-EX — per-control policy gating (Phase 3b)", () => {
     expectAllowedByArbac(res)
   })
 
-  it.skip(
-    "CTRL-EX-05 — multi-role union: both deny $groupBy → 403 (SKIP: moost-db quirk, see CTRL-EX-02)",
-    async () => {
-      // Same moost-db@0.1.75 quirk as CTRL-EX-02 — $groupBy bypasses
-      // validateParsed/validateControls. Union semantics ARE covered by the
-      // unit tests in `packages/arbac/src/scope/controls.spec.ts`.
-      const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_alice)
-      const res = await fetch("/tasks/query?$groupBy=status&$select=status,count(*):cnt")
-      await expect403Containing(res, "$groupBy")
-    },
-  )
+  it("CTRL-EX-05 — multi-role union: both deny $groupBy → 403", async () => {
+    const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_alice)
+    const res = await fetch("/tasks/query?$groupBy=status&$select=status,count(*):cnt")
+    await expect403Containing(res, "$groupBy")
+  })
 
   it("CTRL-EX-06 — gating works on /pages route too", async () => {
     const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_eve)

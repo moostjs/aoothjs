@@ -1,3 +1,4 @@
+import { HttpError } from "@moostjs/event-http";
 import type { EventContext } from "@wooksjs/event-core";
 import { defineWook, key } from "@wooksjs/event-core";
 import { getConstructor, useControllerContext } from "moost";
@@ -21,6 +22,7 @@ const arbacScopesKey = key<unknown[] | undefined>("arbac.scopes");
 function normalizeAutoCrudMethod(method: string): string {
   if (method === "getOne" || method === "getOneComposite") return "one";
   if (method === "removeComposite") return "remove";
+  if (method === "metaForm") return "meta";
   return method;
 }
 
@@ -31,6 +33,19 @@ interface ArbacBindings {
     resource?: string;
     action?: string;
   }) => Promise<{ allowed: boolean; scopes?: TScope[]; userId: string }>;
+  /**
+   * Throw-on-deny variant of {@link evaluate}. Returns the same shape on
+   * `allowed: true`; throws `HttpError(403)` otherwise.
+   *
+   * Use this in handlers/steps that want a hard short-circuit on deny.
+   * Use {@link evaluate} when you need to inspect `allowed` (e.g. to merge
+   * with another policy, to filter UI metadata, or to fall through to a
+   * different authorization path).
+   */
+  evaluateOrThrow: <TScope extends object>(opts?: {
+    resource?: string;
+    action?: string;
+  }) => Promise<{ allowed: true; scopes?: TScope[]; userId: string }>;
   resource: string;
   action: string;
   isPublic: boolean;
@@ -101,10 +116,24 @@ export const useArbac = defineWook((ctx: EventContext): ArbacBindings => {
     return { ...result, userId };
   };
 
+  const evaluateOrThrow = async <TScope extends object>(opts?: {
+    resource?: string;
+    action?: string;
+  }): Promise<{ allowed: true; scopes?: TScope[]; userId: string }> => {
+    const result = await evaluate<TScope>(opts);
+    if (!result.allowed) {
+      const r = opts?.resource || resource;
+      const a = opts?.action || action;
+      throw new HttpError(403, `Forbidden: ${r}/${a}`);
+    }
+    return { ...result, allowed: true };
+  };
+
   return {
     getScopes,
     setScopes,
     evaluate,
+    evaluateOrThrow,
     resource,
     action,
     isPublic,

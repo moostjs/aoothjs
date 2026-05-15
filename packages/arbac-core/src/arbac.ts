@@ -142,6 +142,9 @@ export class Arbac<TUserAttrs extends object, TScope extends object> {
               userAttrs = typeof user.attrs === "function" ? await user.attrs(user.id) : user.attrs;
             }
             scopes.push(rule.scope(userAttrs, String(user.id)));
+          } else {
+            // Universe sentinel — preserves "no restriction" grant under multi-role union.
+            scopes.push({} as TScope);
           }
         }
       }

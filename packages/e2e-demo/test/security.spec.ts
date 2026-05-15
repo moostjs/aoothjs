@@ -462,7 +462,7 @@ describe("SEC — lockout / brute-force", () => {
     expect(locked.status).toBe(423)
   })
 
-  it("SEC-19 GAP: TOTP brute force has no rate-limit on MFA failures", async () => {
+  it("SEC-19 — TOTP brute force trips the shared lockout after threshold failures", async () => {
     const grace = app.fixtures.users.t1_grace
     expect(grace.totpSecret).toBeTruthy()
 
@@ -475,22 +475,31 @@ describe("SEC — lockout / brute-force", () => {
     })
     let body = await readWfPause(credResp)
 
-    let everUnauthorized = false
-    for (let i = 0; i < 100; i++) {
+    // Lockout threshold is 3 (envOverrides above). Three wrong codes must
+    // produce a lockout response (423); subsequent login also returns 423.
+    let lockedStatus = 0
+    for (let i = 0; i < 5; i++) {
       const guess = String(i % 1_000_000).padStart(6, "0")
       const att = await app.triggerWf("public", {
         wfid: "auth.login",
         wfs: body.wfs,
         input: { code: guess },
       })
-      if (att.status === 401 || att.status === 423) {
-        everUnauthorized = true
+      if (att.status === 423) {
+        lockedStatus = 423
         break
       }
       body = await readWfPause(att)
       if (!body.wfs) break
     }
-    expect(everUnauthorized).toBe(false)
+    expect(lockedStatus).toBe(423)
+
+    // A fresh login attempt now hits the password-side lockout check too.
+    const relogin = await app.fetch("/auth/login", {
+      method: "POST",
+      json: { username: grace.username, password: grace.password },
+    })
+    expect(relogin.status).toBe(423)
   })
 })
 

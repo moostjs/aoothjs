@@ -29,7 +29,7 @@ describe("arbac", () => {
       ),
     ).toStrictEqual({
       allowed: true,
-      scopes: [],
+      scopes: [{}],
     });
     expect(
       await arbac.evaluate(
@@ -41,7 +41,7 @@ describe("arbac", () => {
       ),
     ).toStrictEqual({
       allowed: true,
-      scopes: [],
+      scopes: [{}],
     });
     expect(
       await arbac.evaluate(
@@ -67,7 +67,7 @@ describe("arbac", () => {
       ),
     ).toStrictEqual({
       allowed: true,
-      scopes: [],
+      scopes: [{}],
     });
     expect(
       await arbac.evaluate(
@@ -79,7 +79,7 @@ describe("arbac", () => {
       ),
     ).toStrictEqual({
       allowed: true,
-      scopes: [],
+      scopes: [{}],
     });
     expect(
       await arbac.evaluate(
@@ -147,7 +147,40 @@ describe("arbac", () => {
       ),
     ).toStrictEqual({
       allowed: true,
-      scopes: [],
+      scopes: [{}],
+    });
+  });
+
+  it("must push universe sentinel for no-scope allow rule (preserves union semantics)", async () => {
+    const arbac = new Arbac<
+      { tenantId: string; userId: string },
+      { filter: { tenantId: string } }
+    >();
+    arbac.registerRole({
+      id: "com.role.super",
+      rules: [{ action: "*", resource: "com.resource.**" }],
+    });
+    arbac.registerRole({
+      id: "com.role.viewer",
+      rules: [
+        {
+          action: "read",
+          resource: "com.resource.db.tasks",
+          scope: (attrs) => ({ filter: { tenantId: attrs.tenantId } }),
+        },
+      ],
+    });
+    const result = await arbac.evaluate(
+      { action: "read", resource: "com.resource.db.tasks" },
+      {
+        id: "u1",
+        roles: ["com.role.super", "com.role.viewer"],
+        attrs: { tenantId: "A", userId: "u1" },
+      },
+    );
+    expect(result).toStrictEqual({
+      allowed: true,
+      scopes: [{}, { filter: { tenantId: "A" } }],
     });
   });
 });

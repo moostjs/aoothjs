@@ -82,7 +82,9 @@ describe("InviteWorkflow", () => {
     expect(errors).toMatchObject({ confirmPassword: "Passwords do not match" });
   });
 
-  it("expired invite token: 410 on resume", async () => {
+  it("expired invite token: 410 on resume (TTL config-driven)", async () => {
+    // BUG-12 fix: `inviteTokenTtlMs` now drives the actual replay window,
+    // not just the email envelope.
     const app = await prepareWfApp({ inviteTokenTtlMs: 1000 });
     const r1 = await app.trigger({ wfid: "auth.invite" });
     await app.trigger({
@@ -91,8 +93,8 @@ describe("InviteWorkflow", () => {
     });
     const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
 
-    // Simulate expiry by deleting the row.
-    await app.store.delete(token);
+    // Wait past the TTL — `WfStateStoreMemory.get()` honours `expiresAt`.
+    await new Promise((resolve) => setTimeout(resolve, 1100));
 
     const r3 = await app.resumeViaQuery(token);
     expect(r3.status).toBe(410);
@@ -116,5 +118,58 @@ describe("InviteWorkflow", () => {
       input: { email: "frank@test.com" },
     });
     expect(app.emails[0].metadata).toBeUndefined();
+  });
+
+  it("prepareUser hook: extras merged into created user", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const app = await prepareWfApp({
+      prepareUser: (input) => {
+        seen.push({ ...input });
+        return { tenantId: "acme", roles: input.roles };
+      },
+    });
+
+    const r1 = await app.trigger({ wfid: "auth.invite" });
+    await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { email: "grace@test.com", roles: "admin, viewer" },
+    });
+    const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
+    const r3 = await app.resumeViaQuery(token);
+    await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
+    });
+
+    // Hook ran with the parsed input shape we promised.
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toEqual({
+      email: "grace@test.com",
+      roles: ["admin", "viewer"],
+    });
+
+    // Returned extras land on the persisted user record.
+    const user = (await app.users.getUser("grace@test.com")) as unknown as Record<string, unknown>;
+    expect(user.tenantId).toBe("acme");
+    expect(user.roles).toEqual(["admin", "viewer"]);
+  });
+
+  it("prepareUser hook is optional: invite still completes without it", async () => {
+    // No `prepareUser` configured — `prepareWfApp` default does not set one.
+    const app = await prepareWfApp();
+    const r1 = await app.trigger({ wfid: "auth.invite" });
+    await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { email: "henry@test.com" },
+    });
+    const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
+    const r3 = await app.resumeViaQuery(token);
+    const r4 = await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
+    });
+    expect(r4.body?.userId).toBe("henry@test.com");
+    const user = await app.users.getUser("henry@test.com");
+    expect(user.account.active).toBe(true);
   });
 });

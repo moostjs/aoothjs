@@ -79,33 +79,12 @@ describe("META — meta endpoint overlay", () => {
     expect(res.status).toBe(403)
   })
 
-  it("META-04 — meta/form/:name schema is global (BUG-SHAPE: gated by `metaForm` action)", async () => {
-    // SPEC: form schemas are global metadata; viewer and admin should both
-    // get the SAME serialized form back. The route should be allowed for
-    // anyone holding `tasks.meta` (or be open like `meta` itself).
-    //
-    // CURRENT BEHAVIOR: `normalizeAutoCrudMethod` in arbac-moost's
-    // useArbac() composable maps `getOne`/`getOneComposite` → `one` and
-    // `removeComposite` → `remove`, but does NOT map `metaForm` → `meta`.
-    // Thus the action ID resolved from the controller method name is the
-    // literal `"metaForm"`, which no role grants — and EVERY role gets 403,
-    // including the tenant admin and the viewer who explicitly hold
-    // `tasks.meta`. Real bug location:
-    // `packages/arbac-moost/src/arbac.composables.ts` (`normalizeAutoCrudMethod`
-    // is missing the `metaForm → meta` alias). Once fixed, both admin and
-    // viewer should get 200 with identical bodies, and guest should still
-    // get 403 (no `tasks.meta` privilege).
+  it("META-04 — meta/form/:name schema is reachable for any role holding `meta`", async () => {
+    // SPEC: form schemas are global metadata served via `metaForm` (aliased to
+    // `meta` in normalizeAutoCrudMethod). Both admin and viewer hold `tasks.meta`
+    // and must get identical bodies.
     const { fetch: daveFetch } = await loginAndFetch(app, app.fixtures.users.t1_dave)
     const daveRes = await daveFetch("/tasks/meta/form/NewTaskForm")
-
-    if (daveRes.status === 403) {
-      const { fetch: eveFetch } = await loginAndFetch(app, app.fixtures.users.t1_eve)
-      const eveRes = await eveFetch("/tasks/meta/form/NewTaskForm")
-      // Bug-shape: BOTH roles fail consistently with 403.
-      expect(eveRes.status).toBe(403)
-      return
-    }
-
     expect(daveRes.status).toBe(200)
     const daveSchema = await daveRes.json()
 

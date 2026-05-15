@@ -72,7 +72,13 @@ export class AsArbacDbController<
       scopes && scopes.length > 0
         ? mergeScopeFilters(scopes.map((s) => s.filter ?? {}))
         : undefined;
-    return merged ? { ...merged, ...filter } : (filter ?? {});
+    // Wrap with `$and` (not object spread) so a top-level `$or`/`$and`/`$not`
+    // in `filter` cannot drop the scope's sibling field keys when @uniqu/core's
+    // `walkFilter` short-circuits on logical operators. See BUG-2.
+    const userFilter = filter && Object.keys(filter).length > 0 ? filter : undefined;
+    if (!merged) return userFilter ?? {};
+    if (!userFilter) return merged;
+    return { $and: [merged, userFilter] };
   }
 
   protected transformProjection(
@@ -145,15 +151,44 @@ export class AsArbacDbController<
     if (!allowed) {
       throw new HttpError(403, `Forbidden: ${arbacAction}`);
     }
-    return applyAllowedFieldsAndSet(data, scopes ?? []);
+    if (action !== "insert" && action !== "insertMany") {
+      await this.assertInScope(data, scopes ?? []);
+    }
+    return applyAllowedFieldsAndSet(data, scopes ?? [], this.identifierFields());
   }
 
   protected async onRemove(id: unknown): Promise<unknown> {
-    const { allowed } = await useArbac().evaluate<ArbacDbScope>({ action: "remove" });
+    const { allowed, scopes } = await useArbac().evaluate<ArbacDbScope>({ action: "remove" });
     if (!allowed) {
       throw new HttpError(403, "Forbidden: remove");
     }
+    await this.assertInScope(id, scopes ?? []);
     return id;
+  }
+
+  // BUG-1: base update/remove key purely on payload.id, so without this
+  // pre-check a caller could mutate a row outside their scope by knowing its PK.
+  private async assertInScope(idOrIds: unknown, scopes: ArbacDbScope[]): Promise<void> {
+    const scopeFilter = mergeScopeFilters(scopes.map((s) => s.filter ?? {}));
+    if (!scopeFilter) return;
+    const ids = Array.isArray(idOrIds) ? idOrIds : [idOrIds];
+    const idFilters = ids.map((id) => this.table.resolveIdFilter(id));
+    if (idFilters.some((f) => !f)) throw new HttpError(404, "Not found");
+    const idFilter = idFilters.length === 1 ? idFilters[0] : { $or: idFilters };
+    const count = await this.table.count({
+      filter: { $and: [idFilter, scopeFilter] },
+    } as never);
+    if (count < ids.length) throw new HttpError(404, "Not found");
+  }
+
+  // Always preserve PK + unique-index fields so callers don't need to whitelist
+  // server-derived metadata that update/replace requires to address the row.
+  private identifierFields(): string[] {
+    const out = new Set<string>();
+    for (const ident of this.table.identifications) {
+      for (const f of ident.fields) out.add(f);
+    }
+    return [...out];
   }
 }
 
@@ -254,10 +289,14 @@ export function extractUsedControlValues(key: string, value: unknown): string[] 
   return [];
 }
 
-export function applyAllowedFieldsAndSet(data: unknown, scopes: ArbacDbScope[]): unknown {
+export function applyAllowedFieldsAndSet(
+  data: unknown,
+  scopes: ArbacDbScope[],
+  preserveFields: readonly string[] = [],
+): unknown {
   if (scopes.length === 0) return data;
   if (Array.isArray(data)) {
-    return data.map((row) => applyAllowedFieldsAndSet(row, scopes));
+    return data.map((row) => applyAllowedFieldsAndSet(row, scopes, preserveFields));
   }
   if (!data || typeof data !== "object") return data;
 
@@ -268,6 +307,7 @@ export function applyAllowedFieldsAndSet(data: unknown, scopes: ArbacDbScope[]):
 
   if (allowedSets.length > 0) {
     const union = new Set<string>(allowedSets.flat());
+    for (const f of preserveFields) union.add(f);
     for (const k of Object.keys(merged)) {
       if (!union.has(k)) delete merged[k];
     }
