@@ -177,6 +177,7 @@ export class AsArbacDbController<
     const idFilter = idFilters.length === 1 ? idFilters[0] : { $or: idFilters };
     const count = await this.table.count({
       filter: { $and: [idFilter, scopeFilter] },
+      // TScopeFilter is not parameterized over the table type; fixing properly requires a moost-db count overload or a full TScopeFilter refactor — not worth it for one call site.
     } as never);
     if (count < ids.length) throw new HttpError(404, "Not found");
   }
