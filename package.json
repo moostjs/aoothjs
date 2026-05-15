@@ -36,16 +36,16 @@
     "@prostojs/ftring": "^0.0.3",
     "@prostojs/wf": "^0.1.1",
     "@types/node": "catalog:",
-    "@wooksjs/event-core": "^0.7.11",
-    "@wooksjs/event-http": "^0.7.11",
-    "@wooksjs/event-wf": "^0.7.11",
-    "@wooksjs/http-body": "^0.7.11",
+    "@wooksjs/event-core": "catalog:",
+    "@wooksjs/event-http": "catalog:",
+    "@wooksjs/event-wf": "catalog:",
+    "@wooksjs/http-body": "catalog:",
     "conventional-changelog": "^5.1.0",
     "conventional-changelog-cli": "^4.1.0",
     "typescript": "catalog:",
     "vite-plus": "catalog:",
     "vitepress": "^1.0.0-beta.1",
-    "wooks": "^0.7.11"
+    "wooks": "catalog:"
   },
   "engines": {
     "node": ">=22.12.0"
@@ -56,12 +56,6 @@
       "better-sqlite3",
       "@atscript/db",
       "@atscript/db-sqlite"
-    ],
-    "overrides": {
-      "@atscript/db": "^0.1.78",
-      "@atscript/db-sqlite": "^0.1.78",
-      "@atscript/db-sql-tools": "^0.1.78",
-      "@atscript/moost-db": "^0.1.78"
-    }
+    ]
   }
 }

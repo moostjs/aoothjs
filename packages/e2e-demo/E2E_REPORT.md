@@ -4,7 +4,7 @@ Output of running the e2e-demo suite against the current `@aoothjs/*` packages o
 
 ## Suite stats
 
-All 12 documented bugs are fixed. Suite is fully green; the 4 remaining skips are documented out-of-scope gaps (see GAP-* table near the end).
+All 12 documented bugs are fixed. Suite is fully green; the 4 remaining skips are documented out-of-scope gaps (see GAP-\* table near the end).
 
 ```
 e2e-demo:                Test Files  16  (16 passed)
@@ -28,22 +28,22 @@ e2e-demo:                Test Files  16  (16 passed)
 
 Story coverage by domain:
 
-| Domain | Pass | Fail | Skip | Total |
-| ------ | ---- | ---- | ---- | ----- |
-| AUTH (REST) | 17 | 0 | 1 | 18 |
-| WF (login + MFA + recovery + invite + custom handover + form pause/resume) | 23 | 0 | 0 | 23 |
-| ISO (tenant isolation) | 9 | 0 | 1 | 10 |
-| UNION (multi-role union) | 3 | 0 | 1 | 4 |
-| PROJ (field projection) | 5 | 0 | 1 | 6 |
-| META (meta overlay) | 4 | 0 | 0 | 4 |
-| ACT (per-action gating) | 7 | 0 | 0 | 7 |
-| WRITE (allowedFields + set) | 6 | 0 | 0 | 6 |
-| CTRL (`$controls` scope preservation) | 9 | 0 | 0 | 9 |
-| CTRL-EX (per-control gating — NEW feature) | 8 | 0 | 0 | 8 |
-| SEC (attack vectors) | 27 | 0 | 0 | 27 |
-| DX (developer ergonomics) | 8 | 0 | 0 | 8 |
+| Domain                                                                     | Pass | Fail | Skip | Total |
+| -------------------------------------------------------------------------- | ---- | ---- | ---- | ----- |
+| AUTH (REST)                                                                | 17   | 0    | 1    | 18    |
+| WF (login + MFA + recovery + invite + custom handover + form pause/resume) | 23   | 0    | 0    | 23    |
+| ISO (tenant isolation)                                                     | 9    | 0    | 1    | 10    |
+| UNION (multi-role union)                                                   | 3    | 0    | 1    | 4     |
+| PROJ (field projection)                                                    | 5    | 0    | 1    | 6     |
+| META (meta overlay)                                                        | 4    | 0    | 0    | 4     |
+| ACT (per-action gating)                                                    | 7    | 0    | 0    | 7     |
+| WRITE (allowedFields + set)                                                | 6    | 0    | 0    | 6     |
+| CTRL (`$controls` scope preservation)                                      | 9    | 0    | 0    | 9     |
+| CTRL-EX (per-control gating — NEW feature)                                 | 8    | 0    | 0    | 8     |
+| SEC (attack vectors)                                                       | 27   | 0    | 0    | 27    |
+| DX (developer ergonomics)                                                  | 8    | 0    | 0    | 8     |
 
-CTRL/SEC counts shrank in the e2e-demo refocus pass: stories that test other repos' concerns (moost-db / @uniqu/core operator semantics + pagination shape; @wooksjs body-parser DoS; @atscript/db SQL parameterization; render-side XSS; CSRF middleware) were removed because they belong in those repos' suites. CTRL-EX-* is a new story group covering the per-control gating feature added in Phase 3 — see the Capabilities section.
+CTRL/SEC counts shrank in the e2e-demo refocus pass: stories that test other repos' concerns (moost-db / @uniqu/core operator semantics + pagination shape; @wooksjs body-parser DoS; @atscript/db SQL parameterization; render-side XSS; CSRF middleware) were removed because they belong in those repos' suites. CTRL-EX-\* is a new story group covering the per-control gating feature added in Phase 3 — see the Capabilities section.
 
 ---
 
@@ -55,14 +55,14 @@ A new field on `ArbacDbScope` lets a role's scope deny or whitelist specific Uni
 
 ```ts
 interface ArbacDbScope {
-  filter?: TScopeFilter
-  projection?: TProjection
-  set?: Record<string, unknown>
-  allowedFields?: string[]
-  controls?: Record<string, ControlGate>   // NEW
+  filter?: TScopeFilter;
+  projection?: TProjection;
+  set?: Record<string, unknown>;
+  allowedFields?: string[];
+  controls?: Record<string, ControlGate>; // NEW
 }
 
-type ControlGate = boolean | readonly string[]
+type ControlGate = boolean | readonly string[];
 // false: deny entirely (403); string[]: whitelist values; true / absent: allow
 ```
 
@@ -84,13 +84,13 @@ Nav props (`@db.rel.to` on Comment.task, `@db.rel.from` on Task.comments) landed
 
 ## Upstream quirks (resolved by `@atscript/moost-db@0.1.78`)
 
-### QUIRK-1 — moost-db's `$groupBy` short-circuit bypassed `validateControls` *(FIXED upstream)*
+### QUIRK-1 — moost-db's `$groupBy` short-circuit bypassed `validateControls` _(FIXED upstream)_
 
 In 0.1.75–0.1.76 `query(url)` dispatched to `aggregate(...)` whenever `controls.$groupBy?.length > 0`, BEFORE `validateParsed` (which calls `validateControls`). Per-control gating couldn't fire on aggregate paths.
 
 Fix landed in `@atscript/moost-db@0.1.78` (commit `3f9ac93`): `validateParsed` + `checkGates` now run first, then the aggregate dispatch happens. CTRL-EX-02 / CTRL-EX-05 (viewer / multi-role union both deny `$groupBy`) are now active and passing.
 
-### QUIRK-2 — moost-db's `@TableController` variance issue with nav props *(FIXED upstream)*
+### QUIRK-2 — moost-db's `@TableController` variance issue with nav props _(FIXED upstream)_
 
 In 0.1.75–0.1.76, `@TableController(table)` accepted bare `AtscriptDbTable` only — adding `@db.rel.to` / `@db.rel.from` annotations to `.as` models broke type inference because `AtscriptDbTable<T-with-nav>` isn't assignable to bare `AtscriptDbTable`.
 
@@ -101,6 +101,7 @@ Fix in `@atscript/moost-db@0.1.78`: `TableController` is now generic over `Table
 ## Critical bugs (security-impacting)
 
 ### BUG-1 — Cross-tenant write/delete via PK (ISO-05, ISO-06)
+
 **Severity:** CRITICAL. **Package:** `@aoothjs/arbac-moost`. **File:** [packages/arbac-moost/src/db/as-arbac-db-controller.ts:92-107](packages/arbac-moost/src/db/as-arbac-db-controller.ts#L92).
 
 `onWrite("update"|"replace", data)` and `onRemove(id)` only check action permission and apply `allowedFields`/`set`. They do **NOT** AND the scope's `filter` into the underlying `update`/`remove` operation. The base `AsDbController.update` then operates purely on `payload.id`. A tenant-A admin who knows a tenant-B row's PK can `PATCH /tasks { id: <T_B>, ... }` and mutate it — and admin's scope `set` then forces `tenantId` to A, silently relocating the row across tenants.
@@ -112,12 +113,15 @@ Fix in `@atscript/moost-db@0.1.78`: `TableController` is now generic over `Table
 **Status:** ✅ FIXED — `onWrite` (update/replace) and `onRemove` now pre-fetch via `table.count({ filter: { $and: [resolveIdFilter(id), scopeFilter] } })` and throw 404 when the targeted row is out of scope. ISO-05 and ISO-06 flipped from BUG-SHAPE to passing.
 
 ### BUG-2 — Filter injection via top-level `$or`/`$and` drops scope filter (CTRL-08, SEC-01)
+
 **Severity:** CRITICAL. **Packages:** `@aoothjs/arbac-moost` + `@uniqu/core`. **Files:** [packages/arbac-moost/src/db/as-arbac-db-controller.ts:52](packages/arbac-moost/src/db/as-arbac-db-controller.ts#L52), `node_modules/@uniqu/core/dist/index.mjs:8-36`.
 
 `AsArbacDbController.transformFilter` merges via object spread:
+
 ```ts
 return merged ? { ...merged, ...filter } : (filter ?? {});
 ```
+
 producing `{ tenantId: 'A', $or: [...] }`. `@uniqu/core`'s `walkFilter` short-circuits when a top-level `$and`/`$or`/`$not` key is present and **drops sibling field keys**. Result: any user who supplies a top-level logical operator escapes the scope filter entirely.
 
 **Repro:** [packages/e2e-demo/test/controls.spec.ts](packages/e2e-demo/test/controls.spec.ts) CTRL-08, [packages/e2e-demo/test/security.spec.ts](packages/e2e-demo/test/security.spec.ts) SEC-01.
@@ -127,6 +131,7 @@ producing `{ tenantId: 'A', $or: [...] }`. `@uniqu/core`'s `walkFilter` short-ci
 **Status:** ✅ FIXED — `transformFilter` now wraps scope and user filters as `{ $and: [scopeFilter, userFilter] }` rather than spreading. CTRL-08 and SEC-01 flipped from BUG-SHAPE to passing.
 
 ### BUG-3 — No-scope `allow` rule contributes nothing to scopes (UNION-04)
+
 **Severity:** HIGH. **Package:** `@aoothjs/arbac-core`. **File:** [packages/arbac-core/src/arbac.ts:136-148](packages/arbac-core/src/arbac.ts#L136).
 
 `Arbac.evaluate` only pushes into `scopes` when `rule.scope` exists. A role with universe access (no scope function) contributes `[]` to the `scopes` array. When merged with another role's scoped filter via `mergeScopeFilters`, the universe grant is silently lost — the user is bound by the more restrictive scope. Multi-role union semantics are broken whenever one role intends "no restriction".
@@ -138,6 +143,7 @@ producing `{ tenantId: 'A', $or: [...] }`. `@uniqu/core`'s `walkFilter` short-ci
 **Status:** ✅ FIXED — `Arbac.evaluate` now pushes `{}` (universe sentinel) into `scopes` when a matching `allow` rule has no `scope` function, so `mergeScopeFilters` short-circuits to universe under multi-role union. UNION-04 flipped from BUG-SHAPE to passing.
 
 ### BUG-4 — Password change cascade revoke is no-op on JWT store (AUTH-13)
+
 **Severity:** HIGH. **Package:** `@aoothjs/auth`. **File:** [packages/auth/src/stores/jwt.ts:176](packages/auth/src/stores/jwt.ts#L176).
 
 `AuthController.changePassword` calls `auth.revokeAllForUser(username)`, but `CredentialStoreJwt.revokeAllForUser()` returns `0` and does nothing — JWT is stateless. Stale access tokens from before the password change remain valid until natural expiry.
@@ -149,6 +155,7 @@ producing `{ tenantId: 'A', $or: [...] }`. `@uniqu/core`'s `walkFilter` short-ci
 **Status:** ✅ FIXED — `CredentialStoreJwt` now keeps an in-memory `Map<username, epochMs>`. `revokeAllForUser` sets the epoch to `clock.now() + 1` and returns `1`; `retrieve`/`consume` reject any token whose mirrored `iatMs` is `< epoch`. AUTH-13 flipped from BUG-SHAPE to a strict 401-on-prior-tokens assertion. Limitation: the map is in-memory only — a server restart resets it, so tokens minted before the restart re-validate until natural expiry. Production deployments needing durability should back the epoch map with an external store (Redis / DB) via a custom store wrapper.
 
 ### BUG-5 — Theft response unreachable in `rotation: 'always'` mode (AUTH-07)
+
 **Severity:** HIGH. **Package:** `@aoothjs/auth`. **File:** [packages/auth/src/credential/auth-credential.ts:234](packages/auth/src/credential/auth-credential.ts#L234).
 
 The OAuth-best-practice "refresh-token reuse → revoke all user credentials" theft response only fires in `'sliding'` rotation mode. In `'always'` mode (which is what the demo configures), refresh-replay just returns 401; other devices' tokens remain alive.
@@ -160,6 +167,7 @@ The OAuth-best-practice "refresh-token reuse → revoke all user credentials" th
 **Status:** ✅ FIXED — `AuthCredential` now keeps an in-memory `Map<refreshToken, {userId, exp}>` of consumed refresh tokens. The refresh path checks the map when `store.retrieve` returns null and `rotation !== 'none'`; on a hit it fires `onRotationReuse`, calls `revokeAllForUser`, and throws `REFRESH_REUSE_DETECTED`. Works uniformly across stateful (memory) and stateless (JWT, Encapsulated) stores — the JWT denylist hit on `retrieve` no longer swallows the reuse signal. AUTH-07 now asserts that sibling-device tokens become invalid (401) after replay; both `auth-credential.spec.ts` "rotation 'always'" and the cross-store integration spec assert `REFRESH_REUSE_DETECTED` instead of `INVALID_TOKEN`. Limitation: the consumed-refresh map is in-memory — a server restart resets it, so a refresh token replayed across a restart degrades to plain `INVALID_TOKEN` without theft cascade.
 
 ### BUG-6 — TOTP brute force unmitigated (SEC-19)
+
 **Severity:** HIGH. **Package:** `@aoothjs/user`.
 
 100 wrong TOTP codes accepted without lockout. MFA failures don't increment `account.failedLoginAttempts`, so password-side lockout doesn't help. Consumers running MFA-protected logins have no built-in protection against TOTP brute force.
@@ -175,6 +183,7 @@ The OAuth-best-practice "refresh-token reuse → revoke all user credentials" th
 ## Important bugs (correctness / DX-impacting)
 
 ### BUG-7 — `metaForm` action not aliased to `meta` (META-04)
+
 **Severity:** MEDIUM. **Package:** `@aoothjs/arbac-moost`. **File:** [packages/arbac-moost/src/arbac.composables.ts:19-25](packages/arbac-moost/src/arbac.composables.ts#L19).
 
 `normalizeAutoCrudMethod` aliases `getOne`/`getOneComposite` → `one` and `removeComposite` → `remove`, but does NOT alias `metaForm` → `meta`. Result: NO ROLE can fetch action input form schemas. Every `GET /<resource>/meta/form/:name` request returns 403 — even for admin who has `tableWritePrivilege` (which grants `meta`). Blocks any UI that uses moost-db's auto-form rendering.
@@ -186,6 +195,7 @@ The OAuth-best-practice "refresh-token reuse → revoke all user credentials" th
 **Status:** ✅ FIXED — alias added; admin and viewer (both holding `tasks.meta`) now get identical form schemas via `GET /tasks/meta/form/:name`.
 
 ### BUG-8 — `applyAllowedFieldsAndSet` strips PK fields
+
 **Severity:** MEDIUM. **Package:** `@aoothjs/arbac-moost`. **File:** [packages/arbac-moost/src/db/as-arbac-db-controller.ts:135-159](packages/arbac-moost/src/db/as-arbac-db-controller.ts#L135).
 
 When `allowedFields` is set, `applyAllowedFieldsAndSet` strips every key not in the whitelist — including `id` (PK). Then `update`/`replace` fail with "Missing primary key field 'id' in payload". Every consumer that uses `allowedFields` must remember to include the PK; not in spec, easy to miss, blocking.
@@ -197,6 +207,7 @@ When `allowedFields` is set, `applyAllowedFieldsAndSet` strips every key not in 
 **Status:** ✅ FIXED — `applyAllowedFieldsAndSet` now auto-preserves table PK fields, so consumers don't need to whitelist `id`. Demo's `WRITEABLE_USER_FIELDS_ADMIN` no longer includes `id`.
 
 ### BUG-9 — `useArbac().evaluate()` returns `{allowed:false}`, doesn't throw (handover workflow)
+
 **Severity:** MEDIUM (DX/docs). **Package:** `@aoothjs/arbac-moost`. **File:** [packages/arbac-moost/src/arbac.composables.ts](packages/arbac-moost/src/arbac.composables.ts).
 
 The handover workflow's first attempt at admin-bypass logic was `try { evaluate(...); isAdmin = true } catch { isAdmin = false }` — which silently granted admin to every non-owner because `evaluate()` doesn't throw on deny; it returns `{ allowed: false }`. Inviting consumer code to make the same mistake.
@@ -208,6 +219,7 @@ The handover workflow's first attempt at admin-bypass logic was `try { evaluate(
 **Status:** ✅ FIXED — added `useArbac().evaluateOrThrow(opts)` that throws `HttpError(403, 'Forbidden: <resource>/<action>')` on deny and returns `{ allowed: true, scopes, userId }` on allow. Demo handover workflow simplified to drop the foot-gun try/catch (kept on `evaluate()` since the owner-OR-admin check needs to inspect `allowed`).
 
 ### BUG-10 — `UserService.createUser` ignores extras (DemoUserStore workaround)
+
 **Severity:** MEDIUM (DX). **Package:** `@aoothjs/user` + `@aoothjs/auth-moost` (invite workflow).
 
 `UserService.createUser(username, password)` only constructs the base `UserCredentials` shape. When the consumer's user model has additional required fields (e.g. `tenantId`), `createUser` produces atscript validation errors at insert time. The bundled `InviteWorkflow.accept` step has no extension hook for default fields. Demos must override `UsersStore.create()` to fill defaults.
@@ -219,6 +231,7 @@ The handover workflow's first attempt at admin-bypass logic was `try { evaluate(
 **Status:** ✅ FIXED — `UserService.createUser(username, password?, extras?)` now accepts an optional `Partial<T>` of extras merged AFTER the base `UserCredentials` shape (callers can populate required custom fields and override base defaults like `id`). `setupAuthWorkflows({ prepareUser })` exposes a new hook on `MoostAuthWorkflowConfig`; `InviteWorkflow.accept` calls it with `{ email, roles?, parsedRoles[] }` and forwards the returned record as `extras`. Demo migrated: `app.ts` wires `prepareUser: () => ({ tenantId: "_global" })`; the `DemoUserStore.create()` override stays as a fallback for non-invite paths (seeders / admin scripts) and continues to handle the structurally-required `id: ""` strip + `roles[]`/`email` defaults.
 
 ### BUG-11 — `findByUsername` doesn't fall back to email (recovery workflow)
+
 **Severity:** MEDIUM (DX). **Package:** `@aoothjs/auth-moost` (recovery workflow).
 
 `RecoveryWorkflow.requestRecovery` calls `userService.getUser(input.email)` which delegates to `userStore.findByUsername(input.email)`. If the user model separates `username` and `email` (the realistic shape), the lookup misses and recovery silently short-circuits to the enumeration-resistant "sent" response. No email is ever delivered. Recovery is unusable out-of-the-box for any real user model.
@@ -230,6 +243,7 @@ The handover workflow's first attempt at admin-bypass logic was `try { evaluate(
 **Status:** ✅ FIXED — `setupAuthWorkflows({ emailToUserId })` resolver added to `AuthWorkflowsOptions`. `RecoveryWorkflow.requestRecovery` now resolves the email through it (when configured) before calling `userService.getUser(userId)`. When no resolver is set, it falls back to the previous behavior (treating the email as the username) for back-compat. Returning `null` from the resolver short-circuits to the enumeration-resistant "sent" response. Demo wires `emailToUserId: async (email) => (await userStore.findByUsername(email))?.username ?? null`; the `DemoUserStore.findByUsername` fallback stays as defensive cover for non-recovery callers (arbacUserReader, programmatic lookups). New unit tests in `workflows.recovery.spec.ts` cover both resolver-success and resolver-null paths.
 
 ### BUG-12 — `@StepTTL` hardcoded in recovery + invite workflows (WF-RECOVERY-04, WF-INVITE-04)
+
 **Severity:** MEDIUM. **Package:** `@aoothjs/auth-moost`. **Files:** [packages/auth-moost/src/workflows/recovery.workflow.ts](packages/auth-moost/src/workflows/recovery.workflow.ts), [packages/auth-moost/src/workflows/invite.workflow.ts](packages/auth-moost/src/workflows/invite.workflow.ts).
 
 `recoveryTokenTtlMs` and `inviteTokenTtlMs` config plumbed through `MoostAuthWorkflowConfig` only feed the email envelope's `expiresAt`. The actual replay window is dictated by `@StepTTL(60 * 60 * 1000)` and `@StepTTL(7 * 24 * 60 * 60 * 1000)` — hardcoded. Tests can't exercise expiry without forking the workflows.
@@ -238,41 +252,39 @@ The handover workflow's first attempt at admin-bypass logic was `try { evaluate(
 
 **Status:** ✅ FIXED — dropped `@StepTTL(...)` from both `RecoveryWorkflow.sendLink` and `InviteWorkflow.sendLink` and instead attach `expires: Date.now() + ttl` directly to the `outletEmail(...)` result at runtime, reading the TTL from `MoostAuthWorkflowConfig.config.{recoveryTokenTtlMs,inviteTokenTtlMs}`. The decorator approach was infeasible (the `@StepTTL(n)` decorator from `@moostjs/event-wf` only accepts a `number` literal evaluated at class-definition time — there is no function-form support and no runtime `setTTL` API in 0.6.9). The runtime `expires` field on the step's `WfOutletSignal` is honored end-to-end: `WooksWf` propagates it into `strategy.persist(state, { ttl })`, which sets `expiresAt` on the `WfStateStore` row (both `WfStateStoreMemory` and `AsWfStore` honor it). `recoveryTokenTtlMs` / `inviteTokenTtlMs` config (and the `RECOVERY_TTL_MS` / `INVITE_TTL_MS` env vars in the demo) now drive the actual replay window, not just the email envelope. WF-RECOVERY-04 and WF-INVITE-04 are unskipped and pass.
 
-### BUG-13 — Process-global `Wooks` router + Moost Infact DI cache (test isolation)
-**Severity:** LOW for production, MEDIUM for testability. **Packages:** `wooks` + `moost`.
+### BUG-13 — Process-global `Wooks` router + Moost Infact DI cache (test isolation) — _by design_
 
-Multiple `buildApp()` calls in the same process accumulate route handlers on a single `ProstoRouter` AND reuse stale `MoostAuthWorkflowConfig` instances injected from earlier apps (still pointing to closed SQLite drivers). Tests can't run multiple in-process apps without explicit `clearGlobalWooks()` + `(getMoostInfact() as any)._cleanup?.()`.
+**Severity:** N/A (clarified as intended usage). **Packages:** `wooks` + `moost`.
 
-**Repro / workaround:** [packages/e2e-demo/test/harness.ts](packages/e2e-demo/test/harness.ts) — `clearGlobalWooks()` + Infact cleanup at top of `buildTestApp`.
+Multiple `buildApp()` calls in the same process accumulate route handlers on a single `ProstoRouter` AND reuse Moost's process-global Infact DI registry. This is **intentional**: the global registry is what gives `useArbac()`, `useControllerContext()`, and the rest of the composables their zero-config ergonomics in user code.
 
-**Fix:** Either expose a per-instance `Wooks` injection on `MoostHttp` (so `new Moost()` doesn't share global state by default), or document the global-state semantics explicitly so test authors know to reset.
+**Proper test usage:** call `clearGlobalWooks()` and `(getMoostInfact() as any)._cleanup?.()` between in-process app boots. The e2e harness ([packages/e2e-demo/test/harness.ts](packages/e2e-demo/test/harness.ts)) does this once at the top of `buildTestApp`. Not a bug — documented here for any future test author who hits the same shape.
 
 ### BUG-14 — `__DYE_*` ReferenceError in `@prostojs/router` outside Vite
-**Severity:** LOW (test-time only). **Package:** `@prostojs/router`. **File:** `node_modules/@prostojs/router@0.3.3/dist/index.mjs:703`.
 
-Build-time globals (`__DYE_YELLOW__`, etc.) referenced as runtime values in the duplicate-route warn path. Outside Vite's define-replace, they crash with a `ReferenceError` whenever a duplicate route is registered (which happens on every test re-build).
+**Severity:** LOW (test-time only). **Package:** `@prostojs/router`. **Was at:** `0.3.3/dist/index.mjs:703`.
 
-**Repro / workaround:** [packages/e2e-demo/test/harness.ts](packages/e2e-demo/test/harness.ts) — `installDyeStubs()` polyfills the globals to empty strings.
+Build-time globals (`__DYE_YELLOW__`, etc.) were referenced as runtime values in the duplicate-route warn path. Outside Vite's define-replace, they crashed with a `ReferenceError` whenever a duplicate route was registered.
 
-**Fix:** In `@prostojs/router`, use `(typeof __DYE_YELLOW__ !== 'undefined' ? __DYE_YELLOW__ : '')` or a similar safe-default pattern.
+**Status:** ✅ FIXED upstream in `@prostojs/router@0.3.4` (transitively bumped via `wooks@0.7.12` / `moost@0.6.10`). The dist no longer references `__DYE_*` at runtime. The `installDyeStubs()` workaround was removed from the harness; all 16 spec files now boot Moost cleanly.
 
 ---
 
 ## Documented gaps (intentional or out-of-scope)
 
-| ID | Story | Status | Note |
-| -- | ----- | ------ | ---- |
-| GAP-1 | AUTH-18 | skip | `CredentialStoreJwt` doesn't implement `listForUser` → `maxConcurrent` cannot be enforced on the JWT store. Switch to memory store or add a per-user index to JWT store. |
-| GAP-2 | UNION-03 | skip | No role in the demo seed uses `effect: 'deny'`. Deny semantics are validated in arbac-core unit tests; integration validation requires a synthetic deny-rule role. |
-| GAP-3 | PROJ-04 | skip | Demo `.as` models don't declare `@db.rel.*` annotations, so `$with` relation expansion can't be exercised. |
-| GAP-4 | CTRL-05 | skip | Same — `$with` requires DB relations. |
-| GAP-5 | ISO-09 | skip | Tenant cascade is documented as out-of-scope for ARBAC; arbac doesn't manage cascade. |
-| GAP-6 | SEC-29 | documented | No library-level "preserve at least one admin" invariant. Admins can self-demote. Add an org-level invariant if undesired. |
-| GAP-8 | SEC-11 | documented | Magic links ARE the credential. Defense is email delivery security; nothing in-band can prevent cross-user replay if the link is exfiltrated. |
-| GAP-9 | SEC-18 | documented | TOTP replay within a 30s period is RFC-6238-compliant; not a gap to "fix". |
-| GAP-10 | DX-08 | documented | `setupAuthMoost({ endpoints: false })` causes `/auth/login` to return 401 (auth guard runs first) instead of 404 (route miss). DX wart, not a security issue. Worth a JSDoc note on `endpoints` option. |
-| GAP-11 | DX-07 | documented | Unknown wfid throws an unhandled `Error("Unknown schemaId")` which Wooks bubbles as 500. Should be a 404 with "workflow not registered". |
-| GAP-12 | DX-03 | documented | `defineRole().allow(resource, action)` types both as plain `string` — typos compile. Adding a generic resource→actions map could give type-level safety, but is non-trivial without a registry. |
+| ID     | Story    | Status     | Note                                                                                                                                                                                                    |
+| ------ | -------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GAP-1  | AUTH-18  | skip       | `CredentialStoreJwt` doesn't implement `listForUser` → `maxConcurrent` cannot be enforced on the JWT store. Switch to memory store or add a per-user index to JWT store.                                |
+| GAP-2  | UNION-03 | skip       | No role in the demo seed uses `effect: 'deny'`. Deny semantics are validated in arbac-core unit tests; integration validation requires a synthetic deny-rule role.                                      |
+| GAP-3  | PROJ-04  | skip       | Demo `.as` models don't declare `@db.rel.*` annotations, so `$with` relation expansion can't be exercised.                                                                                              |
+| GAP-4  | CTRL-05  | skip       | Same — `$with` requires DB relations.                                                                                                                                                                   |
+| GAP-5  | ISO-09   | skip       | Tenant cascade is documented as out-of-scope for ARBAC; arbac doesn't manage cascade.                                                                                                                   |
+| GAP-6  | SEC-29   | documented | No library-level "preserve at least one admin" invariant. Admins can self-demote. Add an org-level invariant if undesired.                                                                              |
+| GAP-8  | SEC-11   | documented | Magic links ARE the credential. Defense is email delivery security; nothing in-band can prevent cross-user replay if the link is exfiltrated.                                                           |
+| GAP-9  | SEC-18   | documented | TOTP replay within a 30s period is RFC-6238-compliant; not a gap to "fix".                                                                                                                              |
+| GAP-10 | DX-08    | documented | `setupAuthMoost({ endpoints: false })` causes `/auth/login` to return 401 (auth guard runs first) instead of 404 (route miss). DX wart, not a security issue. Worth a JSDoc note on `endpoints` option. |
+| GAP-11 | DX-07    | documented | Unknown wfid throws an unhandled `Error("Unknown schemaId")` which Wooks bubbles as 500. Should be a 404 with "workflow not registered".                                                                |
+| GAP-12 | DX-03    | documented | `defineRole().allow(resource, action)` types both as plain `string` — typos compile. Adding a generic resource→actions map could give type-level safety, but is non-trivial without a registry.         |
 
 ---
 
@@ -280,15 +292,13 @@ Build-time globals (`__DYE_YELLOW__`, etc.) referenced as runtime values in the 
 
 In rough order of impact:
 
-All 12 documented aoothjs bugs are fixed: BUG-1, BUG-2, BUG-3, BUG-4, BUG-5, BUG-6, BUG-7, BUG-8, BUG-9, BUG-10, BUG-11, BUG-12. (BUG-13 and BUG-14 are upstream — `wooks` global router state and `@prostojs/router` build-time globals respectively — and remain workaround-only via the test harness.)
+All 12 documented aoothjs bugs are fixed: BUG-1, BUG-2, BUG-3, BUG-4, BUG-5, BUG-6, BUG-7, BUG-8, BUG-9, BUG-10, BUG-11, BUG-12. BUG-13 is reclassified as intended usage (the global Wooks/Moost-Infact registry powers the composables; tests reset it explicitly). BUG-14 was fixed upstream in `@prostojs/router@0.3.4`; the harness workaround is removed.
 
 Lower-priority but DX-improving:
 
 10. **Allow custom `AuthEmailKind` in `createAuthEmailOutlet`** — let custom workflows ship their own email envelopes without piggybacking on `'invite.magicLink'`.
-11. **Document or fix global Wooks/Moost-Infact state (BUG-13)** — at minimum, expose a `resetGlobals()` for testability.
-12. **Fix `__DYE_*` globals in `@prostojs/router` (BUG-14)** — safe-default pattern.
-13. **Expose `httpInputRequired` / `validateFormInput` from `@aoothjs/auth-moost`** — currently internal, copy-pasted by every custom workflow.
-14. **Improve unknown-wfid error path (GAP-11)** — convert to 404 with a clear message.
+11. **Expose `httpInputRequired` / `validateFormInput` from `@aoothjs/auth-moost`** — currently internal, copy-pasted by every custom workflow.
+12. **Improve unknown-wfid error path (GAP-11)** — convert to 404 with a clear message.
 
 ---
 
@@ -320,6 +330,7 @@ In addition to the 125 passing tests, the broader observations:
 Seed creates 2 tenants, 6 departments, 10 users (one per role + `t1_grace` with confirmed TOTP), 10 projects, 40 tasks, 60 comments, 20 documents. Audit log is intentionally empty (populated by app actions during tests).
 
 Key user handles (all with password `Password1!`):
+
 - Tenant A: `t1_alice` (member+viewer), `t1_bob` (member), `t1_carol` (manager+viewer), `t1_dave` (admin), `t1_eve` (viewer), `t1_frank` (guest), `t1_grace` (member + TOTP MFA).
 - Tenant B: `t2_olivia` (admin), `t2_oscar` (member).
 - `_super` (superadmin, `tenantId='_global'`).

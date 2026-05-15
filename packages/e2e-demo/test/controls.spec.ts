@@ -1,8 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
-import { buildTestApp, expectAllInTenant, installDyeStubs, type TestApp } from "./harness";
-
-installDyeStubs();
+import { buildTestApp, expectAllInTenant, type TestApp } from "./harness";
 
 interface TaskRow {
   id?: string;

@@ -22,24 +22,24 @@
     "@aoothjs/user-as": "workspace:*",
     "@atscript/core": "catalog:",
     "@atscript/db": "catalog:",
-    "@atscript/db-sqlite": "catalog:",
     "@atscript/db-sql-tools": "catalog:",
+    "@atscript/db-sqlite": "catalog:",
     "@atscript/moost-db": "catalog:",
     "@atscript/moost-wf": "catalog:",
     "@atscript/typescript": "catalog:",
     "@atscript/ui": "catalog:",
     "@moostjs/event-http": "catalog:",
     "@moostjs/event-wf": "catalog:",
-    "@wooksjs/event-core": "^0.7.11",
-    "@wooksjs/event-http": "^0.7.11",
-    "@uniqu/core": "^0.1.6",
-    "better-sqlite3": "^12.6.2",
     "@types/better-sqlite3": "^7.6.13",
-    "moost": "^0.6.9"
+    "@uniqu/core": "^0.1.6",
+    "@wooksjs/event-core": "catalog:",
+    "@wooksjs/event-http": "catalog:",
+    "better-sqlite3": "^12.6.2",
+    "moost": "catalog:"
   },
   "devDependencies": {
     "unplugin-atscript": "catalog:",
     "vite-node": "^3.0.0",
-    "vite-plus": "0.1.12"
+    "vite-plus": "catalog:"
   }
 }

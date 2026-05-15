@@ -68,6 +68,6 @@
     "unplugin-atscript": "catalog:"
   },
   "peerDependencies": {
-    "@atscript/db": ">=0.1.78"
+    "@atscript/db": ">=0.1.79"
   }
 }
