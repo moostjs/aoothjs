@@ -185,7 +185,7 @@ attribute updates) must reflect immediately on the next request.
 export { Arbac, arbacPatternToRegex }; // re-exports @aoothjs/arbac-core
 export { MoostArbac };
 export { ArbacUserProvider };
-export { ArbacAuthorize, ArbacResource, ArbacAction, ArbacPublic, ArbacScopes, CurrentArbacScopes };
+export { ArbacAuthorize, ArbacResource, ArbacAction, ArbacPublic, ArbacScopes };
 export { arbacAuthorizeInterceptor };
 export { useArbac };
 export type { TArbacCompiledRule, TArbacEvalResult, TArbacRole, TArbacRoleForResource, TArbacRule };

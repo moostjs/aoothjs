@@ -12,8 +12,7 @@ import { ArbacUserProvider } from "./user.provider";
  *
  * Module-level `key()` per the `@wooksjs/event-core` slot system. The
  * authorize interceptor calls `setScopes(...)` after a successful evaluate;
- * downstream `@ArbacScopes()` / `@CurrentArbacScopes()` resolvers read it
- * back from the same event context.
+ * downstream `@ArbacScopes()` resolvers read it back from the same event context.
  */
 const arbacScopesKey = key<unknown[] | undefined>("arbac.scopes");
 

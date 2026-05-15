@@ -63,15 +63,6 @@ export function applyArbacGuardGlobally(app: Moost): void {
 export const ArbacScopes = () => Resolve(() => useArbac().getScopes());
 
 /**
- * Alias for `ArbacScopes` that reads more naturally on a parameter.
- *
- * ```ts
- * handler(@CurrentArbacScopes() scopes?: MyScope[]) {}
- * ```
- */
-export const CurrentArbacScopes = ArbacScopes;
-
-/**
  * Decorator to specify a resource id for ARBAC evaluation. Apply to a
  * controller class or a handler method.
  */

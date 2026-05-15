@@ -10,11 +10,11 @@ import {
   ArbacResource,
   ArbacScopes,
   ArbacUserProvider,
-  CurrentArbacScopes,
   getArbacMate,
   MoostArbac,
   useArbac,
 } from "./index";
+import * as indexModule from "./index";
 
 describe("@aoothjs/arbac-moost", () => {
   it("re-exports arbac-core engine", () => {
@@ -53,7 +53,6 @@ describe("@aoothjs/arbac-moost", () => {
   it("exports decorator factories that return functions", () => {
     expect(typeof ArbacAuthorize).toBe("function");
     expect(typeof ArbacScopes).toBe("function");
-    expect(typeof CurrentArbacScopes).toBe("function");
     expect(typeof ArbacResource).toBe("function");
     expect(typeof ArbacAction).toBe("function");
     expect(typeof ArbacPublic).toBe("function");
@@ -63,10 +62,6 @@ describe("@aoothjs/arbac-moost", () => {
     expect(typeof ArbacAction("create")).toBe("function");
     expect(typeof ArbacPublic()).toBe("function");
     expect(typeof ArbacScopes()).toBe("function");
-  });
-
-  it("CurrentArbacScopes is the ArbacScopes alias", () => {
-    expect(CurrentArbacScopes).toBe(ArbacScopes);
   });
 
   it("getArbacMate returns the moost mate singleton typed for ARBAC", () => {
@@ -80,6 +75,13 @@ describe("@aoothjs/arbac-moost", () => {
     expect(typeof useArbac).toBe("function");
     // defineWook attaches an underlying _slot for isolation use
     expect(useArbac._slot).toBeDefined();
+  });
+
+  it("CurrentArbacScopes is NOT exported (hard-cut alias removal — ISSUE-3)", () => {
+    // ArbacScopes is the canonical export; CurrentArbacScopes was a needless alias.
+    // Any re-introduction of the alias would silently add a second way to do the same
+    // thing and break the hard-cut contract — this test catches that regression.
+    expect("CurrentArbacScopes" in indexModule).toBe(false);
   });
 
   it("ArbacResource decorator writes resource id metadata", () => {

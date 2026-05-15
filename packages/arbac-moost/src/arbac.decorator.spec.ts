@@ -20,8 +20,8 @@ import {
   arbacAuthorizeInterceptor,
   ArbacPublic,
   ArbacResource,
+  ArbacScopes,
   ArbacUserProvider,
-  CurrentArbacScopes,
   MoostArbac,
 } from "./index";
 
@@ -83,7 +83,7 @@ async function bootstrap(opts: { user: TestUserProvider; global?: boolean }): Pr
     @Get("read")
     @ArbacAction("read")
     @ArbacAuthorize()
-    read(@CurrentArbacScopes() scopes?: DemoScope[]) {
+    read(@ArbacScopes() scopes?: DemoScope[]) {
       return { ok: true, scopes: scopes ?? null };
     }
 
@@ -165,7 +165,7 @@ describe("arbac authorize HTTP integration", () => {
     clearGlobalWooks();
   });
 
-  it("allows when role permits and exposes scopes via @CurrentArbacScopes", async () => {
+  it("allows when role permits and exposes scopes via @ArbacScopes", async () => {
     const http = await bootstrap({ user: new TestUserProvider("u1", ["admin"]) });
     const res = await http.request("/read");
     expect(res?.status).toBe(200);

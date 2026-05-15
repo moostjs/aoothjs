@@ -81,23 +81,15 @@ describe("extractUsedControlValues", () => {
   });
 
   it("$with: tolerates bare string entries (defensive)", () => {
-    expect(extractUsedControlValues("$with", ["comments", "owner"])).toEqual([
-      "comments",
-      "owner",
-    ]);
+    expect(extractUsedControlValues("$with", ["comments", "owner"])).toEqual(["comments", "owner"]);
   });
 
   it("$with: skips entries with no .name", () => {
-    expect(extractUsedControlValues("$with", [{ filter: {} }, { name: "ok" }])).toEqual([
-      "ok",
-    ]);
+    expect(extractUsedControlValues("$with", [{ filter: {} }, { name: "ok" }])).toEqual(["ok"]);
   });
 
   it("$groupBy: returns the array as-is (filtered to strings)", () => {
-    expect(extractUsedControlValues("$groupBy", ["status", "owner"])).toEqual([
-      "status",
-      "owner",
-    ]);
+    expect(extractUsedControlValues("$groupBy", ["status", "owner"])).toEqual(["status", "owner"]);
   });
 
   it("returns [] for unknown / undefined / null values", () => {
@@ -155,9 +147,9 @@ describe("enforceControlsPolicy", () => {
     expect(() =>
       enforceControlsPolicy({ $groupBy: ["status"] }, { $groupBy: ["status"] }),
     ).not.toThrow();
-    expect(() =>
-      enforceControlsPolicy({ $groupBy: ["status"] }, { $groupBy: ["owner"] }),
-    ).toThrow(/\$groupBy=owner/);
+    expect(() => enforceControlsPolicy({ $groupBy: ["status"] }, { $groupBy: ["owner"] })).toThrow(
+      /\$groupBy=owner/,
+    );
   });
 
   it("integrates with unionControlsPolicy: silence + deny → allow (no throw)", () => {
@@ -170,10 +162,7 @@ describe("enforceControlsPolicy", () => {
   });
 
   it("integrates with unionControlsPolicy: deny + deny → throws", () => {
-    const scopes: ArbacDbScope[] = [
-      { controls: { $with: false } },
-      { controls: { $with: false } },
-    ];
+    const scopes: ArbacDbScope[] = [{ controls: { $with: false } }, { controls: { $with: false } }];
     expect(() =>
       enforceControlsPolicy(unionControlsPolicy(scopes), {
         $with: [{ name: "comments" }],
@@ -192,8 +181,6 @@ describe("enforceControlsPolicy", () => {
         $with: [{ name: "comments" }, { name: "owner" }],
       }),
     ).not.toThrow();
-    expect(() =>
-      enforceControlsPolicy(policy, { $with: [{ name: "tasks" }] }),
-    ).toThrow(/tasks/);
+    expect(() => enforceControlsPolicy(policy, { $with: [{ name: "tasks" }] })).toThrow(/tasks/);
   });
 });
