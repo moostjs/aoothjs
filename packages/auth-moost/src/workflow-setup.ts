@@ -13,7 +13,8 @@ import { InviteWorkflow, LoginWorkflow, RecoveryWorkflow } from "./workflows/ind
  * - Conditionally registers the three workflow controllers gated on
  *   `opts.workflows.{login,recovery,invite}` (all default to `true`).
  *
- * Pairs with `setupAuthMoost()` (REST endpoints + guard); both are independent.
+ * Pairs with the REST endpoints + guard wiring (DI providers + global
+ * `authGuardInterceptor` + `AuthController`); both halves are independent.
  *
  * Call exactly once per Moost instance — `applyGlobalInterceptors` and
  * `registerControllers` append.

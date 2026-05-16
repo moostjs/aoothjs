@@ -105,7 +105,7 @@ packages/e2e-demo/
 
 ## 3. Models
 
-All models use `@atscript/db` annotations. Atscript primitive tags (`number.timestamp`, `string`) inferred from the type. Where useful, fields carry `@arbac.attribute` (so they flow into `UserAttrs` via `AutoArbacUserProvider`) or `@arbac.role` (for role lookup).
+All models use `@atscript/db` annotations. Atscript primitive tags (`number.timestamp`, `string`) inferred from the type. Where useful, fields carry `@arbac.attribute` (so they flow into `UserAttrs` via `AtscriptArbacUserProvider`) or `@arbac.role` (for role lookup).
 
 ### 3.1 `tenant.as`
 
@@ -373,7 +373,7 @@ export interface UserAttrs {
 }
 ```
 
-`@AutoArbacUserProvider` builds this automatically by walking `DemoUser`'s annotated props. Scope functions receive `(attrs: UserAttrs, userId: string)` — `userId` is the **username** (JWT subject), not the UUID `id`.
+`AtscriptArbacUserProvider` (extended by the demo's `DemoArbacUserProvider`) builds this automatically by walking `DemoUser`'s annotated props. Scope functions receive `(attrs: UserAttrs, userId: string)` — `userId` is the **username** (JWT subject), not the UUID `id`.
 
 ---
 
@@ -777,7 +777,7 @@ export async function buildApp(
   // 2. create DbSpace + sync tables
   // 3. wire AuthCredential, UserService, ArbacUserReader, EmailSender (default = capture in tests)
   // 4. new Moost(); adapter(HTTP).listen(port=0 in tests for ephemeral); adapter(WF)
-  // 5. setupAuthMoost; setupAuthWorkflows
+  // 5. wire DI (AuthCredential/UserService/MoostAuthConfig) + apply authGuardInterceptor + register AuthController; setupAuthWorkflows
   // 6. replace registry for ArbacUserProvider
   // 7. registerControllers(...)
   // 8. app.applyGlobalInterceptors(arbacAuthorizeInterceptor)

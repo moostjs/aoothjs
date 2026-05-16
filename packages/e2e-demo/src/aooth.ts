@@ -1,4 +1,3 @@
-import type { ArbacUserReader } from "@aoothjs/arbac-moost/atscript";
 import { AuthCredential, CredentialStoreJwt, DenylistStoreMemory } from "@aoothjs/auth";
 import type { BuildMagicLinkUrl } from "@aoothjs/auth-moost";
 import { type UserCredentials, UserService } from "@aoothjs/user";
@@ -51,7 +50,6 @@ export interface AppAuth {
   credentialStore: CredentialStoreJwt<Record<string, unknown>>;
   userStore: DemoUserStore;
   userService: UserService<DemoUser>;
-  arbacUserReader: ArbacUserReader<DemoUser>;
   buildMagicLinkUrl: BuildMagicLinkUrl;
   denylist: DenylistStoreMemory;
 }
@@ -110,15 +108,6 @@ export function createAooth({ tables, env }: AppAuthOptions): AppAuth {
     denylist,
   });
 
-  // JWT subject is `username`, but `DemoUser.@meta.id` is the UUID `id`.
-  // Resolve through `findByUsername` so ARBAC reads the right record without
-  // re-annotating the model.
-  const arbacUserReader: ArbacUserReader<DemoUser> = {
-    async read(userId: string) {
-      return (await userStore.findByUsername(userId)) as DemoUser | null;
-    },
-  };
-
   const buildMagicLinkUrl: BuildMagicLinkUrl = (kind, token) => {
     const segment = kind === "recovery" ? "recover" : "accept-invite";
     return `${env.FRONTEND_URL}/${segment}?wfs=${token}`;
@@ -129,7 +118,6 @@ export function createAooth({ tables, env }: AppAuthOptions): AppAuth {
     credentialStore,
     userStore,
     userService,
-    arbacUserReader,
     buildMagicLinkUrl,
     denylist,
   };

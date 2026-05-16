@@ -178,7 +178,7 @@ describe("DX-07 — setupAuthWorkflows({ workflows: { invite: false } }) skips r
   });
 });
 
-describe("DX-08 — setupAuthMoost({ endpoints: false }) skips AuthController", () => {
+describe("DX-08 — `authEndpointsEnabled: false` skips AuthController", () => {
   let app: TestApp;
 
   beforeAll(async () => {

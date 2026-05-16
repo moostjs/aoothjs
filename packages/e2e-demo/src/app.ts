@@ -4,12 +4,25 @@ import {
   ArbacUserProvider,
   MoostArbac,
 } from "@aoothjs/arbac-moost";
-import { AutoArbacUserProvider, setUserRecordFetcher } from "@aoothjs/arbac-moost/atscript";
-import type { EmailSender } from "@aoothjs/auth";
-import { setupAuthMoost, setupAuthWorkflows, useAuth } from "@aoothjs/auth-moost";
+import { AtscriptArbacUserProvider } from "@aoothjs/arbac-moost/atscript";
+import { AuthCredential, type EmailSender } from "@aoothjs/auth";
+import {
+  AuthController,
+  authGuardInterceptor,
+  MoostAuthConfig,
+  setupAuthWorkflows,
+  useAuth,
+} from "@aoothjs/auth-moost";
+import { UserService } from "@aoothjs/user";
 import { MoostHttp } from "@moostjs/event-http";
 import { MoostWf } from "@moostjs/event-wf";
-import { createReplaceRegistry, getMoostInfact, Injectable, Moost } from "moost";
+import {
+  createProvideRegistry,
+  createReplaceRegistry,
+  getMoostInfact,
+  Injectable,
+  Moost,
+} from "moost";
 import type { AddressInfo } from "node:net";
 
 import { type AppAuth, createAooth } from "./aooth";
@@ -45,9 +58,9 @@ export interface BuildAppOptions {
    */
   workflowsEnabled?: { login?: boolean; recovery?: boolean; invite?: boolean };
   /**
-   * Forwarded to `setupAuthMoost({ endpoints })`. When `false`, the bundled
-   * `AuthController` (login/logout/refresh/status/password) is NOT registered;
-   * the auth GUARD is still installed globally. Used by DX-08.
+   * When `false`, the bundled `AuthController` (login/logout/refresh/status/
+   * password) is NOT registered; the auth GUARD is still installed globally.
+   * Used by DX-08.
    */
   authEndpointsEnabled?: boolean;
 }
@@ -78,12 +91,22 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   app.adapter(moostHttp);
   app.adapter(new MoostWf());
 
-  setupAuthMoost(app, {
-    authCredential: aooth.authCredential,
-    userService: aooth.userService,
-    cookie: { secure: false },
-    endpoints: opts.authEndpointsEnabled,
-  });
+  // Canonical REST + guard wiring: DI providers (`AuthCredential`,
+  // `UserService`, `MoostAuthConfig`) + global `authGuardInterceptor` +
+  // optional `AuthController`. `UserService` is only consumed by
+  // `AuthController`; skipping the controller leaves the guard active for
+  // the rest of the app (used by DX-08).
+  const authProviders: Parameters<typeof createProvideRegistry> = [
+    [AuthCredential, () => aooth.authCredential],
+    [UserService, () => aooth.userService],
+    [MoostAuthConfig, () => new MoostAuthConfig({ cookie: { secure: false } })],
+  ];
+  app.setProvideRegistry(createProvideRegistry(...authProviders));
+  app.applyGlobalInterceptors(authGuardInterceptor);
+  if (opts.authEndpointsEnabled !== false) {
+    app.registerControllers(AuthController);
+  }
+
   setupAuthWorkflows(app, {
     emailSender,
     buildMagicLinkUrl: aooth.buildMagicLinkUrl,
@@ -106,13 +129,31 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     },
   });
 
-  setUserRecordFetcher((userId) => aooth.arbacUserReader.read(userId));
-
   // Bind the atscript-driven user provider to the JWT subject for ARBAC.
+  // `DemoUser.@meta.id` is a UUID but the JWT subject is `username`;
+  // `userStore.findByUsername` resolves either, so wrap it in the minimal
+  // `ArbacUserTable` shim and ignore the projection (small fixture, low
+  // payoff to optimize). This is the consumer-side override seam.
+  const arbacUserTable = {
+    async findOne(query: { filter: Record<string, unknown> }): Promise<DemoUser | null> {
+      const userId = query.filter.id as string | undefined;
+      if (!userId) return null;
+      const user = await aooth.userStore.findByUsername(userId);
+      return (user as DemoUser | null) ?? null;
+    },
+  };
+
+  // `@Injectable()` (SINGLETON) — moost@0.6.x does NOT inherit injectable
+  // metadata across `extends`, so each consumer subclass must re-apply it.
+  // Per-event memoization happens via a wooks-slot cache inside
+  // `AtscriptArbacUserProvider`.
   @Injectable()
-  class DemoArbacUserProvider extends AutoArbacUserProvider {
+  class DemoArbacUserProvider extends AtscriptArbacUserProvider<DemoUser> {
     constructor() {
-      super(DemoUser, () => useAuth().getCurrentUserId());
+      super(DemoUser, arbacUserTable);
+    }
+    override getUserId(): string {
+      return useAuth().getCurrentUserId();
     }
   }
   app.setReplaceRegistry(createReplaceRegistry([ArbacUserProvider, DemoArbacUserProvider]));

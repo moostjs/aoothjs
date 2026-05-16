@@ -1,9 +1,9 @@
-import type { AuthContext } from "@aoothjs/auth";
+import { type AuthContext, CredentialStoreMemory } from "@aoothjs/auth";
 import { ppHasMinLength } from "@aoothjs/user";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import type { AuthLoginResponse } from "../auth.dto";
-import { parseCookieValue, prepareControllerApp } from "./controller-utils";
+import { type MyClaims, parseCookieValue, prepareControllerApp } from "./controller-utils";
 
 async function seedActiveUser(
   users: import("@aoothjs/user").UserService,
@@ -353,6 +353,94 @@ describe("AuthController", () => {
         json: { currentPassword: "x", newPassword: "y" },
       });
       expect(res.status).toBe(401);
+    });
+  });
+
+  // ISSUE-9: `AuthController` no longer takes ctor-injected deps. It splits
+  // dependency resolution into `resolveCoreDeps()` (auth + config only) and
+  // `resolveDepsWithUsers()` (also pulls UserService). The split exists so
+  // apps that don't expose a UserService (e.g. workflows-only deployments)
+  // can still use /auth/logout + /auth/refresh — only /auth/login and
+  // /auth/password must fail loud, and only with a helpful message that
+  // points at the missing registration.
+  describe("lazy dependency resolution split (ISSUE-9)", () => {
+    async function loginThenDropUserService(): Promise<{
+      noUserApp: Awaited<ReturnType<typeof prepareControllerApp>>;
+      accessToken: string;
+      refreshToken: string;
+    }> {
+      // Mint a valid token pair on a real-deps app, then re-bootstrap a
+      // second app WITHOUT UserService but sharing the same in-memory token
+      // store so the access token still validates. This proves the split:
+      // refresh + logout don't even look at UserService, so they must work
+      // even when none is provided.
+      const sharedStore = new CredentialStoreMemory<MyClaims>();
+      const seedApp = await prepareControllerApp({
+        authOptions: { store: sharedStore },
+      });
+      await seedApp.users.createUser("alice", "Password123");
+      await seedApp.users.activateAccount("alice");
+      const login = (
+        await seedApp.request("/auth/login", {
+          method: "POST",
+          json: { username: "alice", password: "Password123" },
+        })
+      ).body as AuthLoginResponse;
+
+      const noUserApp = await prepareControllerApp({
+        withoutUserService: true,
+        authOptions: { store: sharedStore },
+      });
+
+      return {
+        noUserApp,
+        accessToken: login.accessToken as string,
+        refreshToken: login.refreshToken as string,
+      };
+    }
+
+    it("/auth/logout succeeds when UserService is NOT provided", async () => {
+      // logout uses resolveCoreDeps() — UserService is irrelevant.
+      const { noUserApp, accessToken } = await loginThenDropUserService();
+      const out = await noUserApp.request("/auth/logout", {
+        method: "POST",
+        headers: { authorization: `Bearer ${accessToken}` },
+        json: {},
+      });
+      expect(out.status).toBe(201);
+      // Token revocation still happens — proves the auth + config deps did resolve.
+      expect(await noUserApp.auth.validate(accessToken)).toBeNull();
+    });
+
+    it("/auth/refresh succeeds when UserService is NOT provided", async () => {
+      // refresh also uses resolveCoreDeps() — UserService is irrelevant.
+      const { noUserApp, refreshToken } = await loginThenDropUserService();
+      const res = await noUserApp.request("/auth/refresh", {
+        method: "POST",
+        json: { refreshToken },
+      });
+      expect(res.status).toBe(201);
+      const body = res.body as AuthLoginResponse;
+      expect(body.userId).toBe("alice");
+      expect(typeof body.accessToken).toBe("string");
+    });
+
+    it("/auth/login throws a helpful 500 mentioning 'UserService is not provided'", async () => {
+      // login is the canonical UserService-requiring endpoint. The error
+      // message must name the missing token AND point at the registration
+      // call — anything vaguer wastes consumer time when they hit this in
+      // the wild.
+      const app = await prepareControllerApp({ withoutUserService: true });
+      const res = await app.request("/auth/login", {
+        method: "POST",
+        json: { username: "alice", password: "Password123" },
+      });
+      // Internal config error — moost surfaces it as 500.
+      expect(res.status).toBe(500);
+      // The error must self-identify so the consumer can grep their setup.
+      // Backticks around `UserService` in the message are decorative — match
+      // the substring regardless.
+      expect(JSON.stringify(res.body)).toMatch(/UserService.{0,3}is not provided/);
     });
   });
 });

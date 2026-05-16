@@ -1,12 +1,12 @@
-import { ArbacResource, AsArbacDbController } from "@aoothjs/arbac-moost"
-import type { AtscriptDbTable } from "@atscript/db"
-import { DbAction, DbActionID, InputForm, TableController } from "@atscript/moost-db"
-import { Post } from "@moostjs/event-http"
+import { ArbacResource, AsArbacDbController } from "@aoothjs/arbac-moost";
+import type { AtscriptDbTable } from "@atscript/db";
+import { DbAction, DbActionID, InputForm, TableController } from "@atscript/moost-db";
+import { Post } from "@moostjs/event-http";
 
-import { AssignRolesForm, type DemoUser, LockForm } from "../models/user.as"
-import { type DbControllerCtor, assertWritten, scopedFilter } from "./_helpers"
+import { AssignRolesForm, type DemoUser, LockForm } from "../models/user.as";
+import { type DbControllerCtor, assertWritten, scopedFilter } from "./_helpers";
 
-type Ack = { ok: true; message: string }
+type Ack = { ok: true; message: string };
 
 export function makeUsersController(
   table: AtscriptDbTable<typeof DemoUser>,
@@ -19,13 +19,13 @@ export function makeUsersController(
       patch: Record<string, unknown>,
       message: string,
     ): Promise<Ack> {
-      const r = await this.table.updateMany(scopedFilter({ id }), patch as never)
-      assertWritten(r)
-      return { ok: true, message }
+      const r = await this.table.updateMany(scopedFilter({ id }), patch as never);
+      assertWritten(r);
+      return { ok: true, message };
     }
 
     @Post("actions/assignRoles")
-    @DbAction<typeof DemoUser, []>("assignRoles", {
+    @DbAction<typeof DemoUser>("assignRoles", {
       label: "Assign roles",
       icon: "i-as-shield",
       intent: "primary",
@@ -35,21 +35,18 @@ export function makeUsersController(
       @DbActionID() id: { id: string },
       @InputForm(AssignRolesForm) form: AssignRolesForm,
     ): Promise<Ack> {
-      return this.patchOne(id.id, { roles: form.roles }, "Roles assigned")
+      return this.patchOne(id.id, { roles: form.roles }, "Roles assigned");
     }
 
     @Post("actions/lock")
-    @DbAction<typeof DemoUser, []>("lock", {
+    @DbAction<typeof DemoUser>("lock", {
       label: "Lock account",
       icon: "i-as-lock",
       intent: "negative",
       requiredFields: [],
     })
-    lock(
-      @DbActionID() id: { id: string },
-      @InputForm(LockForm) form: LockForm,
-    ): Promise<Ack> {
-      const lockEnds = form.durationMs ? Date.now() + form.durationMs : 0
+    lock(@DbActionID() id: { id: string }, @InputForm(LockForm) form: LockForm): Promise<Ack> {
+      const lockEnds = form.durationMs ? Date.now() + form.durationMs : 0;
       return this.patchOne(
         id.id,
         {
@@ -58,11 +55,11 @@ export function makeUsersController(
           "account.lockEnds": lockEnds,
         },
         "Account locked",
-      )
+      );
     }
 
     @Post("actions/unlock")
-    @DbAction<typeof DemoUser, []>("unlock", {
+    @DbAction<typeof DemoUser>("unlock", {
       label: "Unlock account",
       icon: "i-as-unlock",
       intent: "positive",
@@ -78,8 +75,8 @@ export function makeUsersController(
           "account.failedLoginAttempts": 0,
         },
         "Account unlocked",
-      )
+      );
     }
   }
-  return UsersController as unknown as DbControllerCtor<typeof DemoUser>
+  return UsersController as unknown as DbControllerCtor<typeof DemoUser>;
 }

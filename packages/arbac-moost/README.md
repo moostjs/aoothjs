@@ -130,53 +130,56 @@ export interface MyUser extends AoothArbacUserCredentials {
 }
 ```
 
-### `setupArbacFromAtscript()`
+### `AtscriptArbacUserProvider`
 
-One call replaces `ArbacUserProvider` in the DI container with an
-auto-wired implementation:
+Abstract `ArbacUserProvider` driven by a `.as` user type and a wrapped
+atscript-db readable. The consumer extends the class, implements
+`getUserId()`, injects their table, and registers the subclass via
+`setReplaceRegistry`:
 
 ```ts
-import { setupArbacFromAtscript } from "@aoothjs/arbac-moost/atscript";
+import { AtscriptArbacUserProvider } from "@aoothjs/arbac-moost/atscript";
+import { ArbacUserProvider } from "@aoothjs/arbac-moost";
 import { useAuth } from "@aoothjs/auth-moost";
+import { createReplaceRegistry, Injectable } from "moost";
 import { MyUser } from "./models/user.as";
 
-setupArbacFromAtscript(moost, {
-  userType: MyUser,
-  table: usersTable, // @atscript/db Table<MyUser>
-  // OR: store: usersStore,                // @aoothjs/user UserStore<MyUser>
-  getUserId: () => useAuth().getCurrentUserId(),
-});
+// `@Injectable()` MUST be re-applied on every consumer subclass —
+// moost@0.6.x does not inherit injectable metadata across `extends`.
+@Injectable()
+class MyArbacUserProvider extends AtscriptArbacUserProvider<MyUser> {
+  constructor() {
+    // `usersTable` is your `@atscript/db` table (or any value implementing
+    // `{ findOne({ filter, controls }): Promise<MyUser | null> }`).
+    super(MyUser, usersTable);
+  }
+  override getUserId(): string {
+    return useAuth().getCurrentUserId();
+  }
+}
+moost.setReplaceRegistry(createReplaceRegistry([ArbacUserProvider, MyArbacUserProvider]));
 ```
 
-| Option      | Required                   | Notes                                                              |
-| ----------- | -------------------------- | ------------------------------------------------------------------ |
-| `userType`  | yes                        | Atscript runtime type token for the user model                     |
-| `table`     | one-of (`table` ⊕ `store`) | `@atscript/db` table; SELECT projection optimised for arbac fields |
-| `store`     | one-of (`table` ⊕ `store`) | Any `{ read(id): Promise<T \| null> }` (matches `UserStore`)       |
-| `getUserId` | yes                        | Resolves the current event's subject id                            |
-| `warn`      | no                         | Warning sink (default `console.warn`)                              |
+The base constructor:
 
-Internally it:
+1. Reads atscript runtime metadata for `userType` and resolves the userId
+   field (`@arbac.userId` ?? `@meta.id`); throws if neither is present.
+2. Computes a minimum SELECT projection covering id + roles + attrs.
 
-1. Reads atscript runtime metadata for `userType`.
-2. Validates ≥ 1 `@arbac.role` field present (warns if none); requires a
-   `userId` field (`@arbac.userId` ?? `@meta.id`).
-3. Computes a minimum projection covering id + roles + attrs.
-4. Installs a per-event memoized user-record fetcher via `defineWook`
-   (see `useUserRecord`).
-5. Replaces `ArbacUserProvider` in DI with `AutoArbacUserProvider`
-   bound to `userType` and `getUserId`.
+`getRoles(id)` and `getAttrs(id)` then call `table.findOne({ filter:
+{ [userIdField]: id }, controls: { $select: projection } })` and feed the
+record through the `protected extractRoles` / `extractAttrs` seams —
+override either to reshape the output without re-implementing the fetch.
 
-### Per-event memoization
+#### Per-event memoization
 
-`useUserRecord()` returns a per-event accessor keyed by `userId`. The first
-call for an id fires the configured fetcher; subsequent calls within the
-same event reuse the cached promise. Calls for **different** ids in the
-same event are cached independently — safe for admin handlers that
-evaluate policy against multiple subjects.
+The base class caches the fetched record on the wooks event context,
+keyed by `(this, userId)`. Two calls — `getRoles(id) + getAttrs(id)` —
+share one DB read. Different subjects probed by the same event are
+cached independently (safe for admin handlers).
 
 Cross-request caching is **not** included. Auth changes (role revocation,
-attribute updates) must reflect immediately on the next request.
+attribute updates) reflect immediately on the next request.
 
 ## API surface
 
@@ -191,17 +194,7 @@ export { useArbac };
 export type { TArbacCompiledRule, TArbacEvalResult, TArbacRole, TArbacRoleForResource, TArbacRule };
 
 // /atscript sub-export
-export {
-  AutoArbacUserProvider,
-  extractArbacAttrs,
-  extractArbacRoles,
-  extractArbacUserId,
-  getArbacProjection,
-  setupArbacFromAtscript,
-  setUserRecordFetcher,
-  useUserRecord,
-  AoothArbacUserCredentials,
-};
+export { AtscriptArbacUserProvider, type ArbacUserTable, AoothArbacUserCredentials };
 
 // /plugin sub-export (atscript compile-time plugin)
 export default function arbacPlugin(): TAtscriptPlugin;

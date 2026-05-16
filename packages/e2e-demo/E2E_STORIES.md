@@ -352,7 +352,7 @@ _(or — if we add cascade — flip the assertion. For v1, assert current behavi
 
 ### ACT-04 — action requires authentication even when ARBAC public
 
-_(this exists to document the auth/arbac orthogonality — `@ArbacPublic` does NOT bypass `setupAuthMoost`'s guard.)_
+_(this exists to document the auth/arbac orthogonality — `@ArbacPublic` does NOT bypass the global `authGuardInterceptor`.)_
 **Acceptance:** `@ArbacPublic` controller still requires auth unless ALSO `@Public()` from auth-moost.
 
 ### ACT-05 — `disabled: perRow` predicate enforced
@@ -645,7 +645,7 @@ _(documented: in-memory denylist grows; `cleanup()` purges expired. Test that ca
 
 **Acceptance:** `/wf/admin` triggering `auth.invite` after `invite: false` → 404 / "workflow not registered".
 
-### DX-08 — `setupAuthMoost` `endpoints: false` skips AuthController
+### DX-08 — `authEndpointsEnabled: false` skips AuthController
 
 **Acceptance:** `/auth/login` → 404 when endpoints disabled.
 

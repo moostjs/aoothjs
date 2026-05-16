@@ -9,6 +9,6 @@ export const ENV = {
   LOCKOUT_DURATION_MS: Number(process.env.LOCKOUT_DURATION_MS ?? 5_000),
   RECOVERY_TTL_MS: Number(process.env.RECOVERY_TTL_MS ?? 60 * 60 * 1000),
   INVITE_TTL_MS: Number(process.env.INVITE_TTL_MS ?? 7 * 24 * 60 * 60 * 1000),
-} as const
+} as const;
 
-export type AppEnv = typeof ENV
+export type AppEnv = typeof ENV;

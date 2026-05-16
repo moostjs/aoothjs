@@ -1,5 +1,5 @@
-import { ArbacResource, AsArbacDbController } from "@aoothjs/arbac-moost"
-import type { AtscriptDbTable } from "@atscript/db"
+import { ArbacResource, AsArbacDbController } from "@aoothjs/arbac-moost";
+import type { AtscriptDbTable } from "@atscript/db";
 import {
   DbAction,
   DbActionID,
@@ -7,13 +7,13 @@ import {
   InputForm,
   TableController,
   perRow,
-} from "@atscript/moost-db"
-import { HttpError, Post } from "@moostjs/event-http"
+} from "@atscript/moost-db";
+import { HttpError, Post } from "@moostjs/event-http";
 
-import { AssignTaskForm, NewTaskForm, type Task } from "../models/task.as"
-import { type DbControllerCtor, assertWritten, scopedFilter, scopedSet } from "./_helpers"
+import { AssignTaskForm, NewTaskForm, type Task } from "../models/task.as";
+import { type DbControllerCtor, assertWritten, scopedFilter, scopedSet } from "./_helpers";
 
-type Ack = { ok: true; message: string }
+type Ack = { ok: true; message: string };
 
 export function makeTasksController(
   table: AtscriptDbTable<typeof Task>,
@@ -29,13 +29,13 @@ export function makeTasksController(
       const r = await this.table.updateMany(scopedFilter({ id }), {
         ...patch,
         updatedAt: Date.now(),
-      } as never)
-      assertWritten(r)
-      return { ok: true, message }
+      } as never);
+      assertWritten(r);
+      return { ok: true, message };
     }
 
     @Post("actions/new")
-    @DbAction<typeof Task, []>("new", {
+    @DbAction<typeof Task>("new", {
       label: "New task",
       icon: "i-as-plus",
       intent: "primary",
@@ -44,12 +44,14 @@ export function makeTasksController(
     async newTask(
       @InputForm(NewTaskForm) form: NewTaskForm,
     ): Promise<Ack & { insertedId: string }> {
-      const r = await this.table.insertOne({ ...form, ...scopedSet(), status: "open" } as never)
-      const insertedId = (r as { insertedId: unknown }).insertedId
+      // NewTaskForm is a class instance; only its data fields are persisted, methods are unused.
+      // oxlint-disable-next-line no-misused-spread
+      const r = await this.table.insertOne({ ...form, ...scopedSet(), status: "open" } as never);
+      const insertedId = (r as { insertedId: unknown }).insertedId;
       if (typeof insertedId !== "string") {
-        throw new HttpError(500, "Insert succeeded but no insertedId returned")
+        throw new HttpError(500, "Insert succeeded but no insertedId returned");
       }
-      return { ok: true, message: "Task created", insertedId }
+      return { ok: true, message: "Task created", insertedId };
     }
 
     @Post("actions/markDone")
@@ -64,7 +66,7 @@ export function makeTasksController(
       @DbActionID() id: { id: string },
       @DbActionRow() _row: Pick<Task, "id" | "status">,
     ): Promise<Ack> {
-      return this.patchOne(id.id, { status: "done" }, "Task marked done")
+      return this.patchOne(id.id, { status: "done" }, "Task marked done");
     }
 
     @Post("actions/markInProgress")
@@ -79,7 +81,7 @@ export function makeTasksController(
       @DbActionID() id: { id: string },
       @DbActionRow() _row: Pick<Task, "id" | "status">,
     ): Promise<Ack> {
-      return this.patchOne(id.id, { status: "in_progress" }, "Task in progress")
+      return this.patchOne(id.id, { status: "in_progress" }, "Task in progress");
     }
 
     @Post("actions/archive")
@@ -94,11 +96,11 @@ export function makeTasksController(
       @DbActionID() id: { id: string },
       @DbActionRow() _row: Pick<Task, "id" | "status">,
     ): Promise<Ack> {
-      return this.patchOne(id.id, { status: "done" }, "Task archived")
+      return this.patchOne(id.id, { status: "done" }, "Task archived");
     }
 
     @Post("actions/assign")
-    @DbAction<typeof Task, []>("assign", {
+    @DbAction<typeof Task>("assign", {
       label: "Assign",
       icon: "i-as-user",
       intent: "primary",
@@ -108,11 +110,11 @@ export function makeTasksController(
       @DbActionID() id: { id: string },
       @InputForm(AssignTaskForm) form: AssignTaskForm,
     ): Promise<Ack> {
-      return this.patchOne(id.id, { assigneeUsername: form.assigneeUsername }, "Task assigned")
+      return this.patchOne(id.id, { assigneeUsername: form.assigneeUsername }, "Task assigned");
     }
 
     @Post("actions/delete")
-    @DbAction<typeof Task, []>("delete", {
+    @DbAction<typeof Task>("delete", {
       label: "Delete",
       icon: "i-as-trash",
       intent: "negative",
@@ -120,10 +122,10 @@ export function makeTasksController(
       requiredFields: [],
     })
     async deleteTask(@DbActionID() id: { id: string }): Promise<Ack> {
-      const r = await this.table.deleteMany(scopedFilter({ id: id.id }))
-      assertWritten(r)
-      return { ok: true, message: "Task deleted" }
+      const r = await this.table.deleteMany(scopedFilter({ id: id.id }));
+      assertWritten(r);
+      return { ok: true, message: "Task deleted" };
     }
   }
-  return TasksController as unknown as DbControllerCtor<typeof Task>
+  return TasksController as unknown as DbControllerCtor<typeof Task>;
 }

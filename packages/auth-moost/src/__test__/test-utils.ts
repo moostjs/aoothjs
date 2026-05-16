@@ -1,9 +1,11 @@
 import type { AuthCredential, AuthContext } from "@aoothjs/auth";
 import { AuthCredential as AuthCredentialClass, CredentialStoreMemory } from "@aoothjs/auth";
+import { UserService } from "@aoothjs/user";
 import { prepareTestHttpContext } from "@wooksjs/event-http";
 import type { TMoostAdapter, TMoostAdapterOptions } from "moost";
 import {
   Controller,
+  createProvideRegistry,
   current,
   getMoostMate,
   Moost,
@@ -11,9 +13,9 @@ import {
   TInterceptorPriority,
 } from "moost";
 
+import { MoostAuthConfig, type MoostAuthConfigOptions } from "../auth.config";
 import { useAuth } from "../auth.composables";
 import { authGuardInterceptor } from "../auth.guard";
-import { setupAuthMoost, type SetupAuthMoostOptions } from "../auth.setup";
 
 /**
  * Synthesizes a `handlers` entry on a method so `moost.init()` walks our test
@@ -64,9 +66,14 @@ export interface PreparedTestApp {
   auth: AuthCredential<MyClaims>;
 }
 
+export interface PrepareTestAppOpts extends MoostAuthConfigOptions {
+  /** Optional UserService; when omitted, login + password endpoints are not exercised. */
+  userService?: UserService;
+}
+
 export async function prepareTestApp(
   controllers: ControllerClass[],
-  opts: Omit<SetupAuthMoostOptions<MyClaims>, "authCredential"> = {},
+  opts: PrepareTestAppOpts = {},
 ): Promise<PreparedTestApp> {
   const moost = new Moost();
   const adapter = new TestAdapter();
@@ -75,10 +82,15 @@ export async function prepareTestApp(
 
   const store = new CredentialStoreMemory<MyClaims>();
   const auth = new AuthCredentialClass<MyClaims>({ store, method: "token", accessTtl: 60_000 });
-  // Existing guard-focused tests don't care about endpoints; default off here
-  // so callers don't have to pass a UserService. They can still opt-in by
-  // setting `endpoints: true` in opts.
-  setupAuthMoost(moost, { authCredential: auth, endpoints: false, ...opts });
+
+  const { userService, ...cfg } = opts;
+  const providers: Parameters<typeof createProvideRegistry> = [
+    [AuthCredentialClass, () => auth],
+    [MoostAuthConfig, () => new MoostAuthConfig(cfg)],
+  ];
+  if (userService) providers.push([UserService, () => userService]);
+  moost.setProvideRegistry(createProvideRegistry(...providers));
+  moost.applyGlobalInterceptors(authGuardInterceptor);
 
   await moost.init();
   return { moost, adapter, auth };

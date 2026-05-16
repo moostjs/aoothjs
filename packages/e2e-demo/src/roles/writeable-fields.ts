@@ -10,4 +10,4 @@ export const WRITEABLE_USER_FIELDS_ADMIN = [
   "account.locked",
   "mfa.defaultMethod",
   "mfa.autoSend",
-] as const
+] as const;

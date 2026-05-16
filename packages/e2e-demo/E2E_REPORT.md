@@ -272,19 +272,19 @@ Build-time globals (`__DYE_YELLOW__`, etc.) were referenced as runtime values in
 
 ## Documented gaps (intentional or out-of-scope)
 
-| ID     | Story    | Status     | Note                                                                                                                                                                                                    |
-| ------ | -------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GAP-1  | AUTH-18  | skip       | `CredentialStoreJwt` doesn't implement `listForUser` → `maxConcurrent` cannot be enforced on the JWT store. Switch to memory store or add a per-user index to JWT store.                                |
-| GAP-2  | UNION-03 | skip       | No role in the demo seed uses `effect: 'deny'`. Deny semantics are validated in arbac-core unit tests; integration validation requires a synthetic deny-rule role.                                      |
-| GAP-3  | PROJ-04  | skip       | Demo `.as` models don't declare `@db.rel.*` annotations, so `$with` relation expansion can't be exercised.                                                                                              |
-| GAP-4  | CTRL-05  | skip       | Same — `$with` requires DB relations.                                                                                                                                                                   |
-| GAP-5  | ISO-09   | skip       | Tenant cascade is documented as out-of-scope for ARBAC; arbac doesn't manage cascade.                                                                                                                   |
-| GAP-6  | SEC-29   | documented | No library-level "preserve at least one admin" invariant. Admins can self-demote. Add an org-level invariant if undesired.                                                                              |
-| GAP-8  | SEC-11   | documented | Magic links ARE the credential. Defense is email delivery security; nothing in-band can prevent cross-user replay if the link is exfiltrated.                                                           |
-| GAP-9  | SEC-18   | documented | TOTP replay within a 30s period is RFC-6238-compliant; not a gap to "fix".                                                                                                                              |
-| GAP-10 | DX-08    | documented | `setupAuthMoost({ endpoints: false })` causes `/auth/login` to return 401 (auth guard runs first) instead of 404 (route miss). DX wart, not a security issue. Worth a JSDoc note on `endpoints` option. |
-| GAP-11 | DX-07    | documented | Unknown wfid throws an unhandled `Error("Unknown schemaId")` which Wooks bubbles as 500. Should be a 404 with "workflow not registered".                                                                |
-| GAP-12 | DX-03    | documented | `defineRole().allow(resource, action)` types both as plain `string` — typos compile. Adding a generic resource→actions map could give type-level safety, but is non-trivial without a registry.         |
+| ID     | Story    | Status     | Note                                                                                                                                                                                            |
+| ------ | -------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GAP-1  | AUTH-18  | skip       | `CredentialStoreJwt` doesn't implement `listForUser` → `maxConcurrent` cannot be enforced on the JWT store. Switch to memory store or add a per-user index to JWT store.                        |
+| GAP-2  | UNION-03 | skip       | No role in the demo seed uses `effect: 'deny'`. Deny semantics are validated in arbac-core unit tests; integration validation requires a synthetic deny-rule role.                              |
+| GAP-3  | PROJ-04  | skip       | Demo `.as` models don't declare `@db.rel.*` annotations, so `$with` relation expansion can't be exercised.                                                                                      |
+| GAP-4  | CTRL-05  | skip       | Same — `$with` requires DB relations.                                                                                                                                                           |
+| GAP-5  | ISO-09   | skip       | Tenant cascade is documented as out-of-scope for ARBAC; arbac doesn't manage cascade.                                                                                                           |
+| GAP-6  | SEC-29   | documented | No library-level "preserve at least one admin" invariant. Admins can self-demote. Add an org-level invariant if undesired.                                                                      |
+| GAP-8  | SEC-11   | documented | Magic links ARE the credential. Defense is email delivery security; nothing in-band can prevent cross-user replay if the link is exfiltrated.                                                   |
+| GAP-9  | SEC-18   | documented | TOTP replay within a 30s period is RFC-6238-compliant; not a gap to "fix".                                                                                                                      |
+| GAP-10 | DX-08    | documented | Skipping `registerControllers(AuthController)` causes `/auth/login` to return 401 (auth guard runs first) instead of 404 (route miss). DX wart, not a security issue.                           |
+| GAP-11 | DX-07    | documented | Unknown wfid throws an unhandled `Error("Unknown schemaId")` which Wooks bubbles as 500. Should be a 404 with "workflow not registered".                                                        |
+| GAP-12 | DX-03    | documented | `defineRole().allow(resource, action)` types both as plain `string` — typos compile. Adding a generic resource→actions map could give type-level safety, but is non-trivial without a registry. |
 
 ---
 

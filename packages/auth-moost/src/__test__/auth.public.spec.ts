@@ -1,7 +1,19 @@
 import { describe, expect, it } from "vite-plus/test";
 
+import * as indexModule from "../index";
 import { getAuthMate } from "../auth.mate";
 import { Public } from "../auth.decorator";
+
+// ISSUE-9: `setupAuthMoost` was deleted. Consumers now call
+// setProvideRegistry / applyGlobalInterceptors / registerControllers
+// directly — see controller-utils.ts for the canonical wiring.
+// Re-introducing the helper would re-create the abstraction tax the
+// refactor removed; this negative pins it shut at the barrel level.
+describe("@aoothjs/auth-moost ISSUE-9 hard-cut removals", () => {
+  it("setupAuthMoost is NOT exported from the root barrel", () => {
+    expect("setupAuthMoost" in indexModule).toBe(false);
+  });
+});
 
 describe("@Public decorator", () => {
   it("writes authPublic=true at the class level", () => {

@@ -71,25 +71,49 @@ function translatePasswordError(err: unknown): never {
   throw err;
 }
 
-interface Deps {
+interface CoreDeps {
   auth: AuthCredential;
   config: MoostAuthConfig;
+}
+
+interface DepsWithUsers extends CoreDeps {
   users: UserService;
 }
 
-async function resolveDeps(): Promise<Deps> {
+async function resolveCoreDeps(): Promise<CoreDeps> {
   const cc = useControllerContext();
+  const [auth, config] = await Promise.all([
+    cc.instantiate(AuthCredential),
+    cc.instantiate(MoostAuthConfig),
+  ]);
+  return { auth, config };
+}
+
+async function resolveDepsWithUsers(): Promise<DepsWithUsers> {
+  const cc = useControllerContext();
+  // `UserService` is required only by handlers that read/verify user records
+  // (login, changePassword). Refresh + logout work off the token store alone,
+  // so they call `resolveCoreDeps()` and never trip this guard. Controller-
+  // construction proper is gated by moost@0.6.x's `@Inject` constructor-param
+  // limitation (see the DI note at the top of this file), which is why this
+  // resolves lazily at first request rather than at boot.
   const [auth, config, users] = await Promise.all([
     cc.instantiate(AuthCredential),
     cc.instantiate(MoostAuthConfig),
-    cc.instantiate(UserService),
+    cc.instantiate(UserService).catch(() => {
+      throw new Error(
+        "AuthController: `UserService` is not provided in the Moost DI container. " +
+          "Register one via `setProvideRegistry(createProvideRegistry([UserService, () => myUserService]))`, " +
+          "or do not register `AuthController` if you don't need /auth/login + /auth/password.",
+      );
+    }),
   ]);
   return { auth, config, users };
 }
 
 /**
- * Public REST endpoints for credential management. Auto-registered by
- * `setupAuthMoost()` when `endpoints` is `true` (the default).
+ * Public REST endpoints for credential management. Consumers register this
+ * controller explicitly via `moost.registerControllers(AuthController)`.
  *
  * Exported so consumers can subclass to override individual methods (e.g.
  * to wire a non-username userId mapping in `changePassword`).
@@ -107,7 +131,7 @@ export class AuthController {
     if (!body || typeof body.username !== "string" || typeof body.password !== "string") {
       throw new HttpError(400, "username and password are required");
     }
-    const { auth, config, users } = await resolveDeps();
+    const { auth, config, users } = await resolveDepsWithUsers();
 
     let loginResult: Awaited<ReturnType<UserService["login"]>>;
     try {
@@ -123,7 +147,7 @@ export class AuthController {
 
   @Post("logout")
   async logout(@Body() body: AuthLogoutBody): Promise<AuthOkResponse> {
-    const { auth, config } = await resolveDeps();
+    const { auth, config } = await resolveCoreDeps();
     const ctx = current();
     const accessToken = extractAccessToken(ctx, config);
     // Revoke the refresh side too — otherwise a stolen device could mint a
@@ -162,7 +186,7 @@ export class AuthController {
   @Post("refresh")
   @Public()
   async refresh(@Body() body: AuthRefreshBody | undefined): Promise<AuthLoginResponse> {
-    const { auth, config } = await resolveDeps();
+    const { auth, config } = await resolveCoreDeps();
     const ctx = current();
     let refreshToken = body?.refreshToken;
     if (!refreshToken && config.enableCookie) {
@@ -204,7 +228,7 @@ export class AuthController {
     if (!body || typeof body.currentPassword !== "string" || typeof body.newPassword !== "string") {
       throw new HttpError(400, "currentPassword and newPassword are required");
     }
-    const { auth, config, users } = await resolveDeps();
+    const { auth, config, users } = await resolveDepsWithUsers();
     const username = useAuth().getCurrentUserId();
 
     let valid: boolean;

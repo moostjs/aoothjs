@@ -1,4 +1,4 @@
-import type { AuthEmailEvent, EmailSender } from "@aoothjs/auth"
+import type { AuthEmailEvent, EmailSender } from "@aoothjs/auth";
 
 export class ConsoleEmailSender implements EmailSender {
   send(event: AuthEmailEvent): Promise<void> {
@@ -11,13 +11,13 @@ export class ConsoleEmailSender implements EmailSender {
       `expires=${new Date(event.expiresAt).toISOString()}`,
     ]
       .filter(Boolean)
-      .join(" ")
+      .join(" ");
     // biome-ignore lint/suspicious/noConsole: demo logger
-    console.log(parts)
+    console.log(parts);
     if (event.metadata) {
       // biome-ignore lint/suspicious/noConsole: demo logger
-      console.log(`  metadata: ${JSON.stringify(event.metadata)}`)
+      console.log(`  metadata: ${JSON.stringify(event.metadata)}`);
     }
-    return Promise.resolve()
+    return Promise.resolve();
   }
 }

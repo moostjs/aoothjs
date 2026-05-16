@@ -14,12 +14,10 @@ describe("MoostAuthConfig", () => {
     expect(c.refreshCookie.sameSite).toBe("lax");
     expect(c.enableBearer).toBe(true);
     expect(c.enableCookie).toBe(true);
-    expect(c.endpoints).toBe(true);
   });
 
   it("propagates access-cookie transport attrs to the refresh cookie", () => {
-    const c = new MoostAuthConfig();
-    c.configure({
+    const c = new MoostAuthConfig({
       cookie: { secure: false, sameSite: "strict", httpOnly: true, domain: "example.com" },
     });
     expect(c.refreshCookie.secure).toBe(false);
@@ -30,8 +28,7 @@ describe("MoostAuthConfig", () => {
   });
 
   it("refresh-cookie overrides win over inherited access-cookie attrs", () => {
-    const c = new MoostAuthConfig();
-    c.configure({
+    const c = new MoostAuthConfig({
       cookie: { secure: true, sameSite: "lax" },
       refreshCookie: { name: "rt", path: "/api/refresh", sameSite: "strict" },
     });
@@ -41,11 +38,38 @@ describe("MoostAuthConfig", () => {
     expect(c.refreshCookie.secure).toBe(true); // inherited
   });
 
-  it("toggles transports + endpoints flags", () => {
-    const c = new MoostAuthConfig();
-    c.configure({ enableBearer: false, enableCookie: true, endpoints: false });
+  it("toggles transports flags", () => {
+    const c = new MoostAuthConfig({ enableBearer: false, enableCookie: true });
     expect(c.enableBearer).toBe(false);
     expect(c.enableCookie).toBe(true);
-    expect(c.endpoints).toBe(false);
+  });
+
+  // ISSUE-9: the old `configure()` method was deleted in favour of a real
+  // ctor — consumers used to build a no-op instance and then mutate it,
+  // which produced two construction paths for the same shape. The asserts
+  // below pin the new contract: partial opts must only touch the requested
+  // sub-field while every default elsewhere survives.
+  it("partial cookie opts preserve all other access-cookie defaults", () => {
+    const c = new MoostAuthConfig({ cookie: { secure: false } });
+    expect(c.cookie.secure).toBe(false);
+    // Every other default on the access cookie must be untouched.
+    expect(c.cookie.name).toBe("aooth_session");
+    expect(c.cookie.path).toBe("/");
+    expect(c.cookie.sameSite).toBe("lax");
+    expect(c.cookie.httpOnly).toBe(true);
+    // Sibling defaults survive too.
+    expect(c.enableBearer).toBe(true);
+    expect(c.enableCookie).toBe(true);
+    expect(c.refreshCookie.name).toBe("aooth_refresh");
+    expect(c.refreshCookie.path).toBe("/auth/refresh");
+  });
+
+  it("configure() is NOT a method on MoostAuthConfig (hard-cut — ISSUE-9)", () => {
+    // The legacy `cfg.configure({...})` was the second construction path that
+    // ISSUE-9 collapsed into the constructor. Re-introducing it would split
+    // the contract again — this assertion catches that regression at the
+    // class-shape level.
+    const c = new MoostAuthConfig();
+    expect((c as unknown as { configure?: unknown }).configure).toBeUndefined();
   });
 });

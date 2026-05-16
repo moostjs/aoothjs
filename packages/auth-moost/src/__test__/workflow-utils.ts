@@ -30,12 +30,20 @@ import {
 import { current } from "@wooksjs/event-core";
 import { createWfApp } from "@wooksjs/event-wf";
 import { createHttpApp } from "@wooksjs/event-http";
-import { Controller, getMoostInfact, Moost, useControllerContext } from "moost";
+import {
+  Controller,
+  createProvideRegistry,
+  getMoostInfact,
+  Moost,
+  useControllerContext,
+} from "moost";
 import { Wooks } from "wooks";
 
 import type { BuildMagicLinkUrl, EmailSender } from "@aoothjs/auth";
 
-import { setupAuthMoost } from "../auth.setup";
+import { MoostAuthConfig } from "../auth.config";
+import { AuthController } from "../auth.controller";
+import { authGuardInterceptor } from "../auth.guard";
 import { Public } from "../auth.decorator";
 import { setupAuthWorkflows } from "../workflow-setup";
 import { createAuthEmailOutlet } from "../workflows/auth-email-outlet";
@@ -101,8 +109,9 @@ export interface PrepareWfOpts {
  * Spins up a Moost app wired with:
  *   - `MoostHttp` (fresh Wooks per test)
  *   - `MoostWf` (workflow adapter)
- *   - `setupAuthMoost` (REST endpoints + guard; we keep the guard so we can
- *     test "the workflow endpoints are still reachable as `@Public()` once we
+ *   - DI providers + global `authGuardInterceptor` + `AuthController` (the
+ *     canonical REST + guard wiring; we keep the guard so we can test
+ *     "the workflow endpoints are still reachable as `@Public()` once we
  *     mount them")
  *   - `setupAuthWorkflows` (registers `LoginWorkflow` / `RecoveryWorkflow`
  *     / `InviteWorkflow`)
@@ -151,14 +160,19 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
   const store = new WfStateStoreMemory();
   const strategy: WfStateStrategy = new HandleStateStrategy({ store });
 
-  // `setupAuthMoost` applies the guard and registers `AuthController`.
-  // The workflow trigger endpoint we add below is `@Public()` already (no
-  // existing user is authenticated when login or recovery start).
-  setupAuthMoost(moost, {
-    authCredential: auth,
-    userService: users,
-    cookie: { secure: false }, // dev-friendly in test (no Secure attribute required)
-  });
+  // Canonical REST wiring: DI providers + global `authGuardInterceptor` +
+  // `AuthController`. The workflow trigger endpoint we add below is
+  // `@Public()` already (no existing user is authenticated when login or
+  // recovery start).
+  moost.setProvideRegistry(
+    createProvideRegistry(
+      [AuthCredential, () => auth],
+      [UserService, () => users],
+      [MoostAuthConfig, () => new MoostAuthConfig({ cookie: { secure: false } })],
+    ),
+  );
+  moost.applyGlobalInterceptors(authGuardInterceptor);
+  moost.registerControllers(AuthController);
 
   setupAuthWorkflows(moost, {
     emailSender,

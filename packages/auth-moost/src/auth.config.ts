@@ -10,62 +10,56 @@ export interface ResolvedAuthCookieConfig {
   domain?: string;
 }
 
+export interface MoostAuthConfigOptions {
+  cookie?: Partial<ResolvedAuthCookieConfig>;
+  /**
+   * Refresh-cookie attribute overrides. Defaults to `name='aooth_refresh'`,
+   * `path='/auth/refresh'`; inherits `secure/sameSite/httpOnly/domain` from
+   * the access cookie unless overridden here.
+   */
+  refreshCookie?: Partial<ResolvedAuthCookieConfig>;
+  /** Read the session token from a cookie. Default: `true`. */
+  enableCookie?: boolean;
+  /** Read the session token from `Authorization: Bearer ...`. Default: `true`. */
+  enableBearer?: boolean;
+}
+
 /**
  * DI singleton carrying the resolved auth-guard transport configuration.
- * Populated once at boot by `setupAuthMoost()` via {@link configure}.
+ * Constructed by the consumer (typically inside the Moost provide registry)
+ * with the desired overrides; defaults are baked at construction time.
  */
 @Injectable()
 export class MoostAuthConfig {
-  cookie: ResolvedAuthCookieConfig = {
-    name: "aooth_session",
-    secure: true,
-    sameSite: "lax",
-    httpOnly: true,
-    path: "/",
-  };
+  cookie: ResolvedAuthCookieConfig;
   /**
    * Narrow `path: '/auth/refresh'` ensures the refresh token only travels to
    * the refresh endpoint. Transport attrs (`secure/sameSite/httpOnly/domain`)
-   * are inherited from {@link cookie} in {@link configure} unless overridden.
+   * are inherited from {@link cookie} unless overridden.
    */
-  refreshCookie: ResolvedAuthCookieConfig = {
-    name: "aooth_refresh",
-    secure: true,
-    sameSite: "lax",
-    httpOnly: true,
-    path: "/auth/refresh",
-  };
-  enableCookie = true;
-  enableBearer = true;
-  /** When `false`, `setupAuthMoost` skips registering `AuthController`. */
-  endpoints = true;
+  refreshCookie: ResolvedAuthCookieConfig;
+  enableCookie: boolean;
+  enableBearer: boolean;
 
-  configure(config: {
-    cookie?: Partial<ResolvedAuthCookieConfig>;
-    refreshCookie?: Partial<ResolvedAuthCookieConfig>;
-    enableCookie?: boolean;
-    enableBearer?: boolean;
-    endpoints?: boolean;
-  }): void {
-    if (config.cookie) {
-      this.cookie = { ...this.cookie, ...config.cookie };
-    }
+  constructor(opts: MoostAuthConfigOptions = {}) {
+    this.cookie = {
+      name: "aooth_session",
+      secure: true,
+      sameSite: "lax",
+      httpOnly: true,
+      path: "/",
+      ...opts.cookie,
+    };
     this.refreshCookie = {
-      ...this.refreshCookie,
+      name: "aooth_refresh",
       secure: this.cookie.secure,
       sameSite: this.cookie.sameSite,
       httpOnly: this.cookie.httpOnly,
       domain: this.cookie.domain,
-      ...config.refreshCookie,
+      path: "/auth/refresh",
+      ...opts.refreshCookie,
     };
-    if (typeof config.enableCookie === "boolean") {
-      this.enableCookie = config.enableCookie;
-    }
-    if (typeof config.enableBearer === "boolean") {
-      this.enableBearer = config.enableBearer;
-    }
-    if (typeof config.endpoints === "boolean") {
-      this.endpoints = config.endpoints;
-    }
+    this.enableCookie = opts.enableCookie ?? true;
+    this.enableBearer = opts.enableBearer ?? true;
   }
 }

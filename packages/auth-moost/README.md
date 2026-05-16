@@ -28,10 +28,10 @@ Peer dependencies:
 ```ts
 import { createHttpApp } from "@wooksjs/event-http";
 import { MoostHttp } from "@moostjs/event-http";
-import { Moost } from "moost";
+import { createProvideRegistry, Moost } from "moost";
 import { AuthCredential, CredentialStoreMemory } from "@aoothjs/auth";
 import { UserService, UserStoreMemory } from "@aoothjs/user";
-import { setupAuthMoost } from "@aoothjs/auth-moost";
+import { AuthController, authGuardInterceptor, MoostAuthConfig } from "@aoothjs/auth-moost";
 
 const auth = new AuthCredential({
   store: new CredentialStoreMemory(),
@@ -44,38 +44,41 @@ const users = new UserService(new UserStoreMemory());
 const moost = new Moost();
 moost.adapter(new MoostHttp(createHttpApp()));
 
-setupAuthMoost(moost, { authCredential: auth, userService: users });
+moost.setProvideRegistry(
+  createProvideRegistry(
+    [AuthCredential, () => auth],
+    [UserService, () => users],
+    [MoostAuthConfig, () => new MoostAuthConfig({ cookie: { secure: false } })],
+  ),
+);
+moost.applyGlobalInterceptors(authGuardInterceptor);
+moost.registerControllers(AuthController);
 
 await moost.init();
 ```
 
-`setupAuthMoost()` registers `AuthCredential`, `MoostAuthConfig`, and
-`UserService` as DI singletons, applies `authGuardInterceptor` globally, and
-auto-registers `AuthController` at `/auth`. Every handler is **protected by
-default**; opt out with `@Public()`.
-
-> Note: `applyGlobalInterceptors` and `registerControllers` append. Call
-> `setupAuthMoost()` exactly once per Moost instance.
+The four-line wiring is hand-written (no helper) so consumers see exactly
+what's registered. `MoostAuthConfig` takes its options at construction time;
+`authGuardInterceptor` makes every handler **protected by default** (opt out
+with `@Public()`). Skip `registerControllers(AuthController)` if you don't
+need the bundled login/logout/refresh/status/password endpoints.
 
 ## Transport
 
 The guard reads the access token from `Authorization: Bearer <token>` first
 and falls back to a cookie when a Bearer header is absent. The refresh token
 travels in a separate cookie scoped to `/auth/refresh`. Both transports are
-configurable per app.
+configurable per app via `MoostAuthConfig` constructor options.
 
-| Option          | Default                                                                               | Notes                              |
-| --------------- | ------------------------------------------------------------------------------------- | ---------------------------------- |
-| `enableCookie`  | `true`                                                                                | Read access/refresh from cookies   |
-| `enableBearer`  | `true`                                                                                | Read access from `Authorization`   |
-| `cookie`        | `{ name: 'aooth_session', secure: true, sameSite: 'lax', httpOnly: true, path: '/' }` | Access-token cookie attributes     |
-| `refreshCookie` | `{ name: 'aooth_refresh', path: '/auth/refresh', ... }`                               | Inherits secure/sameSite/httpOnly  |
-| `endpoints`     | `true`                                                                                | Skip `AuthController` registration |
+| Option          | Default                                                                               | Notes                                                                    |
+| --------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `enableCookie`  | `true`                                                                                | Read access/refresh from cookies                                         |
+| `enableBearer`  | `true`                                                                                | Read access from `Authorization`                                         |
+| `cookie`        | `{ name: 'aooth_session', secure: true, sameSite: 'lax', httpOnly: true, path: '/' }` | Access-token cookie attributes                                           |
+| `refreshCookie` | `{ name: 'aooth_refresh', path: '/auth/refresh', ... }`                               | Inherits secure/sameSite/httpOnly/domain from `cookie` unless overridden |
 
 ```ts
-setupAuthMoost(moost, {
-  authCredential: auth,
-  userService: users,
+new MoostAuthConfig({
   cookie: { secure: false }, // dev only
   enableBearer: false, // cookie-only deployment
 });
@@ -155,7 +158,7 @@ Method-level decoration overrides class-level.
 
 ## REST endpoints
 
-`AuthController` is mounted at `/auth` when `endpoints: true` (the default).
+`AuthController` mounts at `/auth` when registered via `moost.registerControllers(AuthController)`.
 
 | Method | Path             | Visibility  | Purpose                                         |
 | ------ | ---------------- | ----------- | ----------------------------------------------- |
@@ -195,18 +198,17 @@ the client can schedule a silent refresh.
 > Note: `AuthController` assumes `AuthContext.userId === username`. Login
 > issues the credential with the resolved username, and `/auth/password`
 > reads it back via `useAuth().getCurrentUserId()`. Apps that map userIds to
-> opaque ids (UUIDs, internal pks) must disable the controller and ship a
-> subclass:
+> opaque ids (UUIDs, internal pks) must skip `registerControllers(AuthController)`
+> and ship a subclass instead:
 >
 > ```ts
-> setupAuthMoost(moost, { authCredential, userService, endpoints: false });
 > moost.registerControllers(MyAuthController);
 > ```
 
 ## Workflows
 
-The workflow half of this package is independent of `setupAuthMoost()` and
-configured separately via `setupAuthWorkflows()`.
+The workflow half of this package is independent of the REST endpoints +
+guard wiring above and configured separately via `setupAuthWorkflows()`.
 
 ```ts
 import { AsWfStore } from "@atscript/moost-wf/store";
@@ -439,9 +441,8 @@ Documented learnings from the workflow implementation:
 
 ```ts
 // Setup
-export { setupAuthMoost, type SetupAuthMoostOptions };
 export { setupAuthWorkflows, type AuthWorkflowsOptions };
-export { MoostAuthConfig, type ResolvedAuthCookieConfig };
+export { MoostAuthConfig, type MoostAuthConfigOptions, type ResolvedAuthCookieConfig };
 export { MoostAuthWorkflowConfig, type ResolvedAuthWorkflowsConfig };
 export { DEFAULT_RECOVERY_TOKEN_TTL_MS, DEFAULT_INVITE_TOKEN_TTL_MS, DEFAULT_MFA_CODE_TTL_MS };
 
@@ -449,7 +450,7 @@ export { DEFAULT_RECOVERY_TOKEN_TTL_MS, DEFAULT_INVITE_TOKEN_TTL_MS, DEFAULT_MFA
 export { useAuth, type AuthBindings };
 export { Public };
 
-// Guard (auto-applied by setupAuthMoost; export for testing)
+// Guard — apply globally via `moost.applyGlobalInterceptors(authGuardInterceptor)`
 export { authGuardInterceptor };
 
 // Controllers

@@ -20,10 +20,12 @@ import { UserService, UserStoreMemory } from "@aoothjs/user";
 import type { UserServiceConfig } from "@aoothjs/user";
 import { MoostHttp } from "@moostjs/event-http";
 import { createHttpApp } from "@wooksjs/event-http";
-import { Moost } from "moost";
+import { createProvideRegistry, Moost } from "moost";
 import { Wooks } from "wooks";
 
-import { setupAuthMoost, type SetupAuthMoostOptions } from "../auth.setup";
+import { AuthController } from "../auth.controller";
+import { MoostAuthConfig, type MoostAuthConfigOptions } from "../auth.config";
+import { authGuardInterceptor } from "../auth.guard";
 
 export interface MyClaims extends Record<string, unknown> {
   roles?: string[];
@@ -41,16 +43,15 @@ export interface PreparedControllerApp {
   ) => Promise<{ status: number; body: unknown; setCookies: string[]; response: Response | null }>;
 }
 
-export interface PrepareControllerOpts extends Omit<
-  SetupAuthMoostOptions<MyClaims>,
-  "authCredential" | "userService"
-> {
+export interface PrepareControllerOpts extends MoostAuthConfigOptions {
   /** Override the AuthCredential constructor options. */
   authOptions?: Partial<AuthCredentialOptions<MyClaims>>;
   /** UserService config (lockout threshold, password policies, etc). */
   userConfig?: UserServiceConfig;
   /** When set, skip wiring `userService` into setup (for negative tests). */
   withoutUserService?: boolean;
+  /** When `false`, skip auto-registering `AuthController`. Default: `true`. */
+  endpoints?: boolean;
 }
 
 /**
@@ -80,12 +81,19 @@ export async function prepareControllerApp(
   const userStore = new UserStoreMemory();
   const users = new UserService(userStore, opts.userConfig);
 
-  const { authOptions: _a, userConfig: _u, withoutUserService, ...setupOpts } = opts;
-  setupAuthMoost(moost, {
-    authCredential: auth,
-    userService: withoutUserService ? undefined : users,
-    ...setupOpts,
-  });
+  const { authOptions: _a, userConfig: _u, withoutUserService, endpoints = true, ...cfg } = opts;
+  const providers: Parameters<typeof createProvideRegistry> = [
+    [AuthCredential, () => auth],
+    [MoostAuthConfig, () => new MoostAuthConfig(cfg)],
+  ];
+  if (!withoutUserService) {
+    providers.push([UserService, () => users]);
+  }
+  moost.setProvideRegistry(createProvideRegistry(...providers));
+  moost.applyGlobalInterceptors(authGuardInterceptor);
+  if (endpoints) {
+    moost.registerControllers(AuthController);
+  }
 
   await moost.init();
 

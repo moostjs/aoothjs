@@ -14,6 +14,7 @@ import {
   useArbac,
 } from "./index";
 import * as indexModule from "./index";
+import * as atscriptModule from "./atscript/index";
 
 describe("@aoothjs/arbac-moost", () => {
   it("re-exports arbac-core engine", () => {
@@ -102,5 +103,78 @@ describe("@aoothjs/arbac-moost", () => {
     ArbacPublic()(PublicProbe);
     const meta = getArbacMate().read(PublicProbe);
     expect(meta?.arbacPublic).toBe(true);
+  });
+
+  // ISSUE-9: the legacy AutoArbacUserProvider + the loose helper functions
+  // (setUserRecordFetcher / useUserRecord / setupArbacFromAtscript / the
+  // extract* + projection getters) were collapsed into the new abstract
+  // AtscriptArbacUserProvider. Re-introducing any of them would re-fork the
+  // DI surface and silently re-create the two-ways-to-do-the-same-thing
+  // problem the refactor was meant to kill — these negatives guard that.
+  describe("ISSUE-9 hard-cut removals", () => {
+    it("AutoArbacUserProvider is NOT exported from the root barrel", () => {
+      expect("AutoArbacUserProvider" in indexModule).toBe(false);
+    });
+
+    it("setUserRecordFetcher is NOT exported (absorbed into AtscriptArbacUserProvider)", () => {
+      expect("setUserRecordFetcher" in indexModule).toBe(false);
+      expect("setUserRecordFetcher" in atscriptModule).toBe(false);
+    });
+
+    it("useUserRecord is NOT exported (replaced by the provider's per-event memoization)", () => {
+      expect("useUserRecord" in indexModule).toBe(false);
+      expect("useUserRecord" in atscriptModule).toBe(false);
+    });
+
+    it("setupArbacFromAtscript is NOT exported (consumers wire DI directly)", () => {
+      expect("setupArbacFromAtscript" in indexModule).toBe(false);
+      expect("setupArbacFromAtscript" in atscriptModule).toBe(false);
+    });
+
+    it("getArbacProjection is NOT exported (module-local cache only)", () => {
+      expect("getArbacProjection" in indexModule).toBe(false);
+      expect("getArbacProjection" in atscriptModule).toBe(false);
+    });
+
+    it("getArbacExtractSpec is NOT exported (module-local cache only)", () => {
+      expect("getArbacExtractSpec" in indexModule).toBe(false);
+      expect("getArbacExtractSpec" in atscriptModule).toBe(false);
+    });
+
+    it("extractArbacUserId is NOT exported (folded into provider)", () => {
+      expect("extractArbacUserId" in indexModule).toBe(false);
+      expect("extractArbacUserId" in atscriptModule).toBe(false);
+    });
+
+    it("extractArbacRoles is NOT exported (replaced by protected extractRoles seam)", () => {
+      expect("extractArbacRoles" in indexModule).toBe(false);
+      expect("extractArbacRoles" in atscriptModule).toBe(false);
+    });
+
+    it("extractArbacAttrs is NOT exported (replaced by protected extractAttrs seam)", () => {
+      expect("extractArbacAttrs" in indexModule).toBe(false);
+      expect("extractArbacAttrs" in atscriptModule).toBe(false);
+    });
+  });
+
+  // ISSUE-9 positive: the canonical replacement is `AtscriptArbacUserProvider`,
+  // an abstract class shipped from the `/atscript` subpath. Consumers extend it,
+  // implement `getUserId`, and register the subclass via `setReplaceRegistry`.
+  describe("ISSUE-9 AtscriptArbacUserProvider public surface", () => {
+    it("is exported from the /atscript subpath barrel", () => {
+      expect("AtscriptArbacUserProvider" in atscriptModule).toBe(true);
+      const ctor = atscriptModule.AtscriptArbacUserProvider as unknown as Function;
+      expect(typeof ctor).toBe("function");
+    });
+
+    it("is abstract (instantiating the base class without a subclass throws)", () => {
+      // `abstract` is a compile-time check; at runtime the class is constructible.
+      // The intent we encode here is that the constructor demands a real
+      // annotated type and a real table — without them it must fail loud.
+      const Ctor = atscriptModule.AtscriptArbacUserProvider as unknown as new (
+        ...args: unknown[]
+      ) => unknown;
+      expect(() => new Ctor()).toThrow();
+    });
   });
 });

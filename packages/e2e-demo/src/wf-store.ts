@@ -1,7 +1,7 @@
-import type { AtscriptDbTable } from "@atscript/db"
-import { AsWfStore } from "@atscript/moost-wf/store"
+import type { AtscriptDbTable } from "@atscript/db";
+import { AsWfStore } from "@atscript/moost-wf/store";
 
-import type { AppDb } from "./db"
+import type { AppDb } from "./db";
 
 export function createWfStore(appDb: AppDb): AsWfStore {
   return new AsWfStore({
@@ -11,5 +11,5 @@ export function createWfStore(appDb: AppDb): AsWfStore {
     // The store only touches base columns, so the loose cast is safe.
     // biome-ignore lint/suspicious/noExplicitAny: see comment above
     table: appDb.tables.wfStates as unknown as AtscriptDbTable<any>,
-  })
+  });
 }
