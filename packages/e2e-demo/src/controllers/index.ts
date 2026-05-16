@@ -7,4 +7,3 @@ export { makeProjectsController } from "./projects.controller";
 export { makeTasksController } from "./tasks.controller";
 export { makeTenantsController } from "./tenants.controller";
 export { makeUsersController } from "./users.controller";
-export { makeWfTriggerController } from "./wf-trigger.controller";

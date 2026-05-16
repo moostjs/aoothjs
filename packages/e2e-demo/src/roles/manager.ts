@@ -52,5 +52,7 @@ export const managerRole = defineRole<UserAttrs, ArbacDbScope>()
       }),
     }),
   )
-  .allow("auth", "public.*")
+  .allow("auth", "logout")
+  .allow("auth", "refresh")
+  .allow("auth", "status")
   .build();

@@ -1,9 +1,3 @@
-/** POST /auth/login request body. */
-export interface AuthLoginBody {
-  username: string;
-  password: string;
-}
-
 /** POST /auth/refresh request body. Falls back to the refresh cookie when absent. */
 export interface AuthRefreshBody {
   refreshToken?: string;
@@ -19,14 +13,9 @@ export interface AuthLogoutBody {
   refreshToken?: string;
 }
 
-/** POST /auth/password request body. */
-export interface AuthPasswordChangeBody {
-  currentPassword: string;
-  newPassword: string;
-}
-
 /**
- * POST /auth/login + POST /auth/refresh response body.
+ * POST /auth/refresh response body. Also returned by workflow finalize steps
+ * (e.g. `LoginWorkflow`) when issuing tokens after a successful flow.
  *
  * Tokens are populated only when `enableBearer` is true. With `enableBearer=false`
  * the body still echoes `userId` + `accessExpiresAt` so the caller can schedule
@@ -40,7 +29,7 @@ export interface AuthLoginResponse {
   refreshToken?: string;
 }
 
-/** POST /auth/logout and POST /auth/password response body. */
+/** POST /auth/logout response body. */
 export interface AuthOkResponse {
   ok: true;
 }

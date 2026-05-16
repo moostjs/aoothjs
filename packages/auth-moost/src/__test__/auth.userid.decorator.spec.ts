@@ -2,7 +2,6 @@ import { Get } from "@moostjs/event-http";
 import { Controller } from "moost";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
-import type { AuthLoginResponse } from "../auth.dto";
 import { UserId } from "../auth.decorator";
 import { prepareControllerApp } from "./controller-utils";
 
@@ -42,13 +41,11 @@ describe("@UserId() parameter decorator (ISSUE-5)", () => {
     app = await prepareControllerApp({ extraControllers: [UserIdProbeController] });
     await app.users.createUser("alice", "Password123");
     await app.users.activateAccount("alice");
-    const login = (
-      await app.request("/auth/login", {
-        method: "POST",
-        json: { username: "alice", password: "Password123" },
-      })
-    ).body as AuthLoginResponse;
-    accessToken = login.accessToken as string;
+    // `/auth/login` was dropped (AUTH-MOOST-5) — mint a token directly through
+    // the AuthCredential so the test stays focused on the decorator, not the
+    // login flow (covered by workflow specs).
+    const issue = await app.auth.issue("alice");
+    accessToken = issue.accessToken;
   });
 
   it("injects the authenticated user's id into the handler parameter", async () => {

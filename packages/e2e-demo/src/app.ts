@@ -1,28 +1,34 @@
 import {
   arbacAuthorizeInterceptor,
   type ArbacDbScope,
+  ArbacResource,
   ArbacUserProviderToken,
   MoostArbac,
 } from "@aoothjs/arbac-moost";
 import { AtscriptArbacUserProvider } from "@aoothjs/arbac-moost/atscript";
 import { AuthCredential, type EmailSender, type SmsSender } from "@aoothjs/auth";
 import {
-  type AuthEmailOutletDeps,
   AuthController,
   authGuardInterceptor,
+  createAuthEmailOutlet,
+  DEFAULT_AUTH_WORKFLOWS,
   type DeliverPayload,
   InviteWorkflow,
   type InviteWorkflowOpts,
   LoginWorkflow,
   type LoginWorkflowOpts,
+  Public,
   RecoveryWorkflow,
   type RecoveryWorkflowOpts,
   useAuth,
+  WfTrigger,
+  WfTriggerProvider,
 } from "@aoothjs/auth-moost";
+import { HandleStateStrategy } from "@moostjs/event-wf";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { UserService } from "@aoothjs/user";
 import { formInputInterceptor } from "@atscript/moost-wf";
-import { MoostHttp } from "@moostjs/event-http";
+import { MoostHttp, Post } from "@moostjs/event-http";
 import { MoostWf } from "@moostjs/event-wf";
 import {
   Controller,
@@ -49,7 +55,6 @@ import {
   makeTasksController,
   makeTenantsController,
   makeUsersController,
-  makeWfTriggerController,
 } from "./controllers";
 import { DemoUser, InviteAcceptProfileForm } from "./models/user.as";
 import { allRoles, type UserAttrs } from "./roles";
@@ -201,8 +206,14 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     // behavior; production should keep the default ON.
     accept: { showConfirmation: false },
   };
+  // `@ArbacResource('auth') + @ArbacAction('admin.invite')` re-establish the
+  // admin gating that used to live on the `/wf/admin` controller route
+  // (deleted in AUTH-MOOST-5). The global `arbacAuthorizeInterceptor` runs on
+  // workflow events too, so the class-level resource + method-level action
+  // gate every invite-related workflow event (start + resume).
   @Inherit()
   @Injectable("FOR_EVENT")
+  @ArbacResource("auth")
   @Controller()
   class DemoInviteWorkflow extends InviteWorkflow {
     constructor(users: UserService, authCred: AuthCredential) {
@@ -249,8 +260,52 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   app.setProvideRegistry(createProvideRegistry(...authProviders));
   app.applyGlobalInterceptors(authGuardInterceptor({ cookie: { secure: false } }));
   app.applyGlobalInterceptors(formInputInterceptor());
+
+  // AUTH-MOOST-5: `DemoWfTriggerProvider` is the consumer subclass of
+  // `WfTriggerProvider` that wires this app's DB-backed wf state store and
+  // adds the magic-link email outlet. Bound to `WfTriggerProvider` via the
+  // replace registry so `AuthController.triggerWf()` (and the subclass
+  // `DemoAuthController.triggerWf()`) picks it up automatically.
+  const demoEmailOutletDeps = {
+    emailSender,
+    buildMagicLinkUrl: aooth.buildMagicLinkUrl,
+    magicLinkTtlMs: (kind: import("@aoothjs/auth").AuthEmailKind) =>
+      kind === "invite.magicLink" ? env.INVITE_TTL_MS : env.RECOVERY_TTL_MS,
+  };
+  @Injectable()
+  class DemoWfTriggerProvider extends WfTriggerProvider {
+    constructor(wf: MoostWf) {
+      super(wf);
+      this.state = new HandleStateStrategy({ store: wfStateStore });
+      this.outlets = [...this.outlets, createAuthEmailOutlet(demoEmailOutletDeps)];
+    }
+  }
+
+  // Extend the bundled `AuthController.triggerWf()` allow-list with the
+  // demo-only `project.handover` workflow — the spec's recommended consumer
+  // subclass pattern for adding app-specific workflows to the single trigger.
+  // `@Inherit()` carries the parent's `@Get('status')` / `@Post('logout')` /
+  // `@Post('refresh')` metadata; without it moost re-scans method decorators
+  // only on the subclass and the unoverridden endpoints disappear.
+  @Inherit()
+  @Controller("auth")
+  class DemoAuthController extends AuthController {
+    constructor(auth: AuthCredential) {
+      super(auth);
+    }
+    @Post("trigger")
+    @Public()
+    @WfTrigger({
+      allow: [...DEFAULT_AUTH_WORKFLOWS, "project.handover"],
+    })
+    override triggerWf(): void {
+      // see AuthController.triggerWf — body intentionally empty.
+    }
+  }
+  app.setReplaceRegistry(createReplaceRegistry([WfTriggerProvider, DemoWfTriggerProvider]));
+
   if (opts.authEndpointsEnabled !== false) {
-    app.registerControllers(AuthController);
+    app.registerControllers(DemoAuthController);
   }
 
   const wfEnabled = opts.workflowsEnabled ?? {};
@@ -293,14 +348,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
 
   app.applyGlobalInterceptors(arbacAuthorizeInterceptor);
 
-  app.registerControllers(
-    ...buildAppControllers(appDb, wfStateStore, {
-      emailSender,
-      buildMagicLinkUrl: aooth.buildMagicLinkUrl,
-      magicLinkTtlMs: (kind) =>
-        kind === "invite.magicLink" ? env.INVITE_TTL_MS : env.RECOVERY_TTL_MS,
-    }),
-  );
+  app.registerControllers(...buildAppControllers(appDb));
 
   await app.init();
   await moostHttp.listen(port);
@@ -322,11 +370,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   return { app, appDb, baseUrl, emailSender, aooth, close };
 }
 
-function buildAppControllers(
-  appDb: AppDb,
-  wfStateStore: ReturnType<typeof createWfStore>,
-  emailOutletDeps: AuthEmailOutletDeps,
-): ReadonlyArray<new (...args: never[]) => unknown> {
+function buildAppControllers(appDb: AppDb): ReadonlyArray<new (...args: never[]) => unknown> {
   const t = appDb.tables;
   return [
     HealthController,
@@ -338,7 +382,6 @@ function buildAppControllers(
     makeCommentsController(t.comments),
     makeDocumentsController(t.documents),
     makeAuditController(t.audit),
-    makeWfTriggerController(wfStateStore, emailOutletDeps),
     makeHandoverWorkflow({
       projectsTable: t.projects,
       usersTable: t.users,

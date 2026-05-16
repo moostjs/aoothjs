@@ -61,6 +61,13 @@ export interface TestApp {
   close: () => Promise<void>;
   fetch: (path: string, init?: FetchInit) => Promise<Response>;
   loginAs: (user: SeededUser) => Promise<LoginTokens>;
+  /**
+   * Drives the `auth.login` workflow via `/auth/trigger` and returns the
+   * raw final `Response` — used by tests that assert on status / body
+   * shape (e.g. "wrong password → 401", "locked account → 423"). Tests that
+   * just need a token pair should use `loginAs(user)` instead.
+   */
+  loginRequest: (username: string, password: string) => Promise<Response>;
   authedFetch: (token: string) => AuthedFetch;
   triggerWf: (
     route: "public" | "admin",
@@ -138,18 +145,70 @@ export async function buildTestApp(opts: BuildTestAppOptions = {}): Promise<Test
     throw lastErr;
   };
 
+  // AUTH-MOOST-5 dropped `/auth/login` — minting tokens for tests now drives
+  // the `auth.login` workflow through `/auth/trigger`. Three-step protocol
+  // for users with TOTP (e.g. `t1_grace`); two steps otherwise:
+  //   1. POST /auth/trigger { wfid: 'auth.login' } → returns `{ wfs }`.
+  //   2. POST /auth/trigger { wfs, input: { username, password } } →
+  //      either the finalized AuthLoginResponse (no MFA) OR another `{ wfs }`
+  //      payload prompting for an MFA code.
+  //   3. (MFA only) POST /auth/trigger { wfs, input: { code } } → AuthLoginResponse.
   const loginAs = async (user: SeededUser): Promise<LoginTokens> => {
-    const res = await doFetch("/auth/login", {
+    const initRes = await doFetch("/auth/trigger", {
       method: "POST",
-      json: { username: user.username, password: user.password },
+      json: { wfid: "auth.login" },
     });
-    if (res.status >= 400) {
-      const text = await res.text().catch(() => "<unreadable>");
+    if (initRes.status >= 400) {
+      const text = await initRes.text().catch(() => "<unreadable>");
       throw new Error(
-        `loginAs(${user.username}) failed: HTTP ${res.status} ${res.statusText} — ${text}`,
+        `loginAs(${user.username}) init failed: HTTP ${initRes.status} ${initRes.statusText} — ${text}`,
       );
     }
-    const body = (await res.json()) as AuthLoginResponse;
+    const initBody = (await initRes.json()) as { wfs?: string };
+    if (!initBody.wfs) {
+      throw new Error(
+        `loginAs(${user.username}): expected wfs in init response, got ${JSON.stringify(initBody)}`,
+      );
+    }
+    const credRes = await doFetch("/auth/trigger", {
+      method: "POST",
+      json: {
+        wfs: initBody.wfs,
+        input: { username: user.username, password: user.password },
+      },
+    });
+    if (credRes.status >= 400) {
+      const text = await credRes.text().catch(() => "<unreadable>");
+      throw new Error(
+        `loginAs(${user.username}) credentials failed: HTTP ${credRes.status} ${credRes.statusText} — ${text}`,
+      );
+    }
+    let body = (await credRes.json()) as AuthLoginResponse & {
+      wfs?: string;
+      inputRequired?: { payload?: { type?: { props?: { code?: unknown } } } };
+    };
+    // MFA branch: the workflow prompts with `MfaCodeForm` (a `code` field).
+    // Seeded users that have a confirmed TOTP secret submit a freshly
+    // generated code; users without one cannot finish this branch.
+    if (body.wfs && body.inputRequired) {
+      if (!user.totpSecret) {
+        throw new Error(
+          `loginAs(${user.username}): MFA prompted but seeded user has no totpSecret`,
+        );
+      }
+      const code = generateTotpCode(user.totpSecret);
+      const mfaRes = await doFetch("/auth/trigger", {
+        method: "POST",
+        json: { wfs: body.wfs, input: { code } },
+      });
+      if (mfaRes.status >= 400) {
+        const text = await mfaRes.text().catch(() => "<unreadable>");
+        throw new Error(
+          `loginAs(${user.username}) MFA failed: HTTP ${mfaRes.status} ${mfaRes.statusText} — ${text}`,
+        );
+      }
+      body = (await mfaRes.json()) as AuthLoginResponse & { wfs?: string };
+    }
     if (!body.accessToken || !body.refreshToken) {
       throw new Error(
         `loginAs(${user.username}): expected accessToken+refreshToken in response, got ${JSON.stringify(body)}`,
@@ -164,16 +223,44 @@ export async function buildTestApp(opts: BuildTestAppOptions = {}): Promise<Test
     };
   };
 
+  // Drives `auth.login` end-to-end (init → submit credentials) and returns
+  // the raw final Response. The workflow's HTTP outlet maps status codes
+  // through: 423 on locked accounts, 4xx on form errors with `errors`
+  // payload, 2xx with `userId`/`accessToken` on success. The wf trigger
+  // returns 401 on bad credentials by re-raising the `HttpError(401)` the
+  // credentials step throws — preserving the legacy `/auth/login` shape
+  // tests assert on.
+  const loginRequest = async (username: string, password: string): Promise<Response> => {
+    const init = await doFetch("/auth/trigger", {
+      method: "POST",
+      json: { wfid: "auth.login" },
+    });
+    if (init.status >= 400) return init;
+    const { wfs } = (await init.json()) as { wfs?: string };
+    if (!wfs) return init;
+    return doFetch("/auth/trigger", {
+      method: "POST",
+      json: { wfs, input: { username, password } },
+    });
+  };
+
   const authedFetch = (token: string): AuthedFetch => {
     return (path, init = {}) => doFetch(path, { ...init, token });
   };
 
+  // AUTH-MOOST-5: the bundled `AuthController.triggerWf()` covers all three
+  // auth workflows (`auth.login`, `auth.recovery`, `auth.invite`) plus the
+  // demo's `project.handover` via the `DemoAuthController` subclass — single
+  // `/auth/trigger` endpoint. The legacy `route: "public" | "admin"` arg is
+  // accepted for now (the demo binds both paths to the same handler) but
+  // ignored — kept on the signature so existing call sites compile while
+  // tests get migrated to the single-arg form.
   const triggerWf = (
-    route: "public" | "admin",
+    _route: "public" | "admin",
     body: unknown,
     triggerOpts: { token?: string } = {},
   ): Promise<Response> => {
-    return doFetch(`/wf/${route}`, {
+    return doFetch("/auth/trigger", {
       method: "POST",
       json: body,
       token: triggerOpts.token,
@@ -192,7 +279,7 @@ export async function buildTestApp(opts: BuildTestAppOptions = {}): Promise<Test
       body && typeof body === "object" && !Array.isArray(body)
         ? { ...(body as Record<string, unknown>), wfs }
         : { wfs, input: body };
-    return doFetch("/wf/public", {
+    return doFetch("/auth/trigger", {
       method: "POST",
       json: merged,
       token: resumeOpts.token,
@@ -211,6 +298,7 @@ export async function buildTestApp(opts: BuildTestAppOptions = {}): Promise<Test
     close,
     fetch: doFetch,
     loginAs,
+    loginRequest,
     authedFetch,
     triggerWf,
     resumeWfFromUrl,

@@ -11,14 +11,15 @@ export { authGuardInterceptor, AuthGuarded } from "./auth.guard";
 export { useAuth, type AuthBindings } from "./auth.composables";
 export { Public, UserId } from "./auth.decorator";
 export { getAuthMate, type TAuthMeta } from "./auth.mate";
-export { AuthController } from "./auth.controller";
+export { AuthController, DEFAULT_AUTH_WORKFLOWS } from "./auth.controller";
 export type {
-  AuthLoginBody,
   AuthLoginResponse,
+  AuthLogoutBody,
   AuthOkResponse,
-  AuthPasswordChangeBody,
   AuthRefreshBody,
 } from "./auth.dto";
+export { WfTrigger, type WfTriggerOpts } from "./wf-trigger/decorator";
+export { WfTriggerProvider } from "./wf-trigger/provider";
 
 // Re-exported from @aoothjs/auth for ergonomic single-import setup; the
 // definitions are framework-agnostic and live in the core package.

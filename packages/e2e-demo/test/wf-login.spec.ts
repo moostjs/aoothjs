@@ -94,7 +94,7 @@ describe("WF-LOGIN — auth.login workflow", () => {
     // than the redirect target (which would be 404/401 in the demo app).
     const start = await app.triggerWf("public", { wfid: "auth.login" });
     const startBody = await readWfPause(start);
-    const r = await globalThis.fetch(`${app.baseUrl}/wf/public`, {
+    const r = await globalThis.fetch(`${app.baseUrl}/auth/trigger`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

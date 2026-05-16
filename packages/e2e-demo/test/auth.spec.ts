@@ -2,8 +2,6 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 
 import { buildTestApp, expectOk, sleep, type TestApp } from "./harness";
 
-const STRONG_NEW_PASSWORD = "NewPassword2!";
-
 function base64url(input: string | Buffer): string {
   return Buffer.from(input)
     .toString("base64")
@@ -27,16 +25,13 @@ function forgeAlgNoneJwt(sub: string): string {
   return `${header}.${payload}.`;
 }
 
-function extractCookie(setCookie: string | string[] | null, name: string): string | undefined {
-  if (!setCookie) return;
-  const headers = Array.isArray(setCookie) ? setCookie : setCookie.split(/,(?=\s*[A-Za-z0-9_-]+=)/);
-  for (const raw of headers) {
-    const first = raw.split(";")[0].trim();
-    const eq = first.indexOf("=");
-    if (eq < 0) continue;
-    if (first.slice(0, eq) === name) return first.slice(eq + 1);
-  }
-}
+// AUTH-MOOST-5 dropped the `/auth/login` and `/auth/password` REST endpoints
+// — login goes through `auth.login` workflow (covered in `wf-login.spec.ts`)
+// and password change through `auth.recovery` (covered in `wf-recovery.spec.ts`).
+// The tests below cover the four surviving endpoints
+// (`logout` / `refresh` / `status` / `trigger`) plus token-level concerns
+// (forgery, expiry, transport precedence) that are invariant of how the
+// initial token was issued. `loginAs()` in the harness drives the workflow.
 
 describe("AUTH — read-only / non-mutating", () => {
   let app: TestApp;
@@ -48,7 +43,7 @@ describe("AUTH — read-only / non-mutating", () => {
     await app.close();
   });
 
-  it("AUTH-01 — login happy path", async () => {
+  it("AUTH-01 — login (workflow-driven) yields a token reaching /auth/status", async () => {
     const tokens = await app.loginAs(app.fixtures.users.t1_alice);
     expect(tokens.accessToken).toBeTruthy();
     expect(tokens.refreshToken).toBeTruthy();
@@ -60,27 +55,6 @@ describe("AUTH — read-only / non-mutating", () => {
     expect(status.status).toBe(200);
     const ctx = (await status.json()) as { userId: string };
     expect(ctx.userId).toBe("t1_alice");
-  });
-
-  it("AUTH-02 — login with wrong password → 401 Invalid credentials", async () => {
-    const res = await app.fetch("/auth/login", {
-      method: "POST",
-      json: { username: app.fixtures.users.t1_alice.username, password: "wrong-password" },
-    });
-    expect(res.status).toBe(401);
-    const body = await res.text();
-    expect(body).toContain("Invalid credentials");
-    expect(body).not.toContain("Unknown user");
-  });
-
-  it("AUTH-03 — login with unknown username → 401 (enumeration resistance)", async () => {
-    const res = await app.fetch("/auth/login", {
-      method: "POST",
-      json: { username: "no-such-user-xyz", password: "Password1!" },
-    });
-    expect(res.status).toBe(401);
-    const body = await res.text();
-    expect(body).toContain("Invalid credentials");
   });
 
   it("AUTH-08 — refresh with missing token → 401", async () => {
@@ -112,68 +86,6 @@ describe("AUTH — read-only / non-mutating", () => {
     const res = await app.fetch("/health");
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
-  });
-});
-
-describe("AUTH — manual lockout", () => {
-  let app: TestApp;
-  beforeEach(async () => {
-    app = await buildTestApp();
-  });
-  afterEach(async () => {
-    await app.close();
-  });
-
-  it("AUTH-04 — login with locked account → 423", async () => {
-    const alice = app.fixtures.users.t1_alice;
-    await app.appHandle.aooth.userService.lockAccount(alice.username, "manual", 60_000);
-
-    const res = await app.fetch("/auth/login", {
-      method: "POST",
-      json: { username: alice.username, password: alice.password },
-    });
-    expect(res.status).toBe(423);
-    expect(await res.text()).toContain("Account locked");
-  });
-});
-
-describe("AUTH — auto lockout after threshold", () => {
-  let app: TestApp;
-  beforeEach(async () => {
-    app = await buildTestApp({
-      envOverrides: { LOCKOUT_THRESHOLD: 3, LOCKOUT_DURATION_MS: 1500 },
-    });
-  });
-  afterEach(async () => {
-    await app.close();
-  });
-
-  it("AUTH-05 — auto lockout after N failures, auto-unlock after duration", async () => {
-    const alice = app.fixtures.users.t1_alice;
-
-    for (let i = 0; i < 3; i++) {
-      const r = await app.fetch("/auth/login", {
-        method: "POST",
-        json: { username: alice.username, password: "wrong" },
-      });
-      expect(r.status).toBe(401);
-    }
-
-    const lockedAttempt = await app.fetch("/auth/login", {
-      method: "POST",
-      json: { username: alice.username, password: alice.password },
-    });
-    expect(lockedAttempt.status).toBe(423);
-
-    await sleep(1700);
-
-    const recovered = await app.fetch("/auth/login", {
-      method: "POST",
-      json: { username: alice.username, password: alice.password },
-    });
-    expectOk(recovered);
-    const body = (await recovered.json()) as { userId: string };
-    expect(body.userId).toBe(alice.username);
   });
 });
 
@@ -280,82 +192,6 @@ describe("AUTH — logout", () => {
   });
 });
 
-describe("AUTH — password change", () => {
-  let app: TestApp;
-  beforeEach(async () => {
-    app = await buildTestApp();
-  });
-  afterEach(async () => {
-    await app.close();
-  });
-
-  it("AUTH-12 — password change requires current password and validates policy", async () => {
-    const alice = app.fixtures.users.t1_alice;
-    const tokens = await app.loginAs(alice);
-    const authed = app.authedFetch(tokens.accessToken);
-
-    const wrong = await authed("/auth/password", {
-      method: "POST",
-      json: { currentPassword: "not-the-current", newPassword: STRONG_NEW_PASSWORD },
-    });
-    expect(wrong.status).toBe(401);
-
-    const tokens2 = await app.loginAs(alice);
-    const weak = await app.authedFetch(tokens2.accessToken)("/auth/password", {
-      method: "POST",
-      json: { currentPassword: alice.password, newPassword: "abc" },
-    });
-    expect(weak.status).toBe(400);
-
-    const tokens3 = await app.loginAs(alice);
-    const ok = await app.authedFetch(tokens3.accessToken)("/auth/password", {
-      method: "POST",
-      json: { currentPassword: alice.password, newPassword: STRONG_NEW_PASSWORD },
-    });
-    expectOk(ok);
-
-    const oldPwLogin = await app.fetch("/auth/login", {
-      method: "POST",
-      json: { username: alice.username, password: alice.password },
-    });
-    expect(oldPwLogin.status).toBe(401);
-
-    const newPwLogin = await app.fetch("/auth/login", {
-      method: "POST",
-      json: { username: alice.username, password: STRONG_NEW_PASSWORD },
-    });
-    expectOk(newPwLogin);
-  });
-
-  it("AUTH-13 — password change revokes all prior sessions via per-user epoch", async () => {
-    const alice = app.fixtures.users.t1_alice;
-    const deviceA = await app.loginAs(alice);
-    const deviceB = await app.loginAs(alice);
-
-    const change = await app.authedFetch(deviceA.accessToken)("/auth/password", {
-      method: "POST",
-      json: { currentPassword: alice.password, newPassword: STRONG_NEW_PASSWORD },
-    });
-    expectOk(change);
-
-    // Prior tokens must be rejected after the password change (epoch bump).
-    const stillA = await app.authedFetch(deviceA.accessToken)("/auth/status");
-    const stillB = await app.authedFetch(deviceB.accessToken)("/auth/status");
-    expect(stillA.status).toBe(401);
-    expect(stillB.status).toBe(401);
-
-    // A fresh login with the new password produces a working token.
-    const newLogin = await app.fetch("/auth/login", {
-      method: "POST",
-      json: { username: alice.username, password: STRONG_NEW_PASSWORD },
-    });
-    expectOk(newLogin);
-    const { accessToken: freshToken } = (await newLogin.json()) as { accessToken: string };
-    const fresh = await app.authedFetch(freshToken)("/auth/status");
-    expect(fresh.status).toBe(200);
-  });
-});
-
 describe("AUTH — token forgery / expiry / transport precedence", () => {
   let app: TestApp;
 
@@ -377,14 +213,26 @@ describe("AUTH — token forgery / expiry / transport precedence", () => {
 
   it("AUTH-16 — bearer wins over cookie (invalid bearer + valid cookie → 401)", async () => {
     const alice = app.fixtures.users.t1_alice;
-    const loginRes = await app.fetch("/auth/login", {
+    // Drive the login workflow and capture the cookies set by the finalize
+    // step (handled by `useAuth().buildFinishedCookies` inside the wf outlet).
+    const initRes = await app.fetch("/auth/trigger", {
       method: "POST",
-      json: { username: alice.username, password: alice.password },
+      json: { wfid: "auth.login" },
+    });
+    const initBody = (await initRes.json()) as { wfs?: string };
+    expect(initBody.wfs).toBeTruthy();
+    const loginRes = await app.fetch("/auth/trigger", {
+      method: "POST",
+      json: {
+        wfs: initBody.wfs,
+        input: { username: alice.username, password: alice.password },
+      },
     });
     expectOk(loginRes);
 
-    const setCookie = loginRes.headers.get("set-cookie");
-    const sessionCookie = extractCookie(setCookie, "aooth_session");
+    const setCookies = loginRes.headers.getSetCookie?.() ?? [];
+    const sessionCookieHeader = setCookies.find((c) => c.startsWith("aooth_session="));
+    const sessionCookie = sessionCookieHeader?.split(";")[0]?.split("=")[1];
     expect(sessionCookie).toBeTruthy();
 
     const cookieOnly = await app.fetch("/auth/status", {

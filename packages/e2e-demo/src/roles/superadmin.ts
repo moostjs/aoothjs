@@ -25,5 +25,7 @@ export const superadminRole = defineRole<UserAttrs, ArbacDbScope>()
     allowTableWrite<UserAttrs, ArbacDbScope>("documents"),
     allowTableRead<UserAttrs, ArbacDbScope>("audit"),
   )
-  .allow("auth", "public.*")
+  .allow("auth", "logout")
+  .allow("auth", "refresh")
+  .allow("auth", "status")
   .build();

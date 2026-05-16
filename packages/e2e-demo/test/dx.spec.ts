@@ -188,17 +188,15 @@ describe("DX-08 — `authEndpointsEnabled: false` skips AuthController", () => {
     await app.close();
   });
 
-  it("DX-08 — /auth/login unreachable when endpoints disabled; auth GUARD still protects routes", async () => {
-    const login = await app.fetch("/auth/login", {
+  it("DX-08 — /auth/trigger unreachable when endpoints disabled; auth GUARD still protects routes", async () => {
+    // AUTH-MOOST-5: `/auth/login` was dropped — the workflow trigger
+    // (`/auth/trigger`) is now the canonical entry point. When the consumer
+    // sets `authEndpointsEnabled=false`, the bundled controller (and its
+    // subclass) is NOT registered, so /auth/trigger must be unserved.
+    const login = await app.fetch("/auth/trigger", {
       method: "POST",
-      json: { username: app.fixtures.users.t1_alice.username, password: "Password1!" },
+      json: { wfid: "auth.login" },
     });
-    // The story specifies 404. In practice, the route is genuinely not
-    // registered (AuthController is not added when `endpoints: false`), but the
-    // global auth guard runs first and rejects unauthenticated requests with
-    // 401 before the router can return 404. Either status proves /auth/login
-    // is unserved by the bundled controller; the key contract is "no
-    // successful login response".
     expect(login.status).toBeGreaterThanOrEqual(400);
     expect(login.status).not.toBe(200);
     expect(login.status).not.toBe(201);
