@@ -14,6 +14,23 @@ import { getInstanceOwnMethods, Inherit, useControllerContext } from "moost";
 import { useArbac } from "../arbac.composables";
 import type { TArbacMeta } from "../arbac.mate";
 
+/**
+ * Contract returned by an ARBAC role's scope predicate on a DB-backed resource.
+ *
+ * Apps can extend this interface with their own fields via TypeScript
+ * declaration merging — both at role-definition time (returned from
+ * `role.allow(...)`) and at consumption time (custom controller overrides
+ * reading `scopes[i].myCustomField` get full type safety):
+ *
+ * @example
+ * ```ts
+ * declare module '@aoothjs/arbac-moost' {
+ *   interface ArbacDbScope {
+ *     tenantId?: string
+ *   }
+ * }
+ * ```
+ */
 export interface ArbacDbScope {
   filter?: TScopeFilter;
   projection?: TProjection;
@@ -219,6 +236,9 @@ function collectActionMetaByName(): Map<string, ActionResolutionMeta> {
 }
 
 /**
+ * Test-friendly internal helper — exported for unit tests and helper
+ * composition; regular consumers should not call this directly.
+ *
  * Enforce a per-control policy against a parsed Uniquery `controls` map.
  *
  * Throws `HttpError(403)` on the first violation. Pure (no DI) so it is
@@ -259,6 +279,9 @@ export function enforceControlsPolicy(
 }
 
 /**
+ * Test-friendly internal helper — exported for unit tests and helper
+ * composition; regular consumers should not call this directly.
+ *
  * Extract the set of "named values" from a Uniquery control payload, for
  * use against a whitelist gate.
  *
@@ -290,6 +313,14 @@ export function extractUsedControlValues(key: string, value: unknown): string[] 
   return [];
 }
 
+/**
+ * Test-friendly internal helper — exported for unit tests and helper
+ * composition; regular consumers should not call this directly.
+ *
+ * Apply the union of `allowedFields` whitelists (with `preserveFields`
+ * always preserved) and overlay each scope's `set` overrides. Returns a
+ * shallow copy; original `data` is not mutated.
+ */
 export function applyAllowedFieldsAndSet(
   data: unknown,
   scopes: ArbacDbScope[],

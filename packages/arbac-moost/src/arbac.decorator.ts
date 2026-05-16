@@ -1,7 +1,7 @@
 import { current } from "@wooksjs/event-core";
 import type { TAuthGuardDef, TAuthTransportDeclaration } from "@moostjs/event-http";
 import { Authenticate, HttpError } from "@moostjs/event-http";
-import { defineBeforeInterceptor, Resolve, TInterceptorPriority, useLogger } from "moost";
+import { defineBeforeInterceptor, TInterceptorPriority, useLogger } from "moost";
 
 import { useArbac } from "./arbac.composables";
 import { getArbacMate } from "./arbac.mate";
@@ -41,7 +41,8 @@ export const arbacAuthorizeInterceptor: TAuthGuardDef = Object.assign(
         throw error;
       }
       logger.warn(String(error));
-      throw new HttpError(401, "Authorization error");
+      const originalMessage = error instanceof Error ? error.message : String(error);
+      throw new HttpError(401, originalMessage);
     }
   }, TInterceptorPriority.GUARD),
   { __authTransports: {} as TAuthTransportDeclaration },
@@ -49,12 +50,6 @@ export const arbacAuthorizeInterceptor: TAuthGuardDef = Object.assign(
 
 /** Wrapped via `Authenticate` so `@moostjs/swagger` picks up the auth-guard metadata. */
 export const ArbacAuthorize = () => Authenticate(arbacAuthorizeInterceptor);
-
-/**
- * Resolves the evaluated ARBAC scopes for the current event. Use as a
- * parameter or property decorator.
- */
-export const ArbacScopes = () => Resolve(() => useArbac().getScopes());
 
 /**
  * Decorator to specify a resource id for ARBAC evaluation. Apply to a

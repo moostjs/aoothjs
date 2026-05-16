@@ -16,6 +16,7 @@ import {
   arbacAuthorizeInterceptor,
   ArbacResource,
   ArbacUserProvider,
+  ArbacUserProviderToken,
   MoostArbac,
 } from "./index";
 
@@ -282,7 +283,7 @@ describe("useArbac().evaluateOrThrow", () => {
     const arbac = buildArbacAllowing();
     const app = new Moost();
     const user = new TestUserProvider("u1", ["creator"]);
-    app.setReplaceRegistry(createReplaceRegistry([ArbacUserProvider, TestUserProvider]));
+    app.setReplaceRegistry(createReplaceRegistry([ArbacUserProviderToken, TestUserProvider]));
     app.setProvideRegistry(
       createProvideRegistry([TestUserProvider, () => user], [MoostArbac, () => arbac]),
     );
@@ -305,7 +306,7 @@ describe("useArbac().evaluateOrThrow", () => {
     const arbac = buildArbacAllowing();
     const app = new Moost();
     const user = new TestUserProvider("u1", ["creator"]);
-    app.setReplaceRegistry(createReplaceRegistry([ArbacUserProvider, TestUserProvider]));
+    app.setReplaceRegistry(createReplaceRegistry([ArbacUserProviderToken, TestUserProvider]));
     app.setProvideRegistry(
       createProvideRegistry([TestUserProvider, () => user], [MoostArbac, () => arbac]),
     );
@@ -350,7 +351,7 @@ describe("useArbac integration: @DbAction('new') resolves to action 'new'", () =
     const arbac = buildArbac();
     const app = new Moost();
     const user = new TestUserProvider("u1", ["creator"]);
-    app.setReplaceRegistry(createReplaceRegistry([ArbacUserProvider, TestUserProvider]));
+    app.setReplaceRegistry(createReplaceRegistry([ArbacUserProviderToken, TestUserProvider]));
     app.setProvideRegistry(
       createProvideRegistry([TestUserProvider, () => user], [MoostArbac, () => arbac]),
     );

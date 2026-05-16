@@ -18,7 +18,7 @@ declare module "moost" {
   interface TMoostMetadata extends TArbacMeta {}
 }
 
-export type ArbacMate = Mate<
+type ArbacMate = Mate<
   TMoostMetadata & { params: TMateParamMeta[] },
   TMoostMetadata & { params: TMateParamMeta[] }
 >;

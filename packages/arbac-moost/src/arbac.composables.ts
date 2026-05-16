@@ -5,7 +5,7 @@ import { getConstructor, useControllerContext } from "moost";
 
 import type { TArbacMeta } from "./arbac.mate";
 import { MoostArbac } from "./moost-arbac";
-import { ArbacUserProvider } from "./user.provider";
+import { ArbacUserProvider, ArbacUserProviderToken } from "./user.provider";
 
 /**
  * Writable slot holding the evaluated scopes for the current event.
@@ -93,7 +93,7 @@ export const useArbac = defineWook((ctx: EventContext): ArbacBindings => {
       );
     }
     const [user, arbac] = (await Promise.all([
-      cc.instantiate(ArbacUserProvider),
+      cc.instantiate(ArbacUserProviderToken),
       cc.instantiate(MoostArbac),
     ])) as [ArbacUserProvider, MoostArbac<object, TScope>];
     const userId = await user.getUserId();

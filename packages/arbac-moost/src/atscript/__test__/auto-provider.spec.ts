@@ -3,7 +3,7 @@ import { createEventContext, defineEventKind } from "@wooksjs/event-core";
 import { createLogger, createReplaceRegistry, getMoostInfact, Injectable, Moost } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
-import { ArbacUserProvider } from "../../user.provider";
+import { ArbacUserProvider, ArbacUserProviderToken } from "../../user.provider";
 import { type ArbacUserTable, AtscriptArbacUserProvider } from "../auto-provider";
 
 // ISSUE-9: AtscriptArbacUserProvider replaces the deleted AutoArbacUserProvider
@@ -169,7 +169,7 @@ describe("AtscriptArbacUserProvider (ISSUE-9)", () => {
         super(table, "user-1");
       }
     }
-    const replace = createReplaceRegistry([ArbacUserProvider, WiredProvider]);
+    const replace = createReplaceRegistry([ArbacUserProviderToken, WiredProvider]);
     const app = new Moost();
     app.setReplaceRegistry(replace);
     await app.init();

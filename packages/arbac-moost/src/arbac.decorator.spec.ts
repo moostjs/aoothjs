@@ -18,11 +18,12 @@ import {
   ArbacAuthorize,
   arbacAuthorizeInterceptor,
   ArbacResource,
-  ArbacScopes,
   ArbacUserProvider,
+  ArbacUserProviderToken,
   getArbacMate,
   MoostArbac,
 } from "./index";
+import { useArbac } from "./arbac.composables";
 
 // ArbacPublic was removed (ISSUE-4); the `arbacPublic` mate flag is now
 // written by auth-moost's combined `@Public()`. These tests still need to
@@ -89,7 +90,8 @@ async function bootstrap(opts: { user: TestUserProvider; global?: boolean }): Pr
     @Get("read")
     @ArbacAction("read")
     @ArbacAuthorize()
-    read(@ArbacScopes() scopes?: DemoScope[]) {
+    read() {
+      const scopes = useArbac().getScopes<DemoScope>();
       return { ok: true, scopes: scopes ?? null };
     }
 
@@ -115,7 +117,7 @@ async function bootstrap(opts: { user: TestUserProvider; global?: boolean }): Pr
 
   const arbac = buildArbac();
   const app = new Moost();
-  app.setReplaceRegistry(createReplaceRegistry([ArbacUserProvider, TestUserProvider]));
+  app.setReplaceRegistry(createReplaceRegistry([ArbacUserProviderToken, TestUserProvider]));
   app.setProvideRegistry(
     createProvideRegistry([TestUserProvider, () => opts.user], [MoostArbac, () => arbac]),
   );
@@ -171,7 +173,7 @@ describe("arbac authorize HTTP integration", () => {
     clearGlobalWooks();
   });
 
-  it("allows when role permits and exposes scopes via @ArbacScopes", async () => {
+  it("allows when role permits and exposes scopes via useArbac().getScopes()", async () => {
     const http = await bootstrap({ user: new TestUserProvider("u1", ["admin"]) });
     const res = await http.request("/read");
     expect(res?.status).toBe(200);
@@ -184,6 +186,28 @@ describe("arbac authorize HTTP integration", () => {
     const http = await bootstrap({ user: new TestUserProvider("u2", ["user"]) });
     const res = await http.request("/write");
     expect(res?.status).toBe(403);
+  });
+
+  it("rethrows non-HttpError from evaluate as HttpError(401) preserving original message (ISSUE-3)", async () => {
+    class ThrowingUserProvider extends ArbacUserProvider<DemoAttrs> {
+      override getUserId(): Promise<string> {
+        return Promise.reject(new Error("database unavailable"));
+      }
+      override getRoles() {
+        return [];
+      }
+      override getAttrs() {
+        return {} as DemoAttrs;
+      }
+    }
+    const http = await bootstrap({
+      user: new ThrowingUserProvider() as unknown as TestUserProvider,
+    });
+    const res = await http.request("/read");
+    expect(res?.status).toBe(401);
+    const body = (await res?.json()) as { message?: string; statusCode?: number };
+    expect(body.statusCode).toBe(401);
+    expect(body.message).toBe("database unavailable");
   });
 
   it("bypasses arbac on @ArbacPublic routes", async () => {
@@ -230,7 +254,7 @@ describe("arbac authorize HTTP integration", () => {
     });
 
     const app = new Moost();
-    app.setReplaceRegistry(createReplaceRegistry([ArbacUserProvider, TestUserProvider]));
+    app.setReplaceRegistry(createReplaceRegistry([ArbacUserProviderToken, TestUserProvider]));
     app.setProvideRegistry(
       createProvideRegistry(
         [TestUserProvider, () => new TestUserProvider("u6", ["viewer"])],
@@ -262,7 +286,7 @@ describe("arbac authorize HTTP integration", () => {
       [TestUserProvider, () => new TestUserProvider("u-wf", ["user"])],
       [MoostArbac, () => arbac],
     );
-    const replace = createReplaceRegistry([ArbacUserProvider, TestUserProvider]);
+    const replace = createReplaceRegistry([ArbacUserProviderToken, TestUserProvider]);
     const app = new Moost();
     app.setReplaceRegistry(replace);
     app.setProvideRegistry(provide);
@@ -313,7 +337,7 @@ describe("arbac authorize HTTP integration", () => {
       [TestUserProvider, () => new TestUserProvider("u-wf-pub", [])],
       [MoostArbac, () => arbac],
     );
-    const replace = createReplaceRegistry([ArbacUserProvider, TestUserProvider]);
+    const replace = createReplaceRegistry([ArbacUserProviderToken, TestUserProvider]);
     const app = new Moost();
     app.setReplaceRegistry(replace);
     app.setProvideRegistry(provide);

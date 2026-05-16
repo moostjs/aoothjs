@@ -6,7 +6,6 @@ import {
   ArbacAuthorize,
   arbacAuthorizeInterceptor,
   ArbacResource,
-  ArbacScopes,
   ArbacUserProvider,
   getArbacMate,
   MoostArbac,
@@ -26,14 +25,27 @@ describe("@aoothjs/arbac-moost", () => {
     expect(new MoostArbac()).toBeInstanceOf(Arbac);
   });
 
-  it("exports ArbacUserProvider with the three abstract-style methods", async () => {
+  it("exports ArbacUserProvider as an abstract class with three abstract methods", () => {
     expect(ArbacUserProvider).toBeDefined();
-    const provider = new ArbacUserProvider();
+    expect(typeof ArbacUserProvider).toBe("function");
+    // ArbacUserProvider is `abstract` — subclasses must implement
+    // getUserId/getRoles/getAttrs. We verify the prototype seam exists
+    // (subclass methods can be discovered) without instantiating the base.
+    class Impl extends ArbacUserProvider {
+      getUserId() {
+        return "u";
+      }
+      getRoles() {
+        return [];
+      }
+      getAttrs() {
+        return {};
+      }
+    }
+    const provider = new Impl();
     expect(typeof provider.getUserId).toBe("function");
     expect(typeof provider.getRoles).toBe("function");
     expect(typeof provider.getAttrs).toBe("function");
-    // base methods reject — must be overridden
-    await expect(Promise.resolve(provider.getUserId())).rejects.toBeInstanceOf(Error);
   });
 
   it("exports arbacAuthorizeInterceptor as a moost auth-guard def", () => {
@@ -47,14 +59,16 @@ describe("@aoothjs/arbac-moost", () => {
 
   it("exports decorator factories that return functions", () => {
     expect(typeof ArbacAuthorize).toBe("function");
-    expect(typeof ArbacScopes).toBe("function");
     expect(typeof ArbacResource).toBe("function");
     expect(typeof ArbacAction).toBe("function");
     // each factory must return a usable decorator
     expect(typeof ArbacAuthorize()).toBe("function");
     expect(typeof ArbacResource("res.user")).toBe("function");
     expect(typeof ArbacAction("create")).toBe("function");
-    expect(typeof ArbacScopes()).toBe("function");
+  });
+
+  it("ArbacScopes is NOT exported (dropped — ISSUE ARBAC-MOOST-4)", () => {
+    expect("ArbacScopes" in indexModule).toBe(false);
   });
 
   it("getArbacMate returns the moost mate singleton typed for ARBAC", () => {
