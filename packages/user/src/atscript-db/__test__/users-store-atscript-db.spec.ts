@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vite-plus/test";
 import { AtscriptDbTable } from "@atscript/db";
 import { SqliteAdapter, BetterSqlite3Driver } from "@atscript/db-sqlite";
-import { UserAuthError, UserService } from "@aoothjs/user";
-import type { UserCredentials } from "@aoothjs/user";
+import { UserAuthError, UserService } from "../../index";
+import type { UserCredentials } from "../../index";
 
-import { UserStoreAs } from "../users-store-as";
+import { type AuthUserTable, UsersStoreAtscriptDb } from "../index";
 import { prepareFixtures } from "./test-utils";
 
 let AoothUserCredentials: any;
@@ -36,11 +36,11 @@ function makeUserData(overrides?: Partial<UserCredentials>): UserCredentials {
   };
 }
 
-describe("UserStoreAs", () => {
+describe("UsersStoreAtscriptDb", () => {
   let driver: BetterSqlite3Driver;
   let adapter: SqliteAdapter;
   let table: AtscriptDbTable;
-  let store: UserStoreAs;
+  let store: UsersStoreAtscriptDb;
 
   beforeAll(async () => {
     await prepareFixtures();
@@ -54,7 +54,11 @@ describe("UserStoreAs", () => {
     table = new AtscriptDbTable(AoothUserCredentials, adapter);
     await table.ensureTable();
     await table.syncIndexes();
-    store = new UserStoreAs(table);
+    // `AtscriptDbTable` returns `Record<string, unknown>` from its
+    // structural reads, so the typed `AuthUserTable<UserCredentialsRow>`
+    // surface needs a cast at the wiring seam — same pattern e2e-demo's
+    // `wf-store.ts` uses.
+    store = new UsersStoreAtscriptDb({ table: table as unknown as AuthUserTable });
   });
 
   afterEach(() => {

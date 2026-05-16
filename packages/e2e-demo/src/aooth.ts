@@ -1,7 +1,7 @@
 import { AuthCredential, CredentialStoreJwt, DenylistStoreMemory } from "@aoothjs/auth";
 import type { BuildMagicLinkUrl } from "@aoothjs/auth-moost";
 import { type UserCredentials, UserService } from "@aoothjs/user";
-import { UserStoreAs } from "@aoothjs/user-as";
+import { type AuthUserTable, UsersStoreAtscriptDb } from "@aoothjs/user/atscript-db";
 
 import type { AppDb } from "./db";
 import type { AppEnv } from "./env";
@@ -19,7 +19,7 @@ import type { DemoUser } from "./models/user.as";
  * (which calls `userService.getUser(input.email)`) can resolve users in this
  * app where username is a short handle and email is the canonical contact.
  */
-class DemoUserStore extends UserStoreAs<DemoUser> {
+class DemoUserStore extends UsersStoreAtscriptDb<DemoUser> {
   async create(data: UserCredentials & DemoUser): Promise<void> {
     const rec = data as unknown as Record<string, unknown>;
     const patched = {
@@ -59,7 +59,12 @@ export function createAooth({ tables, env }: AppAuthOptions): AppAuth {
   // consults it by jti — keyspaces are disjoint so reuse is safe.
   const denylist = new DenylistStoreMemory();
 
-  const userStore = new DemoUserStore(tables.users);
+  // `AtscriptDbTable` returns `Record<string, unknown>` from its structural
+  // reads, so the typed `AuthUserTable` surface needs a cast at the wiring
+  // seam — same pattern `wf-store.ts` uses.
+  const userStore = new DemoUserStore({
+    table: tables.users as unknown as AuthUserTable<DemoUser>,
+  });
 
   const userService = new UserService<DemoUser>(userStore, {
     password: {

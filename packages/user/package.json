@@ -20,7 +20,8 @@
     "directory": "packages/user"
   },
   "files": [
-    "dist"
+    "dist",
+    "src/atscript-db/user-credentials.as"
   ],
   "type": "module",
   "sideEffects": false,
@@ -33,6 +34,12 @@
       "import": "./dist/index.mjs",
       "require": "./dist/index.cjs"
     },
+    "./atscript-db": {
+      "types": "./dist/atscript-db.d.mts",
+      "import": "./dist/atscript-db.mjs",
+      "require": "./dist/atscript-db.cjs"
+    },
+    "./atscript-db/model.as": "./src/atscript-db/user-credentials.as",
     "./package.json": "./package.json"
   },
   "publishConfig": {
@@ -46,5 +53,23 @@
   },
   "dependencies": {
     "@prostojs/ftring": "^0.0.3"
+  },
+  "devDependencies": {
+    "@atscript/core": "catalog:",
+    "@atscript/db": "catalog:",
+    "@atscript/db-sql-tools": "catalog:",
+    "@atscript/db-sqlite": "catalog:",
+    "@atscript/typescript": "catalog:",
+    "@types/better-sqlite3": "^7.6.13",
+    "better-sqlite3": "^12.6.2",
+    "unplugin-atscript": "catalog:"
+  },
+  "peerDependencies": {
+    "@atscript/db": ">=0.1.79"
+  },
+  "peerDependenciesMeta": {
+    "@atscript/db": {
+      "optional": true
+    }
   }
 }

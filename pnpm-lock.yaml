@@ -155,9 +155,6 @@ importers:
       '@aoothjs/user':
         specifier: workspace:*
         version: link:../../../packages/user
-      '@aoothjs/user-as':
-        specifier: workspace:*
-        version: link:../../../packages/user-as
       '@atscript/core':
         specifier: 'catalog:'
         version: 0.1.56(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)
@@ -315,9 +312,9 @@ importers:
       '@aoothjs/arbac-core':
         specifier: workspace:*
         version: link:../arbac-core
-      '@aoothjs/user-as':
+      '@aoothjs/user':
         specifier: workspace:*
-        version: link:../user-as
+        version: link:../user
       '@wooksjs/event-core':
         specifier: '>=0.7.12'
         version: 0.7.12
@@ -367,6 +364,9 @@ importers:
       '@aoothjs/user':
         specifier: workspace:*
         version: link:../user
+      '@atscript/db':
+        specifier: '>=0.1.79'
+        version: 0.1.79(@atscript/core@0.1.56(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0))(@atscript/typescript@0.1.56)(@uniqu/core@0.1.6)
       jose:
         specifier: ^6.2.3
         version: 6.2.3
@@ -437,9 +437,6 @@ importers:
       '@aoothjs/user':
         specifier: workspace:*
         version: link:../user
-      '@aoothjs/user-as':
-        specifier: workspace:*
-        version: link:../user-as
       '@atscript/core':
         specifier: 'catalog:'
         version: 0.1.56(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)
@@ -504,12 +501,6 @@ importers:
       '@prostojs/ftring':
         specifier: ^0.0.3
         version: 0.0.3
-
-  packages/user-as:
-    dependencies:
-      '@aoothjs/user':
-        specifier: workspace:*
-        version: link:../user
     devDependencies:
       '@atscript/core':
         specifier: 'catalog:'
@@ -529,9 +520,6 @@ importers:
       '@types/better-sqlite3':
         specifier: ^7.6.13
         version: 7.6.13
-      '@uniqu/core':
-        specifier: ^0.1.6
-        version: 0.1.6
       better-sqlite3:
         specifier: ^12.6.2
         version: 12.10.0

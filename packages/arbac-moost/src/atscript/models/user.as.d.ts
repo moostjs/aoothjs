@@ -8,7 +8,7 @@
  */
 
 import type { TAtscriptTypeObject, TAtscriptTypeComplex, TAtscriptTypeFinal, TAtscriptTypeArray, TAtscriptAnnotatedType, TMetadataMap, Validator, TValidatorOptions } from "@atscript/typescript/utils"
-import { AoothUserCredentials } from "@aoothjs/user-as/models.as"
+import { AoothUserCredentials } from "@aoothjs/user/atscript-db/model.as"
 
 /**
  * Atscript interface **AoothArbacUserCredentials**

@@ -85,7 +85,6 @@ Planned packages (see `TODO.md` for full roadmap):
 - `packages/arbac-core` — `@aoothjs/arbac-core` — zero-dep RBAC engine (from @prostojs/arbac)
 - `packages/arbac` — `@aoothjs/arbac` — re-exports arbac-core + builder API, privilege factories, scope merge
 - `packages/auth` — `@aoothjs/auth` — sessions, tokens, password reset, MFA flows
-- `packages/user-as` — `@aoothjs/user-as` — UsersStore backed by @atscript/db
 - `packages/arbac-moost` — `@aoothjs/arbac-moost` — moost RBAC integration (from @moostjs/arbac)
 - `packages/auth-moost` — `@aoothjs/auth-moost` — moost auth controllers, guards, composables
 - `packages/atscript-plugin` — `@aoothjs/atscript-plugin` — `@aooth.*` annotations for .as models

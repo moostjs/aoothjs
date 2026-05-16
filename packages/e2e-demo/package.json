@@ -19,7 +19,6 @@
     "@aoothjs/auth": "workspace:*",
     "@aoothjs/auth-moost": "workspace:*",
     "@aoothjs/user": "workspace:*",
-    "@aoothjs/user-as": "workspace:*",
     "@atscript/core": "catalog:",
     "@atscript/db": "catalog:",
     "@atscript/db-sql-tools": "catalog:",

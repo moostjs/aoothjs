@@ -21,7 +21,7 @@ export default defineConfig({
       neverBundle: [
         "@aoothjs/arbac",
         "@aoothjs/arbac-core",
-        "@aoothjs/user-as",
+        "@aoothjs/user",
         "@atscript/core",
         "@atscript/db",
         "@atscript/moost-db",

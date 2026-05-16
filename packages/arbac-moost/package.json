@@ -63,7 +63,7 @@
   "dependencies": {
     "@aoothjs/arbac": "workspace:*",
     "@aoothjs/arbac-core": "workspace:*",
-    "@aoothjs/user-as": "workspace:*"
+    "@aoothjs/user": "workspace:*"
   },
   "devDependencies": {
     "@atscript/core": "catalog:",
