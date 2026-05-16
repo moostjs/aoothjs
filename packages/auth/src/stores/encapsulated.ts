@@ -48,6 +48,12 @@ interface EncryptedPayload<TClaims extends object> extends CredentialState<TClai
  *   were random, every previously issued token would become undecryptable.
  *   For maximum protection against rainbow tables on weak passphrases,
  *   provide a 32-byte random buffer as `secret` (the KDF path is skipped).
+ *
+ * Revocation caveat: `revokeAllForUser` uses an in-memory per-user epoch map.
+ * It does not survive process restart and does not sync across instances —
+ * the same limitation as `CredentialStoreJwt`. Use `CredentialStoreRedis` or
+ * `CredentialStoreAtscriptDb` when you need native enumeration with durable
+ * cross-instance cascade semantics.
  */
 export class CredentialStoreEncapsulated<
   TClaims extends object = object,
@@ -55,6 +61,14 @@ export class CredentialStoreEncapsulated<
   private readonly key: Buffer;
   private readonly denylist?: DenylistStore;
   private readonly clock: Clock;
+  /**
+   * Per-user revocation epoch (ms). `revokeAllForUser` sets this to
+   * `clock.now()`; `retrieve`/`consume` reject any decrypted state whose
+   * `issuedAt` is not strictly greater than the user's epoch (strict
+   * greater-than handles same-ms collisions). Mirrors the JWT store pattern;
+   * see class JSDoc for durability caveats.
+   */
+  private readonly epochs = new Map<string, number>();
 
   constructor(opts: CredentialStoreEncapsulatedOptions) {
     if (opts.secret == null) {
@@ -83,6 +97,7 @@ export class CredentialStoreEncapsulated<
     const decrypted = this.decrypt(token);
     if (!decrypted) return null;
     if (decrypted.expiresAt <= this.clock.now()) return null;
+    if (!this.passesEpoch(decrypted)) return null;
     if (this.denylist && (await this.denylist.has(decrypted.jti))) return null;
     return stripJti(decrypted);
   }
@@ -92,6 +107,7 @@ export class CredentialStoreEncapsulated<
     const decrypted = this.decrypt(token);
     if (!decrypted) return null;
     if (decrypted.expiresAt <= this.clock.now()) return null;
+    if (!this.passesEpoch(decrypted)) return null;
     if (await denylist.has(decrypted.jti)) return null;
     await denylist.add(decrypted.jti, decrypted.expiresAt);
     return stripJti(decrypted);
@@ -113,11 +129,22 @@ export class CredentialStoreEncapsulated<
     await denylist.add(decrypted.jti, decrypted.expiresAt);
   }
 
-  async revokeAllForUser(_userId: string): Promise<number> {
-    // Stateless: nothing to enumerate. Returning 0 lets the orchestrator's
-    // theft-response path (which best-effort revokes-all before throwing
-    // REFRESH_REUSE_DETECTED) succeed when only a denylist is available.
-    return 0;
+  async revokeAllForUser(userId: string): Promise<number> {
+    // Stateless: bump a per-user epoch; tokens with issuedAt <= epoch are
+    // rejected (strictly-greater gate covers same-ms collisions). Returns 1
+    // to signal "revocation took effect" without claiming a precise count.
+    this.epochs.set(userId, this.clock.now());
+    return 1;
+  }
+
+  /**
+   * Reject decrypted payloads whose `issuedAt` is not strictly greater than
+   * the user's revocation epoch. Mirrors `CredentialStoreJwt.passesEpoch`.
+   */
+  private passesEpoch(payload: EncryptedPayload<TClaims>): boolean {
+    const epoch = this.epochs.get(payload.userId);
+    if (epoch === undefined) return true;
+    return payload.issuedAt > epoch;
   }
 
   private requireDenylist(op: string): DenylistStore {

@@ -176,12 +176,63 @@ describe("CredentialStoreEncapsulated", () => {
     }
   });
 
-  it("revokeAllForUser is a best-effort no-op (returns 0)", async () => {
+  it("revokeAllForUser bumps a per-user epoch and rejects tokens minted before it", async () => {
+    // The encapsulated store is stateless from a server-side index
+    // perspective: it cannot enumerate live tokens (the token IS the state).
+    // Instead, it mirrors the JWT store's BUG-4 pattern — bump an in-memory
+    // per-user epoch, and reject any decrypted state whose `issuedAt` is not
+    // strictly greater than that epoch. Returning 1 (not 0) signals to the
+    // orchestrator that revocation took effect, even though we cannot report
+    // a precise count of invalidated tokens.
     const store = new CredentialStoreEncapsulated({ secret: SECRET, clock });
-    // Stateless cannot enumerate; orchestrator's theft-response relies on
-    // this returning rather than throwing so the caller still sees the
-    // intended REFRESH_REUSE_DETECTED error.
-    expect(await store.revokeAllForUser("alice")).toBe(0);
+    const oldToken = await store.persist(makeState("alice", clock.now()));
+    clock.advance(1);
+    expect(await store.revokeAllForUser("alice")).toBe(1);
+    expect(await store.retrieve(oldToken)).toBeNull();
+  });
+
+  it("revokeAllForUser also blocks consume of pre-epoch tokens", async () => {
+    // Same epoch gate must apply on the consume path so a stolen refresh
+    // token can't be exchanged after a cascade revoke.
+    const denylist = new DenylistStoreMemory({ clock });
+    const store = new CredentialStoreEncapsulated({ secret: SECRET, denylist, clock });
+    const token = await store.persist(makeState("alice", clock.now()));
+    clock.advance(1);
+    await store.revokeAllForUser("alice");
+    expect(await store.consume(token)).toBeNull();
+  });
+
+  it("revokeAllForUser is scoped per-user (Bob's tokens unaffected)", async () => {
+    // Per-user isolation: bumping Alice's epoch must not invalidate Bob.
+    const store = new CredentialStoreEncapsulated({ secret: SECRET, clock });
+    const aliceToken = await store.persist(makeState("alice", clock.now()));
+    const bobToken = await store.persist(makeState("bob", clock.now()));
+    clock.advance(1);
+    await store.revokeAllForUser("alice");
+    expect(await store.retrieve(aliceToken)).toBeNull();
+    expect(await store.retrieve(bobToken)).not.toBeNull();
+  });
+
+  it("tokens minted AFTER revokeAllForUser are accepted (epoch is in the past)", async () => {
+    // The epoch gate is `issuedAt > epoch`. A token minted strictly after the
+    // revoke must pass — otherwise the user could never log back in.
+    const store = new CredentialStoreEncapsulated({ secret: SECRET, clock });
+    await store.revokeAllForUser("alice");
+    clock.advance(1);
+    const fresh = await store.persist(makeState("alice", clock.now()));
+    expect(await store.retrieve(fresh)).not.toBeNull();
+  });
+
+  it("rejects tokens whose issuedAt equals the epoch (strict-greater guards same-ms collisions)", async () => {
+    // BUG-4 guard: if a token is minted in the same millisecond the epoch is
+    // bumped, `issuedAt === epoch` and the strict `>` comparison rejects it.
+    // Without strict-greater, a racing mint+revoke in the same ms would leave
+    // the just-issued token usable — defeating the cascade.
+    const store = new CredentialStoreEncapsulated({ secret: SECRET, clock });
+    const sameMsToken = await store.persist(makeState("alice", clock.now()));
+    // No clock.advance — revoke happens in the same millisecond as persist.
+    expect(await store.revokeAllForUser("alice")).toBe(1);
+    expect(await store.retrieve(sameMsToken)).toBeNull();
   });
 
   it("derives different keys for different short string secrets", async () => {
