@@ -77,8 +77,10 @@ export class UserService<T extends object = object> {
     const pw = password ?? this.hasher.generatePassword();
     const hash = await this.hasher.hash(pw);
 
-    const base: UserCredentials = {
-      id: "",
+    // Omit `id` from the base record so the underlying store/DB default
+    // (e.g. atscript-db's `@db.default.uuid`) decides. Callers that want a
+    // specific id pass it via `extras`.
+    const base: Omit<UserCredentials, "id"> = {
       username,
       password: {
         hash,
@@ -139,7 +141,7 @@ export class UserService<T extends object = object> {
       return { user, mfaRequired };
     }
 
-    await this.incrementAndMaybeLock(username, user.account, "INVALID_CREDENTIALS");
+    return this.incrementAndMaybeLock(username, user.account, "INVALID_CREDENTIALS");
   }
 
   async verifyPassword(username: string, password: string): Promise<boolean> {

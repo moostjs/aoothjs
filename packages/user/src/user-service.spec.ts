@@ -86,6 +86,50 @@ describe("UserService", () => {
       } as any);
       expect(user.id).toBe("user-123");
     });
+
+    // Regression for ISSUE-27 — a hard-coded `id: ""` on the base record
+    // shadowed atscript-db's `@db.default.uuid` so every invite-created user
+    // collided on PK, causing the second `create` to fail with UNIQUE.
+    // The contract being verified: `createUser` MUST NOT put any `id`
+    // property on the record handed to the store unless the caller provided
+    // one via `extras`. That way the store's defaults (UUID, sequence, ...)
+    // can fire on each insert.
+    it("does NOT include `id` on the record passed to store.create when no id is supplied", async () => {
+      let received: Record<string, unknown> | undefined;
+      const recordingStore = new UserStoreMemory();
+      const originalCreate = recordingStore.create.bind(recordingStore);
+      recordingStore.create = async (data) => {
+        received = data as unknown as Record<string, unknown>;
+        return originalCreate(data);
+      };
+      const recSvc = new UserService(recordingStore, {
+        password: { ...FAST_SCRYPT },
+        clock: () => now,
+      });
+      await recSvc.createUser("alice", "pass123");
+      expect(received).toBeDefined();
+      // Use `in` so we catch `id: ""` / `id: undefined` — the original bug
+      // was `id: ""` overwriting the DB default.
+      expect("id" in (received as object)).toBe(false);
+    });
+
+    it("DOES include caller-supplied `id` on the record passed to store.create", async () => {
+      let received: Record<string, unknown> | undefined;
+      const recordingStore = new UserStoreMemory<{ id?: string }>();
+      const originalCreate = recordingStore.create.bind(recordingStore);
+      recordingStore.create = async (data) => {
+        received = data as unknown as Record<string, unknown>;
+        return originalCreate(data);
+      };
+      const recSvc = new UserService<{ id?: string }>(recordingStore, {
+        password: { ...FAST_SCRYPT },
+        clock: () => now,
+      });
+      await recSvc.createUser("alice", "pass123", { id: "explicit-id" });
+      expect(received).toBeDefined();
+      expect("id" in (received as object)).toBe(true);
+      expect(received!.id).toBe("explicit-id");
+    });
   });
 
   describe("getUser", () => {
