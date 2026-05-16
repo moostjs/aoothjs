@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { RecoveryWorkflowOptions } from "../workflows/recovery.workflow.options";
 import { prepareWfApp, seedActiveUser } from "./workflow-utils";
 
 /**
@@ -25,7 +24,7 @@ describe("RecoveryWorkflow", () => {
     // instead of auto-issuing tokens. This existing test asserts the
     // auto-login path, so opt back into it explicitly.
     const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({ freshLoginRequired: false }),
+      recoveryOpts: { postReset: { freshLoginRequired: false } },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
 

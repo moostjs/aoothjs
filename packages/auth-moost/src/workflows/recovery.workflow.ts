@@ -4,7 +4,7 @@
  * Full step catalog per `WF_RECOVERY.md`. Defaults give today's 3-step
  * magic-link flow (`request` → `sendMagicLink` → `setPassword`); consumers
  * turn on OTP delivery, pre-reset factor verification, fresh-login redirect
- * etc. via `RecoveryWorkflowOptions`.
+ * etc. via `RecoveryWorkflowOpts`.
  *
  * **Step routing model.** Mirrors `LoginWorkflow`: alt-action handlers run
  * BEFORE form validation (so `backToLogin` works without filling fields) and
@@ -12,8 +12,26 @@
  * `useWfFinished().set(...)`. The step body then returns `undefined` so the
  * schema advances cleanly, with terminal steps gated on `!ctx.aborted` so the
  * abort response set via `useWfFinished()` is not overwritten.
+ *
+ * **Consumer subclass pattern (Phase 3 reshape).** Consumers subclass
+ * `RecoveryWorkflow` to override `protected` hook methods. The subclass MUST
+ * re-apply `@Inherit() @Injectable('FOR_EVENT') @Controller()` and re-declare
+ * the constructor signature (TS emits fresh design-paramtypes per class).
+ *
+ * **Side-effect deps as protected methods.** The optional sender/emitter DI
+ * providers have been DROPPED from the constructor. The hooks live as
+ * `protected` methods consumers override:
+ *
+ *   - `deliver(payload)` — unified email + SMS dispatch (see `DeliverPayload`).
+ *     Default throws; override to wire your senders.
+ *   - `audit(event)` — fire audit events. Default: no-op.
+ *   - `emailToUserId(email)` — resolve recovery email to canonical username.
+ *   - `verifyRecoveryFactor(...)` — phone last-4 / TOTP / custom factors.
+ *
+ * Rate-limiting is intentionally NOT part of this workflow — consumers who
+ * want a cap wire it themselves at the HTTP / trigger layer.
  */
-import { AuthCredential, type EmailSender, type SmsSender } from "@aoothjs/auth";
+import { AuthCredential } from "@aoothjs/auth";
 import { UserAuthError, UserService, verifyTotpCode } from "@aoothjs/user";
 import {
   outletEmail,
@@ -25,7 +43,7 @@ import {
 } from "@moostjs/event-wf";
 import { current } from "@wooksjs/event-core";
 import { useUrlParams } from "@wooksjs/event-http";
-import { Controller, Inject, Injectable, Optional } from "moost";
+import { Controller, Injectable } from "moost";
 
 import {
   EmailIdentifierForm,
@@ -34,11 +52,15 @@ import {
   RecoveryModeSelectForm,
   SetPasswordForm,
 } from "../atscript/models/forms.as.js";
-import { type AuditEmitter, NoopAuditEmitter } from "../audit/index";
+import type { AuditEvent } from "../audit/index";
 import { MoostAuthConfig } from "../auth.config";
 import { buildLoginResponse } from "../auth.cookies";
-import type { WorkflowRateLimitStore } from "../rate-limit/index";
-import { RecoveryWorkflowOptions } from "./recovery.workflow.options";
+import type { DeliverPayload } from "./login.workflow";
+import {
+  mergeRecoveryOpts,
+  type RecoveryWorkflowOpts,
+  type ResolvedRecoveryWorkflowOpts,
+} from "./recovery.workflow.options";
 import {
   buildFinishedCookies,
   httpInputRequired,
@@ -51,14 +73,13 @@ import {
 } from "./wf-helpers";
 
 export interface RecoveryWfCtx {
-  opts?: RecoveryWorkflowOptions;
+  opts?: ResolvedRecoveryWorkflowOpts;
 
   // Phase 1 — request:
   email?: string;
   username?: string;
-  rateLimited?: boolean;
 
-  // Mode (when deliveryMode === 'choice'):
+  // Mode (when delivery.mode === 'choice'):
   selectedMode?: "magicLink" | "otp";
   /** Resolved delivery mode the workflow committed to (populated by `selectMode` or `init`). */
   resolvedMode?: "magicLink" | "otp";
@@ -95,88 +116,61 @@ const ALT_HANDLED: unique symbol = Symbol("ALT_HANDLED");
 type AltHandled = typeof ALT_HANDLED;
 
 /**
- * Strip non-JSON values (functions, atscript form classes) from the options
- * object so the snapshot persists cleanly into `AsWfStore`. Adds presence
- * booleans for callback fields so schema `condition` predicates can gate on
- * them without holding the original reference.
+ * Construction-time invariants for DATA validity only. Sender/emitter absence
+ * is no longer checked — those default to fail-loud (`deliver()`) or safe
+ * (`audit()` no-op) protected methods that consumers override.
  */
-function snapshotOpts(opts: RecoveryWorkflowOptions): RecoveryWorkflowOptions {
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(opts)) {
-    if (v === undefined) continue;
-    if (typeof v === "function") continue;
-    if (v && typeof v === "object" && !Array.isArray(v)) {
-      if ((v as Record<string, unknown>).__is_atscript_annotated_type) continue;
-    }
-    out[k] = v;
-  }
-  out.emailToUserIdEnabled = typeof opts.emailToUserId === "function";
-  return out as unknown as RecoveryWorkflowOptions;
-}
-
-/**
- * Boot-time invariants. Called once per options instance via the
- * `validatedOpts` WeakSet inside `init`.
- */
-function validateOpts(
-  opts: RecoveryWorkflowOptions,
-  emailSender?: EmailSender,
-  smsSender?: SmsSender,
-  rateLimitStore?: WorkflowRateLimitStore,
-): void {
-  if (opts.rateLimit !== null) {
-    if (!rateLimitStore) {
-      throw new Error(
-        "RecoveryWorkflow: WorkflowRateLimitStore required when opts.rateLimit is non-null",
-      );
-    }
-    if (opts.rateLimit.count <= 0 || opts.rateLimit.windowMs <= 0) {
-      throw new Error(
-        "RecoveryWorkflow: opts.rateLimit.count and opts.rateLimit.windowMs must be > 0 (set rateLimit: null to disable)",
-      );
-    }
-  }
-  const otpEnabled = opts.deliveryMode !== "magicLink";
-  if (otpEnabled && opts.otpTransports.length === 0) {
+function validateOpts(opts: ResolvedRecoveryWorkflowOpts): void {
+  const otpReachable = opts.delivery.mode !== "magicLink";
+  if (otpReachable && opts.delivery.otp.transports.length === 0) {
     throw new Error(
-      "RecoveryWorkflow: otpTransports cannot be empty when deliveryMode includes OTP",
-    );
-  }
-  if (otpEnabled && opts.otpTransports.includes("sms") && !smsSender) {
-    throw new Error(
-      'RecoveryWorkflow: SmsSender required when otpTransports includes "sms" and deliveryMode allows OTP',
-    );
-  }
-  if (otpEnabled && opts.otpTransports.includes("email") && !emailSender) {
-    throw new Error(
-      'RecoveryWorkflow: EmailSender required when otpTransports includes "email" and deliveryMode allows OTP',
-    );
-  }
-  if (opts.deliveryMode !== "otp" && !emailSender) {
-    // magicLink and choice modes both depend on the email outlet.
-    throw new Error(
-      'RecoveryWorkflow: EmailSender required when deliveryMode is "magicLink" or "choice"',
+      "RecoveryWorkflow: delivery.otp.transports cannot be empty when delivery.mode includes OTP",
     );
   }
 }
-
-const validatedOpts = new WeakSet<RecoveryWorkflowOptions>();
 
 @Injectable("FOR_EVENT")
 @Controller()
 export class RecoveryWorkflow {
+  protected readonly opts: ResolvedRecoveryWorkflowOpts;
+  protected readonly users: UserService;
+  protected readonly auth: AuthCredential;
+  protected readonly authConfig: MoostAuthConfig;
+
   constructor(
-    private readonly opts: RecoveryWorkflowOptions,
-    private readonly users: UserService,
-    private readonly auth: AuthCredential,
-    private readonly authConfig: MoostAuthConfig,
-    @Optional() @Inject("EmailSender") private readonly mailer?: EmailSender,
-    @Optional() @Inject("SmsSender") private readonly sms?: SmsSender,
-    @Optional()
-    @Inject("WorkflowRateLimitStore")
-    private readonly rateLimitStore?: WorkflowRateLimitStore,
-    @Optional() @Inject("AuditEmitter") private readonly audit?: AuditEmitter,
-  ) {}
+    opts: RecoveryWorkflowOpts,
+    users: UserService,
+    auth: AuthCredential,
+    authConfig: MoostAuthConfig,
+  ) {
+    this.opts = mergeRecoveryOpts(opts);
+    this.users = users;
+    this.auth = auth;
+    this.authConfig = authConfig;
+    validateOpts(this.opts);
+  }
+
+  // ── Protected extension surface ───────────────────────────────────────
+  /**
+   * Dispatch an email or SMS event. Default throws — consumers MUST override
+   * if `delivery.mode` ever drives email/SMS (i.e. for any non-`magicLink`
+   * mode AND for `magicLink` mode the `outletEmail` outlet still runs the
+   * email through `createAuthEmailOutlet`'s `EmailSender` — see the trigger
+   * controller wiring; this method covers OTP code dispatch).
+   */
+  protected async deliver(_payload: DeliverPayload): Promise<void> {
+    throw new Error(
+      "RecoveryWorkflow.deliver() not configured — override to wire your email/sms sender",
+    );
+  }
+
+  /**
+   * Emit an audit event. Default: no-op. Consumers override to fan out to
+   * their audit sink.
+   */
+  protected async audit(_event: AuditEvent): Promise<void> {
+    // No-op default.
+  }
 
   @Workflow("auth.recovery")
   @WorkflowSchema<RecoveryWfCtx>([
@@ -186,18 +180,21 @@ export class RecoveryWorkflow {
     // other's handlers.
     { id: "recoveryInit" },
     { id: "recoveryRequest" },
-    // Mode picker — only when deliveryMode === 'choice' AND not already chosen.
+    // Mode picker — only when delivery.mode === 'choice' AND not already chosen.
     {
       id: "recoverySelectMode",
       condition: (ctx) =>
-        Boolean(
-          ctx.username && ctx.opts?.deliveryMode === "choice" && !ctx.selectedMode && !ctx.aborted,
+        !!(
+          ctx.username &&
+          ctx.opts!.delivery.mode === "choice" &&
+          !ctx.selectedMode &&
+          !ctx.aborted
         ),
     },
     // Magic-link branch.
     {
       id: "recoverySendMagicLink",
-      condition: (ctx) => Boolean(ctx.username && ctx.resolvedMode === "magicLink" && !ctx.aborted),
+      condition: (ctx) => !!(ctx.username && ctx.resolvedMode === "magicLink" && !ctx.aborted),
     },
     // OTP branch — sendOtp + checkOtp wrapped in a while-loop so the
     // `useDifferentTransport` and `resend` alt-actions can reset
@@ -205,7 +202,7 @@ export class RecoveryWorkflow {
     // channel. The loop exits when `pinVerified` flips true.
     {
       while: (ctx) =>
-        Boolean(ctx.username && ctx.resolvedMode === "otp" && !ctx.pinVerified && !ctx.aborted),
+        !!(ctx.username && ctx.resolvedMode === "otp" && !ctx.pinVerified && !ctx.aborted),
       steps: [
         {
           id: "recoverySendOtp",
@@ -218,45 +215,48 @@ export class RecoveryWorkflow {
     {
       id: "recoveryVerifyFactor",
       condition: (ctx) =>
-        Boolean(
+        !!(
           ctx.username &&
-          ctx.opts?.requireKnownRecoveryFactor &&
+          ctx.opts!.preReset.requireKnownFactor &&
           !ctx.factorVerified &&
           (ctx.linkSent || ctx.pinVerified) &&
-          !ctx.aborted,
+          !ctx.aborted
         ),
     },
     // Set password — gated on the chosen branch having completed.
     {
       id: "recoverySetPassword",
       condition: (ctx) =>
-        Boolean(
+        !!(
           ctx.username &&
           (ctx.linkSent || ctx.pinVerified) &&
-          (!ctx.opts?.requireKnownRecoveryFactor || ctx.factorVerified) &&
-          !ctx.aborted,
+          (!ctx.opts!.preReset.requireKnownFactor || ctx.factorVerified) &&
+          !ctx.aborted
         ),
     },
     {
       id: "recoveryRevokeSessions",
       condition: (ctx) =>
-        Boolean(ctx.opts?.revokeAllSessions && ctx.passwordChanged && !ctx.aborted),
+        !!(ctx.opts!.postReset.revokeAllSessions && ctx.passwordChanged && !ctx.aborted),
     },
     {
       id: "recoveryAudit",
-      condition: (ctx) => Boolean(ctx.opts?.auditEvents && ctx.passwordChanged && !ctx.aborted),
+      condition: (ctx) => !!(ctx.opts!.audit.enabled && ctx.passwordChanged && !ctx.aborted),
     },
     // Finalize: one of fresh-login or auto-login, never both.
     {
       id: "recoveryFreshLoginFinish",
       condition: (ctx) =>
-        Boolean(ctx.opts?.freshLoginRequired && ctx.passwordChanged && !ctx.aborted),
+        !!(ctx.opts!.postReset.freshLoginRequired && ctx.passwordChanged && !ctx.aborted),
     },
     {
       id: "recoveryAutoLoginFinish",
       condition: (ctx) =>
-        Boolean(
-          !ctx.opts?.freshLoginRequired && ctx.passwordChanged && !ctx.tokensIssued && !ctx.aborted,
+        !!(
+          !ctx.opts!.postReset.freshLoginRequired &&
+          ctx.passwordChanged &&
+          !ctx.tokensIssued &&
+          !ctx.aborted
         ),
     },
   ])
@@ -265,16 +265,24 @@ export class RecoveryWorkflow {
   // ── Phase 0 ───────────────────────────────────────────────────────────
   @Step("recoveryInit")
   init(@WorkflowParam("context") ctx: RecoveryWfCtx): undefined {
-    if (!validatedOpts.has(this.opts)) {
-      validateOpts(this.opts, this.mailer, this.sms, this.rateLimitStore);
-      validatedOpts.add(this.opts);
-    }
-    ctx.opts = snapshotOpts(this.opts);
+    ctx.opts = this.snapshotOpts(this.opts);
     // Resolve the mode up-front when fixed; `'choice'` defers to `selectMode`.
-    if (this.opts.deliveryMode !== "choice") {
-      ctx.resolvedMode = this.opts.deliveryMode;
+    if (this.opts.delivery.mode !== "choice") {
+      ctx.resolvedMode = this.opts.delivery.mode;
     }
     return undefined;
+  }
+
+  /**
+   * Returns the JSON-safe projection of `opts` stashed onto `ctx` for schema
+   * conditions to read. Default: identity — the resolved-opts shape already
+   * contains only nested primitive groups (no callbacks, no class instances).
+   *
+   * Consumers who extend the opts type with non-JSON values can override this
+   * to strip them so `AsWfStore`'s plain-JSON persistence doesn't choke.
+   */
+  protected snapshotOpts(opts: ResolvedRecoveryWorkflowOpts): ResolvedRecoveryWorkflowOpts {
+    return opts;
   }
 
   // ── request ──────────────────────────────────────────────────────────
@@ -294,7 +302,7 @@ export class RecoveryWorkflow {
       return httpInputRequired(EmailIdentifierForm, formCtx);
     }
 
-    if (input.action === "backToLogin" && this.opts.backToLoginAction) {
+    if (input.action === "backToLogin" && this.opts.altActions.backToLogin) {
       this.abortToLogin(ctx);
       return undefined;
     }
@@ -305,26 +313,9 @@ export class RecoveryWorkflow {
     const email = input.email as string;
     ctx.email = email;
 
-    // Rate-limit check BEFORE the user lookup — a positive rate-limit hit
-    // intentionally short-circuits to the same generic response as an unknown
-    // email (anti-enumeration: indistinguishable from non-existent).
-    if (this.opts.rateLimit && this.rateLimitStore) {
-      const res = await this.rateLimitStore.consume(
-        email.toLowerCase(),
-        this.opts.rateLimit.windowMs,
-        this.opts.rateLimit.count,
-      );
-      if (!res.allowed) {
-        ctx.rateLimited = true;
-        await this.emitRequested(ctx);
-        this.finishGeneric();
-        return undefined;
-      }
-    }
-
     let username: string | undefined;
     try {
-      const userId = this.opts.emailToUserId ? await this.opts.emailToUserId(email) : email;
+      const userId = await this.emailToUserId(email);
       if (userId) {
         const user = await this.users.getUser(userId);
         username = user.username;
@@ -345,9 +336,19 @@ export class RecoveryWorkflow {
     ctx.username = username;
     // Pick the default OTP transport so `sendOtp` knows the channel.
     if (ctx.resolvedMode === "otp" && !ctx.otpTransport) {
-      ctx.otpTransport = this.opts.otpTransports[0];
+      ctx.otpTransport = this.opts.delivery.otp.transports[0];
     }
     return undefined;
+  }
+
+  /**
+   * Resolves the recovery-step `email` input to the `username` (user-id) that
+   * `UserService.getUser` expects. Default: returns the email unchanged (treats
+   * email as username). Apps whose user model separates `username` from
+   * `email` MUST override this; return `null` when no user matches.
+   */
+  protected async emailToUserId(email: string): Promise<string | null> {
+    return email;
   }
 
   // ── selectMode ───────────────────────────────────────────────────────
@@ -357,7 +358,7 @@ export class RecoveryWorkflow {
     @WorkflowParam("context") ctx: RecoveryWfCtx,
   ): unknown {
     if (!input) return httpInputRequired(RecoveryModeSelectForm, ctx);
-    if (input.action === "backToLogin" && this.opts.backToLoginAction) {
+    if (input.action === "backToLogin" && this.opts.altActions.backToLogin) {
       this.abortToLogin(ctx);
       return undefined;
     }
@@ -367,7 +368,7 @@ export class RecoveryWorkflow {
     ctx.selectedMode = mode;
     ctx.resolvedMode = mode;
     if (mode === "otp" && !ctx.otpTransport) {
-      ctx.otpTransport = this.opts.otpTransports[0];
+      ctx.otpTransport = this.opts.delivery.otp.transports[0];
     }
     return undefined;
   }
@@ -383,9 +384,9 @@ export class RecoveryWorkflow {
     return {
       ...outletEmail(ctx.email as string, "recovery.magicLink", {
         username: ctx.username,
-        expiresAtMs: this.opts.magicLinkTtlMs,
+        expiresAtMs: this.opts.delivery.magicLinkTtlMs,
       }),
-      expires: Date.now() + this.opts.magicLinkTtlMs,
+      expires: Date.now() + this.opts.delivery.magicLinkTtlMs,
     };
   }
 
@@ -393,36 +394,33 @@ export class RecoveryWorkflow {
   @Step("recoverySendOtp")
   async sendOtp(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<undefined> {
     requireUsername(ctx);
-    const transport: "sms" | "email" = ctx.otpTransport ?? this.opts.otpTransports[0] ?? "email";
+    const transport: "sms" | "email" =
+      ctx.otpTransport ?? this.opts.delivery.otp.transports[0] ?? "email";
     ctx.otpTransport = transport;
-    ctx.otpCodeLength = this.opts.otpCodeLength;
-    const code = mintPin(ctx, this.opts.otpCodeLength, this.opts.otpTtlMs);
-    ctx.pinResendAllowedAt = Date.now() + this.opts.otpResendCooldownMs;
+    ctx.otpCodeLength = this.opts.delivery.otp.codeLength;
+    const code = mintPin(ctx, this.opts.delivery.otp.codeLength, this.opts.delivery.otp.ttlMs);
+    ctx.pinResendAllowedAt = Date.now() + this.opts.delivery.otp.resendCooldownMs;
 
     if (transport === "email") {
-      if (!this.mailer) {
-        throw new Error("RecoveryWorkflow.sendOtp: EmailSender not registered");
-      }
-      await this.mailer.send({
+      await this.deliver({
+        channel: "email",
         kind: "recovery.pincode",
         recipient: ctx.email as string,
         code,
         expiresAt: ctx.pinExpire as number,
-        username: ctx.username,
+        userId: ctx.username,
       });
     } else {
-      if (!this.sms) {
-        throw new Error("RecoveryWorkflow.sendOtp: SmsSender not registered");
-      }
       // The user's recorded phone wins over `ctx.email` (which is what the
       // user typed at `request` time — could be an email even when delivering
       // SMS). Fall back to the typed value if there is no recorded phone.
       const phone = await this.resolveUserPhone(ctx.username);
-      await this.sms.send({
+      await this.deliver({
+        channel: "sms",
         kind: "recovery.pincode",
         recipient: phone ?? (ctx.email as string),
         code,
-        ttlMs: this.opts.otpTtlMs,
+        ttlMs: this.opts.delivery.otp.ttlMs,
         userId: ctx.username,
       });
     }
@@ -437,7 +435,7 @@ export class RecoveryWorkflow {
   ): Promise<unknown> {
     if (!input) return httpInputRequired(PincodeForm, ctx);
 
-    if (input.action === "backToLogin" && this.opts.backToLoginAction) {
+    if (input.action === "backToLogin" && this.opts.altActions.backToLogin) {
       this.abortToLogin(ctx);
       return undefined;
     }
@@ -447,12 +445,15 @@ export class RecoveryWorkflow {
         return httpInputRequired(PincodeForm, ctx, { __form: `Please wait ${waitSec}s` });
       }
       // Clear pin so the while-loop's `sendOtp` condition re-fires.
-      ctx.pin = undefined;
-      ctx.pinExpire = undefined;
+      // `delete` (not `= undefined`) so the persisted ctx remains JSON-clean
+      // — AsWfStore validates state.context against a JSON-anyOf schema and
+      // chokes on explicit `undefined` entries.
+      delete ctx.pin;
+      delete ctx.pinExpire;
       return undefined;
     }
     if (input.action === "useDifferentTransport") {
-      const transports = this.opts.otpTransports;
+      const transports = this.opts.delivery.otp.transports;
       if (transports.length < 2) {
         return httpInputRequired(PincodeForm, ctx, {
           __form: "Only one transport configured",
@@ -461,8 +462,8 @@ export class RecoveryWorkflow {
       const current = ctx.otpTransport ?? transports[0];
       const next = transports.find((t) => t !== current) ?? transports[0];
       ctx.otpTransport = next;
-      ctx.pin = undefined;
-      ctx.pinExpire = undefined;
+      delete ctx.pin;
+      delete ctx.pinExpire;
       return undefined;
     }
 
@@ -471,8 +472,8 @@ export class RecoveryWorkflow {
     const pinErr = verifyPin(ctx, input.code);
     if (pinErr) return httpInputRequired(PincodeForm, ctx, pinErr);
     ctx.pinVerified = true;
-    ctx.pin = undefined;
-    ctx.pinExpire = undefined;
+    delete ctx.pin;
+    delete ctx.pinExpire;
     return undefined;
   }
 
@@ -483,35 +484,53 @@ export class RecoveryWorkflow {
     @WorkflowParam("context") ctx: RecoveryWfCtx,
   ): Promise<unknown> {
     if (!input) return httpInputRequired(RecoveryFactorForm, ctx);
-    if (input.action === "backToLogin" && this.opts.backToLoginAction) {
+    if (input.action === "backToLogin" && this.opts.altActions.backToLogin) {
       this.abortToLogin(ctx);
       return undefined;
     }
     const errors = validateFormInput(RecoveryFactorForm, input);
     if (errors) return httpInputRequired(RecoveryFactorForm, ctx, errors);
     requireUsername(ctx);
-    const factor = input.factor as "phone" | "totp";
+    const factor = input.factor as string;
     const value = input.value as string;
 
-    const user = await this.users.getUser(ctx.username);
-    if (factor === "phone") {
-      const phoneMethod = user.mfa.methods.find((m) => m.name === "sms" && m.confirmed);
-      if (!phoneMethod) {
-        // Opaque error — never reveal which factor is enrolled.
-        return httpInputRequired(RecoveryFactorForm, ctx, { value: "Invalid factor" });
-      }
-      const last4 = phoneMethod.value.slice(-4);
-      if (value !== last4) {
-        return httpInputRequired(RecoveryFactorForm, ctx, { value: "Invalid factor" });
-      }
-    } else if (factor === "totp") {
-      const totpMethod = user.mfa.methods.find((m) => m.name === "totp" && m.confirmed);
-      if (!totpMethod || !verifyTotpCode(totpMethod.value, value)) {
-        return httpInputRequired(RecoveryFactorForm, ctx, { value: "Invalid factor" });
-      }
+    const ok = await this.verifyRecoveryFactor({ factor, value, ctx });
+    if (!ok) {
+      // Opaque error — never reveal which factor is enrolled.
+      return httpInputRequired(RecoveryFactorForm, ctx, { value: "Invalid factor" });
     }
     ctx.factorVerified = true;
     return undefined;
+  }
+
+  /**
+   * Verifies a recovery factor against the user's enrolled MFA methods.
+   * Default: supports `'phone'` (phone last-4 match) and `'totp'` (current
+   * TOTP code). Returns `true` when the factor matches.
+   *
+   * Consumers extend by overriding to support additional factors (e.g.
+   * security questions); call `super.verifyRecoveryFactor(...)` to keep
+   * the built-in checks.
+   */
+  protected async verifyRecoveryFactor(input: {
+    factor: string;
+    value: string;
+    ctx: RecoveryWfCtx;
+  }): Promise<boolean> {
+    const { factor, value, ctx } = input;
+    if (!ctx.username) return false;
+    const user = await this.users.getUser(ctx.username);
+    if (factor === "phone") {
+      const phoneMethod = user.mfa.methods.find((m) => m.name === "sms" && m.confirmed);
+      if (!phoneMethod) return false;
+      return value === phoneMethod.value.slice(-4);
+    }
+    if (factor === "totp") {
+      const totpMethod = user.mfa.methods.find((m) => m.name === "totp" && m.confirmed);
+      if (!totpMethod) return false;
+      return verifyTotpCode(totpMethod.value, value);
+    }
+    return false;
   }
 
   // ── setPassword ──────────────────────────────────────────────────────
@@ -530,7 +549,7 @@ export class RecoveryWorkflow {
       return httpInputRequired(SetPasswordForm, formCtx);
     }
 
-    if (input.action === "backToLogin" && this.opts.backToLoginAction) {
+    if (input.action === "backToLogin" && this.opts.altActions.backToLogin) {
       this.abortToLogin(ctx);
       return undefined;
     }
@@ -566,12 +585,11 @@ export class RecoveryWorkflow {
   // ── audit ────────────────────────────────────────────────────────────
   @Step("recoveryAudit")
   async auditStep(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<undefined> {
-    const emitter = this.audit ?? NoopAuditEmitter;
-    await emitter.emit({
+    await this.audit({
       kind: "recovery.completed",
       userId: ctx.username,
       workflow: "auth.recovery",
-      deliveryMode: ctx.resolvedMode ?? this.opts.deliveryMode,
+      deliveryMode: ctx.resolvedMode ?? this.opts.delivery.mode,
       ip: resolveClientIp(),
       ...(ctx.sessionsRevoked && { sessionsRevoked: true }),
     });
@@ -581,7 +599,7 @@ export class RecoveryWorkflow {
   // ── freshLoginFinish ─────────────────────────────────────────────────
   @Step("recoveryFreshLoginFinish")
   freshLoginFinish(@WorkflowParam("context") _ctx: RecoveryWfCtx): undefined {
-    useWfFinished().set({ type: "redirect", value: this.opts.loginUrl });
+    useWfFinished().set({ type: "redirect", value: this.opts.postReset.loginUrl });
     return undefined;
   }
 
@@ -602,8 +620,8 @@ export class RecoveryWorkflow {
   // ── Helpers ──────────────────────────────────────────────────────────
   /**
    * Send the generic "if an account exists, you'll receive instructions"
-   * finished response. Used for unknown emails and rate-limited known ones
-   * so the two are indistinguishable to the client.
+   * finished response. Used for unknown emails so a known/unknown lookup is
+   * indistinguishable to the client (anti-enumeration).
    */
   private finishGeneric(): void {
     useWfFinished().set({
@@ -613,21 +631,19 @@ export class RecoveryWorkflow {
   }
 
   private abortToLogin(ctx: RecoveryWfCtx): AltHandled {
-    useWfFinished().set({ type: "redirect", value: this.opts.loginUrl });
+    useWfFinished().set({ type: "redirect", value: this.opts.postReset.loginUrl });
     ctx.aborted = true;
     return ALT_HANDLED;
   }
 
   private async emitRequested(ctx: RecoveryWfCtx, username?: string): Promise<void> {
-    if (!this.opts.auditEvents) return;
-    const emitter = this.audit ?? NoopAuditEmitter;
-    await emitter.emit({
+    if (!this.opts.audit.enabled) return;
+    await this.audit({
       kind: "recovery.requested",
       workflow: "auth.recovery",
       userId: username,
       email: ctx.email,
       ip: resolveClientIp(),
-      ...(ctx.rateLimited && { rateLimited: true }),
     });
   }
 

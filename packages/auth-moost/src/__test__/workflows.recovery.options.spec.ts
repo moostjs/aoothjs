@@ -1,6 +1,6 @@
 /**
  * Per-option behaviour tests for `RecoveryWorkflow` — one (or two) cases per
- * `RecoveryWorkflowOptions` flag flagged in WF_RECOVERY.md §"Tasks" item #8.
+ * `RecoveryWorkflowOpts` flag flagged in WF_RECOVERY.md §"Tasks" item #8.
  *
  * Anti-test guard (Rule 9): every test below asserts an observable outcome
  * that DIRECTLY depends on the flag under test — i.e. flipping the flag (or
@@ -8,16 +8,68 @@
  * No "step count == N" tests; no full-body snapshots; assertions target the
  * response payload, captured side effects (emails, sms, audit events,
  * revoked tokens), and the response shape parity required by anti-enumeration.
+ *
+ * Phase-3 reshape: callbacks (`emailToUserId`) are now `protected` methods on
+ * `RecoveryWorkflow`. Tests that exercised those callbacks build a tiny
+ * subclass and pass it via `recoveryWorkflowClass`. The harness has a built-in
+ * `emailToUserId` short-cut for the most common case.
  */
-import { generateTotpCode, generateTotpSecret } from "@aoothjs/user";
+import { AuthCredential } from "@aoothjs/auth";
+import { generateTotpCode, generateTotpSecret, UserService } from "@aoothjs/user";
+import { Controller, Inherit, Injectable } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
-import {
-  type WorkflowRateLimitConsumeResult,
-  type WorkflowRateLimitStore,
-} from "../rate-limit/index";
-import { RecoveryWorkflowOptions } from "../workflows/recovery.workflow.options";
+import { MoostAuthConfig } from "../auth.config";
+import { RecoveryWorkflow, type RecoveryWorkflowOpts } from "../workflows/index";
 import { prepareWfApp, seedActiveUser } from "./workflow-utils";
+
+/**
+ * Build a `RecoveryWorkflow` subclass with optional protected-method overrides.
+ * Mirrors the canonical consumer pattern — re-decorates the class and
+ * re-declares the ctor so DI metadata regenerates.
+ */
+function makeRecoverySubclass(
+  overrides: Partial<{
+    emailToUserId: (this: RecoveryWorkflow, email: string) => Promise<string | null>;
+    verifyRecoveryFactor: (
+      this: RecoveryWorkflow,
+      input: {
+        factor: string;
+        value: string;
+        ctx: Parameters<RecoveryWorkflow["verifyFactor"]>[1];
+      },
+    ) => Promise<boolean>;
+  }>,
+): typeof RecoveryWorkflow {
+  @Inherit()
+  @Injectable("FOR_EVENT")
+  @Controller()
+  class SubclassedRecovery extends RecoveryWorkflow {
+    constructor(
+      opts: RecoveryWorkflowOpts,
+      users: UserService,
+      auth: AuthCredential,
+      authConfig: MoostAuthConfig,
+    ) {
+      super(opts, users, auth, authConfig);
+    }
+    protected override async emailToUserId(email: string): Promise<string | null> {
+      return overrides.emailToUserId
+        ? overrides.emailToUserId.call(this, email)
+        : super.emailToUserId(email);
+    }
+    protected override async verifyRecoveryFactor(input: {
+      factor: string;
+      value: string;
+      ctx: Parameters<RecoveryWorkflow["verifyFactor"]>[1];
+    }): Promise<boolean> {
+      return overrides.verifyRecoveryFactor
+        ? overrides.verifyRecoveryFactor.call(this, input)
+        : super.verifyRecoveryFactor(input);
+    }
+  }
+  return SubclassedRecovery;
+}
 
 /** Drive a magic-link recovery to the `setPassword` form and return the wfs token. */
 async function driveMagicLinkToSetPassword(
@@ -43,76 +95,49 @@ async function driveOtpToCheck(
   return { wfs: r2.body?.wfs as string, code: last.code };
 }
 
-describe("RecoveryWorkflowOptions — boot-time validators (fail loud)", () => {
-  it("rateLimit non-null WITHOUT registered store → first request 500 with WorkflowRateLimitStore message", async () => {
-    // validateOpts runs inside the workflow's `init` step (one-shot via the
-    // module-level WeakSet guard). The throw surfaces at the HTTP layer as a
-    // 500 with the validator's exact message — that's the user-visible
-    // fail-loud signal.
-    const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({
-        // Defaults to a non-null rateLimit cap — we just need a store missing.
-      }),
-      rateLimitStore: null,
-    });
-    const r = await app.trigger({ wfid: "auth.recovery" });
-    expect(r.status).toBe(500);
-    expect(JSON.stringify(r.body)).toMatch(/WorkflowRateLimitStore/);
-  });
+describe("RecoveryWorkflowOpts — boot-time validators (fail loud)", () => {
+  // Post-reshape: only data-validity checks remain. Sender/emitter absence is
+  // surfaced at the first `deliver()` call via the fail-loud default.
+  // Rate-limit is no longer part of the recovery workflow surface.
 
-  it("rateLimit.count <= 0 → fail loud (500 with count/windowMs message)", async () => {
+  it("delivery.mode 'otp' + otp.transports ['sms'] WITHOUT SmsSender → runtime throw at deliver()", async () => {
+    // Post-reshape: sender absence is enforced at the first `deliver()` call.
+    // The harness's override throws when `registerSmsSender: false`.
     const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({ rateLimit: { count: 0, windowMs: 60_000 } }),
-    });
-    const r = await app.trigger({ wfid: "auth.recovery" });
-    expect(r.status).toBe(500);
-    expect(JSON.stringify(r.body)).toMatch(/rateLimit.*must be > 0/);
-  });
-
-  it("rateLimit.windowMs <= 0 → fail loud (500 with count/windowMs message)", async () => {
-    const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({ rateLimit: { count: 5, windowMs: 0 } }),
-    });
-    const r = await app.trigger({ wfid: "auth.recovery" });
-    expect(r.status).toBe(500);
-    expect(JSON.stringify(r.body)).toMatch(/rateLimit.*must be > 0/);
-  });
-
-  it("deliveryMode 'otp' + otpTransports ['sms'] WITHOUT SmsSender → fail loud (500 with SmsSender message)", async () => {
-    const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({
-        deliveryMode: "otp",
-        otpTransports: ["sms"],
-      }),
+      recoveryOpts: {
+        delivery: { mode: "otp", otp: { transports: ["sms"] } },
+      },
       registerSmsSender: false,
     });
-    const r = await app.trigger({ wfid: "auth.recovery" });
-    expect(r.status).toBe(500);
-    expect(JSON.stringify(r.body)).toMatch(/SmsSender/);
+    await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
+    const r1 = await app.trigger({ wfid: "auth.recovery" });
+    const r2 = await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { email: "alice@test.com" },
+    });
+    expect(r2.status).toBe(500);
+    expect(JSON.stringify(r2.body)).toMatch(/SmsSender/);
   });
 
-  it("deliveryMode 'otp' + empty otpTransports → fail loud (500 with otpTransports message)", async () => {
+  it("delivery.mode 'otp' + empty otp.transports → fail loud (500 with transports message)", async () => {
     const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({
-        deliveryMode: "otp",
-        otpTransports: [],
-      }),
+      recoveryOpts: {
+        delivery: { mode: "otp", otp: { transports: [] } },
+      },
     });
     const r = await app.trigger({ wfid: "auth.recovery" });
     expect(r.status).toBe(500);
-    expect(JSON.stringify(r.body)).toMatch(/otpTransports.*empty/);
+    expect(JSON.stringify(r.body)).toMatch(/transports.*empty/);
   });
 });
 
-describe("RecoveryWorkflowOptions — deliveryMode otp end-to-end", () => {
+describe("RecoveryWorkflowOpts — deliveryMode otp end-to-end", () => {
   it("otp mode: request → sendOtp (email) → checkOtp (correct code) → setPassword → tokens (auto-login)", async () => {
     const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({
-        deliveryMode: "otp",
-        otpTransports: ["email"],
-        freshLoginRequired: false, // exercise auto-login terminal
-        revokeAllSessions: false, // simpler assertion
-      }),
+      recoveryOpts: {
+        delivery: { mode: "otp", otp: { transports: ["email"] } },
+        postReset: { freshLoginRequired: false, revokeAllSessions: false },
+      },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
 
@@ -142,10 +167,9 @@ describe("RecoveryWorkflowOptions — deliveryMode otp end-to-end", () => {
 
   it("otp mode: wrong code → form error 'Invalid code', no advance", async () => {
     const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({
-        deliveryMode: "otp",
-        otpTransports: ["email"],
-      }),
+      recoveryOpts: {
+        delivery: { mode: "otp", otp: { transports: ["email"] } },
+      },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
     const { wfs } = await driveOtpToCheck(app, "alice@test.com");
@@ -158,11 +182,12 @@ describe("RecoveryWorkflowOptions — deliveryMode otp end-to-end", () => {
 
   it("otp resend within cooldown → form error 'wait Ns'; no second email sent", async () => {
     const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({
-        deliveryMode: "otp",
-        otpTransports: ["email"],
-        otpResendCooldownMs: 60_000, // generous so we land inside the window
-      }),
+      recoveryOpts: {
+        delivery: {
+          mode: "otp",
+          otp: { transports: ["email"], resendCooldownMs: 60_000 },
+        },
+      },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
     const { wfs } = await driveOtpToCheck(app, "alice@test.com");
@@ -177,11 +202,12 @@ describe("RecoveryWorkflowOptions — deliveryMode otp end-to-end", () => {
 
   it("otp resend after cooldown elapsed → re-sends pincode (second email captured)", async () => {
     const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({
-        deliveryMode: "otp",
-        otpTransports: ["email"],
-        otpResendCooldownMs: 50, // tiny so the cooldown passes within the test
-      }),
+      recoveryOpts: {
+        delivery: {
+          mode: "otp",
+          otp: { transports: ["email"], resendCooldownMs: 50 },
+        },
+      },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
     const { wfs } = await driveOtpToCheck(app, "alice@test.com");
@@ -199,10 +225,9 @@ describe("RecoveryWorkflowOptions — deliveryMode otp end-to-end", () => {
 
   it("otp two transports + useDifferentTransport → switches email → sms, sms sender invoked", async () => {
     const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({
-        deliveryMode: "otp",
-        otpTransports: ["email", "sms"],
-      }),
+      recoveryOpts: {
+        delivery: { mode: "otp", otp: { transports: ["email", "sms"] } },
+      },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
     // Enroll an SMS factor so resolveUserPhone returns the recorded number.
@@ -233,10 +258,9 @@ describe("RecoveryWorkflowOptions — deliveryMode otp end-to-end", () => {
 
   it("otp single transport: useDifferentTransport alt → form error 'Only one transport configured'", async () => {
     const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({
-        deliveryMode: "otp",
-        otpTransports: ["email"],
-      }),
+      recoveryOpts: {
+        delivery: { mode: "otp", otp: { transports: ["email"] } },
+      },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
     const { wfs } = await driveOtpToCheck(app, "alice@test.com");
@@ -246,127 +270,12 @@ describe("RecoveryWorkflowOptions — deliveryMode otp end-to-end", () => {
   });
 });
 
-describe("RecoveryWorkflowOptions — rate-limit cap (anti-enumeration)", () => {
-  it("third request inside the window short-circuits to generic response; no email; audit emits rateLimited:true", async () => {
-    const auditEvents: Array<{ kind: string; rateLimited?: boolean; userId?: string }> = [];
-    const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({
-        rateLimit: { count: 2, windowMs: 60_000 },
-        freshLoginRequired: false,
-      }),
-      auditEmitter: {
-        emit(ev) {
-          auditEvents.push(ev);
-        },
-      },
-    });
-    await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
-
-    // First request — allowed, magic-link email sent.
-    const r1a = await app.trigger({ wfid: "auth.recovery" });
-    const r1b = await app.trigger({
-      wfs: r1a.body?.wfs as string,
-      input: { email: "alice@test.com" },
-    });
-    expect(app.emails).toHaveLength(1);
-    expect(r1b.body?.errors).toBeUndefined();
-
-    // Second request — also allowed (cap=2).
-    const r2a = await app.trigger({ wfid: "auth.recovery" });
-    await app.trigger({
-      wfs: r2a.body?.wfs as string,
-      input: { email: "alice@test.com" },
-    });
-    expect(app.emails).toHaveLength(2);
-
-    // Third request — cap hit → generic short-circuit, no email sent.
-    const r3a = await app.trigger({ wfid: "auth.recovery" });
-    const r3b = await app.trigger({
-      wfs: r3a.body?.wfs as string,
-      input: { email: "alice@test.com" },
-    });
-    expect(r3b.body?.sent).toBe(true);
-    expect(app.emails).toHaveLength(2);
-
-    // Audit emits recovery.requested for ALL three (per spec: always emits).
-    // The rate-limited one carries `rateLimited: true`. The two below-cap ones
-    // do NOT carry the flag.
-    const requested = auditEvents.filter((e) => e.kind === "recovery.requested");
-    expect(requested.length).toBe(3);
-    const rateLimitedHits = requested.filter((e) => e.rateLimited === true);
-    expect(rateLimitedHits.length).toBe(1);
-    expect(rateLimitedHits[0].userId).toBeUndefined(); // generic path skips user-id leak
-  });
-
-  it("rateLimit null disables the cap — N requests all go through", async () => {
-    const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({ rateLimit: null }),
-    });
-    await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
-    for (let i = 0; i < 5; i++) {
-      const r1 = await app.trigger({ wfid: "auth.recovery" });
-      await app.trigger({
-        wfs: r1.body?.wfs as string,
-        input: { email: "alice@test.com" },
-      });
-    }
-    expect(app.emails).toHaveLength(5);
-  });
-});
-
-describe("RecoveryWorkflowOptions — anti-enumeration response parity", () => {
-  it("unknown email vs rate-limited known email: identical client-visible response shape (THE critical security invariant)", async () => {
-    const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({
-        rateLimit: { count: 1, windowMs: 60_000 },
-      }),
-    });
-    await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
-
-    // First request from alice — burns the rate-limit (count=1).
-    const seedA = await app.trigger({ wfid: "auth.recovery" });
-    await app.trigger({
-      wfs: seedA.body?.wfs as string,
-      input: { email: "alice@test.com" },
-    });
-    expect(app.emails).toHaveLength(1);
-
-    // (B) Unknown email.
-    const b1 = await app.trigger({ wfid: "auth.recovery" });
-    const b2 = await app.trigger({
-      wfs: b1.body?.wfs as string,
-      input: { email: "ghost@nowhere.test" },
-    });
-
-    // (C) Rate-limited known email (second alice request — cap=1 already hit).
-    const c1 = await app.trigger({ wfid: "auth.recovery" });
-    const c2 = await app.trigger({
-      wfs: c1.body?.wfs as string,
-      input: { email: "alice@test.com" },
-    });
-    expect(app.emails).toHaveLength(1); // still only the first one — no leak
-
-    // THE critical security invariant: an attacker cannot distinguish an
-    // unknown email from a rate-limited known one. Identical status + body.
-    expect(c2.status).toBe(b2.status);
-    expect(JSON.stringify(c2.body)).toBe(JSON.stringify(b2.body));
-    expect(c2.body?.sent).toBe(true);
-    expect(c2.body?.message).toBe("If an account exists, you will receive instructions.");
-    expect(c2.body?.errors).toBeUndefined();
-    expect(b2.body?.errors).toBeUndefined();
-    // Neither path leaks an `outlet` field (which the successful magic-link
-    // path emits) — that field is the unavoidable "real success" signal
-    // outletEmail produces, and is by-design observably present ONLY when
-    // there is a real account + cap headroom.
-    expect(b2.body?.outlet).toBeUndefined();
-    expect(c2.body?.outlet).toBeUndefined();
-  });
-
+describe("RecoveryWorkflowOpts — anti-enumeration response parity", () => {
   it("unknown email path returns no `wfs` for client to advance on", async () => {
     // Belt-and-braces: prove the anti-enumeration short-circuit terminates the
     // workflow rather than leaving a paused state the client could probe.
     const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({}),
+      recoveryOpts: {},
     });
     const r1 = await app.trigger({ wfid: "auth.recovery" });
     const r2 = await app.trigger({
@@ -377,14 +286,13 @@ describe("RecoveryWorkflowOptions — anti-enumeration response parity", () => {
   });
 });
 
-describe("RecoveryWorkflowOptions — requireKnownRecoveryFactor", () => {
+describe("RecoveryWorkflowOpts — requireKnownFactor", () => {
   it("happy path: phone last-4 matches → advances to setPassword", async () => {
     const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({
-        requireKnownRecoveryFactor: true,
-        freshLoginRequired: false,
-        revokeAllSessions: false,
-      }),
+      recoveryOpts: {
+        preReset: { requireKnownFactor: true },
+        postReset: { freshLoginRequired: false, revokeAllSessions: false },
+      },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
     await app.users.addMfaMethod("alice@test.com", {
@@ -411,9 +319,7 @@ describe("RecoveryWorkflowOptions — requireKnownRecoveryFactor", () => {
 
   it("bad factor: phone last-4 mismatch → opaque 'Invalid factor' error, no advance", async () => {
     const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({
-        requireKnownRecoveryFactor: true,
-      }),
+      recoveryOpts: { preReset: { requireKnownFactor: true } },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
     await app.users.addMfaMethod("alice@test.com", {
@@ -432,11 +338,10 @@ describe("RecoveryWorkflowOptions — requireKnownRecoveryFactor", () => {
 
   it("totp factor: correct current TOTP → advances", async () => {
     const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({
-        requireKnownRecoveryFactor: true,
-        freshLoginRequired: false,
-        revokeAllSessions: false,
-      }),
+      recoveryOpts: {
+        preReset: { requireKnownFactor: true },
+        postReset: { freshLoginRequired: false, revokeAllSessions: false },
+      },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
     const secret = generateTotpSecret();
@@ -453,13 +358,12 @@ describe("RecoveryWorkflowOptions — requireKnownRecoveryFactor", () => {
   });
 });
 
-describe("RecoveryWorkflowOptions — revokeAllSessions", () => {
+describe("RecoveryWorkflowOpts — revokeAllSessions", () => {
   it("revokeAllSessions true: pre-existing token rejected after successful reset", async () => {
     const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({
-        revokeAllSessions: true,
-        freshLoginRequired: false, // so we get auto-login response
-      }),
+      recoveryOpts: {
+        postReset: { revokeAllSessions: true, freshLoginRequired: false },
+      },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
 
@@ -480,10 +384,9 @@ describe("RecoveryWorkflowOptions — revokeAllSessions", () => {
 
   it("revokeAllSessions false: pre-existing token still valid after reset", async () => {
     const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({
-        revokeAllSessions: false,
-        freshLoginRequired: false,
-      }),
+      recoveryOpts: {
+        postReset: { revokeAllSessions: false, freshLoginRequired: false },
+      },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
     const pre = await app.auth.issue("alice@test.com");
@@ -499,13 +402,12 @@ describe("RecoveryWorkflowOptions — revokeAllSessions", () => {
   });
 });
 
-describe("RecoveryWorkflowOptions — freshLoginRequired terminal", () => {
+describe("RecoveryWorkflowOpts — freshLoginRequired terminal", () => {
   it("freshLoginRequired true → redirect to loginUrl, no tokens issued", async () => {
     const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({
-        freshLoginRequired: true,
-        loginUrl: "/sign-in",
-      }),
+      recoveryOpts: {
+        postReset: { freshLoginRequired: true, loginUrl: "/sign-in" },
+      },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
     const { wfs } = await driveMagicLinkToSetPassword(app, "alice@test.com");
@@ -522,9 +424,7 @@ describe("RecoveryWorkflowOptions — freshLoginRequired terminal", () => {
 
   it("freshLoginRequired false → auto-login (issues access token in body)", async () => {
     const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({
-        freshLoginRequired: false,
-      }),
+      recoveryOpts: { postReset: { freshLoginRequired: false } },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
     const { wfs } = await driveMagicLinkToSetPassword(app, "alice@test.com");
@@ -537,13 +437,13 @@ describe("RecoveryWorkflowOptions — freshLoginRequired terminal", () => {
   });
 });
 
-describe("RecoveryWorkflowOptions — backToLogin alt-action", () => {
+describe("RecoveryWorkflowOpts — backToLogin alt-action", () => {
   it("request step: backToLogin alt → redirect to loginUrl, no email sent", async () => {
     const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({
-        backToLoginAction: true,
-        loginUrl: "/login",
-      }),
+      recoveryOpts: {
+        altActions: { backToLogin: true },
+        postReset: { loginUrl: "/login" },
+      },
     });
     const r1 = await app.trigger({ wfid: "auth.recovery" });
     const r2 = await app.trigger({
@@ -557,10 +457,10 @@ describe("RecoveryWorkflowOptions — backToLogin alt-action", () => {
 
   it("setPassword step: backToLogin alt → redirect, password NOT changed", async () => {
     const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({
-        backToLoginAction: true,
-        loginUrl: "/login",
-      }),
+      recoveryOpts: {
+        altActions: { backToLogin: true },
+        postReset: { loginUrl: "/login" },
+      },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
     const { wfs } = await driveMagicLinkToSetPassword(app, "alice@test.com");
@@ -573,14 +473,14 @@ describe("RecoveryWorkflowOptions — backToLogin alt-action", () => {
   });
 });
 
-describe("RecoveryWorkflowOptions — auditEvents", () => {
+describe("RecoveryWorkflowOpts — audit", () => {
   it("emits recovery.requested (request step) and recovery.completed (terminal)", async () => {
     const captured: Array<Record<string, unknown>> = [];
     const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({
-        auditEvents: true,
-        freshLoginRequired: false,
-      }),
+      recoveryOpts: {
+        audit: { enabled: true },
+        postReset: { freshLoginRequired: false },
+      },
       auditEmitter: {
         emit(ev) {
           captured.push(ev);
@@ -605,13 +505,13 @@ describe("RecoveryWorkflowOptions — auditEvents", () => {
     expect(completed?.sessionsRevoked).toBe(true);
   });
 
-  it("auditEvents false → no recovery.requested or recovery.completed emitted", async () => {
+  it("audit.enabled false → no recovery.requested or recovery.completed emitted", async () => {
     const captured: Array<Record<string, unknown>> = [];
     const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({
-        auditEvents: false,
-        freshLoginRequired: false,
-      }),
+      recoveryOpts: {
+        audit: { enabled: false },
+        postReset: { freshLoginRequired: false },
+      },
       auditEmitter: {
         emit(ev) {
           captured.push(ev);
@@ -626,45 +526,6 @@ describe("RecoveryWorkflowOptions — auditEvents", () => {
     });
     expect(captured.find((e) => e.kind === "recovery.requested")).toBeUndefined();
     expect(captured.find((e) => e.kind === "recovery.completed")).toBeUndefined();
-  });
-});
-
-describe("RecoveryWorkflowOptions — custom rate-limit store wiring", () => {
-  it("custom store is consulted for each request and its decision is honored", async () => {
-    // A deterministic stub that denies on the second call regardless of cap.
-    let calls = 0;
-    const store: WorkflowRateLimitStore = {
-      async consume(): Promise<WorkflowRateLimitConsumeResult> {
-        calls += 1;
-        return calls < 2
-          ? { allowed: true, remaining: 0, resetAt: Date.now() + 60_000 }
-          : { allowed: false, remaining: 0, resetAt: Date.now() + 60_000 };
-      },
-    };
-    const app = await prepareWfApp({
-      recoveryOptions: new RecoveryWorkflowOptions({
-        rateLimit: { count: 100, windowMs: 60_000 }, // irrelevant — stub decides
-      }),
-      rateLimitStore: store,
-    });
-    await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
-
-    const r1a = await app.trigger({ wfid: "auth.recovery" });
-    await app.trigger({
-      wfs: r1a.body?.wfs as string,
-      input: { email: "alice@test.com" },
-    });
-    expect(app.emails).toHaveLength(1);
-
-    const r2a = await app.trigger({ wfid: "auth.recovery" });
-    const r2b = await app.trigger({
-      wfs: r2a.body?.wfs as string,
-      input: { email: "alice@test.com" },
-    });
-    // Stub denied → generic short-circuit, no new email.
-    expect(r2b.body?.sent).toBe(true);
-    expect(app.emails).toHaveLength(1);
-    expect(calls).toBe(2);
   });
 });
 
@@ -698,5 +559,51 @@ describe("RecoveryWorkflow — request step pre-fill from ?username= query", () 
     expect(body.id).toBe("EmailIdentifierForm");
     expect(typeof body.wfs).toBe("string");
     expect(body.defaults?.email).toBe("alice@example.com");
+  });
+});
+
+describe("RecoveryWorkflow subclass — protected method overrides", () => {
+  it("emailToUserId override is invoked instead of the default identity mapping", async () => {
+    // Default `emailToUserId` returns the email unchanged. A subclass that
+    // maps email → handle should cause `users.getUser` to resolve a different
+    // record — the captured email's `username` proves the override ran.
+    const app = await prepareWfApp({
+      recoveryWorkflowClass: makeRecoverySubclass({
+        async emailToUserId(email) {
+          if (email === "alice@corp.example") return "alice42";
+          return null;
+        },
+      }),
+    });
+    await seedActiveUser(app.users, "alice42", "OldPassword1");
+
+    const r1 = await app.trigger({ wfid: "auth.recovery" });
+    const r2 = await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { email: "alice@corp.example" },
+    });
+    expect(r2.status).toBe(201);
+    expect(app.emails).toHaveLength(1);
+    expect(app.emails[0].kind).toBe("recovery.magicLink");
+    expect(app.emails[0].recipient).toBe("alice@corp.example");
+    expect(app.emails[0].username).toBe("alice42");
+  });
+
+  it("emailToUserId returning null: enumeration-resistant short-circuit", async () => {
+    const app = await prepareWfApp({
+      recoveryWorkflowClass: makeRecoverySubclass({
+        async emailToUserId() {
+          return null;
+        },
+      }),
+    });
+    await seedActiveUser(app.users, "alice42", "OldPassword1");
+    const r1 = await app.trigger({ wfid: "auth.recovery" });
+    const r2 = await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { email: "anyone@nowhere.test" },
+    });
+    expect(r2.body?.sent).toBe(true);
+    expect(app.emails).toHaveLength(0);
   });
 });

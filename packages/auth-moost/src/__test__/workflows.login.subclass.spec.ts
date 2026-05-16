@@ -14,16 +14,14 @@
  * observable outcome that the default no-op implementation could not
  * produce.
  */
-import { AuthCredential, type EmailSender, type SmsSender } from "@aoothjs/auth";
+import { AuthCredential } from "@aoothjs/auth";
 import { generateTotpCode, generateTotpSecret, UserService } from "@aoothjs/user";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
-import { Controller, Inherit, Inject, Injectable, Optional } from "moost";
+import { Controller, Inherit, Injectable } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import { ProfileCompleteForm } from "../atscript/models/forms.as.js";
-import type { AuditEmitter } from "../audit/index";
 import { MoostAuthConfig } from "../auth.config";
-import type { DeviceTrustStore } from "../device-trust/index";
 import { type LoginWfCtx, LoginWorkflow, type LoginWorkflowOpts } from "../workflows/index";
 import { prepareWfApp, seedActiveUser } from "./workflow-utils";
 
@@ -44,12 +42,8 @@ describe("LoginWorkflow subclass — end-to-end registration shape", () => {
         users: UserService,
         auth: AuthCredential,
         authConfig: MoostAuthConfig,
-        @Optional() @Inject("EmailSender") mailer?: EmailSender,
-        @Optional() @Inject("SmsSender") sms?: SmsSender,
-        @Optional() @Inject("DeviceTrustStore") deviceTrustStore?: DeviceTrustStore,
-        @Optional() @Inject("AuditEmitter") audit?: AuditEmitter,
       ) {
-        super(opts, users, auth, authConfig, mailer, sms, deviceTrustStore, audit);
+        super(opts, users, auth, authConfig);
       }
       // Override an arbitrary protected method to prove the subclass body
       // actually runs on the dispatch path (i.e. the registered class is
@@ -103,12 +97,8 @@ describe("LoginWorkflow subclass — applyProfile override", () => {
         users: UserService,
         auth: AuthCredential,
         authConfig: MoostAuthConfig,
-        @Optional() @Inject("EmailSender") mailer?: EmailSender,
-        @Optional() @Inject("SmsSender") sms?: SmsSender,
-        @Optional() @Inject("DeviceTrustStore") deviceTrustStore?: DeviceTrustStore,
-        @Optional() @Inject("AuditEmitter") audit?: AuditEmitter,
       ) {
-        super(opts, users, auth, authConfig, mailer, sms, deviceTrustStore, audit);
+        super(opts, users, auth, authConfig);
       }
       override async credentials(
         input: { username?: string; password?: string; action?: string } | undefined,
@@ -171,12 +161,8 @@ describe("LoginWorkflow subclass — applyConsentMarketing override", () => {
         users: UserService,
         auth: AuthCredential,
         authConfig: MoostAuthConfig,
-        @Optional() @Inject("EmailSender") mailer?: EmailSender,
-        @Optional() @Inject("SmsSender") sms?: SmsSender,
-        @Optional() @Inject("DeviceTrustStore") deviceTrustStore?: DeviceTrustStore,
-        @Optional() @Inject("AuditEmitter") audit?: AuditEmitter,
       ) {
-        super(opts, users, auth, authConfig, mailer, sms, deviceTrustStore, audit);
+        super(opts, users, auth, authConfig);
       }
       protected override async applyConsentMarketing(
         username: string,
@@ -229,12 +215,8 @@ describe("LoginWorkflow subclass — loadTenants override", () => {
         users: UserService,
         auth: AuthCredential,
         authConfig: MoostAuthConfig,
-        @Optional() @Inject("EmailSender") mailer?: EmailSender,
-        @Optional() @Inject("SmsSender") sms?: SmsSender,
-        @Optional() @Inject("DeviceTrustStore") deviceTrustStore?: DeviceTrustStore,
-        @Optional() @Inject("AuditEmitter") audit?: AuditEmitter,
       ) {
-        super(opts, users, auth, authConfig, mailer, sms, deviceTrustStore, audit);
+        super(opts, users, auth, authConfig);
       }
       override async credentials(
         input: { username?: string; password?: string; action?: string } | undefined,
@@ -286,12 +268,8 @@ describe("LoginWorkflow subclass — loadTenants override", () => {
         users: UserService,
         auth: AuthCredential,
         authConfig: MoostAuthConfig,
-        @Optional() @Inject("EmailSender") mailer?: EmailSender,
-        @Optional() @Inject("SmsSender") sms?: SmsSender,
-        @Optional() @Inject("DeviceTrustStore") deviceTrustStore?: DeviceTrustStore,
-        @Optional() @Inject("AuditEmitter") audit?: AuditEmitter,
       ) {
-        super(opts, users, auth, authConfig, mailer, sms, deviceTrustStore, audit);
+        super(opts, users, auth, authConfig);
       }
       override async credentials(
         input: { username?: string; password?: string; action?: string } | undefined,
@@ -341,12 +319,8 @@ describe("LoginWorkflow subclass — loadPersonas override", () => {
         users: UserService,
         auth: AuthCredential,
         authConfig: MoostAuthConfig,
-        @Optional() @Inject("EmailSender") mailer?: EmailSender,
-        @Optional() @Inject("SmsSender") sms?: SmsSender,
-        @Optional() @Inject("DeviceTrustStore") deviceTrustStore?: DeviceTrustStore,
-        @Optional() @Inject("AuditEmitter") audit?: AuditEmitter,
       ) {
-        super(opts, users, auth, authConfig, mailer, sms, deviceTrustStore, audit);
+        super(opts, users, auth, authConfig);
       }
       override async credentials(
         input: { username?: string; password?: string; action?: string } | undefined,
@@ -402,12 +376,8 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
         users: UserService,
         auth: AuthCredential,
         authConfig: MoostAuthConfig,
-        @Optional() @Inject("EmailSender") mailer?: EmailSender,
-        @Optional() @Inject("SmsSender") sms?: SmsSender,
-        @Optional() @Inject("DeviceTrustStore") deviceTrustStore?: DeviceTrustStore,
-        @Optional() @Inject("AuditEmitter") audit?: AuditEmitter,
       ) {
-        super(opts, users, auth, authConfig, mailer, sms, deviceTrustStore, audit);
+        super(opts, users, auth, authConfig);
       }
       override async credentials(
         input: { username?: string; password?: string; action?: string } | undefined,
@@ -455,12 +425,8 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
         users: UserService,
         auth: AuthCredential,
         authConfig: MoostAuthConfig,
-        @Optional() @Inject("EmailSender") mailer?: EmailSender,
-        @Optional() @Inject("SmsSender") sms?: SmsSender,
-        @Optional() @Inject("DeviceTrustStore") deviceTrustStore?: DeviceTrustStore,
-        @Optional() @Inject("AuditEmitter") audit?: AuditEmitter,
       ) {
-        super(opts, users, auth, authConfig, mailer, sms, deviceTrustStore, audit);
+        super(opts, users, auth, authConfig);
       }
       override async credentials(
         input: { username?: string; password?: string; action?: string } | undefined,
@@ -497,28 +463,75 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
   });
 });
 
-// ── Boot-time fail-loud paths ───────────────────────────────────────────────
-describe("LoginWorkflow boot-time fail-loud", () => {
-  it("mfa.transports includes 'email' + mfa.enabled true + NO EmailSender registered → 500 with 'EmailSender required'", async () => {
+// ── Runtime fail-loud paths (post protected-method reshape) ─────────────────
+//
+// Pre-reshape these were boot-time checks against missing DI providers. The
+// reshape moved sender wiring to `protected deliver()`; the default throws
+// at the first dispatch. The harness's override throws when `registerEmailSender`
+// is false, matching the prior fail-loud surface. We trigger the deliver()
+// call by reaching a step that emits (email MFA pincode, notify-new-device).
+describe("LoginWorkflow runtime fail-loud — deliver() not configured", () => {
+  it("mfa email path + NO EmailSender registered → runtime throw (500 with 'EmailSender required')", async () => {
     const app = await prepareWfApp({
       loginOpts: { mfa: { transports: ["email"], enabled: true } },
       registerEmailSender: false,
     });
-    const r = await app.trigger({ wfid: "auth.login" });
-    expect(r.status).toBe(500);
-    expect(JSON.stringify(r.body)).toMatch(/EmailSender/);
+    await seedActiveUser(app.users, "alice", "Password123");
+    // Enroll an email factor so `pincode-send-login` runs and hits `deliver()`.
+    await app.users.addMfaMethod("alice", {
+      name: "email",
+      value: "alice@example.com",
+      confirmed: true,
+    });
+    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r2 = await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { username: "alice", password: "Password123" },
+    });
+    expect(r2.status).toBe(500);
+    expect(JSON.stringify(r2.body)).toMatch(/EmailSender/);
   });
 
-  it("finalize.notifyNewDevice true + NO EmailSender registered → 500 with 'EmailSender required'", async () => {
+  it("finalize.notifyNewDevice + new device + NO EmailSender registered → runtime throw (500 with 'EmailSender required')", async () => {
+    // Drive a TOTP-MFA login with deviceTrust enabled + no cookie so
+    // `check-trusted-device` flags `newDevice`, MFA runs, deviceTrust persists,
+    // then `notify-new-device` invokes `deliver()` — which throws because
+    // EmailSender is not registered.
     const app = await prepareWfApp({
       loginOpts: {
         finalize: { notifyNewDevice: true },
-        mfa: { enabled: false }, // isolate from the email-transport branch above
+        deviceTrust: { enabled: true, optIn: false },
+        mfa: { transports: ["totp"] },
       },
       registerEmailSender: false,
     });
-    const r = await app.trigger({ wfid: "auth.login" });
-    expect(r.status).toBe(500);
-    expect(JSON.stringify(r.body)).toMatch(/EmailSender/);
+    await seedActiveUser(app.users, "alice", "Password123");
+    // Need an enrolled email so notifyNewDevice has a recipient (otherwise
+    // the step returns undefined without calling deliver()).
+    await app.users.addMfaMethod("alice", {
+      name: "email",
+      value: "alice@example.com",
+      confirmed: true,
+    });
+    const secret = generateTotpSecret();
+    await app.users.addMfaMethod("alice", {
+      name: "totp",
+      value: secret,
+      confirmed: true,
+    });
+    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r2 = await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { username: "alice", password: "Password123" },
+    });
+    // Two MFA methods → select2fa pauses; pick totp.
+    const sel = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { methodName: "totp" },
+    });
+    const code = generateTotpCode(secret);
+    const final = await app.trigger({ wfs: sel.body?.wfs as string, input: { code } });
+    expect(final.status).toBe(500);
+    expect(JSON.stringify(final.body)).toMatch(/EmailSender/);
   });
 });

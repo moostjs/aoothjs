@@ -10,15 +10,13 @@ import {
   type AuthEmailOutletDeps,
   AuthController,
   authGuardInterceptor,
-  type AuditEmitter,
-  type DeviceTrustStore,
   InviteWorkflow,
   InviteWorkflowOptions,
   LoginWorkflow,
   type LoginWorkflowOpts,
   MoostAuthConfig,
   RecoveryWorkflow,
-  RecoveryWorkflowOptions,
+  type RecoveryWorkflowOpts,
   useAuth,
   WorkflowRateLimitStoreMemory,
 } from "@aoothjs/auth-moost";
@@ -32,10 +30,8 @@ import {
   createReplaceRegistry,
   getMoostInfact,
   Inherit,
-  Inject,
   Injectable,
   Moost,
-  Optional,
 } from "moost";
 import type { AddressInfo } from "node:net";
 
@@ -104,15 +100,50 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   app.adapter(moostHttp);
   app.adapter(new MoostWf());
 
+  // Console-stub SMS sender — kept here as a closure for the workflow
+  // overrides. Defaults strip 'sms' from mfa.transports, so this only fires
+  // if a consumer flips it back on.
+  const demoSmsSender: SmsSender = {
+    async send(event) {
+      console.log("[demo SMS]", event.kind, event.recipient, event.code);
+    },
+  };
+
+  // Shared `deliver()` body for both workflow subclasses below. The
+  // discriminated `DeliverPayload` narrows `kind` to the matching transport
+  // type, so no casts are needed when forwarding to EmailSender / SmsSender.
+  const forwardDeliver = async (
+    payload: import("@aoothjs/auth-moost").DeliverPayload,
+  ): Promise<void> => {
+    if (payload.channel === "email") {
+      await emailSender.send({
+        kind: payload.kind,
+        recipient: payload.recipient,
+        ...(payload.code !== undefined && { code: payload.code }),
+        ...(payload.url !== undefined && { url: payload.url }),
+        expiresAt: payload.expiresAt ?? Date.now(),
+        ...(payload.userId !== undefined && { username: payload.userId }),
+        ...(payload.metadata && { metadata: payload.metadata }),
+      });
+      return;
+    }
+    await demoSmsSender.send({
+      kind: payload.kind,
+      recipient: payload.recipient,
+      code: payload.code,
+      ttlMs: payload.ttlMs ?? 0,
+      ...(payload.userId !== undefined && { userId: payload.userId }),
+    });
+  };
+
   // Phase-2 reshape: `LoginWorkflow` is configured via a consumer subclass
-  // (carries the nested-pojo opts in `super(...)`). `@Inherit()` carries the
-  // base class's `@Workflow` / `@WorkflowSchema` / `@Step` metadata; the
+  // that overrides `protected` methods. `@Inherit()` carries the base
+  // class's `@Workflow` / `@WorkflowSchema` / `@Step` metadata; the
   // re-declared ctor is required because TS emits fresh design-paramtypes per
   // class.
   const demoLoginOpts: LoginWorkflowOpts = {
     // Representative demo subset — no SMS gateway in the demo, so we strip
-    // 'sms' from the default mfa.transports list (the workflow's boot-time
-    // validator would otherwise demand a SmsSender).
+    // 'sms' from the default mfa.transports list.
     mfa: { transports: ["email", "totp"] },
     alternateCredentials: { forgotPassword: true },
     guards: { passwordInitial: true },
@@ -121,16 +152,45 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   @Injectable("FOR_EVENT")
   @Controller()
   class DemoLoginWorkflow extends LoginWorkflow {
-    constructor(
-      users: UserService,
-      authCred: AuthCredential,
-      authConfig: MoostAuthConfig,
-      @Optional() @Inject("EmailSender") mailer?: EmailSender,
-      @Optional() @Inject("SmsSender") sms?: SmsSender,
-      @Optional() @Inject("DeviceTrustStore") deviceTrustStore?: DeviceTrustStore,
-      @Optional() @Inject("AuditEmitter") audit?: AuditEmitter,
-    ) {
-      super(demoLoginOpts, users, authCred, authConfig, mailer, sms, deviceTrustStore, audit);
+    constructor(users: UserService, authCred: AuthCredential, authConfig: MoostAuthConfig) {
+      super(demoLoginOpts, users, authCred, authConfig);
+    }
+    protected override deliver(payload: import("@aoothjs/auth-moost").DeliverPayload) {
+      return forwardDeliver(payload);
+    }
+  }
+
+  // Phase-3 reshape: `RecoveryWorkflow` is configured via a consumer subclass
+  // that overrides `protected` methods. The demo overrides `deliver` for OTP
+  // emails (magic-link mode uses the email outlet on the trigger route) and
+  // `emailToUserId` to map a recovery-step email to the canonical username.
+  const demoRecoveryOpts: RecoveryWorkflowOpts = {
+    delivery: { magicLinkTtlMs: env.RECOVERY_TTL_MS },
+    // BIG 3.2 defaults flipped `freshLoginRequired` to true (redirect to
+    // /login after reset) and `revokeAllSessions` to true (kick every active
+    // session). The demo preserves the prior behavior (auto-login;
+    // pre-existing sessions left intact) so the existing e2e tests keep
+    // asserting the same outcomes; production consumers should leave the
+    // secure defaults on.
+    postReset: { freshLoginRequired: false, revokeAllSessions: false },
+  };
+  @Inherit()
+  @Injectable("FOR_EVENT")
+  @Controller()
+  class DemoRecoveryWorkflow extends RecoveryWorkflow {
+    constructor(users: UserService, authCred: AuthCredential, authConfig: MoostAuthConfig) {
+      super(demoRecoveryOpts, users, authCred, authConfig);
+    }
+    protected override deliver(payload: import("@aoothjs/auth-moost").DeliverPayload) {
+      return forwardDeliver(payload);
+    }
+    // Maps a recovery-step email to the canonical username. In this demo
+    // `DemoUser.username` happens to equal `DemoUser.email` for seeded users,
+    // so a direct email lookup is enough — but the indirection is what makes
+    // recovery work for any user model where `username !== email`.
+    protected override async emailToUserId(email: string): Promise<string | null> {
+      const user = await aooth.userStore.findByUsername(email);
+      return user ? user.username : null;
     }
   }
 
@@ -152,34 +212,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
         },
       }),
     ],
-    [
-      RecoveryWorkflowOptions,
-      () =>
-        new RecoveryWorkflowOptions({
-          recoveryTokenTtlMs: env.RECOVERY_TTL_MS,
-          // BIG 3.2 defaults flipped `freshLoginRequired` to true (redirect
-          // to /login after reset) and `revokeAllSessions` to true (kick
-          // every active session). The demo preserves the prior behavior
-          // (auto-login; pre-existing sessions left intact) so the existing
-          // e2e tests keep asserting the same outcomes; production consumers
-          // should leave the secure defaults on.
-          freshLoginRequired: false,
-          revokeAllSessions: false,
-          // Maps a recovery-step email to the canonical username. In this
-          // demo `DemoUser.username` happens to equal `DemoUser.email` for
-          // seeded users, so a direct email lookup is enough — but the
-          // indirection is what makes recovery work for any user model where
-          // `username !== email`.
-          emailToUserId: async (email) => {
-            const user = await aooth.userStore.findByUsername(email);
-            return user ? user.username : null;
-          },
-        }),
-    ],
-    // In-memory rate-limit store for the recovery workflow. Required because
-    // `RecoveryWorkflowOptions.rateLimit` defaults to non-null (2/day per
-    // email). Consumers running multiple instances swap in a Redis-backed
-    // store so the cap actually limits across replicas.
+    // In-memory rate-limit store for the InviteWorkflow (which still consumes
+    // this DI token). Consumers running multiple instances swap in a
+    // Redis-backed store so the cap actually limits across replicas.
     ["WorkflowRateLimitStore", () => new WorkflowRateLimitStoreMemory()],
     [
       InviteWorkflowOptions,
@@ -216,7 +251,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   const wfEnabled = opts.workflowsEnabled ?? {};
   const wfControllers: Array<new (...args: never[]) => unknown> = [];
   if (wfEnabled.login !== false) wfControllers.push(DemoLoginWorkflow);
-  if (wfEnabled.recovery !== false) wfControllers.push(RecoveryWorkflow);
+  if (wfEnabled.recovery !== false) wfControllers.push(DemoRecoveryWorkflow);
   if (wfEnabled.invite !== false) wfControllers.push(InviteWorkflow);
   if (wfControllers.length > 0) {
     app.registerControllers(...wfControllers);

@@ -44,6 +44,9 @@ export {
   DEFAULT_INVITE_TOKEN_TTL_MS,
   DEFAULT_MFA_CODE_TTL_MS,
   DEFAULT_RECOVERY_TOKEN_TTL_MS,
+  type DeliverEmail,
+  type DeliverPayload,
+  type DeliverSms,
   type DuplicateAction,
   InviteWorkflow,
   type InviteWfCtx,
@@ -63,7 +66,11 @@ export {
   parseInviteRoles,
   RecoveryWorkflow,
   type RecoveryWfCtx,
-  RecoveryWorkflowOptions,
+  type RecoveryDeliveryMode,
+  type RecoveryOtpTransport,
+  type RecoveryWorkflowOpts,
+  type ResolvedRecoveryWorkflowOpts,
+  mergeRecoveryOpts,
 } from "./workflows/index";
 export { type AuthEmailOutletDeps, createAuthEmailOutlet } from "./workflows/auth-email-outlet";
 export {
@@ -77,10 +84,6 @@ export {
   type WorkflowRateLimitStore,
   WorkflowRateLimitStoreMemory,
 } from "./rate-limit/index";
-export type {
-  RecoveryDeliveryMode,
-  RecoveryOtpTransport,
-} from "./workflows/recovery.workflow.options";
 
 // DI tokens for optional workflow deps. `SmsSender` and `DeviceTrustStore`
 // are TS interfaces (no runtime constructor) so consumers register them

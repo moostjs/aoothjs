@@ -1,4 +1,11 @@
-export { LoginWorkflow, type LoginWfCtx, type MfaSummary } from "./login.workflow";
+export {
+  LoginWorkflow,
+  type DeliverEmail,
+  type DeliverPayload,
+  type DeliverSms,
+  type LoginWfCtx,
+  type MfaSummary,
+} from "./login.workflow";
 export {
   DEFAULT_MFA_CODE_TTL_MS,
   type LoginWorkflowOpts,
@@ -12,7 +19,11 @@ export {
 export { RecoveryWorkflow, type RecoveryWfCtx } from "./recovery.workflow";
 export {
   DEFAULT_RECOVERY_TOKEN_TTL_MS,
-  RecoveryWorkflowOptions,
+  mergeRecoveryOpts,
+  type RecoveryDeliveryMode,
+  type RecoveryOtpTransport,
+  type RecoveryWorkflowOpts,
+  type ResolvedRecoveryWorkflowOpts,
 } from "./recovery.workflow.options";
 export { InviteWorkflow, type InviteWfCtx, parseInviteRoles } from "./invite.workflow";
 export {

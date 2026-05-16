@@ -19,14 +19,30 @@
  * controller does not call `useWfAction().setAction()`).
  *
  * **Consumer subclass pattern (Phase 2 reshape).** Consumers subclass
- * `LoginWorkflow` to override `protected` hook methods (e.g.
- * `assessRiskStepUp`, `buildRecoveryUrl`, `loadTenants`, `applyProfile`).
- * The subclass MUST re-apply `@Inherit() @Injectable('FOR_EVENT')
- * @Controller()` and re-declare the constructor signature (TS emits fresh
- * design-paramtypes per class). See TASKS.md §"Probe outcomes" for the
- * canonical subclass shape.
+ * `LoginWorkflow` to override `protected` hook methods. The subclass MUST
+ * re-apply `@Inherit() @Injectable('FOR_EVENT') @Controller()` and re-declare
+ * the constructor signature (TS emits fresh design-paramtypes per class).
+ *
+ * **Side-effect deps as protected methods (this reshape).** The four
+ * optional sender/store/emitter DI providers (EmailSender, SmsSender,
+ * DeviceTrustStore, AuditEmitter) have been DROPPED from the constructor.
+ * Side-effecting hooks live as `protected` methods consumers override:
+ *
+ *   - `deliver(payload)` — unified email + SMS dispatch. Default throws
+ *     `Error("deliver() not configured …")`; override to wire your senders.
+ *   - `audit(event)` — fire audit events. Default: no-op.
+ *   - `loadTrustedDevice(userId, token, ip?)` — return `true` to grant
+ *     trust. Default: `false` (never trust).
+ *   - `storeTrustedDevice(record)` — persist a freshly issued trust record.
+ *     Default: no-op.
+ *   - `revokeTrustedDevice(userId, token)` — remove a trust record.
+ *     Default: no-op.
+ *
+ * Validation of senders is now INHERENT — the first `deliver()` invocation
+ * without an override throws. Boot-time "X required when Y enabled" checks
+ * are gone for sender/store/emitter; only data-validity checks remain.
  */
-import { AuthCredential, type EmailSender, type SmsSender } from "@aoothjs/auth";
+import { AuthCredential, type AuthEmailKind, type AuthSmsKind } from "@aoothjs/auth";
 import {
   type MfaMethodInfo,
   UserAuthError,
@@ -38,7 +54,7 @@ import { HttpError } from "@moostjs/event-http";
 import { Step, useWfFinished, Workflow, WorkflowParam, WorkflowSchema } from "@moostjs/event-wf";
 import { current } from "@wooksjs/event-core";
 import { useCookies, useRequest, useResponse } from "@wooksjs/event-http";
-import { Controller, Inject, Injectable, Optional } from "moost";
+import { Controller, Injectable } from "moost";
 
 import {
   AskEmailForm,
@@ -55,10 +71,10 @@ import {
   TenantSelectForm,
   TermsAcceptForm,
 } from "../atscript/models/forms.as.js";
-import { type AuditEmitter, NoopAuditEmitter } from "../audit/index";
+import type { AuditEvent } from "../audit/index";
 import { MoostAuthConfig } from "../auth.config";
 import { buildLoginResponse, cookieAttrs } from "../auth.cookies";
-import type { DeviceTrustStore } from "../device-trust/index";
+import type { DeviceTrustRecord } from "../device-trust/index";
 import {
   type LoginWorkflowOpts,
   type ResolvedLoginWorkflowOpts,
@@ -195,35 +211,51 @@ function verifyPin(ctx: LoginWfCtx, submitted: string | undefined): { code: stri
 }
 
 /**
- * Construction-time invariants. Called from the ctor so misconfigured opts
- * fail loud at workflow instantiation rather than at first event.
+ * Construction-time invariants for DATA validity only. Sender/store/emitter
+ * absence is no longer checked — those default to fail-loud (`deliver()`) or
+ * no-op (`audit()`, `loadTrustedDevice()`) protected methods that consumers
+ * override.
  */
-function validateOpts(
-  opts: ResolvedLoginWorkflowOpts,
-  deps: { mailer?: EmailSender; sms?: SmsSender; deviceTrustStore?: DeviceTrustStore },
-): void {
-  if (opts.mfa.enabled && opts.mfa.transports.includes("sms") && !deps.sms) {
-    throw new Error(
-      'LoginWorkflow: SmsSender required when mfa.transports includes "sms" and mfa.enabled is true',
-    );
-  }
-  if (opts.mfa.enabled && opts.mfa.transports.includes("email") && !deps.mailer) {
-    throw new Error(
-      'LoginWorkflow: EmailSender required when mfa.transports includes "email" and mfa.enabled is true',
-    );
-  }
-  if (opts.deviceTrust.enabled && !deps.deviceTrustStore) {
-    throw new Error(
-      "LoginWorkflow: DeviceTrustStore required when opts.deviceTrust.enabled is true",
-    );
-  }
+function validateOpts(opts: ResolvedLoginWorkflowOpts): void {
   if (opts.mfa.enabled && opts.mfa.transports.length === 0) {
     throw new Error("LoginWorkflow: mfa.transports cannot be empty when mfa.enabled is true");
   }
-  if (opts.finalize.notifyNewDevice && !deps.mailer) {
-    throw new Error("LoginWorkflow: EmailSender required when finalize.notifyNewDevice is true");
-  }
 }
+
+/**
+ * Unified payload for `deliver()` — discriminated by `channel`. `kind`
+ * narrows further to the template the consumer should render. The two
+ * channels do not share a fields set (email carries `url` for magic links
+ * and `expiresAt`; SMS always carries a pincode + `ttlMs`).
+ */
+export interface DeliverEmail {
+  channel: "email";
+  /** Template kind — discriminator the consumer uses to pick which email template to render. */
+  kind: AuthEmailKind;
+  recipient: string;
+  /** Numeric pincode (set for `*.pincode` kinds). */
+  code?: string;
+  /** Magic-link URL (set for `*.magicLink` kinds). */
+  url?: string;
+  /** Absolute expiry timestamp for the link/code (ms epoch). */
+  expiresAt?: number;
+  /** Associated user id, when known. */
+  userId?: string;
+  /** Extra context (e.g. `roles` for invite emails, IP/UA for notifyNewDevice). */
+  metadata?: Record<string, unknown>;
+}
+
+export interface DeliverSms {
+  channel: "sms";
+  kind: AuthSmsKind;
+  recipient: string;
+  /** SMS always carries a pincode — that's the only thing SMS gets used for in this lib. */
+  code: string;
+  ttlMs?: number;
+  userId?: string;
+}
+
+export type DeliverPayload = DeliverEmail | DeliverSms;
 
 @Injectable("FOR_EVENT")
 @Controller()
@@ -232,30 +264,93 @@ export class LoginWorkflow {
   protected readonly users: UserService;
   protected readonly auth: AuthCredential;
   protected readonly authConfig: MoostAuthConfig;
-  protected readonly mailer?: EmailSender;
-  protected readonly sms?: SmsSender;
-  protected readonly deviceTrustStore?: DeviceTrustStore;
-  protected readonly audit?: AuditEmitter;
 
   constructor(
     opts: LoginWorkflowOpts,
     users: UserService,
     auth: AuthCredential,
     authConfig: MoostAuthConfig,
-    @Optional() @Inject("EmailSender") mailer?: EmailSender,
-    @Optional() @Inject("SmsSender") sms?: SmsSender,
-    @Optional() @Inject("DeviceTrustStore") deviceTrustStore?: DeviceTrustStore,
-    @Optional() @Inject("AuditEmitter") audit?: AuditEmitter,
   ) {
     this.opts = mergeLoginOpts(opts);
     this.users = users;
     this.auth = auth;
     this.authConfig = authConfig;
-    this.mailer = mailer;
-    this.sms = sms;
-    this.deviceTrustStore = deviceTrustStore;
-    this.audit = audit;
-    validateOpts(this.opts, { mailer, sms, deviceTrustStore });
+    validateOpts(this.opts);
+  }
+
+  // ── Protected extension surface ───────────────────────────────────────
+  /**
+   * Dispatch an email or SMS event. Default throws — consumers MUST override
+   * if any feature that emits is enabled (MFA pincode, ensureEmail/Phone OTP,
+   * notifyNewDevice). The throw surfaces at the HTTP layer as 500 on the
+   * first event that triggers a send, which is the fail-loud signal.
+   */
+  protected async deliver(_payload: DeliverPayload): Promise<void> {
+    throw new Error(
+      "LoginWorkflow.deliver() not configured — override to wire your email/sms sender",
+    );
+  }
+
+  /**
+   * Emit an audit event. Default: no-op. Consumers override to fan out to
+   * their audit sink (DB table, log file, Kafka topic, …).
+   */
+  protected async audit(_event: AuditEvent): Promise<void> {
+    // No-op default.
+  }
+
+  /**
+   * Verify whether a presented trust-cookie token belongs to `userId` and is
+   * still valid. Default: returns `false` (never trust). Consumers override
+   * to consult their device-trust store (e.g. `DeviceTrustStoreMemory`).
+   */
+  protected async loadTrustedDevice(
+    _userId: string,
+    _token: string,
+    _ip?: string,
+  ): Promise<boolean> {
+    return false;
+  }
+
+  /**
+   * Persist a freshly-issued trust record. Default: no-op (the cookie is
+   * written but never accepted on a return visit, because the default
+   * `loadTrustedDevice()` returns `false`). Override to persist.
+   */
+  protected async storeTrustedDevice(_record: DeviceTrustRecord): Promise<void> {
+    // No-op default.
+  }
+
+  /**
+   * Revoke a trust record. Default: no-op. Currently unused by the workflow's
+   * own happy path but exposed so consumers can call it from their own
+   * "sign out everywhere" flows for symmetry with `storeTrustedDevice`.
+   */
+  protected async revokeTrustedDevice(_userId: string, _token: string): Promise<void> {
+    // No-op default.
+  }
+
+  /**
+   * Mint a new device-trust record + cookie value. Default: synthesizes a
+   * raw token (32 hex bytes) bound to `userId` (+ `ip` when `bindsTo` ===
+   * `'cookie+ip'`). Consumers running multiple instances typically override
+   * `storeTrustedDevice`/`loadTrustedDevice` against Redis but keep this
+   * default — it carries no per-process state.
+   */
+  protected async issueTrustedDevice(
+    userId: string,
+    ip: string | undefined,
+    ttlMs: number,
+  ): Promise<DeviceTrustRecord> {
+    const { randomBytes } = await import("node:crypto");
+    const now = Date.now();
+    return {
+      userId,
+      token: randomBytes(32).toString("hex"),
+      ...(ip !== undefined && { ip }),
+      issuedAt: now,
+      expiresAt: now + ttlMs,
+    };
   }
 
   @Workflow("auth.login")
@@ -608,8 +703,8 @@ export class LoginWorkflow {
       ctx.email = input.email;
       // Generate + send the OTP, then ask for it next round.
       const code = mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
-      if (!this.mailer) throw new HttpError(500, "EmailSender not registered");
-      await this.mailer.send({
+      await this.deliver({
+        channel: "email",
         kind: "login.pincode",
         recipient: input.email,
         code,
@@ -636,9 +731,6 @@ export class LoginWorkflow {
     @WorkflowParam("context") ctx: LoginWfCtx,
   ): Promise<unknown> {
     requireUsername(ctx);
-    if (!this.sms) {
-      throw new HttpError(501, "ensurePhone requires SmsSender to be registered");
-    }
     if (!ctx.phone) {
       if (!input?.phone) return httpInputRequired(AskPhoneForm, ctx);
       const errors = validateFormInput(AskPhoneForm, input);
@@ -650,7 +742,8 @@ export class LoginWorkflow {
       });
       ctx.phone = input.phone;
       const code = mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
-      await this.sms.send({
+      await this.deliver({
+        channel: "sms",
         kind: "login.pincode",
         recipient: input.phone,
         code,
@@ -674,14 +767,14 @@ export class LoginWorkflow {
   // ── Phase 4: MFA ──────────────────────────────────────────────────────
   @Step("check-trusted-device")
   async checkTrustedDevice(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
-    if (!ctx.username || !this.deviceTrustStore) return undefined;
+    if (!ctx.username) return undefined;
     const cookieValue = useCookies(current()).getCookie(this.opts.deviceTrust.cookieName);
     if (!cookieValue) {
       ctx.newDevice = true;
       return undefined;
     }
     const ip = this.opts.deviceTrust.bindsTo === "cookie+ip" ? this.resolveClientIp() : undefined;
-    const ok = await this.deviceTrustStore.verify(ctx.username, cookieValue, ip);
+    const ok = await this.loadTrustedDevice(ctx.username, cookieValue, ip);
     if (ok) {
       ctx.mfaChecked = true;
       ctx.deviceTrustToken = cookieValue;
@@ -769,18 +862,18 @@ export class LoginWorkflow {
     ctx.pinTimeout = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
     if (ctx.mfaMethod === "email") {
       ctx.pinSentTo = maskEmail(method.value);
-      if (!this.mailer) throw new HttpError(500, "EmailSender not registered");
-      await this.mailer.send({
+      await this.deliver({
+        channel: "email",
         kind: "login.pincode",
         recipient: method.value,
         code,
         expiresAt: ctx.pinExpire as number,
-        username: ctx.username,
+        userId: ctx.username,
       });
     } else if (ctx.mfaMethod === "sms") {
-      if (!this.sms) throw new HttpError(500, "SmsSender not registered");
       ctx.pinSentTo = maskPhone(method.value);
-      await this.sms.send({
+      await this.deliver({
+        channel: "sms",
         kind: "login.pincode",
         recipient: method.value,
         code,
@@ -908,10 +1001,10 @@ export class LoginWorkflow {
 
   @Step("device-trust")
   async deviceTrust(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
-    if (!ctx.username || !this.deviceTrustStore) return undefined;
+    if (!ctx.username) return undefined;
     const ip = this.opts.deviceTrust.bindsTo === "cookie+ip" ? this.resolveClientIp() : undefined;
-    const record = this.deviceTrustStore.issue(ctx.username, ip, this.opts.deviceTrust.ttlMs);
-    await this.deviceTrustStore.add(record);
+    const record = await this.issueTrustedDevice(ctx.username, ip, this.opts.deviceTrust.ttlMs);
+    await this.storeTrustedDevice(record);
     ctx.deviceTrustToken = record.token;
     useResponse(current()).setCookie(
       this.opts.deviceTrust.cookieName,
@@ -1185,8 +1278,7 @@ export class LoginWorkflow {
 
   @Step("audit-login")
   async auditLogin(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
-    const emitter = this.audit ?? NoopAuditEmitter;
-    await emitter.emit({
+    await this.audit({
       kind: "login.success",
       userId: ctx.username,
       workflow: "auth.login",
@@ -1199,12 +1291,13 @@ export class LoginWorkflow {
 
   @Step("notify-new-device")
   async notifyNewDevice(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
-    if (!ctx.email || !this.mailer) return undefined;
-    await this.mailer.send({
+    if (!ctx.email) return undefined;
+    await this.deliver({
+      channel: "email",
       kind: "notifyNewDevice",
       recipient: ctx.email,
       expiresAt: Date.now(),
-      username: ctx.username,
+      userId: ctx.username,
       metadata: { ip: this.resolveClientIp() ?? "" },
     });
     return undefined;

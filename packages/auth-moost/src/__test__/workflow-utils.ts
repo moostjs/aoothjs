@@ -31,7 +31,14 @@ import {
 import { current } from "@wooksjs/event-core";
 import { createWfApp } from "@wooksjs/event-wf";
 import { createHttpApp } from "@wooksjs/event-http";
-import { Controller, createProvideRegistry, getMoostInfact, Moost } from "moost";
+import {
+  Controller,
+  createProvideRegistry,
+  getMoostInfact,
+  Inherit,
+  Injectable,
+  Moost,
+} from "moost";
 import { Wooks } from "wooks";
 
 import type { BuildMagicLinkUrl, EmailSender, SmsSender } from "@aoothjs/auth";
@@ -41,9 +48,14 @@ import { MoostAuthConfig } from "../auth.config";
 import { AuthController } from "../auth.controller";
 import { authGuardInterceptor } from "../auth.guard";
 import { Public } from "../auth.decorator";
-import { type DeviceTrustStore, DeviceTrustStoreMemory } from "../device-trust/index";
+import {
+  type DeviceTrustRecord,
+  type DeviceTrustStore,
+  DeviceTrustStoreMemory,
+} from "../device-trust/index";
 import { type WorkflowRateLimitStore, WorkflowRateLimitStoreMemory } from "../rate-limit/index";
 import { createAuthEmailOutlet } from "../workflows/auth-email-outlet";
+import type { DeliverPayload } from "../workflows/login.workflow";
 import {
   DEFAULT_INVITE_TOKEN_TTL_MS,
   DEFAULT_RECOVERY_TOKEN_TTL_MS,
@@ -52,7 +64,7 @@ import {
   LoginWorkflow,
   type LoginWorkflowOpts,
   RecoveryWorkflow,
-  RecoveryWorkflowOptions,
+  type RecoveryWorkflowOpts,
 } from "../workflows/index";
 
 export interface CapturedEmail {
@@ -130,8 +142,13 @@ export interface PrepareWfOpts {
   inviteTokenTtlMs?: number;
   /** Forwarded to InviteWorkflowOptions — populates extras on invite-accept. */
   prepareUser?: InviteWorkflowOptions["prepareUser"];
-  /** Forwarded to RecoveryWorkflowOptions — maps recovery email → username. */
-  emailToUserId?: RecoveryWorkflowOptions["emailToUserId"];
+  /**
+   * Maps a recovery-step `email` to the canonical username. When supplied,
+   * the harness builds a tiny `RecoveryWorkflow` subclass that overrides
+   * `emailToUserId` to call this function. Tests that need richer overrides
+   * pass a full subclass via `recoveryWorkflowClass` instead.
+   */
+  emailToUserId?: (email: string) => Promise<string | null> | string | null;
   /**
    * Nested-pojo opts handed to `LoginWorkflow`'s constructor. Per-test feature
    * combinations supply their own here.
@@ -177,11 +194,19 @@ export interface PrepareWfOpts {
    */
   rateLimitStore?: WorkflowRateLimitStore | null;
   /**
-   * Override the recovery options instance entirely (for OTP / choice mode
-   * variants). When omitted, defaults to a magicLink-mode instance built from
-   * the per-test `recoveryTokenTtlMs` + `emailToUserId`.
+   * Nested-pojo opts handed to `RecoveryWorkflow`'s constructor. When omitted,
+   * the harness builds a magicLink-mode opts object from the per-test
+   * `recoveryTokenTtlMs` (passes as `delivery.magicLinkTtlMs`).
    */
-  recoveryOptions?: RecoveryWorkflowOptions;
+  recoveryOpts?: RecoveryWorkflowOpts;
+  /**
+   * Consumer subclass of `RecoveryWorkflow` registered in place of the base
+   * class. Use this when a test needs to override a `protected` method
+   * (`emailToUserId`, `verifyRecoveryFactor`). The subclass MUST re-apply
+   * `@Inherit() @Injectable('FOR_EVENT') @Controller()` and re-declare the
+   * ctor signature — see the Phase-2 LoginWorkflow subclass spec for shape.
+   */
+  recoveryWorkflowClass?: typeof RecoveryWorkflow;
   /**
    * Override the invite options instance entirely. When omitted, defaults to
    * the back-compat instance built from `inviteTokenTtlMs` + `prepareUser`
@@ -245,7 +270,8 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
   // When loginOpts.deviceTrust.enabled is on, default-wire a fresh memory
   // store so tests that just flip the flag don't have to construct one too.
   // Tests explicitly passing `deviceTrustStore: null` skip registration to
-  // exercise the boot-time fail-loud path.
+  // exercise the boot-time fail-loud path (legacy semantics — now the
+  // override returns false / throws when the store is missing).
   const deviceTrustEnabled = loginOpts.deviceTrust?.enabled === true;
   const deviceTrustStore: DeviceTrustStore | undefined =
     opts.deviceTrustStore === null
@@ -255,7 +281,7 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
 
   const auditEvents: AuditEvent[] = [];
   // Default auditLogin in `mergeLoginOpts` is `true`, so unless the test
-  // explicitly disables it, auto-wire a capture emitter.
+  // explicitly disables it, auto-capture audit events for assertions.
   const auditLoginEnabled = loginOpts.finalize?.auditLogin !== false;
   const auditEmitter: AuditEmitter | undefined =
     opts.auditEmitter ??
@@ -267,51 +293,63 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
         }
       : undefined);
 
-  // Rate-limit store — RecoveryWorkflowOptions defaults to a non-null
-  // `rateLimit`, so the workflow constructor fails loud unless a store is
-  // wired. Default-register an in-memory store so tests don't need to
-  // re-derive opts; tests can pass `rateLimitStore: null` to exercise the
-  // fail-loud path or supply a custom store to test the rate-limit cap.
+  // Rate-limit store. Only used by `InviteWorkflow` now (its ctor still
+  // consumes the DI registration). Recovery no longer participates. Tests
+  // that opt out via `rateLimitStore: null` skip registration entirely so
+  // the InviteWorkflow boot-time validator fires.
   const rateLimitStore: WorkflowRateLimitStore | undefined =
     opts.rateLimitStore === null
       ? undefined
       : (opts.rateLimitStore ?? new WorkflowRateLimitStoreMemory());
 
-  // Canonical REST wiring + per-workflow providers registered via DI.
-  // `LoginWorkflow` itself is provided via a factory so the test-supplied
-  // nested-pojo `loginOpts` reaches the ctor; consumer subclasses (rare in
-  // tests, common in production) replace `loginWorkflowClass` and the factory
-  // still does the right thing.
-  const LoginCtor: typeof LoginWorkflow = opts.loginWorkflowClass ?? LoginWorkflow;
+  // Build harness subclasses that wire the per-test capture arrays through
+  // `protected` method overrides — replacing the pre-reshape DI registrations
+  // for EmailSender / SmsSender / DeviceTrustStore / AuditEmitter / RateLimitStore.
+  const LoginCtor = buildHarnessLoginClass({
+    base: opts.loginWorkflowClass ?? LoginWorkflow,
+    opts: loginOpts,
+    emails,
+    sms,
+    emailSender,
+    smsSender,
+    registerEmail,
+    registerSms,
+    deviceTrustStore,
+    auditEmitter,
+  }) as unknown as new (
+    users: UserService,
+    auth: AuthCredential,
+    authConfig: MoostAuthConfig,
+  ) => LoginWorkflow;
+
+  const recoveryOpts: RecoveryWorkflowOpts = opts.recoveryOpts ?? {
+    delivery: { magicLinkTtlMs: recoveryTokenTtlMs },
+  };
+  const RecoveryCtor = buildHarnessRecoveryClass({
+    base: opts.recoveryWorkflowClass ?? RecoveryWorkflow,
+    opts: recoveryOpts,
+    emails,
+    sms,
+    emailSender,
+    smsSender,
+    registerEmail,
+    registerSms,
+    auditEmitter,
+    emailToUserId: opts.emailToUserId,
+  }) as unknown as new (
+    users: UserService,
+    auth: AuthCredential,
+    authConfig: MoostAuthConfig,
+  ) => RecoveryWorkflow;
+
   const moostAuthConfig = new MoostAuthConfig({ cookie: { secure: false } });
   type ProvideEntry = Parameters<typeof createProvideRegistry>[number];
   const providers: ProvideEntry[] = [
     [AuthCredential, () => auth],
     [UserService, () => users],
     [MoostAuthConfig, () => moostAuthConfig],
-    [
-      LoginCtor,
-      () =>
-        new LoginCtor(
-          loginOpts,
-          users,
-          auth,
-          moostAuthConfig,
-          registerEmail ? emailSender : undefined,
-          registerSms ? smsSender : undefined,
-          deviceTrustStore,
-          auditEmitter,
-        ),
-    ],
-    [
-      RecoveryWorkflowOptions,
-      () =>
-        opts.recoveryOptions ??
-        new RecoveryWorkflowOptions({
-          recoveryTokenTtlMs,
-          emailToUserId: opts.emailToUserId,
-        }),
-    ],
+    [LoginCtor, () => new LoginCtor(users, auth, moostAuthConfig)],
+    [RecoveryCtor, () => new RecoveryCtor(users, auth, moostAuthConfig)],
     [
       InviteWorkflowOptions,
       () =>
@@ -326,6 +364,9 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
         }),
     ],
   ];
+  // InviteWorkflow has NOT been refactored to protected methods yet (Phase 4
+  // / separate agent), so its DI tokens are still consumed by its ctor. Keep
+  // registering them. Login + Recovery ignore these registrations now.
   if (registerEmail) providers.push(["EmailSender", () => emailSender]);
   if (registerSms) providers.push(["SmsSender", () => smsSender]);
   if (deviceTrustStore) providers.push(["DeviceTrustStore", () => deviceTrustStore]);
@@ -339,7 +380,7 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
   const wfEnabled = opts.workflows ?? {};
   const wfControllers: Array<new (...args: never[]) => unknown> = [];
   if (wfEnabled.login !== false) wfControllers.push(LoginCtor);
-  if (wfEnabled.recovery !== false) wfControllers.push(RecoveryWorkflow);
+  if (wfEnabled.recovery !== false) wfControllers.push(RecoveryCtor);
   if (wfEnabled.invite !== false) wfControllers.push(InviteWorkflow);
   if (wfControllers.length > 0) {
     moost.registerControllers(...wfControllers);
@@ -466,4 +507,208 @@ export async function seedActiveUser(
 ): Promise<void> {
   await users.createUser(username, password);
   await users.activateAccount(username);
+}
+
+// ── Harness subclass builders ────────────────────────────────────────────────
+//
+// Both `LoginWorkflow` and `RecoveryWorkflow` have ctor shape
+// `(opts, users, auth, authConfig)` after the protected-method refactor.
+// Tests still hand-roll opts per-case, so the harness pre-binds opts and
+// exposes a re-declared 3-arg ctor `(users, auth, authConfig)` to the moost
+// DI factory. Each builder layers on the per-test capture overrides
+// (`deliver` / `audit` / `loadTrustedDevice` / `storeTrustedDevice` /
+// `revokeTrustedDevice` / `checkRateLimit` / `emailToUserId`).
+
+interface HarnessLoginDeps {
+  base: typeof LoginWorkflow;
+  opts: LoginWorkflowOpts;
+  emails: CapturedEmail[];
+  sms: CapturedSms[];
+  emailSender: EmailSender;
+  smsSender: SmsSender;
+  registerEmail: boolean;
+  registerSms: boolean;
+  deviceTrustStore: DeviceTrustStore | undefined;
+  auditEmitter: AuditEmitter | undefined;
+}
+
+function buildHarnessLoginClass(deps: HarnessLoginDeps): new (...args: never[]) => LoginWorkflow {
+  const {
+    base: Base,
+    opts: loginOpts,
+    emails,
+    sms,
+    emailSender,
+    smsSender,
+    registerEmail,
+    registerSms,
+    deviceTrustStore,
+    auditEmitter,
+  } = deps;
+
+  @Inherit()
+  @Injectable("FOR_EVENT")
+  @Controller()
+  class HarnessLogin extends Base {
+    constructor(usersDep: UserService, authDep: AuthCredential, authConfigDep: MoostAuthConfig) {
+      super(loginOpts, usersDep, authDep, authConfigDep);
+    }
+
+    protected override async deliver(payload: DeliverPayload): Promise<void> {
+      await harnessDeliver(payload, {
+        emails,
+        sms,
+        emailSender,
+        smsSender,
+        registerEmail,
+        registerSms,
+        label: "LoginWorkflow",
+      });
+    }
+
+    protected override async audit(event: AuditEvent): Promise<void> {
+      if (auditEmitter) await auditEmitter.emit(event);
+    }
+
+    protected override async loadTrustedDevice(
+      userId: string,
+      token: string,
+      ip?: string,
+    ): Promise<boolean> {
+      if (!deviceTrustStore) return false;
+      return deviceTrustStore.verify(userId, token, ip);
+    }
+
+    protected override async storeTrustedDevice(record: DeviceTrustRecord): Promise<void> {
+      if (!deviceTrustStore) return;
+      await deviceTrustStore.add(record);
+    }
+
+    protected override async revokeTrustedDevice(userId: string, token: string): Promise<void> {
+      if (!deviceTrustStore) return;
+      await deviceTrustStore.revoke(userId, token);
+    }
+
+    protected override async issueTrustedDevice(
+      userId: string,
+      ip: string | undefined,
+      ttlMs: number,
+    ): Promise<DeviceTrustRecord> {
+      if (deviceTrustStore) {
+        return deviceTrustStore.issue(userId, ip, ttlMs);
+      }
+      return super.issueTrustedDevice(userId, ip, ttlMs);
+    }
+  }
+  return HarnessLogin;
+}
+
+/**
+ * Shared deliver implementation for both `LoginWorkflow` and `RecoveryWorkflow`
+ * harness subclasses. Routes via the test-supplied EmailSender / SmsSender
+ * (the default captures into the shared `emails` / `sms` arrays so a single
+ * call here populates both an HTTP wire payload AND the test assertion buffer).
+ * When the consumer passed a custom `opts.emailSender`, that sender is called
+ * instead and we push manually for the test's assertion buffer.
+ */
+async function harnessDeliver(
+  payload: DeliverPayload,
+  deps: {
+    emails: CapturedEmail[];
+    sms: CapturedSms[];
+    emailSender: EmailSender;
+    smsSender: SmsSender;
+    registerEmail: boolean;
+    registerSms: boolean;
+    label: string;
+  },
+): Promise<void> {
+  if (payload.channel === "email") {
+    if (!deps.registerEmail) {
+      throw new Error(`${deps.label}.deliver: EmailSender required`);
+    }
+    await deps.emailSender.send({
+      kind: payload.kind,
+      recipient: payload.recipient,
+      ...(payload.code !== undefined && { code: payload.code }),
+      ...(payload.url !== undefined && { url: payload.url }),
+      expiresAt: payload.expiresAt ?? Date.now(),
+      ...(payload.userId !== undefined && { username: payload.userId }),
+      ...(payload.metadata && { metadata: payload.metadata }),
+    });
+    return;
+  }
+  if (!deps.registerSms) {
+    throw new Error(`${deps.label}.deliver: SmsSender required`);
+  }
+  await deps.smsSender.send({
+    kind: payload.kind,
+    recipient: payload.recipient,
+    code: payload.code,
+    ttlMs: payload.ttlMs ?? 0,
+    ...(payload.userId !== undefined && { userId: payload.userId }),
+  });
+}
+
+interface HarnessRecoveryDeps {
+  base: typeof RecoveryWorkflow;
+  opts: RecoveryWorkflowOpts;
+  emails: CapturedEmail[];
+  sms: CapturedSms[];
+  emailSender: EmailSender;
+  smsSender: SmsSender;
+  registerEmail: boolean;
+  registerSms: boolean;
+  auditEmitter: AuditEmitter | undefined;
+  emailToUserId?: (email: string) => Promise<string | null> | string | null;
+}
+
+function buildHarnessRecoveryClass(
+  deps: HarnessRecoveryDeps,
+): new (...args: never[]) => RecoveryWorkflow {
+  const {
+    base: Base,
+    opts: recoveryOpts,
+    emails,
+    sms,
+    emailSender,
+    smsSender,
+    registerEmail,
+    registerSms,
+    auditEmitter,
+    emailToUserId,
+  } = deps;
+
+  @Inherit()
+  @Injectable("FOR_EVENT")
+  @Controller()
+  class HarnessRecovery extends Base {
+    constructor(usersDep: UserService, authDep: AuthCredential, authConfigDep: MoostAuthConfig) {
+      super(recoveryOpts, usersDep, authDep, authConfigDep);
+    }
+
+    protected override async deliver(payload: DeliverPayload): Promise<void> {
+      await harnessDeliver(payload, {
+        emails,
+        sms,
+        emailSender,
+        smsSender,
+        registerEmail,
+        registerSms,
+        label: "RecoveryWorkflow",
+      });
+    }
+
+    protected override async audit(event: AuditEvent): Promise<void> {
+      if (auditEmitter) await auditEmitter.emit(event);
+    }
+
+    protected override async emailToUserId(email: string): Promise<string | null> {
+      if (emailToUserId) {
+        return await emailToUserId(email);
+      }
+      return super.emailToUserId(email);
+    }
+  }
+  return HarnessRecovery;
 }

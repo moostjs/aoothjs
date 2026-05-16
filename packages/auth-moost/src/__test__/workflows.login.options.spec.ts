@@ -12,14 +12,12 @@
  * Tests that exercised those callbacks build a tiny subclass and pass it via
  * `loginWorkflowClass`.
  */
-import { AuthCredential, type EmailSender, type SmsSender } from "@aoothjs/auth";
+import { AuthCredential } from "@aoothjs/auth";
 import { generateTotpCode, generateTotpSecret, UserService } from "@aoothjs/user";
-import { Controller, Inherit, Inject, Injectable, Optional } from "moost";
+import { Controller, Inherit, Injectable } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import { MoostAuthConfig } from "../auth.config";
-import type { AuditEmitter } from "../audit/index";
-import type { DeviceTrustStore } from "../device-trust/index";
 import { type LoginWfCtx, LoginWorkflow, type LoginWorkflowOpts } from "../workflows/index";
 import { prepareWfApp, seedActiveUser } from "./workflow-utils";
 
@@ -47,12 +45,8 @@ function makeLoginSubclass(
       users: UserService,
       auth: AuthCredential,
       authConfig: MoostAuthConfig,
-      @Optional() @Inject("EmailSender") mailer?: EmailSender,
-      @Optional() @Inject("SmsSender") sms?: SmsSender,
-      @Optional() @Inject("DeviceTrustStore") deviceTrustStore?: DeviceTrustStore,
-      @Optional() @Inject("AuditEmitter") audit?: AuditEmitter,
     ) {
-      super(opts, users, auth, authConfig, mailer, sms, deviceTrustStore, audit);
+      super(opts, users, auth, authConfig);
     }
     protected override buildRecoveryUrl(username?: string): string {
       return overrides.buildRecoveryUrl
@@ -281,18 +275,28 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
     expect(r3.body?.userId).toBe("alice");
   });
 
-  it("mfa.transports: ['sms'] WITHOUT registered SmsSender → fail loud (500 with SmsSender message)", async () => {
-    // validateOpts runs inside the workflow's `init` step (one-shot via the
-    // module-level WeakSet guard). The throw surfaces at the HTTP layer as a
-    // 500 with the validator's exact message — that's the user-visible
-    // fail-loud signal.
+  it("mfa.transports: ['sms'] with sms MFA enrolled WITHOUT registered SmsSender → runtime throw at deliver()", async () => {
+    // Post-reshape: sender absence is enforced at the first `deliver()` call
+    // rather than at boot. The harness's override throws when `registerSmsSender`
+    // is false, mirroring the prior fail-loud surface (500 with SmsSender message).
     const app = await prepareWfApp({
       loginOpts: { mfa: { transports: ["sms"] } },
       registerSmsSender: false,
     });
-    const r = await app.trigger({ wfid: "auth.login" });
-    expect(r.status).toBe(500);
-    expect(JSON.stringify(r.body)).toMatch(/SmsSender/);
+    await seedActiveUser(app.users, "alice", "Password123");
+    // Enroll an SMS factor so `pincode-send-login` runs and hits `deliver()`.
+    await app.users.addMfaMethod("alice", {
+      name: "sms",
+      value: "+15555550100",
+      confirmed: true,
+    });
+    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r2 = await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { username: "alice", password: "Password123" },
+    });
+    expect(r2.status).toBe(500);
+    expect(JSON.stringify(r2.body)).toMatch(/SmsSender/);
   });
 
   it("mfa.transports empty with mfa.enabled true → fail loud (500 with 'mfa.transports cannot be empty')", async () => {
@@ -304,14 +308,23 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
     expect(JSON.stringify(r.body)).toMatch(/mfa\.transports.*empty/);
   });
 
-  it("deviceTrust.enabled true WITHOUT registered DeviceTrustStore → fail loud (500 with DeviceTrustStore message)", async () => {
+  it("deviceTrust.enabled true WITHOUT registered DeviceTrustStore → loadTrustedDevice returns false (newDevice path)", async () => {
+    // Post-reshape: missing device-trust store no longer fails loud at boot.
+    // The default `loadTrustedDevice()` returns false (never trust), so the
+    // flow flags `newDevice` and runs MFA normally. The harness's override
+    // returns false when `deviceTrustStore: null`.
     const app = await prepareWfApp({
-      loginOpts: { deviceTrust: { enabled: true } },
+      loginOpts: { deviceTrust: { enabled: true }, mfa: { enabled: false } },
       deviceTrustStore: null,
     });
-    const r = await app.trigger({ wfid: "auth.login" });
-    expect(r.status).toBe(500);
-    expect(JSON.stringify(r.body)).toMatch(/DeviceTrustStore/);
+    await seedActiveUser(app.users, "alice", "Password123");
+    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r2 = await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { username: "alice", password: "Password123" },
+    });
+    // Tokens issued — flow completes via the no-trust path.
+    expect(r2.body?.userId).toBe("alice");
   });
 
   it("mfa.transports: ['email'] (default user has TOTP only) — falls back to issue (no enrolled allowed methods)", async () => {

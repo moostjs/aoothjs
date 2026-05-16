@@ -120,63 +120,6 @@ describe("WF-RECOVERY — single-use + session-survival", () => {
   });
 });
 
-describe("WF-RECOVERY — rate-limit (BIG 3.2 — default 2/day per email)", () => {
-  // The demo app wires `WorkflowRateLimitStoreMemory` and the BIG-3.2 default
-  // `RecoveryWorkflowOptions.rateLimit = { count: 2, windowMs: 24h }`. Past
-  // the cap, the workflow short-circuits to the same generic body the unknown
-  // email path returns — anti-enumeration parity for an attacker probing
-  // whether an account exists.
-  it("WF-RECOVERY-06 — third request for the same email is rate-limited; no third email sent; parity with unknown-email body", async () => {
-    const app = await buildTestApp();
-    try {
-      const bob = app.fixtures.users.t1_bob;
-
-      // Reset state to start clean.
-      app.emailSender.reset();
-
-      async function submitFor(email: string): Promise<Record<string, unknown>> {
-        const start = await app.triggerWf("public", { wfid: "auth.recovery" });
-        const startBody = await readWfPause(start);
-        const res = await app.triggerWf("public", {
-          wfid: "auth.recovery",
-          wfs: startBody.wfs,
-          input: { email },
-        });
-        return (await res.json()) as Record<string, unknown>;
-      }
-
-      // 1st + 2nd: allowed (cap=2).
-      await submitFor(bob.email);
-      await submitFor(bob.email);
-
-      // Wait briefly for any in-flight email captures.
-      await sleep(150);
-      const beforeThird = app.emailSender.events.filter(
-        (e) => e.kind === "recovery.magicLink" && e.recipient === bob.email,
-      ).length;
-      expect(beforeThird).toBe(2);
-
-      // 3rd: rate-limited → generic body, no new email.
-      const rateLimited = await submitFor(bob.email);
-      // Unknown email: generic body too.
-      const unknown = await submitFor("anyone-not-real@nowhere.test");
-
-      expect(rateLimited.sent).toBe(true);
-      expect(unknown.sent).toBe(true);
-      // Identical body (THE anti-enumeration invariant).
-      expect(JSON.stringify(rateLimited)).toBe(JSON.stringify(unknown));
-
-      await sleep(150);
-      const afterThird = app.emailSender.events.filter(
-        (e) => e.kind === "recovery.magicLink" && e.recipient === bob.email,
-      ).length;
-      expect(afterThird).toBe(2); // still 2 — no new email after rate-limit hit
-    } finally {
-      await app.close();
-    }
-  });
-});
-
 describe("WF-RECOVERY — TTL expiry", () => {
   it("WF-RECOVERY-04 — magic link expires after TTL (config-driven)", async () => {
     // BUG-12 fix: `recoveryTokenTtlMs` (env.RECOVERY_TTL_MS) now drives the
