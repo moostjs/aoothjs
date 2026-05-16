@@ -81,10 +81,10 @@ export async function buildTestApp(opts: BuildTestAppOptions = {}): Promise<Test
   clearGlobalWooks();
   // Moost's Infact is also a process-global singleton that caches @Injectable
   // instances by class identity. Without a reset, DI singletons created in a
-  // previous app (notably MoostAuthWorkflowConfig holding the prior
-  // `wfStateStore` whose better-sqlite3 connection has since closed) are
-  // re-handed-out to handlers in the next app, producing
-  // "TypeError: The database connection is not open" on workflow trigger.
+  // previous app (holding the prior `wfStateStore` whose better-sqlite3
+  // connection has since closed) are re-handed-out to handlers in the next
+  // app, producing "TypeError: The database connection is not open" on
+  // workflow trigger.
   (getMoostInfact() as unknown as { _cleanup?: () => void })._cleanup?.();
   const emailSender = new CaptureEmailSender();
   const appHandle = await buildApp({

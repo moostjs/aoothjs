@@ -17,6 +17,7 @@ for (const key of [
 
 import { AuthCredential, type AuthCredentialOptions, CredentialStoreMemory } from "@aoothjs/auth";
 import { UserService, type UserServiceConfig, UserStoreMemory } from "@aoothjs/user";
+import { formInputInterceptor } from "@atscript/moost-wf";
 import { Body, MoostHttp, Post } from "@moostjs/event-http";
 import {
   createHttpOutlet,
@@ -30,13 +31,7 @@ import {
 import { current } from "@wooksjs/event-core";
 import { createWfApp } from "@wooksjs/event-wf";
 import { createHttpApp } from "@wooksjs/event-http";
-import {
-  Controller,
-  createProvideRegistry,
-  getMoostInfact,
-  Moost,
-  useControllerContext,
-} from "moost";
+import { Controller, createProvideRegistry, getMoostInfact, Moost } from "moost";
 import { Wooks } from "wooks";
 
 import type { BuildMagicLinkUrl, EmailSender } from "@aoothjs/auth";
@@ -45,9 +40,17 @@ import { MoostAuthConfig } from "../auth.config";
 import { AuthController } from "../auth.controller";
 import { authGuardInterceptor } from "../auth.guard";
 import { Public } from "../auth.decorator";
-import { setupAuthWorkflows } from "../workflow-setup";
 import { createAuthEmailOutlet } from "../workflows/auth-email-outlet";
-import { MoostAuthWorkflowConfig, type AuthWorkflowsOptions } from "../workflow-config";
+import {
+  DEFAULT_INVITE_TOKEN_TTL_MS,
+  DEFAULT_RECOVERY_TOKEN_TTL_MS,
+  InviteWorkflow,
+  InviteWorkflowOptions,
+  LoginWorkflow,
+  LoginWorkflowOptions,
+  RecoveryWorkflow,
+  RecoveryWorkflowOptions,
+} from "../workflows/index";
 
 export interface CapturedEmail {
   kind: string;
@@ -94,45 +97,30 @@ export interface PrepareWfOpts {
   buildMagicLinkUrl?: BuildMagicLinkUrl;
   /** Inject a custom emailSender. Default: captures into `emails`. */
   emailSender?: EmailSender;
-  /** Workflow enable/disable map. */
+  /** Workflow registration toggles — omit a workflow to skip its controller. */
   workflows?: { login?: boolean; recovery?: boolean; invite?: boolean };
-  /** Override the recovery / invite / mfa TTLs (e.g. for expiry tests). */
+  /** Override the recovery / invite TTLs (e.g. for expiry tests). */
   recoveryTokenTtlMs?: number;
   inviteTokenTtlMs?: number;
-  /** Forwarded to `setupAuthWorkflows` — populates extras on invite-accept. */
-  prepareUser?: AuthWorkflowsOptions["prepareUser"];
-  /** Forwarded to `setupAuthWorkflows` — maps recovery email → username. */
-  emailToUserId?: AuthWorkflowsOptions["emailToUserId"];
+  /** Forwarded to InviteWorkflowOptions — populates extras on invite-accept. */
+  prepareUser?: InviteWorkflowOptions["prepareUser"];
+  /** Forwarded to RecoveryWorkflowOptions — maps recovery email → username. */
+  emailToUserId?: RecoveryWorkflowOptions["emailToUserId"];
 }
 
 /**
- * Spins up a Moost app wired with:
- *   - `MoostHttp` (fresh Wooks per test)
- *   - `MoostWf` (workflow adapter)
- *   - DI providers + global `authGuardInterceptor` + `AuthController` (the
- *     canonical REST + guard wiring; we keep the guard so we can test
- *     "the workflow endpoints are still reachable as `@Public()` once we
- *     mount them")
- *   - `setupAuthWorkflows` (registers `LoginWorkflow` / `RecoveryWorkflow`
- *     / `InviteWorkflow`)
- *   - `WfStateStoreMemory` + `HandleStateStrategy` (single-use tokens)
- *   - A `WfTriggerController` exposing `POST /wf` that calls
- *     `wf.handleOutlet({...})`. This is the same shape consumers will mount
- *     in their app.
+ * Spins up a Moost app wired with HTTP + WF adapters, the auth REST controller,
+ * the three workflow controllers via explicit DI (per WF.md), and a
+ * `POST /wf/trigger` endpoint that calls `wf.handleOutlet({...})`.
  */
 export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWfApp> {
   // Moost's Infact is a process-global singleton; instances cached by class
-  // identity leak across tests (test 1's UserService gets resolved when
-  // test 2 calls `useControllerContext().instantiate(UserService)`). Reset
-  // its private registry before every spin-up to keep test isolation.
+  // identity leak across tests. Reset before every spin-up.
   (getMoostInfact() as unknown as { _cleanup?: () => void })._cleanup?.();
 
   const moost = new Moost();
   const wooksHttp = createHttpApp(undefined, new Wooks());
   const http = moost.adapter(new MoostHttp(wooksHttp));
-  // Fresh Wooks instance for the workflow router too — otherwise the global
-  // shared router accumulates duplicate `WF_STEP:/credentials` registrations
-  // across tests and refuses subsequent setups.
   const wooksWf = createWfApp(undefined, new Wooks());
   const wf = moost.adapter(new MoostWf(wooksWf));
 
@@ -160,46 +148,50 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
   const store = new WfStateStoreMemory();
   const strategy: WfStateStrategy = new HandleStateStrategy({ store });
 
-  // Canonical REST wiring: DI providers + global `authGuardInterceptor` +
-  // `AuthController`. The workflow trigger endpoint we add below is
-  // `@Public()` already (no existing user is authenticated when login or
-  // recovery start).
+  const recoveryTokenTtlMs = opts.recoveryTokenTtlMs ?? DEFAULT_RECOVERY_TOKEN_TTL_MS;
+  const inviteTokenTtlMs = opts.inviteTokenTtlMs ?? DEFAULT_INVITE_TOKEN_TTL_MS;
+
+  // Canonical REST wiring + per-workflow options classes registered via DI.
   moost.setProvideRegistry(
     createProvideRegistry(
       [AuthCredential, () => auth],
       [UserService, () => users],
       [MoostAuthConfig, () => new MoostAuthConfig({ cookie: { secure: false } })],
+      [LoginWorkflowOptions, () => new LoginWorkflowOptions()],
+      [
+        RecoveryWorkflowOptions,
+        () =>
+          new RecoveryWorkflowOptions({ recoveryTokenTtlMs, emailToUserId: opts.emailToUserId }),
+      ],
+      [
+        InviteWorkflowOptions,
+        () => new InviteWorkflowOptions({ inviteTokenTtlMs, prepareUser: opts.prepareUser }),
+      ],
     ),
   );
   moost.applyGlobalInterceptors(authGuardInterceptor);
+  moost.applyGlobalInterceptors(formInputInterceptor());
   moost.registerControllers(AuthController);
 
-  setupAuthWorkflows(moost, {
-    emailSender,
-    buildMagicLinkUrl,
-    wfStateStore: store,
-    workflows: opts.workflows,
-    recoveryTokenTtlMs: opts.recoveryTokenTtlMs,
-    inviteTokenTtlMs: opts.inviteTokenTtlMs,
-    prepareUser: opts.prepareUser,
-    emailToUserId: opts.emailToUserId,
-  });
+  const wfEnabled = opts.workflows ?? {};
+  const wfControllers: Array<new (...args: never[]) => unknown> = [];
+  if (wfEnabled.login !== false) wfControllers.push(LoginWorkflow);
+  if (wfEnabled.recovery !== false) wfControllers.push(RecoveryWorkflow);
+  if (wfEnabled.invite !== false) wfControllers.push(InviteWorkflow);
+  if (wfControllers.length > 0) {
+    moost.registerControllers(...wfControllers);
+  }
 
   // Mount a single trigger endpoint that calls `wf.handleOutlet` with our
   // strategy + outlets. Consumers do the same in their app.
+  const emailOutletDeps = { emailSender, buildMagicLinkUrl, recoveryTokenTtlMs };
+
   @Controller("wf")
   @Public()
   // biome-ignore lint/correctness/noUnusedVariables: registered via registerControllers below
   class WfTriggerController {
     @Post("trigger")
     async trigger(@Body() _body: WfRequestBody): Promise<unknown> {
-      const wfConfig = await useControllerContext().instantiate(MoostAuthWorkflowConfig);
-      // Calling `handleWfOutletRequest` directly (instead of `wf.handleOutlet`)
-      // so we can forward the HTTP eventContext into the workflow. Otherwise
-      // `useWfFinished().set({ value, cookies })` writes to the WF's isolated
-      // context and `handleWfOutletRequest` (which reads from the HTTP ctx)
-      // can't see it back. `MoostWf.handleOutlet()` drops the eventContext
-      // param — known upstream issue.
       const wfApp = wf.getWfApp();
       const deps: WfOutletTriggerDeps = {
         start: (schemaId, context, opts) =>
@@ -217,7 +209,7 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
         {
           allow: ["auth.login", "auth.recovery", "auth.invite"],
           state: strategy,
-          outlets: [createHttpOutlet(), createAuthEmailOutlet(wfConfig)],
+          outlets: [createHttpOutlet(), createAuthEmailOutlet(emailOutletDeps)],
           token: { read: ["body", "query"], write: "body", name: "wfs" },
         },
         deps,

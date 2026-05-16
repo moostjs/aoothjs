@@ -7,13 +7,20 @@ import {
 import { AtscriptArbacUserProvider } from "@aoothjs/arbac-moost/atscript";
 import { AuthCredential, type EmailSender } from "@aoothjs/auth";
 import {
+  type AuthEmailOutletDeps,
   AuthController,
   authGuardInterceptor,
+  InviteWorkflow,
+  InviteWorkflowOptions,
+  LoginWorkflow,
+  LoginWorkflowOptions,
   MoostAuthConfig,
-  setupAuthWorkflows,
+  RecoveryWorkflow,
+  RecoveryWorkflowOptions,
   useAuth,
 } from "@aoothjs/auth-moost";
 import { UserService } from "@aoothjs/user";
+import { formInputInterceptor } from "@atscript/moost-wf";
 import { MoostHttp } from "@moostjs/event-http";
 import { MoostWf } from "@moostjs/event-wf";
 import {
@@ -52,8 +59,7 @@ export interface BuildAppOptions {
   port?: number;
   envOverrides?: Partial<AppEnv>;
   /**
-   * Per-workflow registration toggles forwarded to
-   * `setupAuthWorkflows({ workflows })`. Defaults to all enabled. Used by
+   * Per-workflow registration toggles. Defaults to all enabled. Used by
    * DX-07 to assert that a disabled workflow (`auth.invite`) is unreachable.
    */
   workflowsEnabled?: { login?: boolean; recovery?: boolean; invite?: boolean };
@@ -91,43 +97,56 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   app.adapter(moostHttp);
   app.adapter(new MoostWf());
 
-  // Canonical REST + guard wiring: DI providers (`AuthCredential`,
-  // `UserService`, `MoostAuthConfig`) + global `authGuardInterceptor` +
-  // optional `AuthController`. `UserService` is only consumed by
-  // `AuthController`; skipping the controller leaves the guard active for
-  // the rest of the app (used by DX-08).
+  // Canonical REST + guard wiring + per-workflow options classes registered
+  // via DI. `UserService` is only consumed by `AuthController`; skipping the
+  // controller leaves the guard active for the rest of the app (used by DX-08).
   const authProviders: Parameters<typeof createProvideRegistry> = [
     [AuthCredential, () => aooth.authCredential],
     [UserService, () => aooth.userService],
     [MoostAuthConfig, () => new MoostAuthConfig({ cookie: { secure: false } })],
+    [LoginWorkflowOptions, () => new LoginWorkflowOptions()],
+    [
+      RecoveryWorkflowOptions,
+      () =>
+        new RecoveryWorkflowOptions({
+          recoveryTokenTtlMs: env.RECOVERY_TTL_MS,
+          // Maps a recovery-step email to the canonical username. In this
+          // demo `DemoUser.username` happens to equal `DemoUser.email` for
+          // seeded users, so a direct email lookup is enough — but the
+          // indirection is what makes recovery work for any user model where
+          // `username !== email`.
+          emailToUserId: async (email) => {
+            const user = await aooth.userStore.findByUsername(email);
+            return user ? user.username : null;
+          },
+        }),
+    ],
+    [
+      InviteWorkflowOptions,
+      () =>
+        new InviteWorkflowOptions({
+          inviteTokenTtlMs: env.INVITE_TTL_MS,
+          // Demonstrates the `prepareUser` hook: populate the consumer-required
+          // `tenantId` field before `userService.createUser` runs.
+          prepareUser: () => ({ tenantId: "_global" }),
+        }),
+    ],
   ];
   app.setProvideRegistry(createProvideRegistry(...authProviders));
   app.applyGlobalInterceptors(authGuardInterceptor);
+  app.applyGlobalInterceptors(formInputInterceptor());
   if (opts.authEndpointsEnabled !== false) {
     app.registerControllers(AuthController);
   }
 
-  setupAuthWorkflows(app, {
-    emailSender,
-    buildMagicLinkUrl: aooth.buildMagicLinkUrl,
-    wfStateStore,
-    recoveryTokenTtlMs: env.RECOVERY_TTL_MS,
-    inviteTokenTtlMs: env.INVITE_TTL_MS,
-    workflows: opts.workflowsEnabled,
-    // Demonstrates the `prepareUser` hook: populate the consumer-required
-    // `tenantId` field before `userService.createUser` runs. Admins re-tenant
-    // invitees later via the user-management UI.
-    prepareUser: () => ({ tenantId: "_global" }),
-    // Demonstrates the `emailToUserId` resolver: maps a recovery-step email
-    // to the canonical username. In this demo `DemoUser.username` happens to
-    // equal `DemoUser.email` for seeded users, so a direct email lookup is
-    // enough — but the indirection is what makes recovery work for any user
-    // model where `username !== email`.
-    emailToUserId: async (email) => {
-      const user = await aooth.userStore.findByUsername(email);
-      return user ? user.username : null;
-    },
-  });
+  const wfEnabled = opts.workflowsEnabled ?? {};
+  const wfControllers: Array<new (...args: never[]) => unknown> = [];
+  if (wfEnabled.login !== false) wfControllers.push(LoginWorkflow);
+  if (wfEnabled.recovery !== false) wfControllers.push(RecoveryWorkflow);
+  if (wfEnabled.invite !== false) wfControllers.push(InviteWorkflow);
+  if (wfControllers.length > 0) {
+    app.registerControllers(...wfControllers);
+  }
 
   // Bind the atscript-driven user provider to the JWT subject for ARBAC.
   // `DemoUser.@meta.id` is a UUID but the JWT subject is `username`;
@@ -160,7 +179,13 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
 
   app.applyGlobalInterceptors(arbacAuthorizeInterceptor);
 
-  app.registerControllers(...buildAppControllers(appDb, wfStateStore));
+  app.registerControllers(
+    ...buildAppControllers(appDb, wfStateStore, {
+      emailSender,
+      buildMagicLinkUrl: aooth.buildMagicLinkUrl,
+      recoveryTokenTtlMs: env.RECOVERY_TTL_MS,
+    }),
+  );
 
   await app.init();
   await moostHttp.listen(port);
@@ -185,6 +210,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
 function buildAppControllers(
   appDb: AppDb,
   wfStateStore: ReturnType<typeof createWfStore>,
+  emailOutletDeps: AuthEmailOutletDeps,
 ): ReadonlyArray<new (...args: never[]) => unknown> {
   const t = appDb.tables;
   return [
@@ -197,7 +223,7 @@ function buildAppControllers(
     makeCommentsController(t.comments),
     makeDocumentsController(t.documents),
     makeAuditController(t.audit),
-    makeWfTriggerController(wfStateStore),
+    makeWfTriggerController(wfStateStore, emailOutletDeps),
     makeHandoverWorkflow({
       projectsTable: t.projects,
       usersTable: t.users,

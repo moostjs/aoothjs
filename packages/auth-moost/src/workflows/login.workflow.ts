@@ -2,31 +2,27 @@
  * LoginWorkflow — `wfid = 'auth.login'`.
  *
  * Steps:
- *   1. `credentials`  — collect username/password, run `UserService.login`.
- *                      If `mfaRequired`, branch into step 2; otherwise step 3.
- *   2. `mfa`          — collect TOTP code (skipped when `!mfaRequired`).
- *   3. `issue`        — issue an `AuthCredential`, write cookies, finish.
- *
- * Triggered via an HTTP outlet handler the consumer mounts at e.g.
- * `POST /wf/trigger` and pointing `<AsWfForm name="auth.login" />` at it.
+ *   1. `init`         — copies `this.opts` → `ctx.opts` (per WF.md convention).
+ *   2. `credentials`  — collect username/password, run `UserService.login`.
+ *                       If `mfaRequired`, branch into step 3; otherwise step 4.
+ *   3. `mfa`          — collect TOTP code (skipped when `!mfaRequired`).
+ *   4. `issue`        — issue an `AuthCredential`, write cookies, finish.
  */
 import { AuthCredential } from "@aoothjs/auth";
 import { UserAuthError, UserService } from "@aoothjs/user";
 import { HttpError } from "@moostjs/event-http";
 import { Step, useWfFinished, Workflow, WorkflowParam, WorkflowSchema } from "@moostjs/event-wf";
-import { Controller, Injectable, useControllerContext } from "moost";
+import { Controller, Injectable } from "moost";
 
 import { LoginCredentialsForm, MfaCodeForm } from "../atscript/models/forms.as.js";
 import { MoostAuthConfig } from "../auth.config";
 import { buildLoginResponse } from "../auth.cookies";
 import { Public } from "../auth.decorator";
+import { LoginWorkflowOptions } from "./login.workflow.options";
 import { buildFinishedCookies, httpInputRequired, validateFormInput } from "./wf-helpers";
 
-/**
- * Workflow context — server-only. `@WorkflowSchema<Ctx>` types this for the
- * conditional check, and step handlers mutate it.
- */
 export interface LoginWfCtx {
+  opts?: LoginWorkflowOptions;
   username?: string;
   mfaRequired?: boolean;
 }
@@ -35,13 +31,27 @@ export interface LoginWfCtx {
 @Controller()
 @Public()
 export class LoginWorkflow {
+  constructor(
+    private readonly opts: LoginWorkflowOptions,
+    private readonly users: UserService,
+    private readonly auth: AuthCredential,
+    private readonly authConfig: MoostAuthConfig,
+  ) {}
+
   @Workflow("auth.login")
   @WorkflowSchema<LoginWfCtx>([
+    { id: "init" },
     { id: "credentials" },
     { id: "mfa", condition: (ctx) => !!ctx.mfaRequired },
     { id: "issue" },
   ])
   flow(): void {}
+
+  @Step("init")
+  init(@WorkflowParam("context") ctx: LoginWfCtx): undefined {
+    ctx.opts = this.opts;
+    return undefined;
+  }
 
   @Step("credentials")
   async credentials(
@@ -52,11 +62,8 @@ export class LoginWorkflow {
     const errors = validateFormInput(LoginCredentialsForm, input);
     if (errors) return httpInputRequired(LoginCredentialsForm, ctx, errors);
 
-    const cc = useControllerContext();
-    const users = await cc.instantiate(UserService);
-
     try {
-      const result = await users.login(input.username as string, input.password as string);
+      const result = await this.users.login(input.username as string, input.password as string);
       ctx.username = result.user.username;
       ctx.mfaRequired = result.mfaRequired;
     } catch (err) {
@@ -87,11 +94,8 @@ export class LoginWorkflow {
       throw new HttpError(500, "Workflow state corrupted: missing username");
     }
 
-    const cc = useControllerContext();
-    const users = await cc.instantiate(UserService);
-
     try {
-      await users.verifyMfa(ctx.username, input.code as string);
+      await this.users.verifyMfa(ctx.username, input.code as string);
     } catch (err) {
       if (err instanceof UserAuthError) {
         if (err.type === "LOCKED") {
@@ -123,16 +127,11 @@ export class LoginWorkflow {
     if (!ctx.username) {
       throw new HttpError(500, "Workflow state corrupted: missing username");
     }
-    const cc = useControllerContext();
-    const [auth, config] = await Promise.all([
-      cc.instantiate(AuthCredential),
-      cc.instantiate(MoostAuthConfig),
-    ]);
-    const issue = await auth.issue(ctx.username);
+    const issue = await this.auth.issue(ctx.username);
     useWfFinished().set({
       type: "data",
-      value: buildLoginResponse(config, ctx.username, issue),
-      cookies: buildFinishedCookies(config, issue),
+      value: buildLoginResponse(this.authConfig, ctx.username, issue),
+      cookies: buildFinishedCookies(this.authConfig, issue),
     });
   }
 }

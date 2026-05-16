@@ -1,18 +1,12 @@
 /**
  * RecoveryWorkflow — `wfid = 'auth.recovery'`.
  *
- * Steps (mirrors the canonical demo pattern of separating "send" from "collect"):
- *   1. `requestRecovery` — collect email; resolves the user but never reveals
- *                           whether it existed. On unknown email the workflow
- *                           short-circuits via `useWfFinished().set(sent:true)`
- *                           and the following steps are skipped via a guard.
- *   2. `sendLink`        — emits `outletEmail()` ONCE (first run). On resume
- *                           after the magic-link click the flag `linkSent` is
- *                           already true so the step advances without re-emitting.
- *   3. `setPassword`     — collects + sets the new password, issues tokens.
- *
- * Magic-link URL: `buildMagicLinkUrl('recovery', token)` → e.g.
- * `https://app.example.com/wf/trigger?wfs=<token>`.
+ * Steps:
+ *   1. `init`               — copies `this.opts` → `ctx.opts`.
+ *   2. `recoveryRequest`    — collect email; resolves the user but never reveals
+ *                              whether it existed. Unknown email short-circuits.
+ *   3. `recoverySendLink`   — emits `outletEmail()` ONCE; pauses for magic-link click.
+ *   4. `recoverySetPassword` — sets new password, issues tokens.
  */
 import { AuthCredential } from "@aoothjs/auth";
 import { UserAuthError, UserService } from "@aoothjs/user";
@@ -24,13 +18,13 @@ import {
   WorkflowParam,
   WorkflowSchema,
 } from "@moostjs/event-wf";
-import { Controller, Injectable, useControllerContext } from "moost";
+import { Controller, Injectable } from "moost";
 
 import { EmailIdentifierForm, SetPasswordForm } from "../atscript/models/forms.as.js";
 import { MoostAuthConfig } from "../auth.config";
 import { buildLoginResponse } from "../auth.cookies";
 import { Public } from "../auth.decorator";
-import { MoostAuthWorkflowConfig } from "../workflow-config";
+import { RecoveryWorkflowOptions } from "./recovery.workflow.options";
 import {
   buildFinishedCookies,
   httpInputRequired,
@@ -38,8 +32,8 @@ import {
   validateFormInput,
 } from "./wf-helpers";
 
-/** Server-only workflow context. `username` is set when the email matches. */
 export interface RecoveryWfCtx {
+  opts?: RecoveryWorkflowOptions;
   username?: string;
   email?: string;
   /** Marks that `sendLink` already emitted the outlet (resume → advance). */
@@ -50,14 +44,28 @@ export interface RecoveryWfCtx {
 @Controller()
 @Public()
 export class RecoveryWorkflow {
+  constructor(
+    private readonly opts: RecoveryWorkflowOptions,
+    private readonly users: UserService,
+    private readonly auth: AuthCredential,
+    private readonly authConfig: MoostAuthConfig,
+  ) {}
+
   @Workflow("auth.recovery")
   @WorkflowSchema<RecoveryWfCtx>([
+    { id: "init" },
     { id: "recoveryRequest" },
     // Both later steps require `username` — skip everything for unknown emails.
     { id: "recoverySendLink", condition: (ctx) => !!ctx.username },
     { id: "recoverySetPassword", condition: (ctx) => !!ctx.username },
   ])
   flow(): void {}
+
+  @Step("init")
+  init(@WorkflowParam("context") ctx: RecoveryWfCtx): undefined {
+    ctx.opts = this.opts;
+    return undefined;
+  }
 
   @Step("recoveryRequest")
   async requestRecovery(
@@ -68,21 +76,15 @@ export class RecoveryWorkflow {
     const errors = validateFormInput(EmailIdentifierForm, input);
     if (errors) return httpInputRequired(EmailIdentifierForm, ctx, errors);
 
-    const cc = useControllerContext();
-    const [users, wfConfig] = await Promise.all([
-      cc.instantiate(UserService),
-      cc.instantiate(MoostAuthWorkflowConfig),
-    ]);
-
     // `emailToUserId` is required when the user model separates `username` and
     // `email`; without it we treat the email as the username (resolver === null
     // result intentionally short-circuits → enumeration-resistant response).
     let username: string | undefined;
     try {
-      const userId = await (wfConfig.config.emailToUserId?.(input.email as string) ??
+      const userId = await (this.opts.emailToUserId?.(input.email as string) ??
         (input.email as string));
       if (userId) {
-        const user = await users.getUser(userId);
+        const user = await this.users.getUser(userId);
         username = user.username;
       }
     } catch (err) {
@@ -105,24 +107,21 @@ export class RecoveryWorkflow {
   }
 
   @Step("recoverySendLink")
-  async sendLink(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<unknown> {
+  sendLink(@WorkflowParam("context") ctx: RecoveryWfCtx): unknown {
     // First run: emit outletEmail; engine persists state and our email outlet
     // ships the magic link. Resume run (link clicked): `linkSent` is set
     // so we advance to `setPassword` without re-sending.
     if (ctx.linkSent) return undefined;
     ctx.linkSent = true;
 
-    const cc = useControllerContext();
-    const wfConfig = await cc.instantiate(MoostAuthWorkflowConfig);
-    const config = wfConfig.config;
     // Runtime TTL — `@StepTTL` resolves at class-definition time, so we attach
     // `expires` to the outlet result (MoostWf only overrides when `@StepTTL`).
     return {
       ...outletEmail(ctx.email as string, "recovery.magicLink", {
         username: ctx.username,
-        expiresAtMs: config.recoveryTokenTtlMs,
+        expiresAtMs: this.opts.recoveryTokenTtlMs,
       }),
-      expires: Date.now() + config.recoveryTokenTtlMs,
+      expires: Date.now() + this.opts.recoveryTokenTtlMs,
     };
   }
 
@@ -145,23 +144,16 @@ export class RecoveryWorkflow {
       return httpInputRequired(SetPasswordForm, ctx, { __form: "Recovery session expired" });
     }
 
-    const cc = useControllerContext();
-    const [users, auth, config] = await Promise.all([
-      cc.instantiate(UserService),
-      cc.instantiate(AuthCredential),
-      cc.instantiate(MoostAuthConfig),
-    ]);
-
     try {
-      await users.setPassword(ctx.username, input.newPassword as string);
+      await this.users.setPassword(ctx.username, input.newPassword as string);
     } catch (err) {
       translatePasswordSetError(err);
     }
-    const issue = await auth.issue(ctx.username);
+    const issue = await this.auth.issue(ctx.username);
     useWfFinished().set({
       type: "data",
-      value: buildLoginResponse(config, ctx.username, issue),
-      cookies: buildFinishedCookies(config, issue),
+      value: buildLoginResponse(this.authConfig, ctx.username, issue),
+      cookies: buildFinishedCookies(this.authConfig, issue),
     });
     return undefined;
   }

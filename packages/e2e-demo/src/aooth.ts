@@ -11,7 +11,7 @@ import type { DemoUser } from "./models/user.as";
  * Default `roles` (inherited array) and mirror `username` → `email` so the
  * bundled invite flow gets a usable contact field.
  *
- * `tenantId` defaults are wired via `setupAuthWorkflows({ prepareUser })` for
+ * `tenantId` defaults are wired via `InviteWorkflowOptions.prepareUser` for
  * the bundled invite flow; this store-level fallback covers programmatic
  * `createUser` calls (seeders, admin scripts) that bypass the workflow hook.
  *

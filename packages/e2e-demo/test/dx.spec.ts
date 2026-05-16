@@ -144,7 +144,7 @@ describe("DX — read-only ergonomics (shared app)", () => {
   });
 });
 
-describe("DX-07 — setupAuthWorkflows({ workflows: { invite: false } }) skips registration", () => {
+describe("DX-07 — workflowsEnabled: { invite: false } skips InviteWorkflow registration", () => {
   let app: TestApp;
 
   beforeEach(async () => {

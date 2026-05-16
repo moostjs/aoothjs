@@ -1,37 +1,14 @@
 /**
  * InviteWorkflow — `wfid = 'auth.invite'`.
  *
- * Steps (mirrors the demo's separation of "send" from "collect"):
- *   1. `createInvite` — admin enters email + optional roles; validates the
- *                       email is not already in use.
- *   2. `sendLink`     — emits `outletEmail` once (first run only).
- *   3. `accept`       — collects + sets the new password, creates + activates
- *                       the user, issues tokens.
+ * Steps:
+ *   1. `init`         — copies `this.opts` → `ctx.opts`.
+ *   2. `inviteCreate` — admin enters email + optional roles; validates uniqueness.
+ *   3. `inviteSendLink` — emits `outletEmail` once.
+ *   4. `inviteAccept`   — sets password, creates + activates user, issues tokens.
  *
- * **CRITICAL — Admin protection is the consumer's responsibility.**
- *
- * The workflow itself does NOT authenticate the caller of step 1
- * (`createInvite`). Mounting an HTTP outlet trigger with `'auth.invite'` in
- * `allow:` exposes an unauthenticated **invite-email-spam** vector: any
- * caller can submit arbitrary `email` + `roles` form values and cause your
- * configured `EmailSender` to dispatch an invite email to that address.
- *
- * Mitigations the consumer MUST apply when mounting the outlet trigger:
- *
- *  1. Mount a SEPARATE outlet trigger route for `auth.invite` and guard it
- *     with admin RBAC (e.g. `@ArbacAuthorize({ resource: 'user', action: 'invite' })`).
- *  2. OR exclude `'auth.invite'` from the public trigger's `allow:` list and
- *     drive invite creation from an admin-only endpoint that calls the
- *     workflow programmatically.
- *
- * The `accept` step (step 3) is intentionally reachable without admin auth —
- * the magic-link token IS the authorisation to complete the invite.
- *
- * `ctx.roles` from step 1 is currently NOT applied to the new user — role
- * assignment is left to a consumer-supplied post-step hook (e.g. by
- * subclassing `InviteWorkflow.accept`). This prevents accidental privilege
- * escalation by misconfigured deployments; do not weaken this default
- * without considering the implications.
+ * Admin protection is the consumer's responsibility (mount the invite trigger
+ * behind admin RBAC). See `createAuthEmailOutlet` for the recommended split.
  */
 import { AuthCredential } from "@aoothjs/auth";
 import { UserAuthError, UserService } from "@aoothjs/user";
@@ -44,13 +21,13 @@ import {
   WorkflowParam,
   WorkflowSchema,
 } from "@moostjs/event-wf";
-import { Controller, Injectable, useControllerContext } from "moost";
+import { Controller, Injectable } from "moost";
 
 import { InviteForm, SetPasswordForm } from "../atscript/models/forms.as.js";
 import { MoostAuthConfig } from "../auth.config";
 import { buildLoginResponse } from "../auth.cookies";
 import { Public } from "../auth.decorator";
-import { MoostAuthWorkflowConfig } from "../workflow-config";
+import { InviteWorkflowOptions } from "./invite.workflow.options";
 import {
   buildFinishedCookies,
   httpInputRequired,
@@ -58,8 +35,8 @@ import {
   validateFormInput,
 } from "./wf-helpers";
 
-/** Server-only context. */
 export interface InviteWfCtx {
+  opts?: InviteWorkflowOptions;
   email?: string;
   roles?: string[];
   /** Marks that `sendLink` already emitted the outlet (resume → advance). */
@@ -79,13 +56,27 @@ export function parseInviteRoles(input?: string): string[] {
 @Controller()
 @Public()
 export class InviteWorkflow {
+  constructor(
+    private readonly opts: InviteWorkflowOptions,
+    private readonly users: UserService,
+    private readonly auth: AuthCredential,
+    private readonly authConfig: MoostAuthConfig,
+  ) {}
+
   @Workflow("auth.invite")
   @WorkflowSchema<InviteWfCtx>([
+    { id: "init" },
     { id: "inviteCreate" },
     { id: "inviteSendLink" },
     { id: "inviteAccept" },
   ])
   flow(): void {}
+
+  @Step("init")
+  init(@WorkflowParam("context") ctx: InviteWfCtx): undefined {
+    ctx.opts = this.opts;
+    return undefined;
+  }
 
   @Step("inviteCreate")
   async createInvite(
@@ -96,13 +87,10 @@ export class InviteWorkflow {
     const errors = validateFormInput(InviteForm, input);
     if (errors) return httpInputRequired(InviteForm, ctx, errors);
 
-    const cc = useControllerContext();
-    const users = await cc.instantiate(UserService);
-
     // Reject if the user already exists — unlike recovery, enumeration
     // resistance does not apply (only admins reach this endpoint).
     try {
-      await users.getUser(input.email as string);
+      await this.users.getUser(input.email as string);
       throw new HttpError(409, "User already exists");
     } catch (err) {
       if (err instanceof HttpError) throw err;
@@ -116,21 +104,18 @@ export class InviteWorkflow {
   }
 
   @Step("inviteSendLink")
-  async sendLink(@WorkflowParam("context") ctx: InviteWfCtx): Promise<unknown> {
+  sendLink(@WorkflowParam("context") ctx: InviteWfCtx): unknown {
     if (ctx.linkSent) return undefined;
     ctx.linkSent = true;
 
-    const cc = useControllerContext();
-    const wfConfig = await cc.instantiate(MoostAuthWorkflowConfig);
-    const config = wfConfig.config;
     // Runtime TTL — `@StepTTL` resolves at class-definition time, so we attach
     // `expires` to the outlet result (MoostWf only overrides when `@StepTTL`).
     return {
       ...outletEmail(ctx.email as string, "invite.magicLink", {
         ...(ctx.roles && { roles: ctx.roles }),
-        expiresAtMs: config.inviteTokenTtlMs,
+        expiresAtMs: this.opts.inviteTokenTtlMs,
       }),
-      expires: Date.now() + config.inviteTokenTtlMs,
+      expires: Date.now() + this.opts.inviteTokenTtlMs,
     };
   }
 
@@ -153,33 +138,21 @@ export class InviteWorkflow {
       return httpInputRequired(SetPasswordForm, ctx, { __form: "Invite session expired" });
     }
 
-    const cc = useControllerContext();
-    const [users, auth, config, wfConfig] = await Promise.all([
-      cc.instantiate(UserService),
-      cc.instantiate(AuthCredential),
-      cc.instantiate(MoostAuthConfig),
-      cc.instantiate(MoostAuthWorkflowConfig),
-    ]);
-
-    const prepareUser = wfConfig.config.prepareUser;
-    const extras = prepareUser
-      ? await prepareUser({ email: ctx.email, roles: ctx.roles ?? [] })
+    const extras = this.opts.prepareUser
+      ? await this.opts.prepareUser({ email: ctx.email, roles: ctx.roles ?? [] })
       : undefined;
 
     try {
-      await users.createUser(ctx.email, input.newPassword as string, extras);
+      await this.users.createUser(ctx.email, input.newPassword as string, extras);
     } catch (err) {
       translatePasswordSetError(err);
     }
-    await users.activateAccount(ctx.email);
-    // Role-application hook is intentionally not wired here in 6.5b — the
-    // workflow context still carries `ctx.roles` so consumers extending the
-    // controller can react to it via a spy / post-step interceptor.
-    const issue = await auth.issue(ctx.email);
+    await this.users.activateAccount(ctx.email);
+    const issue = await this.auth.issue(ctx.email);
     useWfFinished().set({
       type: "data",
-      value: buildLoginResponse(config, ctx.email, issue),
-      cookies: buildFinishedCookies(config, issue),
+      value: buildLoginResponse(this.authConfig, ctx.email, issue),
+      cookies: buildFinishedCookies(this.authConfig, issue),
     });
     return undefined;
   }

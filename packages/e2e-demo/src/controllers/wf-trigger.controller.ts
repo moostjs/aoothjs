@@ -1,5 +1,5 @@
 import { ArbacAction, ArbacResource } from "@aoothjs/arbac-moost";
-import { createAuthEmailOutlet, MoostAuthWorkflowConfig, Public } from "@aoothjs/auth-moost";
+import { type AuthEmailOutletDeps, createAuthEmailOutlet, Public } from "@aoothjs/auth-moost";
 import { createAsHttpOutlet, handleAsOutletRequest } from "@atscript/moost-wf";
 import { Body, Post } from "@moostjs/event-http";
 import { HandleStateStrategy, MoostWf, type WfOutletTriggerDeps } from "@moostjs/event-wf";
@@ -22,9 +22,13 @@ export type WfTriggerControllerCtor = new (...args: never[]) => {
   admin(body: WfBody): Promise<unknown>;
 };
 
-export function makeWfTriggerController(wfStateStore: AsWfStore): WfTriggerControllerCtor {
+export function makeWfTriggerController(
+  wfStateStore: AsWfStore,
+  emailOutletDeps: AuthEmailOutletDeps,
+): WfTriggerControllerCtor {
   const handleStrategy = new HandleStateStrategy({ store: wfStateStore });
   const httpOutlet = createAsHttpOutlet();
+  const emailOutlet = createAuthEmailOutlet(emailOutletDeps);
   const tokenWire = {
     read: ["body", "query"] as ("body" | "query" | "cookie")[],
     write: "body" as const,
@@ -49,12 +53,11 @@ export function makeWfTriggerController(wfStateStore: AsWfStore): WfTriggerContr
   }
 
   async function trigger(allow: readonly string[]): Promise<unknown> {
-    const cfg = await useControllerContext().instantiate(MoostAuthWorkflowConfig);
     return handleAsOutletRequest(
       {
         allow: [...allow],
         state: handleStrategy,
-        outlets: [httpOutlet, createAuthEmailOutlet(cfg)],
+        outlets: [httpOutlet, emailOutlet],
         token: tokenWire,
       },
       await makeDeps(),

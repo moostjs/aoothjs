@@ -41,19 +41,16 @@ export {
   DEFAULT_INVITE_TOKEN_TTL_MS,
   DEFAULT_MFA_CODE_TTL_MS,
   DEFAULT_RECOVERY_TOKEN_TTL_MS,
-  MoostAuthWorkflowConfig,
-  type AuthWorkflowsOptions,
-  type InvitePrepareUserInput,
-  type ResolvedAuthWorkflowsConfig,
-} from "./workflow-config";
-export { setupAuthWorkflows } from "./workflow-setup";
-export {
   InviteWorkflow,
   type InviteWfCtx,
+  type InvitePrepareUserInput,
+  InviteWorkflowOptions,
   LoginWorkflow,
   type LoginWfCtx,
+  LoginWorkflowOptions,
   parseInviteRoles,
   RecoveryWorkflow,
   type RecoveryWfCtx,
+  RecoveryWorkflowOptions,
 } from "./workflows/index";
-export { createAuthEmailOutlet } from "./workflows/auth-email-outlet";
+export { type AuthEmailOutletDeps, createAuthEmailOutlet } from "./workflows/auth-email-outlet";
