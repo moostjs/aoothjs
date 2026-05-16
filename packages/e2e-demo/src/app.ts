@@ -10,10 +10,12 @@ import {
   type AuthEmailOutletDeps,
   AuthController,
   authGuardInterceptor,
+  type AuditEmitter,
+  type DeviceTrustStore,
   InviteWorkflow,
   InviteWorkflowOptions,
   LoginWorkflow,
-  LoginWorkflowOptions,
+  type LoginWorkflowOpts,
   MoostAuthConfig,
   RecoveryWorkflow,
   RecoveryWorkflowOptions,
@@ -25,11 +27,15 @@ import { formInputInterceptor } from "@atscript/moost-wf";
 import { MoostHttp } from "@moostjs/event-http";
 import { MoostWf } from "@moostjs/event-wf";
 import {
+  Controller,
   createProvideRegistry,
   createReplaceRegistry,
   getMoostInfact,
+  Inherit,
+  Inject,
   Injectable,
   Moost,
+  Optional,
 } from "moost";
 import type { AddressInfo } from "node:net";
 
@@ -98,25 +104,43 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   app.adapter(moostHttp);
   app.adapter(new MoostWf());
 
-  // Canonical REST + guard wiring + per-workflow options classes registered
-  // via DI. `UserService` is only consumed by `AuthController`; skipping the
-  // controller leaves the guard active for the rest of the app (used by DX-08).
+  // Phase-2 reshape: `LoginWorkflow` is configured via a consumer subclass
+  // (carries the nested-pojo opts in `super(...)`). `@Inherit()` carries the
+  // base class's `@Workflow` / `@WorkflowSchema` / `@Step` metadata; the
+  // re-declared ctor is required because TS emits fresh design-paramtypes per
+  // class.
+  const demoLoginOpts: LoginWorkflowOpts = {
+    // Representative demo subset — no SMS gateway in the demo, so we strip
+    // 'sms' from the default mfa.transports list (the workflow's boot-time
+    // validator would otherwise demand a SmsSender).
+    mfa: { transports: ["email", "totp"] },
+    alternateCredentials: { forgotPassword: true },
+    guards: { passwordInitial: true },
+  };
+  @Inherit()
+  @Injectable("FOR_EVENT")
+  @Controller()
+  class DemoLoginWorkflow extends LoginWorkflow {
+    constructor(
+      users: UserService,
+      authCred: AuthCredential,
+      authConfig: MoostAuthConfig,
+      @Optional() @Inject("EmailSender") mailer?: EmailSender,
+      @Optional() @Inject("SmsSender") sms?: SmsSender,
+      @Optional() @Inject("DeviceTrustStore") deviceTrustStore?: DeviceTrustStore,
+      @Optional() @Inject("AuditEmitter") audit?: AuditEmitter,
+    ) {
+      super(demoLoginOpts, users, authCred, authConfig, mailer, sms, deviceTrustStore, audit);
+    }
+  }
+
+  // Canonical REST + guard wiring + per-workflow providers registered via DI.
+  // `UserService` is only consumed by `AuthController`; skipping the controller
+  // leaves the guard active for the rest of the app (used by DX-08).
   const authProviders: Parameters<typeof createProvideRegistry> = [
     [AuthCredential, () => aooth.authCredential],
     [UserService, () => aooth.userService],
     [MoostAuthConfig, () => new MoostAuthConfig({ cookie: { secure: false } })],
-    [
-      LoginWorkflowOptions,
-      () =>
-        new LoginWorkflowOptions({
-          // Representative demo subset — no SMS gateway in the demo, so we
-          // strip 'sms' from the default mfaTransports list (the workflow's
-          // boot-time validator would otherwise demand a SmsSender).
-          mfaTransports: ["email", "totp"],
-          forgotPasswordAction: true,
-          passwordInitialGuard: true,
-        }),
-    ],
     ["EmailSender", () => emailSender],
     // Console-stub SmsSender — kept so DI-resolves succeed if a consumer
     // flips on 'sms' transport at runtime; defaults strip 'sms' above.
@@ -191,7 +215,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
 
   const wfEnabled = opts.workflowsEnabled ?? {};
   const wfControllers: Array<new (...args: never[]) => unknown> = [];
-  if (wfEnabled.login !== false) wfControllers.push(LoginWorkflow);
+  if (wfEnabled.login !== false) wfControllers.push(DemoLoginWorkflow);
   if (wfEnabled.recovery !== false) wfControllers.push(RecoveryWorkflow);
   if (wfEnabled.invite !== false) wfControllers.push(InviteWorkflow);
   if (wfControllers.length > 0) {

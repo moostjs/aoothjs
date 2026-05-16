@@ -2,9 +2,9 @@
  * LoginWorkflow — `wfid = 'auth.login'`.
  *
  * Full step catalog per `WF_LOGIN.md`. Every advanced step is gated by the
- * matching `LoginWorkflowOptions` flag so the default-opts flow matches
- * today's "credentials → optional totp MFA → issue tokens" behaviour with no
- * surprise prompts.
+ * matching `LoginWorkflowOpts` flag so the default-opts flow matches today's
+ * "credentials → optional totp MFA → issue tokens" behaviour with no surprise
+ * prompts.
  *
  * **Step routing model.** Phase 1's `credentials` step is the main happy
  * path. Alternate credential paths (`magicLink*`, `passkey`, `ssoCallback`)
@@ -17,6 +17,14 @@
  * the regular form fields. Each form-bearing step inspects `input.action`
  * for routing rather than wiring `@AltAction()` (the existing trigger
  * controller does not call `useWfAction().setAction()`).
+ *
+ * **Consumer subclass pattern (Phase 2 reshape).** Consumers subclass
+ * `LoginWorkflow` to override `protected` hook methods (e.g.
+ * `assessRiskStepUp`, `buildRecoveryUrl`, `loadTenants`, `applyProfile`).
+ * The subclass MUST re-apply `@Inherit() @Injectable('FOR_EVENT')
+ * @Controller()` and re-declare the constructor signature (TS emits fresh
+ * design-paramtypes per class). See TASKS.md §"Probe outcomes" for the
+ * canonical subclass shape.
  */
 import { AuthCredential, type EmailSender, type SmsSender } from "@aoothjs/auth";
 import {
@@ -51,7 +59,11 @@ import { type AuditEmitter, NoopAuditEmitter } from "../audit/index";
 import { MoostAuthConfig } from "../auth.config";
 import { buildLoginResponse, cookieAttrs } from "../auth.cookies";
 import type { DeviceTrustStore } from "../device-trust/index";
-import { LoginWorkflowOptions } from "./login.workflow.options";
+import {
+  type LoginWorkflowOpts,
+  type ResolvedLoginWorkflowOpts,
+  mergeLoginOpts,
+} from "./login.workflow.options";
 import {
   buildFinishedCookies,
   httpInputRequired,
@@ -62,7 +74,7 @@ import {
 
 export interface LoginWfCtx {
   // Populated by `init`:
-  opts?: LoginWorkflowOptions;
+  opts?: ResolvedLoginWorkflowOpts;
 
   // Populated by `credentials`:
   username?: string;
@@ -96,7 +108,7 @@ export interface LoginWfCtx {
   deviceTrustToken?: string;
   /** Set true at MFA gate when no trust cookie matched → trigger `notify-new-device`. */
   newDevice?: boolean;
-  /** Captured from the OTP/pincode form when `opts.deviceTrustOptIn`. */
+  /** Captured from the OTP/pincode form when `opts.deviceTrust.optIn`. */
   rememberDevice?: boolean;
 
   // Terms / profile:
@@ -153,29 +165,6 @@ function mfaKindOf(methodName: string): "sms" | "email" | "totp" | null {
 const ALT_HANDLED: unique symbol = Symbol("ALT_HANDLED");
 type AltHandled = typeof ALT_HANDLED;
 
-/**
- * Strip non-JSON values (functions, class instances) from the options object
- * so the resulting snapshot persists cleanly into `AsWfStore`. Step bodies
- * still consult `this.opts` directly for the callbacks/forms we drop here.
- */
-function snapshotOpts(opts: LoginWorkflowOptions): LoginWorkflowOptions {
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(opts)) {
-    if (v === undefined) continue;
-    if (typeof v === "function") continue;
-    if (v && typeof v === "object" && !Array.isArray(v)) {
-      // Drop atscript form classes (they expose `__is_atscript_annotated_type`).
-      if ((v as Record<string, unknown>).__is_atscript_annotated_type) continue;
-    }
-    out[k] = v;
-  }
-  // Boolean projections of callback fields — schema `condition`/`while`
-  // predicates consult `ctx.opts` (the JSON-safe snapshot) and can't see the
-  // original callback. Expose presence-as-bool so conditions can gate on them.
-  out.riskStepUpEnabled = typeof opts.riskStepUp === "function";
-  return out as unknown as LoginWorkflowOptions;
-}
-
 /** Mint a numeric pincode of the requested length using Math.random — fine for OTPs. */
 function generatePincode(length: number): string {
   let out = "";
@@ -206,43 +195,68 @@ function verifyPin(ctx: LoginWfCtx, submitted: string | undefined): { code: stri
 }
 
 /**
- * Boot-time invariants. Called once per options instance via the
- * `validatedOpts` WeakSet guard inside `init` — running here per-event would
- * be wasteful since the options instance is the same across all requests.
+ * Construction-time invariants. Called from the ctor so misconfigured opts
+ * fail loud at workflow instantiation rather than at first event.
  */
 function validateOpts(
-  opts: LoginWorkflowOptions,
-  smsSender?: SmsSender,
-  deviceTrustStore?: DeviceTrustStore,
+  opts: ResolvedLoginWorkflowOpts,
+  deps: { mailer?: EmailSender; sms?: SmsSender; deviceTrustStore?: DeviceTrustStore },
 ): void {
-  if (opts.mfaEnabled && opts.mfaTransports.includes("sms") && !smsSender) {
+  if (opts.mfa.enabled && opts.mfa.transports.includes("sms") && !deps.sms) {
     throw new Error(
-      'LoginWorkflow: SmsSender required when mfaTransports includes "sms" and mfaEnabled is true',
+      'LoginWorkflow: SmsSender required when mfa.transports includes "sms" and mfa.enabled is true',
     );
   }
-  if (opts.deviceTrust && !deviceTrustStore) {
-    throw new Error("LoginWorkflow: DeviceTrustStore required when opts.deviceTrust is true");
+  if (opts.mfa.enabled && opts.mfa.transports.includes("email") && !deps.mailer) {
+    throw new Error(
+      'LoginWorkflow: EmailSender required when mfa.transports includes "email" and mfa.enabled is true',
+    );
   }
-  if (opts.mfaTransports.length === 0 && opts.mfaEnabled) {
-    throw new Error("LoginWorkflow: mfaTransports cannot be empty when mfaEnabled is true");
+  if (opts.deviceTrust.enabled && !deps.deviceTrustStore) {
+    throw new Error(
+      "LoginWorkflow: DeviceTrustStore required when opts.deviceTrust.enabled is true",
+    );
+  }
+  if (opts.mfa.enabled && opts.mfa.transports.length === 0) {
+    throw new Error("LoginWorkflow: mfa.transports cannot be empty when mfa.enabled is true");
+  }
+  if (opts.finalize.notifyNewDevice && !deps.mailer) {
+    throw new Error("LoginWorkflow: EmailSender required when finalize.notifyNewDevice is true");
   }
 }
-
-const validatedOpts = new WeakSet<LoginWorkflowOptions>();
 
 @Injectable("FOR_EVENT")
 @Controller()
 export class LoginWorkflow {
+  protected readonly opts: ResolvedLoginWorkflowOpts;
+  protected readonly users: UserService;
+  protected readonly auth: AuthCredential;
+  protected readonly authConfig: MoostAuthConfig;
+  protected readonly mailer?: EmailSender;
+  protected readonly sms?: SmsSender;
+  protected readonly deviceTrustStore?: DeviceTrustStore;
+  protected readonly audit?: AuditEmitter;
+
   constructor(
-    private readonly opts: LoginWorkflowOptions,
-    private readonly users: UserService,
-    private readonly auth: AuthCredential,
-    private readonly authConfig: MoostAuthConfig,
-    @Optional() @Inject("EmailSender") private readonly mailer?: EmailSender,
-    @Optional() @Inject("SmsSender") private readonly smsSender?: SmsSender,
-    @Optional() @Inject("DeviceTrustStore") private readonly deviceTrustStore?: DeviceTrustStore,
-    @Optional() @Inject("AuditEmitter") private readonly audit?: AuditEmitter,
-  ) {}
+    opts: LoginWorkflowOpts,
+    users: UserService,
+    auth: AuthCredential,
+    authConfig: MoostAuthConfig,
+    @Optional() @Inject("EmailSender") mailer?: EmailSender,
+    @Optional() @Inject("SmsSender") sms?: SmsSender,
+    @Optional() @Inject("DeviceTrustStore") deviceTrustStore?: DeviceTrustStore,
+    @Optional() @Inject("AuditEmitter") audit?: AuditEmitter,
+  ) {
+    this.opts = mergeLoginOpts(opts);
+    this.users = users;
+    this.auth = auth;
+    this.authConfig = authConfig;
+    this.mailer = mailer;
+    this.sms = sms;
+    this.deviceTrustStore = deviceTrustStore;
+    this.audit = audit;
+    validateOpts(this.opts, { mailer, sms, deviceTrustStore });
+  }
 
   @Workflow("auth.login")
   @WorkflowSchema<LoginWfCtx>([
@@ -258,18 +272,15 @@ export class LoginWorkflow {
     {
       id: "ensureEmail",
       condition: (ctx) =>
-        Boolean(
-          ctx.username &&
-          ctx.opts &&
-          (ctx.opts.ensureEmail || ctx.opts.emailVerifiedRequired) &&
-          !ctx.emailConfirmed &&
-          !ctx.aborted,
-        ),
+        !!ctx.username &&
+        (ctx.opts!.enrollment.ensureEmail || ctx.opts!.guards.emailVerifiedRequired) &&
+        !ctx.emailConfirmed &&
+        !ctx.aborted,
     },
     {
       id: "ensurePhone",
       condition: (ctx) =>
-        Boolean(ctx.username && ctx.opts?.ensurePhone && !ctx.phoneConfirmed && !ctx.aborted),
+        !!ctx.username && ctx.opts!.enrollment.ensurePhone && !ctx.phoneConfirmed && !ctx.aborted,
     },
     // Phase 4 MFA + Phase 8 risk-step-up wrapped in a while-loop so:
     //   - `select2fa.useDifferentMethod` (BUG-LOGIN-3/4) can clear `mfaMethod`
@@ -278,47 +289,42 @@ export class LoginWorkflow {
     // The loop exits the moment `mfaChecked` flips true with no pending risk
     // step-up — at which point linear execution resumes.
     {
-      while: (ctx) =>
-        Boolean(ctx.username && ctx.opts?.mfaEnabled && !ctx.mfaChecked && !ctx.aborted),
+      while: (ctx) => !!(ctx.username && ctx.opts!.mfa.enabled && !ctx.mfaChecked && !ctx.aborted),
       steps: [
         {
           id: "check-trusted-device",
           condition: (ctx) =>
-            Boolean(ctx.opts?.deviceTrust && ctx.opts?.deviceTrustSkipsMfa && !ctx.mfaChecked),
+            ctx.opts!.deviceTrust.enabled && ctx.opts!.deviceTrust.skipsMfa && !ctx.mfaChecked,
         },
         {
           id: "prepare-mfa-options",
-          condition: (ctx) => Boolean(!ctx.mfaChecked),
+          condition: (ctx) => !ctx.mfaChecked,
         },
         {
           id: "select2fa",
           condition: (ctx) =>
-            Boolean(!ctx.mfaChecked && !ctx.mfaMethod && (ctx.mfaEnrolledMethods?.length ?? 0) > 1),
+            !ctx.mfaChecked && !ctx.mfaMethod && (ctx.mfaEnrolledMethods?.length ?? 0) > 1,
         },
         {
           id: "pincode-send-login",
           condition: (ctx) =>
-            Boolean(
-              !ctx.mfaChecked && (ctx.mfaMethod === "sms" || ctx.mfaMethod === "email") && !ctx.pin,
-            ),
+            !ctx.mfaChecked && (ctx.mfaMethod === "sms" || ctx.mfaMethod === "email") && !ctx.pin,
         },
         {
           id: "pincode-check-login",
           condition: (ctx) =>
-            Boolean(!ctx.mfaChecked && (ctx.mfaMethod === "sms" || ctx.mfaMethod === "email")),
+            !ctx.mfaChecked && (ctx.mfaMethod === "sms" || ctx.mfaMethod === "email"),
         },
         {
           id: "mfa-totp",
-          condition: (ctx) => Boolean(!ctx.mfaChecked && ctx.mfaMethod === "totp"),
+          condition: (ctx) => !ctx.mfaChecked && ctx.mfaMethod === "totp",
         },
         {
           id: "mfa-enroll-required",
           condition: (ctx) =>
-            Boolean(
-              ctx.opts?.mfaEnrollRequired &&
-              !ctx.mfaChecked &&
-              (ctx.mfaEnrolledMethods?.length ?? 0) === 0,
-            ),
+            ctx.opts!.mfa.enrollRequired &&
+            !ctx.mfaChecked &&
+            (ctx.mfaEnrolledMethods?.length ?? 0) === 0,
         },
         {
           // Inside the loop so a `require: true` result can clear `mfaChecked`
@@ -326,120 +332,108 @@ export class LoginWorkflow {
           // guard: it flips true on each call and is only reset when the loop
           // re-enters MFA, so a `require: false` outcome lets the loop exit.
           id: "risk-step-up",
-          condition: (ctx) =>
-            Boolean(ctx.opts?.riskStepUpEnabled && ctx.mfaChecked && !ctx.riskStepUpEvaluated),
+          condition: (ctx) => !!(ctx.mfaChecked && !ctx.riskStepUpEvaluated),
         },
       ],
     },
     {
       id: "device-trust",
       condition: (ctx) =>
-        Boolean(
-          ctx.username &&
-          ctx.opts?.deviceTrust &&
-          ctx.mfaChecked &&
-          ctx.newDevice &&
-          (!ctx.opts.deviceTrustOptIn || ctx.rememberDevice) &&
-          !ctx.aborted,
-        ),
+        !!ctx.username &&
+        ctx.opts!.deviceTrust.enabled &&
+        !!ctx.mfaChecked &&
+        !!ctx.newDevice &&
+        (!ctx.opts!.deviceTrust.optIn || !!ctx.rememberDevice) &&
+        !ctx.aborted,
     },
     // Phase 5 forced password change:
     {
       id: "prepare-password-rules",
-      condition: (ctx) => Boolean(ctx.isPasswordInitial && !ctx.passwordChanged && !ctx.aborted),
+      condition: (ctx) => !!ctx.isPasswordInitial && !ctx.passwordChanged && !ctx.aborted,
     },
     {
       id: "create-password-form",
-      condition: (ctx) => Boolean(ctx.isPasswordInitial && !ctx.passwordChanged && !ctx.aborted),
+      condition: (ctx) => !!ctx.isPasswordInitial && !ctx.passwordChanged && !ctx.aborted,
     },
     // Phase 6 acceptance / onboarding:
     {
       id: "terms-accept",
       condition: (ctx) =>
-        Boolean(
-          ctx.username &&
-          ctx.opts?.termsAcceptVersion &&
-          ctx.termsAcceptedVersion !== ctx.opts.termsAcceptVersion &&
-          !ctx.termsAcceptedDone &&
-          !ctx.aborted,
-        ),
+        !!ctx.username &&
+        !!ctx.opts!.acceptance.termsVersion &&
+        ctx.termsAcceptedVersion !== ctx.opts!.acceptance.termsVersion &&
+        !ctx.termsAcceptedDone &&
+        !ctx.aborted,
     },
     {
       id: "profile-complete",
       condition: (ctx) =>
-        Boolean(
-          ctx.username &&
-          ctx.opts?.profileCompleteRequired &&
-          !ctx.profileApplied &&
-          (ctx.profileMissingFields?.length ?? 0) > 0 &&
-          !ctx.aborted,
-        ),
+        !!ctx.username &&
+        ctx.opts!.acceptance.profileCompleteRequired &&
+        !ctx.profileApplied &&
+        (ctx.profileMissingFields?.length ?? 0) > 0 &&
+        !ctx.aborted,
     },
     {
       id: "consent-marketing",
       condition: (ctx) =>
-        Boolean(ctx.username && ctx.opts?.consentMarketing && !ctx.consentApplied && !ctx.aborted),
+        !!ctx.username &&
+        ctx.opts!.acceptance.consentMarketing &&
+        !ctx.consentApplied &&
+        !ctx.aborted,
     },
     // Phase 7 tenant / persona:
     {
       id: "tenant-select",
       condition: (ctx) =>
-        Boolean(
-          ctx.username &&
-          ctx.opts?.tenantSelect &&
-          !ctx.selectedTenantId &&
-          (ctx.availableTenants?.length ?? 0) > 1 &&
-          !ctx.aborted,
-        ),
+        !!ctx.username &&
+        ctx.opts!.multiContext.tenantSelect &&
+        !ctx.selectedTenantId &&
+        (ctx.availableTenants?.length ?? 0) > 1 &&
+        !ctx.aborted,
     },
     {
       id: "persona-select",
       condition: (ctx) =>
-        Boolean(
-          ctx.username &&
-          ctx.opts?.personaSelect &&
-          !ctx.selectedPersonaId &&
-          (ctx.availablePersonas?.length ?? 0) > 1 &&
-          !ctx.aborted,
-        ),
+        !!ctx.username &&
+        ctx.opts!.multiContext.personaSelect &&
+        !ctx.selectedPersonaId &&
+        (ctx.availablePersonas?.length ?? 0) > 1 &&
+        !ctx.aborted,
     },
     // Phase 8 session policy:
     {
       id: "concurrency-limit",
       condition: (ctx) =>
-        Boolean(
-          ctx.username &&
-          ctx.opts?.concurrencyLimit &&
-          (ctx.activeSessions ?? 0) >= ctx.opts.concurrencyLimit.max &&
-          !ctx.aborted,
-        ),
+        !!ctx.username &&
+        !!ctx.opts!.sessionPolicy.concurrencyLimit &&
+        (ctx.activeSessions ?? 0) >= ctx.opts!.sessionPolicy.concurrencyLimit.max &&
+        !ctx.aborted,
     },
     // Phase 9 finalize. All gate on `!ctx.aborted` so the abort response set
     // via `useWfFinished()` by an abort alt-action (BUG-LOGIN-5) is not
     // overwritten by token issuance further down.
     {
       id: "issue",
-      condition: (ctx) => Boolean(ctx.username && !ctx.tokensIssued && !ctx.aborted),
+      condition: (ctx) => !!ctx.username && !ctx.tokensIssued && !ctx.aborted,
     },
     {
       id: "audit-login",
       condition: (ctx) =>
-        Boolean(ctx.username && ctx.opts?.auditLogin && ctx.tokensIssued && !ctx.aborted),
+        !!ctx.username && ctx.opts!.finalize.auditLogin && !!ctx.tokensIssued && !ctx.aborted,
     },
     {
       id: "notify-new-device",
       condition: (ctx) =>
-        Boolean(
-          ctx.username &&
-          ctx.opts?.notifyNewDevice &&
-          ctx.newDevice &&
-          ctx.tokensIssued &&
-          !ctx.aborted,
-        ),
+        !!ctx.username &&
+        ctx.opts!.finalize.notifyNewDevice &&
+        !!ctx.newDevice &&
+        !!ctx.tokensIssued &&
+        !ctx.aborted,
     },
     {
       id: "redirect",
-      condition: (ctx) => Boolean(ctx.username && ctx.tokensIssued && !ctx.aborted),
+      condition: (ctx) => !!ctx.username && !!ctx.tokensIssued && !ctx.aborted,
     },
   ])
   flow(): void {}
@@ -447,16 +441,32 @@ export class LoginWorkflow {
   // ── Phase 0 ───────────────────────────────────────────────────────────
   @Step("init")
   init(@WorkflowParam("context") ctx: LoginWfCtx): undefined {
-    if (!validatedOpts.has(this.opts)) {
-      validateOpts(this.opts, this.smsSender, this.deviceTrustStore);
-      validatedOpts.add(this.opts);
-    }
-    // Snapshot only JSON-serializable feature flags onto ctx — class
-    // instances / atscript form classes / callbacks break AsWfStore's plain-
-    // JSON schema for `state.context`. Step bodies still read non-serializable
-    // callbacks (`recoveryUrlBuilder`, `loadTenants`, ...) via `this.opts`.
-    ctx.opts = snapshotOpts(this.opts);
+    // The resolved-opts object is all JSON-safe nested data (no callbacks, no
+    // class instances) so it persists directly into `AsWfStore`. Step bodies
+    // still consult `this.opts.acceptance.profileCompleteForm` (a class) via
+    // `this.opts`, not `ctx.opts`.
+    ctx.opts = this.snapshotOpts(this.opts);
     return undefined;
+  }
+
+  /**
+   * Returns the JSON-safe projection of `opts` stashed onto `ctx` for schema
+   * conditions to read. Default: identity — the resolved-opts shape already
+   * contains only nested primitive groups plus the (replaceable) atscript
+   * form class on `acceptance.profileCompleteForm`, which is dropped here so
+   * `AsWfStore`'s plain-JSON persistence doesn't choke.
+   *
+   * Consumers who put non-JSON values on `opts` (e.g. by extending the type)
+   * can override this to strip them.
+   */
+  protected snapshotOpts(opts: ResolvedLoginWorkflowOpts): ResolvedLoginWorkflowOpts {
+    const { acceptance, ...rest } = opts;
+    // Drop the atscript form class — class instances are not plain JSON.
+    const { profileCompleteForm: _form, ...acceptanceJson } = acceptance;
+    return {
+      ...rest,
+      acceptance: acceptanceJson as ResolvedLoginWorkflowOpts["acceptance"],
+    };
   }
 
   // ── Phase 1 ───────────────────────────────────────────────────────────
@@ -487,11 +497,11 @@ export class LoginWorkflow {
       const result = await this.users.login(input.username as string, input.password as string);
       ctx.username = result.user.username;
       // Preserve legacy `mfaRequired` for tests / consumer subclasses; the
-      // step catalog decides MFA inclusion via `mfaEnabled` + enrolled
+      // step catalog decides MFA inclusion via `mfa.enabled` + enrolled
       // methods, not this flag.
       ctx.mfaRequired = result.mfaRequired;
       // Phase 2 inline guards:
-      if (this.opts.passwordInitialGuard && result.user.password.isInitial) {
+      if (this.opts.guards.passwordInitial && result.user.password.isInitial) {
         ctx.isPasswordInitial = true;
       }
       // Sync existing channel state so `ensureEmail`/`ensurePhone` skip
@@ -520,27 +530,37 @@ export class LoginWorkflow {
     action: string,
     typedUsername: string | undefined,
   ): AltHandled | undefined {
-    if (action === "forgotPassword" && this.opts.forgotPasswordAction) {
-      const url = this.opts.recoveryUrlBuilder
-        ? this.opts.recoveryUrlBuilder(typedUsername)
-        : `${this.opts.recoveryUrl}?username=${encodeURIComponent(typedUsername ?? "")}`;
+    const alt = this.opts.alternateCredentials;
+    if (action === "forgotPassword" && alt.forgotPassword) {
+      const url = this.buildRecoveryUrl(typedUsername);
       useWfFinished().set({ type: "redirect", value: url });
       return ALT_HANDLED;
     }
-    if (action === "signup" && this.opts.signupAction) {
-      useWfFinished().set({ type: "redirect", value: this.opts.signupUrl });
+    if (action === "signup" && alt.signup) {
+      useWfFinished().set({ type: "redirect", value: alt.signupUrl });
       return ALT_HANDLED;
     }
-    if (action === "magicLink" && this.opts.magicLinkAction) {
+    if (action === "magicLink" && alt.magicLink) {
       // Magic-link alternate path is a stub. See class doc.
       throw new HttpError(501, "Magic-link login path not implemented in this version");
     }
-    const sso = this.opts.ssoActions.find((p) => p.id === action);
+    const sso = alt.ssoProviders.find((p) => p.id === action);
     if (sso) {
       useWfFinished().set({ type: "redirect", value: sso.url });
       return ALT_HANDLED;
     }
     return undefined;
+  }
+
+  /**
+   * Builds the redirect URL the `forgotPassword` alt-action navigates to.
+   * Receives whatever the user typed into the username field so the recovery
+   * page can pre-fill it. Default:
+   * `${alternateCredentials.recoveryUrl}?username=${encodeURIComponent(username ?? '')}`.
+   */
+  protected buildRecoveryUrl(username?: string): string {
+    const base = this.opts.alternateCredentials.recoveryUrl;
+    return `${base}?username=${encodeURIComponent(username ?? "")}`;
   }
 
   @Step("magicLinkRequest")
@@ -587,7 +607,7 @@ export class LoginWorkflow {
       });
       ctx.email = input.email;
       // Generate + send the OTP, then ask for it next round.
-      const code = mintPin(ctx, this.opts.pincodeLength, this.opts.pincodeTtlMs);
+      const code = mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
       if (!this.mailer) throw new HttpError(500, "EmailSender not registered");
       await this.mailer.send({
         kind: "login.pincode",
@@ -616,7 +636,7 @@ export class LoginWorkflow {
     @WorkflowParam("context") ctx: LoginWfCtx,
   ): Promise<unknown> {
     requireUsername(ctx);
-    if (!this.smsSender) {
+    if (!this.sms) {
       throw new HttpError(501, "ensurePhone requires SmsSender to be registered");
     }
     if (!ctx.phone) {
@@ -629,12 +649,12 @@ export class LoginWorkflow {
         confirmed: false,
       });
       ctx.phone = input.phone;
-      const code = mintPin(ctx, this.opts.pincodeLength, this.opts.pincodeTtlMs);
-      await this.smsSender.send({
+      const code = mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
+      await this.sms.send({
         kind: "login.pincode",
         recipient: input.phone,
         code,
-        ttlMs: this.opts.pincodeTtlMs,
+        ttlMs: this.opts.mfa.pincodeTtlMs,
         userId: ctx.username,
       });
       return httpInputRequired(PincodeForm, ctx);
@@ -655,12 +675,12 @@ export class LoginWorkflow {
   @Step("check-trusted-device")
   async checkTrustedDevice(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
     if (!ctx.username || !this.deviceTrustStore) return undefined;
-    const cookieValue = useCookies(current()).getCookie(this.opts.deviceTrustCookieName);
+    const cookieValue = useCookies(current()).getCookie(this.opts.deviceTrust.cookieName);
     if (!cookieValue) {
       ctx.newDevice = true;
       return undefined;
     }
-    const ip = this.opts.deviceTrustBindsTo === "cookie+ip" ? this.resolveClientIp() : undefined;
+    const ip = this.opts.deviceTrust.bindsTo === "cookie+ip" ? this.resolveClientIp() : undefined;
     const ok = await this.deviceTrustStore.verify(ctx.username, cookieValue, ip);
     if (ok) {
       ctx.mfaChecked = true;
@@ -675,7 +695,7 @@ export class LoginWorkflow {
   async prepareMfaOptions(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
     if (!ctx.username) return undefined;
     const user = await this.users.getUser(ctx.username);
-    const allowed = new Set(this.opts.mfaTransports);
+    const allowed = new Set(this.opts.mfa.transports);
     const methods = this.users.getAvailableMfaMethods(user.mfa);
     const summary: MfaSummary[] = methods
       .filter((m: MfaMethodInfo) => {
@@ -717,7 +737,7 @@ export class LoginWorkflow {
     @WorkflowParam("context") ctx: LoginWfCtx,
   ): Promise<unknown> {
     if (!input) return httpInputRequired(Select2faForm, ctx);
-    if (input.action === "useBackupCode" && this.opts.mfaBackupCodes) {
+    if (input.action === "useBackupCode" && this.opts.mfa.backupCodes) {
       return this.handleBackupCode(
         (input as { code?: string }).code ? { code: (input as { code?: string }).code } : undefined,
         ctx,
@@ -745,8 +765,8 @@ export class LoginWorkflow {
     const user = await this.users.getUser(ctx.username);
     const method = user.mfa.methods.find((m) => m.name === summary.methodName && m.confirmed);
     if (!method) throw new HttpError(500, "MFA method no longer present");
-    const code = mintPin(ctx, this.opts.pincodeLength, this.opts.pincodeTtlMs);
-    ctx.pinTimeout = Date.now() + this.opts.pincodeResendTimeoutMs;
+    const code = mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
+    ctx.pinTimeout = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
     if (ctx.mfaMethod === "email") {
       ctx.pinSentTo = maskEmail(method.value);
       if (!this.mailer) throw new HttpError(500, "EmailSender not registered");
@@ -758,13 +778,13 @@ export class LoginWorkflow {
         username: ctx.username,
       });
     } else if (ctx.mfaMethod === "sms") {
-      if (!this.smsSender) throw new HttpError(500, "SmsSender not registered");
+      if (!this.sms) throw new HttpError(500, "SmsSender not registered");
       ctx.pinSentTo = maskPhone(method.value);
-      await this.smsSender.send({
+      await this.sms.send({
         kind: "login.pincode",
         recipient: method.value,
         code,
-        ttlMs: this.opts.pincodeTtlMs,
+        ttlMs: this.opts.mfa.pincodeTtlMs,
         userId: ctx.username,
       });
     }
@@ -800,7 +820,7 @@ export class LoginWorkflow {
       ctx.pinExpire = undefined;
       return undefined;
     }
-    if (input.action === "useBackupCode" && this.opts.mfaBackupCodes) {
+    if (input.action === "useBackupCode" && this.opts.mfa.backupCodes) {
       // First click → no `code` field → handleBackupCode pauses for the form.
       // Resume with the backup code populated → handleBackupCode validates and
       // consumes. The presence of `code` is the toggle.
@@ -813,7 +833,7 @@ export class LoginWorkflow {
     ctx.mfaChecked = true;
     // Allow the risk-step-up gate to re-evaluate after this re-verification.
     ctx.riskStepUpEvaluated = false;
-    if (this.opts.deviceTrust && this.opts.deviceTrustOptIn) {
+    if (this.opts.deviceTrust.enabled && this.opts.deviceTrust.optIn) {
       ctx.rememberDevice = Boolean(input.rememberDevice);
     }
     return undefined;
@@ -832,7 +852,7 @@ export class LoginWorkflow {
       ctx.mfaMethod = undefined;
       return undefined;
     }
-    if (input.action === "useBackupCode" && this.opts.mfaBackupCodes) {
+    if (input.action === "useBackupCode" && this.opts.mfa.backupCodes) {
       return this.handleBackupCode(input.code ? { code: input.code } : undefined, ctx);
     }
     const errors = validateFormInput(MfaCodeForm, input);
@@ -842,7 +862,7 @@ export class LoginWorkflow {
       await this.users.verifyMfa(ctx.username, input.code as string);
       ctx.mfaChecked = true;
       ctx.riskStepUpEvaluated = false;
-      if (this.opts.deviceTrust && this.opts.deviceTrustOptIn) {
+      if (this.opts.deviceTrust.enabled && this.opts.deviceTrust.optIn) {
         ctx.rememberDevice = Boolean(input.rememberDevice);
       }
     } catch (err) {
@@ -889,14 +909,14 @@ export class LoginWorkflow {
   @Step("device-trust")
   async deviceTrust(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
     if (!ctx.username || !this.deviceTrustStore) return undefined;
-    const ip = this.opts.deviceTrustBindsTo === "cookie+ip" ? this.resolveClientIp() : undefined;
-    const record = this.deviceTrustStore.issue(ctx.username, ip, this.opts.deviceTrustTtlMs);
+    const ip = this.opts.deviceTrust.bindsTo === "cookie+ip" ? this.resolveClientIp() : undefined;
+    const record = this.deviceTrustStore.issue(ctx.username, ip, this.opts.deviceTrust.ttlMs);
     await this.deviceTrustStore.add(record);
     ctx.deviceTrustToken = record.token;
     useResponse(current()).setCookie(
-      this.opts.deviceTrustCookieName,
+      this.opts.deviceTrust.cookieName,
       record.token,
-      cookieAttrs(this.authConfig.cookie, { maxAge: this.opts.deviceTrustTtlMs / 1000 }),
+      cookieAttrs(this.authConfig.cookie, { maxAge: this.opts.deviceTrust.ttlMs / 1000 }),
     );
     return undefined;
   }
@@ -967,7 +987,7 @@ export class LoginWorkflow {
     if (input.accepted !== true) {
       return httpInputRequired(TermsAcceptForm, ctx, { accepted: "You must accept the terms" });
     }
-    if (input.acceptedVersion !== this.opts.termsAcceptVersion) {
+    if (input.acceptedVersion !== this.opts.acceptance.termsVersion) {
       return httpInputRequired(TermsAcceptForm, ctx, {
         acceptedVersion: "Version mismatch — please retry",
       });
@@ -982,16 +1002,26 @@ export class LoginWorkflow {
     @WorkflowParam("input") input: Record<string, unknown> | undefined,
     @WorkflowParam("context") ctx: LoginWfCtx,
   ): Promise<unknown> {
-    const form = this.opts.profileCompleteForm;
+    const form = this.opts.acceptance.profileCompleteForm;
     if (!input) return httpInputRequired(form, ctx);
     const errors = validateFormInput(form, input, { partial: "deep" });
     if (errors) return httpInputRequired(form, ctx, errors);
     requireUsername(ctx);
-    if (this.opts.profileApply) {
-      await this.opts.profileApply(ctx.username, input);
-    }
+    await this.applyProfile(ctx.username, input);
     ctx.profileApplied = true;
     return undefined;
+  }
+
+  /**
+   * Persists the profile-complete payload onto the user record. Default:
+   * no-op (the workflow records the form was submitted but writes nothing).
+   * Consumers override to write into their user store.
+   */
+  protected async applyProfile(
+    _username: string,
+    _payload: Record<string, unknown>,
+  ): Promise<void> {
+    // No-op default.
   }
 
   @Step("consent-marketing")
@@ -1001,11 +1031,16 @@ export class LoginWorkflow {
   ): Promise<unknown> {
     if (!input) return httpInputRequired(ConsentMarketingForm, ctx);
     requireUsername(ctx);
-    if (this.opts.consentMarketingApply) {
-      await this.opts.consentMarketingApply(ctx.username, Boolean(input.optIn));
-    }
+    await this.applyConsentMarketing(ctx.username, Boolean(input.optIn));
     ctx.consentApplied = true;
     return undefined;
+  }
+
+  /**
+   * Persists the marketing consent decision. Default: no-op.
+   */
+  protected async applyConsentMarketing(_username: string, _optIn: boolean): Promise<void> {
+    // No-op default.
   }
 
   // ── Phase 7: tenant / persona ─────────────────────────────────────────
@@ -1014,8 +1049,8 @@ export class LoginWorkflow {
     @WorkflowParam("input") input: { tenantId?: string } | undefined,
     @WorkflowParam("context") ctx: LoginWfCtx,
   ): Promise<unknown> {
-    if (!ctx.availableTenants && ctx.username && this.opts.loadTenants) {
-      ctx.availableTenants = await this.opts.loadTenants(ctx.username);
+    if (!ctx.availableTenants && ctx.username) {
+      ctx.availableTenants = await this.loadTenants(ctx.username);
     }
     if (!input) return httpInputRequired(TenantSelectForm, ctx);
     const errors = validateFormInput(TenantSelectForm, input);
@@ -1028,13 +1063,22 @@ export class LoginWorkflow {
     return undefined;
   }
 
+  /**
+   * Resolves the user's available tenants. Default: empty array. Consumers
+   * who enable `multiContext.tenantSelect` must override this to return the
+   * tenants the user belongs to.
+   */
+  protected async loadTenants(_username: string): Promise<Array<{ id: string; name: string }>> {
+    return [];
+  }
+
   @Step("persona-select")
   async personaSelect(
     @WorkflowParam("input") input: { personaId?: string } | undefined,
     @WorkflowParam("context") ctx: LoginWfCtx,
   ): Promise<unknown> {
-    if (!ctx.availablePersonas && ctx.username && this.opts.loadPersonas) {
-      ctx.availablePersonas = await this.opts.loadPersonas(ctx.username);
+    if (!ctx.availablePersonas && ctx.username) {
+      ctx.availablePersonas = await this.loadPersonas(ctx.username);
     }
     if (!input) return httpInputRequired(PersonaSelectForm, ctx);
     const errors = validateFormInput(PersonaSelectForm, input);
@@ -1047,13 +1091,21 @@ export class LoginWorkflow {
     return undefined;
   }
 
+  /**
+   * Resolves the user's available personas. Default: empty array. Consumers
+   * who enable `multiContext.personaSelect` must override this.
+   */
+  protected async loadPersonas(_username: string): Promise<Array<{ id: string; label: string }>> {
+    return [];
+  }
+
   // ── Phase 8: session policy ───────────────────────────────────────────
   @Step("concurrency-limit")
   async concurrencyLimit(
     @WorkflowParam("input") input: { action?: string } | undefined,
     @WorkflowParam("context") ctx: LoginWfCtx,
   ): Promise<unknown> {
-    const cfg = this.opts.concurrencyLimit;
+    const cfg = this.opts.sessionPolicy.concurrencyLimit;
     if (!cfg) return undefined;
     if (cfg.onLimit === "reject") {
       throw new HttpError(429, "Session limit reached");
@@ -1067,31 +1119,52 @@ export class LoginWorkflow {
     }
     const errors = validateFormInput(ConcurrencyLimitForm, input);
     if (errors) return httpInputRequired(ConcurrencyLimitForm, ctx, errors);
-    if (input.action === "logoutOthers" && ctx.username && this.opts.logoutOtherSessions) {
-      await this.opts.logoutOtherSessions(ctx.username);
+    if (input.action === "logoutOthers" && ctx.username) {
+      await this.logoutOtherSessions(ctx.username);
     }
     return undefined;
+  }
+
+  /**
+   * Implements the "log out other sessions" branch of `sessionPolicy.concurrencyLimit`.
+   * Default: no-op. Consumers override to revoke sessions in their auth store.
+   */
+  protected async logoutOtherSessions(_username: string): Promise<void> {
+    // No-op default.
   }
 
   @Step("risk-step-up")
   async riskStepUp(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
     // Runs INSIDE the Phase 4 `while: !mfaChecked` loop (see schema above).
-    // Consumers gate via `opts.riskStepUp(ctx)`; `{require: true}` re-arms MFA
-    // for another round by clearing `mfaChecked`. `riskStepUpEvaluated` is
-    // flipped true so this step does not fire twice within one MFA round —
-    // the MFA steps reset it on next successful verification.
-    if (!this.opts.riskStepUp) return undefined;
+    // `assessRiskStepUp({require: true})` re-arms MFA for another round by
+    // clearing `mfaChecked`. `riskStepUpEvaluated` is flipped true so this
+    // step does not fire twice within one MFA round — the MFA steps reset it
+    // on next successful verification.
     ctx.riskStepUpEvaluated = true;
-    const res = await this.opts.riskStepUp(ctx);
+    const res = await this.assessRiskStepUp(ctx);
     if (res.require) {
       ctx.riskStepUpReason = res.reason ?? "additional verification required";
       ctx.mfaChecked = false;
-      ctx.pin = undefined;
-      ctx.pinExpire = undefined;
+      // delete (not `= undefined`) so the persisted ctx remains JSON-clean
+      // — AsWfStore validates state.context against a JSON-anyOf schema and
+      // chokes on explicit `undefined` entries.
+      delete ctx.pin;
+      delete ctx.pinExpire;
     } else {
-      ctx.riskStepUpReason = undefined;
+      delete ctx.riskStepUpReason;
     }
     return undefined;
+  }
+
+  /**
+   * Risk-step-up assessor. Default: never requires an extra factor. Consumers
+   * override to inspect ctx (IP, geo, time since last login, etc.) and return
+   * `{require: true, reason: '…'}` to force an additional MFA round.
+   */
+  protected async assessRiskStepUp(
+    _ctx: LoginWfCtx,
+  ): Promise<{ require: boolean; reason?: string }> {
+    return { require: false };
   }
 
   // ── Phase 9: finalize ─────────────────────────────────────────────────
@@ -1102,7 +1175,7 @@ export class LoginWorkflow {
     ctx.tokensIssued = true;
     // Build response payload + cookies and stash on the finished response.
     // The `redirect` step (terminal) overrides with a redirect type when
-    // `opts.redirect` is set; otherwise the data response sticks.
+    // `resolveRedirect` returns a URL; otherwise the data response sticks.
     useWfFinished().set({
       type: "data",
       value: buildLoginResponse(this.authConfig, ctx.username, issue),
@@ -1139,9 +1212,8 @@ export class LoginWorkflow {
 
   @Step("redirect")
   redirect(@WorkflowParam("context") ctx: LoginWfCtx): undefined {
-    // Compute the target URL — when 'referer' or 'home', overrides the issue
-    // step's data finish with a redirect; when a function returns falsy, keep
-    // the data response from `issue`.
+    // Compute the target URL — when set, overrides the issue step's data
+    // finish with a redirect; otherwise keep the data response from `issue`.
     const url = this.resolveRedirect(ctx);
     if (!url) return undefined;
     const existing = useWfFinished().get();
@@ -1154,26 +1226,18 @@ export class LoginWorkflow {
     return undefined;
   }
 
-  // ── Helpers ───────────────────────────────────────────────────────────
-  private resolveClientIp(): string | undefined {
-    try {
-      const req = useRequest(current());
-      // wooks getIp(): some adapters return null for tests; cast loosely.
-      const ip = (req as unknown as { getIp?: () => string | undefined }).getIp?.();
-      return ip || undefined;
-    } catch {
-      return undefined;
-    }
-  }
-
-  private resolveRedirect(ctx: LoginWfCtx): string | undefined {
-    const r = this.opts.redirect;
-    if (typeof r === "function") return r(ctx) || undefined;
+  /**
+   * Resolves the post-login redirect URL. Default reads
+   * `finalize.redirect`: `'home'` → `/`; `'referer'` → request `Referer`
+   * header (returns undefined when absent so the `issue` step's data
+   * response stands — typical for SPAs/API clients).
+   *
+   * Consumers who want a computed redirect override this method.
+   */
+  protected resolveRedirect(_ctx: LoginWfCtx): string | undefined {
+    const r = this.opts.finalize.redirect;
     if (r === "home") return "/";
     if (r === "referer") {
-      // Only override to a redirect when a real Referer header is present;
-      // otherwise let the `issue` step's data response stand (the typical
-      // happy path for SPAs / API clients with no Referer).
       try {
         const req = useRequest(current());
         const headers = (
@@ -1187,5 +1251,17 @@ export class LoginWorkflow {
       }
     }
     return undefined;
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────
+  private resolveClientIp(): string | undefined {
+    try {
+      const req = useRequest(current());
+      // wooks getIp(): some adapters return null for tests; cast loosely.
+      const ip = (req as unknown as { getIp?: () => string | undefined }).getIp?.();
+      return ip || undefined;
+    } catch {
+      return undefined;
+    }
   }
 }

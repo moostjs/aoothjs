@@ -1,17 +1,79 @@
 /**
  * Per-option behaviour tests for `LoginWorkflow` — one (or two) cases per
- * `LoginWorkflowOptions` flag flagged in WF_LOGIN.md §"Tasks" item #6.
+ * `LoginWorkflowOpts` flag flagged in WF_LOGIN.md §"Tasks" item #6.
  *
  * Anti-test guard (Rule 9): every test below asserts an observable outcome
  * that DIRECTLY depends on the flag under test — i.e. flipping the flag (or
  * removing the relevant production-code branch) would make the test fail.
  * No "step count == N" tests; no full-body snapshots.
+ *
+ * Phase-2 reshape: callbacks (`recoveryUrlBuilder`, `riskStepUp`,
+ * `redirect`-as-function) are now `protected` methods on `LoginWorkflow`.
+ * Tests that exercised those callbacks build a tiny subclass and pass it via
+ * `loginWorkflowClass`.
  */
-import { generateTotpCode, generateTotpSecret } from "@aoothjs/user";
+import { AuthCredential, type EmailSender, type SmsSender } from "@aoothjs/auth";
+import { generateTotpCode, generateTotpSecret, UserService } from "@aoothjs/user";
+import { Controller, Inherit, Inject, Injectable, Optional } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
-import { LoginWorkflowOptions } from "../workflows/index";
+import { MoostAuthConfig } from "../auth.config";
+import type { AuditEmitter } from "../audit/index";
+import type { DeviceTrustStore } from "../device-trust/index";
+import { type LoginWfCtx, LoginWorkflow, type LoginWorkflowOpts } from "../workflows/index";
 import { prepareWfApp, seedActiveUser } from "./workflow-utils";
+
+/**
+ * Build a `LoginWorkflow` subclass with a single override. Mirrors the
+ * canonical consumer pattern (see TASKS.md §"Probe outcomes") — re-decorates
+ * the class and re-declares the ctor so DI metadata regenerates.
+ */
+function makeLoginSubclass(
+  overrides: Partial<{
+    buildRecoveryUrl: (this: LoginWorkflow, username?: string) => string;
+    assessRiskStepUp: (
+      this: LoginWorkflow,
+      ctx: LoginWfCtx,
+    ) => Promise<{ require: boolean; reason?: string }>;
+    resolveRedirect: (this: LoginWorkflow, ctx: LoginWfCtx) => string | undefined;
+  }>,
+): typeof LoginWorkflow {
+  @Inherit()
+  @Injectable("FOR_EVENT")
+  @Controller()
+  class SubclassedLogin extends LoginWorkflow {
+    constructor(
+      opts: LoginWorkflowOpts,
+      users: UserService,
+      auth: AuthCredential,
+      authConfig: MoostAuthConfig,
+      @Optional() @Inject("EmailSender") mailer?: EmailSender,
+      @Optional() @Inject("SmsSender") sms?: SmsSender,
+      @Optional() @Inject("DeviceTrustStore") deviceTrustStore?: DeviceTrustStore,
+      @Optional() @Inject("AuditEmitter") audit?: AuditEmitter,
+    ) {
+      super(opts, users, auth, authConfig, mailer, sms, deviceTrustStore, audit);
+    }
+    protected override buildRecoveryUrl(username?: string): string {
+      return overrides.buildRecoveryUrl
+        ? overrides.buildRecoveryUrl.call(this, username)
+        : super.buildRecoveryUrl(username);
+    }
+    protected override async assessRiskStepUp(
+      ctx: LoginWfCtx,
+    ): Promise<{ require: boolean; reason?: string }> {
+      return overrides.assessRiskStepUp
+        ? overrides.assessRiskStepUp.call(this, ctx)
+        : super.assessRiskStepUp(ctx);
+    }
+    protected override resolveRedirect(ctx: LoginWfCtx): string | undefined {
+      return overrides.resolveRedirect
+        ? overrides.resolveRedirect.call(this, ctx)
+        : super.resolveRedirect(ctx);
+    }
+  }
+  return SubclassedLogin;
+}
 
 /** Helper: drive credentials → first paused/finished state. */
 async function startAndCredentials(
@@ -27,17 +89,16 @@ async function startAndCredentials(
   });
 }
 
-describe("LoginWorkflowOptions — Phase 1 alt-action redirects (credentials step)", () => {
+describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)", () => {
   // Phase 1 alt-actions short-circuit via the `ALT_HANDLED` sentinel — the
   // handler sets a `useWfFinished({type:'redirect', value: ...})` and returns
   // the sentinel; the caller returns `undefined` without running form
   // validation (the payload lacks the password field by design).
-  it("forgotPasswordAction: 'forgotPassword' alt → redirect to recoveryUrl with typed username", async () => {
+  it("alternateCredentials.forgotPassword: 'forgotPassword' alt → redirect to recoveryUrl with typed username", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({
-        forgotPasswordAction: true,
-        recoveryUrl: "/recover",
-      }),
+      loginOpts: {
+        alternateCredentials: { forgotPassword: true, recoveryUrl: "/recover" },
+      },
     });
     const r1 = await app.trigger({ wfid: "auth.login" });
     const r2 = await app.trigger({
@@ -48,11 +109,13 @@ describe("LoginWorkflowOptions — Phase 1 alt-action redirects (credentials ste
     expect(r2.location).toBe("/recover?username=typed-user");
   });
 
-  it("forgotPasswordAction: respects recoveryUrlBuilder when supplied", async () => {
+  it("buildRecoveryUrl override: subclass returns custom URL", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({
-        forgotPasswordAction: true,
-        recoveryUrlBuilder: (u) => `#/forgot?u=${u ?? ""}`,
+      loginOpts: { alternateCredentials: { forgotPassword: true } },
+      loginWorkflowClass: makeLoginSubclass({
+        buildRecoveryUrl(username) {
+          return `#/forgot?u=${username ?? ""}`;
+        },
       }),
     });
     const r1 = await app.trigger({ wfid: "auth.login" });
@@ -63,14 +126,11 @@ describe("LoginWorkflowOptions — Phase 1 alt-action redirects (credentials ste
     expect(r2.location).toBe("#/forgot?u=bob");
   });
 
-  it("forgotPasswordAction: false → action is ignored (no redirect, falls through to validation)", async () => {
-    // This one passes today both because forgotPasswordAction=false (handler
-    // doesn't recognize the action) AND because of BUG-LOGIN-1 (handler
-    // returns undefined → falls through to validation). When BUG-LOGIN-1 is
-    // fixed, the test should still pass — the handler returns undefined when
-    // it can't route the action, and validation kicks in.
+  it("alternateCredentials.forgotPassword: false → action is ignored (no redirect, falls through to validation)", async () => {
+    // The handler returns undefined when it can't route the action, and
+    // validation kicks in.
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({ forgotPasswordAction: false }),
+      loginOpts: { alternateCredentials: { forgotPassword: false } },
     });
     const r1 = await app.trigger({ wfid: "auth.login" });
     const r2 = await app.trigger({
@@ -81,12 +141,11 @@ describe("LoginWorkflowOptions — Phase 1 alt-action redirects (credentials ste
     expect(r2.body?.errors).toBeTruthy();
   });
 
-  it("signupAction: 'signup' alt → redirect to signupUrl", async () => {
+  it("alternateCredentials.signup: 'signup' alt → redirect to signupUrl", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({
-        signupAction: true,
-        signupUrl: "/sign-me-up",
-      }),
+      loginOpts: {
+        alternateCredentials: { signup: true, signupUrl: "/sign-me-up" },
+      },
     });
     const r1 = await app.trigger({ wfid: "auth.login" });
     const r2 = await app.trigger({
@@ -97,14 +156,16 @@ describe("LoginWorkflowOptions — Phase 1 alt-action redirects (credentials ste
     expect(r2.location).toBe("/sign-me-up");
   });
 
-  it("ssoActions: matching provider id → redirect to provider url", async () => {
+  it("alternateCredentials.ssoProviders: matching provider id → redirect to provider url", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({
-        ssoActions: [
-          { id: "google", label: "Sign in with Google", url: "https://idp.example/oauth/google" },
-          { id: "okta", label: "Okta", url: "https://idp.example/oauth/okta" },
-        ],
-      }),
+      loginOpts: {
+        alternateCredentials: {
+          ssoProviders: [
+            { id: "google", label: "Sign in with Google", url: "https://idp.example/oauth/google" },
+            { id: "okta", label: "Okta", url: "https://idp.example/oauth/okta" },
+          ],
+        },
+      },
     });
     const r1 = await app.trigger({ wfid: "auth.login" });
     const r2 = await app.trigger({
@@ -114,11 +175,9 @@ describe("LoginWorkflowOptions — Phase 1 alt-action redirects (credentials ste
     expect(r2.location).toBe("https://idp.example/oauth/okta");
   });
 
-  it("magicLinkAction: 'magicLink' alt → HttpError 501 (stub, see WF_LOGIN §Phase 1 doc)", async () => {
-    // magicLink throws explicitly, so BUG-LOGIN-1 doesn't apply here — the
-    // throw aborts the step before fall-through to form validation.
+  it("alternateCredentials.magicLink: 'magicLink' alt → HttpError 501 (stub, see WF_LOGIN §Phase 1 doc)", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({ magicLinkAction: true }),
+      loginOpts: { alternateCredentials: { magicLink: true } },
     });
     const r1 = await app.trigger({ wfid: "auth.login" });
     const r2 = await app.trigger({
@@ -129,13 +188,13 @@ describe("LoginWorkflowOptions — Phase 1 alt-action redirects (credentials ste
   });
 });
 
-describe("LoginWorkflowOptions — Phase 2 password guards", () => {
-  it("passwordInitialGuard true + user.password.isInitial → routes to create-password-form", async () => {
+describe("LoginWorkflowOpts — Phase 2 password guards", () => {
+  it("guards.passwordInitial true + user.password.isInitial → routes to create-password-form", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({
-        passwordInitialGuard: true,
-        mfaEnabled: false, // skip MFA so we observe the password-change branch directly
-      }),
+      loginOpts: {
+        guards: { passwordInitial: true },
+        mfa: { enabled: false }, // skip MFA so we observe the password-change branch directly
+      },
     });
     // createUser without a password marks `password.isInitial = true` (see UserService.createUser).
     await app.users.createUser("alice");
@@ -158,12 +217,12 @@ describe("LoginWorkflowOptions — Phase 2 password guards", () => {
     expect(JSON.stringify(payload)).toMatch(/newPassword/);
   });
 
-  it("passwordInitialGuard false → skip the password-change branch even when isInitial is true", async () => {
+  it("guards.passwordInitial false → skip the password-change branch even when isInitial is true", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({
-        passwordInitialGuard: false,
-        mfaEnabled: false,
-      }),
+      loginOpts: {
+        guards: { passwordInitial: false },
+        mfa: { enabled: false },
+      },
     });
     await app.users.createUser("alice", "Password123");
     await app.users.activateAccount("alice");
@@ -177,10 +236,10 @@ describe("LoginWorkflowOptions — Phase 2 password guards", () => {
   });
 });
 
-describe("LoginWorkflowOptions — Phase 4 MFA enable/transports", () => {
-  it("mfaEnabled false → Phase 4 skipped entirely (credentials → issue) even with enrolled TOTP", async () => {
+describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
+  it("mfa.enabled false → Phase 4 skipped entirely (credentials → issue) even with enrolled TOTP", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({ mfaEnabled: false }),
+      loginOpts: { mfa: { enabled: false } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const secret = generateTotpSecret();
@@ -192,9 +251,9 @@ describe("LoginWorkflowOptions — Phase 4 MFA enable/transports", () => {
     expect(typeof r2.body?.accessToken).toBe("string");
   });
 
-  it("mfaTransports: ['email'] + user has only TOTP enrolled → MFA short-circuits (no methods after filter)", async () => {
+  it("mfa.transports: ['email'] + user has only TOTP enrolled → MFA short-circuits (no methods after filter)", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({ mfaTransports: ["email"] }),
+      loginOpts: { mfa: { transports: ["email"] } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const secret = generateTotpSecret();
@@ -206,9 +265,9 @@ describe("LoginWorkflowOptions — Phase 4 MFA enable/transports", () => {
     expect(typeof r2.body?.accessToken).toBe("string");
   });
 
-  it("mfaTransports: ['email', 'totp'] + user has TOTP only → auto-picks TOTP (1 method, no select2fa)", async () => {
+  it("mfa.transports: ['email', 'totp'] + user has TOTP only → auto-picks TOTP (1 method, no select2fa)", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({ mfaTransports: ["email", "totp"] }),
+      loginOpts: { mfa: { transports: ["email", "totp"] } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const secret = generateTotpSecret();
@@ -222,13 +281,13 @@ describe("LoginWorkflowOptions — Phase 4 MFA enable/transports", () => {
     expect(r3.body?.userId).toBe("alice");
   });
 
-  it("mfaTransports: ['sms'] WITHOUT registered SmsSender → fail loud (500 with SmsSender message)", async () => {
+  it("mfa.transports: ['sms'] WITHOUT registered SmsSender → fail loud (500 with SmsSender message)", async () => {
     // validateOpts runs inside the workflow's `init` step (one-shot via the
     // module-level WeakSet guard). The throw surfaces at the HTTP layer as a
     // 500 with the validator's exact message — that's the user-visible
     // fail-loud signal.
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({ mfaTransports: ["sms"] }),
+      loginOpts: { mfa: { transports: ["sms"] } },
       registerSmsSender: false,
     });
     const r = await app.trigger({ wfid: "auth.login" });
@@ -236,18 +295,18 @@ describe("LoginWorkflowOptions — Phase 4 MFA enable/transports", () => {
     expect(JSON.stringify(r.body)).toMatch(/SmsSender/);
   });
 
-  it("mfaTransports empty with mfaEnabled true → fail loud (500 with 'mfaTransports cannot be empty')", async () => {
+  it("mfa.transports empty with mfa.enabled true → fail loud (500 with 'mfa.transports cannot be empty')", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({ mfaTransports: [], mfaEnabled: true }),
+      loginOpts: { mfa: { transports: [], enabled: true } },
     });
     const r = await app.trigger({ wfid: "auth.login" });
     expect(r.status).toBe(500);
-    expect(JSON.stringify(r.body)).toMatch(/mfaTransports.*empty/);
+    expect(JSON.stringify(r.body)).toMatch(/mfa\.transports.*empty/);
   });
 
-  it("deviceTrust true WITHOUT registered DeviceTrustStore → fail loud (500 with DeviceTrustStore message)", async () => {
+  it("deviceTrust.enabled true WITHOUT registered DeviceTrustStore → fail loud (500 with DeviceTrustStore message)", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({ deviceTrust: true }),
+      loginOpts: { deviceTrust: { enabled: true } },
       deviceTrustStore: null,
     });
     const r = await app.trigger({ wfid: "auth.login" });
@@ -255,11 +314,9 @@ describe("LoginWorkflowOptions — Phase 4 MFA enable/transports", () => {
     expect(JSON.stringify(r.body)).toMatch(/DeviceTrustStore/);
   });
 
-  it("mfaTransports: ['email'] (default user has TOTP only) — falls back to issue (no enrolled allowed methods)", async () => {
-    // Sanity sibling of the test above — using a user with NO MFA at all,
-    // proving the same fall-through works when the user has nothing enrolled.
+  it("mfa.transports: ['email'] (default user has TOTP only) — falls back to issue (no enrolled allowed methods)", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({ mfaTransports: ["email"] }),
+      loginOpts: { mfa: { transports: ["email"] } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
@@ -267,14 +324,16 @@ describe("LoginWorkflowOptions — Phase 4 MFA enable/transports", () => {
   });
 });
 
-describe("LoginWorkflowOptions — Phase 4 device trust", () => {
+describe("LoginWorkflowOpts — Phase 4 device trust", () => {
   it("deviceTrust true + valid cookie → MFA skipped (mfaChecked set in check-trusted-device)", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({
-        deviceTrust: true,
-        deviceTrustSkipsMfa: true,
-        deviceTrustOptIn: false, // silently trust → device-trust step writes cookie unconditionally
-      }),
+      loginOpts: {
+        deviceTrust: {
+          enabled: true,
+          skipsMfa: true,
+          optIn: false, // silently trust → device-trust step writes cookie unconditionally
+        },
+      },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const secret = generateTotpSecret();
@@ -304,11 +363,10 @@ describe("LoginWorkflowOptions — Phase 4 device trust", () => {
 
   it("deviceTrust true + NO cookie → marks newDevice, runs MFA normally, persists cookie", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({
-        deviceTrust: true,
-        deviceTrustOptIn: false, // unconditional persist on successful MFA
-        mfaTransports: ["totp"],
-      }),
+      loginOpts: {
+        deviceTrust: { enabled: true, optIn: false }, // unconditional persist on successful MFA
+        mfa: { transports: ["totp"] },
+      },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const secret = generateTotpSecret();
@@ -324,7 +382,7 @@ describe("LoginWorkflowOptions — Phase 4 device trust", () => {
     expect(trustCookie).toBeTruthy();
   });
 
-  it("deviceTrust + deviceTrustBindsTo='cookie+ip': cookie issued for IP A is rejected when verified with IP B", async () => {
+  it("deviceTrust + deviceTrust.bindsTo='cookie+ip': cookie issued for IP A is rejected when verified with IP B", async () => {
     // Unit-level proof via the store (workflow-level testing requires the
     // request adapter to expose req.ip, which the in-process Wooks test
     // harness doesn't surface for synthetic requests). The store IS the
@@ -338,10 +396,10 @@ describe("LoginWorkflowOptions — Phase 4 device trust", () => {
   });
 });
 
-describe("LoginWorkflowOptions — Phase 9 finalize (auditLogin, notifyNewDevice, redirect)", () => {
-  it("auditLogin true → emits one 'login.success' event with userId + method", async () => {
+describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, redirect)", () => {
+  it("finalize.auditLogin true → emits one 'login.success' event with userId + method", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({ auditLogin: true, mfaEnabled: false }),
+      loginOpts: { finalize: { auditLogin: true }, mfa: { enabled: false } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     await startAndCredentials(app, "alice", "Password123");
@@ -353,23 +411,22 @@ describe("LoginWorkflowOptions — Phase 9 finalize (auditLogin, notifyNewDevice
     });
   });
 
-  it("auditLogin false → emits NO events", async () => {
+  it("finalize.auditLogin false → emits NO events", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({ auditLogin: false, mfaEnabled: false }),
+      loginOpts: { finalize: { auditLogin: false }, mfa: { enabled: false } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     await startAndCredentials(app, "alice", "Password123");
     expect(app.auditEvents.length).toBe(0);
   });
 
-  it("notifyNewDevice true + newDevice → sends 'notifyNewDevice' email after MFA", async () => {
+  it("finalize.notifyNewDevice true + newDevice → sends 'notifyNewDevice' email after MFA", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({
-        notifyNewDevice: true,
-        deviceTrust: true,
-        deviceTrustOptIn: false, // unconditional trust persist so newDevice flows through
-        mfaTransports: ["totp"],
-      }),
+      loginOpts: {
+        finalize: { notifyNewDevice: true },
+        deviceTrust: { enabled: true, optIn: false }, // unconditional trust persist so newDevice flows through
+        mfa: { transports: ["totp"] },
+      },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     // Need a confirmed email channel so notifyNewDevice has a recipient.
@@ -395,14 +452,13 @@ describe("LoginWorkflowOptions — Phase 9 finalize (auditLogin, notifyNewDevice
     expect(newDevEmail?.recipient).toBe("alice@example.com");
   });
 
-  it("notifyNewDevice false → no notifyNewDevice email even after MFA success", async () => {
+  it("finalize.notifyNewDevice false → no notifyNewDevice email even after MFA success", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({
-        notifyNewDevice: false,
-        deviceTrust: true,
-        deviceTrustOptIn: false,
-        mfaTransports: ["totp"],
-      }),
+      loginOpts: {
+        finalize: { notifyNewDevice: false },
+        deviceTrust: { enabled: true, optIn: false },
+        mfa: { transports: ["totp"] },
+      },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     await app.users.addMfaMethod("alice", {
@@ -423,9 +479,9 @@ describe("LoginWorkflowOptions — Phase 9 finalize (auditLogin, notifyNewDevice
     expect(app.emails.find((e) => e.kind === "notifyNewDevice")).toBeUndefined();
   });
 
-  it("redirect: 'home' → 302 to /", async () => {
+  it("finalize.redirect: 'home' → 302 to /", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({ redirect: "home", mfaEnabled: false }),
+      loginOpts: { finalize: { redirect: "home" }, mfa: { enabled: false } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
@@ -433,11 +489,13 @@ describe("LoginWorkflowOptions — Phase 9 finalize (auditLogin, notifyNewDevice
     expect(r2.location).toBe("/");
   });
 
-  it("redirect: function → 302 to function's return value", async () => {
+  it("resolveRedirect override → 302 to overridden URL", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({
-        redirect: (ctx) => `/welcome/${ctx.username ?? "guest"}`,
-        mfaEnabled: false,
+      loginOpts: { mfa: { enabled: false } },
+      loginWorkflowClass: makeLoginSubclass({
+        resolveRedirect(ctx) {
+          return `/welcome/${ctx.username ?? "guest"}`;
+        },
       }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -445,9 +503,9 @@ describe("LoginWorkflowOptions — Phase 9 finalize (auditLogin, notifyNewDevice
     expect(r2.location).toBe("/welcome/alice");
   });
 
-  it("redirect: 'referer' with no Referer header → data response (no redirect override)", async () => {
+  it("finalize.redirect: 'referer' with no Referer header → data response (no redirect override)", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({ redirect: "referer", mfaEnabled: false }),
+      loginOpts: { finalize: { redirect: "referer" }, mfa: { enabled: false } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
@@ -456,13 +514,13 @@ describe("LoginWorkflowOptions — Phase 9 finalize (auditLogin, notifyNewDevice
   });
 });
 
-describe("LoginWorkflowOptions — Phase 6 terms acceptance", () => {
-  it("termsAcceptVersion set + user.termsVersion mismatched → terms-accept form fires", async () => {
+describe("LoginWorkflowOpts — Phase 6 terms acceptance", () => {
+  it("acceptance.termsVersion set + user.termsVersion mismatched → terms-accept form fires", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({
-        termsAcceptVersion: "v2",
-        mfaEnabled: false,
-      }),
+      loginOpts: {
+        acceptance: { termsVersion: "v2" },
+        mfa: { enabled: false },
+      },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
@@ -478,12 +536,9 @@ describe("LoginWorkflowOptions — Phase 6 terms acceptance", () => {
     expect(r3.body?.userId).toBe("alice");
   });
 
-  it("termsAcceptVersion unset → step is skipped", async () => {
+  it("acceptance.termsVersion unset → step is skipped", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({
-        // termsAcceptVersion explicitly undefined
-        mfaEnabled: false,
-      }),
+      loginOpts: { mfa: { enabled: false } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
@@ -491,12 +546,12 @@ describe("LoginWorkflowOptions — Phase 6 terms acceptance", () => {
     expect(r2.body?.userId).toBe("alice");
   });
 
-  it("termsAcceptVersion: mismatched 'acceptedVersion' on submit → form error 'Version mismatch'", async () => {
+  it("acceptance.termsVersion: mismatched 'acceptedVersion' on submit → form error 'Version mismatch'", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({
-        termsAcceptVersion: "v2",
-        mfaEnabled: false,
-      }),
+      loginOpts: {
+        acceptance: { termsVersion: "v2" },
+        mfa: { enabled: false },
+      },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
@@ -509,21 +564,19 @@ describe("LoginWorkflowOptions — Phase 6 terms acceptance", () => {
   });
 });
 
-describe("LoginWorkflowOptions — Phase 8 session policy", () => {
-  it("concurrencyLimit reject + ctx.activeSessions over max → 429", async () => {
+describe("LoginWorkflowOpts — Phase 8 session policy", () => {
+  it("sessionPolicy.concurrencyLimit reject + ctx.activeSessions over max → 429", async () => {
     // Force activeSessions by directly setting on ctx — the workflow defers to
-    // ctx.activeSessions which isn't auto-populated; setting it would require
-    // a `countActiveSessions` callback. The simplest proof is: when activeSessions
-    // is unset, the step never trips (condition `(ctx.activeSessions ?? 0) >= max`).
-    // To prove the rejection path, we exercise it via the condition that DOES
-    // trip — by pre-populating activeSessions via a custom 'init' on the
-    // workflow is not exposed. Instead, we test the negative path here and the
-    // alt-action 'cancel' path in the alt-actions spec.
+    // ctx.activeSessions which isn't auto-populated. To prove the rejection
+    // path, we exercise it via the condition that DOES trip — by pre-populating
+    // activeSessions via a custom 'init' on the workflow is not exposed.
+    // Instead, we test the negative path here and the alt-action 'cancel'
+    // path in the alt-actions spec.
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({
-        concurrencyLimit: { max: 2, onLimit: "reject" },
-        mfaEnabled: false,
-      }),
+      loginOpts: {
+        sessionPolicy: { concurrencyLimit: { max: 2, onLimit: "reject" } },
+        mfa: { enabled: false },
+      },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
@@ -532,15 +585,17 @@ describe("LoginWorkflowOptions — Phase 8 session policy", () => {
   });
 
   // Phase 8 `risk-step-up` runs inside the Phase 4 `while: !mfaChecked` loop;
-  // a `require: true` outcome clears `mfaChecked` so MFA re-runs for the extra
-  // factor. `riskStepUpEnabled` (JSON-safe projection of `!!opts.riskStepUp`,
-  // populated by `snapshotOpts`) gates the schema condition.
-  it("riskStepUp callback returning require:true forces additional MFA re-run", async () => {
+  // a `require: true` outcome clears `mfaChecked` so MFA re-runs for the
+  // extra factor. The subclass overrides `assessRiskStepUp` — the schema
+  // condition no longer gates on a presence-projection (always runs when
+  // mfaChecked and not yet evaluated), and a `require:false` outcome lets
+  // the loop exit.
+  it("assessRiskStepUp override returning require:true forces additional MFA re-run", async () => {
     let calls = 0;
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({
-        mfaTransports: ["totp"],
-        riskStepUp: async () => {
+      loginOpts: { mfa: { transports: ["totp"] } },
+      loginWorkflowClass: makeLoginSubclass({
+        async assessRiskStepUp() {
           calls++;
           return { require: calls === 1, reason: "unusual" };
         },

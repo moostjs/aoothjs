@@ -14,7 +14,6 @@
 import { generateTotpSecret } from "@aoothjs/user";
 import { describe, expect, it } from "vite-plus/test";
 
-import { LoginWorkflowOptions } from "../workflows/index";
 import { prepareWfApp, seedActiveUser } from "./workflow-utils";
 
 /** Drives credentials + select2fa pick to land at `pincode-check-login` (email transport). */
@@ -50,7 +49,7 @@ async function driveToPincodeCheck(
 describe("LoginWorkflow alt-actions — select2fa", () => {
   it("useBackupCode → pauses for MfaCodeForm (backup code entry)", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({ mfaBackupCodes: true }),
+      loginOpts: { mfa: { backupCodes: true } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     await app.users.addMfaMethod("alice", {
@@ -81,9 +80,7 @@ describe("LoginWorkflow alt-actions — select2fa", () => {
 describe("LoginWorkflow alt-actions — pincode-check-login", () => {
   it("resend within pinTimeout → form error 'Please wait Ns'", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({
-        pincodeResendTimeoutMs: 60_000, // generous so we land inside the window
-      }),
+      loginOpts: { mfa: { pincodeResendTimeoutMs: 60_000 } }, // generous so we land inside the window
     });
     const { wfs } = await driveToPincodeCheck(app);
     const r = await app.trigger({ wfs, input: { action: "resend" } });
@@ -93,7 +90,7 @@ describe("LoginWorkflow alt-actions — pincode-check-login", () => {
 
   it("useBackupCode → branches to backup-code entry (MfaCodeForm)", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({ mfaBackupCodes: true }),
+      loginOpts: { mfa: { backupCodes: true } },
     });
     const { wfs } = await driveToPincodeCheck(app);
     const r = await app.trigger({ wfs, input: { action: "useBackupCode" } });
@@ -131,7 +128,7 @@ describe("LoginWorkflow alt-actions — pincode-check-login", () => {
 describe("LoginWorkflow alt-actions — mfa-totp", () => {
   it("useBackupCode → branches to backup-code entry", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({ mfaBackupCodes: true, mfaTransports: ["totp"] }),
+      loginOpts: { mfa: { backupCodes: true, transports: ["totp"] } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const secret = generateTotpSecret();
@@ -154,7 +151,7 @@ describe("LoginWorkflow alt-actions — mfa-totp", () => {
   // Same loop wrapping as BUG-LOGIN-3 — `useDifferentMethod` re-enters select2fa.
   it("useDifferentMethod → loops back to select2fa", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({ mfaTransports: ["email", "totp"] }),
+      loginOpts: { mfa: { transports: ["email", "totp"] } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     await app.users.addMfaMethod("alice", {
@@ -203,10 +200,10 @@ describe("LoginWorkflow alt-actions — create-password-form", () => {
   // `!ctx.aborted` so the abort response set via `useWfFinished()` survives.
   it("'logout' alt → aborts workflow with { aborted: true, reason: 'logout' }", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({
-        passwordInitialGuard: true,
-        mfaEnabled: false,
-      }),
+      loginOpts: {
+        guards: { passwordInitial: true },
+        mfa: { enabled: false },
+      },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const store = (app.users as unknown as { store: { update: Function } }).store;
@@ -228,10 +225,10 @@ describe("LoginWorkflow alt-actions — terms-accept", () => {
   // Abort alt-action gates the schema via `ctx.aborted` (see BUG-LOGIN-5 fix).
   it("'decline' alt → aborts workflow with friendly 'You must accept to continue' message", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({
-        termsAcceptVersion: "v2",
-        mfaEnabled: false,
-      }),
+      loginOpts: {
+        acceptance: { termsVersion: "v2" },
+        mfa: { enabled: false },
+      },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r1 = await app.trigger({ wfid: "auth.login" });
@@ -252,10 +249,10 @@ describe("LoginWorkflow alt-actions — terms-accept", () => {
 
   it("accept submit with mismatched version → form error", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({
-        termsAcceptVersion: "v2",
-        mfaEnabled: false,
-      }),
+      loginOpts: {
+        acceptance: { termsVersion: "v2" },
+        mfa: { enabled: false },
+      },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r1 = await app.trigger({ wfid: "auth.login" });
@@ -277,10 +274,10 @@ describe("LoginWorkflow alt-actions — terms-accept", () => {
     // branch runs. Either rejection path satisfies the spec intent: the user
     // can't proceed without checking the box.
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({
-        termsAcceptVersion: "v2",
-        mfaEnabled: false,
-      }),
+      loginOpts: {
+        acceptance: { termsVersion: "v2" },
+        mfa: { enabled: false },
+      },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r1 = await app.trigger({ wfid: "auth.login" });

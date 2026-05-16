@@ -1,7 +1,9 @@
 export { LoginWorkflow, type LoginWfCtx, type MfaSummary } from "./login.workflow";
 export {
   DEFAULT_MFA_CODE_TTL_MS,
-  LoginWorkflowOptions,
+  type LoginWorkflowOpts,
+  type ResolvedLoginWorkflowOpts,
+  mergeLoginOpts,
   type LoginRedirect,
   type MfaTransport,
   type SsoProvider,

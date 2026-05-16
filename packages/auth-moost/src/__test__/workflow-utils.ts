@@ -50,7 +50,7 @@ import {
   InviteWorkflow,
   InviteWorkflowOptions,
   LoginWorkflow,
-  LoginWorkflowOptions,
+  type LoginWorkflowOpts,
   RecoveryWorkflow,
   RecoveryWorkflowOptions,
 } from "../workflows/index";
@@ -133,20 +133,34 @@ export interface PrepareWfOpts {
   /** Forwarded to RecoveryWorkflowOptions — maps recovery email → username. */
   emailToUserId?: RecoveryWorkflowOptions["emailToUserId"];
   /**
-   * Replace the default `LoginWorkflowOptions` instance. The provider is
-   * registered via DI exactly once per app spin-up, so each test that needs a
-   * different feature combination supplies its own here.
+   * Nested-pojo opts handed to `LoginWorkflow`'s constructor. Per-test feature
+   * combinations supply their own here.
    */
-  loginOptions?: LoginWorkflowOptions;
+  loginOpts?: LoginWorkflowOpts;
+  /**
+   * Consumer subclass of `LoginWorkflow` registered in place of the base
+   * class. Use this when a test needs to override a `protected` method
+   * (`assessRiskStepUp`, `buildRecoveryUrl`, `resolveRedirect`, etc.). The
+   * subclass MUST re-apply `@Inherit() @Injectable('FOR_EVENT') @Controller()`
+   * and re-declare the ctor signature — see TASKS.md §"Probe outcomes".
+   */
+  loginWorkflowClass?: typeof LoginWorkflow;
   /**
    * When `false`, the `SmsSender` DI token is NOT registered — used by the
    * boot-time fail-loud test for `mfaTransports: ['sms']`.
    */
   registerSmsSender?: boolean;
   /**
+   * When `false`, the `EmailSender` DI token is NOT registered — used by the
+   * boot-time fail-loud tests for `mfaTransports: ['email']` and
+   * `finalize.notifyNewDevice: true`. The capture array (`emails`) is still
+   * returned but stays empty because nothing is wired.
+   */
+  registerEmailSender?: boolean;
+  /**
    * Inject a `DeviceTrustStore` against the `DeviceTrustStore` DI token. When
    * omitted, defaults to a fresh `DeviceTrustStoreMemory('test-trust-secret')`
-   * IF `loginOptions.deviceTrust === true` — otherwise unregistered (so the
+   * IF `loginOpts.deviceTrust.enabled === true` — otherwise unregistered (so the
    * boot-time validator throws for misconfigured opts).
    */
   deviceTrustStore?: DeviceTrustStore | null;
@@ -225,22 +239,27 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
   const recoveryTokenTtlMs = opts.recoveryTokenTtlMs ?? DEFAULT_RECOVERY_TOKEN_TTL_MS;
   const inviteTokenTtlMs = opts.inviteTokenTtlMs ?? DEFAULT_INVITE_TOKEN_TTL_MS;
 
-  const loginOptions = opts.loginOptions ?? new LoginWorkflowOptions();
+  const loginOpts: LoginWorkflowOpts = opts.loginOpts ?? {};
   const registerSms = opts.registerSmsSender !== false;
-  // When loginOptions.deviceTrust is on, default-wire a fresh memory store so
-  // tests that just flip the flag don't have to construct one too. Tests
-  // explicitly passing `deviceTrustStore: null` skip registration to exercise
-  // the boot-time fail-loud path.
+  const registerEmail = opts.registerEmailSender !== false;
+  // When loginOpts.deviceTrust.enabled is on, default-wire a fresh memory
+  // store so tests that just flip the flag don't have to construct one too.
+  // Tests explicitly passing `deviceTrustStore: null` skip registration to
+  // exercise the boot-time fail-loud path.
+  const deviceTrustEnabled = loginOpts.deviceTrust?.enabled === true;
   const deviceTrustStore: DeviceTrustStore | undefined =
     opts.deviceTrustStore === null
       ? undefined
       : (opts.deviceTrustStore ??
-        (loginOptions.deviceTrust ? new DeviceTrustStoreMemory("test-trust-secret") : undefined));
+        (deviceTrustEnabled ? new DeviceTrustStoreMemory("test-trust-secret") : undefined));
 
   const auditEvents: AuditEvent[] = [];
+  // Default auditLogin in `mergeLoginOpts` is `true`, so unless the test
+  // explicitly disables it, auto-wire a capture emitter.
+  const auditLoginEnabled = loginOpts.finalize?.auditLogin !== false;
   const auditEmitter: AuditEmitter | undefined =
     opts.auditEmitter ??
-    (loginOptions.auditLogin
+    (auditLoginEnabled
       ? {
           emit(event) {
             auditEvents.push({ ...event });
@@ -258,16 +277,32 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
       ? undefined
       : (opts.rateLimitStore ?? new WorkflowRateLimitStoreMemory());
 
-  // Canonical REST wiring + per-workflow options classes registered via DI.
-  // `createProvideRegistry` takes a variadic tuple — build it conditionally so
-  // tests can omit SmsSender / DeviceTrustStore / AuditEmitter.
+  // Canonical REST wiring + per-workflow providers registered via DI.
+  // `LoginWorkflow` itself is provided via a factory so the test-supplied
+  // nested-pojo `loginOpts` reaches the ctor; consumer subclasses (rare in
+  // tests, common in production) replace `loginWorkflowClass` and the factory
+  // still does the right thing.
+  const LoginCtor: typeof LoginWorkflow = opts.loginWorkflowClass ?? LoginWorkflow;
+  const moostAuthConfig = new MoostAuthConfig({ cookie: { secure: false } });
   type ProvideEntry = Parameters<typeof createProvideRegistry>[number];
   const providers: ProvideEntry[] = [
     [AuthCredential, () => auth],
     [UserService, () => users],
-    [MoostAuthConfig, () => new MoostAuthConfig({ cookie: { secure: false } })],
-    [LoginWorkflowOptions, () => loginOptions],
-    ["EmailSender", () => emailSender],
+    [MoostAuthConfig, () => moostAuthConfig],
+    [
+      LoginCtor,
+      () =>
+        new LoginCtor(
+          loginOpts,
+          users,
+          auth,
+          moostAuthConfig,
+          registerEmail ? emailSender : undefined,
+          registerSms ? smsSender : undefined,
+          deviceTrustStore,
+          auditEmitter,
+        ),
+    ],
     [
       RecoveryWorkflowOptions,
       () =>
@@ -291,6 +326,7 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
         }),
     ],
   ];
+  if (registerEmail) providers.push(["EmailSender", () => emailSender]);
   if (registerSms) providers.push(["SmsSender", () => smsSender]);
   if (deviceTrustStore) providers.push(["DeviceTrustStore", () => deviceTrustStore]);
   if (auditEmitter) providers.push(["AuditEmitter", () => auditEmitter]);
@@ -302,7 +338,7 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
 
   const wfEnabled = opts.workflows ?? {};
   const wfControllers: Array<new (...args: never[]) => unknown> = [];
-  if (wfEnabled.login !== false) wfControllers.push(LoginWorkflow);
+  if (wfEnabled.login !== false) wfControllers.push(LoginCtor);
   if (wfEnabled.recovery !== false) wfControllers.push(RecoveryWorkflow);
   if (wfEnabled.invite !== false) wfControllers.push(InviteWorkflow);
   if (wfControllers.length > 0) {

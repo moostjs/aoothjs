@@ -10,7 +10,6 @@
 import { generateTotpSecret, hashMfaCode as _hash } from "@aoothjs/user";
 import { describe, expect, it } from "vite-plus/test";
 
-import { LoginWorkflowOptions } from "../workflows/index";
 import { prepareWfApp, seedActiveUser } from "./workflow-utils";
 
 // Touch the import so the linter doesn't strip it (used as a doc anchor).
@@ -55,7 +54,7 @@ describe("LoginWorkflow edge cases — MFA", () => {
     // once `failedLoginAttempts >= threshold` the next miss locks the account
     // and the workflow translates `MFA_INVALID(lockEnds: …)` to 423.
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({ mfaTransports: ["totp"] }),
+      loginOpts: { mfa: { transports: ["totp"] } },
       userConfig: { lockout: { threshold: 2, duration: 60_000 } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -85,10 +84,7 @@ describe("LoginWorkflow edge cases — MFA", () => {
   // separate from `MfaCodeForm` (digits-only for TOTP). See BUG-LOGIN-6 fix.
   it("backup code consumed twice → second use fails (one-time semantics)", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({
-        mfaBackupCodes: true,
-        mfaTransports: ["totp"],
-      }),
+      loginOpts: { mfa: { backupCodes: true, transports: ["totp"] } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const secret = generateTotpSecret();
@@ -144,7 +140,7 @@ describe("LoginWorkflow edge cases — MFA", () => {
 
   it("SMS transport: enrolled-via-sms user receives pin via SmsSender, can verify and finish", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({ mfaTransports: ["sms"] }),
+      loginOpts: { mfa: { transports: ["sms"] } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     await app.users.addMfaMethod("alice", {
@@ -175,7 +171,7 @@ describe("LoginWorkflow edge cases — MFA", () => {
 
   it("Email transport: pin email carries 'login.pincode' kind + numeric code", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({ mfaTransports: ["email"] }),
+      loginOpts: { mfa: { transports: ["email"] } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     await app.users.addMfaMethod("alice", {
@@ -203,22 +199,14 @@ describe("LoginWorkflow edge cases — MFA", () => {
 
 describe("LoginWorkflow edge cases — JSON-safety of opts snapshot", () => {
   // ── snapshotOpts proof via observable behaviour ────────────────────────────
-  // The workflow's `init` step strips non-JSON values (callbacks, atscript Form
-  // classes) from `opts` before stashing on ctx so `AsWfStore` can persist the
-  // state. If snapshotOpts drops a callback by accident (or a callback leaks),
-  // the workflow would fail to resume across a pause (state-store roundtrip).
-  // We pin "options with callbacks AND with a default atscript Form class
-  // (`profileCompleteForm`) survive a pause/resume roundtrip" as the test.
-  it("workflow with callback opts (recoveryUrlBuilder) survives pause+resume across state store", async () => {
+  // The workflow's `init` step stashes the resolved opts on `ctx` so the
+  // schema can read flags. The default `acceptance.profileCompleteForm` is
+  // an atscript class instance — if `snapshotOpts` let it through, the
+  // in-memory state store would either fail to serialize or hold a stale
+  // class reference, breaking pause+resume.
+  it("default profileCompleteForm (atscript class) does NOT poison ctx.opts — pause+resume survives", async () => {
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({
-        mfaEnabled: false,
-        // Callback — would explode JSON.stringify if leaked onto ctx.
-        recoveryUrlBuilder: (u) => `#/recover?u=${u ?? ""}`,
-        // The default `profileCompleteForm` is an atscript class instance.
-        // If snapshotOpts let it through, the in-memory state store would
-        // either fail to serialize or hold a stale class reference.
-      }),
+      loginOpts: { mfa: { enabled: false } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r1 = await app.trigger({ wfid: "auth.login" });
@@ -234,16 +222,11 @@ describe("LoginWorkflow edge cases — JSON-safety of opts snapshot", () => {
 
 describe("LoginWorkflow edge cases — NoopAuditEmitter fallback", () => {
   it("auditLogin true + NO AuditEmitter registered → workflow still completes (no crash)", async () => {
-    // Pass an explicitly-undefined emitter and force no DI registration by
-    // overriding the default: the test harness only auto-registers when
-    // `loginOptions.auditLogin` is truthy. Disable here so the inject is empty,
-    // then re-enable auditLogin on the workflow opts so the audit-login step
-    // does fire and falls back to NoopAuditEmitter.
+    // The helper auto-wires a capture emitter when `finalize.auditLogin` is
+    // truthy — provide an explicit no-op so we're testing the FALLBACK path
+    // when the registered emitter does nothing (proxies the absence case).
     const app = await prepareWfApp({
-      loginOptions: new LoginWorkflowOptions({ auditLogin: true, mfaEnabled: false }),
-      // The helper auto-wires a capture emitter when loginOptions.auditLogin
-      // is truthy — provide an explicit undefined override by replacing it
-      // with a no-op (so we're testing the FALLBACK is safe, not absence).
+      loginOpts: { finalize: { auditLogin: true }, mfa: { enabled: false } },
       auditEmitter: { emit: () => undefined },
     });
     await seedActiveUser(app.users, "alice", "Password123");
