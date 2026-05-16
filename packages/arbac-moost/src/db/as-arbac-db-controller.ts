@@ -1,9 +1,4 @@
-import {
-  mergeScopeFilters,
-  restrictProjection,
-  unionControlsPolicy,
-  unionProjections,
-} from "@aoothjs/arbac";
+import { mergeScopeFilters } from "@aoothjs/arbac";
 import type { ControlGate, TProjection, TScopeFilter } from "@aoothjs/arbac";
 import type { TCrudOp, TMetaResponse } from "@atscript/db";
 import { AsDbController } from "@atscript/moost-db";
@@ -13,6 +8,12 @@ import { getInstanceOwnMethods, Inherit, useControllerContext } from "moost";
 
 import { useArbac } from "../arbac.composables";
 import type { TArbacMeta } from "../arbac.mate";
+import {
+  applyArbacControls,
+  applyArbacProjection,
+  readCachedScopes,
+  transformArbacFilter,
+} from "./shared-read-helpers";
 
 /**
  * Contract returned by an ARBAC role's scope predicate on a DB-backed resource.
@@ -56,60 +57,20 @@ export interface ArbacDbScope {
   controls?: Record<string, ControlGate>;
 }
 
-const DENY_FILTER: TScopeFilter = { $or: [] };
-
-const WRITE_ACTION_TO_ARBAC = {
-  insert: "insert",
-  insertMany: "insert",
-  update: "update",
-  updateMany: "update",
-  replace: "replace",
-  replaceMany: "replace",
-} as const;
-
-type WriteAction = keyof typeof WRITE_ACTION_TO_ARBAC;
-
 @Inherit()
 export class AsArbacDbController<
   T extends TAtscriptAnnotatedType = TAtscriptAnnotatedType,
 > extends AsDbController<T> {
-  protected async transformFilter(
+  protected transformFilter(
     filter: Record<string, unknown> | undefined,
   ): Promise<Record<string, unknown>> {
-    const arbac = useArbac();
-    const { allowed, scopes } = await arbac.evaluate<ArbacDbScope>();
-    if (!allowed) {
-      return DENY_FILTER as Record<string, unknown>;
-    }
-    // Cache scopes so transformProjection (called next on the same request)
-    // does not re-evaluate, and stays correct without requiring the
-    // ArbacAuthorize interceptor to be wired upstream.
-    arbac.setScopes(scopes);
-    const merged =
-      scopes && scopes.length > 0
-        ? mergeScopeFilters(scopes.map((s) => s.filter ?? {}))
-        : undefined;
-    // Wrap with `$and` (not object spread) so a top-level `$or`/`$and`/`$not`
-    // in `filter` cannot drop the scope's sibling field keys when @uniqu/core's
-    // `walkFilter` short-circuits on logical operators. See BUG-2.
-    const userFilter = filter && Object.keys(filter).length > 0 ? filter : undefined;
-    if (!merged) return userFilter ?? {};
-    if (!userFilter) return merged;
-    return { $and: [merged, userFilter] };
+    return transformArbacFilter(filter);
   }
 
   protected transformProjection(
     projection?: TProjection,
   ): TProjection | undefined | Promise<TProjection | undefined> {
-    const scopes = useArbac().getScopes<ArbacDbScope>() ?? [];
-    if (scopes.length === 0) {
-      return projection;
-    }
-    const allowed = unionProjections(...scopes.map((s) => s.projection ?? {}));
-    if (Object.keys(allowed).length === 0) {
-      return projection;
-    }
-    return restrictProjection(projection ?? {}, allowed);
+    return applyArbacProjection(projection, readCachedScopes());
   }
 
   /**
@@ -132,10 +93,7 @@ export class AsArbacDbController<
     const baseErr = super.validateControls(controls, type);
     if (baseErr) return baseErr;
 
-    const scopes = useArbac().getScopes<ArbacDbScope>() ?? [];
-    if (scopes.length === 0) return undefined;
-
-    enforceControlsPolicy(unionControlsPolicy(scopes), controls);
+    applyArbacControls(controls, readCachedScopes());
     return undefined;
   }
 
@@ -162,24 +120,19 @@ export class AsArbacDbController<
     return { ...meta, actions: filteredActions, crud: filteredCrud };
   }
 
-  protected async onWrite(action: WriteAction, data: unknown): Promise<unknown> {
-    const arbacAction = WRITE_ACTION_TO_ARBAC[action];
-    const { allowed, scopes } = await useArbac().evaluate<ArbacDbScope>({ action: arbacAction });
-    if (!allowed) {
-      throw new HttpError(403, `Forbidden: ${arbacAction}`);
-    }
+  protected async onWrite(
+    action: "insert" | "insertMany" | "replace" | "replaceMany" | "update" | "updateMany",
+    data: unknown,
+  ): Promise<unknown> {
+    const scopes = readCachedScopes();
     if (action !== "insert" && action !== "insertMany") {
-      await this.assertInScope(data, scopes ?? []);
+      await this.assertInScope(data, scopes);
     }
-    return applyAllowedFieldsAndSet(data, scopes ?? [], this.identifierFields());
+    return applyAllowedFieldsAndSet(data, scopes, this.identifierFields());
   }
 
   protected async onRemove(id: unknown): Promise<unknown> {
-    const { allowed, scopes } = await useArbac().evaluate<ArbacDbScope>({ action: "remove" });
-    if (!allowed) {
-      throw new HttpError(403, "Forbidden: remove");
-    }
-    await this.assertInScope(id, scopes ?? []);
+    await this.assertInScope(id, readCachedScopes());
     return id;
   }
 

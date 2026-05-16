@@ -5,6 +5,8 @@ import {
   ArbacAction,
   ArbacAuthorize,
   arbacAuthorizeInterceptor,
+  AsArbacDbController,
+  AsArbacDbReadableController,
   ArbacResource,
   ArbacUserProvider,
   getArbacMate,
@@ -96,6 +98,11 @@ describe("@aoothjs/arbac-moost", () => {
     // directly. Keeping this test ensures no one silently re-introduces the helper and
     // re-creates an abstraction that adds zero value over the bare Moost API.
     expect("applyArbacGuardGlobally" in indexModule).toBe(false);
+  });
+
+  it("exports AsArbacDbController and AsArbacDbReadableController (ISSUE ARBAC-MOOST-9)", () => {
+    expect(typeof AsArbacDbController).toBe("function");
+    expect(typeof AsArbacDbReadableController).toBe("function");
   });
 
   it("ArbacResource decorator writes resource id metadata", () => {

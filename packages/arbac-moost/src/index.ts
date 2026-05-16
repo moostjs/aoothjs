@@ -12,5 +12,6 @@ export * from "./arbac.composables";
 export * from "./arbac.decorator";
 export * from "./arbac.mate";
 export * from "./db/as-arbac-db-controller";
+export * from "./db/as-arbac-db-readable-controller";
 export * from "./moost-arbac";
 export * from "./user.provider";
