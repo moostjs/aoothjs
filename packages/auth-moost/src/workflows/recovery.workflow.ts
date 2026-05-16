@@ -14,7 +14,6 @@
  * Magic-link URL: `buildMagicLinkUrl('recovery', token)` → e.g.
  * `https://app.example.com/wf/trigger?wfs=<token>`.
  */
-import { ArbacPublic } from "@aoothjs/arbac-moost";
 import { AuthCredential } from "@aoothjs/auth";
 import { UserAuthError, UserService } from "@aoothjs/user";
 import {
@@ -47,7 +46,6 @@ export interface RecoveryWfCtx {
   linkSent?: boolean;
 }
 
-@ArbacPublic()
 @Injectable("FOR_EVENT")
 @Controller()
 @Public()

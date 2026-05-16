@@ -33,7 +33,6 @@
  * escalation by misconfigured deployments; do not weaken this default
  * without considering the implications.
  */
-import { ArbacPublic } from "@aoothjs/arbac-moost";
 import { AuthCredential } from "@aoothjs/auth";
 import { UserAuthError, UserService } from "@aoothjs/user";
 import { HttpError } from "@moostjs/event-http";
@@ -76,7 +75,6 @@ export function parseInviteRoles(input?: string): string[] {
     .filter(Boolean);
 }
 
-@ArbacPublic()
 @Injectable("FOR_EVENT")
 @Controller()
 @Public()

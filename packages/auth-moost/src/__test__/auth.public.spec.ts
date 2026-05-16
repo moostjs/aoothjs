@@ -1,3 +1,4 @@
+import { getArbacMate } from "@aoothjs/arbac-moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import * as indexModule from "../index";
@@ -54,5 +55,40 @@ describe("@Public decorator", () => {
     // class-level meta does NOT inherit the method-level decoration.
     expect(cMeta?.authPublic).toBeUndefined();
     expect(mMeta?.authPublic).toBe(true);
+  });
+
+  // ISSUE-4 — the central design intent: a single `@Public()` is a COMBINED
+  // bypass of BOTH the auth-moost bearer guard (authPublic) AND the
+  // arbac-moost authorize interceptor (arbacPublic). Splitting them into
+  // two decorators (the old `@ArbacPublic()` + `@Public()` pair) was a
+  // foot-gun: forgetting one produced silent 403s on routes the consumer
+  // believed were anonymous. These tests pin the combined-write semantics
+  // so a regression to single-mate writes fails loud.
+  describe("combined auth + arbac bypass (ISSUE-4)", () => {
+    it("writes BOTH authPublic AND arbacPublic on a class in a single decoration", () => {
+      class Probe {
+        _name = "probe";
+      }
+      Public()(Probe);
+      const authMeta = getAuthMate().read(Probe);
+      const arbacMeta = getArbacMate().read(Probe);
+      expect(authMeta?.authPublic).toBe(true);
+      expect(arbacMeta?.arbacPublic).toBe(true);
+    });
+
+    it("writes BOTH authPublic AND arbacPublic on a method in a single decoration", () => {
+      class Probe {
+        _name = "probe";
+        handler() {
+          return "ok";
+        }
+      }
+      const desc = Object.getOwnPropertyDescriptor(Probe.prototype, "handler");
+      Public()(Probe.prototype, "handler", desc as PropertyDescriptor);
+      const authMeta = getAuthMate().read(Probe, "handler");
+      const arbacMeta = getArbacMate().read(Probe, "handler");
+      expect(authMeta?.authPublic).toBe(true);
+      expect(arbacMeta?.arbacPublic).toBe(true);
+    });
   });
 });

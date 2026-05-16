@@ -76,4 +76,5 @@ export const memberRole = defineRole<UserAttrs, ArbacDbScope>()
     }),
   )
   .allow("auth", "handover.trigger")
+  .allow("auth", "public.*")
   .build();

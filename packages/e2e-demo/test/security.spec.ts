@@ -128,7 +128,7 @@ describe("SEC — ARBAC bypass attacks", () => {
     expect(res.status).toBe(404);
   });
 
-  it("SEC-25 — @ArbacPublic resolution: class-level inherits to all methods (documented)", async () => {
+  it("SEC-25 — @Public resolution: anonymous /health is reachable (auth + arbac bypass)", async () => {
     const res = await app.fetch("/health");
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });

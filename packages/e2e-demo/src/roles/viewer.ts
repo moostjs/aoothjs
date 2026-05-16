@@ -45,4 +45,5 @@ export const viewerRole = defineRole<UserAttrs, ArbacDbScope>()
       }),
     }),
   )
+  .allow("auth", "public.*")
   .build();

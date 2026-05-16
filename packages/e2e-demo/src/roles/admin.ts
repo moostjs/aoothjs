@@ -54,4 +54,5 @@ export const adminRole = defineRole<UserAttrs, ArbacDbScope>()
     }),
   )
   .allow("auth", "admin.invite")
+  .allow("auth", "public.*")
   .build();

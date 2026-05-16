@@ -350,10 +350,10 @@ _(or — if we add cascade — flip the assertion. For v1, assert current behavi
 **Setup:** action method named `mark` decorated `@DbAction("markDone")`.
 **Acceptance:** ARBAC rule `tasks.markDone` (not `tasks.mark`) controls access — verifying `atscript_db_action.name` is honored over `id`/method-name.
 
-### ACT-04 — action requires authentication even when ARBAC public
+### ACT-04 — undecorated route still requires authentication
 
-_(this exists to document the auth/arbac orthogonality — `@ArbacPublic` does NOT bypass the global `authGuardInterceptor`.)_
-**Acceptance:** `@ArbacPublic` controller still requires auth unless ALSO `@Public()` from auth-moost.
+_(post-ISSUE-4: arbac-only bypass no longer exists. A route with no `@ArbacResource`/`@ArbacAction` short-circuits the ARBAC interceptor by virtue of having no resource/action — but auth-moost's global bearer guard still demands a token unless `@Public()` is applied.)_
+**Acceptance:** route lacking both `@Public()` and `@ArbacResource`/`@ArbacAction` still requires a valid token; ARBAC just no-ops because there's nothing to evaluate.
 
 ### ACT-05 — `disabled: perRow` predicate enforced
 
@@ -582,7 +582,7 @@ _Note:_ HOTP-style replay defense isn't standard for TOTP; accept replay-within-
 **Attack:** two simultaneous `/auth/password` requests from same user.
 **Acceptance:** one succeeds, the other fails (or both succeed atomically); no torn state.
 
-### SEC-25 — bypass `@ArbacPublic` on a controller via direct method call
+### SEC-25 — `@Public()` resolution on a class-level decoration
 
 **Attack:** confirm that ONLY methods explicitly marked or controllers entirely marked are public; nested decorators don't accidentally inherit.
 
@@ -629,9 +629,9 @@ _(documented: in-memory denylist grows; `cleanup()` purges expired. Test that ca
 
 **Acceptance:** `defineRole<UserAttrs, ArbacDbScope>().allow("tasks", "fooo", ...)` is allowed at runtime (string types) — not a TS error per se, but document that the e2e suite catches this via behavior tests.
 
-### DX-04 — `@ArbacPublic` on auth-moost controllers ships out of the box
+### DX-04 — `@Public()` on bundled auth-moost controllers ships out of the box
 
-**Acceptance:** consumer doesn't need to manually decorate `AuthController` / `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow`. Confirm by registering them WITHOUT extra decoration and calling `app.applyGlobalInterceptors(arbacAuthorizeInterceptor)`.
+**Acceptance:** consumer doesn't need to manually decorate `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow` or the public `AuthController` endpoints (`login`, `refresh`). Confirm by registering them WITHOUT extra decoration and calling `app.applyGlobalInterceptors(arbacAuthorizeInterceptor)`.
 
 ### DX-05 — `useArbac().evaluate()` defaults work in handlers
 

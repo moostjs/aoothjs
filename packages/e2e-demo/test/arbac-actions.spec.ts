@@ -79,10 +79,14 @@ describe("ACT — read-mostly per-action gating", () => {
     expect(del.status).toBe(403);
   });
 
-  it("ACT-04 — @ArbacPublic does NOT bypass auth-moost auth guard (no token → 401)", async () => {
-    // /health/protected is decorated @ArbacPublic() ONLY (no @Public()). The
-    // ARBAC interceptor short-circuits, but auth-moost's bearer guard still
-    // demands a token.
+  it("ACT-04 — undecorated route still requires auth (no token → 401) AND ARBAC falls back to controller+method name", async () => {
+    // /health/protected carries no @Public() and no @ArbacResource/@ArbacAction.
+    // auth-moost's bearer guard demands a token. ARBAC falls back to the
+    // controller class name + method name as resource/action — no role grants
+    // that pair, so a logged-in viewer is denied 403. Post-ISSUE-4 there is no
+    // arbac-only bypass: routes that should be reachable by any authenticated
+    // user must either use @Public() (full bypass) or declare an explicit
+    // `public.*` action and grant it on the appropriate roles.
     expect((await app.fetch("/health/protected")).status).toBe(401);
 
     const badAuth = await app.fetch("/health/protected", {
@@ -91,7 +95,7 @@ describe("ACT — read-mostly per-action gating", () => {
     expect(badAuth.status).toBe(401);
 
     const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_eve);
-    expect((await fetch("/health/protected")).status).toBe(200);
+    expect((await fetch("/health/protected")).status).toBe(403);
   });
 
   it("ACT-06 — `allowTableRead` covers both /users/one/:id (getOne) and /users/one?... (getOneComposite)", async () => {
@@ -157,6 +161,38 @@ describe("ACT — read-mostly per-action gating", () => {
 
     expect(await dbFindOne(app, "users", { id: id1 })).toBeFalsy();
     expect(await dbFindOne(app, "users", { username: "act07_bycomposite" })).toBeFalsy();
+  });
+
+  it("ACT-08 — viewer's `allow(auth, public.*)` reaches /auth/status and /auth/logout end-to-end", async () => {
+    // ISSUE-4 contract through the demo's role+seed wiring: the `public.*`
+    // action prefix is the convention the bundled AuthController's middle-
+    // ground methods (logout/status/password) use to stay reachable for
+    // *any* authenticated user without bespoke per-method grants. All six
+    // demo roles (guest..superadmin) wire `allow("auth", "public.*")`.
+    // t1_eve holds ONLY the `viewer` role — if `public.*` regresses (the
+    // controller drops `@ArbacAction("public.<verb>")`, or a role's grant
+    // is renamed), this asserts 403 immediately and points at the broken
+    // contract.
+    //
+    // We exercise /auth/status (read, no side effects) and /auth/logout
+    // (revokes the caller's tokens — fatal to this session but harmless
+    // for the rest of the describe, which uses the shared `app` but never
+    // re-uses eve after this test). We skip /auth/password here because
+    // it bumps the per-user epoch and would invalidate every other
+    // already-acquired token in the shared `app` — the unit-level suite
+    // (`auth.controller.spec.ts`) covers /auth/password under `public.*`
+    // with an isolated app, so the e2e signal is the one we'd lose first
+    // on a wiring regression.
+    const eve = app.fixtures.users.t1_eve;
+    const { fetch } = await loginAndFetch(app, eve);
+
+    const statusRes = await fetch("/auth/status");
+    expect(statusRes.status).toBe(200);
+    const statusBody = (await statusRes.json()) as { userId: string };
+    expect(statusBody.userId).toBe("t1_eve");
+
+    const logoutRes = await fetch("/auth/logout", { method: "POST", json: {} });
+    expect([200, 201]).toContain(logoutRes.status);
   });
 });
 

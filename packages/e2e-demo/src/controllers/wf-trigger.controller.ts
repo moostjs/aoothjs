@@ -1,4 +1,4 @@
-import { ArbacAction, ArbacPublic, ArbacResource } from "@aoothjs/arbac-moost";
+import { ArbacAction, ArbacResource } from "@aoothjs/arbac-moost";
 import { createAuthEmailOutlet, MoostAuthWorkflowConfig, Public } from "@aoothjs/auth-moost";
 import { createAsHttpOutlet, handleAsOutletRequest } from "@atscript/moost-wf";
 import { Body, Post } from "@moostjs/event-http";
@@ -65,7 +65,6 @@ export function makeWfTriggerController(wfStateStore: AsWfStore): WfTriggerContr
   class WfTriggerController {
     @Post("public")
     @Public()
-    @ArbacPublic()
     public(@Body() _body: WfBody): Promise<unknown> {
       return trigger(WF_PUBLIC_ALLOW);
     }

@@ -15,4 +15,5 @@ export const guestRole = defineRole<UserAttrs, ArbacDbScope>()
       }),
     }),
   )
+  .allow("auth", "public.*")
   .build();

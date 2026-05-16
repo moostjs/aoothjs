@@ -547,7 +547,6 @@ All db-backed controllers are **empty subclasses** of `AsArbacDbController<typeo
 export class HealthController {
   @Get()
   @Public()
-  @ArbacPublic()
   health(): { ok: true } {
     return { ok: true };
   }
@@ -673,10 +672,9 @@ interface HandoverWfCtx {
   notified?: boolean;
 }
 
-@ArbacPublic()
 @Injectable("FOR_EVENT")
 @Controller()
-@Public()  // workflow trigger handler does auth itself if needed
+@Public() // combined: skips auth-moost guard AND arbac for this workflow controller
 export class HandoverWorkflow {
   @Workflow("project.handover")
   @WorkflowSchema<HandoverWfCtx>([

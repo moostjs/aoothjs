@@ -11,10 +11,10 @@ import { getArbacMate } from "./arbac.mate";
  * declaration is empty — pair with an upstream auth guard (e.g. JWT
  * bearer) that publishes the principal.
  *
- * Runs for every event kind (HTTP, WF, CLI, WS). `@ArbacPublic()` is the
- * only bypass — apply it to controllers/handlers that should remain
- * reachable without an evaluated rule (e.g. login/recovery workflows,
- * health probes).
+ * Runs for every event kind (HTTP, WF, CLI, WS). The `arbacPublic` mate
+ * flag (written by auth-moost's combined `@Public()`) is the only bypass —
+ * apply it to controllers/handlers that should remain reachable without an
+ * evaluated rule (e.g. login/recovery workflows, health probes).
  */
 export const arbacAuthorizeInterceptor: TAuthGuardDef = Object.assign(
   defineBeforeInterceptor(async () => {
@@ -67,9 +67,3 @@ export const ArbacResource = (name: string) => getArbacMate().decorate("arbacRes
  * at the method level.
  */
 export const ArbacAction = (name: string) => getArbacMate().decorate("arbacActionId", name);
-
-/**
- * Marks a handler or controller as publicly accessible, bypassing
- * authorization checks.
- */
-export const ArbacPublic = () => getArbacMate().decorate("arbacPublic", true);

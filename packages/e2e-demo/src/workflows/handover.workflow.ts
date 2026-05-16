@@ -1,4 +1,4 @@
-import { ArbacPublic, useArbac } from "@aoothjs/arbac-moost";
+import { useArbac } from "@aoothjs/arbac-moost";
 import { Public, useAuth } from "@aoothjs/auth-moost";
 import type { AtscriptDbTable } from "@atscript/db";
 import { extractPassContext, serializeFormSchema } from "@atscript/moost-wf";
@@ -100,7 +100,6 @@ function validateForm(type: TAtscriptAnnotatedType, input: unknown): Record<stri
 export function makeHandoverWorkflow(tables: HandoverWfTables): HandoverWorkflowCtor {
   const { projectsTable, usersTable, auditTable } = tables;
 
-  @ArbacPublic()
   @Injectable("FOR_EVENT")
   @Controller()
   @Public()

@@ -10,7 +10,6 @@
  * Triggered via an HTTP outlet handler the consumer mounts at e.g.
  * `POST /wf/trigger` and pointing `<AsWfForm name="auth.login" />` at it.
  */
-import { ArbacPublic } from "@aoothjs/arbac-moost";
 import { AuthCredential } from "@aoothjs/auth";
 import { UserAuthError, UserService } from "@aoothjs/user";
 import { HttpError } from "@moostjs/event-http";
@@ -32,7 +31,6 @@ export interface LoginWfCtx {
   mfaRequired?: boolean;
 }
 
-@ArbacPublic()
 @Injectable("FOR_EVENT")
 @Controller()
 @Public()

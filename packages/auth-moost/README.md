@@ -141,6 +141,12 @@ with an invalid token, `getCurrentUser()` returns `null` rather than throwing.
 
 ### `@Public()`
 
+`@Public()` is a single combined decorator that opts a route or controller
+out of BOTH authentication (auth-moost's bearer guard) AND authorization
+(arbac-moost's `arbacAuthorizeInterceptor`). There is no separate arbac-only
+or auth-only bypass — having two decorators that each disable half of the
+stack was a footgun.
+
 ```ts
 import { Public } from "@aoothjs/auth-moost";
 
@@ -149,12 +155,40 @@ class DocsController {
   @Get("public")
   @Public()
   async docs() {
-    /* runs even without a valid token */
+    /* runs even without a valid token; ARBAC is skipped too */
   }
 }
 ```
 
 Method-level decoration overrides class-level.
+
+### `public.*` action convention for self-service routes
+
+For middle-ground routes that ARE authenticated (a valid token is required)
+but should be reachable by any logged-in user regardless of role — e.g.
+`logout`, `status`, `change own password` — use action names under the
+`public.*` namespace and grant the wildcard once per role:
+
+```ts
+// Bundled AuthController methods (resource stays "auth"):
+//   POST /auth/login    →  @Public()                        (no auth, no arbac)
+//   POST /auth/refresh  →  @Public()                        (no auth, no arbac)
+//   POST /auth/logout   →  @ArbacAction("public.logout")    (authed + role grant)
+//   GET  /auth/status   →  @ArbacAction("public.status")    (authed + role grant)
+//   POST /auth/password →  @ArbacAction("public.password")  (authed + role grant)
+
+// In each role that should support self-service:
+defineRole()
+  .id("viewer")
+  // ...table privileges...
+  .allow("auth", "public.*") // wildcard covers logout/status/password
+  .build();
+```
+
+The wildcard rule grants the role every `public.*` action on the `auth`
+resource. Without this grant, a logged-in user would receive 403 on
+`/auth/logout`, `/auth/status`, and `/auth/password` even though their
+session is valid.
 
 ## REST endpoints
 

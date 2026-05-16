@@ -25,7 +25,6 @@ import {
   ArbacAuthorize,
   ArbacResource,
   ArbacAction,
-  ArbacPublic,
 } from "@aoothjs/arbac-moost";
 
 class MyArbacUserProvider extends ArbacUserProvider<{ tenantId: string }> {
@@ -56,8 +55,13 @@ arbac.registerRole(editorRole);
 | `@ArbacAuthorize()` | Method / class       | Applies the authorize interceptor                                   |
 | `@ArbacResource(s)` | Method / class       | Sets the resource id for evaluation                                 |
 | `@ArbacAction(a)`   | Method / class       | Sets the action id for evaluation                                   |
-| `@ArbacPublic()`    | Method / class       | Bypasses authorization                                              |
 | `@ArbacScopes()`    | Parameter / property | Injects evaluated `scopes` returned by the role's `scope(attrs)` fn |
+
+To bypass ARBAC (and auth-moost's bearer guard at the same time), use the
+combined `@Public()` decorator from `@aoothjs/auth-moost` — it writes the
+`arbacPublic` mate flag the interceptor reads. There is intentionally no
+standalone arbac-only bypass decorator: opting out of authorization without
+also opting out of authentication is rarely desired and was a footgun.
 
 ```ts
 @Controller("articles")
@@ -188,7 +192,7 @@ attribute updates) reflect immediately on the next request.
 export { Arbac, arbacPatternToRegex }; // re-exports @aoothjs/arbac-core
 export { MoostArbac };
 export { ArbacUserProvider };
-export { ArbacAuthorize, ArbacResource, ArbacAction, ArbacPublic, ArbacScopes };
+export { ArbacAuthorize, ArbacResource, ArbacAction, ArbacScopes };
 export { arbacAuthorizeInterceptor };
 export { useArbac };
 export type { TArbacCompiledRule, TArbacEvalResult, TArbacRole, TArbacRoleForResource, TArbacRule };

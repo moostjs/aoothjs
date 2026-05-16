@@ -314,7 +314,7 @@ In addition to the 125 passing tests, the broader observations:
 - **Per-action gating** correctly resolves the action key via the chain `arbacActionId > atscript_db_action.name > id > literal method name passthrough(method)` (ACT-03, ACT-06).
 - **`disabled: perRow` predicates** correctly reject actions on rows that don't satisfy the predicate (ACT-05).
 - **Forced `set` fields** correctly override body values for inserts/actions (WRITE-02, WRITE-03, WRITE-07).
-- **`@ArbacPublic` ships pre-decorated** on auth-moost's `AuthController` and bundled workflows — consumers don't pay the decoration tax.
+- **`@Public()` (combined auth + arbac bypass) ships pre-decorated** on auth-moost's `AuthController` login/refresh endpoints and bundled workflows — consumers don't pay the decoration tax.
 - **Bundled workflows** (login + MFA, recovery, invite) work end-to-end with single-use magic-link semantics (WF-RECOVERY-03, WF-INVITE-05).
 - **Custom workflows** with persistent state via `AsWfStore` resume across server restart (WF-CUSTOM-02 confirmed).
 - **Lockout** correctly triggers on failed-login threshold and auto-unlocks after duration (AUTH-05).

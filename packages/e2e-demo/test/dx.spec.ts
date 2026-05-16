@@ -102,11 +102,11 @@ describe("DX — read-only ergonomics (shared app)", () => {
     expect(typo.status).not.toBe(202);
   });
 
-  it("DX-04 — bundled workflow controllers ship with @ArbacPublic (anonymous /wf/public auth.recovery)", async () => {
-    // No token, no @ArbacPublic added by the demo. If `RecoveryWorkflow` were
-    // missing the ArbacPublic decoration, the global ARBAC guard would 403 the
-    // request before the workflow even started. A 200/202 with a wfs handle is
-    // the proof point.
+  it("DX-04 — bundled workflow controllers ship with @Public (anonymous /wf/public auth.recovery)", async () => {
+    // No token, no decoration added by the demo. If `RecoveryWorkflow` were
+    // missing the combined @Public() decoration (auth + arbac bypass), the
+    // global ARBAC guard would 403 the request before the workflow even
+    // started. A 200/202 with a wfs handle is the proof point.
     const res = await app.triggerWf("public", { wfid: "auth.recovery" });
     expect([200, 201, 202]).toContain(res.status);
     const body = (await res.json()) as { wfs?: string };

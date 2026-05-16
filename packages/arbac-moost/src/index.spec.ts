@@ -5,7 +5,6 @@ import {
   ArbacAction,
   ArbacAuthorize,
   arbacAuthorizeInterceptor,
-  ArbacPublic,
   ArbacResource,
   ArbacScopes,
   ArbacUserProvider,
@@ -51,12 +50,10 @@ describe("@aoothjs/arbac-moost", () => {
     expect(typeof ArbacScopes).toBe("function");
     expect(typeof ArbacResource).toBe("function");
     expect(typeof ArbacAction).toBe("function");
-    expect(typeof ArbacPublic).toBe("function");
     // each factory must return a usable decorator
     expect(typeof ArbacAuthorize()).toBe("function");
     expect(typeof ArbacResource("res.user")).toBe("function");
     expect(typeof ArbacAction("create")).toBe("function");
-    expect(typeof ArbacPublic()).toBe("function");
     expect(typeof ArbacScopes()).toBe("function");
   });
 
@@ -96,13 +93,11 @@ describe("@aoothjs/arbac-moost", () => {
     expect(meta?.arbacResourceId).toBe("probe.resource");
   });
 
-  it("ArbacPublic decorator marks the target as public", () => {
-    class PublicProbe {
-      _name = "public-probe";
-    }
-    ArbacPublic()(PublicProbe);
-    const meta = getArbacMate().read(PublicProbe);
-    expect(meta?.arbacPublic).toBe(true);
+  it("ArbacPublic is NOT exported (hard-cut removal — ISSUE-4)", () => {
+    // ArbacPublic was collapsed into auth-moost's combined @Public(). The
+    // `arbacPublic` mate flag still exists and is written by @Public(),
+    // but no standalone arbac-only bypass decorator is exported.
+    expect("ArbacPublic" in indexModule).toBe(false);
   });
 
   // ISSUE-9: the legacy AutoArbacUserProvider + the loose helper functions

@@ -17,12 +17,19 @@ import {
   ArbacAction,
   ArbacAuthorize,
   arbacAuthorizeInterceptor,
-  ArbacPublic,
   ArbacResource,
   ArbacScopes,
   ArbacUserProvider,
+  getArbacMate,
   MoostArbac,
 } from "./index";
+
+// ArbacPublic was removed (ISSUE-4); the `arbacPublic` mate flag is now
+// written by auth-moost's combined `@Public()`. These tests still need to
+// mark a target as arbac-public to exercise the interceptor's `isPublic`
+// short-circuit, so they write the mate flag directly to avoid a cross-
+// package dep from this lower-tier package.
+const ArbacPublic = () => getArbacMate().decorate("arbacPublic", true);
 
 interface DemoScope {
   filter?: Record<string, unknown>;

@@ -52,4 +52,5 @@ export const managerRole = defineRole<UserAttrs, ArbacDbScope>()
       }),
     }),
   )
+  .allow("auth", "public.*")
   .build();

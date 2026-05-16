@@ -1,4 +1,4 @@
-import { ArbacAction, ArbacPublic, ArbacResource } from "@aoothjs/arbac-moost";
+import { ArbacAction, ArbacResource } from "@aoothjs/arbac-moost";
 import { Public, useAuth } from "@aoothjs/auth-moost";
 import { Get } from "@moostjs/event-http";
 import { Controller } from "moost";
@@ -7,13 +7,11 @@ import { Controller } from "moost";
 export class HealthController {
   @Get("health")
   @Public()
-  @ArbacPublic()
   health(): { ok: true } {
     return { ok: true };
   }
 
   @Get("health/protected")
-  @ArbacPublic()
   protectedRoute(): { user: string } {
     return { user: useAuth().getCurrentUserId() };
   }

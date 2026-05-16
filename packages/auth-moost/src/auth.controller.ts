@@ -1,4 +1,4 @@
-import { ArbacPublic } from "@aoothjs/arbac-moost";
+import { ArbacAction, ArbacResource } from "@aoothjs/arbac-moost";
 import { type AuthContext, AuthCredential, AuthError, type IssueResult } from "@aoothjs/auth";
 import { UserAuthError, UserService } from "@aoothjs/user";
 import { current } from "@wooksjs/event-core";
@@ -122,8 +122,8 @@ async function resolveDepsWithUsers(): Promise<DepsWithUsers> {
  * (e.g. `/v1`) if `/v1/auth/...` is needed — moost does not expose runtime
  * prefix overrides on the `@Controller(...)` decorator.
  */
-@ArbacPublic()
 @Controller("auth")
+@ArbacResource("auth")
 export class AuthController {
   @Post("login")
   @Public()
@@ -146,6 +146,7 @@ export class AuthController {
   }
 
   @Post("logout")
+  @ArbacAction("public.logout")
   async logout(@Body() body: AuthLogoutBody): Promise<AuthOkResponse> {
     const { auth, config } = await resolveCoreDeps();
     const ctx = current();
@@ -213,17 +214,19 @@ export class AuthController {
   }
 
   @Get("status")
+  @ArbacAction("public.status")
   status(): AuthContext {
     const user = useAuth().getCurrentUser();
     if (!user) {
       // The global guard normally throws 401 before we reach here; this is a
-      // defence-in-depth in case the route is somehow marked `@Public()`.
+      // defence-in-depth in case the principal is somehow unset.
       throw new HttpError(401, "Not authenticated");
     }
     return user;
   }
 
   @Post("password")
+  @ArbacAction("public.password")
   async changePassword(@Body() body: AuthPasswordChangeBody): Promise<AuthOkResponse> {
     if (!body || typeof body.currentPassword !== "string" || typeof body.newPassword !== "string") {
       throw new HttpError(400, "currentPassword and newPassword are required");

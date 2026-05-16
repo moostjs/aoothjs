@@ -1,3 +1,4 @@
+import type { TArbacRole } from "@aoothjs/arbac-moost";
 import { type AuthContext, CredentialStoreMemory } from "@aoothjs/auth";
 import { ppHasMinLength } from "@aoothjs/user";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
@@ -441,6 +442,184 @@ describe("AuthController", () => {
       // Backticks around `UserService` in the message are decorative — match
       // the substring regardless.
       expect(JSON.stringify(res.body)).toMatch(/UserService.{0,3}is not provided/);
+    });
+  });
+
+  // ISSUE-4 — the combined `@Public()` decorator and the `public.*` action
+  // convention. These tests exercise the AuthController under a globally
+  // installed `arbacAuthorizeInterceptor` to prove three intents end-to-end:
+  //
+  // 1. `@Public()` opts out of BOTH guards atomically: an anonymous request
+  //    to `/auth/login` succeeds even though the controller class has
+  //    `@ArbacResource("auth")` (which would otherwise force a 403 when no
+  //    principal/role exists). This is the regression risk of splitting the
+  //    flag into two decorators.
+  //
+  // 2. The middle-ground methods (`logout`, `status`, `password`) carry
+  //    `@ArbacAction("public.<verb>")`. A role granting `allow("auth",
+  //    "public.*")` reaches them; a role without that grant gets 403. This
+  //    pins the convention — any handler still labelled `@Public()` would
+  //    invisibly bypass ARBAC; any handler missing the action prefix would
+  //    require a per-method grant.
+  //
+  // 3. The action id actually written by `@ArbacAction("public.logout")` is
+  //    what the resolver reads — i.e. a wildcard like `allow("auth", "log*")`
+  //    that does NOT cover `public.logout` must 403. This guards against a
+  //    silent regression where the action-resolution chain (atscript-db
+  //    action arg, mate `arbacActionId`, method name) reorders.
+  describe("ISSUE-4 combined @Public + public.* action gating", () => {
+    // TArbacRule typing: allow rules are denoted by *omitting* the `effect`
+    // field (the union has `effect?: never` on the allow arm and
+    // `effect: "deny"` on the deny arm). The arbac-core engine defaults a
+    // missing effect to "allow" — see `Arbac.evalRoleForResource`.
+    const ROLE_VIEWER: TArbacRole<object, object> = {
+      id: "viewer",
+      rules: [
+        // Grants every "public.*" action on the "auth" resource — the
+        // convention the bundled controller's middle-ground methods use.
+        { resource: "auth", action: "public.*" },
+      ],
+    };
+    const ROLE_BARE: TArbacRole<object, object> = {
+      id: "bare",
+      rules: [
+        // Deliberately grants nothing on `auth`. Used to assert that a
+        // logged-in user without the `public.*` grant gets 403.
+        { resource: "other", action: "*" },
+      ],
+    };
+    // Used by the action-mapping test: grants only an action prefix that
+    // does NOT cover `public.logout` etc. A wildcard like `logout*` would
+    // accidentally match the method name — `public.logout` proves the mate
+    // arbacActionId wins over the method name in the resolver.
+    const ROLE_WRONG_PREFIX: TArbacRole<object, object> = {
+      id: "wrongprefix",
+      rules: [{ resource: "auth", action: "logout" }],
+    };
+
+    async function loginAs(
+      username: string,
+      password: string,
+      roles: string[],
+    ): Promise<{
+      app: Awaited<ReturnType<typeof prepareControllerApp>>;
+      accessToken: string;
+      refreshToken: string;
+    }> {
+      const userRoles = new Map<string, string[]>([[username, roles]]);
+      const app = await prepareControllerApp({
+        userConfig: { password: { policies: [ppHasMinLength(8)] } },
+        arbac: {
+          userRoles,
+          roles: [ROLE_VIEWER, ROLE_BARE, ROLE_WRONG_PREFIX],
+        },
+      });
+      await app.users.createUser(username, password);
+      await app.users.activateAccount(username);
+      const login = (
+        await app.request("/auth/login", {
+          method: "POST",
+          json: { username, password },
+        })
+      ).body as AuthLoginResponse;
+      return {
+        app,
+        accessToken: login.accessToken as string,
+        refreshToken: login.refreshToken as string,
+      };
+    }
+
+    it("/auth/login is reachable anonymously — @Public() bypasses BOTH guards", async () => {
+      // The combined-bypass intent. The controller class has
+      // `@ArbacResource("auth")`; without `arbacPublic` the interceptor
+      // would force a 403 on anonymous requests even though auth-moost's
+      // own bearer guard was disarmed. This test fails the moment @Public()
+      // stops writing `arbacPublic`.
+      const userRoles = new Map<string, string[]>();
+      const app = await prepareControllerApp({
+        arbac: { userRoles, roles: [ROLE_VIEWER] },
+      });
+      await app.users.createUser("alice", "Password123");
+      await app.users.activateAccount("alice");
+      const res = await app.request("/auth/login", {
+        method: "POST",
+        json: { username: "alice", password: "Password123" },
+      });
+      expect(res.status).toBe(201);
+      const body = res.body as AuthLoginResponse;
+      expect(body.userId).toBe("alice");
+    });
+
+    it("/auth/logout succeeds for a user with `allow(auth, public.*)`", async () => {
+      const { app, accessToken } = await loginAs("alice", "Password123", ["viewer"]);
+      const out = await app.request("/auth/logout", {
+        method: "POST",
+        headers: { authorization: `Bearer ${accessToken}` },
+        json: {},
+      });
+      expect(out.status).toBe(201);
+    });
+
+    it("/auth/status succeeds for a user with `allow(auth, public.*)`", async () => {
+      const { app, accessToken } = await loginAs("alice", "Password123", ["viewer"]);
+      const res = await app.request("/auth/status", {
+        headers: { authorization: `Bearer ${accessToken}` },
+      });
+      expect(res.status).toBe(200);
+      expect((res.body as AuthContext).userId).toBe("alice");
+    });
+
+    it("/auth/password succeeds for a user with `allow(auth, public.*)`", async () => {
+      const { app, accessToken } = await loginAs("alice", "Password123", ["viewer"]);
+      const res = await app.request("/auth/password", {
+        method: "POST",
+        headers: { authorization: `Bearer ${accessToken}` },
+        json: { currentPassword: "Password123", newPassword: "AnotherSecret9" },
+      });
+      expect(res.status).toBe(201);
+    });
+
+    it("/auth/logout returns 403 for a user WITHOUT `public.*` on `auth`", async () => {
+      const { app, accessToken } = await loginAs("alice", "Password123", ["bare"]);
+      const out = await app.request("/auth/logout", {
+        method: "POST",
+        headers: { authorization: `Bearer ${accessToken}` },
+        json: {},
+      });
+      expect(out.status).toBe(403);
+    });
+
+    it("/auth/status returns 403 for a user WITHOUT `public.*` on `auth`", async () => {
+      const { app, accessToken } = await loginAs("alice", "Password123", ["bare"]);
+      const res = await app.request("/auth/status", {
+        headers: { authorization: `Bearer ${accessToken}` },
+      });
+      expect(res.status).toBe(403);
+    });
+
+    it("/auth/password returns 403 for a user WITHOUT `public.*` on `auth`", async () => {
+      const { app, accessToken } = await loginAs("alice", "Password123", ["bare"]);
+      const res = await app.request("/auth/password", {
+        method: "POST",
+        headers: { authorization: `Bearer ${accessToken}` },
+        json: { currentPassword: "Password123", newPassword: "AnotherSecret9" },
+      });
+      expect(res.status).toBe(403);
+    });
+
+    it("the resolver reads `public.logout` from @ArbacAction, not the method name", async () => {
+      // ROLE_WRONG_PREFIX grants `allow("auth", "logout")`. If the resolver
+      // were keyed on the JS method name (`logout`) instead of the
+      // `@ArbacAction("public.logout")` mate value, this request would 200.
+      // The expected 403 proves `@ArbacAction("public.<verb>")` is what the
+      // engine actually evaluates.
+      const { app, accessToken } = await loginAs("alice", "Password123", ["wrongprefix"]);
+      const out = await app.request("/auth/logout", {
+        method: "POST",
+        headers: { authorization: `Bearer ${accessToken}` },
+        json: {},
+      });
+      expect(out.status).toBe(403);
     });
   });
 });
