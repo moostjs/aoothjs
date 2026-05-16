@@ -68,6 +68,15 @@ export {
   type DeviceTrustRecord,
 } from "./device-trust/index";
 export { type AuditEmitter, type AuditEvent, NoopAuditEmitter } from "./audit/index";
+export {
+  type WorkflowRateLimitConsumeResult,
+  type WorkflowRateLimitStore,
+  WorkflowRateLimitStoreMemory,
+} from "./rate-limit/index";
+export type {
+  RecoveryDeliveryMode,
+  RecoveryOtpTransport,
+} from "./workflows/recovery.workflow.options";
 
 // DI tokens for optional workflow deps. `SmsSender` and `DeviceTrustStore`
 // are TS interfaces (no runtime constructor) so consumers register them
@@ -75,3 +84,4 @@ export { type AuditEmitter, type AuditEvent, NoopAuditEmitter } from "./audit/in
 export const SMS_SENDER_TOKEN = "SmsSender";
 export const DEVICE_TRUST_STORE_TOKEN = "DeviceTrustStore";
 export const AUDIT_EMITTER_TOKEN = "AuditEmitter";
+export const WORKFLOW_RATE_LIMIT_STORE_TOKEN = "WorkflowRateLimitStore";

@@ -42,6 +42,7 @@ import { AuthController } from "../auth.controller";
 import { authGuardInterceptor } from "../auth.guard";
 import { Public } from "../auth.decorator";
 import { type DeviceTrustStore, DeviceTrustStoreMemory } from "../device-trust/index";
+import { type WorkflowRateLimitStore, WorkflowRateLimitStoreMemory } from "../rate-limit/index";
 import { createAuthEmailOutlet } from "../workflows/auth-email-outlet";
 import {
   DEFAULT_INVITE_TOKEN_TTL_MS,
@@ -101,6 +102,8 @@ export interface PreparedWfApp {
   auditEvents: AuditEvent[];
   /** The `DeviceTrustStore` instance wired by the test (when `deviceTrust` is enabled). */
   deviceTrustStore?: DeviceTrustStore;
+  /** The `WorkflowRateLimitStore` instance wired by the test (default in-memory). */
+  rateLimitStore?: WorkflowRateLimitStore;
   buildMagicLinkUrl: BuildMagicLinkUrl;
   /** Submit a request to the trigger endpoint. Resolves with parsed body. */
   trigger: (body: WfRequestBody) => Promise<WfResponse>;
@@ -153,6 +156,18 @@ export interface PrepareWfOpts {
    * (workflows fall back to `NoopAuditEmitter`).
    */
   auditEmitter?: AuditEmitter;
+  /**
+   * Replace the `WorkflowRateLimitStore` registration. When `null`, the store
+   * is NOT registered — used by tests that exercise the boot-time fail-loud
+   * path when `RecoveryWorkflowOptions.rateLimit` is non-null.
+   */
+  rateLimitStore?: WorkflowRateLimitStore | null;
+  /**
+   * Override the recovery options instance entirely (for OTP / choice mode
+   * variants). When omitted, defaults to a magicLink-mode instance built from
+   * the per-test `recoveryTokenTtlMs` + `emailToUserId`.
+   */
+  recoveryOptions?: RecoveryWorkflowOptions;
 }
 
 /**
@@ -227,6 +242,16 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
         }
       : undefined);
 
+  // Rate-limit store — RecoveryWorkflowOptions defaults to a non-null
+  // `rateLimit`, so the workflow constructor fails loud unless a store is
+  // wired. Default-register an in-memory store so tests don't need to
+  // re-derive opts; tests can pass `rateLimitStore: null` to exercise the
+  // fail-loud path or supply a custom store to test the rate-limit cap.
+  const rateLimitStore: WorkflowRateLimitStore | undefined =
+    opts.rateLimitStore === null
+      ? undefined
+      : (opts.rateLimitStore ?? new WorkflowRateLimitStoreMemory());
+
   // Canonical REST wiring + per-workflow options classes registered via DI.
   // `createProvideRegistry` takes a variadic tuple — build it conditionally so
   // tests can omit SmsSender / DeviceTrustStore / AuditEmitter.
@@ -239,7 +264,12 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     ["EmailSender", () => emailSender],
     [
       RecoveryWorkflowOptions,
-      () => new RecoveryWorkflowOptions({ recoveryTokenTtlMs, emailToUserId: opts.emailToUserId }),
+      () =>
+        opts.recoveryOptions ??
+        new RecoveryWorkflowOptions({
+          recoveryTokenTtlMs,
+          emailToUserId: opts.emailToUserId,
+        }),
     ],
     [
       InviteWorkflowOptions,
@@ -249,6 +279,7 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
   if (registerSms) providers.push(["SmsSender", () => smsSender]);
   if (deviceTrustStore) providers.push(["DeviceTrustStore", () => deviceTrustStore]);
   if (auditEmitter) providers.push(["AuditEmitter", () => auditEmitter]);
+  if (rateLimitStore) providers.push(["WorkflowRateLimitStore", () => rateLimitStore]);
   moost.setProvideRegistry(createProvideRegistry(...providers));
   moost.applyGlobalInterceptors(authGuardInterceptor);
   moost.applyGlobalInterceptors(formInputInterceptor());
@@ -362,6 +393,7 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     sms,
     auditEvents,
     ...(deviceTrustStore && { deviceTrustStore }),
+    ...(rateLimitStore && { rateLimitStore }),
     buildMagicLinkUrl,
     trigger,
     triggerWithHeaders,

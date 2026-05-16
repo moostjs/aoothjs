@@ -6,6 +6,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { build } from "@atscript/core";
+import wfPlugin from "@atscript/moost-wf/plugin";
 import { tsPlugin as ts } from "@atscript/typescript";
 import uiPlugin from "@atscript/ui/plugin";
 
@@ -13,7 +14,7 @@ const wd = path.join(process.cwd(), "src");
 const repo = await build({
   rootDir: wd,
   include: ["**/*.as"],
-  plugins: [ts(), uiPlugin()],
+  plugins: [ts(), wfPlugin(), uiPlugin()],
 });
 const out = [
   ...(await repo.generate({ outDir: ".", format: "dts" })),

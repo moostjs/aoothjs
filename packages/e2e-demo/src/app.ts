@@ -18,6 +18,7 @@ import {
   RecoveryWorkflow,
   RecoveryWorkflowOptions,
   useAuth,
+  WorkflowRateLimitStoreMemory,
 } from "@aoothjs/auth-moost";
 import { UserService } from "@aoothjs/user";
 import { formInputInterceptor } from "@atscript/moost-wf";
@@ -132,6 +133,14 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       () =>
         new RecoveryWorkflowOptions({
           recoveryTokenTtlMs: env.RECOVERY_TTL_MS,
+          // BIG 3.2 defaults flipped `freshLoginRequired` to true (redirect
+          // to /login after reset) and `revokeAllSessions` to true (kick
+          // every active session). The demo preserves the prior behavior
+          // (auto-login; pre-existing sessions left intact) so the existing
+          // e2e tests keep asserting the same outcomes; production consumers
+          // should leave the secure defaults on.
+          freshLoginRequired: false,
+          revokeAllSessions: false,
           // Maps a recovery-step email to the canonical username. In this
           // demo `DemoUser.username` happens to equal `DemoUser.email` for
           // seeded users, so a direct email lookup is enough — but the
@@ -143,6 +152,11 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
           },
         }),
     ],
+    // In-memory rate-limit store for the recovery workflow. Required because
+    // `RecoveryWorkflowOptions.rateLimit` defaults to non-null (2/day per
+    // email). Consumers running multiple instances swap in a Redis-backed
+    // store so the cap actually limits across replicas.
+    ["WorkflowRateLimitStore", () => new WorkflowRateLimitStoreMemory()],
     [
       InviteWorkflowOptions,
       () =>

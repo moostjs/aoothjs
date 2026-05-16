@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
+import { RecoveryWorkflowOptions } from "../workflows/recovery.workflow.options";
 import { prepareWfApp, seedActiveUser } from "./workflow-utils";
 
 /**
@@ -20,7 +21,12 @@ import { prepareWfApp, seedActiveUser } from "./workflow-utils";
  */
 describe("RecoveryWorkflow", () => {
   it("happy path: email known → magic link sent → set password → tokens", async () => {
-    const app = await prepareWfApp();
+    // BIG 3.2: the new `freshLoginRequired: true` default redirects to /login
+    // instead of auto-issuing tokens. This existing test asserts the
+    // auto-login path, so opt back into it explicitly.
+    const app = await prepareWfApp({
+      recoveryOptions: new RecoveryWorkflowOptions({ freshLoginRequired: false }),
+    });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
 
     // Step 1: start

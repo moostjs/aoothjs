@@ -55,7 +55,14 @@ export interface BackupCodeForm {
 
 /**
  * Email identifier form — used for password recovery initiation.
+ *
+ * `@wf.context.pass 'defaults'` whitelists the `defaults` ctx key so the
+ * recovery `request` step can pre-fill the email field from the
+ * `?username=` query param (carried in by the login workflow's
+ * `forgotPassword` alt-action). Without this annotation the field is
+ * stripped by `extractPassContext` before reaching the client.
  */
+@wf.context.pass 'defaults'
 export interface EmailIdentifierForm {
     @ui.form.type 'text'
     @meta.label 'Email'
@@ -247,4 +254,37 @@ export interface MagicLinkRequestForm {
     @ui.form.autocomplete 'username'
     @meta.required
     identifier: string
+}
+
+/**
+ * Recovery delivery-mode picker — rendered only when
+ * `RecoveryWorkflowOptions.deliveryMode === 'choice'`.
+ */
+export interface RecoveryModeSelectForm {
+    @ui.form.type 'text'
+    @meta.label 'Recovery method'
+    @meta.required
+    @expect.pattern '^(magicLink|otp)$'
+    mode: string
+}
+
+/**
+ * Recovery factor-verification form — used when
+ * `RecoveryWorkflowOptions.requireKnownRecoveryFactor` is true. The user
+ * picks a factor type and supplies its value; the server validates against
+ * the enrolled factor (phone last-4 or current TOTP code).
+ */
+export interface RecoveryFactorForm {
+    @ui.form.type 'text'
+    @meta.label 'Factor'
+    @meta.required
+    @expect.pattern '^(phone|totp)$'
+    factor: string
+
+    @ui.form.type 'text'
+    @meta.label 'Value'
+    @meta.required
+    @expect.minLength 4
+    @expect.maxLength 12
+    value: string
 }

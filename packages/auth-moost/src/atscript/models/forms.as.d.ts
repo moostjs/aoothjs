@@ -60,7 +60,7 @@ export declare class BackupCodeForm {
 
 /**
  * Atscript interface **EmailIdentifierForm**
- * @see {@link ./forms.as:59:18}
+ * @see {@link ./forms.as:66:18}
  */
 export declare class EmailIdentifierForm {
   email: string /* email */
@@ -76,7 +76,7 @@ export declare class EmailIdentifierForm {
 
 /**
  * Atscript interface **SetPasswordForm**
- * @see {@link ./forms.as:73:18}
+ * @see {@link ./forms.as:80:18}
  */
 export declare class SetPasswordForm {
   newPassword: string
@@ -93,7 +93,7 @@ export declare class SetPasswordForm {
 
 /**
  * Atscript interface **InviteForm**
- * @see {@link ./forms.as:94:18}
+ * @see {@link ./forms.as:101:18}
  */
 export declare class InviteForm {
   email: string /* email */
@@ -110,7 +110,7 @@ export declare class InviteForm {
 
 /**
  * Atscript interface **Select2faForm**
- * @see {@link ./forms.as:115:18}
+ * @see {@link ./forms.as:122:18}
  */
 export declare class Select2faForm {
   methodName: string
@@ -127,7 +127,7 @@ export declare class Select2faForm {
 
 /**
  * Atscript interface **PincodeForm**
- * @see {@link ./forms.as:131:18}
+ * @see {@link ./forms.as:138:18}
  */
 export declare class PincodeForm {
   code: string
@@ -144,7 +144,7 @@ export declare class PincodeForm {
 
 /**
  * Atscript interface **AskEmailForm**
- * @see {@link ./forms.as:149:18}
+ * @see {@link ./forms.as:156:18}
  */
 export declare class AskEmailForm {
   email: string /* email */
@@ -160,7 +160,7 @@ export declare class AskEmailForm {
 
 /**
  * Atscript interface **AskPhoneForm**
- * @see {@link ./forms.as:161:18}
+ * @see {@link ./forms.as:168:18}
  */
 export declare class AskPhoneForm {
   phone: string
@@ -176,7 +176,7 @@ export declare class AskPhoneForm {
 
 /**
  * Atscript interface **TermsAcceptForm**
- * @see {@link ./forms.as:172:18}
+ * @see {@link ./forms.as:179:18}
  */
 export declare class TermsAcceptForm {
   acceptedVersion: string
@@ -193,7 +193,7 @@ export declare class TermsAcceptForm {
 
 /**
  * Atscript interface **ProfileCompleteForm**
- * @see {@link ./forms.as:188:18}
+ * @see {@link ./forms.as:195:18}
  */
 export declare class ProfileCompleteForm {
   firstName?: string
@@ -210,7 +210,7 @@ export declare class ProfileCompleteForm {
 
 /**
  * Atscript interface **ConsentMarketingForm**
- * @see {@link ./forms.as:201:18}
+ * @see {@link ./forms.as:208:18}
  */
 export declare class ConsentMarketingForm {
   optIn?: boolean
@@ -226,7 +226,7 @@ export declare class ConsentMarketingForm {
 
 /**
  * Atscript interface **TenantSelectForm**
- * @see {@link ./forms.as:210:18}
+ * @see {@link ./forms.as:217:18}
  */
 export declare class TenantSelectForm {
   tenantId: string
@@ -242,7 +242,7 @@ export declare class TenantSelectForm {
 
 /**
  * Atscript interface **PersonaSelectForm**
- * @see {@link ./forms.as:220:18}
+ * @see {@link ./forms.as:227:18}
  */
 export declare class PersonaSelectForm {
   personaId: string
@@ -258,7 +258,7 @@ export declare class PersonaSelectForm {
 
 /**
  * Atscript interface **ConcurrencyLimitForm**
- * @see {@link ./forms.as:231:18}
+ * @see {@link ./forms.as:238:18}
  */
 export declare class ConcurrencyLimitForm {
   action: string
@@ -274,7 +274,7 @@ export declare class ConcurrencyLimitForm {
 
 /**
  * Atscript interface **MagicLinkRequestForm**
- * @see {@link ./forms.as:244:18}
+ * @see {@link ./forms.as:251:18}
  */
 export declare class MagicLinkRequestForm {
   identifier: string
@@ -282,6 +282,39 @@ export declare class MagicLinkRequestForm {
   static type: TAtscriptTypeObject<keyof MagicLinkRequestForm, MagicLinkRequestForm>
   static metadata: TMetadataMap<AtscriptMetadata>
   static validator: (opts?: Partial<TValidatorOptions>) => Validator<typeof MagicLinkRequestForm>
+  /** @deprecated JSON Schema support is disabled. Calling this method will throw a runtime error. To enable, set `jsonSchema: 'lazy'` or `jsonSchema: 'bundle'` in tsPlugin options, or add `@emit.jsonSchema` annotation to individual interfaces. */
+  static toJsonSchema: () => any
+  /** @deprecated Example Data support is disabled. To enable, set `exampleData: true` in tsPlugin options. */
+  static toExampleData?: () => any
+}
+
+/**
+ * Atscript interface **RecoveryModeSelectForm**
+ * @see {@link ./forms.as:263:18}
+ */
+export declare class RecoveryModeSelectForm {
+  mode: string
+  static __is_atscript_annotated_type: true
+  static type: TAtscriptTypeObject<keyof RecoveryModeSelectForm, RecoveryModeSelectForm>
+  static metadata: TMetadataMap<AtscriptMetadata>
+  static validator: (opts?: Partial<TValidatorOptions>) => Validator<typeof RecoveryModeSelectForm>
+  /** @deprecated JSON Schema support is disabled. Calling this method will throw a runtime error. To enable, set `jsonSchema: 'lazy'` or `jsonSchema: 'bundle'` in tsPlugin options, or add `@emit.jsonSchema` annotation to individual interfaces. */
+  static toJsonSchema: () => any
+  /** @deprecated Example Data support is disabled. To enable, set `exampleData: true` in tsPlugin options. */
+  static toExampleData?: () => any
+}
+
+/**
+ * Atscript interface **RecoveryFactorForm**
+ * @see {@link ./forms.as:277:18}
+ */
+export declare class RecoveryFactorForm {
+  factor: string
+  value: string
+  static __is_atscript_annotated_type: true
+  static type: TAtscriptTypeObject<keyof RecoveryFactorForm, RecoveryFactorForm>
+  static metadata: TMetadataMap<AtscriptMetadata>
+  static validator: (opts?: Partial<TValidatorOptions>) => Validator<typeof RecoveryFactorForm>
   /** @deprecated JSON Schema support is disabled. Calling this method will throw a runtime error. To enable, set `jsonSchema: 'lazy'` or `jsonSchema: 'bundle'` in tsPlugin options, or add `@emit.jsonSchema` annotation to individual interfaces. */
   static toJsonSchema: () => any
   /** @deprecated Example Data support is disabled. To enable, set `exampleData: true` in tsPlugin options. */

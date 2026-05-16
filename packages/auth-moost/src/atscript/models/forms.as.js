@@ -189,6 +189,28 @@ export class MagicLinkRequestForm {
   }
 }
 
+
+export class RecoveryModeSelectForm {
+  static __is_atscript_annotated_type = true
+  static type = {}
+  static metadata = new Map()
+  static id = "RecoveryModeSelectForm"
+  static toJsonSchema() {
+    $d("JSON Schema", "jsonSchema", "emit.jsonSchema")
+  }
+}
+
+
+export class RecoveryFactorForm {
+  static __is_atscript_annotated_type = true
+  static type = {}
+  static metadata = new Map()
+  static id = "RecoveryFactorForm"
+  static toJsonSchema() {
+    $d("JSON Schema", "jsonSchema", "emit.jsonSchema")
+  }
+}
+
 $("object", LoginCredentialsForm)
   .prop(
     "username",
@@ -255,6 +277,7 @@ $("object", EmailIdentifierForm)
       .annotate("expect.pattern", { pattern: "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",  flags: "",  message: "Invalid email format." }, true)
       .$type
   )
+  .annotate("wf.context.pass", "defaults", true)
 
 $("object", SetPasswordForm)
   .prop(
@@ -462,6 +485,40 @@ $("object", MagicLinkRequestForm)
       .annotate("meta.label", "Email or username")
       .annotate("ui.form.autocomplete", "username")
       .annotate("meta.required", { })
+      .$type
+  )
+
+$("object", RecoveryModeSelectForm)
+  .prop(
+    "mode",
+    $().designType("string")
+      .tags("string")
+      .annotate("ui.form.type", "text")
+      .annotate("meta.label", "Recovery method")
+      .annotate("meta.required", { })
+      .annotate("expect.pattern", { pattern: "^(magicLink|otp)$",  }, true)
+      .$type
+  )
+
+$("object", RecoveryFactorForm)
+  .prop(
+    "factor",
+    $().designType("string")
+      .tags("string")
+      .annotate("ui.form.type", "text")
+      .annotate("meta.label", "Factor")
+      .annotate("meta.required", { })
+      .annotate("expect.pattern", { pattern: "^(phone|totp)$",  }, true)
+      .$type
+  ).prop(
+    "value",
+    $().designType("string")
+      .tags("string")
+      .annotate("ui.form.type", "text")
+      .annotate("meta.label", "Value")
+      .annotate("meta.required", { })
+      .annotate("expect.minLength", { length: 4,  })
+      .annotate("expect.maxLength", { length: 12,  })
       .$type
   )
 

@@ -30,6 +30,9 @@ declare global {
     "expect.array.uniqueItems": { message?: string }
     "expect.array.key": { message?: string }
     "emit.jsonSchema": boolean
+    "wf.context.pass": (string)[]
+    "wf.action.withData": string
+    "wf.store.fromContext": string
     "ui.type": string
     "ui.form.placeholder": string
     "ui.form.hint": string
