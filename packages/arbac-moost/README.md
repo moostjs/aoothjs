@@ -97,11 +97,11 @@ annotated with `@arbac.*` to an auto-built `ArbacUserProvider`.
 
 ### Annotation namespace
 
-| Annotation         | Targets | Purpose                                                                     |
-| ------------------ | ------- | --------------------------------------------------------------------------- |
-| `@arbac.role`      | prop    | Source of role identifiers. `string` or `string[]`. Multiple roles unioned. |
-| `@arbac.attribute` | prop    | Field becomes a user attribute keyed by its prop name                       |
-| `@arbac.userId`    | prop    | Overrides the userId source (defaults to `@meta.id`)                        |
+| Annotation         | Targets | Purpose                                                                                                                                             |
+| ------------------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@arbac.role`      | prop    | THE source of role identifiers. Exactly one per type. Either inline (`string \| string[]`) or `@db.rel.from` nav prop. Multiple declarations throw. |
+| `@arbac.attribute` | prop    | Field becomes a user attribute keyed by its prop name. Multiple fields are merged into the `UserAttrs` map.                                         |
+| `@arbac.userId`    | prop    | Overrides the userId source. Resolution: `@arbac.userId` → field of `@db.table.preferredId.uniqueIndex` → `@meta.id`.                               |
 
 Register the plugin in your `atscript.config.ts`:
 
@@ -167,13 +167,22 @@ moost.setReplaceRegistry(createReplaceRegistry([ArbacUserProvider, MyArbacUserPr
 The base constructor:
 
 1. Reads atscript runtime metadata for `userType` and resolves the userId
-   field (`@arbac.userId` ?? `@meta.id`); throws if neither is present.
-2. Computes a minimum SELECT projection covering id + roles + attrs.
+   field by walking `@arbac.userId` → the single field of the
+   `@db.table.preferredId.uniqueIndex` group → `@meta.id`. Throws if none
+   of the three resolves.
+2. Detects the (single) `@arbac.role` field and classifies it as `inline`
+   (`string | string[]`) or `@db.rel.from` (joined role records). Throws
+   if more than one `@arbac.role` is declared.
+3. Computes a minimum SELECT projection covering id + inline role field +
+   attrs, and a `$with` clause when the role field is `@db.rel.from`.
 
-`getRoles(id)` and `getAttrs(id)` then call `table.findOne({ filter:
-{ [userIdField]: id }, controls: { $select: projection } })` and feed the
+`getRoles(id)` and `getAttrs(id)` call `table.findOne({ filter:
+{ [userIdField]: id }, controls: { $select, $with? } })` and feed the
 record through the `protected extractRoles` / `extractAttrs` seams —
 override either to reshape the output without re-implementing the fetch.
+For `@db.rel.from` role fields the provider extracts role names from each
+joined record using the target type's identifier field (same chain:
+`@arbac.userId` → preferred unique index → `@meta.id`).
 
 #### Per-event memoization
 

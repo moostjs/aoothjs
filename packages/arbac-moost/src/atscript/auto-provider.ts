@@ -9,27 +9,105 @@ import { ArbacUserProvider } from "../user.provider";
  * Minimal atscript-db readable surface used to fetch the user record. Matches
  * `AtscriptDbTable.findOne` exactly so consumers pass the table directly.
  * Kept loose to avoid pulling `@atscript/db` types into the public surface.
+ *
+ * `controls.$with` is optional — included so providers can request nav-prop
+ * expansion when `@arbac.role` is declared on a `@db.rel.from` field.
  */
 export interface ArbacUserTable<T extends object> {
   findOne(query: {
     filter: Record<string, unknown>;
-    controls?: { $select?: Record<string, 1> };
+    controls?: {
+      $select?: Record<string, 1>;
+      $with?: Array<{ name: string }>;
+    };
   }): Promise<T | null>;
 }
 
+/**
+ * Spec computed once per `TAtscriptAnnotatedType`.
+ *
+ * `userIdField` resolution order (first match wins):
+ *   1. explicit `@arbac.userId`
+ *   2. field declared by `@db.table.preferredId.uniqueIndex` (a `@db.index.unique`
+ *      group declared on exactly one field; named index variant or first declared)
+ *   3. `@meta.id` (PK)
+ *
+ * `roleField` is the single `@arbac.role`-annotated prop (more than one throws):
+ *   - shape `'inline'` → field holds `string | string[]`; values are read directly
+ *     and projected via `$select`.
+ *   - shape `'rel.from'` → field is a `@db.rel.from` nav prop (1:N to a role
+ *     table); provider auto-injects `controls.$with = [{ name: roleField }]`
+ *     and extracts role names from joined records using `roleTargetIdField`
+ *     (resolved on the target type with the same chain as `userIdField`).
+ */
 interface ArbacExtractSpec {
-  /** Resolved id field name: `@arbac.userId` if present, else `@meta.id`. */
   userIdField: string | undefined;
-  roleFields: string[];
+  roleField:
+    | { name: string; shape: "inline" }
+    | { name: string; shape: "rel.from"; roleTargetIdField: string }
+    | undefined;
   attrFields: string[];
 }
 
-/**
- * Walk the type's `props` once and record the `@arbac.*` / `@meta.id`
- * field positions. Memoized on the type reference (module-level WeakMap)
- * so multiple provider instances share one traversal per type.
- */
 const specCache = new WeakMap<TAtscriptAnnotatedType, ArbacExtractSpec>();
+
+/**
+ * Resolve the identifier field on an object type using the three-step chain
+ * documented on `ArbacExtractSpec.userIdField`. Used for the user type AND
+ * for the role target type referenced by `@db.rel.from`-shaped role fields.
+ */
+function resolveIdentifierField(type: TAtscriptAnnotatedType): string | undefined {
+  const def = type.type;
+  if (def.kind !== "object") return undefined;
+
+  let explicit: string | undefined;
+  let metaId: string | undefined;
+  const uniqueIndexFields = new Map<string, string[]>(); // index-name → fields
+  const anyUniqueField: string[] = [];
+
+  for (const [fieldName, fieldType] of def.props) {
+    const md = fieldType.metadata;
+    if (md.get("arbac.userId")) explicit = fieldName;
+    if (md.get("meta.id")) metaId = fieldName;
+    // `@db.index.unique` is a `(string | true)[]` — each entry is one group
+    // membership. `true` is an anonymous unique index on this field alone.
+    const unique = md.get("db.index.unique");
+    if (Array.isArray(unique)) {
+      for (const entry of unique) {
+        if (entry === true) {
+          anyUniqueField.push(fieldName);
+        } else if (typeof entry === "string") {
+          const bucket = uniqueIndexFields.get(entry);
+          if (bucket) bucket.push(fieldName);
+          else uniqueIndexFields.set(entry, [fieldName]);
+        }
+      }
+    }
+  }
+  if (explicit) return explicit;
+
+  // `@db.table.preferredId.uniqueIndex` lives on the type-level metadata. Value
+  // is `string` (target an index by name) or `true` (use the first declared
+  // unique index). Either way it must resolve to a single-field group — a
+  // composite unique index makes a poor identifier, so we skip those silently
+  // and fall through to `@meta.id`. The whole point of preferredId is "address
+  // rows by a single human-readable field".
+  const preferred = type.metadata.get("db.table.preferredId.uniqueIndex");
+  if (preferred !== undefined) {
+    if (typeof preferred === "string") {
+      const fields = uniqueIndexFields.get(preferred);
+      if (fields && fields.length === 1) return fields[0];
+    } else {
+      // `true`: pick the first unique-index group with exactly one member.
+      for (const fields of uniqueIndexFields.values()) {
+        if (fields.length === 1) return fields[0];
+      }
+      if (anyUniqueField.length > 0) return anyUniqueField[0];
+    }
+  }
+
+  return metaId;
+}
 
 function getArbacExtractSpec(type: TAtscriptAnnotatedType): ArbacExtractSpec {
   const cached = specCache.get(type);
@@ -37,7 +115,7 @@ function getArbacExtractSpec(type: TAtscriptAnnotatedType): ArbacExtractSpec {
 
   const spec: ArbacExtractSpec = {
     userIdField: undefined,
-    roleFields: [],
+    roleField: undefined,
     attrFields: [],
   };
 
@@ -47,23 +125,80 @@ function getArbacExtractSpec(type: TAtscriptAnnotatedType): ArbacExtractSpec {
     return spec;
   }
 
-  let metaIdField: string | undefined;
-  let userIdField: string | undefined;
+  const roleCandidates: Array<{ name: string; fieldType: TAtscriptAnnotatedType }> = [];
 
   for (const [fieldName, fieldType] of def.props) {
     const md = fieldType.metadata;
-    if (md.get("arbac.userId")) userIdField = fieldName;
-    if (md.get("meta.id")) metaIdField = fieldName;
-    if (md.get("arbac.role")) spec.roleFields.push(fieldName);
+    if (md.get("arbac.role")) {
+      roleCandidates.push({ name: fieldName, fieldType });
+    }
     if (md.get("arbac.attribute")) spec.attrFields.push(fieldName);
   }
 
-  spec.userIdField = userIdField ?? metaIdField;
+  // Fail loud: more than one `@arbac.role` is rejected outright. Silent union
+  // was the previous behavior; surfacing the conflict at spec time stops apps
+  // from booting with an ambiguous role source.
+  if (roleCandidates.length > 1) {
+    throw new Error(
+      `AtscriptArbacUserProvider: multiple @arbac.role fields declared (${roleCandidates
+        .map((c) => c.name)
+        .join(
+          ", ",
+        )}). Exactly one role source is supported — drop the @arbac.role from all but the canonical field.`,
+    );
+  }
+
+  if (roleCandidates.length === 1) {
+    const { name, fieldType } = roleCandidates[0];
+    const isRelFrom = fieldType.metadata.get("db.rel.from") !== undefined;
+    if (isRelFrom) {
+      // Resolve the role table's identifier field — the value we pull off each
+      // joined record. The target sits in `fieldType.type.of` for an array
+      // nav-prop. We tolerate weirder shapes (e.g. someone annotates a non-
+      // array `@db.rel.from`) by walking through to the first annotated type
+      // we can resolve.
+      const target = resolveRelTargetType(fieldType);
+      if (!target) {
+        throw new Error(
+          `AtscriptArbacUserProvider: @arbac.role on @db.rel.from field "${name}" — could not resolve the target role type. Declare the nav prop as \`<RoleType>[]\`.`,
+        );
+      }
+      const roleTargetIdField = resolveIdentifierField(target);
+      if (!roleTargetIdField) {
+        throw new Error(
+          `AtscriptArbacUserProvider: @arbac.role on @db.rel.from field "${name}" — target role type has no @arbac.userId / preferred unique index / @meta.id to identify role names by.`,
+        );
+      }
+      spec.roleField = { name, shape: "rel.from", roleTargetIdField };
+    } else {
+      spec.roleField = { name, shape: "inline" };
+    }
+  }
+
+  spec.userIdField = resolveIdentifierField(type);
   specCache.set(type, spec);
   return spec;
 }
 
-/** Mongo-style projection covering id + every `@arbac.role` / `@arbac.attribute` field. */
+/**
+ * Walk an annotated type to the target type of a navigation prop. Most cases
+ * are `Role[]` (array of annotated types), so we descend through `array.of`
+ * once. If the descent doesn't land on an `object`, the caller treats it as
+ * unresolvable.
+ */
+function resolveRelTargetType(
+  fieldType: TAtscriptAnnotatedType,
+): TAtscriptAnnotatedType | undefined {
+  const def = fieldType.type;
+  if (def.kind === "array") {
+    const of = (def as { of?: TAtscriptAnnotatedType }).of;
+    if (of && of.type.kind === "object") return of;
+  }
+  if (def.kind === "object") return fieldType;
+  return undefined;
+}
+
+/** Mongo-style projection covering id + `@arbac.role` (when inline) + `@arbac.attribute` fields. */
 const projectionCache = new WeakMap<TAtscriptAnnotatedType, Record<string, 1>>();
 
 function getArbacProjection(type: TAtscriptAnnotatedType): Record<string, 1> {
@@ -72,7 +207,12 @@ function getArbacProjection(type: TAtscriptAnnotatedType): Record<string, 1> {
   const spec = getArbacExtractSpec(type);
   const projection: Record<string, 1> = {};
   if (spec.userIdField) projection[spec.userIdField] = 1;
-  for (const f of spec.roleFields) projection[f] = 1;
+  // Inline role fields project as a regular column. `rel.from` role fields are
+  // requested via `$with` (not `$select`) and the adapter materializes them
+  // onto the record as joined arrays — so they do NOT belong in the projection.
+  if (spec.roleField && spec.roleField.shape === "inline") {
+    projection[spec.roleField.name] = 1;
+  }
   for (const f of spec.attrFields) projection[f] = 1;
   projectionCache.set(type, projection);
   return projection;
@@ -121,6 +261,7 @@ export abstract class AtscriptArbacUserProvider<
 > extends ArbacUserProvider {
   private readonly spec: ArbacExtractSpec;
   private readonly projection: Record<string, 1>;
+  private readonly withClause: Array<{ name: string }> | undefined;
 
   constructor(
     protected readonly userType: TAtscriptAnnotatedType,
@@ -130,10 +271,12 @@ export abstract class AtscriptArbacUserProvider<
     this.spec = getArbacExtractSpec(userType);
     if (!this.spec.userIdField) {
       throw new Error(
-        "AtscriptArbacUserProvider: userType has no @arbac.userId or @meta.id field — annotate one to identify users",
+        "AtscriptArbacUserProvider: userType has no @arbac.userId, @db.table.preferredId.uniqueIndex field, or @meta.id — annotate one to identify users",
       );
     }
     this.projection = getArbacProjection(userType);
+    this.withClause =
+      this.spec.roleField?.shape === "rel.from" ? [{ name: this.spec.roleField.name }] : undefined;
   }
 
   abstract override getUserId(): string | Promise<string>;
@@ -151,29 +294,49 @@ export abstract class AtscriptArbacUserProvider<
   }
 
   /**
-   * Override seam: combined list of all `@arbac.role` field values,
-   * deduplicated in first-seen order. Each declared role field may hold
-   * `string` or `string[]`; empty / nullish / non-string entries are skipped.
+   * Override seam: role identifiers pulled off the record.
+   *
+   * - inline (`string | string[]`): the field value, with empty / nullish /
+   *   non-string entries dropped and duplicates collapsed in first-seen order.
+   * - `@db.rel.from` (joined array of role records): each entry's
+   *   `roleTargetIdField` value (resolved at spec time on the target type
+   *   using the same `@arbac.userId` → preferred unique index → `@meta.id`
+   *   chain). Same dedup / drop-empty rules.
+   *
+   * Returns `[]` when the role field is undeclared or its value is null /
+   * undefined / empty.
    */
   protected extractRoles(record: T): string[] {
-    const roleFields = this.spec.roleFields;
-    if (roleFields.length === 0) return [];
+    const roleField = this.spec.roleField;
+    if (!roleField) return [];
+    const rec = record as Record<string, unknown>;
+    const raw = rec[roleField.name];
+    if (raw === undefined || raw === null) return [];
+
     const seen = new Set<string>();
     const out: string[] = [];
-    const rec = record as Record<string, unknown>;
-    for (const field of roleFields) {
-      const value = rec[field];
-      if (value === undefined || value === null) continue;
-      if (Array.isArray(value)) {
-        for (const item of value) {
-          if (typeof item === "string" && item !== "" && !seen.has(item)) {
-            seen.add(item);
-            out.push(item);
-          }
+
+    const push = (val: unknown) => {
+      if (typeof val === "string" && val !== "" && !seen.has(val)) {
+        seen.add(val);
+        out.push(val);
+      }
+    };
+
+    if (roleField.shape === "inline") {
+      if (Array.isArray(raw)) {
+        for (const item of raw) push(item);
+      } else {
+        push(raw);
+      }
+    } else {
+      // rel.from: raw is an array of joined role records.
+      if (!Array.isArray(raw)) return out;
+      const idField = roleField.roleTargetIdField;
+      for (const item of raw) {
+        if (item && typeof item === "object") {
+          push((item as Record<string, unknown>)[idField]);
         }
-      } else if (typeof value === "string" && value !== "" && !seen.has(value)) {
-        seen.add(value);
-        out.push(value);
       }
     }
     return out;
@@ -212,9 +375,13 @@ export abstract class AtscriptArbacUserProvider<
     if (cached !== undefined) return cached;
     // userIdField is guaranteed non-empty by the constructor check.
     const userIdField = this.spec.userIdField as string;
+    const controls: { $select: Record<string, 1>; $with?: Array<{ name: string }> } = {
+      $select: this.projection,
+    };
+    if (this.withClause) controls.$with = this.withClause;
     const promise = this.table.findOne({
       filter: { [userIdField]: userId },
-      controls: { $select: this.projection },
+      controls,
     });
     // Drop a rejected entry so a retry within the same event can re-fetch
     // (otherwise concurrent getRoles/getAttrs would all see the same failure).
