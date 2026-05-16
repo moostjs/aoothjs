@@ -15,15 +15,12 @@ pnpm add @aoothjs/auth @aoothjs/user
 ## Quickstart
 
 ```ts
-import {
-  AuthCredential,
-  CredentialStoreMemory,
-} from "@aoothjs/auth";
+import { AuthCredential, CredentialStoreMemory } from "@aoothjs/auth";
 
 const auth = new AuthCredential({
   store: new CredentialStoreMemory(),
   method: "token",
-  accessTtl: 60 * 60 * 1000,                    // 1h
+  accessTtl: 60 * 60 * 1000, // 1h
   refresh: { ttl: 30 * 24 * 60 * 60 * 1000, rotation: "sliding" },
 });
 
@@ -36,46 +33,42 @@ const ctx = await auth.validate(issued.accessToken);
 
 ## `AuthCredential`
 
-| Method                          | Purpose                                                                   |
-| ------------------------------- | ------------------------------------------------------------------------- |
-| `issue(userId, opts?)`          | Issue a new access (+ refresh) credential pair                            |
-| `validate(accessToken)`         | Return `AuthContext` or `null` (consults denylist if configured)          |
-| `refresh(refreshToken)`         | Rotate per `RefreshConfig` (`'none' \| 'always' \| 'sliding'`)            |
-| `revoke(token)`                 | Revoke a single token (access or refresh)                                 |
-| `revokeAllForUser(userId)`      | Revoke all credentials for a user                                         |
-| `listForUser(userId)`           | List active access credentials (for a "your sessions" UI)                 |
+| Method                     | Purpose                                                          |
+| -------------------------- | ---------------------------------------------------------------- |
+| `issue(userId, opts?)`     | Issue a new access (+ refresh) credential pair                   |
+| `validate(accessToken)`    | Return `AuthContext` or `null` (consults denylist if configured) |
+| `refresh(refreshToken)`    | Rotate per `RefreshConfig` (`'none' \| 'always' \| 'sliding'`)   |
+| `revoke(token)`            | Revoke a single token (access or refresh)                        |
+| `revokeAllForUser(userId)` | Revoke all credentials for a user                                |
+| `listForUser(userId)`      | List active access credentials (for a "your sessions" UI)        |
 
 Refresh-reuse after the grace window triggers best-effort revocation of all
 credentials for the affected user — standard OAuth theft response.
 
 ### Refresh rotation
 
-| Rotation   | Behavior                                                              |
-| ---------- | --------------------------------------------------------------------- |
-| `'none'`   | Refresh token survives across rotations; reuse permitted              |
-| `'always'` | New refresh issued on every call; old token revoked immediately       |
-| `'sliding'`| Like `'always'`, with a 30s grace window for in-flight refreshes      |
+| Rotation    | Behavior                                                         |
+| ----------- | ---------------------------------------------------------------- |
+| `'none'`    | Refresh token survives across rotations; reuse permitted         |
+| `'always'`  | New refresh issued on every call; old token revoked immediately  |
+| `'sliding'` | Like `'always'`, with a 30s grace window for in-flight refreshes |
 
 `'sliding'` is the recommended default — tolerates retry storms / racing
 clients while still detecting reuse outside the grace window.
 
 ## Credential stores
 
-| Store                          | Storage             | Stateless? | Notes                                              |
-| ------------------------------ | ------------------- | ---------- | -------------------------------------------------- |
-| `CredentialStoreMemory`        | in-memory Map       | no         | Tests / dev                                        |
-| `CredentialStoreJwt`           | JWT (HS256/HS512/RS256) | yes    | HS+RS supported; `kid` rotation; alg-confusion blocked |
-| `CredentialStoreEncapsulated`  | AES-256-GCM envelope| yes        | Opaque token; pure session-cookie deployments      |
+| Store                         | Storage                 | Stateless? | Notes                                                  |
+| ----------------------------- | ----------------------- | ---------- | ------------------------------------------------------ |
+| `CredentialStoreMemory`       | in-memory Map           | no         | Tests / dev                                            |
+| `CredentialStoreJwt`          | JWT (HS256/HS512/RS256) | yes        | HS+RS supported; `kid` rotation; alg-confusion blocked |
+| `CredentialStoreEncapsulated` | AES-256-GCM envelope    | yes        | Opaque token; pure session-cookie deployments          |
 
 Both stateless stores accept an optional `DenylistStore` for revocation
 keyed on `jti`.
 
 ```ts
-import {
-  AuthCredential,
-  CredentialStoreJwt,
-  DenylistStoreMemory,
-} from "@aoothjs/auth";
+import { AuthCredential, CredentialStoreJwt, DenylistStoreMemory } from "@aoothjs/auth";
 
 const auth = new AuthCredential({
   store: new CredentialStoreJwt({
@@ -111,9 +104,9 @@ const sender: EmailSender = {
 interface AuthEmailEvent {
   kind: "recovery.magicLink" | "invite.magicLink" | "mfa.code";
   recipient: string;
-  url?: string;        // magic-link events
-  code?: string;       // mfa.code (v2; not emitted in v1)
-  expiresAt: number;   // Unix ms
+  url?: string; // magic-link events
+  code?: string; // mfa.code (v2; not emitted in v1)
+  expiresAt: number; // Unix ms
   username?: string;
   metadata?: Record<string, unknown>;
 }
@@ -148,35 +141,102 @@ Consumer-supplied URL builder. The recommended convention is `?wfs=<token>`
 so the frontend can mount `<AsWfForm initialToken="...">` (from
 `@atscript/vue-wf`) to resume a paused workflow.
 
+## Storage adapters
+
+The core package ships in-memory and stateless (JWT, Encapsulated) stores.
+Two additional adapters are available as subpath exports — each is
+tree-shaken when not imported, and neither pulls extra deps into the core
+bundle.
+
+### `@aoothjs/auth/redis`
+
+Redis-backed `CredentialStore` + `DenylistStore`. No peer dep on any Redis
+client — the adapters depend on a structural `RedisLike` interface covering
+~6 commands (`set`, `get`, `del`, `exists`, `expire`, `sadd`, `srem`,
+`smembers`). `ioredis`, `redis@4+`, `@redis/client`, and ad-hoc test doubles
+all match by shape.
+
+```ts
+import Redis from "ioredis";
+import { CredentialStoreRedis, DenylistStoreRedis } from "@aoothjs/auth/redis";
+import { AuthCredential, CredentialStoreJwt } from "@aoothjs/auth";
+
+const redis = new Redis(process.env.REDIS_URL!);
+
+// Stateful credentials in Redis — `EXPIRE` handles TTL-based GC.
+const credentials = new AuthCredential({
+  store: new CredentialStoreRedis({ redis, prefix: "myapp:cred" }),
+  accessTtlMs: 15 * 60_000,
+});
+
+// Or pair a stateless JWT store with a Redis denylist.
+const jwt = new CredentialStoreJwt({
+  secret: process.env.JWT_SECRET!,
+  denylist: new DenylistStoreRedis({ redis, prefix: "myapp:dl" }),
+});
+```
+
+`DenylistStoreRedis.cleanup()` is a no-op — denylist keys carry `PX` TTLs
+matching the underlying token's expiry, so Redis evicts them automatically.
+
+### `@aoothjs/auth/atscript-db`
+
+`CredentialStore` backed by an `@atscript/db` table. `revokeAllForUser`
+issues a single `deleteMany({ userId })`; `listForUser` is a native
+filter query.
+
+Ship the `.as` model alongside your other database models and pass the
+resolved table to the adapter:
+
+```ts
+import { DbSpace } from "@atscript/db";
+import { SqliteAdapter, BetterSqlite3Driver } from "@atscript/db-sqlite";
+import { syncSchema } from "@atscript/db/sync";
+import { AoothAuthCredential } from "@aoothjs/auth/atscript-db/model.as";
+import { CredentialStoreAtscriptDb } from "@aoothjs/auth/atscript-db";
+import { AuthCredential } from "@aoothjs/auth";
+
+const db = new DbSpace(() => new SqliteAdapter(new BetterSqlite3Driver("./app.db")));
+await syncSchema(db, [AoothAuthCredential]);
+
+const credentials = new AuthCredential({
+  store: new CredentialStoreAtscriptDb({ table: db.getTable(AoothAuthCredential) }),
+  accessTtlMs: 15 * 60_000,
+});
+```
+
+`@atscript/db` is an optional `peerDependency` — installs only when you
+actually wire the atscript-db store.
+
 ## API surface
 
 ```ts
 // Orchestrator
-export { AuthCredential }
-export type { AuthCredentialOptions, IssueOptions }
+export { AuthCredential };
+export type { AuthCredentialOptions, IssueOptions };
 
 // Context + state types
-export type { AuthContext, CredentialState, CredentialMetadata, IssueResult, RefreshConfig }
+export type { AuthContext, CredentialState, CredentialMetadata, IssueResult, RefreshConfig };
 
 // Store interfaces
-export type { CredentialStore, DenylistStore }
+export type { CredentialStore, DenylistStore };
 
 // In-memory implementations
-export { CredentialStoreMemory, DenylistStoreMemory }
+export { CredentialStoreMemory, DenylistStoreMemory };
 
 // Stateless implementations
-export { CredentialStoreJwt, type CredentialStoreJwtOptions, type JwtAlgorithm }
-export { CredentialStoreEncapsulated, type CredentialStoreEncapsulatedOptions }
+export { CredentialStoreJwt, type CredentialStoreJwtOptions, type JwtAlgorithm };
+export { CredentialStoreEncapsulated, type CredentialStoreEncapsulatedOptions };
 
 // Errors
-export { AuthError, type AuthErrorType }
+export { AuthError, type AuthErrorType };
 
 // Email + magic-link primitives (consumer composes into flows)
-export type { AuthEmailEvent, AuthEmailKind, EmailSender }
-export type { BuildMagicLinkUrl, MagicLinkKind }
-export { generateMagicLinkToken }
+export type { AuthEmailEvent, AuthEmailKind, EmailSender };
+export type { BuildMagicLinkUrl, MagicLinkKind };
+export { generateMagicLinkToken };
 
 // Clock abstraction
-export type { Clock }
-export { defaultClock }
+export type { Clock };
+export { defaultClock };
 ```

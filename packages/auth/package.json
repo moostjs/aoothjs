@@ -24,7 +24,8 @@
     "directory": "packages/auth"
   },
   "files": [
-    "dist"
+    "dist",
+    "src/atscript-db/auth-credential.as"
   ],
   "type": "module",
   "sideEffects": false,
@@ -37,6 +38,17 @@
       "import": "./dist/index.mjs",
       "require": "./dist/index.cjs"
     },
+    "./redis": {
+      "types": "./dist/redis.d.mts",
+      "import": "./dist/redis.mjs",
+      "require": "./dist/redis.cjs"
+    },
+    "./atscript-db": {
+      "types": "./dist/atscript-db.d.mts",
+      "import": "./dist/atscript-db.mjs",
+      "require": "./dist/atscript-db.cjs"
+    },
+    "./atscript-db/model.as": "./src/atscript-db/auth-credential.as",
     "./package.json": "./package.json"
   },
   "publishConfig": {
@@ -51,5 +63,13 @@
   "dependencies": {
     "@aoothjs/user": "workspace:*",
     "jose": "^6.2.3"
+  },
+  "peerDependencies": {
+    "@atscript/db": ">=0.1.79"
+  },
+  "peerDependenciesMeta": {
+    "@atscript/db": {
+      "optional": true
+    }
   }
 }
