@@ -53,19 +53,22 @@ import {
   type DeviceTrustStore,
   DeviceTrustStoreMemory,
 } from "../device-trust/index";
-import { type WorkflowRateLimitStore, WorkflowRateLimitStoreMemory } from "../rate-limit/index";
 import { createAuthEmailOutlet } from "../workflows/auth-email-outlet";
 import type { DeliverPayload } from "../workflows/login.workflow";
 import {
   DEFAULT_INVITE_TOKEN_TTL_MS,
   DEFAULT_RECOVERY_TOKEN_TTL_MS,
+  type DuplicateAction,
   InviteWorkflow,
-  InviteWorkflowOptions,
+  type InviteWorkflowOpts,
+  type PreparedUserInput,
   LoginWorkflow,
   type LoginWorkflowOpts,
   RecoveryWorkflow,
   type RecoveryWorkflowOpts,
 } from "../workflows/index";
+import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
+import type { UserCredentials } from "@aoothjs/user";
 
 export interface CapturedEmail {
   kind: string;
@@ -114,8 +117,6 @@ export interface PreparedWfApp {
   auditEvents: AuditEvent[];
   /** The `DeviceTrustStore` instance wired by the test (when `deviceTrust` is enabled). */
   deviceTrustStore?: DeviceTrustStore;
-  /** The `WorkflowRateLimitStore` instance wired by the test (default in-memory). */
-  rateLimitStore?: WorkflowRateLimitStore;
   buildMagicLinkUrl: BuildMagicLinkUrl;
   /** Submit a request to the trigger endpoint. Resolves with parsed body. */
   trigger: (body: WfRequestBody) => Promise<WfResponse>;
@@ -140,8 +141,14 @@ export interface PrepareWfOpts {
   /** Override the recovery / invite TTLs (e.g. for expiry tests). */
   recoveryTokenTtlMs?: number;
   inviteTokenTtlMs?: number;
-  /** Forwarded to InviteWorkflowOptions — populates extras on invite-accept. */
-  prepareUser?: InviteWorkflowOptions["prepareUser"];
+  /**
+   * Forwarded to the invite harness — pre-bound as the subclass's
+   * `prepareUser()` override so existing tests can supply extras without
+   * declaring a full subclass.
+   */
+  prepareUser?: (
+    input: PreparedUserInput,
+  ) => Promise<Record<string, unknown>> | Record<string, unknown>;
   /**
    * Maps a recovery-step `email` to the canonical username. When supplied,
    * the harness builds a tiny `RecoveryWorkflow` subclass that overrides
@@ -188,12 +195,6 @@ export interface PrepareWfOpts {
    */
   auditEmitter?: AuditEmitter;
   /**
-   * Replace the `WorkflowRateLimitStore` registration. When `null`, the store
-   * is NOT registered — used by tests that exercise the boot-time fail-loud
-   * path when `RecoveryWorkflowOptions.rateLimit` is non-null.
-   */
-  rateLimitStore?: WorkflowRateLimitStore | null;
-  /**
    * Nested-pojo opts handed to `RecoveryWorkflow`'s constructor. When omitted,
    * the harness builds a magicLink-mode opts object from the per-test
    * `recoveryTokenTtlMs` (passes as `delivery.magicLinkTtlMs`).
@@ -208,11 +209,47 @@ export interface PrepareWfOpts {
    */
   recoveryWorkflowClass?: typeof RecoveryWorkflow;
   /**
-   * Override the invite options instance entirely. When omitted, defaults to
-   * the back-compat instance built from `inviteTokenTtlMs` + `prepareUser`
-   * with `showConfirmation: false` for parity with existing tests.
+   * Nested-pojo opts handed to `InviteWorkflow`'s constructor. When omitted,
+   * defaults to `{ send: { tokenTtlMs: inviteTokenTtlMs }, accept: { showConfirmation: false } }`
+   * for parity with existing tests.
    */
-  inviteOptions?: InviteWorkflowOptions;
+  inviteOpts?: InviteWorkflowOpts;
+  /**
+   * Consumer subclass of `InviteWorkflow` registered in place of the base
+   * class. Use this when a test needs to override a `protected` method
+   * (`prepareUser`, `applyProfile`, `duplicateCheck`, `getProfileForm`, …).
+   * The subclass MUST re-apply `@Inherit() @Injectable('FOR_EVENT') @Controller()`
+   * and re-declare the ctor signature.
+   */
+  inviteWorkflowClass?: typeof InviteWorkflow;
+  /**
+   * Per-test override map for the invite harness subclass's protected hooks
+   * (handier than building a full subclass for every options test). These all
+   * default to the workflow's built-in behavior.
+   */
+  inviteHooks?: {
+    prepareUser?: (
+      input: PreparedUserInput,
+    ) => Promise<Record<string, unknown>> | Record<string, unknown>;
+    getAvailableRoles?: () =>
+      | Promise<Array<{ id: string; label: string }> | undefined>
+      | Array<{ id: string; label: string }>
+      | undefined;
+    inferRoles?: (input: {
+      email: string;
+      firstName?: string;
+      lastName?: string;
+    }) => Promise<string[]> | string[];
+    applyProfile?: (input: {
+      username: string;
+      profile: Record<string, unknown>;
+    }) => Promise<void> | void;
+    duplicateCheck?: (input: {
+      email: string;
+      existingUser: UserCredentials | null;
+    }) => Promise<DuplicateAction> | DuplicateAction;
+    getProfileForm?: () => TAtscriptAnnotatedType | undefined;
+  };
 }
 
 /**
@@ -293,18 +330,9 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
         }
       : undefined);
 
-  // Rate-limit store. Only used by `InviteWorkflow` now (its ctor still
-  // consumes the DI registration). Recovery no longer participates. Tests
-  // that opt out via `rateLimitStore: null` skip registration entirely so
-  // the InviteWorkflow boot-time validator fires.
-  const rateLimitStore: WorkflowRateLimitStore | undefined =
-    opts.rateLimitStore === null
-      ? undefined
-      : (opts.rateLimitStore ?? new WorkflowRateLimitStoreMemory());
-
   // Build harness subclasses that wire the per-test capture arrays through
   // `protected` method overrides — replacing the pre-reshape DI registrations
-  // for EmailSender / SmsSender / DeviceTrustStore / AuditEmitter / RateLimitStore.
+  // for EmailSender / SmsSender / DeviceTrustStore / AuditEmitter.
   const LoginCtor = buildHarnessLoginClass({
     base: opts.loginWorkflowClass ?? LoginWorkflow,
     opts: loginOpts,
@@ -342,6 +370,37 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     authConfig: MoostAuthConfig,
   ) => RecoveryWorkflow;
 
+  const inviteOpts: InviteWorkflowOpts = opts.inviteOpts ?? {
+    send: { tokenTtlMs: inviteTokenTtlMs },
+    // Existing tests assert the auto-login response shape directly,
+    // pre-dating the confirmation pause introduced by BIG 3.3. New
+    // tests that exercise the confirmation step set this to true.
+    accept: { showConfirmation: false },
+  };
+  // Layer the per-test `prepareUser` shortcut onto `inviteHooks.prepareUser`
+  // so existing tests that only need to populate extras don't have to
+  // assemble the full `inviteHooks` object.
+  const inviteHooks = { ...opts.inviteHooks };
+  if (opts.prepareUser && !inviteHooks.prepareUser) {
+    inviteHooks.prepareUser = opts.prepareUser;
+  }
+  const InviteCtor = buildHarnessInviteClass({
+    base: opts.inviteWorkflowClass ?? InviteWorkflow,
+    opts: inviteOpts,
+    emails,
+    sms,
+    emailSender,
+    smsSender,
+    registerEmail,
+    registerSms,
+    auditEmitter,
+    hooks: inviteHooks,
+  }) as unknown as new (
+    users: UserService,
+    auth: AuthCredential,
+    authConfig: MoostAuthConfig,
+  ) => InviteWorkflow;
+
   const moostAuthConfig = new MoostAuthConfig({ cookie: { secure: false } });
   type ProvideEntry = Parameters<typeof createProvideRegistry>[number];
   const providers: ProvideEntry[] = [
@@ -350,28 +409,13 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     [MoostAuthConfig, () => moostAuthConfig],
     [LoginCtor, () => new LoginCtor(users, auth, moostAuthConfig)],
     [RecoveryCtor, () => new RecoveryCtor(users, auth, moostAuthConfig)],
-    [
-      InviteWorkflowOptions,
-      () =>
-        opts.inviteOptions ??
-        new InviteWorkflowOptions({
-          inviteTokenTtlMs,
-          prepareUser: opts.prepareUser,
-          // Existing tests assert the auto-login response shape directly,
-          // pre-dating the confirmation pause introduced by BIG 3.3. New
-          // tests that exercise the confirmation step set this to true.
-          showConfirmation: false,
-        }),
-    ],
+    [InviteCtor, () => new InviteCtor(users, auth, moostAuthConfig)],
   ];
-  // InviteWorkflow has NOT been refactored to protected methods yet (Phase 4
-  // / separate agent), so its DI tokens are still consumed by its ctor. Keep
-  // registering them. Login + Recovery ignore these registrations now.
-  if (registerEmail) providers.push(["EmailSender", () => emailSender]);
-  if (registerSms) providers.push(["SmsSender", () => smsSender]);
-  if (deviceTrustStore) providers.push(["DeviceTrustStore", () => deviceTrustStore]);
-  if (auditEmitter) providers.push(["AuditEmitter", () => auditEmitter]);
-  if (rateLimitStore) providers.push(["WorkflowRateLimitStore", () => rateLimitStore]);
+  // The three workflows now all use `protected` method overrides for
+  // sender/store/audit hooks — no DI registrations needed for them. The
+  // `EmailSender` token is still consumed by `createAuthEmailOutlet` (the
+  // trigger-side mailer for magic-link outlets), so the email-outlet deps
+  // object below takes it directly via closure.
   moost.setProvideRegistry(createProvideRegistry(...providers));
   moost.applyGlobalInterceptors(authGuardInterceptor);
   moost.applyGlobalInterceptors(formInputInterceptor());
@@ -381,7 +425,7 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
   const wfControllers: Array<new (...args: never[]) => unknown> = [];
   if (wfEnabled.login !== false) wfControllers.push(LoginCtor);
   if (wfEnabled.recovery !== false) wfControllers.push(RecoveryCtor);
-  if (wfEnabled.invite !== false) wfControllers.push(InviteWorkflow);
+  if (wfEnabled.invite !== false) wfControllers.push(InviteCtor);
   if (wfControllers.length > 0) {
     moost.registerControllers(...wfControllers);
   }
@@ -491,7 +535,6 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     sms,
     auditEvents,
     ...(deviceTrustStore && { deviceTrustStore }),
-    ...(rateLimitStore && { rateLimitStore }),
     buildMagicLinkUrl,
     trigger,
     triggerWithHeaders,
@@ -511,13 +554,12 @@ export async function seedActiveUser(
 
 // ── Harness subclass builders ────────────────────────────────────────────────
 //
-// Both `LoginWorkflow` and `RecoveryWorkflow` have ctor shape
-// `(opts, users, auth, authConfig)` after the protected-method refactor.
-// Tests still hand-roll opts per-case, so the harness pre-binds opts and
-// exposes a re-declared 3-arg ctor `(users, auth, authConfig)` to the moost
-// DI factory. Each builder layers on the per-test capture overrides
-// (`deliver` / `audit` / `loadTrustedDevice` / `storeTrustedDevice` /
-// `revokeTrustedDevice` / `checkRateLimit` / `emailToUserId`).
+// All three workflows (`LoginWorkflow`, `RecoveryWorkflow`, `InviteWorkflow`)
+// have ctor shape `(opts, users, auth, authConfig)` after the protected-method
+// refactor. Tests still hand-roll opts per-case, so each harness pre-binds
+// opts and exposes a re-declared 3-arg ctor `(users, auth, authConfig)` to the
+// moost DI factory. Each builder layers on the per-test capture overrides
+// (`deliver` / `audit` / device-trust hooks / invite hooks / `emailToUserId`).
 
 interface HarnessLoginDeps {
   base: typeof LoginWorkflow;
@@ -711,4 +753,107 @@ function buildHarnessRecoveryClass(
     }
   }
   return HarnessRecovery;
+}
+
+interface HarnessInviteDeps {
+  base: typeof InviteWorkflow;
+  opts: InviteWorkflowOpts;
+  emails: CapturedEmail[];
+  sms: CapturedSms[];
+  emailSender: EmailSender;
+  smsSender: SmsSender;
+  registerEmail: boolean;
+  registerSms: boolean;
+  auditEmitter: AuditEmitter | undefined;
+  hooks: NonNullable<PrepareWfOpts["inviteHooks"]>;
+}
+
+function buildHarnessInviteClass(
+  deps: HarnessInviteDeps,
+): new (...args: never[]) => InviteWorkflow {
+  const {
+    base: Base,
+    opts: inviteOpts,
+    emails,
+    sms,
+    emailSender,
+    smsSender,
+    registerEmail,
+    registerSms,
+    auditEmitter,
+    hooks,
+  } = deps;
+
+  @Inherit()
+  @Injectable("FOR_EVENT")
+  @Controller()
+  class HarnessInvite extends Base {
+    constructor(usersDep: UserService, authDep: AuthCredential, authConfigDep: MoostAuthConfig) {
+      super(inviteOpts, usersDep, authDep, authConfigDep);
+    }
+
+    protected override async deliver(payload: DeliverPayload): Promise<void> {
+      await harnessDeliver(payload, {
+        emails,
+        sms,
+        emailSender,
+        smsSender,
+        registerEmail,
+        registerSms,
+        label: "InviteWorkflow",
+      });
+    }
+
+    protected override async audit(event: AuditEvent): Promise<void> {
+      if (auditEmitter) await auditEmitter.emit(event);
+    }
+
+    protected override async prepareUser(
+      input: PreparedUserInput,
+    ): Promise<Record<string, unknown>> {
+      if (hooks.prepareUser) return await hooks.prepareUser(input);
+      return super.prepareUser(input);
+    }
+
+    protected override async getAvailableRoles(): Promise<
+      Array<{ id: string; label: string }> | undefined
+    > {
+      if (hooks.getAvailableRoles) return await hooks.getAvailableRoles();
+      return super.getAvailableRoles();
+    }
+
+    protected override async inferRoles(input: {
+      email: string;
+      firstName?: string;
+      lastName?: string;
+    }): Promise<string[]> {
+      if (hooks.inferRoles) return await hooks.inferRoles(input);
+      return super.inferRoles(input);
+    }
+
+    protected override async applyProfile(input: {
+      username: string;
+      profile: Record<string, unknown>;
+    }): Promise<void> {
+      if (hooks.applyProfile) {
+        await hooks.applyProfile(input);
+        return;
+      }
+      await super.applyProfile(input);
+    }
+
+    protected override async duplicateCheck(input: {
+      email: string;
+      existingUser: UserCredentials | null;
+    }): Promise<DuplicateAction> {
+      if (hooks.duplicateCheck) return await hooks.duplicateCheck(input);
+      return super.duplicateCheck(input);
+    }
+
+    protected override getProfileForm(): TAtscriptAnnotatedType | undefined {
+      if (hooks.getProfileForm) return hooks.getProfileForm();
+      return super.getProfileForm();
+    }
+  }
+  return HarnessInvite;
 }

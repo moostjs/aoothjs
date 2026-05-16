@@ -10,16 +10,17 @@ import {
   type AuthEmailOutletDeps,
   AuthController,
   authGuardInterceptor,
+  type DeliverPayload,
   InviteWorkflow,
-  InviteWorkflowOptions,
+  type InviteWorkflowOpts,
   LoginWorkflow,
   type LoginWorkflowOpts,
   MoostAuthConfig,
   RecoveryWorkflow,
   type RecoveryWorkflowOpts,
   useAuth,
-  WorkflowRateLimitStoreMemory,
 } from "@aoothjs/auth-moost";
+import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { UserService } from "@aoothjs/user";
 import { formInputInterceptor } from "@atscript/moost-wf";
 import { MoostHttp } from "@moostjs/event-http";
@@ -112,9 +113,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // Shared `deliver()` body for both workflow subclasses below. The
   // discriminated `DeliverPayload` narrows `kind` to the matching transport
   // type, so no casts are needed when forwarding to EmailSender / SmsSender.
-  const forwardDeliver = async (
-    payload: import("@aoothjs/auth-moost").DeliverPayload,
-  ): Promise<void> => {
+  const forwardDeliver = async (payload: DeliverPayload): Promise<void> => {
     if (payload.channel === "email") {
       await emailSender.send({
         kind: payload.kind,
@@ -155,7 +154,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     constructor(users: UserService, authCred: AuthCredential, authConfig: MoostAuthConfig) {
       super(demoLoginOpts, users, authCred, authConfig);
     }
-    protected override deliver(payload: import("@aoothjs/auth-moost").DeliverPayload) {
+    protected override deliver(payload: DeliverPayload) {
       return forwardDeliver(payload);
     }
   }
@@ -181,7 +180,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     constructor(users: UserService, authCred: AuthCredential, authConfig: MoostAuthConfig) {
       super(demoRecoveryOpts, users, authCred, authConfig);
     }
-    protected override deliver(payload: import("@aoothjs/auth-moost").DeliverPayload) {
+    protected override deliver(payload: DeliverPayload) {
       return forwardDeliver(payload);
     }
     // Maps a recovery-step email to the canonical username. In this demo
@@ -194,6 +193,48 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     }
   }
 
+  // Phase-4 reshape: `InviteWorkflow` is also configured via a consumer
+  // subclass that overrides `protected` methods — matching login + recovery.
+  const demoInviteOpts: InviteWorkflowOpts = {
+    send: { tokenTtlMs: env.INVITE_TTL_MS },
+    // Existing demo tests assert the auto-login response payload — pre-dating
+    // the BIG 3.3 confirmation pause. Off here so the demo matches today's
+    // behavior; production should keep the default ON.
+    accept: { showConfirmation: false },
+  };
+  @Inherit()
+  @Injectable("FOR_EVENT")
+  @Controller()
+  class DemoInviteWorkflow extends InviteWorkflow {
+    constructor(users: UserService, authCred: AuthCredential, authConfig: MoostAuthConfig) {
+      super(demoInviteOpts, users, authCred, authConfig);
+    }
+    protected override deliver(payload: DeliverPayload) {
+      // Invite's default send path uses `outletEmail` (handled by the
+      // createAuthEmailOutlet at the trigger route); deliver() runs only if a
+      // future override drives a manual send. Reuse the shared forwarder for
+      // parity with login/recovery.
+      return forwardDeliver(payload);
+    }
+    // Demonstrates the `prepareUser` hook: populate the consumer-required
+    // `tenantId` field before `userService.createUser` runs.
+    protected override async prepareUser(): Promise<Record<string, unknown>> {
+      return { tenantId: "_global" };
+    }
+    // Demonstrates the consumer-supplied profile form. `applyProfile` defaults
+    // to `users.update(username, profile)` when not overridden; the explicit
+    // override below proves the escape hatch reaches user-supplied code.
+    protected override getProfileForm(): TAtscriptAnnotatedType {
+      return InviteAcceptProfileForm as unknown as TAtscriptAnnotatedType;
+    }
+    protected override async applyProfile(input: {
+      username: string;
+      profile: Record<string, unknown>;
+    }): Promise<void> {
+      await aooth.userService.update(input.username, input.profile as Record<string, never>);
+    }
+  }
+
   // Canonical REST + guard wiring + per-workflow providers registered via DI.
   // `UserService` is only consumed by `AuthController`; skipping the controller
   // leaves the guard active for the rest of the app (used by DX-08).
@@ -201,45 +242,11 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     [AuthCredential, () => aooth.authCredential],
     [UserService, () => aooth.userService],
     [MoostAuthConfig, () => new MoostAuthConfig({ cookie: { secure: false } })],
+    // `EmailSender` is still consumed by `createAuthEmailOutlet` (the
+    // trigger-side mailer for magic-link outlets). The three auth workflows
+    // themselves no longer consume DI for senders/audit/trust/rate-limit —
+    // they use `protected` method overrides (see the subclasses above).
     ["EmailSender", () => emailSender],
-    // Console-stub SmsSender — kept so DI-resolves succeed if a consumer
-    // flips on 'sms' transport at runtime; defaults strip 'sms' above.
-    [
-      "SmsSender",
-      (): SmsSender => ({
-        async send(event) {
-          console.log("[demo SMS]", event.kind, event.recipient, event.code);
-        },
-      }),
-    ],
-    // In-memory rate-limit store for the InviteWorkflow (which still consumes
-    // this DI token). Consumers running multiple instances swap in a
-    // Redis-backed store so the cap actually limits across replicas.
-    ["WorkflowRateLimitStore", () => new WorkflowRateLimitStoreMemory()],
-    [
-      InviteWorkflowOptions,
-      () =>
-        new InviteWorkflowOptions({
-          inviteTokenTtlMs: env.INVITE_TTL_MS,
-          // Existing demo tests assert the auto-login response payload —
-          // pre-dating the BIG 3.3 confirmation pause. Off here so the demo
-          // matches today's behavior; production should keep the default ON.
-          showConfirmation: false,
-          // Demonstrates the `prepareUser` hook: populate the consumer-required
-          // `tenantId` field before `userService.createUser` runs.
-          prepareUser: () => ({ tenantId: "_global" }),
-          // Demonstrates the auto-injected profile form + escape hatch.
-          // `applyProfile` defaults to `users.update(username, profile)` when
-          // omitted; the explicit hook here proves the seam works.
-          acceptProfileForm: InviteAcceptProfileForm,
-          applyProfile: async ({ username, profile }) => {
-            // Persist via the same store the demo uses elsewhere. The default
-            // would do the same deep-merge — this explicit form proves the
-            // escape hatch reaches user-supplied code.
-            await aooth.userService.update(username, profile as Record<string, never>);
-          },
-        }),
-    ],
   ];
   app.setProvideRegistry(createProvideRegistry(...authProviders));
   app.applyGlobalInterceptors(authGuardInterceptor);
@@ -252,7 +259,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   const wfControllers: Array<new (...args: never[]) => unknown> = [];
   if (wfEnabled.login !== false) wfControllers.push(DemoLoginWorkflow);
   if (wfEnabled.recovery !== false) wfControllers.push(DemoRecoveryWorkflow);
-  if (wfEnabled.invite !== false) wfControllers.push(InviteWorkflow);
+  if (wfEnabled.invite !== false) wfControllers.push(DemoInviteWorkflow);
   if (wfControllers.length > 0) {
     app.registerControllers(...wfControllers);
   }

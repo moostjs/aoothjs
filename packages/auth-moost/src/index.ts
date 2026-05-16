@@ -51,8 +51,11 @@ export {
   InviteWorkflow,
   type InviteWfCtx,
   type InvitePrepareUserInput,
-  InviteWorkflowOptions,
+  type InviteSendMode,
+  type InviteWorkflowOpts,
+  mergeInviteOpts,
   type PreparedUserInput,
+  type ResolvedInviteWorkflowOpts,
   LoginWorkflow,
   type LoginWfCtx,
   type LoginRedirect,
@@ -85,10 +88,10 @@ export {
   WorkflowRateLimitStoreMemory,
 } from "./rate-limit/index";
 
-// DI tokens for optional workflow deps. `SmsSender` and `DeviceTrustStore`
-// are TS interfaces (no runtime constructor) so consumers register them
-// against these string tokens: `[SMS_SENDER_TOKEN, () => mySender]`.
-export const SMS_SENDER_TOKEN = "SmsSender";
-export const DEVICE_TRUST_STORE_TOKEN = "DeviceTrustStore";
-export const AUDIT_EMITTER_TOKEN = "AuditEmitter";
-export const WORKFLOW_RATE_LIMIT_STORE_TOKEN = "WorkflowRateLimitStore";
+// Note: the DI-token exports (`SMS_SENDER_TOKEN`, `AUDIT_EMITTER_TOKEN`,
+// `DEVICE_TRUST_STORE_TOKEN`, `WORKFLOW_RATE_LIMIT_STORE_TOKEN`) were dropped
+// in Phase 4 of the workflow OOP-reshape. All three auth workflows now use
+// `protected` method overrides instead of constructor-injected side-effect
+// deps, so no consumer needs the tokens. The `WorkflowRateLimitStore` /
+// `DeviceTrustStore` / `EmailSender` / `SmsSender` / `AuditEmitter` types
+// still ship for consumer overrides.

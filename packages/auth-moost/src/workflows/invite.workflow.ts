@@ -4,7 +4,7 @@
  *   - `auth.invite`       — admin invites a new user → user accepts (full flow)
  *   - `auth.reInvite`     — admin resends to an existing `pendingInvitation` user
  *   - `auth.cancelInvite` — admin hard-deletes a pending invite (gated by
- *                           `opts.allowCancel`)
+ *                           `opts.cancellation.allowed`)
  *
  * Full step catalog per `WF_INVITE.md`. Step IDs are workflow-scoped (all
  * prefixed `invite*`) because `@moostjs/event-wf` registers `@Step('id')`
@@ -18,9 +18,42 @@
  * fields) and return the `ALT_HANDLED` sentinel after short-circuiting via
  * `useWfFinished().set(...)`. Terminal steps gate on `!ctx.aborted` so the
  * abort response stays.
+ *
+ * **Consumer subclass pattern (Phase 4 reshape).** Consumers subclass
+ * `InviteWorkflow` to override `protected` hook methods. The subclass MUST
+ * re-apply `@Inherit() @Injectable('FOR_EVENT') @Controller()` and re-declare
+ * the constructor signature (TS emits fresh design-paramtypes per class).
+ *
+ * **Side-effect deps as protected methods.** Sender/store/emitter DI
+ * providers have been DROPPED from the constructor. Hooks live as `protected`
+ * methods consumers override:
+ *
+ *   - `deliver(payload)` — unified email + SMS dispatch (see `DeliverPayload`).
+ *     Default throws; override to wire your senders. The default invite send
+ *     uses `outletEmail` (handled by `createAuthEmailOutlet` at the trigger
+ *     route) so `deliver()` is only invoked if a consumer's accept-tail steps
+ *     drive a manual send. Kept exposed for parity with login/recovery and to
+ *     give consumer subclasses a single override seam for future SMS-invite
+ *     work.
+ *   - `audit(event)` — fire audit events. Default: no-op.
+ *
+ * **Replaceable behaviour as protected methods.**
+ *
+ *   - `prepareUser(input)` — extras merged into the freshly-created user row.
+ *   - `getAvailableRoles()` — multi-select source for the admin invite form.
+ *   - `inferRoles(input)` — derive roles server-side (e.g. AD lookup).
+ *   - `applyProfile({username, profile})` — persist the accept-time profile.
+ *   - `duplicateCheck({email, existingUser})` — override the structural
+ *     duplicate rule (multi-tenant escape hatch).
+ *   - `getProfileForm()` — return the consumer's `.as` profile form schema;
+ *     `undefined` skips the profile-collection step.
+ *
+ * Rate-limiting is intentionally NOT part of this workflow — consumers who
+ * want a cap wire it themselves at the HTTP / trigger layer.
  */
-import { AuthCredential, type EmailSender, type SmsSender } from "@aoothjs/auth";
+import { AuthCredential } from "@aoothjs/auth";
 import { UserAuthError, type UserCredentials, UserService } from "@aoothjs/user";
+import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { HttpError } from "@moostjs/event-http";
 import {
   outletEmail,
@@ -30,7 +63,7 @@ import {
   WorkflowParam,
   WorkflowSchema,
 } from "@moostjs/event-wf";
-import { Controller, Inject, Injectable, Optional } from "moost";
+import { Controller, Injectable } from "moost";
 
 import {
   InviteEmailForm,
@@ -38,16 +71,18 @@ import {
   InviteSendModeForm,
   SetPasswordForm,
 } from "../atscript/models/forms.as.js";
-import { type AuditEmitter, NoopAuditEmitter } from "../audit/index";
+import type { AuditEvent } from "../audit/index";
 import { useAuth } from "../auth.composables";
 import { MoostAuthConfig } from "../auth.config";
 import { buildLoginResponse } from "../auth.cookies";
-import type { WorkflowRateLimitStore } from "../rate-limit/index";
 import {
   type DuplicateAction,
-  InviteWorkflowOptions,
+  type InviteWorkflowOpts,
+  mergeInviteOpts,
   type PreparedUserInput,
+  type ResolvedInviteWorkflowOpts,
 } from "./invite.workflow.options";
+import type { DeliverPayload } from "./login.workflow";
 import {
   buildFinishedCookies,
   httpInputRequired,
@@ -58,10 +93,12 @@ import {
 } from "./wf-helpers";
 
 export interface InviteWfCtx {
-  opts?: InviteWorkflowOptions;
+  opts?: ResolvedInviteWorkflowOpts;
+  /** Boolean projection of `this.getProfileForm() !== undefined` — schema gates on it. */
+  acceptProfileFormPresent?: boolean;
 
   // ── Admin-side (Phase A) ────────────────────────────────────────────────
-  /** Populated by `invitePrepareAvailableRoles` when getAvailableRoles is wired. */
+  /** Populated by `invitePrepareAvailableRoles` when the override returns a list. */
   availableRoles?: Array<{ id: string; label: string }>;
   email?: string;
   /** Typically same as `email`; consumers can override the mapping. */
@@ -69,7 +106,7 @@ export interface InviteWfCtx {
   firstName?: string;
   lastName?: string;
   roles?: string[];
-  /** Populated by `inviteSelectSendMode` (when `sendMode === 'choice'`). */
+  /** Populated by `inviteSelectSendMode` (when `send.mode === 'choice'`). */
   selectedSendMode?: "email" | "shareableLink";
   /** Resolved send mode the workflow committed to (set in `inviteInit` or `inviteSelectSendMode`). */
   resolvedSendMode?: "email" | "shareableLink";
@@ -104,52 +141,18 @@ const ALT_HANDLED: unique symbol = Symbol("ALT_HANDLED");
 type AltHandled = typeof ALT_HANDLED;
 
 /**
- * Strip non-JSON values (functions, atscript form classes) from the options
- * object so the snapshot persists cleanly into the workflow state store. Add
- * `*Enabled` / `*Present` boolean projections so schema `condition` predicates
- * can gate on callback presence without holding the original reference.
+ * Construction-time invariants for DATA validity only. Sender/emitter absence
+ * is no longer checked — those default to fail-loud (`deliver()`) or safe
+ * (`audit()` no-op) protected methods that consumers override. Rate-limit is
+ * gone from the workflow entirely, so the only thing left to assert is that
+ * the resolved opts shape itself is internally consistent. Currently no
+ * cross-field invariants survive — the function stays for symmetry with
+ * `LoginWorkflow` / `RecoveryWorkflow` and to give future opts somewhere to
+ * land their checks without re-plumbing the ctor.
  */
-function snapshotOpts(opts: InviteWorkflowOptions): InviteWorkflowOptions {
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(opts)) {
-    if (v === undefined) continue;
-    if (typeof v === "function") continue;
-    if (v && typeof v === "object" && !Array.isArray(v)) {
-      if ((v as Record<string, unknown>).__is_atscript_annotated_type) continue;
-    }
-    out[k] = v;
-  }
-  out.getAvailableRolesEnabled = typeof opts.getAvailableRoles === "function";
-  out.inferRolesEnabled = typeof opts.inferRoles === "function";
-  out.acceptProfileFormPresent = Boolean(opts.acceptProfileForm);
-  return out as unknown as InviteWorkflowOptions;
+function validateOpts(_opts: ResolvedInviteWorkflowOpts): void {
+  // No cross-field invariants today.
 }
-
-/** Boot-time invariants — called once per options instance via `validatedOpts`. */
-function validateOpts(
-  opts: InviteWorkflowOptions,
-  emailSender: EmailSender | undefined,
-  rateLimitStore: WorkflowRateLimitStore | undefined,
-): void {
-  if (opts.rateLimit !== null) {
-    if (!rateLimitStore) {
-      throw new Error(
-        "InviteWorkflow: WorkflowRateLimitStore required when opts.rateLimit is non-null",
-      );
-    }
-    if (opts.rateLimit.count <= 0 || opts.rateLimit.windowMs <= 0) {
-      throw new Error(
-        "InviteWorkflow: opts.rateLimit.count and opts.rateLimit.windowMs must be > 0 (set rateLimit: null to disable)",
-      );
-    }
-  }
-  if (opts.sendMode !== "shareableLink" && !emailSender) {
-    // 'email' and 'choice' both need the email outlet.
-    throw new Error('InviteWorkflow: EmailSender required when sendMode is "email" or "choice"');
-  }
-}
-
-const validatedOpts = new WeakSet<InviteWorkflowOptions>();
 
 /** Audit `kind` → `wfid` reverse map. Default falls through to `auth.invite`. */
 const AUDIT_WORKFLOW_BY_KIND: Record<string, string> = {
@@ -160,7 +163,7 @@ const AUDIT_WORKFLOW_BY_KIND: Record<string, string> = {
 /** Trim/split `roles` free-text input — `"admin, editor"` → `["admin", "editor"]`. */
 export function parseInviteRoles(input?: string | string[]): string[] {
   if (!input) return [];
-  if (Array.isArray(input)) return input.map((r) => String(r).trim()).filter(Boolean);
+  if (Array.isArray(input)) return input.map((r) => r.trim()).filter(Boolean);
   return input
     .split(",")
     .map((r) => r.trim())
@@ -175,21 +178,120 @@ export function parseInviteRoles(input?: string | string[]): string[] {
 @Injectable("FOR_EVENT")
 @Controller()
 export class InviteWorkflow {
+  protected readonly opts: ResolvedInviteWorkflowOpts;
+  protected readonly users: UserService;
+  protected readonly auth: AuthCredential;
+  protected readonly authConfig: MoostAuthConfig;
+
   constructor(
-    private readonly opts: InviteWorkflowOptions,
-    private readonly users: UserService,
-    private readonly auth: AuthCredential,
-    private readonly authConfig: MoostAuthConfig,
-    @Optional() @Inject("EmailSender") private readonly mailer?: EmailSender,
-    @Optional() @Inject("SmsSender") private readonly sms?: SmsSender,
-    @Optional()
-    @Inject("WorkflowRateLimitStore")
-    private readonly rateLimitStore?: WorkflowRateLimitStore,
-    @Optional() @Inject("AuditEmitter") private readonly audit?: AuditEmitter,
+    opts: InviteWorkflowOpts,
+    users: UserService,
+    auth: AuthCredential,
+    authConfig: MoostAuthConfig,
   ) {
-    // Silence unused-DI lint for the optional SMS injection — kept on the
-    // constructor signature for parity with recovery / future invite-SMS work.
-    void this.sms;
+    this.opts = mergeInviteOpts(opts);
+    this.users = users;
+    this.auth = auth;
+    this.authConfig = authConfig;
+    validateOpts(this.opts);
+  }
+
+  // ── Protected extension surface ───────────────────────────────────────
+  /**
+   * Dispatch an email or SMS event. Default throws — the default invite send
+   * uses `outletEmail` (handled by `createAuthEmailOutlet`) so this method is
+   * only invoked when a consumer's accept-tail steps drive a manual send.
+   * Override to wire your senders.
+   */
+  protected async deliver(_payload: DeliverPayload): Promise<void> {
+    throw new Error(
+      "InviteWorkflow.deliver() not configured — override to wire your email/sms sender",
+    );
+  }
+
+  /**
+   * Emit an audit event. Default: no-op. Consumers override to fan out to
+   * their audit sink.
+   */
+  protected async audit(_event: AuditEvent): Promise<void> {
+    // No-op default.
+  }
+
+  /**
+   * Build the extras dictionary merged into the freshly-created user row in
+   * `invitePreCreateUser`. Default: `{}`. Override to populate e.g. a
+   * required `tenantId`.
+   */
+  protected async prepareUser(_input: PreparedUserInput): Promise<Record<string, unknown>> {
+    return {};
+  }
+
+  /**
+   * Return the list of selectable roles for the admin invite form. When
+   * defined AND `adminForm.collectRoles` is true → form ships
+   * `ctx.availableRoles` so the UI renders a multi-select. When `undefined`
+   * (default) → admin enters roles as free-text.
+   */
+  protected async getAvailableRoles(): Promise<Array<{ id: string; label: string }> | undefined> {
+    return undefined;
+  }
+
+  /**
+   * Derive roles server-side from the admin-form payload (e.g. email domain
+   * → tenant role, AD lookup). Result is set-unioned with admin-supplied
+   * roles when `adminForm.collectRoles` is true. Default: `[]` (no inference).
+   */
+  protected async inferRoles(_input: {
+    email: string;
+    firstName?: string;
+    lastName?: string;
+  }): Promise<string[]> {
+    return [];
+  }
+
+  /**
+   * Persist the accept-time profile payload. Default: deep-merge into the
+   * user record via `UserService.update(username, profile)`. Override to
+   * route into a separate profile table / external CRM.
+   */
+  protected async applyProfile(input: {
+    username: string;
+    profile: Record<string, unknown>;
+  }): Promise<void> {
+    await this.users.update(input.username, input.profile as Partial<UserCredentials>);
+  }
+
+  /**
+   * Override the structural duplicate rule for `inviteAdminInviteForm`.
+   * Default: any existing row → `'reject'`; nothing → `'allow'`. Multi-tenant
+   * apps that allow re-inviting the same email into a different tenant
+   * override to return `'allow'` for those cases.
+   */
+  protected async duplicateCheck(input: {
+    email: string;
+    existingUser: UserCredentials | null;
+  }): Promise<DuplicateAction> {
+    return input.existingUser ? "reject" : "allow";
+  }
+
+  /**
+   * Return the consumer-supplied `.as` form schema rendered in the
+   * `inviteCollectProfile` step. `undefined` (default) skips the step
+   * entirely (just password collection).
+   */
+  protected getProfileForm(): TAtscriptAnnotatedType | undefined {
+    return undefined;
+  }
+
+  /**
+   * Returns the JSON-safe projection of `opts` stashed onto `ctx` for schema
+   * conditions to read. Default: identity — the resolved-opts shape already
+   * contains only nested primitive groups (no callbacks, no class instances).
+   * Consumers who extend the opts type with non-JSON values can override this
+   * to strip them so `AsWfStore`'s plain-JSON persistence doesn't choke.
+   */
+  protected snapshotOpts(opts: ResolvedInviteWorkflowOpts): ResolvedInviteWorkflowOpts {
+    return opts;
   }
 
   // ╔═══════════════════════════════════════════════════════════════════════╗
@@ -201,92 +303,94 @@ export class InviteWorkflow {
     { id: "inviteInit" },
     {
       id: "invitePrepareAvailableRoles",
-      condition: (ctx) =>
-        Boolean(ctx.opts?.collectRoles && ctx.opts?.getAvailableRolesEnabled && !ctx.aborted),
+      condition: (ctx) => ctx.opts!.adminForm.collectRoles && !ctx.aborted,
     },
     {
       id: "inviteSelectSendMode",
-      condition: (ctx) =>
-        Boolean(ctx.opts?.sendMode === "choice" && !ctx.resolvedSendMode && !ctx.aborted),
+      condition: (ctx) => ctx.opts!.send.mode === "choice" && !ctx.resolvedSendMode && !ctx.aborted,
     },
-    { id: "inviteAdminInviteForm", condition: (ctx) => Boolean(!ctx.email && !ctx.aborted) },
+    { id: "inviteAdminInviteForm", condition: (ctx) => !ctx.email && !ctx.aborted },
     {
       id: "inviteInferRolesStep",
-      condition: (ctx) => Boolean(ctx.email && ctx.opts?.inferRolesEnabled && !ctx.aborted),
+      condition: (ctx) => !!(ctx.email && !ctx.aborted),
     },
     {
       id: "invitePreCreateUser",
-      condition: (ctx) => Boolean(ctx.email && !ctx.username && !ctx.aborted),
+      condition: (ctx) => !!(ctx.email && !ctx.username && !ctx.aborted),
     },
     {
       id: "inviteSendInviteEmail",
-      condition: (ctx) => Boolean(ctx.username && ctx.resolvedSendMode === "email" && !ctx.aborted),
+      condition: (ctx) => !!(ctx.username && ctx.resolvedSendMode === "email" && !ctx.aborted),
     },
     {
       id: "inviteReturnShareableLink",
       condition: (ctx) =>
-        Boolean(ctx.username && ctx.resolvedSendMode === "shareableLink" && !ctx.aborted),
+        !!(ctx.username && ctx.resolvedSendMode === "shareableLink" && !ctx.aborted),
     },
     // ── Phase B (accept tail): runs only after the magic link resumes here.
     {
       id: "inviteCheckPendingInvitation",
-      condition: (ctx) => Boolean(ctx.linkSent && !ctx.aborted),
+      condition: (ctx) => !!(ctx.linkSent && !ctx.aborted),
     },
     {
       id: "inviteIdempotentRedirect",
-      condition: (ctx) => Boolean(ctx.alreadyAccepted && !ctx.aborted),
+      condition: (ctx) => !!(ctx.alreadyAccepted && !ctx.aborted),
     },
     {
       id: "invitePreparePasswordRules",
-      condition: (ctx) => Boolean(ctx.linkSent && !ctx.alreadyAccepted && !ctx.aborted),
+      condition: (ctx) => !!(ctx.linkSent && !ctx.alreadyAccepted && !ctx.aborted),
     },
     {
       id: "inviteCreatePasswordForm",
       condition: (ctx) =>
-        Boolean(ctx.linkSent && !ctx.alreadyAccepted && !ctx.passwordSet && !ctx.aborted),
+        !!(ctx.linkSent && !ctx.alreadyAccepted && !ctx.passwordSet && !ctx.aborted),
     },
     {
       id: "inviteCollectProfile",
       condition: (ctx) =>
-        Boolean(
-          ctx.passwordSet && ctx.opts?.acceptProfileFormPresent && !ctx.profile && !ctx.aborted,
-        ),
+        !!(ctx.passwordSet && ctx.acceptProfileFormPresent && !ctx.profile && !ctx.aborted),
     },
     {
       id: "inviteApplyProfile",
       condition: (ctx) =>
-        Boolean(
+        !!(
           ctx.passwordSet &&
-          ctx.opts?.acceptProfileFormPresent &&
+          ctx.acceptProfileFormPresent &&
           ctx.profile &&
           !ctx.profileApplied &&
-          !ctx.aborted,
+          !ctx.aborted
         ),
     },
     {
       id: "inviteUnsetPendingInvitation",
-      condition: (ctx) => Boolean(ctx.passwordSet && !ctx.pendingInvitationCleared && !ctx.aborted),
+      condition: (ctx) => !!(ctx.passwordSet && !ctx.pendingInvitationCleared && !ctx.aborted),
     },
     {
       id: "inviteActivateUser",
-      condition: (ctx) => Boolean(ctx.pendingInvitationCleared && !ctx.activated && !ctx.aborted),
+      condition: (ctx) => !!(ctx.pendingInvitationCleared && !ctx.activated && !ctx.aborted),
     },
     {
       id: "inviteConfirmation",
       condition: (ctx) =>
-        Boolean(
-          ctx.activated && ctx.opts?.showConfirmation && !ctx.confirmationShown && !ctx.aborted,
+        !!(
+          ctx.activated &&
+          ctx.opts!.accept.showConfirmation &&
+          !ctx.confirmationShown &&
+          !ctx.aborted
         ),
     },
     {
       id: "inviteFreshLoginFinish",
-      condition: (ctx) => Boolean(ctx.activated && ctx.opts?.freshLoginRequired && !ctx.aborted),
+      condition: (ctx) => !!(ctx.activated && ctx.opts!.accept.freshLoginRequired && !ctx.aborted),
     },
     {
       id: "inviteAutoLoginFinish",
       condition: (ctx) =>
-        Boolean(
-          ctx.activated && !ctx.opts?.freshLoginRequired && !ctx.tokensIssued && !ctx.aborted,
+        !!(
+          ctx.activated &&
+          !ctx.opts!.accept.freshLoginRequired &&
+          !ctx.tokensIssued &&
+          !ctx.aborted
         ),
     },
   ])
@@ -298,73 +402,77 @@ export class InviteWorkflow {
     { id: "inviteLoadPendingUser", condition: (ctx) => !ctx.aborted },
     {
       id: "inviteSendInviteEmail",
-      condition: (ctx) => Boolean(ctx.username && ctx.resolvedSendMode === "email" && !ctx.aborted),
+      condition: (ctx) => !!(ctx.username && ctx.resolvedSendMode === "email" && !ctx.aborted),
     },
     {
       id: "inviteReturnShareableLink",
       condition: (ctx) =>
-        Boolean(ctx.username && ctx.resolvedSendMode === "shareableLink" && !ctx.aborted),
+        !!(ctx.username && ctx.resolvedSendMode === "shareableLink" && !ctx.aborted),
     },
     // Accept tail — same steps; runs only after the magic link resumes.
     {
       id: "inviteCheckPendingInvitation",
-      condition: (ctx) => Boolean(ctx.linkSent && !ctx.aborted),
+      condition: (ctx) => !!(ctx.linkSent && !ctx.aborted),
     },
     {
       id: "inviteIdempotentRedirect",
-      condition: (ctx) => Boolean(ctx.alreadyAccepted && !ctx.aborted),
+      condition: (ctx) => !!(ctx.alreadyAccepted && !ctx.aborted),
     },
     {
       id: "invitePreparePasswordRules",
-      condition: (ctx) => Boolean(ctx.linkSent && !ctx.alreadyAccepted && !ctx.aborted),
+      condition: (ctx) => !!(ctx.linkSent && !ctx.alreadyAccepted && !ctx.aborted),
     },
     {
       id: "inviteCreatePasswordForm",
       condition: (ctx) =>
-        Boolean(ctx.linkSent && !ctx.alreadyAccepted && !ctx.passwordSet && !ctx.aborted),
+        !!(ctx.linkSent && !ctx.alreadyAccepted && !ctx.passwordSet && !ctx.aborted),
     },
     {
       id: "inviteCollectProfile",
       condition: (ctx) =>
-        Boolean(
-          ctx.passwordSet && ctx.opts?.acceptProfileFormPresent && !ctx.profile && !ctx.aborted,
-        ),
+        !!(ctx.passwordSet && ctx.acceptProfileFormPresent && !ctx.profile && !ctx.aborted),
     },
     {
       id: "inviteApplyProfile",
       condition: (ctx) =>
-        Boolean(
+        !!(
           ctx.passwordSet &&
-          ctx.opts?.acceptProfileFormPresent &&
+          ctx.acceptProfileFormPresent &&
           ctx.profile &&
           !ctx.profileApplied &&
-          !ctx.aborted,
+          !ctx.aborted
         ),
     },
     {
       id: "inviteUnsetPendingInvitation",
-      condition: (ctx) => Boolean(ctx.passwordSet && !ctx.pendingInvitationCleared && !ctx.aborted),
+      condition: (ctx) => !!(ctx.passwordSet && !ctx.pendingInvitationCleared && !ctx.aborted),
     },
     {
       id: "inviteActivateUser",
-      condition: (ctx) => Boolean(ctx.pendingInvitationCleared && !ctx.activated && !ctx.aborted),
+      condition: (ctx) => !!(ctx.pendingInvitationCleared && !ctx.activated && !ctx.aborted),
     },
     {
       id: "inviteConfirmation",
       condition: (ctx) =>
-        Boolean(
-          ctx.activated && ctx.opts?.showConfirmation && !ctx.confirmationShown && !ctx.aborted,
+        !!(
+          ctx.activated &&
+          ctx.opts!.accept.showConfirmation &&
+          !ctx.confirmationShown &&
+          !ctx.aborted
         ),
     },
     {
       id: "inviteFreshLoginFinish",
-      condition: (ctx) => Boolean(ctx.activated && ctx.opts?.freshLoginRequired && !ctx.aborted),
+      condition: (ctx) => !!(ctx.activated && ctx.opts!.accept.freshLoginRequired && !ctx.aborted),
     },
     {
       id: "inviteAutoLoginFinish",
       condition: (ctx) =>
-        Boolean(
-          ctx.activated && !ctx.opts?.freshLoginRequired && !ctx.tokensIssued && !ctx.aborted,
+        !!(
+          ctx.activated &&
+          !ctx.opts!.accept.freshLoginRequired &&
+          !ctx.tokensIssued &&
+          !ctx.aborted
         ),
     },
   ])
@@ -384,14 +492,11 @@ export class InviteWorkflow {
   // ── Phase 0 ────────────────────────────────────────────────────────────
   @Step("inviteInit")
   init(@WorkflowParam("context") ctx: InviteWfCtx): undefined {
-    if (!validatedOpts.has(this.opts)) {
-      validateOpts(this.opts, this.mailer, this.rateLimitStore);
-      validatedOpts.add(this.opts);
-    }
-    ctx.opts = snapshotOpts(this.opts);
+    ctx.opts = this.snapshotOpts(this.opts);
+    ctx.acceptProfileFormPresent = this.getProfileForm() !== undefined;
     // Resolve send-mode up-front when fixed; `'choice'` defers to `inviteSelectSendMode`.
-    if (this.opts.sendMode !== "choice") {
-      ctx.resolvedSendMode = this.opts.sendMode;
+    if (this.opts.send.mode !== "choice") {
+      ctx.resolvedSendMode = this.opts.send.mode;
     }
     return undefined;
   }
@@ -399,8 +504,8 @@ export class InviteWorkflow {
   // ── Phase A: prepareAvailableRoles ────────────────────────────────────
   @Step("invitePrepareAvailableRoles")
   async prepareAvailableRoles(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
-    if (!this.opts.getAvailableRoles) return undefined;
-    ctx.availableRoles = await this.opts.getAvailableRoles();
+    const roles = await this.getAvailableRoles();
+    if (roles) ctx.availableRoles = roles;
     return undefined;
   }
 
@@ -446,33 +551,13 @@ export class InviteWorkflow {
 
     const email = input.email as string;
 
-    // Rate-limit BEFORE the user lookup so spammers can't fish for
-    // existing-email signals via the duplicate-check error path. Per-admin key
-    // is best-effort: an unauthenticated trigger context simply skips the cap
-    // (authorization is the trigger route's responsibility — ARBAC).
-    const adminId = useAuth().getAuthContext()?.userId;
-    if (this.opts.rateLimit && this.rateLimitStore && adminId) {
-      const res = await this.rateLimitStore.consume(
-        adminId,
-        this.opts.rateLimit.windowMs,
-        this.opts.rateLimit.count,
-      );
-      if (!res.allowed) {
-        throw new HttpError(429, "Invite rate limit exceeded for this admin");
-      }
-    }
-
-    // Duplicate check — escape hatch overrides the structural rule. Structural
-    // rule: any existing row → reject (with a different message per pending /
-    // accepted). `reuseAsReInvite` falls through as a no-op — the consumer is
-    // responsible for their own multi-tenant model; `invitePreCreateUser` will
-    // surface ALREADY_EXISTS from the store cleanly.
+    // Duplicate check — override-friendly. Default structural rule: any
+    // existing row → reject (with a different message per pending / accepted).
+    // `reuseAsReInvite` falls through as a no-op — the consumer is responsible
+    // for their own multi-tenant model; `invitePreCreateUser` will surface
+    // ALREADY_EXISTS from the store cleanly.
     const existing = await this.loadUserOrNull(email);
-    const action: DuplicateAction = this.opts.duplicateCheck
-      ? await this.opts.duplicateCheck({ email, existingUser: existing })
-      : existing
-        ? "reject"
-        : "allow";
+    const action: DuplicateAction = await this.duplicateCheck({ email, existingUser: existing });
     if (action === "reject") {
       if (existing?.account?.pendingInvitation) {
         throw new HttpError(409, "Invite already pending, use reInvite");
@@ -492,11 +577,11 @@ export class InviteWorkflow {
   // ── Phase A: inferRolesStep ───────────────────────────────────────────
   @Step("inviteInferRolesStep")
   async inferRolesStep(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
-    if (!this.opts.inferRoles || !ctx.email) return undefined;
-    const inferred = await this.opts.inferRoles({
+    if (!ctx.email) return undefined;
+    const inferred = await this.inferRoles({
       email: ctx.email,
-      firstName: ctx.firstName,
-      lastName: ctx.lastName,
+      ...(ctx.firstName && { firstName: ctx.firstName }),
+      ...(ctx.lastName && { lastName: ctx.lastName }),
     });
     if (inferred.length === 0) return undefined;
     const merged = new Set<string>([...(ctx.roles ?? []), ...inferred]);
@@ -518,7 +603,7 @@ export class InviteWorkflow {
       ...(invitedBy && { invitedBy }),
     };
 
-    const extras = this.opts.prepareUser ? await this.opts.prepareUser(preparedInput) : {};
+    const extras = await this.prepareUser(preparedInput);
 
     // `UserService.createUser` shallow-merges `extras` over `base`, so passing
     // an `account` key would wipe out the base's `active: false` / `locked:
@@ -562,9 +647,9 @@ export class InviteWorkflow {
       ...outletEmail(ctx.email as string, "invite.magicLink", {
         username: ctx.username,
         ...(ctx.roles && { roles: ctx.roles }),
-        expiresAtMs: this.opts.inviteTokenTtlMs,
+        expiresAtMs: this.opts.send.tokenTtlMs,
       }),
-      expires: Date.now() + this.opts.inviteTokenTtlMs,
+      expires: Date.now() + this.opts.send.tokenTtlMs,
     };
   }
 
@@ -581,10 +666,10 @@ export class InviteWorkflow {
       ...outletEmail(ctx.email as string, "invite.magicLink", {
         username: ctx.username,
         ...(ctx.roles && { roles: ctx.roles }),
-        expiresAtMs: this.opts.inviteTokenTtlMs,
+        expiresAtMs: this.opts.send.tokenTtlMs,
         shareableLink: true,
       }),
-      expires: Date.now() + this.opts.inviteTokenTtlMs,
+      expires: Date.now() + this.opts.send.tokenTtlMs,
     };
   }
 
@@ -645,7 +730,7 @@ export class InviteWorkflow {
   // ── Phase B: idempotentRedirect ───────────────────────────────────────
   @Step("inviteIdempotentRedirect")
   idempotentRedirect(@WorkflowParam("context") ctx: InviteWfCtx): undefined {
-    useWfFinished().set({ type: "redirect", value: this.opts.alreadyAcceptedRedirectUrl });
+    useWfFinished().set({ type: "redirect", value: this.opts.accept.alreadyAcceptedRedirectUrl });
     ctx.aborted = true;
     return undefined;
   }
@@ -697,7 +782,7 @@ export class InviteWorkflow {
     @WorkflowParam("input") input: Record<string, unknown> | undefined,
     @WorkflowParam("context") ctx: InviteWfCtx,
   ): Promise<unknown> {
-    const form = this.opts.acceptProfileForm;
+    const form = this.getProfileForm();
     if (!form) return undefined; // Defensive — condition gates on `acceptProfileFormPresent`.
     if (!input) return httpInputRequired(form, ctx);
     if ((input as { action?: string }).action === "skip") {
@@ -713,19 +798,14 @@ export class InviteWorkflow {
 
   // ── Phase B: applyProfile ─────────────────────────────────────────────
   @Step("inviteApplyProfile")
-  async applyProfile(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
+  async applyProfileStep(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     requireUsername(ctx);
     const profile = ctx.profile ?? {};
     if (Object.keys(profile).length === 0) {
       ctx.profileApplied = true;
       return undefined;
     }
-    if (this.opts.applyProfile) {
-      await this.opts.applyProfile({ username: ctx.username, profile });
-    } else {
-      // Default: deep-merge into the user record via UserService.update.
-      await this.users.update(ctx.username, profile as Partial<UserCredentials>);
-    }
+    await this.applyProfile({ username: ctx.username, profile });
     ctx.profileApplied = true;
     return undefined;
   }
@@ -763,7 +843,7 @@ export class InviteWorkflow {
     // tuned together — that's by design per WF_INVITE.md §"confirmation".
     useWfFinished().set({
       type: "data",
-      value: { message: this.opts.confirmationMessage, confirmed: true },
+      value: { message: this.opts.accept.confirmationMessage, confirmed: true },
     });
     return undefined;
   }
@@ -771,7 +851,7 @@ export class InviteWorkflow {
   // ── Phase B: freshLoginFinish ─────────────────────────────────────────
   @Step("inviteFreshLoginFinish")
   freshLoginFinish(@WorkflowParam("context") _ctx: InviteWfCtx): undefined {
-    useWfFinished().set({ type: "redirect", value: this.opts.loginUrl });
+    useWfFinished().set({ type: "redirect", value: this.opts.accept.loginUrl });
     return undefined;
   }
 
@@ -795,7 +875,7 @@ export class InviteWorkflow {
     @WorkflowParam("input") input: { email?: string } | undefined,
     @WorkflowParam("context") ctx: InviteWfCtx,
   ): Promise<unknown> {
-    if (!this.opts.allowCancel) {
+    if (!this.opts.cancellation.allowed) {
       throw new HttpError(403, "Invite cancellation is disabled");
     }
     if (!input) return httpInputRequired(InviteEmailForm, ctx);
@@ -837,10 +917,9 @@ export class InviteWorkflow {
   }
 
   private async emitAudit(kind: string, ctx: InviteWfCtx): Promise<void> {
-    if (!this.opts.auditEvents) return;
-    const emitter = this.audit ?? NoopAuditEmitter;
+    if (!this.opts.audit.enabled) return;
     const invitedBy = useAuth().getAuthContext()?.userId;
-    await emitter.emit({
+    await this.audit({
       kind,
       workflow: AUDIT_WORKFLOW_BY_KIND[kind] ?? "auth.invite",
       ...(ctx.username && { userId: ctx.username }),

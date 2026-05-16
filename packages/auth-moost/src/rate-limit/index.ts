@@ -1,14 +1,16 @@
 /**
  * Workflow-shared rate limiter.
  *
- * Used by `RecoveryWorkflow.request` to cap recovery requests per email and
- * (eventually) by `InviteWorkflow` to cap admin-side invite sends. The `key`
- * parameter is workflow-defined — for recovery it is the inbound email, for
- * invite it is the admin's `userId` — the store treats it opaquely.
+ * Phase 4 of the OOP-reshape dropped rate-limiting from the auth workflow
+ * surface entirely — consumers who want a cap wire it themselves at the
+ * trigger / HTTP layer. This interface + the in-memory default ship for that
+ * use-case. The `key` parameter is consumer-defined (typically the inbound
+ * email for recovery, the admin's `userId` for invite); the store treats it
+ * opaquely.
  *
  * The in-memory default ships per-process; consumers running multiple
- * instances register a Redis-backed implementation via the
- * `WORKFLOW_RATE_LIMIT_STORE_TOKEN` DI token to keep counts shared.
+ * instances replace it with a Redis-backed implementation so counts are
+ * shared across replicas.
  */
 export interface WorkflowRateLimitConsumeResult {
   /** True when the request fits inside the window; false when the cap was hit. */

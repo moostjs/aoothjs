@@ -6,33 +6,23 @@
  * payloads, captured emails, audit events, user-store state). No step-count /
  * step-name assertions. Each test would fail if the production branch under
  * test were removed.
+ *
+ * Phase 4 reshape: tests configure InviteWorkflow via the nested-pojo
+ * `inviteOpts` + the harness's `inviteHooks` map (which the harness subclass
+ * wires onto the new `protected` overrides). The pre-reshape options-class +
+ * the rate-limit feature are gone — see WF_INVITE.md.
  */
 import { describe, expect, it } from "vite-plus/test";
 
 import { ProfileCompleteForm } from "../atscript/models/forms.as.js";
-import {
-  type WorkflowRateLimitConsumeResult,
-  type WorkflowRateLimitStore,
-} from "../rate-limit/index";
-import { InviteWorkflowOptions } from "../workflows/invite.workflow.options";
 import { prepareWfApp, seedActiveUser } from "./workflow-utils";
 
 const PASSWORD = "NewPassword123";
 
-/** Issue a token via auth.issue and build `Authorization: Bearer` headers. */
-async function adminBearerHeaders(
-  app: Awaited<ReturnType<typeof prepareWfApp>>,
-  adminId = "admin@test.com",
-): Promise<Record<string, string>> {
-  const issued = await app.auth.issue(adminId);
-  return { Authorization: `Bearer ${issued.accessToken}` };
-}
-
 /**
  * Drive the canonical happy-path: admin opens `auth.invite`, submits invite
  * form, captures the email, resumes via magic link, submits password. Returns
- * the final response. Uses the back-compat default options (no admin auth, no
- * confirmation step) unless the caller overrides `inviteOptions`.
+ * the final response.
  */
 async function driveDefaultInviteAccept(
   app: Awaited<ReturnType<typeof prepareWfApp>>,
@@ -49,45 +39,7 @@ async function driveDefaultInviteAccept(
   return { status: r4.status, body: r4.body };
 }
 
-describe("InviteWorkflowOptions — boot-time validators (fail loud)", () => {
-  it("rateLimit non-null WITHOUT registered store → first request 500 with WorkflowRateLimitStore message", async () => {
-    // validateOpts runs once per options instance inside `inviteInit`. The
-    // throw surfaces at the HTTP layer as a 500 with the validator message.
-    const app = await prepareWfApp({
-      inviteOptions: new InviteWorkflowOptions({
-        // default rateLimit is non-null — store missing.
-      }),
-      rateLimitStore: null,
-    });
-    const r = await app.trigger({ wfid: "auth.invite" });
-    expect(r.status).toBe(500);
-    expect(JSON.stringify(r.body)).toMatch(/WorkflowRateLimitStore/);
-  });
-
-  it("rateLimit.count <= 0 → fail loud (500 with count/windowMs message)", async () => {
-    const app = await prepareWfApp({
-      inviteOptions: new InviteWorkflowOptions({
-        rateLimit: { count: 0, windowMs: 60_000 },
-      }),
-    });
-    const r = await app.trigger({ wfid: "auth.invite" });
-    expect(r.status).toBe(500);
-    expect(JSON.stringify(r.body)).toMatch(/rateLimit.*must be > 0/);
-  });
-
-  it("rateLimit.windowMs <= 0 → fail loud (500 with count/windowMs message)", async () => {
-    const app = await prepareWfApp({
-      inviteOptions: new InviteWorkflowOptions({
-        rateLimit: { count: 50, windowMs: 0 },
-      }),
-    });
-    const r = await app.trigger({ wfid: "auth.invite" });
-    expect(r.status).toBe(500);
-    expect(JSON.stringify(r.body)).toMatch(/rateLimit.*must be > 0/);
-  });
-});
-
-describe("InviteWorkflowOptions — default flow end-to-end", () => {
+describe("InviteWorkflow — default flow end-to-end", () => {
   it("admin invite → magic link → accept → auto-login (back-compat default)", async () => {
     // This mirrors workflows.invite.spec.ts "happy path" but also asserts the
     // `pendingInvitation` flag round-trips through UsersStoreMemory: TRUE
@@ -100,10 +52,6 @@ describe("InviteWorkflowOptions — default flow end-to-end", () => {
     });
 
     // After preCreateUser: user row exists with pendingInvitation === true.
-    // (NOTE: known production bug — UserService.createUser shallow-merges
-    // `extras.account` over `base.account`, dropping `active`/`locked`/etc.
-    // The pendingInvitation flag itself round-trips correctly, which is the
-    // only invariant WF_INVITE.md requires for the accept-tail gating.)
     const pre = await app.users.getUser("alice@test.com");
     expect(pre.account?.pendingInvitation).toBe(true);
 
@@ -142,19 +90,15 @@ describe("InviteWorkflowOptions — default flow end-to-end", () => {
   });
 });
 
-describe("InviteWorkflowOptions — sendMode shareableLink", () => {
+describe("InviteWorkflow — send.mode shareableLink", () => {
   it("shareableLink: admin form completes; magic-link URL is round-trippable (PUNT: email leaks per impl note)", async () => {
     // PUNT per impl report: shareableLink currently piggy-backs on the email
     // outlet so the admin's UI sees the same URL the email envelope carries.
-    // The assertion proves the link works end-to-end; the leakage is the
-    // documented punt and is tracked as a production-side TODO, not a test
-    // bug. (The current auth-email-outlet only forwards `roles` to metadata
-    // — `shareableLink: true` is dropped on the floor.)
     const app = await prepareWfApp({
-      inviteOptions: new InviteWorkflowOptions({
-        sendMode: "shareableLink",
-        showConfirmation: false,
-      }),
+      inviteOpts: {
+        send: { mode: "shareableLink" },
+        accept: { showConfirmation: false },
+      },
     });
 
     const r1 = await app.trigger({ wfid: "auth.invite" });
@@ -165,21 +109,19 @@ describe("InviteWorkflowOptions — sendMode shareableLink", () => {
 
     expect(app.emails).toHaveLength(1);
     expect(app.emails[0].kind).toBe("invite.magicLink");
-    // The link URL resolves to the accept tail when clicked — this proves the
-    // shareableLink branch built a usable magic-link.
     const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
     const r3 = await app.resumeViaQuery(token);
     expect(r3.body?.wfs).toBeTruthy();
   });
 });
 
-describe("InviteWorkflowOptions — sendMode choice", () => {
+describe("InviteWorkflow — send.mode choice", () => {
   it("choice: admin picks 'shareableLink' at runtime → metadata.shareableLink: true on the email", async () => {
     const app = await prepareWfApp({
-      inviteOptions: new InviteWorkflowOptions({
-        sendMode: "choice",
-        showConfirmation: false,
-      }),
+      inviteOpts: {
+        send: { mode: "choice" },
+        accept: { showConfirmation: false },
+      },
     });
     const r1 = await app.trigger({ wfid: "auth.invite" });
     // First pause: send-mode picker (InviteSendModeForm).
@@ -204,10 +146,10 @@ describe("InviteWorkflowOptions — sendMode choice", () => {
 
   it("choice: admin picks 'email' → email sent normally", async () => {
     const app = await prepareWfApp({
-      inviteOptions: new InviteWorkflowOptions({
-        sendMode: "choice",
-        showConfirmation: false,
-      }),
+      inviteOpts: {
+        send: { mode: "choice" },
+        accept: { showConfirmation: false },
+      },
     });
     const r1 = await app.trigger({ wfid: "auth.invite" });
     const r2 = await app.trigger({
@@ -224,17 +166,17 @@ describe("InviteWorkflowOptions — sendMode choice", () => {
   });
 });
 
-describe("InviteWorkflowOptions — acceptProfileForm + applyProfile", () => {
-  it("acceptProfileForm + custom applyProfile callback fires with raw profile + username", async () => {
+describe("InviteWorkflow — getProfileForm + applyProfile", () => {
+  it("getProfileForm + custom applyProfile override fires with raw profile + username", async () => {
     const seen: Array<{ username: string; profile: Record<string, unknown> }> = [];
     const app = await prepareWfApp({
-      inviteOptions: new InviteWorkflowOptions({
-        showConfirmation: false,
-        acceptProfileForm: ProfileCompleteForm,
+      inviteOpts: { accept: { showConfirmation: false } },
+      inviteHooks: {
+        getProfileForm: () => ProfileCompleteForm,
         applyProfile: async ({ username, profile }) => {
           seen.push({ username, profile });
         },
-      }),
+      },
     });
 
     const r1 = await app.trigger({ wfid: "auth.invite" });
@@ -259,13 +201,13 @@ describe("InviteWorkflowOptions — acceptProfileForm + applyProfile", () => {
     expect(seen[0].profile).toMatchObject({ firstName: "Pat", lastName: "Patel" });
   });
 
-  it("acceptProfileForm WITHOUT applyProfile → default deep-merge fallback writes via UserService.update", async () => {
+  it("getProfileForm WITHOUT applyProfile override → default deep-merge fallback writes via UserService.update", async () => {
     const app = await prepareWfApp({
-      inviteOptions: new InviteWorkflowOptions({
-        showConfirmation: false,
-        acceptProfileForm: ProfileCompleteForm,
+      inviteOpts: { accept: { showConfirmation: false } },
+      inviteHooks: {
+        getProfileForm: () => ProfileCompleteForm,
         // no applyProfile — default deep-merge runs.
-      }),
+      },
     });
 
     const r1 = await app.trigger({ wfid: "auth.invite" });
@@ -286,23 +228,23 @@ describe("InviteWorkflowOptions — acceptProfileForm + applyProfile", () => {
     expect(user.lastName).toBe("Merge");
   });
 
-  it("no acceptProfileForm → no profile pause; password-set advances straight to auto-login", async () => {
+  it("no getProfileForm override → no profile pause; password-set advances straight to auto-login", async () => {
     const app = await prepareWfApp();
     const r = await driveDefaultInviteAccept(app, "noprof@test.com");
     expect(r.body?.userId).toBe("noprof@test.com");
   });
 });
 
-describe("InviteWorkflowOptions — getAvailableRoles + inferRoles", () => {
+describe("InviteWorkflow — getAvailableRoles + inferRoles", () => {
   it("getAvailableRoles populates ctx.availableRoles on the InviteForm pause", async () => {
     const app = await prepareWfApp({
-      inviteOptions: new InviteWorkflowOptions({
-        showConfirmation: false,
+      inviteOpts: { accept: { showConfirmation: false } },
+      inviteHooks: {
         getAvailableRoles: async () => [
           { id: "admin", label: "Administrator" },
           { id: "viewer", label: "Viewer" },
         ],
-      }),
+      },
     });
     const r1 = await app.trigger({ wfid: "auth.invite" });
     // Admin form returned; availableRoles whitelisted via `@wf.context.pass`.
@@ -315,13 +257,13 @@ describe("InviteWorkflowOptions — getAvailableRoles + inferRoles", () => {
   it("inferRoles merges with admin-supplied roles (set-union)", async () => {
     const calls: Array<Record<string, unknown>> = [];
     const app = await prepareWfApp({
-      inviteOptions: new InviteWorkflowOptions({
-        showConfirmation: false,
+      inviteOpts: { accept: { showConfirmation: false } },
+      inviteHooks: {
         inferRoles: async (input) => {
           calls.push({ ...input });
           return ["auto-role", "viewer"]; // 'viewer' overlaps with admin pick
         },
-      }),
+      },
     });
     const r1 = await app.trigger({ wfid: "auth.invite" });
     await app.trigger({
@@ -337,7 +279,7 @@ describe("InviteWorkflowOptions — getAvailableRoles + inferRoles", () => {
   });
 });
 
-describe("InviteWorkflowOptions — re-invite", () => {
+describe("InviteWorkflow — re-invite", () => {
   it("re-invite happy path: original link works, then re-invite issues new magic link", async () => {
     const app = await prepareWfApp();
     const r1 = await app.trigger({ wfid: "auth.invite" });
@@ -390,7 +332,7 @@ describe("InviteWorkflowOptions — re-invite", () => {
   });
 });
 
-describe("InviteWorkflowOptions — cancel-invite", () => {
+describe("InviteWorkflow — cancel-invite", () => {
   it("cancel removes the pending user; subsequent magic-link click → 410", async () => {
     const app = await prepareWfApp();
     const r1 = await app.trigger({ wfid: "auth.invite" });
@@ -446,29 +388,28 @@ describe("InviteWorkflowOptions — cancel-invite", () => {
     expect(c2.status).toBe(404);
   });
 
-  it("allowCancel=false → 403 from cancel step", async () => {
+  it("cancellation.allowed=false → 403 from cancel step", async () => {
     const app = await prepareWfApp({
-      inviteOptions: new InviteWorkflowOptions({
-        showConfirmation: false,
-        allowCancel: false,
-      }),
+      inviteOpts: {
+        accept: { showConfirmation: false },
+        cancellation: { allowed: false },
+      },
     });
-    // The `cancelInvite` step's allowCancel guard fires on the first
-    // trigger (before the form input pause), so the workflow returns 403
-    // immediately rather than handing back an InviteEmailForm prompt.
+    // The `cancelInvite` step's allowed-gate fires on the first trigger
+    // (before the form input pause), so the workflow returns 403 immediately
+    // rather than handing back an InviteEmailForm prompt.
     const c1 = await app.trigger({ wfid: "auth.cancelInvite" });
     expect(c1.status).toBe(403);
     expect(JSON.stringify(c1.body)).toMatch(/disabled|forbidden/i);
   });
 });
 
-describe("InviteWorkflowOptions — idempotent magic-link click", () => {
-  it("second click after a successful accept → redirect to alreadyAcceptedRedirectUrl", async () => {
+describe("InviteWorkflow — idempotent magic-link click", () => {
+  it("second click after a successful accept → redirect / 4xx (single-use token)", async () => {
     const app = await prepareWfApp({
-      inviteOptions: new InviteWorkflowOptions({
-        showConfirmation: false,
-        alreadyAcceptedRedirectUrl: "/already-in",
-      }),
+      inviteOpts: {
+        accept: { showConfirmation: false, alreadyAcceptedRedirectUrl: "/already-in" },
+      },
     });
     const r1 = await app.trigger({ wfid: "auth.invite" });
     await app.trigger({
@@ -485,25 +426,22 @@ describe("InviteWorkflowOptions — idempotent magic-link click", () => {
     expect(r4.body?.userId).toBe("idem@test.com");
 
     // Second click (replay): single-use tokens reject after consumption with
-    // 410 Gone — that's the documented behavior; the configured
-    // `alreadyAcceptedRedirectUrl` branch would fire only on a parallel
-    // second link (re-invite issued before accept). Either short-circuit
-    // proves the user is NOT taken back into the password form.
+    // 410 Gone — the configured `alreadyAcceptedRedirectUrl` branch would
+    // fire only on a parallel second link issued before accept. Either
+    // short-circuit proves the user is NOT taken back into the password form.
     const replay = await app.resumeViaQuery(token);
     expect(replay.status).toBeGreaterThanOrEqual(400);
     expect(replay.status).toBeLessThan(500);
   });
 
-  it("re-invite link click after the user already accepted via the FIRST link → redirect to alreadyAcceptedRedirectUrl", async () => {
-    // Real idempotent-redirect coverage: issue invite #1, complete it, then
-    // re-invite (which legally re-issues a token because reInvite checks for
-    // `pendingInvitation` — so we need a fresh pending user). Use a different
-    // accepted user + an inflight re-invite scenario.
+  it("re-invite refuses after the user already accepted via the FIRST link → 409", async () => {
+    // The structural pendingInvitation=false → re-invite rejects path proves
+    // the alreadyAccepted invariant from the workflow level: once accepted,
+    // no second token can be issued.
     const app = await prepareWfApp({
-      inviteOptions: new InviteWorkflowOptions({
-        showConfirmation: false,
-        alreadyAcceptedRedirectUrl: "/already-in",
-      }),
+      inviteOpts: {
+        accept: { showConfirmation: false, alreadyAcceptedRedirectUrl: "/already-in" },
+      },
     });
     const r1 = await app.trigger({ wfid: "auth.invite" });
     await app.trigger({
@@ -511,9 +449,6 @@ describe("InviteWorkflowOptions — idempotent magic-link click", () => {
       input: { email: "twice@test.com" },
     });
     const tokenA = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
-    // Simulate a re-issued token while user A is still pending (NOTE:
-    // re-invite would 409 once accepted, so we manually mark the user
-    // accepted then probe the original token's idempotent branch).
 
     // Complete via first token.
     const r3 = await app.resumeViaQuery(tokenA);
@@ -524,13 +459,6 @@ describe("InviteWorkflowOptions — idempotent magic-link click", () => {
     // Sanity: user is fully accepted.
     expect((await app.users.getUser("twice@test.com")).account?.pendingInvitation).toBe(false);
 
-    // The original token is consumed; replay returns 4xx. The redirect path
-    // is exercised only when there is a separately-issued in-flight token
-    // (e.g. an old token from before accept). The PUNT block above documents
-    // why the implementation collapses both cases; cover the structural
-    // pendingInvitation=false → alreadyAccepted=true flag via the unit-of
-    // behaviour at the workflow level: re-invite rejects (so no second
-    // token can be created), which is the test that proves the invariant.
     const ri1 = await app.trigger({ wfid: "auth.reInvite" });
     const ri2 = await app.trigger({
       wfs: ri1.body?.wfs as string,
@@ -540,14 +468,16 @@ describe("InviteWorkflowOptions — idempotent magic-link click", () => {
   });
 });
 
-describe("InviteWorkflowOptions — freshLoginRequired", () => {
+describe("InviteWorkflow — accept.freshLoginRequired", () => {
   it("freshLoginRequired=true skips auto-login (redirect to loginUrl)", async () => {
     const app = await prepareWfApp({
-      inviteOptions: new InviteWorkflowOptions({
-        showConfirmation: false,
-        freshLoginRequired: true,
-        loginUrl: "/sign-in",
-      }),
+      inviteOpts: {
+        accept: {
+          showConfirmation: false,
+          freshLoginRequired: true,
+          loginUrl: "/sign-in",
+        },
+      },
     });
     const r = await driveDefaultInviteAccept(app, "fresh@test.com");
     expect(r.status).toBe(302);
@@ -556,81 +486,7 @@ describe("InviteWorkflowOptions — freshLoginRequired", () => {
   });
 });
 
-describe("InviteWorkflowOptions — rate-limit cap (per-admin)", () => {
-  it("default 50/hour: 51st invite from same admin fires 429", async () => {
-    const app = await prepareWfApp({
-      inviteOptions: new InviteWorkflowOptions({
-        // bearer token populates auth context → workflow reads `useAuth()` as
-        // the rate-limit key. Without an admin user-id the workflow no-ops
-        // the rate cap.
-        rateLimit: { count: 2, windowMs: 60_000 },
-        showConfirmation: false,
-      }),
-    });
-    const headers = await adminBearerHeaders(app, "admin-spammer@test.com");
-
-    // 1st invite — allowed.
-    const r1a = await app.triggerWithHeaders({ wfid: "auth.invite" }, headers);
-    const r1b = await app.triggerWithHeaders(
-      { wfs: r1a.body?.wfs as string, input: { email: "lim1@test.com" } },
-      headers,
-    );
-    expect(r1b.status).not.toBe(429);
-
-    // 2nd invite — also allowed (cap=2).
-    const r2a = await app.triggerWithHeaders({ wfid: "auth.invite" }, headers);
-    const r2b = await app.triggerWithHeaders(
-      { wfs: r2a.body?.wfs as string, input: { email: "lim2@test.com" } },
-      headers,
-    );
-    expect(r2b.status).not.toBe(429);
-
-    // 3rd invite — 429 fires.
-    const r3a = await app.triggerWithHeaders({ wfid: "auth.invite" }, headers);
-    const r3b = await app.triggerWithHeaders(
-      { wfs: r3a.body?.wfs as string, input: { email: "lim3@test.com" } },
-      headers,
-    );
-    expect(r3b.status).toBe(429);
-  });
-
-  it("custom rate-limit store: consume() decision is honored", async () => {
-    let calls = 0;
-    const store: WorkflowRateLimitStore = {
-      async consume(): Promise<WorkflowRateLimitConsumeResult> {
-        calls += 1;
-        return calls < 2
-          ? { allowed: true, remaining: 0, resetAt: Date.now() + 60_000 }
-          : { allowed: false, remaining: 0, resetAt: Date.now() + 60_000 };
-      },
-    };
-    const app = await prepareWfApp({
-      inviteOptions: new InviteWorkflowOptions({
-        rateLimit: { count: 999, windowMs: 60_000 },
-        showConfirmation: false,
-      }),
-      rateLimitStore: store,
-    });
-    const headers = await adminBearerHeaders(app, "custom@test.com");
-
-    const r1a = await app.triggerWithHeaders({ wfid: "auth.invite" }, headers);
-    const r1b = await app.triggerWithHeaders(
-      { wfs: r1a.body?.wfs as string, input: { email: "c1@test.com" } },
-      headers,
-    );
-    expect(r1b.status).not.toBe(429);
-
-    const r2a = await app.triggerWithHeaders({ wfid: "auth.invite" }, headers);
-    const r2b = await app.triggerWithHeaders(
-      { wfs: r2a.body?.wfs as string, input: { email: "c2@test.com" } },
-      headers,
-    );
-    expect(r2b.status).toBe(429);
-    expect(calls).toBe(2);
-  });
-});
-
-describe("InviteWorkflowOptions — duplicate-invite structural rule", () => {
+describe("InviteWorkflow — duplicate-invite structural rule", () => {
   it("invite for an email that already has pendingInvitation=true → 409 'Invite already pending, use reInvite'", async () => {
     const app = await prepareWfApp();
     // First invite: pre-creates the user with pendingInvitation: true.
@@ -661,31 +517,26 @@ describe("InviteWorkflowOptions — duplicate-invite structural rule", () => {
     expect(JSON.stringify(r2.body)).toMatch(/already exists/i);
   });
 
-  it("duplicateCheck callback returning 'allow' overrides the structural rule (multi-tenant escape hatch)", async () => {
-    // The escape hatch is documented in WF_INVITE.md as a way for
-    // multi-tenant apps to permit re-using an email across tenants. When the
-    // callback returns 'allow' the workflow does NOT short-circuit on the
-    // structural duplicate check. The downstream createUser will still
-    // reject the duplicate at the store level (UserAuthError ALREADY_EXISTS
-    // → 409), so the test must use a NEW email that the store does not
-    // already have — proving the callback path runs without the structural
-    // 409 firing first.
+  it("duplicateCheck override returning 'allow' bypasses the structural rule (multi-tenant escape hatch)", async () => {
+    // The escape hatch lets multi-tenant apps permit re-using an email across
+    // tenants. When the override returns 'allow' the workflow does NOT
+    // short-circuit on the structural duplicate check.
     const seen: Array<{ email: string; hadExisting: boolean }> = [];
     const app = await prepareWfApp({
-      inviteOptions: new InviteWorkflowOptions({
-        showConfirmation: false,
+      inviteOpts: { accept: { showConfirmation: false } },
+      inviteHooks: {
         duplicateCheck: async ({ email, existingUser }) => {
           seen.push({ email, hadExisting: existingUser !== null });
           return "allow" as const;
         },
-      }),
+      },
     });
     const r1 = await app.trigger({ wfid: "auth.invite" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "fresh@test.com" },
     });
-    // Callback was invoked + workflow advanced past the duplicate check
+    // Override was invoked + workflow advanced past the duplicate check
     // (pauses at the email outlet or 200/201-style finish state, NOT 409).
     expect(seen).toEqual([{ email: "fresh@test.com", hadExisting: false }]);
     expect([200, 201]).toContain(r2.status);
@@ -696,14 +547,11 @@ describe("InviteWorkflowOptions — duplicate-invite structural rule", () => {
   });
 });
 
-describe("InviteWorkflowOptions — audit events", () => {
+describe("InviteWorkflow — audit events", () => {
   it("emits invite.created (preCreateUser), invite.accepted (activateUser)", async () => {
     const events: Array<Record<string, unknown>> = [];
     const app = await prepareWfApp({
-      inviteOptions: new InviteWorkflowOptions({
-        showConfirmation: false,
-        auditEvents: true,
-      }),
+      inviteOpts: { accept: { showConfirmation: false }, audit: { enabled: true } },
       auditEmitter: {
         emit(e) {
           events.push(e);
@@ -723,10 +571,7 @@ describe("InviteWorkflowOptions — audit events", () => {
   it("emits invite.resent on auth.reInvite (loadPendingUser)", async () => {
     const events: Array<Record<string, unknown>> = [];
     const app = await prepareWfApp({
-      inviteOptions: new InviteWorkflowOptions({
-        showConfirmation: false,
-        auditEvents: true,
-      }),
+      inviteOpts: { accept: { showConfirmation: false }, audit: { enabled: true } },
       auditEmitter: {
         emit(e) {
           events.push(e);
@@ -752,10 +597,7 @@ describe("InviteWorkflowOptions — audit events", () => {
   it("emits invite.cancelled on auth.cancelInvite", async () => {
     const events: Array<Record<string, unknown>> = [];
     const app = await prepareWfApp({
-      inviteOptions: new InviteWorkflowOptions({
-        showConfirmation: false,
-        auditEvents: true,
-      }),
+      inviteOpts: { accept: { showConfirmation: false }, audit: { enabled: true } },
       auditEmitter: {
         emit(e) {
           events.push(e);
@@ -778,13 +620,10 @@ describe("InviteWorkflowOptions — audit events", () => {
     expect(cancelled?.email).toBe("bye@test.com");
   });
 
-  it("auditEvents=false → no invite.* events fired", async () => {
+  it("audit.enabled=false → no invite.* events fired", async () => {
     const events: Array<Record<string, unknown>> = [];
     const app = await prepareWfApp({
-      inviteOptions: new InviteWorkflowOptions({
-        showConfirmation: false,
-        auditEvents: false,
-      }),
+      inviteOpts: { accept: { showConfirmation: false }, audit: { enabled: false } },
       auditEmitter: {
         emit(e) {
           events.push(e);
