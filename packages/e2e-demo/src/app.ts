@@ -162,10 +162,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       () =>
         new InviteWorkflowOptions({
           inviteTokenTtlMs: env.INVITE_TTL_MS,
-          // Existing demo HTTP fixtures pre-date the admin-auth contract and
-          // call the trigger directly without an auth context; production
-          // consumers leave this on (the default).
-          requireAdminAuth: false,
           // Existing demo tests assert the auto-login response payload —
           // pre-dating the BIG 3.3 confirmation pause. Off here so the demo
           // matches today's behavior; production should keep the default ON.

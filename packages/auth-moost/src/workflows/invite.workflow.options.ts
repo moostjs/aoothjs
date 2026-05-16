@@ -1,10 +1,11 @@
 /**
  * Full shape per `WF_INVITE.md` §"`InviteWorkflowOptions` — full shape".
  *
- * Defaults match the doc's "drop in and use" baseline: admin auth required,
- * collect first/last/roles (free text), email-only send mode, 7-day TTL, no
- * accept-time profile form, auto-login after accept, confirmation message,
- * cancellation allowed, 50/hour per-admin rate limit, audit emission ON.
+ * Defaults match the doc's "drop in and use" baseline: collect first/last/roles
+ * (free text), email-only send mode, 7-day TTL, no accept-time profile form,
+ * auto-login after accept, confirmation message, cancellation allowed,
+ * 50/hour per-admin rate limit, audit emission ON. Admin authorization is the
+ * trigger route's responsibility (ARBAC), not the workflow class.
  */
 import type { UserCredentials } from "@aoothjs/user";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
@@ -32,20 +33,6 @@ export type DuplicateAction = "allow" | "reject" | "reuseAsReInvite";
 
 @Injectable()
 export class InviteWorkflowOptions {
-  // ── Admin auth (replaces the docblock disclaimer) ────────────────────────
-  /**
-   * When true, admin-side steps assert an authenticated admin via
-   * `opts.adminAuthCheck?.() ?? useAuth().isAuthenticated()`. Subject to
-   * ARBAC at the route level too — recommended.
-   */
-  requireAdminAuth = true;
-  /**
-   * Override the default `useAuth().isAuthenticated()` predicate. Apps with
-   * custom admin gating (e.g. a role check on top of authentication) supply a
-   * predicate here. Resolved at runtime — never persisted into `ctx.opts`.
-   */
-  adminAuthCheck?: () => Promise<boolean> | boolean;
-
   // ── Admin invite form fields ─────────────────────────────────────────────
   collectFirstName = true;
   collectLastName = true;

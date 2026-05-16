@@ -42,7 +42,6 @@ import { type AuditEmitter, NoopAuditEmitter } from "../audit/index";
 import { useAuth } from "../auth.composables";
 import { MoostAuthConfig } from "../auth.config";
 import { buildLoginResponse } from "../auth.cookies";
-import { Public } from "../auth.decorator";
 import type { WorkflowRateLimitStore } from "../rate-limit/index";
 import {
   type DuplicateAction,
@@ -62,8 +61,6 @@ export interface InviteWfCtx {
   opts?: InviteWorkflowOptions;
 
   // ── Admin-side (Phase A) ────────────────────────────────────────────────
-  /** Admin's `userId` captured by `inviteAssertAdminAuth`. */
-  invitedBy?: string;
   /** Populated by `invitePrepareAvailableRoles` when getAvailableRoles is wired. */
   availableRoles?: Array<{ id: string; label: string }>;
   email?: string;
@@ -170,9 +167,13 @@ export function parseInviteRoles(input?: string | string[]): string[] {
     .filter(Boolean);
 }
 
+/**
+ * Authorization is the trigger route's responsibility. Mount admin-gated
+ * triggers (e.g. `@ArbacAuthorize({ resource: 'auth.invite', action: '*' })`)
+ * for these workflow ids; never put them on a public trigger allow-list.
+ */
 @Injectable("FOR_EVENT")
 @Controller()
-@Public()
 export class InviteWorkflow {
   constructor(
     private readonly opts: InviteWorkflowOptions,
@@ -198,10 +199,6 @@ export class InviteWorkflow {
   @Workflow("auth.invite")
   @WorkflowSchema<InviteWfCtx>([
     { id: "inviteInit" },
-    {
-      id: "inviteAssertAdminAuth",
-      condition: (ctx) => Boolean(ctx.opts?.requireAdminAuth && !ctx.aborted),
-    },
     {
       id: "invitePrepareAvailableRoles",
       condition: (ctx) =>
@@ -298,10 +295,6 @@ export class InviteWorkflow {
   @Workflow("auth.reInvite")
   @WorkflowSchema<InviteWfCtx>([
     { id: "inviteInit" },
-    {
-      id: "inviteAssertAdminAuth",
-      condition: (ctx) => Boolean(ctx.opts?.requireAdminAuth && !ctx.aborted),
-    },
     { id: "inviteLoadPendingUser", condition: (ctx) => !ctx.aborted },
     {
       id: "inviteSendInviteEmail",
@@ -380,10 +373,6 @@ export class InviteWorkflow {
   @Workflow("auth.cancelInvite")
   @WorkflowSchema<InviteWfCtx>([
     { id: "inviteInit" },
-    {
-      id: "inviteAssertAdminAuth",
-      condition: (ctx) => Boolean(ctx.opts?.requireAdminAuth && !ctx.aborted),
-    },
     { id: "inviteCancelInvite", condition: (ctx) => !ctx.aborted },
   ])
   cancelInviteFlow(): void {}
@@ -403,22 +392,6 @@ export class InviteWorkflow {
     // Resolve send-mode up-front when fixed; `'choice'` defers to `inviteSelectSendMode`.
     if (this.opts.sendMode !== "choice") {
       ctx.resolvedSendMode = this.opts.sendMode;
-    }
-    return undefined;
-  }
-
-  // ── Phase A: assertAdminAuth ──────────────────────────────────────────
-  @Step("inviteAssertAdminAuth")
-  async assertAdminAuth(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
-    const ok = this.opts.adminAuthCheck
-      ? await this.opts.adminAuthCheck()
-      : useAuth().isAuthenticated();
-    if (!ok) throw new HttpError(401, "Admin authentication required");
-    try {
-      ctx.invitedBy = useAuth().getUserId();
-    } catch {
-      // Custom adminAuthCheck may permit pre-authenticated session shapes
-      // without a userId; in that case we silently leave invitedBy unset.
     }
     return undefined;
   }
@@ -474,10 +447,13 @@ export class InviteWorkflow {
     const email = input.email as string;
 
     // Rate-limit BEFORE the user lookup so spammers can't fish for
-    // existing-email signals via the duplicate-check error path.
-    if (this.opts.rateLimit && this.rateLimitStore && ctx.invitedBy) {
+    // existing-email signals via the duplicate-check error path. Per-admin key
+    // is best-effort: an unauthenticated trigger context simply skips the cap
+    // (authorization is the trigger route's responsibility — ARBAC).
+    const adminId = useAuth().getAuthContext()?.userId;
+    if (this.opts.rateLimit && this.rateLimitStore && adminId) {
       const res = await this.rateLimitStore.consume(
-        ctx.invitedBy,
+        adminId,
         this.opts.rateLimit.windowMs,
         this.opts.rateLimit.count,
       );
@@ -533,12 +509,13 @@ export class InviteWorkflow {
   async preCreateUser(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     if (!ctx.email) throw new HttpError(500, "Workflow state corrupted: missing email");
 
+    const invitedBy = useAuth().getAuthContext()?.userId;
     const preparedInput: PreparedUserInput = {
       email: ctx.email,
       ...(ctx.firstName && { firstName: ctx.firstName }),
       ...(ctx.lastName && { lastName: ctx.lastName }),
       roles: ctx.roles ?? [],
-      ...(ctx.invitedBy && { invitedBy: ctx.invitedBy }),
+      ...(invitedBy && { invitedBy }),
     };
 
     const extras = this.opts.prepareUser ? await this.opts.prepareUser(preparedInput) : {};
@@ -862,11 +839,12 @@ export class InviteWorkflow {
   private async emitAudit(kind: string, ctx: InviteWfCtx): Promise<void> {
     if (!this.opts.auditEvents) return;
     const emitter = this.audit ?? NoopAuditEmitter;
+    const invitedBy = useAuth().getAuthContext()?.userId;
     await emitter.emit({
       kind,
       workflow: AUDIT_WORKFLOW_BY_KIND[kind] ?? "auth.invite",
       ...(ctx.username && { userId: ctx.username }),
-      ...(ctx.invitedBy && { invitedBy: ctx.invitedBy }),
+      ...(invitedBy && { invitedBy }),
       ...(ctx.email && { email: ctx.email }),
       ip: resolveClientIp(),
     });

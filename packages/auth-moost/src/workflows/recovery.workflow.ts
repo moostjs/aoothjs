@@ -37,7 +37,6 @@ import {
 import { type AuditEmitter, NoopAuditEmitter } from "../audit/index";
 import { MoostAuthConfig } from "../auth.config";
 import { buildLoginResponse } from "../auth.cookies";
-import { Public } from "../auth.decorator";
 import type { WorkflowRateLimitStore } from "../rate-limit/index";
 import { RecoveryWorkflowOptions } from "./recovery.workflow.options";
 import {
@@ -165,7 +164,6 @@ const validatedOpts = new WeakSet<RecoveryWorkflowOptions>();
 
 @Injectable("FOR_EVENT")
 @Controller()
-@Public()
 export class RecoveryWorkflow {
   constructor(
     private readonly opts: RecoveryWorkflowOptions,

@@ -56,7 +56,6 @@ describe("InviteWorkflowOptions — boot-time validators (fail loud)", () => {
     const app = await prepareWfApp({
       inviteOptions: new InviteWorkflowOptions({
         // default rateLimit is non-null — store missing.
-        requireAdminAuth: false,
       }),
       rateLimitStore: null,
     });
@@ -69,7 +68,6 @@ describe("InviteWorkflowOptions — boot-time validators (fail loud)", () => {
     const app = await prepareWfApp({
       inviteOptions: new InviteWorkflowOptions({
         rateLimit: { count: 0, windowMs: 60_000 },
-        requireAdminAuth: false,
       }),
     });
     const r = await app.trigger({ wfid: "auth.invite" });
@@ -81,7 +79,6 @@ describe("InviteWorkflowOptions — boot-time validators (fail loud)", () => {
     const app = await prepareWfApp({
       inviteOptions: new InviteWorkflowOptions({
         rateLimit: { count: 50, windowMs: 0 },
-        requireAdminAuth: false,
       }),
     });
     const r = await app.trigger({ wfid: "auth.invite" });
@@ -156,7 +153,6 @@ describe("InviteWorkflowOptions — sendMode shareableLink", () => {
     const app = await prepareWfApp({
       inviteOptions: new InviteWorkflowOptions({
         sendMode: "shareableLink",
-        requireAdminAuth: false,
         showConfirmation: false,
       }),
     });
@@ -182,7 +178,6 @@ describe("InviteWorkflowOptions — sendMode choice", () => {
     const app = await prepareWfApp({
       inviteOptions: new InviteWorkflowOptions({
         sendMode: "choice",
-        requireAdminAuth: false,
         showConfirmation: false,
       }),
     });
@@ -211,7 +206,6 @@ describe("InviteWorkflowOptions — sendMode choice", () => {
     const app = await prepareWfApp({
       inviteOptions: new InviteWorkflowOptions({
         sendMode: "choice",
-        requireAdminAuth: false,
         showConfirmation: false,
       }),
     });
@@ -235,7 +229,6 @@ describe("InviteWorkflowOptions — acceptProfileForm + applyProfile", () => {
     const seen: Array<{ username: string; profile: Record<string, unknown> }> = [];
     const app = await prepareWfApp({
       inviteOptions: new InviteWorkflowOptions({
-        requireAdminAuth: false,
         showConfirmation: false,
         acceptProfileForm: ProfileCompleteForm,
         applyProfile: async ({ username, profile }) => {
@@ -269,7 +262,6 @@ describe("InviteWorkflowOptions — acceptProfileForm + applyProfile", () => {
   it("acceptProfileForm WITHOUT applyProfile → default deep-merge fallback writes via UserService.update", async () => {
     const app = await prepareWfApp({
       inviteOptions: new InviteWorkflowOptions({
-        requireAdminAuth: false,
         showConfirmation: false,
         acceptProfileForm: ProfileCompleteForm,
         // no applyProfile — default deep-merge runs.
@@ -305,7 +297,6 @@ describe("InviteWorkflowOptions — getAvailableRoles + inferRoles", () => {
   it("getAvailableRoles populates ctx.availableRoles on the InviteForm pause", async () => {
     const app = await prepareWfApp({
       inviteOptions: new InviteWorkflowOptions({
-        requireAdminAuth: false,
         showConfirmation: false,
         getAvailableRoles: async () => [
           { id: "admin", label: "Administrator" },
@@ -325,7 +316,6 @@ describe("InviteWorkflowOptions — getAvailableRoles + inferRoles", () => {
     const calls: Array<Record<string, unknown>> = [];
     const app = await prepareWfApp({
       inviteOptions: new InviteWorkflowOptions({
-        requireAdminAuth: false,
         showConfirmation: false,
         inferRoles: async (input) => {
           calls.push({ ...input });
@@ -459,7 +449,6 @@ describe("InviteWorkflowOptions — cancel-invite", () => {
   it("allowCancel=false → 403 from cancel step", async () => {
     const app = await prepareWfApp({
       inviteOptions: new InviteWorkflowOptions({
-        requireAdminAuth: false,
         showConfirmation: false,
         allowCancel: false,
       }),
@@ -477,7 +466,6 @@ describe("InviteWorkflowOptions — idempotent magic-link click", () => {
   it("second click after a successful accept → redirect to alreadyAcceptedRedirectUrl", async () => {
     const app = await prepareWfApp({
       inviteOptions: new InviteWorkflowOptions({
-        requireAdminAuth: false,
         showConfirmation: false,
         alreadyAcceptedRedirectUrl: "/already-in",
       }),
@@ -513,7 +501,6 @@ describe("InviteWorkflowOptions — idempotent magic-link click", () => {
     // accepted user + an inflight re-invite scenario.
     const app = await prepareWfApp({
       inviteOptions: new InviteWorkflowOptions({
-        requireAdminAuth: false,
         showConfirmation: false,
         alreadyAcceptedRedirectUrl: "/already-in",
       }),
@@ -557,7 +544,6 @@ describe("InviteWorkflowOptions — freshLoginRequired", () => {
   it("freshLoginRequired=true skips auto-login (redirect to loginUrl)", async () => {
     const app = await prepareWfApp({
       inviteOptions: new InviteWorkflowOptions({
-        requireAdminAuth: false,
         showConfirmation: false,
         freshLoginRequired: true,
         loginUrl: "/sign-in",
@@ -570,56 +556,13 @@ describe("InviteWorkflowOptions — freshLoginRequired", () => {
   });
 });
 
-describe("InviteWorkflowOptions — requireAdminAuth", () => {
-  it("requireAdminAuth=true (default) blocks unauthenticated callers → 401", async () => {
-    const app = await prepareWfApp({
-      inviteOptions: new InviteWorkflowOptions({
-        // requireAdminAuth defaults to true
-        showConfirmation: false,
-      }),
-    });
-    const r1 = await app.trigger({ wfid: "auth.invite" });
-    // No bearer token — assertAdminAuth throws 401.
-    expect(r1.status).toBe(401);
-  });
-
-  it("requireAdminAuth=true with bearer token → admin gets InviteForm pause", async () => {
-    const app = await prepareWfApp({
-      inviteOptions: new InviteWorkflowOptions({
-        showConfirmation: false,
-      }),
-    });
-    const headers = await adminBearerHeaders(app);
-    const r1 = await app.triggerWithHeaders({ wfid: "auth.invite" }, headers);
-    expect(r1.status).not.toBe(401);
-    expect(JSON.stringify(r1.body)).toMatch(/email|InviteForm/);
-  });
-
-  it("adminAuthCheck override → custom predicate wins (true → allow; false → 401)", async () => {
-    let allow = false;
-    const app = await prepareWfApp({
-      inviteOptions: new InviteWorkflowOptions({
-        requireAdminAuth: true,
-        adminAuthCheck: async () => allow,
-        showConfirmation: false,
-      }),
-    });
-    const r1 = await app.trigger({ wfid: "auth.invite" });
-    expect(r1.status).toBe(401);
-
-    allow = true;
-    const r2 = await app.trigger({ wfid: "auth.invite" });
-    expect(r2.status).not.toBe(401);
-  });
-});
-
 describe("InviteWorkflowOptions — rate-limit cap (per-admin)", () => {
   it("default 50/hour: 51st invite from same admin fires 429", async () => {
     const app = await prepareWfApp({
       inviteOptions: new InviteWorkflowOptions({
-        // requireAdminAuth=true so the rate-limit key (invitedBy) is captured
-        // — without an admin user-id the workflow no-ops the rate cap.
-        requireAdminAuth: true,
+        // bearer token populates auth context → workflow reads `useAuth()` as
+        // the rate-limit key. Without an admin user-id the workflow no-ops
+        // the rate cap.
         rateLimit: { count: 2, windowMs: 60_000 },
         showConfirmation: false,
       }),
@@ -663,7 +606,6 @@ describe("InviteWorkflowOptions — rate-limit cap (per-admin)", () => {
     };
     const app = await prepareWfApp({
       inviteOptions: new InviteWorkflowOptions({
-        requireAdminAuth: true,
         rateLimit: { count: 999, windowMs: 60_000 },
         showConfirmation: false,
       }),
@@ -731,7 +673,6 @@ describe("InviteWorkflowOptions — duplicate-invite structural rule", () => {
     const seen: Array<{ email: string; hadExisting: boolean }> = [];
     const app = await prepareWfApp({
       inviteOptions: new InviteWorkflowOptions({
-        requireAdminAuth: false,
         showConfirmation: false,
         duplicateCheck: async ({ email, existingUser }) => {
           seen.push({ email, hadExisting: existingUser !== null });
@@ -760,7 +701,6 @@ describe("InviteWorkflowOptions — audit events", () => {
     const events: Array<Record<string, unknown>> = [];
     const app = await prepareWfApp({
       inviteOptions: new InviteWorkflowOptions({
-        requireAdminAuth: false,
         showConfirmation: false,
         auditEvents: true,
       }),
@@ -784,7 +724,6 @@ describe("InviteWorkflowOptions — audit events", () => {
     const events: Array<Record<string, unknown>> = [];
     const app = await prepareWfApp({
       inviteOptions: new InviteWorkflowOptions({
-        requireAdminAuth: false,
         showConfirmation: false,
         auditEvents: true,
       }),
@@ -814,7 +753,6 @@ describe("InviteWorkflowOptions — audit events", () => {
     const events: Array<Record<string, unknown>> = [];
     const app = await prepareWfApp({
       inviteOptions: new InviteWorkflowOptions({
-        requireAdminAuth: false,
         showConfirmation: false,
         auditEvents: true,
       }),
@@ -844,7 +782,6 @@ describe("InviteWorkflowOptions — audit events", () => {
     const events: Array<Record<string, unknown>> = [];
     const app = await prepareWfApp({
       inviteOptions: new InviteWorkflowOptions({
-        requireAdminAuth: false,
         showConfirmation: false,
         auditEvents: false,
       }),

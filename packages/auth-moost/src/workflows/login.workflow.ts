@@ -50,7 +50,6 @@ import {
 import { type AuditEmitter, NoopAuditEmitter } from "../audit/index";
 import { MoostAuthConfig } from "../auth.config";
 import { buildLoginResponse, cookieAttrs } from "../auth.cookies";
-import { Public } from "../auth.decorator";
 import type { DeviceTrustStore } from "../device-trust/index";
 import { LoginWorkflowOptions } from "./login.workflow.options";
 import {
@@ -233,7 +232,6 @@ const validatedOpts = new WeakSet<LoginWorkflowOptions>();
 
 @Injectable("FOR_EVENT")
 @Controller()
-@Public()
 export class LoginWorkflow {
   constructor(
     private readonly opts: LoginWorkflowOptions,

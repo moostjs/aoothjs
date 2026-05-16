@@ -171,8 +171,7 @@ export interface PrepareWfOpts {
   /**
    * Override the invite options instance entirely. When omitted, defaults to
    * the back-compat instance built from `inviteTokenTtlMs` + `prepareUser`
-   * with `requireAdminAuth: false` + `showConfirmation: false` for parity
-   * with existing tests.
+   * with `showConfirmation: false` for parity with existing tests.
    */
   inviteOptions?: InviteWorkflowOptions;
 }
@@ -285,10 +284,6 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
         new InviteWorkflowOptions({
           inviteTokenTtlMs,
           prepareUser: opts.prepareUser,
-          // Existing invite tests pre-date the admin-auth contract — they
-          // exercise the workflow without an auth context. New tests that
-          // need the admin gate construct their own InviteWorkflowOptions.
-          requireAdminAuth: false,
           // Existing tests assert the auto-login response shape directly,
           // pre-dating the confirmation pause introduced by BIG 3.3. New
           // tests that exercise the confirmation step set this to true.
