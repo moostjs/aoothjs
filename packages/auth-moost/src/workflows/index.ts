@@ -15,6 +15,8 @@ export {
 export { InviteWorkflow, type InviteWfCtx, parseInviteRoles } from "./invite.workflow";
 export {
   DEFAULT_INVITE_TOKEN_TTL_MS,
+  type DuplicateAction,
   type InvitePrepareUserInput,
   InviteWorkflowOptions,
+  type PreparedUserInput,
 } from "./invite.workflow.options";

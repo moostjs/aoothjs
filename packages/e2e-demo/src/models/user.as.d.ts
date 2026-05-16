@@ -22,6 +22,8 @@ export declare class DemoUser extends AoothArbacUserCredentials {
   departmentId?: string /* id */
   email?: string
   secretNotes?: string
+  displayName?: string
+  phone?: string
   createdAt: number /* timestamp */
   static __is_atscript_annotated_type: true
   static type: TAtscriptTypeObject<keyof DemoUser, DemoUser>
@@ -45,6 +47,7 @@ export declare class DemoUser extends AoothArbacUserCredentials {
     "account.lockEnds": number /* timestamp */
     "account.failedLoginAttempts": number
     "account.lastLogin": number /* timestamp */
+    "account.pendingInvitation"?: boolean
     "mfa": never
     "mfa.methods": never
     "mfa.methods.name": string
@@ -58,6 +61,8 @@ export declare class DemoUser extends AoothArbacUserCredentials {
     "departmentId"?: string /* id */
     "email"?: string
     "secretNotes"?: string
+    "displayName"?: string
+    "phone"?: string
     "createdAt": number /* timestamp */
   }
   static __ownProps: {
@@ -74,6 +79,7 @@ export declare class DemoUser extends AoothArbacUserCredentials {
     "account.lockEnds": number /* timestamp */
     "account.failedLoginAttempts": number
     "account.lastLogin": number /* timestamp */
+    "account.pendingInvitation"?: boolean
     "mfa": never
     "mfa.methods": never
     "mfa.methods.name": string
@@ -87,6 +93,8 @@ export declare class DemoUser extends AoothArbacUserCredentials {
     "departmentId"?: string /* id */
     "email"?: string
     "secretNotes"?: string
+    "displayName"?: string
+    "phone"?: string
     "createdAt": number /* timestamp */
   }
   
@@ -120,6 +128,23 @@ export declare class LockForm {
   static type: TAtscriptTypeObject<keyof LockForm, LockForm>
   static metadata: TMetadataMap<AtscriptMetadata>
   static validator: (opts?: Partial<TValidatorOptions>) => Validator<typeof LockForm>
+  /** @deprecated JSON Schema support is disabled. Calling this method will throw a runtime error. To enable, set `jsonSchema: 'lazy'` or `jsonSchema: 'bundle'` in tsPlugin options, or add `@emit.jsonSchema` annotation to individual interfaces. */
+  static toJsonSchema: () => any
+  /** @deprecated Example Data support is disabled. To enable, set `exampleData: true` in tsPlugin options. */
+  static toExampleData?: () => any
+}
+
+/**
+ * Atscript interface **InviteAcceptProfileForm**
+ * @see {@link ./user.as:49:18}
+ */
+export declare class InviteAcceptProfileForm {
+  displayName?: string
+  phone?: string
+  static __is_atscript_annotated_type: true
+  static type: TAtscriptTypeObject<keyof InviteAcceptProfileForm, InviteAcceptProfileForm>
+  static metadata: TMetadataMap<AtscriptMetadata>
+  static validator: (opts?: Partial<TValidatorOptions>) => Validator<typeof InviteAcceptProfileForm>
   /** @deprecated JSON Schema support is disabled. Calling this method will throw a runtime error. To enable, set `jsonSchema: 'lazy'` or `jsonSchema: 'bundle'` in tsPlugin options, or add `@emit.jsonSchema` annotation to individual interfaces. */
   static toJsonSchema: () => any
   /** @deprecated Example Data support is disabled. To enable, set `exampleData: true` in tsPlugin options. */

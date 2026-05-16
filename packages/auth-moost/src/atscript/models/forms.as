@@ -97,7 +97,12 @@ export interface SetPasswordForm {
 
 /**
  * Invite form — used by an admin to send an invite magic link.
+ *
+ * `@wf.context.pass 'availableRoles'` whitelists the workflow ctx key so the
+ * `inviteAdminInviteForm` step can pass the role-picker options into the
+ * client form when `opts.getAvailableRoles` is wired.
  */
+@wf.context.pass 'availableRoles'
 export interface InviteForm {
     @ui.form.type 'text'
     @meta.label 'Email'
@@ -106,9 +111,43 @@ export interface InviteForm {
     email: string.email
 
     @ui.form.type 'text'
+    @meta.label 'First name'
+    firstName?: string
+
+    @ui.form.type 'text'
+    @meta.label 'Last name'
+    lastName?: string
+
+    @ui.form.type 'text'
     @meta.label 'Roles (comma-separated, optional)'
     @ui.form.placeholder 'admin,editor'
     roles?: string
+}
+
+/**
+ * Email-only form — used by `auth.reInvite` (loadPendingUser step) and
+ * `auth.cancelInvite` (cancelInvite step). Separate from `EmailIdentifierForm`
+ * so future invite-side tweaks don't ripple into the recovery form.
+ */
+export interface InviteEmailForm {
+    @ui.form.type 'text'
+    @meta.label 'Email'
+    @ui.form.autocomplete 'email'
+    @meta.required
+    email: string.email
+}
+
+/**
+ * Send-mode picker — rendered only when
+ * `InviteWorkflowOptions.sendMode === 'choice'`. `mode` matches one of
+ * `'email'` or `'shareableLink'`.
+ */
+export interface InviteSendModeForm {
+    @ui.form.type 'text'
+    @meta.label 'Delivery mode'
+    @meta.required
+    @expect.pattern '^(email|shareableLink)$'
+    mode: string
 }
 
 /**

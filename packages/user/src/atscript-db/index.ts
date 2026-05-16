@@ -28,6 +28,7 @@ export interface AuthUserTable<TUserCustom extends object = object> {
   updateOne(
     patch: Record<string, unknown>,
   ): Promise<{ matchedCount: number; modifiedCount: number }>;
+  deleteMany(filter: Record<string, unknown>): Promise<{ deletedCount: number }>;
 }
 
 /**
@@ -103,5 +104,10 @@ export class UsersStoreAtscriptDb<
 
     const result = await this.table.updateOne(patch);
     return result.matchedCount > 0;
+  }
+
+  async delete(username: string): Promise<boolean> {
+    const result = await this.table.deleteMany({ username });
+    return result.deletedCount > 0;
   }
 }

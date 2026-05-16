@@ -93,10 +93,18 @@ describe("WF-INVITE — admin-gated invite", () => {
     expect(resumedBody.wfs).toBeTruthy();
     expect(resumedBody.inputRequired).toBeTruthy();
 
-    const finalRes = await app.triggerWf("public", {
+    const passwordRes = await app.triggerWf("public", {
       wfid: "auth.invite",
       wfs: resumedBody.wfs,
       input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
+    });
+    // Demo wires `acceptProfileForm: InviteAcceptProfileForm` — workflow
+    // pauses for profile collection after password-set.
+    const profileBody = await readWfPause(passwordRes);
+    const finalRes = await app.triggerWf("public", {
+      wfid: "auth.invite",
+      wfs: profileBody.wfs,
+      input: { displayName: "New Hire" },
     });
     const finalBody = (await finalRes.json()) as { userId?: string; accessToken?: string };
     expect(finalBody.userId).toBe(NEW_INVITEE_EMAIL);
@@ -134,6 +142,66 @@ describe("WF-INVITE — admin-gated invite", () => {
     expect(conflict.status).toBe(409);
   });
 
+  it("WF-INVITE-06 — acceptProfileForm + applyProfile end-to-end (displayName/phone persisted)", async () => {
+    // Demo wiring (src/app.ts) sets `acceptProfileForm: InviteAcceptProfileForm`
+    // + custom `applyProfile` that calls `aooth.userService.update(...)`.
+    // This test proves the form is rendered between password-set and accept,
+    // the consumer callback fires with the raw profile, and the demo user
+    // record carries the captured fields after accept.
+    const dave = app.fixtures.users.t1_dave;
+    const daveTokens = await app.loginAs(dave);
+    const profileEmail = "profileuser@acme.test";
+
+    const start = await app.triggerWf(
+      "admin",
+      { wfid: "auth.invite" },
+      { token: daveTokens.accessToken },
+    );
+    const startBody = await readWfPause(start);
+    await app.triggerWf(
+      "admin",
+      { wfid: "auth.invite", wfs: startBody.wfs, input: { email: profileEmail, roles: "member" } },
+      { token: daveTokens.accessToken },
+    );
+
+    const captured = await app.emailSender.next(
+      (e) => e.kind === "invite.magicLink" && e.recipient === profileEmail,
+      2000,
+    );
+
+    const resumed = await app.resumeWfFromUrl(captured.url as string);
+    const resumedBody = await readWfPause(resumed);
+
+    // Step 1 of accept tail: set-password form.
+    const afterPw = await app.triggerWf("public", {
+      wfid: "auth.invite",
+      wfs: resumedBody.wfs,
+      input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
+    });
+    const profileBody = await readWfPause(afterPw);
+    // Workflow must pause again — this time for the consumer-supplied profile form.
+    expect(profileBody.wfs).toBeTruthy();
+    expect(JSON.stringify(profileBody)).toMatch(/displayName|phone/);
+
+    // Submit the profile form → workflow continues into activate + auto-login.
+    const finalRes = await app.triggerWf("public", {
+      wfid: "auth.invite",
+      wfs: profileBody.wfs,
+      input: { displayName: "Profile User", phone: "+15555550100" },
+    });
+    const finalBody = (await finalRes.json()) as { userId?: string };
+    expect(finalBody.userId).toBe(profileEmail);
+
+    // The applyProfile callback wrote through to the user record.
+    const userRow = (await app.appHandle.aooth.userStore.findByUsername(profileEmail)) as Record<
+      string,
+      unknown
+    > | null;
+    expect(userRow).toBeTruthy();
+    expect(userRow?.displayName).toBe("Profile User");
+    expect(userRow?.phone).toBe("+15555550100");
+  });
+
   it("WF-INVITE-05 — magic link is single-use; replay after consumption returns 4xx", async () => {
     const dave = app.fixtures.users.t1_dave;
     const daveTokens = await app.loginAs(dave);
@@ -166,10 +234,17 @@ describe("WF-INVITE — admin-gated invite", () => {
     const firstBody = await readWfPause(first);
     expect(firstBody.wfs).toBeTruthy();
 
-    const finalize = await app.triggerWf("public", {
+    const passwordRes = await app.triggerWf("public", {
       wfid: "auth.invite",
       wfs: firstBody.wfs,
       input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
+    });
+    // Demo wires `acceptProfileForm` — submit the profile to fully consume.
+    const profileBody = await readWfPause(passwordRes);
+    const finalize = await app.triggerWf("public", {
+      wfid: "auth.invite",
+      wfs: profileBody.wfs,
+      input: { displayName: "Single Use" },
     });
     expectOk(finalize);
 

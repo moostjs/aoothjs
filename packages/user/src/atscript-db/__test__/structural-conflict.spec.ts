@@ -76,6 +76,9 @@ describe("UsersStoreAtscriptDb (structural surface, no @atscript/db)", () => {
       async updateOne() {
         return { matchedCount: 0, modifiedCount: 0 };
       },
+      async deleteMany() {
+        return { deletedCount: 0 };
+      },
     };
     const store = new UsersStoreAtscriptDb({ table });
 
@@ -102,6 +105,9 @@ describe("UsersStoreAtscriptDb (structural surface, no @atscript/db)", () => {
       },
       async updateOne() {
         return { matchedCount: 0, modifiedCount: 0 };
+      },
+      async deleteMany() {
+        return { deletedCount: 0 };
       },
     };
     const store = new UsersStoreAtscriptDb({ table });

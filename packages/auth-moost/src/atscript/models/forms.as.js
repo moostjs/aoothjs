@@ -69,6 +69,28 @@ export class InviteForm {
 }
 
 
+export class InviteEmailForm {
+  static __is_atscript_annotated_type = true
+  static type = {}
+  static metadata = new Map()
+  static id = "InviteEmailForm"
+  static toJsonSchema() {
+    $d("JSON Schema", "jsonSchema", "emit.jsonSchema")
+  }
+}
+
+
+export class InviteSendModeForm {
+  static __is_atscript_annotated_type = true
+  static type = {}
+  static metadata = new Map()
+  static id = "InviteSendModeForm"
+  static toJsonSchema() {
+    $d("JSON Schema", "jsonSchema", "emit.jsonSchema")
+  }
+}
+
+
 export class Select2faForm {
   static __is_atscript_annotated_type = true
   static type = {}
@@ -316,6 +338,22 @@ $("object", InviteForm)
       .annotate("expect.pattern", { pattern: "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",  flags: "",  message: "Invalid email format." }, true)
       .$type
   ).prop(
+    "firstName",
+    $().designType("string")
+      .tags("string")
+      .annotate("ui.form.type", "text")
+      .annotate("meta.label", "First name")
+      .optional()
+      .$type
+  ).prop(
+    "lastName",
+    $().designType("string")
+      .tags("string")
+      .annotate("ui.form.type", "text")
+      .annotate("meta.label", "Last name")
+      .optional()
+      .$type
+  ).prop(
     "roles",
     $().designType("string")
       .tags("string")
@@ -323,6 +361,32 @@ $("object", InviteForm)
       .annotate("meta.label", "Roles (comma-separated, optional)")
       .annotate("ui.form.placeholder", "admin,editor")
       .optional()
+      .$type
+  )
+  .annotate("wf.context.pass", "availableRoles", true)
+
+$("object", InviteEmailForm)
+  .prop(
+    "email",
+    $().designType("string")
+      .tags("email", "string")
+      .annotate("ui.form.type", "text")
+      .annotate("meta.label", "Email")
+      .annotate("ui.form.autocomplete", "email")
+      .annotate("meta.required", { })
+      .annotate("expect.pattern", { pattern: "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",  flags: "",  message: "Invalid email format." }, true)
+      .$type
+  )
+
+$("object", InviteSendModeForm)
+  .prop(
+    "mode",
+    $().designType("string")
+      .tags("string")
+      .annotate("ui.form.type", "text")
+      .annotate("meta.label", "Delivery mode")
+      .annotate("meta.required", { })
+      .annotate("expect.pattern", { pattern: "^(email|shareableLink)$",  }, true)
       .$type
   )
 

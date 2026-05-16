@@ -168,6 +168,13 @@ export interface PrepareWfOpts {
    * the per-test `recoveryTokenTtlMs` + `emailToUserId`.
    */
   recoveryOptions?: RecoveryWorkflowOptions;
+  /**
+   * Override the invite options instance entirely. When omitted, defaults to
+   * the back-compat instance built from `inviteTokenTtlMs` + `prepareUser`
+   * with `requireAdminAuth: false` + `showConfirmation: false` for parity
+   * with existing tests.
+   */
+  inviteOptions?: InviteWorkflowOptions;
 }
 
 /**
@@ -273,7 +280,20 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     ],
     [
       InviteWorkflowOptions,
-      () => new InviteWorkflowOptions({ inviteTokenTtlMs, prepareUser: opts.prepareUser }),
+      () =>
+        opts.inviteOptions ??
+        new InviteWorkflowOptions({
+          inviteTokenTtlMs,
+          prepareUser: opts.prepareUser,
+          // Existing invite tests pre-date the admin-auth contract — they
+          // exercise the workflow without an auth context. New tests that
+          // need the admin gate construct their own InviteWorkflowOptions.
+          requireAdminAuth: false,
+          // Existing tests assert the auto-login response shape directly,
+          // pre-dating the confirmation pause introduced by BIG 3.3. New
+          // tests that exercise the confirmation step set this to true.
+          showConfirmation: false,
+        }),
     ],
   ];
   if (registerSms) providers.push(["SmsSender", () => smsSender]);
@@ -319,7 +339,13 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
       };
       return handleWfOutletRequest(
         {
-          allow: ["auth.login", "auth.recovery", "auth.invite"],
+          allow: [
+            "auth.login",
+            "auth.recovery",
+            "auth.invite",
+            "auth.reInvite",
+            "auth.cancelInvite",
+          ],
           state: strategy,
           outlets: [createHttpOutlet(), createAuthEmailOutlet(emailOutletDeps)],
           token: { read: ["body", "query"], write: "body", name: "wfs" },

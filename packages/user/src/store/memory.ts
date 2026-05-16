@@ -44,4 +44,8 @@ export class UserStoreMemory<T extends object = object> extends UserStore<T> {
     }
     return true;
   }
+
+  async delete(username: string): Promise<boolean> {
+    return this.store.delete(username);
+  }
 }

@@ -55,6 +55,15 @@ export class MockTable<TUserCustom extends object = object> implements AuthUserT
     return { matchedCount: 1, modifiedCount: 1 };
   }
 
+  async deleteMany(filter: Record<string, unknown>): Promise<{ deletedCount: number }> {
+    this.ops.push({ cmd: "deleteMany", args: [filter] });
+    const username = filter.username as string | undefined;
+    if (username !== undefined) {
+      return { deletedCount: this.rows.delete(username) ? 1 : 0 };
+    }
+    return { deletedCount: 0 };
+  }
+
   opsOf(cmd: string): Array<{ cmd: string; args: unknown[] }> {
     return this.ops.filter((o) => o.cmd === cmd);
   }

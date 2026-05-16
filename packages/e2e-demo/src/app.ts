@@ -49,7 +49,7 @@ import {
   makeUsersController,
   makeWfTriggerController,
 } from "./controllers";
-import { DemoUser } from "./models/user.as";
+import { DemoUser, InviteAcceptProfileForm } from "./models/user.as";
 import { allRoles, type UserAttrs } from "./roles";
 import { createWfStore } from "./wf-store";
 import { makeHandoverWorkflow } from "./workflows/handover.workflow";
@@ -162,9 +162,27 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       () =>
         new InviteWorkflowOptions({
           inviteTokenTtlMs: env.INVITE_TTL_MS,
+          // Existing demo HTTP fixtures pre-date the admin-auth contract and
+          // call the trigger directly without an auth context; production
+          // consumers leave this on (the default).
+          requireAdminAuth: false,
+          // Existing demo tests assert the auto-login response payload —
+          // pre-dating the BIG 3.3 confirmation pause. Off here so the demo
+          // matches today's behavior; production should keep the default ON.
+          showConfirmation: false,
           // Demonstrates the `prepareUser` hook: populate the consumer-required
           // `tenantId` field before `userService.createUser` runs.
           prepareUser: () => ({ tenantId: "_global" }),
+          // Demonstrates the auto-injected profile form + escape hatch.
+          // `applyProfile` defaults to `users.update(username, profile)` when
+          // omitted; the explicit hook here proves the seam works.
+          acceptProfileForm: InviteAcceptProfileForm,
+          applyProfile: async ({ username, profile }) => {
+            // Persist via the same store the demo uses elsewhere. The default
+            // would do the same deep-merge — this explicit form proves the
+            // escape hatch reaches user-supplied code.
+            await aooth.userService.update(username, profile as Record<string, never>);
+          },
         }),
     ],
   ];

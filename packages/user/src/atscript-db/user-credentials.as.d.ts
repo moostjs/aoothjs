@@ -28,6 +28,7 @@ export declare class AoothUserCredentials {
     lockEnds: number /* timestamp */
     failedLoginAttempts: number
     lastLogin: number /* timestamp */
+    pendingInvitation?: boolean
   }
   mfa: {
     methods: {

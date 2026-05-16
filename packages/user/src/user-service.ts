@@ -173,6 +173,33 @@ export class UserService<T extends object = object> {
     await this.applyPasswordChange(username, user, newPassword);
   }
 
+  /**
+   * Hard-delete the user row. Returns nothing on success. Throws
+   * `UserAuthError("NOT_FOUND")` when no row matches `username`. Used by the
+   * invite workflow's `auth.cancelInvite` to revoke a pending invitation.
+   */
+  async deleteUser(username: string): Promise<void> {
+    const removed = await this.store.delete(username);
+    if (!removed) throw new UserAuthError("NOT_FOUND");
+  }
+
+  /**
+   * Deep-merge `patch` into the user record (top-level fields are shallow-
+   * merged; `account` / `mfa` / `password` are merged per their
+   * `@db.patch.strategy 'merge'` declaration). Returns the patched record.
+   * Used by the invite workflow's `applyProfile` default fallback.
+   */
+  async update(
+    username: string,
+    patch: Partial<UserCredentials & T>,
+  ): Promise<UserCredentials & T> {
+    const found = await this.store.update(username, {
+      set: patch as DeepPartial<UserCredentials>,
+    });
+    if (!found) throw new UserAuthError("NOT_FOUND");
+    return this.getUser(username);
+  }
+
   async activateAccount(username: string): Promise<void> {
     const found = await this.store.update(username, {
       set: { account: { active: true } } as DeepPartial<UserCredentials>,
