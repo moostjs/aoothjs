@@ -2,7 +2,7 @@ import type { AuthCredential, AuthContext } from "@aoothjs/auth";
 import { AuthCredential as AuthCredentialClass, CredentialStoreMemory } from "@aoothjs/auth";
 import { UserService } from "@aoothjs/user";
 import { prepareTestHttpContext } from "@wooksjs/event-http";
-import type { TMoostAdapter, TMoostAdapterOptions } from "moost";
+import type { TInterceptorDef, TMoostAdapter, TMoostAdapterOptions } from "moost";
 import {
   Controller,
   createProvideRegistry,
@@ -13,7 +13,7 @@ import {
   TInterceptorPriority,
 } from "moost";
 
-import { MoostAuthConfig, type MoostAuthConfigOptions } from "../auth.config";
+import type { AuthOptions } from "../auth.config";
 import { useAuth } from "../auth.composables";
 import { authGuardInterceptor } from "../auth.guard";
 
@@ -64,9 +64,11 @@ export interface PreparedTestApp {
   moost: Moost;
   adapter: TestAdapter;
   auth: AuthCredential<MyClaims>;
+  /** Configured interceptor — captured so `runGuardForHandler` can invoke its `before` directly. */
+  guard: TInterceptorDef;
 }
 
-export interface PrepareTestAppOpts extends MoostAuthConfigOptions {
+export interface PrepareTestAppOpts extends AuthOptions {
   /** Optional UserService; when omitted, login + password endpoints are not exercised. */
   userService?: UserService;
 }
@@ -84,16 +86,14 @@ export async function prepareTestApp(
   const auth = new AuthCredentialClass<MyClaims>({ store, method: "token", accessTtl: 60_000 });
 
   const { userService, ...cfg } = opts;
-  const providers: Parameters<typeof createProvideRegistry> = [
-    [AuthCredentialClass, () => auth],
-    [MoostAuthConfig, () => new MoostAuthConfig(cfg)],
-  ];
+  const providers: Parameters<typeof createProvideRegistry> = [[AuthCredentialClass, () => auth]];
   if (userService) providers.push([UserService, () => userService]);
   moost.setProvideRegistry(createProvideRegistry(...providers));
-  moost.applyGlobalInterceptors(authGuardInterceptor);
+  const guard = authGuardInterceptor(cfg);
+  moost.applyGlobalInterceptors(guard);
 
   await moost.init();
-  return { moost, adapter, auth };
+  return { moost, adapter, auth, guard };
 }
 
 export interface GuardRunResult {
@@ -130,7 +130,7 @@ export async function runGuardForHandler(
     try {
       // Functional interceptor's `before` may receive a `reply` arg in moost
       // pipelines; we pass a no-op since we only care about throw vs no-throw.
-      await authGuardInterceptor.before?.(() => {});
+      await app.guard.before?.(() => {});
       const auth = useAuth(ctx);
       return {
         ok: true,

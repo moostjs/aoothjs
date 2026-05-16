@@ -21,7 +21,6 @@ import { Controller, Inherit, Injectable } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import { ProfileCompleteForm } from "../atscript/models/forms.as.js";
-import { MoostAuthConfig } from "../auth.config";
 import { type LoginWfCtx, LoginWorkflow, type LoginWorkflowOpts } from "../workflows/index";
 import { prepareWfApp, seedActiveUser } from "./workflow-utils";
 
@@ -37,13 +36,8 @@ describe("LoginWorkflow subclass — end-to-end registration shape", () => {
     @Injectable("FOR_EVENT")
     @Controller()
     class MyLogin extends LoginWorkflow {
-      constructor(
-        opts: LoginWorkflowOpts,
-        users: UserService,
-        auth: AuthCredential,
-        authConfig: MoostAuthConfig,
-      ) {
-        super(opts, users, auth, authConfig);
+      constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
+        super(opts, users, auth);
       }
       // Override an arbitrary protected method to prove the subclass body
       // actually runs on the dispatch path (i.e. the registered class is
@@ -92,13 +86,8 @@ describe("LoginWorkflow subclass — applyProfile override", () => {
     @Injectable("FOR_EVENT")
     @Controller()
     class ProfileLogin extends LoginWorkflow {
-      constructor(
-        opts: LoginWorkflowOpts,
-        users: UserService,
-        auth: AuthCredential,
-        authConfig: MoostAuthConfig,
-      ) {
-        super(opts, users, auth, authConfig);
+      constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
+        super(opts, users, auth);
       }
       override async credentials(
         input: { username?: string; password?: string; action?: string } | undefined,
@@ -158,13 +147,8 @@ describe("LoginWorkflow subclass — applyConsentMarketing override", () => {
     @Injectable("FOR_EVENT")
     @Controller()
     class ConsentLogin extends LoginWorkflow {
-      constructor(
-        opts: LoginWorkflowOpts,
-        users: UserService,
-        auth: AuthCredential,
-        authConfig: MoostAuthConfig,
-      ) {
-        super(opts, users, auth, authConfig);
+      constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
+        super(opts, users, auth);
       }
       protected override async applyConsentMarketing(
         username: string,
@@ -212,13 +196,8 @@ describe("LoginWorkflow subclass — loadTenants override", () => {
     @Injectable("FOR_EVENT")
     @Controller()
     class TenantLogin extends LoginWorkflow {
-      constructor(
-        opts: LoginWorkflowOpts,
-        users: UserService,
-        auth: AuthCredential,
-        authConfig: MoostAuthConfig,
-      ) {
-        super(opts, users, auth, authConfig);
+      constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
+        super(opts, users, auth);
       }
       override async credentials(
         input: { username?: string; password?: string; action?: string } | undefined,
@@ -265,13 +244,8 @@ describe("LoginWorkflow subclass — loadTenants override", () => {
     @Injectable("FOR_EVENT")
     @Controller()
     class TenantLogin extends LoginWorkflow {
-      constructor(
-        opts: LoginWorkflowOpts,
-        users: UserService,
-        auth: AuthCredential,
-        authConfig: MoostAuthConfig,
-      ) {
-        super(opts, users, auth, authConfig);
+      constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
+        super(opts, users, auth);
       }
       override async credentials(
         input: { username?: string; password?: string; action?: string } | undefined,
@@ -316,13 +290,8 @@ describe("LoginWorkflow subclass — loadPersonas override", () => {
     @Injectable("FOR_EVENT")
     @Controller()
     class PersonaLogin extends LoginWorkflow {
-      constructor(
-        opts: LoginWorkflowOpts,
-        users: UserService,
-        auth: AuthCredential,
-        authConfig: MoostAuthConfig,
-      ) {
-        super(opts, users, auth, authConfig);
+      constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
+        super(opts, users, auth);
       }
       override async credentials(
         input: { username?: string; password?: string; action?: string } | undefined,
@@ -373,13 +342,8 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
     @Injectable("FOR_EVENT")
     @Controller()
     class KickLogin extends LoginWorkflow {
-      constructor(
-        opts: LoginWorkflowOpts,
-        users: UserService,
-        auth: AuthCredential,
-        authConfig: MoostAuthConfig,
-      ) {
-        super(opts, users, auth, authConfig);
+      constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
+        super(opts, users, auth);
       }
       override async credentials(
         input: { username?: string; password?: string; action?: string } | undefined,
@@ -422,13 +386,8 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
     @Injectable("FOR_EVENT")
     @Controller()
     class KickLogin extends LoginWorkflow {
-      constructor(
-        opts: LoginWorkflowOpts,
-        users: UserService,
-        auth: AuthCredential,
-        authConfig: MoostAuthConfig,
-      ) {
-        super(opts, users, auth, authConfig);
+      constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
+        super(opts, users, auth);
       }
       override async credentials(
         input: { username?: string; password?: string; action?: string } | undefined,

@@ -1,5 +1,3 @@
-import { Injectable } from "moost";
-
 /** Resolved cookie attributes. Same shape is used for both access + refresh. */
 export interface ResolvedAuthCookieConfig {
   name: string;
@@ -10,7 +8,7 @@ export interface ResolvedAuthCookieConfig {
   domain?: string;
 }
 
-export interface MoostAuthConfigOptions {
+export interface AuthOptions {
   cookie?: Partial<ResolvedAuthCookieConfig>;
   /**
    * Refresh-cookie attribute overrides. Defaults to `name='aooth_refresh'`,
@@ -25,12 +23,11 @@ export interface MoostAuthConfigOptions {
 }
 
 /**
- * DI singleton carrying the resolved auth-guard transport configuration.
- * Constructed by the consumer (typically inside the Moost provide registry)
- * with the desired overrides; defaults are baked at construction time.
+ * Fully-resolved options carried by `authGuardInterceptor(opts)` through the
+ * HTTP event slot. `useAuth().options` returns this shape so consumers can type
+ * variables without re-resolving defaults.
  */
-@Injectable()
-export class MoostAuthConfig {
+export interface ResolvedAuthOptions {
   cookie: ResolvedAuthCookieConfig;
   /**
    * Narrow `path: '/auth/refresh'` ensures the refresh token only travels to
@@ -40,26 +37,36 @@ export class MoostAuthConfig {
   refreshCookie: ResolvedAuthCookieConfig;
   enableCookie: boolean;
   enableBearer: boolean;
+}
 
-  constructor(opts: MoostAuthConfigOptions = {}) {
-    this.cookie = {
-      name: "aooth_session",
-      secure: true,
-      sameSite: "lax",
-      httpOnly: true,
-      path: "/",
-      ...opts.cookie,
-    };
-    this.refreshCookie = {
-      name: "aooth_refresh",
-      secure: this.cookie.secure,
-      sameSite: this.cookie.sameSite,
-      httpOnly: this.cookie.httpOnly,
-      domain: this.cookie.domain,
-      path: "/auth/refresh",
-      ...opts.refreshCookie,
-    };
-    this.enableCookie = opts.enableCookie ?? true;
-    this.enableBearer = opts.enableBearer ?? true;
-  }
+/**
+ * Resolve `AuthOptions` to its `ResolvedAuthOptions` form, applying the same
+ * defaults the legacy `MoostAuthConfig` constructor did. Pure — call once per
+ * `authGuardInterceptor` factory invocation; the resolved value is stashed in
+ * a wook slot for the event chain.
+ */
+export function resolveAuthOptions(opts: AuthOptions = {}): ResolvedAuthOptions {
+  const cookie: ResolvedAuthCookieConfig = {
+    name: "aooth_session",
+    secure: true,
+    sameSite: "lax",
+    httpOnly: true,
+    path: "/",
+    ...opts.cookie,
+  };
+  const refreshCookie: ResolvedAuthCookieConfig = {
+    name: "aooth_refresh",
+    secure: cookie.secure,
+    sameSite: cookie.sameSite,
+    httpOnly: cookie.httpOnly,
+    ...(cookie.domain !== undefined && { domain: cookie.domain }),
+    path: "/auth/refresh",
+    ...opts.refreshCookie,
+  };
+  return {
+    cookie,
+    refreshCookie,
+    enableCookie: opts.enableCookie ?? true,
+    enableBearer: opts.enableBearer ?? true,
+  };
 }

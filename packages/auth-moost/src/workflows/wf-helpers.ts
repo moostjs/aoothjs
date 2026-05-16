@@ -3,9 +3,12 @@
  *
  * Co-locates two patterns the @atscript/moost-wf reference docs tell consumers
  * to copy into their own projects (`httpInputRequired` + `validateFormInput`)
- * with auth-specific glue for cookie + finished-response building.
+ * with auth-specific glue for the password-set error translation.
+ *
+ * Cookie + finished-response building lives on `useAuth()` (see
+ * `auth.composables.ts`) so it shares the same resolved options the guard
+ * stashed onto the HTTP event chain.
  */
-import type { IssueResult } from "@aoothjs/auth";
 import { UserAuthError } from "@aoothjs/user";
 import { extractPassContext, serializeFormSchema } from "@atscript/moost-wf";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
@@ -13,10 +16,6 @@ import { HttpError } from "@moostjs/event-http";
 import { outletHttp } from "@moostjs/event-wf";
 import { current } from "@wooksjs/event-core";
 import { useRequest } from "@wooksjs/event-http";
-import type { WfFinishedResponse } from "@wooksjs/event-wf";
-
-import type { MoostAuthConfig } from "../auth.config";
-import { cookieAttrs } from "../auth.cookies";
 
 /**
  * Special error keys:
@@ -67,28 +66,6 @@ export function validateFormInput(
     }
     throw err;
   }
-}
-
-/**
- * Build the `cookies` map for `useWfFinished({ cookies })`. The outlet
- * trigger's HTTP layer turns the entries into `Set-Cookie` headers, mirroring
- * what `writeAuthCookies()` does for the REST controller.
- */
-export function buildFinishedCookies(
-  config: MoostAuthConfig,
-  issue: IssueResult,
-): WfFinishedResponse["cookies"] {
-  if (!config.enableCookie) return undefined;
-  const cookies: NonNullable<WfFinishedResponse["cookies"]> = {
-    [config.cookie.name]: { value: issue.accessToken, options: cookieAttrs(config.cookie) },
-  };
-  if (issue.refreshToken) {
-    cookies[config.refreshCookie.name] = {
-      value: issue.refreshToken,
-      options: cookieAttrs(config.refreshCookie),
-    };
-  }
-  return cookies;
 }
 
 /**

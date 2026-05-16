@@ -3,11 +3,11 @@
 export type { AuthContext, IssueResult } from "@aoothjs/auth";
 
 export {
-  MoostAuthConfig,
-  type MoostAuthConfigOptions,
+  type AuthOptions,
   type ResolvedAuthCookieConfig,
+  type ResolvedAuthOptions,
 } from "./auth.config";
-export { authGuardInterceptor } from "./auth.guard";
+export { authGuardInterceptor, AuthGuarded } from "./auth.guard";
 export { useAuth, type AuthBindings } from "./auth.composables";
 export { Public, UserId } from "./auth.decorator";
 export { getAuthMate, type TAuthMeta } from "./auth.mate";
@@ -19,13 +19,6 @@ export type {
   AuthPasswordChangeBody,
   AuthRefreshBody,
 } from "./auth.dto";
-export { extractAccessToken } from "./auth.token";
-export {
-  buildLoginResponse,
-  clearAuthCookies,
-  cookieAttrs,
-  writeAuthCookies,
-} from "./auth.cookies";
 
 // Re-exported from @aoothjs/auth for ergonomic single-import setup; the
 // definitions are framework-agnostic and live in the core package.

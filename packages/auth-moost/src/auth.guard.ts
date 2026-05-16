@@ -1,15 +1,25 @@
 import { AuthCredential } from "@aoothjs/auth";
 import { current, eventTypeKey } from "@wooksjs/event-core";
 import { HttpError } from "@wooksjs/event-http";
-import { defineBeforeInterceptor, TInterceptorPriority, useControllerContext } from "moost";
+import {
+  defineBeforeInterceptor,
+  Intercept,
+  type TInterceptorDef,
+  TInterceptorPriority,
+  useControllerContext,
+} from "moost";
 
-import { MoostAuthConfig } from "./auth.config";
-import { setAuthContext } from "./auth.composables";
+import { type AuthOptions, resolveAuthOptions } from "./auth.config";
+import { authOptionsKey, setAuthContext, useAuth } from "./auth.composables";
 import type { TAuthMeta } from "./auth.mate";
-import { extractAccessToken } from "./auth.token";
 
 /**
- * `GUARD`-priority interceptor that authenticates incoming requests.
+ * `GUARD`-priority interceptor factory that authenticates incoming requests.
+ *
+ * Returns a configured `TInterceptorDef`. Each invocation captures its own
+ * resolved options and stashes them onto the HTTP event context's
+ * `authOptionsKey` slot so `useAuth()` (and the workflows that depend on it)
+ * can read the same transport config.
  *
  * Token extraction precedence: `Authorization: Bearer ...` wins over cookie
  * when both transports are enabled. On `@Public()` routes a missing or
@@ -24,38 +34,51 @@ import { extractAccessToken } from "./auth.token";
  * an admin-only invite endpoint protects its outlet HTTP route, not the
  * step handler).
  */
-export const authGuardInterceptor = defineBeforeInterceptor(async () => {
-  const ctx = current();
-  if (ctx.get(eventTypeKey) !== "http") return;
-  const cc = useControllerContext(ctx);
+export function authGuardInterceptor(opts?: AuthOptions): TInterceptorDef {
+  const resolved = resolveAuthOptions(opts);
+  return defineBeforeInterceptor(async () => {
+    const ctx = current();
+    if (ctx.get(eventTypeKey) !== "http") return;
+    // Stash resolved options into the event slot BEFORE doing anything that
+    // might call `useAuth()` (including ours below). Child events started via
+    // `start({ eventContext: current() })` inherit this slot through the
+    // parent-context chain.
+    ctx.set(authOptionsKey, resolved);
 
-  const cMeta = cc.getControllerMeta<TAuthMeta>();
-  const mMeta = cc.getMethodMeta<TAuthMeta>();
-  const isPublic = mMeta?.authPublic ?? cMeta?.authPublic ?? false;
+    const cc = useControllerContext(ctx);
+    const cMeta = cc.getControllerMeta<TAuthMeta>();
+    const mMeta = cc.getMethodMeta<TAuthMeta>();
+    const isPublic = mMeta?.authPublic ?? cMeta?.authPublic ?? false;
 
-  const [credential, config] = await Promise.all([
-    cc.instantiate(AuthCredential),
-    cc.instantiate(MoostAuthConfig),
-  ]);
+    const credential = await cc.instantiate(AuthCredential);
+    const token = useAuth().extractToken();
 
-  const token = extractAccessToken(ctx, config);
-
-  if (!token) {
-    if (isPublic) {
-      setAuthContext(ctx, null);
-      return;
+    if (!token) {
+      if (isPublic) {
+        setAuthContext(ctx, null);
+        return;
+      }
+      throw new HttpError(401, "Unauthorized");
     }
-    throw new HttpError(401, "Unauthorized");
-  }
 
-  const authContext = await credential.validate(token);
-  if (!authContext) {
-    if (isPublic) {
-      setAuthContext(ctx, null);
-      return;
+    const authContext = await credential.validate(token);
+    if (!authContext) {
+      if (isPublic) {
+        setAuthContext(ctx, null);
+        return;
+      }
+      throw new HttpError(401, "Invalid credential");
     }
-    throw new HttpError(401, "Invalid credential");
-  }
 
-  setAuthContext(ctx, authContext);
-}, TInterceptorPriority.GUARD);
+    setAuthContext(ctx, authContext);
+  }, TInterceptorPriority.GUARD);
+}
+
+/**
+ * Decorator-factory sugar for attaching `authGuardInterceptor(opts)` to a
+ * specific controller or method instead of globally. Equivalent to
+ * `@Intercept(authGuardInterceptor(opts))`.
+ */
+export function AuthGuarded(opts?: AuthOptions): ClassDecorator & MethodDecorator {
+  return Intercept(authGuardInterceptor(opts));
+}

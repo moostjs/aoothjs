@@ -19,7 +19,6 @@ import { generateTotpCode, generateTotpSecret, UserService } from "@aoothjs/user
 import { Controller, Inherit, Injectable } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
-import { MoostAuthConfig } from "../auth.config";
 import { RecoveryWorkflow, type RecoveryWorkflowOpts } from "../workflows/index";
 import { prepareWfApp, seedActiveUser } from "./workflow-utils";
 
@@ -45,13 +44,8 @@ function makeRecoverySubclass(
   @Injectable("FOR_EVENT")
   @Controller()
   class SubclassedRecovery extends RecoveryWorkflow {
-    constructor(
-      opts: RecoveryWorkflowOpts,
-      users: UserService,
-      auth: AuthCredential,
-      authConfig: MoostAuthConfig,
-    ) {
-      super(opts, users, auth, authConfig);
+    constructor(opts: RecoveryWorkflowOpts, users: UserService, auth: AuthCredential) {
+      super(opts, users, auth);
     }
     protected override async emailToUserId(email: string): Promise<string | null> {
       return overrides.emailToUserId

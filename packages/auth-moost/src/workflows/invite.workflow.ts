@@ -67,8 +67,6 @@ import { Controller, Injectable } from "moost";
 
 import type { AuditEvent } from "../audit/index";
 import { useAuth } from "../auth.composables";
-import { MoostAuthConfig } from "../auth.config";
-import { buildLoginResponse } from "../auth.cookies";
 import {
   type DuplicateAction,
   type InviteWorkflowOpts,
@@ -78,7 +76,6 @@ import {
 } from "./invite.workflow.options";
 import type { DeliverPayload } from "./login.workflow";
 import {
-  buildFinishedCookies,
   httpInputRequired,
   requireUsername,
   resolveClientIp,
@@ -181,18 +178,11 @@ export class InviteWorkflow {
   protected readonly opts: ResolvedInviteWorkflowOpts;
   protected readonly users: UserService;
   protected readonly auth: AuthCredential;
-  protected readonly authConfig: MoostAuthConfig;
 
-  constructor(
-    opts: InviteWorkflowOpts,
-    users: UserService,
-    auth: AuthCredential,
-    authConfig: MoostAuthConfig,
-  ) {
+  constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
     this.opts = mergeInviteOpts(opts);
     this.users = users;
     this.auth = auth;
-    this.authConfig = authConfig;
     validateOpts(this.opts);
   }
 
@@ -878,10 +868,11 @@ export class InviteWorkflow {
     requireUsername(ctx);
     const issue = await this.auth.issue(ctx.username);
     ctx.tokensIssued = true;
+    const auth = useAuth();
     useWfFinished().set({
       type: "data",
-      value: buildLoginResponse(this.authConfig, ctx.username, issue),
-      cookies: buildFinishedCookies(this.authConfig, issue),
+      value: auth.buildLoginResponse(ctx.username, issue),
+      cookies: auth.buildFinishedCookies(issue),
     });
     return undefined;
   }

@@ -44,7 +44,6 @@ import { Wooks } from "wooks";
 import type { AuthEmailKind, BuildMagicLinkUrl, EmailSender, SmsSender } from "@aoothjs/auth";
 
 import { type AuditEmitter, type AuditEvent } from "../audit/index";
-import { MoostAuthConfig } from "../auth.config";
 import { AuthController } from "../auth.controller";
 import { authGuardInterceptor } from "../auth.guard";
 import { Public } from "../auth.decorator";
@@ -338,11 +337,7 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     registerEmail,
     registerSms,
     auditEmitter,
-  }) as unknown as new (
-    users: UserService,
-    auth: AuthCredential,
-    authConfig: MoostAuthConfig,
-  ) => LoginWorkflow;
+  }) as unknown as new (users: UserService, auth: AuthCredential) => LoginWorkflow;
 
   const recoveryOpts: RecoveryWorkflowOpts = opts.recoveryOpts ?? {
     delivery: { magicLinkTtlMs: recoveryTokenTtlMs },
@@ -358,11 +353,7 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     registerSms,
     auditEmitter,
     emailToUserId: opts.emailToUserId,
-  }) as unknown as new (
-    users: UserService,
-    auth: AuthCredential,
-    authConfig: MoostAuthConfig,
-  ) => RecoveryWorkflow;
+  }) as unknown as new (users: UserService, auth: AuthCredential) => RecoveryWorkflow;
 
   const inviteOpts: InviteWorkflowOpts = opts.inviteOpts ?? {
     send: { tokenTtlMs: inviteTokenTtlMs },
@@ -389,21 +380,15 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     registerSms,
     auditEmitter,
     hooks: inviteHooks,
-  }) as unknown as new (
-    users: UserService,
-    auth: AuthCredential,
-    authConfig: MoostAuthConfig,
-  ) => InviteWorkflow;
+  }) as unknown as new (users: UserService, auth: AuthCredential) => InviteWorkflow;
 
-  const moostAuthConfig = new MoostAuthConfig({ cookie: { secure: false } });
   type ProvideEntry = Parameters<typeof createProvideRegistry>[number];
   const providers: ProvideEntry[] = [
     [AuthCredential, () => auth],
     [UserService, () => users],
-    [MoostAuthConfig, () => moostAuthConfig],
-    [LoginCtor, () => new LoginCtor(users, auth, moostAuthConfig)],
-    [RecoveryCtor, () => new RecoveryCtor(users, auth, moostAuthConfig)],
-    [InviteCtor, () => new InviteCtor(users, auth, moostAuthConfig)],
+    [LoginCtor, () => new LoginCtor(users, auth)],
+    [RecoveryCtor, () => new RecoveryCtor(users, auth)],
+    [InviteCtor, () => new InviteCtor(users, auth)],
   ];
   // The three workflows now all use `protected` method overrides for
   // sender/store/audit hooks — no DI registrations needed for them. The
@@ -411,7 +396,7 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
   // trigger-side mailer for magic-link outlets), so the email-outlet deps
   // object below takes it directly via closure.
   moost.setProvideRegistry(createProvideRegistry(...providers));
-  moost.applyGlobalInterceptors(authGuardInterceptor);
+  moost.applyGlobalInterceptors(authGuardInterceptor({ cookie: { secure: false } }));
   moost.applyGlobalInterceptors(formInputInterceptor());
   moost.registerControllers(AuthController);
 
@@ -553,11 +538,12 @@ export async function seedActiveUser(
 // ── Harness subclass builders ────────────────────────────────────────────────
 //
 // All three workflows (`LoginWorkflow`, `RecoveryWorkflow`, `InviteWorkflow`)
-// have ctor shape `(opts, users, auth, authConfig)` after the protected-method
-// refactor. Tests still hand-roll opts per-case, so each harness pre-binds
-// opts and exposes a re-declared 3-arg ctor `(users, auth, authConfig)` to the
-// moost DI factory. Each builder layers on the per-test capture overrides
-// (`deliver` / `audit` / device-trust hooks / invite hooks / `emailToUserId`).
+// have ctor shape `(opts, users, auth)` after the AUTH-MOOST-1 reshape (the
+// previous `authConfig` arg moved into the wook slot read by `useAuth()`).
+// Tests still hand-roll opts per-case, so each harness pre-binds opts and
+// exposes a re-declared 2-arg ctor `(users, auth)` to the moost DI factory.
+// Each builder layers on the per-test capture overrides (`deliver` / `audit`
+// / device-trust hooks / invite hooks / `emailToUserId`).
 
 interface HarnessLoginDeps {
   base: typeof LoginWorkflow;
@@ -588,8 +574,8 @@ function buildHarnessLoginClass(deps: HarnessLoginDeps): new (...args: never[]) 
   @Injectable("FOR_EVENT")
   @Controller()
   class HarnessLogin extends Base {
-    constructor(usersDep: UserService, authDep: AuthCredential, authConfigDep: MoostAuthConfig) {
-      super(loginOpts, usersDep, authDep, authConfigDep);
+    constructor(usersDep: UserService, authDep: AuthCredential) {
+      super(loginOpts, usersDep, authDep);
     }
 
     protected override async deliver(payload: DeliverPayload): Promise<void> {
@@ -691,8 +677,8 @@ function buildHarnessRecoveryClass(
   @Injectable("FOR_EVENT")
   @Controller()
   class HarnessRecovery extends Base {
-    constructor(usersDep: UserService, authDep: AuthCredential, authConfigDep: MoostAuthConfig) {
-      super(recoveryOpts, usersDep, authDep, authConfigDep);
+    constructor(usersDep: UserService, authDep: AuthCredential) {
+      super(recoveryOpts, usersDep, authDep);
     }
 
     protected override async deliver(payload: DeliverPayload): Promise<void> {
@@ -754,8 +740,8 @@ function buildHarnessInviteClass(
   @Injectable("FOR_EVENT")
   @Controller()
   class HarnessInvite extends Base {
-    constructor(usersDep: UserService, authDep: AuthCredential, authConfigDep: MoostAuthConfig) {
-      super(inviteOpts, usersDep, authDep, authConfigDep);
+    constructor(usersDep: UserService, authDep: AuthCredential) {
+      super(inviteOpts, usersDep, authDep);
     }
 
     protected override async deliver(payload: DeliverPayload): Promise<void> {

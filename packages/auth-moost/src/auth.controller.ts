@@ -6,9 +6,7 @@ import { Body, Get, HttpError, Post } from "@moostjs/event-http";
 import { useCookies } from "@wooksjs/event-http";
 import { Controller, useControllerContext } from "moost";
 
-import { MoostAuthConfig } from "./auth.config";
 import { useAuth } from "./auth.composables";
-import { buildLoginResponse, clearAuthCookies, writeAuthCookies } from "./auth.cookies";
 import { Public } from "./auth.decorator";
 import type {
   AuthLoginBody,
@@ -18,7 +16,6 @@ import type {
   AuthPasswordChangeBody,
   AuthRefreshBody,
 } from "./auth.dto";
-import { extractAccessToken } from "./auth.token";
 
 // CRITICAL ASSUMPTION: `AuthContext.userId === username`. Login issues the
 // credential with `loginResult.user.username` as its userId, so the password-
@@ -26,13 +23,6 @@ import { extractAccessToken } from "./auth.token";
 // Consumers who map userId → an opaque id (UUID, internal pk) must disable
 // the auto-registered controller (`endpoints: false`) and re-register a
 // subclassed one with the correct lookup — see README.
-//
-// DI note: moost@0.6.x cannot resolve constructor params via `@Inject(SomeClass)`
-// — the registry is keyed by `Symbol.for(class)` but the param lookup uses
-// the raw constructor (they don't compare equal). The reliable runtime path
-// is `useControllerContext().instantiate(SomeClass)`, which goes through
-// infact's `get()` and matches on `classSymbol`. That's why this controller
-// resolves dependencies inside each handler rather than via a constructor.
 
 function translateLoginError(err: unknown): never {
   if (err instanceof UserAuthError) {
@@ -71,44 +61,17 @@ function translatePasswordError(err: unknown): never {
   throw err;
 }
 
-interface CoreDeps {
-  auth: AuthCredential;
-  config: MoostAuthConfig;
-}
-
-interface DepsWithUsers extends CoreDeps {
-  users: UserService;
-}
-
-async function resolveCoreDeps(): Promise<CoreDeps> {
-  const cc = useControllerContext();
-  const [auth, config] = await Promise.all([
-    cc.instantiate(AuthCredential),
-    cc.instantiate(MoostAuthConfig),
-  ]);
-  return { auth, config };
-}
-
-async function resolveDepsWithUsers(): Promise<DepsWithUsers> {
+async function resolveUsersDep(): Promise<UserService> {
   const cc = useControllerContext();
   // `UserService` is required only by handlers that read/verify user records
-  // (login, changePassword). Refresh + logout work off the token store alone,
-  // so they call `resolveCoreDeps()` and never trip this guard. Controller-
-  // construction proper is gated by moost@0.6.x's `@Inject` constructor-param
-  // limitation (see the DI note at the top of this file), which is why this
-  // resolves lazily at first request rather than at boot.
-  const [auth, config, users] = await Promise.all([
-    cc.instantiate(AuthCredential),
-    cc.instantiate(MoostAuthConfig),
-    cc.instantiate(UserService).catch(() => {
-      throw new Error(
-        "AuthController: `UserService` is not provided in the Moost DI container. " +
-          "Register one via `setProvideRegistry(createProvideRegistry([UserService, () => myUserService]))`, " +
-          "or do not register `AuthController` if you don't need /auth/login + /auth/password.",
-      );
-    }),
-  ]);
-  return { auth, config, users };
+  // (login, changePassword). Refresh + logout work off the token store alone.
+  return cc.instantiate(UserService).catch(() => {
+    throw new Error(
+      "AuthController: `UserService` is not provided in the Moost DI container. " +
+        "Register one via `setProvideRegistry(createProvideRegistry([UserService, () => myUserService]))`, " +
+        "or do not register `AuthController` if you don't need /auth/login + /auth/password.",
+    );
+  });
 }
 
 /**
@@ -125,13 +88,15 @@ async function resolveDepsWithUsers(): Promise<DepsWithUsers> {
 @Controller("auth")
 @ArbacResource("auth")
 export class AuthController {
+  constructor(protected readonly auth: AuthCredential) {}
+
   @Post("login")
   @Public()
   async login(@Body() body: AuthLoginBody): Promise<AuthLoginResponse> {
     if (!body || typeof body.username !== "string" || typeof body.password !== "string") {
       throw new HttpError(400, "username and password are required");
     }
-    const { auth, config, users } = await resolveDepsWithUsers();
+    const users = await resolveUsersDep();
 
     let loginResult: Awaited<ReturnType<UserService["login"]>>;
     try {
@@ -140,17 +105,18 @@ export class AuthController {
       translateLoginError(err);
     }
 
-    const issue = await auth.issue(loginResult.user.username);
-    writeAuthCookies(config, issue);
-    return buildLoginResponse(config, loginResult.user.username, issue);
+    const issue = await this.auth.issue(loginResult.user.username);
+    const auth = useAuth();
+    auth.writeCookies(issue);
+    return auth.buildLoginResponse(loginResult.user.username, issue);
   }
 
   @Post("logout")
   @ArbacAction("public.logout")
   async logout(@Body() body: AuthLogoutBody): Promise<AuthOkResponse> {
-    const { auth, config } = await resolveCoreDeps();
     const ctx = current();
-    const accessToken = extractAccessToken(ctx, config);
+    const auth = useAuth();
+    const accessToken = auth.extractToken();
     // Revoke the refresh side too — otherwise a stolen device could mint a
     // fresh access token via `/auth/refresh` after the user "logged out".
     // The refresh cookie's narrow path keeps it OUT of `/auth/logout`, so we
@@ -160,38 +126,38 @@ export class AuthController {
       body && typeof body === "object" && typeof body.refreshToken === "string"
         ? body.refreshToken
         : undefined;
-    if (!refreshToken && config.enableCookie) {
-      refreshToken = useCookies(ctx).getCookie(config.refreshCookie.name) ?? undefined;
+    if (!refreshToken && auth.options.enableCookie) {
+      refreshToken = useCookies(ctx).getCookie(auth.options.refreshCookie.name) ?? undefined;
     }
     // Best-effort: the guard already validated the access token; if either
     // revocation fails (e.g. store unreachable) we still clear cookies so the
     // client's session ends.
     if (accessToken) {
       try {
-        await auth.revoke(accessToken);
+        await this.auth.revoke(accessToken);
       } catch {
         /* swallow — see comment */
       }
     }
     if (refreshToken) {
       try {
-        await auth.revoke(refreshToken);
+        await this.auth.revoke(refreshToken);
       } catch {
         /* swallow — see comment */
       }
     }
-    clearAuthCookies(config);
+    auth.clearCookies();
     return { ok: true };
   }
 
   @Post("refresh")
   @Public()
   async refresh(@Body() body: AuthRefreshBody | undefined): Promise<AuthLoginResponse> {
-    const { auth, config } = await resolveCoreDeps();
     const ctx = current();
+    const auth = useAuth();
     let refreshToken = body?.refreshToken;
-    if (!refreshToken && config.enableCookie) {
-      refreshToken = useCookies(ctx).getCookie(config.refreshCookie.name) ?? undefined;
+    if (!refreshToken && auth.options.enableCookie) {
+      refreshToken = useCookies(ctx).getCookie(auth.options.refreshCookie.name) ?? undefined;
     }
     if (!refreshToken) {
       throw new HttpError(401, "Missing refresh token");
@@ -199,7 +165,7 @@ export class AuthController {
 
     let issue: IssueResult;
     try {
-      issue = await auth.refresh(refreshToken);
+      issue = await this.auth.refresh(refreshToken);
     } catch (err) {
       if (err instanceof AuthError) {
         throw new HttpError(401, "Invalid refresh token");
@@ -207,10 +173,10 @@ export class AuthController {
       throw err;
     }
 
-    writeAuthCookies(config, issue);
+    auth.writeCookies(issue);
     // userId is preserved across refresh — recover it from the new access token.
-    const validated = await auth.validate(issue.accessToken);
-    return buildLoginResponse(config, validated?.userId ?? "", issue);
+    const validated = await this.auth.validate(issue.accessToken);
+    return auth.buildLoginResponse(validated?.userId ?? "", issue);
   }
 
   @Get("status")
@@ -231,8 +197,9 @@ export class AuthController {
     if (!body || typeof body.currentPassword !== "string" || typeof body.newPassword !== "string") {
       throw new HttpError(400, "currentPassword and newPassword are required");
     }
-    const { auth, config, users } = await resolveDepsWithUsers();
-    const username = useAuth().getUserId();
+    const users = await resolveUsersDep();
+    const auth = useAuth();
+    const username = auth.getUserId();
 
     let valid: boolean;
     try {
@@ -255,11 +222,11 @@ export class AuthController {
     // is already changed, and the worst outcome is a brief window of stale
     // tokens that will expire on their natural TTL.
     try {
-      await auth.revokeAllForUser(username);
+      await this.auth.revokeAllForUser(username);
     } catch {
       /* swallow — see comment */
     }
-    clearAuthCookies(config);
+    auth.clearCookies();
     return { ok: true };
   }
 }

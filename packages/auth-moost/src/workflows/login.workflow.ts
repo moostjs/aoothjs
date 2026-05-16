@@ -58,15 +58,13 @@ import { useCookies, useRequest, useResponse } from "@wooksjs/event-http";
 import { Controller, Injectable } from "moost";
 
 import type { AuditEvent } from "../audit/index";
-import { MoostAuthConfig } from "../auth.config";
-import { buildLoginResponse, cookieAttrs } from "../auth.cookies";
+import { useAuth } from "../auth.composables";
 import {
   type LoginWorkflowOpts,
   type ResolvedLoginWorkflowOpts,
   mergeLoginOpts,
 } from "./login.workflow.options";
 import {
-  buildFinishedCookies,
   httpInputRequired,
   requireUsername,
   translatePasswordSetError,
@@ -248,18 +246,11 @@ export class LoginWorkflow {
   protected readonly opts: ResolvedLoginWorkflowOpts;
   protected readonly users: UserService;
   protected readonly auth: AuthCredential;
-  protected readonly authConfig: MoostAuthConfig;
 
-  constructor(
-    opts: LoginWorkflowOpts,
-    users: UserService,
-    auth: AuthCredential,
-    authConfig: MoostAuthConfig,
-  ) {
+  constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
     this.opts = mergeLoginOpts(opts);
     this.users = users;
     this.auth = auth;
-    this.authConfig = authConfig;
     validateOpts(this.opts);
   }
 
@@ -989,7 +980,7 @@ export class LoginWorkflow {
     useResponse(current()).setCookie(
       this.opts.deviceTrust.cookieName,
       record.token,
-      cookieAttrs(this.authConfig.cookie, { maxAge: this.opts.deviceTrust.ttlMs / 1000 }),
+      useAuth().cookieAttrs({ maxAge: this.opts.deviceTrust.ttlMs / 1000 }),
     );
     return undefined;
   }
@@ -1253,10 +1244,11 @@ export class LoginWorkflow {
     // Build response payload + cookies and stash on the finished response.
     // The `redirect` step (terminal) overrides with a redirect type when
     // `resolveRedirect` returns a URL; otherwise the data response sticks.
+    const auth = useAuth();
     useWfFinished().set({
       type: "data",
-      value: buildLoginResponse(this.authConfig, ctx.username, issue),
-      cookies: buildFinishedCookies(this.authConfig, issue),
+      value: auth.buildLoginResponse(ctx.username, issue),
+      cookies: auth.buildFinishedCookies(issue),
     });
   }
 

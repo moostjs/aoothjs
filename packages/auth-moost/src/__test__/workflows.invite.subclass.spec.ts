@@ -23,7 +23,6 @@ import { Controller, Inherit, Injectable } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import { ProfileCompleteForm } from "../atscript/models/forms.as.js";
-import { MoostAuthConfig } from "../auth.config";
 import {
   type DuplicateAction,
   InviteWorkflow,
@@ -48,13 +47,8 @@ describe("InviteWorkflow subclass — end-to-end registration shape", () => {
     @Injectable("FOR_EVENT")
     @Controller()
     class MyInvite extends InviteWorkflow {
-      constructor(
-        opts: InviteWorkflowOpts,
-        users: UserService,
-        auth: AuthCredential,
-        authConfig: MoostAuthConfig,
-      ) {
-        super(opts, users, auth, authConfig);
+      constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
+        super(opts, users, auth);
       }
       protected override async prepareUser(
         _input: PreparedUserInput,
@@ -97,13 +91,8 @@ describe("InviteWorkflow subclass — end-to-end registration shape", () => {
     @Injectable("FOR_EVENT")
     @Controller()
     class MyInvite extends InviteWorkflow {
-      constructor(
-        opts: InviteWorkflowOpts,
-        users: UserService,
-        auth: AuthCredential,
-        authConfig: MoostAuthConfig,
-      ) {
-        super(opts, users, auth, authConfig);
+      constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
+        super(opts, users, auth);
       }
       protected override async duplicateCheck(input: {
         email: string;
@@ -163,13 +152,8 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
     @Injectable("FOR_EVENT")
     @Controller()
     class MyInvite extends InviteWorkflow {
-      constructor(
-        opts: InviteWorkflowOpts,
-        users: UserService,
-        auth: AuthCredential,
-        authConfig: MoostAuthConfig,
-      ) {
-        super(opts, users, auth, authConfig);
+      constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
+        super(opts, users, auth);
       }
       protected override async getAvailableRoles(): Promise<string[] | undefined> {
         return ["tenant-admin", "tenant-member"];
@@ -193,13 +177,8 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
     @Injectable("FOR_EVENT")
     @Controller()
     class MyInvite extends InviteWorkflow {
-      constructor(
-        opts: InviteWorkflowOpts,
-        users: UserService,
-        auth: AuthCredential,
-        authConfig: MoostAuthConfig,
-      ) {
-        super(opts, users, auth, authConfig);
+      constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
+        super(opts, users, auth);
       }
       protected override async inferRoles(_input: {
         email: string;
@@ -230,13 +209,8 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
     @Injectable("FOR_EVENT")
     @Controller()
     class MyInvite extends InviteWorkflow {
-      constructor(
-        opts: InviteWorkflowOpts,
-        users: UserService,
-        auth: AuthCredential,
-        authConfig: MoostAuthConfig,
-      ) {
-        super(opts, users, auth, authConfig);
+      constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
+        super(opts, users, auth);
       }
       protected override getProfileForm(): TAtscriptAnnotatedType {
         return ProfileCompleteForm as unknown as TAtscriptAnnotatedType;
@@ -284,13 +258,8 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
     @Injectable("FOR_EVENT")
     @Controller()
     class MyInvite extends InviteWorkflow {
-      constructor(
-        opts: InviteWorkflowOpts,
-        users: UserService,
-        auth: AuthCredential,
-        authConfig: MoostAuthConfig,
-      ) {
-        super(opts, users, auth, authConfig);
+      constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
+        super(opts, users, auth);
       }
       protected override async duplicateCheck(input: {
         email: string;
@@ -348,13 +317,8 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
     @Injectable("FOR_EVENT")
     @Controller()
     class MyInvite extends InviteWorkflow {
-      constructor(
-        opts: InviteWorkflowOpts,
-        users: UserService,
-        auth: AuthCredential,
-        authConfig: MoostAuthConfig,
-      ) {
-        super(opts, users, auth, authConfig);
+      constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
+        super(opts, users, auth);
       }
       protected override getProfileForm(): TAtscriptAnnotatedType {
         return ProfileCompleteForm as unknown as TAtscriptAnnotatedType;

@@ -17,7 +17,6 @@ import { generateTotpCode, generateTotpSecret, UserService } from "@aoothjs/user
 import { Controller, Inherit, Injectable } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
-import { MoostAuthConfig } from "../auth.config";
 import { type LoginWfCtx, LoginWorkflow, type LoginWorkflowOpts } from "../workflows/index";
 import { prepareWfApp, seedActiveUser } from "./workflow-utils";
 
@@ -40,13 +39,8 @@ function makeLoginSubclass(
   @Injectable("FOR_EVENT")
   @Controller()
   class SubclassedLogin extends LoginWorkflow {
-    constructor(
-      opts: LoginWorkflowOpts,
-      users: UserService,
-      auth: AuthCredential,
-      authConfig: MoostAuthConfig,
-    ) {
-      super(opts, users, auth, authConfig);
+    constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
+      super(opts, users, auth);
     }
     protected override buildRecoveryUrl(username?: string): string {
       return overrides.buildRecoveryUrl

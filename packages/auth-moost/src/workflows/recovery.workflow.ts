@@ -46,8 +46,7 @@ import { useUrlParams } from "@wooksjs/event-http";
 import { Controller, Injectable } from "moost";
 
 import type { AuditEvent } from "../audit/index";
-import { MoostAuthConfig } from "../auth.config";
-import { buildLoginResponse } from "../auth.cookies";
+import { useAuth } from "../auth.composables";
 import type { DeliverPayload } from "./login.workflow";
 import {
   mergeRecoveryOpts,
@@ -55,7 +54,6 @@ import {
   type ResolvedRecoveryWorkflowOpts,
 } from "./recovery.workflow.options";
 import {
-  buildFinishedCookies,
   httpInputRequired,
   mintPin,
   requireUsername,
@@ -128,18 +126,11 @@ export class RecoveryWorkflow {
   protected readonly opts: ResolvedRecoveryWorkflowOpts;
   protected readonly users: UserService;
   protected readonly auth: AuthCredential;
-  protected readonly authConfig: MoostAuthConfig;
 
-  constructor(
-    opts: RecoveryWorkflowOpts,
-    users: UserService,
-    auth: AuthCredential,
-    authConfig: MoostAuthConfig,
-  ) {
+  constructor(opts: RecoveryWorkflowOpts, users: UserService, auth: AuthCredential) {
     this.opts = mergeRecoveryOpts(opts);
     this.users = users;
     this.auth = auth;
-    this.authConfig = authConfig;
     validateOpts(this.opts);
   }
 
@@ -608,10 +599,11 @@ export class RecoveryWorkflow {
     requireUsername(ctx);
     const issue = await this.auth.issue(ctx.username);
     ctx.tokensIssued = true;
+    const auth = useAuth();
     useWfFinished().set({
       type: "data",
-      value: buildLoginResponse(this.authConfig, ctx.username, issue),
-      cookies: buildFinishedCookies(this.authConfig, issue),
+      value: auth.buildLoginResponse(ctx.username, issue),
+      cookies: auth.buildFinishedCookies(issue),
     });
     return undefined;
   }

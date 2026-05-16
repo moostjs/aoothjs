@@ -39,7 +39,7 @@ import { Wooks } from "wooks";
 
 import { useAuth } from "../auth.composables";
 import { AuthController } from "../auth.controller";
-import { MoostAuthConfig, type MoostAuthConfigOptions } from "../auth.config";
+import type { AuthOptions } from "../auth.config";
 import { authGuardInterceptor } from "../auth.guard";
 
 // Module-level mutable role map consumed by `TestArbacUserProvider`. Updated
@@ -72,7 +72,7 @@ export interface PreparedControllerApp {
   ) => Promise<{ status: number; body: unknown; setCookies: string[]; response: Response | null }>;
 }
 
-export interface PrepareControllerOpts extends MoostAuthConfigOptions {
+export interface PrepareControllerOpts extends AuthOptions {
   /** Override the AuthCredential constructor options. */
   authOptions?: Partial<AuthCredentialOptions<MyClaims>>;
   /** UserService config (lockout threshold, password policies, etc). */
@@ -147,15 +147,12 @@ export async function prepareControllerApp(
     extraControllers,
     ...cfg
   } = opts;
-  const providers: Parameters<typeof createProvideRegistry> = [
-    [AuthCredential, () => auth],
-    [MoostAuthConfig, () => new MoostAuthConfig(cfg)],
-  ];
+  const providers: Parameters<typeof createProvideRegistry> = [[AuthCredential, () => auth]];
   if (!withoutUserService) {
     providers.push([UserService, () => users]);
   }
   moost.setProvideRegistry(createProvideRegistry(...providers));
-  moost.applyGlobalInterceptors(authGuardInterceptor);
+  moost.applyGlobalInterceptors(authGuardInterceptor(cfg));
 
   if (arbacOpts) {
     // Set the active user→roles map BEFORE the moost wiring runs. The

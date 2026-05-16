@@ -15,7 +15,6 @@ import {
   type InviteWorkflowOpts,
   LoginWorkflow,
   type LoginWorkflowOpts,
-  MoostAuthConfig,
   RecoveryWorkflow,
   type RecoveryWorkflowOpts,
   useAuth,
@@ -151,8 +150,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   @Injectable("FOR_EVENT")
   @Controller()
   class DemoLoginWorkflow extends LoginWorkflow {
-    constructor(users: UserService, authCred: AuthCredential, authConfig: MoostAuthConfig) {
-      super(demoLoginOpts, users, authCred, authConfig);
+    constructor(users: UserService, authCred: AuthCredential) {
+      super(demoLoginOpts, users, authCred);
     }
     protected override deliver(payload: DeliverPayload) {
       return forwardDeliver(payload);
@@ -177,8 +176,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   @Injectable("FOR_EVENT")
   @Controller()
   class DemoRecoveryWorkflow extends RecoveryWorkflow {
-    constructor(users: UserService, authCred: AuthCredential, authConfig: MoostAuthConfig) {
-      super(demoRecoveryOpts, users, authCred, authConfig);
+    constructor(users: UserService, authCred: AuthCredential) {
+      super(demoRecoveryOpts, users, authCred);
     }
     protected override deliver(payload: DeliverPayload) {
       return forwardDeliver(payload);
@@ -206,8 +205,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   @Injectable("FOR_EVENT")
   @Controller()
   class DemoInviteWorkflow extends InviteWorkflow {
-    constructor(users: UserService, authCred: AuthCredential, authConfig: MoostAuthConfig) {
-      super(demoInviteOpts, users, authCred, authConfig);
+    constructor(users: UserService, authCred: AuthCredential) {
+      super(demoInviteOpts, users, authCred);
     }
     protected override deliver(payload: DeliverPayload) {
       // Invite's default send path uses `outletEmail` (handled by the
@@ -241,7 +240,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   const authProviders: Parameters<typeof createProvideRegistry> = [
     [AuthCredential, () => aooth.authCredential],
     [UserService, () => aooth.userService],
-    [MoostAuthConfig, () => new MoostAuthConfig({ cookie: { secure: false } })],
     // `EmailSender` is still consumed by `createAuthEmailOutlet` (the
     // trigger-side mailer for magic-link outlets). The three auth workflows
     // themselves no longer consume DI for senders/audit/trust/rate-limit —
@@ -249,7 +247,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     ["EmailSender", () => emailSender],
   ];
   app.setProvideRegistry(createProvideRegistry(...authProviders));
-  app.applyGlobalInterceptors(authGuardInterceptor);
+  app.applyGlobalInterceptors(authGuardInterceptor({ cookie: { secure: false } }));
   app.applyGlobalInterceptors(formInputInterceptor());
   if (opts.authEndpointsEnabled !== false) {
     app.registerControllers(AuthController);
