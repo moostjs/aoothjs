@@ -35,6 +35,9 @@ export { defaultClock } from "./utils/clock";
 // Email transport interface (consumer provides the impl)
 export type { AuthEmailEvent, AuthEmailKind, EmailSender } from "./email";
 
+// SMS transport interface (consumer provides the impl)
+export type { AuthSmsEvent, AuthSmsKind, SmsSender } from "./sms";
+
 // Magic-link helpers (framework-agnostic — used by workflow integrations)
 export type { BuildMagicLinkUrl, MagicLinkKind } from "./magic-link";
 export { generateMagicLinkToken } from "./magic-link";

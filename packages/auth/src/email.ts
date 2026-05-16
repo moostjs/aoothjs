@@ -1,10 +1,18 @@
 /**
  * Discriminator for auth-related email events emitted by the workflow stack.
  *
- * `mfa.code` is reserved for v2 — v1 is TOTP only. The kind is part of the
- * public surface so transports can stub it ahead of time.
+ * `mfa.code` is reserved for v2 — v1 is TOTP only. `login.pincode`,
+ * `recovery.pincode`, `invite.pincode` and `notifyNewDevice` are added with
+ * BIG 3.1 (login workflow re-implementation).
  */
-export type AuthEmailKind = "recovery.magicLink" | "invite.magicLink" | "mfa.code";
+export type AuthEmailKind =
+  | "recovery.magicLink"
+  | "invite.magicLink"
+  | "mfa.code"
+  | "login.pincode"
+  | "recovery.pincode"
+  | "invite.pincode"
+  | "notifyNewDevice";
 
 /**
  * Structured event passed to `EmailSender.send()` from inside the auth
@@ -14,15 +22,15 @@ export type AuthEmailKind = "recovery.magicLink" | "invite.magicLink" | "mfa.cod
 export interface AuthEmailEvent {
   kind: AuthEmailKind;
   recipient: string;
-  /** Resume URL for magic-link events. Absent for `mfa.code`. */
+  /** Resume URL for magic-link events. Absent for code / notify events. */
   url?: string;
-  /** Numeric OTP for `mfa.code` events. Absent for magic links. */
+  /** Numeric OTP for code-bearing events. Absent for magic links / notify. */
   code?: string;
   /** Unix-ms timestamp at which the token / code expires. */
   expiresAt: number;
   /** Recipient's username when known (omitted for invites to new accounts). */
   username?: string;
-  /** Free-form payload (e.g. invite-side `roles: string[]`). */
+  /** Free-form payload (e.g. invite-side `roles: string[]`, notify-side `ip`). */
   metadata?: Record<string, unknown>;
 }
 

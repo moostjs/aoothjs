@@ -43,8 +43,24 @@ export declare class MfaCodeForm {
 }
 
 /**
+ * Atscript interface **BackupCodeForm**
+ * @see {@link ./forms.as:45:18}
+ */
+export declare class BackupCodeForm {
+  code: string
+  static __is_atscript_annotated_type: true
+  static type: TAtscriptTypeObject<keyof BackupCodeForm, BackupCodeForm>
+  static metadata: TMetadataMap<AtscriptMetadata>
+  static validator: (opts?: Partial<TValidatorOptions>) => Validator<typeof BackupCodeForm>
+  /** @deprecated JSON Schema support is disabled. Calling this method will throw a runtime error. To enable, set `jsonSchema: 'lazy'` or `jsonSchema: 'bundle'` in tsPlugin options, or add `@emit.jsonSchema` annotation to individual interfaces. */
+  static toJsonSchema: () => any
+  /** @deprecated Example Data support is disabled. To enable, set `exampleData: true` in tsPlugin options. */
+  static toExampleData?: () => any
+}
+
+/**
  * Atscript interface **EmailIdentifierForm**
- * @see {@link ./forms.as:40:18}
+ * @see {@link ./forms.as:59:18}
  */
 export declare class EmailIdentifierForm {
   email: string /* email */
@@ -60,7 +76,7 @@ export declare class EmailIdentifierForm {
 
 /**
  * Atscript interface **SetPasswordForm**
- * @see {@link ./forms.as:54:18}
+ * @see {@link ./forms.as:73:18}
  */
 export declare class SetPasswordForm {
   newPassword: string
@@ -77,7 +93,7 @@ export declare class SetPasswordForm {
 
 /**
  * Atscript interface **InviteForm**
- * @see {@link ./forms.as:75:18}
+ * @see {@link ./forms.as:94:18}
  */
 export declare class InviteForm {
   email: string /* email */
@@ -86,6 +102,186 @@ export declare class InviteForm {
   static type: TAtscriptTypeObject<keyof InviteForm, InviteForm>
   static metadata: TMetadataMap<AtscriptMetadata>
   static validator: (opts?: Partial<TValidatorOptions>) => Validator<typeof InviteForm>
+  /** @deprecated JSON Schema support is disabled. Calling this method will throw a runtime error. To enable, set `jsonSchema: 'lazy'` or `jsonSchema: 'bundle'` in tsPlugin options, or add `@emit.jsonSchema` annotation to individual interfaces. */
+  static toJsonSchema: () => any
+  /** @deprecated Example Data support is disabled. To enable, set `exampleData: true` in tsPlugin options. */
+  static toExampleData?: () => any
+}
+
+/**
+ * Atscript interface **Select2faForm**
+ * @see {@link ./forms.as:115:18}
+ */
+export declare class Select2faForm {
+  methodName: string
+  saveAsDefault?: boolean
+  static __is_atscript_annotated_type: true
+  static type: TAtscriptTypeObject<keyof Select2faForm, Select2faForm>
+  static metadata: TMetadataMap<AtscriptMetadata>
+  static validator: (opts?: Partial<TValidatorOptions>) => Validator<typeof Select2faForm>
+  /** @deprecated JSON Schema support is disabled. Calling this method will throw a runtime error. To enable, set `jsonSchema: 'lazy'` or `jsonSchema: 'bundle'` in tsPlugin options, or add `@emit.jsonSchema` annotation to individual interfaces. */
+  static toJsonSchema: () => any
+  /** @deprecated Example Data support is disabled. To enable, set `exampleData: true` in tsPlugin options. */
+  static toExampleData?: () => any
+}
+
+/**
+ * Atscript interface **PincodeForm**
+ * @see {@link ./forms.as:131:18}
+ */
+export declare class PincodeForm {
+  code: string
+  rememberDevice?: boolean
+  static __is_atscript_annotated_type: true
+  static type: TAtscriptTypeObject<keyof PincodeForm, PincodeForm>
+  static metadata: TMetadataMap<AtscriptMetadata>
+  static validator: (opts?: Partial<TValidatorOptions>) => Validator<typeof PincodeForm>
+  /** @deprecated JSON Schema support is disabled. Calling this method will throw a runtime error. To enable, set `jsonSchema: 'lazy'` or `jsonSchema: 'bundle'` in tsPlugin options, or add `@emit.jsonSchema` annotation to individual interfaces. */
+  static toJsonSchema: () => any
+  /** @deprecated Example Data support is disabled. To enable, set `exampleData: true` in tsPlugin options. */
+  static toExampleData?: () => any
+}
+
+/**
+ * Atscript interface **AskEmailForm**
+ * @see {@link ./forms.as:149:18}
+ */
+export declare class AskEmailForm {
+  email: string /* email */
+  static __is_atscript_annotated_type: true
+  static type: TAtscriptTypeObject<keyof AskEmailForm, AskEmailForm>
+  static metadata: TMetadataMap<AtscriptMetadata>
+  static validator: (opts?: Partial<TValidatorOptions>) => Validator<typeof AskEmailForm>
+  /** @deprecated JSON Schema support is disabled. Calling this method will throw a runtime error. To enable, set `jsonSchema: 'lazy'` or `jsonSchema: 'bundle'` in tsPlugin options, or add `@emit.jsonSchema` annotation to individual interfaces. */
+  static toJsonSchema: () => any
+  /** @deprecated Example Data support is disabled. To enable, set `exampleData: true` in tsPlugin options. */
+  static toExampleData?: () => any
+}
+
+/**
+ * Atscript interface **AskPhoneForm**
+ * @see {@link ./forms.as:161:18}
+ */
+export declare class AskPhoneForm {
+  phone: string
+  static __is_atscript_annotated_type: true
+  static type: TAtscriptTypeObject<keyof AskPhoneForm, AskPhoneForm>
+  static metadata: TMetadataMap<AtscriptMetadata>
+  static validator: (opts?: Partial<TValidatorOptions>) => Validator<typeof AskPhoneForm>
+  /** @deprecated JSON Schema support is disabled. Calling this method will throw a runtime error. To enable, set `jsonSchema: 'lazy'` or `jsonSchema: 'bundle'` in tsPlugin options, or add `@emit.jsonSchema` annotation to individual interfaces. */
+  static toJsonSchema: () => any
+  /** @deprecated Example Data support is disabled. To enable, set `exampleData: true` in tsPlugin options. */
+  static toExampleData?: () => any
+}
+
+/**
+ * Atscript interface **TermsAcceptForm**
+ * @see {@link ./forms.as:172:18}
+ */
+export declare class TermsAcceptForm {
+  acceptedVersion: string
+  accepted: boolean
+  static __is_atscript_annotated_type: true
+  static type: TAtscriptTypeObject<keyof TermsAcceptForm, TermsAcceptForm>
+  static metadata: TMetadataMap<AtscriptMetadata>
+  static validator: (opts?: Partial<TValidatorOptions>) => Validator<typeof TermsAcceptForm>
+  /** @deprecated JSON Schema support is disabled. Calling this method will throw a runtime error. To enable, set `jsonSchema: 'lazy'` or `jsonSchema: 'bundle'` in tsPlugin options, or add `@emit.jsonSchema` annotation to individual interfaces. */
+  static toJsonSchema: () => any
+  /** @deprecated Example Data support is disabled. To enable, set `exampleData: true` in tsPlugin options. */
+  static toExampleData?: () => any
+}
+
+/**
+ * Atscript interface **ProfileCompleteForm**
+ * @see {@link ./forms.as:188:18}
+ */
+export declare class ProfileCompleteForm {
+  firstName?: string
+  lastName?: string
+  static __is_atscript_annotated_type: true
+  static type: TAtscriptTypeObject<keyof ProfileCompleteForm, ProfileCompleteForm>
+  static metadata: TMetadataMap<AtscriptMetadata>
+  static validator: (opts?: Partial<TValidatorOptions>) => Validator<typeof ProfileCompleteForm>
+  /** @deprecated JSON Schema support is disabled. Calling this method will throw a runtime error. To enable, set `jsonSchema: 'lazy'` or `jsonSchema: 'bundle'` in tsPlugin options, or add `@emit.jsonSchema` annotation to individual interfaces. */
+  static toJsonSchema: () => any
+  /** @deprecated Example Data support is disabled. To enable, set `exampleData: true` in tsPlugin options. */
+  static toExampleData?: () => any
+}
+
+/**
+ * Atscript interface **ConsentMarketingForm**
+ * @see {@link ./forms.as:201:18}
+ */
+export declare class ConsentMarketingForm {
+  optIn?: boolean
+  static __is_atscript_annotated_type: true
+  static type: TAtscriptTypeObject<keyof ConsentMarketingForm, ConsentMarketingForm>
+  static metadata: TMetadataMap<AtscriptMetadata>
+  static validator: (opts?: Partial<TValidatorOptions>) => Validator<typeof ConsentMarketingForm>
+  /** @deprecated JSON Schema support is disabled. Calling this method will throw a runtime error. To enable, set `jsonSchema: 'lazy'` or `jsonSchema: 'bundle'` in tsPlugin options, or add `@emit.jsonSchema` annotation to individual interfaces. */
+  static toJsonSchema: () => any
+  /** @deprecated Example Data support is disabled. To enable, set `exampleData: true` in tsPlugin options. */
+  static toExampleData?: () => any
+}
+
+/**
+ * Atscript interface **TenantSelectForm**
+ * @see {@link ./forms.as:210:18}
+ */
+export declare class TenantSelectForm {
+  tenantId: string
+  static __is_atscript_annotated_type: true
+  static type: TAtscriptTypeObject<keyof TenantSelectForm, TenantSelectForm>
+  static metadata: TMetadataMap<AtscriptMetadata>
+  static validator: (opts?: Partial<TValidatorOptions>) => Validator<typeof TenantSelectForm>
+  /** @deprecated JSON Schema support is disabled. Calling this method will throw a runtime error. To enable, set `jsonSchema: 'lazy'` or `jsonSchema: 'bundle'` in tsPlugin options, or add `@emit.jsonSchema` annotation to individual interfaces. */
+  static toJsonSchema: () => any
+  /** @deprecated Example Data support is disabled. To enable, set `exampleData: true` in tsPlugin options. */
+  static toExampleData?: () => any
+}
+
+/**
+ * Atscript interface **PersonaSelectForm**
+ * @see {@link ./forms.as:220:18}
+ */
+export declare class PersonaSelectForm {
+  personaId: string
+  static __is_atscript_annotated_type: true
+  static type: TAtscriptTypeObject<keyof PersonaSelectForm, PersonaSelectForm>
+  static metadata: TMetadataMap<AtscriptMetadata>
+  static validator: (opts?: Partial<TValidatorOptions>) => Validator<typeof PersonaSelectForm>
+  /** @deprecated JSON Schema support is disabled. Calling this method will throw a runtime error. To enable, set `jsonSchema: 'lazy'` or `jsonSchema: 'bundle'` in tsPlugin options, or add `@emit.jsonSchema` annotation to individual interfaces. */
+  static toJsonSchema: () => any
+  /** @deprecated Example Data support is disabled. To enable, set `exampleData: true` in tsPlugin options. */
+  static toExampleData?: () => any
+}
+
+/**
+ * Atscript interface **ConcurrencyLimitForm**
+ * @see {@link ./forms.as:231:18}
+ */
+export declare class ConcurrencyLimitForm {
+  action: string
+  static __is_atscript_annotated_type: true
+  static type: TAtscriptTypeObject<keyof ConcurrencyLimitForm, ConcurrencyLimitForm>
+  static metadata: TMetadataMap<AtscriptMetadata>
+  static validator: (opts?: Partial<TValidatorOptions>) => Validator<typeof ConcurrencyLimitForm>
+  /** @deprecated JSON Schema support is disabled. Calling this method will throw a runtime error. To enable, set `jsonSchema: 'lazy'` or `jsonSchema: 'bundle'` in tsPlugin options, or add `@emit.jsonSchema` annotation to individual interfaces. */
+  static toJsonSchema: () => any
+  /** @deprecated Example Data support is disabled. To enable, set `exampleData: true` in tsPlugin options. */
+  static toExampleData?: () => any
+}
+
+/**
+ * Atscript interface **MagicLinkRequestForm**
+ * @see {@link ./forms.as:244:18}
+ */
+export declare class MagicLinkRequestForm {
+  identifier: string
+  static __is_atscript_annotated_type: true
+  static type: TAtscriptTypeObject<keyof MagicLinkRequestForm, MagicLinkRequestForm>
+  static metadata: TMetadataMap<AtscriptMetadata>
+  static validator: (opts?: Partial<TValidatorOptions>) => Validator<typeof MagicLinkRequestForm>
   /** @deprecated JSON Schema support is disabled. Calling this method will throw a runtime error. To enable, set `jsonSchema: 'lazy'` or `jsonSchema: 'bundle'` in tsPlugin options, or add `@emit.jsonSchema` annotation to individual interfaces. */
   static toJsonSchema: () => any
   /** @deprecated Example Data support is disabled. To enable, set `exampleData: true` in tsPlugin options. */

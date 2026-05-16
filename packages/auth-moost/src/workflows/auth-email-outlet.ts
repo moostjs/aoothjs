@@ -42,6 +42,10 @@
 import type { AuthEmailEvent, AuthEmailKind, BuildMagicLinkUrl, EmailSender } from "@aoothjs/auth";
 import { createEmailOutlet, type WfOutlet } from "@moostjs/event-wf";
 
+// `login.pincode` / `recovery.pincode` / `invite.pincode` / `notifyNewDevice`
+// are sent directly via `EmailSender.send(...)` from workflow steps, NOT
+// through the magic-link outlet — they do not need a resume URL. Only the
+// magic-link kinds round-trip through this outlet.
 const KNOWN_KINDS = new Set<string>(["recovery.magicLink", "invite.magicLink", "mfa.code"]);
 
 function isAuthEmailKind(value: string): value is AuthEmailKind {

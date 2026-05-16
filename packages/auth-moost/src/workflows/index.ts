@@ -1,5 +1,12 @@
-export { LoginWorkflow, type LoginWfCtx } from "./login.workflow";
-export { DEFAULT_MFA_CODE_TTL_MS, LoginWorkflowOptions } from "./login.workflow.options";
+export { LoginWorkflow, type LoginWfCtx, type MfaSummary } from "./login.workflow";
+export {
+  DEFAULT_MFA_CODE_TTL_MS,
+  LoginWorkflowOptions,
+  type LoginRedirect,
+  type MfaTransport,
+  type SsoProvider,
+  type ConcurrencyLimitOptions,
+} from "./login.workflow.options";
 export { RecoveryWorkflow, type RecoveryWfCtx } from "./recovery.workflow";
 export {
   DEFAULT_RECOVERY_TOKEN_TTL_MS,

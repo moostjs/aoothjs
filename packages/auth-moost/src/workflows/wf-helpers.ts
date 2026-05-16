@@ -93,18 +93,22 @@ export function buildFinishedCookies(
  * Translate password-mutation errors from `UserService.setPassword` /
  * `createUser` into the matching HTTP status. Mirrors `translatePasswordError`
  * in `auth.controller.ts`; kept here so workflow steps don't import from the
- * controller module.
+ * controller module. All `UserAuthError` shapes from a set-password call are
+ * client-side (policy / history / mismatch), so they collapse to 400.
  */
 export function translatePasswordSetError(err: unknown): never {
-  if (err instanceof UserAuthError) {
-    switch (err.type) {
-      case "POLICY_VIOLATION":
-      case "PASSWORD_IN_HISTORY":
-      case "PASSWORDS_MISMATCH":
-        throw new HttpError(400, err.message);
-      default:
-        throw new HttpError(400, err.message);
-    }
-  }
+  if (err instanceof UserAuthError) throw new HttpError(400, err.message);
   throw err;
+}
+
+/**
+ * Asserts `ctx.username` is populated. Workflow steps reach for `ctx.username`
+ * after `credentials`/`init` has set it; losing it indicates a workflow-state
+ * bug, not a client error. Throws `HttpError(500)` on miss; otherwise narrows
+ * the field to `string` for the caller via `asserts`.
+ */
+export function requireUsername<T extends { username?: string }>(
+  ctx: T,
+): asserts ctx is T & { username: string } {
+  if (!ctx.username) throw new HttpError(500, "Workflow state corrupted: missing username");
 }

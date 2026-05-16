@@ -5,7 +5,7 @@ import {
   MoostArbac,
 } from "@aoothjs/arbac-moost";
 import { AtscriptArbacUserProvider } from "@aoothjs/arbac-moost/atscript";
-import { AuthCredential, type EmailSender } from "@aoothjs/auth";
+import { AuthCredential, type EmailSender, type SmsSender } from "@aoothjs/auth";
 import {
   type AuthEmailOutletDeps,
   AuthController,
@@ -104,7 +104,29 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     [AuthCredential, () => aooth.authCredential],
     [UserService, () => aooth.userService],
     [MoostAuthConfig, () => new MoostAuthConfig({ cookie: { secure: false } })],
-    [LoginWorkflowOptions, () => new LoginWorkflowOptions()],
+    [
+      LoginWorkflowOptions,
+      () =>
+        new LoginWorkflowOptions({
+          // Representative demo subset — no SMS gateway in the demo, so we
+          // strip 'sms' from the default mfaTransports list (the workflow's
+          // boot-time validator would otherwise demand a SmsSender).
+          mfaTransports: ["email", "totp"],
+          forgotPasswordAction: true,
+          passwordInitialGuard: true,
+        }),
+    ],
+    ["EmailSender", () => emailSender],
+    // Console-stub SmsSender — kept so DI-resolves succeed if a consumer
+    // flips on 'sms' transport at runtime; defaults strip 'sms' above.
+    [
+      "SmsSender",
+      (): SmsSender => ({
+        async send(event) {
+          console.log("[demo SMS]", event.kind, event.recipient, event.code);
+        },
+      }),
+    ],
     [
       RecoveryWorkflowOptions,
       () =>

@@ -32,9 +32,12 @@ export {
 export type {
   AuthEmailEvent,
   AuthEmailKind,
+  AuthSmsEvent,
+  AuthSmsKind,
   BuildMagicLinkUrl,
   EmailSender,
   MagicLinkKind,
+  SmsSender,
 } from "@aoothjs/auth";
 export { generateMagicLinkToken } from "@aoothjs/auth";
 export {
@@ -47,6 +50,11 @@ export {
   InviteWorkflowOptions,
   LoginWorkflow,
   type LoginWfCtx,
+  type LoginRedirect,
+  type MfaSummary,
+  type MfaTransport,
+  type SsoProvider,
+  type ConcurrencyLimitOptions,
   LoginWorkflowOptions,
   parseInviteRoles,
   RecoveryWorkflow,
@@ -54,3 +62,16 @@ export {
   RecoveryWorkflowOptions,
 } from "./workflows/index";
 export { type AuthEmailOutletDeps, createAuthEmailOutlet } from "./workflows/auth-email-outlet";
+export {
+  type DeviceTrustStore,
+  DeviceTrustStoreMemory,
+  type DeviceTrustRecord,
+} from "./device-trust/index";
+export { type AuditEmitter, type AuditEvent, NoopAuditEmitter } from "./audit/index";
+
+// DI tokens for optional workflow deps. `SmsSender` and `DeviceTrustStore`
+// are TS interfaces (no runtime constructor) so consumers register them
+// against these string tokens: `[SMS_SENDER_TOKEN, () => mySender]`.
+export const SMS_SENDER_TOKEN = "SmsSender";
+export const DEVICE_TRUST_STORE_TOKEN = "DeviceTrustStore";
+export const AUDIT_EMITTER_TOKEN = "AuditEmitter";

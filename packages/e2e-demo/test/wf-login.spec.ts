@@ -81,6 +81,82 @@ describe("WF-LOGIN — auth.login workflow", () => {
     expect(typeof issued.accessToken).toBe("string");
   });
 
+  // ── BIG 3.1 coverage (subset wired in the demo app) ──────────────────────
+  // The demo wires LoginWorkflowOptions({ mfaTransports: ['email','totp'],
+  // forgotPasswordAction: true, passwordInitialGuard: true }). Tests below
+  // exercise the two demo-only flags. Other LoginWorkflowOptions surfaces
+  // (deviceTrust, notifyNewDevice, riskStepUp, …) are covered in unit tests
+  // in `@aoothjs/auth-moost` per WF_LOGIN.md §"Tasks" item #6.
+
+  it("WF-LOGIN-04 — forgotPassword alt-action redirects to /recover", async () => {
+    // Spec: `useWfFinished({type:'redirect', value: opts.recoveryUrl + '?username=' + typed})`.
+    // Use `redirect: 'manual'` so the assertion sees the 302 response rather
+    // than the redirect target (which would be 404/401 in the demo app).
+    const start = await app.triggerWf("public", { wfid: "auth.login" });
+    const startBody = await readWfPause(start);
+    const r = await globalThis.fetch(`${app.baseUrl}/wf/public`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        wfid: "auth.login",
+        wfs: startBody.wfs,
+        input: { username: "alice@demo.test", action: "forgotPassword" },
+      }),
+      redirect: "manual",
+    });
+    expect(r.status).toBe(302);
+    expect(r.headers.get("location")).toMatch(/\/recover\?username=/);
+  });
+
+  it("WF-LOGIN-05 — passwordInitialGuard: user with password.isInitial=true must change password before token issue", async () => {
+    // The seeded users all have isInitial=false. Directly flip the flag via
+    // the @atscript/db `updateMany` API (the only path that knows the
+    // DemoUser schema's nested `password.isInitial` set semantics).
+    // Use t1_alice (no MFA enrolled) so this test doesn't intersect MFA.
+    const alice = app.fixtures.users.t1_alice;
+    const usersTbl = app.appHandle.appDb.tables.users as unknown as {
+      updateMany: (
+        filter: Record<string, unknown>,
+        patch: Record<string, unknown>,
+      ) => Promise<unknown>;
+    };
+    await usersTbl.updateMany({ username: alice.username }, {
+      password: { isInitial: true },
+    } as never);
+
+    const start = await app.triggerWf("public", { wfid: "auth.login" });
+    const startBody = await readWfPause(start);
+    const cred = await app.triggerWf("public", {
+      wfid: "auth.login",
+      wfs: startBody.wfs,
+      input: { username: alice.username, password: alice.password },
+    });
+    expectOk(cred);
+    const credBody = await readWfPause(cred);
+    // Paused with the SetPasswordForm — payload contains `newPassword` field.
+    expect(credBody.inputRequired).toBeTruthy();
+    const payloadStr = JSON.stringify(credBody.inputRequired);
+    expect(payloadStr).toMatch(/newPassword/);
+    expect(payloadStr).toMatch(/confirmPassword/);
+
+    // Submit a fresh password.
+    const setResp = await app.triggerWf("public", {
+      wfid: "auth.login",
+      wfs: credBody.wfs,
+      input: { newPassword: "FreshPass99!", confirmPassword: "FreshPass99!" },
+    });
+    expectOk(setResp);
+    const issued = (await setResp.json()) as { userId?: string; accessToken?: string };
+    expect(issued.userId).toBe(alice.username);
+    expect(typeof issued.accessToken).toBe("string");
+
+    // After the workflow succeeded, alice's password is `FreshPass99!` —
+    // patch `alice.password` on the in-memory fixture so any LATER test in
+    // the suite that uses it still authenticates. We can't reset to the seed
+    // password because UserService history forbids reuse.
+    (alice as { password: string }).password = "FreshPass99!";
+  });
+
   it("WF-LOGIN-03 — MFA bypass attempt with empty/skip input still requires a code", async () => {
     const grace = app.fixtures.users.t1_grace;
     const start = await app.triggerWf("public", { wfid: "auth.login" });
