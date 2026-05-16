@@ -19,6 +19,7 @@ import {
   Arbac,
   arbacAuthorizeInterceptor,
   ArbacUserProvider,
+  ArbacUserProviderToken,
   MoostArbac,
   type TArbacRole,
 } from "@aoothjs/arbac-moost";
@@ -165,7 +166,9 @@ export async function prepareControllerApp(
     // to keep a per-test role map under the moost@0.6.x + infact@0.4.x
     // singleton model — see comment on `TestArbacUserProvider` below.
     activeUserRoles = arbacOpts.userRoles;
-    moost.setReplaceRegistry(createReplaceRegistry([ArbacUserProvider, TestArbacUserProvider]));
+    moost.setReplaceRegistry(
+      createReplaceRegistry([ArbacUserProviderToken, TestArbacUserProvider]),
+    );
     moost.applyGlobalInterceptors(arbacAuthorizeInterceptor);
   }
 

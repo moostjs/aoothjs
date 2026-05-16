@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 
-export type MagicLinkKind = "recovery" | "invite";
+import type { AuthEmailKind } from "./email";
 
 /**
  * Consumer-supplied URL builder. The consumer chooses route, query
@@ -9,7 +9,7 @@ export type MagicLinkKind = "recovery" | "invite";
  * Recommended convention: include the token as `?wfs=<token>` so the
  * frontend can mount `<AsWfForm initialToken="...">` to resume the flow.
  */
-export type BuildMagicLinkUrl = (kind: MagicLinkKind, token: string) => string;
+export type BuildMagicLinkUrl = (kind: AuthEmailKind, token: string) => string;
 
 /**
  * 32 bytes of CSPRNG entropy (256 bits) encoded as base64url — 43 chars,

@@ -114,7 +114,7 @@ export function createAooth({ tables, env }: AppAuthOptions): AppAuth {
   });
 
   const buildMagicLinkUrl: BuildMagicLinkUrl = (kind, token) => {
-    const segment = kind === "recovery" ? "recover" : "accept-invite";
+    const segment = kind === "recovery.magicLink" ? "recover" : "accept-invite";
     return `${env.FRONTEND_URL}/${segment}?wfs=${token}`;
   };
 

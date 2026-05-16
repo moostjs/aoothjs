@@ -36,14 +36,10 @@ export type {
   AuthSmsKind,
   BuildMagicLinkUrl,
   EmailSender,
-  MagicLinkKind,
   SmsSender,
 } from "@aoothjs/auth";
 export { generateMagicLinkToken } from "@aoothjs/auth";
 export {
-  DEFAULT_INVITE_TOKEN_TTL_MS,
-  DEFAULT_MFA_CODE_TTL_MS,
-  DEFAULT_RECOVERY_TOKEN_TTL_MS,
   type DeliverEmail,
   type DeliverPayload,
   type DeliverSms,
@@ -81,17 +77,12 @@ export {
   DeviceTrustStoreMemory,
   type DeviceTrustRecord,
 } from "./device-trust/index";
-export { type AuditEmitter, type AuditEvent, NoopAuditEmitter } from "./audit/index";
-export {
-  type WorkflowRateLimitConsumeResult,
-  type WorkflowRateLimitStore,
-  WorkflowRateLimitStoreMemory,
-} from "./rate-limit/index";
+export { type AuditEmitter, type AuditEvent } from "./audit/index";
 
 // Note: the DI-token exports (`SMS_SENDER_TOKEN`, `AUDIT_EMITTER_TOKEN`,
 // `DEVICE_TRUST_STORE_TOKEN`, `WORKFLOW_RATE_LIMIT_STORE_TOKEN`) were dropped
 // in Phase 4 of the workflow OOP-reshape. All three auth workflows now use
 // `protected` method overrides instead of constructor-injected side-effect
-// deps, so no consumer needs the tokens. The `WorkflowRateLimitStore` /
-// `DeviceTrustStore` / `EmailSender` / `SmsSender` / `AuditEmitter` types
-// still ship for consumer overrides.
+// deps, so no consumer needs the tokens. The `DeviceTrustStore` /
+// `EmailSender` / `SmsSender` / `AuditEmitter` types still ship for consumer
+// overrides.

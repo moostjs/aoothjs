@@ -39,5 +39,5 @@ export type { AuthEmailEvent, AuthEmailKind, EmailSender } from "./email";
 export type { AuthSmsEvent, AuthSmsKind, SmsSender } from "./sms";
 
 // Magic-link helpers (framework-agnostic — used by workflow integrations)
-export type { BuildMagicLinkUrl, MagicLinkKind } from "./magic-link";
+export type { BuildMagicLinkUrl } from "./magic-link";
 export { generateMagicLinkToken } from "./magic-link";

@@ -21,7 +21,7 @@ async function main() {
   const aooth = createAooth({ tables: appDb.tables, env: ENV });
   // biome-ignore lint/suspicious/noConsole: smoke probe
   console.log(
-    `[probe] aooth ready: authCredential=${aooth.authCredential.constructor.name}, userService=${aooth.userService.constructor.name}, magicLinkSample=${aooth.buildMagicLinkUrl("recovery", "abc")}`,
+    `[probe] aooth ready: authCredential=${aooth.authCredential.constructor.name}, userService=${aooth.userService.constructor.name}, magicLinkSample=${aooth.buildMagicLinkUrl("recovery.magicLink", "abc")}`,
   );
 
   const consoleSender = new ConsoleEmailSender();

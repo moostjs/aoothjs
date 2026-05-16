@@ -220,8 +220,8 @@ describe("LoginWorkflow edge cases — JSON-safety of opts snapshot", () => {
   });
 });
 
-describe("LoginWorkflow edge cases — NoopAuditEmitter fallback", () => {
-  it("auditLogin true + NO AuditEmitter registered → workflow still completes (no crash)", async () => {
+describe("LoginWorkflow edge cases — silent-audit fallback", () => {
+  it("auditLogin true + no-op AuditEmitter → workflow still completes (no crash)", async () => {
     // The helper auto-wires a capture emitter when `finalize.auditLogin` is
     // truthy — provide an explicit no-op so we're testing the FALLBACK path
     // when the registered emitter does nothing (proxies the absence case).

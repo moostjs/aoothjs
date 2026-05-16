@@ -41,7 +41,7 @@ import {
 } from "moost";
 import { Wooks } from "wooks";
 
-import type { BuildMagicLinkUrl, EmailSender, SmsSender } from "@aoothjs/auth";
+import type { AuthEmailKind, BuildMagicLinkUrl, EmailSender, SmsSender } from "@aoothjs/auth";
 
 import { type AuditEmitter, type AuditEvent } from "../audit/index";
 import { MoostAuthConfig } from "../auth.config";
@@ -54,10 +54,10 @@ import {
   DeviceTrustStoreMemory,
 } from "../device-trust/index";
 import { createAuthEmailOutlet } from "../workflows/auth-email-outlet";
+import { DEFAULT_INVITE_TOKEN_TTL_MS } from "../workflows/invite.workflow.options";
 import type { DeliverPayload } from "../workflows/login.workflow";
+import { DEFAULT_RECOVERY_TOKEN_TTL_MS } from "../workflows/recovery.workflow.options";
 import {
-  DEFAULT_INVITE_TOKEN_TTL_MS,
-  DEFAULT_RECOVERY_TOKEN_TTL_MS,
   type DuplicateAction,
   InviteWorkflow,
   type InviteWorkflowOpts,
@@ -191,7 +191,7 @@ export interface PrepareWfOpts {
   /**
    * Inject an `AuditEmitter`. The captured-events array is also returned on
    * `app.auditEvents` for assertions. When omitted, NO emitter is registered
-   * (workflows fall back to `NoopAuditEmitter`).
+   * (workflows skip emission when no `AuditEmitter` is supplied).
    */
   auditEmitter?: AuditEmitter;
   /**
@@ -432,7 +432,12 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
 
   // Mount a single trigger endpoint that calls `wf.handleOutlet` with our
   // strategy + outlets. Consumers do the same in their app.
-  const emailOutletDeps = { emailSender, buildMagicLinkUrl, recoveryTokenTtlMs };
+  const emailOutletDeps = {
+    emailSender,
+    buildMagicLinkUrl,
+    magicLinkTtlMs: (kind: AuthEmailKind) =>
+      kind === "invite.magicLink" ? inviteTokenTtlMs : recoveryTokenTtlMs,
+  };
 
   @Controller("wf")
   @Public()

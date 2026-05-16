@@ -1,7 +1,7 @@
 import {
   arbacAuthorizeInterceptor,
   type ArbacDbScope,
-  ArbacUserProvider,
+  ArbacUserProviderToken,
   MoostArbac,
 } from "@aoothjs/arbac-moost";
 import { AtscriptArbacUserProvider } from "@aoothjs/arbac-moost/atscript";
@@ -291,7 +291,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       return useAuth().getUserId();
     }
   }
-  app.setReplaceRegistry(createReplaceRegistry([ArbacUserProvider, DemoArbacUserProvider]));
+  app.setReplaceRegistry(createReplaceRegistry([ArbacUserProviderToken, DemoArbacUserProvider]));
 
   app.applyGlobalInterceptors(arbacAuthorizeInterceptor);
 
@@ -299,7 +299,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     ...buildAppControllers(appDb, wfStateStore, {
       emailSender,
       buildMagicLinkUrl: aooth.buildMagicLinkUrl,
-      recoveryTokenTtlMs: env.RECOVERY_TTL_MS,
+      magicLinkTtlMs: (kind) =>
+        kind === "invite.magicLink" ? env.INVITE_TTL_MS : env.RECOVERY_TTL_MS,
     }),
   );
 

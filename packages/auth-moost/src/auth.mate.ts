@@ -13,7 +13,7 @@ declare module "moost" {
   interface TMoostMetadata extends TAuthMeta {}
 }
 
-export type AuthMate = Mate<
+type AuthMate = Mate<
   TMoostMetadata & { params: TMateParamMeta[] },
   TMoostMetadata & { params: TMateParamMeta[] }
 >;

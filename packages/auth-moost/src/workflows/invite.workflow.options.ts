@@ -7,9 +7,8 @@
  * via subclassing. Defaults are applied by `mergeInviteOpts(opts)` so step
  * bodies + schema conditions can read `ctx.opts.<group>.<flag>` without `?.`.
  *
- * Rate-limit was dropped from the workflow surface entirely — consumers who
- * want a cap wire it themselves at the trigger / HTTP layer (the standalone
- * `WorkflowRateLimitStore` interface + memory impl still ship for that).
+ * Rate limiting will be addressed systematically in a later pass — for now
+ * consumers who want a cap wire it themselves at the trigger / HTTP layer.
  * Admin authorization is the trigger route's responsibility (ARBAC).
  */
 import type { UserCredentials } from "@aoothjs/user";

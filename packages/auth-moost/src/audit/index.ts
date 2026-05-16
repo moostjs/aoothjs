@@ -3,9 +3,9 @@
  * recovery / invite audit steps) to fan out login.success and similar events
  * to consumer-supplied sinks (DB table, log file, Kafka topic).
  *
- * Aoothjs ships no concrete sink — register your own via
- * `setProvideRegistry([AuditEmitter, () => myEmitter])`. When not registered,
- * workflows inject `undefined` and skip emission silently.
+ * Aoothjs ships no concrete sink. Workflow subclasses override the
+ * `audit(event)` protected method to wire their preferred sink; when not
+ * overridden the workflow's default implementation is a no-op.
  */
 
 export interface AuditEvent {
@@ -25,10 +25,3 @@ export interface AuditEvent {
 export interface AuditEmitter {
   emit(event: AuditEvent): Promise<void> | void;
 }
-
-/** No-op `AuditEmitter` used when the consumer did not register one. */
-export const NoopAuditEmitter: AuditEmitter = {
-  emit() {
-    /* no-op */
-  },
-};
