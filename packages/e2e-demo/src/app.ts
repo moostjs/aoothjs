@@ -153,7 +153,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       super(DemoUser, arbacUserTable);
     }
     override getUserId(): string {
-      return useAuth().getCurrentUserId();
+      return useAuth().getUserId();
     }
   }
   app.setReplaceRegistry(createReplaceRegistry([ArbacUserProvider, DemoArbacUserProvider]));

@@ -8,9 +8,9 @@ import { HttpError } from "@wooksjs/event-http";
 const authContextKey = key<AuthContext | null>("auth.context");
 
 export interface AuthBindings {
-  getCurrentUser<TClaims extends object = Record<string, unknown>>(): AuthContext<TClaims> | null;
+  getAuthContext<TClaims extends object = Record<string, unknown>>(): AuthContext<TClaims> | null;
   /** @throws `HttpError(401)` if no `AuthContext` is present in the event. */
-  getCurrentUserId(): string;
+  getUserId(): string;
   isAuthenticated(): boolean;
 }
 
@@ -21,7 +21,7 @@ export interface AuthBindings {
  * one closure. Reads from the slot populated by `authGuardInterceptor`.
  */
 export const useAuth = defineWook((ctx: EventContext): AuthBindings => {
-  const getCurrentUser = <
+  const getAuthContext = <
     TClaims extends object = Record<string, unknown>,
   >(): AuthContext<TClaims> | null => {
     if (!ctx.has(authContextKey)) return null;
@@ -30,15 +30,15 @@ export const useAuth = defineWook((ctx: EventContext): AuthBindings => {
     return ctx.get(authContextKey) as AuthContext<TClaims> | null;
   };
 
-  const getCurrentUserId = (): string => {
-    const user = getCurrentUser();
-    if (!user) throw new HttpError(401, "Not authenticated");
-    return user.userId;
+  const getUserId = (): string => {
+    const auth = getAuthContext();
+    if (!auth) throw new HttpError(401, "Not authenticated");
+    return auth.userId;
   };
 
-  const isAuthenticated = (): boolean => getCurrentUser() !== null;
+  const isAuthenticated = (): boolean => getAuthContext() !== null;
 
-  return { getCurrentUser, getCurrentUserId, isAuthenticated };
+  return { getAuthContext, getUserId, isAuthenticated };
 });
 
 /** Internal: only `authGuardInterceptor` writes the slot. */

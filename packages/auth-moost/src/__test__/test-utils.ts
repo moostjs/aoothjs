@@ -134,7 +134,7 @@ export async function runGuardForHandler(
       const auth = useAuth(ctx);
       return {
         ok: true,
-        authContext: auth.getCurrentUser<MyClaims>(),
+        authContext: auth.getAuthContext<MyClaims>(),
         isAuthenticated: auth.isAuthenticated(),
       };
     } catch (err) {

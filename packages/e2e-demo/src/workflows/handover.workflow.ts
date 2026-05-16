@@ -129,7 +129,7 @@ export function makeHandoverWorkflow(tables: HandoverWfTables): HandoverWorkflow
         return reqInput(HandoverTargetForm, ctx, { projectId: "Project not found" });
       }
 
-      const currentUser = useAuth().getCurrentUserId();
+      const currentUser = useAuth().getUserId();
       const isOwner = project.ownerUsername === currentUser;
       if (!isOwner) {
         const { allowed } = await useArbac().evaluate({
@@ -194,7 +194,7 @@ export function makeHandoverWorkflow(tables: HandoverWfTables): HandoverWorkflow
       } as never);
       await auditTable.insertOne({
         tenantId: ctx.tenantId ?? "",
-        actor: useAuth().getCurrentUserId(),
+        actor: useAuth().getUserId(),
         action: "handover",
         resource: "projects",
         recordId: ctx.projectId,

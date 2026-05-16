@@ -553,14 +553,14 @@ export class HealthController {
 
   @Get("protected")
   protected(): { user: string } {
-    return { user: useAuth().getCurrentUserId() };
+    return { user: useAuth().getUserId() };
   }
 
   @Get("admin-only")
   @ArbacResource("health")
   @ArbacAction("admin")
   adminOnly(): { ok: true; user: string } {
-    return { ok: true, user: useAuth().getCurrentUserId() };
+    return { ok: true, user: useAuth().getUserId() };
   }
 }
 ```

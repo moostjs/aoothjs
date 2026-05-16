@@ -22,7 +22,7 @@ import { extractAccessToken } from "./auth.token";
 
 // CRITICAL ASSUMPTION: `AuthContext.userId === username`. Login issues the
 // credential with `loginResult.user.username` as its userId, so the password-
-// change handler reads it back through `useAuth().getCurrentUserId()`.
+// change handler reads it back through `useAuth().getUserId()`.
 // Consumers who map userId → an opaque id (UUID, internal pk) must disable
 // the auto-registered controller (`endpoints: false`) and re-register a
 // subclassed one with the correct lookup — see README.
@@ -216,13 +216,13 @@ export class AuthController {
   @Get("status")
   @ArbacAction("public.status")
   status(): AuthContext {
-    const user = useAuth().getCurrentUser();
-    if (!user) {
+    const auth = useAuth().getAuthContext();
+    if (!auth) {
       // The global guard normally throws 401 before we reach here; this is a
       // defence-in-depth in case the principal is somehow unset.
       throw new HttpError(401, "Not authenticated");
     }
-    return user;
+    return auth;
   }
 
   @Post("password")
@@ -232,7 +232,7 @@ export class AuthController {
       throw new HttpError(400, "currentPassword and newPassword are required");
     }
     const { auth, config, users } = await resolveDepsWithUsers();
-    const username = useAuth().getCurrentUserId();
+    const username = useAuth().getUserId();
 
     let valid: boolean;
     try {

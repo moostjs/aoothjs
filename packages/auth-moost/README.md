@@ -100,6 +100,13 @@ interface AuthContext<TClaims extends object = object> {
 }
 ```
 
+`AuthContext` is **credential context**, not a user profile. It carries the
+authenticated `userId` plus what the credential layer knows about the active
+session (method, credential id, expiry, optional caller-shaped claims). This
+library deliberately does not own a user profile type — there is no `@User()`
+decorator, and `useAuth()` will not hand you a `User` object. Look up profile
+fields against your own store using the `userId`.
+
 ### `AuthGuard`
 
 The `authGuardInterceptor` runs at `TInterceptorPriority.GUARD` on every HTTP
@@ -124,20 +131,41 @@ import { useAuth } from "@aoothjs/auth-moost";
 class OrdersController {
   @Get()
   async list() {
-    const { getCurrentUserId, getCurrentUser, isAuthenticated } = useAuth();
-    return ordersForUser(getCurrentUserId());
+    const { getUserId, getAuthContext, isAuthenticated } = useAuth();
+    return ordersForUser(getUserId());
   }
 }
 ```
 
-| Method               | Behavior                                                        |
-| -------------------- | --------------------------------------------------------------- |
-| `getCurrentUser()`   | Returns `AuthContext` or `null` (e.g. on `@Public()` routes)    |
-| `getCurrentUserId()` | Returns the userId; throws `HttpError(401)` when no AuthContext |
-| `isAuthenticated()`  | `true` when `getCurrentUser()` is non-null                      |
+| Method              | Behavior                                                        |
+| ------------------- | --------------------------------------------------------------- |
+| `getAuthContext()`  | Returns `AuthContext` or `null` (e.g. on `@Public()` routes)    |
+| `getUserId()`       | Returns the userId; throws `HttpError(401)` when no AuthContext |
+| `isAuthenticated()` | `true` when `getAuthContext()` is non-null                      |
 
 `useAuth()` reads from the slot populated by the guard. On `@Public()` routes
-with an invalid token, `getCurrentUser()` returns `null` rather than throwing.
+with an invalid token, `getAuthContext()` returns `null` rather than throwing.
+
+### `@UserId()`
+
+Parameter decorator that resolves the authenticated user's id (string) for a
+handler argument. Thin wrapper around `useAuth().getUserId()` — throws
+`HttpError(401)` when no `AuthContext` is present.
+
+```ts
+import { UserId } from "@aoothjs/auth-moost";
+
+@Controller("orders")
+class OrdersController {
+  @Get()
+  async list(@UserId() userId: string) {
+    return ordersForUser(userId);
+  }
+}
+```
+
+There is no `@User()` counterpart — see the `AuthContext` note above on why
+this library does not own a user profile type.
 
 ### `@Public()`
 
@@ -231,7 +259,7 @@ the client can schedule a silent refresh.
 
 > Note: `AuthController` assumes `AuthContext.userId === username`. Login
 > issues the credential with the resolved username, and `/auth/password`
-> reads it back via `useAuth().getCurrentUserId()`. Apps that map userIds to
+> reads it back via `useAuth().getUserId()`. Apps that map userIds to
 > opaque ids (UUIDs, internal pks) must skip `registerControllers(AuthController)`
 > and ship a subclass instead:
 >
@@ -482,7 +510,7 @@ export { DEFAULT_RECOVERY_TOKEN_TTL_MS, DEFAULT_INVITE_TOKEN_TTL_MS, DEFAULT_MFA
 
 // Composables + decorators
 export { useAuth, type AuthBindings };
-export { Public };
+export { Public, UserId };
 
 // Guard — apply globally via `moost.applyGlobalInterceptors(authGuardInterceptor)`
 export { authGuardInterceptor };

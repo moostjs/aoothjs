@@ -6,20 +6,20 @@ import { describe, expect, it } from "vite-plus/test";
 import { setAuthContext, useAuth } from "../auth.composables";
 
 describe("useAuth composable", () => {
-  it("getCurrentUser returns null when no AuthContext is in the event", () => {
+  it("getAuthContext returns null when no AuthContext is in the event", () => {
     const run = prepareTestHttpContext({ url: "/test" });
     run(() => {
       const auth = useAuth();
-      expect(auth.getCurrentUser()).toBeNull();
+      expect(auth.getAuthContext()).toBeNull();
       expect(auth.isAuthenticated()).toBe(false);
     });
   });
 
-  it("getCurrentUserId throws HttpError(401) when no AuthContext is present", () => {
+  it("getUserId throws HttpError(401) when no AuthContext is present", () => {
     const run = prepareTestHttpContext({ url: "/test" });
     run(() => {
       const auth = useAuth();
-      expect(() => auth.getCurrentUserId()).toThrow(/Not authenticated/);
+      expect(() => auth.getUserId()).toThrow(/Not authenticated/);
     });
   });
 
@@ -34,15 +34,15 @@ describe("useAuth composable", () => {
       };
 
       // Before write: no auth.
-      expect(useAuth().getCurrentUser()).toBeNull();
+      expect(useAuth().getAuthContext()).toBeNull();
 
       setAuthContext(current(), ctx);
 
       // After write: subsequent useAuth() calls inherit the value, because
       // useAuth's bindings memoize the accessor closures (not the value).
       const auth = useAuth();
-      expect(auth.getCurrentUser()).toBe(ctx);
-      expect(auth.getCurrentUserId()).toBe("alice");
+      expect(auth.getAuthContext()).toBe(ctx);
+      expect(auth.getUserId()).toBe("alice");
       expect(auth.isAuthenticated()).toBe(true);
     });
   });

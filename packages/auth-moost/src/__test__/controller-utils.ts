@@ -81,9 +81,16 @@ export interface PrepareControllerOpts extends MoostAuthConfigOptions {
   /** When `false`, skip auto-registering `AuthController`. Default: `true`. */
   endpoints?: boolean;
   /**
+   * Extra controllers to register alongside (or instead of, when
+   * `endpoints=false`) `AuthController`. Registered BEFORE `moost.init()` so
+   * routes are wired during the same boot pass — registering after init
+   * silently no-ops on the HTTP adapter (the route table is frozen).
+   */
+  extraControllers?: Array<new (...args: never[]) => unknown>;
+  /**
    * When set, wires `MoostArbac` + a test `ArbacUserProvider` + the
    * `arbacAuthorizeInterceptor` globally. The provider resolves the current
-   * user id from `useAuth().getCurrentUserId()` and reads roles from the
+   * user id from `useAuth().getUserId()` and reads roles from the
    * `userRoles` map. Roles are registered via `roles`. Used by ISSUE-4
    * integration tests that verify `@Public()` and `public.*` action grants.
    */
@@ -136,6 +143,7 @@ export async function prepareControllerApp(
     withoutUserService,
     endpoints = true,
     arbac: arbacOpts,
+    extraControllers,
     ...cfg
   } = opts;
   const providers: Parameters<typeof createProvideRegistry> = [
@@ -163,6 +171,11 @@ export async function prepareControllerApp(
 
   if (endpoints) {
     moost.registerControllers(AuthController);
+  }
+  if (extraControllers && extraControllers.length > 0) {
+    // biome-ignore lint/suspicious/noExplicitAny: moost.registerControllers takes the
+    // package-internal `TClassConstructor` shape; tests pass plain constructors.
+    moost.registerControllers(...(extraControllers as any[]));
   }
 
   await moost.init();
@@ -225,7 +238,7 @@ export function parseCookieValue(setCookie: string, name: string): string | null
 @Injectable()
 class TestArbacUserProvider extends ArbacUserProvider {
   override getUserId(): string {
-    return useAuth().getCurrentUserId();
+    return useAuth().getUserId();
   }
   override getRoles(id: string): string[] {
     return activeUserRoles.get(id) ?? [];

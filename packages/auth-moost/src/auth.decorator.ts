@@ -1,5 +1,7 @@
 import { getArbacMate } from "@aoothjs/arbac-moost";
+import { Resolve } from "moost";
 
+import { useAuth } from "./auth.composables";
 import { getAuthMate } from "./auth.mate";
 
 /**
@@ -22,3 +24,13 @@ export const Public = (): ClassDecorator & MethodDecorator => {
     arbac(target, key, descriptor);
   }) as ClassDecorator & MethodDecorator;
 };
+
+/**
+ * Resolves the authenticated user's id (string) for a handler parameter.
+ *
+ * Delegates to `useAuth().getUserId()`, which throws `HttpError(401)` when no
+ * `AuthContext` is present in the event. There is no `@User()` counterpart —
+ * `AuthContext` is credential context, not user profile data, and this library
+ * does not own a user profile type.
+ */
+export const UserId = () => Resolve(() => useAuth().getUserId());

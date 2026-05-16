@@ -13,13 +13,13 @@ export class HealthController {
 
   @Get("health/protected")
   protectedRoute(): { user: string } {
-    return { user: useAuth().getCurrentUserId() };
+    return { user: useAuth().getUserId() };
   }
 
   @Get("health/admin-only")
   @ArbacResource("health")
   @ArbacAction("admin")
   adminOnly(): { ok: true; user: string } {
-    return { ok: true, user: useAuth().getCurrentUserId() };
+    return { ok: true, user: useAuth().getUserId() };
   }
 }

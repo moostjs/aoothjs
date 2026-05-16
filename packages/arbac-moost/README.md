@@ -29,7 +29,7 @@ import {
 
 class MyArbacUserProvider extends ArbacUserProvider<{ tenantId: string }> {
   getUserId() {
-    return useAuth().getCurrentUserId();
+    return useAuth().getUserId();
   }
   async getRoles(id: string) {
     return (await db.users.find(id)).roles;
@@ -158,7 +158,7 @@ class MyArbacUserProvider extends AtscriptArbacUserProvider<MyUser> {
     super(MyUser, usersTable);
   }
   override getUserId(): string {
-    return useAuth().getCurrentUserId();
+    return useAuth().getUserId();
   }
 }
 moost.setReplaceRegistry(createReplaceRegistry([ArbacUserProvider, MyArbacUserProvider]));
