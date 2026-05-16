@@ -9,7 +9,22 @@
  */
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 
-import { ProfileCompleteForm } from "../atscript/models/forms.as.js";
+import {
+  AskEmailForm,
+  AskPhoneForm,
+  BackupCodeForm,
+  ConcurrencyLimitForm,
+  ConsentMarketingForm,
+  LoginCredentialsForm,
+  MfaCodeForm,
+  PersonaSelectForm,
+  PincodeForm,
+  ProfileCompleteForm,
+  Select2faForm,
+  SetPasswordForm,
+  TenantSelectForm,
+  TermsAcceptForm,
+} from "../atscript/models/forms.as.js";
 
 export const DEFAULT_MFA_CODE_TTL_MS = 5 * 60 * 1000;
 
@@ -70,8 +85,6 @@ export interface LoginWorkflowOpts {
   acceptance?: {
     termsVersion?: string;
     profileCompleteRequired?: boolean;
-    /** Replaceable profile-completion form. Falls back to the default first/last name shape. */
-    profileCompleteForm?: TAtscriptAnnotatedType;
     consentMarketing?: boolean;
   };
   multiContext?: {
@@ -86,6 +99,27 @@ export interface LoginWorkflowOpts {
     notifyNewDevice?: boolean;
     redirect?: LoginRedirect;
   };
+  /**
+   * Replaceable form schemas. Each field defaults to the corresponding
+   * `.as` form shipped under `@aoothjs/auth-moost/atscript/models`; supply a
+   * subset to override only the forms you want to swap.
+   */
+  forms?: {
+    askEmail?: TAtscriptAnnotatedType;
+    askPhone?: TAtscriptAnnotatedType;
+    backupCode?: TAtscriptAnnotatedType;
+    concurrencyLimit?: TAtscriptAnnotatedType;
+    consentMarketing?: TAtscriptAnnotatedType;
+    loginCredentials?: TAtscriptAnnotatedType;
+    mfaCode?: TAtscriptAnnotatedType;
+    personaSelect?: TAtscriptAnnotatedType;
+    pincode?: TAtscriptAnnotatedType;
+    profileComplete?: TAtscriptAnnotatedType;
+    select2fa?: TAtscriptAnnotatedType;
+    setPassword?: TAtscriptAnnotatedType;
+    tenantSelect?: TAtscriptAnnotatedType;
+    termsAccept?: TAtscriptAnnotatedType;
+  };
 }
 
 /**
@@ -93,8 +127,8 @@ export interface LoginWorkflowOpts {
  * always populated by `mergeLoginOpts`, so schema conditions can read
  * `ctx.opts.<group>.<flag>` directly without optional chaining.
  *
- * Fields without sensible defaults (e.g. `termsVersion`, `concurrencyLimit`,
- * `profileCompleteForm`) stay optional inside their group.
+ * Fields without sensible defaults (e.g. `termsVersion`, `concurrencyLimit`)
+ * stay optional inside their group.
  */
 export interface ResolvedLoginWorkflowOpts {
   alternateCredentials: {
@@ -137,7 +171,6 @@ export interface ResolvedLoginWorkflowOpts {
   acceptance: {
     termsVersion?: string;
     profileCompleteRequired: boolean;
-    profileCompleteForm: TAtscriptAnnotatedType;
     consentMarketing: boolean;
   };
   multiContext: {
@@ -151,6 +184,22 @@ export interface ResolvedLoginWorkflowOpts {
     auditLogin: boolean;
     notifyNewDevice: boolean;
     redirect: LoginRedirect;
+  };
+  forms: {
+    askEmail: TAtscriptAnnotatedType;
+    askPhone: TAtscriptAnnotatedType;
+    backupCode: TAtscriptAnnotatedType;
+    concurrencyLimit: TAtscriptAnnotatedType;
+    consentMarketing: TAtscriptAnnotatedType;
+    loginCredentials: TAtscriptAnnotatedType;
+    mfaCode: TAtscriptAnnotatedType;
+    personaSelect: TAtscriptAnnotatedType;
+    pincode: TAtscriptAnnotatedType;
+    profileComplete: TAtscriptAnnotatedType;
+    select2fa: TAtscriptAnnotatedType;
+    setPassword: TAtscriptAnnotatedType;
+    tenantSelect: TAtscriptAnnotatedType;
+    termsAccept: TAtscriptAnnotatedType;
   };
 }
 
@@ -205,7 +254,6 @@ export function mergeLoginOpts(opts: LoginWorkflowOpts = {}): ResolvedLoginWorkf
     },
     acceptance: {
       profileCompleteRequired: false,
-      profileCompleteForm: ProfileCompleteForm as unknown as TAtscriptAnnotatedType,
       consentMarketing: false,
       ...opts.acceptance,
     },
@@ -222,6 +270,23 @@ export function mergeLoginOpts(opts: LoginWorkflowOpts = {}): ResolvedLoginWorkf
       notifyNewDevice: false,
       redirect: "referer",
       ...opts.finalize,
+    },
+    forms: {
+      askEmail: AskEmailForm as unknown as TAtscriptAnnotatedType,
+      askPhone: AskPhoneForm as unknown as TAtscriptAnnotatedType,
+      backupCode: BackupCodeForm as unknown as TAtscriptAnnotatedType,
+      concurrencyLimit: ConcurrencyLimitForm as unknown as TAtscriptAnnotatedType,
+      consentMarketing: ConsentMarketingForm as unknown as TAtscriptAnnotatedType,
+      loginCredentials: LoginCredentialsForm as unknown as TAtscriptAnnotatedType,
+      mfaCode: MfaCodeForm as unknown as TAtscriptAnnotatedType,
+      personaSelect: PersonaSelectForm as unknown as TAtscriptAnnotatedType,
+      pincode: PincodeForm as unknown as TAtscriptAnnotatedType,
+      profileComplete: ProfileCompleteForm as unknown as TAtscriptAnnotatedType,
+      select2fa: Select2faForm as unknown as TAtscriptAnnotatedType,
+      setPassword: SetPasswordForm as unknown as TAtscriptAnnotatedType,
+      tenantSelect: TenantSelectForm as unknown as TAtscriptAnnotatedType,
+      termsAccept: TermsAcceptForm as unknown as TAtscriptAnnotatedType,
+      ...opts.forms,
     },
   };
 }

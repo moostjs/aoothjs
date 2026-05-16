@@ -11,8 +11,10 @@
  * the moment someone replaces `{ ...defaults, ...input }` with `input` for any
  * group — which is exactly the regression this file guards against.
  */
+import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { describe, expect, it } from "vite-plus/test";
 
+import { LoginCredentialsForm } from "../atscript/models/forms.as.js";
 import { mergeLoginOpts } from "../workflows/login.workflow.options";
 
 describe("mergeLoginOpts — defaults survive partial input", () => {
@@ -27,7 +29,7 @@ describe("mergeLoginOpts — defaults survive partial input", () => {
     expect(opts.finalize.auditLogin).toBe(true);
     expect(opts.finalize.redirect).toBe("referer");
     expect(opts.deviceTrust.cookieName).toBe("aooth_trusted_device");
-    expect(opts.acceptance.profileCompleteForm).toBeTruthy();
+    expect(opts.forms.profileComplete).toBeTruthy();
   });
 
   it("partial mfa override (enabled:false) keeps mfa.transports default", () => {
@@ -68,6 +70,16 @@ describe("mergeLoginOpts — defaults survive partial input", () => {
     expect(opts.mfa.pincodeLength).toBe(8);
     expect(opts.finalize.auditLogin).toBe(false);
     expect(opts.finalize.notifyNewDevice).toBe(true);
+  });
+
+  it("forms group: default loginCredentials is the shipped form; consumer override wins", () => {
+    // Default-resolved form must be the LoginCredentialsForm class — step
+    // bodies read `this.opts.forms.loginCredentials` without optional chain.
+    expect(mergeLoginOpts({}).forms.loginCredentials).toBe(LoginCredentialsForm);
+    const MyForm = { __is_atscript_annotated_type: true } as unknown as TAtscriptAnnotatedType;
+    expect(mergeLoginOpts({ forms: { loginCredentials: MyForm } }).forms.loginCredentials).toBe(
+      MyForm,
+    );
   });
 
   it("sessionPolicy.concurrencyLimit stays undefined by default (not a default-on group)", () => {

@@ -65,12 +65,6 @@ import {
 } from "@moostjs/event-wf";
 import { Controller, Injectable } from "moost";
 
-import {
-  InviteEmailForm,
-  InviteForm,
-  InviteSendModeForm,
-  SetPasswordForm,
-} from "../atscript/models/forms.as.js";
 import type { AuditEvent } from "../audit/index";
 import { useAuth } from "../auth.composables";
 import { MoostAuthConfig } from "../auth.config";
@@ -98,8 +92,13 @@ export interface InviteWfCtx {
   acceptProfileFormPresent?: boolean;
 
   // ── Admin-side (Phase A) ────────────────────────────────────────────────
-  /** Populated by `invitePrepareAvailableRoles` when the override returns a list. */
-  availableRoles?: Array<{ id: string; label: string }>;
+  /**
+   * Populated by `invitePrepareAvailableRoles` when the override returns a list.
+   * Surfaced into the `InviteForm` via `@wf.context.pass 'availableRoles'` so
+   * the role multi-select renders the whitelisted choices; also used by
+   * `inviteAdminInviteForm` to reject admin-submitted roles outside the list.
+   */
+  availableRoles?: string[];
   email?: string;
   /** Typically same as `email`; consumers can override the mapping. */
   username?: string;
@@ -160,14 +159,15 @@ const AUDIT_WORKFLOW_BY_KIND: Record<string, string> = {
   "invite.resent": "auth.reInvite",
 };
 
-/** Trim/split `roles` free-text input — `"admin, editor"` → `["admin", "editor"]`. */
-export function parseInviteRoles(input?: string | string[]): string[] {
-  if (!input) return [];
-  if (Array.isArray(input)) return input.map((r) => r.trim()).filter(Boolean);
-  return input
-    .split(",")
-    .map((r) => r.trim())
-    .filter(Boolean);
+/** Trim + de-duplicate role identifiers submitted via the admin invite form. */
+export function parseInviteRoles(input?: string[]): string[] {
+  if (!Array.isArray(input)) return [];
+  const seen = new Set<string>();
+  for (const v of input) {
+    const trimmed = typeof v === "string" ? v.trim() : "";
+    if (trimmed) seen.add(trimmed);
+  }
+  return [...seen];
 }
 
 /**
@@ -227,12 +227,14 @@ export class InviteWorkflow {
   }
 
   /**
-   * Return the list of selectable roles for the admin invite form. When
-   * defined AND `adminForm.collectRoles` is true → form ships
-   * `ctx.availableRoles` so the UI renders a multi-select. When `undefined`
-   * (default) → admin enters roles as free-text.
+   * Return the list of selectable role identifiers for the admin invite form.
+   * When defined AND `adminForm.collectRoles` is true → form ships
+   * `ctx.availableRoles` so the UI renders a multi-select AND the
+   * `inviteAdminInviteForm` step rejects admin-submitted roles outside the
+   * list. When `undefined` (default) → no whitelist is enforced and any role
+   * value the admin form supplies is accepted.
    */
-  protected async getAvailableRoles(): Promise<Array<{ id: string; label: string }> | undefined> {
+  protected async getAvailableRoles(): Promise<string[] | undefined> {
     return undefined;
   }
 
@@ -285,13 +287,16 @@ export class InviteWorkflow {
 
   /**
    * Returns the JSON-safe projection of `opts` stashed onto `ctx` for schema
-   * conditions to read. Default: identity — the resolved-opts shape already
-   * contains only nested primitive groups (no callbacks, no class instances).
+   * conditions to read. Default: drop the `forms` group (atscript form classes
+   * are not plain JSON) so `AsWfStore`'s plain-JSON persistence doesn't choke.
+   * Step bodies still consult the form classes via `this.opts.forms.*`.
+   *
    * Consumers who extend the opts type with non-JSON values can override this
    * to strip them so `AsWfStore`'s plain-JSON persistence doesn't choke.
    */
   protected snapshotOpts(opts: ResolvedInviteWorkflowOpts): ResolvedInviteWorkflowOpts {
-    return opts;
+    const { forms: _forms, ...rest } = opts;
+    return rest as ResolvedInviteWorkflowOpts;
   }
 
   // ╔═══════════════════════════════════════════════════════════════════════╗
@@ -515,12 +520,12 @@ export class InviteWorkflow {
     @WorkflowParam("input") input: { mode?: string; action?: string } | undefined,
     @WorkflowParam("context") ctx: InviteWfCtx,
   ): unknown {
-    if (!input) return httpInputRequired(InviteSendModeForm, ctx);
+    if (!input) return httpInputRequired(this.opts.forms.inviteSendMode, ctx);
     if (input.action === "cancel") {
       return this.abort(ctx, "cancel");
     }
-    const errors = validateFormInput(InviteSendModeForm, input);
-    if (errors) return httpInputRequired(InviteSendModeForm, ctx, errors);
+    const errors = validateFormInput(this.opts.forms.inviteSendMode, input);
+    if (errors) return httpInputRequired(this.opts.forms.inviteSendMode, ctx, errors);
     const mode = input.mode as "email" | "shareableLink";
     ctx.selectedSendMode = mode;
     ctx.resolvedSendMode = mode;
@@ -535,21 +540,34 @@ export class InviteWorkflow {
           email?: string;
           firstName?: string;
           lastName?: string;
-          roles?: string | string[];
+          roles?: string[];
           action?: string;
         }
       | undefined,
     @WorkflowParam("context") ctx: InviteWfCtx,
   ): Promise<unknown> {
-    if (!input) return httpInputRequired(InviteForm, ctx);
+    if (!input) return httpInputRequired(this.opts.forms.invite, ctx);
     if (input.action === "cancel") {
       return this.abort(ctx, "cancel");
     }
 
-    const errors = validateFormInput(InviteForm, input);
-    if (errors) return httpInputRequired(InviteForm, ctx, errors);
+    const errors = validateFormInput(this.opts.forms.invite, input);
+    if (errors) return httpInputRequired(this.opts.forms.invite, ctx, errors);
 
     const email = input.email as string;
+
+    const parsed = parseInviteRoles(input.roles);
+    // Server-side whitelist enforcement: when `getAvailableRoles()` returned a
+    // list (surfaced as `ctx.availableRoles` by `invitePrepareAvailableRoles`),
+    // reject any admin-submitted role outside the whitelist. Skipped when no
+    // whitelist is configured — see `getAvailableRoles` doc.
+    if (Array.isArray(ctx.availableRoles)) {
+      const allowed = new Set(ctx.availableRoles);
+      const bad = parsed.find((r) => !allowed.has(r));
+      if (bad !== undefined) {
+        return httpInputRequired(this.opts.forms.invite, ctx, { roles: "Invalid role" });
+      }
+    }
 
     // Duplicate check — override-friendly. Default structural rule: any
     // existing row → reject (with a different message per pending / accepted).
@@ -569,7 +587,6 @@ export class InviteWorkflow {
     ctx.email = email;
     if (input.firstName) ctx.firstName = input.firstName;
     if (input.lastName) ctx.lastName = input.lastName;
-    const parsed = parseInviteRoles(input.roles);
     if (parsed.length > 0) ctx.roles = parsed;
     return undefined;
   }
@@ -679,12 +696,12 @@ export class InviteWorkflow {
     @WorkflowParam("input") input: { email?: string; action?: string } | undefined,
     @WorkflowParam("context") ctx: InviteWfCtx,
   ): Promise<unknown> {
-    if (!input) return httpInputRequired(InviteEmailForm, ctx);
+    if (!input) return httpInputRequired(this.opts.forms.inviteEmail, ctx);
     if (input.action === "cancel") {
       return this.abort(ctx, "cancel");
     }
-    const errors = validateFormInput(InviteEmailForm, input);
-    if (errors) return httpInputRequired(InviteEmailForm, ctx, errors);
+    const errors = validateFormInput(this.opts.forms.inviteEmail, input);
+    if (errors) return httpInputRequired(this.opts.forms.inviteEmail, ctx, errors);
 
     const email = input.email as string;
     const existing = await this.loadUserOrNull(email);
@@ -750,7 +767,7 @@ export class InviteWorkflow {
       | undefined,
     @WorkflowParam("context") ctx: InviteWfCtx,
   ): Promise<unknown> {
-    if (!input) return httpInputRequired(SetPasswordForm, ctx);
+    if (!input) return httpInputRequired(this.opts.forms.setPassword, ctx);
     if (input.action === "cancel") {
       // User abort: stop the flow but DO NOT delete the user record. Admin can
       // reInvite later. The pending-invitation flag stays true.
@@ -759,10 +776,10 @@ export class InviteWorkflow {
       return undefined;
     }
 
-    const errors = validateFormInput(SetPasswordForm, input);
-    if (errors) return httpInputRequired(SetPasswordForm, ctx, errors);
+    const errors = validateFormInput(this.opts.forms.setPassword, input);
+    if (errors) return httpInputRequired(this.opts.forms.setPassword, ctx, errors);
     if (input.newPassword !== input.confirmPassword) {
-      return httpInputRequired(SetPasswordForm, ctx, {
+      return httpInputRequired(this.opts.forms.setPassword, ctx, {
         confirmPassword: "Passwords do not match",
       });
     }
@@ -878,9 +895,9 @@ export class InviteWorkflow {
     if (!this.opts.cancellation.allowed) {
       throw new HttpError(403, "Invite cancellation is disabled");
     }
-    if (!input) return httpInputRequired(InviteEmailForm, ctx);
-    const errors = validateFormInput(InviteEmailForm, input);
-    if (errors) return httpInputRequired(InviteEmailForm, ctx, errors);
+    if (!input) return httpInputRequired(this.opts.forms.inviteEmail, ctx);
+    const errors = validateFormInput(this.opts.forms.inviteEmail, input);
+    if (errors) return httpInputRequired(this.opts.forms.inviteEmail, ctx, errors);
     const email = input.email as string;
     const existing = await this.loadUserOrNull(email);
     if (!existing) throw new HttpError(404, "No invite to cancel for this email");

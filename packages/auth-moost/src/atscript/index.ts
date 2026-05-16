@@ -4,10 +4,4 @@
  * atscript projects can `extends` these interfaces from their own `.as`
  * files.
  */
-export {
-  EmailIdentifierForm,
-  InviteForm,
-  LoginCredentialsForm,
-  MfaCodeForm,
-  SetPasswordForm,
-} from "./models/forms.as";
+export * from "./models/forms.as";

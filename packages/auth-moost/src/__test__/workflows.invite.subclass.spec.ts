@@ -171,13 +171,8 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
       ) {
         super(opts, users, auth, authConfig);
       }
-      protected override async getAvailableRoles(): Promise<
-        Array<{ id: string; label: string }> | undefined
-      > {
-        return [
-          { id: "tenant-admin", label: "Tenant Admin" },
-          { id: "tenant-member", label: "Tenant Member" },
-        ];
+      protected override async getAvailableRoles(): Promise<string[] | undefined> {
+        return ["tenant-admin", "tenant-member"];
       }
     }
     const app = await prepareWfApp({
@@ -189,10 +184,7 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
     // `@wf.context.pass` — UI uses this to render the multi-select. The
     // override could not be detected without this projection being attached
     // to the pause payload.
-    expect(r1.body?.availableRoles).toEqual([
-      { id: "tenant-admin", label: "Tenant Admin" },
-      { id: "tenant-member", label: "Tenant Member" },
-    ]);
+    expect(r1.body?.availableRoles).toEqual(["tenant-admin", "tenant-member"]);
   });
 
   it("inferRoles override merges with admin-supplied roles (set-union persisted)", async () => {
@@ -225,7 +217,7 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
     const r1 = await app.trigger({ wfid: "auth.invite" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
-      input: { email: "infer-sub@test.com", roles: "admin, viewer" },
+      input: { email: "infer-sub@test.com", roles: ["admin", "viewer"] },
     });
     expect(calls).toBe(1);
     const roles = (app.emails[0].metadata as { roles?: string[] } | undefined)?.roles ?? [];

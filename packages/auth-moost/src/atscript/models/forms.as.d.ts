@@ -99,7 +99,7 @@ export declare class InviteForm {
   email: string /* email */
   firstName?: string
   lastName?: string
-  roles?: string
+  roles?: string[]
   static __is_atscript_annotated_type: true
   static type: TAtscriptTypeObject<keyof InviteForm, InviteForm>
   static metadata: TMetadataMap<AtscriptMetadata>
@@ -112,7 +112,7 @@ export declare class InviteForm {
 
 /**
  * Atscript interface **InviteEmailForm**
- * @see {@link ./forms.as:132:18}
+ * @see {@link ./forms.as:134:18}
  */
 export declare class InviteEmailForm {
   email: string /* email */
@@ -128,7 +128,7 @@ export declare class InviteEmailForm {
 
 /**
  * Atscript interface **InviteSendModeForm**
- * @see {@link ./forms.as:145:18}
+ * @see {@link ./forms.as:147:18}
  */
 export declare class InviteSendModeForm {
   mode: string
@@ -144,7 +144,7 @@ export declare class InviteSendModeForm {
 
 /**
  * Atscript interface **Select2faForm**
- * @see {@link ./forms.as:161:18}
+ * @see {@link ./forms.as:163:18}
  */
 export declare class Select2faForm {
   methodName: string
@@ -161,7 +161,7 @@ export declare class Select2faForm {
 
 /**
  * Atscript interface **PincodeForm**
- * @see {@link ./forms.as:177:18}
+ * @see {@link ./forms.as:179:18}
  */
 export declare class PincodeForm {
   code: string
@@ -178,7 +178,7 @@ export declare class PincodeForm {
 
 /**
  * Atscript interface **AskEmailForm**
- * @see {@link ./forms.as:195:18}
+ * @see {@link ./forms.as:197:18}
  */
 export declare class AskEmailForm {
   email: string /* email */
@@ -194,7 +194,7 @@ export declare class AskEmailForm {
 
 /**
  * Atscript interface **AskPhoneForm**
- * @see {@link ./forms.as:207:18}
+ * @see {@link ./forms.as:209:18}
  */
 export declare class AskPhoneForm {
   phone: string
@@ -210,7 +210,7 @@ export declare class AskPhoneForm {
 
 /**
  * Atscript interface **TermsAcceptForm**
- * @see {@link ./forms.as:218:18}
+ * @see {@link ./forms.as:220:18}
  */
 export declare class TermsAcceptForm {
   acceptedVersion: string
@@ -227,7 +227,7 @@ export declare class TermsAcceptForm {
 
 /**
  * Atscript interface **ProfileCompleteForm**
- * @see {@link ./forms.as:234:18}
+ * @see {@link ./forms.as:236:18}
  */
 export declare class ProfileCompleteForm {
   firstName?: string
@@ -244,7 +244,7 @@ export declare class ProfileCompleteForm {
 
 /**
  * Atscript interface **ConsentMarketingForm**
- * @see {@link ./forms.as:247:18}
+ * @see {@link ./forms.as:249:18}
  */
 export declare class ConsentMarketingForm {
   optIn?: boolean
@@ -260,7 +260,7 @@ export declare class ConsentMarketingForm {
 
 /**
  * Atscript interface **TenantSelectForm**
- * @see {@link ./forms.as:256:18}
+ * @see {@link ./forms.as:258:18}
  */
 export declare class TenantSelectForm {
   tenantId: string
@@ -276,7 +276,7 @@ export declare class TenantSelectForm {
 
 /**
  * Atscript interface **PersonaSelectForm**
- * @see {@link ./forms.as:266:18}
+ * @see {@link ./forms.as:268:18}
  */
 export declare class PersonaSelectForm {
   personaId: string
@@ -292,7 +292,7 @@ export declare class PersonaSelectForm {
 
 /**
  * Atscript interface **ConcurrencyLimitForm**
- * @see {@link ./forms.as:277:18}
+ * @see {@link ./forms.as:279:18}
  */
 export declare class ConcurrencyLimitForm {
   action: string
@@ -308,7 +308,7 @@ export declare class ConcurrencyLimitForm {
 
 /**
  * Atscript interface **MagicLinkRequestForm**
- * @see {@link ./forms.as:290:18}
+ * @see {@link ./forms.as:292:18}
  */
 export declare class MagicLinkRequestForm {
   identifier: string
@@ -324,7 +324,7 @@ export declare class MagicLinkRequestForm {
 
 /**
  * Atscript interface **RecoveryModeSelectForm**
- * @see {@link ./forms.as:302:18}
+ * @see {@link ./forms.as:304:18}
  */
 export declare class RecoveryModeSelectForm {
   mode: string
@@ -340,7 +340,7 @@ export declare class RecoveryModeSelectForm {
 
 /**
  * Atscript interface **RecoveryFactorForm**
- * @see {@link ./forms.as:316:18}
+ * @see {@link ./forms.as:318:18}
  */
 export declare class RecoveryFactorForm {
   factor: string

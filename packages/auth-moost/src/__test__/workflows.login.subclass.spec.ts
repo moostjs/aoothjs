@@ -119,7 +119,9 @@ describe("LoginWorkflow subclass — applyProfile override", () => {
       loginOpts: {
         acceptance: {
           profileCompleteRequired: true,
-          profileCompleteForm: ProfileCompleteForm as unknown as TAtscriptAnnotatedType,
+        },
+        forms: {
+          profileComplete: ProfileCompleteForm as unknown as TAtscriptAnnotatedType,
         },
         mfa: { enabled: false },
       },

@@ -13,8 +13,11 @@
  * `?? defaults`) for any group — which is exactly the regression this file
  * guards against.
  */
+import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { describe, expect, it } from "vite-plus/test";
 
+import { InviteForm } from "../atscript/models/forms.as.js";
+import { parseInviteRoles } from "../workflows/invite.workflow";
 import { DEFAULT_INVITE_TOKEN_TTL_MS, mergeInviteOpts } from "../workflows/invite.workflow.options";
 
 describe("mergeInviteOpts — defaults survive partial input", () => {
@@ -77,6 +80,21 @@ describe("mergeInviteOpts — defaults survive partial input", () => {
     const opts = mergeInviteOpts({ audit: { enabled: false } });
     expect(opts.audit.enabled).toBe(false);
     expect(opts.cancellation.allowed).toBe(true);
+  });
+
+  it("parseInviteRoles: trims, drops empties, dedupes", () => {
+    // The string[] form input flows through this normalizer before reaching
+    // the user record / email metadata — guard the contract end-to-end.
+    expect(parseInviteRoles(undefined)).toEqual([]);
+    expect(parseInviteRoles([])).toEqual([]);
+    expect(parseInviteRoles(["a", "b"])).toEqual(["a", "b"]);
+    expect(parseInviteRoles(["  a  ", "a", "", "b"])).toEqual(["a", "b"]);
+  });
+
+  it("forms group: default invite is the shipped form; consumer override wins", () => {
+    expect(mergeInviteOpts({}).forms.invite).toBe(InviteForm);
+    const MyForm = { __is_atscript_annotated_type: true } as unknown as TAtscriptAnnotatedType;
+    expect(mergeInviteOpts({ forms: { invite: MyForm } }).forms.invite).toBe(MyForm);
   });
 
   it("explicit overrides beat defaults (no accidental defaulting)", () => {

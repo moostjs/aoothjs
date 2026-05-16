@@ -355,11 +355,13 @@ $("object", InviteForm)
       .$type
   ).prop(
     "roles",
-    $().designType("string")
-      .tags("string")
-      .annotate("ui.form.type", "text")
-      .annotate("meta.label", "Roles (comma-separated, optional)")
-      .annotate("ui.form.placeholder", "admin,editor")
+    $("array")
+      .of($().designType("string")
+          .tags("string")
+          .$type)
+      .annotate("ui.form.type", "select")
+      .annotate("ui.form.fn.options", "(_, _data, context) => Array.isArray(context.availableRoles) ? context.availableRoles.map(r => ({ value: r, label: r })) : []")
+      .annotate("meta.label", "Roles")
       .optional()
       .$type
   )

@@ -24,7 +24,7 @@ describe("InviteWorkflow", () => {
 
     await app.trigger({
       wfs: wfs1,
-      input: { email: "bob@test.com", roles: "admin, editor" },
+      input: { email: "bob@test.com", roles: ["admin", "editor"] },
     });
     expect(app.emails).toHaveLength(1);
     const email = app.emails[0];
@@ -100,12 +100,12 @@ describe("InviteWorkflow", () => {
     expect(r3.status).toBe(410);
   });
 
-  it("roles trimming / parsing: empty entries skipped", async () => {
+  it("roles trimming / parsing: empty entries skipped + duplicates collapsed", async () => {
     const app = await prepareWfApp();
     const r1 = await app.trigger({ wfid: "auth.invite" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
-      input: { email: "eve@test.com", roles: ", admin , , editor ,  " },
+      input: { email: "eve@test.com", roles: ["  admin  ", "", "editor", "admin"] },
     });
     expect(app.emails[0].metadata).toMatchObject({ roles: ["admin", "editor"] });
   });
@@ -132,7 +132,7 @@ describe("InviteWorkflow", () => {
     const r1 = await app.trigger({ wfid: "auth.invite" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
-      input: { email: "grace@test.com", roles: "admin, viewer" },
+      input: { email: "grace@test.com", roles: ["admin", "viewer"] },
     });
     const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
     const r3 = await app.resumeViaQuery(token);

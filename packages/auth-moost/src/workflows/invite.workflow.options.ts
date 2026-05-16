@@ -12,6 +12,14 @@
  * Admin authorization is the trigger route's responsibility (ARBAC).
  */
 import type { UserCredentials } from "@aoothjs/user";
+import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
+
+import {
+  InviteEmailForm,
+  InviteForm,
+  InviteSendModeForm,
+  SetPasswordForm,
+} from "../atscript/models/forms.as.js";
 
 export const DEFAULT_INVITE_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -57,6 +65,16 @@ export interface InviteWorkflowOpts {
   audit?: {
     enabled?: boolean;
   };
+  /**
+   * Replaceable form schemas. Each field defaults to the corresponding
+   * `.as` form shipped under `@aoothjs/auth-moost/atscript/models`.
+   */
+  forms?: {
+    invite?: TAtscriptAnnotatedType;
+    inviteEmail?: TAtscriptAnnotatedType;
+    inviteSendMode?: TAtscriptAnnotatedType;
+    setPassword?: TAtscriptAnnotatedType;
+  };
 }
 
 /**
@@ -86,6 +104,12 @@ export interface ResolvedInviteWorkflowOpts {
   };
   audit: {
     enabled: boolean;
+  };
+  forms: {
+    invite: TAtscriptAnnotatedType;
+    inviteEmail: TAtscriptAnnotatedType;
+    inviteSendMode: TAtscriptAnnotatedType;
+    setPassword: TAtscriptAnnotatedType;
   };
 }
 
@@ -122,6 +146,13 @@ export function mergeInviteOpts(opts: InviteWorkflowOpts = {}): ResolvedInviteWo
     audit: {
       enabled: true,
       ...opts.audit,
+    },
+    forms: {
+      invite: InviteForm as unknown as TAtscriptAnnotatedType,
+      inviteEmail: InviteEmailForm as unknown as TAtscriptAnnotatedType,
+      inviteSendMode: InviteSendModeForm as unknown as TAtscriptAnnotatedType,
+      setPassword: SetPasswordForm as unknown as TAtscriptAnnotatedType,
+      ...opts.forms,
     },
   };
 }

@@ -118,10 +118,12 @@ export interface InviteForm {
     @meta.label 'Last name'
     lastName?: string
 
-    @ui.form.type 'text'
-    @meta.label 'Roles (comma-separated, optional)'
-    @ui.form.placeholder 'admin,editor'
-    roles?: string
+    // UX: select-on-array currently renders single-text-per-item via AsArray;
+    // dedicated multi-select widget tracked as atscript-ui follow-up.
+    @ui.form.type 'select'
+    @ui.form.fn.options '(_, _data, context) => Array.isArray(context.availableRoles) ? context.availableRoles.map(r => ({ value: r, label: r })) : []'
+    @meta.label 'Roles'
+    roles?: string[]
 }
 
 /**

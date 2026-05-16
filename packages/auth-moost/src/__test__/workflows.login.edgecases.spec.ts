@@ -200,11 +200,11 @@ describe("LoginWorkflow edge cases — MFA", () => {
 describe("LoginWorkflow edge cases — JSON-safety of opts snapshot", () => {
   // ── snapshotOpts proof via observable behaviour ────────────────────────────
   // The workflow's `init` step stashes the resolved opts on `ctx` so the
-  // schema can read flags. The default `acceptance.profileCompleteForm` is
-  // an atscript class instance — if `snapshotOpts` let it through, the
-  // in-memory state store would either fail to serialize or hold a stale
-  // class reference, breaking pause+resume.
-  it("default profileCompleteForm (atscript class) does NOT poison ctx.opts — pause+resume survives", async () => {
+  // schema can read flags. The default `forms.*` entries are atscript class
+  // instances — if `snapshotOpts` let them through, the in-memory state store
+  // would either fail to serialize or hold stale class references, breaking
+  // pause+resume.
+  it("default forms group (atscript classes) does NOT poison ctx.opts — pause+resume survives", async () => {
     const app = await prepareWfApp({
       loginOpts: { mfa: { enabled: false } },
     });

@@ -56,21 +56,6 @@ import { current } from "@wooksjs/event-core";
 import { useCookies, useRequest, useResponse } from "@wooksjs/event-http";
 import { Controller, Injectable } from "moost";
 
-import {
-  AskEmailForm,
-  AskPhoneForm,
-  BackupCodeForm,
-  ConcurrencyLimitForm,
-  ConsentMarketingForm,
-  LoginCredentialsForm,
-  MfaCodeForm,
-  PersonaSelectForm,
-  PincodeForm,
-  Select2faForm,
-  SetPasswordForm,
-  TenantSelectForm,
-  TermsAcceptForm,
-} from "../atscript/models/forms.as.js";
 import type { AuditEvent } from "../audit/index";
 import { MoostAuthConfig } from "../auth.config";
 import { buildLoginResponse, cookieAttrs } from "../auth.cookies";
@@ -536,32 +521,25 @@ export class LoginWorkflow {
   // ── Phase 0 ───────────────────────────────────────────────────────────
   @Step("init")
   init(@WorkflowParam("context") ctx: LoginWfCtx): undefined {
-    // The resolved-opts object is all JSON-safe nested data (no callbacks, no
-    // class instances) so it persists directly into `AsWfStore`. Step bodies
-    // still consult `this.opts.acceptance.profileCompleteForm` (a class) via
-    // `this.opts`, not `ctx.opts`.
+    // `snapshotOpts` returns a JSON-safe projection (drops the `forms` group of
+    // atscript classes) so it persists into `AsWfStore`. Step bodies still
+    // consult `this.opts.forms.*` via `this.opts`, not `ctx.opts`.
     ctx.opts = this.snapshotOpts(this.opts);
     return undefined;
   }
 
   /**
    * Returns the JSON-safe projection of `opts` stashed onto `ctx` for schema
-   * conditions to read. Default: identity — the resolved-opts shape already
-   * contains only nested primitive groups plus the (replaceable) atscript
-   * form class on `acceptance.profileCompleteForm`, which is dropped here so
-   * `AsWfStore`'s plain-JSON persistence doesn't choke.
+   * conditions to read. Default: drop the `forms` group (atscript form classes
+   * are not plain JSON) so `AsWfStore`'s plain-JSON persistence doesn't choke.
+   * Step bodies still consult the form classes via `this.opts.forms.*`.
    *
    * Consumers who put non-JSON values on `opts` (e.g. by extending the type)
    * can override this to strip them.
    */
   protected snapshotOpts(opts: ResolvedLoginWorkflowOpts): ResolvedLoginWorkflowOpts {
-    const { acceptance, ...rest } = opts;
-    // Drop the atscript form class — class instances are not plain JSON.
-    const { profileCompleteForm: _form, ...acceptanceJson } = acceptance;
-    return {
-      ...rest,
-      acceptance: acceptanceJson as ResolvedLoginWorkflowOpts["acceptance"],
-    };
+    const { forms: _forms, ...rest } = opts;
+    return rest as ResolvedLoginWorkflowOpts;
   }
 
   // ── Phase 1 ───────────────────────────────────────────────────────────
@@ -572,7 +550,7 @@ export class LoginWorkflow {
       | undefined,
     @WorkflowParam("context") ctx: LoginWfCtx,
   ): Promise<unknown> {
-    if (!input) return httpInputRequired(LoginCredentialsForm, ctx);
+    if (!input) return httpInputRequired(this.opts.forms.loginCredentials, ctx);
 
     // Alt-action routing — handled BEFORE form validation so the user can
     // hit "Forgot password?" without filling in the password field. The
@@ -585,8 +563,8 @@ export class LoginWorkflow {
       if (handled === ALT_HANDLED) return undefined;
     }
 
-    const errors = validateFormInput(LoginCredentialsForm, input);
-    if (errors) return httpInputRequired(LoginCredentialsForm, ctx, errors);
+    const errors = validateFormInput(this.opts.forms.loginCredentials, input);
+    if (errors) return httpInputRequired(this.opts.forms.loginCredentials, ctx, errors);
 
     try {
       const result = await this.users.login(input.username as string, input.password as string);
@@ -614,7 +592,9 @@ export class LoginWorkflow {
     } catch (err) {
       if (err instanceof UserAuthError) {
         if (err.type === "LOCKED") throw new HttpError(423, "Account locked");
-        return httpInputRequired(LoginCredentialsForm, ctx, { __form: "Invalid credentials" });
+        return httpInputRequired(this.opts.forms.loginCredentials, ctx, {
+          __form: "Invalid credentials",
+        });
       }
       throw err;
     }
@@ -692,9 +672,9 @@ export class LoginWorkflow {
     requireUsername(ctx);
     // Step 1: collect the email if we don't have one.
     if (!ctx.email) {
-      if (!input?.email) return httpInputRequired(AskEmailForm, ctx);
-      const errors = validateFormInput(AskEmailForm, input);
-      if (errors) return httpInputRequired(AskEmailForm, ctx, errors);
+      if (!input?.email) return httpInputRequired(this.opts.forms.askEmail, ctx);
+      const errors = validateFormInput(this.opts.forms.askEmail, input);
+      if (errors) return httpInputRequired(this.opts.forms.askEmail, ctx, errors);
       await this.users.addMfaMethod(ctx.username, {
         name: "email",
         value: input.email,
@@ -710,14 +690,14 @@ export class LoginWorkflow {
         code,
         expiresAt: ctx.pinExpire as number,
       });
-      return httpInputRequired(PincodeForm, ctx);
+      return httpInputRequired(this.opts.forms.pincode, ctx);
     }
     // Step 2: verify the OTP.
-    if (!input?.code) return httpInputRequired(PincodeForm, ctx);
-    const errors = validateFormInput(PincodeForm, input);
-    if (errors) return httpInputRequired(PincodeForm, ctx, errors);
+    if (!input?.code) return httpInputRequired(this.opts.forms.pincode, ctx);
+    const errors = validateFormInput(this.opts.forms.pincode, input);
+    if (errors) return httpInputRequired(this.opts.forms.pincode, ctx, errors);
     const pinErr = verifyPin(ctx, input.code);
-    if (pinErr) return httpInputRequired(PincodeForm, ctx, pinErr);
+    if (pinErr) return httpInputRequired(this.opts.forms.pincode, ctx, pinErr);
     await this.users.confirmMfaMethod(ctx.username, "email");
     ctx.emailConfirmed = true;
     ctx.pin = undefined;
@@ -732,9 +712,9 @@ export class LoginWorkflow {
   ): Promise<unknown> {
     requireUsername(ctx);
     if (!ctx.phone) {
-      if (!input?.phone) return httpInputRequired(AskPhoneForm, ctx);
-      const errors = validateFormInput(AskPhoneForm, input);
-      if (errors) return httpInputRequired(AskPhoneForm, ctx, errors);
+      if (!input?.phone) return httpInputRequired(this.opts.forms.askPhone, ctx);
+      const errors = validateFormInput(this.opts.forms.askPhone, input);
+      if (errors) return httpInputRequired(this.opts.forms.askPhone, ctx, errors);
       await this.users.addMfaMethod(ctx.username, {
         name: "sms",
         value: input.phone,
@@ -750,13 +730,13 @@ export class LoginWorkflow {
         ttlMs: this.opts.mfa.pincodeTtlMs,
         userId: ctx.username,
       });
-      return httpInputRequired(PincodeForm, ctx);
+      return httpInputRequired(this.opts.forms.pincode, ctx);
     }
-    if (!input?.code) return httpInputRequired(PincodeForm, ctx);
-    const errors = validateFormInput(PincodeForm, input);
-    if (errors) return httpInputRequired(PincodeForm, ctx, errors);
+    if (!input?.code) return httpInputRequired(this.opts.forms.pincode, ctx);
+    const errors = validateFormInput(this.opts.forms.pincode, input);
+    if (errors) return httpInputRequired(this.opts.forms.pincode, ctx, errors);
     const pinErr = verifyPin(ctx, input.code);
-    if (pinErr) return httpInputRequired(PincodeForm, ctx, pinErr);
+    if (pinErr) return httpInputRequired(this.opts.forms.pincode, ctx, pinErr);
     await this.users.confirmMfaMethod(ctx.username, "sms");
     ctx.phoneConfirmed = true;
     ctx.pin = undefined;
@@ -829,18 +809,20 @@ export class LoginWorkflow {
       | undefined,
     @WorkflowParam("context") ctx: LoginWfCtx,
   ): Promise<unknown> {
-    if (!input) return httpInputRequired(Select2faForm, ctx);
+    if (!input) return httpInputRequired(this.opts.forms.select2fa, ctx);
     if (input.action === "useBackupCode" && this.opts.mfa.backupCodes) {
       return this.handleBackupCode(
         (input as { code?: string }).code ? { code: (input as { code?: string }).code } : undefined,
         ctx,
       );
     }
-    const errors = validateFormInput(Select2faForm, input);
-    if (errors) return httpInputRequired(Select2faForm, ctx, errors);
+    const errors = validateFormInput(this.opts.forms.select2fa, input);
+    if (errors) return httpInputRequired(this.opts.forms.select2fa, ctx, errors);
     const picked = (ctx.mfaEnrolledMethods ?? []).find((m) => m.methodName === input.methodName);
     if (!picked) {
-      return httpInputRequired(Select2faForm, ctx, { methodName: "Unknown MFA method" });
+      return httpInputRequired(this.opts.forms.select2fa, ctx, {
+        methodName: "Unknown MFA method",
+      });
     }
     ctx.mfaMethod = picked.kind;
     ctx.mfaSaveAsDefault = Boolean(input.saveAsDefault);
@@ -891,11 +873,13 @@ export class LoginWorkflow {
       | undefined,
     @WorkflowParam("context") ctx: LoginWfCtx,
   ): Promise<unknown> {
-    if (!input) return httpInputRequired(PincodeForm, ctx);
+    if (!input) return httpInputRequired(this.opts.forms.pincode, ctx);
     if (input.action === "resend") {
       if (ctx.pinTimeout && Date.now() < ctx.pinTimeout) {
         const waitSec = Math.ceil((ctx.pinTimeout - Date.now()) / 1000);
-        return httpInputRequired(PincodeForm, ctx, { __form: `Please wait ${waitSec}s` });
+        return httpInputRequired(this.opts.forms.pincode, ctx, {
+          __form: `Please wait ${waitSec}s`,
+        });
       }
       ctx.pin = undefined;
       ctx.pinExpire = undefined;
@@ -904,7 +888,7 @@ export class LoginWorkflow {
       // through to the resend by clearing and re-invoking via the schema.
       // moost-wf re-evaluates conditions on resume — clearing `pin` causes
       // `pincode-send-login` to be re-included next pass.
-      return httpInputRequired(PincodeForm, ctx, { __form: "Code resent" });
+      return httpInputRequired(this.opts.forms.pincode, ctx, { __form: "Code resent" });
     }
     if (input.action === "useDifferentMethod") {
       ctx.ignoreMfaDefault = true;
@@ -919,10 +903,10 @@ export class LoginWorkflow {
       // consumes. The presence of `code` is the toggle.
       return this.handleBackupCode(input.code ? { code: input.code } : undefined, ctx);
     }
-    const errors = validateFormInput(PincodeForm, input);
-    if (errors) return httpInputRequired(PincodeForm, ctx, errors);
+    const errors = validateFormInput(this.opts.forms.pincode, input);
+    if (errors) return httpInputRequired(this.opts.forms.pincode, ctx, errors);
     const pinErr = verifyPin(ctx, input.code);
-    if (pinErr) return httpInputRequired(PincodeForm, ctx, pinErr);
+    if (pinErr) return httpInputRequired(this.opts.forms.pincode, ctx, pinErr);
     ctx.mfaChecked = true;
     // Allow the risk-step-up gate to re-evaluate after this re-verification.
     ctx.riskStepUpEvaluated = false;
@@ -939,7 +923,7 @@ export class LoginWorkflow {
       | undefined,
     @WorkflowParam("context") ctx: LoginWfCtx,
   ): Promise<unknown> {
-    if (!input) return httpInputRequired(MfaCodeForm, ctx);
+    if (!input) return httpInputRequired(this.opts.forms.mfaCode, ctx);
     if (input.action === "useDifferentMethod") {
       ctx.ignoreMfaDefault = true;
       ctx.mfaMethod = undefined;
@@ -948,8 +932,8 @@ export class LoginWorkflow {
     if (input.action === "useBackupCode" && this.opts.mfa.backupCodes) {
       return this.handleBackupCode(input.code ? { code: input.code } : undefined, ctx);
     }
-    const errors = validateFormInput(MfaCodeForm, input);
-    if (errors) return httpInputRequired(MfaCodeForm, ctx, errors);
+    const errors = validateFormInput(this.opts.forms.mfaCode, input);
+    if (errors) return httpInputRequired(this.opts.forms.mfaCode, ctx, errors);
     requireUsername(ctx);
     try {
       await this.users.verifyMfa(ctx.username, input.code as string);
@@ -965,7 +949,7 @@ export class LoginWorkflow {
         if (err.type === "MFA_NOT_CONFIGURED") throw new HttpError(400, "No TOTP MFA configured");
         if (err.type === "MFA_INVALID") {
           if (err.details?.lockEnds !== undefined) throw new HttpError(423, "Account locked");
-          return httpInputRequired(MfaCodeForm, ctx, { code: "Invalid code" });
+          return httpInputRequired(this.opts.forms.mfaCode, ctx, { code: "Invalid code" });
         }
       }
       throw err;
@@ -983,12 +967,13 @@ export class LoginWorkflow {
     input: { code?: string } | undefined,
     ctx: LoginWfCtx,
   ): Promise<unknown> {
-    if (!input) return httpInputRequired(BackupCodeForm, ctx);
-    const errors = validateFormInput(BackupCodeForm, input);
-    if (errors) return httpInputRequired(BackupCodeForm, ctx, errors);
+    if (!input) return httpInputRequired(this.opts.forms.backupCode, ctx);
+    const errors = validateFormInput(this.opts.forms.backupCode, input);
+    if (errors) return httpInputRequired(this.opts.forms.backupCode, ctx, errors);
     requireUsername(ctx);
     const ok = await this.users.consumeBackupCode(ctx.username, input.code as string);
-    if (!ok) return httpInputRequired(BackupCodeForm, ctx, { code: "Invalid backup code" });
+    if (!ok)
+      return httpInputRequired(this.opts.forms.backupCode, ctx, { code: "Invalid backup code" });
     ctx.mfaChecked = true;
     ctx.riskStepUpEvaluated = false;
     return undefined;
@@ -1030,7 +1015,7 @@ export class LoginWorkflow {
       | undefined,
     @WorkflowParam("context") ctx: LoginWfCtx,
   ): Promise<unknown> {
-    if (!input) return httpInputRequired(SetPasswordForm, ctx);
+    if (!input) return httpInputRequired(this.opts.forms.setPassword, ctx);
     if (input.action === "logout") {
       useWfFinished().set({ type: "data", value: { aborted: true, reason: "logout" } });
       // Gate downstream steps (issue/audit/notify/redirect) — without this
@@ -1039,10 +1024,10 @@ export class LoginWorkflow {
       ctx.aborted = true;
       return undefined;
     }
-    const errors = validateFormInput(SetPasswordForm, input);
-    if (errors) return httpInputRequired(SetPasswordForm, ctx, errors);
+    const errors = validateFormInput(this.opts.forms.setPassword, input);
+    if (errors) return httpInputRequired(this.opts.forms.setPassword, ctx, errors);
     if (input.newPassword !== input.confirmPassword) {
-      return httpInputRequired(SetPasswordForm, ctx, {
+      return httpInputRequired(this.opts.forms.setPassword, ctx, {
         confirmPassword: "Passwords do not match",
       });
     }
@@ -1065,7 +1050,7 @@ export class LoginWorkflow {
       | undefined,
     @WorkflowParam("context") ctx: LoginWfCtx,
   ): Promise<unknown> {
-    if (!input) return httpInputRequired(TermsAcceptForm, ctx);
+    if (!input) return httpInputRequired(this.opts.forms.termsAccept, ctx);
     if (input.action === "decline") {
       useWfFinished().set({
         type: "data",
@@ -1075,13 +1060,15 @@ export class LoginWorkflow {
       ctx.aborted = true;
       return undefined;
     }
-    const errors = validateFormInput(TermsAcceptForm, input);
-    if (errors) return httpInputRequired(TermsAcceptForm, ctx, errors);
+    const errors = validateFormInput(this.opts.forms.termsAccept, input);
+    if (errors) return httpInputRequired(this.opts.forms.termsAccept, ctx, errors);
     if (input.accepted !== true) {
-      return httpInputRequired(TermsAcceptForm, ctx, { accepted: "You must accept the terms" });
+      return httpInputRequired(this.opts.forms.termsAccept, ctx, {
+        accepted: "You must accept the terms",
+      });
     }
     if (input.acceptedVersion !== this.opts.acceptance.termsVersion) {
-      return httpInputRequired(TermsAcceptForm, ctx, {
+      return httpInputRequired(this.opts.forms.termsAccept, ctx, {
         acceptedVersion: "Version mismatch — please retry",
       });
     }
@@ -1095,7 +1082,7 @@ export class LoginWorkflow {
     @WorkflowParam("input") input: Record<string, unknown> | undefined,
     @WorkflowParam("context") ctx: LoginWfCtx,
   ): Promise<unknown> {
-    const form = this.opts.acceptance.profileCompleteForm;
+    const form = this.opts.forms.profileComplete;
     if (!input) return httpInputRequired(form, ctx);
     const errors = validateFormInput(form, input, { partial: "deep" });
     if (errors) return httpInputRequired(form, ctx, errors);
@@ -1122,7 +1109,7 @@ export class LoginWorkflow {
     @WorkflowParam("input") input: { optIn?: boolean; action?: string } | undefined,
     @WorkflowParam("context") ctx: LoginWfCtx,
   ): Promise<unknown> {
-    if (!input) return httpInputRequired(ConsentMarketingForm, ctx);
+    if (!input) return httpInputRequired(this.opts.forms.consentMarketing, ctx);
     requireUsername(ctx);
     await this.applyConsentMarketing(ctx.username, Boolean(input.optIn));
     ctx.consentApplied = true;
@@ -1145,12 +1132,12 @@ export class LoginWorkflow {
     if (!ctx.availableTenants && ctx.username) {
       ctx.availableTenants = await this.loadTenants(ctx.username);
     }
-    if (!input) return httpInputRequired(TenantSelectForm, ctx);
-    const errors = validateFormInput(TenantSelectForm, input);
-    if (errors) return httpInputRequired(TenantSelectForm, ctx, errors);
+    if (!input) return httpInputRequired(this.opts.forms.tenantSelect, ctx);
+    const errors = validateFormInput(this.opts.forms.tenantSelect, input);
+    if (errors) return httpInputRequired(this.opts.forms.tenantSelect, ctx, errors);
     const ok = (ctx.availableTenants ?? []).some((t) => t.id === input.tenantId);
     if (!ok) {
-      return httpInputRequired(TenantSelectForm, ctx, { tenantId: "Unknown tenant" });
+      return httpInputRequired(this.opts.forms.tenantSelect, ctx, { tenantId: "Unknown tenant" });
     }
     ctx.selectedTenantId = input.tenantId;
     return undefined;
@@ -1173,12 +1160,14 @@ export class LoginWorkflow {
     if (!ctx.availablePersonas && ctx.username) {
       ctx.availablePersonas = await this.loadPersonas(ctx.username);
     }
-    if (!input) return httpInputRequired(PersonaSelectForm, ctx);
-    const errors = validateFormInput(PersonaSelectForm, input);
-    if (errors) return httpInputRequired(PersonaSelectForm, ctx, errors);
+    if (!input) return httpInputRequired(this.opts.forms.personaSelect, ctx);
+    const errors = validateFormInput(this.opts.forms.personaSelect, input);
+    if (errors) return httpInputRequired(this.opts.forms.personaSelect, ctx, errors);
     const ok = (ctx.availablePersonas ?? []).some((p) => p.id === input.personaId);
     if (!ok) {
-      return httpInputRequired(PersonaSelectForm, ctx, { personaId: "Unknown persona" });
+      return httpInputRequired(this.opts.forms.personaSelect, ctx, {
+        personaId: "Unknown persona",
+      });
     }
     ctx.selectedPersonaId = input.personaId;
     return undefined;
@@ -1203,15 +1192,15 @@ export class LoginWorkflow {
     if (cfg.onLimit === "reject") {
       throw new HttpError(429, "Session limit reached");
     }
-    if (!input) return httpInputRequired(ConcurrencyLimitForm, ctx);
+    if (!input) return httpInputRequired(this.opts.forms.concurrencyLimit, ctx);
     if (input.action === "cancel") {
       useWfFinished().set({ type: "data", value: { aborted: true, reason: "sessionLimit" } });
       // BUG-LOGIN-5: stop the schema progressing into `issue` etc.
       ctx.aborted = true;
       return undefined;
     }
-    const errors = validateFormInput(ConcurrencyLimitForm, input);
-    if (errors) return httpInputRequired(ConcurrencyLimitForm, ctx, errors);
+    const errors = validateFormInput(this.opts.forms.concurrencyLimit, input);
+    if (errors) return httpInputRequired(this.opts.forms.concurrencyLimit, ctx, errors);
     if (input.action === "logoutOthers" && ctx.username) {
       await this.logoutOtherSessions(ctx.username);
     }

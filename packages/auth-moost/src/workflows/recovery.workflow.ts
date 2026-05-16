@@ -45,13 +45,6 @@ import { current } from "@wooksjs/event-core";
 import { useUrlParams } from "@wooksjs/event-http";
 import { Controller, Injectable } from "moost";
 
-import {
-  EmailIdentifierForm,
-  PincodeForm,
-  RecoveryFactorForm,
-  RecoveryModeSelectForm,
-  SetPasswordForm,
-} from "../atscript/models/forms.as.js";
 import type { AuditEvent } from "../audit/index";
 import { MoostAuthConfig } from "../auth.config";
 import { buildLoginResponse } from "../auth.cookies";
@@ -275,14 +268,16 @@ export class RecoveryWorkflow {
 
   /**
    * Returns the JSON-safe projection of `opts` stashed onto `ctx` for schema
-   * conditions to read. Default: identity — the resolved-opts shape already
-   * contains only nested primitive groups (no callbacks, no class instances).
+   * conditions to read. Default: drop the `forms` group (atscript form classes
+   * are not plain JSON) so `AsWfStore`'s plain-JSON persistence doesn't choke.
+   * Step bodies still consult the form classes via `this.opts.forms.*`.
    *
    * Consumers who extend the opts type with non-JSON values can override this
    * to strip them so `AsWfStore`'s plain-JSON persistence doesn't choke.
    */
   protected snapshotOpts(opts: ResolvedRecoveryWorkflowOpts): ResolvedRecoveryWorkflowOpts {
-    return opts;
+    const { forms: _forms, ...rest } = opts;
+    return rest as ResolvedRecoveryWorkflowOpts;
   }
 
   // ── request ──────────────────────────────────────────────────────────
@@ -299,7 +294,7 @@ export class RecoveryWorkflow {
       if (prefilled) {
         formCtx.defaults = { email: prefilled };
       }
-      return httpInputRequired(EmailIdentifierForm, formCtx);
+      return httpInputRequired(this.opts.forms.emailIdentifier, formCtx);
     }
 
     if (input.action === "backToLogin" && this.opts.altActions.backToLogin) {
@@ -307,8 +302,8 @@ export class RecoveryWorkflow {
       return undefined;
     }
 
-    const errors = validateFormInput(EmailIdentifierForm, input);
-    if (errors) return httpInputRequired(EmailIdentifierForm, ctx, errors);
+    const errors = validateFormInput(this.opts.forms.emailIdentifier, input);
+    if (errors) return httpInputRequired(this.opts.forms.emailIdentifier, ctx, errors);
 
     const email = input.email as string;
     ctx.email = email;
@@ -357,13 +352,13 @@ export class RecoveryWorkflow {
     @WorkflowParam("input") input: { mode?: string; action?: string } | undefined,
     @WorkflowParam("context") ctx: RecoveryWfCtx,
   ): unknown {
-    if (!input) return httpInputRequired(RecoveryModeSelectForm, ctx);
+    if (!input) return httpInputRequired(this.opts.forms.recoveryModeSelect, ctx);
     if (input.action === "backToLogin" && this.opts.altActions.backToLogin) {
       this.abortToLogin(ctx);
       return undefined;
     }
-    const errors = validateFormInput(RecoveryModeSelectForm, input);
-    if (errors) return httpInputRequired(RecoveryModeSelectForm, ctx, errors);
+    const errors = validateFormInput(this.opts.forms.recoveryModeSelect, input);
+    if (errors) return httpInputRequired(this.opts.forms.recoveryModeSelect, ctx, errors);
     const mode = input.mode as "magicLink" | "otp";
     ctx.selectedMode = mode;
     ctx.resolvedMode = mode;
@@ -433,7 +428,7 @@ export class RecoveryWorkflow {
     @WorkflowParam("input") input: { code?: string; action?: string } | undefined,
     @WorkflowParam("context") ctx: RecoveryWfCtx,
   ): Promise<unknown> {
-    if (!input) return httpInputRequired(PincodeForm, ctx);
+    if (!input) return httpInputRequired(this.opts.forms.pincode, ctx);
 
     if (input.action === "backToLogin" && this.opts.altActions.backToLogin) {
       this.abortToLogin(ctx);
@@ -442,7 +437,9 @@ export class RecoveryWorkflow {
     if (input.action === "resend") {
       if (ctx.pinResendAllowedAt && Date.now() < ctx.pinResendAllowedAt) {
         const waitSec = Math.ceil((ctx.pinResendAllowedAt - Date.now()) / 1000);
-        return httpInputRequired(PincodeForm, ctx, { __form: `Please wait ${waitSec}s` });
+        return httpInputRequired(this.opts.forms.pincode, ctx, {
+          __form: `Please wait ${waitSec}s`,
+        });
       }
       // Clear pin so the while-loop's `sendOtp` condition re-fires.
       // `delete` (not `= undefined`) so the persisted ctx remains JSON-clean
@@ -455,7 +452,7 @@ export class RecoveryWorkflow {
     if (input.action === "useDifferentTransport") {
       const transports = this.opts.delivery.otp.transports;
       if (transports.length < 2) {
-        return httpInputRequired(PincodeForm, ctx, {
+        return httpInputRequired(this.opts.forms.pincode, ctx, {
           __form: "Only one transport configured",
         });
       }
@@ -467,10 +464,10 @@ export class RecoveryWorkflow {
       return undefined;
     }
 
-    const errors = validateFormInput(PincodeForm, input);
-    if (errors) return httpInputRequired(PincodeForm, ctx, errors);
+    const errors = validateFormInput(this.opts.forms.pincode, input);
+    if (errors) return httpInputRequired(this.opts.forms.pincode, ctx, errors);
     const pinErr = verifyPin(ctx, input.code);
-    if (pinErr) return httpInputRequired(PincodeForm, ctx, pinErr);
+    if (pinErr) return httpInputRequired(this.opts.forms.pincode, ctx, pinErr);
     ctx.pinVerified = true;
     delete ctx.pin;
     delete ctx.pinExpire;
@@ -483,13 +480,13 @@ export class RecoveryWorkflow {
     @WorkflowParam("input") input: { factor?: string; value?: string; action?: string } | undefined,
     @WorkflowParam("context") ctx: RecoveryWfCtx,
   ): Promise<unknown> {
-    if (!input) return httpInputRequired(RecoveryFactorForm, ctx);
+    if (!input) return httpInputRequired(this.opts.forms.recoveryFactor, ctx);
     if (input.action === "backToLogin" && this.opts.altActions.backToLogin) {
       this.abortToLogin(ctx);
       return undefined;
     }
-    const errors = validateFormInput(RecoveryFactorForm, input);
-    if (errors) return httpInputRequired(RecoveryFactorForm, ctx, errors);
+    const errors = validateFormInput(this.opts.forms.recoveryFactor, input);
+    if (errors) return httpInputRequired(this.opts.forms.recoveryFactor, ctx, errors);
     requireUsername(ctx);
     const factor = input.factor as string;
     const value = input.value as string;
@@ -497,7 +494,7 @@ export class RecoveryWorkflow {
     const ok = await this.verifyRecoveryFactor({ factor, value, ctx });
     if (!ok) {
       // Opaque error — never reveal which factor is enrolled.
-      return httpInputRequired(RecoveryFactorForm, ctx, { value: "Invalid factor" });
+      return httpInputRequired(this.opts.forms.recoveryFactor, ctx, { value: "Invalid factor" });
     }
     ctx.factorVerified = true;
     return undefined;
@@ -546,7 +543,7 @@ export class RecoveryWorkflow {
       // render hints alongside the inputs.
       const formCtx: Record<string, unknown> = { ...(ctx as Record<string, unknown>) };
       formCtx.passwordPolicies = this.users.getTransferablePolicies();
-      return httpInputRequired(SetPasswordForm, formCtx);
+      return httpInputRequired(this.opts.forms.setPassword, formCtx);
     }
 
     if (input.action === "backToLogin" && this.opts.altActions.backToLogin) {
@@ -554,15 +551,17 @@ export class RecoveryWorkflow {
       return undefined;
     }
 
-    const errors = validateFormInput(SetPasswordForm, input);
-    if (errors) return httpInputRequired(SetPasswordForm, ctx, errors);
+    const errors = validateFormInput(this.opts.forms.setPassword, input);
+    if (errors) return httpInputRequired(this.opts.forms.setPassword, ctx, errors);
     if (input.newPassword !== input.confirmPassword) {
-      return httpInputRequired(SetPasswordForm, ctx, {
+      return httpInputRequired(this.opts.forms.setPassword, ctx, {
         confirmPassword: "Passwords do not match",
       });
     }
     if (!ctx.username) {
-      return httpInputRequired(SetPasswordForm, ctx, { __form: "Recovery session expired" });
+      return httpInputRequired(this.opts.forms.setPassword, ctx, {
+        __form: "Recovery session expired",
+      });
     }
     try {
       await this.users.setPassword(ctx.username, input.newPassword as string);

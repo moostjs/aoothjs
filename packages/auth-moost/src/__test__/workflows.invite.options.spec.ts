@@ -240,18 +240,33 @@ describe("InviteWorkflow — getAvailableRoles + inferRoles", () => {
     const app = await prepareWfApp({
       inviteOpts: { accept: { showConfirmation: false } },
       inviteHooks: {
-        getAvailableRoles: async () => [
-          { id: "admin", label: "Administrator" },
-          { id: "viewer", label: "Viewer" },
-        ],
+        getAvailableRoles: async () => ["admin", "viewer"],
       },
     });
     const r1 = await app.trigger({ wfid: "auth.invite" });
     // Admin form returned; availableRoles whitelisted via `@wf.context.pass`.
-    expect(r1.body?.availableRoles).toEqual([
-      { id: "admin", label: "Administrator" },
-      { id: "viewer", label: "Viewer" },
-    ]);
+    expect(r1.body?.availableRoles).toEqual(["admin", "viewer"]);
+  });
+
+  it("getAvailableRoles whitelist rejects admin-submitted role outside the list", async () => {
+    // Server-side guard against the admin submitting a role that the consumer
+    // hook did not surface — without this, a tampered form payload could
+    // assign arbitrary roles.
+    const app = await prepareWfApp({
+      inviteOpts: { accept: { showConfirmation: false } },
+      inviteHooks: {
+        getAvailableRoles: async () => ["admin", "viewer"],
+      },
+    });
+    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r2 = await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { email: "bad-role@test.com", roles: ["admin", "superuser"] },
+    });
+    // Workflow re-pauses on the invite form with a `roles` field error.
+    expect(r2.body?.errors).toMatchObject({ roles: "Invalid role" });
+    // No invite email was sent — the workflow did not advance past the form.
+    expect(app.emails).toHaveLength(0);
   });
 
   it("inferRoles merges with admin-supplied roles (set-union)", async () => {
@@ -268,7 +283,7 @@ describe("InviteWorkflow — getAvailableRoles + inferRoles", () => {
     const r1 = await app.trigger({ wfid: "auth.invite" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
-      input: { email: "infer@test.com", roles: "viewer, admin" },
+      input: { email: "infer@test.com", roles: ["viewer", "admin"] },
     });
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({ email: "infer@test.com" });

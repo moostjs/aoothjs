@@ -47,7 +47,7 @@ describe("WF-INVITE — admin-gated invite", () => {
       {
         wfid: "auth.invite",
         wfs: startBody.wfs,
-        input: { email: NEW_INVITEE_EMAIL, roles: "member, viewer" },
+        input: { email: NEW_INVITEE_EMAIL, roles: ["member", "viewer"] },
       },
       { token: daveTokens.accessToken },
     );
@@ -78,7 +78,7 @@ describe("WF-INVITE — admin-gated invite", () => {
       {
         wfid: "auth.invite",
         wfs: startBody.wfs,
-        input: { email: NEW_INVITEE_EMAIL, roles: "member" },
+        input: { email: NEW_INVITEE_EMAIL, roles: ["member"] },
       },
       { token: daveTokens.accessToken },
     );
@@ -160,7 +160,11 @@ describe("WF-INVITE — admin-gated invite", () => {
     const startBody = await readWfPause(start);
     await app.triggerWf(
       "admin",
-      { wfid: "auth.invite", wfs: startBody.wfs, input: { email: profileEmail, roles: "member" } },
+      {
+        wfid: "auth.invite",
+        wfs: startBody.wfs,
+        input: { email: profileEmail, roles: ["member"] },
+      },
       { token: daveTokens.accessToken },
     );
 

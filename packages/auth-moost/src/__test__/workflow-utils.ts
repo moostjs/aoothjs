@@ -231,10 +231,7 @@ export interface PrepareWfOpts {
     prepareUser?: (
       input: PreparedUserInput,
     ) => Promise<Record<string, unknown>> | Record<string, unknown>;
-    getAvailableRoles?: () =>
-      | Promise<Array<{ id: string; label: string }> | undefined>
-      | Array<{ id: string; label: string }>
-      | undefined;
+    getAvailableRoles?: () => Promise<string[] | undefined> | string[] | undefined;
     inferRoles?: (input: {
       email: string;
       firstName?: string;
@@ -820,9 +817,7 @@ function buildHarnessInviteClass(
       return super.prepareUser(input);
     }
 
-    protected override async getAvailableRoles(): Promise<
-      Array<{ id: string; label: string }> | undefined
-    > {
+    protected override async getAvailableRoles(): Promise<string[] | undefined> {
       if (hooks.getAvailableRoles) return await hooks.getAvailableRoles();
       return super.getAvailableRoles();
     }

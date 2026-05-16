@@ -13,6 +13,15 @@
  * reset. (Rate-limit was dropped from the workflow surface — consumers who
  * want a cap wire it themselves at the trigger / HTTP layer.)
  */
+import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
+
+import {
+  EmailIdentifierForm,
+  PincodeForm,
+  RecoveryFactorForm,
+  RecoveryModeSelectForm,
+  SetPasswordForm,
+} from "../atscript/models/forms.as.js";
 
 /** Magic-link TTL default — also used as the persisted wf-state token TTL. */
 export const DEFAULT_RECOVERY_TOKEN_TTL_MS = 60 * 60 * 1000;
@@ -45,6 +54,17 @@ export interface RecoveryWorkflowOpts {
   audit?: {
     enabled?: boolean;
   };
+  /**
+   * Replaceable form schemas. Each field defaults to the corresponding
+   * `.as` form shipped under `@aoothjs/auth-moost/atscript/models`.
+   */
+  forms?: {
+    emailIdentifier?: TAtscriptAnnotatedType;
+    pincode?: TAtscriptAnnotatedType;
+    recoveryFactor?: TAtscriptAnnotatedType;
+    recoveryModeSelect?: TAtscriptAnnotatedType;
+    setPassword?: TAtscriptAnnotatedType;
+  };
 }
 
 /**
@@ -76,6 +96,13 @@ export interface ResolvedRecoveryWorkflowOpts {
   };
   audit: {
     enabled: boolean;
+  };
+  forms: {
+    emailIdentifier: TAtscriptAnnotatedType;
+    pincode: TAtscriptAnnotatedType;
+    recoveryFactor: TAtscriptAnnotatedType;
+    recoveryModeSelect: TAtscriptAnnotatedType;
+    setPassword: TAtscriptAnnotatedType;
   };
 }
 
@@ -117,6 +144,14 @@ export function mergeRecoveryOpts(opts: RecoveryWorkflowOpts = {}): ResolvedReco
     audit: {
       enabled: true,
       ...opts.audit,
+    },
+    forms: {
+      emailIdentifier: EmailIdentifierForm as unknown as TAtscriptAnnotatedType,
+      pincode: PincodeForm as unknown as TAtscriptAnnotatedType,
+      recoveryFactor: RecoveryFactorForm as unknown as TAtscriptAnnotatedType,
+      recoveryModeSelect: RecoveryModeSelectForm as unknown as TAtscriptAnnotatedType,
+      setPassword: SetPasswordForm as unknown as TAtscriptAnnotatedType,
+      ...opts.forms,
     },
   };
 }
