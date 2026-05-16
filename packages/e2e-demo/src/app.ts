@@ -1,7 +1,6 @@
 import {
   arbacAuthorizeInterceptor,
   type ArbacDbScope,
-  ArbacResource,
   ArbacUserProviderToken,
   MoostArbac,
 } from "@aoothjs/arbac-moost";
@@ -77,6 +76,40 @@ export interface BuildAppOptions {
    * Used by DX-08.
    */
   authEndpointsEnabled?: boolean;
+  /**
+   * E2E coverage hook — per-workflow option overrides deep-merged into the
+   * demo defaults (one nested group at a time, e.g. `{ mfa: { enabled: false } }`
+   * replaces only `mfa.enabled` and preserves `mfa.transports`). Used by the
+   * workflow-options e2e specs to flip a single flag without forking the
+   * whole demo wiring.
+   */
+  loginOpts?: LoginWorkflowOpts;
+  recoveryOpts?: RecoveryWorkflowOpts;
+  inviteOpts?: InviteWorkflowOpts;
+}
+
+/** Two-level deep merge — sufficient for the nested-pojo workflow opts. */
+function mergeWfOpts<T>(base: T, over?: T): T {
+  if (!over) return base;
+  const baseRec = base as unknown as Record<string, unknown>;
+  const overRec = over as unknown as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...baseRec };
+  for (const [k, v] of Object.entries(overRec)) {
+    const prev = out[k];
+    if (
+      prev &&
+      typeof prev === "object" &&
+      !Array.isArray(prev) &&
+      v &&
+      typeof v === "object" &&
+      !Array.isArray(v)
+    ) {
+      out[k] = { ...(prev as Record<string, unknown>), ...(v as Record<string, unknown>) };
+    } else {
+      out[k] = v;
+    }
+  }
+  return out as T;
 }
 
 export interface AppHandle {
@@ -144,13 +177,16 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // class's `@Workflow` / `@WorkflowSchema` / `@Step` metadata; the
   // re-declared ctor is required because TS emits fresh design-paramtypes per
   // class.
-  const demoLoginOpts: LoginWorkflowOpts = {
-    // Representative demo subset — no SMS gateway in the demo, so we strip
-    // 'sms' from the default mfa.transports list.
-    mfa: { transports: ["email", "totp"] },
-    alternateCredentials: { forgotPassword: true },
-    guards: { passwordInitial: true },
-  };
+  const demoLoginOpts: LoginWorkflowOpts = mergeWfOpts(
+    {
+      // Representative demo subset — no SMS gateway in the demo, so we strip
+      // 'sms' from the default mfa.transports list.
+      mfa: { transports: ["email", "totp"] },
+      alternateCredentials: { forgotPassword: true },
+      guards: { passwordInitial: true },
+    },
+    opts.loginOpts,
+  );
   @Inherit()
   @Injectable("FOR_EVENT")
   @Controller()
@@ -167,16 +203,19 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // that overrides `protected` methods. The demo overrides `deliver` for OTP
   // emails (magic-link mode uses the email outlet on the trigger route) and
   // `emailToUserId` to map a recovery-step email to the canonical username.
-  const demoRecoveryOpts: RecoveryWorkflowOpts = {
-    delivery: { magicLinkTtlMs: env.RECOVERY_TTL_MS },
-    // BIG 3.2 defaults flipped `freshLoginRequired` to true (redirect to
-    // /login after reset) and `revokeAllSessions` to true (kick every active
-    // session). The demo preserves the prior behavior (auto-login;
-    // pre-existing sessions left intact) so the existing e2e tests keep
-    // asserting the same outcomes; production consumers should leave the
-    // secure defaults on.
-    postReset: { freshLoginRequired: false, revokeAllSessions: false },
-  };
+  const demoRecoveryOpts: RecoveryWorkflowOpts = mergeWfOpts(
+    {
+      delivery: { magicLinkTtlMs: env.RECOVERY_TTL_MS },
+      // BIG 3.2 defaults flipped `freshLoginRequired` to true (redirect to
+      // /login after reset) and `revokeAllSessions` to true (kick every active
+      // session). The demo preserves the prior behavior (auto-login;
+      // pre-existing sessions left intact) so the existing e2e tests keep
+      // asserting the same outcomes; production consumers should leave the
+      // secure defaults on.
+      postReset: { freshLoginRequired: false, revokeAllSessions: false },
+    },
+    opts.recoveryOpts,
+  );
   @Inherit()
   @Injectable("FOR_EVENT")
   @Controller()
@@ -199,21 +238,30 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
 
   // Phase-4 reshape: `InviteWorkflow` is also configured via a consumer
   // subclass that overrides `protected` methods — matching login + recovery.
-  const demoInviteOpts: InviteWorkflowOpts = {
-    send: { tokenTtlMs: env.INVITE_TTL_MS },
-    // Existing demo tests assert the auto-login response payload — pre-dating
-    // the BIG 3.3 confirmation pause. Off here so the demo matches today's
-    // behavior; production should keep the default ON.
-    accept: { showConfirmation: false },
-  };
-  // `@ArbacResource('auth') + @ArbacAction('admin.invite')` re-establish the
-  // admin gating that used to live on the `/wf/admin` controller route
-  // (deleted in AUTH-MOOST-5). The global `arbacAuthorizeInterceptor` runs on
-  // workflow events too, so the class-level resource + method-level action
-  // gate every invite-related workflow event (start + resume).
+  const demoInviteOpts: InviteWorkflowOpts = mergeWfOpts(
+    {
+      send: { tokenTtlMs: env.INVITE_TTL_MS },
+      // Existing demo tests assert the auto-login response payload — pre-dating
+      // the BIG 3.3 confirmation pause. Off here so the demo matches today's
+      // behavior; production should keep the default ON.
+      accept: { showConfirmation: false },
+    },
+    opts.inviteOpts,
+  );
+  // No `@ArbacResource('auth')` here yet — see `ISSUES.md` (workflow-event
+  // ARBAC gating) for the design work needed to gate admin start vs allow
+  // anonymous magic-link resume. The bundled `InviteWorkflow` marks WF_FLOW
+  // + every accept-tail step `@Public()` so a future class-level
+  // `@ArbacResource(...) @ArbacAction(...)` here gates only the admin-side
+  // steps (`inviteInit`, `inviteSelectSendMode`, `inviteAdminInviteForm`,
+  // `inviteInferRolesStep`, `invitePreCreateUser`, `inviteSendInviteEmail`,
+  // `inviteReturnShareableLink`, `inviteLoadPendingUser`, `inviteCancelInvite`).
+  // The remaining blocker: those admin-side steps RE-RUN on resume (the
+  // workflow runtime restarts at the paused step index, not after it), so
+  // re-evaluating arbac on resume with the now-anonymous principal still
+  // throws 401. Needs a resume-aware bypass — out of scope for this fix.
   @Inherit()
   @Injectable("FOR_EVENT")
-  @ArbacResource("auth")
   @Controller()
   class DemoInviteWorkflow extends InviteWorkflow {
     constructor(users: UserService, authCred: AuthCredential) {

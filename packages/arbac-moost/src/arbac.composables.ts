@@ -1,6 +1,6 @@
 import { HttpError } from "@moostjs/event-http";
 import type { EventContext } from "@wooksjs/event-core";
-import { defineWook, key } from "@wooksjs/event-core";
+import { current, key } from "@wooksjs/event-core";
 import { getConstructor, useControllerContext } from "moost";
 
 import type { TArbacMeta } from "./arbac.mate";
@@ -46,10 +46,27 @@ interface ArbacBindings {
  *
  * Exposes scope read/write, lazy `evaluate`, and the resolved
  * resource/action/public flags derived from the current controller +
- * method metadata. Built with `defineWook` so multiple calls inside the
- * same event share one cached object.
+ * method metadata.
+ *
+ * Intentionally NOT a `defineWook`-cached composable: WF events created via
+ * `WfTriggerProvider.handle()` are passed the originating HTTP `EventContext`
+ * as their `parent`. A `defineWook` cache slot would traverse that parent
+ * chain and return the HTTP request's first-resolution tuple (resource +
+ * action + isPublic from the @Public-marked `/auth/trigger` route) for every
+ * downstream WF step — silently bypassing class-level `@ArbacResource` on the
+ * workflow controller. Re-resolving per call is cheap (two `mate.read` cache
+ * hits) and avoids that cross-context leak.
+ *
+ * Read/write scope state goes through `arbacScopesKey` directly so it still
+ * lives on the per-event slot (set inside the WF event ctx, read by handlers
+ * running inside the same event).
  */
-export const useArbac = defineWook((ctx: EventContext): ArbacBindings => {
+export const useArbac = (ctx?: EventContext): ArbacBindings => {
+  const _ctx = ctx ?? current();
+  return _useArbacFactory(_ctx);
+};
+
+const _useArbacFactory = (ctx: EventContext): ArbacBindings => {
   const cc = useControllerContext(ctx);
 
   const getScopes = <TScope extends object>(): TScope[] | undefined =>
@@ -62,16 +79,25 @@ export const useArbac = defineWook((ctx: EventContext): ArbacBindings => {
   const cMeta = cc.getControllerMeta<TArbacMeta>();
   const mMeta = cc.getMethodMeta<TArbacMeta>();
 
+  // Strict-by-default per ACT-04: undecorated controllers fall back to the
+  // class name as resource and the method name as action, so a globally
+  // wired `arbacAuthorizeInterceptor` denies access unless the user holds a
+  // matching grant (or the controller/method is `@Public()`).
   const resource =
     mMeta?.arbacResourceId ||
     cMeta?.arbacResourceId ||
     cMeta?.id ||
     getConstructor(cc.getController()).name;
+  // Action resolution. Class-level `@ArbacAction` is honoured so a workflow
+  // consumer can pin a single action id for every step event (e.g.
+  // `@ArbacResource('auth') @ArbacAction('admin.invite')` on the workflow
+  // class evaluates every step against `auth/admin.invite`).
   const action =
     mMeta?.arbacActionId ||
     // atscript_db_action is set by @atscript/moost-db on method metadata; TArbacMeta does not
     // include it because arbac-moost doesn't depend on atscript-db — side-channel read only.
     (mMeta as { atscript_db_action?: { name?: string } } | undefined)?.atscript_db_action?.name ||
+    cMeta?.arbacActionId ||
     mMeta?.id ||
     (cc.getMethod() ?? "");
   const isPublic = mMeta?.arbacPublic || cMeta?.arbacPublic || false;
@@ -130,4 +156,4 @@ export const useArbac = defineWook((ctx: EventContext): ArbacBindings => {
     action,
     isPublic,
   };
-});
+};

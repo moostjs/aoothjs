@@ -47,6 +47,7 @@ import { Controller, Injectable } from "moost";
 
 import type { AuditEvent } from "../audit/index";
 import { useAuth } from "../auth.composables";
+import { Public } from "../auth.decorator";
 import type { DeliverPayload } from "./login.workflow";
 import {
   mergeRecoveryOpts,
@@ -120,6 +121,12 @@ function validateOpts(opts: ResolvedRecoveryWorkflowOpts): void {
   }
 }
 
+// `@Public()` — recovery is by definition reachable without authn (the user
+// can't authenticate yet). The global `arbacAuthorizeInterceptor` running on
+// workflow events bypasses this controller. See `LoginWorkflow` for the
+// rationale on why the marker has to live on the workflow class itself, not
+// just the `/auth/trigger` HTTP route.
+@Public()
 @Injectable("FOR_EVENT")
 @Controller()
 export class RecoveryWorkflow {

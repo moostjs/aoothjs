@@ -80,10 +80,16 @@ describe("@aoothjs/arbac-moost", () => {
     expect(typeof mate.read).toBe("function");
   });
 
-  it("useArbac is a wook composable function", () => {
+  it("useArbac is a composable function", () => {
     expect(typeof useArbac).toBe("function");
-    // defineWook attaches an underlying _slot for isolation use
-    expect(useArbac._slot).toBeDefined();
+    // Intentionally NOT a `defineWook`-cached composable: WF events created
+    // via `WfTriggerProvider.handle()` carry the originating HTTP
+    // `EventContext` as their `parent`, and a `defineWook` cache slot would
+    // traverse that parent chain and return the HTTP request's
+    // first-resolution tuple for every downstream WF step — silently
+    // bypassing class-level `@ArbacResource` on the workflow controller.
+    // Re-resolving per call is cheap and avoids that cross-context leak.
+    expect((useArbac as unknown as { _slot?: unknown })._slot).toBeUndefined();
   });
 
   it("CurrentArbacScopes is NOT exported (hard-cut alias removal — ISSUE-3)", () => {

@@ -16,17 +16,18 @@ describe("WF-INVITE — admin-gated invite", () => {
   });
 
   it("WF-INVITE-01 — admin caller succeeds + email captured (non-admin gating tracked as KNOWN GAP)", async () => {
-    // KNOWN GAP (post AUTH-MOOST-5): admin gating on workflow events.
-    // The bundled `AuthController.triggerWf` is intentionally `@Public()`
-    // — per-workflow gating must live on the workflow class itself (per
-    // ISSUES.md). The demo's `DemoInviteWorkflow` carries
-    // `@ArbacResource("auth")`, but the global `arbacAuthorizeInterceptor`
-    // does not currently fire on the workflow event with the subclass's
-    // class-level metadata in scope (moost@0.6.x metadata-inheritance
-    // semantics interact awkwardly with `@Inherit()` + workflow-event
-    // controller scoping). Tracking the wiring fix separately; for now we
-    // only assert the admin-side happy path (the gating regression test
-    // re-enables when the workflow-event ARBAC chain is correct).
+    // KNOWN GAP (post WF ARBAC investigation): admin gating on workflow
+    // events. The original `useArbac()` per-event resolution bug (a
+    // `defineWook` cache reading the HTTP parent ctx's tuple for every WF
+    // event) was fixed; the bundled `InviteWorkflow` is now `@Public()` so
+    // apps that wire `arbacAuthorizeInterceptor` globally don't accidentally
+    // deny all invite events. What remains: workflow resume re-runs the
+    // paused step (the runtime restarts at the saved step index, not after
+    // it), so a class-level admin gate on the workflow controller would
+    // re-evaluate ARBAC against the now-anonymous magic-link resume
+    // principal and 401. A resume-vs-start aware bypass is the missing
+    // piece. For now we only assert the admin-side happy path; the gating
+    // regression test (SEC-12) re-enables when that bypass exists.
     const dave = app.fixtures.users.t1_dave;
     const daveTokens = await app.loginAs(dave);
 
@@ -251,6 +252,72 @@ describe("WF-INVITE — admin-gated invite", () => {
     const replay = await app.resumeWfFromUrl(captured.url as string);
     expect(replay.status).toBeGreaterThanOrEqual(400);
     expect(replay.status).toBeLessThan(500);
+  });
+});
+
+describe("WF-INVITE — accept options", () => {
+  it("WF-INVITE-07 — accept.freshLoginRequired=true + loginUrl: terminal redirect honours custom URL", async () => {
+    // End-to-end signal: demo defaults `freshLoginRequired:false` (auto-login
+    // JSON). Flipping to true must bypass the auto-login finish and emit a
+    // 302 to the configured `loginUrl` — proves the option threads through
+    // the HTTP outlet on the real demo server. (Unit suite covers the schema
+    // condition; this asserts the redirect headers reach the client.)
+    const app = await buildTestApp({
+      inviteOpts: {
+        accept: { freshLoginRequired: true, loginUrl: "/welcome" },
+      },
+    });
+    try {
+      const dave = app.fixtures.users.t1_dave;
+      const daveTokens = await app.loginAs(dave);
+      const inviteEmail = "freshlogin-test@acme.test";
+
+      const start = await app.triggerWf(
+        "admin",
+        { wfid: "auth.invite" },
+        { token: daveTokens.accessToken },
+      );
+      const startBody = await readWfPause(start);
+      await app.triggerWf(
+        "admin",
+        {
+          wfid: "auth.invite",
+          wfs: startBody.wfs,
+          input: { email: inviteEmail, roles: ["member"] },
+        },
+        { token: daveTokens.accessToken },
+      );
+      const email = await app.emailSender.next(
+        (e) => e.kind === "invite.magicLink" && e.recipient === inviteEmail,
+        2000,
+      );
+
+      const resumed = await app.resumeWfFromUrl(email.url as string);
+      const resumedBody = await readWfPause(resumed);
+      // Submit set-password → demo's profile form fires next.
+      const afterPw = await app.triggerWf("public", {
+        wfid: "auth.invite",
+        wfs: resumedBody.wfs,
+        input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
+      });
+      const profileBody = await readWfPause(afterPw);
+      // Submit profile → terminal step. With freshLoginRequired on, this
+      // must redirect to loginUrl, NOT return tokens.
+      const finalize = await globalThis.fetch(`${app.baseUrl}/auth/trigger`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          wfid: "auth.invite",
+          wfs: profileBody.wfs,
+          input: { displayName: "Fresh Login User" },
+        }),
+        redirect: "manual",
+      });
+      expect(finalize.status).toBe(302);
+      expect(finalize.headers.get("location")).toBe("/welcome");
+    } finally {
+      await app.close();
+    }
   });
 });
 

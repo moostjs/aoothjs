@@ -191,3 +191,62 @@ describe("WF-LOGIN — auth.login workflow", () => {
     expect(wfErrors(emptyBody)).toBeTruthy();
   });
 });
+
+// New LoginWorkflowOpts coverage — each test builds its own isolated app via
+// buildTestApp (which calls clearGlobalWooks), so they're segregated from the
+// shared `app` in the suite above (a fresh-app call mid-suite would invalidate
+// it). Each test exercises ONE option flag's end-to-end runtime effect.
+describe("WF-LOGIN — option overrides (isolated apps)", () => {
+  it("WF-LOGIN-06 — mfa.enabled=false: TOTP-enrolled user logs in WITHOUT MFA prompt", async () => {
+    // End-to-end signal: when the demo flips `mfa.enabled` off, the workflow
+    // skips Phase 4 entirely even for a user with a confirmed TOTP secret.
+    // Verifies the option threads through buildApp → DemoLoginWorkflow over
+    // the real HTTP / DI stack (the unit suite proves the schema-level skip
+    // in isolation; this test proves the demo wiring honours it).
+    const mfaOff = await buildTestApp({ loginOpts: { mfa: { enabled: false } } });
+    try {
+      const grace = mfaOff.fixtures.users.t1_grace;
+      expect(grace.totpSecret).toBeTruthy();
+      const start = await mfaOff.triggerWf("public", { wfid: "auth.login" });
+      const startBody = await readWfPause(start);
+      const submit = await mfaOff.triggerWf("public", {
+        wfid: "auth.login",
+        wfs: startBody.wfs,
+        input: { username: grace.username, password: grace.password },
+      });
+      expectOk(submit);
+      const issued = (await submit.json()) as { userId?: string; accessToken?: string };
+      expect(issued.userId).toBe(grace.username);
+      expect(typeof issued.accessToken).toBe("string");
+    } finally {
+      await mfaOff.close();
+    }
+  });
+
+  it("WF-LOGIN-07 — finalize.redirect='home': successful login responds 302 to '/'", async () => {
+    // End-to-end signal: when `finalize.redirect: 'home'` is set, the HTTP
+    // outlet responds with a 302 to `/` instead of the JSON token payload.
+    // Verifies the redirect outlet is wired through `/auth/trigger` on the
+    // real HTTP server.
+    const redirApp = await buildTestApp({ loginOpts: { finalize: { redirect: "home" } } });
+    try {
+      const alice = redirApp.fixtures.users.t1_alice;
+      const start = await redirApp.triggerWf("public", { wfid: "auth.login" });
+      const startBody = await readWfPause(start);
+      const submit = await globalThis.fetch(`${redirApp.baseUrl}/auth/trigger`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          wfid: "auth.login",
+          wfs: startBody.wfs,
+          input: { username: alice.username, password: alice.password },
+        }),
+        redirect: "manual",
+      });
+      expect(submit.status).toBe(302);
+      expect(submit.headers.get("location")).toBe("/");
+    } finally {
+      await redirApp.close();
+    }
+  });
+});

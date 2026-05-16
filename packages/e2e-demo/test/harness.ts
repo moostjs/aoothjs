@@ -1,4 +1,9 @@
-import type { AuthLoginResponse } from "@aoothjs/auth-moost";
+import type {
+  AuthLoginResponse,
+  InviteWorkflowOpts,
+  LoginWorkflowOpts,
+  RecoveryWorkflowOpts,
+} from "@aoothjs/auth-moost";
 import { generateTotpCode } from "@aoothjs/user";
 import { clearGlobalWooks, getMoostInfact } from "moost";
 import { expect } from "vite-plus/test";
@@ -34,6 +39,12 @@ export interface BuildTestAppOptions {
   dbPath?: string;
   workflowsEnabled?: { login?: boolean; recovery?: boolean; invite?: boolean };
   authEndpointsEnabled?: boolean;
+  /** Deep-merged into the demo's `demoLoginOpts` — see `buildApp`. */
+  loginOpts?: LoginWorkflowOpts;
+  /** Deep-merged into the demo's `demoRecoveryOpts` — see `buildApp`. */
+  recoveryOpts?: RecoveryWorkflowOpts;
+  /** Deep-merged into the demo's `demoInviteOpts` — see `buildApp`. */
+  inviteOpts?: InviteWorkflowOpts;
 }
 
 export interface FetchInit extends RequestInit {
@@ -101,6 +112,9 @@ export async function buildTestApp(opts: BuildTestAppOptions = {}): Promise<Test
     envOverrides: opts.envOverrides,
     workflowsEnabled: opts.workflowsEnabled,
     authEndpointsEnabled: opts.authEndpointsEnabled,
+    loginOpts: opts.loginOpts,
+    recoveryOpts: opts.recoveryOpts,
+    inviteOpts: opts.inviteOpts,
   });
 
   const fixtures = opts.seed === false ? SENTINEL_FIXTURES : await seedAll(appHandle);

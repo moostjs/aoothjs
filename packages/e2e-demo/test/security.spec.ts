@@ -371,11 +371,13 @@ describe("SEC — magic-link attacks", () => {
   });
 
   it.skip("SEC-12 — workflow handle replay across roles (KNOWN GAP: see WF-INVITE-01)", () => {
-    // KNOWN GAP (post AUTH-MOOST-5): same workflow-event ARBAC propagation
-    // issue as WF-INVITE-01 — the workflow handle is admin-scoped, but the
-    // demo's class-level `@ArbacResource("auth")` on `DemoInviteWorkflow`
-    // is not currently enforced on workflow events. Re-enable when the
-    // workflow-event ARBAC chain is correct.
+    // KNOWN GAP (post WF ARBAC investigation): see WF-INVITE-01 for the
+    // detailed mechanic. tl;dr — the `useArbac()` per-event resolution bug
+    // is fixed, but the bundled `InviteWorkflow` is `@Public()` because
+    // resume re-runs paused admin-side steps that would 401 against the
+    // anonymous magic-link resume principal under any class-level admin
+    // gate. Re-enable when the workflow runtime gains a resume-vs-start
+    // aware bypass (so admin gating fires only on the initiating event).
   });
 
   it("SEC-28 — invite link visit alone does NOT activate user; password required (see WF-INVITE-02)", async () => {
@@ -537,18 +539,6 @@ describe("SEC — password attacks", () => {
     const recoveryWeak = await submitRecoveryPassword(app, resumedBody.wfs, "abc");
     const respBody = (await recoveryWeak.json()) as Record<string, unknown>;
     expect(respBody.userId).toBeUndefined();
-  });
-
-  it.skip("SEC-17 — password history: cannot reuse a password (gap: /auth/password dropped in AUTH-MOOST-5)", () => {
-    // The `/auth/password` endpoint was removed; password change flows through
-    // `auth.recovery` workflow which sets a fresh password but doesn't expose
-    // the iterated current→new change shape this test relied on. Password-
-    // history enforcement is unit-tested in @aoothjs/user. Re-enable when the
-    // demo wires a multi-step "change password while logged in" workflow.
-  });
-
-  it.skip("SEC-24 — concurrent password change (gap: /auth/password dropped in AUTH-MOOST-5)", () => {
-    // Same gap as SEC-17 — see comment above.
   });
 });
 

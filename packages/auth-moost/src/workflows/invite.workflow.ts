@@ -67,6 +67,7 @@ import { Controller, Injectable } from "moost";
 
 import type { AuditEvent } from "../audit/index";
 import { useAuth } from "../auth.composables";
+import { Public } from "../auth.decorator";
 import {
   type DuplicateAction,
   type InviteWorkflowOpts,
@@ -171,7 +172,21 @@ export function parseInviteRoles(input?: string[]): string[] {
  * Authorization is the trigger route's responsibility. Mount admin-gated
  * triggers (e.g. `@ArbacAuthorize({ resource: 'auth.invite', action: '*' })`)
  * for these workflow ids; never put them on a public trigger allow-list.
+ *
+ * **`@Public()` baseline.** Marks the controller `arbacPublic` so the global
+ * `arbacAuthorizeInterceptor` bypasses every step/flow event on this
+ * workflow by default. The library does not ship admin gating on workflow
+ * events — there's no clean way to gate admin start while still allowing the
+ * anonymous magic-link resume (which re-enters every saved-step handler
+ * back through the global interceptor chain after the workflow runtime
+ * restarts at the paused step index, not after it). See ISSUES.md
+ * "workflow-event ARBAC gating" for the resume-vs-start design work needed
+ * to lift this. Consumers who need a hard admin gate today should either
+ * gate the HTTP route on a separate admin-only trigger or call
+ * `useArbac().evaluateOrThrow(...)` explicitly inside `inviteAdminInviteForm`
+ * / `inviteLoadPendingUser` / `inviteCancelInvite`.
  */
+@Public()
 @Injectable("FOR_EVENT")
 @Controller()
 export class InviteWorkflow {

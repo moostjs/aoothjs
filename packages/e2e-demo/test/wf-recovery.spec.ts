@@ -123,6 +123,63 @@ describe("WF-RECOVERY — single-use + session-survival", () => {
   });
 });
 
+describe("WF-RECOVERY — postReset options", () => {
+  it("WF-RECOVERY-06 — postReset.revokeAllSessions=true: pre-existing token 401 after reset", async () => {
+    // End-to-end signal: flipping the demo default (false → true) MUST kick
+    // existing sessions when the recovery workflow finalizes. Mirrors
+    // WF-RECOVERY-05 (the "false" case) with the opposite assertion to prove
+    // the option threads through the full HTTP / session-store stack.
+    const app = await buildTestApp({
+      recoveryOpts: { postReset: { revokeAllSessions: true, freshLoginRequired: false } },
+    });
+    try {
+      const carol = app.fixtures.users.t1_carol;
+      const pre = await app.loginAs(carol);
+
+      const { resumedBody } = await startRecoveryAndResume(app, carol.email);
+      const finalize = await app.triggerWf("public", {
+        wfid: "auth.recovery",
+        wfs: resumedBody.wfs,
+        input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
+      });
+      expectOk(finalize);
+
+      const afterReset = await app.authedFetch(pre.accessToken)("/auth/status");
+      expect(afterReset.status).toBe(401);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("WF-RECOVERY-07 — postReset.freshLoginRequired=true: finishes with redirect, no tokens", async () => {
+    // End-to-end signal: when `freshLoginRequired` is on, the workflow
+    // terminal step issues a 302 to `loginUrl` instead of the auto-login JSON
+    // payload. The unit suite covers the schema branch; this asserts the HTTP
+    // outlet on the real server reflects it.
+    const app = await buildTestApp({
+      recoveryOpts: { postReset: { freshLoginRequired: true, loginUrl: "/sign-in" } },
+    });
+    try {
+      const bob = app.fixtures.users.t1_bob;
+      const { resumedBody } = await startRecoveryAndResume(app, bob.email);
+      const finalize = await globalThis.fetch(`${app.baseUrl}/auth/trigger`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          wfid: "auth.recovery",
+          wfs: resumedBody.wfs,
+          input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
+        }),
+        redirect: "manual",
+      });
+      expect(finalize.status).toBe(302);
+      expect(finalize.headers.get("location")).toBe("/sign-in");
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 describe("WF-RECOVERY — TTL expiry", () => {
   it("WF-RECOVERY-04 — magic link expires after TTL (config-driven)", async () => {
     // BUG-12 fix: `recoveryTokenTtlMs` (env.RECOVERY_TTL_MS) now drives the

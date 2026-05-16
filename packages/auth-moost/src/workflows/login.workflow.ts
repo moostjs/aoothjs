@@ -59,6 +59,7 @@ import { Controller, Injectable } from "moost";
 
 import type { AuditEvent } from "../audit/index";
 import { useAuth } from "../auth.composables";
+import { Public } from "../auth.decorator";
 import {
   type LoginWorkflowOpts,
   type ResolvedLoginWorkflowOpts,
@@ -240,6 +241,14 @@ export interface DeliverSms {
 
 export type DeliverPayload = DeliverEmail | DeliverSms;
 
+// `@Public()` marks `arbacPublic` AND `authPublic` on the controller — the
+// global `arbacAuthorizeInterceptor` running on WF events bypasses this
+// class. Anonymous login is supposed to be reachable without authn, and the
+// `/auth/trigger` HTTP route is already `@Public()`; without this marker the
+// arbac interceptor would resolve resource→`LoginWorkflow` / action→step
+// name on workflow events and either deny (no matching role) or require a
+// configured grant.
+@Public()
 @Injectable("FOR_EVENT")
 @Controller()
 export class LoginWorkflow {
