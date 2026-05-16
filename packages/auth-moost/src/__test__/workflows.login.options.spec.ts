@@ -308,14 +308,14 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
     expect(JSON.stringify(r.body)).toMatch(/mfa\.transports.*empty/);
   });
 
-  it("deviceTrust.enabled true WITHOUT registered DeviceTrustStore → loadTrustedDevice returns false (newDevice path)", async () => {
-    // Post-reshape: missing device-trust store no longer fails loud at boot.
-    // The default `loadTrustedDevice()` returns false (never trust), so the
-    // flow flags `newDevice` and runs MFA normally. The harness's override
-    // returns false when `deviceTrustStore: null`.
+  it("deviceTrust.enabled true with NO cookie → check-trusted-device flags newDevice and flow completes", async () => {
+    // No cookie ⇒ `check-trusted-device` short-circuits to `newDevice = true`
+    // without calling `loadTrustedDevice`, so the flow completes via the
+    // no-trust path even when no trust-device secret/store is wired (we still
+    // wire the default secret here — proves the no-cookie branch is the
+    // structural short-circuit).
     const app = await prepareWfApp({
       loginOpts: { deviceTrust: { enabled: true }, mfa: { enabled: false } },
-      deviceTrustStore: null,
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r1 = await app.trigger({ wfid: "auth.login" });
@@ -323,7 +323,6 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
     });
-    // Tokens issued — flow completes via the no-trust path.
     expect(r2.body?.userId).toBe("alice");
   });
 
@@ -353,9 +352,8 @@ describe("LoginWorkflowOpts — Phase 4 device trust", () => {
     await app.users.addMfaMethod("alice", { name: "totp", value: secret, confirmed: true });
 
     // Pre-issue a trust record so cookie is valid out of the gate.
-    const trustStore = app.deviceTrustStore!;
-    const rec = trustStore.issue("alice", undefined, 60_000);
-    await trustStore.add(rec);
+    const rec = app.users.issueTrustedDevice("alice", { ttlMs: 60_000 });
+    await app.users.addTrustedDevice("alice", rec);
 
     // First request: send the cookie.
     const r1 = await app.triggerWithHeaders(
@@ -396,16 +394,20 @@ describe("LoginWorkflowOpts — Phase 4 device trust", () => {
   });
 
   it("deviceTrust + deviceTrust.bindsTo='cookie+ip': cookie issued for IP A is rejected when verified with IP B", async () => {
-    // Unit-level proof via the store (workflow-level testing requires the
-    // request adapter to expose req.ip, which the in-process Wooks test
-    // harness doesn't surface for synthetic requests). The store IS the
-    // authoritative IP-binding check.
-    const { DeviceTrustStoreMemory } = await import("../device-trust/index");
-    const store = new DeviceTrustStoreMemory("test-secret");
-    const rec = store.issue("alice", "10.0.0.1", 60_000);
-    await store.add(rec);
-    expect(await store.verify("alice", rec.token, "10.0.0.1")).toBe(true);
-    expect(await store.verify("alice", rec.token, "10.0.0.2")).toBe(false);
+    // Unit-level proof via `UserService` directly (workflow-level testing
+    // requires the request adapter to expose req.ip, which the in-process
+    // Wooks test harness doesn't surface for synthetic requests).
+    // `UserService` IS the authoritative IP-binding check.
+    const { UserStoreMemory } = await import("@aoothjs/user");
+    const userStore = new UserStoreMemory();
+    const users = new UserService(userStore, {
+      deviceTrust: { secret: "test-secret" },
+    });
+    await users.createUser("alice", "Password123");
+    const rec = users.issueTrustedDevice("alice", { ip: "10.0.0.1", ttlMs: 60_000 });
+    await users.addTrustedDevice("alice", rec);
+    expect(await users.verifyTrustedDevice("alice", rec.token, "10.0.0.1")).toBe(true);
+    expect(await users.verifyTrustedDevice("alice", rec.token, "10.0.0.2")).toBe(false);
   });
 });
 

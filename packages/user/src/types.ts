@@ -10,6 +10,23 @@ export interface UserCredentials {
    * enrolled backup codes; an empty array means all codes were consumed.
    */
   backupCodes?: string[];
+  /**
+   * Persisted device-trust records ("remember this device, skip MFA next
+   * time"). Managed by `UserService.{issue,add,verify,revoke,list}TrustedDevice`.
+   * Absent when the user has never opted in.
+   */
+  trustedDevices?: TrustedDeviceRecord[];
+}
+
+export interface TrustedDeviceRecord {
+  /** `<raw>.<sig>` — what we hand back to the consumer and what they round-trip. */
+  token: string;
+  /** Bound IP — set when `deviceTrust.bindsTo === 'cookie+ip'`. */
+  ip?: string;
+  issuedAt: number;
+  expiresAt: number;
+  /** Optional human-readable label (e.g. user-agent summary). */
+  name?: string;
 }
 
 export interface PasswordData {
@@ -65,6 +82,15 @@ export interface UserServiceConfig {
   lockout?: LockoutConfig;
   /** Injectable clock for testability. Defaults to Date.now */
   clock?: () => number;
+  /**
+   * Device-trust config. Required (with a non-empty `secret`) when any
+   * `issueTrustedDevice` / `verifyTrustedDevice` API is called; the methods
+   * throw clearly when invoked without it.
+   */
+  deviceTrust?: {
+    /** HMAC-SHA256 signing secret for trust-device tokens. */
+    secret: string;
+  };
 }
 
 export interface PasswordConfig {

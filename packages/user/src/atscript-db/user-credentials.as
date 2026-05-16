@@ -30,4 +30,13 @@ export interface AoothUserCredentials {
         defaultMethod: string
         autoSend: boolean
     }
+
+    @db.patch.strategy 'merge'
+    trustedDevices?: {
+        token: string
+        ip?: string
+        issuedAt: number.timestamp
+        expiresAt: number.timestamp
+        name?: string
+    }[]
 }

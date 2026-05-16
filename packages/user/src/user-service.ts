@@ -1,3 +1,5 @@
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+
 import { UserAuthError } from "./errors";
 import { generateBackupCodePlaintext } from "./mfa/backup-codes";
 import { hashMfaCode, verifyMfaCode } from "./mfa/codes";
@@ -17,6 +19,7 @@ import type {
   PolicyCheckResult,
   TotpConfig,
   TransferablePolicy,
+  TrustedDeviceRecord,
   UserCredentials,
   UserServiceConfig,
 } from "./types";
@@ -27,6 +30,7 @@ interface ResolvedConfig {
   password: Required<Omit<PasswordConfig, "policies">> & { policies: PasswordPolicy[] };
   lockout: Required<LockoutConfig>;
   clock: () => number;
+  deviceTrust?: { secret: string };
 }
 
 function resolveConfig(config?: UserServiceConfig): ResolvedConfig {
@@ -45,7 +49,26 @@ function resolveConfig(config?: UserServiceConfig): ResolvedConfig {
       duration: config?.lockout?.duration ?? 0,
     },
     clock: config?.clock ?? Date.now,
+    ...(config?.deviceTrust && { deviceTrust: config.deviceTrust }),
   };
+}
+
+// ---- device-trust helpers ----
+// Token format: `<raw 32-byte hex>.<hmac-sha256(userId|raw|ip-or-empty)>`.
+// The HMAC ties the token to the user (and optionally the IP); the persisted
+// record enforces expiry + IP binding on top.
+const DEVICE_TRUST_TOKEN_BYTES = 32;
+const DEVICE_TRUST_SEPARATOR = ".";
+
+function signDeviceTrust(secret: string, payload: string): string {
+  return createHmac("sha256", secret).update(payload).digest("hex");
+}
+
+function deviceTrustSafeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
 }
 
 export class UserService<T extends object = object> {
@@ -413,6 +436,93 @@ export class UserService<T extends object = object> {
 
   getConfig(): Readonly<ResolvedConfig> {
     return this.config;
+  }
+
+  // ---- trusted devices ----
+  /**
+   * Mint a freshly-signed trust record (does NOT persist — pair with
+   * `addTrustedDevice`). Throws when `deviceTrust.secret` is unset.
+   */
+  issueTrustedDevice(
+    userId: string,
+    opts: { ip?: string; ttlMs: number; name?: string },
+  ): TrustedDeviceRecord {
+    const secret = this.requireDeviceTrustSecret();
+    const raw = randomBytes(DEVICE_TRUST_TOKEN_BYTES).toString("hex");
+    const sig = signDeviceTrust(secret, `${userId}|${raw}|${opts.ip ?? ""}`);
+    const now = this.config.clock();
+    return {
+      token: `${raw}${DEVICE_TRUST_SEPARATOR}${sig}`,
+      ...(opts.ip !== undefined && { ip: opts.ip }),
+      issuedAt: now,
+      expiresAt: now + opts.ttlMs,
+      ...(opts.name !== undefined && { name: opts.name }),
+    };
+  }
+
+  /**
+   * Append a trust record to the user's `trustedDevices` list. Read-modify-
+   * write — the array shape is preserved end-to-end so DB adapters with a
+   * merge strategy replace the whole array.
+   */
+  async addTrustedDevice(username: string, record: TrustedDeviceRecord): Promise<void> {
+    const user = await this.getUser(username);
+    const next = [...(user.trustedDevices ?? []), record];
+    await this.store.update(username, {
+      set: { trustedDevices: next } as DeepPartial<UserCredentials>,
+    });
+  }
+
+  /**
+   * Returns true when the supplied token (a) signs against the user+ip with
+   * the configured secret, AND (b) matches a persisted record that is still
+   * within its expiry window and whose bound IP (if any) matches.
+   */
+  async verifyTrustedDevice(username: string, token: string, ip?: string): Promise<boolean> {
+    const secret = this.requireDeviceTrustSecret();
+    const sepIdx = token.lastIndexOf(DEVICE_TRUST_SEPARATOR);
+    if (sepIdx <= 0) return false;
+    const raw = token.slice(0, sepIdx);
+    const sig = token.slice(sepIdx + 1);
+    const expectedSig = signDeviceTrust(secret, `${username}|${raw}|${ip ?? ""}`);
+    if (!deviceTrustSafeEqual(sig, expectedSig)) return false;
+
+    const user = await this.store.findByUsername(username);
+    if (!user) return false;
+    const list = user.trustedDevices ?? [];
+    const now = this.config.clock();
+    const found = list.find((r) => r.token === token && r.expiresAt > now);
+    if (!found) return false;
+    if (found.ip !== undefined && found.ip !== ip) return false;
+    return true;
+  }
+
+  /**
+   * Remove a specific trust record from the user. No-op when the record is
+   * absent — mirrors the legacy `DeviceTrustStore.revoke` semantics.
+   */
+  async revokeTrustedDevice(username: string, token: string): Promise<void> {
+    const user = await this.store.findByUsername(username);
+    if (!user) return;
+    const list = user.trustedDevices ?? [];
+    const next = list.filter((r) => r.token !== token);
+    if (next.length === list.length) return;
+    await this.store.update(username, {
+      set: { trustedDevices: next } as DeepPartial<UserCredentials>,
+    });
+  }
+
+  async listTrustedDevices(username: string): Promise<TrustedDeviceRecord[]> {
+    const user = await this.getUser(username);
+    return user.trustedDevices ?? [];
+  }
+
+  private requireDeviceTrustSecret(): string {
+    const secret = this.config.deviceTrust?.secret;
+    if (!secret) {
+      throw new Error("UserService: deviceTrust.secret is required to use trusted-device APIs");
+    }
+    return secret;
   }
 
   // ---- private helpers ----

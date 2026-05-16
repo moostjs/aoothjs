@@ -72,17 +72,15 @@ export {
   mergeRecoveryOpts,
 } from "./workflows/index";
 export { type AuthEmailOutletDeps, createAuthEmailOutlet } from "./workflows/auth-email-outlet";
-export {
-  type DeviceTrustStore,
-  DeviceTrustStoreMemory,
-  type DeviceTrustRecord,
-} from "./device-trust/index";
 export { type AuditEmitter, type AuditEvent } from "./audit/index";
 
 // Note: the DI-token exports (`SMS_SENDER_TOKEN`, `AUDIT_EMITTER_TOKEN`,
 // `DEVICE_TRUST_STORE_TOKEN`, `WORKFLOW_RATE_LIMIT_STORE_TOKEN`) were dropped
 // in Phase 4 of the workflow OOP-reshape. All three auth workflows now use
 // `protected` method overrides instead of constructor-injected side-effect
-// deps, so no consumer needs the tokens. The `DeviceTrustStore` /
-// `EmailSender` / `SmsSender` / `AuditEmitter` types still ship for consumer
-// overrides.
+// deps, so no consumer needs the tokens. The `EmailSender` / `SmsSender` /
+// `AuditEmitter` types still ship for consumer overrides. Device-trust
+// persistence moved into `UserService` (`@aoothjs/user`); consumers wire it
+// via `UserServiceConfig.deviceTrust.secret` and override
+// `LoginWorkflow`'s `loadTrustedDevice` / `storeTrustedDevice` etc. only
+// when they need a non-default backend.

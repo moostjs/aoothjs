@@ -21,6 +21,7 @@ export type {
   TransferablePolicy,
   MfaMethodInfo,
   TotpConfig,
+  TrustedDeviceRecord,
 } from "./types";
 
 // Error

@@ -902,4 +902,111 @@ describe("UserService", () => {
       }
     });
   });
+
+  describe("trustedDevices", () => {
+    let dtNow: number;
+    let dtStore: UserStoreMemory;
+    let dtSvc: UserService;
+
+    beforeEach(async () => {
+      dtNow = 1000000;
+      dtStore = new UserStoreMemory();
+      dtSvc = new UserService(dtStore, {
+        password: { ...FAST_SCRYPT },
+        clock: () => dtNow,
+        deviceTrust: { secret: "unit-test-secret" },
+      });
+      await createActiveUser(dtSvc, "alice", "Password1!");
+    });
+
+    it("issueTrustedDevice + addTrustedDevice + verifyTrustedDevice round-trips (no IP)", async () => {
+      const rec = dtSvc.issueTrustedDevice("alice", { ttlMs: 60_000 });
+      await dtSvc.addTrustedDevice("alice", rec);
+      expect(await dtSvc.verifyTrustedDevice("alice", rec.token)).toBe(true);
+    });
+
+    it("issueTrustedDevice + verifyTrustedDevice round-trips with IP binding", async () => {
+      const rec = dtSvc.issueTrustedDevice("alice", { ttlMs: 60_000, ip: "10.0.0.1" });
+      await dtSvc.addTrustedDevice("alice", rec);
+      expect(await dtSvc.verifyTrustedDevice("alice", rec.token, "10.0.0.1")).toBe(true);
+      // Wrong IP rejected — HMAC payload differs AND record IP differs.
+      expect(await dtSvc.verifyTrustedDevice("alice", rec.token, "10.0.0.2")).toBe(false);
+    });
+
+    it("verifyTrustedDevice returns false for a forged signature", async () => {
+      const rec = dtSvc.issueTrustedDevice("alice", { ttlMs: 60_000 });
+      await dtSvc.addTrustedDevice("alice", rec);
+      const [raw] = rec.token.split(".");
+      const fake = `${raw}.${"0".repeat(64)}`;
+      expect(await dtSvc.verifyTrustedDevice("alice", fake)).toBe(false);
+    });
+
+    it("verifyTrustedDevice returns false when token signature is valid but no record persisted", async () => {
+      const rec = dtSvc.issueTrustedDevice("alice", { ttlMs: 60_000 });
+      // NB: NOT calling addTrustedDevice — signature would verify but record is absent.
+      expect(await dtSvc.verifyTrustedDevice("alice", rec.token)).toBe(false);
+    });
+
+    it("verifyTrustedDevice returns false after expiry (clock advanced past expiresAt)", async () => {
+      const rec = dtSvc.issueTrustedDevice("alice", { ttlMs: 60_000 });
+      await dtSvc.addTrustedDevice("alice", rec);
+      dtNow += 60_001;
+      expect(await dtSvc.verifyTrustedDevice("alice", rec.token)).toBe(false);
+    });
+
+    it("revokeTrustedDevice removes the matching record (subsequent verify false)", async () => {
+      const rec = dtSvc.issueTrustedDevice("alice", { ttlMs: 60_000 });
+      await dtSvc.addTrustedDevice("alice", rec);
+      expect(await dtSvc.verifyTrustedDevice("alice", rec.token)).toBe(true);
+      await dtSvc.revokeTrustedDevice("alice", rec.token);
+      expect(await dtSvc.verifyTrustedDevice("alice", rec.token)).toBe(false);
+    });
+
+    it("revokeTrustedDevice is a no-op for an unknown token (does not throw, leaves siblings)", async () => {
+      const rec = dtSvc.issueTrustedDevice("alice", { ttlMs: 60_000 });
+      await dtSvc.addTrustedDevice("alice", rec);
+      await dtSvc.revokeTrustedDevice("alice", "no-such-token.sig");
+      expect(await dtSvc.verifyTrustedDevice("alice", rec.token)).toBe(true);
+    });
+
+    it("listTrustedDevices returns all persisted records in insertion order", async () => {
+      const r1 = dtSvc.issueTrustedDevice("alice", { ttlMs: 60_000, name: "macbook" });
+      await dtSvc.addTrustedDevice("alice", r1);
+      const r2 = dtSvc.issueTrustedDevice("alice", { ttlMs: 60_000, name: "phone" });
+      await dtSvc.addTrustedDevice("alice", r2);
+      const list = await dtSvc.listTrustedDevices("alice");
+      expect(list.length).toBe(2);
+      expect(list[0].name).toBe("macbook");
+      expect(list[1].name).toBe("phone");
+    });
+
+    it("issueTrustedDevice throws clearly when deviceTrust.secret is not configured", () => {
+      const noSecretSvc = new UserService(new UserStoreMemory(), {
+        password: { ...FAST_SCRYPT },
+      });
+      expect(() => noSecretSvc.issueTrustedDevice("alice", { ttlMs: 60_000 })).toThrow(
+        /deviceTrust\.secret/,
+      );
+    });
+
+    it("verifyTrustedDevice throws clearly when deviceTrust.secret is not configured", async () => {
+      const noSecretSvc = new UserService(new UserStoreMemory(), {
+        password: { ...FAST_SCRYPT },
+      });
+      await expect(noSecretSvc.verifyTrustedDevice("alice", "x.y")).rejects.toThrow(
+        /deviceTrust\.secret/,
+      );
+    });
+
+    it("HMAC depends on the secret — a record signed by one secret cannot be verified by another", async () => {
+      const recA = dtSvc.issueTrustedDevice("alice", { ttlMs: 60_000 });
+      const otherSvc = new UserService(dtStore, {
+        password: { ...FAST_SCRYPT },
+        clock: () => dtNow,
+        deviceTrust: { secret: "different-secret" },
+      });
+      await dtSvc.addTrustedDevice("alice", recA);
+      expect(await otherSvc.verifyTrustedDevice("alice", recA.token)).toBe(false);
+    });
+  });
 });

@@ -48,11 +48,6 @@ import { MoostAuthConfig } from "../auth.config";
 import { AuthController } from "../auth.controller";
 import { authGuardInterceptor } from "../auth.guard";
 import { Public } from "../auth.decorator";
-import {
-  type DeviceTrustRecord,
-  type DeviceTrustStore,
-  DeviceTrustStoreMemory,
-} from "../device-trust/index";
 import { createAuthEmailOutlet } from "../workflows/auth-email-outlet";
 import { DEFAULT_INVITE_TOKEN_TTL_MS } from "../workflows/invite.workflow.options";
 import type { DeliverPayload } from "../workflows/login.workflow";
@@ -115,8 +110,6 @@ export interface PreparedWfApp {
   sms: CapturedSms[];
   /** Captured audit events when an `AuditEmitter` was wired by the test. */
   auditEvents: AuditEvent[];
-  /** The `DeviceTrustStore` instance wired by the test (when `deviceTrust` is enabled). */
-  deviceTrustStore?: DeviceTrustStore;
   buildMagicLinkUrl: BuildMagicLinkUrl;
   /** Submit a request to the trigger endpoint. Resolves with parsed body. */
   trigger: (body: WfRequestBody) => Promise<WfResponse>;
@@ -182,12 +175,13 @@ export interface PrepareWfOpts {
    */
   registerEmailSender?: boolean;
   /**
-   * Inject a `DeviceTrustStore` against the `DeviceTrustStore` DI token. When
-   * omitted, defaults to a fresh `DeviceTrustStoreMemory('test-trust-secret')`
-   * IF `loginOpts.deviceTrust.enabled === true` — otherwise unregistered (so the
-   * boot-time validator throws for misconfigured opts).
+   * When `false`, do NOT seed `userConfig.deviceTrust.secret` even though
+   * `loginOpts.deviceTrust.enabled` is on. The default `loadTrustedDevice` /
+   * `issueTrustedDevice` overrides then throw on first use — used by the
+   * legacy "no store wired" test that now asserts the no-cookie short-circuit
+   * (cookie absence skips the call entirely).
    */
-  deviceTrustStore?: DeviceTrustStore | null;
+  wireDeviceTrustSecret?: boolean;
   /**
    * Inject an `AuditEmitter`. The captured-events array is also returned on
    * `app.auditEvents` for assertions. When omitted, NO emitter is registered
@@ -275,7 +269,20 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
   });
 
   const userStore = new UserStoreMemory();
-  const users = new UserService(userStore, opts.userConfig);
+  // Seed a default device-trust secret unless the test opted out — this
+  // mirrors how a production app wires `UserServiceConfig.deviceTrust.secret`
+  // and is required for the trusted-device APIs called by `LoginWorkflow`'s
+  // default `loadTrustedDevice` / `issueTrustedDevice` overrides.
+  const wireDeviceTrustSecret = opts.wireDeviceTrustSecret !== false;
+  const userConfig: UserServiceConfig = {
+    ...opts.userConfig,
+    ...(wireDeviceTrustSecret && {
+      deviceTrust: {
+        secret: opts.userConfig?.deviceTrust?.secret ?? "test-trust-secret",
+      },
+    }),
+  };
+  const users = new UserService(userStore, userConfig);
 
   const emails: CapturedEmail[] = [];
   const emailSender: EmailSender = opts.emailSender ?? {
@@ -301,17 +308,6 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
   const loginOpts: LoginWorkflowOpts = opts.loginOpts ?? {};
   const registerSms = opts.registerSmsSender !== false;
   const registerEmail = opts.registerEmailSender !== false;
-  // When loginOpts.deviceTrust.enabled is on, default-wire a fresh memory
-  // store so tests that just flip the flag don't have to construct one too.
-  // Tests explicitly passing `deviceTrustStore: null` skip registration to
-  // exercise the boot-time fail-loud path (legacy semantics — now the
-  // override returns false / throws when the store is missing).
-  const deviceTrustEnabled = loginOpts.deviceTrust?.enabled === true;
-  const deviceTrustStore: DeviceTrustStore | undefined =
-    opts.deviceTrustStore === null
-      ? undefined
-      : (opts.deviceTrustStore ??
-        (deviceTrustEnabled ? new DeviceTrustStoreMemory("test-trust-secret") : undefined));
 
   const auditEvents: AuditEvent[] = [];
   // Default auditLogin in `mergeLoginOpts` is `true`, so unless the test
@@ -329,7 +325,9 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
 
   // Build harness subclasses that wire the per-test capture arrays through
   // `protected` method overrides — replacing the pre-reshape DI registrations
-  // for EmailSender / SmsSender / DeviceTrustStore / AuditEmitter.
+  // for EmailSender / SmsSender / AuditEmitter. Device-trust persistence is
+  // now handled by the workflow's default `loadTrustedDevice` /
+  // `storeTrustedDevice` overrides (which delegate to `UserService`).
   const LoginCtor = buildHarnessLoginClass({
     base: opts.loginWorkflowClass ?? LoginWorkflow,
     opts: loginOpts,
@@ -339,7 +337,6 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     smsSender,
     registerEmail,
     registerSms,
-    deviceTrustStore,
     auditEmitter,
   }) as unknown as new (
     users: UserService,
@@ -536,7 +533,6 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     emails,
     sms,
     auditEvents,
-    ...(deviceTrustStore && { deviceTrustStore }),
     buildMagicLinkUrl,
     trigger,
     triggerWithHeaders,
@@ -572,7 +568,6 @@ interface HarnessLoginDeps {
   smsSender: SmsSender;
   registerEmail: boolean;
   registerSms: boolean;
-  deviceTrustStore: DeviceTrustStore | undefined;
   auditEmitter: AuditEmitter | undefined;
 }
 
@@ -586,7 +581,6 @@ function buildHarnessLoginClass(deps: HarnessLoginDeps): new (...args: never[]) 
     smsSender,
     registerEmail,
     registerSms,
-    deviceTrustStore,
     auditEmitter,
   } = deps;
 
@@ -612,36 +606,6 @@ function buildHarnessLoginClass(deps: HarnessLoginDeps): new (...args: never[]) 
 
     protected override async audit(event: AuditEvent): Promise<void> {
       if (auditEmitter) await auditEmitter.emit(event);
-    }
-
-    protected override async loadTrustedDevice(
-      userId: string,
-      token: string,
-      ip?: string,
-    ): Promise<boolean> {
-      if (!deviceTrustStore) return false;
-      return deviceTrustStore.verify(userId, token, ip);
-    }
-
-    protected override async storeTrustedDevice(record: DeviceTrustRecord): Promise<void> {
-      if (!deviceTrustStore) return;
-      await deviceTrustStore.add(record);
-    }
-
-    protected override async revokeTrustedDevice(userId: string, token: string): Promise<void> {
-      if (!deviceTrustStore) return;
-      await deviceTrustStore.revoke(userId, token);
-    }
-
-    protected override async issueTrustedDevice(
-      userId: string,
-      ip: string | undefined,
-      ttlMs: number,
-    ): Promise<DeviceTrustRecord> {
-      if (deviceTrustStore) {
-        return deviceTrustStore.issue(userId, ip, ttlMs);
-      }
-      return super.issueTrustedDevice(userId, ip, ttlMs);
     }
   }
   return HarnessLogin;

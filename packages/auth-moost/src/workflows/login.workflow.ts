@@ -32,11 +32,11 @@
  *     `Error("deliver() not configured …")`; override to wire your senders.
  *   - `audit(event)` — fire audit events. Default: no-op.
  *   - `loadTrustedDevice(userId, token, ip?)` — return `true` to grant
- *     trust. Default: `false` (never trust).
- *   - `storeTrustedDevice(record)` — persist a freshly issued trust record.
- *     Default: no-op.
+ *     trust. Default: delegates to `UserService.verifyTrustedDevice`.
+ *   - `storeTrustedDevice(userId, record)` — persist a freshly issued trust
+ *     record. Default: delegates to `UserService.addTrustedDevice`.
  *   - `revokeTrustedDevice(userId, token)` — remove a trust record.
- *     Default: no-op.
+ *     Default: delegates to `UserService.revokeTrustedDevice`.
  *
  * Validation of senders is now INHERENT — the first `deliver()` invocation
  * without an override throws. Boot-time "X required when Y enabled" checks
@@ -45,6 +45,7 @@
 import { AuthCredential, type AuthEmailKind, type AuthSmsKind } from "@aoothjs/auth";
 import {
   type MfaMethodInfo,
+  type TrustedDeviceRecord,
   UserAuthError,
   UserService,
   maskEmail,
@@ -59,7 +60,6 @@ import { Controller, Injectable } from "moost";
 import type { AuditEvent } from "../audit/index";
 import { MoostAuthConfig } from "../auth.config";
 import { buildLoginResponse, cookieAttrs } from "../auth.cookies";
-import type { DeviceTrustRecord } from "../device-trust/index";
 import {
   type LoginWorkflowOpts,
   type ResolvedLoginWorkflowOpts,
@@ -286,56 +286,51 @@ export class LoginWorkflow {
 
   /**
    * Verify whether a presented trust-cookie token belongs to `userId` and is
-   * still valid. Default: returns `false` (never trust). Consumers override
-   * to consult their device-trust store (e.g. `DeviceTrustStoreMemory`).
+   * still valid. Default: delegates to `UserService.verifyTrustedDevice`
+   * (HMAC + persisted record + expiry + IP-binding). Override to use a
+   * different trust backend.
    */
-  protected async loadTrustedDevice(
-    _userId: string,
-    _token: string,
-    _ip?: string,
-  ): Promise<boolean> {
-    return false;
+  protected async loadTrustedDevice(userId: string, token: string, ip?: string): Promise<boolean> {
+    return this.users.verifyTrustedDevice(userId, token, ip);
   }
 
   /**
-   * Persist a freshly-issued trust record. Default: no-op (the cookie is
-   * written but never accepted on a return visit, because the default
-   * `loadTrustedDevice()` returns `false`). Override to persist.
+   * Persist a freshly-issued trust record. Default: delegates to
+   * `UserService.addTrustedDevice` — the record is appended to the user's
+   * `trustedDevices` array on the user store. `userId` is the username the
+   * record belongs to (passed alongside since `TrustedDeviceRecord` itself
+   * carries no user identifier).
    */
-  protected async storeTrustedDevice(_record: DeviceTrustRecord): Promise<void> {
-    // No-op default.
+  protected async storeTrustedDevice(userId: string, record: TrustedDeviceRecord): Promise<void> {
+    await this.users.addTrustedDevice(userId, record);
   }
 
   /**
-   * Revoke a trust record. Default: no-op. Currently unused by the workflow's
-   * own happy path but exposed so consumers can call it from their own
-   * "sign out everywhere" flows for symmetry with `storeTrustedDevice`.
+   * Revoke a trust record. Default: delegates to
+   * `UserService.revokeTrustedDevice`. Currently unused by the workflow's own
+   * happy path but exposed so consumers can call it from their own "sign out
+   * everywhere" flows for symmetry with `storeTrustedDevice`.
    */
-  protected async revokeTrustedDevice(_userId: string, _token: string): Promise<void> {
-    // No-op default.
+  protected async revokeTrustedDevice(userId: string, token: string): Promise<void> {
+    await this.users.revokeTrustedDevice(userId, token);
   }
 
   /**
-   * Mint a new device-trust record + cookie value. Default: synthesizes a
-   * raw token (32 hex bytes) bound to `userId` (+ `ip` when `bindsTo` ===
-   * `'cookie+ip'`). Consumers running multiple instances typically override
-   * `storeTrustedDevice`/`loadTrustedDevice` against Redis but keep this
-   * default — it carries no per-process state.
+   * Mint a new device-trust record + cookie value. Default: delegates to
+   * `UserService.issueTrustedDevice` — produces an HMAC-signed token bound to
+   * `userId` (+ `ip` when `bindsTo === 'cookie+ip'`). Consumers running
+   * multiple instances typically override `loadTrustedDevice`/
+   * `storeTrustedDevice` against Redis but keep this default.
    */
   protected async issueTrustedDevice(
     userId: string,
     ip: string | undefined,
     ttlMs: number,
-  ): Promise<DeviceTrustRecord> {
-    const { randomBytes } = await import("node:crypto");
-    const now = Date.now();
-    return {
-      userId,
-      token: randomBytes(32).toString("hex"),
+  ): Promise<TrustedDeviceRecord> {
+    return this.users.issueTrustedDevice(userId, {
+      ttlMs,
       ...(ip !== undefined && { ip }),
-      issuedAt: now,
-      expiresAt: now + ttlMs,
-    };
+    });
   }
 
   @Workflow("auth.login")
@@ -989,7 +984,7 @@ export class LoginWorkflow {
     if (!ctx.username) return undefined;
     const ip = this.opts.deviceTrust.bindsTo === "cookie+ip" ? this.resolveClientIp() : undefined;
     const record = await this.issueTrustedDevice(ctx.username, ip, this.opts.deviceTrust.ttlMs);
-    await this.storeTrustedDevice(record);
+    await this.storeTrustedDevice(ctx.username, record);
     ctx.deviceTrustToken = record.token;
     useResponse(current()).setCookie(
       this.opts.deviceTrust.cookieName,
