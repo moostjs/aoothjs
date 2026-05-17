@@ -88,17 +88,10 @@ describe("PROJ — field-level projection", () => {
     expect(sawEmail).toBe(true);
   });
 
-  it("PROJ-04 — $with whitelist gates relation expansion + parent projection survives", async () => {
-    // Viewer's tasks scope sets controls.$with = ['comments'] so the relation
-    // graph can be drilled exactly one hop. Asserts:
-    //   1. `?$with=comments` is allowed and produces expanded child arrays
-    //   2. parent rows still honor PROJ_TASK_VIEWER (no `internalNotes`)
-    //   3. unwhitelisted relations (e.g. `?$with=project`) are rejected
-    // KNOWN GAP: arbac-moost does not yet pipe the joined resource's own
-    // projection through the $with expansion — expanded comment rows
-    // currently carry `tenantId` even though the standalone /comments
-    // query masks it. Tracked separately; per-relation projection masking
-    // would belong in arbac-moost, not the demo fixtures.
+  it("PROJ-04 — $with whitelist gates expansion + per-relation projection masks expanded rows + parent projection survives", async () => {
+    // Load-bearing assertion: expanded comment rows must honor
+    // viewer.tasks.with.comments.projection — proves arbac-moost pipes the
+    // per-relation projection into the relation loader, not just the parent.
     const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_eve);
     const allowed = await fetch("/tasks/query?$with=comments");
     expect(allowed.status).toBe(200);
@@ -110,6 +103,7 @@ describe("PROJ — field-level projection", () => {
     for (const r of rows) expect(Object.hasOwn(r, "internalNotes")).toBe(false);
     const expanded = rows.flatMap((r) => r.comments ?? []);
     expect(expanded.length).toBeGreaterThan(0);
+    for (const c of expanded) expect(Object.hasOwn(c, "tenantId")).toBe(false);
 
     const rejected = await fetch("/tasks/query?$with=project");
     expect(rejected.status).toBe(403);

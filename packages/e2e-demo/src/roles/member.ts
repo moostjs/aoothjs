@@ -1,5 +1,10 @@
 import { allowTableAction, allowTableRead, type ControlGate, defineRole } from "@aoothjs/arbac";
 
+import { Comment } from "../models/comment.as";
+import { Document } from "../models/document.as";
+import { Project } from "../models/project.as";
+import { Task } from "../models/task.as";
+import { DemoUser } from "../models/user.as";
 import type { ArbacDbScope, UserAttrs } from "./attrs";
 import { PROJ_TASK_MEMBER, PROJ_USER_MEMBER } from "./projections";
 import { tenantFilter, tenantSet } from "./scopes";
@@ -9,12 +14,12 @@ const memberControls: Record<string, ControlGate> = {
   $having: false,
 };
 
-export const memberRole = defineRole<UserAttrs, ArbacDbScope>()
+export const memberRole = defineRole<UserAttrs>()
   .id("member")
   .name("Contributor")
   .describe("Tenant-scoped reads via project membership; act on assigned tasks; own comments")
   .use(
-    allowTableRead<UserAttrs, ArbacDbScope>("users", {
+    allowTableRead<UserAttrs, ArbacDbScope<DemoUser>>("users", {
       scope: (attrs) => ({
         filter: tenantFilter(attrs),
         projection: PROJ_USER_MEMBER,
@@ -22,7 +27,7 @@ export const memberRole = defineRole<UserAttrs, ArbacDbScope>()
       }),
     }),
     // Owner-self branch deliberately spans tenants so the UNION test can observe broadening.
-    allowTableRead<UserAttrs, ArbacDbScope>("projects", {
+    allowTableRead<UserAttrs, ArbacDbScope<Project>>("projects", {
       scope: (attrs, userId) => ({
         filter: {
           $or: [
@@ -33,7 +38,7 @@ export const memberRole = defineRole<UserAttrs, ArbacDbScope>()
         controls: memberControls,
       }),
     }),
-    allowTableRead<UserAttrs, ArbacDbScope>("tasks", {
+    allowTableRead<UserAttrs, ArbacDbScope<Task>>("tasks", {
       scope: (attrs, userId) => ({
         filter: {
           ...tenantFilter(attrs),
@@ -43,12 +48,12 @@ export const memberRole = defineRole<UserAttrs, ArbacDbScope>()
         controls: memberControls,
       }),
     }),
-    allowTableAction<UserAttrs, ArbacDbScope>("tasks", ["markDone", "markInProgress"], {
+    allowTableAction<UserAttrs, ArbacDbScope<Task>>("tasks", ["markDone", "markInProgress"], {
       scope: (attrs, userId) => ({
         filter: { ...tenantFilter(attrs), assigneeUsername: userId },
       }),
     }),
-    allowTableAction<UserAttrs, ArbacDbScope>("tasks", ["new"], {
+    allowTableAction<UserAttrs, ArbacDbScope<Task>>("tasks", ["new"], {
       scope: (attrs, userId) => ({
         filter: { ...tenantFilter(attrs), assigneeUsername: userId },
         set: {
@@ -59,16 +64,16 @@ export const memberRole = defineRole<UserAttrs, ArbacDbScope>()
         },
       }),
     }),
-    allowTableRead<UserAttrs, ArbacDbScope>("comments", {
+    allowTableRead<UserAttrs, ArbacDbScope<Comment>>("comments", {
       scope: (attrs) => ({ filter: tenantFilter(attrs), controls: memberControls }),
     }),
-    allowTableAction<UserAttrs, ArbacDbScope>("comments", ["insert", "update", "remove"], {
+    allowTableAction<UserAttrs, ArbacDbScope<Comment>>("comments", ["insert", "update", "remove"], {
       scope: (attrs, userId) => ({
         filter: { ...tenantFilter(attrs), authorUsername: userId },
         set: { ...tenantSet(attrs), authorUsername: userId },
       }),
     }),
-    allowTableRead<UserAttrs, ArbacDbScope>("documents", {
+    allowTableRead<UserAttrs, ArbacDbScope<Document>>("documents", {
       scope: (attrs) => ({
         filter: { ...tenantFilter(attrs), classification: { $ne: "confidential" } },
         controls: memberControls,

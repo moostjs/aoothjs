@@ -1,6 +1,6 @@
 import { defineRole } from "@aoothjs/arbac";
 
-import type { ArbacDbScope, UserAttrs } from "./attrs";
+import type { UserAttrs } from "./attrs";
 
 // Single-purpose deny role: blocks `comments.query`. Composed with `member`
 // (which would otherwise allow comments reads), it lets UNION-03 assert
@@ -9,7 +9,7 @@ import type { ArbacDbScope, UserAttrs } from "./attrs";
 //
 // Shape stays minimal so the test can assign this role + member to a user
 // at runtime without dragging extra fixtures into the seed.
-export const commentsDeniedRole = defineRole<UserAttrs, ArbacDbScope>()
+export const commentsDeniedRole = defineRole<UserAttrs>()
   .id("comments-denied")
   .name("Comments Denied")
   .describe(
