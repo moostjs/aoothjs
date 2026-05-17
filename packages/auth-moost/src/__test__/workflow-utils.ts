@@ -17,7 +17,7 @@ for (const key of [
 
 import { AuthCredential, type AuthCredentialOptions, CredentialStoreMemory } from "@aoothjs/auth";
 import { UserService, type UserServiceConfig, UserStoreMemory } from "@aoothjs/user";
-import { formInputInterceptor } from "@atscript/moost-wf";
+import { formInputInterceptor, type WfFinished } from "@atscript/moost-wf";
 import { Body, MoostHttp, Post } from "@moostjs/event-http";
 import {
   createHttpOutlet,
@@ -529,6 +529,24 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     triggerWithHeaders,
     resumeViaQuery,
   };
+}
+
+/**
+ * Asserts the response body is a `WfFinished` envelope and returns it
+ * with the requested `TData` shape. Use in tests that consume the
+ * terminal envelope (auto-login payload, redirect end, message, …).
+ * Throws when the body is missing or not finished so the failing test
+ * surfaces the actual status/body instead of a downstream `undefined`.
+ */
+export function expectFinished<TData = Record<string, unknown>>(
+  res: WfResponse,
+): WfFinished<TData> {
+  if (!res.body || res.body.finished !== true) {
+    throw new Error(
+      `expected WfFinished envelope, got status=${res.status} body=${JSON.stringify(res.body)}`,
+    );
+  }
+  return res.body as unknown as WfFinished<TData>;
 }
 
 /** Seed an active user. */

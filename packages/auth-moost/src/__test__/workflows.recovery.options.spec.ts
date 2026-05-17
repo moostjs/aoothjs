@@ -20,7 +20,7 @@ import { Controller, Inherit, Injectable } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import { RecoveryWorkflow, type RecoveryWorkflowOpts } from "../workflows/index";
-import { prepareWfApp, seedActiveUser } from "./workflow-utils";
+import { expectFinished, prepareWfApp, seedActiveUser } from "./workflow-utils";
 
 /**
  * Build a `RecoveryWorkflow` subclass with optional protected-method overrides.
@@ -151,9 +151,10 @@ describe("RecoveryWorkflowOpts — deliveryMode otp end-to-end", () => {
       wfs: r3.body?.wfs as string,
       input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
     });
-    // Auto-login terminal returns the buildLoginResponse payload.
-    expect(r4.body?.userId).toBe("alice@test.com");
-    expect(typeof r4.body?.accessToken).toBe("string");
+    // Auto-login terminal returns the buildLoginResponse payload wrapped in the envelope.
+    const env4 = expectFinished<{ userId: string; accessToken: string }>(r4);
+    expect(env4.data?.userId).toBe("alice@test.com");
+    expect(typeof env4.data?.accessToken).toBe("string");
 
     const ok = await app.users.verifyPassword("alice@test.com", "NewPassword123");
     expect(ok).toBe(true);
@@ -277,6 +278,8 @@ describe("RecoveryWorkflowOpts — anti-enumeration response parity", () => {
       input: { email: "ghost@nowhere.test" },
     });
     expect(r2.body?.wfs).toBeUndefined();
+    // Envelope-finished signal — no further step.
+    expect(r2.body?.finished).toBe(true);
   });
 });
 
@@ -308,7 +311,8 @@ describe("RecoveryWorkflowOpts — requireKnownFactor", () => {
       wfs: r.body?.wfs as string,
       input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
     });
-    expect(r2.body?.userId).toBe("alice@test.com");
+    const env2 = expectFinished<{ userId: string }>(r2);
+    expect(env2.data?.userId).toBe("alice@test.com");
   });
 
   it("bad factor: phone last-4 mismatch → opaque 'Invalid factor' error, no advance", async () => {
@@ -370,7 +374,8 @@ describe("RecoveryWorkflowOpts — revokeAllSessions", () => {
       wfs,
       input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
     });
-    expect(fin.body?.userId).toBe("alice@test.com");
+    const envFin = expectFinished<{ userId: string }>(fin);
+    expect(envFin.data?.userId).toBe("alice@test.com");
 
     // Pre-existing token now rejected (epoch bumped by revokeAllForUser).
     expect(await app.auth.validate(pre.accessToken)).toBeNull();
@@ -397,7 +402,7 @@ describe("RecoveryWorkflowOpts — revokeAllSessions", () => {
 });
 
 describe("RecoveryWorkflowOpts — freshLoginRequired terminal", () => {
-  it("freshLoginRequired true → redirect to loginUrl, no tokens issued", async () => {
+  it("freshLoginRequired true → envelope redirect to loginUrl, no tokens issued", async () => {
     const app = await prepareWfApp({
       recoveryOpts: {
         postReset: { freshLoginRequired: true, loginUrl: "/sign-in" },
@@ -409,14 +414,41 @@ describe("RecoveryWorkflowOpts — freshLoginRequired terminal", () => {
       wfs,
       input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
     });
-    expect(r.status).toBe(302);
-    expect(r.location).toBe("/sign-in");
+    expect(r.status).not.toBe(302);
+    const env = expectFinished<{ accessToken?: string; userId?: string }>(r);
+    const end = env.end as Extract<NonNullable<typeof env.end>, { mode: "immediate" }>;
+    expect(end?.action?.type).toBe("redirect");
+    expect(end?.action?.type === "redirect" && end.action.target).toBe("/sign-in");
     // No auto-login payload.
-    expect(r.body?.accessToken).toBeUndefined();
-    expect(r.body?.userId).toBeUndefined();
+    expect(env.data?.accessToken).toBeUndefined();
+    expect(env.data?.userId).toBeUndefined();
   });
 
-  it("freshLoginRequired false → auto-login (issues access token in body)", async () => {
+  it("freshLoginFinish emits auto-mode envelope with 5s countdown + success message", async () => {
+    const app = await prepareWfApp({
+      recoveryOpts: {
+        postReset: { freshLoginRequired: true, loginUrl: "/sign-in" },
+      },
+    });
+    await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
+    const { wfs } = await driveMagicLinkToSetPassword(app, "alice@test.com");
+    const r = await app.trigger({
+      wfs,
+      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
+    });
+    const env = expectFinished(r);
+    const end = env.end as Extract<NonNullable<typeof env.end>, { mode: "auto" }>;
+    expect(end?.mode).toBe("auto");
+    expect(end?.timeoutMs).toBe(5000);
+    expect(end?.skipButton?.label).toBe("Go now");
+    expect(end?.action?.type).toBe("redirect");
+    expect(end?.action?.type === "redirect" && end.action.target).toBe("/sign-in");
+    expect(end?.action?.type === "redirect" && end.action.reason).toBe("reset-success");
+    expect(env.message?.level).toBe("success");
+    expect(env.message?.text).toMatch(/Password updated/);
+  });
+
+  it("freshLoginRequired false → auto-login (issues access token in envelope data)", async () => {
     const app = await prepareWfApp({
       recoveryOpts: { postReset: { freshLoginRequired: false } },
     });
@@ -426,8 +458,9 @@ describe("RecoveryWorkflowOpts — freshLoginRequired terminal", () => {
       wfs,
       input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
     });
-    expect(r.body?.userId).toBe("alice@test.com");
-    expect(typeof r.body?.accessToken).toBe("string");
+    const env = expectFinished<{ userId: string; accessToken: string }>(r);
+    expect(env.data?.userId).toBe("alice@test.com");
+    expect(typeof env.data?.accessToken).toBe("string");
   });
 
   it("default freshLoginRequired: false → autoLoginFinish issues tokens (recovery + immediate validate)", async () => {
@@ -446,22 +479,23 @@ describe("RecoveryWorkflowOpts — freshLoginRequired terminal", () => {
       wfs,
       input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
     });
-    // Default auto-login emits the buildLoginResponse payload, no 302.
+    // Default auto-login emits the buildLoginResponse payload under .data, no 302.
     expect(r.status).not.toBe(302);
-    expect(r.body?.userId).toBe("alice@test.com");
-    expect(typeof r.body?.accessToken).toBe("string");
-    expect(typeof r.body?.refreshToken).toBe("string");
+    const env = expectFinished<{ userId: string; accessToken: string; refreshToken: string }>(r);
+    expect(env.data?.userId).toBe("alice@test.com");
+    expect(typeof env.data?.accessToken).toBe("string");
+    expect(typeof env.data?.refreshToken).toBe("string");
 
     // Immediate validate proves the issued token survived the same-tick
     // revokeAllForUser → issue sequence (epoch `>=` race fix).
-    const principal = await app.auth.validate(r.body!.accessToken as string);
+    const principal = await app.auth.validate(env.data!.accessToken);
     expect(principal).not.toBeNull();
     expect(principal?.userId).toBe("alice@test.com");
   });
 });
 
 describe("RecoveryWorkflowOpts — backToLogin alt-action", () => {
-  it("request step: backToLogin alt → redirect to loginUrl, no email sent", async () => {
+  it("request step: backToLogin alt → immediate redirect envelope to loginUrl, no email sent", async () => {
     const app = await prepareWfApp({
       recoveryOpts: {
         altActions: { backToLogin: true },
@@ -473,12 +507,17 @@ describe("RecoveryWorkflowOpts — backToLogin alt-action", () => {
       wfs: r1.body?.wfs as string,
       input: { action: "backToLogin" },
     });
-    expect(r2.status).toBe(302);
-    expect(r2.location).toBe("/login");
+    expect(r2.status).not.toBe(302);
+    const env2 = expectFinished(r2);
+    const end2 = env2.end as Extract<NonNullable<typeof env2.end>, { mode: "immediate" }>;
+    expect(end2?.mode).toBe("immediate");
+    expect(end2?.action?.type).toBe("redirect");
+    expect(end2?.action?.type === "redirect" && end2.action.target).toBe("/login");
+    expect(end2?.action?.type === "redirect" && end2.action.reason).toBe("user-cancelled");
     expect(app.emails).toHaveLength(0);
   });
 
-  it("setPassword step: backToLogin alt → redirect, password NOT changed", async () => {
+  it("setPassword step: backToLogin alt → envelope redirect, password NOT changed", async () => {
     const app = await prepareWfApp({
       recoveryOpts: {
         altActions: { backToLogin: true },
@@ -488,8 +527,10 @@ describe("RecoveryWorkflowOpts — backToLogin alt-action", () => {
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
     const { wfs } = await driveMagicLinkToSetPassword(app, "alice@test.com");
     const r = await app.trigger({ wfs, input: { action: "backToLogin" } });
-    expect(r.status).toBe(302);
-    expect(r.location).toBe("/login");
+    expect(r.status).not.toBe(302);
+    const env = expectFinished(r);
+    const end = env.end as Extract<NonNullable<typeof env.end>, { mode: "immediate" }>;
+    expect(end?.action?.type === "redirect" && end.action.target).toBe("/login");
     // Old password still works.
     const ok = await app.users.verifyPassword("alice@test.com", "OldPassword1");
     expect(ok).toBe(true);
@@ -626,7 +667,8 @@ describe("RecoveryWorkflow subclass — protected method overrides", () => {
       wfs: r1.body?.wfs as string,
       input: { email: "anyone@nowhere.test" },
     });
-    expect(r2.body?.sent).toBe(true);
+    const env2 = expectFinished<{ sent: boolean }>(r2);
+    expect(env2.data?.sent).toBe(true);
     expect(app.emails).toHaveLength(0);
   });
 });

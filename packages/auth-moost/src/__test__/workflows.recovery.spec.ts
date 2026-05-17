@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { prepareWfApp, seedActiveUser } from "./workflow-utils";
+import { expectFinished, prepareWfApp, seedActiveUser } from "./workflow-utils";
 
 /**
  * Wire trace for the recovery workflow:
@@ -62,8 +62,9 @@ describe("RecoveryWorkflow", () => {
       wfs: wfs3,
       input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
     });
-    expect(r4.body?.userId).toBe("alice@test.com");
-    expect(typeof r4.body?.accessToken).toBe("string");
+    const env4 = expectFinished<{ userId: string; accessToken: string }>(r4);
+    expect(env4.data?.userId).toBe("alice@test.com");
+    expect(typeof env4.data?.accessToken).toBe("string");
 
     // Verify password was actually changed
     const ok = await app.users.verifyPassword("alice@test.com", "NewPassword123");
@@ -77,7 +78,10 @@ describe("RecoveryWorkflow", () => {
       wfs: r1.body?.wfs as string,
       input: { email: "ghost@test.com" },
     });
-    expect(r2.body?.sent).toBe(true);
+    const env2 = expectFinished<{ sent: boolean }>(r2);
+    expect(env2.data?.sent).toBe(true);
+    expect(env2.message?.level).toBe("info");
+    expect(env2.message?.text).toMatch(/If an account exists/);
     expect(app.emails).toHaveLength(0);
   });
 
@@ -156,7 +160,8 @@ describe("RecoveryWorkflow", () => {
       wfs: r1.body?.wfs as string,
       input: { email: "anyone@nowhere.test" },
     });
-    expect(r2.body?.sent).toBe(true);
+    const env2 = expectFinished<{ sent: boolean }>(r2);
+    expect(env2.data?.sent).toBe(true);
     expect(app.emails).toHaveLength(0);
   });
 

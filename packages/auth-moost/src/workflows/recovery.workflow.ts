@@ -33,6 +33,7 @@
  */
 import { AuthCredential } from "@aoothjs/auth";
 import { UserAuthError, UserService, verifyTotpCode } from "@aoothjs/user";
+import { finishWfWithData, finishWfWithRedirect, type WfFinished } from "@atscript/moost-wf";
 import {
   outletEmail,
   Step,
@@ -596,7 +597,16 @@ export class RecoveryWorkflow {
   // ── freshLoginFinish ─────────────────────────────────────────────────
   @Step("recoveryFreshLoginFinish")
   freshLoginFinish(@WorkflowParam("context") _ctx: RecoveryWfCtx): undefined {
-    useWfFinished().set({ type: "redirect", value: this.opts.postReset.loginUrl });
+    // Auto-mode countdown: user reads the success confirmation before redirect.
+    finishWfWithRedirect(this.opts.postReset.loginUrl, {
+      autoMs: 5000,
+      skipLabel: "Go now",
+      message: {
+        level: "success",
+        text: "Password updated. Redirecting to sign-in…",
+      },
+      reason: "reset-success",
+    });
     return undefined;
   }
 
@@ -607,9 +617,14 @@ export class RecoveryWorkflow {
     const issue = await this.auth.issue(ctx.username);
     ctx.tokensIssued = true;
     const auth = useAuth();
+    // Raw envelope path — helpers don't expose cookies; wooks-level Set-Cookie.
+    const envelope: WfFinished = {
+      finished: true,
+      data: auth.buildLoginResponse(ctx.username, issue),
+    };
     useWfFinished().set({
       type: "data",
-      value: auth.buildLoginResponse(ctx.username, issue),
+      value: envelope,
       cookies: auth.buildFinishedCookies(issue),
     });
     return undefined;
@@ -622,14 +637,14 @@ export class RecoveryWorkflow {
    * indistinguishable to the client (anti-enumeration).
    */
   private finishGeneric(): void {
-    useWfFinished().set({
-      type: "data",
-      value: { sent: true, message: "If an account exists, you will receive instructions." },
-    });
+    finishWfWithData(
+      { sent: true },
+      { level: "info", text: "If an account exists, you will receive instructions." },
+    );
   }
 
   private abortToLogin(ctx: RecoveryWfCtx): AltHandled {
-    useWfFinished().set({ type: "redirect", value: this.opts.postReset.loginUrl });
+    finishWfWithRedirect(this.opts.postReset.loginUrl, { reason: "user-cancelled" });
     ctx.aborted = true;
     return ALT_HANDLED;
   }
