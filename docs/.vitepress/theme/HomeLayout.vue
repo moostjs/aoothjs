@@ -117,7 +117,9 @@ const showcases = computed(() => [
       <section class="aooth-hero">
         <AuthFlowBg />
         <div class="aooth-hero-inner">
-          <div class="aooth-hero-pill animate-in"><span class="dot" /> Pre-release · alpha</div>
+          <div class="aooth-hero-pill animate-in">
+            <span class="dot" /> v0.1.1 · preview release
+          </div>
 
           <img src="/logo.svg" alt="aooth" class="aooth-wordmark animate-in" />
 

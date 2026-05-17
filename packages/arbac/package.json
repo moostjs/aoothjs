@@ -1,6 +1,6 @@
 {
   "name": "@aoothjs/arbac",
-  "version": "0.0.1-alpha.6",
+  "version": "0.1.0",
   "description": "Batteries-included RBAC: builder API, privilege factories, scope merge utilities",
   "keywords": [
     "access-control",
