@@ -10,7 +10,7 @@ import type { ArbacDbScope, UserAttrs } from "./attrs";
 import { PROJ_USER_MANAGER } from "./projections";
 import { tenantDeptFilter, tenantFilter, tenantSet } from "./scopes";
 
-export const managerRole = defineRole<UserAttrs>()
+export const managerRole = defineRole<UserAttrs, ArbacDbScope>()
   .id("manager")
   .name("Department Manager")
   .describe("Read across own tenant; write within own department")

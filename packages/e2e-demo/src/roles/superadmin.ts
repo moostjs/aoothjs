@@ -10,7 +10,7 @@ import { Tenant } from "../models/tenant.as";
 import { DemoUser } from "../models/user.as";
 import type { ArbacDbScope, UserAttrs } from "./attrs";
 
-export const superadminRole = defineRole<UserAttrs>()
+export const superadminRole = defineRole<UserAttrs, ArbacDbScope>()
   .id("superadmin")
   .name("Super Admin")
   .describe("Cross-tenant god mode; for ops & migration")

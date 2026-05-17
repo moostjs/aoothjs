@@ -30,7 +30,7 @@ const viewerTaskControls: Record<string, ControlGate> = {
   $having: false,
 };
 
-export const viewerRole = defineRole<UserAttrs>()
+export const viewerRole = defineRole<UserAttrs, ArbacDbScope>()
   .id("viewer")
   .name("Viewer")
   .describe("Read-only on the tenant with the heaviest projection mask")

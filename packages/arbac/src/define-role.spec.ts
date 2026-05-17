@@ -111,6 +111,36 @@ describe("defineRole", () => {
     ]);
   });
 
+  it("must accept privileges with independent per-arg TScope in one .use() call", () => {
+    // WHY: real-world roles compose privileges over different .as models
+    // (e.g. `allowTableRead<UserAttrs, ArbacDbScope<Task>>` next to
+    // `allowTableRead<UserAttrs, ArbacDbScope<Comment>>`). The variadic tuple
+    // typing on .use() permits the mix; without it the role builder would
+    // force callers to drop the role-level scope pin or split into one
+    // .use() call per scope shape (both worse). The role-level TScope stays
+    // as upper-bound documentation; runtime stores everything as a single
+    // rules array.
+    interface ScopeA {
+      kind: "A";
+      aOnly: string;
+    }
+    interface ScopeB {
+      kind: "B";
+      bOnly: number;
+    }
+    const pA: TPrivilegeFunction<object, ScopeA> = () => [
+      { resource: "a", action: "read", scope: () => ({ kind: "A", aOnly: "x" }) },
+    ];
+    const pB: TPrivilegeFunction<object, ScopeB> = () => [
+      { resource: "b", action: "read", scope: () => ({ kind: "B", bOnly: 1 }) },
+    ];
+
+    const role = defineRole<object, ScopeA | ScopeB>().id("mixed-scopes").use(pA, pB).build();
+    expect(role.rules).toHaveLength(2);
+    expect(role.rules[0].resource).toBe("a");
+    expect(role.rules[1].resource).toBe("b");
+  });
+
   it("must preserve both deny and allow rules in call order", () => {
     const role = defineRole()
       .id("mixed")

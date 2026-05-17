@@ -37,8 +37,19 @@ export interface RoleBuilder<TUserAttrs, TScope> {
   /**
    * Splice in rules from one or more privilege functions (see
    * {@link definePrivilege}). Privileges are expanded inline in call order.
+   *
+   * Each privilege carries its own scope shape — a variadic tuple typing lets
+   * `.use()` accept a mix of `TPrivilegeFunction<TUserAttrs, S1>`,
+   * `TPrivilegeFunction<TUserAttrs, S2>`, … in one call. Necessary because
+   * typed-table privileges return different per-resource scope shapes (e.g.
+   * `ArbacDbScope<Task>` vs `ArbacDbScope<Comment>`) that aren't structurally
+   * assignable to the role-level `TScope` pin. The role-level `TScope` stays
+   * as the *upper-bound documentation* of what scopes look like at evaluate
+   * time; runtime storage type-erases through the cast at push.
    */
-  use(...privileges: TPrivilegeFunction<TUserAttrs, TScope>[]): RoleBuilder<TUserAttrs, TScope>;
+  use<TScopes extends readonly unknown[]>(
+    ...privileges: { [K in keyof TScopes]: TPrivilegeFunction<TUserAttrs, TScopes[K]> }
+  ): RoleBuilder<TUserAttrs, TScope>;
   /**
    * Finalize and return a plain {@link TArbacRole} object suitable for
    * `Arbac.registerRole`. Throws if `.id()` was never called.
@@ -85,9 +96,15 @@ class RoleBuilderImpl<TUserAttrs, TScope> implements RoleBuilder<TUserAttrs, TSc
     return this;
   }
 
-  use(...privileges: TPrivilegeFunction<TUserAttrs, TScope>[]): this {
+  use<TScopes extends readonly unknown[]>(
+    ...privileges: { [K in keyof TScopes]: TPrivilegeFunction<TUserAttrs, TScopes[K]> }
+  ): this {
     for (const priv of privileges) {
-      this._rules.push(...priv());
+      // Type-erase: each privilege's TScopes[K] is widened to the role's
+      // TScope at storage. Safe because rules are read structurally at
+      // evaluate time (scope object's runtime shape, not its compile-time
+      // declared type).
+      this._rules.push(...(priv() as TArbacRule<TUserAttrs, TScope>[]));
     }
     return this;
   }

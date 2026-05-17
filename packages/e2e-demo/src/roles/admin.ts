@@ -13,7 +13,7 @@ import { PROJ_USER_ADMIN } from "./projections";
 import { tenantFilter, tenantSet } from "./scopes";
 import { WRITEABLE_USER_FIELDS_ADMIN } from "./writeable-fields";
 
-export const adminRole = defineRole<UserAttrs>()
+export const adminRole = defineRole<UserAttrs, ArbacDbScope>()
   .id("admin")
   .name("Tenant Admin")
   .describe("Tenant-scoped god mode; cannot touch other tenants; cannot mutate roles via PATCH")

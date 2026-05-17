@@ -14,7 +14,7 @@ const memberControls: Record<string, ControlGate> = {
   $having: false,
 };
 
-export const memberRole = defineRole<UserAttrs>()
+export const memberRole = defineRole<UserAttrs, ArbacDbScope>()
   .id("member")
   .name("Contributor")
   .describe("Tenant-scoped reads via project membership; act on assigned tasks; own comments")
