@@ -33,10 +33,24 @@ describe("CTRL-EX — per-control policy gating (Phase 3b)", () => {
     await app.close();
   });
 
-  it("CTRL-EX-01 — viewer $with denied → 403", async () => {
+  it("CTRL-EX-01 — viewer $with denied on $with:false table → 403", async () => {
+    // Pivoted from /tasks (which now whitelists $with:['comments'] for the
+    // PROJ-04 expansion test) to /comments (viewerControls.$with === false).
+    // Intent preserved: viewer's per-control $with denial fires when
+    // the role declares it.
     const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_eve);
-    const res = await fetch("/tasks/query?$with=comments");
+    const res = await fetch("/comments/query?$with=task");
     await expect403Containing(res, "$with");
+  });
+
+  it("CTRL-EX-01b — viewer $with whitelist allows the named relation, rejects others", async () => {
+    // viewer.tasks now declares controls.$with = ['comments'] — a one-hop
+    // whitelist. Allowed: comments. Rejected: any other name.
+    const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_eve);
+    const allowed = await fetch("/tasks/query?$with=comments");
+    expect(allowed.status).toBe(200);
+    const rejected = await fetch("/tasks/query?$with=project");
+    await expect403Containing(rejected, "$with");
   });
 
   it("CTRL-EX-02 — viewer $groupBy denied", async () => {
@@ -64,8 +78,9 @@ describe("CTRL-EX — per-control policy gating (Phase 3b)", () => {
   });
 
   it("CTRL-EX-06 — gating works on /pages route too", async () => {
+    // Same pivot as CTRL-EX-01: /comments has $with:false for viewer.
     const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_eve);
-    const res = await fetch("/tasks/pages?$page=1&$size=10&$with=comments");
+    const res = await fetch("/comments/pages?$page=1&$size=10&$with=task");
     await expect403Containing(res, "$with");
   });
 

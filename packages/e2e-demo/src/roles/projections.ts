@@ -13,3 +13,5 @@ export const PROJ_USER_SELF: TProjection = { id: 1, username: 1, email: 1 };
 
 export const PROJ_TASK_MEMBER: TProjection = { internalNotes: 0 };
 export const PROJ_TASK_VIEWER: TProjection = { internalNotes: 0 };
+
+export const PROJ_COMMENT_VIEWER: TProjection = { tenantId: 0 };

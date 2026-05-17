@@ -76,15 +76,32 @@ describe("UNION — multi-role scope union", () => {
     // surface email on at least one row that has one in the seed.
     expect(sawEmail).toBe(true);
   });
+});
 
-  it.skip("UNION-03 — explicit deny short-circuits union (no `effect: deny` rule in seeded roles)", () => {
-    // The demo's role matrix is additive only — none of the six roles use
-    // `effect: 'deny'`. To exercise deny short-circuit semantics we would need
-    // either a synthetic role registered at test time, or a deny rule baked
-    // into a seed role; both expand scope beyond Test Step C. Deny semantics
-    // ARE covered by arbac-core unit tests (packages/arbac-core/src/arbac.spec.ts);
-    // this story is skipped here to keep the e2e-demo's roles representative
-    // of typical app shape.
+describe("UNION-03 — explicit deny short-circuits union", () => {
+  let app: TestApp;
+
+  beforeEach(async () => {
+    app = await buildTestApp();
+    // alice already holds [member, viewer], both of which allow comments.query.
+    // Layer commentsDeniedRole on top via dbUpdateOne (mirrors UNION-04's
+    // pattern) so the union becomes [member, viewer, comments-denied].
+    await dbUpdateOne(app, "users", {
+      username: "t1_alice",
+      roles: ["member", "viewer", "comments-denied"],
+    });
+  });
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it("UNION-03 — comments-denied beats member+viewer allows on /comments/query", async () => {
+    const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_alice);
+    const res = await fetch("/comments/query");
+    // SPEC: a deny rule for (comments, query) short-circuits the additive
+    // union — even though member AND viewer each allow the same action,
+    // any deny on the (resource, action) tuple wins.
+    expect(res.status).toBe(403);
   });
 });
 

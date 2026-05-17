@@ -1,11 +1,21 @@
 import { allowTableRead, type ControlGate, defineRole } from "@aoothjs/arbac";
 
 import type { ArbacDbScope, UserAttrs } from "./attrs";
-import { PROJ_TASK_VIEWER, PROJ_USER_VIEWER } from "./projections";
+import { PROJ_COMMENT_VIEWER, PROJ_TASK_VIEWER, PROJ_USER_VIEWER } from "./projections";
 import { tenantFilter } from "./scopes";
 
 const viewerControls: Record<string, ControlGate> = {
   $with: false,
+  $groupBy: false,
+  $having: false,
+};
+
+// Narrower set for the tasks read scope: viewers can expand the
+// `comments` relation (PROJ-04 exercises this) but can't groupBy/having.
+// $with is whitelisted to ["comments"] — drill-throughs to other relations
+// are still rejected so the surface stays auditable.
+const viewerTaskControls: Record<string, ControlGate> = {
+  $with: ["comments"],
   $groupBy: false,
   $having: false,
 };
@@ -32,11 +42,15 @@ export const viewerRole = defineRole<UserAttrs, ArbacDbScope>()
       scope: (attrs) => ({
         filter: tenantFilter(attrs),
         projection: PROJ_TASK_VIEWER,
-        controls: viewerControls,
+        controls: viewerTaskControls,
       }),
     }),
     allowTableRead<UserAttrs, ArbacDbScope>("comments", {
-      scope: (attrs) => ({ filter: tenantFilter(attrs), controls: viewerControls }),
+      scope: (attrs) => ({
+        filter: tenantFilter(attrs),
+        projection: PROJ_COMMENT_VIEWER,
+        controls: viewerControls,
+      }),
     }),
     allowTableRead<UserAttrs, ArbacDbScope>("documents", {
       scope: (attrs) => ({
