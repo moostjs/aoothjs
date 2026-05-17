@@ -11,6 +11,7 @@ import type { TArbacMeta } from "../arbac.mate";
 import {
   applyArbacControls,
   applyArbacProjection,
+  applyArbacRelationScopes,
   readCachedScopes,
   transformArbacFilter,
 } from "./shared-read-helpers";
@@ -55,6 +56,26 @@ export interface ArbacDbScope {
    * @example `{ controls: { $with: ['comments', 'owner'] } }` — restrict relations.
    */
   controls?: Record<string, ControlGate>;
+  /**
+   * Per-relation sub-scopes applied when the request expands a relation via
+   * `?$with=<name>`. Recursive — each sub-scope has the same shape and can
+   * declare its own `with` for nested expansions (e.g. tasks → comments → task).
+   *
+   * **Authority model**: the PARENT scope owns the policy for joined rows.
+   * arbac-moost does NOT re-evaluate ARBAC against the joined resource's own
+   * scopes — that would be a confusing indirection and a perf hit. Whatever
+   * the parent declares here is what surfaces from the expansion.
+   *
+   * **Union across roles**: when multiple roles allow the same parent table,
+   * their `with[name]` sub-scopes are unioned at every nested level using the
+   * existing `unionProjections` / `mergeScopeFilters` / `unionControlsPolicy`
+   * primitives (additive: broader access wins, same rules as the parent).
+   *
+   * **Silence wins**: if no role declares `with.<name>`, expansion is
+   * unrestricted (matches `controls.$with` whitelist semantics; the gate
+   * still applies if declared).
+   */
+  with?: Record<string, ArbacDbScope>;
 }
 
 @Inherit()
@@ -93,7 +114,9 @@ export class AsArbacDbController<
     const baseErr = super.validateControls(controls, type);
     if (baseErr) return baseErr;
 
-    applyArbacControls(controls, readCachedScopes());
+    const scopes = readCachedScopes();
+    applyArbacControls(controls, scopes);
+    applyArbacRelationScopes(controls, scopes);
     return undefined;
   }
 

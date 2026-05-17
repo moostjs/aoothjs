@@ -6,6 +6,7 @@ import { Inherit } from "moost";
 import {
   applyArbacControls,
   applyArbacProjection,
+  applyArbacRelationScopes,
   readCachedScopes,
   transformArbacFilter,
 } from "./shared-read-helpers";
@@ -39,7 +40,9 @@ export class AsArbacDbReadableController<
     const baseErr = super.validateControls(controls, type);
     if (baseErr) return baseErr;
 
-    applyArbacControls(controls, readCachedScopes());
+    const scopes = readCachedScopes();
+    applyArbacControls(controls, scopes);
+    applyArbacRelationScopes(controls, scopes);
     return undefined;
   }
 }
