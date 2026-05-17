@@ -11,7 +11,7 @@
  * affected by the same general "alt handler returns undefined → falls through
  * to form validation" pattern (see BUG-LOGIN-3 / BUG-LOGIN-4 markers below).
  */
-import { generateTotpSecret } from "@aoothjs/user";
+import { generateTotpSecret } from "@aooth/user";
 import { describe, expect, it } from "vite-plus/test";
 
 import { prepareWfApp, seedActiveUser } from "./workflow-utils";

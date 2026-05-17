@@ -1,4 +1,4 @@
-import type { ControlGate, TProjection } from "@aoothjs/arbac";
+import type { ControlGate, TProjection } from "@aooth/arbac";
 import type { NavPropsOf, OwnPropsOf } from "@atscript/typescript/utils";
 
 /**

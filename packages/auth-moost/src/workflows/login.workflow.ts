@@ -42,7 +42,7 @@
  * without an override throws. Boot-time "X required when Y enabled" checks
  * are gone for sender/store/emitter; only data-validity checks remain.
  */
-import { AuthCredential, type AuthEmailKind, type AuthSmsKind } from "@aoothjs/auth";
+import { AuthCredential, type AuthEmailKind, type AuthSmsKind } from "@aooth/auth";
 import {
   type MfaMethodInfo,
   type TrustedDeviceRecord,
@@ -50,7 +50,7 @@ import {
   UserService,
   maskEmail,
   maskPhone,
-} from "@aoothjs/user";
+} from "@aooth/user";
 import { finishWfAborted, finishWfWithRedirect, type WfFinished } from "@atscript/moost-wf";
 import { HttpError } from "@moostjs/event-http";
 import { Step, useWfFinished, Workflow, WorkflowParam, WorkflowSchema } from "@moostjs/event-wf";

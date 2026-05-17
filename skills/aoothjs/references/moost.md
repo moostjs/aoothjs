@@ -1,9 +1,9 @@
-# @aoothjs/auth-moost & @aoothjs/arbac-moost
+# @aooth/auth-moost & @aooth/arbac-moost
 
 ## Quick start
 
 ```ts
-import { AuthCredential, CredentialStoreJwt, type EmailSender } from "@aoothjs/auth";
+import { AuthCredential, CredentialStoreJwt, type EmailSender } from "@aooth/auth";
 import {
   AuthController,
   authGuardInterceptor,
@@ -16,7 +16,7 @@ import {
   useAuth,
   WfTrigger,
   WfTriggerProvider,
-} from "@aoothjs/auth-moost";
+} from "@aooth/auth-moost";
 import {
   arbacAuthorizeInterceptor,
   ArbacAction,
@@ -24,9 +24,9 @@ import {
   ArbacResource,
   ArbacUserProviderToken,
   MoostArbac,
-} from "@aoothjs/arbac-moost";
-import { AtscriptArbacUserProvider } from "@aoothjs/arbac-moost/atscript";
-import { UserService } from "@aoothjs/user";
+} from "@aooth/arbac-moost";
+import { AtscriptArbacUserProvider } from "@aooth/arbac-moost/atscript";
+import { UserService } from "@aooth/user";
 import { formInputInterceptor } from "@atscript/moost-wf";
 import { HandleStateStrategy, MoostWf } from "@moostjs/event-wf";
 import { Get, MoostHttp, Post } from "@moostjs/event-http";
@@ -129,7 +129,7 @@ for (const role of allRoles) arbac.registerRole(role);
 
 | #   | Rule                                                                                                                                                                                                                                                                                                                                |
 | --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | **`@Public()` is dual-purpose.** Imported from `@aoothjs/auth-moost`, it writes BOTH `authPublic=true` AND `arbacPublic=true` on the same mate. You cannot ARBAC-gate an `@Public()` route. Splitting was deliberately rejected as a foot-gun.                                                                                      |
+| 1   | **`@Public()` is dual-purpose.** Imported from `@aooth/auth-moost`, it writes BOTH `authPublic=true` AND `arbacPublic=true` on the same mate. You cannot ARBAC-gate an `@Public()` route. Splitting was deliberately rejected as a foot-gun.                                                                                        |
 | 2   | **Workflow class needs `@Public()`** — without it the global `arbacAuthorizeInterceptor` resolves WF events to `(resource=class-name, action=step-name)` and denies anonymous logins. `LoginWorkflow`/`RecoveryWorkflow` already carry it; `InviteWorkflow` does not (phase A is ARBAC-gated). Subclasses inherit via `@Inherit()`. |
 | 3   | **Phase-B invite steps are `@Public()`.** Anonymous magic-link resume fires on a token, not a session. Don't strip these flags when subclassing.                                                                                                                                                                                    |
 | 4   | **`useArbac` is NOT a wook.** It re-resolves resource/action per call. A wook cache would inherit the originating HTTP `EventContext` through WF `parent` and silently bypass workflow-class `@ArbacResource`.                                                                                                                      |
@@ -155,7 +155,7 @@ for (const role of allRoles) arbac.registerRole(role);
 ## Key imports
 
 ```ts
-// — @aoothjs/auth-moost (runtime + types)
+// — @aooth/auth-moost (runtime + types)
 import {
   AuthController,
   authGuardInterceptor,
@@ -170,7 +170,7 @@ import {
   WfTriggerProvider,
   createAuthEmailOutlet,
   DEFAULT_AUTH_WORKFLOWS,
-} from "@aoothjs/auth-moost";
+} from "@aooth/auth-moost";
 import type {
   AuthOptions,
   ResolvedAuthOptions,
@@ -186,9 +186,9 @@ import type {
   LoginWorkflowOpts,
   RecoveryWorkflowOpts,
   InviteWorkflowOpts,
-} from "@aoothjs/auth-moost";
+} from "@aooth/auth-moost";
 
-// — @aoothjs/arbac-moost
+// — @aooth/arbac-moost
 import {
   MoostArbac,
   arbacAuthorizeInterceptor,
@@ -200,16 +200,16 @@ import {
   ArbacUserProviderToken,
   AsArbacDbController,
   AsArbacDbReadableController,
-} from "@aoothjs/arbac-moost";
-import type { TArbacMeta, ArbacDbScope } from "@aoothjs/arbac-moost";
+} from "@aooth/arbac-moost";
+import type { TArbacMeta, ArbacDbScope } from "@aooth/arbac-moost";
 
-// — @aoothjs/arbac-moost/atscript (atscript-driven user provider)
-import { AtscriptArbacUserProvider } from "@aoothjs/arbac-moost/atscript";
-import type { ArbacUserTable } from "@aoothjs/arbac-moost/atscript";
-import { AoothArbacUserCredentials } from "@aoothjs/arbac-moost/atscript/models";
+// — @aooth/arbac-moost/atscript (atscript-driven user provider)
+import { AtscriptArbacUserProvider } from "@aooth/arbac-moost/atscript";
+import type { ArbacUserTable } from "@aooth/arbac-moost/atscript";
+import { AoothArbacUserCredentials } from "@aooth/arbac-moost/atscript/models";
 
-// — @aoothjs/arbac-moost/plugin (build-time only, in atscript.config.ts)
-import arbacPlugin from "@aoothjs/arbac-moost/plugin";
+// — @aooth/arbac-moost/plugin (build-time only, in atscript.config.ts)
+import arbacPlugin from "@aooth/arbac-moost/plugin";
 
 // — Workflow finish-envelope helpers (re-exported via @atscript/moost-wf)
 import {
@@ -225,9 +225,9 @@ import type { WfFinished } from "@atscript/moost-wf";
 
 // NOTE: `expectFinished` / `expectRedirect` are **test-only helpers** that
 // live in `packages/auth-moost/src/__test__/workflow-utils.ts` and are NOT
-// exported from `@aoothjs/auth-moost`. Don't import them in app code.
+// exported from `@aooth/auth-moost`. Don't import them in app code.
 // NOTE: `DENY_FILTER` and the `ArbacBindings` interface are **internal**
-// to `@aoothjs/arbac-moost` and not re-exported from `./index.ts`.
+// to `@aooth/arbac-moost` and not re-exported from `./index.ts`.
 // Read the `useArbac()` return value via `ReturnType<typeof useArbac>`.
 
 // — Moost framework (re-stated for grep-friendliness)
@@ -243,10 +243,10 @@ import {
 import { MoostHttp, Get, Post } from "@moostjs/event-http";
 import { MoostWf, HandleStateStrategy } from "@moostjs/event-wf";
 
-// — Peer types from @aoothjs/auth / @aoothjs/user (commonly imported together)
-import { AuthCredential } from "@aoothjs/auth";
-import type { EmailSender, AuthEmailKind, SmsSender } from "@aoothjs/auth";
-import { UserService } from "@aoothjs/user";
+// — Peer types from @aooth/auth / @aooth/user (commonly imported together)
+import { AuthCredential } from "@aooth/auth";
+import type { EmailSender, AuthEmailKind, SmsSender } from "@aooth/auth";
+import { UserService } from "@aooth/user";
 ```
 
 ## References — load only what's needed

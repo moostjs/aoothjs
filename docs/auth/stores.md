@@ -1,23 +1,23 @@
 # Stores
 
-`@aoothjs/auth` is store-agnostic — every persistence concern is behind `CredentialStore<TClaims>` and `DenylistStore`. This page covers every shipped implementation: the interfaces, the in-memory defaults, the Redis adapter, the atscript-db adapter (with the shipped `.as` model), and the matrix you'd use to pick between them.
+`@aooth/auth` is store-agnostic — every persistence concern is behind `CredentialStore<TClaims>` and `DenylistStore`. This page covers every shipped implementation: the interfaces, the in-memory defaults, the Redis adapter, the atscript-db adapter (with the shipped `.as` model), and the matrix you'd use to pick between them.
 
 ## The store matrix
 
-| Store                         | Subpath                     | State location            | Token shape      | `listForUser` | `consume`           | Notes                                                            |
-| ----------------------------- | --------------------------- | ------------------------- | ---------------- | ------------- | ------------------- | ---------------------------------------------------------------- |
-| `CredentialStoreMemory`       | `@aoothjs/auth`             | In-process `Map`          | Opaque UUID      | yes           | yes                 | Dev, tests. Lost on restart.                                     |
-| `CredentialStoreJwt`          | `@aoothjs/auth`             | The token itself          | Signed JWT       | no            | requires `denylist` | Stateless. See [Tokens](./tokens).                               |
-| `CredentialStoreEncapsulated` | `@aoothjs/auth`             | The token itself          | AES-256-GCM blob | no            | requires `denylist` | Stateless + confidential.                                        |
-| `CredentialStoreRedis`        | `@aoothjs/auth/redis`       | Redis                     | Opaque UUID      | yes           | yes                 | Multi-instance, fast.                                            |
-| `CredentialStoreAtscriptDb`   | `@aoothjs/auth/atscript-db` | DB row via `@atscript/db` | Opaque UUID      | yes           | yes                 | Durable, queryable, integrates with the rest of your data model. |
+| Store                         | Subpath                   | State location            | Token shape      | `listForUser` | `consume`           | Notes                                                            |
+| ----------------------------- | ------------------------- | ------------------------- | ---------------- | ------------- | ------------------- | ---------------------------------------------------------------- |
+| `CredentialStoreMemory`       | `@aooth/auth`             | In-process `Map`          | Opaque UUID      | yes           | yes                 | Dev, tests. Lost on restart.                                     |
+| `CredentialStoreJwt`          | `@aooth/auth`             | The token itself          | Signed JWT       | no            | requires `denylist` | Stateless. See [Tokens](./tokens).                               |
+| `CredentialStoreEncapsulated` | `@aooth/auth`             | The token itself          | AES-256-GCM blob | no            | requires `denylist` | Stateless + confidential.                                        |
+| `CredentialStoreRedis`        | `@aooth/auth/redis`       | Redis                     | Opaque UUID      | yes           | yes                 | Multi-instance, fast.                                            |
+| `CredentialStoreAtscriptDb`   | `@aooth/auth/atscript-db` | DB row via `@atscript/db` | Opaque UUID      | yes           | yes                 | Durable, queryable, integrates with the rest of your data model. |
 
 And the denylist matrix:
 
-| Denylist              | Subpath               | Persistence      |
-| --------------------- | --------------------- | ---------------- |
-| `DenylistStoreMemory` | `@aoothjs/auth`       | In-process `Map` |
-| `DenylistStoreRedis`  | `@aoothjs/auth/redis` | Redis with TTL   |
+| Denylist              | Subpath             | Persistence      |
+| --------------------- | ------------------- | ---------------- |
+| `DenylistStoreMemory` | `@aooth/auth`       | In-process `Map` |
+| `DenylistStoreRedis`  | `@aooth/auth/redis` | Redis with TTL   |
 
 ## `CredentialStore<TClaims>` — the interface
 
@@ -91,7 +91,7 @@ interface DenylistStore {
 The default. A `Map<token, state>` keyed by token, plus a secondary `Map<userId, Set<token>>` for O(1) `revokeAllForUser` and `listForUser`.
 
 ```ts
-import { CredentialStoreMemory, AuthCredential } from "@aoothjs/auth";
+import { CredentialStoreMemory, AuthCredential } from "@aooth/auth";
 
 const auth = new AuthCredential({
   store: new CredentialStoreMemory(),
@@ -112,7 +112,7 @@ Use it for tests and dev. For everything else, pick Redis or atscript-db.
 ## `DenylistStoreMemory`
 
 ```ts
-import { DenylistStoreMemory } from "@aoothjs/auth";
+import { DenylistStoreMemory } from "@aooth/auth";
 
 const denylist = new DenylistStoreMemory();
 ```
@@ -122,13 +122,13 @@ const denylist = new DenylistStoreMemory();
 ## Redis adapter
 
 ```bash
-pnpm add @aoothjs/auth ioredis
+pnpm add @aooth/auth ioredis
 ```
 
 ```ts
 import { Redis } from "ioredis";
-import { CredentialStoreRedis, DenylistStoreRedis } from "@aoothjs/auth/redis";
-import { AuthCredential } from "@aoothjs/auth";
+import { CredentialStoreRedis, DenylistStoreRedis } from "@aooth/auth/redis";
+import { AuthCredential } from "@aooth/auth";
 
 const redis = new Redis(process.env.REDIS_URL!);
 
@@ -209,8 +209,8 @@ const denylist = new DenylistStoreRedis({ redis, prefix: "app:" });
 
 ```ts
 import { Redis } from "ioredis";
-import { CredentialStoreJwt, AuthCredential } from "@aoothjs/auth";
-import { DenylistStoreRedis } from "@aoothjs/auth/redis";
+import { CredentialStoreJwt, AuthCredential } from "@aooth/auth";
+import { DenylistStoreRedis } from "@aooth/auth/redis";
 
 const redis = new Redis(process.env.REDIS_URL!);
 
@@ -231,14 +231,14 @@ The denylist is durable across pods. The per-user revocation epoch map, however,
 ## atscript-db adapter
 
 ```bash
-pnpm add @aoothjs/auth @atscript/db
+pnpm add @aooth/auth @atscript/db
 ```
 
 ```ts
 import { DbSpace } from "@atscript/db";
-import { CredentialStoreAtscriptDb } from "@aoothjs/auth/atscript-db";
-import { AuthCredential } from "@aoothjs/auth";
-import { AoothAuthCredential } from "@aoothjs/auth/atscript-db/model.as";
+import { CredentialStoreAtscriptDb } from "@aooth/auth/atscript-db";
+import { AuthCredential } from "@aooth/auth";
+import { AoothAuthCredential } from "@aooth/auth/atscript-db/model.as";
 // Importing the raw `.as` file requires the atscript build pipeline
 // (`unplugin-atscript` for Vite/Rollup, or run `asc` ahead of time). Without
 // it, your bundler cannot resolve the `.as` extension.
@@ -259,7 +259,7 @@ const auth = new AuthCredential({
 
 ### The shipped `.as` model
 
-`@aoothjs/auth/atscript-db/model.as` exports `AoothAuthCredential` — a one-table model that maps directly onto `CredentialState`:
+`@aooth/auth/atscript-db/model.as` exports `AoothAuthCredential` — a one-table model that maps directly onto `CredentialState`:
 
 ```as
 @db.table 'aooth_credentials'

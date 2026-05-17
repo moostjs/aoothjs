@@ -4,7 +4,7 @@
   </a>
 </p>
 
-<h1 align="center">@aoothjs/arbac-moost</h1>
+<h1 align="center">@aooth/arbac-moost</h1>
 
 <p align="center">
   Moost RBAC integration — DI-injectable <code>MoostArbac</code>, an authorize interceptor, <code>@ArbacResource</code> / <code>@ArbacAction</code> decorators, <code>AsArbacDbController</code> for scoped DB controllers, and auto-wired provider plumbing for <code>.as</code> user models.
@@ -19,7 +19,7 @@
 ## Install
 
 ```bash
-pnpm add @aoothjs/arbac-moost @aoothjs/arbac @aoothjs/user
+pnpm add @aooth/arbac-moost @aooth/arbac @aooth/user
 ```
 
 ## Documentation

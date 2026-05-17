@@ -1,6 +1,6 @@
 # Email & SMS Senders
 
-`@aoothjs/auth` ships **interfaces only** for email and SMS delivery. There's no SES, no SendGrid, no Twilio adapter inside the package — you bring the implementation, the workflow calls it through these contracts.
+`@aooth/auth` ships **interfaces only** for email and SMS delivery. There's no SES, no SendGrid, no Twilio adapter inside the package — you bring the implementation, the workflow calls it through these contracts.
 
 This page covers the two contracts, their event shapes, the kind unions, and worked implementations against SES (email) and Twilio (SMS).
 
@@ -67,7 +67,7 @@ interface AuthEmailEvent {
 ### Implementing `EmailSender` (SES)
 
 ```ts
-import type { EmailSender, AuthEmailEvent, AuthEmailKind } from "@aoothjs/auth";
+import type { EmailSender, AuthEmailEvent, AuthEmailKind } from "@aooth/auth";
 import { SESClient, SendEmailCommand } from "@aws-sdk/client-ses";
 
 interface EmailTemplate {
@@ -138,7 +138,7 @@ const emailSender = new SesEmailSender(
 
 ```ts
 import sgMail from "@sendgrid/mail";
-import type { EmailSender, AuthEmailEvent } from "@aoothjs/auth";
+import type { EmailSender, AuthEmailEvent } from "@aooth/auth";
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
 
@@ -199,7 +199,7 @@ interface AuthSmsEvent {
 ### Implementing `SmsSender` (Twilio)
 
 ```ts
-import type { SmsSender, AuthSmsEvent } from "@aoothjs/auth";
+import type { SmsSender, AuthSmsEvent } from "@aooth/auth";
 import twilio from "twilio";
 
 export class TwilioSmsSender implements SmsSender {
@@ -227,7 +227,7 @@ export class TwilioSmsSender implements SmsSender {
 ### A different provider
 
 ```ts
-import type { SmsSender, AuthSmsEvent } from "@aoothjs/auth";
+import type { SmsSender, AuthSmsEvent } from "@aooth/auth";
 import { SNSClient, PublishCommand } from "@aws-sdk/client-sns";
 
 export class SnsSmsSender implements SmsSender {
@@ -251,7 +251,7 @@ export class SnsSmsSender implements SmsSender {
 A request waiting for a third-party HTTP roundtrip is fragile. Best practice: the sender pushes onto an internal queue (SQS, Redis Streams, BullMQ) and returns. A worker process consumes the queue and calls the real provider. The user-visible latency is the queue insert, which is sub-millisecond. The workflow still gets a `Promise<void>` it can `await`, but the resolution is bounded.
 
 ```ts
-import type { EmailSender, AuthEmailEvent } from "@aoothjs/auth";
+import type { EmailSender, AuthEmailEvent } from "@aooth/auth";
 
 export class QueuedEmailSender implements EmailSender {
   constructor(private readonly queue: { add(j: unknown): Promise<void> }) {}
@@ -267,12 +267,12 @@ The trade-off: a delivery failure no longer surfaces to the request. Build a dea
 
 ## Registration with workflows
 
-`@aoothjs/auth-moost` does **not** ship `EmailSender` / `SmsSender` as DI tokens — the Phase 4 workflow reshape dropped them in favor of `protected` method overrides on the workflow classes themselves (subclass `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow` and override `deliver*` / `auditLogin` / `storeTrustedDevice` etc.). Senders are wired by closure into those overrides.
+`@aooth/auth-moost` does **not** ship `EmailSender` / `SmsSender` as DI tokens — the Phase 4 workflow reshape dropped them in favor of `protected` method overrides on the workflow classes themselves (subclass `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow` and override `deliver*` / `auditLogin` / `storeTrustedDevice` etc.). Senders are wired by closure into those overrides.
 
 The magic-link outlet (`createAuthEmailOutlet`) is the one place that still takes an `EmailSender` directly — as a constructor dep, not via DI:
 
 ```ts
-import { createAuthEmailOutlet } from "@aoothjs/auth-moost";
+import { createAuthEmailOutlet } from "@aooth/auth-moost";
 
 const emailSender = new SesEmailSender(/* … */);
 const smsSender = new TwilioSmsSender(/* … */);
@@ -287,8 +287,8 @@ To register the workflows themselves with Moost's DI, use the tuple form of `cre
 
 ```ts
 import { Moost, createProvideRegistry } from "moost";
-import { AuthCredential } from "@aoothjs/auth";
-import { LoginWorkflow } from "@aoothjs/auth-moost";
+import { AuthCredential } from "@aooth/auth";
+import { LoginWorkflow } from "@aooth/auth-moost";
 
 const moost = new Moost();
 moost.setProvideRegistry(

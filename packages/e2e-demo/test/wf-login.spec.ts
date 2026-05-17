@@ -1,4 +1,4 @@
-import { generateTotpCode } from "@aoothjs/user";
+import { generateTotpCode } from "@aooth/user";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
@@ -89,7 +89,7 @@ describe("WF-LOGIN — auth.login workflow", () => {
   // forgotPasswordAction: true, passwordInitialGuard: true }). Tests below
   // exercise the two demo-only flags. Other LoginWorkflowOptions surfaces
   // (deviceTrust, notifyNewDevice, riskStepUp, …) are covered in unit tests
-  // in `@aoothjs/auth-moost` per WF_LOGIN.md §"Tasks" item #6.
+  // in `@aooth/auth-moost` per WF_LOGIN.md §"Tasks" item #6.
 
   it("WF-LOGIN-04 — forgotPassword alt-action redirects to /recover", async () => {
     const start = await app.triggerWf("public", { wfid: "auth.login" });

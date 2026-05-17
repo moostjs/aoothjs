@@ -18,7 +18,7 @@ export type TScopeFilter = Record<string, unknown>;
 /**
  * Per-control policy in a resource scope.
  *
- * Used inside `ArbacDbScope.controls` (in `@aoothjs/arbac-moost`) to gate
+ * Used inside `ArbacDbScope.controls` (in `@aooth/arbac-moost`) to gate
  * Uniquery URL controls (`$with`, `$groupBy`, `$having`, …) on a per-role basis.
  *
  * Semantics:

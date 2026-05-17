@@ -1,5 +1,5 @@
-import { useArbac } from "@aoothjs/arbac-moost";
-import { Public, useAuth } from "@aoothjs/auth-moost";
+import { useArbac } from "@aooth/arbac-moost";
+import { Public, useAuth } from "@aooth/auth-moost";
 import type { AtscriptDbTable } from "@atscript/db";
 import { extractPassContext, serializeFormSchema } from "@atscript/moost-wf";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";

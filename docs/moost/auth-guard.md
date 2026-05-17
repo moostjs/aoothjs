@@ -5,7 +5,7 @@ This page answers: _how does `authGuardInterceptor` decide who's authenticated, 
 ## `authGuardInterceptor(opts?)`
 
 ```ts
-import { authGuardInterceptor } from "@aoothjs/auth-moost";
+import { authGuardInterceptor } from "@aooth/auth-moost";
 
 app.applyGlobalInterceptors(authGuardInterceptor({ cookie: { secure: false } }));
 ```
@@ -74,7 +74,7 @@ class AdminController {
 `useAuth()` is a `defineWook` returning an `AuthBindings` object memoized per event. Every call after the first one in the same event returns the same instance.
 
 ```ts
-import { useAuth } from "@aoothjs/auth-moost";
+import { useAuth } from "@aooth/auth-moost";
 
 const auth = useAuth();
 auth.isAuthenticated();         // boolean

@@ -4,10 +4,10 @@
   </a>
 </p>
 
-<h1 align="center">@aoothjs/auth-moost</h1>
+<h1 align="center">@aooth/auth-moost</h1>
 
 <p align="center">
-  Moost integration for <code>@aoothjs/auth</code> — <code>AuthGuard</code> interceptor, <code>useAuth()</code> composable, REST endpoints (<code>/auth/*</code>), and login / recovery / invite workflows driven by typed <code>.as</code> forms.
+  Moost integration for <code>@aooth/auth</code> — <code>AuthGuard</code> interceptor, <code>useAuth()</code> composable, REST endpoints (<code>/auth/*</code>), and login / recovery / invite workflows driven by typed <code>.as</code> forms.
 </p>
 
 <p align="center">
@@ -19,7 +19,7 @@
 ## Install
 
 ```bash
-pnpm add @aoothjs/auth-moost @aoothjs/auth @aoothjs/user
+pnpm add @aooth/auth-moost @aooth/auth @aooth/user
 ```
 
 ## Documentation

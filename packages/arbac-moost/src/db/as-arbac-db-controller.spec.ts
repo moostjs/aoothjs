@@ -1,4 +1,4 @@
-import { unionControlsPolicy } from "@aoothjs/arbac";
+import { unionControlsPolicy } from "@aooth/arbac";
 import { HttpError } from "@moostjs/event-http";
 import { describe, expect, it } from "vite-plus/test";
 

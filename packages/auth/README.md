@@ -4,7 +4,7 @@
   </a>
 </p>
 
-<h1 align="center">@aoothjs/auth</h1>
+<h1 align="center">@aooth/auth</h1>
 
 <p align="center">
   Framework-agnostic auth method layer for aoothjs — session and token stores (in-memory, JWT, encapsulated AES-GCM), refresh rotation, denylist, magic-link + email primitives.
@@ -19,7 +19,7 @@
 ## Install
 
 ```bash
-pnpm add @aoothjs/auth @aoothjs/user
+pnpm add @aooth/auth @aooth/user
 ```
 
 ## Documentation

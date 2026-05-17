@@ -1,7 +1,7 @@
 # getting-started
 
 Install, wire, and ship one authenticated + authorized endpoint with aoothjs. Covers the
-no-moost path (use just `@aoothjs/user` + `@aoothjs/arbac`), the moost integration path
+no-moost path (use just `@aooth/user` + `@aooth/arbac`), the moost integration path
 (production target), `.as` model wiring against `@atscript/db`, and the standard testing
 patterns (`UserStoreMemory` + `FAST_SCRYPT` + injectable clock).
 
@@ -19,17 +19,17 @@ patterns (`UserStoreMemory` + `FAST_SCRYPT` + injectable clock).
 
 ```bash
 # Core (always)
-pnpm add @aoothjs/user @aoothjs/arbac
+pnpm add @aooth/user @aooth/arbac
 
 # Credential layer
-pnpm add @aoothjs/auth
+pnpm add @aooth/auth
 
 # Pick at most one persistence backend (or stay in-memory for tests)
 pnpm add @atscript/db @atscript/db-sqlite better-sqlite3   # atscript-db SQLite
 pnpm add ioredis                                            # Redis
 
 # Moost integration (production target)
-pnpm add @aoothjs/auth-moost @aoothjs/arbac-moost
+pnpm add @aooth/auth-moost @aooth/arbac-moost
 pnpm add moost @moostjs/event-http @moostjs/event-wf @atscript/moost-wf
 
 # Atscript build
@@ -39,7 +39,7 @@ pnpm add -D unplugin-atscript @atscript/typescript @atscript/core
 `atscript.config.ts` — register the arbac plugin so `.as` files type-check `@arbac.*`:
 
 ```ts
-import arbacPlugin from "@aoothjs/arbac-moost/plugin";
+import arbacPlugin from "@aooth/arbac-moost/plugin";
 import { defineConfig } from "@atscript/core";
 import dbPlugin from "@atscript/db/plugin";
 import wfPlugin from "@atscript/moost-wf/plugin";
@@ -58,8 +58,8 @@ export default defineConfig({
 A standalone script that creates a user, logs them in, and evaluates one ARBAC rule.
 
 ```ts
-import { UserService, UserStoreMemory } from "@aoothjs/user";
-import { Arbac, defineRole, allowTableRead } from "@aoothjs/arbac";
+import { UserService, UserStoreMemory } from "@aooth/user";
+import { Arbac, defineRole, allowTableRead } from "@aooth/arbac";
 
 const users = new UserService(new UserStoreMemory(), {
   password: { pepper: process.env.AOOTH_PEPPER ?? "" },
@@ -84,11 +84,11 @@ const decision = await arbac.evaluate(
 // decision = { allowed: true, scopes: [{ dept: 'sales' }] }
 ```
 
-No `@aoothjs/auth` involved — that layer kicks in once you need tokens / cookies / sessions.
+No `@aooth/auth` involved — that layer kicks in once you need tokens / cookies / sessions.
 
 ## Adding moost
 
-`@aoothjs/auth-moost` adds the four wiring concerns; `@aoothjs/arbac-moost` adds the fifth.
+`@aooth/auth-moost` adds the four wiring concerns; `@aooth/arbac-moost` adds the fifth.
 
 1. **Provide** `UserService`, `AuthCredential`, `MoostArbac`, and an `'EmailSender'` string token via `app.setProvideRegistry(createProvideRegistry(...))`.
 2. **Replace** `ArbacUserProviderToken` with your concrete provider via `app.setReplaceRegistry(createReplaceRegistry(...))`.
@@ -104,7 +104,7 @@ The atscript path:
 
 ```ts
 // src/models/app-user.as
-import { AoothArbacUserCredentials } from '@aoothjs/arbac-moost/atscript/models'
+import { AoothArbacUserCredentials } from '@aooth/arbac-moost/atscript/models'
 
 @db.table 'users'
 export interface AppUser extends AoothArbacUserCredentials {
@@ -129,9 +129,9 @@ Then build (`asc` or `unplugin-atscript`) and sync the schema:
 import { DbSpace, syncSchema } from "@atscript/db";
 import { SqliteAdapter, BetterSqlite3Driver } from "@atscript/db-sqlite";
 import { AppUser } from "./models/app-user.as";
-import { UsersStoreAtscriptDb, type AuthUserTable } from "@aoothjs/user/atscript-db";
-import { AoothAuthCredential } from "@aoothjs/auth/atscript-db/model.as";
-import { CredentialStoreAtscriptDb } from "@aoothjs/auth/atscript-db";
+import { UsersStoreAtscriptDb, type AuthUserTable } from "@aooth/user/atscript-db";
+import { AoothAuthCredential } from "@aooth/auth/atscript-db/model.as";
+import { CredentialStoreAtscriptDb } from "@aooth/auth/atscript-db";
 
 const db = new DbSpace(() => new SqliteAdapter(new BetterSqlite3Driver("./app.db")));
 await syncSchema(db, [AppUser, AoothAuthCredential]);
@@ -215,8 +215,8 @@ expect(await auth.validate(token)).toBeNull();
 Error assertions — the discriminator is `error.type`, never `error.message`:
 
 ```ts
-import { UserAuthError } from "@aoothjs/user";
-import { AuthError } from "@aoothjs/auth";
+import { UserAuthError } from "@aooth/user";
+import { AuthError } from "@aooth/auth";
 
 await expect(svc.login("alice", "wrong")).rejects.toMatchObject({
   name: "UserAuthError",

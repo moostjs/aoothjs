@@ -9,7 +9,7 @@
  * ```ts
  * import { createHttpOutlet, HandleStateStrategy } from '@moostjs/event-wf'
  * import { AsWfStore } from '@atscript/moost-wf/store'
- * import { createAuthEmailOutlet } from '@aoothjs/auth-moost'
+ * import { createAuthEmailOutlet } from '@aooth/auth-moost'
  *
  * const wfStore = new AsWfStore({ table })
  * const handleStrategy = new HandleStateStrategy({ store: wfStore })
@@ -30,7 +30,7 @@
  * }
  * ```
  */
-import type { AuthEmailEvent, AuthEmailKind, BuildMagicLinkUrl, EmailSender } from "@aoothjs/auth";
+import type { AuthEmailEvent, AuthEmailKind, BuildMagicLinkUrl, EmailSender } from "@aooth/auth";
 import { createEmailOutlet, type WfOutlet } from "@moostjs/event-wf";
 
 export interface AuthEmailOutletDeps {

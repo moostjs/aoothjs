@@ -1,14 +1,14 @@
 ```ts:no-line-numbers
-import { UserService } from "@aoothjs/user";
+import { UserService } from "@aooth/user";
 import {
   UsersStoreAtscriptDb,
   type AuthUserTable,
-} from "@aoothjs/user/atscript-db";
+} from "@aooth/user/atscript-db";
 import {
   ppHasMinLength,
   ppHasUpperCase,
   ppHasNumber,
-} from "@aoothjs/user";
+} from "@aooth/user";
 
 const users = new UserService(
   new UsersStoreAtscriptDb({

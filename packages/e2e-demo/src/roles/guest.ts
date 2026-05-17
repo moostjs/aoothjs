@@ -1,4 +1,4 @@
-import { allowTableRead, defineRole } from "@aoothjs/arbac";
+import { allowTableRead, defineRole } from "@aooth/arbac";
 
 import { DemoUser } from "../models/user.as";
 import type { ArbacDbScope, UserAttrs } from "./attrs";

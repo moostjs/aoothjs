@@ -4,7 +4,7 @@
   </a>
 </p>
 
-<h1 align="center">@aoothjs/arbac-core</h1>
+<h1 align="center">@aooth/arbac-core</h1>
 
 <p align="center">
   Zero-dependency RBAC engine — role evaluation with resource/action pattern matching, scope merging, and a minimal public API for framework integrators.
@@ -19,10 +19,10 @@
 ## Install
 
 ```bash
-pnpm add @aoothjs/arbac-core
+pnpm add @aooth/arbac-core
 ```
 
-Most apps want [`@aoothjs/arbac`](../arbac) (builder API, privilege factories, scope utilities) or [`@aoothjs/arbac-moost`](../arbac-moost) (Moost integration) instead of consuming the core engine directly.
+Most apps want [`@aooth/arbac`](../arbac) (builder API, privilege factories, scope utilities) or [`@aooth/arbac-moost`](../arbac-moost) (Moost integration) instead of consuming the core engine directly.
 
 ## Documentation
 

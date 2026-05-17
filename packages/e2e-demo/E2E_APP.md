@@ -143,7 +143,7 @@ interface Tenant {
 Extends `AoothArbacUserCredentials` (which already declares `roles: string[]` with `@arbac.role`). Adds tenant/department attrs and a couple of e2e-only fields.
 
 ```
-import { AoothArbacUserCredentials } from '@aoothjs/arbac-moost/atscript/models'
+import { AoothArbacUserCredentials } from '@aooth/arbac-moost/atscript/models'
 
 @db.table 'users'
 @db.http.path '/users'
@@ -653,7 +653,7 @@ The audit table is **read-only via HTTP** — no role has write privilege; write
 
 ## 8. Workflows
 
-### 8.1 Bundled (from `@aoothjs/auth-moost`)
+### 8.1 Bundled (from `@aooth/auth-moost`)
 
 - `auth.login` (+ MFA branch)
 - `auth.recovery`

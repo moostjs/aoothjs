@@ -3,4 +3,4 @@ export interface UserAttrs {
   departmentId?: string;
 }
 
-export type { ArbacDbScope } from "@aoothjs/arbac-moost";
+export type { ArbacDbScope } from "@aooth/arbac-moost";

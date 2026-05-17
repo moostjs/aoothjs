@@ -9,7 +9,7 @@
  * `auth.composables.ts`) so it shares the same resolved options the guard
  * stashed onto the HTTP event chain.
  */
-import { UserAuthError } from "@aoothjs/user";
+import { UserAuthError } from "@aooth/user";
 import { extractPassContext, serializeFormSchema } from "@atscript/moost-wf";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { HttpError } from "@moostjs/event-http";

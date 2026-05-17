@@ -4,20 +4,20 @@ This page is the canonical reference for every decorator the two packages export
 
 ## Matrix
 
-| Decorator                        | Target                            | Package                | Effect                                                                                                                                                                               |
-| -------------------------------- | --------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `@Public()`                      | class / method                    | `@aoothjs/auth-moost`  | Sets BOTH `authPublic=true` AND `arbacPublic=true` on the mate. Single decorator hides the route from both guards.                                                                   |
-| `@UserId()`                      | parameter                         | `@aoothjs/auth-moost`  | Resolves to `useAuth().getUserId()`. Throws `401` if no context.                                                                                                                     |
-| `@AuthGuarded(opts)`             | class / method                    | `@aoothjs/auth-moost`  | Sugar for `@Intercept(authGuardInterceptor(opts))`.                                                                                                                                  |
-| `@ArbacResource(name)`           | class / method                    | `@aoothjs/arbac-moost` | Sets `arbacResourceId` on the mate.                                                                                                                                                  |
-| `@ArbacAction(name)`             | class / method (typically method) | `@aoothjs/arbac-moost` | Sets `arbacActionId` on the mate.                                                                                                                                                    |
-| `@ArbacAuthorize()`              | class / method                    | `@aoothjs/arbac-moost` | Wraps `arbacAuthorizeInterceptor` via `Authenticate()` so swagger picks up auth-guard metadata.                                                                                      |
-| `@WfTrigger({ allow?, token? })` | method                            | `@aoothjs/auth-moost`  | Wraps a method in `defineAfterInterceptor` at INTERCEPTOR priority; instantiates `WfTriggerProvider` and replies with its `handle(opts)` when the inner handler returns `undefined`. |
+| Decorator                        | Target                            | Package              | Effect                                                                                                                                                                               |
+| -------------------------------- | --------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `@Public()`                      | class / method                    | `@aooth/auth-moost`  | Sets BOTH `authPublic=true` AND `arbacPublic=true` on the mate. Single decorator hides the route from both guards.                                                                   |
+| `@UserId()`                      | parameter                         | `@aooth/auth-moost`  | Resolves to `useAuth().getUserId()`. Throws `401` if no context.                                                                                                                     |
+| `@AuthGuarded(opts)`             | class / method                    | `@aooth/auth-moost`  | Sugar for `@Intercept(authGuardInterceptor(opts))`.                                                                                                                                  |
+| `@ArbacResource(name)`           | class / method                    | `@aooth/arbac-moost` | Sets `arbacResourceId` on the mate.                                                                                                                                                  |
+| `@ArbacAction(name)`             | class / method (typically method) | `@aooth/arbac-moost` | Sets `arbacActionId` on the mate.                                                                                                                                                    |
+| `@ArbacAuthorize()`              | class / method                    | `@aooth/arbac-moost` | Wraps `arbacAuthorizeInterceptor` via `Authenticate()` so swagger picks up auth-guard metadata.                                                                                      |
+| `@WfTrigger({ allow?, token? })` | method                            | `@aooth/auth-moost`  | Wraps a method in `defineAfterInterceptor` at INTERCEPTOR priority; instantiates `WfTriggerProvider` and replies with its `handle(opts)` when the inner handler returns `undefined`. |
 
 ## `@Public()`
 
 ```ts
-import { Public } from "@aoothjs/auth-moost";
+import { Public } from "@aooth/auth-moost";
 
 @Public()
 @Post("logout")
@@ -38,7 +38,7 @@ If you genuinely need "anonymous, but ARBAC-checked" semantics (e.g. an anonymou
 ## `@UserId()`
 
 ```ts
-import { UserId } from "@aoothjs/auth-moost";
+import { UserId } from "@aooth/auth-moost";
 
 @Get("me")
 whoami(@UserId() userId: string) {
@@ -119,12 +119,12 @@ See [REST Controllers](./controllers) and [Workflows](./workflows) for full cove
 The mate shape is two small interfaces, declaration-merged into Moost's `TMoostMetadata`:
 
 ```ts
-// from @aoothjs/auth-moost
+// from @aooth/auth-moost
 interface TAuthMeta {
   authPublic?: boolean;
 }
 
-// from @aoothjs/arbac-moost
+// from @aooth/arbac-moost
 interface TArbacMeta {
   arbacResourceId?: string;
   arbacActionId?: string;
@@ -135,8 +135,8 @@ interface TArbacMeta {
 Accessors:
 
 ```ts
-import { getAuthMate } from "@aoothjs/auth-moost";
-import { getArbacMate } from "@aoothjs/arbac-moost";
+import { getAuthMate } from "@aooth/auth-moost";
+import { getArbacMate } from "@aooth/arbac-moost";
 
 const authMeta = getAuthMate().read(SomeClass); // class-level
 const authMeta = getAuthMate().read(SomeClass.prototype, "methodName"); // method-level
@@ -150,14 +150,14 @@ The following names are commonly searched for but are **not exported**. Don't tr
 
 | Name              | Why it doesn't exist                                                               | Use instead                                                                                                                |
 | ----------------- | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `@ArbacPublic()`  | The split-decorator design was a foot-gun; combined into auth-moost's `@Public()`. | `@Public()` from `@aoothjs/auth-moost`.                                                                                    |
+| `@ArbacPublic()`  | The split-decorator design was a foot-gun; combined into auth-moost's `@Public()`. | `@Public()` from `@aooth/auth-moost`.                                                                                      |
 | `@AuthPublic()`   | Same.                                                                              | `@Public()`.                                                                                                               |
 | `@ArbacScopes()`  | Scopes are a runtime concept (produced by the engine, not declared via metadata).  | `useArbac().getScopes<TScope>()` directly in the handler.                                                                  |
 | `@User()`         | `AuthContext` is credential context, not user record.                              | `useAuth().getAuthContext()` for the credential context, or `userService.getUser(useAuth().getUserId())` for the user row. |
 | `@Roles('admin')` | Roles live in `MoostArbac` rules, not in route metadata.                           | `arbac.registerRole(defineRole().allow(...).build())` and let the interceptor enforce it.                                  |
 
 ::: warning No `@ArbacPublic()` — use `@Public()`
-`@ArbacPublic` is not exported from `@aoothjs/arbac-moost`. The `arbacPublic` mate flag is written by `@aoothjs/auth-moost`'s combined `@Public()`. The two packages share this single decorator on purpose; splitting them was a foot-gun.
+`@ArbacPublic` is not exported from `@aooth/arbac-moost`. The `arbacPublic` mate flag is written by `@aooth/auth-moost`'s combined `@Public()`. The two packages share this single decorator on purpose; splitting them was a foot-gun.
 :::
 
 ## See also

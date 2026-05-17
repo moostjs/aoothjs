@@ -1,4 +1,4 @@
-import { getArbacMate } from "@aoothjs/arbac-moost";
+import { getArbacMate } from "@aooth/arbac-moost";
 import { Resolve } from "moost";
 
 import { useAuth } from "./auth.composables";

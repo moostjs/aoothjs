@@ -1,6 +1,6 @@
-# `@aoothjs/arbac-core` API Reference
+# `@aooth/arbac-core` API Reference
 
-Complete export reference for `@aoothjs/arbac-core` — the zero-dep ARBAC engine. See the [ARBAC Conceptual Guide](/arbac/) for narrative documentation. All exports come from `packages/arbac-core/src/index.ts` (re-exports `arbac`, `types`, `utils`).
+Complete export reference for `@aooth/arbac-core` — the zero-dep ARBAC engine. See the [ARBAC Conceptual Guide](/arbac/) for narrative documentation. All exports come from `packages/arbac-core/src/index.ts` (re-exports `arbac`, `types`, `utils`).
 
 ## Classes
 

@@ -8,7 +8,7 @@
  */
 
 import type { TAtscriptTypeObject, TAtscriptTypeComplex, TAtscriptTypeFinal, TAtscriptTypeArray, TAtscriptAnnotatedType, TMetadataMap, Validator, TValidatorOptions } from "@atscript/typescript/utils"
-import { AoothArbacUserCredentials } from "@aoothjs/arbac-moost/atscript/models.as"
+import { AoothArbacUserCredentials } from "@aooth/arbac-moost/atscript/models.as"
 import { Tenant } from "./tenant.as"
 import { Department } from "./department.as"
 

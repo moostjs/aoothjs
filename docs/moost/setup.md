@@ -7,11 +7,11 @@ This page is the full app-bootstrap recipe — everything you must wire into a f
 ```bash
 pnpm add moost @moostjs/event-http @moostjs/event-wf
 pnpm add @atscript/moost-wf
-pnpm add @aoothjs/user @aoothjs/auth @aoothjs/auth-moost
-pnpm add @aoothjs/arbac @aoothjs/arbac-moost
+pnpm add @aooth/user @aooth/auth @aooth/auth-moost
+pnpm add @aooth/arbac @aooth/arbac-moost
 ```
 
-`@aoothjs/auth-moost` peer-depends on the first three rows. The atscript-driven user provider (`@aoothjs/arbac-moost/atscript`) additionally requires `@atscript/typescript` and a working atscript codegen step — see [Atscript Models](./atscript).
+`@aooth/auth-moost` peer-depends on the first three rows. The atscript-driven user provider (`@aooth/arbac-moost/atscript`) additionally requires `@atscript/typescript` and a working atscript codegen step — see [Atscript Models](./atscript).
 
 ## Wiring order
 
@@ -32,14 +32,10 @@ There are four things to wire, and they must happen in this order:
 
 ```ts
 // minimal
-import { AuthCredential, CredentialStoreJwt } from "@aoothjs/auth";
-import { UserService } from "@aoothjs/user";
-import {
-  arbacAuthorizeInterceptor,
-  ArbacUserProviderToken,
-  MoostArbac,
-} from "@aoothjs/arbac-moost";
-import { AtscriptArbacUserProvider } from "@aoothjs/arbac-moost/atscript";
+import { AuthCredential, CredentialStoreJwt } from "@aooth/auth";
+import { UserService } from "@aooth/user";
+import { arbacAuthorizeInterceptor, ArbacUserProviderToken, MoostArbac } from "@aooth/arbac-moost";
+import { AtscriptArbacUserProvider } from "@aooth/arbac-moost/atscript";
 import {
   AuthController,
   authGuardInterceptor,
@@ -51,7 +47,7 @@ import {
   UserId,
   useAuth,
   WfTriggerProvider,
-} from "@aoothjs/auth-moost";
+} from "@aooth/auth-moost";
 import { formInputInterceptor } from "@atscript/moost-wf";
 import { HandleStateStrategy, MoostWf } from "@moostjs/event-wf";
 import { MoostHttp, Get } from "@moostjs/event-http";
@@ -220,7 +216,7 @@ Phase 4 of the auth-moost reshape removed `EmailSenderToken`, `SmsSenderToken`, 
 
 ## Public surface re-exports
 
-The top-level `@aoothjs/auth-moost` import gives you everything you need at the framework seam:
+The top-level `@aooth/auth-moost` import gives you everything you need at the framework seam:
 
 ```ts
 import {
@@ -252,7 +248,7 @@ import {
   WfTriggerProvider,
   createAuthEmailOutlet,
   DEFAULT_AUTH_WORKFLOWS,
-} from "@aoothjs/auth-moost";
+} from "@aooth/auth-moost";
 ```
 
 ```ts
@@ -272,10 +268,10 @@ import {
   AsArbacDbReadableController,
   type ArbacDbScope,
   type ControlGate,
-} from "@aoothjs/arbac-moost";
+} from "@aooth/arbac-moost";
 ```
 
 ```ts
 // atscript-driven user provider (separate subpath)
-import { AtscriptArbacUserProvider, type ArbacUserTable } from "@aoothjs/arbac-moost/atscript";
+import { AtscriptArbacUserProvider, type ArbacUserTable } from "@aooth/arbac-moost/atscript";
 ```

@@ -1,18 +1,18 @@
 # Atscript Models
 
-This page covers the atscript integration — the compile-time `arbacPlugin()`, the `@arbac.*` annotations it registers, the bundled `AoothArbacUserCredentials` model, the `AtscriptArbacUserProvider` runtime that auto-derives roles + attrs from a `.as` annotated user type, and the bundled forms model from `@aoothjs/auth-moost`.
+This page covers the atscript integration — the compile-time `arbacPlugin()`, the `@arbac.*` annotations it registers, the bundled `AoothArbacUserCredentials` model, the `AtscriptArbacUserProvider` runtime that auto-derives roles + attrs from a `.as` annotated user type, and the bundled forms model from `@aooth/auth-moost`.
 
 ## The two atscript surfaces
 
-| Surface               | Subpath                                     | Purpose                                                                                                                            |
-| --------------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| Compile-time plugin   | `@aoothjs/arbac-moost/plugin`               | Registers `@arbac.role` / `@arbac.attribute` / `@arbac.userId` so `.as` files type-check.                                          |
-| Runtime user provider | `@aoothjs/arbac-moost/atscript`             | `AtscriptArbacUserProvider` builds `getRoles` / `getAttrs` automatically from the model's annotations.                             |
-| Bundled user model    | `@aoothjs/arbac-moost/atscript/models[.as]` | `AoothArbacUserCredentials` — extends `@aoothjs/user`'s base credential record and pre-applies `@arbac.role` to `roles: string[]`. |
-| Bundled forms model   | `@aoothjs/auth-moost/atscript/models.as`    | 17+ form types consumed by the workflows. Replaceable per-workflow via `opts.forms.*`.                                             |
+| Surface               | Subpath                                   | Purpose                                                                                                                          |
+| --------------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Compile-time plugin   | `@aooth/arbac-moost/plugin`               | Registers `@arbac.role` / `@arbac.attribute` / `@arbac.userId` so `.as` files type-check.                                        |
+| Runtime user provider | `@aooth/arbac-moost/atscript`             | `AtscriptArbacUserProvider` builds `getRoles` / `getAttrs` automatically from the model's annotations.                           |
+| Bundled user model    | `@aooth/arbac-moost/atscript/models[.as]` | `AoothArbacUserCredentials` — extends `@aooth/user`'s base credential record and pre-applies `@arbac.role` to `roles: string[]`. |
+| Bundled forms model   | `@aooth/auth-moost/atscript/models.as`    | 17+ form types consumed by the workflows. Replaceable per-workflow via `opts.forms.*`.                                           |
 
 ::: warning Compile-time vs runtime imports
-`@aoothjs/arbac-moost/plugin` is **compile-time only** — atscript pulls it inside `atscript.config.ts`. No runtime DI surface. `@aoothjs/arbac-moost` (main) is the runtime — interceptor, composable, decorators, DB controllers, `MoostArbac`, hand-rolled provider base. `@aoothjs/arbac-moost/atscript` is the atscript-aware runtime: `AtscriptArbacUserProvider`, `ArbacUserTable`, and the re-exported `AoothArbacUserCredentials` model class.
+`@aooth/arbac-moost/plugin` is **compile-time only** — atscript pulls it inside `atscript.config.ts`. No runtime DI surface. `@aooth/arbac-moost` (main) is the runtime — interceptor, composable, decorators, DB controllers, `MoostArbac`, hand-rolled provider base. `@aooth/arbac-moost/atscript` is the atscript-aware runtime: `AtscriptArbacUserProvider`, `ArbacUserTable`, and the re-exported `AoothArbacUserCredentials` model class.
 :::
 
 ## `arbacPlugin()` in `atscript.config.ts`
@@ -20,7 +20,7 @@ This page covers the atscript integration — the compile-time `arbacPlugin()`, 
 ```ts
 // atscript.config.ts
 import { defineConfig } from "@atscript/typescript/config";
-import arbacPlugin from "@aoothjs/arbac-moost/plugin";
+import arbacPlugin from "@aooth/arbac-moost/plugin";
 
 export default defineConfig({
   plugins: [arbacPlugin()],
@@ -99,7 +99,7 @@ If none resolve, `AtscriptArbacUserProvider`'s constructor throws. Fail-loud, no
 [`packages/arbac-moost/src/atscript/models/user.as`](https://github.com/moostjs/aoothjs/blob/main/packages/arbac-moost/src/atscript/models/user.as):
 
 ```as
-import { AoothUserCredentials } from '@aoothjs/user/atscript-db/model'
+import { AoothUserCredentials } from '@aooth/user/atscript-db/model'
 
 /**
  * Base credential record for ARBAC-enabled atscript users.
@@ -115,7 +115,7 @@ Intentionally minimal. Extend it in your app model:
 
 ```as
 // my-app/models/user.as
-import { AoothArbacUserCredentials } from '@aoothjs/arbac-moost/atscript/models'
+import { AoothArbacUserCredentials } from '@aooth/arbac-moost/atscript/models'
 
 export interface MyUser extends AoothArbacUserCredentials {
   @arbac.attribute
@@ -133,7 +133,7 @@ Now `roles` is already typed `string[]` and pre-annotated with `@arbac.role`; yo
 ## `AtscriptArbacUserProvider`
 
 ```ts
-import { AtscriptArbacUserProvider, type ArbacUserTable } from "@aoothjs/arbac-moost/atscript";
+import { AtscriptArbacUserProvider, type ArbacUserTable } from "@aooth/arbac-moost/atscript";
 import { Injectable } from "moost";
 import { MyUser } from "./models/user.as";
 
@@ -244,7 +244,7 @@ export default defineConfig({
 
 Without a built `.as.d.ts` / `.as.js` pair, importing `MyUser` from `./models/user.as` will fail at runtime with `Cannot read properties of undefined (reading 'metadata')`.
 
-## The forms model from `@aoothjs/auth-moost`
+## The forms model from `@aooth/auth-moost`
 
 The workflows consume 21 `.as` form types from [`packages/auth-moost/src/atscript/models/forms.as`](https://github.com/moostjs/aoothjs/blob/main/packages/auth-moost/src/atscript/models/forms.as):
 

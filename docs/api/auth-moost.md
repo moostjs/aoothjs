@@ -1,6 +1,6 @@
-# `@aoothjs/auth-moost` API Reference
+# `@aooth/auth-moost` API Reference
 
-Complete export reference for `@aoothjs/auth-moost`. See the [Moost Integration Guide](/moost/), [AuthGuard & useAuth](/moost/auth-guard), [REST Controllers](/moost/controllers), and [Workflows](/moost/) for narrative documentation.
+Complete export reference for `@aooth/auth-moost`. See the [Moost Integration Guide](/moost/), [AuthGuard & useAuth](/moost/auth-guard), [REST Controllers](/moost/controllers), and [Workflows](/moost/) for narrative documentation.
 
 ## Classes
 
@@ -346,7 +346,7 @@ interface InviteWorkflowOpts {
 
 See [Workflows](/moost/).
 
-## Re-exports from `@aoothjs/auth`
+## Re-exports from `@aooth/auth`
 
 Re-exported for convenience so consumers don't need a second import:
 
@@ -406,10 +406,10 @@ interface AuthOptions {
 
 Defaults: `cookie.name='aooth_session'`, `secure=true`, `sameSite='lax'`, `httpOnly=true`, `path='/'`. `refreshCookie.path='/auth/refresh'` (narrow path). `enableCookie=true`, `enableBearer=true`. Bearer wins when both transports are enabled. See [Config Reference](/moost/).
 
-## Subpath: `@aoothjs/auth-moost/atscript`
+## Subpath: `@aooth/auth-moost/atscript`
 
 ```ts
-import * as forms from "@aoothjs/auth-moost/atscript";
+import * as forms from "@aooth/auth-moost/atscript";
 ```
 
 Re-exports the form types from `src/atscript/models/forms.as`:

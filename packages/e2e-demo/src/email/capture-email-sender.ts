@@ -1,4 +1,4 @@
-import type { AuthEmailEvent, EmailSender } from "@aoothjs/auth";
+import type { AuthEmailEvent, EmailSender } from "@aooth/auth";
 
 interface CaptureWaiter {
   filter: (event: AuthEmailEvent) => boolean;

@@ -1,6 +1,6 @@
-# `@aoothjs/arbac-moost` API Reference
+# `@aooth/arbac-moost` API Reference
 
-Complete export reference for `@aoothjs/arbac-moost`. See the [Moost Integration Guide](/moost/) and [ARBAC Authorize](/moost/arbac-authorize) for narrative documentation. Subpaths: `./atscript`, `./plugin`.
+Complete export reference for `@aooth/arbac-moost`. See the [Moost Integration Guide](/moost/) and [ARBAC Authorize](/moost/arbac-authorize) for narrative documentation. Subpaths: `./atscript`, `./plugin`.
 
 ## Classes
 
@@ -163,7 +163,7 @@ function ArbacAuthorize(): ClassDecorator & MethodDecorator;
 Sugar for `Authenticate(arbacAuthorizeInterceptor)`. Use when you don't apply the interceptor globally and want to authorize a single route. See [Decorators](/moost/decorators).
 
 ::: info Not exported
-`@ArbacPublic` and `@ArbacScopes` are intentionally NOT exported. Use [`@Public()`](./auth-moost#public) from `@aoothjs/auth-moost` (writes both `authPublic` and `arbacPublic`), and read scopes via `useArbac().getScopes<TScope>()`.
+`@ArbacPublic` and `@ArbacScopes` are intentionally NOT exported. Use [`@Public()`](./auth-moost#public) from `@aooth/auth-moost` (writes both `authPublic` and `arbacPublic`), and read scopes via `useArbac().getScopes<TScope>()`.
 :::
 
 ## Types
@@ -191,14 +191,14 @@ The scope shape `AsArbacDbController` understands. Pass an `.as` model as `T` (e
 arbac-moost does not apply the joined-resource projection mask to `$with` expansions when the request uses exclude-mode `$select` for the relation loader. Include-mode `$select` works end-to-end. Track via the e2e-demo's `PROJ_COMMENT_VIEWER_EXPANDED` notes.
 :::
 
-## Subpath: `@aoothjs/arbac-moost/atscript`
+## Subpath: `@aooth/arbac-moost/atscript`
 
 ```ts
 import {
   AtscriptArbacUserProvider,
   ArbacUserTable,
   AoothArbacUserCredentials,
-} from "@aoothjs/arbac-moost/atscript";
+} from "@aooth/arbac-moost/atscript";
 ```
 
 ### `AtscriptArbacUserProvider<T>`
@@ -227,12 +227,12 @@ Structural interface — the subset of `AtscriptDbTable` `AtscriptArbacUserProvi
 
 ### `AoothArbacUserCredentials`
 
-Re-exported from `@aoothjs/arbac-moost/atscript/models[.as]`. Extends `AoothUserCredentials` with `@arbac.role roles: string[]`. See [Atscript Models](/moost/).
+Re-exported from `@aooth/arbac-moost/atscript/models[.as]`. Extends `AoothUserCredentials` with `@arbac.role roles: string[]`. See [Atscript Models](/moost/).
 
-## Subpath: `@aoothjs/arbac-moost/plugin`
+## Subpath: `@aooth/arbac-moost/plugin`
 
 ```ts
-import arbacPlugin from "@aoothjs/arbac-moost/plugin";
+import arbacPlugin from "@aooth/arbac-moost/plugin";
 ```
 
 ### `arbacPlugin()` (default export)

@@ -7,7 +7,7 @@
  * on the credentials step — we add SMS, backup-code, and explicit MFA-lockout
  * coverage here.
  */
-import { generateTotpSecret, hashMfaCode as _hash } from "@aoothjs/user";
+import { generateTotpSecret, hashMfaCode as _hash } from "@aooth/user";
 import { describe, expect, it } from "vite-plus/test";
 
 import { prepareWfApp, seedActiveUser } from "./workflow-utils";

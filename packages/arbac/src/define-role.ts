@@ -1,4 +1,4 @@
-import type { TArbacRole, TArbacRule } from "@aoothjs/arbac-core";
+import type { TArbacRole, TArbacRule } from "@aooth/arbac-core";
 
 /**
  * A privilege function produces an array of rules when called.

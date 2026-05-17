@@ -1,6 +1,6 @@
 # Builder API
 
-This page answers: _how do I write roles without hand-rolling `TArbacRole` object literals, and how do I keep the generics flowing from the role through to my scope functions?_ It documents `defineRole()` from [`@aoothjs/arbac`](https://github.com/moostjs/aoothjs/tree/main/packages/arbac).
+This page answers: _how do I write roles without hand-rolling `TArbacRole` object literals, and how do I keep the generics flowing from the role through to my scope functions?_ It documents `defineRole()` from [`@aooth/arbac`](https://github.com/moostjs/aoothjs/tree/main/packages/arbac).
 
 The builder is the recommended way to declare roles. It pins generics once, preserves rule order, and lets you splice in reusable [privilege factories](./privileges) with `.use(...)`.
 
@@ -34,7 +34,7 @@ Calling `.build()` without an ID throws `"Role id is required. Call .id() before
 ## Quick example
 
 ```ts
-import { defineRole } from "@aoothjs/arbac";
+import { defineRole } from "@aooth/arbac";
 
 type Attrs = { dept: string };
 type Scope = { dept: string };
@@ -72,7 +72,7 @@ If you skip the generics, both default to `object` and you'll get `unknown` insi
 
 ### Role-level `TScope` is upper-bound documentation, not enforcement
 
-`.use()` accepts a mix of typed-scope privileges in a single call — each privilege keeps its own scope shape. This matters for typed-table privileges like `allowTableRead<Attrs, ArbacDbScope<Task>>(...)` and `allowTableRead<Attrs, ArbacDbScope<Comment>>(...)`: the two scope shapes are not structurally assignable to each other, but you can drop both into one `.use(...)` call. The role-level `TScope` pin (`defineRole<Attrs, ArbacDbScope>()`) stays as **upper-bound documentation** of what scope objects look like at evaluate time. See [`@aoothjs/arbac` API reference](/api/arbac) for the full `.use()` signature.
+`.use()` accepts a mix of typed-scope privileges in a single call — each privilege keeps its own scope shape. This matters for typed-table privileges like `allowTableRead<Attrs, ArbacDbScope<Task>>(...)` and `allowTableRead<Attrs, ArbacDbScope<Comment>>(...)`: the two scope shapes are not structurally assignable to each other, but you can drop both into one `.use(...)` call. The role-level `TScope` pin (`defineRole<Attrs, ArbacDbScope>()`) stays as **upper-bound documentation** of what scope objects look like at evaluate time. See [`@aooth/arbac` API reference](/api/arbac) for the full `.use()` signature.
 
 ## Rule order preservation
 
@@ -94,7 +94,7 @@ Order matters for one thing only: **debugging**. Rule arrays end up in audit log
 `.use(...privileges)` accepts any number of privileges, each typed as `TPrivilegeFunction<TUserAttrs, TScopes[K]>` (variadic tuple). Each is called _immediately_ and its returned rules are spliced into the current rule list.
 
 ```ts
-import { defineRole, definePrivilege, allowTableWrite } from "@aoothjs/arbac";
+import { defineRole, definePrivilege, allowTableWrite } from "@aooth/arbac";
 
 type Attrs = { dept: string };
 type Scope = { dept: string };
@@ -142,7 +142,7 @@ The omitted form is slightly more efficient (no scope-fn call at eval time) and 
 ## End-to-end
 
 ```ts
-import { Arbac, defineRole, allowTableWrite } from "@aoothjs/arbac";
+import { Arbac, defineRole, allowTableWrite } from "@aooth/arbac";
 
 type Attrs = { dept: string; assignment: string[] };
 type Scope = { dept: string };

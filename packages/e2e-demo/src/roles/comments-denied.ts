@@ -1,4 +1,4 @@
-import { defineRole } from "@aoothjs/arbac";
+import { defineRole } from "@aooth/arbac";
 
 import type { ArbacDbScope, UserAttrs } from "./attrs";
 

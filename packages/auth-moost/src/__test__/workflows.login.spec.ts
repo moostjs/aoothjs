@@ -1,4 +1,4 @@
-import { generateTotpCode, generateTotpSecret } from "@aoothjs/user";
+import { generateTotpCode, generateTotpSecret } from "@aooth/user";
 import { describe, expect, it } from "vite-plus/test";
 
 import { prepareWfApp, seedActiveUser } from "./workflow-utils";

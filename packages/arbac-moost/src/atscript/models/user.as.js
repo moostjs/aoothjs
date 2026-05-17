@@ -2,7 +2,7 @@
 /* eslint-disable */
 /* oxlint-disable */
 import { defineAnnotatedType as $, annotate as $a, throwFeatureDisabled as $d } from "@atscript/typescript/utils"
-import { AoothUserCredentials } from "@aoothjs/user/atscript-db/model.as"
+import { AoothUserCredentials } from "@aooth/user/atscript-db/model.as"
 
 export class AoothArbacUserCredentials {
   static __is_atscript_annotated_type = true

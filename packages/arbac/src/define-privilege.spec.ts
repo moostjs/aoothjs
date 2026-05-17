@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { Arbac } from "@aoothjs/arbac-core";
+import { Arbac } from "@aooth/arbac-core";
 
 import { definePrivilege } from "./define-privilege";
 import { defineRole } from "./define-role";

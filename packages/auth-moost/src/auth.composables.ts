@@ -1,4 +1,4 @@
-import type { AuthContext, IssueResult } from "@aoothjs/auth";
+import type { AuthContext, IssueResult } from "@aooth/auth";
 import type { EventContext } from "@wooksjs/event-core";
 import { current, defineWook, key } from "@wooksjs/event-core";
 import {

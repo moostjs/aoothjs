@@ -1,5 +1,5 @@
 {
-  "name": "@aoothjs/arbac-moost",
+  "name": "@aooth/arbac-moost",
   "version": "0.1.0",
   "description": "Moost RBAC integration for aoothjs (migrated from @moostjs/arbac)",
   "keywords": [
@@ -61,9 +61,9 @@
     "check": "vp check"
   },
   "dependencies": {
-    "@aoothjs/arbac": "workspace:*",
-    "@aoothjs/arbac-core": "workspace:*",
-    "@aoothjs/user": "workspace:*"
+    "@aooth/arbac": "workspace:*",
+    "@aooth/arbac-core": "workspace:*",
+    "@aooth/user": "workspace:*"
   },
   "devDependencies": {
     "@atscript/core": "catalog:",

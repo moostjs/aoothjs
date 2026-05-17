@@ -16,26 +16,21 @@ Pure-Node TOTP / HOTP primitives, SHA-256 MFA-code helpers for email/SMS challen
 **Wired here:**
 
 - TOTP secret generation, otpauth URI generation, code generation, and constant-time window verification.
-- One-time MFA code helpers (`generateMfaCode` + `hashMfaCode` + `verifyMfaCode`) for email/SMS challenges — challenge **state machine** lives in `@aoothjs/auth`.
+- One-time MFA code helpers (`generateMfaCode` + `hashMfaCode` + `verifyMfaCode`) for email/SMS challenges — challenge **state machine** lives in `@aooth/auth`.
 - Backup-code generation + hashing + one-shot consumption (`UserService.consumeBackupCode`).
 - Trusted-device token minting + HMAC verification (`UserService.issueTrustedDevice` / `verifyTrustedDevice`).
 - `UserService.verifyMfa` shares the lockout counter with `login` (see [user-service.md § The login sequence](./user-service.md#the-login-sequence)).
 
 **NOT here:**
 
-- No email / SMS transport — `MfaMethod.value` is stored verbatim, delivery is `@aoothjs/auth`'s job.
+- No email / SMS transport — `MfaMethod.value` is stored verbatim, delivery is `@aooth/auth`'s job.
 - No WebAuthn / FIDO2.
 - `verifyMfa` is TOTP-only; non-TOTP method names participate in `addMfaMethod` / `confirmMfaMethod` bookkeeping but are not verified by this package.
 
 ## TOTP
 
 ```ts
-import {
-  generateTotpSecret,
-  generateTotpUri,
-  generateTotpCode,
-  verifyTotpCode,
-} from "@aoothjs/user";
+import { generateTotpSecret, generateTotpUri, generateTotpCode, verifyTotpCode } from "@aooth/user";
 
 const secret = generateTotpSecret(); // 20-byte base32-encoded, padding stripped, uppercased
 const uri = generateTotpUri(secret, "MyApp", "alice@example.com");
@@ -97,7 +92,7 @@ Only SHA1 is emitted — the wider ecosystem (Authenticator, 1Password, Authy) a
 For email / SMS / out-of-band challenges where the user types a code you delivered.
 
 ```ts
-import { generateMfaCode, hashMfaCode, verifyMfaCode } from "@aoothjs/user";
+import { generateMfaCode, hashMfaCode, verifyMfaCode } from "@aooth/user";
 
 const plaintext = generateMfaCode(); // 6 digits — default
 const plaintext8 = generateMfaCode(8);
@@ -114,7 +109,7 @@ const ok = verifyMfaCode(submitted, hash); // constant-time, SHA-256 hex compare
 | `hashMfaCode(code) → hex`                | SHA-256, hex-encoded. Stable comparable output regardless of input case/format.                                            |
 | `verifyMfaCode(submitted, expectedHash)` | Re-hashes `submitted`, decodes both to buffers, `timingSafeEqual`s. Returns `false` for empty hashes or length mismatches. |
 
-These power the challenge-ticket pattern used by `@aoothjs/auth` (the package stores `{ codeHash, expiresAt }` and verifies the user-submitted plaintext via `verifyMfaCode`).
+These power the challenge-ticket pattern used by `@aooth/auth` (the package stores `{ codeHash, expiresAt }` and verifies the user-submitted plaintext via `verifyMfaCode`).
 
 ## Backup codes
 
@@ -131,7 +126,7 @@ These power the challenge-ticket pattern used by `@aoothjs/auth` (the package st
 ## Trusted-device tokens
 
 ```ts
-import { UserService } from "@aoothjs/user";
+import { UserService } from "@aooth/user";
 
 const svc = new UserService(store, {
   deviceTrust: { secret: process.env.DEVICE_TRUST_SECRET! },

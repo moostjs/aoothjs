@@ -1,6 +1,6 @@
 # E2E_STORIES — Test Scenario Catalog
 
-This document enumerates every behavior the `@aoothjs/e2e-demo` app must exercise. Stories are grouped by domain, each with: a short description, the setup it depends on, and the acceptance criteria a passing e2e test must verify.
+This document enumerates every behavior the `@aooth/e2e-demo` app must exercise. Stories are grouped by domain, each with: a short description, the setup it depends on, and the acceptance criteria a passing e2e test must verify.
 
 Stories drive both the **app design** (what models/roles/actions/workflows must exist — captured in [E2E_APP.md](./E2E_APP.md)) and the **test suite** (what assertions the tests must make).
 

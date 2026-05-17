@@ -1,7 +1,7 @@
 // Pre-built role definitions used by the codegen CLI smoke test.
 // Hand-rolled (no TypeScript build step) to keep the test hermetic.
 
-/** @type {import("@aoothjs/arbac-core").TArbacRole<unknown, unknown>[]} */
+/** @type {import("@aooth/arbac-core").TArbacRole<unknown, unknown>[]} */
 const roles = [
   {
     id: "editor",

@@ -1,6 +1,6 @@
 # Tokens (JWT)
 
-Tokens and sessions are **the same machinery** in `@aoothjs/auth` — same orchestrator, same store interface. The only difference is the `method` tag on `AuthCredential` and, usually, which store you pick. This page covers the two stateless stores: `CredentialStoreJwt` (signed) and `CredentialStoreEncapsulated` (encrypted).
+Tokens and sessions are **the same machinery** in `@aooth/auth` — same orchestrator, same store interface. The only difference is the `method` tag on `AuthCredential` and, usually, which store you pick. This page covers the two stateless stores: `CredentialStoreJwt` (signed) and `CredentialStoreEncapsulated` (encrypted).
 
 ## Stateful vs. stateless
 
@@ -24,7 +24,7 @@ JWTs via `jose`. The token _is_ the state — the store signs at `persist`, veri
 ### Construction
 
 ```ts
-import { CredentialStoreJwt, DenylistStoreMemory, AuthCredential } from "@aoothjs/auth";
+import { CredentialStoreJwt, DenylistStoreMemory, AuthCredential } from "@aooth/auth";
 
 const auth = new AuthCredential({
   store: new CredentialStoreJwt({
@@ -170,7 +170,7 @@ When you want the token to carry the state but you also want **confidentiality**
 ### Construction
 
 ```ts
-import { CredentialStoreEncapsulated } from "@aoothjs/auth";
+import { CredentialStoreEncapsulated } from "@aooth/auth";
 import { randomBytes } from "node:crypto";
 
 const key = randomBytes(32); // 32 bytes — skips the KDF path
@@ -247,7 +247,7 @@ import {
   CredentialStoreJwt,
   CredentialStoreEncapsulated,
   DenylistStoreMemory,
-} from "@aoothjs/auth";
+} from "@aooth/auth";
 import { randomBytes } from "node:crypto";
 
 // Stateless JWT — public verification by third parties (asymmetric)

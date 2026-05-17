@@ -3,7 +3,7 @@ import {
   AuthCredential,
   CredentialStoreJwt,
   DenylistStoreMemory,
-} from "@aoothjs/auth";
+} from "@aooth/auth";
 
 const auth = new AuthCredential<{ roles: string[] }>({
   store: new CredentialStoreJwt({

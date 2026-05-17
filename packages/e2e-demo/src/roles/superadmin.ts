@@ -1,4 +1,4 @@
-import { allowTableAction, allowTableRead, allowTableWrite, defineRole } from "@aoothjs/arbac";
+import { allowTableAction, allowTableRead, allowTableWrite, defineRole } from "@aooth/arbac";
 
 import { AuditEntry } from "../models/audit.as";
 import { Comment } from "../models/comment.as";

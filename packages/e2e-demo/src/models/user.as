@@ -1,4 +1,4 @@
-import { AoothArbacUserCredentials } from '@aoothjs/arbac-moost/atscript/models'
+import { AoothArbacUserCredentials } from '@aooth/arbac-moost/atscript/models'
 import { Tenant } from './tenant'
 import { Department } from './department'
 

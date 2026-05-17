@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**aoothjs** is a TypeScript authentication + authorization monorepo (pre-release, all packages on `0.0.1-alpha.*`) for the moost / atscript ecosystem. The `@aoothjs/*` packages cover the full auth stack: user credentials, RBAC engine + builder, sessions/tokens, MFA primitives, and Moost framework integration. An internal `e2e-demo` package exercises the full stack against a real SQLite-backed atscript DB.
+**aoothjs** is a TypeScript authentication + authorization monorepo (pre-release, all packages on `0.0.1-alpha.*`) for the moost / atscript ecosystem. The `@aooth/*` packages cover the full auth stack: user credentials, RBAC engine + builder, sessions/tokens, MFA primitives, and Moost framework integration. An internal `e2e-demo` package exercises the full stack against a real SQLite-backed atscript DB.
 
 ## Commands
 
@@ -51,7 +51,7 @@ Uses **vite-plus** (`vp`) as the build/test/lint orchestrator — wraps Vite, Ro
 
 pnpm monorepo (`pnpm-workspace.yaml` globs `packages/*`, `explorations/*/{frontend,backend}`, `docs`).
 
-Published packages (all `@aoothjs/*`):
+Published packages (all `@aooth/*`):
 
 - `packages/user` — user credential primitives: `UserService` (orchestrator), `UserCredentials` (type), `PasswordHasher` + `PasswordPolicy` (+ `ppHas*` factories), `UserStore` abstract (+ `UserStoreMemory` for tests, `UsersStoreAtscriptDb` for `@atscript/db` via the `./atscript-db` subpath), `UserAuthError`, TOTP / backup-code / trusted-device helpers.
 - `packages/arbac-core` — zero-dep RBAC engine (`Arbac` class, role/resource registration, pattern matching, evaluation).
@@ -93,7 +93,7 @@ Cross-cutting patterns:
 ## TypeScript
 
 - `tsconfig.base.json`: `target: esnext`, `strict: true`, `module: preserve`, `moduleResolution: bundler`, `verbatimModuleSyntax: true`, `noUnusedLocals: true`, `emitDeclarationOnly: true`.
-- Path aliases (root): `@aoothjs/*` → `./packages/*/src` with explicit overrides for sub-entry-points (`@aoothjs/user/atscript-db`, `@aoothjs/arbac-moost/atscript`, `@aoothjs/arbac-moost/plugin`, `@aoothjs/auth-moost/atscript`, and `arbac-core` → `./packages/arbac-core/src`). When adding a new sub-entry-point that consumers import, add it here too.
+- Path aliases (root): `@aooth/*` → `./packages/*/src` with explicit overrides for sub-entry-points (`@aooth/user/atscript-db`, `@aooth/arbac-moost/atscript`, `@aooth/arbac-moost/plugin`, `@aooth/auth-moost/atscript`, and `arbac-core` → `./packages/arbac-core/src`). When adding a new sub-entry-point that consumers import, add it here too.
 - Node ≥ 22.12.0, `packageManager: pnpm@10.32.1`.
 - `pnpm.onlyBuiltDependencies` is restricted to `better-sqlite3`, `@atscript/db`, `@atscript/db-sqlite` — keep it tight when adding native-build deps.
 

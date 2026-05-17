@@ -1,4 +1,4 @@
-import { AuthCredential } from "@aoothjs/auth";
+import { AuthCredential } from "@aooth/auth";
 import { current, eventTypeKey } from "@wooksjs/event-core";
 import { HttpError } from "@wooksjs/event-http";
 import {

@@ -1,6 +1,6 @@
 # E2E_REPORT — Findings
 
-Output of running the e2e-demo suite against the current `@aoothjs/*` packages on `main` (HEAD = `e5fe2be feat(arbac): empty-subclass AsArbacDbController + table privilege factories + global guard`).
+Output of running the e2e-demo suite against the current `@aooth/*` packages on `main` (HEAD = `e5fe2be feat(arbac): empty-subclass AsArbacDbController + table privilege factories + global guard`).
 
 ## Suite stats
 
@@ -10,16 +10,16 @@ All 12 documented bugs are fixed. Suite is fully green; the 4 remaining skips ar
 e2e-demo:                Test Files  16  (16 passed)
                          Tests      130  (0 failed, 4 skipped, 126 passed)
 
-@aoothjs/arbac:          Test Files   8  (8 passed)
+@aooth/arbac:          Test Files   8  (8 passed)
                          Tests      126  (126 passed)
 
-@aoothjs/arbac-moost:    Test Files  12  (12 passed)
+@aooth/arbac-moost:    Test Files  12  (12 passed)
                          Tests       89  (89 passed)
 
-@aoothjs/auth:           Test Files   9  (9 passed)
+@aooth/auth:           Test Files   9  (9 passed)
                          Tests      117  (117 passed)
 
-@aoothjs/user:           Test Files  11  (11 passed)
+@aooth/user:           Test Files  11  (11 passed)
                          Tests      179  (179 passed)
 ```
 
@@ -102,7 +102,7 @@ Fix in `@atscript/moost-db@0.1.78`: `TableController` is now generic over `Table
 
 ### BUG-1 — Cross-tenant write/delete via PK (ISO-05, ISO-06)
 
-**Severity:** CRITICAL. **Package:** `@aoothjs/arbac-moost`. **File:** [packages/arbac-moost/src/db/as-arbac-db-controller.ts:92-107](packages/arbac-moost/src/db/as-arbac-db-controller.ts#L92).
+**Severity:** CRITICAL. **Package:** `@aooth/arbac-moost`. **File:** [packages/arbac-moost/src/db/as-arbac-db-controller.ts:92-107](packages/arbac-moost/src/db/as-arbac-db-controller.ts#L92).
 
 `onWrite("update"|"replace", data)` and `onRemove(id)` only check action permission and apply `allowedFields`/`set`. They do **NOT** AND the scope's `filter` into the underlying `update`/`remove` operation. The base `AsDbController.update` then operates purely on `payload.id`. A tenant-A admin who knows a tenant-B row's PK can `PATCH /tasks { id: <T_B>, ... }` and mutate it — and admin's scope `set` then forces `tenantId` to A, silently relocating the row across tenants.
 
@@ -114,7 +114,7 @@ Fix in `@atscript/moost-db@0.1.78`: `TableController` is now generic over `Table
 
 ### BUG-2 — Filter injection via top-level `$or`/`$and` drops scope filter (CTRL-08, SEC-01)
 
-**Severity:** CRITICAL. **Packages:** `@aoothjs/arbac-moost` + `@uniqu/core`. **Files:** [packages/arbac-moost/src/db/as-arbac-db-controller.ts:52](packages/arbac-moost/src/db/as-arbac-db-controller.ts#L52), `node_modules/@uniqu/core/dist/index.mjs:8-36`.
+**Severity:** CRITICAL. **Packages:** `@aooth/arbac-moost` + `@uniqu/core`. **Files:** [packages/arbac-moost/src/db/as-arbac-db-controller.ts:52](packages/arbac-moost/src/db/as-arbac-db-controller.ts#L52), `node_modules/@uniqu/core/dist/index.mjs:8-36`.
 
 `AsArbacDbController.transformFilter` merges via object spread:
 
@@ -132,7 +132,7 @@ producing `{ tenantId: 'A', $or: [...] }`. `@uniqu/core`'s `walkFilter` short-ci
 
 ### BUG-3 — No-scope `allow` rule contributes nothing to scopes (UNION-04)
 
-**Severity:** HIGH. **Package:** `@aoothjs/arbac-core`. **File:** [packages/arbac-core/src/arbac.ts:136-148](packages/arbac-core/src/arbac.ts#L136).
+**Severity:** HIGH. **Package:** `@aooth/arbac-core`. **File:** [packages/arbac-core/src/arbac.ts:136-148](packages/arbac-core/src/arbac.ts#L136).
 
 `Arbac.evaluate` only pushes into `scopes` when `rule.scope` exists. A role with universe access (no scope function) contributes `[]` to the `scopes` array. When merged with another role's scoped filter via `mergeScopeFilters`, the universe grant is silently lost — the user is bound by the more restrictive scope. Multi-role union semantics are broken whenever one role intends "no restriction".
 
@@ -144,7 +144,7 @@ producing `{ tenantId: 'A', $or: [...] }`. `@uniqu/core`'s `walkFilter` short-ci
 
 ### BUG-4 — Password change cascade revoke is no-op on JWT store (AUTH-13)
 
-**Severity:** HIGH. **Package:** `@aoothjs/auth`. **File:** [packages/auth/src/stores/jwt.ts:176](packages/auth/src/stores/jwt.ts#L176).
+**Severity:** HIGH. **Package:** `@aooth/auth`. **File:** [packages/auth/src/stores/jwt.ts:176](packages/auth/src/stores/jwt.ts#L176).
 
 `AuthController.changePassword` calls `auth.revokeAllForUser(username)`, but `CredentialStoreJwt.revokeAllForUser()` returns `0` and does nothing — JWT is stateless. Stale access tokens from before the password change remain valid until natural expiry.
 
@@ -156,7 +156,7 @@ producing `{ tenantId: 'A', $or: [...] }`. `@uniqu/core`'s `walkFilter` short-ci
 
 ### BUG-5 — Theft response unreachable in `rotation: 'always'` mode (AUTH-07)
 
-**Severity:** HIGH. **Package:** `@aoothjs/auth`. **File:** [packages/auth/src/credential/auth-credential.ts:234](packages/auth/src/credential/auth-credential.ts#L234).
+**Severity:** HIGH. **Package:** `@aooth/auth`. **File:** [packages/auth/src/credential/auth-credential.ts:234](packages/auth/src/credential/auth-credential.ts#L234).
 
 The OAuth-best-practice "refresh-token reuse → revoke all user credentials" theft response only fires in `'sliding'` rotation mode. In `'always'` mode (which is what the demo configures), refresh-replay just returns 401; other devices' tokens remain alive.
 
@@ -168,7 +168,7 @@ The OAuth-best-practice "refresh-token reuse → revoke all user credentials" th
 
 ### BUG-6 — TOTP brute force unmitigated (SEC-19)
 
-**Severity:** HIGH. **Package:** `@aoothjs/user`.
+**Severity:** HIGH. **Package:** `@aooth/user`.
 
 100 wrong TOTP codes accepted without lockout. MFA failures don't increment `account.failedLoginAttempts`, so password-side lockout doesn't help. Consumers running MFA-protected logins have no built-in protection against TOTP brute force.
 
@@ -184,7 +184,7 @@ The OAuth-best-practice "refresh-token reuse → revoke all user credentials" th
 
 ### BUG-7 — `metaForm` action not aliased to `meta` (META-04)
 
-**Severity:** MEDIUM. **Package:** `@aoothjs/arbac-moost`. **File:** [packages/arbac-moost/src/arbac.composables.ts:19-25](packages/arbac-moost/src/arbac.composables.ts#L19).
+**Severity:** MEDIUM. **Package:** `@aooth/arbac-moost`. **File:** [packages/arbac-moost/src/arbac.composables.ts:19-25](packages/arbac-moost/src/arbac.composables.ts#L19).
 
 `literal method name passthrough` aliases `getOne`/`getOneComposite` → `one` and `removeComposite` → `remove`, but does NOT alias `metaForm` → `meta`. Result: NO ROLE can fetch action input form schemas. Every `GET /<resource>/meta/form/:name` request returns 403 — even for admin who has `allowTableWrite` (which grants `meta`). Blocks any UI that uses moost-db's auto-form rendering.
 
@@ -196,7 +196,7 @@ The OAuth-best-practice "refresh-token reuse → revoke all user credentials" th
 
 ### BUG-8 — `applyAllowedFieldsAndSet` strips PK fields
 
-**Severity:** MEDIUM. **Package:** `@aoothjs/arbac-moost`. **File:** [packages/arbac-moost/src/db/as-arbac-db-controller.ts:135-159](packages/arbac-moost/src/db/as-arbac-db-controller.ts#L135).
+**Severity:** MEDIUM. **Package:** `@aooth/arbac-moost`. **File:** [packages/arbac-moost/src/db/as-arbac-db-controller.ts:135-159](packages/arbac-moost/src/db/as-arbac-db-controller.ts#L135).
 
 When `allowedFields` is set, `applyAllowedFieldsAndSet` strips every key not in the whitelist — including `id` (PK). Then `update`/`replace` fail with "Missing primary key field 'id' in payload". Every consumer that uses `allowedFields` must remember to include the PK; not in spec, easy to miss, blocking.
 
@@ -208,7 +208,7 @@ When `allowedFields` is set, `applyAllowedFieldsAndSet` strips every key not in 
 
 ### BUG-9 — `useArbac().evaluate()` returns `{allowed:false}`, doesn't throw (handover workflow)
 
-**Severity:** MEDIUM (DX/docs). **Package:** `@aoothjs/arbac-moost`. **File:** [packages/arbac-moost/src/arbac.composables.ts](packages/arbac-moost/src/arbac.composables.ts).
+**Severity:** MEDIUM (DX/docs). **Package:** `@aooth/arbac-moost`. **File:** [packages/arbac-moost/src/arbac.composables.ts](packages/arbac-moost/src/arbac.composables.ts).
 
 The handover workflow's first attempt at admin-bypass logic was `try { evaluate(...); isAdmin = true } catch { isAdmin = false }` — which silently granted admin to every non-owner because `evaluate()` doesn't throw on deny; it returns `{ allowed: false }`. Inviting consumer code to make the same mistake.
 
@@ -220,7 +220,7 @@ The handover workflow's first attempt at admin-bypass logic was `try { evaluate(
 
 ### BUG-10 — `UserService.createUser` ignores extras (DemoUserStore workaround)
 
-**Severity:** MEDIUM (DX). **Package:** `@aoothjs/user` + `@aoothjs/auth-moost` (invite workflow).
+**Severity:** MEDIUM (DX). **Package:** `@aooth/user` + `@aooth/auth-moost` (invite workflow).
 
 `UserService.createUser(username, password)` only constructs the base `UserCredentials` shape. When the consumer's user model has additional required fields (e.g. `tenantId`), `createUser` produces atscript validation errors at insert time. The bundled `InviteWorkflow.accept` step has no extension hook for default fields. Demos must override `UsersStore.create()` to fill defaults.
 
@@ -232,7 +232,7 @@ The handover workflow's first attempt at admin-bypass logic was `try { evaluate(
 
 ### BUG-11 — `findByUsername` doesn't fall back to email (recovery workflow)
 
-**Severity:** MEDIUM (DX). **Package:** `@aoothjs/auth-moost` (recovery workflow).
+**Severity:** MEDIUM (DX). **Package:** `@aooth/auth-moost` (recovery workflow).
 
 `RecoveryWorkflow.requestRecovery` calls `userService.getUser(input.email)` which delegates to `userStore.findByUsername(input.email)`. If the user model separates `username` and `email` (the realistic shape), the lookup misses and recovery silently short-circuits to the enumeration-resistant "sent" response. No email is ever delivered. Recovery is unusable out-of-the-box for any real user model.
 
@@ -244,7 +244,7 @@ The handover workflow's first attempt at admin-bypass logic was `try { evaluate(
 
 ### BUG-12 — `@StepTTL` hardcoded in recovery + invite workflows (WF-RECOVERY-04, WF-INVITE-04)
 
-**Severity:** MEDIUM. **Package:** `@aoothjs/auth-moost`. **Files:** [packages/auth-moost/src/workflows/recovery.workflow.ts](packages/auth-moost/src/workflows/recovery.workflow.ts), [packages/auth-moost/src/workflows/invite.workflow.ts](packages/auth-moost/src/workflows/invite.workflow.ts).
+**Severity:** MEDIUM. **Package:** `@aooth/auth-moost`. **Files:** [packages/auth-moost/src/workflows/recovery.workflow.ts](packages/auth-moost/src/workflows/recovery.workflow.ts), [packages/auth-moost/src/workflows/invite.workflow.ts](packages/auth-moost/src/workflows/invite.workflow.ts).
 
 `recoveryTokenTtlMs` and `inviteTokenTtlMs` config plumbed through `MoostAuthWorkflowConfig` only feed the email envelope's `expiresAt`. The actual replay window is dictated by `@StepTTL(60 * 60 * 1000)` and `@StepTTL(7 * 24 * 60 * 60 * 1000)` — hardcoded. Tests can't exercise expiry without forking the workflows.
 
@@ -297,7 +297,7 @@ All 12 documented aoothjs bugs are fixed: BUG-1, BUG-2, BUG-3, BUG-4, BUG-5, BUG
 Lower-priority but DX-improving:
 
 10. **Allow custom `AuthEmailKind` in `createAuthEmailOutlet`** — let custom workflows ship their own email envelopes without piggybacking on `'invite.magicLink'`.
-11. **Expose `httpInputRequired` / `validateFormInput` from `@aoothjs/auth-moost`** — currently internal, copy-pasted by every custom workflow.
+11. **Expose `httpInputRequired` / `validateFormInput` from `@aooth/auth-moost`** — currently internal, copy-pasted by every custom workflow.
 12. **Improve unknown-wfid error path (GAP-11)** — convert to 404 with a clear message.
 
 ---

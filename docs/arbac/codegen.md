@@ -1,6 +1,6 @@
 # Codegen
 
-This page answers: _how do I get TypeScript types out of my roles array so I can write `resource: TArbacResource` instead of `resource: string`?_ It documents the library API and the `aoothjs-arbac-codegen` CLI shipped by [`@aoothjs/arbac`](https://github.com/moostjs/aoothjs/tree/main/packages/arbac).
+This page answers: _how do I get TypeScript types out of my roles array so I can write `resource: TArbacResource` instead of `resource: string`?_ It documents the library API and the `aoothjs-arbac-codegen` CLI shipped by [`@aooth/arbac`](https://github.com/moostjs/aoothjs/tree/main/packages/arbac).
 
 The output is a `.ts` file with three exports: a `Resource` union, an `Action` union, and a `ResourceActionMap` shape that maps each resource literal to the set of actions declared on it.
 
@@ -52,7 +52,7 @@ interface TResourceActionMap {
 Walks every role's rules and builds the resource→actions map. By default, **entries containing `*` are skipped** — wildcards are not literal types, so emitting them would be misleading.
 
 ```ts
-import { extractResourceActions, defineRole } from "@aoothjs/arbac";
+import { extractResourceActions, defineRole } from "@aooth/arbac";
 
 const roles = [
   defineRole().id("reader").allow("articles", "read").allow("comments", "read").build(),
@@ -87,7 +87,7 @@ Returns a `.ts` source string. No file is written — that's your job (or use th
 | `header`            | (default banner) | String prepended to the output. Use it for license headers, eslint-disable lines, etc. |
 
 ```ts
-import { extractResourceActions, generateResourceTypes } from "@aoothjs/arbac";
+import { extractResourceActions, generateResourceTypes } from "@aooth/arbac";
 
 const map = extractResourceActions(roles);
 const ts = generateResourceTypes(map, {
@@ -172,7 +172,7 @@ If you have a use case for keeping wildcards in the output, set `includeWildcard
 
 ```ts
 // src/roles.ts
-import { defineRole, allowTableWrite } from "@aoothjs/arbac";
+import { defineRole, allowTableWrite } from "@aooth/arbac";
 
 export const roles = [
   defineRole()

@@ -1,4 +1,4 @@
-import { generateTotpSecret } from "@aoothjs/user";
+import { generateTotpSecret } from "@aooth/user";
 
 import type { AppHandle } from "./app";
 

@@ -1,7 +1,7 @@
-import { AuthCredential, CredentialStoreJwt, DenylistStoreMemory } from "@aoothjs/auth";
-import type { BuildMagicLinkUrl } from "@aoothjs/auth-moost";
-import { type UserCredentials, UserService } from "@aoothjs/user";
-import { type AuthUserTable, UsersStoreAtscriptDb } from "@aoothjs/user/atscript-db";
+import { AuthCredential, CredentialStoreJwt, DenylistStoreMemory } from "@aooth/auth";
+import type { BuildMagicLinkUrl } from "@aooth/auth-moost";
+import { type UserCredentials, UserService } from "@aooth/user";
+import { type AuthUserTable, UsersStoreAtscriptDb } from "@aooth/user/atscript-db";
 
 import type { AppDb } from "./db";
 import type { AppEnv } from "./env";

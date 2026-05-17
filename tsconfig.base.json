@@ -17,13 +17,13 @@
     "skipLibCheck": true,
     "noEmit": true,
     "paths": {
-      "@aoothjs/user": ["./packages/user/src"],
-      "@aoothjs/user/atscript-db": ["./packages/user/src/atscript-db/index.ts"],
+      "@aooth/user": ["./packages/user/src"],
+      "@aooth/user/atscript-db": ["./packages/user/src/atscript-db/index.ts"],
       "arbac-core": ["./packages/arbac-core/src"],
-      "@aoothjs/arbac-moost/atscript": ["./packages/arbac-moost/src/atscript/index.ts"],
-      "@aoothjs/arbac-moost/plugin": ["./packages/arbac-moost/src/plugin.ts"],
-      "@aoothjs/auth-moost/atscript": ["./packages/auth-moost/src/atscript/index.ts"],
-      "@aoothjs/*": ["./packages/*/src"]
+      "@aooth/arbac-moost/atscript": ["./packages/arbac-moost/src/atscript/index.ts"],
+      "@aooth/arbac-moost/plugin": ["./packages/arbac-moost/src/plugin.ts"],
+      "@aooth/auth-moost/atscript": ["./packages/auth-moost/src/atscript/index.ts"],
+      "@aooth/*": ["./packages/*/src"]
     }
   }
 }

@@ -13,7 +13,7 @@ export interface AuthContext<TClaims extends object = object> {
 /**
  * Display metadata for stateful credentials.
  * Extensible via TypeScript declaration merging:
- *   declare module '@aoothjs/auth' {
+ *   declare module '@aooth/auth' {
  *     interface CredentialMetadata { geoCountry?: string }
  *   }
  */

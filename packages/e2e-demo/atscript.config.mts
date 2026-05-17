@@ -1,4 +1,4 @@
-import arbacPlugin from "@aoothjs/arbac-moost/plugin";
+import arbacPlugin from "@aooth/arbac-moost/plugin";
 import { defineConfig } from "@atscript/core";
 import dbPlugin from "@atscript/db/plugin";
 import wfPlugin from "@atscript/moost-wf/plugin";

@@ -4,10 +4,10 @@
   </a>
 </p>
 
-<h1 align="center">@aoothjs/arbac</h1>
+<h1 align="center">@aooth/arbac</h1>
 
 <p align="center">
-  Batteries-included RBAC — re-exports <code>@aoothjs/arbac-core</code> and adds a fluent role builder, reusable privilege factories, scope-merge utilities, and a codegen CLI for typed resource/action unions.
+  Batteries-included RBAC — re-exports <code>@aooth/arbac-core</code> and adds a fluent role builder, reusable privilege factories, scope-merge utilities, and a codegen CLI for typed resource/action unions.
 </p>
 
 <p align="center">
@@ -19,7 +19,7 @@
 ## Install
 
 ```bash
-pnpm add @aoothjs/arbac
+pnpm add @aooth/arbac
 ```
 
 ## Documentation

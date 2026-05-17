@@ -51,9 +51,9 @@
  * Rate-limiting is intentionally NOT part of this workflow — consumers who
  * want a cap wire it themselves at the HTTP / trigger layer.
  */
-import { ArbacAction, ArbacResource } from "@aoothjs/arbac-moost";
-import { AuthCredential } from "@aoothjs/auth";
-import { UserAuthError, type UserCredentials, UserService } from "@aoothjs/user";
+import { ArbacAction, ArbacResource } from "@aooth/arbac-moost";
+import { AuthCredential } from "@aooth/auth";
+import { UserAuthError, type UserCredentials, UserService } from "@aooth/user";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import {
   finishWfAborted,

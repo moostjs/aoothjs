@@ -12,8 +12,8 @@
  * Tests that exercised those callbacks build a tiny subclass and pass it via
  * `loginWorkflowClass`.
  */
-import { AuthCredential } from "@aoothjs/auth";
-import { generateTotpCode, generateTotpSecret, UserService } from "@aoothjs/user";
+import { AuthCredential } from "@aooth/auth";
+import { generateTotpCode, generateTotpSecret, UserService } from "@aooth/user";
 import { Controller, Inherit, Injectable } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -433,7 +433,7 @@ describe("LoginWorkflowOpts — Phase 4 device trust", () => {
     // requires the request adapter to expose req.ip, which the in-process
     // Wooks test harness doesn't surface for synthetic requests).
     // `UserService` IS the authoritative IP-binding check.
-    const { UserStoreMemory } = await import("@aoothjs/user");
+    const { UserStoreMemory } = await import("@aooth/user");
     const userStore = new UserStoreMemory();
     const users = new UserService(userStore, {
       deviceTrust: { secret: "test-secret" },

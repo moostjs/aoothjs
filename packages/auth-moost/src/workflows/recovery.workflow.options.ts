@@ -56,7 +56,7 @@ export interface RecoveryWorkflowOpts {
   };
   /**
    * Replaceable form schemas. Each field defaults to the corresponding
-   * `.as` form shipped under `@aoothjs/auth-moost/atscript/models`.
+   * `.as` form shipped under `@aooth/auth-moost/atscript/models`.
    */
   forms?: {
     emailIdentifier?: TAtscriptAnnotatedType;

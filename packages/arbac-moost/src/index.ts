@@ -4,9 +4,9 @@ export type {
   TArbacRole,
   TArbacRoleForResource,
   TArbacRule,
-} from "@aoothjs/arbac-core";
-export { Arbac, arbacPatternToRegex } from "@aoothjs/arbac-core";
-export type { ControlGate } from "@aoothjs/arbac";
+} from "@aooth/arbac-core";
+export { Arbac, arbacPatternToRegex } from "@aooth/arbac-core";
+export type { ControlGate } from "@aooth/arbac";
 
 export * from "./arbac.composables";
 export * from "./arbac.decorator";

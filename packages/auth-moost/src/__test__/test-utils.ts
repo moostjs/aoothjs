@@ -1,6 +1,6 @@
-import type { AuthCredential, AuthContext } from "@aoothjs/auth";
-import { AuthCredential as AuthCredentialClass, CredentialStoreMemory } from "@aoothjs/auth";
-import { UserService } from "@aoothjs/user";
+import type { AuthCredential, AuthContext } from "@aooth/auth";
+import { AuthCredential as AuthCredentialClass, CredentialStoreMemory } from "@aooth/auth";
+import { UserService } from "@aooth/user";
 import { prepareTestHttpContext } from "@wooksjs/event-http";
 import type { TInterceptorDef, TMoostAdapter, TMoostAdapterOptions } from "moost";
 import {

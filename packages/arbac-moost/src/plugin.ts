@@ -2,7 +2,7 @@ import type { TAtscriptPlugin } from "@atscript/core";
 import { AnnotationSpec } from "@atscript/core";
 
 /**
- * Registers the `@arbac.*` annotation namespace for `@aoothjs/arbac-moost`:
+ * Registers the `@arbac.*` annotation namespace for `@aooth/arbac-moost`:
  *
  * - `@arbac.role` — field is the source of role identifiers. Exactly one
  *   field per type. Two valid shapes:
@@ -19,7 +19,7 @@ import { AnnotationSpec } from "@atscript/core";
  * Install in `atscript.config.ts`:
  *
  * ```ts
- * import arbacPlugin from '@aoothjs/arbac-moost/plugin'
+ * import arbacPlugin from '@aooth/arbac-moost/plugin'
  * export default { plugins: [arbacPlugin()] }
  * ```
  */

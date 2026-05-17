@@ -5,7 +5,7 @@ This page answers: _how does `arbacAuthorizeInterceptor` resolve the resource an
 ## `arbacAuthorizeInterceptor`
 
 ```ts
-import { arbacAuthorizeInterceptor } from "@aoothjs/arbac-moost";
+import { arbacAuthorizeInterceptor } from "@aooth/arbac-moost";
 
 app.applyGlobalInterceptors(arbacAuthorizeInterceptor);
 ```

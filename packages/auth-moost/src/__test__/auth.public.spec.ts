@@ -1,4 +1,4 @@
-import { getArbacMate } from "@aoothjs/arbac-moost";
+import { getArbacMate } from "@aooth/arbac-moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import * as indexModule from "../index";
@@ -10,7 +10,7 @@ import { Public } from "../auth.decorator";
 // directly — see controller-utils.ts for the canonical wiring.
 // Re-introducing the helper would re-create the abstraction tax the
 // refactor removed; this negative pins it shut at the barrel level.
-describe("@aoothjs/auth-moost ISSUE-9 hard-cut removals", () => {
+describe("@aooth/auth-moost ISSUE-9 hard-cut removals", () => {
   it("setupAuthMoost is NOT exported from the root barrel", () => {
     expect("setupAuthMoost" in indexModule).toBe(false);
   });

@@ -143,7 +143,7 @@ Returns `ArbacBindings`. **Not** a `defineWook` — re-resolves metadata per cal
 
 | Decorator              | Target             | Writes                                   | Notes                                                                                                    |
 | ---------------------- | ------------------ | ---------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `@Public()`            | class \| method    | `authPublic=true` + `arbacPublic=true`   | Dual-purpose. Imported from `@aoothjs/auth-moost`.                                                       |
+| `@Public()`            | class \| method    | `authPublic=true` + `arbacPublic=true`   | Dual-purpose. Imported from `@aooth/auth-moost`.                                                         |
 | `@UserId()`            | parameter          | `Resolve(() => useAuth().getUserId())`   | No `@User()` counterpart — `AuthContext` is credential context only.                                     |
 | `@AuthGuarded(opts)`   | class \| method    | `@Intercept(authGuardInterceptor(opts))` | Per-controller mounting sugar — use when you don't want the guard globally.                              |
 | `@ArbacResource(name)` | class \| method    | `arbacResourceId`                        | —                                                                                                        |

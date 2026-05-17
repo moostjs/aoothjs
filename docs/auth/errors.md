@@ -1,6 +1,6 @@
 # Errors
 
-`@aoothjs/auth` throws exactly one error class: `AuthError`. Every failure mode that should surface to the caller carries a typed discriminator, an optional `details` payload, and a stable message shape.
+`@aooth/auth` throws exactly one error class: `AuthError`. Every failure mode that should surface to the caller carries a typed discriminator, an optional `details` payload, and a stable message shape.
 
 This page lists every error type, what triggers it, what the `details` look like, and the recommended HTTP mapping.
 
@@ -29,7 +29,7 @@ type AuthErrorType =
 Catching:
 
 ```ts
-import { AuthError } from "@aoothjs/auth";
+import { AuthError } from "@aooth/auth";
 
 try {
   await auth.refresh(refreshToken);
@@ -307,7 +307,7 @@ function toHttp(e: unknown): { status: number; body: object } {
 }
 ```
 
-`@aoothjs/auth-moost` does this for you — see [Moost — AuthGuard & useAuth](../moost/auth-guard).
+`@aooth/auth-moost` does this for you — see [Moost — AuthGuard & useAuth](../moost/auth-guard).
 
 ## See also
 

@@ -5,7 +5,7 @@ This page is the complete configuration reference for the Moost integration laye
 ## `AuthOptions`
 
 ```ts
-import type { AuthOptions } from "@aoothjs/auth-moost";
+import type { AuthOptions } from "@aooth/auth-moost";
 
 app.applyGlobalInterceptors(
   authGuardInterceptor({

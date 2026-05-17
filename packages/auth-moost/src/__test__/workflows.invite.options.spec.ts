@@ -12,8 +12,8 @@
  * wires onto the new `protected` overrides). The pre-reshape options-class +
  * the rate-limit feature are gone — see WF_INVITE.md.
  */
-import { UserStoreMemory } from "@aoothjs/user";
-import type { UserCredentials } from "@aoothjs/user";
+import { UserStoreMemory } from "@aooth/user";
+import type { UserCredentials } from "@aooth/user";
 import { describe, expect, it } from "vite-plus/test";
 
 import { InviteForm, ProfileCompleteForm } from "../atscript/models/forms.as.js";

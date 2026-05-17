@@ -12,8 +12,8 @@ Every snippet below is lifted from the working `packages/e2e-demo/` app — wire
 ## 1. Install packages
 
 ```bash
-pnpm add @aoothjs/user @aoothjs/auth @aoothjs/auth-moost \
-         @aoothjs/arbac @aoothjs/arbac-moost \
+pnpm add @aooth/user @aooth/auth @aooth/auth-moost \
+         @aooth/arbac @aooth/arbac-moost \
          moost @moostjs/event-http @moostjs/event-wf \
          @atscript/db @atscript/db-sqlite @atscript/moost-wf \
          better-sqlite3
@@ -21,7 +21,7 @@ pnpm add -D @atscript/core @atscript/typescript unplugin-atscript
 ```
 
 ::: info Catalogued versions
-The aoothjs monorepo pins `moost`, `@moostjs/*`, `@atscript/*`, and `vite-plus` in `pnpm-workspace.yaml`. Match those versions when consuming the `@aoothjs/*` workspace packages out-of-tree.
+The aoothjs monorepo pins `moost`, `@moostjs/*`, `@atscript/*`, and `vite-plus` in `pnpm-workspace.yaml`. Match those versions when consuming the `@aooth/*` workspace packages out-of-tree.
 :::
 
 ## 2. Configure atscript
@@ -29,7 +29,7 @@ The aoothjs monorepo pins `moost`, `@moostjs/*`, `@atscript/*`, and `vite-plus` 
 Create `atscript.config.mts` so the compiler understands the `@arbac.*` annotations used by the bundled `AoothArbacUserCredentials` model.
 
 ```ts:line-numbers
-import arbacPlugin from '@aoothjs/arbac-moost/plugin'
+import arbacPlugin from '@aooth/arbac-moost/plugin'
 import { defineConfig } from '@atscript/core'
 import dbPlugin from '@atscript/db/plugin'
 import wfPlugin from '@atscript/moost-wf/plugin'
@@ -52,7 +52,7 @@ Extend `AoothArbacUserCredentials` to add the columns your app needs. Mark one `
 ::: code-group
 
 ```ts [src/models/user.as]
-import { AoothArbacUserCredentials } from '@aoothjs/arbac-moost/atscript/models'
+import { AoothArbacUserCredentials } from '@aooth/arbac-moost/atscript/models'
 
 @db.table 'users'
 export interface AppUser extends AoothArbacUserCredentials {
@@ -75,7 +75,7 @@ export interface AppUser extends AoothArbacUserCredentials {
 :::
 
 ::: tip Why `AoothArbacUserCredentials` and not `AoothUserCredentials`
-`AoothArbacUserCredentials` is just `AoothUserCredentials` + `@arbac.role roles: string[]`. If you only need authentication (no RBAC) you can extend `@aoothjs/user/atscript-db/model.as`'s `AoothUserCredentials` directly. See [Using atscript-db Models](./atscript-db).
+`AoothArbacUserCredentials` is just `AoothUserCredentials` + `@arbac.role roles: string[]`. If you only need authentication (no RBAC) you can extend `@aooth/user/atscript-db/model.as`'s `AoothUserCredentials` directly. See [Using atscript-db Models](./atscript-db).
 :::
 
 ## 4. Wire the database
@@ -84,7 +84,7 @@ export interface AppUser extends AoothArbacUserCredentials {
 import { DbSpace } from '@atscript/db'
 import { syncSchema } from '@atscript/db/sync'
 import { BetterSqlite3Driver, SqliteAdapter } from '@atscript/db-sqlite'
-import { AoothAuthCredential } from '@aoothjs/auth/atscript-db/model.as'
+import { AoothAuthCredential } from '@aooth/auth/atscript-db/model.as'
 import { AppUser } from './models/user.as'
 
 const driver = new BetterSqlite3Driver('./app.db')
@@ -107,10 +107,10 @@ await syncSchema(db, [AppUser, AoothAuthCredential])
 The pattern below mirrors [`createAooth()`](https://github.com/moostjs/aoothjs/blob/main/packages/e2e-demo/src/aooth.ts) in the demo.
 
 ```ts:line-numbers
-import { AuthCredential, CredentialStoreJwt, DenylistStoreMemory } from '@aoothjs/auth'
-import { UserService } from '@aoothjs/user'
-import { UsersStoreAtscriptDb, type AuthUserTable } from '@aoothjs/user/atscript-db'
-import { CredentialStoreAtscriptDb } from '@aoothjs/auth/atscript-db'
+import { AuthCredential, CredentialStoreJwt, DenylistStoreMemory } from '@aooth/auth'
+import { UserService } from '@aooth/user'
+import { UsersStoreAtscriptDb, type AuthUserTable } from '@aooth/user/atscript-db'
+import { CredentialStoreAtscriptDb } from '@aooth/auth/atscript-db'
 import type { AppUser } from './models/user.as'
 
 const denylist = new DenylistStoreMemory()
@@ -151,8 +151,8 @@ The cast on `tables.users` bridges atscript-db's generic row shape (`Record<stri
 ## 6. Define a role
 
 ```ts:line-numbers
-import { allowTableRead, defineRole } from '@aoothjs/arbac'
-import type { ArbacDbScope } from '@aoothjs/arbac-moost'
+import { allowTableRead, defineRole } from '@aooth/arbac'
+import type { ArbacDbScope } from '@aooth/arbac-moost'
 
 type UserAttrs = { tenantId: string }
 
@@ -180,8 +180,8 @@ import {
   ArbacUserProviderToken,
   MoostArbac,
   type ArbacDbScope,
-} from '@aoothjs/arbac-moost'
-import { AtscriptArbacUserProvider } from '@aoothjs/arbac-moost/atscript'
+} from '@aooth/arbac-moost'
+import { AtscriptArbacUserProvider } from '@aooth/arbac-moost/atscript'
 import {
   AuthController,
   authGuardInterceptor,
@@ -193,9 +193,9 @@ import {
   UserId,
   WfTrigger,
   WfTriggerProvider,
-} from '@aoothjs/auth-moost'
-import { AuthCredential } from '@aoothjs/auth'
-import { UserService } from '@aoothjs/user'
+} from '@aooth/auth-moost'
+import { AuthCredential } from '@aooth/auth'
+import { UserService } from '@aooth/user'
 import { formInputInterceptor } from '@atscript/moost-wf'
 import { HandleStateStrategy, MoostWf } from '@moostjs/event-wf'
 import { Get, MoostHttp } from '@moostjs/event-http'
@@ -218,7 +218,7 @@ class MeController {
 ```
 
 ::: warning `@Public()` is dual-purpose
-`@Public()` from `@aoothjs/auth-moost` writes BOTH `authPublic=true` AND `arbacPublic=true`. There is no separate `@ArbacPublic` — bypassing one without the other was a deliberately-removed footgun.
+`@Public()` from `@aooth/auth-moost` writes BOTH `authPublic=true` AND `arbacPublic=true`. There is no separate `@ArbacPublic` — bypassing one without the other was a deliberately-removed footgun.
 :::
 
 ### 7a. Workflow subclasses
@@ -226,7 +226,7 @@ class MeController {
 `LoginWorkflow` is configured by **subclassing** — the constructor accepts your options and you override `protected` methods for delivery, audit, role inference, etc.
 
 ```ts:line-numbers
-import type { DeliverPayload } from '@aoothjs/auth-moost'
+import type { DeliverPayload } from '@aooth/auth-moost'
 
 @Inherit()
 @Injectable('FOR_EVENT')
@@ -400,9 +400,9 @@ End-to-end snippets for the four most-asked Day-1 recipes. Each one assumes the 
 ### Guard a single route by role
 
 ```ts:line-numbers
-import { ArbacAction, ArbacResource, useArbac } from '@aoothjs/arbac-moost'
+import { ArbacAction, ArbacResource, useArbac } from '@aooth/arbac-moost'
 import { Controller, Get } from '@moostjs/event-http'
-import { allowTableRead, defineRole } from '@aoothjs/arbac'
+import { allowTableRead, defineRole } from '@aooth/arbac'
 
 // Role: editors see only their own tenant's tasks.
 export const editorRole = defineRole<UserAttrs, ArbacDbScope>()

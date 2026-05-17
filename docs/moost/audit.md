@@ -40,7 +40,7 @@ All events include the standard `userId`, `workflow`, `ip`, `userAgent` fields w
 Override `audit` on each workflow subclass:
 
 ```ts
-import { type AuditEvent, LoginWorkflow } from "@aoothjs/auth-moost";
+import { type AuditEvent, LoginWorkflow } from "@aooth/auth-moost";
 
 @Inherit()
 @Injectable("FOR_EVENT")
@@ -144,7 +144,7 @@ protected override async audit(event: AuditEvent) {
 If you want compile-time typing for a custom shape, declaration-merge:
 
 ```ts
-declare module "@aoothjs/auth-moost" {
+declare module "@aooth/auth-moost" {
   interface AuditEvent {
     requestId?: string;
     tenantId?: string;

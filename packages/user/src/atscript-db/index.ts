@@ -5,7 +5,7 @@ import { setAtPath } from "../utils";
 
 /**
  * Persisted row shape — `UserCredentials` plus the consumer's custom user
- * fields. The `.as` model shipped at `@aoothjs/user/atscript-db/model.as`
+ * fields. The `.as` model shipped at `@aooth/user/atscript-db/model.as`
  * (`AoothUserCredentials`) matches by construction; consumers extend it with
  * their own `.as` interface to add custom columns.
  */
@@ -14,10 +14,10 @@ export type UserCredentialsRow<TUserCustom extends object = object> = UserCreden
 /**
  * Structural surface of `AtscriptDbTable` covering exactly the methods this
  * adapter calls. Kept loose to avoid pulling `@atscript/db` types into the
- * `@aoothjs/user` public surface — consumers pass `db.getTable(AoothUserCredentials)`
+ * `@aooth/user` public surface — consumers pass `db.getTable(AoothUserCredentials)`
  * directly and TypeScript matches by-shape.
  *
- * Mirrors `AuthCredentialTable` from `@aoothjs/auth/atscript-db`.
+ * Mirrors `AuthCredentialTable` from `@aooth/auth/atscript-db`.
  */
 export interface AuthUserTable<TUserCustom extends object = object> {
   count(query: { filter: Record<string, unknown> }): Promise<number>;
@@ -53,7 +53,7 @@ interface UsersStoreAtscriptDbOptions<TUserCustom extends object> {
 /**
  * `@atscript/db`-backed `UserStore`. Pass the resolved table for the
  * `AoothUserCredentials` (or a `.as` interface extending it) shipped at the
- * `@aoothjs/user/atscript-db/model.as` subpath.
+ * `@aooth/user/atscript-db/model.as` subpath.
  */
 export class UsersStoreAtscriptDb<
   TUserCustom extends object = object,

@@ -16,8 +16,8 @@
  * methods. Each test asserts an observable outcome (response payload, store
  * state, captured emails) that the default implementation could not produce.
  */
-import { AuthCredential } from "@aoothjs/auth";
-import { UserService, type UserCredentials } from "@aoothjs/user";
+import { AuthCredential } from "@aooth/auth";
+import { UserService, type UserCredentials } from "@aooth/user";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { Controller, Inherit, Injectable } from "moost";
 import { describe, expect, it } from "vite-plus/test";

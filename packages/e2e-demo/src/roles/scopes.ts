@@ -1,4 +1,4 @@
-import type { TScopeFilter } from "@aoothjs/arbac";
+import type { TScopeFilter } from "@aooth/arbac";
 
 import type { UserAttrs } from "./attrs";
 

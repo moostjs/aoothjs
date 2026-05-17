@@ -1,5 +1,5 @@
 {
-  "name": "@aoothjs/auth",
+  "name": "@aooth/auth",
   "version": "0.1.0",
   "description": "Auth method layer for aoothjs (sessions, tokens, password reset, MFA primitives)",
   "keywords": [
@@ -61,7 +61,7 @@
     "check": "vp check"
   },
   "dependencies": {
-    "@aoothjs/user": "workspace:*",
+    "@aooth/user": "workspace:*",
     "jose": "^6.2.3"
   },
   "peerDependencies": {

@@ -1,4 +1,4 @@
-import { AoothUserCredentials } from '@aoothjs/user/atscript-db/model'
+import { AoothUserCredentials } from '@aooth/user/atscript-db/model'
 
 /**
  * Base credential record for ARBAC-enabled atscript users.

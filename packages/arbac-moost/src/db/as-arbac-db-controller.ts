@@ -1,5 +1,5 @@
-import { mergeScopeFilters } from "@aoothjs/arbac";
-import type { ControlGate, TProjection, TScopeFilter } from "@aoothjs/arbac";
+import { mergeScopeFilters } from "@aooth/arbac";
+import type { ControlGate, TProjection, TScopeFilter } from "@aooth/arbac";
 import type { TCrudOp, TMetaResponse } from "@atscript/db";
 import { AsDbController } from "@atscript/moost-db";
 import type { NavPropsOf, TAtscriptAnnotatedType } from "@atscript/typescript/utils";
@@ -33,7 +33,7 @@ import {
  *
  * @example
  * ```ts
- * declare module '@aoothjs/arbac-moost' {
+ * declare module '@aooth/arbac-moost' {
  *   interface ArbacDbScope {
  *     tenantId?: string
  *   }

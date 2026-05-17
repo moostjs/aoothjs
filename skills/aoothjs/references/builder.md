@@ -45,7 +45,7 @@ class Arbac<TUserAttrs extends object, TScope extends object> {
 ## `defineRole()` chain
 
 ```ts
-import { defineRole, allowTableRead } from "@aoothjs/arbac";
+import { defineRole, allowTableRead } from "@aooth/arbac";
 
 type Attrs = { dept: string };
 type Scope = { dept: string };
@@ -101,7 +101,7 @@ const factory = def((arg1, arg2) => [
 Worked example:
 
 ```ts
-import { definePrivilege, defineRole } from "@aoothjs/arbac";
+import { definePrivilege, defineRole } from "@aooth/arbac";
 
 type Attrs = { dept: string };
 type Scope = { dept: string };
@@ -144,7 +144,7 @@ All three return `TPrivilegeFunction<TUserAttrs, TScope>` for `.use(...)`.
 `opts.scope` is `(attrs: TUserAttrs, userId: string) => TScope`. When present, it attaches to EVERY generated rule. Omit `opts.scope` to grant unrestricted access (each rule will push `{}` into the scopes array).
 
 ```ts
-import { defineRole, allowTableWrite, allowTableAction } from "@aoothjs/arbac";
+import { defineRole, allowTableWrite, allowTableAction } from "@aooth/arbac";
 
 type Attrs = { dept: string };
 type Scope = { dept: string };
@@ -163,7 +163,7 @@ The "db" in `db-privileges.ts` refers strictly to the `AsDbController` REST cont
 When you don't need the builder's ergonomics (e.g. roles loaded from a config file or DB), emit plain literals:
 
 ```ts
-import type { TArbacRole } from "@aoothjs/arbac";
+import type { TArbacRole } from "@aooth/arbac";
 
 const role: TArbacRole<{ dept: string }, { dept: string }> = {
   id: "reader",

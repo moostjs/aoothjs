@@ -15,8 +15,8 @@ for (const key of [
   if (!(key in g)) g[key] = "";
 }
 
-import { AuthCredential, type AuthCredentialOptions, CredentialStoreMemory } from "@aoothjs/auth";
-import { UserService, type UserServiceConfig, UserStoreMemory } from "@aoothjs/user";
+import { AuthCredential, type AuthCredentialOptions, CredentialStoreMemory } from "@aooth/auth";
+import { UserService, type UserServiceConfig, UserStoreMemory } from "@aooth/user";
 import { formInputInterceptor, type WfFinished } from "@atscript/moost-wf";
 import { Body, MoostHttp, Post } from "@moostjs/event-http";
 import {
@@ -41,7 +41,7 @@ import {
 } from "moost";
 import { Wooks } from "wooks";
 
-import type { AuthEmailKind, BuildMagicLinkUrl, EmailSender, SmsSender } from "@aoothjs/auth";
+import type { AuthEmailKind, BuildMagicLinkUrl, EmailSender, SmsSender } from "@aooth/auth";
 
 import { type AuditEmitter, type AuditEvent } from "../audit/index";
 import { AuthController } from "../auth.controller";
@@ -62,7 +62,7 @@ import {
   type RecoveryWorkflowOpts,
 } from "../workflows/index";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
-import type { UserCredentials } from "@aoothjs/user";
+import type { UserCredentials } from "@aooth/user";
 
 export interface CapturedEmail {
   kind: string;

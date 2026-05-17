@@ -6,7 +6,7 @@ import type { CredentialStore } from "../stores/store";
  * Persisted row shape — mirrors `AoothAuthCredential` from
  * `./auth-credential.as`. Re-declared here as a plain TS interface so
  * consumers can use the adapter without running the atscript build (and so
- * `@aoothjs/auth` doesn't need to depend on `@atscript/typescript` at build
+ * `@aooth/auth` doesn't need to depend on `@atscript/typescript` at build
  * time). When you DO wire the `.as` model, the shapes match by construction.
  */
 export interface AuthCredentialRow<TClaims extends object = object> {
@@ -29,7 +29,7 @@ export interface AuthCredentialRow<TClaims extends object = object> {
 /**
  * Structural surface of `AtscriptDbTable` covering exactly the methods this
  * adapter calls. Kept loose to avoid pulling `@atscript/db` types into the
- * `@aoothjs/auth` public surface — consumers pass `db.getTable(AoothAuthCredential)`
+ * `@aooth/auth` public surface — consumers pass `db.getTable(AoothAuthCredential)`
  * directly and TypeScript matches by-shape.
  */
 export interface AuthCredentialTable<TClaims extends object = object> {

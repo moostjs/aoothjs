@@ -11,7 +11,7 @@
  * consumers who want a cap wire it themselves at the trigger / HTTP layer.
  * Admin authorization is the trigger route's responsibility (ARBAC).
  */
-import type { UserCredentials } from "@aoothjs/user";
+import type { UserCredentials } from "@aooth/user";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 
 import {
@@ -65,7 +65,7 @@ export interface InviteWorkflowOpts {
   };
   /**
    * Replaceable form schemas. Each field defaults to the corresponding
-   * `.as` form shipped under `@aoothjs/auth-moost/atscript/models`.
+   * `.as` form shipped under `@aooth/auth-moost/atscript/models`.
    */
   forms?: {
     invite?: TAtscriptAnnotatedType;

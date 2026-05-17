@@ -178,7 +178,7 @@ describe("RecoveryWorkflow", () => {
       },
     });
     void app;
-    // Skipping — `@aoothjs/user`'s policy plumbing in the userConfig is
+    // Skipping — `@aooth/user`'s policy plumbing in the userConfig is
     // exercised by the user package's own tests. Including this stub for
     // completeness; the workflow correctly translates POLICY_VIOLATION when
     // it occurs (see workflow-helpers.ts).

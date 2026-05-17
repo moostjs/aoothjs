@@ -47,7 +47,7 @@ Every mutation in `UserService` translates to one of these. The two cooperate �
 
 A correct `UserStore<T>` implementation:
 
-1. **`create` throws `ALREADY_EXISTS`** on a unique-username conflict (use `UserAuthError` from `@aoothjs/user`).
+1. **`create` throws `ALREADY_EXISTS`** on a unique-username conflict (use `UserAuthError` from `@aooth/user`).
 2. **`update` deep-merges the `set` patch** for object-valued sub-keys (`password`, `account`, `mfa`, `trustedDevices`). Don't wholesale-replace those sub-objects from a partial.
 3. **Arrays in `set` are wholesale replacements.** The service builds the next array client-side (e.g. `backupCodes`, `trustedDevices`) and hands you the full list.
 4. **`update` applies `inc` atomically** per dot-path. SQL: `SET col = col + N`. JSON columns: equivalent atomic primitive in your engine.
@@ -59,7 +59,7 @@ A minimal but valid in-memory implementation lives at [`UserStoreMemory`](https:
 ## `UserStoreMemory<T>`
 
 ```ts
-import { UserStoreMemory } from "@aoothjs/user";
+import { UserStoreMemory } from "@aooth/user";
 
 const store = new UserStoreMemory(); // empty
 const seeded = new UserStoreMemory({ alice: existingRecord });
@@ -76,7 +76,7 @@ const seeded = new UserStoreMemory({ alice: existingRecord });
 It's the recommended fake for unit tests and for prototyping before you wire a real DB.
 
 ```ts
-import { UserService, UserStoreMemory } from "@aoothjs/user";
+import { UserService, UserStoreMemory } from "@aooth/user";
 
 const users = new UserService(new UserStoreMemory(), {
   password: { scryptN: 1024, scryptR: 1, scryptP: 1, keyLength: 32 },
@@ -88,8 +88,8 @@ const users = new UserService(new UserStoreMemory(), {
 Skeleton for a SQL-backed store:
 
 ```ts
-import { UserStore, UserAuthError } from "@aoothjs/user";
-import type { UserCredentials, UserStoreUpdate, DeepPartial } from "@aoothjs/user";
+import { UserStore, UserAuthError } from "@aooth/user";
+import type { UserCredentials, UserStoreUpdate, DeepPartial } from "@aooth/user";
 
 export class PostgresUserStore<T extends object = object> extends UserStore<T> {
   constructor(private sql: any /* your sql tag */) {
@@ -144,7 +144,7 @@ If you store the user record as a single JSON column, your `update` must merge *
 
 ## The `@atscript/db` adapter
 
-Subpath: `@aoothjs/user/atscript-db` ([source](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/atscript-db/index.ts)).
+Subpath: `@aooth/user/atscript-db` ([source](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/atscript-db/index.ts)).
 
 Exports:
 
@@ -153,13 +153,13 @@ import {
   UsersStoreAtscriptDb,
   type UserCredentialsRow,
   type AuthUserTable,
-} from "@aoothjs/user/atscript-db";
+} from "@aooth/user/atscript-db";
 ```
 
 Shipped `.as` model (subpath export `./atscript-db/model.as`):
 
 ```ts
-import { AoothUserCredentials } from "@aoothjs/user/atscript-db/model.as";
+import { AoothUserCredentials } from "@aooth/user/atscript-db/model.as";
 ```
 
 ### Extend the model in your app
@@ -168,7 +168,7 @@ The shipped interface has the `username` unique index and the `@db.patch.strateg
 
 ```ts
 // app.as
-import { AoothUserCredentials } from '@aoothjs/user/atscript-db/model.as'
+import { AoothUserCredentials } from '@aooth/user/atscript-db/model.as'
 
 @db.table 'users'
 export interface AppUser extends AoothUserCredentials {
@@ -189,8 +189,8 @@ The merge strategy is what makes partial `set` patches work. Re-declaring `accou
 ```ts
 import { DbSpace, syncSchema } from "@atscript/db";
 import { SqliteAdapter, BetterSqlite3Driver } from "@atscript/db-sqlite";
-import { UserService } from "@aoothjs/user";
-import { UsersStoreAtscriptDb, type AuthUserTable } from "@aoothjs/user/atscript-db";
+import { UserService } from "@aooth/user";
+import { UsersStoreAtscriptDb, type AuthUserTable } from "@aooth/user/atscript-db";
 import { AppUser } from "./app.as";
 
 const db = new DbSpace(() => new SqliteAdapter(new BetterSqlite3Driver("./app.db")));
@@ -218,5 +218,5 @@ The `as unknown as AuthUserTable` cast is required because `AtscriptDbTable<T>` 
 
 - [Credentials Model](./credentials) — the shape `UserStore<T>` persists.
 - [Errors](./errors) — what `create` / `update` / `delete` throws when things go wrong.
-- [`@aoothjs/user/atscript-db` source](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/atscript-db/index.ts).
+- [`@aooth/user/atscript-db` source](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/atscript-db/index.ts).
 - [Shipped `.as` model](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/atscript-db/user-credentials.as).

@@ -14,8 +14,8 @@
  * subclass and pass it via `recoveryWorkflowClass`. The harness has a built-in
  * `emailToUserId` short-cut for the most common case.
  */
-import { AuthCredential } from "@aoothjs/auth";
-import { generateTotpCode, generateTotpSecret, UserService } from "@aoothjs/user";
+import { AuthCredential } from "@aooth/auth";
+import { generateTotpCode, generateTotpSecret, UserService } from "@aooth/user";
 import { Controller, Inherit, Injectable } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 

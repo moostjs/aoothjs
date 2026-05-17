@@ -14,8 +14,8 @@
  * observable outcome that the default no-op implementation could not
  * produce.
  */
-import { AuthCredential } from "@aoothjs/auth";
-import { generateTotpCode, generateTotpSecret, UserService } from "@aoothjs/user";
+import { AuthCredential } from "@aooth/auth";
+import { generateTotpCode, generateTotpSecret, UserService } from "@aooth/user";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { Controller, Inherit, Injectable } from "moost";
 import { describe, expect, it } from "vite-plus/test";

@@ -19,9 +19,9 @@ export default defineConfig({
     plugins: [atscriptRolldown()],
     deps: {
       neverBundle: [
-        "@aoothjs/arbac",
-        "@aoothjs/arbac-core",
-        "@aoothjs/user",
+        "@aooth/arbac",
+        "@aooth/arbac-core",
+        "@aooth/user",
         "@atscript/core",
         "@atscript/db",
         "@atscript/moost-db",

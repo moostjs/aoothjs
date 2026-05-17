@@ -76,7 +76,7 @@ Examples actually emitted by `UserService`:
 ## `UserStoreMemory<T>`
 
 ```ts
-import { UserStoreMemory } from "@aoothjs/user";
+import { UserStoreMemory } from "@aooth/user";
 
 const store = new UserStoreMemory();
 const seeded = new UserStoreMemory({
@@ -108,12 +108,7 @@ Start from the contract above. Five rules:
 5. **Arrays in `set` are full replacements.** The service has already built `next` from `prev` — your job is to persist whatever you receive.
 
 ```ts
-import {
-  UserStore,
-  UserAuthError,
-  type UserCredentials,
-  type UserStoreUpdate,
-} from "@aoothjs/user";
+import { UserStore, UserAuthError, type UserCredentials, type UserStoreUpdate } from "@aooth/user";
 
 class MyStore<T extends object = object> extends UserStore<T> {
   async exists(username: string): Promise<boolean> {
@@ -146,14 +141,14 @@ class MyStore<T extends object = object> extends UserStore<T> {
 
 ## `UsersStoreAtscriptDb<T>`
 
-The shipped production adapter (`@aoothjs/user/atscript-db`).
+The shipped production adapter (`@aooth/user/atscript-db`).
 
 ```ts
 import { DbSpace } from "@atscript/db";
 import { syncSchema } from "@atscript/db/sync";
 import { BetterSqlite3Driver, SqliteAdapter } from "@atscript/db-sqlite";
-import { UserService } from "@aoothjs/user";
-import { type AuthUserTable, UsersStoreAtscriptDb } from "@aoothjs/user/atscript-db";
+import { UserService } from "@aooth/user";
+import { type AuthUserTable, UsersStoreAtscriptDb } from "@aooth/user/atscript-db";
 import { AppUser } from "./app-user.as";
 
 const db = new DbSpace(() => new SqliteAdapter(new BetterSqlite3Driver("./app.db")));
@@ -202,7 +197,7 @@ Keep `T` aligned across the three places it appears (`UsersStoreAtscriptDb<T>`, 
 
 ## `AoothUserCredentials` — the shipped `.as` model
 
-The package ships `@aoothjs/user/atscript-db/model.as` as a literal-file export pointing at `src/atscript-db/user-credentials.as`:
+The package ships `@aooth/user/atscript-db/model.as` as a literal-file export pointing at `src/atscript-db/user-credentials.as`:
 
 ```atscript
 export interface AoothUserCredentials {

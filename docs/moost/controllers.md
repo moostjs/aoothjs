@@ -5,7 +5,7 @@ This page documents the bundled `AuthController` — its four endpoints, their d
 ## `AuthController`
 
 ```ts
-import { AuthController } from "@aoothjs/auth-moost";
+import { AuthController } from "@aooth/auth-moost";
 
 app.registerControllers(AuthController);
 ```
@@ -157,8 +157,8 @@ The most common subclass extends the workflow allow-list. Two patterns:
 ### Pattern A — override `triggerWf` with a wider `allow`
 
 ```ts
-import { AuthController, DEFAULT_AUTH_WORKFLOWS, Public, WfTrigger } from "@aoothjs/auth-moost";
-import { AuthCredential } from "@aoothjs/auth";
+import { AuthController, DEFAULT_AUTH_WORKFLOWS, Public, WfTrigger } from "@aooth/auth-moost";
+import { AuthCredential } from "@aooth/auth";
 import { Inherit, Controller } from "moost";
 import { Post } from "@moostjs/event-http";
 

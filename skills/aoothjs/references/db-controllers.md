@@ -104,7 +104,7 @@ This is BUG-8's fix: without auto-preservation, an `allowedFields = ['name']` sc
 ## Wiring example
 
 ```ts
-import { ArbacResource, AsArbacDbController } from "@aoothjs/arbac-moost";
+import { ArbacResource, AsArbacDbController } from "@aooth/arbac-moost";
 import { TableController } from "@atscript/moost-db";
 import type { AtscriptDbTable } from "@atscript/db";
 import { Article } from "./article.as";
@@ -122,8 +122,8 @@ The table is bound through `@TableController(table)` from `@atscript/moost-db`. 
 With a role like:
 
 ```ts
-import { allowTableRead, defineRole } from "@aoothjs/arbac";
-import type { ArbacDbScope } from "@aoothjs/arbac-moost";
+import { allowTableRead, defineRole } from "@aooth/arbac";
+import type { ArbacDbScope } from "@aooth/arbac-moost";
 import { Article } from "./article.as";
 
 type UserAttrs = { tenantId: string; id: string };

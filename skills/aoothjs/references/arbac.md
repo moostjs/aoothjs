@@ -1,4 +1,4 @@
-# @aoothjs/arbac & @aoothjs/arbac-core
+# @aooth/arbac & @aooth/arbac-core
 
 ## Quick start
 
@@ -9,7 +9,7 @@ import {
   allowTableRead,
   mergeScopeFilters,
   unionProjections,
-} from "@aoothjs/arbac";
+} from "@aooth/arbac";
 
 type Attrs = { dept: string };
 type Scope = { dept: string };
@@ -65,23 +65,23 @@ unionProjections({ name: 1, email: 1 }, { secret: 0 });
 ## Key imports
 
 ```ts
-// Engine (zero-dep — re-exported by @aoothjs/arbac)
-import { Arbac, arbacPatternToRegex } from "@aoothjs/arbac";
+// Engine (zero-dep — re-exported by @aooth/arbac)
+import { Arbac, arbacPatternToRegex } from "@aooth/arbac";
 import type {
   TArbacRole,
   TArbacRule,
   TArbacEvalResult,
   TArbacCompiledRule,
   TArbacRoleForResource,
-} from "@aoothjs/arbac";
+} from "@aooth/arbac";
 
 // Builder
-import { defineRole } from "@aoothjs/arbac";
-import type { RoleBuilder } from "@aoothjs/arbac";
+import { defineRole } from "@aooth/arbac";
+import type { RoleBuilder } from "@aooth/arbac";
 
 // Privilege factories
-import { definePrivilege, allowTableRead, allowTableWrite, allowTableAction } from "@aoothjs/arbac";
-import type { TPrivilegeFunction } from "@aoothjs/arbac";
+import { definePrivilege, allowTableRead, allowTableWrite, allowTableAction } from "@aooth/arbac";
+import type { TPrivilegeFunction } from "@aooth/arbac";
 
 // Scope merging
 import {
@@ -91,16 +91,16 @@ import {
   getProjectionMode,
   isFieldAllowed,
   unionControlsPolicy,
-} from "@aoothjs/arbac";
-import type { ControlGate, TProjection, TProjectionMode, TScopeFilter } from "@aoothjs/arbac";
+} from "@aooth/arbac";
+import type { ControlGate, TProjection, TProjectionMode, TScopeFilter } from "@aooth/arbac";
 
 // NOTE: `ArbacDbScope` (the shape consumed by `AsArbacDbController`) is exported from
-// `@aoothjs/arbac-moost`, not from this package. The merge utilities above operate on
+// `@aooth/arbac-moost`, not from this package. The merge utilities above operate on
 // its `filter` / `projection` / `controls` fields.
 
 // Codegen — library API
-import { extractResourceActions, generateResourceTypes } from "@aoothjs/arbac";
-import type { TCodegenOptions, TResourceActionMap } from "@aoothjs/arbac";
+import { extractResourceActions, generateResourceTypes } from "@aooth/arbac";
+import type { TCodegenOptions, TResourceActionMap } from "@aooth/arbac";
 
 // Codegen — CLI is installed via `bin`: `aoothjs-arbac-codegen`
 ```

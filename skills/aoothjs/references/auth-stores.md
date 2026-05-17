@@ -73,7 +73,7 @@ interface DenylistStore {
 In-process `Map<token, state>` + `Map<userId, Set<token>>` secondary index.
 
 ```ts
-import { CredentialStoreMemory } from "@aoothjs/auth";
+import { CredentialStoreMemory } from "@aooth/auth";
 
 const store = new CredentialStoreMemory<{ roles: string[] }>();
 ```
@@ -85,10 +85,10 @@ const store = new CredentialStoreMemory<{ roles: string[] }>();
 
 ## `CredentialStoreRedis`
 
-Subpath `@aoothjs/auth/redis`. Multi-pod-safe.
+Subpath `@aooth/auth/redis`. Multi-pod-safe.
 
 ```ts
-import { CredentialStoreRedis } from "@aoothjs/auth/redis";
+import { CredentialStoreRedis } from "@aooth/auth/redis";
 
 const store = new CredentialStoreRedis({
   redis, // any RedisLike
@@ -128,15 +128,15 @@ interface RedisLike {
 
 ## `CredentialStoreAtscriptDb`
 
-Subpath `@aoothjs/auth/atscript-db`. Backed by a single table.
+Subpath `@aooth/auth/atscript-db`. Backed by a single table.
 
 ```ts
 import { DbSpace } from "@atscript/db";
 import { syncSchema } from "@atscript/db/sync";
 import { SqliteAdapter, BetterSqlite3Driver } from "@atscript/db-sqlite";
 
-import { CredentialStoreAtscriptDb } from "@aoothjs/auth/atscript-db";
-import { AoothAuthCredential } from "@aoothjs/auth/atscript-db/model.as";
+import { CredentialStoreAtscriptDb } from "@aooth/auth/atscript-db";
+import { AoothAuthCredential } from "@aooth/auth/atscript-db/model.as";
 
 const db = new DbSpace(() => new SqliteAdapter(new BetterSqlite3Driver("./auth.db")));
 await syncSchema(db, [AoothAuthCredential]);
@@ -176,7 +176,7 @@ Implementation specifics:
 
 ## `AoothAuthCredential` `.as` model
 
-Shipped at `@aoothjs/auth/atscript-db/model.as`:
+Shipped at `@aooth/auth/atscript-db/model.as`:
 
 ```atscript
 @db.table 'aooth_credentials'
@@ -221,7 +221,7 @@ Implement `CredentialStore<TClaims>` directly. Required behaviours (in addition 
 Minimal skeleton:
 
 ```ts
-import type { CredentialStore, CredentialState } from "@aoothjs/auth";
+import type { CredentialStore, CredentialState } from "@aooth/auth";
 import { randomUUID } from "node:crypto";
 
 export class CredentialStoreCustom<
@@ -244,8 +244,8 @@ export class CredentialStoreCustom<
 ## `DenylistStoreMemory` / `DenylistStoreRedis`
 
 ```ts
-import { DenylistStoreMemory } from "@aoothjs/auth";
-import { DenylistStoreRedis } from "@aoothjs/auth/redis";
+import { DenylistStoreMemory } from "@aooth/auth";
+import { DenylistStoreRedis } from "@aooth/auth/redis";
 ```
 
 | Implementation        | Storage                                | `cleanup`                         | Use for                           |

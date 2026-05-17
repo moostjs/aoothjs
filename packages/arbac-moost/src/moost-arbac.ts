@@ -1,4 +1,4 @@
-import { Arbac } from "@aoothjs/arbac-core";
+import { Arbac } from "@aooth/arbac-core";
 import { Injectable } from "moost";
 
 /**

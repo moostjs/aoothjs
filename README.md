@@ -16,18 +16,18 @@
 
 ---
 
-`@aoothjs/*` is a TypeScript monorepo covering the full auth stack: user credentials, password + MFA, sessions and tokens, RBAC, DB-backed storage, and Moost framework integration.
+`@aooth/*` is a TypeScript monorepo covering the full auth stack: user credentials, password + MFA, sessions and tokens, RBAC, DB-backed storage, and Moost framework integration.
 
 ## Packages
 
-| Package                                          | Purpose                                                                                     |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------- |
-| [`@aoothjs/user`](./packages/user)               | User credential primitives — password hashing, MFA, lockout, policy engine                  |
-| [`@aoothjs/auth`](./packages/auth)               | Session and token layer — JWT / encapsulated stores, refresh rotation, denylist             |
-| [`@aoothjs/arbac-core`](./packages/arbac-core)   | Zero-dependency RBAC engine — role evaluation, scope merge                                  |
-| [`@aoothjs/arbac`](./packages/arbac)             | Batteries-included RBAC — builder API, privilege factories, scope utilities                 |
-| [`@aoothjs/auth-moost`](./packages/auth-moost)   | Moost integration — `AuthGuard`, `useAuth`, REST endpoints, login/recovery/invite workflows |
-| [`@aoothjs/arbac-moost`](./packages/arbac-moost) | Moost RBAC integration — `@ArbacResource`, `AsArbacDbController`, atscript wiring           |
+| Package                                        | Purpose                                                                                     |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| [`@aooth/user`](./packages/user)               | User credential primitives — password hashing, MFA, lockout, policy engine                  |
+| [`@aooth/auth`](./packages/auth)               | Session and token layer — JWT / encapsulated stores, refresh rotation, denylist             |
+| [`@aooth/arbac-core`](./packages/arbac-core)   | Zero-dependency RBAC engine — role evaluation, scope merge                                  |
+| [`@aooth/arbac`](./packages/arbac)             | Batteries-included RBAC — builder API, privilege factories, scope utilities                 |
+| [`@aooth/auth-moost`](./packages/auth-moost)   | Moost integration — `AuthGuard`, `useAuth`, REST endpoints, login/recovery/invite workflows |
+| [`@aooth/arbac-moost`](./packages/arbac-moost) | Moost RBAC integration — `@ArbacResource`, `AsArbacDbController`, atscript wiring           |
 
 ## Quick links
 

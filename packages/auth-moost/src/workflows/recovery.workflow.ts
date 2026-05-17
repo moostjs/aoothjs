@@ -31,8 +31,8 @@
  * Rate-limiting is intentionally NOT part of this workflow — consumers who
  * want a cap wire it themselves at the HTTP / trigger layer.
  */
-import { AuthCredential } from "@aoothjs/auth";
-import { UserAuthError, UserService, verifyTotpCode } from "@aoothjs/user";
+import { AuthCredential } from "@aooth/auth";
+import { UserAuthError, UserService, verifyTotpCode } from "@aooth/user";
 import { finishWfWithData, finishWfWithRedirect, type WfFinished } from "@atscript/moost-wf";
 import {
   outletEmail,

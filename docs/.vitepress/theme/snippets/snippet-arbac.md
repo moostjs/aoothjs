@@ -4,7 +4,7 @@ import {
   defineRole,
   allowTableRead,
   allowTableWrite,
-} from "@aoothjs/arbac";
+} from "@aooth/arbac";
 
 type Attrs = { tenantId: string; department: string };
 type Scope = { filter?: { tenantId?: string; department?: string } };

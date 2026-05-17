@@ -15,8 +15,8 @@ Generate TypeScript union types from a roles array so downstream code types `res
 Two functions. Both are pure.
 
 ```ts
-import { extractResourceActions, generateResourceTypes } from "@aoothjs/arbac";
-import type { TResourceActionMap, TCodegenOptions } from "@aoothjs/arbac";
+import { extractResourceActions, generateResourceTypes } from "@aooth/arbac";
+import type { TResourceActionMap, TCodegenOptions } from "@aooth/arbac";
 ```
 
 ### `extractResourceActions(roles, options?)`
@@ -59,7 +59,7 @@ type TCodegenOptions = {
 Inline usage:
 
 ```ts
-import { extractResourceActions, generateResourceTypes } from "@aoothjs/arbac";
+import { extractResourceActions, generateResourceTypes } from "@aooth/arbac";
 import { allRoles } from "./roles";
 import { writeFileSync } from "node:fs";
 

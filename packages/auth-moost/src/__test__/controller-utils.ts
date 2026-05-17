@@ -22,10 +22,10 @@ import {
   ArbacUserProviderToken,
   MoostArbac,
   type TArbacRole,
-} from "@aoothjs/arbac-moost";
-import { AuthCredential, type AuthCredentialOptions, CredentialStoreMemory } from "@aoothjs/auth";
-import { UserService, UserStoreMemory } from "@aoothjs/user";
-import type { UserServiceConfig } from "@aoothjs/user";
+} from "@aooth/arbac-moost";
+import { AuthCredential, type AuthCredentialOptions, CredentialStoreMemory } from "@aooth/auth";
+import { UserService, UserStoreMemory } from "@aooth/user";
+import type { UserServiceConfig } from "@aooth/user";
 import { MoostHttp } from "@moostjs/event-http";
 import { createHttpApp } from "@wooksjs/event-http";
 import {

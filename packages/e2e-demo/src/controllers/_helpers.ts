@@ -1,5 +1,5 @@
-import { type ArbacDbScope, type AsArbacDbController, useArbac } from "@aoothjs/arbac-moost";
-import { mergeScopeFilters } from "@aoothjs/arbac";
+import { type ArbacDbScope, type AsArbacDbController, useArbac } from "@aooth/arbac-moost";
+import { mergeScopeFilters } from "@aooth/arbac";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { HttpError } from "@moostjs/event-http";
 

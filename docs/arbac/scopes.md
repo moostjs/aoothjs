@@ -1,6 +1,6 @@
 # Scope Merging
 
-This page answers: _the engine returned `scopes: TScope[]` for a user with multiple roles — now how do I turn that into one filter, one projection, and one set of Uniquery controls to apply at query time?_ It documents the scope-merge utilities in [`@aoothjs/arbac`](https://github.com/moostjs/aoothjs/tree/main/packages/arbac).
+This page answers: _the engine returned `scopes: TScope[]` for a user with multiple roles — now how do I turn that into one filter, one projection, and one set of Uniquery controls to apply at query time?_ It documents the scope-merge utilities in [`@aooth/arbac`](https://github.com/moostjs/aoothjs/tree/main/packages/arbac).
 
 All three utilities operate under **additive RBAC**: when a user has multiple matching roles, the _broader_ access wins. An empty filter, an empty projection, or a missing controls map signals "no restriction" and short-circuits the union.
 
@@ -41,7 +41,7 @@ function mergeScopeFilters(scopes: TScopeFilter[]): TScopeFilter | undefined;
 ### Examples
 
 ```ts
-import { mergeScopeFilters } from "@aoothjs/arbac";
+import { mergeScopeFilters } from "@aooth/arbac";
 
 mergeScopeFilters([]);
 // → undefined
@@ -108,7 +108,7 @@ The intuition: **inclusions widen** (any role granting a field wins), **exclusio
 ### Examples
 
 ```ts
-import { unionProjections } from "@aoothjs/arbac";
+import { unionProjections } from "@aooth/arbac";
 
 unionProjections({ name: 1, email: 1 }, { email: 1, phone: 1 });
 // → { email: 1, name: 1, phone: 1 }     // all-include union
@@ -215,7 +215,7 @@ If **any** input scope lacks a `controls` map entirely, `unionControlsPolicy` re
 ### Examples
 
 ```ts
-import { unionControlsPolicy } from "@aoothjs/arbac";
+import { unionControlsPolicy } from "@aooth/arbac";
 
 // One role with no controls map → all controls allowed.
 unionControlsPolicy([
@@ -256,7 +256,7 @@ import {
   unionProjections,
   restrictProjection,
   unionControlsPolicy,
-} from "@aoothjs/arbac";
+} from "@aooth/arbac";
 
 const r = await arbac.evaluate({ resource: "articles", action: "query" }, user);
 if (!r.allowed) throw new ForbiddenError();
@@ -286,4 +286,4 @@ The three utilities run in parallel — they don't depend on each other. The ord
 ## Next
 
 - [Codegen](./codegen) — generate TS unions for `Resource` and `Action` so you can type `resource: TArbacResource` instead of `string`.
-- [Moost → ARBAC Authorize](/moost/arbac-authorize) — how `@aoothjs/arbac-moost` wires `ArbacDbScope` into request handlers.
+- [Moost → ARBAC Authorize](/moost/arbac-authorize) — how `@aooth/arbac-moost` wires `ArbacDbScope` into request handlers.

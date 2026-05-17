@@ -2,10 +2,10 @@
 
 This section answers: _how do I plug aoothjs into a Moost HTTP app, in what order, with which decorators, and which extension seams should I override?_ It covers two packages that together form the framework glue layer:
 
-| Package                                                                                     | Concern                                                                                                                                                                |
-| ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`@aoothjs/auth-moost`](https://github.com/moostjs/aoothjs/tree/main/packages/auth-moost)   | Authentication. `authGuardInterceptor`, `useAuth()`, `AuthController`, `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow`, magic-link outlets.                    |
-| [`@aoothjs/arbac-moost`](https://github.com/moostjs/aoothjs/tree/main/packages/arbac-moost) | Authorization. `arbacAuthorizeInterceptor`, `useArbac()`, `@ArbacResource` / `@ArbacAction` / `@ArbacAuthorize`, `AsArbacDbController`, atscript-driven user provider. |
+| Package                                                                                   | Concern                                                                                                                                                                |
+| ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`@aooth/auth-moost`](https://github.com/moostjs/aoothjs/tree/main/packages/auth-moost)   | Authentication. `authGuardInterceptor`, `useAuth()`, `AuthController`, `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow`, magic-link outlets.                    |
+| [`@aooth/arbac-moost`](https://github.com/moostjs/aoothjs/tree/main/packages/arbac-moost) | Authorization. `arbacAuthorizeInterceptor`, `useArbac()`, `@ArbacResource` / `@ArbacAction` / `@ArbacAuthorize`, `AsArbacDbController`, atscript-driven user provider. |
 
 The two packages share one decorator on purpose: [`@Public()`](./decorators) writes both `authPublic=true` and `arbacPublic=true`, so a single annotation hides a route from both guards. Splitting the two into separate decorators was — in practice — a foot-gun.
 

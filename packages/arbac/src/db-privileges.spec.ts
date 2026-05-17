@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { Arbac } from "@aoothjs/arbac-core";
+import { Arbac } from "@aooth/arbac-core";
 
 import { allowTableAction, allowTableRead, allowTableWrite } from "./db-privileges";
 import * as dbPrivilegesModule from "./db-privileges";

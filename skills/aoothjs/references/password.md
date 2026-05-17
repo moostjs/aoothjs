@@ -18,7 +18,7 @@ Scrypt-based hasher with a self-describing hash string, an optional pepper, hist
 ## `PasswordHasher`
 
 ```ts
-import { PasswordHasher } from "@aoothjs/user";
+import { PasswordHasher } from "@aooth/user";
 
 const hasher = new PasswordHasher({
   pepper: process.env.PASSWORD_PEPPER ?? "",
@@ -75,7 +75,7 @@ Used by `UserService.createUser(username)` (no password argument) — the genera
 ## `PasswordPolicy`
 
 ```ts
-import { PasswordPolicy } from "@aoothjs/user";
+import { PasswordPolicy } from "@aooth/user";
 
 const p = new PasswordPolicy({
   rule: "v.length >= 12", // string OR function

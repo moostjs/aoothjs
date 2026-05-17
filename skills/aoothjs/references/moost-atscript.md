@@ -1,6 +1,6 @@
 # atscript
 
-`@aoothjs/arbac-moost/atscript` + `/plugin` — the atscript-driven path that auto-builds an `ArbacUserProvider` from a `.as`-annotated user model. Covers plugin registration, the three `@arbac.*` annotations, the user-id resolution chain, `AtscriptArbacUserProvider` seams, per-event memoization, and the bundled `AoothArbacUserCredentials` model. The bundled forms `.as` model lives in [workflows.md](workflows.md#forms-catalogue).
+`@aooth/arbac-moost/atscript` + `/plugin` — the atscript-driven path that auto-builds an `ArbacUserProvider` from a `.as`-annotated user model. Covers plugin registration, the three `@arbac.*` annotations, the user-id resolution chain, `AtscriptArbacUserProvider` seams, per-event memoization, and the bundled `AoothArbacUserCredentials` model. The bundled forms `.as` model lives in [workflows.md](workflows.md#forms-catalogue).
 
 ## Contents
 
@@ -18,12 +18,12 @@
 
 Three subpath exports, three different audiences:
 
-| Subpath                                     | Compile/runtime       | Audience                                                                                                              |
-| ------------------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `@aoothjs/arbac-moost`                      | runtime               | `arbacAuthorizeInterceptor`, `useArbac`, `MoostArbac`, `ArbacUserProvider` (hand-rolled base), `AsArbacDbController`. |
-| `@aoothjs/arbac-moost/atscript`             | runtime               | `AtscriptArbacUserProvider`, `ArbacUserTable`, re-exported `AoothArbacUserCredentials`.                               |
-| `@aoothjs/arbac-moost/plugin`               | **compile-time only** | atscript build-time plugin. Pull from `atscript.config.ts`. No runtime DI surface.                                    |
-| `@aoothjs/arbac-moost/atscript/models/user` | raw `.as`             | The `.as` source of `AoothArbacUserCredentials` for `extends` in your own models.                                     |
+| Subpath                                   | Compile/runtime       | Audience                                                                                                              |
+| ----------------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `@aooth/arbac-moost`                      | runtime               | `arbacAuthorizeInterceptor`, `useArbac`, `MoostArbac`, `ArbacUserProvider` (hand-rolled base), `AsArbacDbController`. |
+| `@aooth/arbac-moost/atscript`             | runtime               | `AtscriptArbacUserProvider`, `ArbacUserTable`, re-exported `AoothArbacUserCredentials`.                               |
+| `@aooth/arbac-moost/plugin`               | **compile-time only** | atscript build-time plugin. Pull from `atscript.config.ts`. No runtime DI surface.                                    |
+| `@aooth/arbac-moost/atscript/models/user` | raw `.as`             | The `.as` source of `AoothArbacUserCredentials` for `extends` in your own models.                                     |
 
 ## `arbacPlugin()` registration
 
@@ -33,7 +33,7 @@ Single default export. Registers three `AnnotationSpec`s under the `arbac` names
 // atscript.config.ts
 import { defineConfig } from "@atscript/core/config";
 import dbPlugin from "@atscript/db/plugin";
-import arbacPlugin from "@aoothjs/arbac-moost/plugin";
+import arbacPlugin from "@aooth/arbac-moost/plugin";
 
 export default defineConfig({
   plugins: [dbPlugin(), arbacPlugin()],
@@ -56,7 +56,7 @@ All three annotations target `nodeType: ['prop']`, `multiple: false`.
 Example:
 
 ```atscript
-import { AoothUserCredentials } from '@aoothjs/user/atscript-db/model'
+import { AoothUserCredentials } from '@aooth/user/atscript-db/model'
 
 @db.table 'users'
 export interface AppUser extends AoothUserCredentials {
@@ -142,7 +142,7 @@ The `extractRoles` / `extractAttrs` protected seams let you override the extract
 `src/atscript/models/user.as`:
 
 ```atscript
-import { AoothUserCredentials } from '@aoothjs/user/atscript-db/model'
+import { AoothUserCredentials } from '@aooth/user/atscript-db/model'
 
 export interface AoothArbacUserCredentials extends AoothUserCredentials {
     @arbac.role
@@ -150,9 +150,9 @@ export interface AoothArbacUserCredentials extends AoothUserCredentials {
 }
 ```
 
-Intentionally minimal: extends the base credential record (from `@aoothjs/user`) and pre-applies `@arbac.role` to a `roles: string[]` field. Apps that want this default extend it; apps with custom role shapes extend `AoothUserCredentials` directly and apply `@arbac.role` themselves.
+Intentionally minimal: extends the base credential record (from `@aooth/user`) and pre-applies `@arbac.role` to a `roles: string[]` field. Apps that want this default extend it; apps with custom role shapes extend `AoothUserCredentials` directly and apply `@arbac.role` themselves.
 
-The companion class is re-exported at `@aoothjs/arbac-moost/atscript/models/user` for `extends` use in your `.as` files.
+The companion class is re-exported at `@aooth/arbac-moost/atscript/models/user` for `extends` use in your `.as` files.
 
 ## Replacing a bundled form
 
@@ -198,7 +198,7 @@ The handler reads `input.accountId` / `input.password` — field names match you
 
 ## Codegen step
 
-`@aoothjs/arbac-moost/atscript` depends on `@atscript/typescript` runtime metadata. The build chain must run **before** app build:
+`@aooth/arbac-moost/atscript` depends on `@atscript/typescript` runtime metadata. The build chain must run **before** app build:
 
 - **Vite / bundler builds**: `unplugin-atscript` runs automatically. No manual step.
 - **Plain `tsc` / Node builds**: invoke `asc -f dts` (or `npx asc`) before `tsc`. Generated `*.as.d.ts` + `*.as.js` + `atscript.d.ts` must exist when TS compiles.

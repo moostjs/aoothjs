@@ -1,6 +1,6 @@
 # Privilege Factories
 
-This page answers: _how do I bundle related rules into a named, parameterizable unit I can reuse across roles?_ It documents `definePrivilege()` and the curated `allowTable*` family from [`@aoothjs/arbac`](https://github.com/moostjs/aoothjs/tree/main/packages/arbac).
+This page answers: _how do I bundle related rules into a named, parameterizable unit I can reuse across roles?_ It documents `definePrivilege()` and the curated `allowTable*` family from [`@aooth/arbac`](https://github.com/moostjs/aoothjs/tree/main/packages/arbac).
 
 A _privilege_ is a function that returns an array of `TArbacRule[]` — exactly the shape `defineRole().use(...)` expects. You can hand-write one, or use `definePrivilege()` to keep generics flowing cleanly.
 
@@ -30,7 +30,7 @@ Writing `definePrivilege(factory)` instead of `definePrivilege<A, S>()(factory)`
 ### Minimal example
 
 ```ts
-import { definePrivilege, defineRole } from "@aoothjs/arbac";
+import { definePrivilege, defineRole } from "@aooth/arbac";
 
 type Attrs = { dept: string };
 type Scope = { dept: string };
@@ -74,7 +74,7 @@ The double-call wrapper preserves the parameter tuple as `TArgs`, so the caller-
 
 ## The `allowTable*` family
 
-[`@aoothjs/arbac`](https://github.com/moostjs/aoothjs/blob/main/packages/arbac/src/db-privileges.ts) ships three curated factories that bake in the action vocabulary `AsDbController` exposes for `@atscript/db` models. They save you from memorizing — or misspelling — those action names.
+[`@aooth/arbac`](https://github.com/moostjs/aoothjs/blob/main/packages/arbac/src/db-privileges.ts) ships three curated factories that bake in the action vocabulary `AsDbController` exposes for `@atscript/db` models. They save you from memorizing — or misspelling — those action names.
 
 The vocabulary:
 
@@ -123,7 +123,7 @@ function allowTableAction<TUserAttrs extends object, TScope extends object>(
 ### Examples
 
 ```ts
-import { defineRole, allowTableRead, allowTableWrite, allowTableAction } from "@aoothjs/arbac";
+import { defineRole, allowTableRead, allowTableWrite, allowTableAction } from "@aooth/arbac";
 
 type Attrs = { dept: string };
 type Scope = { dept: string };

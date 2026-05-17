@@ -1,6 +1,6 @@
-# `@aoothjs/auth` API Reference
+# `@aooth/auth` API Reference
 
-Complete export reference for `@aoothjs/auth`. See the [Auth Conceptual Guide](/auth/) for narrative documentation. Subpaths: `./redis`, `./atscript-db`, `./atscript-db/model.as`.
+Complete export reference for `@aooth/auth`. See the [Auth Conceptual Guide](/auth/) for narrative documentation. Subpaths: `./redis`, `./atscript-db`, `./atscript-db/model.as`.
 
 ## Classes
 
@@ -131,7 +131,7 @@ interface CredentialMetadata {
 }
 ```
 
-**Open to declaration merging** — augment via `declare module '@aoothjs/auth' { interface CredentialMetadata { ... } }`. See [Credentials & Sessions](/auth/credentials).
+**Open to declaration merging** — augment via `declare module '@aooth/auth' { interface CredentialMetadata { ... } }`. See [Credentials & Sessions](/auth/credentials).
 
 ### `CredentialState<TClaims>`
 
@@ -331,10 +331,10 @@ type AuthErrorType =
 
 `REFRESH_REUSE_DETECTED` fires on `'always'` reuse and `'sliding'` reuse-after-grace; both trigger `revokeAllForUser`. See [Errors](/auth/) and [Refresh & Rotation](/auth/refresh).
 
-## Subpath: `@aoothjs/auth/redis`
+## Subpath: `@aooth/auth/redis`
 
 ```ts
-import { CredentialStoreRedis, DenylistStoreRedis, RedisLike } from "@aoothjs/auth/redis";
+import { CredentialStoreRedis, DenylistStoreRedis, RedisLike } from "@aooth/auth/redis";
 ```
 
 ### `CredentialStoreRedis<TClaims>`
@@ -375,15 +375,15 @@ interface RedisLike {
 
 Structural Redis interface — only the 8 methods the adapters use. Works with `ioredis`, `redis@4`, etc. See [Stores](/auth/).
 
-## Subpath: `@aoothjs/auth/atscript-db`
+## Subpath: `@aooth/auth/atscript-db`
 
 ```ts
 import {
   CredentialStoreAtscriptDb,
   AuthCredentialRow,
   AuthCredentialTable,
-} from "@aoothjs/auth/atscript-db";
-import { AoothAuthCredential } from "@aoothjs/auth/atscript-db/model.as";
+} from "@aooth/auth/atscript-db";
+import { AoothAuthCredential } from "@aooth/auth/atscript-db/model.as";
 ```
 
 ### `CredentialStoreAtscriptDb<TClaims>`

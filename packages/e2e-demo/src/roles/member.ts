@@ -1,4 +1,4 @@
-import { allowTableAction, allowTableRead, type ControlGate, defineRole } from "@aoothjs/arbac";
+import { allowTableAction, allowTableRead, type ControlGate, defineRole } from "@aooth/arbac";
 
 import { Comment } from "../models/comment.as";
 import { Document } from "../models/document.as";

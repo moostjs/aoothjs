@@ -7,15 +7,15 @@ import {
   LoginWorkflow,
   type LoginWorkflowOpts,
   type DeliverPayload,
-} from "@aoothjs/auth-moost";
+} from "@aooth/auth-moost";
 import {
   ArbacAuthorize,
   ArbacResource,
   ArbacAction,
   arbacAuthorizeInterceptor,
-} from "@aoothjs/arbac-moost";
-import type { AuthCredential } from "@aoothjs/auth";
-import type { UserService } from "@aoothjs/user";
+} from "@aooth/arbac-moost";
+import type { AuthCredential } from "@aooth/auth";
+import type { UserService } from "@aooth/user";
 import { Controller, Inherit, Injectable } from "moost";
 import { Get } from "@moostjs/event-http";
 

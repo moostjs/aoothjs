@@ -158,22 +158,22 @@ importers:
 
   explorations/demo/backend:
     dependencies:
-      '@aoothjs/arbac':
+      '@aooth/arbac':
         specifier: workspace:*
         version: link:../../../packages/arbac
-      '@aoothjs/arbac-core':
+      '@aooth/arbac-core':
         specifier: workspace:*
         version: link:../../../packages/arbac-core
-      '@aoothjs/arbac-moost':
+      '@aooth/arbac-moost':
         specifier: workspace:*
         version: link:../../../packages/arbac-moost
-      '@aoothjs/auth':
+      '@aooth/auth':
         specifier: workspace:*
         version: link:../../../packages/auth
-      '@aoothjs/auth-moost':
+      '@aooth/auth-moost':
         specifier: workspace:*
         version: link:../../../packages/auth-moost
-      '@aoothjs/user':
+      '@aooth/user':
         specifier: workspace:*
         version: link:../../../packages/user
       '@atscript/core':
@@ -243,7 +243,7 @@ importers:
 
   explorations/demo/frontend:
     dependencies:
-      '@aoothjs/auth-moost':
+      '@aooth/auth-moost':
         specifier: workspace:*
         version: link:../../../packages/auth-moost
       '@atscript/core':
@@ -319,7 +319,7 @@ importers:
 
   packages/arbac:
     dependencies:
-      '@aoothjs/arbac-core':
+      '@aooth/arbac-core':
         specifier: workspace:*
         version: link:../arbac-core
 
@@ -327,13 +327,13 @@ importers:
 
   packages/arbac-moost:
     dependencies:
-      '@aoothjs/arbac':
+      '@aooth/arbac':
         specifier: workspace:*
         version: link:../arbac
-      '@aoothjs/arbac-core':
+      '@aooth/arbac-core':
         specifier: workspace:*
         version: link:../arbac-core
-      '@aoothjs/user':
+      '@aooth/user':
         specifier: workspace:*
         version: link:../user
       '@wooksjs/event-core':
@@ -382,7 +382,7 @@ importers:
 
   packages/auth:
     dependencies:
-      '@aoothjs/user':
+      '@aooth/user':
         specifier: workspace:*
         version: link:../user
       '@atscript/db':
@@ -394,13 +394,13 @@ importers:
 
   packages/auth-moost:
     dependencies:
-      '@aoothjs/arbac-moost':
+      '@aooth/arbac-moost':
         specifier: workspace:^
         version: link:../arbac-moost
-      '@aoothjs/auth':
+      '@aooth/auth':
         specifier: workspace:*
         version: link:../auth
-      '@aoothjs/user':
+      '@aooth/user':
         specifier: workspace:*
         version: link:../user
       '@atscript/moost-wf':
@@ -440,22 +440,22 @@ importers:
 
   packages/e2e-demo:
     dependencies:
-      '@aoothjs/arbac':
+      '@aooth/arbac':
         specifier: workspace:*
         version: link:../arbac
-      '@aoothjs/arbac-core':
+      '@aooth/arbac-core':
         specifier: workspace:*
         version: link:../arbac-core
-      '@aoothjs/arbac-moost':
+      '@aooth/arbac-moost':
         specifier: workspace:*
         version: link:../arbac-moost
-      '@aoothjs/auth':
+      '@aooth/auth':
         specifier: workspace:*
         version: link:../auth
-      '@aoothjs/auth-moost':
+      '@aooth/auth-moost':
         specifier: workspace:*
         version: link:../auth-moost
-      '@aoothjs/user':
+      '@aooth/user':
         specifier: workspace:*
         version: link:../user
       '@atscript/core':

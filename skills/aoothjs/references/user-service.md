@@ -123,7 +123,7 @@ Filters to policies whose `rule` is a string — those compile via `@prostojs/ft
 | `getAvailableMfaMethods(mfa)` (sync)  | Returns `{ name, isDefault, masked }[]` for confirmed methods. `masked` uses `maskMfaValue`.                                                                                                     |
 | `verifyMfa(username, code, config?)`  | TOTP-only path. Auto-unlocks expired locks, increments **the same** `failedLoginAttempts` as `login`, throws `MFA_INVALID`, `MFA_NOT_CONFIGURED`, `INACTIVE`, `LOCKED`, or `NOT_FOUND` per case. |
 
-`verifyMfa` finds the method via `mfa.methods.find(m => m.name === 'totp' && m.confirmed)` — no other method names participate in this path; email / SMS challenges live in `@aoothjs/auth`.
+`verifyMfa` finds the method via `mfa.methods.find(m => m.name === 'totp' && m.confirmed)` — no other method names participate in this path; email / SMS challenges live in `@aooth/auth`.
 
 ## Backup codes
 

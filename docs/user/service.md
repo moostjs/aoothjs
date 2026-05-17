@@ -5,7 +5,7 @@
 ## Constructor
 
 ```ts
-import { UserService, UserStoreMemory } from "@aoothjs/user"
+import { UserService, UserStoreMemory } from "@aooth/user"
 
 const users = new UserService<T extends object = object>(
   store: UserStore<T>,

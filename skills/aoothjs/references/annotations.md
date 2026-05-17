@@ -14,9 +14,9 @@ nodeType, multiplicity, and which aoothjs package consumes it.
 
 ## `@arbac.*` annotations (owned)
 
-Registered by `arbacPlugin()` from `@aoothjs/arbac-moost/plugin`. All three target
+Registered by `arbacPlugin()` from `@aooth/arbac-moost/plugin`. All three target
 `nodeType: ['prop']` with `multiple: false`. Read at runtime by
-`AtscriptArbacUserProvider` (from `@aoothjs/arbac-moost/atscript`) via the
+`AtscriptArbacUserProvider` (from `@aooth/arbac-moost/atscript`) via the
 `ArbacExtractSpec` it builds once per user type and caches in a module-level WeakMap.
 
 | Annotation         | Target | Multiplicity | Argument | What aoothjs does with it                                                                                                                                                             |
@@ -39,13 +39,13 @@ Hand-rolled `ArbacUserProvider` subclasses don't read these annotations — they
 
 ## `@db.*` annotations read by aoothjs
 
-`@aoothjs/user` and `@aoothjs/auth` read a small subset of `@db.*` from the shipped `.as`
+`@aooth/user` and `@aooth/auth` read a small subset of `@db.*` from the shipped `.as`
 models. See the `atscript-db` skill for the full annotation reference.
 
 | Annotation                          | Where it appears                                                                   | Why aoothjs depends on it                                                                                                                                                                                                                                                                   |
 | ----------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@db.patch.strategy 'merge'`        | `AoothUserCredentials` sub-objects: `password`, `account`, `mfa`, `trustedDevices` | `UserService.update.set` emits partial sub-object patches (`set: { account: { lastLogin, failedLoginAttempts: 0 } }`). Without merge strategy, those become wholesale replaces and clobber the other fields. Re-declaring sub-objects in an extending interface MUST repeat the annotation. |
-| `@db.depth.limit 0`                 | `AoothAuthCredential` table                                                        | `@aoothjs/auth/atscript-db` never writes nested credentials. Locking depth at 0 makes the moost-db boundary reject nested writes with HTTP 400.                                                                                                                                             |
+| `@db.depth.limit 0`                 | `AoothAuthCredential` table                                                        | `@aooth/auth/atscript-db` never writes nested credentials. Locking depth at 0 makes the moost-db boundary reject nested writes with HTTP 400.                                                                                                                                               |
 | `@db.index.unique 'username_idx'`   | `AoothUserCredentials.username`                                                    | `UsersStoreAtscriptDb.create` relies on the unique-index conflict to surface as `DbError.code === 'CONFLICT'`, which the structural `isConflict` check translates to `UserAuthError('ALREADY_EXISTS')`.                                                                                     |
 | `@db.index.plain`                   | `AoothAuthCredential.userId`                                                       | `revokeAllForUser` issues `deleteMany({ userId })` — needs the index for any reasonable size.                                                                                                                                                                                               |
 | `@db.json`                          | `AoothAuthCredential.claims`, `AoothAuthCredential.metadata`                       | `CredentialState`'s open structural fields. SQL adapters store as JSON column; mongo nests natively.                                                                                                                                                                                        |
@@ -64,7 +64,7 @@ models. See the `atscript-db` skill for the full annotation reference.
 
 ## Form-only annotations
 
-The atscript workflow forms in `@aoothjs/auth-moost/atscript/models/forms.as` use a
+The atscript workflow forms in `@aooth/auth-moost/atscript/models/forms.as` use a
 fixed annotation alphabet. Each is owned by a sibling skill — load the relevant skill
 for the full reference.
 

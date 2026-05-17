@@ -1,4 +1,4 @@
-import type { AuthEmailEvent, EmailSender } from "@aoothjs/auth";
+import type { AuthEmailEvent, EmailSender } from "@aooth/auth";
 
 export class ConsoleEmailSender implements EmailSender {
   send(event: AuthEmailEvent): Promise<void> {

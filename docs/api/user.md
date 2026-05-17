@@ -1,6 +1,6 @@
-# `@aoothjs/user` API Reference
+# `@aooth/user` API Reference
 
-Complete export reference for `@aoothjs/user`. See the [User Conceptual Guide](/user/) for narrative documentation. Every public symbol lives in `packages/user/src/index.ts`.
+Complete export reference for `@aooth/user`. See the [User Conceptual Guide](/user/) for narrative documentation. Every public symbol lives in `packages/user/src/index.ts`.
 
 ## Classes
 
@@ -324,12 +324,12 @@ class UserAuthError extends Error {
 }
 ```
 
-Every error path in `@aoothjs/user` funnels through this single class. The `type` field drives HTTP mapping at the controller layer. `details` carries `{ reason, lockEnds }` for `LOCKED`, `{ policies }` for `POLICY_VIOLATION`, and `{ lockEnds }` for `INVALID_CREDENTIALS` / `MFA_INVALID` when the failure tripped the lock. See [Errors](/user/errors).
+Every error path in `@aooth/user` funnels through this single class. The `type` field drives HTTP mapping at the controller layer. `details` carries `{ reason, lockEnds }` for `LOCKED`, `{ policies }` for `POLICY_VIOLATION`, and `{ lockEnds }` for `INVALID_CREDENTIALS` / `MFA_INVALID` when the failure tripped the lock. See [Errors](/user/errors).
 
-## Subpath: `@aoothjs/user/atscript-db`
+## Subpath: `@aooth/user/atscript-db`
 
 ```ts
-import { UsersStoreAtscriptDb, AuthUserTable, UserCredentialsRow } from "@aoothjs/user/atscript-db";
+import { UsersStoreAtscriptDb, AuthUserTable, UserCredentialsRow } from "@aooth/user/atscript-db";
 ```
 
 ### `UsersStoreAtscriptDb<TUserCustom>`
@@ -344,6 +344,6 @@ new UsersStoreAtscriptDb<TUserCustom>(opts: { table: AuthUserTable<TUserCustom> 
 
 Structural-only types describing the subset of `AtscriptDbTable` methods the adapter needs and the row shape it expects. Apps cast their concrete `db.getTable(AppUser)` to `AuthUserTable`. See [Stores](/user/stores).
 
-## Subpath: `@aoothjs/user/atscript-db/model.as`
+## Subpath: `@aooth/user/atscript-db/model.as`
 
 Raw `.as` file export. Defines `AoothUserCredentials` — `username` (with `@db.index.unique`) plus `@db.patch.strategy 'merge'` sub-objects for `password` / `account` / `mfa` / `trustedDevices`. Consumers extend it to add `@meta.id` and `@db.table`. See [Credentials Model](/user/credentials).

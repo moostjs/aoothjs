@@ -1,4 +1,4 @@
-import type { AuthContext } from "@aoothjs/auth";
+import type { AuthContext } from "@aooth/auth";
 import { current } from "@wooksjs/event-core";
 import { prepareTestHttpContext } from "@wooksjs/event-http";
 import { describe, expect, it } from "vite-plus/test";

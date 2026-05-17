@@ -7,7 +7,7 @@ This page covers every constructor option and every public method.
 ## Construction
 
 ```ts
-import { AuthCredential, CredentialStoreMemory } from "@aoothjs/auth";
+import { AuthCredential, CredentialStoreMemory } from "@aooth/auth";
 
 const auth = new AuthCredential<{ roles: string[] }>({
   store: new CredentialStoreMemory(),
@@ -305,7 +305,7 @@ It is **explicitly designed for TypeScript declaration merging**. Augment it in 
 
 ```ts
 // types/aooth.d.ts
-declare module "@aoothjs/auth" {
+declare module "@aooth/auth" {
   interface CredentialMetadata {
     geoCountry?: string;
     deviceId?: string;
@@ -331,7 +331,7 @@ The metadata is persisted by the store but never returned through `validate`. Re
 ## Full lifecycle example
 
 ```ts
-import { AuthCredential, CredentialStoreMemory } from "@aoothjs/auth";
+import { AuthCredential, CredentialStoreMemory } from "@aooth/auth";
 
 const auth = new AuthCredential<{ roles: string[] }>({
   store: new CredentialStoreMemory(),

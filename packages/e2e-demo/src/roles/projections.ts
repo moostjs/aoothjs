@@ -1,4 +1,4 @@
-import type { TProjection } from "@aoothjs/arbac";
+import type { TProjection } from "@aooth/arbac";
 
 export const PROJ_USER_ADMIN: TProjection = { "password.history": 0, "mfa.methods": 0 };
 export const PROJ_USER_MANAGER: TProjection = {

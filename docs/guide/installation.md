@@ -4,16 +4,16 @@
 
 ## Decision table
 
-| Use case                                                                  | aoothjs packages                                                         | Required peer deps                                                                  |
-| ------------------------------------------------------------------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
-| Hash passwords / manage credentials, no HTTP                              | `@aoothjs/user`                                                          | —                                                                                   |
-| Above + issue/validate JWT tokens, no HTTP                                | `@aoothjs/user`, `@aoothjs/auth`                                         | — (`jose` is a regular dep of `@aoothjs/auth`, auto-installed)                      |
-| Full HTTP auth stack on moost (sessions, login/recovery/invite workflows) | `@aoothjs/user`, `@aoothjs/auth`, `@aoothjs/auth-moost`                  | `moost`, `@moostjs/event-http`, `@moostjs/event-wf`, `@atscript/moost-wf`           |
-| RBAC only — no auth, no HTTP                                              | `@aoothjs/arbac` (re-exports `arbac-core`)                               | —                                                                                   |
-| RBAC + moost integration                                                  | `@aoothjs/arbac`, `@aoothjs/arbac-moost`                                 | `moost`                                                                             |
-| atscript-first user model + auto-derived ARBAC                            | above + `@aoothjs/arbac-moost/atscript`                                  | `@atscript/db`, `@atscript/typescript`, `unplugin-atscript`                         |
-| Persist users + tokens + workflow state in a database                     | add `@aoothjs/user/atscript-db` and `@aoothjs/auth/atscript-db` subpaths | `@atscript/db` and one driver (`@atscript/db-sqlite`, `@atscript/db-postgres`, ...) |
-| Persist tokens in Redis                                                   | use `@aoothjs/auth/redis` subpath                                        | a `RedisLike` client (`ioredis`, `redis`, ...)                                      |
+| Use case                                                                  | aoothjs packages                                                     | Required peer deps                                                                  |
+| ------------------------------------------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Hash passwords / manage credentials, no HTTP                              | `@aooth/user`                                                        | —                                                                                   |
+| Above + issue/validate JWT tokens, no HTTP                                | `@aooth/user`, `@aooth/auth`                                         | — (`jose` is a regular dep of `@aooth/auth`, auto-installed)                        |
+| Full HTTP auth stack on moost (sessions, login/recovery/invite workflows) | `@aooth/user`, `@aooth/auth`, `@aooth/auth-moost`                    | `moost`, `@moostjs/event-http`, `@moostjs/event-wf`, `@atscript/moost-wf`           |
+| RBAC only — no auth, no HTTP                                              | `@aooth/arbac` (re-exports `arbac-core`)                             | —                                                                                   |
+| RBAC + moost integration                                                  | `@aooth/arbac`, `@aooth/arbac-moost`                                 | `moost`                                                                             |
+| atscript-first user model + auto-derived ARBAC                            | above + `@aooth/arbac-moost/atscript`                                | `@atscript/db`, `@atscript/typescript`, `unplugin-atscript`                         |
+| Persist users + tokens + workflow state in a database                     | add `@aooth/user/atscript-db` and `@aooth/auth/atscript-db` subpaths | `@atscript/db` and one driver (`@atscript/db-sqlite`, `@atscript/db-postgres`, ...) |
+| Persist tokens in Redis                                                   | use `@aooth/auth/redis` subpath                                      | a `RedisLike` client (`ioredis`, `redis`, ...)                                      |
 
 ## Recommended starting point
 
@@ -21,8 +21,8 @@ A full moost HTTP app with `.as`-modelled users, sqlite-backed credentials/token
 
 ```bash
 # Runtime
-pnpm add @aoothjs/user @aoothjs/auth @aoothjs/auth-moost \
-         @aoothjs/arbac @aoothjs/arbac-moost \
+pnpm add @aooth/user @aooth/auth @aooth/auth-moost \
+         @aooth/arbac @aooth/arbac-moost \
          moost @moostjs/event-http @moostjs/event-wf \
          @atscript/db @atscript/db-sqlite @atscript/moost-wf \
          better-sqlite3
@@ -37,29 +37,29 @@ This is the dependency set used by [`packages/e2e-demo`](https://github.com/moos
 
 The list below names the `peerDependencies` each package declares (versions resolve from your `package.json`). Anything labelled `optional` is only required when you use the matching subpath.
 
-### `@aoothjs/user`
+### `@aooth/user`
 
-| Peer                   | Required when                                |
-| ---------------------- | -------------------------------------------- |
-| `@atscript/db ^0.1.79` | optional — using `@aoothjs/user/atscript-db` |
+| Peer                   | Required when                              |
+| ---------------------- | ------------------------------------------ |
+| `@atscript/db ^0.1.79` | optional — using `@aooth/user/atscript-db` |
 
-### `@aoothjs/auth`
+### `@aooth/auth`
 
-| Peer                   | Required when                                |
-| ---------------------- | -------------------------------------------- |
-| `@atscript/db ^0.1.79` | optional — using `@aoothjs/auth/atscript-db` |
+| Peer                   | Required when                              |
+| ---------------------- | ------------------------------------------ |
+| `@atscript/db ^0.1.79` | optional — using `@aooth/auth/atscript-db` |
 
 `jose ^6.2.3` is shipped as a regular dependency (not a peer) since `CredentialStoreJwt` always uses it — no manual install required.
 
-### `@aoothjs/arbac-core`
+### `@aooth/arbac-core`
 
 Zero dependencies. Pure TypeScript.
 
-### `@aoothjs/arbac`
+### `@aooth/arbac`
 
-Single dependency — `@aoothjs/arbac-core`. Re-exports everything from it; no additional peers.
+Single dependency — `@aooth/arbac-core`. Re-exports everything from it; no additional peers.
 
-### `@aoothjs/auth-moost`
+### `@aooth/auth-moost`
 
 | Peer                  | Required when                                                                  |
 | --------------------- | ------------------------------------------------------------------------------ |
@@ -67,20 +67,20 @@ Single dependency — `@aoothjs/arbac-core`. Re-exports everything from it; no a
 | `@moostjs/event-http` | always                                                                         |
 | `@moostjs/event-wf`   | always — workflows are mandatory for the bundled `AuthController`              |
 | `@atscript/moost-wf`  | always — provides `formInputInterceptor`, `AsWfStore`, the form-input plumbing |
-| `@aoothjs/auth`       | always                                                                         |
-| `@aoothjs/user`       | always                                                                         |
+| `@aooth/auth`         | always                                                                         |
+| `@aooth/user`         | always                                                                         |
 
-### `@aoothjs/arbac-moost`
+### `@aooth/arbac-moost`
 
 | Peer                   | Required when                                                          |
 | ---------------------- | ---------------------------------------------------------------------- |
 | `moost`                | always                                                                 |
-| `@aoothjs/arbac-core`  | always                                                                 |
+| `@aooth/arbac-core`    | always                                                                 |
 | `@atscript/moost-db`   | optional — using `AsArbacDbController` / `AsArbacDbReadableController` |
 | `@atscript/typescript` | optional — using the `/atscript` subpath (`AtscriptArbacUserProvider`) |
 
 ::: warning Subpath compile-time deps
-`@aoothjs/arbac-moost/plugin` is **compile-time only** — it goes in `atscript.config.ts` so the `@arbac.*` annotations type-check. It contributes no runtime code.
+`@aooth/arbac-moost/plugin` is **compile-time only** — it goes in `atscript.config.ts` so the `@arbac.*` annotations type-check. It contributes no runtime code.
 :::
 
 ## Atscript codegen
@@ -110,7 +110,7 @@ Both call the same compiler. The CLI form is what [`e2e-demo`](https://github.co
 You will also need an `atscript.config.mts` at the project root that registers the plugins for whichever annotations you use:
 
 ```ts:line-numbers
-import arbacPlugin from '@aoothjs/arbac-moost/plugin'
+import arbacPlugin from '@aooth/arbac-moost/plugin'
 import { defineConfig } from '@atscript/core'
 import dbPlugin from '@atscript/db/plugin'
 import wfPlugin from '@atscript/moost-wf/plugin'
@@ -135,9 +135,9 @@ pnpm add @atscript/db @atscript/db-sqlite       # or db-postgres / db-mysql / db
 Use the subpath imports:
 
 ```ts
-import { UsersStoreAtscriptDb } from "@aoothjs/user/atscript-db";
-import { CredentialStoreAtscriptDb } from "@aoothjs/auth/atscript-db";
-import { AoothAuthCredential } from "@aoothjs/auth/atscript-db/model.as";
+import { UsersStoreAtscriptDb } from "@aooth/user/atscript-db";
+import { CredentialStoreAtscriptDb } from "@aooth/auth/atscript-db";
+import { AoothAuthCredential } from "@aooth/auth/atscript-db/model.as";
 ```
 
 ### Redis (for tokens / denylist only)
@@ -149,7 +149,7 @@ pnpm add ioredis            # or redis@^4
 Use the subpath import:
 
 ```ts
-import { CredentialStoreRedis, DenylistStoreRedis } from "@aoothjs/auth/redis";
+import { CredentialStoreRedis, DenylistStoreRedis } from "@aooth/auth/redis";
 ```
 
 The package declares a structural `RedisLike` interface (8 methods used) — any client that matches the shape works.
@@ -159,8 +159,8 @@ The package declares a structural `RedisLike` interface (8 methods used) — any
 Ships in the main entry points — no extra install:
 
 ```ts
-import { UserStoreMemory } from "@aoothjs/user";
-import { CredentialStoreMemory, DenylistStoreMemory } from "@aoothjs/auth";
+import { UserStoreMemory } from "@aooth/user";
+import { CredentialStoreMemory, DenylistStoreMemory } from "@aooth/auth";
 ```
 
 ::: warning Memory stores in production

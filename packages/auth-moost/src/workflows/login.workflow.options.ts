@@ -101,7 +101,7 @@ export interface LoginWorkflowOpts {
   };
   /**
    * Replaceable form schemas. Each field defaults to the corresponding
-   * `.as` form shipped under `@aoothjs/auth-moost/atscript/models`; supply a
+   * `.as` form shipped under `@aooth/auth-moost/atscript/models`; supply a
    * subset to override only the forms you want to swap.
    */
   forms?: {

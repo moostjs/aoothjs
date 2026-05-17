@@ -1,5 +1,5 @@
 {
-  "name": "@aoothjs/arbac-core",
+  "name": "@aooth/arbac-core",
   "version": "0.1.0",
   "description": "Advanced Role-Based Access Control (ARBAC) engine",
   "keywords": [

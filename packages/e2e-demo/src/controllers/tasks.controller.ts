@@ -1,4 +1,4 @@
-import { ArbacResource, AsArbacDbController } from "@aoothjs/arbac-moost";
+import { ArbacResource, AsArbacDbController } from "@aooth/arbac-moost";
 import type { AtscriptDbTable } from "@atscript/db";
 import {
   DbAction,

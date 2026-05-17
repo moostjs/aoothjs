@@ -1,9 +1,9 @@
-# @aoothjs/auth
+# @aooth/auth
 
 ## Quick start
 
 ```ts
-import { AuthCredential, CredentialStoreJwt, DenylistStoreMemory } from "@aoothjs/auth";
+import { AuthCredential, CredentialStoreJwt, DenylistStoreMemory } from "@aooth/auth";
 
 // Stateless tokens, HS256-signed. Denylist is in-memory — swap for
 // DenylistStoreRedis in production multi-instance deployments.
@@ -48,7 +48,7 @@ await auth.revokeAllForUser("alice"); // bumps in-memory epoch
 | 9   | **`CredentialStoreRedis.persist` fails loud on already-dead credentials.** TTL <= 0 throws a plain `Error` (NOT an `AuthError('INVALID_CONFIG')`) synchronously rather than writing a phantom token. The atscript-db adapter mirrors the same posture in `update`: pushing `state.expiresAt` past `now` is treated as a revoke.                                                      |
 | 10  | **`update` may return a different token.** Stateless stores re-issue (the old `jti` lands on the denylist, the new state is freshly signed); stateful stores return the same token id. Callers MUST use the returned value rather than the input.                                                                                                                                    |
 | 11  | **`EmailSender.send` / `SmsSender.send` are `await`ed inline.** Workflows do not background them. Blocking transports must push onto a queue and return — otherwise issue / refresh / consume calls stall on SES / Twilio latency.                                                                                                                                                   |
-| 12  | **`CredentialMetadata` is open to declaration merging.** Augment it with project-specific fields via `declare module '@aoothjs/auth' { interface CredentialMetadata { geoCountry?: string } }` — every store carries the extra fields through `persist` / `retrieve` / `listForUser` unchanged.                                                                                      |
+| 12  | **`CredentialMetadata` is open to declaration merging.** Augment it with project-specific fields via `declare module '@aooth/auth' { interface CredentialMetadata { geoCountry?: string } }` — every store carries the extra fields through `persist` / `retrieve` / `listForUser` unchanged.                                                                                        |
 | 13  | **`consume` on a stateless store without a `denylist` throws `STATELESS_OPERATION_UNSUPPORTED`.** Same for `revoke` and `update`. Magic-link flows are stateless-incompatible without a denylist — wire `DenylistStoreMemory` (single-process) or `DenylistStoreRedis` (multi-pod) before persisting magic-link state into JWT / Encapsulated.                                       |
 | 14  | **`accessTtl <= 0`, missing HS `secret`, or missing asymmetric keypair throw `INVALID_CONFIG` at construction.** Boot-time fail-loud — never produce tokens that fail `validate()` the moment they exist. `refresh.ttl <= 0` does the same.                                                                                                                                          |
 | 15  | **`revokeAllForUser` cascades across `kind: 'access'` AND `kind: 'refresh'`.** Stateful stores delete every row keyed on `userId`; stateless stores bump the epoch which rejects both kinds on the next `retrieve`. The return value is a count for stateful stores and sentinel `1` for stateless ("epoch bumped, count unknown").                                                  |
@@ -58,7 +58,7 @@ await auth.revokeAllForUser("alice"); // bumps in-memory epoch
 
 ```ts
 // Core orchestrator + types
-import { AuthCredential, AuthError } from "@aoothjs/auth";
+import { AuthCredential, AuthError } from "@aooth/auth";
 import type {
   AuthCredentialOptions,
   IssueOptions,
@@ -69,11 +69,11 @@ import type {
   RefreshConfig,
   AuthErrorType,
   Clock,
-} from "@aoothjs/auth";
-import { defaultClock } from "@aoothjs/auth";
+} from "@aooth/auth";
+import { defaultClock } from "@aooth/auth";
 
 // Store interfaces
-import type { CredentialStore, DenylistStore } from "@aoothjs/auth";
+import type { CredentialStore, DenylistStore } from "@aooth/auth";
 
 // In-memory + stateless stores (main subpath)
 import {
@@ -81,22 +81,22 @@ import {
   DenylistStoreMemory,
   CredentialStoreJwt,
   CredentialStoreEncapsulated,
-} from "@aoothjs/auth";
+} from "@aooth/auth";
 import type {
   CredentialStoreJwtOptions,
   CredentialStoreEncapsulatedOptions,
   JwtAlgorithm,
-} from "@aoothjs/auth";
+} from "@aooth/auth";
 
 // Redis adapters (subpath)
-import { CredentialStoreRedis, DenylistStoreRedis } from "@aoothjs/auth/redis";
-import type { RedisLike } from "@aoothjs/auth/redis";
+import { CredentialStoreRedis, DenylistStoreRedis } from "@aooth/auth/redis";
+import type { RedisLike } from "@aooth/auth/redis";
 
 // atscript-db adapter (subpath)
-import { CredentialStoreAtscriptDb } from "@aoothjs/auth/atscript-db";
-import type { AuthCredentialRow, AuthCredentialTable } from "@aoothjs/auth/atscript-db";
+import { CredentialStoreAtscriptDb } from "@aooth/auth/atscript-db";
+import type { AuthCredentialRow, AuthCredentialTable } from "@aooth/auth/atscript-db";
 // .as model — raw file export, consumed by `unplugin-atscript` / `asc`
-import { AoothAuthCredential } from "@aoothjs/auth/atscript-db/model.as";
+import { AoothAuthCredential } from "@aooth/auth/atscript-db/model.as";
 
 // Transport contracts (consumer ships impl)
 import type {
@@ -106,11 +106,11 @@ import type {
   SmsSender,
   AuthSmsEvent,
   AuthSmsKind,
-} from "@aoothjs/auth";
+} from "@aooth/auth";
 
 // Magic-link helpers
-import { generateMagicLinkToken } from "@aoothjs/auth";
-import type { BuildMagicLinkUrl } from "@aoothjs/auth";
+import { generateMagicLinkToken } from "@aooth/auth";
+import type { BuildMagicLinkUrl } from "@aooth/auth";
 ```
 
 ## References — load only what's needed

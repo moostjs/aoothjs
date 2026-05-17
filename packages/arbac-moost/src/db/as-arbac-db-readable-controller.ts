@@ -1,4 +1,4 @@
-import type { TProjection } from "@aoothjs/arbac";
+import type { TProjection } from "@aooth/arbac";
 import { AsDbReadableController } from "@atscript/moost-db";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { Inherit } from "moost";

@@ -1,6 +1,6 @@
-// Re-exported from @aoothjs/auth — exposed in the public surface (handler
+// Re-exported from @aooth/auth — exposed in the public surface (handler
 // returns + helper parameters) so consumers don't need a second import.
-export type { AuthContext, IssueResult } from "@aoothjs/auth";
+export type { AuthContext, IssueResult } from "@aooth/auth";
 
 export {
   type AuthOptions,
@@ -21,7 +21,7 @@ export type {
 export { WfTrigger, type WfTriggerOpts } from "./wf-trigger/decorator";
 export { WfTriggerProvider } from "./wf-trigger/provider";
 
-// Re-exported from @aoothjs/auth for ergonomic single-import setup; the
+// Re-exported from @aooth/auth for ergonomic single-import setup; the
 // definitions are framework-agnostic and live in the core package.
 export type {
   AuthEmailEvent,
@@ -31,8 +31,8 @@ export type {
   BuildMagicLinkUrl,
   EmailSender,
   SmsSender,
-} from "@aoothjs/auth";
-export { generateMagicLinkToken } from "@aoothjs/auth";
+} from "@aooth/auth";
+export { generateMagicLinkToken } from "@aooth/auth";
 export {
   type DeliverEmail,
   type DeliverPayload,
@@ -74,7 +74,7 @@ export { type AuditEmitter, type AuditEvent } from "./audit/index";
 // `protected` method overrides instead of constructor-injected side-effect
 // deps, so no consumer needs the tokens. The `EmailSender` / `SmsSender` /
 // `AuditEmitter` types still ship for consumer overrides. Device-trust
-// persistence moved into `UserService` (`@aoothjs/user`); consumers wire it
+// persistence moved into `UserService` (`@aooth/user`); consumers wire it
 // via `UserServiceConfig.deviceTrust.secret` and override
 // `LoginWorkflow`'s `loadTrustedDevice` / `storeTrustedDevice` etc. only
 // when they need a non-default backend.

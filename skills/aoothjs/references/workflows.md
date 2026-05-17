@@ -263,7 +263,7 @@ Each workflow takes a single options object as its first ctor arg. Nested groups
 
 ## Forms catalogue
 
-`@aoothjs/auth-moost`'s `src/atscript/models/forms.as` defines 21 form interfaces. Every form is replaceable per-workflow via `opts.forms.<formName>`.
+`@aooth/auth-moost`'s `src/atscript/models/forms.as` defines 21 form interfaces. Every form is replaceable per-workflow via `opts.forms.<formName>`.
 
 | Form                     | Workflow(s)             | Purpose                                                                                           |
 | ------------------------ | ----------------------- | ------------------------------------------------------------------------------------------------- |

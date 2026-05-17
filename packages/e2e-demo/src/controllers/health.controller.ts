@@ -1,5 +1,5 @@
-import { ArbacAction, ArbacResource } from "@aoothjs/arbac-moost";
-import { Public, useAuth } from "@aoothjs/auth-moost";
+import { ArbacAction, ArbacResource } from "@aooth/arbac-moost";
+import { Public, useAuth } from "@aooth/auth-moost";
 import { Get } from "@moostjs/event-http";
 import { Controller } from "moost";
 

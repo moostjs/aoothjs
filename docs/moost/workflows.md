@@ -344,9 +344,9 @@ Forms are class references (not POJOs), so they cannot be serialized into the wf
 ## Subclassing pattern — full template
 
 ```ts
-import { LoginWorkflow, type LoginWorkflowOpts, type DeliverPayload } from "@aoothjs/auth-moost";
-import { AuthCredential } from "@aoothjs/auth";
-import { UserService } from "@aoothjs/user";
+import { LoginWorkflow, type LoginWorkflowOpts, type DeliverPayload } from "@aooth/auth-moost";
+import { AuthCredential } from "@aooth/auth";
+import { UserService } from "@aooth/user";
 import { Inherit, Injectable, Controller } from "moost";
 
 const myLoginOpts: LoginWorkflowOpts = {

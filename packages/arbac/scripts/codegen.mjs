@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// @aoothjs/arbac codegen CLI
+// @aooth/arbac codegen CLI
 //
-// Generates TypeScript union types from a built array of @aoothjs/arbac roles.
+// Generates TypeScript union types from a built array of @aooth/arbac roles.
 //
 // Usage:
 //   aoothjs-arbac-codegen --roles <path> --output <path> [--export-name <name>]
@@ -98,7 +98,7 @@ function pickRoles(mod, importedFrom) {
       `Module at ${importedFrom} must export a default array or a named \`roles\` array of built roles.`,
     );
   }
-  return /** @type {import("@aoothjs/arbac-core").TArbacRole<unknown, unknown>[]} */ (candidate);
+  return /** @type {import("@aooth/arbac-core").TArbacRole<unknown, unknown>[]} */ (candidate);
 }
 
 async function loadCodegenApi() {

@@ -3,9 +3,9 @@ import {
   type ArbacDbScope,
   ArbacUserProviderToken,
   MoostArbac,
-} from "@aoothjs/arbac-moost";
-import { AtscriptArbacUserProvider } from "@aoothjs/arbac-moost/atscript";
-import { AuthCredential, type EmailSender, type SmsSender } from "@aoothjs/auth";
+} from "@aooth/arbac-moost";
+import { AtscriptArbacUserProvider } from "@aooth/arbac-moost/atscript";
+import { AuthCredential, type EmailSender, type SmsSender } from "@aooth/auth";
 import {
   AuthController,
   authGuardInterceptor,
@@ -22,10 +22,10 @@ import {
   useAuth,
   WfTrigger,
   WfTriggerProvider,
-} from "@aoothjs/auth-moost";
+} from "@aooth/auth-moost";
 import { HandleStateStrategy } from "@moostjs/event-wf";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
-import { UserService } from "@aoothjs/user";
+import { UserService } from "@aooth/user";
 import { formInputInterceptor } from "@atscript/moost-wf";
 import { MoostHttp, Post } from "@moostjs/event-http";
 import { MoostWf } from "@moostjs/event-wf";
@@ -309,7 +309,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   const demoEmailOutletDeps = {
     emailSender,
     buildMagicLinkUrl: aooth.buildMagicLinkUrl,
-    magicLinkTtlMs: (kind: import("@aoothjs/auth").AuthEmailKind) =>
+    magicLinkTtlMs: (kind: import("@aooth/auth").AuthEmailKind) =>
       kind === "invite.magicLink" ? env.INVITE_TTL_MS : env.RECOVERY_TTL_MS,
   };
   @Injectable()

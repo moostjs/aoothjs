@@ -3,9 +3,9 @@ import type {
   InviteWorkflowOpts,
   LoginWorkflowOpts,
   RecoveryWorkflowOpts,
-} from "@aoothjs/auth-moost";
+} from "@aooth/auth-moost";
 import type { WfFinished } from "@atscript/moost-wf";
-import { generateTotpCode } from "@aoothjs/user";
+import { generateTotpCode } from "@aooth/user";
 import { clearGlobalWooks, getMoostInfact } from "moost";
 import { expect } from "vite-plus/test";
 

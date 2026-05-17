@@ -6,14 +6,14 @@ The patterns below are taken from [`packages/e2e-demo/`](https://github.com/moos
 
 ## The three shipped models
 
-| Model                       | Subpath                                   | Purpose                                                                                                                                     |
-| --------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AoothUserCredentials`      | `@aoothjs/user/atscript-db/model.as`      | Base credential record — `username`, `password`, `account`, `mfa`, `trustedDevices`. Does NOT declare `@meta.id` or `@db.table`.            |
-| `AoothArbacUserCredentials` | `@aoothjs/arbac-moost/atscript/models.as` | Extends `AoothUserCredentials` with `@arbac.role roles: string[]`. The default user shape when ARBAC is in play.                            |
-| `AoothAuthCredential`       | `@aoothjs/auth/atscript-db/model.as`      | Bearer-token row — `token` (PK), `userId`, `issuedAt`, `expiresAt`, `claims`, `metadata`. Already complete — apps usually do not extend it. |
+| Model                       | Subpath                                 | Purpose                                                                                                                                     |
+| --------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AoothUserCredentials`      | `@aooth/user/atscript-db/model.as`      | Base credential record — `username`, `password`, `account`, `mfa`, `trustedDevices`. Does NOT declare `@meta.id` or `@db.table`.            |
+| `AoothArbacUserCredentials` | `@aooth/arbac-moost/atscript/models.as` | Extends `AoothUserCredentials` with `@arbac.role roles: string[]`. The default user shape when ARBAC is in play.                            |
+| `AoothAuthCredential`       | `@aooth/auth/atscript-db/model.as`      | Bearer-token row — `token` (PK), `userId`, `issuedAt`, `expiresAt`, `claims`, `metadata`. Already complete — apps usually do not extend it. |
 
 ::: info Subpath form
-The `package.json` exports the raw `.as` source under the `.as` suffix (e.g. `'@aoothjs/user/atscript-db/model.as'`). That is what `unplugin-atscript` resolves and what the e2e demo imports. There is no separate no-extension subpath — always include `.as`.
+The `package.json` exports the raw `.as` source under the `.as` suffix (e.g. `'@aooth/user/atscript-db/model.as'`). That is what `unplugin-atscript` resolves and what the e2e demo imports. There is no separate no-extension subpath — always include `.as`.
 :::
 
 ## What's in `AoothUserCredentials`
@@ -43,14 +43,14 @@ Source: [`user-credentials.as`](https://github.com/moostjs/aoothjs/blob/main/pac
 Two things to notice:
 
 1. **No `@meta.id`**. The base model is incomplete on purpose so consumers can choose their own PK type (UUID string, integer, ULID, ...) and any `@db.default.*` annotation.
-2. **`@db.patch.strategy 'merge'`** on `password`, `account`, `mfa`, `trustedDevices`. This is how the `UsersStoreAtscriptDb` adapter knows that a `set` patch like `{ account: { lastLogin } }` should merge into the existing row, not replace the whole sub-object. **Do not redeclare these sub-objects without the same annotation** — TypeScript shape inheritance does not carry the atscript annotation. See the [`@aoothjs/user` invariants](../user/#invariants).
+2. **`@db.patch.strategy 'merge'`** on `password`, `account`, `mfa`, `trustedDevices`. This is how the `UsersStoreAtscriptDb` adapter knows that a `set` patch like `{ account: { lastLogin } }` should merge into the existing row, not replace the whole sub-object. **Do not redeclare these sub-objects without the same annotation** — TypeScript shape inheritance does not carry the atscript annotation. See the [`@aooth/user` invariants](../user/#invariants).
 
 ## Extending for ARBAC
 
 For ARBAC apps, extend `AoothArbacUserCredentials` instead — it pre-applies `@arbac.role` to `roles: string[]` so you do not have to remember the annotation:
 
 ```ts:line-numbers
-import { AoothArbacUserCredentials } from '@aoothjs/arbac-moost/atscript/models'
+import { AoothArbacUserCredentials } from '@aooth/arbac-moost/atscript/models'
 import { Tenant } from './tenant'
 import { Department } from './department'
 
@@ -103,7 +103,7 @@ The `AtscriptArbacUserProvider` fails loud if it sees more than one field with `
 If you do not use the moost ARBAC layer, extend `AoothUserCredentials` directly:
 
 ```ts:line-numbers
-import { AoothUserCredentials } from '@aoothjs/user/atscript-db/model.as'
+import { AoothUserCredentials } from '@aooth/user/atscript-db/model.as'
 
 @db.table 'users'
 export interface AppUser extends AoothUserCredentials {
@@ -126,8 +126,8 @@ Everything in `UserService`, `LoginWorkflow`, etc. still works — RBAC just is 
 For token storage, `AoothAuthCredential` is already complete — `@meta.id`, `@db.table 'aooth_credentials'`, `@db.depth.limit 0`. Import and use as-is:
 
 ```ts:line-numbers
-import { AoothAuthCredential } from '@aoothjs/auth/atscript-db/model.as'
-import { CredentialStoreAtscriptDb } from '@aoothjs/auth/atscript-db'
+import { AoothAuthCredential } from '@aooth/auth/atscript-db/model.as'
+import { CredentialStoreAtscriptDb } from '@aooth/auth/atscript-db'
 ```
 
 You normally do not extend it. The full schema is in [`auth-credential.as`](https://github.com/moostjs/aoothjs/blob/main/packages/auth/src/atscript-db/auth-credential.as).
@@ -140,7 +140,7 @@ You normally do not extend it. The full schema is in [`auth-credential.as`](http
 import { DbSpace } from '@atscript/db'
 import { syncSchema } from '@atscript/db/sync'
 import { BetterSqlite3Driver, SqliteAdapter } from '@atscript/db-sqlite'
-import { AoothAuthCredential } from '@aoothjs/auth/atscript-db/model.as'
+import { AoothAuthCredential } from '@aooth/auth/atscript-db/model.as'
 import { DemoUser } from './models/user.as'
 import { Tenant } from './models/tenant.as'
 import { Department } from './models/department.as'
@@ -174,8 +174,8 @@ Source: [`e2e-demo/src/db.ts`](https://github.com/moostjs/aoothjs/blob/main/pack
 The shipped adapters expect typed table handles. `AtscriptDbTable<T>` returns `Record<string, unknown>` from its structural reads, so wiring needs a single cast at the boundary:
 
 ```ts:line-numbers
-import { AuthUserTable, UsersStoreAtscriptDb } from '@aoothjs/user/atscript-db'
-import { CredentialStoreAtscriptDb } from '@aoothjs/auth/atscript-db'
+import { AuthUserTable, UsersStoreAtscriptDb } from '@aooth/user/atscript-db'
+import { CredentialStoreAtscriptDb } from '@aooth/auth/atscript-db'
 
 const userStore = new UsersStoreAtscriptDb<DemoUser>({
   table: tables.users as unknown as AuthUserTable<DemoUser>,
@@ -193,7 +193,7 @@ Source: [`e2e-demo/src/aooth.ts`](https://github.com/moostjs/aoothjs/blob/main/p
 `atscript.config.mts` registers the plugins responsible for compiling each namespace of annotations. The `arbacPlugin()` export registers `@arbac.role`, `@arbac.attribute`, and `@arbac.userId`. Without it, the compiler emits `unknownAnnotation` warnings (or errors, depending on your config) on every `@arbac.*` reference.
 
 ```ts:line-numbers
-import arbacPlugin from '@aoothjs/arbac-moost/plugin'
+import arbacPlugin from '@aooth/arbac-moost/plugin'
 import { defineConfig } from '@atscript/core'
 import dbPlugin from '@atscript/db/plugin'
 import wfPlugin from '@atscript/moost-wf/plugin'
@@ -210,7 +210,7 @@ export default defineConfig({
 Source: [`e2e-demo/atscript.config.mts`](https://github.com/moostjs/aoothjs/blob/main/packages/e2e-demo/atscript.config.mts).
 
 ::: tip Compile-time only
-`@aoothjs/arbac-moost/plugin` contributes no runtime code. Importing it from application code by mistake will fail — it only lives in `atscript.config.mts`. The runtime ARBAC machinery is at `@aoothjs/arbac-moost` (decorators, interceptor) and `@aoothjs/arbac-moost/atscript` (`AtscriptArbacUserProvider`).
+`@aooth/arbac-moost/plugin` contributes no runtime code. Importing it from application code by mistake will fail — it only lives in `atscript.config.mts`. The runtime ARBAC machinery is at `@aooth/arbac-moost` (decorators, interceptor) and `@aooth/arbac-moost/atscript` (`AtscriptArbacUserProvider`).
 :::
 
 ## Letting the provider read your model
@@ -224,8 +224,8 @@ Source: [`e2e-demo/atscript.config.mts`](https://github.com/moostjs/aoothjs/blob
 Apps wire the provider by subclassing and overriding `getUserId()`:
 
 ```ts:line-numbers
-import { AtscriptArbacUserProvider } from '@aoothjs/arbac-moost/atscript'
-import { useAuth } from '@aoothjs/auth-moost'
+import { AtscriptArbacUserProvider } from '@aooth/arbac-moost/atscript'
+import { useAuth } from '@aooth/auth-moost'
 import { Injectable } from 'moost'
 import { DemoUser } from './models/user.as'
 

@@ -1,4 +1,4 @@
-import type { TArbacRole } from "@aoothjs/arbac-core";
+import type { TArbacRole } from "@aooth/arbac-core";
 
 export interface TResourceActionMap {
   /** Map of resource string → Set of action strings */

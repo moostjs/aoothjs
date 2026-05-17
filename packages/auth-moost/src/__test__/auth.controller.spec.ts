@@ -1,5 +1,5 @@
-import type { TArbacRole } from "@aoothjs/arbac-moost";
-import { type AuthContext, CredentialStoreMemory } from "@aoothjs/auth";
+import type { TArbacRole } from "@aooth/arbac-moost";
+import { type AuthContext, CredentialStoreMemory } from "@aooth/auth";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import type { AuthLoginResponse } from "../auth.dto";

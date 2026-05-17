@@ -16,7 +16,7 @@ import {
 import * as indexModule from "./index";
 import * as atscriptModule from "./atscript/index";
 
-describe("@aoothjs/arbac-moost", () => {
+describe("@aooth/arbac-moost", () => {
   it("re-exports arbac-core engine", () => {
     expect(Arbac).toBeDefined();
     expect(typeof Arbac).toBe("function");

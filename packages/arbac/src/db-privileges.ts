@@ -1,4 +1,4 @@
-import type { TArbacRule } from "@aoothjs/arbac-core";
+import type { TArbacRule } from "@aooth/arbac-core";
 
 import type { TPrivilegeFunction } from "./define-role";
 

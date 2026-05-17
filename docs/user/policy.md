@@ -32,7 +32,7 @@ interface PasswordPolicyContext {
 `PasswordPolicy` is the compiled wrapper; you usually pass `PasswordPolicyDef` values into `UserServiceConfig.policies` and let the service compile them.
 
 ```ts
-import { PasswordPolicy } from "@aoothjs/user";
+import { PasswordPolicy } from "@aooth/user";
 const p = new PasswordPolicy({ rule: "v.length >= 8" });
 await p.evaluate("hello"); // → false
 await p.evaluate("hello-world"); // → true
@@ -105,7 +105,7 @@ import {
   ppHasNumber,
   ppHasSpecialChar,
   ppMaxRepeatedChars,
-} from "@aoothjs/user";
+} from "@aooth/user";
 
 const users = new UserService(store, {
   policies: [
@@ -167,7 +167,7 @@ Ship this to the client (REST endpoint, inline in HTML, embedded in a Moost work
 
 ```ts
 // client/policy.ts
-import type { TransferablePolicy } from "@aoothjs/user";
+import type { TransferablePolicy } from "@aooth/user";
 
 const compiled = policies.map((p) => ({
   ...p,
@@ -217,7 +217,7 @@ import {
   ppHasNumber,
   ppHasSpecialChar,
   ppMaxRepeatedChars,
-} from "@aoothjs/user";
+} from "@aooth/user";
 
 export const recommendedPolicies = [
   ppHasMinLength(12),

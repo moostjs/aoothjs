@@ -1,12 +1,12 @@
-# `@aoothjs/arbac` API Reference
+# `@aooth/arbac` API Reference
 
-Complete export reference for `@aoothjs/arbac`. See the [ARBAC Conceptual Guide](/arbac/) for narrative documentation.
+Complete export reference for `@aooth/arbac`. See the [ARBAC Conceptual Guide](/arbac/) for narrative documentation.
 
-`@aoothjs/arbac` re-exports the entire engine from [`@aoothjs/arbac-core`](./arbac-core) (`export * from '@aoothjs/arbac-core'`) and adds a fluent builder, privilege factories, scope-merge utilities, and codegen.
+`@aooth/arbac` re-exports the entire engine from [`@aooth/arbac-core`](./arbac-core) (`export * from '@aooth/arbac-core'`) and adds a fluent builder, privilege factories, scope-merge utilities, and codegen.
 
 ## Re-exports
 
-Everything from [`@aoothjs/arbac-core`](./arbac-core) — `Arbac`, `arbacPatternToRegex`, `TArbacEvalResult`, `TArbacRole`, `TArbacRule`, `TArbacCompiledRule`, `TArbacRoleForResource`.
+Everything from [`@aooth/arbac-core`](./arbac-core) — `Arbac`, `arbacPatternToRegex`, `TArbacEvalResult`, `TArbacRole`, `TArbacRule`, `TArbacCompiledRule`, `TArbacRoleForResource`.
 
 ## Functions — Builder
 

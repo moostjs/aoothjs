@@ -1,10 +1,10 @@
-# @aoothjs/user
+# @aooth/user
 
 ## Quick start
 
 ```atscript
 // src/app-user.as
-import { AoothUserCredentials } from '@aoothjs/user/atscript-db/model.as'
+import { AoothUserCredentials } from '@aooth/user/atscript-db/model.as'
 
 @db.table 'users'
 export interface AppUser extends AoothUserCredentials {
@@ -26,8 +26,8 @@ import {
   ppHasMinLength,
   ppHasUpperCase,
   ppHasNumber,
-} from "@aoothjs/user";
-import { type AuthUserTable, UsersStoreAtscriptDb } from "@aoothjs/user/atscript-db";
+} from "@aooth/user";
+import { type AuthUserTable, UsersStoreAtscriptDb } from "@aooth/user/atscript-db";
 import { AppUser } from "./app-user.as";
 
 const db = new DbSpace(() => new SqliteAdapter(new BetterSqlite3Driver("./app.db")));
@@ -71,7 +71,7 @@ try {
 | 7   | **`PasswordPolicy.transferable` is purely `typeof rule === 'string'`.** Function-based rules silently won't ship to the client via `getTransferablePolicies()`. Built-in factories (`ppHasMinLength`, ...) all emit string rules by design.                                                                       |
 | 8   | **`@db.patch.strategy 'merge'`** lives in the shipped `AoothUserCredentials` `.as` model on `password`, `account`, `mfa`, `trustedDevices?`. Re-declaring any of these sub-objects in an extending interface without the annotation flips that field to wholesale replace and breaks the partial-update contract. |
 | 9   | **`UserStoreMemory.findByUsername` returns a `structuredClone`** — mutating the returned object does not affect storage. Treat real-store callers the same way: don't assume references are persistent.                                                                                                           |
-| 10  | **`MFA_REQUIRED` is never thrown by `@aoothjs/user`.** The type is in the union for higher layers (`@aoothjs/auth`, `@aoothjs/auth-moost`) — `UserService.login` returns `{ mfaRequired: boolean }` and lets the caller decide.                                                                                   |
+| 10  | **`MFA_REQUIRED` is never thrown by `@aooth/user`.** The type is in the union for higher layers (`@aooth/auth`, `@aooth/auth-moost`) — `UserService.login` returns `{ mfaRequired: boolean }` and lets the caller decide.                                                                                         |
 | 11  | **`deviceTrust.secret` is mandatory for trusted-device APIs.** `issueTrustedDevice` / `verifyTrustedDevice` throw a plain `Error` (not `UserAuthError`) when the config key is unset. The HMAC binds `userId                                                                                                      | raw | ip`; verify must pass the same `ip` you issued with. |
 | 12  | **`verifyTotpCode` rejects mismatched-length submissions** before reaching `timingSafeEqual` (which requires equal-length buffers). It then walks the entire `[-window..window]` window unconditionally so an early match doesn't return faster than a late one. (`mfa/totp.ts:43`.)                              |
 
@@ -79,18 +79,18 @@ try {
 
 ```ts
 // Service + error
-import { UserService, UserAuthError } from "@aoothjs/user";
+import { UserService, UserAuthError } from "@aooth/user";
 
 // Stores
-import { UserStore, UserStoreMemory } from "@aoothjs/user";
+import { UserStore, UserStoreMemory } from "@aooth/user";
 import {
   UsersStoreAtscriptDb,
   type AuthUserTable,
   type UserCredentialsRow,
-} from "@aoothjs/user/atscript-db";
+} from "@aooth/user/atscript-db";
 
 // .as model (literal-file export — load via .as-aware bundler / `asc`)
-import { AoothUserCredentials } from "@aoothjs/user/atscript-db/model.as";
+import { AoothUserCredentials } from "@aooth/user/atscript-db/model.as";
 
 // Password
 import {
@@ -103,7 +103,7 @@ import {
   ppHasNumber,
   ppHasSpecialChar,
   ppMaxRepeatedChars,
-} from "@aoothjs/user";
+} from "@aooth/user";
 
 // MFA primitives
 import {
@@ -115,10 +115,10 @@ import {
   hashMfaCode,
   verifyMfaCode,
   generateBackupCodePlaintext,
-} from "@aoothjs/user";
+} from "@aooth/user";
 
 // Utilities
-import { maskEmail, maskPhone, maskMfaValue, setAtPath } from "@aoothjs/user";
+import { maskEmail, maskPhone, maskMfaValue, setAtPath } from "@aooth/user";
 
 // Types
 import type {
@@ -144,7 +144,7 @@ import type {
   MfaMethodInfo,
   TotpConfig,
   TrustedDeviceRecord,
-} from "@aoothjs/user";
+} from "@aooth/user";
 ```
 
 ## References — load only what's needed

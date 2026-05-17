@@ -6,11 +6,11 @@ import { type AuthUserTable, UsersStoreAtscriptDb } from "../index";
 import { MockTable } from "./mock-table";
 
 /**
- * Smoke spec for the `@aoothjs/user/atscript-db` subpath that does NOT depend
+ * Smoke spec for the `@aooth/user/atscript-db` subpath that does NOT depend
  * on `@atscript/db` or SQLite. Two things this proves that the SQLite-backed
  * spec cannot prove on its own:
  *
- *   1. The subpath import (`@aoothjs/user/atscript-db`) wires up a working
+ *   1. The subpath import (`@aooth/user/atscript-db`) wires up a working
  *      constructor — i.e. the package.json `exports` map is honored at the
  *      source layer the same way it is at the published layer.
  *   2. Conflict detection is structural (`code === "CONFLICT"`) not nominal

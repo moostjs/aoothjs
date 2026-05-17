@@ -19,9 +19,9 @@
   },
   "type": "module",
   "scripts": {
-    "ready": "vp fmt && vp lint && vp run test -r && vp run build -r",
-    "build": "vp run build -r",
-    "test": "vp run test -r",
+    "ready": "vp fmt && vp lint && vp run --filter './packages/*' test && vp run --filter './packages/*' build",
+    "build": "vp run --filter './packages/*' build",
+    "test": "vp run --filter './packages/*' test",
     "release": "node scripts/release.js patch",
     "release:minor": "node scripts/release.js minor",
     "release:major": "node scripts/release.js major",

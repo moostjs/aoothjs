@@ -13,13 +13,13 @@ export default defineConfig({
     // ESM-only for the atscript sub-export — it re-exports atscript-
     // generated classes and vite-plus does not propagate user plugins into
     // the cjs-dts emit pass. Mirrors the pattern in `@atscript/moost-wf`
-    // and `@aoothjs/arbac-moost`.
+    // and `@aooth/arbac-moost`.
     format: ["esm"],
     plugins: [atscriptRolldown()],
     deps: {
       neverBundle: [
-        "@aoothjs/auth",
-        "@aoothjs/user",
+        "@aooth/auth",
+        "@aooth/user",
         "@atscript/moost-wf",
         "@atscript/typescript",
         "moost",

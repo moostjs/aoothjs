@@ -1,6 +1,6 @@
 # ARBAC
 
-This section answers: _what does Aooth's authorization layer actually do, and which package gives me which piece of it?_ It covers `@aoothjs/arbac-core` (the zero-dependency engine) and `@aoothjs/arbac` (the batteries-included layer of builders, privilege factories, scope mergers, and codegen).
+This section answers: _what does Aooth's authorization layer actually do, and which package gives me which piece of it?_ It covers `@aooth/arbac-core` (the zero-dependency engine) and `@aooth/arbac` (the batteries-included layer of builders, privilege factories, scope mergers, and codegen).
 
 ## What ARBAC is
 
@@ -16,13 +16,13 @@ Together those three turn classic RBAC ("can Alice read articles?") into ARBAC (
 
 Two packages, one engine. The split is deliberate — the engine is tiny and has no dependencies, so you can embed it anywhere; the second package is where the ergonomics live.
 
-| Package                                                                                   | Role                                                                                                                                                                                                                         |
-| ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`@aoothjs/arbac-core`](https://github.com/moostjs/aoothjs/tree/main/packages/arbac-core) | The evaluation engine. `class Arbac`, `arbacPatternToRegex`, and the rule/role/eval-result types. Zero dependencies.                                                                                                         |
-| [`@aoothjs/arbac`](https://github.com/moostjs/aoothjs/tree/main/packages/arbac)           | Re-exports everything from `arbac-core`, then layers on `defineRole()`, `definePrivilege()`, the `allowTable*` family, scope-merge utilities, and the `aoothjs-arbac-codegen` CLI. Single dependency: `@aoothjs/arbac-core`. |
+| Package                                                                                 | Role                                                                                                                                                                                                                       |
+| --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`@aooth/arbac-core`](https://github.com/moostjs/aoothjs/tree/main/packages/arbac-core) | The evaluation engine. `class Arbac`, `arbacPatternToRegex`, and the rule/role/eval-result types. Zero dependencies.                                                                                                       |
+| [`@aooth/arbac`](https://github.com/moostjs/aoothjs/tree/main/packages/arbac)           | Re-exports everything from `arbac-core`, then layers on `defineRole()`, `definePrivilege()`, the `allowTable*` family, scope-merge utilities, and the `aoothjs-arbac-codegen` CLI. Single dependency: `@aooth/arbac-core`. |
 
 ::: tip In practice
-Almost every consumer installs `@aoothjs/arbac` only — it re-exports the core API, so you never need to import from `arbac-core` directly. The split exists so the engine stays embeddable.
+Almost every consumer installs `@aooth/arbac` only — it re-exports the core API, so you never need to import from `arbac-core` directly. The split exists so the engine stays embeddable.
 :::
 
 ## Where to start
@@ -38,7 +38,7 @@ Almost every consumer installs `@aoothjs/arbac` only — it re-exports the core 
 
 ## Where the framework glue lives
 
-`@aoothjs/arbac` is framework-agnostic. The Moost-specific layer — `@ArbacAuthorize`, the `useArbac()` composable, role-aware `AsDbController`, and the `ArbacDbScope` shape that ties projections + filters + Uniquery controls together — lives in `@aoothjs/arbac-moost`. See [Moost Integration → ARBAC Authorize](/moost/arbac-authorize).
+`@aooth/arbac` is framework-agnostic. The Moost-specific layer — `@ArbacAuthorize`, the `useArbac()` composable, role-aware `AsDbController`, and the `ArbacDbScope` shape that ties projections + filters + Uniquery controls together — lives in `@aooth/arbac-moost`. See [Moost Integration → ARBAC Authorize](/moost/arbac-authorize).
 
 This section stays in the framework-agnostic layer. Everything you read here works the same whether you embed the engine in an Express app, a CLI, or a Moost project.
 
@@ -46,7 +46,7 @@ This section stays in the framework-agnostic layer. Everything you read here wor
 
 ```ts
 // minimal
-import { Arbac, defineRole } from "@aoothjs/arbac";
+import { Arbac, defineRole } from "@aooth/arbac";
 
 const editor = defineRole<{ dept: string }, { dept: string }>()
   .id("editor")

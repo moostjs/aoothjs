@@ -1,22 +1,22 @@
 # Password Reset
 
-`@aoothjs/auth` ships the **primitives** for password reset. The full workflow — the HTTP routes, the rate limits, the audit trail, the multi-step form, the freshly-logged-in countdown — lives in [`@aoothjs/auth-moost`](../moost/workflows). This page covers what you'd compose if you were building it yourself.
+`@aooth/auth` ships the **primitives** for password reset. The full workflow — the HTTP routes, the rate limits, the audit trail, the multi-step form, the freshly-logged-in countdown — lives in [`@aooth/auth-moost`](../moost/workflows). This page covers what you'd compose if you were building it yourself.
 
-There are four steps, and each maps to a primitive in this package or in `@aoothjs/user`.
+There are four steps, and each maps to a primitive in this package or in `@aooth/user`.
 
 ## The four-step recipe
 
-| Step            | Primitive                                                                                | Package                           |
-| --------------- | ---------------------------------------------------------------------------------------- | --------------------------------- |
-| 1. Token        | `generateMagicLinkToken()`                                                               | `@aoothjs/auth`                   |
-| 2. Storage      | `CredentialStore.persist(state, ttl)` + `consume(token)`                                 | `@aoothjs/auth`                   |
-| 3. Delivery     | `EmailSender.send({ kind: 'recovery.magicLink', ... })`                                  | `@aoothjs/auth` (interface)       |
-| 4. Verification | `store.consume(token)` → `users.changePassword` → `auth.revokeAllForUser` → `auth.issue` | `@aoothjs/auth` + `@aoothjs/user` |
+| Step            | Primitive                                                                                | Package                       |
+| --------------- | ---------------------------------------------------------------------------------------- | ----------------------------- |
+| 1. Token        | `generateMagicLinkToken()`                                                               | `@aooth/auth`                 |
+| 2. Storage      | `CredentialStore.persist(state, ttl)` + `consume(token)`                                 | `@aooth/auth`                 |
+| 3. Delivery     | `EmailSender.send({ kind: 'recovery.magicLink', ... })`                                  | `@aooth/auth` (interface)     |
+| 4. Verification | `store.consume(token)` → `users.changePassword` → `auth.revokeAllForUser` → `auth.issue` | `@aooth/auth` + `@aooth/user` |
 
 ### Step 1 — generate the token
 
 ```ts
-import { generateMagicLinkToken } from "@aoothjs/auth";
+import { generateMagicLinkToken } from "@aooth/auth";
 
 const token = generateMagicLinkToken(); // 43 chars, base64url, URL-safe
 ```
@@ -101,14 +101,14 @@ import {
   generateMagicLinkToken,
   type EmailSender,
   type BuildMagicLinkUrl,
-} from "@aoothjs/auth";
+} from "@aooth/auth";
 
 declare const users: {
   findUserIdByEmail(email: string): Promise<string | null>;
   changePassword(userId: string, newPassword: string): Promise<void>;
 };
 declare const emailSender: EmailSender;
-declare const table: import("@aoothjs/auth/atscript-db").AuthCredentialTable;
+declare const table: import("@aooth/auth/atscript-db").AuthCredentialTable;
 
 // Bind the store separately — `AuthCredential.store` is `private readonly`.
 const store = new CredentialStoreAtscriptDb({ table });
@@ -197,9 +197,9 @@ if (!state || state.kind !== "magic.recovery") throw new HttpError(401);
 if (state.claims?.tenantId !== currentTenantId) throw new HttpError(401);
 ```
 
-`@aoothjs/auth-moost` does this for you via the `RecoveryWorkflow` guard chain. Rolling your own — remember to check it explicitly.
+`@aooth/auth-moost` does this for you via the `RecoveryWorkflow` guard chain. Rolling your own — remember to check it explicitly.
 
-## What `@aoothjs/auth-moost` adds on top
+## What `@aooth/auth-moost` adds on top
 
 If you're using moost, the [`RecoveryWorkflow`](../moost/workflows) wraps these primitives with:
 

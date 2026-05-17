@@ -1,6 +1,6 @@
 # Magic links
 
-The auth package ships only the primitives — token generation + persistence contract + transport interface. The workflow that wires email delivery and resume routing lives in `@aoothjs/auth-moost` (see moost reference ([moost.md](./moost.md))); this page documents the standalone usage and the recipe both workflows follow.
+The auth package ships only the primitives — token generation + persistence contract + transport interface. The workflow that wires email delivery and resume routing lives in `@aooth/auth-moost` (see moost reference ([moost.md](./moost.md))); this page documents the standalone usage and the recipe both workflows follow.
 
 ## Contents
 
@@ -15,7 +15,7 @@ The auth package ships only the primitives — token generation + persistence co
 ## Token format
 
 ```ts
-import { generateMagicLinkToken } from "@aoothjs/auth";
+import { generateMagicLinkToken } from "@aooth/auth";
 
 const token = generateMagicLinkToken();
 // → 43-char base64url string, e.g. 'xJ3p...A2k'
@@ -33,7 +33,7 @@ The token is the **raw bearer credential** — store its hash, not the plain val
 Magic links reuse the same `CredentialStore` machinery as access / refresh tokens. The workflow `persist`s a `CredentialState` with a short TTL; the resume handler `consume`s it.
 
 ```ts
-import { AuthCredential, CredentialStoreMemory, generateMagicLinkToken } from "@aoothjs/auth";
+import { AuthCredential, CredentialStoreMemory, generateMagicLinkToken } from "@aooth/auth";
 
 const store = new CredentialStoreMemory();
 const MAGIC_LINK_TTL = 15 * 60 * 1000; // 15min
@@ -77,7 +77,7 @@ async function consumeRecoveryLink(token: string) {
 }
 ```
 
-The shipped workflows in `@aoothjs/auth-moost` use this exact pattern with `kind: 'access'` + a `metadata.label` discriminator (`'recovery.magicLink'`, `'invite.magicLink'`, etc.).
+The shipped workflows in `@aooth/auth-moost` use this exact pattern with `kind: 'access'` + a `metadata.label` discriminator (`'recovery.magicLink'`, `'invite.magicLink'`, etc.).
 
 ## Single-use guarantee
 
@@ -107,8 +107,8 @@ new AuthError(
 Wire `DenylistStoreMemory` for single-process apps; `DenylistStoreRedis` for multi-pod. Both shipped:
 
 ```ts
-import { CredentialStoreJwt, DenylistStoreMemory } from "@aoothjs/auth";
-import { DenylistStoreRedis } from "@aoothjs/auth/redis";
+import { CredentialStoreJwt, DenylistStoreMemory } from "@aooth/auth";
+import { DenylistStoreRedis } from "@aooth/auth/redis";
 
 const store = new CredentialStoreJwt({
   algorithm: "HS256",
@@ -126,7 +126,7 @@ The package does not assume your domain, scheme, or route shape. Consumers suppl
 ```ts
 type BuildMagicLinkUrl = (kind: AuthEmailKind, token: string) => string;
 
-// Convention used by `@aoothjs/auth-moost` + `@atscript/vue-wf`:
+// Convention used by `@aooth/auth-moost` + `@atscript/vue-wf`:
 const buildMagicLinkUrl: BuildMagicLinkUrl = (kind, token) => {
   switch (kind) {
     case "recovery.magicLink":
@@ -146,8 +146,8 @@ Passing the token as `?wfs=<token>` lets a frontend mount `<AsWfForm initialToke
 End-to-end shape — translate to your workflow framework (`@moostjs/event-wf`, plain HTTP routes, REST controller).
 
 ```ts
-import { AuthCredential, CredentialStoreAtscriptDb, generateMagicLinkToken } from "@aoothjs/auth";
-import type { EmailSender, BuildMagicLinkUrl } from "@aoothjs/auth";
+import { AuthCredential, CredentialStoreAtscriptDb, generateMagicLinkToken } from "@aooth/auth";
+import type { EmailSender, BuildMagicLinkUrl } from "@aooth/auth";
 
 const auth = new AuthCredential({ store, accessTtl: 60 * 60 * 1000 });
 

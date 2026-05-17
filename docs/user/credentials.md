@@ -124,7 +124,7 @@ See [Stores](./stores) for the full contract.
 `UserService<T>` and `UserStore<T>` both accept a generic that augments the base type. Pass anything that's safe to merge into `UserCredentials`.
 
 ```ts
-import { UserService, UserStoreMemory } from "@aoothjs/user";
+import { UserService, UserStoreMemory } from "@aooth/user";
 
 interface AppUser {
   id: string;
@@ -152,7 +152,7 @@ When using `@atscript/db`, define the extension in `.as` so it shows up at the s
 
 ```ts
 // app.as
-import { AoothUserCredentials } from '@aoothjs/user/atscript-db/model.as'
+import { AoothUserCredentials } from '@aooth/user/atscript-db/model.as'
 
 @db.table 'users'
 export interface AppUser extends AoothUserCredentials {

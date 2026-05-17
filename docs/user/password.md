@@ -7,7 +7,7 @@ Source: [`packages/user/src/password/hasher.ts`](https://github.com/moostjs/aoot
 ## API
 
 ```ts
-import { PasswordHasher } from "@aoothjs/user"
+import { PasswordHasher } from "@aooth/user"
 
 new PasswordHasher(config?: PasswordConfig)
 
@@ -36,7 +36,7 @@ Hashes carry their scrypt parameters inline, so raising `scryptN` in config tomo
 ## Hash + verify example
 
 ```ts
-import { PasswordHasher } from "@aoothjs/user";
+import { PasswordHasher } from "@aooth/user";
 
 const hasher = new PasswordHasher({ pepper: process.env.PEPPER });
 
@@ -124,7 +124,7 @@ Because the hash string carries N/r/p/l, **existing hashes still verify**. They 
 When `changePassword` (or `setPassword`) fails the policy check, it throws `UserAuthError` with `type: 'POLICY_VIOLATION'`. The `details.errors: string[]` field carries one human-readable message per failing rule, taken from each policy's `errorMessage` (or `description` as fallback).
 
 ```ts
-import { UserAuthError } from "@aoothjs/user";
+import { UserAuthError } from "@aooth/user";
 
 try {
   await users.changePassword(username, current, next);

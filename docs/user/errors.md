@@ -1,11 +1,11 @@
 # Errors
 
-Every failure path in `@aoothjs/user` funnels through a single error class: `UserAuthError`. This page is the exhaustive reference for the discriminant `type` field, the `details` payload shape per type, and the HTTP status mapping you'd use in a controller.
+Every failure path in `@aooth/user` funnels through a single error class: `UserAuthError`. This page is the exhaustive reference for the discriminant `type` field, the `details` payload shape per type, and the HTTP status mapping you'd use in a controller.
 
 ## The class
 
 ```ts
-import { UserAuthError } from "@aoothjs/user"
+import { UserAuthError } from "@aooth/user"
 
 class UserAuthError extends Error {
   readonly name = "UserAuthError"
@@ -67,10 +67,10 @@ try {
 | `POLICY_VIOLATION`    | failing policy in `changePassword` / `setPassword`                                                                                                                                             | `{ policies: { description: string, passed: boolean }[] }` (failure reasons are joined into the error `message`) | `422 Unprocessable Entity`             |
 | `PASSWORDS_MISMATCH`  | `repeatPassword !== newPassword` in `changePassword`                                                                                                                                           | —                                                                                                                | `400 Bad Request`                      |
 | `PASSWORD_IN_HISTORY` | new password matches current hash or any `password.history[]` entry                                                                                                                            | —                                                                                                                | `400 Bad Request`                      |
-| `MFA_REQUIRED`        | **never thrown by this package**; reserved for higher layers (`@aoothjs/auth`)                                                                                                                 | —                                                                                                                | `401 Unauthorized` with challenge body |
+| `MFA_REQUIRED`        | **never thrown by this package**; reserved for higher layers (`@aooth/auth`)                                                                                                                   | —                                                                                                                | `401 Unauthorized` with challenge body |
 
 ::: warning `MFA_REQUIRED` is a contract, not a throw site
-`@aoothjs/user` signals "MFA is needed" via the `mfaRequired: true` field on `LoginResult` — not by throwing. The `MFA_REQUIRED` enum member exists so higher layers (the auth orchestrator, controllers) can throw it when **they** decide the session must complete MFA. Don't expect this package to emit it.
+`@aooth/user` signals "MFA is needed" via the `mfaRequired: true` field on `LoginResult` — not by throwing. The `MFA_REQUIRED` enum member exists so higher layers (the auth orchestrator, controllers) can throw it when **they** decide the session must complete MFA. Don't expect this package to emit it.
 :::
 
 ## Type details
@@ -190,7 +190,7 @@ Triggered when the new password matches the current hash or any entry in `passwo
 A reasonable controller-side helper:
 
 ```ts
-import { UserAuthError } from "@aoothjs/user";
+import { UserAuthError } from "@aooth/user";
 
 const STATUS: Record<UserAuthErrorType, number> = {
   NOT_FOUND: 404,
@@ -211,11 +211,11 @@ export function httpStatusFor(err: UserAuthError): number {
 }
 ```
 
-`@aoothjs/auth-moost` ships a built-in mapper for this — see the moost integration docs.
+`@aooth/auth-moost` ships a built-in mapper for this — see the moost integration docs.
 
 ## Detecting `UserAuthError` across module copies
 
-`instanceof UserAuthError` works in the common case. If you have multiple resolved copies of `@aoothjs/user` (pnpm workspaces with hoisting quirks, monorepo edge cases), fall back to the `name` field:
+`instanceof UserAuthError` works in the common case. If you have multiple resolved copies of `@aooth/user` (pnpm workspaces with hoisting quirks, monorepo edge cases), fall back to the `name` field:
 
 ```ts
 function isUserAuthError(e: unknown): e is UserAuthError {

@@ -63,7 +63,7 @@ arbac-moost does not apply the joined-resource projection mask to `$with` expans
 Apps can **declaration-merge** custom fields into `ArbacDbScope` — for example, to add a `restrictRows: number` cap or an `auditTag: string` you read in a custom subclass.
 
 ```ts
-declare module "@aoothjs/arbac-moost" {
+declare module "@aooth/arbac-moost" {
   interface ArbacDbScope {
     auditTag?: string;
     restrictRows?: number;
@@ -109,7 +109,7 @@ Read-only mirror of `AsArbacDbController<T>`. Wires only the read hooks (`transf
 The most common subclass overrides nothing and just plugs in a table — the table is bound by the `@TableController(table)` decorator from `@atscript/moost-db`, **not** by passing it through `super(...)`:
 
 ```ts
-import { AsArbacDbController, ArbacResource } from "@aoothjs/arbac-moost";
+import { AsArbacDbController, ArbacResource } from "@aooth/arbac-moost";
 import { TableController } from "@atscript/moost-db";
 import type { AtscriptDbTable } from "@atscript/db";
 import { Article } from "./article.as";
@@ -160,8 +160,8 @@ class ArticlesController extends AsArbacDbController<Article> {
 A typical role tuned for `AsArbacDbController`:
 
 ```ts
-import { allowTableRead, allowTableWrite, defineRole } from "@aoothjs/arbac";
-import type { ArbacDbScope } from "@aoothjs/arbac-moost";
+import { allowTableRead, allowTableWrite, defineRole } from "@aooth/arbac";
+import type { ArbacDbScope } from "@aooth/arbac-moost";
 import { Article } from "./article.as";
 
 type UserAttrs = { tenantId: string; id: string };
@@ -173,7 +173,7 @@ const editor = defineRole<UserAttrs>()
       scope: (attrs) => ({ filter: { tenantId: attrs.tenantId } }),
     }),
     allowTableWrite<UserAttrs, ArbacDbScope<typeof Article>>("articles", {
-      // ... see @aoothjs/arbac for the full allowTable* surface
+      // ... see @aooth/arbac for the full allowTable* surface
     }),
   )
   .deny("articles", "delete")

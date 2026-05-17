@@ -3,8 +3,8 @@ import {
   restrictProjection,
   unionControlsPolicy,
   unionProjections,
-} from "@aoothjs/arbac";
-import type { TProjection } from "@aoothjs/arbac";
+} from "@aooth/arbac";
+import type { TProjection } from "@aooth/arbac";
 
 import { useArbac } from "../arbac.composables";
 import { enforceControlsPolicy } from "./as-arbac-db-controller";

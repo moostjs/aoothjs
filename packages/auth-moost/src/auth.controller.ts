@@ -1,5 +1,5 @@
-import { ArbacResource } from "@aoothjs/arbac-moost";
-import { type AuthContext, AuthCredential, AuthError, type IssueResult } from "@aoothjs/auth";
+import { ArbacResource } from "@aooth/arbac-moost";
+import { type AuthContext, AuthCredential, AuthError, type IssueResult } from "@aooth/auth";
 import { current } from "@wooksjs/event-core";
 import { Body, Get, HttpError, Post } from "@moostjs/event-http";
 import { useCookies } from "@wooksjs/event-http";

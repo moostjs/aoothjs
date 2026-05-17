@@ -13,7 +13,7 @@ The engine returns `scopes: TScope[]` — a UNION the caller has to fold. Three 
 
 ## The `ArbacDbScope` shape
 
-`ArbacDbScope` is the conventional scope shape consumed by `AsArbacDbController` (which lives in `@aoothjs/arbac-moost`, not here). The merge utilities in this package operate on its fields:
+`ArbacDbScope` is the conventional scope shape consumed by `AsArbacDbController` (which lives in `@aooth/arbac-moost`, not here). The merge utilities in this package operate on its fields:
 
 ```ts
 type ArbacDbScope = {
@@ -27,7 +27,7 @@ type ArbacDbScope = {
 type ControlGate = boolean | readonly string[];
 ```
 
-`@aoothjs/arbac` only exports the merge utilities; `ArbacDbScope` itself is owned by `@aoothjs/arbac-moost`. If you're writing roles that target the AsDb controller, type `TScope` as `ArbacDbScope`.
+`@aooth/arbac` only exports the merge utilities; `ArbacDbScope` itself is owned by `@aooth/arbac-moost`. If you're writing roles that target the AsDb controller, type `TScope` as `ArbacDbScope`.
 
 ## `mergeScopeFilters` — filter union
 

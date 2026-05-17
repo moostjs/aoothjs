@@ -1,8 +1,8 @@
 # Magic Links
 
-A magic link is a single-use URL that authenticates the holder. `@aoothjs/auth` ships the token generator and a `BuildMagicLinkUrl` type contract; the _storage_ of the token reuses the same `CredentialStore` you already configured.
+A magic link is a single-use URL that authenticates the holder. `@aooth/auth` ships the token generator and a `BuildMagicLinkUrl` type contract; the _storage_ of the token reuses the same `CredentialStore` you already configured.
 
-This is a primitives-only page. The full login / invite / recovery workflows that consume magic links live in [`@aoothjs/auth-moost`](../moost/workflows) — this page covers what you'd build yourself.
+This is a primitives-only page. The full login / invite / recovery workflows that consume magic links live in [`@aooth/auth-moost`](../moost/workflows) — this page covers what you'd build yourself.
 
 ## The token
 
@@ -15,7 +15,7 @@ function generateMagicLinkToken(): string;
 - **Alphabet** — `[A-Za-z0-9_-]`. URL-safe; no `+`, `/`, or `=` so the token can drop into a `?token=...` query string without escaping.
 
 ```ts
-import { generateMagicLinkToken } from "@aoothjs/auth";
+import { generateMagicLinkToken } from "@aooth/auth";
 
 const token = generateMagicLinkToken();
 // 'aBcD1234...43_chars_total...'
@@ -94,7 +94,7 @@ if (state.kind && state.kind !== "access") throw new HttpError(401);
 ### Issue: persist + email
 
 ```ts
-import { generateMagicLinkToken } from "@aoothjs/auth";
+import { generateMagicLinkToken } from "@aooth/auth";
 
 async function sendRecoveryMagicLink(userId: string, email: string) {
   const token = generateMagicLinkToken();
@@ -149,7 +149,7 @@ Use `retrieve` only when you intend the token to remain valid. For magic links �
 `store.consume` requires the store to be able to _mark_ a token as used. Stateless stores (`Jwt`, `Encapsulated`) can't — the token is held by the client, not the server. They simulate `consume` by adding the token's `jti` to a `DenylistStore`. Without one, `consume` throws `STATELESS_OPERATION_UNSUPPORTED`.
 
 ```ts
-import { CredentialStoreJwt, DenylistStoreRedis } from "@aoothjs/auth";
+import { CredentialStoreJwt, DenylistStoreRedis } from "@aooth/auth";
 
 const store = new CredentialStoreJwt({
   secret: process.env.JWT_SECRET!,
@@ -170,7 +170,7 @@ import {
   generateMagicLinkToken,
   type BuildMagicLinkUrl,
   type EmailSender,
-} from "@aoothjs/auth";
+} from "@aooth/auth";
 
 // Bind the store separately — `AuthCredential.store` is `private readonly` and
 // is not accessible from outside the class. Keep your own reference for the
@@ -186,7 +186,7 @@ const buildMagicLinkUrl: BuildMagicLinkUrl = (kind, token) =>
 
 declare const emailSender: EmailSender;
 declare const users: {
-  /* @aoothjs/user UserService */
+  /* @aooth/user UserService */
 };
 
 // --- Step 1: user submits "I forgot my password" ---

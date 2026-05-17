@@ -1,8 +1,8 @@
 # Core Engine
 
-This page answers: _what does the `Arbac` class actually expose, what does `evaluate()` do step by step, and what are the type shapes you can rely on?_ It documents [`@aoothjs/arbac-core`](https://github.com/moostjs/aoothjs/tree/main/packages/arbac-core) — the zero-dependency engine.
+This page answers: _what does the `Arbac` class actually expose, what does `evaluate()` do step by step, and what are the type shapes you can rely on?_ It documents [`@aooth/arbac-core`](https://github.com/moostjs/aoothjs/tree/main/packages/arbac-core) — the zero-dependency engine.
 
-`@aoothjs/arbac` re-exports everything here verbatim, so you can import `Arbac` from either package.
+`@aooth/arbac` re-exports everything here verbatim, so you can import `Arbac` from either package.
 
 ## `class Arbac<TUserAttrs, TScope>`
 
@@ -34,7 +34,7 @@ Two generics:
 `new Arbac()` — takes no arguments. There is nothing to configure.
 
 ```ts
-import { Arbac } from "@aoothjs/arbac";
+import { Arbac } from "@aooth/arbac";
 
 type Attrs = { dept: string };
 type Scope = { dept: string };
@@ -191,7 +191,7 @@ function arbacPatternToRegex(input: string): RegExp;
 The wildcard matcher exposed for inspection or reuse. `*` matches a single dot-separated segment; `**` matches across segments. The `.` separator is hard-coded.
 
 ```ts
-import { arbacPatternToRegex } from "@aoothjs/arbac";
+import { arbacPatternToRegex } from "@aooth/arbac";
 
 arbacPatternToRegex("com.resource.db.*");
 // → /^com\.resource\.db\.[^.]*$/

@@ -4,7 +4,7 @@
   </a>
 </p>
 
-<h1 align="center">@aoothjs/user</h1>
+<h1 align="center">@aooth/user</h1>
 
 <p align="center">
   User credential primitives for aoothjs — password hashing, MFA (TOTP, codes, backup codes), lockout, policy engine, and pluggable storage.
@@ -19,7 +19,7 @@
 ## Install
 
 ```bash
-pnpm add @aoothjs/user
+pnpm add @aooth/user
 ```
 
 ## Documentation

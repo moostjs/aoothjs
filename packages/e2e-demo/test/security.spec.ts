@@ -1,5 +1,5 @@
-import { Arbac } from "@aoothjs/arbac-core";
-import { generateTotpCode } from "@aoothjs/user";
+import { Arbac } from "@aooth/arbac-core";
+import { generateTotpCode } from "@aooth/user";
 import { createHmac } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 

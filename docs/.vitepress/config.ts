@@ -84,12 +84,12 @@ const apiSidebar = [
   {
     text: "API Reference",
     items: [
-      { text: "@aoothjs/user", link: "/api/user" },
-      { text: "@aoothjs/arbac-core", link: "/api/arbac-core" },
-      { text: "@aoothjs/arbac", link: "/api/arbac" },
-      { text: "@aoothjs/auth", link: "/api/auth" },
-      { text: "@aoothjs/arbac-moost", link: "/api/arbac-moost" },
-      { text: "@aoothjs/auth-moost", link: "/api/auth-moost" },
+      { text: "@aooth/user", link: "/api/user" },
+      { text: "@aooth/arbac-core", link: "/api/arbac-core" },
+      { text: "@aooth/arbac", link: "/api/arbac" },
+      { text: "@aooth/auth", link: "/api/auth" },
+      { text: "@aooth/arbac-moost", link: "/api/arbac-moost" },
+      { text: "@aooth/auth-moost", link: "/api/auth-moost" },
     ],
   },
 ];
