@@ -5,7 +5,7 @@
       "source": "moostjs/atscript",
       "sourceType": "github",
       "skillPath": "skills/atscript/SKILL.md",
-      "computedHash": "153fe7576f73180006c37ede529f1b229d55d2d8f3436dd288b86c81750e4ab9"
+      "computedHash": "65f8f1411f956c881a46945f351255b974eeef10bc506e86648371360374a1db"
     },
     "atscript-db": {
       "source": "moostjs/atscript-db",
@@ -17,19 +17,19 @@
       "source": "moostjs/atscript-ui",
       "sourceType": "github",
       "skillPath": "skills/atscript-ui/SKILL.md",
-      "computedHash": "07f7372a2d066d00875eccf8edd1487ece34bf53b437883c8df9765a8fc9625a"
+      "computedHash": "59707b867b7520c2d08dc2320d78aa0d186c6d14999c7b55470c488f0aee181d"
     },
     "atscript-ui-forms": {
       "source": "moostjs/atscript-ui",
       "sourceType": "github",
       "skillPath": "skills/atscript-ui-forms/SKILL.md",
-      "computedHash": "7e71a3ef9378e7b330c470baf3cc9a4732fb566a3ce979c2942806706e6cdc9d"
+      "computedHash": "3dd139da704720850e9f6325a93ad942cfbbee2cec1b9690324d8c3b7737306d"
     },
     "atscript-ui-styles": {
       "source": "moostjs/atscript-ui",
       "sourceType": "github",
       "skillPath": "skills/atscript-ui-styles/SKILL.md",
-      "computedHash": "2b3e0049c589eb3c6ec54998423c9b847bbb9b87fc56efd7430da879f72a48c5"
+      "computedHash": "f8d301c3ec8b0411a743d5bf20f507e7e451978023709132a95afcfc42626d92"
     },
     "atscript-ui-tables": {
       "source": "moostjs/atscript-ui",
@@ -41,7 +41,7 @@
       "source": "moostjs/atscript-ui",
       "sourceType": "github",
       "skillPath": "skills/atscript-ui-wf/SKILL.md",
-      "computedHash": "cc284f4c3fb156e41e4cc711b415d5b64a4615d2ab88484201e6d206ad0c7d34"
+      "computedHash": "73756ee626cc201205bdcf52ab25bba920ee7af49d9272fa8b763c8ab4d431e7"
     },
     "frontend-design": {
       "source": "anthropics/skills",

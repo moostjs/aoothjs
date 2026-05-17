@@ -42,49 +42,22 @@ interface ArbacBindings {
 }
 
 /**
- * Per-event memoization of {@link useArbac} bindings.
- *
- * Keyed on the `EventContext` object itself (NOT a wook slot). This is the
- * critical distinction vs. `defineWook`: a `defineWook` cache slot lives in
- * the slot-id space and `ctx.get(slot)` traverses the parent chain — so a WF
- * event created via `WfTriggerProvider.handle()` (whose `parent` is the
- * originating HTTP `EventContext`) would resolve the HTTP request's bindings
- * (resource + action + isPublic from `/auth/trigger`) and silently bypass the
- * workflow controller's `@ArbacResource`. A WeakMap keyed on the child `ctx`
- * object never sees the parent's bindings because the child and parent are
- * distinct object identities. See `arbac.decorator.spec.ts` "evaluates arbac
- * on non-HTTP event kinds" for the regression test that gated the de-cache.
- *
- * `setControllerContext` is invoked exactly once per event dispatch in moost
- * (`defineMoostEventHandler` and the controller-binding startup path), so the
- * `(controller, method)` tuple feeding `resource`/`action`/`isPublic` is
- * stable for the lifetime of one `ctx` — making the cached bindings safe to
- * re-hand-out for every `useArbac()` call within the same event.
- */
-const bindingsCache = new WeakMap<EventContext, ArbacBindings>();
-
-/**
  * Composable for ARBAC utilities within Moost handlers and interceptors.
  *
  * Exposes scope read/write, lazy `evaluate`, and the resolved
  * resource/action/public flags derived from the current controller +
  * method metadata.
  *
- * Bindings are memoized per `EventContext` via a WeakMap keyed on the ctx
- * object itself — see {@link bindingsCache} for the rationale and the
- * parent-chain leak this side-steps. Read/write scope state still goes
- * through `arbacScopesKey` directly so it lives on the per-event slot.
+ * Resource/action/isPublic are recomputed on every call because WF events
+ * dispatch multiple step handlers under one `EventContext` — each step
+ * mutates the controller-context method via `setControllerContext`, so any
+ * per-ctx memo would lock in the first dispatched method's metadata (e.g.
+ * the `@Public()` WF_FLOW body) and incorrectly bypass ARBAC on the gated
+ * step handlers. Scope read/write goes through `arbacScopesKey` directly
+ * so it still lives on the per-event slot.
  */
-export const useArbac = (ctx?: EventContext): ArbacBindings => {
-  const _ctx = ctx ?? current();
-  let bindings = bindingsCache.get(_ctx);
-  if (bindings) return bindings;
-  bindings = _useArbacFactory(_ctx);
-  bindingsCache.set(_ctx, bindings);
-  return bindings;
-};
-
-const _useArbacFactory = (ctx: EventContext): ArbacBindings => {
+export const useArbac = (_ctx?: EventContext): ArbacBindings => {
+  const ctx = _ctx ?? current();
   const cc = useControllerContext(ctx);
 
   const getScopes = <TScope extends object>(): TScope[] | undefined =>
