@@ -113,7 +113,7 @@ describe("LoginWorkflow alt-actions — pincode-check-login", () => {
     const app = await prepareWfApp();
     const { wfs, pin } = await driveToPincodeCheck(app);
     const r = await app.trigger({ wfs, input: { code: pin } });
-    expect(r.body?.userId).toBe("alice");
+    expect((r.body?.data as Record<string, unknown>)?.userId).toBe("alice");
   });
 
   it("invalid code → form error 'Invalid code'", async () => {
@@ -217,7 +217,37 @@ describe("LoginWorkflow alt-actions — create-password-form", () => {
       wfs: cred.body?.wfs as string,
       input: { action: "logout" },
     });
-    expect(r.body).toMatchObject({ aborted: true, reason: "logout" });
+    expect(r.body).toMatchObject({ finished: true, aborted: true, reason: "logout" });
+  });
+
+  it("logout abort emits WfFinished envelope with aborted+reason:logout + info message", async () => {
+    // Pins the WfFinished migration: abort callsites must carry the structured
+    // `message` envelope (level + text) so the UI can render a banner instead
+    // of stalling silently.
+    const app = await prepareWfApp({
+      loginOpts: {
+        guards: { passwordInitial: true },
+        mfa: { enabled: false },
+      },
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    const store = (app.users as unknown as { store: { update: Function } }).store;
+    await store.update("alice", { set: { password: { isInitial: true } } });
+    const r1 = await app.trigger({ wfid: "auth.login" });
+    const cred = await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { username: "alice", password: "Password123" },
+    });
+    const r = await app.trigger({
+      wfs: cred.body?.wfs as string,
+      input: { action: "logout" },
+    });
+    expect(r.body).toMatchObject({
+      finished: true,
+      aborted: true,
+      reason: "logout",
+      message: { level: "info", text: "Signed out." },
+    });
   });
 });
 
@@ -241,9 +271,10 @@ describe("LoginWorkflow alt-actions — terms-accept", () => {
       input: { action: "decline" },
     });
     expect(r.body).toMatchObject({
+      finished: true,
       aborted: true,
       reason: "termsDeclined",
-      message: expect.stringMatching(/must accept/i),
+      message: { level: "info", text: expect.stringMatching(/must accept/i) },
     });
   });
 

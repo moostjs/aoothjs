@@ -93,8 +93,10 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
       wfs: r1.body?.wfs as string,
       input: { username: "typed-user", action: "forgotPassword" },
     });
-    expect(r2.status).toBe(302);
-    expect(r2.location).toBe("/recover?username=typed-user");
+    expect(r2.body?.finished).toBe(true);
+    const end = r2.body?.end as { mode: string; action: { target: string } };
+    expect(end?.mode).toBe("immediate");
+    expect(end?.action?.target).toBe("/recover?username=typed-user");
   });
 
   it("buildRecoveryUrl override: subclass returns custom URL", async () => {
@@ -111,7 +113,8 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
       wfs: r1.body?.wfs as string,
       input: { username: "bob", action: "forgotPassword" },
     });
-    expect(r2.location).toBe("#/forgot?u=bob");
+    const end = r2.body?.end as { action: { target: string } };
+    expect(end?.action?.target).toBe("#/forgot?u=bob");
   });
 
   it("alternateCredentials.forgotPassword: false → action is ignored (no redirect, falls through to validation)", async () => {
@@ -125,7 +128,7 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
       wfs: r1.body?.wfs as string,
       input: { username: "alice", action: "forgotPassword" },
     });
-    expect(r2.status).not.toBe(302);
+    expect(r2.body?.end).toBeUndefined();
     expect(r2.body?.errors).toBeTruthy();
   });
 
@@ -140,8 +143,10 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
       wfs: r1.body?.wfs as string,
       input: { action: "signup" },
     });
-    expect(r2.status).toBe(302);
-    expect(r2.location).toBe("/sign-me-up");
+    expect(r2.body?.finished).toBe(true);
+    const end = r2.body?.end as { mode: string; action: { target: string } };
+    expect(end?.mode).toBe("immediate");
+    expect(end?.action?.target).toBe("/sign-me-up");
   });
 
   it("alternateCredentials.ssoProviders: matching provider id → redirect to provider url", async () => {
@@ -160,7 +165,39 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
       wfs: r1.body?.wfs as string,
       input: { action: "okta" },
     });
-    expect(r2.location).toBe("https://idp.example/oauth/okta");
+    const end = r2.body?.end as { action: { target: string } };
+    expect(end?.action?.target).toBe("https://idp.example/oauth/okta");
+  });
+
+  it("sso redirect emits WfFinished envelope with end:immediate + per-provider reason:sso-<id>", async () => {
+    // Pins the new envelope shape after the WfFinished migration: SSO alt
+    // actions surface `reason: 'sso-<providerId>'` so consumer analytics can
+    // disambiguate which IdP was picked without parsing the URL.
+    const app = await prepareWfApp({
+      loginOpts: {
+        alternateCredentials: {
+          ssoProviders: [{ id: "okta", label: "Okta", url: "https://idp.example/oauth/okta" }],
+        },
+      },
+    });
+    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r2 = await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { action: "okta" },
+    });
+    expect(r2.status).toBe(201);
+    expect(r2.body?.finished).toBe(true);
+    expect(r2.body).toMatchObject({
+      finished: true,
+      end: {
+        mode: "immediate",
+        action: {
+          type: "redirect",
+          target: "https://idp.example/oauth/okta",
+          reason: "sso-okta",
+        },
+      },
+    });
   });
 
   it("alternateCredentials.magicLink: 'magicLink' alt → HttpError 501 (stub, see WF_LOGIN §Phase 1 doc)", async () => {
@@ -219,8 +256,9 @@ describe("LoginWorkflowOpts — Phase 2 password guards", () => {
 
     const r2 = await startAndCredentials(app, "alice", "Password123");
     // No password-change pause → directly issued tokens.
-    expect(r2.body?.userId).toBe("alice");
-    expect(typeof r2.body?.accessToken).toBe("string");
+    const data = r2.body?.data as Record<string, unknown> | undefined;
+    expect(data?.userId).toBe("alice");
+    expect(typeof data?.accessToken).toBe("string");
   });
 });
 
@@ -235,8 +273,9 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
 
     const r2 = await startAndCredentials(app, "alice", "Password123");
     // Issued immediately — no MFA pause.
-    expect(r2.body?.userId).toBe("alice");
-    expect(typeof r2.body?.accessToken).toBe("string");
+    const data = r2.body?.data as Record<string, unknown> | undefined;
+    expect(data?.userId).toBe("alice");
+    expect(typeof data?.accessToken).toBe("string");
   });
 
   it("mfa.transports: ['email'] + user has only TOTP enrolled → MFA short-circuits (no methods after filter)", async () => {
@@ -249,8 +288,9 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
 
     const r2 = await startAndCredentials(app, "alice", "Password123");
     // After prepare-mfa-options filters → 0 methods → ctx.mfaChecked = true → issue.
-    expect(r2.body?.userId).toBe("alice");
-    expect(typeof r2.body?.accessToken).toBe("string");
+    const data = r2.body?.data as Record<string, unknown> | undefined;
+    expect(data?.userId).toBe("alice");
+    expect(typeof data?.accessToken).toBe("string");
   });
 
   it("mfa.transports: ['email', 'totp'] + user has TOTP only → auto-picks TOTP (1 method, no select2fa)", async () => {
@@ -266,7 +306,7 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
     expect(r2.body?.wfs).toBeTruthy();
     const code = generateTotpCode(secret);
     const r3 = await app.trigger({ wfs: r2.body?.wfs as string, input: { code } });
-    expect(r3.body?.userId).toBe("alice");
+    expect((r3.body?.data as Record<string, unknown>)?.userId).toBe("alice");
   });
 
   it("mfa.transports: ['sms'] with sms MFA enrolled WITHOUT registered SmsSender → runtime throw at deliver()", async () => {
@@ -317,7 +357,7 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
     });
-    expect(r2.body?.userId).toBe("alice");
+    expect((r2.body?.data as Record<string, unknown>)?.userId).toBe("alice");
   });
 
   it("mfa.transports: ['email'] (default user has TOTP only) — falls back to issue (no enrolled allowed methods)", async () => {
@@ -326,7 +366,7 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
-    expect(r2.body?.userId).toBe("alice");
+    expect((r2.body?.data as Record<string, unknown>)?.userId).toBe("alice");
   });
 });
 
@@ -362,8 +402,9 @@ describe("LoginWorkflowOpts — Phase 4 device trust", () => {
       { cookie: `aooth_trusted_device=${rec.token}` },
     );
     // MFA bypassed → tokens issued immediately.
-    expect(r2.body?.userId).toBe("alice");
-    expect(typeof r2.body?.accessToken).toBe("string");
+    const data2 = r2.body?.data as Record<string, unknown> | undefined;
+    expect(data2?.userId).toBe("alice");
+    expect(typeof data2?.accessToken).toBe("string");
   });
 
   it("deviceTrust true + NO cookie → marks newDevice, runs MFA normally, persists cookie", async () => {
@@ -381,7 +422,7 @@ describe("LoginWorkflowOpts — Phase 4 device trust", () => {
     expect(r2.body?.wfs).toBeTruthy(); // paused for TOTP
     const code = generateTotpCode(secret);
     const r3 = await app.trigger({ wfs: r2.body?.wfs as string, input: { code } });
-    expect(r3.body?.userId).toBe("alice");
+    expect((r3.body?.data as Record<string, unknown>)?.userId).toBe("alice");
     // A trust cookie was written.
     const trustCookie = r3.setCookies.find((c) => c.startsWith("aooth_trusted_device="));
     expect(trustCookie).toBeTruthy();
@@ -455,7 +496,7 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
     });
     const code = generateTotpCode(secret);
     const final = await app.trigger({ wfs: sel.body?.wfs as string, input: { code } });
-    expect(final.body?.userId).toBe("alice");
+    expect((final.body?.data as Record<string, unknown>)?.userId).toBe("alice");
     const newDevEmail = app.emails.find((e) => e.kind === "notifyNewDevice");
     expect(newDevEmail).toBeTruthy();
     expect(newDevEmail?.recipient).toBe("alice@example.com");
@@ -488,17 +529,23 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
     expect(app.emails.find((e) => e.kind === "notifyNewDevice")).toBeUndefined();
   });
 
-  it("finalize.redirect: 'home' → 302 to /", async () => {
+  it("finalize.redirect: 'home' → envelope with end:immediate redirect to /", async () => {
     const app = await prepareWfApp({
       loginOpts: { finalize: { redirect: "home" }, mfa: { enabled: false } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
-    expect(r2.status).toBe(302);
-    expect(r2.location).toBe("/");
+    expect(r2.body?.finished).toBe(true);
+    expect(r2.body).toMatchObject({
+      finished: true,
+      end: {
+        mode: "immediate",
+        action: { type: "redirect", target: "/", reason: "finalize-redirect" },
+      },
+    });
   });
 
-  it("resolveRedirect override → 302 to overridden URL", async () => {
+  it("resolveRedirect override → envelope redirect to overridden URL", async () => {
     const app = await prepareWfApp({
       loginOpts: { mfa: { enabled: false } },
       loginWorkflowClass: makeLoginSubclass({
@@ -509,29 +556,31 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
-    expect(r2.location).toBe("/welcome/alice");
+    const end = r2.body?.end as { action: { target: string } };
+    expect(end?.action?.target).toBe("/welcome/alice");
   });
 
-  it("finalize.redirect: 'referer' with no Referer header → data response (no redirect override)", async () => {
+  it("finalize.redirect: 'referer' with no Referer header → data envelope (no redirect override)", async () => {
     const app = await prepareWfApp({
       loginOpts: { finalize: { redirect: "referer" }, mfa: { enabled: false } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
-    expect(r2.status).not.toBe(302);
-    expect(r2.body?.userId).toBe("alice");
+    expect(r2.body?.end).toBeUndefined();
+    expect((r2.body?.data as Record<string, unknown>)?.userId).toBe("alice");
   });
 
-  it("finalize.redirect: false → data response (no 302)", async () => {
+  it("finalize.redirect: false → data envelope (no redirect end)", async () => {
     const app = await prepareWfApp({
       loginOpts: { finalize: { redirect: false }, mfa: { enabled: false } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
-    expect(r2.status).not.toBe(302);
-    expect(r2.body?.userId).toBe("alice");
-    expect(typeof r2.body?.accessToken).toBe("string");
-    expect(typeof r2.body?.refreshToken).toBe("string");
+    expect(r2.body?.end).toBeUndefined();
+    const data = r2.body?.data as Record<string, unknown> | undefined;
+    expect(data?.userId).toBe("alice");
+    expect(typeof data?.accessToken).toBe("string");
+    expect(typeof data?.refreshToken).toBe("string");
   });
 });
 
@@ -554,7 +603,7 @@ describe("LoginWorkflowOpts — Phase 6 terms acceptance", () => {
       wfs: r2.body?.wfs as string,
       input: { acceptedVersion: "v2", accepted: true },
     });
-    expect(r3.body?.userId).toBe("alice");
+    expect((r3.body?.data as Record<string, unknown>)?.userId).toBe("alice");
   });
 
   it("acceptance.termsVersion unset → step is skipped", async () => {
@@ -564,7 +613,7 @@ describe("LoginWorkflowOpts — Phase 6 terms acceptance", () => {
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
     // No terms pause → directly issued.
-    expect(r2.body?.userId).toBe("alice");
+    expect((r2.body?.data as Record<string, unknown>)?.userId).toBe("alice");
   });
 
   it("acceptance.termsVersion: mismatched 'acceptedVersion' on submit → form error 'Version mismatch'", async () => {
@@ -602,7 +651,7 @@ describe("LoginWorkflowOpts — Phase 8 session policy", () => {
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
     // activeSessions never set → step skipped → tokens issued.
-    expect(r2.body?.userId).toBe("alice");
+    expect((r2.body?.data as Record<string, unknown>)?.userId).toBe("alice");
   });
 
   // Phase 8 `risk-step-up` runs inside the Phase 4 `while: !mfaChecked` loop;
@@ -631,10 +680,10 @@ describe("LoginWorkflowOpts — Phase 8 session policy", () => {
     const code = generateTotpCode(secret);
     const r3 = await app.trigger({ wfs: r2.body?.wfs as string, input: { code } });
     expect(r3.body?.wfs).toBeTruthy();
-    expect(r3.body?.userId).toBeUndefined();
+    expect((r3.body?.data as Record<string, unknown>)?.userId).toBeUndefined();
     const code2 = generateTotpCode(secret);
     const r4 = await app.trigger({ wfs: r3.body?.wfs as string, input: { code: code2 } });
-    expect(r4.body?.userId).toBe("alice");
+    expect((r4.body?.data as Record<string, unknown>)?.userId).toBe("alice");
     expect(calls).toBeGreaterThanOrEqual(1);
   });
 });

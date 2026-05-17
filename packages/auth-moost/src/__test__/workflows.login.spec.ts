@@ -34,11 +34,13 @@ describe("LoginWorkflow", () => {
       input: { username: "alice", password: "Password123" },
     });
     expect(r2.status).toBe(201);
-    // Finished response — the issue step set the AuthLoginResponse as the
-    // wf-finished value, which becomes the body.
-    expect(r2.body?.userId).toBe("alice");
-    expect(typeof r2.body?.accessToken).toBe("string");
-    expect(typeof r2.body?.refreshToken).toBe("string");
+    // Finished response — the issue step set the WfFinished envelope; domain
+    // data lives under `.data`.
+    const data = r2.body?.data as Record<string, unknown> | undefined;
+    expect(r2.body?.finished).toBe(true);
+    expect(data?.userId).toBe("alice");
+    expect(typeof data?.accessToken).toBe("string");
+    expect(typeof data?.refreshToken).toBe("string");
     // Cookies set
     expect(r2.setCookies.some((c) => c.startsWith("aooth_session="))).toBe(true);
     expect(r2.setCookies.some((c) => c.startsWith("aooth_refresh="))).toBe(true);
@@ -120,8 +122,9 @@ describe("LoginWorkflow", () => {
 
     const code = generateTotpCode(secret);
     const r3 = await app.trigger({ wfs: wfs2, input: { code } });
-    expect(r3.body?.userId).toBe("alice");
-    expect(typeof r3.body?.accessToken).toBe("string");
+    const data = r3.body?.data as Record<string, unknown> | undefined;
+    expect(data?.userId).toBe("alice");
+    expect(typeof data?.accessToken).toBe("string");
   });
 
   it("MFA branch: invalid code re-prompts", async () => {

@@ -51,6 +51,7 @@ import {
   maskEmail,
   maskPhone,
 } from "@aoothjs/user";
+import { finishWfAborted, finishWfWithRedirect, type WfFinished } from "@atscript/moost-wf";
 import { HttpError } from "@moostjs/event-http";
 import { Step, useWfFinished, Workflow, WorkflowParam, WorkflowSchema } from "@moostjs/event-wf";
 import { current } from "@wooksjs/event-core";
@@ -603,11 +604,11 @@ export class LoginWorkflow {
     const alt = this.opts.alternateCredentials;
     if (action === "forgotPassword" && alt.forgotPassword) {
       const url = this.buildRecoveryUrl(typedUsername);
-      useWfFinished().set({ type: "redirect", value: url });
+      finishWfWithRedirect(url, { reason: "forgot-password" });
       return ALT_HANDLED;
     }
     if (action === "signup" && alt.signup) {
-      useWfFinished().set({ type: "redirect", value: alt.signupUrl });
+      finishWfWithRedirect(alt.signupUrl, { reason: "signup" });
       return ALT_HANDLED;
     }
     if (action === "magicLink" && alt.magicLink) {
@@ -616,7 +617,9 @@ export class LoginWorkflow {
     }
     const sso = alt.ssoProviders.find((p) => p.id === action);
     if (sso) {
-      useWfFinished().set({ type: "redirect", value: sso.url });
+      // Per-provider discriminator so consumer analytics can distinguish which
+      // IdP the user picked without parsing the URL.
+      finishWfWithRedirect(sso.url, { reason: `sso-${sso.id}` });
       return ALT_HANDLED;
     }
     return undefined;
@@ -1012,7 +1015,7 @@ export class LoginWorkflow {
   ): Promise<unknown> {
     if (!input) return httpInputRequired(this.opts.forms.setPassword, ctx);
     if (input.action === "logout") {
-      useWfFinished().set({ type: "data", value: { aborted: true, reason: "logout" } });
+      finishWfAborted("logout", { message: { level: "info", text: "Signed out." } });
       // Gate downstream steps (issue/audit/notify/redirect) — without this
       // the schema continues and the `issue` step overwrites the abort
       // response with tokens. See BUG-LOGIN-5.
@@ -1047,9 +1050,8 @@ export class LoginWorkflow {
   ): Promise<unknown> {
     if (!input) return httpInputRequired(this.opts.forms.termsAccept, ctx);
     if (input.action === "decline") {
-      useWfFinished().set({
-        type: "data",
-        value: { aborted: true, reason: "termsDeclined", message: "You must accept to continue" },
+      finishWfAborted("termsDeclined", {
+        message: { level: "info", text: "You must accept to continue" },
       });
       // BUG-LOGIN-5: stop the schema progressing into `issue` etc.
       ctx.aborted = true;
@@ -1189,7 +1191,9 @@ export class LoginWorkflow {
     }
     if (!input) return httpInputRequired(this.opts.forms.concurrencyLimit, ctx);
     if (input.action === "cancel") {
-      useWfFinished().set({ type: "data", value: { aborted: true, reason: "sessionLimit" } });
+      finishWfAborted("sessionLimit", {
+        message: { level: "warn", text: "Concurrent session limit reached." },
+      });
       // BUG-LOGIN-5: stop the schema progressing into `issue` etc.
       ctx.aborted = true;
       return undefined;
@@ -1251,12 +1255,17 @@ export class LoginWorkflow {
     const issue = await this.auth.issue(ctx.username);
     ctx.tokensIssued = true;
     // Build response payload + cookies and stash on the finished response.
-    // The `redirect` step (terminal) overrides with a redirect type when
-    // `resolveRedirect` returns a URL; otherwise the data response sticks.
+    // The `redirect` step (terminal) overrides with a redirect envelope when
+    // `resolveRedirect` returns a URL; otherwise the data envelope sticks.
+    // Raw `useWfFinished` path: cookies are wooks-level, helpers don't expose them.
     const auth = useAuth();
+    const envelope: WfFinished = {
+      finished: true,
+      data: auth.buildLoginResponse(ctx.username, issue),
+    };
     useWfFinished().set({
       type: "data",
-      value: auth.buildLoginResponse(ctx.username, issue),
+      value: envelope,
       cookies: auth.buildFinishedCookies(issue),
     });
   }
@@ -1291,13 +1300,23 @@ export class LoginWorkflow {
   @Step("redirect")
   redirect(@WorkflowParam("context") ctx: LoginWfCtx): undefined {
     // Compute the target URL — when set, overrides the issue step's data
-    // finish with a redirect; otherwise keep the data response from `issue`.
+    // envelope with an immediate-redirect envelope; otherwise keep the data
+    // response from `issue`.
     const url = this.resolveRedirect(ctx);
     if (!url) return undefined;
+    // Raw envelope path: cookies from `issue` must be preserved, and
+    // `finishWfWithRedirect` doesn't accept cookies — that's a wooks concern.
     const existing = useWfFinished().get();
+    const envelope: WfFinished = {
+      finished: true,
+      end: {
+        mode: "immediate",
+        action: { type: "redirect", target: url, reason: "finalize-redirect" },
+      },
+    };
     useWfFinished().set({
-      type: "redirect",
-      value: url,
+      type: "data",
+      value: envelope,
       ...(existing?.cookies && { cookies: existing.cookies }),
     });
     ctx.redirectUrl = url;

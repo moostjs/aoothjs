@@ -105,7 +105,7 @@ describe("LoginWorkflow edge cases — MFA", () => {
       wfs: bc1.body?.wfs as string,
       input: { action: "useBackupCode", code: first },
     });
-    expect(consume1.body?.userId).toBe("alice");
+    expect((consume1.body?.data as Record<string, unknown>)?.userId).toBe("alice");
 
     const r2 = await app.trigger({ wfid: "auth.login" });
     const cred2 = await app.trigger({
@@ -135,7 +135,7 @@ describe("LoginWorkflow edge cases — MFA", () => {
       wfs: bc3.body?.wfs as string,
       input: { action: "useBackupCode", code: second },
     });
-    expect(consume3.body?.userId).toBe("alice");
+    expect((consume3.body?.data as Record<string, unknown>)?.userId).toBe("alice");
   });
 
   it("SMS transport: enrolled-via-sms user receives pin via SmsSender, can verify and finish", async () => {
@@ -166,7 +166,7 @@ describe("LoginWorkflow edge cases — MFA", () => {
       wfs: cred.body?.wfs as string,
       input: { code: sent.code },
     });
-    expect(final.body?.userId).toBe("alice");
+    expect((final.body?.data as Record<string, unknown>)?.userId).toBe("alice");
   });
 
   it("Email transport: pin email carries 'login.pincode' kind + numeric code", async () => {
@@ -193,7 +193,7 @@ describe("LoginWorkflow edge cases — MFA", () => {
       wfs: cred.body?.wfs as string,
       input: { code: pinMail?.code },
     });
-    expect(final.body?.userId).toBe("alice");
+    expect((final.body?.data as Record<string, unknown>)?.userId).toBe("alice");
   });
 });
 
@@ -216,7 +216,7 @@ describe("LoginWorkflow edge cases — JSON-safety of opts snapshot", () => {
       input: { username: "alice", password: "Password123" },
     });
     // Resume worked → tokens issued.
-    expect(r2.body?.userId).toBe("alice");
+    expect((r2.body?.data as Record<string, unknown>)?.userId).toBe("alice");
   });
 });
 
@@ -235,7 +235,7 @@ describe("LoginWorkflow edge cases — silent-audit fallback", () => {
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
     });
-    expect(r2.body?.userId).toBe("alice");
+    expect((r2.body?.data as Record<string, unknown>)?.userId).toBe("alice");
     // Capture emitter was a noop → no events captured (harness array empty).
     expect(app.auditEvents.length).toBe(0);
   });

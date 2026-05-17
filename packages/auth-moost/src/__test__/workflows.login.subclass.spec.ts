@@ -63,7 +63,7 @@ describe("LoginWorkflow subclass — end-to-end registration shape", () => {
     });
     const code = generateTotpCode(secret);
     const r3 = await app.trigger({ wfs: r2.body?.wfs as string, input: { code } });
-    expect(r3.body?.userId).toBe("alice");
+    expect((r3.body?.data as Record<string, unknown>)?.userId).toBe("alice");
     // The override ran — proves the subclass dispatched, not the base class
     // (whose body would still return require:false without bumping the
     // counter).
@@ -129,7 +129,7 @@ describe("LoginWorkflow subclass — applyProfile override", () => {
       wfs: cred.body?.wfs as string,
       input: { firstName: "Alice", lastName: "Doe" },
     });
-    expect(r3.body?.userId).toBe("alice");
+    expect((r3.body?.data as Record<string, unknown>)?.userId).toBe("alice");
     // Consumer override ran with the submitted payload.
     expect(calls.length).toBe(1);
     expect(calls[0]).toMatchObject({
@@ -175,7 +175,7 @@ describe("LoginWorkflow subclass — applyConsentMarketing override", () => {
       wfs: cred.body?.wfs as string,
       input: { optIn: true },
     });
-    expect(r3.body?.userId).toBe("alice");
+    expect((r3.body?.data as Record<string, unknown>)?.userId).toBe("alice");
     expect(captured).toEqual([{ username: "alice", optIn: true }]);
   });
 });
@@ -236,7 +236,7 @@ describe("LoginWorkflow subclass — loadTenants override", () => {
     });
     // Tokens issued — proves the picked id was validated against the
     // override's return value (a bogus id would have produced a form error).
-    expect(r3.body?.userId).toBe("alice");
+    expect((r3.body?.data as Record<string, unknown>)?.userId).toBe("alice");
   });
 
   it("multiContext.tenantSelect + bogus tenantId submission → form error 'Unknown tenant' (override's set IS authoritative)", async () => {
@@ -324,7 +324,7 @@ describe("LoginWorkflow subclass — loadPersonas override", () => {
       wfs: cred.body?.wfs as string,
       input: { personaId: "p-viewer" },
     });
-    expect(r3.body?.userId).toBe("alice");
+    expect((r3.body?.data as Record<string, unknown>)?.userId).toBe("alice");
   });
 });
 
@@ -376,7 +376,7 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
       wfs: cred.body?.wfs as string,
       input: { action: "logoutOthers" },
     });
-    expect(r3.body?.userId).toBe("alice");
+    expect((r3.body?.data as Record<string, unknown>)?.userId).toBe("alice");
     expect(calls).toEqual(["alice"]);
   });
 
@@ -418,9 +418,59 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
       wfs: cred.body?.wfs as string,
       input: { action: "cancel" },
     });
-    expect(r3.body).toMatchObject({ aborted: true, reason: "sessionLimit" });
+    expect(r3.body).toMatchObject({
+      finished: true,
+      aborted: true,
+      reason: "sessionLimit",
+      message: { level: "warn", text: "Concurrent session limit reached." },
+    });
     // Override MUST NOT have fired on cancel.
     expect(calls).toEqual([]);
+  });
+
+  it("session-limit cancel emits WfFinished envelope with aborted+reason:sessionLimit + warn message", async () => {
+    // Pins the WfFinished migration for the session-limit cancel path — the
+    // structured `message` envelope is the new UI banner contract.
+    @Inherit()
+    @Injectable("FOR_EVENT")
+    @Controller()
+    class KickLogin extends LoginWorkflow {
+      constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
+        super(opts, users, auth);
+      }
+      override async credentials(
+        input: { username?: string; password?: string; action?: string } | undefined,
+        ctx: LoginWfCtx,
+      ): Promise<unknown> {
+        const out = await super.credentials(input, ctx);
+        if (ctx.username) ctx.activeSessions = 9;
+        return out;
+      }
+    }
+    const app = await prepareWfApp({
+      loginOpts: {
+        sessionPolicy: { concurrencyLimit: { max: 2, onLimit: "kickPrompt" } },
+        mfa: { enabled: false },
+      },
+      loginWorkflowClass: KickLogin,
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    const r1 = await app.trigger({ wfid: "auth.login" });
+    const cred = await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { username: "alice", password: "Password123" },
+    });
+    const r = await app.trigger({
+      wfs: cred.body?.wfs as string,
+      input: { action: "cancel" },
+    });
+    expect(r.status).toBe(201);
+    expect(r.body).toMatchObject({
+      finished: true,
+      aborted: true,
+      reason: "sessionLimit",
+      message: { level: "warn", text: "Concurrent session limit reached." },
+    });
   });
 });
 
