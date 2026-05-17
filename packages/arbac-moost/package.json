@@ -12,15 +12,15 @@
     "permissions",
     "rbac"
   ],
-  "homepage": "https://github.com/aoothjs/aoothjs/tree/main/packages/arbac-moost#readme",
+  "homepage": "https://github.com/moostjs/aoothjs/tree/main/packages/arbac-moost#readme",
   "bugs": {
-    "url": "https://github.com/aoothjs/aoothjs/issues"
+    "url": "https://github.com/moostjs/aoothjs/issues"
   },
   "license": "MIT",
   "author": "Artem Maltsev",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/aoothjs/aoothjs.git",
+    "url": "git+https://github.com/moostjs/aoothjs.git",
     "directory": "packages/arbac-moost"
   },
   "files": [

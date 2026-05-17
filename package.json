@@ -7,15 +7,15 @@
     "auth",
     "authentication"
   ],
-  "homepage": "https://github.com/aoothjs/aoothjs#readme",
+  "homepage": "https://github.com/moostjs/aoothjs#readme",
   "bugs": {
-    "url": "https://github.com/aoothjs/aoothjs/issues"
+    "url": "https://github.com/moostjs/aoothjs/issues"
   },
   "license": "MIT",
   "author": "Artem Maltsev",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/aoothjs/aoothjs.git"
+    "url": "git+https://github.com/moostjs/aoothjs.git"
   },
   "type": "module",
   "scripts": {
