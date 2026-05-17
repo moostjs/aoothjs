@@ -4,7 +4,7 @@ import type { TCrudOp, TMetaResponse } from "@atscript/db";
 import { AsDbController } from "@atscript/moost-db";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { HttpError } from "@moostjs/event-http";
-import { getInstanceOwnMethods, Inherit, useControllerContext } from "moost";
+import { getConstructor, getInstanceOwnMethods, Inherit, useControllerContext } from "moost";
 
 import { useArbac } from "../arbac.composables";
 import type { TArbacMeta } from "../arbac.mate";
@@ -101,20 +101,29 @@ export class AsArbacDbController<
     const arbac = useArbac();
     const actionToMethodMeta = collectActionMetaByName();
 
+    // Evaluate all gates in parallel: ARBAC evaluate is in-memory + idempotent
+    // and reads from the per-event scope cache, so contention is bounded; the
+    // win is killing N sequential round-trips through the user provider.
+    const crudKeys = Object.keys(meta.crud) as TCrudOp[];
+    const [actionResults, crudResults] = await Promise.all([
+      Promise.all(
+        meta.actions.map((entry) => {
+          const methodMeta = actionToMethodMeta.get(entry.name);
+          const arbacAction = methodMeta?.arbacActionId ?? methodMeta?.id ?? entry.name;
+          return arbac.evaluate({ action: arbacAction });
+        }),
+      ),
+      Promise.all(crudKeys.map((key) => arbac.evaluate({ action: key }))),
+    ]);
+
     const filteredActions: TMetaResponse["actions"] = [];
-    for (const entry of meta.actions) {
-      const methodMeta = actionToMethodMeta.get(entry.name);
-      const arbacAction = methodMeta?.arbacActionId ?? methodMeta?.id ?? entry.name;
-      if ((await arbac.evaluate({ action: arbacAction })).allowed) {
-        filteredActions.push(entry);
-      }
+    for (let i = 0; i < meta.actions.length; i++) {
+      if (actionResults[i].allowed) filteredActions.push(meta.actions[i]);
     }
 
     const filteredCrud: TMetaResponse["crud"] = {};
-    for (const key of Object.keys(meta.crud) as TCrudOp[]) {
-      if ((await arbac.evaluate({ action: key })).allowed) {
-        filteredCrud[key] = meta.crud[key];
-      }
+    for (let i = 0; i < crudKeys.length; i++) {
+      if (crudResults[i].allowed) filteredCrud[crudKeys[i]] = meta.crud[crudKeys[i]];
     }
 
     return { ...meta, actions: filteredActions, crud: filteredCrud };
@@ -154,19 +163,46 @@ export class AsArbacDbController<
 
   // Always preserve PK + unique-index fields so callers don't need to whitelist
   // server-derived metadata that update/replace requires to address the row.
-  private identifierFields(): string[] {
+  // Memoized per controller class: `table.identifications` is decoration-derived
+  // and stable for the class's lifetime.
+  private identifierFields(): readonly string[] {
+    const ctor = this.constructor as new (...args: never[]) => unknown;
+    const cached = identifierFieldsCache.get(ctor);
+    if (cached) return cached;
     const out = new Set<string>();
     for (const ident of this.table.identifications) {
       for (const f of ident.fields) out.add(f);
     }
-    return [...out];
+    const arr = [...out];
+    identifierFieldsCache.set(ctor, arr);
+    return arr;
   }
 }
 
+// WeakMap so test harnesses that throw away the controller class also throw
+// away the cache entry. Cache key is the controller subclass constructor —
+// `table.identifications` is derived from atscript decorations on that class,
+// so the resolved field list cannot change without a new class.
+const identifierFieldsCache = new WeakMap<new (...args: never[]) => unknown, readonly string[]>();
+
 type ActionResolutionMeta = { arbacActionId?: string; id?: string };
+
+// Per-class memoization: controller and method decorator metadata are bound to
+// the class at registration time and never mutate per-request. Caching avoids
+// re-walking `getInstanceOwnMethods` + N `getMethodMeta` calls on every meta
+// overlay (one per GET `/<resource>/meta` request).
+const actionMetaByClassCache = new WeakMap<
+  new (...args: never[]) => unknown,
+  Map<string, ActionResolutionMeta>
+>();
 
 function collectActionMetaByName(): Map<string, ActionResolutionMeta> {
   const cc = useControllerContext();
+  const instance = cc.getController();
+  const ctor = getConstructor(instance) as new (...args: never[]) => unknown;
+  const cached = actionMetaByClassCache.get(ctor);
+  if (cached) return cached;
+
   const map = new Map<string, ActionResolutionMeta>();
   const ctrlMeta = cc.getControllerMeta<TArbacMeta>();
 
@@ -174,7 +210,6 @@ function collectActionMetaByName(): Map<string, ActionResolutionMeta> {
     map.set(entry.name, {});
   }
 
-  const instance = cc.getController();
   for (const methodName of getInstanceOwnMethods(instance)) {
     if (typeof methodName !== "string") continue;
     const m = cc.getMethodMeta<TArbacMeta>(methodName);
@@ -185,6 +220,7 @@ function collectActionMetaByName(): Map<string, ActionResolutionMeta> {
     }
   }
 
+  actionMetaByClassCache.set(ctor, map);
   return map;
 }
 
@@ -280,27 +316,58 @@ export function applyAllowedFieldsAndSet(
   preserveFields: readonly string[] = [],
 ): unknown {
   if (scopes.length === 0) return data;
+
+  // Compute per-scope artefacts once — they're a pure function of `scopes` +
+  // `preserveFields`, so reusing them across every row in a batch insert /
+  // updateMany avoids O(rows × scopes) Set construction + flat() allocation.
+  const prepared = prepareScopeOverlay(scopes, preserveFields);
+
   if (Array.isArray(data)) {
-    return data.map((row) => applyAllowedFieldsAndSet(row, scopes, preserveFields));
+    return data.map((row) => applyPreparedOverlay(row, prepared));
   }
-  if (!data || typeof data !== "object") return data;
+  return applyPreparedOverlay(data, prepared);
+}
 
-  const allowedSets = scopes
-    .map((s) => s.allowedFields)
-    .filter((x): x is string[] => Array.isArray(x));
-  const merged: Record<string, unknown> = { ...(data as Record<string, unknown>) };
+interface PreparedScopeOverlay {
+  union: ReadonlySet<string> | null;
+  setOverrides: Record<string, unknown> | null;
+}
 
-  if (allowedSets.length > 0) {
-    const union = new Set<string>(allowedSets.flat());
+function prepareScopeOverlay(
+  scopes: ArbacDbScope[],
+  preserveFields: readonly string[],
+): PreparedScopeOverlay {
+  let union: Set<string> | null = null;
+  for (const s of scopes) {
+    if (Array.isArray(s.allowedFields)) {
+      if (!union) union = new Set<string>();
+      for (const f of s.allowedFields) union.add(f);
+    }
+  }
+  if (union) {
     for (const f of preserveFields) union.add(f);
-    for (const k of Object.keys(merged)) {
-      if (!union.has(k)) delete merged[k];
+  }
+
+  let setOverrides: Record<string, unknown> | null = null;
+  for (const s of scopes) {
+    if (s.set) {
+      if (!setOverrides) setOverrides = {};
+      Object.assign(setOverrides, s.set);
     }
   }
 
-  for (const s of scopes) {
-    if (s.set) Object.assign(merged, s.set);
-  }
+  return { union, setOverrides };
+}
 
+function applyPreparedOverlay(data: unknown, prepared: PreparedScopeOverlay): unknown {
+  if (Array.isArray(data)) return data.map((row) => applyPreparedOverlay(row, prepared));
+  if (!data || typeof data !== "object") return data;
+  const merged: Record<string, unknown> = { ...(data as Record<string, unknown>) };
+  if (prepared.union) {
+    for (const k of Object.keys(merged)) {
+      if (!prepared.union.has(k)) delete merged[k];
+    }
+  }
+  if (prepared.setOverrides) Object.assign(merged, prepared.setOverrides);
   return merged;
 }

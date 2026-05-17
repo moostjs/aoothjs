@@ -94,14 +94,21 @@ export const useAuth = defineWook((ctx: EventContext): AuthBindings => {
 
   const isAuthenticated = (): boolean => getAuthContext() !== null;
 
+  // Options are immutable for the lifetime of an event (set once by the
+  // guard). Memoize the slot lookup so closures invoked multiple times per
+  // event (extractToken + writeCookies + buildLoginResponse, etc.) collapse
+  // to a single has+get instead of one per call.
+  let cachedOptions: ResolvedAuthOptions | undefined;
   const requireOptions = (): ResolvedAuthOptions => {
+    if (cachedOptions !== undefined) return cachedOptions;
     if (!ctx.has(authOptionsKey)) {
       throw new HttpError(
         500,
         "useAuth(): authGuardInterceptor(opts) must be installed on the HTTP event chain",
       );
     }
-    return ctx.get(authOptionsKey);
+    cachedOptions = ctx.get(authOptionsKey);
+    return cachedOptions;
   };
 
   const extractToken = (): string | undefined => {

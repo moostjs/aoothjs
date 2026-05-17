@@ -42,28 +42,46 @@ interface ArbacBindings {
 }
 
 /**
+ * Per-event memoization of {@link useArbac} bindings.
+ *
+ * Keyed on the `EventContext` object itself (NOT a wook slot). This is the
+ * critical distinction vs. `defineWook`: a `defineWook` cache slot lives in
+ * the slot-id space and `ctx.get(slot)` traverses the parent chain — so a WF
+ * event created via `WfTriggerProvider.handle()` (whose `parent` is the
+ * originating HTTP `EventContext`) would resolve the HTTP request's bindings
+ * (resource + action + isPublic from `/auth/trigger`) and silently bypass the
+ * workflow controller's `@ArbacResource`. A WeakMap keyed on the child `ctx`
+ * object never sees the parent's bindings because the child and parent are
+ * distinct object identities. See `arbac.decorator.spec.ts` "evaluates arbac
+ * on non-HTTP event kinds" for the regression test that gated the de-cache.
+ *
+ * `setControllerContext` is invoked exactly once per event dispatch in moost
+ * (`defineMoostEventHandler` and the controller-binding startup path), so the
+ * `(controller, method)` tuple feeding `resource`/`action`/`isPublic` is
+ * stable for the lifetime of one `ctx` — making the cached bindings safe to
+ * re-hand-out for every `useArbac()` call within the same event.
+ */
+const bindingsCache = new WeakMap<EventContext, ArbacBindings>();
+
+/**
  * Composable for ARBAC utilities within Moost handlers and interceptors.
  *
  * Exposes scope read/write, lazy `evaluate`, and the resolved
  * resource/action/public flags derived from the current controller +
  * method metadata.
  *
- * Intentionally NOT a `defineWook`-cached composable: WF events created via
- * `WfTriggerProvider.handle()` are passed the originating HTTP `EventContext`
- * as their `parent`. A `defineWook` cache slot would traverse that parent
- * chain and return the HTTP request's first-resolution tuple (resource +
- * action + isPublic from the @Public-marked `/auth/trigger` route) for every
- * downstream WF step — silently bypassing class-level `@ArbacResource` on the
- * workflow controller. Re-resolving per call is cheap (two `mate.read` cache
- * hits) and avoids that cross-context leak.
- *
- * Read/write scope state goes through `arbacScopesKey` directly so it still
- * lives on the per-event slot (set inside the WF event ctx, read by handlers
- * running inside the same event).
+ * Bindings are memoized per `EventContext` via a WeakMap keyed on the ctx
+ * object itself — see {@link bindingsCache} for the rationale and the
+ * parent-chain leak this side-steps. Read/write scope state still goes
+ * through `arbacScopesKey` directly so it lives on the per-event slot.
  */
 export const useArbac = (ctx?: EventContext): ArbacBindings => {
   const _ctx = ctx ?? current();
-  return _useArbacFactory(_ctx);
+  let bindings = bindingsCache.get(_ctx);
+  if (bindings) return bindings;
+  bindings = _useArbacFactory(_ctx);
+  bindingsCache.set(_ctx, bindings);
+  return bindings;
 };
 
 const _useArbacFactory = (ctx: EventContext): ArbacBindings => {

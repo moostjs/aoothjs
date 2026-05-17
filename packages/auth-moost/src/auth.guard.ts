@@ -50,7 +50,8 @@ export function authGuardInterceptor(opts?: AuthOptions): TInterceptorDef {
     const mMeta = cc.getMethodMeta<TAuthMeta>();
     const isPublic = mMeta?.authPublic ?? cMeta?.authPublic ?? false;
 
-    const credential = await cc.instantiate(AuthCredential);
+    // Extract the token BEFORE instantiating AuthCredential — public routes
+    // with no token (e.g. health checks) avoid the DI lookup entirely.
     const token = useAuth().extractToken();
 
     if (!token) {
@@ -61,6 +62,7 @@ export function authGuardInterceptor(opts?: AuthOptions): TInterceptorDef {
       throw new HttpError(401, "Unauthorized");
     }
 
+    const credential = await cc.instantiate(AuthCredential);
     const authContext = await credential.validate(token);
     if (!authContext) {
       if (isPublic) {
