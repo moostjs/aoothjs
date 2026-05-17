@@ -48,7 +48,7 @@ interface CredentialStoreJwtOptions {
   privateKey?: CryptoKey;
   publicKey?: CryptoKey;
   issuer?: string;
-  audience?: string | string[];
+  audience?: string;
   denylist?: DenylistStore;
   clock?: Clock;
 }
@@ -61,7 +61,7 @@ interface CredentialStoreJwtOptions {
 | `privateKey` | `algorithm` is `RS*` / `ES*` / `EdDSA` | Used at `persist` (signing).                                                       |
 | `publicKey`  | same as `privateKey`                   | Used at `retrieve` (verification).                                                 |
 | `issuer`     | optional                               | Sets `iss` claim; checked at verify.                                               |
-| `audience`   | optional                               | Sets `aud` claim; checked at verify.                                               |
+| `audience`   | optional                               | Sets `aud` claim (single string only); checked at verify.                          |
 | `denylist`   | optional                               | Required for `revoke` / `consume` / `update`.                                      |
 | `clock`      | optional                               | Injectable clock — drives `currentDate` for `jwtVerify`.                           |
 
@@ -99,21 +99,19 @@ new CredentialStoreJwt({ algorithm: "EdDSA", privateKey, publicKey });
 Use `HS*` when one process both signs and verifies. Use `RS*` / `ES*` / `EdDSA` when verifiers are distinct from issuers — public keys can ship to clients or partner services that need to verify without holding the signing key.
 :::
 
-### Claim layout
+### Wire format (for external verifiers)
 
-The store emits these JWT claims:
+When another service or library verifies these tokens directly (not via `auth.validate`), it sees standard JWT claims:
 
-| Claim   | Source                         | Notes                                                                                                          |
-| ------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| `sub`   | `state.userId`                 | Subject.                                                                                                       |
-| `iat`   | `floor(state.issuedAt / 1000)` | RFC 7519: seconds.                                                                                             |
-| `exp`   | `floor(expiresAtMs / 1000)`    | RFC 7519: seconds.                                                                                             |
-| `jti`   | `randomUUID()`                 | Used as the denylist key.                                                                                      |
-| `iss`   | option                         | Only when configured.                                                                                          |
-| `aud`   | option                         | Only when configured.                                                                                          |
-| `state` | the rest                       | Custom claim mirroring `iatMs`, `expMs`, `kind?`, `claims?`, `metadata?`, `parentCredentialId?`, `rotatedAt?`. |
-
-The `state.iatMs` / `state.expMs` are **ms-precision mirrors** of `iat` / `exp`. RFC 7519 truncates timestamps to seconds, which is too coarse for the per-user revocation epoch gate (which needs `>=` at ms precision). The store reads `iatMs` not `iat` on retrieval.
+| Claim   | Source                         | Notes                                                                                         |
+| ------- | ------------------------------ | --------------------------------------------------------------------------------------------- |
+| `sub`   | `state.userId`                 | Subject.                                                                                      |
+| `iat`   | `floor(state.issuedAt / 1000)` | RFC 7519: seconds.                                                                            |
+| `exp`   | `floor(expiresAtMs / 1000)`    | RFC 7519: seconds.                                                                            |
+| `jti`   | `randomUUID()`                 | Used as the denylist key.                                                                     |
+| `iss`   | option                         | Only when configured.                                                                         |
+| `aud`   | option                         | Only when configured.                                                                         |
+| `state` | the rest                       | aoothjs-internal claim carrying the rest of the credential. External verifiers can ignore it. |
 
 ### Algorithm-confusion defense
 
@@ -183,7 +181,7 @@ const store = new CredentialStoreEncapsulated({ secret: key });
 
 ```ts
 interface CredentialStoreEncapsulatedOptions {
-  secret: string | Uint8Array;
+  secret: string | Buffer | Uint8Array;
   denylist?: DenylistStore;
   clock?: Clock;
 }
@@ -195,24 +193,16 @@ interface CredentialStoreEncapsulatedOptions {
 | `denylist` | Required for `revoke` / `consume` / `update`.                                                                  |
 | `clock`    | Injected clock.                                                                                                |
 
-### Token format
+### Token output
 
-```
-base64url( iv ‖ ciphertext ‖ authTag )
-```
+Tokens are URL-safe `base64url` strings. Decryption is authenticated — any tampering returns `null` from `validate`, never throws.
 
-- `iv` — 12 bytes random per token.
-- `ciphertext` — AES-256-GCM of `JSON.stringify({ ...state, jti })`.
-- `authTag` — 16 bytes.
+### Key derivation
 
-URL-safe (`base64url`). Decryption is constant-time on `authTag` mismatch — the store returns `null` on any tampering.
+When you pass a string `secret`, the store derives a 32-byte key via scrypt with a fixed library-level salt. That salt is for domain separation, **not** per-deployment uniqueness — `secret: "hunter2"` derives the same key on every machine.
 
-### Fixed-salt KDF
-
-When you pass a string `secret`, the store derives a 32-byte key via `scrypt(secret, FIXED_LIBRARY_SALT)`. The salt is a constant inside the package.
-
-::: warning Fixed scrypt salt
-The KDF uses a fixed library salt. This means `secret: "hunter2"` derives the same key on every machine. The salt provides domain separation against unrelated apps using scrypt with default parameters, **not** per-deployment uniqueness. Best practice: generate a 32-byte random buffer per environment and pass it directly to skip the KDF path entirely.
+::: tip Skip the KDF — pass a 32-byte buffer
+Best practice: generate a 32-byte random key per environment and pass it directly. The store uses it as-is and avoids the scrypt step on every construction.
 
 ```ts
 // node: pre-bake a key and store it as env (base64 / hex)

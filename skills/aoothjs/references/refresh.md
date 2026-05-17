@@ -53,7 +53,7 @@ refresh R2  →  A3 + R3
 refresh R1  →  REFRESH_REUSE_DETECTED  →  revokeAllForUser(uid)
 ```
 
-Reuse-detection mechanism: the orchestrator keeps a small in-memory `consumedRefreshes: Map<rawToken, { userId, iat, exp }>` for the refresh TTL window. When `store.retrieve` returns `null` for a refresh token, the map is checked — a hit signals "this was valid, now isn't" rather than "this was never valid".
+Behavior: when a previously-valid refresh token is presented after it has already been consumed/rotated, the orchestrator distinguishes that from "unknown token" and throws `REFRESH_REUSE_DETECTED` (firing the per-user revocation cascade), rather than the generic `INVALID_TOKEN`.
 
 ### `'sliding'` (default)
 
@@ -69,7 +69,7 @@ t=31000 refresh R1  →  REFRESH_REUSE_DETECTED  (after grace → cascade)
 Tunables:
 
 - `rotationGraceMs: 0` collapses sliding to "always-once": rotation happens on first use, any further use trips reuse.
-- Within grace, `issueRotatedPair` is called with `rotateOld: false` — `rotatedAt` is set exactly once (by the first rotation) so the grace window is anchored to the original rotation, not extended on every replay.
+- The grace window is anchored to the original rotation: replays within the window return a fresh access token but do not re-rotate or extend the window.
 
 ## Refresh reuse detection
 

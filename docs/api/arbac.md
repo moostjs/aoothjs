@@ -115,7 +115,7 @@ Dot-path aware membership check. Walks the projection respecting include/exclude
 
 ```ts
 function unionControlsPolicy(
-  ...scopes: Array<{ controls?: Record<string, ControlGate> } | undefined>
+  scopes: ReadonlyArray<{ controls?: Record<string, ControlGate> }>,
 ): Record<string, ControlGate>;
 ```
 
@@ -126,8 +126,8 @@ Specific to `ArbacDbScope.controls` — gates Uniquery URL controls per role. If
 ### `extractResourceActions`
 
 ```ts
-function extractResourceActions<TUserAttrs extends object, TScope extends object>(
-  roles: TArbacRole<TUserAttrs, TScope>[],
+function extractResourceActions(
+  roles: TArbacRole<unknown, unknown>[],
   options?: { includeWildcards?: boolean },
 ): TResourceActionMap;
 ```
@@ -157,7 +157,9 @@ interface RoleBuilder<TUserAttrs, TScope> {
     scope?: (attrs: TUserAttrs, userId: string) => TScope,
   ): this;
   deny(resource: string, action: string): this;
-  use(...privileges: TPrivilegeFunction<TUserAttrs, TScope>[]): this;
+  use<TScopes extends readonly unknown[]>(
+    ...privileges: { [K in keyof TScopes]: TPrivilegeFunction<TUserAttrs, TScopes[K]> }
+  ): this;
   build(): TArbacRole<TUserAttrs, TScope>;
 }
 ```
@@ -208,9 +210,9 @@ Per-rule data filter — any `@uniqu/core`-compatible filter expression. Empty `
 
 ```ts
 interface TResourceActionMap {
-  resources: Record<string, string[]>; // resource → distinct actions
-  allResources: string[];
-  allActions: string[];
+  resources: Map<string, Set<string>>; // resource → set of actions
+  allResources: Set<string>;
+  allActions: Set<string>;
 }
 ```
 

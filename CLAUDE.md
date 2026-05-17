@@ -4,96 +4,98 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**aoothjs** is a TypeScript authentication + authorization monorepo (pre-release) for the moost/atscript ecosystem. The `@aoothjs/*` packages cover the full auth stack: user credentials, RBAC, sessions/tokens, DB-backed storage, and framework integration. See `TODO.md` for the full roadmap.
+**aoothjs** is a TypeScript authentication + authorization monorepo (pre-release, all packages on `0.0.1-alpha.*`) for the moost / atscript ecosystem. The `@aoothjs/*` packages cover the full auth stack: user credentials, RBAC engine + builder, sessions/tokens, MFA primitives, and Moost framework integration. An internal `e2e-demo` package exercises the full stack against a real SQLite-backed atscript DB.
 
 ## Commands
 
 ```bash
-# Install dependencies
-pnpm install
+# Install / refresh after pulling
+pnpm install                  # or `vp install`
 
-# Build all packages
-pnpm run build              # vp run build -r
+# Build, test, type-check across the workspace
+pnpm run build                # vp run build -r
+pnpm run test                 # vp run test -r
+vp check                      # format + lint + tsc on changed files
 
-# Run all tests
-pnpm run test               # vp run test -r
-
-# Run a single package's tests
+# Single package
 cd packages/<pkg> && pnpm run test
+cd packages/<pkg> && pnpm run check
+cd packages/<pkg> && pnpm run dev          # vp pack --watch
 
-# Run a specific test file
-cd packages/<pkg> && pnpm exec vp test src/password.spec.ts
+# Single test file (vitest under vp)
+cd packages/<pkg> && pnpm exec vp test src/<file>.spec.ts
 
-# Type checking
-cd packages/<pkg> && pnpm run check   # vp check
-
-# Format + lint + test + build (pre-release quality gate)
-pnpm run ready
-
-# Watch mode (dev)
-cd packages/<pkg> && pnpm run dev
+# Pre-release quality gate (fmt + lint + test + build across workspace)
+pnpm run ready                # vp fmt && vp lint && vp run test -r && vp run build -r
 
 # Release (bumps version, runs ready, publishes, commits + tags)
-pnpm run release             # patch
-pnpm run release:minor
-pnpm run release:major
+pnpm run release              # patch — also :minor, :major
+
+# e2e-demo (vite-node, not vp)
+cd packages/e2e-demo
+pnpm run dev                  # vite-node --watch src/main.ts
+pnpm run db:init              # seed the demo SQLite db
+pnpm run gen:atscript         # asc -f dts — regenerate .as.d.ts from .as models
 ```
 
-## Build System
+## Build / Tooling
 
-Uses **vite-plus** (`vp`) as the build/test/lint orchestrator. The `vp` CLI wraps Vite, Vitest, and Biome into a single toolchain. Config lives in `vite.config.ts` files (root for linting rules, per-package for build options).
+Uses **vite-plus** (`vp`) as the build/test/lint orchestrator — wraps Vite, Rolldown, Vitest, tsdown, Oxlint, and Oxfmt. Per-package builds are `vp pack`; tests are `vp test`; `vp check` runs fmt + lint + type-check.
 
-- Output: ESM (`dist/index.mjs`) + CJS (`dist/index.cjs`) + declarations (`dist/index.d.mts`)
-- Linter: Biome (configured in root `vite.config.ts` under `lint:` key)
-- Formatter: via `vp fmt`
-- Pre-commit hook: `vp check --fix` on staged files (configured in root `vite.config.ts` under `stagedHooks:`)
-
-## Architecture (packages/user — `@aoothjs/user`)
-
-```
-Aooth (main orchestrator — configures password, lockout, MFA)
-├── UserCredentials (per-user account: create/read/save, login flow, MFA)
-│   ├── extends Changeable (tracks field mutations as set/unset/inc operations)
-│   └── uses UsersStore (abstract storage — dependency-injected)
-├── Password (hashing with salt+pepper, history, policy validation, generation)
-│   ├── extends Changeable
-│   └── uses PasswordPolicy (rule engine — string expressions via @prostojs/ftring or functions)
-└── crypto utilities (hash, generateSalt, HMAC, TOTP secret key generation)
-
-UsersStore (abstract) → UsersStoreMemory (in-memory implementation for tests)
-base-x/ (base32, base64url encoders used by TOTP key generation)
-utils/get-set.ts (deep object get/set helpers for Changeable change tracking)
-```
-
-Key design patterns:
-
-- **Changeable base class**: `UserCredentials` and `Password` extend `Changeable` which records all mutations as `{ op, path, value }` operations, enabling efficient partial updates to any backing store.
-- **Pluggable storage**: `UsersStore<T>` is abstract. Consumers implement `exists()`, `read()`, `change()`, `create()` for their database. `UsersStoreMemory` ships for testing.
-- **Transferable password policies**: Policies defined as string expressions (not functions) can be serialized and sent to clients for pre-validation.
-- **Generic user schema**: `Aooth<T>` and related classes accept a generic `T` extending the base credential type, allowing custom user fields.
+- Output per package: ESM + CJS + `.d.mts` declarations under `dist/`.
+- Lint/format config lives in the **root** `vite.config.ts` (`lint:` block, oxlint rule categories) and applies to the whole workspace. Per-package `vite.config.ts` files exist only when a package needs build-specific options.
+- Pre-commit hook (`staged:`) runs `vp check --fix` on changed files.
+- Dependency versions are pinned via the pnpm **catalog** in `pnpm-workspace.yaml` — depend on `"catalog:"` rather than literal versions for any shared atscript / moost / wooks / vite-plus / typescript dep.
 
 ## Workspace Layout
 
-pnpm monorepo (`pnpm-workspace.yaml`).
+pnpm monorepo (`pnpm-workspace.yaml` globs `packages/*`, `explorations/*/{frontend,backend}`, `docs`).
 
-Current packages:
+Published packages (all `@aoothjs/*`):
 
-- `packages/user` — `@aoothjs/user` — core user credential library
+- `packages/user` — user credential primitives: `UserService` (orchestrator), `UserCredentials` (type), `PasswordHasher` + `PasswordPolicy` (+ `ppHas*` factories), `UserStore` abstract (+ `UserStoreMemory` for tests, `UsersStoreAtscriptDb` for `@atscript/db` via the `./atscript-db` subpath), `UserAuthError`, TOTP / backup-code / trusted-device helpers.
+- `packages/arbac-core` — zero-dep RBAC engine (`Arbac` class, role/resource registration, pattern matching, evaluation).
+- `packages/arbac` — batteries-included layer over `arbac-core`: `defineRole` builder, `definePrivilege`, DB-table privilege factories (`allowTableRead/Write/Action`), scope primitives (projection / filter / controls / with), codegen for resource-action types.
+- `packages/arbac-moost` — Moost integration: `@Arbac` decorator, `useArbac` composable, plugin, `ArbacDbScope<T>` typed scope for atscript-db filter/projection/with, user provider, atscript annotations.
+- `packages/auth` — framework-agnostic auth method layer: `AuthCredential` orchestrator, credential stores (memory, JWT, encapsulated), denylist store, email/SMS/magic-link primitives, atscript-db schema, errors.
+- `packages/auth-moost` — Moost integration: `authGuardInterceptor`, `AuthGuarded`, `useAuth`, `@Public`, `@UserId`, `AuthController` with default REST + workflows (login, invite, password-reset, MFA), `WfTrigger` decorator + provider, audit hooks, atscript annotations.
 
-Planned packages (see `TODO.md` for full roadmap):
+Internal:
 
-- `packages/arbac-core` — `@aoothjs/arbac-core` — zero-dep RBAC engine (from @prostojs/arbac)
-- `packages/arbac` — `@aoothjs/arbac` — re-exports arbac-core + builder API, privilege factories, scope merge
-- `packages/auth` — `@aoothjs/auth` — sessions, tokens, password reset, MFA flows
-- `packages/arbac-moost` — `@aoothjs/arbac-moost` — moost RBAC integration (from @moostjs/arbac)
-- `packages/auth-moost` — `@aoothjs/auth-moost` — moost auth controllers, guards, composables
-- `packages/atscript-plugin` — `@aoothjs/atscript-plugin` — `@aooth.*` annotations for .as models
+- `packages/e2e-demo` — `private: true`. Vite-node app that wires all the above against a real SQLite-backed `@atscript/db` schema. Source of truth for cross-package integration tests. Uses `.as` models compiled by `asc`; depends on every workspace package via `workspace:*`.
+
+## Architecture
+
+The stack is layered — each package depends only on the ones below it. Framework-agnostic cores stay portable; Moost integrations live in their own `-moost` packages.
+
+```
+        ┌──────────────────────── e2e-demo ────────────────────────┐
+        │                                                          │
+   auth-moost ──────────────── arbac-moost ─────── @moostjs/* + atscript
+        │                          │
+      auth                       arbac
+        │                          │
+      user                     arbac-core
+        │
+   @atscript/db (peer)
+```
+
+Cross-cutting patterns:
+
+- **Pluggable storage everywhere.** `UserStore<T>` (user — note: abstract base is singular; the `@atscript/db` impl is `UsersStoreAtscriptDb` with the legacy plural prefix), `CredentialStore` / `DenylistStore` (auth), and the atscript-db adapters are all abstract; in-memory implementations ship for tests, real adapters live alongside.
+- **`UserCredentials` is a TYPE, not a class.** The shape (`{ id, username, password, account, mfa, backupCodes?, trustedDevices? }`) lives in `packages/user/src/types.ts`. `UserService` reads/writes plain rows through the store; partial updates are expressed as `UserStoreUpdate { set, inc }` and applied by the store — there is no internal mutation-tracking class.
+- **Transferable password policies.** `PasswordPolicy` rules are string expressions evaluated via `@prostojs/ftring`, so the same policy can validate client- and server-side. Function-form rules are also supported but lose transferability.
+- **Generic user schema.** `UserService<T>`, `UserStore<T>`, `AuthCredential<TClaims>`, and the RBAC `TUserAttrs` generic all flow custom shapes through the stack — there is no fixed `User` type.
+- **Injectable clock.** `UserServiceConfig.clock` and `AuthCredentialOptions.clock` are top-level fields for deterministic lockout / refresh-grace / TOTP tests.
+- **Typed `ArbacDbScope<T>`** (arbac-moost): when an `.as` model is passed via `.as(Model)` on a `defineRole` builder, projection / `with` / controls / set keys autocomplete against the model's own fields and nav relations. The recursive `with` field expands to nested `ArbacDbScope` for joined resources (parent-authority model — no per-joined-resource re-eval).
+- **Atscript annotations.** `arbac-moost/src/atscript/` and `auth-moost/src/atscript/` define `.as` annotations consumed by `unplugin-atscript` so `.as` models can declare auth/RBAC metadata that the framework reads at runtime.
 
 ## TypeScript
 
-- `tsconfig.base.json`: shared config — `target: esnext`, `strict: true`, `moduleResolution: bundler`
-- Path aliases: `"@aoothjs/*"` → `./packages/*/src`
-- Node ≥ 22.12.0 required (`packageManager: pnpm@10.32.1`)
+- `tsconfig.base.json`: `target: esnext`, `strict: true`, `module: preserve`, `moduleResolution: bundler`, `verbatimModuleSyntax: true`, `noUnusedLocals: true`, `emitDeclarationOnly: true`.
+- Path aliases (root): `@aoothjs/*` → `./packages/*/src` with explicit overrides for sub-entry-points (`@aoothjs/user/atscript-db`, `@aoothjs/arbac-moost/atscript`, `@aoothjs/arbac-moost/plugin`, `@aoothjs/auth-moost/atscript`, and `arbac-core` → `./packages/arbac-core/src`). When adding a new sub-entry-point that consumers import, add it here too.
+- Node ≥ 22.12.0, `packageManager: pnpm@10.32.1`.
+- `pnpm.onlyBuiltDependencies` is restricted to `better-sqlite3`, `@atscript/db`, `@atscript/db-sqlite` — keep it tight when adding native-build deps.
 
 <!--VITE PLUS START-->
 

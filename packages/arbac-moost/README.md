@@ -1,214 +1,38 @@
-# @aoothjs/arbac-moost
+<p align="center">
+  <a href="https://aooth.moost.org">
+    <img src="https://aooth.moost.org/logo.svg" alt="aoothjs" width="120" />
+  </a>
+</p>
 
-Moost integration for `@aoothjs/arbac-core`. DI-injectable `MoostArbac`, an
-authorize interceptor at `GUARD` priority, decorators for declaring resources
-and actions, a `useArbac()` composable, and (under `/atscript`) auto-wired
-provider plumbing driven by `.as` user models annotated with `@arbac.*`.
+<h1 align="center">@aoothjs/arbac-moost</h1>
+
+<p align="center">
+  Moost RBAC integration — DI-injectable <code>MoostArbac</code>, an authorize interceptor, <code>@ArbacResource</code> / <code>@ArbacAction</code> decorators, <code>AsArbacDbController</code> for scoped DB controllers, and auto-wired provider plumbing for <code>.as</code> user models.
+</p>
+
+<p align="center">
+  <a href="https://aooth.moost.org/moost/"><strong>Documentation →</strong></a>
+</p>
+
+---
 
 ## Install
 
 ```bash
-pnpm add @aoothjs/arbac-moost @aoothjs/arbac-core
+pnpm add @aoothjs/arbac-moost @aoothjs/arbac @aoothjs/user
 ```
 
-Peer dependencies: `moost`, `@wooksjs/event-core`, `@wooksjs/event-http`. The
-`/atscript` sub-export additionally depends on `@atscript/typescript` and
-`@atscript/db` (both `optional` peers).
+## Documentation
 
-## Manual setup
+Full docs, API reference, and recipes: **https://aooth.moost.org/moost/**
 
-```ts
-import { Moost, createReplaceRegistry } from "moost";
-import {
-  MoostArbac,
-  ArbacUserProvider,
-  ArbacAuthorize,
-  ArbacResource,
-  ArbacAction,
-} from "@aoothjs/arbac-moost";
+- [Setup](https://aooth.moost.org/moost/setup)
+- [`@ArbacAuthorize`](https://aooth.moost.org/moost/arbac-authorize)
+- [DB controllers (`AsArbacDbController`)](https://aooth.moost.org/moost/db-controllers)
+- [Atscript wiring (`@arbac.*` annotations)](https://aooth.moost.org/moost/atscript)
+- [Decorators](https://aooth.moost.org/moost/decorators)
+- [API reference](https://aooth.moost.org/api/arbac-moost)
 
-class MyArbacUserProvider extends ArbacUserProvider<{ tenantId: string }> {
-  getUserId() {
-    return useAuth().getUserId();
-  }
-  async getRoles(id: string) {
-    return (await db.users.find(id)).roles;
-  }
-  async getAttrs(id: string) {
-    return { tenantId: (await db.users.find(id)).tenantId };
-  }
-}
+## License
 
-const moost = new Moost();
-moost.setReplaceRegistry(createReplaceRegistry([ArbacUserProvider, MyArbacUserProvider]));
-
-// Register roles
-const arbac = await moost.getInfact().get(MoostArbac);
-arbac.registerRole(adminRole);
-arbac.registerRole(editorRole);
-```
-
-## Decorators
-
-| Decorator           | Target               | Effect                                                              |
-| ------------------- | -------------------- | ------------------------------------------------------------------- |
-| `@ArbacAuthorize()` | Method / class       | Applies the authorize interceptor                                   |
-| `@ArbacResource(s)` | Method / class       | Sets the resource id for evaluation                                 |
-| `@ArbacAction(a)`   | Method / class       | Sets the action id for evaluation                                   |
-| `@ArbacScopes()`    | Parameter / property | Injects evaluated `scopes` returned by the role's `scope(attrs)` fn |
-
-To bypass ARBAC (and auth-moost's bearer guard at the same time), use the
-combined `@Public()` decorator from `@aoothjs/auth-moost` — it writes the
-`arbacPublic` mate flag the interceptor reads. There is intentionally no
-standalone arbac-only bypass decorator: opting out of authorization without
-also opting out of authentication is rarely desired and was a footgun.
-
-```ts
-@Controller("articles")
-@ArbacAuthorize()
-@ArbacResource("articles")
-class ArticlesController {
-  @Get(":id")
-  @ArbacAction("read")
-  async read(@Param("id") id: string, @ArbacScopes() scopes?: MyScope[]) {
-    return db.articles.find(id, { restrict: mergeScopes(scopes) });
-  }
-}
-```
-
-The interceptor runs at `GUARD` priority, throws `HttpError(403)` on deny,
-`HttpError(401)` on unexpected errors, and stores `scopes` in the event
-context on allow.
-
-## `useArbac()`
-
-```ts
-const { evaluate, getScopes, setScopes, resource, action, isPublic } = useArbac();
-const { allowed, scopes, userId } = await evaluate({ resource: "articles", action: "read" });
-```
-
-Read-only inside handlers; the authorize interceptor calls `evaluate()` and
-`setScopes()` for you when `@ArbacAuthorize()` is applied.
-
-## `/atscript` — auto-wired provider
-
-Sub-export at `@aoothjs/arbac-moost/atscript`. Pairs an `.as` user model
-annotated with `@arbac.*` to an auto-built `ArbacUserProvider`.
-
-### Annotation namespace
-
-| Annotation         | Targets | Purpose                                                                                                                                             |
-| ------------------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@arbac.role`      | prop    | THE source of role identifiers. Exactly one per type. Either inline (`string \| string[]`) or `@db.rel.from` nav prop. Multiple declarations throw. |
-| `@arbac.attribute` | prop    | Field becomes a user attribute keyed by its prop name. Multiple fields are merged into the `UserAttrs` map.                                         |
-| `@arbac.userId`    | prop    | Overrides the userId source. Resolution: `@arbac.userId` → field of `@db.table.preferredId.uniqueIndex` → `@meta.id`.                               |
-
-Register the plugin in your `atscript.config.ts`:
-
-```ts
-import arbacPlugin from "@aoothjs/arbac-moost/plugin";
-
-export default {
-  plugins: [arbacPlugin()],
-};
-```
-
-### `AoothArbacUserCredentials` base model
-
-Pre-applies `@arbac.role` to a `roles: string[]` field:
-
-```
-import { AoothArbacUserCredentials } from '@aoothjs/arbac-moost/atscript/models'
-
-@db.table 'users'
-export interface MyUser extends AoothArbacUserCredentials {
-    @meta.id
-    @db.default.uuid
-    id: string
-
-    @arbac.attribute
-    tenantId: string
-
-    @arbac.attribute
-    department: string
-}
-```
-
-### `AtscriptArbacUserProvider`
-
-Abstract `ArbacUserProvider` driven by a `.as` user type and a wrapped
-atscript-db readable. The consumer extends the class, implements
-`getUserId()`, injects their table, and registers the subclass via
-`setReplaceRegistry`:
-
-```ts
-import { AtscriptArbacUserProvider } from "@aoothjs/arbac-moost/atscript";
-import { ArbacUserProvider } from "@aoothjs/arbac-moost";
-import { useAuth } from "@aoothjs/auth-moost";
-import { createReplaceRegistry, Injectable } from "moost";
-import { MyUser } from "./models/user.as";
-
-// `@Injectable()` MUST be re-applied on every consumer subclass —
-// moost@0.6.x does not inherit injectable metadata across `extends`.
-@Injectable()
-class MyArbacUserProvider extends AtscriptArbacUserProvider<MyUser> {
-  constructor() {
-    // `usersTable` is your `@atscript/db` table (or any value implementing
-    // `{ findOne({ filter, controls }): Promise<MyUser | null> }`).
-    super(MyUser, usersTable);
-  }
-  override getUserId(): string {
-    return useAuth().getUserId();
-  }
-}
-moost.setReplaceRegistry(createReplaceRegistry([ArbacUserProvider, MyArbacUserProvider]));
-```
-
-The base constructor:
-
-1. Reads atscript runtime metadata for `userType` and resolves the userId
-   field by walking `@arbac.userId` → the single field of the
-   `@db.table.preferredId.uniqueIndex` group → `@meta.id`. Throws if none
-   of the three resolves.
-2. Detects the (single) `@arbac.role` field and classifies it as `inline`
-   (`string | string[]`) or `@db.rel.from` (joined role records). Throws
-   if more than one `@arbac.role` is declared.
-3. Computes a minimum SELECT projection covering id + inline role field +
-   attrs, and a `$with` clause when the role field is `@db.rel.from`.
-
-`getRoles(id)` and `getAttrs(id)` call `table.findOne({ filter:
-{ [userIdField]: id }, controls: { $select, $with? } })` and feed the
-record through the `protected extractRoles` / `extractAttrs` seams —
-override either to reshape the output without re-implementing the fetch.
-For `@db.rel.from` role fields the provider extracts role names from each
-joined record using the target type's identifier field (same chain:
-`@arbac.userId` → preferred unique index → `@meta.id`).
-
-#### Per-event memoization
-
-The base class caches the fetched record on the wooks event context,
-keyed by `(this, userId)`. Two calls — `getRoles(id) + getAttrs(id)` —
-share one DB read. Different subjects probed by the same event are
-cached independently (safe for admin handlers).
-
-Cross-request caching is **not** included. Auth changes (role revocation,
-attribute updates) reflect immediately on the next request.
-
-## API surface
-
-```ts
-// Main export
-export { Arbac, arbacPatternToRegex }; // re-exports @aoothjs/arbac-core
-export { MoostArbac };
-export { ArbacUserProvider };
-export { ArbacAuthorize, ArbacResource, ArbacAction, ArbacScopes };
-export { arbacAuthorizeInterceptor };
-export { useArbac };
-export type { TArbacCompiledRule, TArbacEvalResult, TArbacRole, TArbacRoleForResource, TArbacRule };
-
-// /atscript sub-export
-export { AtscriptArbacUserProvider, type ArbacUserTable, AoothArbacUserCredentials };
-
-// /plugin sub-export (atscript compile-time plugin)
-export default function arbacPlugin(): TAtscriptPlugin;
-```
+MIT

@@ -158,10 +158,7 @@ Dot-path aware: `isFieldAllowed('address.city', { 'address.city': 1 })` returns 
 The mergers above answer _"what does this user's access policy allow?"_. At query time you also have a client-requested projection — "give me only `name` and `email`". `restrictProjection` is the intersection of _desired_ ∩ _access-control_.
 
 ```ts
-function restrictProjection(
-  desired: TProjection | undefined,
-  accessControl: TProjection,
-): TProjection;
+function restrictProjection(desired: TProjection, accessControl: TProjection): TProjection;
 ```
 
 | Modes                            | Semantics                                                       |
@@ -185,10 +182,10 @@ Specific to `ArbacDbScope.controls` — gates Uniquery URL controls (`$with`, `$
 
 ```ts
 function unionControlsPolicy(
-  ...scopes: Pick<ArbacDbScope, "controls">[]
+  scopes: ReadonlyArray<Pick<ArbacDbScope, "controls">>,
 ): Record<string, ControlGate>;
 
-type ControlGate = true | false | readonly string[];
+type ControlGate = boolean | readonly string[];
 ```
 
 ### `ControlGate` semantics
@@ -221,28 +218,30 @@ If **any** input scope lacks a `controls` map entirely, `unionControlsPolicy` re
 import { unionControlsPolicy } from "@aoothjs/arbac";
 
 // One role with no controls map → all controls allowed.
-unionControlsPolicy(
+unionControlsPolicy([
   { controls: { $with: ["author"] } },
   {}, // no controls key at all
-);
+]);
 // → {}
 
-// Both roles deny $groupBy explicitly.
-unionControlsPolicy(
+// Both roles deny $groupBy explicitly; second role whitelists $with.
+// First scope is silent on $with (the key isn't present in its controls map) —
+// silence = allow, so the $with key drops out of the result.
+unionControlsPolicy([
   { controls: { $groupBy: false } },
   { controls: { $groupBy: false, $with: ["author"] } },
-);
-// → { $groupBy: false }   // $with absent because second scope's array is implicit-allow when first is silent? See note.
+]);
+// → { $groupBy: false }
 
 // Both roles whitelist $with — union the arrays.
-unionControlsPolicy(
+unionControlsPolicy([
   { controls: { $with: ["author"] } },
   { controls: { $with: ["comments", "author"] } },
-);
+]);
 // → { $with: ['author', 'comments'] }   // sorted, deduplicated
 
 // Mix of deny + whitelist for $with.
-unionControlsPolicy({ controls: { $with: false } }, { controls: { $with: ["author"] } });
+unionControlsPolicy([{ controls: { $with: false } }, { controls: { $with: ["author"] } }]);
 // → { $with: ['author'] }   // whitelist union; the deny dissolves
 ```
 
@@ -265,7 +264,7 @@ if (!r.allowed) throw new ForbiddenError();
 const filter = mergeScopeFilters(r.scopes.map((s) => s.filter).filter(Boolean));
 const acProjection = unionProjections(...r.scopes.map((s) => s.projection ?? {}));
 const projection = restrictProjection(req.query.fields, acProjection);
-const controls = unionControlsPolicy(...r.scopes);
+const controls = unionControlsPolicy(r.scopes);
 
 const rows = await db.find({
   filter: { ...req.query.filter, ...filter },

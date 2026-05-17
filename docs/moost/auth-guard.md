@@ -14,11 +14,7 @@ A factory that returns a `defineBeforeInterceptor` at `TInterceptorPriority.GUAR
 
 ### Event-kind contract
 
-The guard is **HTTP-only**. On non-HTTP events (WF, CLI, WS) it is a no-op:
-
-```ts
-if (ctx.get(eventTypeKey) !== "http") return;
-```
+The guard is **HTTP-only**. On non-HTTP events (WF, CLI, WS) it is a no-op.
 
 Workflow child events started with `start({ eventContext: current() })` still see the parent HTTP event's `AuthContext` through Moost's `parent` chain — so `useAuth()` inside a `@Step` reads the original HTTP request's user.
 
@@ -85,7 +81,7 @@ auth.isAuthenticated();         // boolean
 auth.getAuthContext();          // AuthContext | null
 auth.getUserId();               // string  — throws 401 if null
 auth.options;                   // ResolvedAuthOptions — throws 500 if no guard
-auth.extractToken();            // { token, source: 'bearer' | 'cookie' } | undefined
+auth.extractToken();            // string | undefined
 auth.writeCookies(issueResult); // set Set-Cookie headers
 auth.clearCookies();            // clear both cookies
 auth.buildLoginResponse(uid, issue);    // AuthLoginResponse
@@ -120,9 +116,9 @@ Returns the resolved options object stashed by the factory. **Throws `HttpError(
 This is intentional. The package treats "the guard never ran" as a deployment bug, not a runtime condition. If you need the auth options inside a non-HTTP event, attach `authGuardInterceptor` to a parent HTTP event (workflows naturally inherit it through Moost's `parent` chain).
 :::
 
-### `extractToken(): { token, source } | undefined`
+### `extractToken(): string | undefined`
 
-Same Bearer-wins precedence as the guard. Returns `undefined` when no token is present at all.
+Same Bearer-wins precedence as the guard. Returns the raw token string, or `undefined` when no token is present at all.
 
 ### `writeCookies(issue: IssueResult)` / `clearCookies()`
 

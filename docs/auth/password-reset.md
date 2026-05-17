@@ -25,8 +25,13 @@ const token = generateMagicLinkToken(); // 43 chars, base64url, URL-safe
 
 ### Step 2 — store it with a TTL
 
+`AuthCredential.store` is `private readonly`, so keep your own reference to the store after construction and call `persist` / `consume` on it directly:
+
 ```ts
-await auth.store.persist(
+const store = new CredentialStoreAtscriptDb({ table });
+const auth = new AuthCredential({ store, accessTtl: 15 * 60 * 1000 });
+
+await store.persist(
   {
     userId,
     issuedAt: now,
@@ -38,6 +43,23 @@ await auth.store.persist(
 ```
 
 Use the same `CredentialStore` you already have — the magic-link token lives in the same table / Redis namespace / JWT denylist as the rest of your credentials. See [Magic Links — Storage pattern](./magic-links#storage-pattern).
+
+::: danger Don't reuse `kind: 'access'` for single-use tokens
+When a single-use token is persisted with `kind: 'access'` (or no `kind`), it can be presented as a bearer token to `auth.validate()` — the validator only filters on `kind === 'refresh'` and lets everything else through. A leaked or mis-routed recovery token then becomes a working access token.
+
+Always either:
+
+1. Persist with a **distinct `kind`** (`'magic.recovery'`, `'magic.login'`, `'magic.invite'`, etc.) and check it explicitly after `consume`, OR
+2. Discriminate by `metadata.label` and have your auth guard reject any unknown label.
+
+```ts
+// guard
+const state = await auth.validate(presentedToken);
+if (!state) throw new HttpError(401);
+if (state.kind && state.kind !== "access") throw new HttpError(401); // reject magic kinds
+```
+
+:::
 
 ### Step 3 — send the email
 
@@ -56,7 +78,7 @@ await emailSender.send({
 ### Step 4 — verify, change password, re-issue
 
 ```ts
-const state = await auth.store.consume(token);
+const state = await store.consume(token); // use the same `store` reference from step 2
 if (!state || state.kind !== "magic.recovery") {
   throw new HttpError(401, "invalid or expired link");
 }
@@ -88,8 +110,10 @@ declare const users: {
 declare const emailSender: EmailSender;
 declare const table: import("@aoothjs/auth/atscript-db").AuthCredentialTable;
 
+// Bind the store separately — `AuthCredential.store` is `private readonly`.
+const store = new CredentialStoreAtscriptDb({ table });
 const auth = new AuthCredential<{ roles: string[] }>({
-  store: new CredentialStoreAtscriptDb({ table }),
+  store,
   accessTtl: 15 * 60 * 1000,
 });
 
@@ -105,10 +129,7 @@ async function startRecovery(email: string) {
   const now = Date.now();
   const ttl = 15 * 60 * 1000;
 
-  await auth.store.persist(
-    { userId, issuedAt: now, expiresAt: now + ttl, kind: "magic.recovery" },
-    ttl,
-  );
+  await store.persist({ userId, issuedAt: now, expiresAt: now + ttl, kind: "magic.recovery" }, ttl);
   await emailSender.send({
     kind: "recovery.magicLink",
     recipient: email,
@@ -119,7 +140,7 @@ async function startRecovery(email: string) {
 
 // ─── finish of recovery ─────────────────────────────────────
 async function finishRecovery(token: string, newPassword: string) {
-  const state = await auth.store.consume(token);
+  const state = await store.consume(token);
   if (!state || state.kind !== "magic.recovery") {
     throw new HttpError(401, "invalid or expired link");
   }
@@ -171,7 +192,7 @@ Short TTLs reduce the exploit window for an intercepted email. Avoid sending two
 For multi-tenant apps, double-check that the `userId` decoded from the consumed state belongs to the tenant in the current request context:
 
 ```ts
-const state = await auth.store.consume(token);
+const state = await store.consume(token);
 if (!state || state.kind !== "magic.recovery") throw new HttpError(401);
 if (state.claims?.tenantId !== currentTenantId) throw new HttpError(401);
 ```

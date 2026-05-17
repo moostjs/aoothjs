@@ -25,7 +25,7 @@ interface AuthCredentialOptions<TClaims extends object> {
   refresh?: RefreshConfig;
   denylist?: DenylistStore;
   maxConcurrent?: number;
-  onLimit?: "reject" | "kickPrompt";
+  onLimit?: "reject" | "evict-oldest";
   clock?: Clock;
 }
 ```
@@ -73,8 +73,6 @@ issue(
   options?: {
     claims?: TClaims;
     metadata?: CredentialMetadata;
-    accessTtl?: number;
-    refreshTtl?: number;
   },
 ): Promise<IssueResult>;
 
@@ -102,16 +100,16 @@ const { accessToken, refreshToken, accessExpiresAt } = await auth.issue("alice",
 });
 ```
 
-The per-call `accessTtl` / `refreshTtl` override the constructor defaults. Use sparingly — workflows like "remember me" pass a longer `refreshTtl`.
+TTLs are pinned at construction (`accessTtl`, `refresh.ttl`). There is no per-call TTL override on `issue()` — workflows that need "remember me" must construct a second `AuthCredential` with a longer-lived `refresh.ttl`.
 
 ### `maxConcurrent` and `onLimit`
 
 `maxConcurrent` is an integer cap on live **access** credentials per user. Refresh tokens are excluded from the count. The orchestrator counts via `store.listForUser(userId)` — stateful stores only. Stateless stores cannot enumerate, so `maxConcurrent` is silently a no-op on JWT / Encapsulated stores.
 
-| `onLimit`            | Behavior                                                                                                                                                                                |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `'reject'` (default) | Throws `AuthError('MAX_CONCURRENT_REACHED')` with `details: { userId, max, current }`.                                                                                                  |
-| `'kickPrompt'`       | Throws `AuthError('MAX_CONCURRENT_REACHED')` with the same payload — the framework integration uses this hint to render a "kick another device" prompt before retrying with `revoke()`. |
+| `onLimit`            | Behavior                                                                                                                                                                                             |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `'reject'` (default) | Throws `AuthError('MAX_CONCURRENT_REACHED')` with `details: { userId, limit, active }`.                                                                                                              |
+| `'evict-oldest'`     | Revokes the access credentials with the smallest `issuedAt` (oldest first) until the user is under the cap, then proceeds with the new `issue()`. Refresh tokens are unaffected. No error is thrown. |
 
 ::: tip Refresh tokens are free
 Long-lived refresh credentials don't count toward `maxConcurrent`. A user on three devices with `maxConcurrent: 3` has three access slots; the refresh tokens behind them don't tip the count.
@@ -239,14 +237,10 @@ revokeAllForUser(userId: string): Promise<number>;
 
 **Returns the count** of credentials revoked. Stateful stores return the actual row count. Stateless stores return the sentinel `1` to mean "the per-user revocation epoch was bumped" — the actual number of tokens affected isn't knowable without enumeration.
 
-**The epoch gate** (stateless only). Stateless stores keep a `Map<userId, epochMs>`. On `revokeAllForUser`, the entry is set to `clock.now()`. On `retrieve`, any token with `iatMs < epoch` is rejected. The gate uses `>=` not `>` — see the next callout.
+**Behavior:** after `revokeAllForUser(userId)`, every previously-issued credential for that user becomes invalid. Credentials issued **after** the call (including in the same millisecond) remain valid — this is what enables auto-login immediately after a password reset. See [Refresh — Epoch revocation gate](./refresh#epoch-revocation-gate-stateless-only) for the full mechanics and the durable-store caveats.
 
-::: warning Stateless epoch is in-memory
-The default `CredentialStoreJwt` keeps the epoch map in process memory. A restart loses it; multi-instance deployments lose it across nodes. For durable per-user revocation on JWT, back the epoch map with Redis or atscript — see [Stores](./stores).
-:::
-
-::: tip Same-ms `>=` gate
-The gate is `iatMs < epoch`, i.e. `iatMs >= epoch` survives. This is load-bearing for recovery: the workflow can `revokeAllForUser(userId)` and then immediately `issue(userId, ...)` in the same millisecond and the new credential survives the gate. Auto-login after password reset depends on this.
+::: warning Stateless epoch is in-memory by default
+The default `CredentialStoreJwt` tracks per-user revocation in process memory. A restart loses it; multi-instance deployments lose it across nodes. For durable per-user revocation on JWT, back it with Redis or atscript — see [Stores](./stores).
 :::
 
 ## `listForUser(userId)`

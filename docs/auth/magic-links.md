@@ -74,6 +74,23 @@ The state shape:
 
 `kind` is a free string on `CredentialState` (the orchestrator only cares about `'access'` / `'refresh'`). Use it to disambiguate magic-link tokens from regular access tokens when reading the store directly.
 
+::: danger Don't reuse `kind: 'access'` for magic-link tokens
+When a magic-link token is persisted with `kind: 'access'` (or no `kind`), it can be presented as a bearer token to `auth.validate()` — the validator only filters on `kind === 'refresh'` and lets everything else through. A magic link sent via email then becomes a working access token until it's consumed.
+
+Always either:
+
+1. Persist with a **distinct `kind`** (`'magic.recovery'`, `'magic.login'`, `'magic.invite'`, etc.) and reject unknown kinds in your auth guard, OR
+2. Discriminate by `metadata.label` and reject unknown labels in the guard.
+
+```ts
+// guard — reject any state that isn't a normal access token
+const state = await auth.validate(bearer);
+if (!state) throw new HttpError(401);
+if (state.kind && state.kind !== "access") throw new HttpError(401);
+```
+
+:::
+
 ### Issue: persist + email
 
 ```ts
@@ -155,8 +172,12 @@ import {
   type EmailSender,
 } from "@aoothjs/auth";
 
+// Bind the store separately — `AuthCredential.store` is `private readonly` and
+// is not accessible from outside the class. Keep your own reference for the
+// direct `persist` / `consume` calls magic-link flows need.
+const store = new CredentialStoreAtscriptDb({ table });
 const auth = new AuthCredential({
-  store: new CredentialStoreAtscriptDb({ table }),
+  store,
   accessTtl: 15 * 60 * 1000,
 });
 
@@ -177,7 +198,7 @@ async function requestRecovery(email: string) {
   const now = Date.now();
   const ttl = 15 * 60 * 1000;
 
-  await auth.store!.persist(
+  await store.persist(
     {
       userId,
       issuedAt: now,
@@ -198,7 +219,7 @@ async function requestRecovery(email: string) {
 
 // --- Step 2: user clicks the link, sets a new password ---
 async function finishRecovery(token: string, newPassword: string) {
-  const state = await auth.store!.consume(token);
+  const state = await store.consume(token);
   if (!state || state.kind !== "magic.recovery") {
     throw new HttpError(401, "invalid or expired link");
   }

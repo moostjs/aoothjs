@@ -47,7 +47,7 @@
 
 - `@aoothjs/auth` depends on `@aoothjs/user` for the credential record shape and password verification.
 - `@aoothjs/auth-moost` depends on both `@aoothjs/user` and `@aoothjs/auth` — workflows orchestrate `UserService` calls and store tokens via `AuthCredential`.
-- `@aoothjs/arbac-moost` depends only on `@aoothjs/arbac-core`. It does NOT depend on `@aoothjs/arbac` — apps that want the builder/codegen layer install it separately.
+- `@aoothjs/arbac-moost` depends on `@aoothjs/arbac-core`, `@aoothjs/arbac` (re-exports `ControlGate`, scope-merge helpers used by the DB controllers), and `@aoothjs/user` (for `UserCredentials` typing on the atscript provider) — all as runtime workspace deps.
 - `@aoothjs/arbac-moost` and `@aoothjs/auth-moost` have **no dependency on each other**. They are bound only at the app's `Moost.applyGlobalInterceptors(...)` boundary. You can use either independently.
 
 ## What each package owns vs. delegates

@@ -22,7 +22,7 @@ patterns (`UserStoreMemory` + `FAST_SCRYPT` + injectable clock).
 pnpm add @aoothjs/user @aoothjs/arbac
 
 # Credential layer
-pnpm add @aoothjs/auth jose
+pnpm add @aoothjs/auth
 
 # Pick at most one persistence backend (or stay in-memory for tests)
 pnpm add @atscript/db @atscript/db-sqlite better-sqlite3   # atscript-db SQLite
@@ -39,13 +39,17 @@ pnpm add -D unplugin-atscript @atscript/typescript @atscript/core
 `atscript.config.ts` — register the arbac plugin so `.as` files type-check `@arbac.*`:
 
 ```ts
-import { defineAtscriptConfig } from "@atscript/typescript";
 import arbacPlugin from "@aoothjs/arbac-moost/plugin";
+import { defineConfig } from "@atscript/core";
+import dbPlugin from "@atscript/db/plugin";
+import wfPlugin from "@atscript/moost-wf/plugin";
+import ts from "@atscript/typescript";
 
-export default defineAtscriptConfig({
+export default defineConfig({
   rootDir: "src",
-  outDir: ".atscript",
-  plugins: [arbacPlugin()],
+  plugins: [ts(), dbPlugin(), wfPlugin(), arbacPlugin()],
+  format: "dts",
+  unknownAnnotation: "warn",
 });
 ```
 
@@ -58,7 +62,7 @@ import { UserService, UserStoreMemory } from "@aoothjs/user";
 import { Arbac, defineRole, allowTableRead } from "@aoothjs/arbac";
 
 const users = new UserService(new UserStoreMemory(), {
-  pepper: process.env.AOOTH_PEPPER ?? "",
+  password: { pepper: process.env.AOOTH_PEPPER ?? "" },
 });
 
 await users.createUser("alice", "CorrectHorse42!");
@@ -100,7 +104,7 @@ The atscript path:
 
 ```ts
 // src/models/app-user.as
-import { AoothArbacUserCredentials } from '@aoothjs/arbac-moost/atscript/models/user'
+import { AoothArbacUserCredentials } from '@aoothjs/arbac-moost/atscript/models'
 
 @db.table 'users'
 export interface AppUser extends AoothArbacUserCredentials {
@@ -132,8 +136,8 @@ import { CredentialStoreAtscriptDb } from "@aoothjs/auth/atscript-db";
 const db = new DbSpace(() => new SqliteAdapter(new BetterSqlite3Driver("./app.db")));
 await syncSchema(db, [AppUser, AoothAuthCredential]);
 
-const userStore = new UsersStoreAtscriptDb({
-  table: db.getTable(AppUser) as unknown as AuthUserTable,
+const userStore = new UsersStoreAtscriptDb<AppUser>({
+  table: db.getTable(AppUser) as unknown as AuthUserTable<AppUser>,
 });
 const tokenStore = new CredentialStoreAtscriptDb({
   table: db.getTable(AoothAuthCredential),
@@ -191,8 +195,7 @@ For asymmetric algorithms (`RS*` / `ES*` / `EdDSA`) you pass both `privateKey` a
 const FAST_SCRYPT = { scryptN: 1024, scryptR: 1, scryptP: 1, keyLength: 32 } as const;
 
 const svc = new UserService(new UserStoreMemory(), {
-  pepper: "test-pepper",
-  password: FAST_SCRYPT,
+  password: { pepper: "test-pepper", ...FAST_SCRYPT },
 });
 ```
 
@@ -225,6 +228,8 @@ await expect(auth.refresh(stolenToken)).rejects.toMatchObject({
 });
 ```
 
-For workflow tests, use the `loginAs` harness pattern from the e2e demo — drive
-`POST /auth/trigger` until `WfFinished` envelope's `end.action === 'data'`, then
-extract `body.cookies` and replay them on subsequent requests.
+For workflow tests, use the `loginAs` harness from
+`packages/e2e-demo/test/harness.ts` (`const loginAs = async (user) => …`) —
+drive `POST /auth/trigger` until the `WfFinished` envelope's
+`end.action === 'data'`, then extract `body.cookies` and replay them on
+subsequent requests.

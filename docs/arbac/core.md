@@ -13,12 +13,12 @@ class Arbac<TUserAttrs extends object, TScope extends object> {
   constructor();
   registerRole(role: TArbacRole<TUserAttrs, TScope>): this;
   registerResource(resource: string): this;
-  evaluate(
+  evaluate<T extends string | undefined>(
     res: { resource: string; action: string },
     user: {
-      id: unknown;
+      id: T;
       roles: string[];
-      attrs: TUserAttrs | ((id: unknown) => TUserAttrs | Promise<TUserAttrs>);
+      attrs: TUserAttrs | ((id: T) => TUserAttrs | Promise<TUserAttrs>);
     },
   ): Promise<TArbacEvalResult<TScope>>;
 }
@@ -113,14 +113,17 @@ The implementation runs these steps, in order:
 5. **Allow pass.** Iterate every resolved role's allow list. For each match:
    - If the rule has a `scope` fn — lazily resolve `userAttrs`, then push `rule.scope(userAttrs, String(user.id))`.
    - Otherwise push `{}` (the universe sentinel).
-6. **Return** `allowed ? { allowed: true, scopes } : { allowed: false }`.
+6. **Return** `allowed ? { allowed: true, scopes } : { allowed: false }` (branches on the `allowed` flag — at least one allow rule matched — not on `scopes.length`; a universe-sentinel `{}` still counts as a match).
 
 A few invariants follow directly:
 
 - Deny precedes allow. There is no specificity weighting.
 - No precedence among roles. Allow scopes from multiple roles are concatenated.
 - `user.id` is stringified before being passed to scope fns: `rule.scope(userAttrs, String(user.id))`.
-- Side effect: `_resourceRegex` / `_actionRegex` are written onto your original rule objects during pre-compilation. Don't `Object.freeze()` rules before registration.
+
+::: info Implementation notes
+The engine mutates rule objects during pre-compilation to attach internal regex caches. Don't `Object.freeze()` rule literals before registration.
+:::
 
 ## Type reference
 
@@ -144,7 +147,7 @@ applyToQuery(r.scopes); // TS narrows scopes to TScope[]
 ### `TArbacRole<TUserAttrs, TScope>`
 
 ```ts
-interface TArbacRole<TUserAttrs extends object, TScope extends object> {
+interface TArbacRole<TUserAttrs, TScope> {
   id: string;
   name?: string;
   description?: string;
@@ -181,30 +184,18 @@ Two consequences:
 
 ## `arbacPatternToRegex(input: string): RegExp`
 
-The wildcard matcher exposed for inspection or reuse. Five substitutions:
+```ts
+function arbacPatternToRegex(input: string): RegExp;
+```
+
+The wildcard matcher exposed for inspection or reuse. `*` matches a single dot-separated segment; `**` matches across segments. The `.` separator is hard-coded.
 
 ```ts
 import { arbacPatternToRegex } from "@aoothjs/arbac";
 
 arbacPatternToRegex("com.resource.db.*");
 // → /^com\.resource\.db\.[^.]*$/
-
-arbacPatternToRegex("com.resource.**");
-// → /^com\.resource\..*$/
-
-arbacPatternToRegex("*");
-// → /^[^.]*$/
 ```
-
-The rules:
-
-1. Escape regex metacharacters except `*`.
-2. Replace `**` with a placeholder.
-3. Replace `*` with `[^.]*` (single segment).
-4. Replace the placeholder with `.*` (multi-segment).
-5. Anchor: `^…$`.
-
-The `.` separator is hard-coded.
 
 ## Worked example — two roles, three scopes
 

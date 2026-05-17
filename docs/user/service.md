@@ -51,7 +51,7 @@ user.tenantId; // ← typed as string
 | `password.scryptR`       | `number`              | `8`        | scrypt block size.                                                                                            |
 | `password.scryptP`       | `number`              | `1`        | scrypt parallelization.                                                                                       |
 | `password.keyLength`     | `number`              | `64`       | Derived key length in bytes.                                                                                  |
-| `policies`               | `PasswordPolicyDef[]` | `[]`       | Password rules enforced by `changePassword`/`setPassword`. See [Policies](./policy).                          |
+| `password.policies`      | `PasswordPolicyDef[]` | `[]`       | Password rules enforced by `changePassword`/`setPassword`. See [Policies](./policy).                          |
 | `lockout.threshold`      | `number`              | `0`        | Failed-login attempts before auto-locking. `0` disables lockout.                                              |
 | `lockout.duration`       | `number`              | `0`        | Lock duration in ms. `0` ⇒ permanent.                                                                         |
 | `deviceTrust.secret`     | `string`              | —          | HMAC key for trusted-device tokens. Required to call any `*TrustedDevice` method.                             |
@@ -63,21 +63,14 @@ Losing the pepper invalidates every stored hash. Treat it like a database master
 
 ## Login flow
 
-```
-UserService.login(username, password)
-├─ store.findByUsername                 →  NOT_FOUND if null
-├─ account.active === false             →  throw INACTIVE
-├─ ensureNotLockedOrThrow               →  auto-unlock if lockEnds<now, else LOCKED
-├─ PasswordHasher.verify
-│    ├─ success
-│    │   └─ store.update({ set: { account: { lastLogin, failedLoginAttempts: 0 } } })
-│    │       → return { user, mfaRequired: hasConfirmedMfaMethods(mfa) }
-│    └─ failure
-│        └─ incrementAndMaybeLock
-│            ├─ store.update({ inc: { "account.failedLoginAttempts": 1 } })
-│            ├─ if threshold tripped → set { locked, lockReason, lockEnds }
-│            └─ throw INVALID_CREDENTIALS (with details.lockEnds when lock fired)
-```
+`UserService.login(username, password)`:
+
+1. Look up the user — throws `NOT_FOUND` if missing.
+2. Reject if `account.active === false` — throws `INACTIVE`.
+3. Reject if locked (auto-unlocks when `lockEnds` is past) — throws `LOCKED`.
+4. Verify the password:
+   - On success: resets `failedLoginAttempts`, stamps `lastLogin`, returns `{ user, mfaRequired }` where `mfaRequired` is `true` iff at least one confirmed MFA method exists.
+   - On failure: increments `failedLoginAttempts`; if the configured threshold is hit, sets `locked`/`lockReason`/`lockEnds`; throws `INVALID_CREDENTIALS` (with `details.lockEnds` when the lock fired on this attempt).
 
 `verifyMfa` shares this exact lockout counter — total tries across `login + verifyMfa` is `threshold`, not `2 × threshold`.
 
@@ -207,7 +200,7 @@ setPassword(username: string, newPassword: string): Promise<void>
 ### `update`
 
 ```ts
-update(username: string, patch: DeepPartial<UserCredentials & T>): Promise<UserCredentials & T>
+update(username: string, patch: Partial<UserCredentials & T>): Promise<UserCredentials & T>
 ```
 
 Deep-merges the patch via `store.update({ set })` and returns the re-read record.
@@ -229,7 +222,7 @@ The expiry check is `lockEnds > 0 && lockEnds < now`. `0` is "no expiry", not "n
 
 ```ts
 getLockStatus(account: AccountData): LockStatus
-// LockStatus = { locked: boolean; lockEnds?: number; expired: boolean }
+// LockStatus = { locked: boolean; expired: boolean; reason: string; lockEnds: number }
 ```
 
 `expired` is `true` only when `lockEnds > 0 && lockEnds < now`. Callers use that to auto-unlock at the boundary.
@@ -241,7 +234,7 @@ checkPolicies(
   password: string,
   passwordData?: PasswordData,
 ): Promise<PolicyCheckResult>
-// PolicyCheckResult = { passed: boolean; policies: { description, passed, errorMessage? }[] }
+// PolicyCheckResult = { passed: boolean; policies: { description: string, passed: boolean }[]; errors: string[] }
 ```
 
 Passing `passwordData` lets policies reason about `lastChanged` / `history`.
@@ -296,7 +289,7 @@ revokeTrustedDevice(username: string, token: string): Promise<void>
 listTrustedDevices(username: string): Promise<TrustedDeviceRecord[]>
 ```
 
-Token format: `<raw-b64u>.<hmac(userId|raw|ip)>`. `verifyTrustedDevice` re-computes the HMAC, checks expiry, and (when issued with an `ip`) requires the same IP.
+The token is an opaque HMAC-signed string bound to the user (and optionally their IP). `verifyTrustedDevice` validates the signature, checks expiry, and (when issued with an `ip`) requires the same IP.
 
 ::: warning Requires `deviceTrust.secret`
 Any trusted-device call throws a plain `Error` if `config.deviceTrust.secret` was not set on the service.
@@ -323,17 +316,6 @@ now += 60_001;
 await users.login("alice", "correct"); // ✓ auto-unlock
 ```
 
-## `FAST_SCRYPT` test idiom
-
-For unit tests, override scrypt cost to single-digit ms:
-
-```ts
-const FAST_SCRYPT = { scryptN: 1024, scryptR: 1, scryptP: 1, keyLength: 32 };
-const users = new UserService(store, { password: FAST_SCRYPT });
-```
-
-The hash strings are self-describing, so production hashes (`N=16384`) and test hashes (`N=1024`) coexist without breaking verification.
-
 ## Escape hatches
 
 ```ts
@@ -342,3 +324,14 @@ users.getConfig(); // → Readonly<ResolvedConfig>
 ```
 
 Use sparingly — anything that should be reusable across consumers belongs as a first-class method on `UserService`.
+
+## Testing
+
+For unit tests, lower the scrypt cost so each hash takes single-digit ms instead of the production ~100 ms target:
+
+```ts
+const FAST_SCRYPT = { scryptN: 1024, scryptR: 1, scryptP: 1, keyLength: 32 };
+const users = new UserService(store, { password: FAST_SCRYPT });
+```
+
+Hashes are self-describing, so production and test hashes coexist without breaking verification — useful when seeding fixtures from a snapshot.

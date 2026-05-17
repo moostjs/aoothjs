@@ -45,6 +45,17 @@ async function issueRecoveryLink(userId: string, email: string) {
   // we set our own token id rather than letting the store generate one.
   // For stores that DO own token-id generation (Memory / Redis / AtscriptDb),
   // call store.persist() and use the returned id instead.
+  //
+  // SECURITY WARNING: `kind: 'access'` here means the magic-link token is
+  // ALSO a valid bearer access token — `AuthCredential.validate()` only
+  // filters out `kind === 'refresh'` (see auth-credential.ts validate()),
+  // it does NOT filter on the `metadata.label` discriminator. Any holder of
+  // the magic-link token can pass it as `Authorization: Bearer <token>` and
+  // pass authentication. If you need the link to be redemption-only, persist
+  // with a distinct `kind` (e.g. `'magic.recovery'`) and check it on
+  // `consume`, OR check `state.metadata?.label` explicitly before honoring
+  // the bearer use. The shipped auth-moost workflows accept the bearer
+  // collapse as the trade-off for using one store / one table.
   await store.persist(
     {
       userId,
@@ -150,6 +161,14 @@ async function requestRecovery(
 
   const token = generateMagicLinkToken();
   const expiresAt = Date.now() + 15 * 60 * 1000;
+  // SECURITY WARNING: `kind: 'access'` makes this magic-link token
+  // accept as a regular bearer token via `auth.validate()` — the only
+  // kind filter there is `kind === 'refresh'`. If you do NOT want the
+  // recipient to be able to call your API with the raw link token, use a
+  // distinct `kind` like `'magic.recovery'` and reject it explicitly in
+  // any custom auth guard (or check `state.metadata?.label` before
+  // accepting the bearer use). The shipped auth-moost workflows accept
+  // this collapse as a trade-off for using one shared store.
   await store.persist(
     {
       userId,

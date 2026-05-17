@@ -168,20 +168,16 @@ Returns `user.trustedDevices ?? []`. Throws `NOT_FOUND` if the user is missing.
 
 `UserService.login(username, password)` runs:
 
-1. `store.findByUsername(username)` → `null` → throw `NOT_FOUND`.
-2. `user.account.active === false` → throw `INACTIVE`.
-3. `ensureNotLockedOrThrow(username, account)`:
-   - Not locked → continue.
-   - Locked but `lockEnds > 0 && lockEnds < clock()` → auto-unlock (`set: { account: { locked: false, lockReason: "", lockEnds: 0 } }`), continue.
-   - Otherwise → throw `LOCKED` with `details = { reason, lockEnds }`.
-4. `hasher.verify(password, user.password.hash)` — re-derives with **parsed** N/r/p/keyLength out of the hash string + the configured pepper.
-5. Success:
-   - `store.update({ set: { account: { lastLogin: clock(), failedLoginAttempts: 0 } } })`.
-   - Patch the in-memory `user` (no re-read).
+1. Look up the user — throw `NOT_FOUND` if missing.
+2. Reject if `account.active === false` — throw `INACTIVE`.
+3. Reject if locked — auto-unlocks when `lockEnds > 0 && lockEnds < clock()`; otherwise throws `LOCKED` with `details = { reason, lockEnds }`.
+4. Verify the password using the parameters baked into the stored hash + the configured pepper.
+5. On success:
+   - Persist `{ set: { account: { lastLogin: clock(), failedLoginAttempts: 0 } } }`.
    - Return `{ user, mfaRequired: mfa.methods.some(m => m.confirmed) }`.
-6. Failure → `incrementAndMaybeLock(username, account, "INVALID_CREDENTIALS")`:
-   - Always `inc: { "account.failedLoginAttempts": 1 }`.
-   - If `threshold > 0 && (attempts + 1) >= threshold`: also `set: { account: { locked: true, lockReason: "Too many login attempts", lockEnds: duration ? now + duration : 0 } }` and throw `INVALID_CREDENTIALS` with `details = { lockEnds }`.
+6. On failure:
+   - Always increment `account.failedLoginAttempts`.
+   - If the configured threshold is hit, also set `locked`/`lockReason`/`lockEnds` and throw `INVALID_CREDENTIALS` with `details = { lockEnds }`.
    - Otherwise throw `INVALID_CREDENTIALS` with no details.
 
 `verifyMfa` shares step 3 + 6 — both factors burn the same counter, so the user gets `threshold` total tries across password and TOTP, not `2 × threshold`.

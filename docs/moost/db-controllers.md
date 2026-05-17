@@ -17,15 +17,15 @@ Use `AsArbacDbReadableController<T>` when:
 
 The class wires four protected hooks of `@atscript/moost-db`'s base controller:
 
-| Hook                              | What it does                                                                                                                                                                                                                                                              |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `transformFilter(filter)`         | Calls `arbac.evaluate<ArbacDbScope>()` once per event, caches scopes via `arbac.setScopes`, merges user filter with the **UNION of scope filters** using `$and: [merged, userFilter]` (never object spread). On deny returns `DENY_FILTER = { $or: [] }` (match-nothing). |
-| `transformProjection(projection)` | Unions per-scope `projection` whitelists and `restrictProjection`s the user projection to that union.                                                                                                                                                                     |
-| `validateControls(controls, ...)` | Runs the parent validator; then invokes `enforceControlsPolicy(unionControlsPolicy(scopes), controls)`. Violations throw `HttpError(403)`.                                                                                                                                |
-| `applyMetaOverlay(meta)`          | For `/meta`, evaluates ARBAC in parallel for every declared action and CRUD op, filters `meta.actions` and `meta.crud` so the UI only sees ops the caller can invoke. Memoized per-class action-meta map.                                                                 |
-| `onWrite(action, data)`           | For non-insert writes: `assertInScope(data, scopes)` first; then `applyAllowedFieldsAndSet(data, scopes, identifierFields)` strips fields outside the union of `allowedFields` (**auto-preserving PK + unique-index columns**) and overlays `set` defaults.               |
-| `onRemove(id)`                    | `assertInScope(id, scopes)`.                                                                                                                                                                                                                                              |
-| `assertInScope(idOrIds, scopes)`  | Issues `table.count` with `{ $and: [resolveIdFilter(id), mergedScopeFilter] }` and throws `HttpError(404, "Not found")` if not every id is in scope.                                                                                                                      |
+| Hook                              | What it does                                                                                                                                                                                                                                                         |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `transformFilter(filter)`         | Calls `arbac.evaluate<ArbacDbScope>()` once per event, caches scopes via `arbac.setScopes`, merges user filter with the **UNION of scope filters** using `$and: [merged, userFilter]` (never object spread). On deny returns a match-nothing filter (`{ $or: [] }`). |
+| `transformProjection(projection)` | Unions per-scope `projection` whitelists and `restrictProjection`s the user projection to that union.                                                                                                                                                                |
+| `validateControls(controls, ...)` | Runs the parent validator; then invokes `enforceControlsPolicy(unionControlsPolicy(scopes), controls)`. Violations throw `HttpError(403)`.                                                                                                                           |
+| `applyMetaOverlay(meta)`          | For `/meta`, evaluates ARBAC in parallel for every declared action and CRUD op, filters `meta.actions` and `meta.crud` so the UI only sees ops the caller can invoke. Memoized per-class action-meta map.                                                            |
+| `onWrite(action, data)`           | For non-insert writes: `assertInScope(data, scopes)` first; then `applyAllowedFieldsAndSet(data, scopes, identifierFields)` strips fields outside the union of `allowedFields` (**auto-preserving PK + unique-index columns**) and overlays `set` defaults.          |
+| `onRemove(id)`                    | `assertInScope(id, scopes)`.                                                                                                                                                                                                                                         |
+| `assertInScope(idOrIds, scopes)`  | Issues `table.count` with `{ $and: [resolveIdFilter(id), mergedScopeFilter] }` and throws `HttpError(404, "Not found")` if not every id is in scope.                                                                                                                 |
 
 ::: warning `$and: [scope, user]`, never object spread
 `@uniqu/core`'s `walkFilter` short-circuits on logical operators. Merging via `{ ...scope, ...userFilter }` would silently drop scope conditions when the user filter has the same top-level keys. Always wrap as `$and: [scope, user]`.
@@ -35,17 +35,30 @@ The class wires four protected hooks of `@atscript/moost-db`'s base controller:
 Without the pre-check, a caller knowing a row's primary key could mutate it past their scope filter (BUG-1). `AsArbacDbController.onWrite` calls `assertInScope(data, scopes)` first, then `applyAllowedFieldsAndSet(...)`. Custom subclasses MUST preserve this order.
 :::
 
-## `ArbacDbScope` contract
+## `ArbacDbScope<T>` contract
 
 ```ts
-interface ArbacDbScope {
+interface ArbacDbScope<T = unknown> {
   filter?: TScopeFilter; // a Mongo-style filter merged into the read/delete/update WHERE
-  projection?: TProjection; // a field-whitelist applied to read responses
-  set?: Record<string, unknown>; // default values overlaid onto inserts/updates
-  allowedFields?: string[]; // whitelist of writable field paths
-  controls?: Record<string, ControlGate>; // gate `$with` / `$groupBy` / etc.
+  projection?: ProjectionOf<T>; // a field-whitelist applied to read responses
+  set?: Partial<Record<OwnFieldKey<T>, unknown>>; // default values overlaid onto inserts/updates
+  allowedFields?: Array<OwnFieldKey<T>>; // whitelist of writable field paths
+  controls?: ControlsOf<T>; // gate `$with` / `$groupBy` / etc.
+  with?: WithOf<T>; // per-relation sub-scopes for `?$with=<name>` expansion
 }
 ```
+
+Pass an `.as` model as `T` (e.g. `ArbacDbScope<Task>`) to get autocomplete on `projection` / `with` / `controls` / `set` / `allowedFields` against the model's own and navigation fields. `T = unknown` (the default) keeps the legacy untyped `Record<string, ...>` shape for back-compat. Dotted-path projections on nested own-objects (e.g. `'mfa.value'`) still type-check via a `keyof | (string & {})` escape hatch.
+
+### Per-relation `with` (recursive)
+
+`with[name]` is a sub-scope applied when the request expands the `name` relation via `?$with=<name>`. Recursive — each sub-scope has the same shape and can declare its own `with` for nested expansions (`tasks → comments → task`).
+
+**Parent-authority model**: the parent scope owns the policy for joined rows. arbac-moost does NOT re-evaluate ARBAC against the joined resource's own scopes — whatever the parent declares here is what surfaces from the expansion. Across roles, `with[name]` sub-scopes union additively at every nested level using the same primitives (`unionProjections` / `mergeScopeFilters` / `unionControlsPolicy`). **Silence wins**: if no role declares `with.<name>`, expansion is unrestricted (the `controls.$with` whitelist still applies if declared).
+
+::: warning Known gap — joined-resource projection in exclude mode
+arbac-moost does not apply the joined-resource projection mask to `$with` expansions when the request uses **exclude-mode** `$select` for the relation loader. Include-mode `$select` works end-to-end. Pin tight whitelists on the parent via `controls.$with` if exclude-mode masking is required.
+:::
 
 Apps can **declaration-merge** custom fields into `ArbacDbScope` — for example, to add a `restrictRows: number` cap or an `auditTag: string` you read in a custom subclass.
 
@@ -93,26 +106,28 @@ Read-only mirror of `AsArbacDbController<T>`. Wires only the read hooks (`transf
 
 ## Subclassing
 
-The most common subclass overrides nothing and just plugs in a table:
+The most common subclass overrides nothing and just plugs in a table — the table is bound by the `@TableController(table)` decorator from `@atscript/moost-db`, **not** by passing it through `super(...)`:
 
 ```ts
-import { AsArbacDbController } from "@aoothjs/arbac-moost";
-import { Controller } from "moost";
-import { Get } from "@moostjs/event-http";
+import { AsArbacDbController, ArbacResource } from "@aoothjs/arbac-moost";
+import { TableController } from "@atscript/moost-db";
+import type { AtscriptDbTable } from "@atscript/db";
+import { Article } from "./article.as";
 
-@Controller("articles")
-class ArticlesController extends AsArbacDbController<Article> {
-  constructor() {
-    super({ table: appDb.tables.articles, model: Article });
-  }
+export function makeArticlesController(table: AtscriptDbTable<typeof Article>) {
+  @TableController(table)
+  @ArbacResource("articles")
+  class ArticlesController extends AsArbacDbController<typeof Article> {}
+  return ArticlesController;
 }
 ```
 
 For a custom secondary check (e.g. enforce a tenant filter even when no scope is configured), override one of the hooks and call `super` first:
 
 ```ts
-@Controller("articles")
-class ArticlesController extends AsArbacDbController<Article> {
+@TableController(table)
+@ArbacResource("articles")
+class ArticlesController extends AsArbacDbController<typeof Article> {
   protected override async transformFilter(filter) {
     const merged = await super.transformFilter(filter);
     const tenantId = useAuth().getAuthContext()?.claims?.tenantId;
@@ -145,24 +160,27 @@ class ArticlesController extends AsArbacDbController<Article> {
 A typical role tuned for `AsArbacDbController`:
 
 ```ts
-import { defineRole } from "@aoothjs/arbac";
+import { allowTableRead, allowTableWrite, defineRole } from "@aoothjs/arbac";
 import type { ArbacDbScope } from "@aoothjs/arbac-moost";
+import { Article } from "./article.as";
 
-const editor = defineRole<{ tenantId: string }, ArbacDbScope>()
+type UserAttrs = { tenantId: string; id: string };
+
+const editor = defineRole<UserAttrs>()
   .id("editor")
-  .allow("articles", "read", (attrs) => ({ filter: { tenantId: attrs.tenantId } }))
-  .allow("articles", "create", (attrs) => ({
-    filter: { tenantId: attrs.tenantId },
-    set: { tenantId: attrs.tenantId, ownerId: attrs.id },
-    allowedFields: ["title", "body", "draft"],
-  }))
-  .allow("articles", "update", (attrs) => ({
-    filter: { tenantId: attrs.tenantId, draft: true },
-    allowedFields: ["title", "body"],
-  }))
+  .use(
+    allowTableRead<UserAttrs, ArbacDbScope<typeof Article>>("articles", {
+      scope: (attrs) => ({ filter: { tenantId: attrs.tenantId } }),
+    }),
+    allowTableWrite<UserAttrs, ArbacDbScope<typeof Article>>("articles", {
+      // ... see @aoothjs/arbac for the full allowTable* surface
+    }),
+  )
   .deny("articles", "delete")
   .build();
 ```
+
+Note: typed scopes are passed **per-privilege** (the `ArbacDbScope<Article>` generic on `allowTable*`). Don't pin a single `ArbacDbScope<X>` at the `defineRole<UserAttrs, ArbacDbScope<X>>()` level — `ArbacDbScope<T>` is not assignable to `ArbacDbScope<unknown>` across `allowTable*` calls. The role-level generic stays as the untyped upper bound.
 
 | Scope field                            | What it does at runtime                                                                 |
 | -------------------------------------- | --------------------------------------------------------------------------------------- |
@@ -176,14 +194,14 @@ const editor = defineRole<{ tenantId: string }, ArbacDbScope>()
 
 `applyAllowedFieldsAndSet` always preserves keys from `table.identifications` — your primary key, every column in a `@db.table.uniqueIndex` group, etc. This means a scope like `allowedFields: ["title"]` doesn't accidentally strip the `id` from an update payload, which would silently break the update.
 
-## `DENY_FILTER`
+## Deny verdict (match-nothing)
 
-`DENY_FILTER` is the constant `{ $or: [] }` — match-nothing. The controller returns this from `transformFilter` whenever:
+On a deny verdict, `transformFilter` returns a match-nothing filter (`{ $or: [] }`). The controller does this whenever:
 
 - `arbac.evaluate()` returns `{ allowed: false }`.
 - The action resolution chain produces a name with no role grant.
 
-Match-nothing produces an empty result set on read (200 with an empty array) and zero affected rows on write — fail-closed without surfacing a 403 to the caller for queries that legitimately return no rows.
+Match-nothing produces an empty result set on read (200 with an empty array) and zero affected rows on write — fail-closed without surfacing a 403 to the caller for queries that legitimately return no rows. The constant itself is internal to the package — don't import it; the observable behavior is what's contracted.
 
 ## See also
 

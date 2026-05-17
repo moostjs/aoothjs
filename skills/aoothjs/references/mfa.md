@@ -148,25 +148,13 @@ await svc.addTrustedDevice("alice", record);
 const trusted = await svc.verifyTrustedDevice("alice", req.cookies.dt, req.ip);
 ```
 
-**Token format:**
-
-```
-<raw 32-byte hex>.<hmac-sha256(userId|raw|ip-or-empty)>
-```
-
-| Property     | Behavior                                                                                           |
-| ------------ | -------------------------------------------------------------------------------------------------- | ------ | -------------------------------------------------------------------------- |
-| `raw`        | 32 random bytes, hex-encoded.                                                                      |
-| HMAC secret  | `config.deviceTrust.secret`. Must be present — `issue` / `verify` throw a plain `Error` otherwise. |
-| HMAC payload | `${userId}                                                                                         | ${raw} | ${ip ?? ""}`— same shape on issue and verify. Pass the same`ip` to verify. |
-| `expiresAt`  | `clock() + ttlMs`. Expiry is enforced server-side on `verifyTrustedDevice`.                        |
-| Persistence  | `addTrustedDevice` appends, `revokeTrustedDevice` filters, `listTrustedDevices` returns full list. |
+**Token:** opaque HMAC-signed string bound to the user (and optionally their IP). The HMAC key is `config.deviceTrust.secret` — `issue` / `verify` throw a plain `Error` if it's unset. Expiry (`clock() + ttlMs`) is enforced on `verifyTrustedDevice`. Persistence: `addTrustedDevice` appends, `revokeTrustedDevice` filters, `listTrustedDevices` returns the full list.
 
 `verifyTrustedDevice` succeeds when **all** hold:
 
-1. The HMAC verifies against `username | raw | ip ?? ""`.
+1. The token signature verifies.
 2. A persisted record matches `token` exactly.
 3. `record.expiresAt > clock()`.
 4. `record.ip === undefined || record.ip === ip` (IP-binding when the record carries an `ip`).
 
-IP-binding is opt-in per-token: omit `ip` on `issue` and the bound IP is the empty string — `verify` will accept any `ip` on subsequent calls for that record. Pin to an IP only when you want strict device-per-network semantics.
+IP-binding is opt-in per-token: omit `ip` on `issue` and `verify` accepts any IP on subsequent calls for that record. Pin to an IP only when you want strict device-per-network semantics.

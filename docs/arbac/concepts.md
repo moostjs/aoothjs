@@ -73,7 +73,7 @@ await arbac.evaluate(res, { id: 'u1', roles: [], attrs: {...} })
 // → { allowed: false }    // no scopes key, period.
 ```
 
-If `user.roles` is empty (or only contains role IDs the engine has never seen), no deny or allow pass runs. The result is `{ allowed: false }` with no `scopes` key. The engine also `console.warn`s **once** per unknown role ID — useful in dev, not noisy in prod.
+If `user.roles` is empty (or only contains role IDs the engine has never seen), no deny or allow pass runs. The result is `{ allowed: false }` with no `scopes` key. The engine also `console.warn`s **once per unknown role ID** the user is assigned — useful in dev, not noisy in prod. An empty `user.roles` array produces no warning.
 
 ## Wildcard matching
 

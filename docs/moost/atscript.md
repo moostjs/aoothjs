@@ -246,7 +246,7 @@ Without a built `.as.d.ts` / `.as.js` pair, importing `MyUser` from `./models/us
 
 ## The forms model from `@aoothjs/auth-moost`
 
-The workflows consume 17+ `.as` form types from [`packages/auth-moost/src/atscript/models/forms.as`](https://github.com/moostjs/aoothjs/blob/main/packages/auth-moost/src/atscript/models/forms.as):
+The workflows consume 21 `.as` form types from [`packages/auth-moost/src/atscript/models/forms.as`](https://github.com/moostjs/aoothjs/blob/main/packages/auth-moost/src/atscript/models/forms.as):
 
 | Form                                     | Used by                                                                                      |
 | ---------------------------------------- | -------------------------------------------------------------------------------------------- |

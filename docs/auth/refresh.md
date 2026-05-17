@@ -97,9 +97,9 @@ The default. The first `refresh()` marks the old token's `rotatedAt`; the old to
 **Choose when** — browsers are involved. Default for a reason.
 
 ::: warning Stateless + `'sliding'` silently degrades
-On stateless stores (JWT, Encapsulated), the `rotatedAt` marker can't be written back to the token after issue. The store treats the first use after issue as the rotation and any subsequent use as reuse — effectively `'always'`-once-the-first-rotation-happens, but without the grace window doing its job.
+On stateless stores (JWT, Encapsulated), the `rotatedAt` marker cannot resurface — the orchestrator writes the rotated state via `store.update`, which on stateless stores denylists the old `jti` and re-encodes into a brand-new token. The next presentation of the original refresh therefore looks like "unknown token" to the store (it's denylisted) — `refresh()` throws **`INVALID_TOKEN`** rather than `REFRESH_REUSE_DETECTED`, and the grace window never gets a chance to apply. There is no per-user theft response in this path either.
 
-If you're running stateless **use `rotation: 'always'` explicitly**. The intent matches the actual behavior, and the rotation timeline becomes predictable.
+If you're running stateless **use `rotation: 'always'` explicitly**. The intent matches the actual behavior, the rotation timeline becomes predictable, and reuse-after-consume fires the proper `REFRESH_REUSE_DETECTED` theft response.
 
 ```ts
 const auth = new AuthCredential({
@@ -215,17 +215,17 @@ await auth.issue("alice", {
 await auth.issue("alice", {
   /* ... */
 });
-// AuthError('MAX_CONCURRENT_REACHED', { userId: 'alice', max: 3, current: 3 })
+// AuthError('MAX_CONCURRENT_REACHED', { userId: 'alice', limit: 3, active: 3 })
 ```
 
 ### `onLimit` strategies
 
-| Strategy             | Behavior                                                                                                             | Use case                                                  |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| `'reject'` (default) | Throws `MAX_CONCURRENT_REACHED`. Caller must handle.                                                                 | Strict cap — third device on a Pro plan, fourth rejected. |
-| `'kickPrompt'`       | Throws `MAX_CONCURRENT_REACHED`. Framework integrations treat this as a hint to render a "pick a device to kick" UI. | Free plan — let the user choose.                          |
+| Strategy             | Behavior                                                                                                                        | Use case                                                  |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `'reject'` (default) | Throws `MAX_CONCURRENT_REACHED`. Caller must handle.                                                                            | Strict cap — third device on a Pro plan, fourth rejected. |
+| `'evict-oldest'`     | Revokes oldest access credentials (by smallest `issuedAt`) until under the cap, then proceeds with the new `issue()`. No throw. | Free plan — silently kick the oldest session.             |
 
-Both throw the same error type. The difference is intent — `'kickPrompt'` tells `@aoothjs/auth-moost` to surface a chooser before retrying with a `revoke()`. See the [moost workflows](../moost/workflows) page.
+`'reject'` throws `AuthError('MAX_CONCURRENT_REACHED')` with `details: { userId, limit, active }`; `'evict-oldest'` returns the new `IssueResult` after the cascade. To render a "pick a device to kick" UI, use `'reject'` plus `listForUser` + `revoke` in the framework layer.
 
 ### Counting and stateless stores
 

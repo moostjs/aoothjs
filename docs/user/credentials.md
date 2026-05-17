@@ -6,6 +6,7 @@
 
 ```ts
 interface UserCredentials {
+  id: string;
   username: string;
   password: PasswordData;
   account: AccountData;
@@ -59,22 +60,6 @@ The account state machine — active, locked, login counters.
 The expiration check is `lockEnds > 0 && lockEnds < now`. Use `lockAccount(u, reason, duration)` and let `duration=0` mean permanent. Reaching for `lockEnds: 0` manually does the same thing.
 :::
 
-The `account` sub-object is patched in two patterns:
-
-```ts
-// login success
-{ set: { account: { lastLogin: now, failedLoginAttempts: 0 } } }
-
-// login failure (no lock tripped)
-{ inc: { "account.failedLoginAttempts": 1 } }
-
-// login failure that tripped the lock
-{
-  inc: { "account.failedLoginAttempts": 1 },
-  set: { account: { locked: true, lockReason: "Too many failed attempts", lockEnds: now + duration } },
-}
-```
-
 ## `password: PasswordData`
 
 | Field         | Type                | Meaning                                                                                          |
@@ -83,12 +68,6 @@ The `account` sub-object is patched in two patterns:
 | `history`     | `string[]`          | Previous hashes; cap of `historyLength`. Checked on `changePassword` / `setPassword`.            |
 | `lastChanged` | `number` (ms epoch) | Set on every successful `change`/`set`.                                                          |
 | `isInitial`   | `boolean`           | `true` when `createUser` generated the password. Flip to `false` on first user-initiated change. |
-
-Patch shape:
-
-```ts
-{ set: { password: { hash, history, lastChanged: now, isInitial: false } } }
-```
 
 ## `mfa: MfaData`
 
@@ -106,7 +85,7 @@ Patch shape:
 
 | Field       | Type                | Meaning                                                                          |
 | ----------- | ------------------- | -------------------------------------------------------------------------------- |
-| `token`     | `string`            | `<raw>.<hmac>`. HMAC is keyed by `deviceTrust.secret` over `userId\|raw\|ip`.    |
+| `token`     | `string`            | Opaque HMAC-signed token bound to the user (and optionally their IP).            |
 | `ip`        | `string?`           | If present, `verifyTrustedDevice` requires the request to come from the same IP. |
 | `issuedAt`  | `number` (ms epoch) |                                                                                  |
 | `expiresAt` | `number` (ms epoch) | Expiry; `verifyTrustedDevice` rejects past-expiry tokens.                        |

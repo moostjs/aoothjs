@@ -16,7 +16,7 @@ actions:
     text: Get Started
     link: /guide/quick-start
   - theme: alt
-    text: Read the AI Skills
+    text: Explore the ecosystem
     link: /guide/ecosystem
   - theme: alt
     text: View on GitHub

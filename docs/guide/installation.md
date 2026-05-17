@@ -7,8 +7,8 @@
 | Use case                                                                  | aoothjs packages                                                         | Required peer deps                                                                  |
 | ------------------------------------------------------------------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
 | Hash passwords / manage credentials, no HTTP                              | `@aoothjs/user`                                                          | —                                                                                   |
-| Above + issue/validate JWT tokens, no HTTP                                | `@aoothjs/user`, `@aoothjs/auth`                                         | `jose`                                                                              |
-| Full HTTP auth stack on moost (sessions, login/recovery/invite workflows) | `@aoothjs/user`, `@aoothjs/auth`, `@aoothjs/auth-moost`                  | `moost`, `@moostjs/event-http`, `@moostjs/event-wf`, `@atscript/moost-wf`, `jose`   |
+| Above + issue/validate JWT tokens, no HTTP                                | `@aoothjs/user`, `@aoothjs/auth`                                         | — (`jose` is a regular dep of `@aoothjs/auth`, auto-installed)                      |
+| Full HTTP auth stack on moost (sessions, login/recovery/invite workflows) | `@aoothjs/user`, `@aoothjs/auth`, `@aoothjs/auth-moost`                  | `moost`, `@moostjs/event-http`, `@moostjs/event-wf`, `@atscript/moost-wf`           |
 | RBAC only — no auth, no HTTP                                              | `@aoothjs/arbac` (re-exports `arbac-core`)                               | —                                                                                   |
 | RBAC + moost integration                                                  | `@aoothjs/arbac`, `@aoothjs/arbac-moost`                                 | `moost`                                                                             |
 | atscript-first user model + auto-derived ARBAC                            | above + `@aoothjs/arbac-moost/atscript`                                  | `@atscript/db`, `@atscript/typescript`, `unplugin-atscript`                         |
@@ -25,7 +25,7 @@ pnpm add @aoothjs/user @aoothjs/auth @aoothjs/auth-moost \
          @aoothjs/arbac @aoothjs/arbac-moost \
          moost @moostjs/event-http @moostjs/event-wf \
          @atscript/db @atscript/db-sqlite @atscript/moost-wf \
-         jose better-sqlite3
+         better-sqlite3
 
 # Atscript codegen toolchain
 pnpm add -D @atscript/core @atscript/typescript unplugin-atscript
@@ -47,8 +47,9 @@ The list below names the `peerDependencies` each package declares (versions reso
 
 | Peer                   | Required when                                |
 | ---------------------- | -------------------------------------------- |
-| `jose ^6.2.3`          | always (used by `CredentialStoreJwt`)        |
 | `@atscript/db ^0.1.79` | optional — using `@aoothjs/auth/atscript-db` |
+
+`jose ^6.2.3` is shipped as a regular dependency (not a peer) since `CredentialStoreJwt` always uses it — no manual install required.
 
 ### `@aoothjs/arbac-core`
 

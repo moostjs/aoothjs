@@ -146,11 +146,13 @@ The adapter doesn't depend on any specific Redis client. It accepts anything tha
 
 ```ts
 interface RedisLike {
-  set(key: string, value: string, mode: "PX", ttlMs: number): Promise<unknown>;
+  /** `SET key value [PX ms]` — `mode` and `ttlMs` are optional. */
+  set(key: string, value: string, mode?: "PX", ttlMs?: number): Promise<string | null>;
   get(key: string): Promise<string | null>;
   del(...keys: string[]): Promise<number>;
   exists(key: string): Promise<number>;
-  expire(key: string, seconds: number): Promise<number>;
+  /** `PEXPIRE key ttlMs` — ttl is in **milliseconds**, not seconds. */
+  expire(key: string, ttlMs: number): Promise<number>;
   sadd(key: string, ...members: string[]): Promise<number>;
   srem(key: string, ...members: string[]): Promise<number>;
   smembers(key: string): Promise<string[]>;
@@ -188,11 +190,11 @@ new CredentialStoreRedis({ redis, prefix: "app:" });
 
 ### `persist` fails loud on dead credentials
 
-If you call `persist` with `state.expiresAt <= now`, the Redis adapter throws `INVALID_CONFIG`. It does **not** silently insert a row that's already expired. This catches clock skew and config bugs early.
+If you call `persist` with `state.expiresAt <= now`, the Redis adapter throws a plain `Error` (not an `AuthError`) with the message `"CredentialStoreRedis.persist: refusing to persist an already-expired credential"`. It does **not** silently insert a row that's already expired. This catches clock skew and config bugs early — handle it as a non-`AuthError` exception.
 
 ```ts
 await store.persist({ userId: "alice", issuedAt: now, expiresAt: now - 1000 /* ... */ });
-// throws AuthError('INVALID_CONFIG')
+// throws Error (NOT AuthError)
 ```
 
 ### `DenylistStoreRedis`
@@ -237,6 +239,9 @@ import { DbSpace } from "@atscript/db";
 import { CredentialStoreAtscriptDb } from "@aoothjs/auth/atscript-db";
 import { AuthCredential } from "@aoothjs/auth";
 import { AoothAuthCredential } from "@aoothjs/auth/atscript-db/model.as";
+// Importing the raw `.as` file requires the atscript build pipeline
+// (`unplugin-atscript` for Vite/Rollup, or run `asc` ahead of time). Without
+// it, your bundler cannot resolve the `.as` extension.
 
 const db = new DbSpace({
   /* adapter, models: [AoothAuthCredential] */
@@ -311,19 +316,19 @@ The adapter doesn't directly require the `@atscript/db` table class — it requi
 
 ```ts
 interface AuthCredentialTable<TClaims = object> {
-  insertOne(row: AuthCredentialRow<TClaims>): Promise<unknown>;
-  findOne(args: {
-    filter: Partial<AuthCredentialRow<TClaims>>;
-  }): Promise<AuthCredentialRow<TClaims> | null>;
-  findMany(args: {
-    filter: Partial<AuthCredentialRow<TClaims>>;
+  insertOne(row: AuthCredentialRow<TClaims>): Promise<{ insertedId: unknown }>;
+  findOne(query: { filter: Record<string, unknown> }): Promise<AuthCredentialRow<TClaims> | null>;
+  findMany(query: {
+    filter?: Record<string, unknown>;
+    controls?: Record<string, unknown>;
   }): Promise<AuthCredentialRow<TClaims>[]>;
-  replaceOne(args: {
-    filter: { token: string };
-    row: AuthCredentialRow<TClaims>;
-  }): Promise<unknown>;
-  deleteOne(args: { filter: { token: string } }): Promise<unknown>;
-  deleteMany(args: { filter: Partial<AuthCredentialRow<TClaims>> }): Promise<unknown>;
+  /** Replaces by PK on the row itself — no `{ filter, row }` wrapper. */
+  replaceOne(
+    row: AuthCredentialRow<TClaims>,
+  ): Promise<{ matchedCount: number; modifiedCount: number }>;
+  /** Deletes by PK value (the token string), not by filter. */
+  deleteOne(idOrPk: unknown): Promise<{ deletedCount: number }>;
+  deleteMany(filter: Record<string, unknown>): Promise<{ deletedCount: number }>;
 }
 ```
 

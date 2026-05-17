@@ -13,15 +13,15 @@
 ## The `Arbac` class
 
 ```ts
-class Arbac<TUserAttrs extends object = object, TScope extends object = object> {
+class Arbac<TUserAttrs extends object, TScope extends object> {
   registerRole(role: TArbacRole<TUserAttrs, TScope>): this;
   registerResource(resource: string): this;
-  evaluate(
+  evaluate<T extends string | undefined>(
     res: { resource: string; action: string },
     user: {
-      id: string | number;
+      id: T;
       roles: string[];
-      attrs: TUserAttrs | ((id: string) => TUserAttrs | Promise<TUserAttrs>);
+      attrs: TUserAttrs | ((id: T) => TUserAttrs | Promise<TUserAttrs>);
     },
   ): Promise<TArbacEvalResult<TScope>>;
 }
@@ -40,9 +40,7 @@ class Arbac<TUserAttrs extends object = object, TScope extends object = object> 
 5. **Allow pass** — iterate every resolved role's allow list. For each match:
    - Rule has `scope` fn → lazily resolve `userAttrs` (once, then memoized), then `scopes.push(rule.scope(userAttrs, String(user.id)))`.
    - No `scope` fn → push `{}` (universe sentinel).
-6. Return `scopes.length ? { allowed: true, scopes } : { allowed: false }`.
-
-Side effect to know about: `evalRoleForResource` writes `_resourceRegex` / `_actionRegex` onto the original rule objects when compiling. Don't `Object.freeze()` rules before registering.
+6. Return `allowed ? { allowed: true, scopes } : { allowed: false }` (branches on whether any allow rule matched, not on `scopes.length` — a universe-sentinel `{}` still counts as a match).
 
 ## `defineRole()` chain
 
@@ -66,15 +64,15 @@ const role = defineRole<Attrs, Scope>()
 
 ### Methods
 
-| Method                 | Effect                                                                                                                           |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `.id(string)`          | Required. Last call wins. Building without it throws `"Role id is required. Call .id() before .build()."`.                       |
-| `.name(string)`        | Optional human label. Stored on the emitted role as `name`.                                                                      |
-| `.describe(string)`    | Optional description. Stored as `description`.                                                                                   |
-| `.allow(r, a, scope?)` | Pushes `{ resource: r, action: a, scope? }`. When `scope` is omitted, the property is NOT present on the rule (not `undefined`). |
-| `.deny(r, a)`          | Pushes `{ resource: r, action: a, effect: "deny" }`. Deny rules cannot carry a scope.                                            |
-| `.use(...privs)`       | Invokes each `TPrivilegeFunction` and splices its rules in-line in call order.                                                   |
-| `.build()`             | Returns a plain `TArbacRole<TUserAttrs, TScope>` with a COPY of the internal rules array. The builder may be discarded after.    |
+| Method                 | Effect                                                                                                                                                                                                                                                                                           |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `.id(string)`          | Required. Last call wins. Building without it throws `"Role id is required. Call .id() before .build()."`.                                                                                                                                                                                       |
+| `.name(string)`        | Optional human label. Stored on the emitted role as `name`.                                                                                                                                                                                                                                      |
+| `.describe(string)`    | Optional description. Stored as `description`.                                                                                                                                                                                                                                                   |
+| `.allow(r, a, scope?)` | Pushes `{ resource: r, action: a, scope? }`. When `scope` is omitted, the property is NOT present on the rule (not `undefined`).                                                                                                                                                                 |
+| `.deny(r, a)`          | Pushes `{ resource: r, action: a, effect: "deny" }`. Deny rules cannot carry a scope.                                                                                                                                                                                                            |
+| `.use(...privs)`       | Invokes each `TPrivilegeFunction` and splices its rules in-line in call order. Accepts a mix of privileges with different per-resource scope shapes (e.g. `ArbacDbScope<Task>` + `ArbacDbScope<Comment>`) in a single call; the role-level `TScope` pin stays as upper-bound documentation only. |
+| `.build()`             | Returns a plain `TArbacRole<TUserAttrs, TScope>` with a COPY of the internal rules array. The builder may be discarded after.                                                                                                                                                                    |
 
 Rules are emitted in call order. `.deny()` and a subsequent `.allow()` for the same `(resource, action)` are both emitted — the engine's deny-wins logic decides precedence at evaluation time, not the builder.
 

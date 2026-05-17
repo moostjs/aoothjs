@@ -41,7 +41,7 @@ p.transferable; // → true (string rule)
 
 ## The string DSL — `@prostojs/ftring`
 
-A string rule is a JS expression compiled once per process via a shared `FtringsPool`. Two policies with the same rule share the same compiled function — defining `ppHasMinLength(12)` twice doesn't double-compile.
+A string rule is a JS expression compiled once and cached, so repeating the same rule across policies doesn't double-compile.
 
 Available variables inside the expression:
 

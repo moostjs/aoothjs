@@ -12,8 +12,8 @@ The patterns below are taken from [`packages/e2e-demo/`](https://github.com/moos
 | `AoothArbacUserCredentials` | `@aoothjs/arbac-moost/atscript/models.as` | Extends `AoothUserCredentials` with `@arbac.role roles: string[]`. The default user shape when ARBAC is in play.                            |
 | `AoothAuthCredential`       | `@aoothjs/auth/atscript-db/model.as`      | Bearer-token row — `token` (PK), `userId`, `issuedAt`, `expiresAt`, `claims`, `metadata`. Already complete — apps usually do not extend it. |
 
-::: info Two-import forms
-Atscript imports `.as` files **without** the file extension at the type level (`from '@aoothjs/user/atscript-db/model'`). The raw-file export `model.as` exists so `unplugin-atscript` can locate the source file when building. Use whichever your tooling expects — the e2e demo uses the no-extension form.
+::: info Subpath form
+The `package.json` exports the raw `.as` source under the `.as` suffix (e.g. `'@aoothjs/user/atscript-db/model.as'`). That is what `unplugin-atscript` resolves and what the e2e demo imports. There is no separate no-extension subpath — always include `.as`.
 :::
 
 ## What's in `AoothUserCredentials`
@@ -103,7 +103,7 @@ The `AtscriptArbacUserProvider` fails loud if it sees more than one field with `
 If you do not use the moost ARBAC layer, extend `AoothUserCredentials` directly:
 
 ```ts:line-numbers
-import { AoothUserCredentials } from '@aoothjs/user/atscript-db/model'
+import { AoothUserCredentials } from '@aoothjs/user/atscript-db/model.as'
 
 @db.table 'users'
 export interface AppUser extends AoothUserCredentials {
@@ -126,7 +126,7 @@ Everything in `UserService`, `LoginWorkflow`, etc. still works — RBAC just is 
 For token storage, `AoothAuthCredential` is already complete — `@meta.id`, `@db.table 'aooth_credentials'`, `@db.depth.limit 0`. Import and use as-is:
 
 ```ts:line-numbers
-import { AoothAuthCredential } from '@aoothjs/auth/atscript-db/model'
+import { AoothAuthCredential } from '@aoothjs/auth/atscript-db/model.as'
 import { CredentialStoreAtscriptDb } from '@aoothjs/auth/atscript-db'
 ```
 
@@ -140,7 +140,7 @@ You normally do not extend it. The full schema is in [`auth-credential.as`](http
 import { DbSpace } from '@atscript/db'
 import { syncSchema } from '@atscript/db/sync'
 import { BetterSqlite3Driver, SqliteAdapter } from '@atscript/db-sqlite'
-import { AoothAuthCredential } from '@aoothjs/auth/atscript-db/model'
+import { AoothAuthCredential } from '@aoothjs/auth/atscript-db/model.as'
 import { DemoUser } from './models/user.as'
 import { Tenant } from './models/tenant.as'
 import { Department } from './models/department.as'
@@ -249,7 +249,7 @@ class AppArbacUserProvider extends AtscriptArbacUserProvider<DemoUser> {
 `@Injectable()` must be **re-applied** on the subclass — moost@0.6.x does not inherit injectable metadata across `extends`.
 
 ::: warning Username vs. id
-The JWT subject (`AuthContext.userId`) is whatever string identifies the credential. The e2e demo's `DemoUser.@meta.id` is a UUID but the JWT subject is `username`. The `userStore.findByUsername` method resolves both — wrap that in your provider's `findOne` so ARBAC sees the same identity the auth layer issues. See [`app.ts:365`](https://github.com/moostjs/aoothjs/blob/main/packages/e2e-demo/src/app.ts#L365) for the demo seam.
+The JWT subject (`AuthContext.userId`) is whatever string identifies the credential. The e2e demo's `DemoUser.@meta.id` is a UUID but the JWT subject is `username`. The `userStore.findByUsername` method resolves both — wrap that in your provider's `findOne` so ARBAC sees the same identity the auth layer issues. See [`app.ts`](https://github.com/moostjs/aoothjs/blob/main/packages/e2e-demo/src/app.ts) for the demo seam.
 :::
 
 ## Generated artefacts
@@ -263,7 +263,7 @@ Running `asc -f dts` (or `unplugin-atscript` in your bundler) produces three sib
 | `atscript.d.ts` | Project-level merged-type declarations.                                                                                  |
 
 ::: warning Re-run after every `.as` change
-The compiled artefacts are gitignored in most setups. Add `gen:atscript` to your prebuild / predev hook, or rely on `unplugin-atscript` to run it automatically.
+We recommend gitignoring the compiled artefacts. Add `gen:atscript` to your prebuild / predev hook, or rely on `unplugin-atscript` to run it automatically.
 :::
 
 ## Recap

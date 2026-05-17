@@ -1,8 +1,20 @@
-# @aoothjs/user
+<p align="center">
+  <a href="https://aooth.moost.org">
+    <img src="https://aooth.moost.org/logo.svg" alt="aoothjs" width="120" />
+  </a>
+</p>
 
-User credential primitives for the aoothjs ecosystem. Pluggable
-`UserStore`, password hashing + policy, lockout, MFA (TOTP, codes, backup
-codes), and the `UserService` orchestrator.
+<h1 align="center">@aoothjs/user</h1>
+
+<p align="center">
+  User credential primitives for aoothjs — password hashing, MFA (TOTP, codes, backup codes), lockout, policy engine, and pluggable storage.
+</p>
+
+<p align="center">
+  <a href="https://aooth.moost.org/user/"><strong>Documentation →</strong></a>
+</p>
+
+---
 
 ## Install
 
@@ -10,62 +22,17 @@ codes), and the `UserService` orchestrator.
 pnpm add @aoothjs/user
 ```
 
-## Storage adapters
+## Documentation
 
-The core package ships an in-memory `UserStoreMemory`. One additional
-adapter is available as a subpath export — tree-shaken when not imported,
-no extra deps in the core bundle.
+Full docs, API reference, and recipes: **https://aooth.moost.org/user/**
 
-### `@aoothjs/user/atscript-db`
+- [Quick start](https://aooth.moost.org/guide/quick-start)
+- [`UserService`](https://aooth.moost.org/user/service)
+- [Password + policy](https://aooth.moost.org/user/password)
+- [MFA](https://aooth.moost.org/user/mfa)
+- [Stores](https://aooth.moost.org/user/stores)
+- [API reference](https://aooth.moost.org/api/user)
 
-`UserStore` backed by an `@atscript/db` table. Ship the `.as` model
-alongside your other database models and pass the resolved table to the
-adapter:
+## License
 
-```ts
-import { DbSpace } from "@atscript/db";
-import { SqliteAdapter, BetterSqlite3Driver } from "@atscript/db-sqlite";
-import { syncSchema } from "@atscript/db/sync";
-import { AoothUserCredentials } from "@aoothjs/user/atscript-db/model.as";
-import { UsersStoreAtscriptDb } from "@aoothjs/user/atscript-db";
-import { UserService } from "@aoothjs/user";
-
-const db = new DbSpace(() => new SqliteAdapter(new BetterSqlite3Driver("./app.db")));
-await syncSchema(db, [AoothUserCredentials]);
-
-const userStore = new UsersStoreAtscriptDb({ table: db.getTable(AoothUserCredentials) });
-const userService = new UserService(userStore);
-```
-
-The shipped `.as` interface is the base credential record — no `@meta.id`,
-no app-specific fields. Extend it in your own `.as` to add a primary key
-and custom columns:
-
-```ts
-import { AoothUserCredentials } from '@aoothjs/user/atscript-db/model.as'
-
-@db.table 'users'
-export interface AppUser extends AoothUserCredentials {
-    @meta.id
-    @db.default.uuid
-    id: string
-
-    email?: string
-}
-```
-
-`@atscript/db` is an optional `peerDependency` — installs only when you
-actually wire the atscript-db store.
-
-### Why no Redis adapter for users
-
-Credentials are PII (password hashes, MFA secrets, account lock state,
-backup codes). Redis is the wrong store for them: it is typically
-in-memory with append-only persistence, not designed as a durable
-system-of-record for sensitive identity data, and lacks the relational
-constraints (FKs to tenants/orgs, transactional updates across user +
-audit rows) that a real user table needs.
-
-A Redis adapter is available for `@aoothjs/auth` because _credentials_
-(short-lived session tokens) are a natural fit — high-churn, TTL-bound,
-revocation by key. Long-lived user records are not.
+MIT

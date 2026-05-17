@@ -22,14 +22,29 @@ REST surface — see the [Controllers](#rest-endpoints) section below for the fo
 @Injectable()
 class WfTriggerProvider {
   constructor(wf: MoostWf);
-  protected state: HandleStateStrategy;
-  protected outlets: Outlet[];
-  protected wire: { read: ("body" | "query" | "cookie")[]; write: "body" | "cookie"; name: string };
-  handle(opts: { allow?: readonly string[]; token?: string }): Promise<WfFinishedResponse>;
+  handle(opts?: { allow?: string[]; token?: WfOutletTokenConfig }): Promise<unknown>;
 }
 ```
 
-Singleton owning workflow state, outlets, and the token wire. Defaults: `HandleStateStrategy({ store: WfStateStoreMemory() })`, `[createAsHttpOutlet()]`, `{ read: ['body','query','cookie'], write: 'body', name: 'wfs' }`. Production consumers subclass to swap state store (`new AsWfStore({ table })`) and add `createAuthEmailOutlet(...)`. Bind via `setReplaceRegistry([WfTriggerProvider, MyProvider])`. See [Workflows](/moost/).
+Singleton owning workflow state, outlets, and the token wire. Defaults: `HandleStateStrategy({ store: WfStateStoreMemory() })`, `[createAsHttpOutlet()]`, `{ read: ['body','query','cookie'], write: 'body', name: 'wfs' }`. Bind a subclass via `setReplaceRegistry([WfTriggerProvider, MyProvider])`.
+
+**Protected — assign in your subclass constructor**: `state: WfStateStrategy`, `outlets: WfOutlet[]`, `token: WfOutletTokenConfig`. Reassign these in the subclass `constructor` to swap the state store, register additional outlets, or override the token wire.
+
+```ts
+@Injectable()
+class MyWfTriggerProvider extends WfTriggerProvider {
+  constructor(wf: MoostWf) {
+    super(wf);
+    this.state = new HandleStateStrategy({ store: new AsWfStore({ table }) });
+    this.outlets = [
+      ...this.outlets,
+      createAuthEmailOutlet({ emailSender, buildMagicLinkUrl, magicLinkTtlMs }),
+    ];
+  }
+}
+```
+
+See [Workflows](/moost/).
 
 ### `LoginWorkflow`
 
@@ -62,16 +77,16 @@ Magic-link OR OTP password-reset workflow. Anti-enumeration: unknown email still
 ### `InviteWorkflow`
 
 ```ts
-@Public()
+@ArbacResource("auth.invite")
+@ArbacAction("start")
 @Injectable("FOR_EVENT")
 @Controller()
-@Workflow("auth.invite")
 class InviteWorkflow {
   constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential);
 }
 ```
 
-Registers three wfids: `auth.invite`, `auth.reInvite`, `auth.cancelInvite`. Phase A (admin) is ARBAC-gated; Phase B (anonymous resume) is fully `@Public()`. Server-side role-whitelist enforcement on admin-submitted roles. See [Workflows](/moost/).
+Registers three wfids: `auth.invite`, `auth.reInvite`, `auth.cancelInvite`. Phase A (admin) is ARBAC-gated by the class-level `@ArbacResource("auth.invite")` + `@ArbacAction("start")` grant. Phase B (anonymous magic-link resume) is per-step `@Public()` — there is no class-level `@Public()`. Server-side role-whitelist enforcement on admin-submitted roles. See [Workflows](/moost/).
 
 ## Functions
 
@@ -93,7 +108,7 @@ interface AuthBindings {
   getUserId(): string; // throws HttpError(401)
   isAuthenticated(): boolean;
   readonly options: ResolvedAuthOptions; // throws HttpError(500) if guard missing
-  extractToken(): string | null;
+  extractToken(): string | undefined;
   writeCookies(issue: IssueResult): void;
   clearCookies(): void;
   buildLoginResponse(userId: string, issue: IssueResult): AuthLoginResponse;
@@ -156,10 +171,10 @@ Sugar for `@Intercept(authGuardInterceptor(opts))`. Attaches the guard to a sing
 ### `@WfTrigger`
 
 ```ts
-function WfTrigger(opts: { allow?: readonly string[]; token?: string }): MethodDecorator;
+function WfTrigger(opts?: { allow?: string[]; token?: WfOutletTokenConfig }): MethodDecorator;
 ```
 
-Method decorator wrapping `defineAfterInterceptor` at `INTERCEPTOR` priority. When the handler returns `undefined`, the interceptor instantiates `WfTriggerProvider` and replies with `provider.handle(opts)`. Return a non-`undefined` value from the handler to short-circuit. See [Workflows](/moost/).
+Method decorator wrapping `defineAfterInterceptor` at `INTERCEPTOR` priority. When the handler returns `undefined`, the interceptor instantiates `WfTriggerProvider` and replies with `provider.handle(opts)`. Return a non-`undefined` value from the handler to short-circuit. `opts.token` overrides the provider's default wire (`WfOutletTokenConfig` from `@moostjs/event-wf`). See [Workflows](/moost/).
 
 ## REST endpoints
 
@@ -245,7 +260,7 @@ interface LoginWorkflowOpts {
     signupUrl?: string;
     embedRecovery?: boolean;
   };
-  guards?: { emailVerifiedRequired?: boolean; passwordExpiry?: number; passwordInitial?: boolean };
+  guards?: { emailVerifiedRequired?: boolean; passwordExpiry?: boolean; passwordInitial?: boolean };
   enrollment?: { ensureEmail?: boolean; ensurePhone?: boolean };
   mfa?: {
     enabled?: boolean;

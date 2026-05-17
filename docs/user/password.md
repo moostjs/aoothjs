@@ -1,6 +1,6 @@
 # Password Hashing
 
-`PasswordHasher` is the scrypt-based hasher behind `UserService`. This page documents the hash format, the pepper, history rotation, `generatePassword`, scrypt cost tuning, and the `FAST_SCRYPT` test idiom.
+`PasswordHasher` is the scrypt-based hasher behind `UserService`. This page documents pepper, history rotation, `generatePassword`, scrypt cost tuning, and how to surface policy errors after a failed change.
 
 Source: [`packages/user/src/password/hasher.ts`](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/password/hasher.ts).
 
@@ -29,19 +29,9 @@ hasher.generatePassword(length?: number /* default 16 */): string
 
 Most consumers don't construct `PasswordHasher` directly — `UserService` does it from `config.password`. Use `users.getPasswordHasher()` if you need direct access.
 
-## Hash string format
+## Self-describing hashes
 
-```
-$scrypt$N=16384,r=8,p=1,l=64$<salt-b64url>$<hash-b64url>
-```
-
-The hash is **self-describing** — N, r, p, and keyLength travel with it. That means:
-
-- You can raise scrypt cost in config tomorrow without breaking yesterday's hashes.
-- `verify(password, encoded)` parses N/r/p/l from `encoded` and re-runs scrypt with **those** parameters, not the current config's.
-- Older / slower hashes verify correctly until the user changes their password, at which point they're re-hashed at the current cost.
-
-The salt is 32 bytes from `crypto.randomBytes`, base64url-encoded.
+Hashes carry their scrypt parameters inline, so raising `scryptN` in config tomorrow doesn't break yesterday's hashes — `verify` always runs scrypt with the parameters baked into the stored value. Existing records re-hash at the current cost the next time the user changes their password.
 
 ## Hash + verify example
 
@@ -51,7 +41,6 @@ import { PasswordHasher } from "@aoothjs/user";
 const hasher = new PasswordHasher({ pepper: process.env.PEPPER });
 
 const stored = await hasher.hash("S3cret!");
-// → "$scrypt$N=16384,r=8,p=1,l=64$Vk0g...$Pq8a..."
 
 await hasher.verify("S3cret!", stored); // → true
 await hasher.verify("wrong", stored); // → false
@@ -108,11 +97,7 @@ Setting `historyLength: 0` disables history checks entirely (current hash is sti
 hasher.generatePassword(length?: number): string  // default 16
 ```
 
-Guarantees:
-
-- One char from each category — lowercase, uppercase, digit, special.
-- Remaining chars from the union pool, drawn via `crypto.randomBytes`.
-- Final string is Fisher-Yates shuffled (also from `crypto.randomBytes`) so the guaranteed-category chars aren't in fixed positions.
+Uses crypto-random selection and guarantees at least one character from each enabled category (lowercase, uppercase, digit, special). Category-chars are not in fixed positions.
 
 ```ts
 hasher.generatePassword(); // → "kF2#mPq8N&xL3$wY"
@@ -134,29 +119,39 @@ const users = new UserService(store, {
 
 Because the hash string carries N/r/p/l, **existing hashes still verify**. They get re-written at the new cost the next time the user changes their password. If you need a forced re-hash, run a job that calls `setPassword` for every user (e.g. on a forced password reset).
 
-## `FAST_SCRYPT` test idiom
+## Surfacing policy errors after `changePassword` fails
 
-Production scrypt is slow on purpose. Tests that exercise the full service want it fast:
+When `changePassword` (or `setPassword`) fails the policy check, it throws `UserAuthError` with `type: 'POLICY_VIOLATION'`. The `details.errors: string[]` field carries one human-readable message per failing rule, taken from each policy's `errorMessage` (or `description` as fallback).
 
 ```ts
-import { UserService, UserStoreMemory } from "@aoothjs/user";
+import { UserAuthError } from "@aoothjs/user";
 
-const FAST_SCRYPT = {
-  scryptN: 1024,
-  scryptR: 1,
-  scryptP: 1,
-  keyLength: 32,
-};
-
-const users = new UserService(new UserStoreMemory(), {
-  password: { ...FAST_SCRYPT },
-});
+try {
+  await users.changePassword(username, current, next);
+} catch (err) {
+  if (err instanceof UserAuthError && err.type === "POLICY_VIOLATION") {
+    // err.details?.errors → ["Must be at least 12 characters", "Must contain a number"]
+    return res.status(422).json({ errors: err.details?.errors ?? [] });
+  }
+  throw err;
+}
 ```
 
-Single-digit ms per hash. Because hash strings are self-describing, production hashes (`N=16384`) and test hashes (`N=1024`) coexist without breaking verification — you can even use both in the same process.
+For a richer UI (per-rule pass/fail state, not just the failing ones), call `users.checkPolicies(candidate)` against the candidate password as the user types — that returns the full `{ passed, policies: [{ description, passed }], errors }` shape without throwing.
+
+## Testing
+
+Production scrypt is slow on purpose. For tests, drop the cost so each hash takes single-digit ms:
+
+```ts
+const FAST_SCRYPT = { scryptN: 1024, scryptR: 1, scryptP: 1, keyLength: 32 };
+const users = new UserService(new UserStoreMemory(), { password: FAST_SCRYPT });
+```
+
+Because hashes are self-describing, production-cost hashes and test-cost hashes coexist in the same process without breaking verification.
 
 ::: danger Never ship FAST_SCRYPT to production
-`N=1024` is trivially brute-forceable. Gate FAST_SCRYPT behind `process.env.NODE_ENV === "test"` or behind a dedicated `if (TEST_MODE)` branch.
+`N=1024` is trivially brute-forceable. Gate behind `process.env.NODE_ENV === "test"`.
 :::
 
 ## See also

@@ -56,15 +56,15 @@ Always check `e instanceof AuthError` first. The package never throws plain `Err
 
 ## Full type table
 
-| `type`                                                                | Trigger                                                                           | `details`                         | Suggested HTTP                                    |
-| --------------------------------------------------------------------- | --------------------------------------------------------------------------------- | --------------------------------- | ------------------------------------------------- |
-| [`INVALID_TOKEN`](#invalid_token)                                     | Unknown / malformed token, or access token presented to `refresh()`               | `{ reason?: string }`             | `401 Unauthorized`                                |
-| [`TOKEN_EXPIRED`](#token_expired)                                     | Reserved (not currently thrown — `validate` collapses to `null` instead)          | —                                 | `401 Unauthorized`                                |
-| [`TOKEN_REVOKED`](#token_revoked)                                     | Reserved (not currently thrown — `validate` collapses to `null` instead)          | —                                 | `401 Unauthorized`                                |
-| [`REFRESH_REUSE_DETECTED`](#refresh_reuse_detected)                   | Refresh-token reuse after grace (sliding) or any reuse (always)                   | `{ userId, parentCredentialId? }` | `401 Unauthorized`, clear cookies, force re-login |
-| [`STATELESS_OPERATION_UNSUPPORTED`](#stateless_operation_unsupported) | `revoke` / `consume` / `update` on JWT or Encapsulated store without a `denylist` | `{ operation, store }`            | `500 Internal Server Error`                       |
-| [`MAX_CONCURRENT_REACHED`](#max_concurrent_reached)                   | `issue()` past `maxConcurrent`                                                    | `{ userId, max, current }`        | `409 Conflict` or `429 Too Many Requests`         |
-| [`INVALID_CONFIG`](#invalid_config)                                   | Construction-time misconfiguration                                                | `{ option, reason }`              | `500 Internal Server Error`                       |
+| `type`                                                                | Trigger                                                                           | `details`                   | Suggested HTTP                                    |
+| --------------------------------------------------------------------- | --------------------------------------------------------------------------------- | --------------------------- | ------------------------------------------------- |
+| [`INVALID_TOKEN`](#invalid_token)                                     | Unknown / malformed token, or access token presented to `refresh()`               | none (message only)         | `401 Unauthorized`                                |
+| [`TOKEN_EXPIRED`](#token_expired)                                     | Reserved (not currently thrown — `validate` collapses to `null` instead)          | —                           | `401 Unauthorized`                                |
+| [`TOKEN_REVOKED`](#token_revoked)                                     | Reserved (not currently thrown — `validate` collapses to `null` instead)          | —                           | `401 Unauthorized`                                |
+| [`REFRESH_REUSE_DETECTED`](#refresh_reuse_detected)                   | Refresh-token reuse after grace (sliding) or any reuse (always)                   | `{ userId, rotatedAt? }`    | `401 Unauthorized`, clear cookies, force re-login |
+| [`STATELESS_OPERATION_UNSUPPORTED`](#stateless_operation_unsupported) | `revoke` / `consume` / `update` on JWT or Encapsulated store without a `denylist` | none (message only)         | `500 Internal Server Error`                       |
+| [`MAX_CONCURRENT_REACHED`](#max_concurrent_reached)                   | `issue()` past `maxConcurrent`                                                    | `{ userId, limit, active }` | `409 Conflict` or `429 Too Many Requests`         |
+| [`INVALID_CONFIG`](#invalid_config)                                   | Construction-time misconfiguration                                                | none (message only)         | `500 Internal Server Error`                       |
 
 The rest of this page details each type.
 
@@ -80,9 +80,7 @@ The token presented to `refresh()` is unknown, malformed, or of the wrong kind.
 
 **`details`**
 
-```ts
-{ reason?: 'unknown' | 'wrong-kind' | 'malformed' }
-```
+None. `refresh()` constructs `AuthError('INVALID_TOKEN')` either bare or with a human message (e.g. `'Token is not a refresh credential'`); the third `details` argument is never populated for this type.
 
 **Why it's only on `refresh`**
 
@@ -123,12 +121,22 @@ A refresh token was reused after its grace window (sliding mode) or after any pr
 
 **`details`**
 
+Two shapes, depending on which code path fires the throw:
+
 ```ts
+// Sliding mode, reuse after grace (auth-credential.ts refreshSliding)
 {
   userId: string;
-  parentCredentialId?: string;   // the original refresh that was reused
+  rotatedAt: number; // ms timestamp of the original rotation
+}
+
+// 'always' mode, replay of a consumed refresh (fireRefreshReuseTheftResponse)
+{
+  userId: string;
 }
 ```
+
+There is no `parentCredentialId` on this error — the orchestrator never attaches it.
 
 **HTTP mapping**
 
@@ -168,12 +176,7 @@ You called `revoke`, `consume`, or `update` on a stateless store (`CredentialSto
 
 **`details`**
 
-```ts
-{
-  operation: "revoke" | "consume" | "update";
-  store: "jwt" | "encapsulated";
-}
-```
+None. The orchestrator constructs `AuthError('STATELESS_OPERATION_UNSUPPORTED', '<op> requires a denylist on stateless <jwt|encapsulated> store')` without a third argument — read the operation / store name out of `error.message` if you need to surface them, but don't rely on `error.details`.
 
 **HTTP mapping**
 
@@ -207,21 +210,19 @@ Only fires on stateful stores — stateless stores can't enumerate, so `maxConcu
 ```ts
 {
   userId: string;
-  max: number;
-  current: number;
+  limit: number; // the configured maxConcurrent cap
+  active: number; // current count of live access credentials for this user
 }
 ```
 
 **HTTP mapping**
 
-The right status depends on policy:
+`'evict-oldest'` never throws this error — it silently revokes the oldest credentials and proceeds with the new `issue()`. Only `'reject'` surfaces the throw, and the recommended status varies by intent:
 
-| `onLimit`      | Recommended status      | Body                                                                    |
-| -------------- | ----------------------- | ----------------------------------------------------------------------- |
-| `'reject'`     | `429 Too Many Requests` | `{ kind: 'maxConcurrent', max, current }`                               |
-| `'kickPrompt'` | `409 Conflict`          | `{ kind: 'maxConcurrent', max, current, sessions: <listForUser data> }` |
-
-`'kickPrompt'` is a hint to the framework integration to surface a "pick a device to kick" UI. The error type is the same; the difference is in handling.
+| Policy / use case  | Recommended status      | Body                                                                     |
+| ------------------ | ----------------------- | ------------------------------------------------------------------------ |
+| Hard cap           | `429 Too Many Requests` | `{ kind: 'maxConcurrent', limit, active }`                               |
+| "Pick a device" UX | `409 Conflict`          | `{ kind: 'maxConcurrent', limit, active, sessions: <listForUser data> }` |
 
 ```ts
 catch (e) {
@@ -229,8 +230,8 @@ catch (e) {
     const sessions = await auth.listForUser(e.details!.userId as string);
     return res.status(409).json({
       kind: 'maxConcurrent',
-      max: e.details!.max,
-      current: e.details!.current,
+      limit: e.details!.limit,
+      active: e.details!.active,
       sessions: sessions.map(s => ({ credentialId: s.credentialId, label: /* … */ })),
     });
   }
@@ -245,22 +246,17 @@ The orchestrator or a store was constructed with bad options. This always throws
 
 **Triggers**
 
-| Trigger                               | Where                                                                         |
-| ------------------------------------- | ----------------------------------------------------------------------------- |
-| `accessTtl <= 0`                      | `new AuthCredential({ accessTtl: 0 })`                                        |
-| `accessTtl < 0`                       | `new AuthCredential({ accessTtl: -1 })`                                       |
-| Missing HS secret                     | `new CredentialStoreJwt({ algorithm: 'HS256' })` (no `secret`)                |
-| Missing key pair                      | `new CredentialStoreJwt({ algorithm: 'RS256', privateKey })` (no `publicKey`) |
-| Dead row on `persist` (Redis adapter) | `store.persist({ ..., expiresAt: now - 1 })`                                  |
+| Trigger                                                                       | Where                                                                         |
+| ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `accessTtl <= 0`                                                              | `new AuthCredential({ accessTtl: 0 })`                                        |
+| `accessTtl < 0`                                                               | `new AuthCredential({ accessTtl: -1 })`                                       |
+| Missing HS secret                                                             | `new CredentialStoreJwt({ algorithm: 'HS256' })` (no `secret`)                |
+| Missing key pair                                                              | `new CredentialStoreJwt({ algorithm: 'RS256', privateKey })` (no `publicKey`) |
+| Dead row on `persist` (Redis adapter — throws plain `Error`, not `AuthError`) | `store.persist({ ..., expiresAt: now - 1 })`                                  |
 
 **`details`**
 
-```ts
-{
-  option: string; // e.g. 'accessTtl', 'secret', 'privateKey', 'expiresAt'
-  reason: string; // human-readable
-}
-```
+None. `INVALID_CONFIG` is always constructed with a human-readable message and no third `details` argument (e.g. `new AuthError('INVALID_CONFIG', 'accessTtl must be > 0 (got 0)')`). Read the option / reason out of `error.message`.
 
 **HTTP mapping**
 
@@ -280,7 +276,7 @@ These errors should never surface to a user — they're caught by `npm test` bef
 | `revoke(token)`              | `STATELESS_OPERATION_UNSUPPORTED`                                            | —                        |
 | `revokeAllForUser(id)`       | Never                                                                        | —                        |
 | `listForUser(id)`            | Never                                                                        | Empty array on stateless |
-| `store.persist(state)`       | `INVALID_CONFIG` (Redis adapter, dead state)                                 | —                        |
+| `store.persist(state)`       | Plain `Error` (Redis adapter, dead state — not an `AuthError`)               | —                        |
 | `store.retrieve(token)`      | Never                                                                        | Every failure mode       |
 | `store.consume(token)`       | `STATELESS_OPERATION_UNSUPPORTED`                                            | If no state              |
 | `store.update(token, state)` | `STATELESS_OPERATION_UNSUPPORTED`, `INVALID_CONFIG`                          | —                        |

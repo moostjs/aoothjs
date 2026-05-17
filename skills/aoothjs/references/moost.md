@@ -145,7 +145,7 @@ for (const role of allRoles) arbac.registerRole(role);
 | 14  | **DB scope+user filter merge is `$and: [scope, user]`, never spread.** `@uniqu/core`'s `walkFilter` short-circuits on logical operators; object-spread silently merges away the scope predicate.                                                                                                                                    |
 | 15  | **`assertInScope` runs BEFORE `applyAllowedFieldsAndSet`** on writes. Otherwise a caller knowing a row's PK could mutate it past their scope filter (BUG-1 in arbac-moost).                                                                                                                                                         |
 | 16  | **`applyAllowedFieldsAndSet` auto-preserves identifier fields** — PK + every `@db.index.unique` group column is unconditionally kept in the patch even when not in `allowedFields` (BUG-8).                                                                                                                                         |
-| 17  | **`DENY_FILTER` is `{ $or: [] }`** — match-nothing. `transformFilter` returns it when `arbac.evaluate(...)` denies.                                                                                                                                                                                                                 |
+| 17  | **`AsArbacDbController.transformFilter` returns match-nothing (`{ $or: [] }`) on a deny verdict** — the constant is internal; behavior is observable as zero rows on reads + zero affected rows on writes.                                                                                                                          |
 | 18  | **Form classes are stripped from `ctx.opts` via `snapshotOpts()`** before workflow state is persisted — `.as` class refs are not JSON-serializable.                                                                                                                                                                                 |
 | 19  | **CSRF is consumer-supplied.** Package ships only SameSite=Lax on the access cookie. Add a CSRF interceptor if you accept state-changing requests from browsers.                                                                                                                                                                    |
 | 20  | **`createAuthEmailOutlet` `await`s `emailSender.send()`.** Slow SMTP blocks the workflow response. Wrap your sender in a queue/transport that returns once accepted, not once delivered.                                                                                                                                            |
@@ -200,14 +200,13 @@ import {
   ArbacUserProviderToken,
   AsArbacDbController,
   AsArbacDbReadableController,
-  DENY_FILTER,
 } from "@aoothjs/arbac-moost";
-import type { TArbacMeta, ArbacBindings, ArbacDbScope } from "@aoothjs/arbac-moost";
+import type { TArbacMeta, ArbacDbScope } from "@aoothjs/arbac-moost";
 
 // — @aoothjs/arbac-moost/atscript (atscript-driven user provider)
 import { AtscriptArbacUserProvider } from "@aoothjs/arbac-moost/atscript";
 import type { ArbacUserTable } from "@aoothjs/arbac-moost/atscript";
-import { AoothArbacUserCredentials } from "@aoothjs/arbac-moost/atscript/models/user";
+import { AoothArbacUserCredentials } from "@aoothjs/arbac-moost/atscript/models";
 
 // — @aoothjs/arbac-moost/plugin (build-time only, in atscript.config.ts)
 import arbacPlugin from "@aoothjs/arbac-moost/plugin";
@@ -223,6 +222,13 @@ import {
   formInputInterceptor,
 } from "@atscript/moost-wf";
 import type { WfFinished } from "@atscript/moost-wf";
+
+// NOTE: `expectFinished` / `expectRedirect` are **test-only helpers** that
+// live in `packages/auth-moost/src/__test__/workflow-utils.ts` and are NOT
+// exported from `@aoothjs/auth-moost`. Don't import them in app code.
+// NOTE: `DENY_FILTER` and the `ArbacBindings` interface are **internal**
+// to `@aoothjs/arbac-moost` and not re-exported from `./index.ts`.
+// Read the `useArbac()` return value via `ReturnType<typeof useArbac>`.
 
 // — Moost framework (re-stated for grep-friendliness)
 import {
@@ -245,13 +251,13 @@ import { UserService } from "@aoothjs/user";
 
 ## References — load only what's needed
 
-| Domain               | File                                     | When                                                                                                                                                                    |
-| -------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| First contact        | [getting-started.md](getting-started.md) | Install matrix, full app-bootstrap recipe, hello-world protected route, the four canonical wiring steps, common pitfalls                                                |
-| Controllers + guards | [controllers.md](./controllers.md)       | `AuthController` REST surface, `authGuardInterceptor` options, `useAuth` / `useArbac` API, decorators (`@Public`, `@UserId`, `@ArbacResource`/`@ArbacAction`)           |
-| Workflows            | [workflows.md](./workflows.md)           | `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow` phases + hooks, `WfFinished` envelope helpers, `WfTrigger` + `createAuthEmailOutlet`, forms catalogue           |
-| DB controllers       | [db-controllers.md](./db-controllers.md) | `AsArbacDbController` hook table, `ArbacDbScope.{filter,projection,set,allowedFields,controls}`, multi-role union, `DENY_FILTER`, identifier auto-preservation          |
-| Atscript user model  | [moost-atscript.md](./moost-atscript.md) | `arbacPlugin()` registration, `@arbac.{role,attribute,userId}` semantics, `AtscriptArbacUserProvider` subclass seam, per-event memoization, `AoothArbacUserCredentials` |
+| Domain               | File                                     | When                                                                                                                                                                        |
+| -------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| First contact        | [getting-started.md](getting-started.md) | Install matrix, full app-bootstrap recipe, hello-world protected route, the four canonical wiring steps, common pitfalls                                                    |
+| Controllers + guards | [controllers.md](./controllers.md)       | `AuthController` REST surface, `authGuardInterceptor` options, `useAuth` / `useArbac` API, decorators (`@Public`, `@UserId`, `@ArbacResource`/`@ArbacAction`)               |
+| Workflows            | [workflows.md](./workflows.md)           | `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow` phases + hooks, `WfFinished` envelope helpers, `WfTrigger` + `createAuthEmailOutlet`, forms catalogue               |
+| DB controllers       | [db-controllers.md](./db-controllers.md) | `AsArbacDbController` hook table, `ArbacDbScope<T>.{filter,projection,set,allowedFields,controls,with}`, multi-role union, match-nothing deny, identifier auto-preservation |
+| Atscript user model  | [moost-atscript.md](./moost-atscript.md) | `arbacPlugin()` registration, `@arbac.{role,attribute,userId}` semantics, `AtscriptArbacUserProvider` subclass seam, per-event memoization, `AoothArbacUserCredentials`     |
 
 ## See also
 

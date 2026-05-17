@@ -20,6 +20,27 @@ class AuthCredential<TClaims extends object = object> {
 
 The orchestrator. Store-agnostic — accepts any `CredentialStore` (stateful or stateless). Refresh rotation modes are `'none' | 'always' | 'sliding'` (default `'sliding'`). On reuse-after-grace, calls `onRotationReuse` and revokes every credential for the user. See [Credentials & Sessions](/auth/credentials) and [Refresh & Rotation](/auth/refresh).
 
+`AuthCredentialOptions<TClaims>`:
+
+```ts
+interface AuthCredentialOptions<TClaims extends object = object> {
+  store: CredentialStore<TClaims>;
+  method?: "session" | "token"; // default 'token'
+  accessTtl?: number; // default 1h; throws INVALID_CONFIG if ≤ 0
+  refresh?: RefreshConfig;
+  /**
+   * Raw-token denylist consulted on every `validate()`. Disjoint from the
+   * store's own `jti`-keyed denylist (used by stateless `revoke`/`update`/
+   * `consume`). Sharing one `DenylistStore` instance across both is safe —
+   * raw tokens and UUID jtis never collide.
+   */
+  denylist?: DenylistStore;
+  maxConcurrent?: number;
+  onLimit?: "reject" | "evict-oldest"; // default 'reject'
+  clock?: Clock;
+}
+```
+
 ### `CredentialStoreMemory<TClaims>`
 
 ```ts
@@ -49,7 +70,7 @@ Stateless JWT store using `jose`. Default algorithm `HS256`. JWT verify pins `al
 
 ```ts
 new CredentialStoreEncapsulated<TClaims>(opts: {
-  secret: string | Uint8Array        // string → scrypt KDF; 32-byte buffer skips KDF
+  secret: string | Buffer | Uint8Array  // string → scrypt KDF; 32-byte Buffer/Uint8Array skips KDF
   denylist?: DenylistStore
   clock?: Clock
 })
@@ -340,13 +361,14 @@ Backing key `aooth:dl:<jti>` with `PX` TTL. `cleanup()` is a no-op — Redis sel
 
 ```ts
 interface RedisLike {
-  set(key: string, value: string, mode?: "PX", ttl?: number): Promise<unknown>;
+  set(key: string, value: string, mode?: "PX", ttlMs?: number): Promise<string | null>;
   get(key: string): Promise<string | null>;
   del(...keys: string[]): Promise<number>;
   exists(key: string): Promise<number>;
-  expire(key: string, seconds: number): Promise<number>;
-  sadd(key: string, member: string): Promise<number>;
-  srem(key: string, member: string): Promise<number>;
+  /** `PEXPIRE key ttlMs` — ttl is **milliseconds**, not seconds. */
+  expire(key: string, ttlMs: number): Promise<number>;
+  sadd(key: string, ...members: string[]): Promise<number>;
+  srem(key: string, ...members: string[]): Promise<number>;
   smembers(key: string): Promise<string[]>;
 }
 ```
@@ -369,9 +391,10 @@ import { AoothAuthCredential } from "@aoothjs/auth/atscript-db/model.as";
 ```ts
 new CredentialStoreAtscriptDb<TClaims>(opts: {
   table: AuthCredentialTable<TClaims>
-  clock?: Clock
 })
 ```
+
+The adapter takes only `{ table }` — there is no `clock` option. Time-sensitive bookkeeping (TTL checks, opportunistic GC) reads `Date.now()` directly.
 
 Single-table stateful store. `revokeAllForUser` uses `deleteMany({ userId })` — one round trip. `retrieve` GCs expired rows opportunistically. See [Stores](/auth/).
 
@@ -383,29 +406,38 @@ interface AuthCredentialRow<TClaims extends object = object> {
   userId: string;
   issuedAt: number;
   expiresAt: number;
-  kind?: "access" | "refresh";
+  kind?: string;
   claims?: TClaims;
-  metadata?: CredentialMetadata;
+  metadata?: {
+    ip?: string;
+    userAgent?: string;
+    fingerprint?: string;
+    label?: string;
+  };
   parentCredentialId?: string;
   rotatedAt?: number;
 }
 ```
 
-Plain TS mirror of `AoothAuthCredential.as`. See [Stores](/auth/).
+Plain TS mirror of `AoothAuthCredential.as`. `kind` is a free-form `string` (the `.as` model intentionally does not narrow it) so the row can carry magic-link discriminators like `'magic.recovery'` alongside the orchestrator's `'access'` / `'refresh'`. See [Stores](/auth/).
 
 ### `AuthCredentialTable<TClaims>`
 
 ```ts
 interface AuthCredentialTable<TClaims extends object = object> {
-  insertOne(row: AuthCredentialRow<TClaims>): Promise<unknown>;
-  findOne(opts: { filter: Record<string, unknown> }): Promise<AuthCredentialRow<TClaims> | null>;
-  findMany(opts: { filter: Record<string, unknown> }): Promise<AuthCredentialRow<TClaims>[]>;
-  replaceOne(opts: {
-    filter: Record<string, unknown>;
-    data: AuthCredentialRow<TClaims>;
-  }): Promise<unknown>;
-  deleteOne(opts: { filter: Record<string, unknown> }): Promise<unknown>;
-  deleteMany(opts: { filter: Record<string, unknown> }): Promise<unknown>;
+  insertOne(row: AuthCredentialRow<TClaims>): Promise<{ insertedId: unknown }>;
+  findOne(query: { filter: Record<string, unknown> }): Promise<AuthCredentialRow<TClaims> | null>;
+  findMany(query: {
+    filter?: Record<string, unknown>;
+    controls?: Record<string, unknown>;
+  }): Promise<AuthCredentialRow<TClaims>[]>;
+  /** Replaces by PK on the row itself — no wrapper. */
+  replaceOne(
+    row: AuthCredentialRow<TClaims>,
+  ): Promise<{ matchedCount: number; modifiedCount: number }>;
+  /** Deletes by PK value (the token string). */
+  deleteOne(idOrPk: unknown): Promise<{ deletedCount: number }>;
+  deleteMany(filter: Record<string, unknown>): Promise<{ deletedCount: number }>;
 }
 ```
 

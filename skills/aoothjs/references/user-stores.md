@@ -172,16 +172,9 @@ How it maps the contract:
 
 - `exists` → `table.count({ filter: { username } }) > 0`.
 - `findByUsername` → `table.findOne({ filter: { username } })`.
-- `create` → `table.insertOne(data)`. Catches errors with structural `code === "CONFLICT"` via the internal `isConflict(err)` and rethrows as `UserAuthError("ALREADY_EXISTS")`. Any other error propagates.
-- `update`:
-  - Starts the patch with `{ username }` (used by the table to locate the row).
-  - `Object.assign(patch, update.set)` — the underlying `AtscriptDbTable.updateOne` honors `@db.patch.strategy 'merge'` from the `.as` model for each sub-object.
-  - For each entry in `update.inc`, `setAtPath(patch, path, { $inc: amount })` — emits the engine-level atomic increment op at the dot-path.
-  - No-op when nothing besides `username` is set (early return `true`).
-  - Returns `result.matchedCount > 0`.
+- `create` → `table.insertOne(data)`. Adapter translates DB conflict errors to `UserAuthError("ALREADY_EXISTS")`; any other error propagates.
+- `update` → forwards `update.set` as a deep-merge patch (the `.as` model's `@db.patch.strategy 'merge'` is load-bearing) and translates each `update.inc` entry into an engine-level atomic increment at the dot-path. No-op when nothing besides `username` is set. Returns `result.matchedCount > 0`.
 - `delete` → `table.deleteMany({ username })`, returns `result.deletedCount > 0`.
-
-**Conflict detection is structural, not nominal.** `isConflict` only checks `err.code === "CONFLICT"` — tests can throw any object with that shape; real `@atscript/db` `DbError` instances match by shape.
 
 ## `AuthUserTable` and the cast pattern
 

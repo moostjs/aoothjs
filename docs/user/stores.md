@@ -212,9 +212,7 @@ The `as unknown as AuthUserTable` cast is required because `AtscriptDbTable<T>` 
 | `{ set: { account: { ... } } }`                 | Deep merge into the `account` JSON column (via `@db.patch.strategy 'merge'`).                                   |
 | `{ inc: { "account.failedLoginAttempts": 1 } }` | `{ $inc: 1 }` at the dot-path, emitting `account.failedLoginAttempts = account.failedLoginAttempts + 1` in SQL. |
 | `{ set: { backupCodes: [...] } }`               | Wholesale array replacement.                                                                                    |
-| `create` conflict (CONFLICT code)               | Translated structurally to `UserAuthError("ALREADY_EXISTS", ...)`.                                              |
-
-The CONFLICT detection is structural — `err.code === "CONFLICT"` — not nominal, so any future `@atscript/db` adapter that emits the same code shape works without changes here.
+| `create` conflict                               | Adapter translates DB conflicts to `UserAuthError("ALREADY_EXISTS", ...)`.                                      |
 
 ## See also
 

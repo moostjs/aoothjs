@@ -19,7 +19,7 @@ DI-injectable `Arbac` subclass. Register a singleton in the provide registry so 
 ### `ArbacUserProvider<TUserAttrs>` (abstract)
 
 ```ts
-abstract class ArbacUserProvider<TUserAttrs extends object> {
+abstract class ArbacUserProvider<TUserAttrs extends object = object> {
   abstract getUserId(): string | Promise<string>;
   abstract getRoles(id: string): string[] | Promise<string[]>;
   abstract getAttrs(id: string): TUserAttrs | Promise<TUserAttrs>;
@@ -39,7 +39,7 @@ DI key used to look up the user provider. The abstract class itself does not sat
 ### `AsArbacDbController<T>`
 
 ```ts
-abstract class AsArbacDbController<T> extends AsDbController<T> {}
+class AsArbacDbController<T> extends AsDbController<T> {}
 ```
 
 `@atscript/moost-db` controller subclass that wires ARBAC into every CRUD seam: `transformFilter`, `transformProjection`, `validateControls`, `applyMetaOverlay`, `onWrite`, `onRemove`, `assertInScope`. Scopes auto-applied — no explicit `getScopes()` call needed in handlers. See [DB Controllers](/moost/).
@@ -47,7 +47,7 @@ abstract class AsArbacDbController<T> extends AsDbController<T> {}
 ### `AsArbacDbReadableController<T>`
 
 ```ts
-abstract class AsArbacDbReadableController<T> extends AsDbReadableController<T> {}
+class AsArbacDbReadableController<T> extends AsDbReadableController<T> {}
 ```
 
 Read-only mirror of `AsArbacDbController` for view controllers. See [DB Controllers](/moost/).
@@ -101,6 +101,10 @@ interface TArbacMeta {
 
 Shared moost `Mate` typed with `TArbacMeta`. `TArbacMeta` is **declaration-merged into `moost`'s `TMoostMetadata`** so framework consumers see fields on their handler metadata. See [Decorators](/moost/decorators).
 
+::: warning Internal — exposed for custom subclassers
+The three helpers below (`enforceControlsPolicy`, `extractUsedControlValues`, `applyAllowedFieldsAndSet`) are wired into `AsArbacDbController`'s hooks for you. They're exported so subclassers writing custom hook overrides can compose them; app code that stays on the documented `AsArbacDbController` subclassing patterns never calls them directly. See [DB Controllers](/moost/).
+:::
+
 ### `enforceControlsPolicy`
 
 ```ts
@@ -110,7 +114,27 @@ function enforceControlsPolicy(
 ): void;
 ```
 
-Throws `HttpError(403, 'Control "$with" is not allowed for your role')` on violations. Applied by `AsArbacDbController.validateControls` against the union of scope `controls` maps. See [DB Controllers](/moost/).
+Throws `HttpError(403, 'Control "$with" is not allowed for your role')` on violations. Applied by `AsArbacDbController.validateControls` against the union of scope `controls` maps.
+
+### `extractUsedControlValues`
+
+```ts
+function extractUsedControlValues(key: string, value: unknown): string[];
+```
+
+Normalizes a control value into the list of names it references — used to feed `enforceControlsPolicy` for `$with` / `$groupBy` whitelist checks.
+
+### `applyAllowedFieldsAndSet`
+
+```ts
+function applyAllowedFieldsAndSet(
+  data: unknown,
+  scopes: ArbacDbScope[],
+  identifierFields?: readonly string[],
+): unknown;
+```
+
+Strips fields outside the union of `allowedFields` and overlays `set` defaults. Auto-preserves keys in `identifierFields` (PK + unique-index columns). Used by `AsArbacDbController.onWrite`.
 
 ## Decorators
 
@@ -142,31 +166,30 @@ Sugar for `Authenticate(arbacAuthorizeInterceptor)`. Use when you don't apply th
 `@ArbacPublic` and `@ArbacScopes` are intentionally NOT exported. Use [`@Public()`](./auth-moost#public) from `@aoothjs/auth-moost` (writes both `authPublic` and `arbacPublic`), and read scopes via `useArbac().getScopes<TScope>()`.
 :::
 
-## Constants
-
-### `DENY_FILTER`
-
-```ts
-const DENY_FILTER = { $or: [] } as const;
-```
-
-Match-nothing filter returned by `AsArbacDbController.transformFilter` on a deny verdict. See [DB Controllers](/moost/).
-
 ## Types
 
-### `ArbacDbScope`
+### `ArbacDbScope<T>`
 
 ```ts
-interface ArbacDbScope {
+interface ArbacDbScope<T = unknown> {
   filter?: TScopeFilter;
-  projection?: TProjection;
-  set?: Record<string, unknown>;
-  allowedFields?: string[];
-  controls?: Record<string, ControlGate>;
+  projection?: ProjectionOf<T>;
+  set?: Partial<Record<OwnFieldKey<T>, unknown>>;
+  allowedFields?: Array<OwnFieldKey<T>>;
+  controls?: ControlsOf<T>;
+  /** Per-relation sub-scopes applied when the request expands a relation via
+   *  `?$with=<name>`. Recursive — each sub-scope has the same shape and can
+   *  declare its own `with` for nested expansions. Parent-authority model:
+   *  arbac-moost does NOT re-evaluate ARBAC against the joined resource. */
+  with?: WithOf<T>;
 }
 ```
 
-The scope shape `AsArbacDbController` understands. **Open to declaration merging** — augment with custom fields if you extend the controller. See [DB Controllers](/moost/).
+The scope shape `AsArbacDbController` understands. Pass an `.as` model as `T` (e.g. `ArbacDbScope<Task>`) to get autocomplete on `projection` / `with` / `controls` / `set` / `allowedFields` against the model's own and navigation fields. `T = unknown` (the default) keeps the legacy untyped shape for back-compat. **Open to declaration merging** — augment with custom fields if you extend the controller. See [DB Controllers](/moost/).
+
+::: warning Known gap — joined-resource projection in exclude mode
+arbac-moost does not apply the joined-resource projection mask to `$with` expansions when the request uses exclude-mode `$select` for the relation loader. Include-mode `$select` works end-to-end. Track via the e2e-demo's `PROJ_COMMENT_VIEWER_EXPANDED` notes.
+:::
 
 ## Subpath: `@aoothjs/arbac-moost/atscript`
 

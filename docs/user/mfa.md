@@ -57,11 +57,7 @@ verifyTotpCode(secret, code, { window: 1 }); // ± 1 step (≈ ±30 s) for clock
 verifyTotpCode(secret, code, { period: 60 }); // 60 s steps
 ```
 
-`verifyTotpCode` walks the full `[-window..+window]` range with **constant-time** comparison (no early exit on match), so timing leakage about which step matched is suppressed.
-
-::: warning Length-checked
-`verifyTotpCode` rejects mismatched-length submissions before any crypto work — `timingSafeEqual` requires equal-length buffers. A 5-digit code against a 6-digit expected always returns `false`.
-:::
+`verifyTotpCode` walks the full `[-window..+window]` range; verification is constant-time and length-checked, so a mismatched-length code returns `false` without leaking timing or step information.
 
 ### Wiring into a user
 
@@ -164,11 +160,11 @@ const ok = await users.verifyTrustedDevice("alice", req.cookies.trusted_device, 
 if (ok) skipMfa();
 ```
 
-Token format: `<raw-b64u>.<hmac(userId|raw|ip)>`.
+The token is an opaque HMAC-signed string bound to the user (and optionally their IP).
 
 | Check in `verifyTrustedDevice`          | Behavior                         |
 | --------------------------------------- | -------------------------------- |
-| HMAC mismatch                           | `false` (counterfeit / tampered) |
+| Signature mismatch                      | `false` (counterfeit / tampered) |
 | `expiresAt < now`                       | `false` (expired)                |
 | Issued with `ip` and request IP differs | `false` (IP binding)             |
 | Token not in `trustedDevices[]`         | `false` (revoked)                |

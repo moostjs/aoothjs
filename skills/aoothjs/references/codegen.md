@@ -24,14 +24,14 @@ import type { TResourceActionMap, TCodegenOptions } from "@aoothjs/arbac";
 Walks every role's `rules` and produces:
 
 ```ts
-type TResourceActionMap = {
-  resources: Record<string, Set<string>>;  // resource → set of actions seen on it
+interface TResourceActionMap {
+  resources: Map<string, Set<string>>;  // resource → set of actions seen on it
   allResources: Set<string>;
   allActions: Set<string>;
-};
+}
 
 extractResourceActions(
-  roles: TArbacRole<any, any>[],
+  roles: TArbacRole<unknown, unknown>[],
   options?: { includeWildcards?: boolean },
 ): TResourceActionMap;
 ```
@@ -86,14 +86,16 @@ aoothjs-arbac-codegen \
 
 Options:
 
-| Flag                                           | Meaning                                                                           |
-| ---------------------------------------------- | --------------------------------------------------------------------------------- |
-| `--roles <path>`                               | Path to a JS module exporting roles. Default export OR named `roles` / `default`. |
-| `--output <path>`                              | Where to write the generated `.ts`. Parent directory must exist.                  |
-| `--resource-type <name>`                       | Name of the `Resource` union type. Default `"Resource"`.                          |
-| `--action-type <name>` (alias `--export-name`) | Name of the `Action` union type. Default `"Action"`.                              |
-| `--include-wildcards`                          | If any rule uses `*`, include those entries verbatim. Off by default.             |
-| `--help`                                       | Print help and exit.                                                              |
+| Flag                     | Meaning                                                                                |
+| ------------------------ | -------------------------------------------------------------------------------------- |
+| `--roles <path>`         | Path to a JS module exporting roles. Default export checked first, then named `roles`. |
+| `--output <path>`        | Where to write the generated `.ts`. Parent directory must exist.                       |
+| `--resource-type <name>` | Name of the `Resource` union type. Default `"Resource"`.                               |
+| `--action-type <name>`   | Name of the `Action` union type. Default `"Action"`.                                   |
+| `--export-name <name>`   | Alias for `--resource-type`.                                                           |
+| `-h`, `--help`           | Print help and exit.                                                                   |
+
+**No `--include-wildcards` CLI flag exists** — the CLI always invokes `extractResourceActions(roles)` with default options (wildcards skipped). To include wildcards you must call the library API directly.
 
 **The `--roles` path MUST point at runnable JavaScript.** The CLI does `import(path)`; it does not transpile. Author your roles in TypeScript, build them to `dist/`, then run codegen against the built artifact. Pointing `--roles` at a `.ts` file fails with `ERR_UNKNOWN_FILE_EXTENSION` (or similar, depending on Node loader config).
 
@@ -138,12 +140,10 @@ Check the generated file into git or `.gitignore` it — both choices are defens
 
 Default: rules with `*` in `resource` or `action` are SKIPPED in extraction. This keeps the emitted unions sound — `Resource = "com.resource.db.*"` would be a literal type that no real resource ID matches.
 
-If your roles use wildcards and you want them surfaced:
+If your roles use wildcards and you want them surfaced, use the library API directly (the CLI has no flag for it):
 
 ```ts
 extractResourceActions(roles, { includeWildcards: true });
-// or
-// aoothjs-arbac-codegen --include-wildcards ...
 ```
 
 Then `Resource` may contain literals like `"com.resource.**"`. Downstream code consuming `Resource` must accept these as opaque pattern strings, not concrete resource IDs.

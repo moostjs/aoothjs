@@ -16,7 +16,7 @@ pnpm add @aoothjs/user @aoothjs/auth @aoothjs/auth-moost \
          @aoothjs/arbac @aoothjs/arbac-moost \
          moost @moostjs/event-http @moostjs/event-wf \
          @atscript/db @atscript/db-sqlite @atscript/moost-wf \
-         jose better-sqlite3
+         better-sqlite3
 pnpm add -D @atscript/core @atscript/typescript unplugin-atscript
 ```
 
@@ -146,7 +146,7 @@ const authCredential = new AuthCredential<Record<string, unknown>>({
 })
 ```
 
-The cast on `tables.users` is required: `AtscriptDbTable<T>` returns `Record<string, unknown>` from its structural reads — `AuthUserTable<T>` narrows that surface to what `UsersStoreAtscriptDb` actually calls. See [`aooth.ts`](https://github.com/moostjs/aoothjs/blob/main/packages/e2e-demo/src/aooth.ts).
+The cast on `tables.users` bridges atscript-db's generic row shape (`Record<string, unknown>`) into the narrower `AuthUserTable<AppUser>` surface that `UsersStoreAtscriptDb` actually calls — copy as-is, no runtime cost. See [`aooth.ts`](https://github.com/moostjs/aoothjs/blob/main/packages/e2e-demo/src/aooth.ts).
 
 ## 6. Define a role
 
@@ -168,13 +168,15 @@ export const memberRole = defineRole<UserAttrs, ArbacDbScope>()
   .build()
 ```
 
-`allow('me', 'read')` matches the controller below — `@ArbacResource('me')` + `@ArbacAction('read')` lookups against the role's rule list.
+`allow('me', 'read')` matches the controller below — `@ArbacResource('me')` on the class and `@ArbacAction('read')` on the method are what `arbacAuthorizeInterceptor` looks up against the role's rule list. (If you omit them the interceptor falls back to `@Controller(id)` and the method name, but explicit is safer — a typo'd handler name silently denies.)
 
 ## 7. Build the moost app
 
 ```ts:line-numbers
 import {
+  ArbacAction,
   arbacAuthorizeInterceptor,
+  ArbacResource,
   ArbacUserProviderToken,
   MoostArbac,
   type ArbacDbScope,
@@ -205,8 +207,10 @@ import { AppUser } from './models/user.as'
 import { memberRole } from './roles/member'
 
 @Controller('me')
+@ArbacResource('me')
 class MeController {
   @Get()
+  @ArbacAction('read')
   whoami(@UserId() userId: string) {
     return { userId }
   }
@@ -242,6 +246,10 @@ TypeScript emits fresh `design:paramtypes` per class. Without the explicit const
 :::
 
 Do the same for `RecoveryWorkflow` and `InviteWorkflow`. For brevity this Quick Start mounts only `AppLoginWorkflow`.
+
+::: warning Workflows not registered → 400 on trigger
+`AuthController.triggerWf` accepts `DEFAULT_AUTH_WORKFLOWS = ['auth.login', 'auth.recovery', 'auth.invite']`. With only `AppLoginWorkflow` registered, a `POST /auth/trigger` with `{"wfs":"auth.recovery"}` will 400 because the workflow id is not registered with `MoostWf`. Register the matching subclass before exposing the corresponding flow.
+:::
 
 ### 7b. ARBAC user provider
 
@@ -324,7 +332,7 @@ arbac.registerRole(memberRole)
 ```
 
 ::: info Why register roles after `init()`
-`MoostArbac` is `@Injectable()` and constructed lazily by moost's IoC container. Grabbing it via `getMoostInfact().get(MoostArbac)` after `init()` is the supported way to get the singleton instance for `registerRole(...)`. Roles registered this way persist for the process lifetime.
+`MoostArbac` is `@Injectable()` and constructed lazily by moost's IoC container. Grabbing it via `getMoostInfact().get(MoostArbac)` after `init()` is the simple form — roles registered this way persist for the process lifetime. For larger role sets, prefer providing a pre-populated `MoostArbac` from your `setProvideRegistry` factory so the role list is set before any request hits the interceptor.
 :::
 
 ## 8. Create a user and log in
@@ -366,9 +374,122 @@ curl http://localhost:3000/me -H 'Authorization: Bearer <accessToken>'
 ## What the request just did
 
 1. `authGuardInterceptor` validated the bearer token via `AuthCredential.validate()` and stashed `AuthContext { userId: 'alice' }` onto the event.
-2. `arbacAuthorizeInterceptor` resolved `resource = 'me'` (from `@ArbacResource` defaulting to controller `id`), `action = 'read'` (from the method name), instantiated `AppArbacUserProvider`, fetched alice's `{ roles: ['member'], attrs: { tenantId: 't1' } }`, and called `Arbac.evaluate(...)`.
+2. `arbacAuthorizeInterceptor` resolved `resource = 'me'` (from class-level `@ArbacResource('me')`), `action = 'read'` (from method-level `@ArbacAction('read')`), instantiated `AppArbacUserProvider`, fetched alice's `{ roles: ['member'], attrs: { tenantId: 't1' } }`, and called `Arbac.evaluate(...)`.
 3. The `memberRole`'s `.allow('me', 'read')` rule matched. Scopes were set on the event.
 4. The handler ran, `useAuth().getUserId()` returned `'alice'`, and moost serialised the response.
+
+## What else `/auth/*` ships
+
+`AuthController` mounts four routes under `@Controller('auth')`. All four are `@Public()` (the auth guard does not block them — they validate their own inputs):
+
+| Method + path        | Body                           | Purpose                                                                                                               |
+| -------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| `POST /auth/logout`  | `{ refreshToken? }` (optional) | Revokes the current access token + refresh (cookie or body). Always clears `aooth_session` / `aooth_refresh` cookies. |
+| `POST /auth/refresh` | `{ refreshToken? }` (optional) | Trades a refresh token for a fresh access + refresh pair. Reads cookie if no body field.                              |
+| `GET /auth/status`   | —                              | Returns the resolved `AuthContext { userId, claims }` if the guard could validate; 401 otherwise.                     |
+| `POST /auth/trigger` | `{ wfs, input? }`              | Drives any workflow in `DEFAULT_AUTH_WORKFLOWS = ['auth.login', 'auth.recovery', 'auth.invite']`.                     |
+
+Subclass `AuthController` to widen the trigger allow-list (override `triggerWf()` with your own `@WfTrigger({ allow })`).
+
+For self-signup, password reset, or invite acceptance use `RecoveryWorkflow` / `InviteWorkflow` — same subclass pattern as `LoginWorkflow`, mounted via the same `/auth/trigger` envelope. See the [Moost integration guide](../moost/) for the per-workflow option surface.
+
+## Common flows
+
+End-to-end snippets for the four most-asked Day-1 recipes. Each one assumes the Quick Start app is running and `AppRecoveryWorkflow` / `AppInviteWorkflow` are registered when relevant.
+
+### Guard a single route by role
+
+```ts:line-numbers
+import { ArbacAction, ArbacResource, useArbac } from '@aoothjs/arbac-moost'
+import { Controller, Get } from '@moostjs/event-http'
+import { allowTableRead, defineRole } from '@aoothjs/arbac'
+
+// Role: editors see only their own tenant's tasks.
+export const editorRole = defineRole<UserAttrs, ArbacDbScope>()
+  .id('editor')
+  .allow('tasks', 'read')
+  .use(allowTableRead<UserAttrs, ArbacDbScope>('tasks', {
+    scope: (attrs) => ({ filter: { tenantId: attrs.tenantId } }),
+  }))
+  .build()
+
+@Controller('tasks')
+@ArbacResource('tasks')
+class TasksController {
+  @Get()
+  @ArbacAction('read')
+  async list() {
+    // Pull the scope union from the request — apply it to your DB filter.
+    const scopes = useArbac().getScopes<ArbacDbScope>() ?? []
+    return tables.tasks.findMany({ filter: scopes[0]?.filter ?? {} })
+  }
+}
+```
+
+A request from a user whose `@arbac.attribute tenantId` is `'t1'` will see `scopes[0].filter = { tenantId: 't1' }` — apply it directly to the query.
+
+### Password reset (recovery flow)
+
+`RecoveryWorkflow` is a multi-step workflow that pauses on each user interaction. The envelope's `wfs` is the resume token.
+
+```bash
+# 1. Start: server returns wfs + RecoveryRequestForm
+curl -X POST http://localhost:3000/auth/trigger \
+  -H 'content-type: application/json' \
+  -d '{"wfs":"auth.recovery"}'
+
+# 2. Submit identifier (username or email) — server emits the magic-link email
+curl -X POST http://localhost:3000/auth/trigger \
+  -H 'content-type: application/json' \
+  -d '{"wfs":"<token-from-step-1>","input":{"identifier":"alice"}}'
+
+# 3. User clicks the magic-link URL from email; FE posts it back as the new wfs
+curl -X POST http://localhost:3000/auth/trigger \
+  -H 'content-type: application/json' \
+  -d '{"wfs":"<token-from-magic-link>","input":{"newPassword":"NewCorrectHorse42!"}}'
+```
+
+Wire `createAuthEmailOutlet({ emailSender, buildMagicLinkUrl })` into your `WfTriggerProvider` (step 7c above) — the outlet receives the kind `'recovery.magicLink'` and turns it into a clickable URL.
+
+### Refresh-token flow
+
+After login, the response carries `aooth_refresh` (HTTP-only cookie, path `/auth/refresh`) and the access token. To rotate before expiry:
+
+```bash
+# Browsers send the cookie automatically:
+curl -X POST http://localhost:3000/auth/refresh \
+  -b 'aooth_refresh=<refresh-token-from-login>'
+
+# Or pass it explicitly in the body (for non-browser clients):
+curl -X POST http://localhost:3000/auth/refresh \
+  -H 'content-type: application/json' \
+  -d '{"refreshToken":"<refresh-token-from-login>"}'
+# → { accessToken, refreshToken, expiresIn, userId, ... }
+```
+
+With `refresh: { rotation: 'always' }` (the Quick Start setting) every call mints a NEW refresh and invalidates the previous one — replaying the old refresh raises `REFRESH_REUSE_DETECTED` and revokes all credentials for the user.
+
+### Magic-link login
+
+`LoginWorkflow` supports passwordless entry through the same email outlet. The recovery recipe above doubles as the magic-link primitive — the only difference is which `kind` the outlet receives (`login.magicLink` vs `recovery.magicLink`). Your `buildMagicLinkUrl` callback should branch on the `kind`:
+
+```ts
+buildMagicLinkUrl: (kind, token) => {
+  const path = kind === "login.magicLink" ? "login" : "recover";
+  return `${process.env.FRONTEND_URL}/${path}?wfs=${token}`;
+};
+```
+
+The clicked URL's `wfs` query parameter is resumed identically:
+
+```bash
+curl -X POST http://localhost:3000/auth/trigger \
+  -H 'content-type: application/json' \
+  -d '{"wfs":"<token-from-clicked-link>"}'
+# → final envelope: { type: "data", end: { action: "data", data: { accessToken, ... } } }
+```
+
+A successful resume drops the same cookies + access token as the password path.
 
 ## Next steps
 

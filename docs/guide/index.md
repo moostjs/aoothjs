@@ -28,7 +28,7 @@ This page sketches the shape of the stack and points you at the right package fo
 | [`@aoothjs/arbac-core`](../arbac/core)             | authz         | Zero-dep RBAC evaluator — `TArbacRole`, `Arbac.evaluate()`, deny-wins, wildcard matching, dynamic scopes.                                          |
 | [`@aoothjs/arbac`](../arbac/)                      | authz         | Fluent `defineRole()` builder, `definePrivilege()` + `allowTable*` factories, scope-merge helpers, type codegen.                                   |
 | [`@aoothjs/auth-moost`](../moost/)                 | authn / moost | `AuthController`, `authGuardInterceptor`, `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow`, `@Public`, `@UserId`, `useAuth`.                |
-| [`@aoothjs/arbac-moost`](../moost/arbac-authorize) | authz / moost | `arbacAuthorizeInterceptor`, `@ArbacResource` / `@ArbacAction`, `useArbac`, `AsArbacDbController`, `AtscriptArbacUserProvider`.                    |
+| [`@aoothjs/arbac-moost`](../moost/arbac-authorize) | authz / moost | `arbacAuthorizeInterceptor`, `@ArbacResource` / `@ArbacAction`, `useArbac`, `AtscriptArbacUserProvider`.                                           |
 
 ## How they compose at runtime
 
@@ -51,7 +51,7 @@ A logged-in request to `GET /tasks/:id` walks the stack like this:
  │   └─ resolves @ArbacResource / @ArbacAction                 │
  │   └─ uses Arbac.evaluate(user, request)  (arbac-core)       │
  │        └─ user fetched via AtscriptArbacUserProvider        │
- │             └─ reads user row + @arbac.role + @arbac.attribute
+ │             └─ reads @arbac.role + @arbac.attribute        │
  └────────────────────┬────────────────────────────────────────┘
                       │ scopes set on event
                       ▼

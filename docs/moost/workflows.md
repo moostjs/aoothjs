@@ -240,40 +240,30 @@ One-step flow. Requires `cancellation.allowed`. Looks up the user, asserts `pend
 
 ## The `WfFinished` envelope contract
 
-All three workflows go through one of four envelope helpers from `@atscript/moost-wf`:
+All three workflows go through one of these envelope helpers from `@atscript/moost-wf`. Every helper produces the unified `WfFinished` wire envelope `{ finished: true, data?, message?, end?, aborted?, reason? }`:
 
-| Helper                                                                     | Envelope shape                                                         | Used by                                                                           |
-| -------------------------------------------------------------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `finishWfWithData(value, message?)`                                        | `{ type: 'data', value, message? }`                                    | Recovery `recoveryRequest` (sent: true), invite `cancelInvite` (cancelled: true). |
-| `finishWfWithRedirect(target, { autoMs?, skipLabel?, message?, reason? })` | `{ type: 'redirect', target, autoMs?, skipLabel?, message?, reason? }` | Login `forgotPassword`, recovery `freshLoginFinish`, invite `freshLoginFinish`.   |
-| `finishWfWithChoice({ message, primary, options? })`                       | `{ type: 'choice', message, primary, options? }`                       | Invite `idempotentRedirect`.                                                      |
-| `finishWfAborted(reason, { message? })`                                    | `{ type: 'aborted', reason, message? }`                                | Login `logout`, terms `decline`, concurrency `cancel`.                            |
+| Helper                                                                     | Wire envelope produced                                                                                                   | Used by                                                                           |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
+| `finishWfWithData(data, message?)`                                         | `{ finished: true, data, message? }`                                                                                     | Recovery `recoveryRequest` (sent: true), invite `cancelInvite` (cancelled: true). |
+| `finishWfWithMessage(level, text)`                                         | `{ finished: true, message: { level, text } }`                                                                           | Display-only finish; no data payload.                                             |
+| `finishWfWithRedirect(target, { autoMs?, skipLabel?, message?, reason? })` | `{ finished: true, message?, end: { mode: 'immediate' \| 'auto', action: { type: 'redirect', target, reason? }, ... } }` | Login `forgotPassword`, recovery `freshLoginFinish`, invite `freshLoginFinish`.   |
+| `finishWfWithChoice({ message?, primary?, options? })`                     | `{ finished: true, data?, message?, end: { mode: 'manual', primary?, options? } }`                                       | Invite `idempotentRedirect`.                                                      |
+| `finishWfAborted(reason, { message?, end? })`                              | `{ finished: true, aborted: true, reason, message?, end? }`                                                              | Login `logout`, terms `decline`, concurrency `cancel`.                            |
 
 ### Raw envelope path for cookies
 
-The high-level helpers above do **not** accept cookies. For paths that need to attach cookies (login `issue`, recovery `autoLoginFinish`, invite `autoLoginFinish`), workflows use the raw envelope path:
+The high-level helpers above do **not** accept cookies. For paths that need to attach cookies (login `issue`, recovery `autoLoginFinish`, invite `autoLoginFinish`), workflows use the raw `useWfFinished().set(...)` slot directly. The slot input shape (`{ type, value, cookies }`) is the `@wooksjs/event-wf` API — distinct from the `WfFinished` wire envelope it carries in `value`:
 
 ```ts
+const envelope: WfFinished = { finished: true, data: auth.buildLoginResponse(...) };
 useWfFinished().set({
   type: "data",
-  value: envelope,
+  value: envelope,            // ← the WfFinished wire envelope
   cookies: auth.buildFinishedCookies(issue),
 });
 ```
 
 `buildFinishedCookies(issue)` builds the cookies map from the `IssueResult`, respecting the `enableCookie` flag. See [AuthGuard & useAuth](./auth-guard#buildfinishedcookies-issue-wffinishedresponse-cookies).
-
-### Test helpers
-
-The package exports test helpers for narrowing envelope types in specs:
-
-```ts
-import { expectFinished, expectRedirect } from "@aoothjs/auth-moost";
-
-const env = await response.json();
-const data = expectFinished<{ sent: true }>(env); // narrows to type: 'data'
-const redirect = expectRedirect(env); // narrows to type: 'redirect'
-```
 
 ## `wf-trigger` — workflow trigger machinery
 

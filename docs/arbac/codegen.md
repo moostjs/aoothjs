@@ -38,15 +38,15 @@ The library exposes two functions you can use inside your own scripts. Both are 
 
 ```ts
 function extractResourceActions(
-  roles: TArbacRole[],
-  options?: { skipWildcards?: boolean },
+  roles: TArbacRole<unknown, unknown>[],
+  options?: { includeWildcards?: boolean },
 ): TResourceActionMap;
 
-type TResourceActionMap = {
-  resources: Record<string, string[]>; // resource → sorted action list
-  allResources: string[]; // sorted union of keys
-  allActions: string[]; // sorted union of all actions
-};
+interface TResourceActionMap {
+  resources: Map<string, Set<string>>; // resource → set of actions
+  allResources: Set<string>; // unique resources
+  allActions: Set<string>; // unique actions
+}
 ```
 
 Walks every role's rules and builds the resource→actions map. By default, **entries containing `*` are skipped** — wildcards are not literal types, so emitting them would be misleading.
@@ -61,16 +61,13 @@ const roles = [
 
 extractResourceActions(roles);
 // → {
-//     resources: {
-//       articles: ['read', 'update'],   // 'articles', '*' skipped
-//       comments: ['read'],
-//     },
-//     allResources: ['articles', 'comments'],
-//     allActions:   ['read', 'update'],
+//     resources:    Map { 'articles' => Set { 'read', 'update' }, 'comments' => Set { 'read' } },
+//     allResources: Set { 'articles', 'comments' },
+//     allActions:   Set { 'read', 'update' },
 //   }
 ```
 
-Pass `skipWildcards: false` if you genuinely want wildcard entries in the output — typically you don't.
+Pass `includeWildcards: true` if you genuinely want wildcard entries in the output — typically you don't.
 
 ### `generateResourceTypes(map, options?)`
 
@@ -113,14 +110,14 @@ aoothjs-arbac-codegen --roles dist/roles.mjs --output src/generated/arbac-types.
 
 ### Options
 
-| Flag                     | Required | Notes                                                                                 |
-| ------------------------ | -------- | ------------------------------------------------------------------------------------- |
-| `--roles <path>`         | **Yes**  | Path to a JS module whose default export (or first array export) is a `TArbacRole[]`. |
-| `--output <path>`        | **Yes**  | Destination `.ts` file. Parent directory must exist.                                  |
-| `--resource-type <name>` | No       | Override `resourceTypeName` (default `'Resource'`).                                   |
-| `--action-type <name>`   | No       | Override `actionTypeName` (default `'Action'`).                                       |
-| `--export-name <name>`   | No       | Alias for `--action-type`.                                                            |
-| `--help`                 | No       | Print help and exit.                                                                  |
+| Flag                     | Required | Notes                                                                                   |
+| ------------------------ | -------- | --------------------------------------------------------------------------------------- |
+| `--roles <path>`         | **Yes**  | Path to a JS module whose default export (or named `roles` export) is a `TArbacRole[]`. |
+| `--output <path>`        | **Yes**  | Destination `.ts` file. Parent directory must exist.                                    |
+| `--resource-type <name>` | No       | Override `resourceTypeName` (default `'Resource'`).                                     |
+| `--action-type <name>`   | No       | Override `actionTypeName` (default `'Action'`).                                         |
+| `--export-name <name>`   | No       | Alias for `--action-type`.                                                              |
+| `--help`                 | No       | Print help and exit.                                                                    |
 
 ### `--roles` must be runnable JS
 
@@ -162,14 +159,14 @@ The output is deterministic given the inputs, but checking it in means PR review
 
 ## Wildcard skipping
 
-The default `skipWildcards: true` means a rule like `allow('articles', '*')` contributes the **resource** `'articles'` to `Resource` but contributes **no action** to `Action` for that resource (since `*` is not a real action name).
+The default (`includeWildcards: false`) means a rule like `allow('articles', '*')` contributes the **resource** `'articles'` to `Resource` but contributes **no action** to `Action` for that resource (since `*` is not a real action name).
 
 Why default-skip:
 
 - Emitting `'*'` as a literal would let `action: '*'` typecheck in callers, defeating the point of `Action` being a closed union.
 - Wildcards in roles are typically blanket grants for admin-tier roles; codegen consumers (request handlers, audit code) want the _enumerated_ universe, not the wildcard placeholder.
 
-If you have a use case for keeping wildcards in the output, set `skipWildcards: false` on `extractResourceActions` directly. The CLI does not expose this flag — it always skips.
+If you have a use case for keeping wildcards in the output, set `includeWildcards: true` on `extractResourceActions` directly. The CLI does not expose this flag — it always skips.
 
 ## End-to-end example
 
@@ -213,9 +210,9 @@ Note `articles` only lists `'read' | 'update'` — the wildcard `'*'` from `admi
 ## Gotchas
 
 - **`--roles` must be JS.** Build first. The CLI does not transpile.
-- **Wildcards are skipped by default.** Use `skipWildcards: false` on the library API if you need them. The CLI has no flag for it.
+- **Wildcards are skipped by default.** Use `includeWildcards: true` on the library API if you need them. The CLI has no flag for it.
 - **Output is sorted.** Keys and union members come out alphabetically — diffs are stable across runs.
-- **Roles must default-export the array** (or be the first array export). The CLI looks for an array; if it can't find one, it errors.
+- **Roles must default-export the array** (or be exported under the named `roles` export). The CLI checks `default` first, then `roles`; if neither is an array, it errors.
 - **`ResourceActionMap` can be huge.** Hundreds of resources × actions = a very wide type. If `tsc` slows down, set `resourceActionMap: false` and use just `Resource` / `Action`.
 
 ## See also

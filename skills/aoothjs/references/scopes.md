@@ -161,7 +161,7 @@ isFieldAllowed("secret", { secret: 0 }); // false
 ## `unionControlsPolicy` — per-control gate merge
 
 ```ts
-unionControlsPolicy(...scopes: ArbacDbScope[]): Record<string, ControlGate>
+unionControlsPolicy(scopes: ReadonlyArray<Pick<ArbacDbScope, "controls">>): Record<string, ControlGate>
 type ControlGate = boolean | readonly string[];
 ```
 
@@ -176,27 +176,27 @@ Resolution per control key:
    - **Mix of `false` and `string[]`** → union of all whitelists, sorted and deduplicated.
 3. **`string[]` is ONLY legal for `$with` and `$groupBy`.** Any other key with a `string[]` gate throws.
 
-Examples:
+Examples (single array arg):
 
 ```ts
-unionControlsPolicy({ controls: { $with: ["tasks"] } }, { controls: { $with: ["comments"] } });
+unionControlsPolicy([{ controls: { $with: ["tasks"] } }, { controls: { $with: ["comments"] } }]);
 // { $with: ["comments", "tasks"] }   ← union, sorted
 
-unionControlsPolicy({ controls: { $with: false } }, { controls: { $with: ["tasks"] } });
+unionControlsPolicy([{ controls: { $with: false } }, { controls: { $with: ["tasks"] } }]);
 // { $with: ["tasks"] }   ← whitelist beats false
 
-unionControlsPolicy({ controls: { $with: false } }, { controls: { $with: false } });
+unionControlsPolicy([{ controls: { $with: false } }, { controls: { $with: false } }]);
 // { $with: false }
 
-unionControlsPolicy({ controls: { $with: true } }, { controls: { $with: false } });
+unionControlsPolicy([{ controls: { $with: true } }, { controls: { $with: false } }]);
 // {}   ← `true` drops the key (absent ≡ allowed)
 
-unionControlsPolicy(
+unionControlsPolicy([
   { controls: { $with: ["tasks"] } },
   {
     /* no controls */
   },
-);
+]);
 // {}   ← any omission = full grant
 ```
 

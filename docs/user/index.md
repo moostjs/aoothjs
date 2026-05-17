@@ -8,13 +8,13 @@ This section documents the foundation of the aoothjs auth stack — the user cre
 
 The one orchestrator is **[`UserService<T>`](./service)** — every consumer-facing API call goes through it. Internally it composes:
 
-| Subsystem     | Module                                        | What it owns                                                                 |
-| ------------- | --------------------------------------------- | ---------------------------------------------------------------------------- |
-| Account state | `UserService`                                 | `account.active`, `locked`, `lockEnds`, `failedLoginAttempts`, `lastLogin`   |
-| Password      | `PasswordHasher` + `PasswordPolicy`           | hashing, verification, history rotation, policy DSL                          |
-| MFA           | `mfa/totp` + `mfa/codes` + `mfa/backup-codes` | TOTP secret/URI/code/verify, SHA-256 challenge codes, backup-code generation |
-| Storage       | `UserStore<T>` (abstract)                     | `exists` / `findByUsername` / `create` / `update` / `delete`                 |
-| Errors        | `UserAuthError`                               | every failure carries a discriminant `type` + structured `details`           |
+| Subsystem     | What it owns                                                                                                                                     |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Account state | `account.active`, `locked`, `lockEnds`, `failedLoginAttempts`, `lastLogin`                                                                       |
+| Password      | `PasswordHasher` + `PasswordPolicy` — hashing, verification, history, policy DSL                                                                 |
+| MFA           | `generateTotpSecret` / `generateTotpUri` / `generateTotpCode` / `verifyTotpCode`, `hashMfaCode` / `verifyMfaCode`, `generateBackupCodePlaintext` |
+| Storage       | `UserStore<T>` (abstract) — `exists` / `findByUsername` / `create` / `update` / `delete`                                                         |
+| Errors        | `UserAuthError` — every failure carries a discriminant `type` + structured `details`                                                             |
 
 ## What this package is not
 
@@ -72,21 +72,6 @@ pnpm add @atscript/db
 This package has no peer dependency on `@atscript/db` unless you import the `@aoothjs/user/atscript-db` subpath. The plain `UserStoreMemory` works out of the box for tests and prototyping.
 :::
 
-## Source map
+## Source
 
-| File                                                                                                                                                  | Role                                  |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
-| [`packages/user/src/index.ts`](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/index.ts)                                               | Public exports                        |
-| [`packages/user/src/types.ts`](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/types.ts)                                               | All public types                      |
-| [`packages/user/src/user-service.ts`](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/user-service.ts)                                 | `UserService` orchestrator            |
-| [`packages/user/src/errors.ts`](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/errors.ts)                                             | `UserAuthError` + `UserAuthErrorType` |
-| [`packages/user/src/store/user-store.ts`](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/store/user-store.ts)                         | `UserStore<T>` abstract               |
-| [`packages/user/src/store/memory.ts`](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/store/memory.ts)                                 | `UserStoreMemory<T>`                  |
-| [`packages/user/src/password/hasher.ts`](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/password/hasher.ts)                           | `PasswordHasher`                      |
-| [`packages/user/src/password/policy.ts`](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/password/policy.ts)                           | `PasswordPolicy` engine               |
-| [`packages/user/src/password/policies.ts`](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/password/policies.ts)                       | `ppHas*` factories                    |
-| [`packages/user/src/mfa/totp.ts`](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/mfa/totp.ts)                                         | TOTP / HOTP / `generateMfaCode`       |
-| [`packages/user/src/mfa/codes.ts`](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/mfa/codes.ts)                                       | `hashMfaCode` / `verifyMfaCode`       |
-| [`packages/user/src/mfa/backup-codes.ts`](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/mfa/backup-codes.ts)                         | `generateBackupCodePlaintext`         |
-| [`packages/user/src/atscript-db/index.ts`](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/atscript-db/index.ts)                       | atscript-db adapter                   |
-| [`packages/user/src/atscript-db/user-credentials.as`](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/atscript-db/user-credentials.as) | Shipped `.as` model                   |
+[Browse the package source on GitHub](https://github.com/moostjs/aoothjs/tree/main/packages/user/src).

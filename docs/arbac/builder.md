@@ -17,15 +17,15 @@ Two generic parameters, both defaulting to `object`. They flow into every chain 
 
 ## The chain
 
-| Method                             | Effect                                                                                                     | Required                                |
-| ---------------------------------- | ---------------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| `.id(value)`                       | Sets the role ID. Last call wins.                                                                          | **Yes** — `.build()` throws without it. |
-| `.name(value)`                     | Optional display name. Last call wins.                                                                     | No                                      |
-| `.describe(value)`                 | Optional description. Last call wins.                                                                      | No                                      |
-| `.allow(resource, action, scope?)` | Pushes `{ resource, action, scope? }`. The `scope` key is omitted from the emitted rule when not provided. | —                                       |
-| `.deny(resource, action)`          | Pushes `{ resource, action, effect: 'deny' }`. No `scope` argument — deny rules cannot carry a scope.      | —                                       |
-| `.use(...privileges)`              | Invokes each `TPrivilegeFunction` and splices its rules into the current list in place.                    | —                                       |
-| `.build()`                         | Returns a plain `TArbacRole<TUserAttrs, TScope>` with a _copy_ of the rules array.                         | —                                       |
+| Method                             | Effect                                                                                                                                                                                                   | Required                                |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| `.id(value)`                       | Sets the role ID. Last call wins.                                                                                                                                                                        | **Yes** — `.build()` throws without it. |
+| `.name(value)`                     | Optional display name. Last call wins.                                                                                                                                                                   | No                                      |
+| `.describe(value)`                 | Optional description. Last call wins.                                                                                                                                                                    | No                                      |
+| `.allow(resource, action, scope?)` | Pushes `{ resource, action, scope? }`. The `scope` key is omitted from the emitted rule when not provided.                                                                                               | —                                       |
+| `.deny(resource, action)`          | Pushes `{ resource, action, effect: 'deny' }`. No `scope` argument — deny rules cannot carry a scope.                                                                                                    | —                                       |
+| `.use(...privileges)`              | Invokes each `TPrivilegeFunction` and splices its rules into the current list in place. Variadic-tuple typed — each privilege keeps its own scope shape (see [Generic pinning](#generic-pinning) below). | —                                       |
+| `.build()`                         | Returns a plain `TArbacRole<TUserAttrs, TScope>` with a _copy_ of the rules array.                                                                                                                       | —                                       |
 
 ::: warning `.id()` is required
 Calling `.build()` without an ID throws `"Role id is required. Call .id() before .build()."`. There is no default ID.
@@ -70,6 +70,10 @@ const role = defineRole<Attrs, Scope>()
 
 If you skip the generics, both default to `object` and you'll get `unknown` inside the scope callback. Pin them every time.
 
+### Role-level `TScope` is upper-bound documentation, not enforcement
+
+`.use()` accepts a mix of typed-scope privileges in a single call — each privilege keeps its own scope shape. This matters for typed-table privileges like `allowTableRead<Attrs, ArbacDbScope<Task>>(...)` and `allowTableRead<Attrs, ArbacDbScope<Comment>>(...)`: the two scope shapes are not structurally assignable to each other, but you can drop both into one `.use(...)` call. The role-level `TScope` pin (`defineRole<Attrs, ArbacDbScope>()`) stays as **upper-bound documentation** of what scope objects look like at evaluate time. See [`@aoothjs/arbac` API reference](/api/arbac) for the full `.use()` signature.
+
 ## Rule order preservation
 
 The builder pushes rules in **call order**. Both `.deny()` and `.allow()` for the same `(resource, action)` end up in the emitted role — and the engine applies its own deny-wins semantics regardless of order.
@@ -87,7 +91,7 @@ Order matters for one thing only: **debugging**. Rule arrays end up in audit log
 
 ## Splicing in privilege factories with `.use()`
 
-`.use(...privileges)` accepts any number of `TPrivilegeFunction<TUserAttrs, TScope>` values. Each is called _immediately_ and its returned rules are spliced into the current rule list.
+`.use(...privileges)` accepts any number of privileges, each typed as `TPrivilegeFunction<TUserAttrs, TScopes[K]>` (variadic tuple). Each is called _immediately_ and its returned rules are spliced into the current rule list.
 
 ```ts
 import { defineRole, definePrivilege, allowTableWrite } from "@aoothjs/arbac";

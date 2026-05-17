@@ -44,9 +44,11 @@ interface AuthEmailEvent {
   code?: string;
   expiresAt: number; // ms since epoch
   username?: string;
-  metadata?: CredentialMetadata;
+  metadata?: Record<string, unknown>;
 }
 ```
+
+`metadata` is intentionally a free-form `Record<string, unknown>` — workflows push notify-side ip / user-agent, invite-side `roles: string[]`, locale hints, etc. It is **not** the per-credential `CredentialMetadata` shape.
 
 | Field       | Always present          | Notes                                                         |
 | ----------- | ----------------------- | ------------------------------------------------------------- |
@@ -265,20 +267,39 @@ The trade-off: a delivery failure no longer surfaces to the request. Build a dea
 
 ## Registration with workflows
 
-`@aoothjs/auth-moost` expects senders in DI:
+`@aoothjs/auth-moost` does **not** ship `EmailSender` / `SmsSender` as DI tokens — the Phase 4 workflow reshape dropped them in favor of `protected` method overrides on the workflow classes themselves (subclass `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow` and override `deliver*` / `auditLogin` / `storeTrustedDevice` etc.). Senders are wired by closure into those overrides.
+
+The magic-link outlet (`createAuthEmailOutlet`) is the one place that still takes an `EmailSender` directly — as a constructor dep, not via DI:
 
 ```ts
-import { AuthMoostModule } from "@aoothjs/auth-moost";
+import { createAuthEmailOutlet } from "@aoothjs/auth-moost";
 
-const moost = new Moost();
-moost.registerControllers(/* … */);
-moost.provide({
-  EmailSender: () => new SesEmailSender(/* … */),
-  SmsSender: () => new TwilioSmsSender(/* … */),
+const emailSender = new SesEmailSender(/* … */);
+const smsSender = new TwilioSmsSender(/* … */);
+
+const outlet = createAuthEmailOutlet({
+  emailSender,
+  buildMagicLinkUrl: (kind, token) => `https://app.example.com/wf/${kind}?wfs=${token}`,
 });
 ```
 
-If a workflow is configured to use SMS but no `SmsSender` is registered, the workflow throws at construction — fail-loud, before any request hits it. See [Moost — Workflows](../moost/workflows).
+To register the workflows themselves with Moost's DI, use the tuple form of `createProvideRegistry`:
+
+```ts
+import { Moost, createProvideRegistry } from "moost";
+import { AuthCredential } from "@aoothjs/auth";
+import { LoginWorkflow } from "@aoothjs/auth-moost";
+
+const moost = new Moost();
+moost.setProvideRegistry(
+  createProvideRegistry(
+    [AuthCredential, () => auth],
+    [LoginWorkflow, () => new MyLoginWorkflow(users, auth)],
+  ),
+);
+```
+
+If a workflow is configured to use SMS but the override doesn't have an `SmsSender` in closure, the workflow throws at runtime on the first dispatch — see [Moost — Workflows](../moost/workflows).
 
 ## Locales and templates
 

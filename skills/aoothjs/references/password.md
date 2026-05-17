@@ -42,36 +42,15 @@ Defaults match `PasswordConfig` defaults: `N=16384, r=8, p=1, keyLength=64, salt
 
 ## Hash-string format
 
-```
-$scrypt$N=16384,r=8,p=1,l=64$<salt-base64url>$<derived-base64url>
-```
-
-The N/r/p/l (keyLength) params travel with the hash. `verify` reads them off the string instead of trusting the current `hasher` config — so you can raise cost in config and old hashes still verify with their original parameters. Hashes produced by older deployments keep working without a migration.
-
-`parseHash` rejects strings that don't start with `$scrypt$`, don't carry the four required params, or don't have three `$`-separated sections — `verify` returns `false` in all of those cases (no throw).
+Hashes are self-describing: the scrypt parameters (N, r, p, keyLength) are baked into the stored value, so `verify` always re-runs scrypt with the parameters from the hash — not the current `hasher` config. You can raise cost without invalidating older hashes; `verify` returns `false` (never throws) for any malformed input.
 
 ## Pepper
 
-`PasswordConfig.pepper` is a static, app-wide string prepended to every password before scrypt:
-
-```
-derivedKey = scrypt(pepper + password, salt, ...)
-```
-
-The pepper is **NOT** stored in the DB. Persist it in your secret manager / env / KMS. Critical invariants:
-
-- Lose the pepper → every stored hash becomes unverifiable. Treat it like a long-lived signing secret.
-- Rotate by re-hashing each user's password the next time they log in (verify with the old pepper, hash with the new — handled at a higher layer, not built-in).
-- Two services that share a user store MUST share the same pepper, or they cannot verify each other's hashes.
+`PasswordConfig.pepper` is a static, app-wide secret mixed into every password before scrypt. Store it in env / secret manager — never in the DB. Invariants: lose the pepper and every hash becomes unverifiable; two services that share a user store MUST share the same pepper; rotation requires app-level dual-write (verify with old, write with new) and is not built in.
 
 ## History rotation
 
-`PasswordConfig.historyLength` (default `0`) controls how many prior hashes are kept on `password.history[]`:
-
-- `0` — history is wiped to `[]` on every change; `PASSWORD_IN_HISTORY` only fires against the current hash.
-- `N > 0` — on `changePassword` / `setPassword`, the new array is `[currentHash, ...oldHistory].slice(0, N)`. New password is checked against `currentHash + every history entry` in parallel via `Promise.all(hashes.map(h => verify(new, h)))` — any match throws `PASSWORD_IN_HISTORY`.
-
-History is per-user (not global) and lives on `user.password.history`. Resetting history on a user record requires a direct store update.
+`PasswordConfig.historyLength` (default `0`) controls how many prior hashes are kept on `password.history[]`. `0` disables history (current hash is still checked). For `N > 0`, `changePassword` / `setPassword` keep the most recent `N` hashes and throw `PASSWORD_IN_HISTORY` if the new password matches any of them. History is per-user.
 
 ## `generatePassword`
 

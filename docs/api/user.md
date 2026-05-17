@@ -64,7 +64,7 @@ Wraps one rule (string compiled via `@prostojs/ftring`, or a function). String-r
 ### `normalizePolicies`
 
 ```ts
-function normalizePolicies(defs: PasswordPolicyDef[]): PasswordPolicy[];
+function normalizePolicies(defs?: (PasswordPolicyDef | PasswordPolicyInstance)[]): PasswordPolicy[];
 ```
 
 Compiles an array of `PasswordPolicyDef` into ready-to-evaluate `PasswordPolicy` instances. See [Password Policies](/user/policy).
@@ -111,7 +111,9 @@ function maskMfaValue(method: MfaMethod): string;
 function setAtPath(obj: object, path: string, value: unknown): void;
 ```
 
-UI-safe MFA target masking + dot-path setter used by the atscript-db adapter to emit `$inc` patches. See [MFA Primitives](/user/mfa).
+`maskEmail` / `maskPhone` / `maskMfaValue` produce UI-safe display strings for MFA targets — see [MFA Primitives](/user/mfa).
+
+`setAtPath` is **advanced — for custom store implementers only**. App code does not call this directly; it's exported so that custom `UserStore` adapters can apply the `inc` patch shape (`{ "account.failedLoginAttempts": 1 }`) against an in-memory snapshot.
 
 ## Types
 
@@ -119,6 +121,7 @@ UI-safe MFA target masking + dot-path setter used by the atscript-db adapter to 
 
 ```ts
 interface UserCredentials {
+  id: string;
   username: string;
   password: PasswordData;
   account: AccountData;
@@ -134,22 +137,27 @@ interface PasswordData {
 }
 interface AccountData {
   active: boolean;
-  lastLogin?: number;
+  locked: boolean;
+  lockReason: string;
+  /** 0 = permanent lock, >0 = timestamp (ms) when lock expires */
+  lockEnds: number;
   failedLoginAttempts: number;
-  locked?: boolean;
-  lockReason?: string;
-  lockEnds?: number;
+  lastLogin: number;
+  /** Set by the invite workflow; cleared once the invite is accepted. */
+  pendingInvitation?: boolean;
 }
 interface MfaData {
   methods: MfaMethod[];
-  defaultMethod?: string;
-  autoSend?: boolean;
+  defaultMethod: string;
+  autoSend: boolean;
 }
 interface MfaMethod {
+  /** Method discriminator: 'email', 'sms', 'totp' */
   name: string;
-  kind: "totp" | "email" | "sms";
-  value?: string;
+  /** Whether this method has been verified/confirmed */
   confirmed: boolean;
+  /** Email address, phone number, or TOTP secret */
+  value: string;
 }
 ```
 
@@ -159,27 +167,28 @@ The full record model lives at `src/types.ts`. See [Credentials Model](/user/cre
 
 ```ts
 interface UserServiceConfig {
+  password?: PasswordConfig;
+  lockout?: LockoutConfig;
+  /** Injectable clock for testability. Defaults to Date.now */
+  clock?: () => number;
+  /** HMAC-SHA256 signing secret for trust-device tokens. */
+  deviceTrust?: { secret: string };
+}
+interface LockoutConfig {
+  /** Lock after this many failed attempts (0 = disabled, default) */
+  threshold?: number;
+  /** Lock duration in ms (0 = permanent, default) */
+  duration?: number;
+}
+interface PasswordConfig {
   pepper?: string;
+  /** Number of historical hashes to retain (0 = disabled) */
   historyLength?: number;
   scryptN?: number;
   scryptR?: number;
   scryptP?: number;
   keyLength?: number;
-  lockout?: LockoutConfig;
-  clock?: () => number;
-  policies?: PasswordPolicyDef[];
-  deviceTrust?: { secret: string; ttlMs?: number; bindToIp?: boolean };
-}
-interface LockoutConfig {
-  threshold: number;
-  duration: number;
-}
-interface PasswordConfig {
-  pepper?: string;
-  scryptN?: number;
-  scryptR?: number;
-  scryptP?: number;
-  keyLength?: number;
+  policies?: (PasswordPolicyDef | PasswordPolicyInstance)[];
 }
 ```
 
@@ -188,14 +197,21 @@ See [UserService](/user/service).
 ### Policy types
 
 ```ts
-type PasswordPolicyEvalFn = (password: string, ctx?: PolicyContext) => boolean | Promise<boolean>;
+type PasswordPolicyEvalFn = (
+  password: string,
+  ctx?: PasswordPolicyContext,
+) => boolean | Promise<boolean>;
 interface PasswordPolicyDef {
   rule: string | PasswordPolicyEvalFn;
   description?: string;
   errorMessage?: string;
 }
+interface PasswordPolicyContext {
+  passwordData?: PasswordData;
+  passwordConfig?: PasswordConfig;
+}
 interface PasswordPolicyInstance extends PasswordPolicyDef {
-  evaluate: PasswordPolicyEvalFn;
+  evaluate(password: string, ctx?: PasswordPolicyContext): boolean | Promise<boolean>;
   transferable: boolean;
 }
 interface TransferablePolicy {
@@ -205,7 +221,8 @@ interface TransferablePolicy {
 }
 interface PolicyCheckResult {
   passed: boolean;
-  policies: Array<{ description?: string; passed: boolean }>;
+  policies: Array<{ description: string; passed: boolean }>;
+  errors: string[];
 }
 ```
 
@@ -232,9 +249,10 @@ interface LoginResult<T extends object = object> {
 }
 interface LockStatus {
   locked: boolean;
-  reason?: string;
-  lockEnds?: number;
-  expired?: boolean;
+  /** True when lock has a non-zero lockEnds that is in the past */
+  expired: boolean;
+  reason: string;
+  lockEnds: number;
 }
 ```
 
@@ -245,23 +263,28 @@ See [UserService](/user/service).
 ```ts
 interface MfaMethodInfo {
   name: string;
-  kind: "totp" | "email" | "sms";
-  masked?: string;
-  confirmed: boolean;
+  isDefault: boolean;
+  masked: string;
 }
 interface TotpConfig {
+  /** Time step in seconds (default 30) */
   period?: number;
+  /** Number of digits in the code (default 6) */
   digits?: number;
+  /** Verification window — steps to check on each side (default 1) */
   window?: number;
-  algorithm?: "SHA1" | "SHA256" | "SHA512";
+  /** Injectable clock for testability */
+  clock?: () => number;
 }
 interface TrustedDeviceRecord {
-  id: string;
-  name?: string;
+  /** `<raw>.<sig>` — opaque token round-tripped by the consumer */
+  token: string;
+  /** Bound IP — set when `deviceTrust.bindsTo === 'cookie+ip'` */
   ip?: string;
-  createdAt: number;
+  issuedAt: number;
   expiresAt: number;
-  tokenHash: string;
+  /** Optional human-readable label (e.g. user-agent summary) */
+  name?: string;
 }
 ```
 
