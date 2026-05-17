@@ -2,7 +2,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 
 import {
   buildTestApp,
+  expectFinished,
   expectOk,
+  expectRedirect,
   readWfPause,
   sleep,
   startRecoveryAndResume,
@@ -37,24 +39,23 @@ describe("WF-RECOVERY — auth.recovery happy path + enumeration + single-use", 
       wfs: resumedBody.wfs,
       input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
     });
-    const finalBody = (await finalRes.json()) as { userId?: string; accessToken?: string };
-    expect(finalBody.userId).toBe(bob.username);
-    expect(typeof finalBody.accessToken).toBe("string");
+    const finalBody = await expectFinished<{ userId?: string; accessToken?: string }>(finalRes);
+    expect(finalBody.data?.userId).toBe(bob.username);
+    expect(typeof finalBody.data?.accessToken).toBe("string");
 
-    // After password change, the old password no longer works. The wf trigger
-    // re-renders the credentials form with `errors.__form = "Invalid credentials"`
-    // instead of the legacy /auth/login 401 — assert on the error envelope.
+    // Old password must NOT produce an auto-login envelope; the wf trigger
+    // re-renders the credentials form (paused) rather than finishing.
     const oldLogin = await app.loginRequest(bob.username, bob.password);
-    const oldBody = (await oldLogin.json()) as { userId?: string };
-    // After password change, the old password no longer works. The wf trigger
-    // re-renders the credentials form (no userId in body) instead of the
-    // legacy /auth/login 401 — assert there's no userId / token.
-    expect(oldBody.userId).toBeUndefined();
+    const oldBody = (await oldLogin.json()) as {
+      finished?: true;
+      data?: { userId?: string };
+    };
+    expect(oldBody.data?.userId).toBeUndefined();
 
     const newLogin = await app.loginRequest(bob.username, STRONG_PASSWORD);
     expectOk(newLogin);
-    const newBody = (await newLogin.json()) as { userId?: string };
-    expect(newBody.userId).toBe(bob.username);
+    const newBody = await expectFinished<{ userId?: string }>(newLogin);
+    expect(newBody.data?.userId).toBe(bob.username);
   });
 
   it("WF-RECOVERY-02 — unknown email: no enumeration, no email captured", async () => {
@@ -67,8 +68,8 @@ describe("WF-RECOVERY — auth.recovery happy path + enumeration + single-use", 
       input: { email: "ghost-no-such-user@nowhere.test" },
     });
     expectOk(submit);
-    const body = (await submit.json()) as { sent?: boolean };
-    expect(body.sent).toBe(true);
+    const body = await expectFinished<{ sent?: boolean }>(submit);
+    expect(body.data?.sent).toBe(true);
 
     // Wait briefly for any erroneous outlet emit; absence is the assertion.
     await sleep(200);
@@ -98,8 +99,8 @@ describe("WF-RECOVERY — single-use + session-survival", () => {
       wfs: resumedBody.wfs,
       input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
     });
-    const finalized = (await finalize.json()) as { userId?: string };
-    expect(finalized.userId).toBe(carol.username);
+    const finalized = await expectFinished<{ userId?: string }>(finalize);
+    expect(finalized.data?.userId).toBe(carol.username);
 
     const replay = await app.resumeWfFromUrl(emailEvent.url as string);
     expect(replay.status).toBeGreaterThanOrEqual(400);
@@ -152,28 +153,29 @@ describe("WF-RECOVERY — postReset options", () => {
   });
 
   it("WF-RECOVERY-07 — postReset.freshLoginRequired=true: finishes with redirect, no tokens", async () => {
-    // End-to-end signal: when `freshLoginRequired` is on, the workflow
-    // terminal step issues a 302 to `loginUrl` instead of the auto-login JSON
-    // payload. The unit suite covers the schema branch; this asserts the HTTP
-    // outlet on the real server reflects it.
+    // Defence: no tokens leak when freshLoginRequired forces the user back
+    // to sign-in.
     const app = await buildTestApp({
       recoveryOpts: { postReset: { freshLoginRequired: true, loginUrl: "/sign-in" } },
     });
     try {
       const bob = app.fixtures.users.t1_bob;
       const { resumedBody } = await startRecoveryAndResume(app, bob.email);
-      const finalize = await globalThis.fetch(`${app.baseUrl}/auth/trigger`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          wfid: "auth.recovery",
-          wfs: resumedBody.wfs,
-          input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
-        }),
-        redirect: "manual",
+      const finalize = await app.triggerWf("public", {
+        wfid: "auth.recovery",
+        wfs: resumedBody.wfs,
+        input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
       });
-      expect(finalize.status).toBe(302);
-      expect(finalize.headers.get("location")).toBe("/sign-in");
+      expectOk(finalize);
+      const body = await expectFinished<{ accessToken?: unknown; refreshToken?: unknown }>(
+        finalize,
+      );
+      const redirect = expectRedirect(body);
+      expect(redirect.mode).toBe("auto");
+      expect(redirect.target).toBe("/sign-in");
+      expect(redirect.reason).toBe("reset-success");
+      expect(body.data?.accessToken).toBeUndefined();
+      expect(body.data?.refreshToken).toBeUndefined();
     } finally {
       await app.close();
     }

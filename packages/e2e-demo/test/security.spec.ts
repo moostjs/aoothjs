@@ -7,6 +7,7 @@ import {
   buildTestApp,
   dbFindOne,
   expectAllInTenant,
+  expectFinished,
   expectOk,
   loginAndFetch,
   readWfPause,
@@ -360,13 +361,13 @@ describe("SEC — magic-link attacks", () => {
       token: bobTokens.accessToken,
     });
     expectOk(finalRes);
-    const finalBody = (await finalRes.json()) as { userId?: string };
-    expect(finalBody.userId).toBe(alice.username);
+    const finalBody = await expectFinished<{ userId?: string }>(finalRes);
+    expect(finalBody.data?.userId).toBe(alice.username);
 
     const aliceLogin = await app.loginRequest(alice.username, STRONG_NEW);
     expectOk(aliceLogin);
-    const aliceLoginBody = (await aliceLogin.json()) as { userId?: string };
-    expect(aliceLoginBody.userId).toBe(alice.username);
+    const aliceLoginBody = await expectFinished<{ userId?: string }>(aliceLogin);
+    expect(aliceLoginBody.data?.userId).toBe(alice.username);
     expect(emailEvent.recipient).toBe(alice.email);
   });
 
@@ -531,8 +532,8 @@ describe("SEC — enumeration", () => {
       input: { email: "ghost-sec15@nowhere.test" },
     });
     expectOk(submit);
-    const body = (await submit.json()) as { sent?: boolean };
-    expect(body.sent).toBe(true);
+    const body = await expectFinished<{ sent?: boolean }>(submit);
+    expect(body.data?.sent).toBe(true);
   });
 });
 
@@ -573,8 +574,8 @@ describe("SEC — TOTP attacks", () => {
 
     const loginOnce = async (): Promise<boolean> => {
       const final = await runTotpLoginWorkflow(app, grace, { code });
-      const body = (await final.json()) as { accessToken?: string };
-      return typeof body.accessToken === "string";
+      const body = await expectFinished<{ accessToken?: string }>(final);
+      return typeof body.data?.accessToken === "string";
     };
 
     expect(await loginOnce()).toBe(true);

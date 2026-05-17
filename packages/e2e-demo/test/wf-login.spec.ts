@@ -1,7 +1,15 @@
 import { generateTotpCode } from "@aoothjs/user";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 
-import { buildTestApp, expectOk, readWfPause, type TestApp, wfErrors } from "./harness";
+import {
+  buildTestApp,
+  expectFinished,
+  expectOk,
+  expectRedirect,
+  readWfPause,
+  type TestApp,
+  wfErrors,
+} from "./harness";
 
 describe("WF-LOGIN — auth.login workflow", () => {
   let app: TestApp;
@@ -30,16 +38,14 @@ describe("WF-LOGIN — auth.login workflow", () => {
       input: { username: alice.username, password: alice.password },
     });
     expectOk(submit);
-    const finished = (await submit.json()) as {
+    const finished = await expectFinished<{
       userId?: string;
       accessToken?: string;
       refreshToken?: string;
-      inputRequired?: unknown;
-    };
-    expect(finished.inputRequired).toBeUndefined();
-    expect(finished.userId).toBe(alice.username);
-    expect(typeof finished.accessToken).toBe("string");
-    expect(typeof finished.refreshToken).toBe("string");
+    }>(submit);
+    expect(finished.data?.userId).toBe(alice.username);
+    expect(typeof finished.data?.accessToken).toBe("string");
+    expect(typeof finished.data?.refreshToken).toBe("string");
   });
 
   it("WF-LOGIN-02 — MFA required branch: credentials → MFA form → valid TOTP → tokens", async () => {
@@ -73,12 +79,9 @@ describe("WF-LOGIN — auth.login workflow", () => {
       input: { code },
     });
     expectOk(final);
-    const issued = (await final.json()) as {
-      userId?: string;
-      accessToken?: string;
-    };
-    expect(issued.userId).toBe(grace.username);
-    expect(typeof issued.accessToken).toBe("string");
+    const issued = await expectFinished<{ userId?: string; accessToken?: string }>(final);
+    expect(issued.data?.userId).toBe(grace.username);
+    expect(typeof issued.data?.accessToken).toBe("string");
   });
 
   // ── BIG 3.1 coverage (subset wired in the demo app) ──────────────────────
@@ -89,23 +92,17 @@ describe("WF-LOGIN — auth.login workflow", () => {
   // in `@aoothjs/auth-moost` per WF_LOGIN.md §"Tasks" item #6.
 
   it("WF-LOGIN-04 — forgotPassword alt-action redirects to /recover", async () => {
-    // Spec: `useWfFinished({type:'redirect', value: opts.recoveryUrl + '?username=' + typed})`.
-    // Use `redirect: 'manual'` so the assertion sees the 302 response rather
-    // than the redirect target (which would be 404/401 in the demo app).
     const start = await app.triggerWf("public", { wfid: "auth.login" });
     const startBody = await readWfPause(start);
-    const r = await globalThis.fetch(`${app.baseUrl}/auth/trigger`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        wfid: "auth.login",
-        wfs: startBody.wfs,
-        input: { username: "alice@demo.test", action: "forgotPassword" },
-      }),
-      redirect: "manual",
+    const r = await app.triggerWf("public", {
+      wfid: "auth.login",
+      wfs: startBody.wfs,
+      input: { username: "alice@demo.test", action: "forgotPassword" },
     });
-    expect(r.status).toBe(302);
-    expect(r.headers.get("location")).toMatch(/\/recover\?username=/);
+    expectOk(r);
+    const redirect = expectRedirect(await expectFinished(r));
+    expect(redirect.reason).toBe("forgot-password");
+    expect(redirect.target).toMatch(/\/recover\?username=/);
   });
 
   it("WF-LOGIN-05 — passwordInitialGuard: user with password.isInitial=true must change password before token issue", async () => {
@@ -146,9 +143,9 @@ describe("WF-LOGIN — auth.login workflow", () => {
       input: { newPassword: "FreshPass99!", confirmPassword: "FreshPass99!" },
     });
     expectOk(setResp);
-    const issued = (await setResp.json()) as { userId?: string; accessToken?: string };
-    expect(issued.userId).toBe(alice.username);
-    expect(typeof issued.accessToken).toBe("string");
+    const issued = await expectFinished<{ userId?: string; accessToken?: string }>(setResp);
+    expect(issued.data?.userId).toBe(alice.username);
+    expect(typeof issued.data?.accessToken).toBe("string");
 
     // After the workflow succeeded, alice's password is `FreshPass99!` —
     // patch `alice.password` on the in-memory fixture so any LATER test in
@@ -215,36 +212,29 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
         input: { username: grace.username, password: grace.password },
       });
       expectOk(submit);
-      const issued = (await submit.json()) as { userId?: string; accessToken?: string };
-      expect(issued.userId).toBe(grace.username);
-      expect(typeof issued.accessToken).toBe("string");
+      const issued = await expectFinished<{ userId?: string; accessToken?: string }>(submit);
+      expect(issued.data?.userId).toBe(grace.username);
+      expect(typeof issued.data?.accessToken).toBe("string");
     } finally {
       await mfaOff.close();
     }
   });
 
-  it("WF-LOGIN-07 — finalize.redirect='home': successful login responds 302 to '/'", async () => {
-    // End-to-end signal: when `finalize.redirect: 'home'` is set, the HTTP
-    // outlet responds with a 302 to `/` instead of the JSON token payload.
-    // Verifies the redirect outlet is wired through `/auth/trigger` on the
-    // real HTTP server.
+  it("WF-LOGIN-07 — finalize.redirect='home': successful login emits redirect envelope to '/'", async () => {
     const redirApp = await buildTestApp({ loginOpts: { finalize: { redirect: "home" } } });
     try {
       const alice = redirApp.fixtures.users.t1_alice;
       const start = await redirApp.triggerWf("public", { wfid: "auth.login" });
       const startBody = await readWfPause(start);
-      const submit = await globalThis.fetch(`${redirApp.baseUrl}/auth/trigger`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          wfid: "auth.login",
-          wfs: startBody.wfs,
-          input: { username: alice.username, password: alice.password },
-        }),
-        redirect: "manual",
+      const submit = await redirApp.triggerWf("public", {
+        wfid: "auth.login",
+        wfs: startBody.wfs,
+        input: { username: alice.username, password: alice.password },
       });
-      expect(submit.status).toBe(302);
-      expect(submit.headers.get("location")).toBe("/");
+      expectOk(submit);
+      const redirect = expectRedirect(await expectFinished(submit));
+      expect(redirect.mode).toBe("immediate");
+      expect(redirect.target).toBe("/");
     } finally {
       await redirApp.close();
     }

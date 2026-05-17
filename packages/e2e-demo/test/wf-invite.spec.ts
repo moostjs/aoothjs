@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
-import { buildTestApp, expectOk, readWfPause, sleep, type TestApp } from "./harness";
+import {
+  buildTestApp,
+  expectFinished,
+  expectOk,
+  expectRedirect,
+  readWfPause,
+  sleep,
+  type TestApp,
+} from "./harness";
 
 const STRONG_PASSWORD = "WelcomeP1ss!";
 const NEW_INVITEE_EMAIL = "newhire@acme.test";
@@ -107,9 +115,9 @@ describe("WF-INVITE — admin-gated invite", () => {
       wfs: profileBody.wfs,
       input: { displayName: "New Hire" },
     });
-    const finalBody = (await finalRes.json()) as { userId?: string; accessToken?: string };
-    expect(finalBody.userId).toBe(NEW_INVITEE_EMAIL);
-    expect(typeof finalBody.accessToken).toBe("string");
+    const finalBody = await expectFinished<{ userId?: string; accessToken?: string }>(finalRes);
+    expect(finalBody.data?.userId).toBe(NEW_INVITEE_EMAIL);
+    expect(typeof finalBody.data?.accessToken).toBe("string");
 
     const login = await app.loginRequest(NEW_INVITEE_EMAIL, STRONG_PASSWORD);
     expectOk(login);
@@ -191,8 +199,8 @@ describe("WF-INVITE — admin-gated invite", () => {
       wfs: profileBody.wfs,
       input: { displayName: "Profile User", phone: "+15555550100" },
     });
-    const finalBody = (await finalRes.json()) as { userId?: string };
-    expect(finalBody.userId).toBe(profileEmail);
+    const finalBody = await expectFinished<{ userId?: string }>(finalRes);
+    expect(finalBody.data?.userId).toBe(profileEmail);
 
     // The applyProfile callback wrote through to the user record.
     const userRow = (await app.appHandle.aooth.userStore.findByUsername(profileEmail)) as Record<
@@ -258,11 +266,8 @@ describe("WF-INVITE — admin-gated invite", () => {
 
 describe("WF-INVITE — accept options", () => {
   it("WF-INVITE-07 — accept.freshLoginRequired=true + loginUrl: terminal redirect honours custom URL", async () => {
-    // End-to-end signal: demo defaults `freshLoginRequired:false` (auto-login
-    // JSON). Flipping to true must bypass the auto-login finish and emit a
-    // 302 to the configured `loginUrl` — proves the option threads through
-    // the HTTP outlet on the real demo server. (Unit suite covers the schema
-    // condition; this asserts the redirect headers reach the client.)
+    // Defence: with freshLoginRequired on, the terminal envelope MUST NOT
+    // carry tokens — invitee is forced through a fresh sign-in.
     const app = await buildTestApp({
       inviteOpts: {
         accept: { freshLoginRequired: true, loginUrl: "/welcome" },
@@ -295,27 +300,26 @@ describe("WF-INVITE — accept options", () => {
 
       const resumed = await app.resumeWfFromUrl(email.url as string);
       const resumedBody = await readWfPause(resumed);
-      // Submit set-password → demo's profile form fires next.
       const afterPw = await app.triggerWf("public", {
         wfid: "auth.invite",
         wfs: resumedBody.wfs,
         input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
       });
       const profileBody = await readWfPause(afterPw);
-      // Submit profile → terminal step. With freshLoginRequired on, this
-      // must redirect to loginUrl, NOT return tokens.
-      const finalize = await globalThis.fetch(`${app.baseUrl}/auth/trigger`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          wfid: "auth.invite",
-          wfs: profileBody.wfs,
-          input: { displayName: "Fresh Login User" },
-        }),
-        redirect: "manual",
+      const finalize = await app.triggerWf("public", {
+        wfid: "auth.invite",
+        wfs: profileBody.wfs,
+        input: { displayName: "Fresh Login User" },
       });
-      expect(finalize.status).toBe(302);
-      expect(finalize.headers.get("location")).toBe("/welcome");
+      expectOk(finalize);
+      const body = await expectFinished<{ accessToken?: unknown; refreshToken?: unknown }>(
+        finalize,
+      );
+      const redirect = expectRedirect(body);
+      expect(redirect.target).toBe("/welcome");
+      expect(redirect.reason).toBe("fresh-login-required");
+      expect(body.data?.accessToken).toBeUndefined();
+      expect(body.data?.refreshToken).toBeUndefined();
     } finally {
       await app.close();
     }

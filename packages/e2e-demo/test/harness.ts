@@ -4,6 +4,7 @@ import type {
   LoginWorkflowOpts,
   RecoveryWorkflowOpts,
 } from "@aoothjs/auth-moost";
+import type { WfFinished } from "@atscript/moost-wf";
 import { generateTotpCode } from "@aoothjs/user";
 import { clearGlobalWooks, getMoostInfact } from "moost";
 import { expect } from "vite-plus/test";
@@ -20,6 +21,51 @@ export const sleep = (ms: number): Promise<void> =>
 export function expectOk(res: Response): void {
   expect([200, 201]).toContain(res.status);
 }
+
+/**
+ * Reads the response JSON and asserts it is a `WfFinished<T>` envelope.
+ * Throws (surfacing status + body) when the body is missing or not finished
+ * so failing tests don't bottom out in `undefined` chains downstream.
+ */
+export async function expectFinished<T = Record<string, unknown>>(
+  res: Response,
+): Promise<WfFinished<T>> {
+  const body = (await res.json()) as { finished?: unknown } | null;
+  if (!body || (body as { finished?: unknown }).finished !== true) {
+    throw new Error(
+      `expected WfFinished envelope, got status=${res.status} body=${JSON.stringify(body)}`,
+    );
+  }
+  return body as WfFinished<T>;
+}
+
+/**
+ * Narrows a `WfFinished` envelope to its redirect end. Throws when the
+ * envelope is in `manual` mode (no action) or the action isn't a redirect.
+ * Saves the inline `mode !== 'manual' && action.type === 'redirect'`
+ * narrowing dance at every assertion site.
+ */
+export function expectRedirect(env: WfFinished): {
+  mode: "immediate" | "auto";
+  target: string;
+  reason?: string;
+} {
+  const end = env.end;
+  if (!end || end.mode === "manual") {
+    throw new Error(`expected redirect-bearing end, got mode=${end?.mode ?? "undefined"}`);
+  }
+  if (end.action.type !== "redirect") {
+    throw new Error(`expected redirect action, got type=${end.action.type}`);
+  }
+  return { mode: end.mode, target: end.action.target, reason: end.action.reason };
+}
+
+type LoginPause = {
+  wfs: string;
+  inputRequired: { payload?: { type?: { props?: { code?: unknown } } } };
+};
+type LoginBody = LoginPause | WfFinished<AuthLoginResponse>;
+const isPause = (b: LoginBody): b is LoginPause => "inputRequired" in b;
 
 /** Extract `inputRequired.context` from a paused workflow body, asserting presence. */
 export function wfContext(body: WfFormPause & Record<string, unknown>): Record<string, unknown> {
@@ -197,14 +243,11 @@ export async function buildTestApp(opts: BuildTestAppOptions = {}): Promise<Test
         `loginAs(${user.username}) credentials failed: HTTP ${credRes.status} ${credRes.statusText} — ${text}`,
       );
     }
-    let body = (await credRes.json()) as AuthLoginResponse & {
-      wfs?: string;
-      inputRequired?: { payload?: { type?: { props?: { code?: unknown } } } };
-    };
+    let body = (await credRes.json()) as LoginBody;
     // MFA branch: the workflow prompts with `MfaCodeForm` (a `code` field).
     // Seeded users that have a confirmed TOTP secret submit a freshly
     // generated code; users without one cannot finish this branch.
-    if (body.wfs && body.inputRequired) {
+    if (isPause(body)) {
       if (!user.totpSecret) {
         throw new Error(
           `loginAs(${user.username}): MFA prompted but seeded user has no totpSecret`,
@@ -221,19 +264,25 @@ export async function buildTestApp(opts: BuildTestAppOptions = {}): Promise<Test
           `loginAs(${user.username}) MFA failed: HTTP ${mfaRes.status} ${mfaRes.statusText} — ${text}`,
         );
       }
-      body = (await mfaRes.json()) as AuthLoginResponse & { wfs?: string };
+      body = (await mfaRes.json()) as LoginBody;
     }
-    if (!body.accessToken || !body.refreshToken) {
+    if (isPause(body) || !body.finished || !body.data) {
       throw new Error(
-        `loginAs(${user.username}): expected accessToken+refreshToken in response, got ${JSON.stringify(body)}`,
+        `loginAs(${user.username}): expected WfFinished envelope with data, got ${JSON.stringify(body)}`,
+      );
+    }
+    const data = body.data;
+    if (!data.accessToken || !data.refreshToken) {
+      throw new Error(
+        `loginAs(${user.username}): expected accessToken+refreshToken in envelope data, got ${JSON.stringify(body)}`,
       );
     }
     return {
-      accessToken: body.accessToken,
-      refreshToken: body.refreshToken,
-      userId: body.userId,
-      accessExpiresAt: body.accessExpiresAt,
-      refreshExpiresAt: body.refreshExpiresAt as number,
+      accessToken: data.accessToken,
+      refreshToken: data.refreshToken,
+      userId: data.userId,
+      accessExpiresAt: data.accessExpiresAt,
+      refreshExpiresAt: data.refreshExpiresAt as number,
     };
   };
 
