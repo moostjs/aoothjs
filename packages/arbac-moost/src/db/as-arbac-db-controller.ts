@@ -2,12 +2,19 @@ import { mergeScopeFilters } from "@aoothjs/arbac";
 import type { ControlGate, TProjection, TScopeFilter } from "@aoothjs/arbac";
 import type { TCrudOp, TMetaResponse } from "@atscript/db";
 import { AsDbController } from "@atscript/moost-db";
-import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
+import type { NavPropsOf, TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { HttpError } from "@moostjs/event-http";
 import { getConstructor, getInstanceOwnMethods, Inherit, useControllerContext } from "moost";
 
 import { useArbac } from "../arbac.composables";
 import type { TArbacMeta } from "../arbac.mate";
+import type {
+  ControlsOf,
+  NavRelationKey,
+  NavTarget,
+  OwnFieldKey,
+  ProjectionOf,
+} from "./scope-types";
 import {
   applyArbacControls,
   applyArbacProjection,
@@ -33,11 +40,11 @@ import {
  * }
  * ```
  */
-export interface ArbacDbScope {
+export interface ArbacDbScope<T = unknown> {
   filter?: TScopeFilter;
-  projection?: TProjection;
-  set?: Record<string, unknown>;
-  allowedFields?: string[];
+  projection?: ProjectionOf<T>;
+  set?: Partial<Record<OwnFieldKey<T>, unknown>>;
+  allowedFields?: Array<OwnFieldKey<T>>;
   /**
    * Per-control gates for Uniquery URL controls (`$with`, `$groupBy`, `$having`, …).
    * Evaluated by {@link AsArbacDbController.validateControls} before query execution;
@@ -55,7 +62,7 @@ export interface ArbacDbScope {
    * @example `{ controls: { $with: false } }` — disable $with for this role.
    * @example `{ controls: { $with: ['comments', 'owner'] } }` — restrict relations.
    */
-  controls?: Record<string, ControlGate>;
+  controls?: ControlsOf<T>;
   /**
    * Per-relation sub-scopes applied when the request expands a relation via
    * `?$with=<name>`. Recursive — each sub-scope has the same shape and can
@@ -75,8 +82,24 @@ export interface ArbacDbScope {
    * unrestricted (matches `controls.$with` whitelist semantics; the gate
    * still applies if declared).
    */
-  with?: Record<string, ArbacDbScope>;
+  with?: WithOf<T>;
 }
+
+/**
+ * Per-relation sub-scope map. For `T = unknown` falls back to the legacy
+ * untyped `Record<string, ArbacDbScope>`. With a typed `T`, each known
+ * relation key gets its scope typed against the joined model (via
+ * `NavTarget` to unwrap arrays), while arbitrary `(string & {})` keys
+ * keep the untyped escape hatch. Lives here (not in `scope-types.ts`)
+ * because it must reference `ArbacDbScope` recursively.
+ */
+type WithOf<T> = unknown extends T
+  ? Record<string, ArbacDbScope>
+  : {
+      [K in NavRelationKey<T>]?: K extends keyof NavPropsOf<T>
+        ? ArbacDbScope<NavTarget<NavPropsOf<T>[K]>>
+        : ArbacDbScope;
+    };
 
 @Inherit()
 export class AsArbacDbController<

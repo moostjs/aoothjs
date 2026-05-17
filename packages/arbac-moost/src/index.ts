@@ -13,5 +13,12 @@ export * from "./arbac.decorator";
 export * from "./arbac.mate";
 export * from "./db/as-arbac-db-controller";
 export * from "./db/as-arbac-db-readable-controller";
+export type {
+  ControlsOf,
+  NavRelationKey,
+  NavTarget,
+  OwnFieldKey,
+  ProjectionOf,
+} from "./db/scope-types";
 export * from "./moost-arbac";
 export * from "./user.provider";
