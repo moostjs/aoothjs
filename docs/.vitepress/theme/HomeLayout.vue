@@ -449,9 +449,17 @@ const showcases = computed(() => [
   max-width: 1152px;
   margin: 0 auto;
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
   gap: 56px;
   align-items: start;
+}
+
+/* Grid children need explicit min-width:0 so their inner <pre> can scroll
+ * horizontally instead of pushing the snippet frame past the viewport
+ * on narrow screens. */
+.showcase-text,
+.showcase-snippet {
+  min-width: 0;
 }
 
 @media (min-width: 960px) {
@@ -633,11 +641,21 @@ const showcases = computed(() => [
   color: var(--vp-c-text-2);
 }
 
+.snippet-body {
+  /* This wraps the rendered VitePress code block. The frame above is
+   * overflow:hidden, so the scroll container must live in here. */
+  max-width: 100%;
+  overflow: hidden;
+}
+
 .snippet-body :deep(div[class*="language-"]) {
   margin: 0;
   border-radius: 0 !important;
   background: var(--vp-c-bg-elv) !important;
   position: relative;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* The custom chrome bar already shows the filename, so hide the inline
@@ -651,10 +669,16 @@ const showcases = computed(() => [
   padding: 18px !important;
   font-size: 13.5px;
   line-height: 1.55;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .snippet-body :deep(pre code) {
   display: block;
+  /* Prevent the code element from collapsing to the scroll container's width —
+   * it needs to be as wide as its content so the parent can scroll it. */
+  width: max-content;
+  min-width: 100%;
 }
 
 /* ─────────────────────────────────────────────
