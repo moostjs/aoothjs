@@ -6,12 +6,7 @@ import { Project } from "../models/project.as";
 import { Task } from "../models/task.as";
 import { DemoUser } from "../models/user.as";
 import type { ArbacDbScope, UserAttrs } from "./attrs";
-import {
-  PROJ_COMMENT_VIEWER,
-  PROJ_COMMENT_VIEWER_EXPANDED,
-  PROJ_TASK_VIEWER,
-  PROJ_USER_VIEWER,
-} from "./projections";
+import { PROJ_COMMENT_VIEWER, PROJ_TASK_VIEWER, PROJ_USER_VIEWER } from "./projections";
 import { tenantFilter } from "./scopes";
 
 const viewerControls: Record<string, ControlGate> = {
@@ -54,7 +49,7 @@ export const viewerRole = defineRole<UserAttrs, ArbacDbScope>()
         projection: PROJ_TASK_VIEWER,
         controls: viewerTaskControls,
         with: {
-          comments: { projection: PROJ_COMMENT_VIEWER_EXPANDED },
+          comments: { projection: PROJ_COMMENT_VIEWER },
         },
       }),
     }),
