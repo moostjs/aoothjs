@@ -41,8 +41,9 @@ describe("InviteWorkflow", () => {
       wfs: wfs3,
       input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
     });
-    expect(r4.body?.userId).toBe("bob@test.com");
-    expect(typeof r4.body?.accessToken).toBe("string");
+    const data4 = r4.body?.data as Record<string, unknown> | undefined;
+    expect(data4?.userId).toBe("bob@test.com");
+    expect(typeof data4?.accessToken).toBe("string");
 
     // User created and active
     const user = await app.users.getUser("bob@test.com");
@@ -168,7 +169,7 @@ describe("InviteWorkflow", () => {
       wfs: r3.body?.wfs as string,
       input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
     });
-    expect(r4.body?.userId).toBe("henry@test.com");
+    expect((r4.body?.data as Record<string, unknown>)?.userId).toBe("henry@test.com");
     const user = await app.users.getUser("henry@test.com");
     expect(user.account.active).toBe(true);
   });

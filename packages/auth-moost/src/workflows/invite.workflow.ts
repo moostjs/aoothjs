@@ -55,6 +55,13 @@ import { ArbacAction, ArbacResource } from "@aoothjs/arbac-moost";
 import { AuthCredential } from "@aoothjs/auth";
 import { UserAuthError, type UserCredentials, UserService } from "@aoothjs/user";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
+import {
+  finishWfAborted,
+  finishWfWithChoice,
+  finishWfWithData,
+  finishWfWithRedirect,
+  type WfFinished,
+} from "@atscript/moost-wf";
 import { HttpError } from "@moostjs/event-http";
 import {
   outletEmail,
@@ -772,7 +779,29 @@ export class InviteWorkflow {
   @Step("inviteIdempotentRedirect")
   @Public()
   idempotentRedirect(@WorkflowParam("context") ctx: InviteWfCtx): undefined {
-    useWfFinished().set({ type: "redirect", value: this.opts.accept.alreadyAcceptedRedirectUrl });
+    // Choice envelope: primary = sign-in, optional secondary = request new invite.
+    // Labels are hardcoded English (consistent with login/recovery finishers);
+    // localization is a cross-workflow concern not yet wired.
+    const altUrl = this.opts.accept.alreadyAcceptedRedirectUrl;
+    finishWfWithChoice({
+      message: { level: "info", text: "This invite was already accepted." },
+      primary: {
+        label: "Go to sign-in",
+        action: {
+          type: "redirect",
+          target: this.opts.accept.loginUrl,
+          reason: "already-accepted",
+        },
+      },
+      ...(altUrl && {
+        options: [
+          {
+            label: "Request a new invite",
+            action: { type: "redirect", target: altUrl, reason: "request-new-invite" },
+          },
+        ],
+      }),
+    });
     ctx.aborted = true;
     return undefined;
   }
@@ -798,9 +827,7 @@ export class InviteWorkflow {
     if (input.action === "cancel") {
       // User abort: stop the flow but DO NOT delete the user record. Admin can
       // reInvite later. The pending-invitation flag stays true.
-      useWfFinished().set({ type: "data", value: { aborted: true, reason: "cancel" } });
-      ctx.aborted = true;
-      return undefined;
+      return this.abort(ctx, "cancel");
     }
 
     const errors = validateFormInput(this.opts.forms.setPassword, input);
@@ -890,10 +917,10 @@ export class InviteWorkflow {
     // overrides with a redirect. The confirmation message is therefore only
     // visible in flows where BOTH freshLoginRequired AND showConfirmation are
     // tuned together — that's by design per WF_INVITE.md §"confirmation".
-    useWfFinished().set({
-      type: "data",
-      value: { message: this.opts.accept.confirmationMessage, confirmed: true },
-    });
+    finishWfWithData(
+      { confirmed: true },
+      { level: "success", text: this.opts.accept.confirmationMessage },
+    );
     return undefined;
   }
 
@@ -901,7 +928,7 @@ export class InviteWorkflow {
   @Step("inviteFreshLoginFinish")
   @Public()
   freshLoginFinish(@WorkflowParam("context") _ctx: InviteWfCtx): undefined {
-    useWfFinished().set({ type: "redirect", value: this.opts.accept.loginUrl });
+    finishWfWithRedirect(this.opts.accept.loginUrl, { reason: "fresh-login-required" });
     return undefined;
   }
 
@@ -913,9 +940,14 @@ export class InviteWorkflow {
     const issue = await this.auth.issue(ctx.username);
     ctx.tokensIssued = true;
     const auth = useAuth();
+    // Raw `useWfFinished` path: cookies are wooks-level, helpers don't expose them.
+    const envelope: WfFinished = {
+      finished: true,
+      data: auth.buildLoginResponse(ctx.username, issue),
+    };
     useWfFinished().set({
       type: "data",
-      value: auth.buildLoginResponse(ctx.username, issue),
+      value: envelope,
       cookies: auth.buildFinishedCookies(issue),
     });
     return undefined;
@@ -945,16 +977,13 @@ export class InviteWorkflow {
       email,
       username: existing.username,
     });
-    useWfFinished().set({
-      type: "data",
-      value: { cancelled: true, email },
-    });
+    finishWfWithData({ cancelled: true, email }, { level: "info", text: "Invite cancelled." });
     return undefined;
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────
   private abort(ctx: InviteWfCtx, reason: string): AltHandled {
-    useWfFinished().set({ type: "data", value: { aborted: true, reason } });
+    finishWfAborted(reason, { message: { level: "info", text: "Invite cancelled." } });
     ctx.aborted = true;
     return ALT_HANDLED;
   }

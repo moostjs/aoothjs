@@ -16,7 +16,7 @@ import { UserStoreMemory } from "@aoothjs/user";
 import type { UserCredentials } from "@aoothjs/user";
 import { describe, expect, it } from "vite-plus/test";
 
-import { ProfileCompleteForm } from "../atscript/models/forms.as.js";
+import { InviteForm, ProfileCompleteForm } from "../atscript/models/forms.as.js";
 import { prepareWfApp, seedActiveUser } from "./workflow-utils";
 
 /**
@@ -102,8 +102,9 @@ describe("InviteWorkflow — default flow end-to-end", () => {
       input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
     });
 
-    expect(r4.body?.userId).toBe("alice@test.com");
-    expect(typeof r4.body?.accessToken).toBe("string");
+    const data4 = r4.body?.data as Record<string, unknown> | undefined;
+    expect(data4?.userId).toBe("alice@test.com");
+    expect(typeof data4?.accessToken).toBe("string");
 
     // pendingInvitation cleared on accept; user activated.
     const post = await app.users.getUser("alice@test.com");
@@ -234,7 +235,7 @@ describe("InviteWorkflow — getProfileForm + applyProfile", () => {
       input: { firstName: "Pat", lastName: "Patel" },
     });
     // Now finished with auto-login.
-    expect(r5.body?.userId).toBe("pp@test.com");
+    expect((r5.body?.data as Record<string, unknown>)?.userId).toBe("pp@test.com");
 
     expect(seen).toHaveLength(1);
     expect(seen[0].username).toBe("pp@test.com");
@@ -271,7 +272,7 @@ describe("InviteWorkflow — getProfileForm + applyProfile", () => {
   it("no getProfileForm override → no profile pause; password-set advances straight to auto-login", async () => {
     const app = await prepareWfApp();
     const r = await driveDefaultInviteAccept(app, "noprof@test.com");
-    expect(r.body?.userId).toBe("noprof@test.com");
+    expect((r.body?.data as Record<string, unknown>)?.userId).toBe("noprof@test.com");
   });
 });
 
@@ -360,7 +361,7 @@ describe("InviteWorkflow — re-invite", () => {
       wfs: r3.body?.wfs as string,
       input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
     });
-    expect(r4.body?.userId).toBe("redo@test.com");
+    expect((r4.body?.data as Record<string, unknown>)?.userId).toBe("redo@test.com");
   });
 
   it("re-invite refuses on already-accepted user → 409", async () => {
@@ -406,7 +407,7 @@ describe("InviteWorkflow — cancel-invite", () => {
       wfs: c1.body?.wfs as string,
       input: { email: "kill@test.com" },
     });
-    expect(c2.body?.cancelled).toBe(true);
+    expect((c2.body?.data as Record<string, unknown>)?.cancelled).toBe(true);
 
     // User row gone.
     let notFound = false;
@@ -478,7 +479,7 @@ describe("InviteWorkflow — idempotent magic-link click", () => {
       wfs: r3.body?.wfs as string,
       input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
     });
-    expect(r4.body?.userId).toBe("idem@test.com");
+    expect((r4.body?.data as Record<string, unknown>)?.userId).toBe("idem@test.com");
 
     // Second click (replay): single-use tokens reject after consumption with
     // 410 Gone — the configured `alreadyAcceptedRedirectUrl` branch would
@@ -535,9 +536,15 @@ describe("InviteWorkflow — accept.freshLoginRequired", () => {
       },
     });
     const r = await driveDefaultInviteAccept(app, "fresh@test.com");
-    expect(r.status).toBe(302);
-    // No auto-login payload.
-    expect(r.body?.accessToken).toBeUndefined();
+    // Envelope: immediate redirect via finishWfWithRedirect, no auto-login data.
+    const end = (r.body as Record<string, unknown>)?.end as
+      | { mode?: string; action?: { type?: string; target?: string; reason?: string } }
+      | undefined;
+    expect(end?.mode).toBe("immediate");
+    expect(end?.action?.type).toBe("redirect");
+    expect(end?.action?.target).toBe("/sign-in");
+    expect(end?.action?.reason).toBe("fresh-login-required");
+    expect((r.body?.data as Record<string, unknown>)?.accessToken).toBeUndefined();
   });
 });
 
@@ -793,5 +800,177 @@ describe("InviteWorkflow — admin form firstName/lastName/roles wiring", () => 
     expect(r2.status).toBeLessThan(500);
     expect(r2.body?.errors).toMatchObject({ roles: "Invalid role" });
     expect(app.emails).toHaveLength(0);
+  });
+});
+
+// ─── WfFinished envelope migration (UI-MIGRATION.md §invite.workflow.ts) ───
+describe("InviteWorkflow — WfFinished envelope shape", () => {
+  it("idempotent magic-link click (already-accepted parallel token) → finishWfWithChoice envelope with primary + option buttons", async () => {
+    // Drive the parallel-token scenario: admin invites; auth.reInvite issues
+    // tokenB while the first invite still pending; user accepts via tokenA;
+    // tokenB resume now lands on `inviteIdempotentRedirect`.
+    const app = await prepareWfApp({
+      inviteOpts: {
+        accept: {
+          showConfirmation: false,
+          alreadyAcceptedRedirectUrl: "/request-new",
+          loginUrl: "/sign-in",
+        },
+      },
+    });
+    const r1 = await app.trigger({ wfid: "auth.invite" });
+    await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { email: "parallel@test.com" },
+    });
+    const tokenA = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
+    // reInvite issues tokenB while pendingInvitation is still true.
+    const ri = await app.trigger({ wfid: "auth.reInvite" });
+    await app.trigger({
+      wfs: ri.body?.wfs as string,
+      input: { email: "parallel@test.com" },
+    });
+    const tokenB = new URL(app.emails[1].url as string).searchParams.get("wfs") as string;
+
+    // Complete accept via tokenA → pendingInvitation cleared.
+    const a1 = await app.resumeViaQuery(tokenA);
+    await app.trigger({
+      wfs: a1.body?.wfs as string,
+      input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
+    });
+
+    // tokenB now resumes into the already-accepted branch → finishWfWithChoice.
+    const b1 = await app.resumeViaQuery(tokenB);
+    const body = b1.body as Record<string, unknown>;
+    expect(body.finished).toBe(true);
+    const end = body.end as
+      | {
+          mode: string;
+          primary?: { label: string; action: { type: string; target: string; reason?: string } };
+          options?: Array<{
+            label: string;
+            action: { type: string; target: string; reason?: string };
+          }>;
+        }
+      | undefined;
+    expect(end?.mode).toBe("manual");
+    expect(end?.primary?.action?.target).toBe("/sign-in");
+    expect(end?.primary?.action?.reason).toBe("already-accepted");
+    expect(end?.options?.[0]?.action?.target).toBe("/request-new");
+    expect(end?.options?.[0]?.action?.reason).toBe("request-new-invite");
+    const message = body.message as { level: string; text: string } | undefined;
+    expect(message?.level).toBe("info");
+  });
+
+  it("password-form cancel alt-action → finishWfAborted envelope with reason='cancel'", async () => {
+    const app = await prepareWfApp();
+    const r1 = await app.trigger({ wfid: "auth.invite" });
+    await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { email: "abort@test.com" },
+    });
+    const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
+    const r3 = await app.resumeViaQuery(token);
+    // Submit the password form with the cancel alt-action.
+    const r4 = await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { action: "cancel" },
+    });
+    const body = r4.body as Record<string, unknown>;
+    expect(body.finished).toBe(true);
+    expect(body.aborted).toBe(true);
+    expect(body.reason).toBe("cancel");
+    // User record NOT deleted — pending invitation flag stays true so admin
+    // can reInvite later (documented contract).
+    const u = await app.users.getUser("abort@test.com");
+    expect(u.account?.pendingInvitation).toBe(true);
+  });
+
+  it("freshLoginRequired → finishWfWithRedirect envelope with reason='fresh-login-required'", async () => {
+    const app = await prepareWfApp({
+      inviteOpts: {
+        accept: { showConfirmation: false, freshLoginRequired: true, loginUrl: "/post-accept" },
+      },
+    });
+    const r = await driveDefaultInviteAccept(app, "fl@test.com");
+    expect(r.status).toBeLessThan(400);
+    const body = r.body as Record<string, unknown>;
+    expect(body.finished).toBe(true);
+    const end = body.end as
+      | { mode: string; action: { target: string; reason?: string } }
+      | undefined;
+    expect(end?.mode).toBe("immediate");
+    expect(end?.action?.target).toBe("/post-accept");
+    expect(end?.action?.reason).toBe("fresh-login-required");
+  });
+
+  it("auto-login terminal still carries cookies (raw WfFinished envelope path)", async () => {
+    // The cookies-bearing finish stays on the raw `useWfFinished` path because
+    // helpers don't expose `cookies`. Envelope shape: { finished: true, data }.
+    const app = await prepareWfApp();
+    const r1 = await app.trigger({ wfid: "auth.invite" });
+    await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { email: "cookie@test.com" },
+    });
+    const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
+    const r3 = await app.resumeViaQuery(token);
+    const r4 = await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
+    });
+    const body = r4.body as Record<string, unknown>;
+    expect(body.finished).toBe(true);
+    const data = body.data as Record<string, unknown> | undefined;
+    expect(data?.userId).toBe("cookie@test.com");
+    expect(typeof data?.accessToken).toBe("string");
+    // Auth cookies still set despite the new envelope.
+    expect(r4.setCookies.length).toBeGreaterThan(0);
+  });
+
+  it("cancelInvite terminal → finishWfWithData envelope with data.cancelled + info message", async () => {
+    const app = await prepareWfApp();
+    const r1 = await app.trigger({ wfid: "auth.invite" });
+    await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { email: "wipe@test.com" },
+    });
+    const c1 = await app.trigger({ wfid: "auth.cancelInvite" });
+    const c2 = await app.trigger({
+      wfs: c1.body?.wfs as string,
+      input: { email: "wipe@test.com" },
+    });
+    const body = c2.body as Record<string, unknown>;
+    expect(body.finished).toBe(true);
+    const data = body.data as Record<string, unknown> | undefined;
+    expect(data?.cancelled).toBe(true);
+    expect(data?.email).toBe("wipe@test.com");
+    const message = body.message as { level: string; text: string } | undefined;
+    expect(message?.level).toBe("info");
+  });
+});
+
+// ─── Multiselect (atscript-ui 0.1.64) — InviteForm.roles serialization ───
+describe("InviteForm.roles multiselect metadata", () => {
+  it("InviteForm.roles serializes with multiselect options metadata (atscript-ui 0.1.64 multiselect support)", async () => {
+    // The upstream atscript-ui 0.1.64 bump renders `string[]` + `@ui.form.type
+    // 'select'` + `@ui.form.fn.options` as a multiselect. The form schema
+    // itself was already correct; this test pins the metadata that drives the
+    // rendering so a future schema regression surfaces here.
+    // biome-ignore lint/suspicious/noExplicitAny: navigating atscript runtime metadata
+    const props = (InviteForm as any).type?.props as Map<string, any>;
+    const roles = props.get("roles");
+    expect(roles).toBeDefined();
+    expect(roles.optional).toBe(true);
+    // Underlying type is an array (multi-value carrier).
+    expect(roles.type?.kind).toBe("array");
+    // The combo that 0.1.64 reads to render a multiselect:
+    //   ui.form.type === 'select' + ui.form.fn.options callback + array carrier.
+    expect(roles.metadata.get("ui.form.type")).toBe("select");
+    const optionsAnnotation = roles.metadata.get("ui.form.fn.options");
+    expect(optionsAnnotation).toBeDefined();
+    // Annotation is a callback string referring to the role-options resolver
+    // (consumes ctx.availableRoles populated by `invitePrepareAvailableRoles`).
+    expect(String(optionsAnnotation)).toMatch(/availableRoles/);
   });
 });

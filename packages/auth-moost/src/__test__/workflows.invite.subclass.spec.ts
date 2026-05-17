@@ -73,7 +73,7 @@ describe("InviteWorkflow subclass — end-to-end registration shape", () => {
       wfs: r3.body?.wfs as string,
       input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
     });
-    expect(r4.body?.userId).toBe("sub@test.com");
+    expect((r4.body?.data as Record<string, unknown>)?.userId).toBe("sub@test.com");
     // Subclass body ran (not just the base default).
     expect(prepareUserCalls).toBe(1);
     // Extras returned by the subclass landed on the persisted user row.
@@ -131,7 +131,7 @@ describe("InviteWorkflow subclass — end-to-end registration shape", () => {
       wfs: c1.body?.wfs as string,
       input: { email: "tri@test.com" },
     });
-    expect(c2.body?.cancelled).toBe(true);
+    expect((c2.body?.data as Record<string, unknown>)?.cancelled).toBe(true);
 
     // Confirmed the user row went away (cancellation actually fired on the
     // consumer-subclass class, not on an orphaned default registration).
@@ -241,7 +241,7 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
       wfs: r4.body?.wfs as string,
       input: { firstName: "Sub", lastName: "Class" },
     });
-    expect(r5.body?.userId).toBe("ap@test.com");
+    expect((r5.body?.data as Record<string, unknown>)?.userId).toBe("ap@test.com");
     expect(seen).toHaveLength(1);
     expect(seen[0].username).toBe("ap@test.com");
     expect(seen[0].profile).toMatchObject({ firstName: "Sub", lastName: "Class" });
@@ -308,8 +308,9 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
         input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
       });
       // No profile pause: auto-login finished in one shot.
-      expect(r4.body?.userId).toBe("no-prof-sub@test.com");
-      expect(typeof r4.body?.accessToken).toBe("string");
+      const data4 = r4.body?.data as Record<string, unknown> | undefined;
+      expect(data4?.userId).toBe("no-prof-sub@test.com");
+      expect(typeof data4?.accessToken).toBe("string");
     }
 
     // Second app: consumer subclass DEFINES the profile form.
