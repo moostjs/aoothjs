@@ -1,0 +1,106 @@
+/**
+ * Aooth — VitePress theme overrides.
+ *
+ * Brand palette derived from the logo:
+ *   cyan  #25AFDB  →  primary
+ *   pink  #DB2592  →  accent (used sparingly — rare-sparkle)
+ *
+ * Typography:
+ *   Display + Body: Geist
+ *   Mono: Geist Mono (code blocks, technical accents)
+ */
+
+@import url("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600&display=swap");
+
+:root {
+  /* Brand */
+  --vp-c-brand-1: #1d97bf;
+  --vp-c-brand-2: #25afdb;
+  --vp-c-brand-3: #58c4e2;
+  --vp-c-brand-soft: rgba(37, 175, 219, 0.14);
+
+  /* Aooth-specific tokens */
+  --aooth-cyan: #25afdb;
+  --aooth-cyan-dark: #1d97bf;
+  --aooth-cyan-bright: #6dd0ed;
+  --aooth-cyan-soft: rgba(37, 175, 219, 0.14);
+  --aooth-magenta: #db2592;
+  --aooth-magenta-soft: rgba(219, 37, 146, 0.14);
+
+  /* Typography overrides */
+  --vp-font-family-base: "Geist", -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  --vp-font-family-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+
+  /* Home-hero name accent (used by default VitePress hero, which we hide on
+   * the landing page but keep available for any future hero usage). */
+  --vp-home-hero-name-color: var(--aooth-cyan);
+  --vp-home-hero-name-background: linear-gradient(
+    120deg,
+    var(--aooth-cyan) 30%,
+    var(--aooth-magenta) 80%
+  );
+  --vp-home-hero-image-background-image: linear-gradient(
+    45deg,
+    rgba(37, 175, 219, 0.15),
+    rgba(219, 37, 146, 0.1)
+  );
+  --vp-home-hero-image-filter: blur(48px);
+}
+
+.dark {
+  --vp-c-brand-1: #6dd0ed;
+  --vp-c-brand-2: #25afdb;
+  --vp-c-brand-3: #1d97bf;
+  --vp-c-brand-soft: rgba(37, 175, 219, 0.16);
+
+  --vp-c-bg: #0a1722;
+  --vp-c-bg-alt: #0c1d2c;
+  --vp-c-bg-elv: #112436;
+  --vp-c-bg-soft: #0e1e2e;
+}
+
+/* Hide default VitePress hero — we render our own from HomeLayout. */
+.VPHome .VPHero {
+  display: none;
+}
+
+/* Attach last section flush to footer. */
+.VPHome {
+  margin-bottom: 0 !important;
+}
+
+/* ──────────────────────────────────────────────
+ * Typography refinements
+ * ────────────────────────────────────────────── */
+
+body {
+  font-feature-settings: "ss01", "ss02", "cv11"; /* Geist's tighter alternates */
+}
+
+.VPNavBarTitle .title {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-feature-settings: "ss01", "ss02";
+}
+
+/* ──────────────────────────────────────────────
+ * Code blocks — slight density bump for landing
+ * ────────────────────────────────────────────── */
+
+.vp-doc :deep(pre) {
+  font-feature-settings: "ss01", "ss02", "calt";
+}
+
+/* ──────────────────────────────────────────────
+ * Nav logo size — keep modest, the wordmark is for the hero
+ * ────────────────────────────────────────────── */
+
+.VPNavBarTitle .logo {
+  height: 24px;
+}

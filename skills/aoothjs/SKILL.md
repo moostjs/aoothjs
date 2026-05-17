@@ -1,0 +1,412 @@
+---
+name: aoothjs
+description: >-
+  Use when working with `@aoothjs/user`, `@aoothjs/arbac`, `@aoothjs/arbac-core`,
+  `@aoothjs/arbac-moost`, `@aoothjs/auth`, `@aoothjs/auth-moost` — the aoothjs
+  auth + authz stack for moost / atscript apps. Covers user credentials
+  (`UserService`, `UserStore`, `UserStoreMemory`, `UserStoreAtscriptDb`,
+  `PasswordHasher`, `PasswordPolicy`, `generateTotpSecret`, `generateTotpCode`,
+  `verifyTotpCode`, `generateBackupCodePlaintext`, `UserAuthError`); the
+  zero-dep ARBAC engine (`Arbac`, `TArbacRole`, `TArbacRule`,
+  `arbacPatternToRegex`) plus the builder layer (`defineRole`,
+  `definePrivilege`, `allowTableRead`, `allowTableWrite`, `allowTableAction`,
+  `mergeScopeFilters`, `unionProjections`, `restrictProjection`,
+  `unionControlsPolicy`, `extractResourceActions`, `generateResourceTypes`,
+  `aoothjs-arbac-codegen` CLI); the credential layer (`AuthCredential`,
+  `CredentialStore`, `CredentialStoreMemory`, `CredentialStoreJwt`,
+  `CredentialStoreEncapsulated`, `CredentialStoreRedis`,
+  `CredentialStoreAtscriptDb`, `DenylistStore`, `DenylistStoreMemory`,
+  `DenylistStoreRedis`, `generateMagicLinkToken`, `EmailSender`, `SmsSender`,
+  `AuthError`); and the Moost glue (`AuthController`, `authGuardInterceptor`,
+  `AuthGuarded`, `@Public`, `@UserId`, `useAuth`, `LoginWorkflow`,
+  `RecoveryWorkflow`, `InviteWorkflow`, `WfTrigger`, `WfTriggerProvider`,
+  `createAuthEmailOutlet`, `MoostArbac`, `arbacAuthorizeInterceptor`,
+  `@ArbacResource`, `@ArbacAction`, `@ArbacAuthorize`, `useArbac`,
+  `ArbacUserProvider`, `ArbacUserProviderToken`, `AtscriptArbacUserProvider`,
+  `AsArbacDbController`, `AsArbacDbReadableController`, `ArbacDbScope`,
+  `arbacPlugin`). Use when the user asks about `.as` user models extending
+  `AoothUserCredentials` / `AoothArbacUserCredentials`, `@arbac.role` /
+  `@arbac.attribute` / `@arbac.userId` annotations, `@db.patch.strategy 'merge'`
+  on credential sub-objects, magic-link / OTP / TOTP / backup-code flows,
+  password-policy transferability, scope merging, deny-wins evaluation,
+  refresh-token rotation, `WfFinished` envelopes, or wiring auth+arbac
+  guards into a Moost app. Out of scope: moost framework internals
+  (use `moostjs`), `.as` syntax / `@meta.*` / `asc` (use `atscript`),
+  `@atscript/db` adapters and `moost-db` controllers (use `atscript-db`),
+  UI rendering / `@ui.*` annotations (use `atscript-ui`).
+---
+
+# aoothjs
+
+## Install
+
+```bash
+npx skills add moostjs/aoothjs            # this skill — full aoothjs stack
+npx skills add moostjs/moostjs            # sibling — moost framework
+npx skills add moostjs/atscript           # sibling — .as syntax
+npx skills add moostjs/atscript-db        # sibling — @atscript/db
+```
+
+```bash
+# Core (always needed)
+pnpm add @aoothjs/user @aoothjs/arbac
+
+# Credential layer (sessions, JWT, magic links, refresh)
+pnpm add @aoothjs/auth jose
+pnpm add ioredis                                     # opt: Redis store
+pnpm add @atscript/db                                # opt: DB-backed store
+
+# Moost integration
+pnpm add @aoothjs/auth-moost @aoothjs/arbac-moost moost
+pnpm add @moostjs/event-http @moostjs/event-wf @atscript/moost-wf
+
+# Atscript build (for .as models)
+pnpm add -D unplugin-atscript @atscript/typescript @atscript/core
+```
+
+## Packages
+
+```
+@aoothjs/arbac-core              zero-dep RBAC engine: Arbac, evaluate(), wildcard patterns, deny-wins
+    └── @aoothjs/arbac           re-exports core + defineRole, definePrivilege, allowTable*, scope mergers, codegen
+            └── @aoothjs/arbac-moost   moost guard + interceptor + AsArbacDbController + ArbacUserProvider
+                       │                  └── /atscript     AtscriptArbacUserProvider, AoothArbacUserCredentials
+                       │                  └── /plugin       arbacPlugin() — @arbac.role/.attribute/.userId
+                       │
+@aoothjs/user                    UserService, password (scrypt), policy, TOTP/HOTP, backup codes, lockout
+    │   └── /atscript-db         UsersStoreAtscriptDb + AoothUserCredentials .as model
+    │
+    └── @aoothjs/auth            AuthCredential, stores (Memory/JWT/Encapsulated/Redis/AtscriptDb), denylist, magic links
+            │   └── /redis        CredentialStoreRedis, DenylistStoreRedis
+            │   └── /atscript-db  CredentialStoreAtscriptDb + AoothAuthCredential .as model
+            │
+            └── @aoothjs/auth-moost   AuthController, authGuardInterceptor, @Public, @UserId, useAuth,
+                                       LoginWorkflow, RecoveryWorkflow, InviteWorkflow, WfTriggerProvider
+```
+
+```bash
+# Engine + builder (zero-dep)
+pnpm add @aoothjs/arbac-core @aoothjs/arbac
+
+# User credentials (scrypt, lockout, MFA primitives)
+pnpm add @aoothjs/user
+
+# Credential layer
+pnpm add @aoothjs/auth jose
+
+# Moost integration
+pnpm add @aoothjs/auth-moost @aoothjs/arbac-moost
+```
+
+## Quick start
+
+```ts
+// src/app-user.as
+import { AoothArbacUserCredentials } from '@aoothjs/arbac-moost/atscript/models/user'
+
+@db.table 'users'
+export interface AppUser extends AoothArbacUserCredentials {
+    @meta.id @db.default.uuid
+    id: string
+
+    @arbac.attribute
+    department?: string
+}
+```
+
+```ts
+// src/main.ts
+import { Moost, createProvideRegistry, createReplaceRegistry } from "moost";
+import { MoostHttp } from "@moostjs/event-http";
+import { MoostWf } from "@moostjs/event-wf";
+import { formInputInterceptor } from "@atscript/moost-wf";
+import { DbSpace, syncSchema } from "@atscript/db";
+import { SqliteAdapter, BetterSqlite3Driver } from "@atscript/db-sqlite";
+import { UserService } from "@aoothjs/user";
+import { UsersStoreAtscriptDb, type AuthUserTable } from "@aoothjs/user/atscript-db";
+import { AuthCredential, CredentialStoreJwt } from "@aoothjs/auth";
+import { AuthController, authGuardInterceptor, LoginWorkflow } from "@aoothjs/auth-moost";
+import {
+  MoostArbac,
+  arbacAuthorizeInterceptor,
+  ArbacUserProviderToken,
+} from "@aoothjs/arbac-moost";
+import { AtscriptArbacUserProvider } from "@aoothjs/arbac-moost/atscript";
+import { defineRole, allowTableRead } from "@aoothjs/arbac";
+import { Injectable } from "moost";
+import { AppUser } from "./app-user.as";
+
+const db = new DbSpace(() => new SqliteAdapter(new BetterSqlite3Driver(":memory:")));
+await syncSchema(db, [AppUser]);
+const userStore = new UsersStoreAtscriptDb({
+  table: db.getTable(AppUser) as unknown as AuthUserTable,
+});
+const userService = new UserService(userStore, { pepper: process.env.AOOTH_PEPPER ?? "" });
+const auth = new AuthCredential({
+  store: new CredentialStoreJwt({ secret: process.env.AOOTH_JWT_SECRET! }),
+  accessTtl: 3_600_000,
+  refresh: { ttl: 7 * 24 * 3_600_000, rotation: "always" },
+});
+const arbac = new MoostArbac();
+arbac.registerRole(defineRole().id("reader").use(allowTableRead("articles")).build());
+
+@Injectable()
+class AppUserProvider extends AtscriptArbacUserProvider<{ department?: string }> {
+  constructor() {
+    super(AppUser, db.getTable(AppUser));
+  }
+  getUserId() {
+    return useAuth().getUserId();
+  }
+}
+
+const app = new Moost();
+app.adapter(new MoostHttp());
+app.adapter(new MoostWf());
+app.setProvideRegistry(
+  createProvideRegistry(
+    [UserService, () => userService],
+    [AuthCredential, () => auth],
+    [MoostArbac, () => arbac],
+  ),
+);
+app.setReplaceRegistry(createReplaceRegistry([ArbacUserProviderToken, AppUserProvider]));
+app.applyGlobalInterceptors(
+  authGuardInterceptor(),
+  arbacAuthorizeInterceptor,
+  formInputInterceptor(),
+);
+app.registerControllers(AuthController);
+await app.init();
+```
+
+## Invariants
+
+| #   | Rule                                                                                                                                                                                                                                                                                                                                    |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | **`@Public()` is dual-purpose.** Imported from `@aoothjs/auth-moost`, it writes BOTH `authPublic=true` AND `arbacPublic=true`. You cannot ARBAC-gate an `@Public()` route. Splitting was deliberately rejected as a foot-gun. Source: `packages/auth-moost/src/auth.guard.ts`.                                                          |
+| 2   | **`ArbacUserProviderToken` is the DI key, not the abstract class.** Wire your provider with `setReplaceRegistry(createReplaceRegistry([ArbacUserProviderToken, MyProvider]))`. The abstract `ArbacUserProvider` does not satisfy moost's `TClassConstructor`.                                                                           |
+| 3   | **`useArbac` is intentionally NOT a wook.** WF events carry the originating HTTP `EventContext` as `parent`; a wook cache would replay the HTTP-event tuple onto the WF event and silently bypass workflow-class `@ArbacResource`. Resolution runs per call.                                                                            |
+| 4   | **`@Injectable()` does NOT inherit across `extends`** in moost@0.6.x. Every concrete subclass of `LoginWorkflow`, `RecoveryWorkflow`, `InviteWorkflow`, `WfTriggerProvider`, `ArbacUserProvider`, or `AtscriptArbacUserProvider` MUST re-decorate `@Injectable(...)` itself.                                                            |
+| 5   | **Refresh cookie path is narrow** (`/auth/refresh`). Browsers won't send it to `/auth/logout` or anywhere else — that's why `/auth/logout` accepts a `{ refreshToken? }` body and the controller falls back to the cookie only when the path-matched request actually carries it.                                                       |
+| 6   | **Bearer wins over cookie** when both `enableBearer` and `enableCookie` are true. The guard's `extractToken()` returns the Bearer value first; cookie is fallback only.                                                                                                                                                                 |
+| 7   | **Deny wins absolutely.** `Arbac.evaluate()` runs the deny pass before the allow pass. A wildcard `deny` overrides any exact-match `allow` — there is no specificity weighting. Source: `packages/arbac-core/src/arbac.ts`.                                                                                                             |
+| 8   | **Universe sentinel `{}` in scope union.** An allow rule with no `scope` fn pushes `{}` into `scopes[]`. `mergeScopeFilters`, `unionProjections`, `unionControlsPolicy` ALL short-circuit to "no constraint" when any input is `{}`. This is the encoding of "this role has unrestricted access".                                       |
+| 9   | **Stateless sliding-refresh silently degrades to "always-once".** `'sliding'` rotation requires the store to mark `rotatedAt` and tolerate reuse within the grace window. `CredentialStoreJwt` / `CredentialStoreEncapsulated` can't update token state in place. Use `rotation: 'always'` explicitly for JWT/Encapsulated deployments. |
+| 10  | **JWT revocation epoch is in-memory** on `CredentialStoreJwt`. It resets on process restart and is per-process. Multi-pod or durable revocation requires backing with Redis or atscript-db.                                                                                                                                             |
+| 11  | **Every terminal workflow step gates on `!ctx.aborted`.** Without this, an abort alt-action that calls `finishWfAborted(...)` would be overwritten by the issuance step that runs immediately after. Drop the gate and `/auth/trigger` returns tokens on the same call that the user clicked "logout".                                  |
+| 12  | **Use `delete ctx.field`, not `ctx.field = undefined`,** in workflow contexts. `AsWfStore` validates `state.context` against a JSON `anyOf` schema and rejects entries explicitly set to `undefined`.                                                                                                                                   |
+| 13  | **`@db.patch.strategy 'merge'`** lives on `password` / `account` / `mfa` sub-objects of the shipped `AoothUserCredentials` `.as` model. Re-declaring these sub-objects in an extending interface without the annotation flips to wholesale replace and breaks atomic field updates.                                                     |
+| 14  | **Pepper is irrecoverable.** A static prefix prepended to every password before `scrypt`. Stored in env / secret manager, never in DB. Lose the pepper, lose every password — no recovery path.                                                                                                                                         |
+| 15  | **`consumeBackupCode` is NOT atomic.** Two concurrent calls for the same code can both succeed. Wrap in a store-layer transaction if strict guarantees needed.                                                                                                                                                                          |
+| 16  | **`lockEnds: 0` means PERMANENT lock**, not "no lock". The expiration check is `lockEnds > 0 && lockEnds < now`. Calling `lockAccount(u, reason)` with no duration locks forever.                                                                                                                                                       |
+| 17  | **`arbac-moost` enforces authorization only.** The interceptor is decorated with `__authTransports: {}` (empty) so swagger sees it as an auth-guard with no transport requirement. Pair with `authGuardInterceptor` upstream — ARBAC alone does NOT authenticate.                                                                       |
+| 18  | **JWT verify pins `algorithms: [this.algorithm]`** as defence against the algorithm-confusion attack (e.g. `alg=none`, HS-confusion against RS public key). Caller-supplied `algorithm` becomes the only accepted value at verify time.                                                                                                 |
+
+## Key imports
+
+```ts
+// — @aoothjs/user
+import {
+  UserService,
+  UserStore,
+  UserStoreMemory,
+  PasswordHasher,
+  PasswordPolicy,
+  normalizePolicies,
+  ppHasMinLength,
+  ppHasUpperCase,
+  ppHasLowerCase,
+  ppHasNumber,
+  ppHasSpecialChar,
+  ppMaxRepeatedChars,
+  generateTotpSecret,
+  generateTotpUri,
+  generateTotpCode,
+  verifyTotpCode,
+  generateMfaCode,
+  hashMfaCode,
+  verifyMfaCode,
+  generateBackupCodePlaintext,
+  maskEmail,
+  maskPhone,
+  maskMfaValue,
+  setAtPath,
+  UserAuthError,
+} from "@aoothjs/user";
+import type {
+  UserCredentials,
+  PasswordData,
+  AccountData,
+  MfaData,
+  MfaMethod,
+  UserServiceConfig,
+  PasswordConfig,
+  LockoutConfig,
+  PasswordPolicyDef,
+  PasswordPolicyInstance,
+  UserStoreUpdate,
+  DeepPartial,
+  LoginResult,
+  LockStatus,
+  PolicyCheckResult,
+  TransferablePolicy,
+  MfaMethodInfo,
+  TotpConfig,
+  TrustedDeviceRecord,
+  UserAuthErrorType,
+} from "@aoothjs/user";
+
+// — @aoothjs/user/atscript-db
+import { UsersStoreAtscriptDb } from "@aoothjs/user/atscript-db";
+import type { UserCredentialsRow, AuthUserTable } from "@aoothjs/user/atscript-db";
+import { AoothUserCredentials } from "@aoothjs/user/atscript-db/model.as";
+
+// — @aoothjs/arbac (re-exports @aoothjs/arbac-core)
+import {
+  Arbac,
+  arbacPatternToRegex,
+  defineRole,
+  definePrivilege,
+  allowTableRead,
+  allowTableWrite,
+  allowTableAction,
+  mergeScopeFilters,
+  unionProjections,
+  restrictProjection,
+  getProjectionMode,
+  isFieldAllowed,
+  unionControlsPolicy,
+  extractResourceActions,
+  generateResourceTypes,
+} from "@aoothjs/arbac";
+import type {
+  TArbacRole,
+  TArbacRule,
+  TArbacEvalResult,
+  RoleBuilder,
+  TPrivilegeFunction,
+  TProjection,
+  TProjectionMode,
+  TScopeFilter,
+  ControlGate,
+  TCodegenOptions,
+  TResourceActionMap,
+} from "@aoothjs/arbac";
+
+// — @aoothjs/auth + subpaths
+import {
+  AuthCredential,
+  AuthError,
+  CredentialStoreMemory,
+  CredentialStoreJwt,
+  CredentialStoreEncapsulated,
+  DenylistStoreMemory,
+  generateMagicLinkToken,
+  defaultClock,
+} from "@aoothjs/auth";
+import type {
+  AuthContext,
+  CredentialMetadata,
+  CredentialState,
+  IssueResult,
+  RefreshConfig,
+  CredentialStore,
+  DenylistStore,
+  EmailSender,
+  AuthEmailEvent,
+  AuthEmailKind,
+  SmsSender,
+  AuthSmsEvent,
+  AuthSmsKind,
+  BuildMagicLinkUrl,
+  Clock,
+  AuthErrorType,
+} from "@aoothjs/auth";
+import { CredentialStoreRedis, DenylistStoreRedis } from "@aoothjs/auth/redis";
+import { CredentialStoreAtscriptDb } from "@aoothjs/auth/atscript-db";
+import type { AuthCredentialRow, AuthCredentialTable } from "@aoothjs/auth/atscript-db";
+import { AoothAuthCredential } from "@aoothjs/auth/atscript-db/model.as";
+
+// — @aoothjs/auth-moost
+import {
+  AuthController,
+  authGuardInterceptor,
+  AuthGuarded,
+  Public,
+  UserId,
+  useAuth,
+  LoginWorkflow,
+  RecoveryWorkflow,
+  InviteWorkflow,
+  WfTrigger,
+  WfTriggerProvider,
+  createAuthEmailOutlet,
+  DEFAULT_AUTH_WORKFLOWS,
+} from "@aoothjs/auth-moost";
+import type {
+  AuthOptions,
+  ResolvedAuthOptions,
+  AuthBindings,
+  AuthLoginResponse,
+  AuthLogoutBody,
+  AuthRefreshBody,
+  AuthOkResponse,
+  AuditEvent,
+  AuditEmitter,
+  LoginWorkflowOpts,
+  RecoveryWorkflowOpts,
+  InviteWorkflowOpts,
+} from "@aoothjs/auth-moost";
+
+// — @aoothjs/arbac-moost + subpaths
+import {
+  MoostArbac,
+  arbacAuthorizeInterceptor,
+  ArbacResource,
+  ArbacAction,
+  ArbacAuthorize,
+  useArbac,
+  ArbacUserProvider,
+  ArbacUserProviderToken,
+  AsArbacDbController,
+  AsArbacDbReadableController,
+  DENY_FILTER,
+} from "@aoothjs/arbac-moost";
+import type { TArbacMeta, ArbacBindings, ArbacDbScope } from "@aoothjs/arbac-moost";
+import { AtscriptArbacUserProvider } from "@aoothjs/arbac-moost/atscript";
+import type { ArbacUserTable } from "@aoothjs/arbac-moost/atscript";
+import { AoothArbacUserCredentials } from "@aoothjs/arbac-moost/atscript/models/user";
+import arbacPlugin from "@aoothjs/arbac-moost/plugin";
+```
+
+## References — load only what's needed
+
+| Domain                   | File                                                | When                                                                                                                        |
+| ------------------------ | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| First contact            | [getting-started.md](references/getting-started.md) | Install matrix, minimum wiring (with + without moost), atscript-db wiring, choosing token/user stores, testing patterns     |
+| Ecosystem map            | [ecosystem.md](references/ecosystem.md)             | Package responsibility matrix, dep graph, peer-dep requirements, subpath export map                                         |
+| Annotation reference     | [annotations.md](references/annotations.md)         | Every `@arbac.*` annotation + how aoothjs reads `@db.*` / `@meta.*` / `@ui.form.*` / `@expect.*` / `@wf.*` from atscript    |
+| **User domain**          | [user.md](references/user.md)                       | `@aoothjs/user` overview: `UserService` quick start, full invariants table, key imports                                     |
+| `UserService` reference  | [user-service.md](references/user-service.md)       | Every public method, config defaults, login flow, lockout, MFA methods, backup codes, trusted devices                       |
+| Password subsystem       | [password.md](references/password.md)               | Scrypt + pepper + history, `generatePassword`, `PasswordPolicy` DSL, transferable policies, built-in `ppHas*` factories     |
+| MFA primitives           | [mfa.md](references/mfa.md)                         | TOTP secret/URI/code/verify, MFA-code helpers, backup codes, trusted-device tokens                                          |
+| User stores              | [user-stores.md](references/user-stores.md)         | `UserStore` contract, `UserStoreMemory`, custom-store skeleton, `UsersStoreAtscriptDb` wiring                               |
+| **ARBAC domain**         | [arbac.md](references/arbac.md)                     | `@aoothjs/arbac` + `arbac-core` overview: quick start, full invariants, key imports                                         |
+| Engine + builder         | [builder.md](references/builder.md)                 | `Arbac` class, `defineRole` chain, `definePrivilege` double-call, `allowTable*` helpers + action vocabulary                 |
+| Scope merging            | [scopes.md](references/scopes.md)                   | `ArbacDbScope` shape, `mergeScopeFilters`, `unionProjections` truth table, `restrictProjection`, `unionControlsPolicy`      |
+| Codegen                  | [codegen.md](references/codegen.md)                 | Library API + CLI: `extractResourceActions`, `generateResourceTypes`, `aoothjs-arbac-codegen --roles ... --output ...`      |
+| **Auth domain**          | [auth.md](references/auth.md)                       | `@aoothjs/auth` overview: quick start, full invariants, key imports                                                         |
+| Tokens & sessions        | [tokens.md](references/tokens.md)                   | `CredentialStoreJwt` algorithms, claim layout, `CredentialStoreEncapsulated`, sessions vs tokens                            |
+| Refresh & rotation       | [refresh.md](references/refresh.md)                 | `RefreshConfig`, three rotation modes, reuse detection, stateless degradation, `maxConcurrent`, epoch revocation            |
+| Magic links              | [magic-links.md](references/magic-links.md)         | `generateMagicLinkToken`, single-use guarantees, stateless `DenylistStore` requirement, recovery recipe                     |
+| Auth stores              | [auth-stores.md](references/auth-stores.md)         | `CredentialStore` + `DenylistStore` contracts, Memory / Redis / atscript-db, shipped `AoothAuthCredential` model            |
+| **Moost domain**         | [moost.md](references/moost.md)                     | `@aoothjs/auth-moost` + `@aoothjs/arbac-moost` overview: quick start, full invariants, key imports                          |
+| Controllers + decorators | [controllers.md](references/controllers.md)         | `AuthController` REST surface, `authGuardInterceptor`, `useAuth`, `useArbac`, all decorators, 401-vs-403 split              |
+| Workflows                | [workflows.md](references/workflows.md)             | `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow` phase tables, options, hooks, `WfFinished` helpers, forms catalogue |
+| DB controllers           | [db-controllers.md](references/db-controllers.md)   | `AsArbacDbController` hooks, `ArbacDbScope`, control-gate semantics, `DENY_FILTER`, identifier auto-preservation            |
+| Atscript provider        | [moost-atscript.md](references/moost-atscript.md)   | `arbacPlugin()`, `@arbac.*` annotations, user-id resolution, `AtscriptArbacUserProvider`, bundled `.as` models              |
+
+## See also
+
+Reference docs: https://aoothjs.dev. Source: https://github.com/moostjs/aoothjs.

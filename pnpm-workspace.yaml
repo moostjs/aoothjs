@@ -2,6 +2,7 @@ packages:
   - packages/*
   - explorations/*/frontend
   - explorations/*/backend
+  - docs
 
 catalog:
   "@atscript/core": ^0.1.56
