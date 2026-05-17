@@ -15,19 +15,20 @@ describe("WF-INVITE — admin-gated invite", () => {
     await app.close();
   });
 
-  it("WF-INVITE-01 — admin caller succeeds + email captured (non-admin gating tracked as KNOWN GAP)", async () => {
-    // KNOWN GAP (post WF ARBAC investigation): admin gating on workflow
-    // events. The original `useArbac()` per-event resolution bug (a
-    // `defineWook` cache reading the HTTP parent ctx's tuple for every WF
-    // event) was fixed; the bundled `InviteWorkflow` is now `@Public()` so
-    // apps that wire `arbacAuthorizeInterceptor` globally don't accidentally
-    // deny all invite events. What remains: workflow resume re-runs the
-    // paused step (the runtime restarts at the saved step index, not after
-    // it), so a class-level admin gate on the workflow controller would
-    // re-evaluate ARBAC against the now-anonymous magic-link resume
-    // principal and 401. A resume-vs-start aware bypass is the missing
-    // piece. For now we only assert the admin-side happy path; the gating
-    // regression test (SEC-12) re-enables when that bypass exists.
+  it("WF-INVITE-01 — non-admin gated; admin caller succeeds + email captured", async () => {
+    // Non-admin caller is denied at the first phase-A event (class-level
+    // `@ArbacResource('auth.invite') @ArbacAction('start')` on the bundled
+    // `InviteWorkflow`). Admin holds `allow('auth.invite', 'start')` and
+    // drives the workflow to the magic-link send.
+    const alice = app.fixtures.users.t1_alice; // member/viewer — no auth.invite grant
+    const aliceTokens = await app.loginAs(alice);
+    const denied = await app.triggerWf(
+      "admin",
+      { wfid: "auth.invite" },
+      { token: aliceTokens.accessToken },
+    );
+    expect(denied.status).toBe(403);
+
     const dave = app.fixtures.users.t1_dave;
     const daveTokens = await app.loginAs(dave);
 

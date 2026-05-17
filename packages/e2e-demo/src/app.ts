@@ -248,18 +248,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     },
     opts.inviteOpts,
   );
-  // No `@ArbacResource('auth')` here yet — see `ISSUES.md` (workflow-event
-  // ARBAC gating) for the design work needed to gate admin start vs allow
-  // anonymous magic-link resume. The bundled `InviteWorkflow` marks WF_FLOW
-  // + every accept-tail step `@Public()` so a future class-level
-  // `@ArbacResource(...) @ArbacAction(...)` here gates only the admin-side
-  // steps (`inviteInit`, `inviteSelectSendMode`, `inviteAdminInviteForm`,
-  // `inviteInferRolesStep`, `invitePreCreateUser`, `inviteSendInviteEmail`,
-  // `inviteReturnShareableLink`, `inviteLoadPendingUser`, `inviteCancelInvite`).
-  // The remaining blocker: those admin-side steps RE-RUN on resume (the
-  // workflow runtime restarts at the paused step index, not after it), so
-  // re-evaluating arbac on resume with the now-anonymous principal still
-  // throws 401. Needs a resume-aware bypass — out of scope for this fix.
+  // ARBAC is carried by the base `InviteWorkflow`: class-level
+  // `@ArbacResource('auth.invite') @ArbacAction('start')` gates phase A,
+  // per-method `@Public()` opens phase B (post magic-link send) so the
+  // anonymous resume isn't denied. `@Inherit()` flows the class meta down.
   @Inherit()
   @Injectable("FOR_EVENT")
   @Controller()

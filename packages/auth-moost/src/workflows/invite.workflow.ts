@@ -51,6 +51,7 @@
  * Rate-limiting is intentionally NOT part of this workflow — consumers who
  * want a cap wire it themselves at the HTTP / trigger layer.
  */
+import { ArbacAction, ArbacResource } from "@aoothjs/arbac-moost";
 import { AuthCredential } from "@aoothjs/auth";
 import { UserAuthError, type UserCredentials, UserService } from "@aoothjs/user";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
@@ -169,24 +170,32 @@ export function parseInviteRoles(input?: string[]): string[] {
 }
 
 /**
- * Authorization is the trigger route's responsibility. Mount admin-gated
- * triggers (e.g. `@ArbacAuthorize({ resource: 'auth.invite', action: '*' })`)
- * for these workflow ids; never put them on a public trigger allow-list.
+ * **Per-step ARBAC model.** Phase-A steps (admin-side, pre magic-link send)
+ * inherit the class-level `@ArbacResource('auth.invite') @ArbacAction('start')`
+ * so every admin-side step event is gated. Apps that wire
+ * `arbacAuthorizeInterceptor` globally grant admin a single rule:
+ * `allow('auth.invite', 'start')`.
  *
- * **`@Public()` baseline.** Marks the controller `arbacPublic` so the global
- * `arbacAuthorizeInterceptor` bypasses every step/flow event on this
- * workflow by default. The library does not ship admin gating on workflow
- * events — there's no clean way to gate admin start while still allowing the
- * anonymous magic-link resume (which re-enters every saved-step handler
- * back through the global interceptor chain after the workflow runtime
- * restarts at the paused step index, not after it). See ISSUES.md
- * "workflow-event ARBAC gating" for the resume-vs-start design work needed
- * to lift this. Consumers who need a hard admin gate today should either
- * gate the HTTP route on a separate admin-only trigger or call
- * `useArbac().evaluateOrThrow(...)` explicitly inside `inviteAdminInviteForm`
- * / `inviteLoadPendingUser` / `inviteCancelInvite`.
+ * The three `@Workflow` body methods (`inviteFlow` / `reInviteFlow` /
+ * `cancelInviteFlow`) are `@Public()` because the wf adapter dispatches the
+ * flow body on EVERY `start()` / `resume()` call — gating it would 401 the
+ * anonymous magic-link resume before any step runs. The real gate is the
+ * step methods themselves, which the wf runtime invokes through the same
+ * interceptor chain.
+ *
+ * Phase-B steps (post `ctx.linkSent`, accept tail) are method-level
+ * `@Public()` because they fire on the anonymous magic-link resume.
+ * `inviteSendInviteEmail` / `inviteReturnShareableLink` are the boundary:
+ * also `@Public()` because the @prostojs/wf runtime re-enters the saved step
+ * on resume (the loop restarts at `indexes[level]`, not after it). Their
+ * bodies are idempotent via `if (ctx.linkSent) return`.
+ *
+ * `auth.reInvite` / `auth.cancelInvite` are admin-only end-to-end (admin
+ * confirms in their own UI; no anonymous boundary), so their phase-A steps
+ * stay class-gated under the same `auth.invite` / `start` grant.
  */
-@Public()
+@ArbacResource("auth.invite")
+@ArbacAction("start")
 @Injectable("FOR_EVENT")
 @Controller()
 export class InviteWorkflow {
@@ -404,6 +413,7 @@ export class InviteWorkflow {
         ),
     },
   ])
+  @Public()
   inviteFlow(): void {}
 
   @Workflow("auth.reInvite")
@@ -486,6 +496,7 @@ export class InviteWorkflow {
         ),
     },
   ])
+  @Public()
   reInviteFlow(): void {}
 
   @Workflow("auth.cancelInvite")
@@ -493,6 +504,7 @@ export class InviteWorkflow {
     { id: "inviteInit" },
     { id: "inviteCancelInvite", condition: (ctx) => !ctx.aborted },
   ])
+  @Public()
   cancelInviteFlow(): void {}
 
   // ╔═══════════════════════════════════════════════════════════════════════╗
@@ -660,8 +672,9 @@ export class InviteWorkflow {
     return undefined;
   }
 
-  // ── Phase A: sendInviteEmail ──────────────────────────────────────────
+  // ── Boundary: sendInviteEmail (fires on admin send AND on anonymous resume) ─
   @Step("inviteSendInviteEmail")
+  @Public()
   sendInviteEmail(@WorkflowParam("context") ctx: InviteWfCtx): unknown {
     if (ctx.linkSent) return undefined;
     ctx.linkSent = true;
@@ -675,8 +688,9 @@ export class InviteWorkflow {
     };
   }
 
-  // ── Phase A: returnShareableLink ──────────────────────────────────────
+  // ── Boundary: returnShareableLink (same boundary semantics as sendInviteEmail) ─
   @Step("inviteReturnShareableLink")
+  @Public()
   returnShareableLink(@WorkflowParam("context") ctx: InviteWfCtx): unknown {
     if (ctx.linkSent) return undefined;
     // PUNT: shareable-link mode currently piggy-backs on the email outlet
@@ -732,6 +746,7 @@ export class InviteWorkflow {
 
   // ── Phase B: checkPendingInvitation ───────────────────────────────────
   @Step("inviteCheckPendingInvitation")
+  @Public()
   async checkPendingInvitation(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     if (!ctx.username) {
       // No username on ctx means we're in a corrupted state — the admin-side
@@ -751,6 +766,7 @@ export class InviteWorkflow {
 
   // ── Phase B: idempotentRedirect ───────────────────────────────────────
   @Step("inviteIdempotentRedirect")
+  @Public()
   idempotentRedirect(@WorkflowParam("context") ctx: InviteWfCtx): undefined {
     useWfFinished().set({ type: "redirect", value: this.opts.accept.alreadyAcceptedRedirectUrl });
     ctx.aborted = true;
@@ -759,6 +775,7 @@ export class InviteWorkflow {
 
   // ── Phase B: preparePasswordRules ─────────────────────────────────────
   @Step("invitePreparePasswordRules")
+  @Public()
   preparePasswordRules(@WorkflowParam("context") ctx: InviteWfCtx): undefined {
     (ctx as Record<string, unknown>).passwordPolicies = this.users.getTransferablePolicies();
     return undefined;
@@ -766,6 +783,7 @@ export class InviteWorkflow {
 
   // ── Phase B: createPasswordForm ───────────────────────────────────────
   @Step("inviteCreatePasswordForm")
+  @Public()
   async createPasswordForm(
     @WorkflowParam("input") input:
       | { newPassword?: string; confirmPassword?: string; action?: string }
@@ -800,6 +818,7 @@ export class InviteWorkflow {
 
   // ── Phase B: collectProfile ───────────────────────────────────────────
   @Step("inviteCollectProfile")
+  @Public()
   async collectProfile(
     @WorkflowParam("input") input: Record<string, unknown> | undefined,
     @WorkflowParam("context") ctx: InviteWfCtx,
@@ -820,6 +839,7 @@ export class InviteWorkflow {
 
   // ── Phase B: applyProfile ─────────────────────────────────────────────
   @Step("inviteApplyProfile")
+  @Public()
   async applyProfileStep(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     requireUsername(ctx);
     const profile = ctx.profile ?? {};
@@ -834,6 +854,7 @@ export class InviteWorkflow {
 
   // ── Phase B: unsetPendingInvitation ───────────────────────────────────
   @Step("inviteUnsetPendingInvitation")
+  @Public()
   async unsetPendingInvitation(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     requireUsername(ctx);
     await this.users.update(ctx.username, {
@@ -845,6 +866,7 @@ export class InviteWorkflow {
 
   // ── Phase B: activateUser ─────────────────────────────────────────────
   @Step("inviteActivateUser")
+  @Public()
   async activateUser(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     requireUsername(ctx);
     await this.users.activateAccount(ctx.username);
@@ -855,6 +877,7 @@ export class InviteWorkflow {
 
   // ── Phase B: confirmation ─────────────────────────────────────────────
   @Step("inviteConfirmation")
+  @Public()
   confirmation(@WorkflowParam("context") ctx: InviteWfCtx): undefined {
     ctx.confirmationShown = true;
     // When auto-login is the next step, the data finish here is OVERWRITTEN
@@ -872,6 +895,7 @@ export class InviteWorkflow {
 
   // ── Phase B: freshLoginFinish ─────────────────────────────────────────
   @Step("inviteFreshLoginFinish")
+  @Public()
   freshLoginFinish(@WorkflowParam("context") _ctx: InviteWfCtx): undefined {
     useWfFinished().set({ type: "redirect", value: this.opts.accept.loginUrl });
     return undefined;
@@ -879,6 +903,7 @@ export class InviteWorkflow {
 
   // ── Phase B: autoLoginFinish ──────────────────────────────────────────
   @Step("inviteAutoLoginFinish")
+  @Public()
   async autoLoginFinish(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     requireUsername(ctx);
     const issue = await this.auth.issue(ctx.username);

@@ -80,12 +80,6 @@ describe("ISO — read-only tenant isolation", () => {
     expect(tenantIds.has(app.fixtures.tenants["tenant-b"])).toBe(true);
     expect(rows.length).toBe(app.fixtures.tasks.tenantA.length + app.fixtures.tasks.tenantB.length);
   });
-
-  it.skip("ISO-09 — tenant cascade deletion is OUT OF SCOPE for ARBAC (documentation story)", () => {
-    // ARBAC governs access control, not relational integrity / cascade
-    // deletes. There is no behavior to assert — this story exists in the
-    // catalog to make the scope boundary explicit.
-  });
 });
 
 describe("ISO — write isolation (mutations; isolated app per test)", () => {

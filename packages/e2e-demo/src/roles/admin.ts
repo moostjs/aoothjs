@@ -53,7 +53,7 @@ export const adminRole = defineRole<UserAttrs, ArbacDbScope>()
       scope: (attrs) => ({ filter: tenantFilter(attrs) }),
     }),
   )
-  .allow("auth", "admin.invite")
+  .allow("auth.invite", "start")
   .allow("auth", "logout")
   .allow("auth", "refresh")
   .allow("auth", "status")

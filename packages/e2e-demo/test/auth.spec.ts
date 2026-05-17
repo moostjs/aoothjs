@@ -272,15 +272,3 @@ describe("AUTH — expired token", () => {
     expect(stale.status).toBe(401);
   });
 });
-
-describe("AUTH — concurrent token limit", () => {
-  it.skip("AUTH-18 — concurrent token limit (gap: maxConcurrent unsupported on JWT store)", () => {
-    // GAP: e2e-demo wires CredentialStoreJwt, which does NOT implement
-    // listForUser; AuthCredential.enforceConcurrencyLimit() therefore short-
-    // circuits before maxConcurrent is enforced. Even with envOverrides for
-    // a maxConcurrent setting (not currently wired in env.ts/aooth.ts), the
-    // limit cannot be tested against a stateless store. Re-enable when the
-    // demo switches to CredentialStoreMemory or a store that supports
-    // listForUser.
-  });
-});

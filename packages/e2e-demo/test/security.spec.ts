@@ -370,14 +370,30 @@ describe("SEC — magic-link attacks", () => {
     expect(emailEvent.recipient).toBe(alice.email);
   });
 
-  it.skip("SEC-12 — workflow handle replay across roles (KNOWN GAP: see WF-INVITE-01)", () => {
-    // KNOWN GAP (post WF ARBAC investigation): see WF-INVITE-01 for the
-    // detailed mechanic. tl;dr — the `useArbac()` per-event resolution bug
-    // is fixed, but the bundled `InviteWorkflow` is `@Public()` because
-    // resume re-runs paused admin-side steps that would 401 against the
-    // anonymous magic-link resume principal under any class-level admin
-    // gate. Re-enable when the workflow runtime gains a resume-vs-start
-    // aware bypass (so admin gating fires only on the initiating event).
+  it("SEC-12 — non-admin cannot start auth.invite; admin succeeds", async () => {
+    // Phase-A steps inherit class-level `@ArbacResource('auth.invite')
+    // @ArbacAction('start')` so the arbac interceptor denies the non-admin
+    // caller on the first event. Admin has `allow('auth.invite', 'start')`
+    // (see roles/admin.ts) so the same trigger returns the admin-form prompt.
+    const alice = app.fixtures.users.t1_alice; // member/viewer — no auth.invite grant
+    const aliceTokens = await app.loginAs(alice);
+    const denied = await app.triggerWf(
+      "admin",
+      { wfid: "auth.invite" },
+      { token: aliceTokens.accessToken },
+    );
+    expect(denied.status).toBe(403);
+
+    const dave = app.fixtures.users.t1_dave; // admin
+    const daveTokens = await app.loginAs(dave);
+    const allowed = await app.triggerWf(
+      "admin",
+      { wfid: "auth.invite" },
+      { token: daveTokens.accessToken },
+    );
+    expectOk(allowed);
+    const body = await readWfPause(allowed);
+    expect(body.wfs).toBeTruthy();
   });
 
   it("SEC-28 — invite link visit alone does NOT activate user; password required (see WF-INVITE-02)", async () => {

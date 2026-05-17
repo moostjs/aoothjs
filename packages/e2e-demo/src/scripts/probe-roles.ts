@@ -86,12 +86,12 @@ async function main(): Promise<void> {
       },
     },
     {
-      label: "admin / auth.admin.invite",
+      label: "admin / auth.invite.start",
       roles: ["admin"],
       attrs: { tenantId: "A" },
       userId: "t1_dave",
-      resource: "auth",
-      action: "admin.invite",
+      resource: "auth.invite",
+      action: "start",
       expectAllowed: true,
     },
     {
