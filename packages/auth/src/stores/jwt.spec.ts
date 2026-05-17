@@ -142,6 +142,20 @@ describe("CredentialStoreJwt", () => {
       expect(await store.retrieve(newToken)).not.toBeNull();
     });
 
+    it("accepts a token whose iatMs equals the epoch (recovery auto-login regression)", async () => {
+      // Regression: recovery/invite workflows call `revokeAllForUser` and then
+      // immediately mint a fresh token in the same workflow tick. A strict `>`
+      // would reject the freshly issued token (`iatMs === epoch`), bouncing
+      // the user back to /login. The gate is `>=` so same-ms mint-after-revoke
+      // is honored; a token whose iatMs is `epoch - 1` is still rejected.
+      const store = new CredentialStoreJwt({ secret: SECRET, clock });
+      const stale = await store.persist(makeState("alice", clock.now() - 1));
+      expect(await store.revokeAllForUser("alice")).toBe(1);
+      const sameMsToken = await store.persist(makeState("alice", clock.now()));
+      expect(await store.retrieve(sameMsToken)).not.toBeNull();
+      expect(await store.retrieve(stale)).toBeNull();
+    });
+
     it("revokeAllForUser is scoped per-user (other users unaffected)", async () => {
       const store = new CredentialStoreJwt({ secret: SECRET, clock });
       const aliceToken = await store.persist(makeState("alice", clock.now()));

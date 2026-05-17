@@ -206,13 +206,13 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   const demoRecoveryOpts: RecoveryWorkflowOpts = mergeWfOpts(
     {
       delivery: { magicLinkTtlMs: env.RECOVERY_TTL_MS },
-      // BIG 3.2 defaults flipped `freshLoginRequired` to true (redirect to
-      // /login after reset) and `revokeAllSessions` to true (kick every active
-      // session). The demo preserves the prior behavior (auto-login;
-      // pre-existing sessions left intact) so the existing e2e tests keep
-      // asserting the same outcomes; production consumers should leave the
-      // secure defaults on.
-      postReset: { freshLoginRequired: false, revokeAllSessions: false },
+      // The library default for `revokeAllSessions` is `true` (kick every
+      // active session after a password reset). The demo opts out so
+      // WF-RECOVERY-05 can keep documenting the "pre-existing session stays
+      // valid" branch; production consumers should leave the secure default
+      // on. `freshLoginRequired` defaults to false (auto-login), which is what
+      // this SPA demo wants — no override needed.
+      postReset: { revokeAllSessions: false },
     },
     opts.recoveryOpts,
   );

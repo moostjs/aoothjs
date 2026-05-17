@@ -50,9 +50,12 @@ describe("AuthController", () => {
       expect(out.setCookies.some((c) => /aooth_refresh=;.*Max-Age=0/i.test(c))).toBe(true);
     });
 
-    it("returns 401 without auth (guard protects logout)", async () => {
+    it("returns 401 without auth (defence-in-depth on @Public() bypass)", async () => {
       const app = await prepareControllerApp();
-      const res = await app.request("/auth/logout", { method: "POST" });
+      // `@Body()` needs a body to parse; previously the auth guard threw
+      // before the body composable ran. Now logout is `@Public()` so the
+      // guard sets a null AuthContext and the handler's own null-check 401s.
+      const res = await app.request("/auth/logout", { method: "POST", json: {} });
       expect(res.status).toBe(401);
     });
 
@@ -233,21 +236,13 @@ describe("AuthController", () => {
   });
 
   // ARBAC integration. The controller carries `@ArbacResource("auth")` at
-  // class level; the auth-action labels (`public.logout` etc.) were dropped
-  // in AUTH-MOOST-5 — handlers now resolve to their method name. Apps that
-  // want a different label add `@ArbacAction(...)` in a subclass.
-  //
-  // We verify two intents:
-  //   1. `@Public()` on /auth/trigger bypasses BOTH guards atomically — an
-  //      anonymous request reaches the handler even though the class has
-  //      `@ArbacResource("auth")` (which would otherwise force 403).
-  //   2. A user with `allow("auth", "*")` reaches the guarded endpoints
-  //      (logout / status); a user without that grant gets 403.
-  describe("ARBAC integration (AUTH-MOOST-5 cleanup)", () => {
-    const ROLE_AUTH_FULL: TArbacRole<object, object> = {
-      id: "auth-full",
-      rules: [{ resource: "auth", action: "*" }],
-    };
+  // class level, but `/auth/status`, `/auth/logout`, `/auth/refresh`, and
+  // `/auth/trigger` are all `@Public()` — they bypass ARBAC because they are
+  // self-scoped primitives (status = "tell me my principal"; logout = "kill
+  // my session"; refresh = gated by the refresh token itself; trigger =
+  // gated by the workflow interceptor). Authentication is still required for
+  // status/logout via the auth guard's defence-in-depth null check.
+  describe("ARBAC integration (status/logout/refresh are @Public())", () => {
     const ROLE_BARE: TArbacRole<object, object> = {
       id: "bare",
       rules: [{ resource: "other", action: "*" }],
@@ -265,7 +260,7 @@ describe("AuthController", () => {
       const app = await prepareControllerApp({
         arbac: {
           userRoles,
-          roles: [ROLE_AUTH_FULL, ROLE_BARE],
+          roles: [ROLE_BARE],
         },
       });
       await app.users.createUser(username, password);
@@ -277,15 +272,15 @@ describe("AuthController", () => {
     it("/auth/trigger is reachable anonymously — @Public() bypasses BOTH guards", async () => {
       const userRoles = new Map<string, string[]>();
       const app = await prepareControllerApp({
-        arbac: { userRoles, roles: [ROLE_AUTH_FULL] },
+        arbac: { userRoles, roles: [ROLE_BARE] },
       });
       const res = await app.request("/auth/trigger", { method: "POST", json: {} });
       expect(res.status).not.toBe(401);
       expect(res.status).not.toBe(403);
     });
 
-    it("/auth/logout succeeds for a user with `allow(auth, *)`", async () => {
-      const { app, accessToken } = await loginAs("alice", "Password123", ["auth-full"]);
+    it("/auth/logout succeeds for an authenticated user with NO arbac grants", async () => {
+      const { app, accessToken } = await loginAs("alice", "Password123", ["bare"]);
       const out = await app.request("/auth/logout", {
         method: "POST",
         headers: { authorization: `Bearer ${accessToken}` },
@@ -294,8 +289,8 @@ describe("AuthController", () => {
       expect(out.status).toBe(201);
     });
 
-    it("/auth/status succeeds for a user with `allow(auth, *)`", async () => {
-      const { app, accessToken } = await loginAs("alice", "Password123", ["auth-full"]);
+    it("/auth/status succeeds for an authenticated user with NO arbac grants", async () => {
+      const { app, accessToken } = await loginAs("alice", "Password123", ["bare"]);
       const res = await app.request("/auth/status", {
         headers: { authorization: `Bearer ${accessToken}` },
       });
@@ -303,22 +298,23 @@ describe("AuthController", () => {
       expect((res.body as AuthContext).userId).toBe("alice");
     });
 
-    it("/auth/logout returns 403 for a user WITHOUT `auth` grant", async () => {
-      const { app, accessToken } = await loginAs("alice", "Password123", ["bare"]);
+    it("/auth/logout returns 401 anonymously — defence-in-depth on the @Public() bypass", async () => {
+      const app = await prepareControllerApp({
+        arbac: { userRoles: new Map(), roles: [ROLE_BARE] },
+      });
       const out = await app.request("/auth/logout", {
         method: "POST",
-        headers: { authorization: `Bearer ${accessToken}` },
         json: {},
       });
-      expect(out.status).toBe(403);
+      expect(out.status).toBe(401);
     });
 
-    it("/auth/status returns 403 for a user WITHOUT `auth` grant", async () => {
-      const { app, accessToken } = await loginAs("alice", "Password123", ["bare"]);
-      const res = await app.request("/auth/status", {
-        headers: { authorization: `Bearer ${accessToken}` },
+    it("/auth/status returns 401 anonymously — defence-in-depth on the @Public() bypass", async () => {
+      const app = await prepareControllerApp({
+        arbac: { userRoles: new Map(), roles: [ROLE_BARE] },
       });
-      expect(res.status).toBe(403);
+      const res = await app.request("/auth/status", { method: "GET" });
+      expect(res.status).toBe(401);
     });
   });
 });

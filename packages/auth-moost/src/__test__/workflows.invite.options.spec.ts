@@ -12,10 +12,50 @@
  * wires onto the new `protected` overrides). The pre-reshape options-class +
  * the rate-limit feature are gone — see WF_INVITE.md.
  */
+import { UserStoreMemory } from "@aoothjs/user";
+import type { UserCredentials } from "@aoothjs/user";
 import { describe, expect, it } from "vite-plus/test";
 
 import { ProfileCompleteForm } from "../atscript/models/forms.as.js";
 import { prepareWfApp, seedActiveUser } from "./workflow-utils";
+
+/**
+ * Simulates atscript-db's strict-schema persistence: rejects any property on
+ * the create payload that isn't in `allowedColumns`. Mirrors the real
+ * `UsersStoreAtscriptDb` behaviour where the row-type validator throws
+ * `"<prop>: Unexpected property"` for fields the consumer's `.as` model does
+ * not declare. Reproduces the InviteWorkflow contract bug at unit-test scope
+ * without pulling in a real DB.
+ */
+class StrictSchemaUserStore extends UserStoreMemory {
+  constructor(private readonly allowedColumns: Set<string>) {
+    super();
+  }
+  override async create(data: UserCredentials & object): Promise<void> {
+    const rec = data as unknown as Record<string, unknown>;
+    for (const key of Object.keys(rec)) {
+      if (!this.allowedColumns.has(key)) {
+        throw new Error(`${key}: Unexpected property`);
+      }
+    }
+    await super.create(data);
+  }
+}
+
+/** Columns mirroring `AoothArbacUserCredentials` (base + `roles`). */
+const BASE_USER_COLUMNS = new Set([
+  "username",
+  "password",
+  "passwordHistory",
+  "account",
+  "id",
+  "roles",
+  "mfa",
+  "recovery",
+  "trustedDevices",
+  "createdAt",
+  "updatedAt",
+]);
 
 const PASSWORD = "NewPassword123";
 
@@ -647,5 +687,111 @@ describe("InviteWorkflow — audit events", () => {
     });
     await driveDefaultInviteAccept(app, "silent@test.com");
     expect(events.filter((e) => String(e.kind).startsWith("invite."))).toHaveLength(0);
+  });
+});
+
+describe("InviteWorkflow — admin form firstName/lastName/roles wiring", () => {
+  it("admin submits firstName/lastName/roles → preCreateUser does NOT write form-only fields onto the user row", async () => {
+    // Regression: the bundled `InviteForm` collects `firstName`/`lastName`
+    // (optional) for downstream consumption — but the base
+    // `AoothUserCredentials` row shape does NOT declare those columns. The
+    // workflow MUST NOT inject them blindly into `users.createUser` `fields`
+    // or atscript-db-backed stores reject the create with
+    // `"firstName: Unexpected property"`. Consumers route the form values into
+    // their custom columns via the `prepareUser({firstName, lastName, …})`
+    // hook return value. `roles` IS in `AoothArbacUserCredentials` so it
+    // stays a direct field.
+    const seenPrepare: Array<Record<string, unknown>> = [];
+    const app = await prepareWfApp({
+      userStore: new StrictSchemaUserStore(BASE_USER_COLUMNS),
+      inviteOpts: { accept: { showConfirmation: false } },
+      inviteHooks: {
+        prepareUser: (input) => {
+          seenPrepare.push({ ...input });
+          return {};
+        },
+      },
+    });
+
+    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r2 = await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: {
+        email: "newhire@x.com",
+        firstName: "New",
+        lastName: "Hire",
+        roles: ["user"],
+      },
+    });
+
+    // Workflow advanced past `preCreateUser` (form-only fields did not crash
+    // the strict-schema store) and emitted the magic link.
+    expect(r2.status).toBeLessThan(400);
+    expect(app.emails).toHaveLength(1);
+
+    // `prepareUser` saw the full form payload (consumer's mapping seam).
+    expect(seenPrepare).toHaveLength(1);
+    expect(seenPrepare[0]).toMatchObject({
+      email: "newhire@x.com",
+      firstName: "New",
+      lastName: "Hire",
+      roles: ["user"],
+    });
+
+    // The created user carries `roles` (base-schema field) but NOT
+    // `firstName`/`lastName` (would have thrown otherwise — and the row reflects
+    // that they were never persisted).
+    const u = (await app.users.getUser("newhire@x.com")) as unknown as Record<string, unknown>;
+    expect(u.roles).toEqual(["user"]);
+    expect(u.firstName).toBeUndefined();
+    expect(u.lastName).toBeUndefined();
+  });
+
+  it("prepareUser return value is the seam for mapping firstName/lastName into consumer columns", async () => {
+    // Consumer maps the form's `firstName`/`lastName` into their schema's
+    // own column (`displayName`) via `prepareUser`'s return. Confirms the
+    // documented contract: the workflow passes form-only fields to the hook
+    // and only writes what the hook returns (+ `roles` + `email`).
+    const allowed = new Set([...BASE_USER_COLUMNS, "displayName"]);
+    const app = await prepareWfApp({
+      userStore: new StrictSchemaUserStore(allowed),
+      inviteOpts: { accept: { showConfirmation: false } },
+      inviteHooks: {
+        prepareUser: ({ firstName, lastName }) => {
+          const display = [firstName, lastName].filter(Boolean).join(" ");
+          return display ? { displayName: display } : {};
+        },
+      },
+    });
+
+    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r2 = await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { email: "mapped@x.com", firstName: "Jane", lastName: "Doe" },
+    });
+    expect(r2.status).toBeLessThan(400);
+    const u = (await app.users.getUser("mapped@x.com")) as unknown as Record<string, unknown>;
+    expect(u.displayName).toBe("Jane Doe");
+  });
+
+  it("getAvailableRoles + admin-submitted role outside whitelist → 400-equivalent inline form error (NOT 500)", async () => {
+    // The whitelist enforcement must surface as an inline form error before
+    // the workflow reaches `preCreateUser`. This existed already; the
+    // regression guard pairs it with the strict-schema store to make sure
+    // the "Invalid role" path stays the friendly inline path rather than
+    // tripping a downstream 500.
+    const app = await prepareWfApp({
+      userStore: new StrictSchemaUserStore(BASE_USER_COLUMNS),
+      inviteOpts: { accept: { showConfirmation: false } },
+      inviteHooks: { getAvailableRoles: async () => ["admin", "viewer"] },
+    });
+    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r2 = await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { email: "bad@x.com", roles: ["admin", "superuser"] },
+    });
+    expect(r2.status).toBeLessThan(500);
+    expect(r2.body?.errors).toMatchObject({ roles: "Invalid role" });
+    expect(app.emails).toHaveLength(0);
   });
 });

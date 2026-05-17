@@ -27,7 +27,7 @@ describe("mergeLoginOpts — defaults survive partial input", () => {
     expect(opts.alternateCredentials.recoveryUrl).toBe("/recover");
     expect(opts.guards.passwordInitial).toBe(true);
     expect(opts.finalize.auditLogin).toBe(true);
-    expect(opts.finalize.redirect).toBe("referer");
+    expect(opts.finalize.redirect).toBe(false);
     expect(opts.deviceTrust.cookieName).toBe("aooth_trusted_device");
     expect(opts.forms.profileComplete).toBeTruthy();
   });

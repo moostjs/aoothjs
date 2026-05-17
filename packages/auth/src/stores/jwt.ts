@@ -79,8 +79,9 @@ export class CredentialStoreJwt<
   private readonly clock: Clock;
   /**
    * Per-user revocation epoch (ms). `revokeAllForUser` sets this to
-   * `clock.now()`; `retrieve` rejects any token whose `iatMs` is not strictly
-   * greater than the user's epoch. Compensates for JWT statelessness so
+   * `clock.now()`; `retrieve` rejects any token whose `iatMs` predates the
+   * user's epoch (same-ms mints are accepted so recovery/invite flows can
+   * revoke and re-issue in one tick). Compensates for JWT statelessness so
    * password-change cascades invalidate tokens minted before the change.
    * In-memory: resets on process restart (a known JWT limitation — production
    * deployments needing durability should back this with an external store).
@@ -185,9 +186,9 @@ export class CredentialStoreJwt<
   }
 
   async revokeAllForUser(userId: string): Promise<number> {
-    // Stateless: bump a per-user epoch; tokens with iatMs <= epoch are rejected
-    // (strictly-greater gate covers same-ms collisions). Returns 1 to signal
-    // "revocation took effect" without claiming a precise count.
+    // Stateless: bump a per-user epoch; tokens with iatMs < epoch are rejected
+    // (same-ms mints pass so a revoke + re-issue in one tick works). Returns 1
+    // to signal "revocation took effect" without claiming a precise count.
     this.epochs.set(userId, this.clock.now());
     return 1;
   }
@@ -210,9 +211,10 @@ export class CredentialStoreJwt<
   }
 
   /**
-   * Reject tokens minted before the user's revocation epoch. `iatMs` mirrors
-   * `iat` at ms precision; we fall back to `iat * 1000` for tokens that
-   * predate the mirror field.
+   * Reject tokens minted before the user's revocation epoch. Same-ms mints
+   * (`iatMs === epoch`) are accepted so a workflow can revoke and re-issue in
+   * one tick. `iatMs` mirrors `iat` at ms precision; we fall back to
+   * `iat * 1000` for tokens that predate the mirror field.
    */
   private passesEpoch(payload: JWTPayload): boolean {
     if (typeof payload.sub !== "string") return true;
@@ -225,7 +227,7 @@ export class CredentialStoreJwt<
         : typeof payload.iat === "number"
           ? payload.iat * 1000
           : 0;
-    return iatMs > epoch;
+    return iatMs >= epoch;
   }
 
   private async verify(token: string): Promise<{ payload: JWTPayload } | null> {

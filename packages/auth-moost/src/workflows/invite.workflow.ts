@@ -234,7 +234,9 @@ export class InviteWorkflow {
   /**
    * Build the extras dictionary merged into the freshly-created user row in
    * `invitePreCreateUser`. Default: `{}`. Override to populate e.g. a
-   * required `tenantId`.
+   * required `tenantId`. This is the ONLY seam through which the admin form's
+   * `firstName` / `lastName` reach persistence — map them into your schema's
+   * own columns (e.g. `displayName`) and return them here.
    */
   protected async prepareUser(_input: PreparedUserInput): Promise<Record<string, unknown>> {
     return {};
@@ -645,10 +647,12 @@ export class InviteWorkflow {
     // `pendingInvitation` via a follow-up `update` instead — preserves the
     // base defaults AND uses the same `@db.patch.strategy 'merge'` path the
     // rest of the workflow relies on.
+    //
+    // `firstName` / `lastName` are intentionally NOT injected here — they're
+    // not in the base credential shape, and a strict-schema store would 500
+    // on unknown columns. They reach the consumer only via `prepareUser`.
     const fields: Record<string, unknown> = {
       ...extras,
-      ...(ctx.firstName && { firstName: ctx.firstName }),
-      ...(ctx.lastName && { lastName: ctx.lastName }),
       ...(ctx.roles && ctx.roles.length > 0 && { roles: ctx.roles }),
     };
 

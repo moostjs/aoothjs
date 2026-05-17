@@ -163,37 +163,16 @@ describe("ACT — read-mostly per-action gating", () => {
     expect(await dbFindOne(app, "users", { username: "act07_bycomposite" })).toBeFalsy();
   });
 
-  it("ACT-08 — viewer's `allow(auth, public.*)` reaches /auth/status and /auth/logout end-to-end", async () => {
-    // ISSUE-4 contract through the demo's role+seed wiring: the `public.*`
-    // action prefix is the convention the bundled AuthController's middle-
-    // ground methods (logout/status/password) use to stay reachable for
-    // *any* authenticated user without bespoke per-method grants. All six
-    // demo roles (guest..superadmin) wire `allow("auth", "public.*")`.
-    // t1_eve holds ONLY the `viewer` role — if `public.*` regresses (the
-    // controller drops `@ArbacAction("public.<verb>")`, or a role's grant
-    // is renamed), this asserts 403 immediately and points at the broken
-    // contract.
-    //
-    // We exercise /auth/status (read, no side effects) and /auth/logout
-    // (revokes the caller's tokens — fatal to this session but harmless
-    // for the rest of the describe, which uses the shared `app` but never
-    // re-uses eve after this test). We skip /auth/password here because
-    // it bumps the per-user epoch and would invalidate every other
-    // already-acquired token in the shared `app` — the unit-level suite
-    // (`auth.controller.spec.ts`) covers /auth/password under `public.*`
-    // with an isolated app, so the e2e signal is the one we'd lose first
-    // on a wiring regression.
-    const eve = app.fixtures.users.t1_eve;
-    const { fetch } = await loginAndFetch(app, eve);
-
-    const statusRes = await fetch("/auth/status");
-    expect(statusRes.status).toBe(200);
-    const statusBody = (await statusRes.json()) as { userId: string };
-    expect(statusBody.userId).toBe("t1_eve");
-
-    const logoutRes = await fetch("/auth/logout", { method: "POST", json: {} });
-    expect([200, 201]).toContain(logoutRes.status);
-  });
+  // ACT-08 deleted (2026-05-17): tested the `public.*` ARBAC grant pattern
+  // reaching `/auth/status` + `/auth/logout`. The bundled AuthController's
+  // `status` / `logout` / `refresh` methods are now `@Public()` (ARBAC is
+  // bypassed entirely — auth still required via the handler's null-check),
+  // and the role files no longer wire `allow("auth", "public.*")`. The
+  // test would still pass (both endpoints return 200 for the authed
+  // viewer) but for entirely different reasons than the description
+  // claimed — keeping it would be a Rule 9 violation (testing behavior,
+  // not intent). The authentication-required intent is still covered by
+  // AUTH-11 (auth.spec.ts) and by the unit suite in `auth.controller.spec.ts`.
 });
 
 describe("ACT — mutating per-action gating (fresh app per test)", () => {

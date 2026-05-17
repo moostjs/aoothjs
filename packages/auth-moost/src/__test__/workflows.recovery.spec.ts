@@ -20,12 +20,9 @@ import { prepareWfApp, seedActiveUser } from "./workflow-utils";
  */
 describe("RecoveryWorkflow", () => {
   it("happy path: email known → magic link sent → set password → tokens", async () => {
-    // BIG 3.2: the new `freshLoginRequired: true` default redirects to /login
-    // instead of auto-issuing tokens. This existing test asserts the
-    // auto-login path, so opt back into it explicitly.
-    const app = await prepareWfApp({
-      recoveryOpts: { postReset: { freshLoginRequired: false } },
-    });
+    // Default `postReset.freshLoginRequired` is false (SPA-friendly), so the
+    // happy path auto-issues tokens without an extra opt-in.
+    const app = await prepareWfApp();
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
 
     // Step 1: start

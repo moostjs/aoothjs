@@ -47,9 +47,17 @@ function resolveRefreshToken(auth: AuthBindings, body: { refreshToken?: string }
 export class AuthController {
   constructor(protected readonly auth: AuthCredential) {}
 
+  // `@Public()` bypasses ARBAC — logout is a self-scoped primitive ("kill
+  // my own session"). Subclass + `@ArbacAction(...)` to gate it. The null
+  // check below is defence-in-depth: the auth guard still populates the
+  // AuthContext on a valid token, so a null here means no credential.
   @Post("logout")
+  @Public()
   async logout(@Body() body: AuthLogoutBody | undefined): Promise<AuthOkResponse> {
     const auth = useAuth();
+    if (!auth.getAuthContext()) {
+      throw new HttpError(401, "Not authenticated");
+    }
     const accessToken = auth.extractToken();
     // Revoke the refresh side too — otherwise a stolen device could mint a
     // fresh access token via `/auth/refresh` after the user "logged out".
@@ -103,12 +111,14 @@ export class AuthController {
     return auth.buildLoginResponse(validated?.userId ?? "", issue);
   }
 
+  // `@Public()` bypasses ARBAC — status is a self-scoped primitive ("tell
+  // me my own principal"). See `logout` above for the defence-in-depth
+  // rationale on the null check.
   @Get("status")
+  @Public()
   status(): AuthContext {
     const auth = useAuth().getAuthContext();
     if (!auth) {
-      // The global guard normally throws 401 before we reach here; this is a
-      // defence-in-depth in case the principal is somehow unset.
       throw new HttpError(401, "Not authenticated");
     }
     return auth;

@@ -5,34 +5,35 @@ packages:
 
 catalog:
   "@atscript/core": ^0.1.56
-  "@atscript/typescript": ^0.1.56
   "@atscript/db": ^0.1.79
-  "@atscript/db-sqlite": ^0.1.79
   "@atscript/db-sql-tools": ^0.1.79
+  "@atscript/db-sqlite": ^0.1.79
   "@atscript/moost-db": ^0.1.79
+  "@atscript/moost-ui-presets": ^0.1.63
   "@atscript/moost-wf": ^0.1.63
+  "@atscript/typescript": ^0.1.56
   "@atscript/ui": ^0.1.63
   "@atscript/ui-fns": ^0.1.63
-  "@atscript/ui-table": ^0.1.63
   "@atscript/ui-styles": ^0.1.63
+  "@atscript/ui-table": ^0.1.63
   "@atscript/vue-form": ^0.1.63
   "@atscript/vue-table": ^0.1.63
   "@atscript/vue-wf": ^0.1.63
-  "@atscript/moost-ui-presets": ^0.1.63
-  "unplugin-atscript": ^0.1.56
-  moost: ^0.6.10
   "@moostjs/event-http": ^0.6.10
   "@moostjs/event-wf": ^0.6.10
-  wooks: ^0.7.12
+  "@moostjs/vite": ^0.6.10
+  "@types/node": ^22
   "@wooksjs/event-core": ^0.7.12
   "@wooksjs/event-http": ^0.7.12
   "@wooksjs/event-wf": ^0.7.12
   "@wooksjs/http-body": ^0.7.12
-  "@types/node": ^22
+  moost: ^0.6.10
   typescript: ^5
+  "unplugin-atscript": ^0.1.56
   vite: npm:@voidzero-dev/vite-plus-core@latest
   vite-plus: latest
   vitest: npm:@voidzero-dev/vite-plus-test@latest
+  wooks: ^0.7.12
 
 catalogMode: prefer
 peerDependencyRules:

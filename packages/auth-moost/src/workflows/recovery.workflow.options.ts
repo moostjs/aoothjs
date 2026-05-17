@@ -132,8 +132,10 @@ export function mergeRecoveryOpts(opts: RecoveryWorkflowOpts = {}): ResolvedReco
       ...opts.preReset,
     },
     postReset: {
+      // safe to default-on since CredentialStoreJwt.passesEpoch uses >= (no race with issue in same tick)
       revokeAllSessions: true,
-      freshLoginRequired: true,
+      // SPA-friendly default; server-rendered apps opt in via freshLoginRequired: true
+      freshLoginRequired: false,
       loginUrl: "/login",
       ...opts.postReset,
     },

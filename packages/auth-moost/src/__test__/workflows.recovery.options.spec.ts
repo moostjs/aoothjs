@@ -429,6 +429,35 @@ describe("RecoveryWorkflowOpts — freshLoginRequired terminal", () => {
     expect(r.body?.userId).toBe("alice@test.com");
     expect(typeof r.body?.accessToken).toBe("string");
   });
+
+  it("default freshLoginRequired: false → autoLoginFinish issues tokens (recovery + immediate validate)", async () => {
+    // Regression guard: the default flips `freshLoginRequired` to false and
+    // keeps `revokeAllSessions` true. The `revokeAllForUser` call in
+    // `recoveryRevokeSessions` runs immediately before `auth.issue` in
+    // `recoveryAutoLoginFinish` — if `passesEpoch` used strict `>` the freshly
+    // minted token would race against the revoke epoch (same-ms) and silently
+    // fail validation. The `>=` fix makes this safe; this test fails the moment
+    // the comparison regresses.
+    const app = await prepareWfApp({}); // pure defaults
+    await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
+
+    const { wfs } = await driveMagicLinkToSetPassword(app, "alice@test.com");
+    const r = await app.trigger({
+      wfs,
+      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
+    });
+    // Default auto-login emits the buildLoginResponse payload, no 302.
+    expect(r.status).not.toBe(302);
+    expect(r.body?.userId).toBe("alice@test.com");
+    expect(typeof r.body?.accessToken).toBe("string");
+    expect(typeof r.body?.refreshToken).toBe("string");
+
+    // Immediate validate proves the issued token survived the same-tick
+    // revokeAllForUser → issue sequence (epoch `>=` race fix).
+    const principal = await app.auth.validate(r.body!.accessToken as string);
+    expect(principal).not.toBeNull();
+    expect(principal?.userId).toBe("alice@test.com");
+  });
 });
 
 describe("RecoveryWorkflowOpts — backToLogin alt-action", () => {

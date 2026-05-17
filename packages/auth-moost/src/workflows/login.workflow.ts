@@ -1306,14 +1306,16 @@ export class LoginWorkflow {
 
   /**
    * Resolves the post-login redirect URL. Default reads
-   * `finalize.redirect`: `'home'` → `/`; `'referer'` → request `Referer`
-   * header (returns undefined when absent so the `issue` step's data
-   * response stands — typical for SPAs/API clients).
+   * `finalize.redirect`: `false` / `null` (the default) → no redirect, the
+   * `issue` step's data response stands (typical for SPAs/API clients);
+   * `'home'` → `/`; `'referer'` → request `Referer` header (undefined when
+   * absent, falling back to the data response).
    *
    * Consumers who want a computed redirect override this method.
    */
   protected resolveRedirect(_ctx: LoginWfCtx): string | undefined {
     const r = this.opts.finalize.redirect;
+    if (r === false || r === null) return undefined;
     if (r === "home") return "/";
     if (r === "referer") {
       try {

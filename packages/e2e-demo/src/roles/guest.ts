@@ -6,7 +6,7 @@ import { PROJ_USER_SELF } from "./projections";
 export const guestRole = defineRole<UserAttrs, ArbacDbScope>()
   .id("guest")
   .name("Guest")
-  .describe("Login only; read own user record (for /auth/status)")
+  .describe("Login only; read own user record")
   .use(
     allowTableRead<UserAttrs, ArbacDbScope>("users", {
       scope: (_attrs, userId) => ({
@@ -15,7 +15,4 @@ export const guestRole = defineRole<UserAttrs, ArbacDbScope>()
       }),
     }),
   )
-  .allow("auth", "logout")
-  .allow("auth", "refresh")
-  .allow("auth", "status")
   .build();

@@ -45,7 +45,4 @@ export const viewerRole = defineRole<UserAttrs, ArbacDbScope>()
       }),
     }),
   )
-  .allow("auth", "logout")
-  .allow("auth", "refresh")
-  .allow("auth", "status")
   .build();

@@ -28,7 +28,7 @@ import {
 
 export const DEFAULT_MFA_CODE_TTL_MS = 5 * 60 * 1000;
 
-export type LoginRedirect = "referer" | "home";
+export type LoginRedirect = "referer" | "home" | false | null;
 
 export type MfaTransport = "sms" | "email" | "totp";
 
@@ -268,7 +268,8 @@ export function mergeLoginOpts(opts: LoginWorkflowOpts = {}): ResolvedLoginWorkf
     finalize: {
       auditLogin: true,
       notifyNewDevice: false,
-      redirect: "referer",
+      // SPA-friendly default; server-rendered apps opt in via redirect: "referer"
+      redirect: false,
       ...opts.finalize,
     },
     forms: {

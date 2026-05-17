@@ -521,6 +521,18 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
     expect(r2.status).not.toBe(302);
     expect(r2.body?.userId).toBe("alice");
   });
+
+  it("finalize.redirect: false → data response (no 302)", async () => {
+    const app = await prepareWfApp({
+      loginOpts: { finalize: { redirect: false }, mfa: { enabled: false } },
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    expect(r2.status).not.toBe(302);
+    expect(r2.body?.userId).toBe("alice");
+    expect(typeof r2.body?.accessToken).toBe("string");
+    expect(typeof r2.body?.refreshToken).toBe("string");
+  });
 });
 
 describe("LoginWorkflowOpts — Phase 6 terms acceptance", () => {

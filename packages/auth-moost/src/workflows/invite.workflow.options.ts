@@ -44,8 +44,6 @@ export type InviteSendMode = "email" | "shareableLink" | "choice";
 
 export interface InviteWorkflowOpts {
   adminForm?: {
-    collectFirstName?: boolean;
-    collectLastName?: boolean;
     collectRoles?: boolean;
   };
   send?: {
@@ -84,8 +82,6 @@ export interface InviteWorkflowOpts {
  */
 export interface ResolvedInviteWorkflowOpts {
   adminForm: {
-    collectFirstName: boolean;
-    collectLastName: boolean;
     collectRoles: boolean;
   };
   send: {
@@ -121,8 +117,6 @@ export interface ResolvedInviteWorkflowOpts {
 export function mergeInviteOpts(opts: InviteWorkflowOpts = {}): ResolvedInviteWorkflowOpts {
   return {
     adminForm: {
-      collectFirstName: true,
-      collectLastName: true,
       collectRoles: true,
       ...opts.adminForm,
     },

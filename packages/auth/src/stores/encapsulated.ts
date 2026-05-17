@@ -64,9 +64,10 @@ export class CredentialStoreEncapsulated<
   /**
    * Per-user revocation epoch (ms). `revokeAllForUser` sets this to
    * `clock.now()`; `retrieve`/`consume` reject any decrypted state whose
-   * `issuedAt` is not strictly greater than the user's epoch (strict
-   * greater-than handles same-ms collisions). Mirrors the JWT store pattern;
-   * see class JSDoc for durability caveats.
+   * `issuedAt` is strictly less than the user's epoch (same-ms mints are
+   * accepted so recovery/invite flows can revoke and re-issue in the same
+   * tick). Mirrors the JWT store pattern; see class JSDoc for durability
+   * caveats.
    */
   private readonly epochs = new Map<string, number>();
 
@@ -130,21 +131,22 @@ export class CredentialStoreEncapsulated<
   }
 
   async revokeAllForUser(userId: string): Promise<number> {
-    // Stateless: bump a per-user epoch; tokens with issuedAt <= epoch are
-    // rejected (strictly-greater gate covers same-ms collisions). Returns 1
-    // to signal "revocation took effect" without claiming a precise count.
+    // Stateless: bump a per-user epoch; tokens with issuedAt < epoch are
+    // rejected (same-ms mints pass so a revoke + re-issue in one tick works).
+    // Returns 1 to signal "revocation took effect" without claiming a count.
     this.epochs.set(userId, this.clock.now());
     return 1;
   }
 
   /**
-   * Reject decrypted payloads whose `issuedAt` is not strictly greater than
-   * the user's revocation epoch. Mirrors `CredentialStoreJwt.passesEpoch`.
+   * Reject decrypted payloads whose `issuedAt` predates the user's revocation
+   * epoch. Same-ms mints (`issuedAt === epoch`) are accepted so a workflow can
+   * revoke and re-issue in one tick. Mirrors `CredentialStoreJwt.passesEpoch`.
    */
   private passesEpoch(payload: EncryptedPayload<TClaims>): boolean {
     const epoch = this.epochs.get(payload.userId);
     if (epoch === undefined) return true;
-    return payload.issuedAt > epoch;
+    return payload.issuedAt >= epoch;
   }
 
   private requireDenylist(op: string): DenylistStore {

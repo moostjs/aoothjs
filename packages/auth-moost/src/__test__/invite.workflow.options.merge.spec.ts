@@ -23,8 +23,6 @@ import { DEFAULT_INVITE_TOKEN_TTL_MS, mergeInviteOpts } from "../workflows/invit
 describe("mergeInviteOpts — defaults survive partial input", () => {
   it("undefined input → every nested group is populated with its full defaults", () => {
     const opts = mergeInviteOpts();
-    expect(opts.adminForm.collectFirstName).toBe(true);
-    expect(opts.adminForm.collectLastName).toBe(true);
     expect(opts.adminForm.collectRoles).toBe(true);
     expect(opts.send.mode).toBe("email");
     expect(opts.send.tokenTtlMs).toBe(DEFAULT_INVITE_TOKEN_TTL_MS);
@@ -35,16 +33,6 @@ describe("mergeInviteOpts — defaults survive partial input", () => {
     expect(opts.accept.confirmationMessage).toBe("Your account has been created.");
     expect(opts.cancellation.allowed).toBe(true);
     expect(opts.audit.enabled).toBe(true);
-  });
-
-  it("partial adminForm override (collectRoles:false) keeps sibling defaults", () => {
-    // Regression: a naive merge like `adminForm: opts.adminForm ?? defaults`
-    // would drop `collectFirstName` / `collectLastName`, breaking the admin
-    // form's first/last-name capture for every consumer who flips one flag.
-    const opts = mergeInviteOpts({ adminForm: { collectRoles: false } });
-    expect(opts.adminForm.collectRoles).toBe(false);
-    expect(opts.adminForm.collectFirstName).toBe(true);
-    expect(opts.adminForm.collectLastName).toBe(true);
   });
 
   it("partial send override (tokenTtlMs only) keeps mode default 'email'", () => {
@@ -102,7 +90,7 @@ describe("mergeInviteOpts — defaults survive partial input", () => {
     // flipped to `{ ...input, ...defaults }` and the defaults would always
     // win — disabling consumer configuration.
     const opts = mergeInviteOpts({
-      adminForm: { collectFirstName: false, collectLastName: false, collectRoles: false },
+      adminForm: { collectRoles: false },
       send: { mode: "shareableLink", tokenTtlMs: 5000 },
       accept: {
         alreadyAcceptedRedirectUrl: "/welcome",
@@ -115,8 +103,6 @@ describe("mergeInviteOpts — defaults survive partial input", () => {
       audit: { enabled: false },
     });
     expect(opts.adminForm).toEqual({
-      collectFirstName: false,
-      collectLastName: false,
       collectRoles: false,
     });
     expect(opts.send).toEqual({ mode: "shareableLink", tokenTtlMs: 5000 });

@@ -192,75 +192,78 @@ Method-level decoration overrides class-level.
 
 ### `public.*` action convention for self-service routes
 
-For middle-ground routes that ARE authenticated (a valid token is required)
-but should be reachable by any logged-in user regardless of role — e.g.
-`logout`, `status`, `change own password` — use action names under the
-`public.*` namespace and grant the wildcard once per role:
+The bundled `AuthController` uses `@Public()` for every method
+(`logout` / `refresh` / `status` / `trigger`), so the `public.*` grant
+pattern is not required for the shipped surface. The convention below
+remains useful for **consumer-added** routes that ARE authenticated (a
+valid token is required) but should be reachable by any logged-in user
+regardless of role — declare the action under a `public.*` namespace
+and grant the wildcard once per role:
 
 ```ts
-// Bundled AuthController methods (resource stays "auth"):
-//   POST /auth/login    →  @Public()                        (no auth, no arbac)
-//   POST /auth/refresh  →  @Public()                        (no auth, no arbac)
-//   POST /auth/logout   →  @ArbacAction("public.logout")    (authed + role grant)
-//   GET  /auth/status   →  @ArbacAction("public.status")    (authed + role grant)
-//   POST /auth/password →  @ArbacAction("public.password")  (authed + role grant)
+// Consumer controller — keep the resource stable, use `public.<verb>`:
+@Controller("billing")
+class BillingController {
+  @Get("self")
+  @ArbacAction("public.self")
+  self() {
+    /* every authed user can read their own billing summary */
+  }
+}
 
 // In each role that should support self-service:
 defineRole()
   .id("viewer")
   // ...table privileges...
-  .allow("auth", "public.*") // wildcard covers logout/status/password
+  .allow("billing", "public.*") // wildcard covers every public.<verb>
   .build();
 ```
 
-The wildcard rule grants the role every `public.*` action on the `auth`
-resource. Without this grant, a logged-in user would receive 403 on
-`/auth/logout`, `/auth/status`, and `/auth/password` even though their
-session is valid.
+Without the wildcard, a logged-in user would receive 403 on every
+`public.*` action even though their session is valid.
 
 ## REST endpoints
 
 `AuthController` mounts at `/auth` when registered via `moost.registerControllers(AuthController)`.
+Every method is `@Public()` (ARBAC bypassed); `logout` / `status` still
+require a valid `AuthContext` via the handler's own null-check.
+Credential issuance and password change flow through `LoginWorkflow` /
+`RecoveryWorkflow` and are reached via `POST /auth/trigger`.
 
-| Method | Path             | Visibility  | Purpose                                         |
-| ------ | ---------------- | ----------- | ----------------------------------------------- |
-| `POST` | `/auth/login`    | `@Public()` | Verify credentials, issue tokens, write cookies |
-| `POST` | `/auth/logout`   | Protected   | Revoke access + refresh, clear cookies          |
-| `POST` | `/auth/refresh`  | `@Public()` | Rotate refresh token, issue new access          |
-| `GET`  | `/auth/status`   | Protected   | Return current `AuthContext`                    |
-| `POST` | `/auth/password` | Protected   | Verify current password, set new, revoke all    |
+| Method | Path            | Visibility  | Purpose                                              |
+| ------ | --------------- | ----------- | ---------------------------------------------------- |
+| `POST` | `/auth/logout`  | `@Public()` | Revoke access + refresh, clear cookies (authed only) |
+| `POST` | `/auth/refresh` | `@Public()` | Rotate refresh token, issue new access               |
+| `GET`  | `/auth/status`  | `@Public()` | Return current `AuthContext` (authed only)           |
+| `POST` | `/auth/trigger` | `@Public()` | Entry point for `LoginWorkflow` / `RecoveryWorkflow` |
 
 ### Request / response bodies
 
 ```ts
-// POST /auth/login
-{ username: string, password: string }
-→ { userId, accessToken?, refreshToken?, accessExpiresAt, refreshExpiresAt? }
-
 // POST /auth/logout
 { refreshToken?: string } // falls back to cookie if path allows
 → { ok: true }
 
 // POST /auth/refresh
 { refreshToken?: string } // falls back to cookie
-→ same shape as login response
+→ { userId, accessToken?, refreshToken?, accessExpiresAt, refreshExpiresAt? }
 
 // GET /auth/status
 → AuthContext
 
-// POST /auth/password
-{ currentPassword: string, newPassword: string }
-→ { ok: true }
+// POST /auth/trigger
+// See @moostjs/event-wf docs — body shape depends on the workflow.
 ```
 
 `accessToken` / `refreshToken` are populated only when `enableBearer: true`.
 With Bearer disabled the response still echoes `userId` + `accessExpiresAt` so
 the client can schedule a silent refresh.
 
-> Note: `AuthController` assumes `AuthContext.userId === username`. Login
-> issues the credential with the resolved username, and `/auth/password`
-> reads it back via `useAuth().getUserId()`. Apps that map userIds to
-> opaque ids (UUIDs, internal pks) must skip `registerControllers(AuthController)`
+> Note: `AuthController` assumes `AuthContext.userId === username`.
+> `LoginWorkflow` / `RecoveryWorkflow` issue credentials with the
+> resolved username, and `/auth/status` + `/auth/logout` read it back
+> via `useAuth().getUserId()`. Apps that map userIds to opaque ids
+> (UUIDs, internal pks) must skip `registerControllers(AuthController)`
 > and ship a subclass instead:
 >
 > ```ts

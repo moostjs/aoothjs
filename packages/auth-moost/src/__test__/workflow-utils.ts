@@ -124,6 +124,12 @@ export interface PreparedWfApp {
 export interface PrepareWfOpts {
   authOptions?: Partial<AuthCredentialOptions<Record<string, unknown>>>;
   userConfig?: UserServiceConfig;
+  /**
+   * Override the in-memory user store. Used by regression tests that simulate
+   * strict-schema persistence (e.g. atscript-db rejecting unknown columns) to
+   * confirm the workflow does not push form-only fields onto the user row.
+   */
+  userStore?: UserStoreMemory;
   /** Inject a custom buildMagicLinkUrl. Default: synthetic URL. */
   buildMagicLinkUrl?: BuildMagicLinkUrl;
   /** Inject a custom emailSender. Default: captures into `emails`. */
@@ -267,7 +273,7 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     ...opts.authOptions,
   });
 
-  const userStore = new UserStoreMemory();
+  const userStore = opts.userStore ?? new UserStoreMemory();
   // Seed a default device-trust secret unless the test opted out — this
   // mirrors how a production app wires `UserServiceConfig.deviceTrust.secret`
   // and is required for the trusted-device APIs called by `LoginWorkflow`'s

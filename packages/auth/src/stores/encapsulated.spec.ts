@@ -223,16 +223,18 @@ describe("CredentialStoreEncapsulated", () => {
     expect(await store.retrieve(fresh)).not.toBeNull();
   });
 
-  it("rejects tokens whose issuedAt equals the epoch (strict-greater guards same-ms collisions)", async () => {
-    // BUG-4 guard: if a token is minted in the same millisecond the epoch is
-    // bumped, `issuedAt === epoch` and the strict `>` comparison rejects it.
-    // Without strict-greater, a racing mint+revoke in the same ms would leave
-    // the just-issued token usable — defeating the cascade.
+  it("accepts a token whose issuedAt equals the epoch (recovery auto-login regression)", async () => {
+    // Regression: recovery/invite workflows call `revokeAllForUser` and then
+    // immediately mint a fresh token in the same workflow tick. A strict `>`
+    // would reject the freshly issued token (`issuedAt === epoch`), bouncing
+    // the user back to /login. The gate is `>=` so same-ms mint-after-revoke
+    // is honored; a token whose issuedAt is `epoch - 1` is still rejected.
     const store = new CredentialStoreEncapsulated({ secret: SECRET, clock });
-    const sameMsToken = await store.persist(makeState("alice", clock.now()));
-    // No clock.advance — revoke happens in the same millisecond as persist.
+    const stale = await store.persist(makeState("alice", clock.now() - 1));
     expect(await store.revokeAllForUser("alice")).toBe(1);
-    expect(await store.retrieve(sameMsToken)).toBeNull();
+    const sameMsToken = await store.persist(makeState("alice", clock.now()));
+    expect(await store.retrieve(sameMsToken)).not.toBeNull();
+    expect(await store.retrieve(stale)).toBeNull();
   });
 
   it("derives different keys for different short string secrets", async () => {
