@@ -38,15 +38,16 @@ export interface RoleBuilder<TUserAttrs, TScope> {
    * Splice in rules from one or more privilege functions (see
    * {@link definePrivilege}). Privileges are expanded inline in call order.
    *
-   * Each privilege carries its own scope shape — a variadic tuple typing lets
-   * `.use()` accept a mix of `TPrivilegeFunction<TUserAttrs, S1>`,
-   * `TPrivilegeFunction<TUserAttrs, S2>`, … in one call. Necessary because
-   * typed-table privileges return different per-resource scope shapes (e.g.
-   * `ArbacDbScope<Task>` vs `ArbacDbScope<Comment>`) that aren't structurally
-   * assignable to the role-level `TScope` pin. The role-level `TScope` stays
-   * as the *upper-bound documentation* of what scopes look like at evaluate
-   * time; runtime storage type-erases through the cast at push.
+   * Two overloads:
+   * 1. **Strict** — all privileges share the role's `TScope`. Preserves
+   *    bidirectional inference of `TUserAttrs` and `TScope` into bare-generic
+   *    privilege calls like `allowTableWrite("tasks", { scope: (attrs) => … })`.
+   * 2. **Variadic tuple** — privileges may carry independent per-arg scope
+   *    shapes (e.g. `ArbacDbScope<Task>` next to `ArbacDbScope<Comment>`).
+   *    Used when typed-table privileges don't structurally match the role
+   *    pin. Runtime storage type-erases through a cast.
    */
+  use(...privileges: TPrivilegeFunction<TUserAttrs, TScope>[]): RoleBuilder<TUserAttrs, TScope>;
   use<TScopes extends readonly unknown[]>(
     ...privileges: { [K in keyof TScopes]: TPrivilegeFunction<TUserAttrs, TScopes[K]> }
   ): RoleBuilder<TUserAttrs, TScope>;
@@ -96,13 +97,15 @@ class RoleBuilderImpl<TUserAttrs, TScope> implements RoleBuilder<TUserAttrs, TSc
     return this;
   }
 
+  use(...privileges: TPrivilegeFunction<TUserAttrs, TScope>[]): this;
   use<TScopes extends readonly unknown[]>(
     ...privileges: { [K in keyof TScopes]: TPrivilegeFunction<TUserAttrs, TScopes[K]> }
-  ): this {
+  ): this;
+  use(...privileges: TPrivilegeFunction<TUserAttrs, unknown>[]): this {
     for (const priv of privileges) {
-      // Type-erase: each privilege's TScopes[K] is widened to the role's
-      // TScope at storage. Safe because rules are read structurally at
-      // evaluate time (scope object's runtime shape, not its compile-time
+      // Type-erase: each privilege's per-arg scope shape is widened to the
+      // role's TScope at storage. Safe because rules are read structurally
+      // at evaluate time (scope object's runtime shape, not its compile-time
       // declared type).
       this._rules.push(...(priv() as TArbacRule<TUserAttrs, TScope>[]));
     }
