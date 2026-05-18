@@ -64,6 +64,16 @@
     "@aooth/user": "workspace:*",
     "jose": "^6.2.3"
   },
+  "devDependencies": {
+    "@atscript/core": "catalog:",
+    "@atscript/db": "catalog:",
+    "@atscript/db-sql-tools": "catalog:",
+    "@atscript/db-sqlite": "catalog:",
+    "@atscript/typescript": "catalog:",
+    "@types/better-sqlite3": "^7.6.13",
+    "better-sqlite3": "^12.6.2",
+    "unplugin-atscript": "catalog:"
+  },
   "peerDependencies": {
     "@atscript/db": ">=0.1.79"
   },

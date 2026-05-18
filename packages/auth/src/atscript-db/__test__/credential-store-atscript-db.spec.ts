@@ -105,6 +105,73 @@ describe("CredentialStoreAtscriptDb — contract", () => {
   });
 });
 
+describe("CredentialStoreAtscriptDb — claims + metadata round-trip", () => {
+  // Intent: claims and metadata are persisted opaquely (as JSON columns in
+  // the shipped .as model). The adapter must round-trip them byte-for-byte
+  // through persist → retrieve → consume; a regression here means JWT
+  // payloads and session-display metadata silently drop on the wire.
+  it("persists claims + metadata and returns them on retrieve", async () => {
+    const table = new MockTable<{ scope: string; roles: string[] }>();
+    const store = new CredentialStoreAtscriptDb<{ scope: string; roles: string[] }>({ table });
+    const claims = { scope: "read:tasks", roles: ["admin", "user"] };
+    const metadata = {
+      ip: "10.0.0.1",
+      userAgent: "Mozilla/5.0",
+      fingerprint: "fp-1",
+      label: "iPhone",
+    };
+    const token = await store.persist({
+      userId: "alice",
+      issuedAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      kind: "refresh",
+      claims,
+      metadata,
+    });
+    const got = await store.retrieve(token);
+    expect(got?.claims).toEqual(claims);
+    expect(got?.metadata).toEqual(metadata);
+  });
+
+  it("does not surface claims/metadata when none were persisted (no synthetic empty objects)", async () => {
+    // Surface contract: omitting a field on persist must yield `undefined` on
+    // retrieve, not `{}` or `null`. Downstream code uses `state.claims` as a
+    // presence flag (e.g. for JWT signing only when there are custom claims)
+    // — a synthetic empty object would silently flip that branch.
+    const table = new MockTable();
+    const store = new CredentialStoreAtscriptDb({ table });
+    const token = await store.persist(makeState("alice"));
+    const got = await store.retrieve(token);
+    expect(got?.claims).toBeUndefined();
+    expect(got?.metadata).toBeUndefined();
+  });
+
+  it("update replaces claims + metadata wholesale (no merge)", async () => {
+    // Adapter contract: update is replace-semantic, not patch-semantic. The
+    // refresh-token rotation path relies on this — a stale fingerprint or
+    // an old claims set MUST NOT survive a rotation.
+    const table = new MockTable<{ scope: string }>();
+    const store = new CredentialStoreAtscriptDb<{ scope: string }>({ table });
+    const token = await store.persist({
+      userId: "alice",
+      issuedAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      claims: { scope: "read:tasks" },
+      metadata: { ip: "10.0.0.1" },
+    });
+    await store.update(token, {
+      userId: "alice",
+      issuedAt: Date.now(),
+      expiresAt: Date.now() + 120_000,
+      claims: { scope: "write:tasks" },
+      metadata: { ip: "10.0.0.2" },
+    });
+    const got = await store.retrieve(token);
+    expect(got?.claims).toEqual({ scope: "write:tasks" });
+    expect(got?.metadata).toEqual({ ip: "10.0.0.2" });
+  });
+});
+
 describe("CredentialStoreAtscriptDb — listForUser", () => {
   // Intent 2: listForUser must yield {...state, token} so UIs can show
   // and manage individual sessions/refresh tokens.
