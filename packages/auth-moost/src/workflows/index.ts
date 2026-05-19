@@ -27,6 +27,11 @@ export {
 } from "./recovery.workflow.options";
 export { InviteWorkflow, type InviteWfCtx, parseInviteRoles } from "./invite.workflow";
 export {
+  DefaultInviteWorkflow,
+  DefaultLoginWorkflow,
+  DefaultRecoveryWorkflow,
+} from "./default-workflows";
+export {
   DEFAULT_INVITE_TOKEN_TTL_MS,
   type DuplicateAction,
   type InvitePrepareUserInput,

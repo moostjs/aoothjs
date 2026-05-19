@@ -84,6 +84,14 @@ export class UserService<T extends object = object> {
   }
 
   /**
+   * Creates a user with `account.active: false`. The invite workflow relies
+   * on this default (see `InviteWorkflow.acceptInvite` — pending invitees stay
+   * inactive until they accept). For setup scripts / seeders / tests that
+   * don't go through invite, follow up with `activateAccount(username)` or
+   * `login()` will throw `UserAuthError("INACTIVE")` — which the login
+   * workflow deliberately re-maps to `"Invalid credentials"` to avoid account
+   * enumeration, so the failure is silent client-side.
+   *
    * @param extras Optional partial user fields merged AFTER the base
    *   `UserCredentials` shape, so callers can populate consumer-specific
    *   required fields (e.g. `tenantId`) without subclassing the store.

@@ -66,6 +66,7 @@ const users = new UserService(new UserStoreMemory(), {
 });
 
 await users.createUser("alice", "CorrectHorse42!");
+await users.activateAccount("alice"); // createUser writes account.active: false
 const result = await users.login("alice", "CorrectHorse42!");
 // result = { user: UserCredentials, mfaRequired: false }
 

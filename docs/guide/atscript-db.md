@@ -221,10 +221,19 @@ Source: [`e2e-demo/atscript.config.mts`](https://github.com/moostjs/aoothjs/blob
 2. The single `@arbac.role` field — either an inline `string | string[]` or a `@db.rel.from` nav prop. Multi-role declarations fail loud.
 3. Every `@arbac.attribute` field — each becomes a key in the `UserAttrs` map.
 
-Apps wire the provider by subclassing and overriding `getUserId()`:
+Apps wire the provider by subclassing and overriding `getUserId()`. Tag the inherited `username` field with `@arbac.userId` (via a mutating `annotate` block — `extends` can't redeclare inherited props) so the resolver looks users up by `username`, not by `@meta.id`:
 
-```ts:line-numbers
-import { AtscriptArbacUserProvider } from '@aooth/arbac-moost/atscript'
+```ts:line-numbers [src/models/user.as]
+import { AoothUserCredentials } from '@aooth/user/atscript-db/model'
+
+annotate AoothUserCredentials {
+    @arbac.userId
+    username
+}
+```
+
+```ts:line-numbers [src/arbac.ts]
+import { AtscriptArbacUserProvider, type ArbacUserTable } from '@aooth/arbac-moost/atscript'
 import { useAuth } from '@aooth/auth-moost'
 import { Injectable } from 'moost'
 import { DemoUser } from './models/user.as'
@@ -232,13 +241,9 @@ import { DemoUser } from './models/user.as'
 @Injectable()
 class AppArbacUserProvider extends AtscriptArbacUserProvider<DemoUser> {
   constructor() {
-    super(DemoUser, {
-      async findOne(q) {
-        const userId = q.filter.id as string | undefined
-        if (!userId) return null
-        return (await userStore.findByUsername(userId)) as DemoUser | null
-      },
-    })
+    // With `@arbac.userId username` declared above, the provider looks users
+    // up by `username` directly — pass the atscript-db table.
+    super(DemoUser, db.getTable(DemoUser) as unknown as ArbacUserTable<DemoUser>)
   }
   override getUserId(): string {
     return useAuth().getUserId()
@@ -248,8 +253,8 @@ class AppArbacUserProvider extends AtscriptArbacUserProvider<DemoUser> {
 
 `@Injectable()` must be **re-applied** on the subclass — moost@0.6.x does not inherit injectable metadata across `extends`.
 
-::: warning Username vs. id
-The JWT subject (`AuthContext.userId`) is whatever string identifies the credential. The e2e demo's `DemoUser.@meta.id` is a UUID but the JWT subject is `username`. The `userStore.findByUsername` method resolves both — wrap that in your provider's `findOne` so ARBAC sees the same identity the auth layer issues. See [`app.ts`](https://github.com/moostjs/aoothjs/blob/main/packages/e2e-demo/src/app.ts) for the demo seam.
+::: tip Username is the auth subject
+`useAuth().getUserId()` returns the username string — the value passed to `UserService.login(username, password)`. The `annotate` block above redirects the provider's identifier chain (`@arbac.userId` → `@db.table.preferredId.uniqueIndex` → `@meta.id`) to `username`, so the runtime lookup matches the auth subject without a shim. `db.getTable(DemoUser)` is structurally compatible with `ArbacUserTable<DemoUser>` but typed wider — the cast is required at compile time only.
 :::
 
 ## Generated artefacts
@@ -270,10 +275,11 @@ We recommend gitignoring the compiled artefacts. Add `gen:atscript` to your preb
 
 1. Extend `AoothArbacUserCredentials` (or `AoothUserCredentials`) with your PK + columns.
 2. Mark scope keys with `@arbac.attribute`.
-3. Pass the model to `syncSchema()` along with `AoothAuthCredential`.
-4. Wire `UsersStoreAtscriptDb` and `CredentialStoreAtscriptDb` against the resulting tables.
-5. Register `arbacPlugin()` in `atscript.config.mts` so `@arbac.*` annotations type-check.
-6. Subclass `AtscriptArbacUserProvider` and override `getUserId()`.
+3. Add `annotate AoothUserCredentials { @arbac.userId username }` so the provider looks users up by the auth subject (username).
+4. Pass the model to `syncSchema()` along with `AoothAuthCredential`.
+5. Wire `UsersStoreAtscriptDb` and `CredentialStoreAtscriptDb` against the resulting tables.
+6. Register `arbacPlugin()` in `atscript.config.mts` so `@arbac.*` annotations type-check.
+7. Subclass `AtscriptArbacUserProvider` and override `getUserId()`. Pass the table directly — no shim.
 
 ## Next steps
 

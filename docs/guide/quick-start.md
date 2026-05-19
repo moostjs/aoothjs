@@ -53,6 +53,16 @@ Extend `AoothArbacUserCredentials` to add the columns your app needs. Mark one `
 
 ```ts [src/models/user.as]
 import { AoothArbacUserCredentials } from '@aooth/arbac-moost/atscript/models'
+import { AoothUserCredentials } from '@aooth/user/atscript-db/model'
+
+// Tag the inherited `username` as the arbac user id so the provider looks
+// users up by `username` — the string `useAuth().getUserId()` returns.
+// `extends` can't redeclare inherited props; a mutating `annotate` block
+// patches the parent's prop in place. See atscript's `as-syntax.md#annotate`.
+annotate AoothUserCredentials {
+    @arbac.userId
+    username
+}
 
 @db.table 'users'
 export interface AppUser extends AoothArbacUserCredentials {
@@ -223,6 +233,27 @@ class MeController {
 
 ### 7a. Workflow subclasses
 
+When you accept the default opts, register the shipped opts-less subclasses from `@aooth/auth-moost` — they remove the empty-opts boilerplate:
+
+```ts
+import {
+  DefaultLoginWorkflow,
+  DefaultRecoveryWorkflow,
+  DefaultInviteWorkflow,
+} from "@aooth/auth-moost";
+
+app.registerControllers(
+  AuthController,
+  DefaultLoginWorkflow,
+  DefaultRecoveryWorkflow,
+  DefaultInviteWorkflow,
+);
+```
+
+These exist because the base workflow constructors take `opts` as a non-class POJO first argument — moost's DI can't resolve interface types, so without them every consumer wrote the same three `super({}, users, auth)` shims.
+
+When you need to override `opts` or hooks (`deliver`, `audit`, etc.), subclass the base workflow directly:
+
 `LoginWorkflow` is configured by **subclassing** — the constructor accepts your options and you override `protected` methods for delivery, audit, role inference, etc.
 
 ```ts:line-numbers
@@ -254,24 +285,26 @@ Do the same for `RecoveryWorkflow` and `InviteWorkflow`. For brevity this Quick 
 ### 7b. ARBAC user provider
 
 ```ts:line-numbers
+import type { ArbacUserTable } from '@aooth/arbac-moost/atscript'
+
 @Injectable()
 class AppArbacUserProvider extends AtscriptArbacUserProvider<AppUser> {
   constructor() {
-    super(AppUser, {
-      async findOne(q: { filter: Record<string, unknown> }) {
-        const userId = q.filter.id as string | undefined
-        if (!userId) return null
-        return (await userStore.findByUsername(userId)) as AppUser | null
-      },
-    })
+    // With `@arbac.userId username` (declared via the `annotate
+    // AoothUserCredentials { ... }` block in src/models/user.as), the
+    // provider looks up by `username` directly — no shim needed.
+    super(AppUser, db.getTable(AppUser) as unknown as ArbacUserTable<AppUser>)
   }
   override getUserId(): string {
+    // `useAuth().getUserId()` returns the username string — the auth subject
+    // `UserService.login(username, password)` set. The annotated
+    // `@arbac.userId username` makes the provider's lookup match.
     return useAuth().getUserId()
   }
 }
 ```
 
-The provider reads `@arbac.role` and `@arbac.attribute` from the user model and turns each request into `{ roles: string[], attrs: UserAttrs }` for the evaluator.
+The provider reads `@arbac.role` and `@arbac.attribute` from the user model and turns each request into `{ roles: string[], attrs: UserAttrs }` for the evaluator. The cast on `db.getTable(AppUser)` is required because `AtscriptDbTable.findOne` is typed wider (engine-specific `controls.*` keys) than `ArbacUserTable.findOne` — structurally compatible at runtime.
 
 ### 7c. WF trigger provider
 
@@ -344,7 +377,12 @@ await userService.createUser('alice', 'CorrectHorse123', {
   tenantId: 't1',
   roles: ['member'],
 } as Partial<AppUser>)
+await userService.activateAccount('alice')
 ```
+
+::: warning `createUser` writes `account.active: false`
+`InviteWorkflow` relies on this default — pending invitees stay inactive until accept. For seed scripts and admin-create flows, **call `activateAccount(username)` after** or `login()` throws `UserAuthError("INACTIVE")`, which the login workflow deliberately re-maps to `"Invalid credentials"` (anti-enumeration). The client-side failure looks identical to a wrong password.
+:::
 
 Trigger the login workflow (this is the same envelope your frontend posts):
 

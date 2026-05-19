@@ -4,14 +4,14 @@
 
 ## Package map
 
-| Package                                          | Role                                                                                                                                                        |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`@aooth/user`](../user/)                        | User credential record + password hashing + MFA primitives + lockout + pluggable `UserStore`.                                                               |
-| [`@aooth/auth`](../auth/)                        | Issue / validate / refresh / revoke bearer credentials (sessions or JWT). Magic-link tokens. Email/SMS transport contracts.                                 |
-| [`@aooth/arbac-core`](../arbac/core)             | Zero-dep RBAC engine — `Arbac`, `TArbacRole`, `TArbacRule`, deny-wins evaluator, wildcard matcher.                                                          |
-| [`@aooth/arbac`](../arbac/)                      | Fluent `defineRole()` builder + `definePrivilege()` factories + scope-merge helpers + type codegen. Re-exports `arbac-core`.                                |
-| [`@aooth/auth-moost`](../moost/)                 | moost glue: `AuthController`, `authGuardInterceptor`, `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow`, `@Public`, `@UserId`, `useAuth`.             |
-| [`@aooth/arbac-moost`](../moost/arbac-authorize) | moost glue: `arbacAuthorizeInterceptor`, `@ArbacResource` / `@ArbacAction`, `useArbac`, `AsArbacDbController`, atscript-driven `AtscriptArbacUserProvider`. |
+| Package                                          | Role                                                                                                                                                                                        |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`@aooth/user`](../user/)                        | User credential record + password hashing + MFA primitives + lockout + pluggable `UserStore`.                                                                                               |
+| [`@aooth/auth`](../auth/)                        | Issue / validate / refresh / revoke bearer credentials (sessions or JWT). Magic-link tokens. Email/SMS transport contracts.                                                                 |
+| [`@aooth/arbac-core`](../arbac/core)             | Zero-dep RBAC engine — `Arbac`, `TArbacRole`, `TArbacRule`, deny-wins evaluator, wildcard matcher.                                                                                          |
+| [`@aooth/arbac`](../arbac/)                      | Fluent `defineRole()` builder + `definePrivilege()` factories + scope-merge helpers + type codegen. Re-exports `arbac-core`.                                                                |
+| [`@aooth/auth-moost`](../moost/)                 | moost glue: `AuthController`, `authGuardInterceptor`, `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow` (+ shipped `Default*` opts-less subclasses), `@Public`, `@UserId`, `useAuth`. |
+| [`@aooth/arbac-moost`](../moost/arbac-authorize) | moost glue: `arbacAuthorizeInterceptor`, `@ArbacResource` / `@ArbacAction`, `useArbac`, `AsArbacDbController`, atscript-driven `AtscriptArbacUserProvider`.                                 |
 
 ## Dependency graph
 

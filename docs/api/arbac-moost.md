@@ -223,7 +223,13 @@ interface ArbacUserTable<T extends object> {
 }
 ```
 
-Structural interface — the subset of `AtscriptDbTable` `AtscriptArbacUserProvider` calls. See [Atscript Models](/moost/).
+Structural interface — the subset of `AtscriptDbTable` `AtscriptArbacUserProvider` calls. Structurally compatible at runtime with `AtscriptDbTable<T>.findOne` but the public typings differ (atscript-db's signature has wider engine-specific `controls.*` keys), so you cast at the call site:
+
+```ts
+super(MyUser, db.getTable(MyUser) as unknown as ArbacUserTable<MyUser>);
+```
+
+See [Atscript Models](/moost/).
 
 ### `AoothArbacUserCredentials`
 

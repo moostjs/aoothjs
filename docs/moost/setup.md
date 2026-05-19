@@ -17,12 +17,12 @@ pnpm add @aooth/arbac @aooth/arbac-moost
 
 There are four things to wire, and they must happen in this order:
 
-| Step | What                                                                                                                                                      | Why                                                                                                                    |
-| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| 1    | **Provide registry** — bind `AuthCredential`, `UserService`, `EmailSender` (string token), and a concrete `MoostArbac` if you customize roles.            | The auth guard pulls `AuthCredential`. The trigger route's email outlet pulls `EmailSender`. ARBAC pulls `MoostArbac`. |
-| 2    | **Replace registry** — bind `ArbacUserProviderToken` to your concrete provider, and `WfTriggerProvider` to your subclass with a DB-backed wf state store. | The base provider is abstract; the default trigger provider only has an in-memory state store.                         |
-| 3    | **Global interceptors** — `authGuardInterceptor(opts)`, `arbacAuthorizeInterceptor`, `formInputInterceptor()`.                                            | Guards must run on every event; the form input interceptor is required by every workflow form pause.                   |
-| 4    | **Register controllers** — `AuthController` (or your subclass), `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow` subclasses, your own controllers. | Subclasses are required for the workflows so you can override `protected` extension hooks.                             |
+| Step | What                                                                                                                                                                                                                                      | Why                                                                                                                         |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| 1    | **Provide registry** — bind `AuthCredential`, `UserService`, `EmailSender` (string token), and a concrete `MoostArbac` if you customize roles.                                                                                            | The auth guard pulls `AuthCredential`. The trigger route's email outlet pulls `EmailSender`. ARBAC pulls `MoostArbac`.      |
+| 2    | **Replace registry** — bind `ArbacUserProviderToken` to your concrete provider, and `WfTriggerProvider` to your subclass with a DB-backed wf state store.                                                                                 | The base provider is abstract; the default trigger provider only has an in-memory state store.                              |
+| 3    | **Global interceptors** — `authGuardInterceptor(opts)`, `arbacAuthorizeInterceptor`, `formInputInterceptor()`.                                                                                                                            | Guards must run on every event; the form input interceptor is required by every workflow form pause.                        |
+| 4    | **Register controllers** — `AuthController` (or your subclass), workflow classes (use shipped `Default{Login,Recovery,Invite}Workflow` for the default-opts path, or your own subclasses to override opts / hooks), your own controllers. | Subclassing is only needed when you want custom opts or to override `protected` extension hooks (`deliver`, `audit`, etc.). |
 
 ::: warning Order matters
 `setProvideRegistry` must happen before any controller is instantiated (the workflows pull `AuthCredential` and `UserService` from the registry). `setReplaceRegistry` for the ARBAC user provider must happen before `applyGlobalInterceptors(arbacAuthorizeInterceptor)` is followed by `app.init()`.
@@ -72,7 +72,18 @@ const userService = new UserService(userStore, {
 });
 const emailSender = new MyEmailSender();
 
-// 2. Workflow subclasses — re-declare the constructor so TS emits design-paramtypes
+// 2. Workflow subclasses
+//
+// If you accept the default opts for all three workflows, skip this section
+// and register the shipped opts-less subclasses straight from @aooth/auth-moost:
+//
+//   import { DefaultLoginWorkflow, DefaultRecoveryWorkflow, DefaultInviteWorkflow } from "@aooth/auth-moost";
+//   app.registerControllers(AuthController, DefaultLoginWorkflow, DefaultRecoveryWorkflow, DefaultInviteWorkflow);
+//
+// Subclass directly when you want custom opts or to override `protected`
+// extension hooks (`deliver`, `audit`, ...). Re-declare the constructor so TS
+// emits design-paramtypes against the subclass.
+
 @Inherit()
 @Injectable("FOR_EVENT")
 @Controller()
@@ -96,6 +107,9 @@ class MyRecoveryWorkflow extends RecoveryWorkflow {
   }
 }
 
+// InviteWorkflow with empty opts — `DefaultInviteWorkflow` from @aooth/auth-moost
+// is the shipped equivalent of this class; use it instead unless you need to
+// override `deliver` or `audit`.
 @Inherit()
 @Injectable("FOR_EVENT")
 @Controller()

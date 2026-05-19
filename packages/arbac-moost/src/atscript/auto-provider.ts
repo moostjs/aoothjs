@@ -6,8 +6,19 @@ import { Injectable } from "moost";
 import { ArbacUserProvider } from "../user.provider";
 
 /**
- * Minimal atscript-db readable surface used to fetch the user record. Matches
- * `AtscriptDbTable.findOne` exactly so consumers pass the table directly.
+ * Minimal atscript-db readable surface used to fetch the user record.
+ * Structurally compatible with `AtscriptDbTable<T>.findOne` so the runtime
+ * call site Just Works™ — but the public typings differ (atscript-db's
+ * `findOne` takes a wider `controls` shape with engine-specific keys we
+ * deliberately omit here to keep this surface narrow and engine-agnostic).
+ *
+ * Consequence: passing `db.getTable(UserModel)` directly will not satisfy
+ * this interface in TypeScript. Cast at the call site:
+ *
+ * ```ts
+ * super(UserModel, db.getTable(UserModel) as unknown as ArbacUserTable<UserModel>)
+ * ```
+ *
  * Kept loose to avoid pulling `@atscript/db` types into the public surface.
  *
  * `controls.$with` is optional — included so providers can request nav-prop

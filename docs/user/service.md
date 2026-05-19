@@ -136,6 +136,16 @@ await users.createUser("carol", "p4ss", { tenantId: "acme", email: "c@x.dev" });
 `extras` is shallow-merged AFTER the base record is constructed. If you pass `extras.account`, you replace the entire base `account` sub-object — you don't merge into it.
 :::
 
+::: warning `account.active` defaults to `false`
+`InviteWorkflow.acceptInvite` relies on this — pending invitees stay inactive until accept. For seed scripts, admin-create flows, or tests that don't go through invite, **call `activateAccount(username)` after** or `login()` throws `UserAuthError("INACTIVE")`. The login workflow deliberately re-maps `INACTIVE` to `"Invalid credentials"` (anti-enumeration), so the client-side failure looks identical to a wrong password.
+
+```ts
+await users.createUser("alice", "S3cret!");
+await users.activateAccount("alice"); // ← required outside the invite flow
+```
+
+:::
+
 ### `getUser`
 
 ```ts

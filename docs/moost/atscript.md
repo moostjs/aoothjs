@@ -94,6 +94,21 @@ Marks the field carrying the canonical user id. Optional — if omitted, the res
 
 If none resolve, `AtscriptArbacUserProvider`'s constructor throws. Fail-loud, not fail-silent.
 
+::: tip Annotate `username` as `@arbac.userId` for the standard wiring
+`useAuth().getUserId()` returns the **username string** — the value `UserService.login(username, password)` set, not the user's `@meta.id` UUID. For the provider's lookup to match, declare `@arbac.userId` on the inherited `username` field via a mutating `annotate` block (`extends` can't redeclare inherited props):
+
+```atscript
+import { AoothUserCredentials } from '@aooth/user/atscript-db/model'
+
+annotate AoothUserCredentials {
+    @arbac.userId
+    username
+}
+```
+
+Without this, the chain falls through to `@meta.id` and `findOne({ filter: { id: 'alice' } })` returns null because `alice` is not a UUID.
+:::
+
 ## The bundled `AoothArbacUserCredentials` model
 
 [`packages/arbac-moost/src/atscript/models/user.as`](https://github.com/moostjs/aoothjs/blob/main/packages/arbac-moost/src/atscript/models/user.as):

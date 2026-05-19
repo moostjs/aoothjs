@@ -26,7 +26,30 @@ All three workflow classes share:
 
 Step IDs are workflow-scoped because `@moostjs/event-wf` registers `@Step('id')` globally — identical IDs across workflows would silently collide.
 
-Consumer subclass pattern:
+### Default opts subclasses (shipped)
+
+When you accept the default opts, register the shipped opts-less subclasses instead of writing the empty-opts shim three times:
+
+```ts
+import {
+  DefaultLoginWorkflow,
+  DefaultRecoveryWorkflow,
+  DefaultInviteWorkflow,
+} from "@aooth/auth-moost";
+
+app.registerControllers(
+  AuthController,
+  DefaultLoginWorkflow,
+  DefaultRecoveryWorkflow,
+  DefaultInviteWorkflow,
+);
+```
+
+These exist because the base workflow constructors take `opts` as a non-class POJO first argument — moost's DI can't resolve interface types, so you'd otherwise need to subclass and call `super({}, users, auth)` three times. The `Default*` classes do exactly that and nothing else.
+
+### Custom subclass pattern (override opts or hooks)
+
+Use this when you need custom `opts`, `deliver`, `audit`, etc. — the `Default*` classes only cover the empty-opts case:
 
 ```ts
 @Inherit() // carries base class meta (@Public, @Workflow, @Step, @ArbacResource)

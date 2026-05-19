@@ -70,6 +70,17 @@ pnpm add -D unplugin-atscript @atscript/typescript @atscript/core
 ```ts
 // src/app-user.as
 import { AoothArbacUserCredentials } from '@aooth/arbac-moost/atscript/models'
+import { AoothUserCredentials } from '@aooth/user/atscript-db/model'
+
+// Tag the inherited `username` as the arbac user id. `useAuth().getUserId()`
+// returns the username string (the auth subject passed to UserService.login),
+// so the provider must look up by `username` — not by AppUser's `@meta.id` uuid.
+// Mutating `annotate` is the only way to patch an inherited prop; `extends`
+// can't redeclare. See atscript skill `as-syntax.md#annotate`.
+annotate AoothUserCredentials {
+    @arbac.userId
+    username
+}
 
 @db.table 'users'
 export interface AppUser extends AoothArbacUserCredentials {
@@ -99,7 +110,7 @@ import {
   ArbacUserProviderToken,
   type ArbacDbScope,
 } from "@aooth/arbac-moost";
-import { AtscriptArbacUserProvider } from "@aooth/arbac-moost/atscript";
+import { AtscriptArbacUserProvider, type ArbacUserTable } from "@aooth/arbac-moost/atscript";
 import { defineRole, allowTableRead } from "@aooth/arbac";
 import { Injectable, getMoostInfact } from "moost";
 import { AppUser } from "./app-user.as";
@@ -120,18 +131,18 @@ const auth = new AuthCredential({
 @Injectable()
 class AppUserProvider extends AtscriptArbacUserProvider<AppUser> {
   constructor() {
-    // AtscriptArbacUserProvider expects an `ArbacUserTable<T>` shim with
-    // `findOne({ filter })` — not a raw `AtscriptDbTable`. See e2e-demo
-    // `src/app.ts` for the canonical wrapper.
-    super(AppUser, {
-      async findOne(q: { filter: Record<string, unknown> }) {
-        const id = q.filter.id as string | undefined;
-        if (!id) return null;
-        return (await userStore.findByUsername(id)) as AppUser | null;
-      },
-    });
+    // `AppUser`'s `@arbac.userId username` (added via the `annotate
+    // AoothUserCredentials { ... }` block in app-user.as) lets the provider
+    // hit the table directly — no shim. The cast is needed because
+    // `AtscriptDbTable.findOne` is typed wider than `ArbacUserTable.findOne`
+    // (engine-specific `controls.*` keys); they're structurally compatible
+    // at runtime.
+    super(AppUser, db.getTable(AppUser) as unknown as ArbacUserTable<AppUser>);
   }
-  getUserId() {
+  override getUserId() {
+    // `useAuth().getUserId()` returns the username string — the auth subject
+    // set by `UserService.login(username, password)`. The provider's
+    // `@arbac.userId` chain points at `username`, so the lookup just works.
     return useAuth().getUserId();
   }
 }

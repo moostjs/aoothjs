@@ -45,7 +45,10 @@ If `password` is omitted, `PasswordHasher.generatePassword()` runs and `password
 await svc.createUser("alice"); // system-generated, isInitial=true
 await svc.createUser("alice", "Strong-Pass-1!");
 await svc.createUser("alice", "Strong-Pass-1!", { tenantId: "acme" });
+await svc.activateAccount("alice"); // ← required outside the invite flow
 ```
+
+> **`createUser` writes `account.active: false`.** `InviteWorkflow.acceptInvite` relies on this default (pending invitees stay inactive until accept). For seed scripts, admin-create flows, or tests that don't go through invite, **call `activateAccount(username)` after** or `login()` throws `UserAuthError("INACTIVE")` — and the login workflow deliberately re-maps that to `"Invalid credentials"` (anti-enumeration), so the failure looks like a wrong password client-side.
 
 ### `getUser(username) → Promise<UserCredentials & T>`
 
