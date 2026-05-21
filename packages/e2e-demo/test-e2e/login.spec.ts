@@ -16,7 +16,9 @@ import { expect, test } from "@playwright/test";
 import {
   clickAction,
   fillField,
+  readFinishEnvelope,
   resetApp,
+  totp,
   USERS,
   waitForEmail,
   waitForFormInput,
@@ -28,13 +30,6 @@ const LOGIN_WF = "auth.login";
 test.beforeEach(async ({ request }) => {
   await resetApp(request);
 });
-
-/** Read the finish-envelope JSON rendered by `WfPage.vue` once `@finished` fires. */
-async function readFinishEnvelope(page: import("@playwright/test").Page): Promise<unknown> {
-  await expect(page.getByText("Workflow finished")).toBeVisible();
-  const json = await page.locator("pre").first().innerText();
-  return JSON.parse(json) as unknown;
-}
 
 test.describe("LoginWorkflow / variant=minimal", () => {
   test("WF-LOGIN-001: alice signs in with correct password → tokens issued", async ({ page }) => {
@@ -154,10 +149,15 @@ test.describe("LoginWorkflow / variant=mfa-full (multi-method)", () => {
     await expect(page.getByRole("button", { name: "Use backup code" })).toBeVisible();
   });
 
-  test.fixme("WF-LOGIN-007b: Select2faForm → SMS → tokens (needs action-only wire fix + SMS capture)", () => {
-    // See note above. Two infra gaps block this:
-    //   1. action-only POST returns HTTP 500.
-    //   2. /__test/sms returns [] in the running demo.
+  test.fixme("WF-LOGIN-007b: Select2faForm → SMS → tokens (needs a multi-MFA user without defaultMfaMethod, or a working useDifferentMethod action)", () => {
+    // Seed `t1_multi_mfa` pins `defaultMfaMethod='totp'` so the workflow's
+    // `prepare-mfa-options` step short-circuits to MfaCodeForm and never
+    // renders Select2faForm. The only way to reach Select2faForm with the
+    // existing fixtures is via the `useDifferentMethod` alt-action, which is
+    // currently broken upstream (action-only POST returns HTTP 500 from the
+    // wf-state store — see orchestrator notes). Unblock by either:
+    //   1. seeding a multi-MFA user without `defaultMfaMethod`, OR
+    //   2. fixing the action-only POST on the pincode-check step.
   });
 });
 
@@ -187,11 +187,27 @@ test.describe("LoginWorkflow / variant=mfa-totp (single TOTP)", () => {
     // verifies, so the assertion is intentionally omitted here.
   });
 
-  test.fixme("WF-LOGIN-008b: t1_grace TOTP submission → tokens (needs deterministic TOTP secret)", () => {
-    // TOTP secret is randomized at seed boot and logged to stdout only.
-    // The `__test/reset` payload doesn't surface it. Either add a
-    // `__test/totp-secret/:username` endpoint or pin the secret at seed time
-    // for test mode. Out of scope for this P0 spec file.
+  test("WF-LOGIN-008b: t1_grace TOTP submission → tokens", async ({ page, request }) => {
+    await page.goto(wfUrl(LOGIN_WF, "mfa-totp"));
+    await fillField(page, "username", USERS.grace.username);
+    await fillField(page, "password", USERS.grace.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    await waitForFormInput(page, "code");
+    // TOTP secret is randomized per seed and surfaced via the test endpoint
+    // (`GET /__test/totp-secret/:username`). Compute the current code with the
+    // harness `totp()` helper, then submit.
+    const res = await request.get(`/__test/totp-secret/${USERS.grace.username}`);
+    expect(res.status()).toBe(200);
+    const { secret } = (await res.json()) as { secret: string };
+    expect(secret, "demo seeds TOTP secret for t1_grace").toBeTruthy();
+    await fillField(page, "code", totp(secret));
+    await page.locator("button.as-submit-btn, button[type=submit]").first().click();
+
+    await expect(page.getByText("Workflow finished")).toBeVisible({ timeout: 15_000 });
+    const envelope = (await readFinishEnvelope(page)) as { data?: { accessToken?: string } };
+    expect(typeof envelope.data?.accessToken).toBe("string");
+    expect((envelope.data?.accessToken ?? "").length).toBeGreaterThan(0);
   });
 });
 
@@ -223,6 +239,15 @@ test.describe("LoginWorkflow / variant=guards (passwordInitial)", () => {
     page,
     request,
   }) => {
+    // Upstream bug: pincode-verify resume on this variant triggers the
+    // wf-state-store `state.context: Value does not match any of the allowed
+    // types` 500 (same shape orchestrator flagged for useDifferentMethod).
+    // The `guards` variant enables BOTH `passwordInitial` AND
+    // `emailVerifiedRequired`, so t1_jack first runs ensureEmail → pincode
+    // verify, which is where the store rejects the resumed ctx. Unblock by
+    // either (a) fixing the upstream wf-state ctx serialization bug, or (b)
+    // shipping a dedicated `password-initial-only` variant that skips
+    // emailVerifiedRequired.
     // The shipped `guards` variant turns on BOTH `passwordInitial` and
     // `emailVerifiedRequired`. Because t1_jack has no confirmed email MFA,
     // the workflow runs `ensureEmail` (AskEmailForm → pincode) BEFORE

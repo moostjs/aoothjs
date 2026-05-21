@@ -129,3 +129,43 @@ export async function clickAction(page: Page, label: string): Promise<void> {
 export async function submitForm(page: Page): Promise<void> {
   await page.locator("button.as-submit-btn, button[type=submit]").first().click();
 }
+
+/**
+ * Rewrite an absolute magic-link URL onto BASE_URL so the resume hits the
+ * demo backend (which serves the SPA in test mode). Magic links land with
+ * the SPA dev origin (e.g. http://localhost:5173) baked in by AuthEmailEvent.
+ */
+export function rewriteToBaseUrl(absolute: string, baseURL: string | undefined): string {
+  const parsed = new URL(absolute);
+  return `${(baseURL ?? "").replace(/\/$/, "")}${parsed.pathname}${parsed.search}`;
+}
+
+/** Read the `WfFinished` envelope JSON rendered by `WfPage.vue` after `@finished`. */
+export async function readFinishEnvelope(page: Page): Promise<unknown> {
+  const pre = page.locator("pre").first();
+  await pre.waitFor({ state: "visible" });
+  const raw = (await pre.textContent()) ?? "";
+  return JSON.parse(raw) as unknown;
+}
+
+/**
+ * Drive `auth.login` (variant `minimal`) through the SPA so the finish
+ * cookies are written to the browser context. Asserts the rendered finish
+ * envelope so subsequent calls can assume an authenticated cookie jar.
+ */
+export async function loginViaUi(
+  page: Page,
+  user: { username: string; password: string },
+): Promise<void> {
+  await page.goto(wfUrl("auth.login", "minimal"));
+  await fillField(page, "username", user.username);
+  await fillField(page, "password", user.password);
+  await submitForm(page);
+  await expect(page.locator("text=Workflow finished")).toBeVisible({ timeout: 5000 });
+  await expect(page.locator("pre").first()).toContainText("accessToken");
+}
+
+/** Per-run unique email so re-runs against a non-reset server don't collide. */
+export function uniqueEmail(prefix: string): string {
+  return `${prefix}-${Date.now()}@test.example`;
+}

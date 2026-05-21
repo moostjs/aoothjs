@@ -9,23 +9,15 @@
  * Variant selection is delegated to the `?variant=...` query param read by
  * `WfPage.vue` and forwarded as the `x-wf-variant` request header — see
  * `packages/e2e-demo/src/variants.ts` (`RECOVERY_VARIANTS`).
- *
- * Infra gap (flagged via `test.fixme` below): in the LIVE demo server
- * (`pnpm dev` + `DEMO_MODE=test`), `/auth/trigger` responds `{sent:true,
- * outlet:"email"}` after the EmailIdentifierForm submit — proving the
- * workflow advanced through the `outletEmail` step — yet `/__test/emails`
- * stays empty. The same flow (same `buildApp`, same `CaptureEmailSender`)
- * works in-process under vitest. Until the live-server mailbox capture is
- * fixed, every magic-link / OTP-bearing story must `fixme`. The two stories
- * that don't depend on a captured email (WF-RECOVERY-002 — unknown email
- * → no email expected) run green.
  */
 import { expect, test } from "@playwright/test";
 
 import {
   fillField,
   getEmails,
+  readFinishEnvelope,
   resetApp,
+  rewriteToBaseUrl,
   submitForm,
   waitForEmail,
   waitForFormInput,
@@ -35,33 +27,6 @@ import {
 
 const ALICE_EMAIL = "alice@acme.test";
 const NEW_PASSWORD = "NewPassword2!";
-
-/**
- * Live-demo mailbox capture is currently a no-op for outlet-driven emails —
- * see file header. Every story that depends on extracting a magic-link URL
- * or an OTP code is parked on this reason until the demo server's
- * `CaptureEmailSender` ref is reconnected to the outlet wiring.
- */
-const MAILBOX_OUTLET_GAP =
-  "Live demo: /__test/emails stays empty after outlet-driven send (vitest in-process works, http server does not). Tracked under demo infra; un-fixme once /__test/emails captures outletEmail-issued events.";
-
-/** WfPage shows the unified `WfFinished` envelope in a `<pre>` after finish. */
-async function readFinishedEnvelope(page: import("@playwright/test").Page): Promise<unknown> {
-  const pre = page.locator("pre").first();
-  await pre.waitFor({ state: "visible" });
-  const raw = (await pre.textContent()) ?? "";
-  return JSON.parse(raw) as unknown;
-}
-
-/**
- * Magic-link `url` lives in `AuthEmailEvent.url` as the absolute frontend URL
- * (e.g. `http://localhost:5173/recover?wfs=...`). Reuse the same `?wfs=...`
- * token against the BASE_URL so the test runs against the demo backend.
- */
-function rewriteToBaseUrl(absolute: string, baseURL: string): string {
-  const parsed = new URL(absolute);
-  return `${baseURL.replace(/\/$/, "")}${parsed.pathname}${parsed.search}`;
-}
 
 test.describe("recovery — default-magiclink (R-A)", () => {
   test.beforeEach(async ({ request }) => {
@@ -73,7 +38,6 @@ test.describe("recovery — default-magiclink (R-A)", () => {
     request,
     baseURL,
   }) => {
-    test.fixme(true, MAILBOX_OUTLET_GAP);
     await page.goto(wfUrl("auth.recovery", "default-magiclink"));
 
     // Phase 1 — EmailIdentifierForm
@@ -105,7 +69,7 @@ test.describe("recovery — default-magiclink (R-A)", () => {
     await submitForm(page);
 
     await expect(page.getByText("Workflow finished.")).toBeVisible();
-    const envelope = (await readFinishedEnvelope(page)) as {
+    const envelope = (await readFinishEnvelope(page)) as {
       finished?: boolean;
       data?: { accessToken?: string };
     };
@@ -124,7 +88,7 @@ test.describe("recovery — default-magiclink (R-A)", () => {
     await submitForm(page);
 
     await expect(page.getByText("Workflow finished.")).toBeVisible();
-    const envelope = (await readFinishedEnvelope(page)) as {
+    const envelope = (await readFinishEnvelope(page)) as {
       message?: { text?: string };
       data?: { accessToken?: string };
     };
@@ -148,7 +112,6 @@ test.describe("recovery — otp-email (R-B)", () => {
     page,
     request,
   }) => {
-    test.fixme(true, MAILBOX_OUTLET_GAP);
     await page.goto(wfUrl("auth.recovery", "otp-email"));
 
     await waitForFormInput(page, "email", 15_000);
@@ -178,7 +141,7 @@ test.describe("recovery — otp-email (R-B)", () => {
     await submitForm(page);
 
     await expect(page.getByText("Workflow finished.")).toBeVisible();
-    const envelope = (await readFinishedEnvelope(page)) as {
+    const envelope = (await readFinishEnvelope(page)) as {
       data?: { accessToken?: string };
     };
     expect(envelope.data?.accessToken).toBeTruthy();
@@ -194,7 +157,6 @@ test.describe("recovery — otp-sms (R-C)", () => {
     page,
     request,
   }) => {
-    test.fixme(true, MAILBOX_OUTLET_GAP);
     await page.goto(wfUrl("auth.recovery", "otp-sms"));
 
     // `t1_ivy` is seeded with SMS MFA confirmed on +15555550101 — see seed.ts.
@@ -219,7 +181,7 @@ test.describe("recovery — otp-sms (R-C)", () => {
     await submitForm(page);
 
     await expect(page.getByText("Workflow finished.")).toBeVisible();
-    const envelope = (await readFinishedEnvelope(page)) as {
+    const envelope = (await readFinishEnvelope(page)) as {
       data?: { accessToken?: string };
     };
     expect(envelope.data?.accessToken).toBeTruthy();
@@ -232,7 +194,6 @@ test.describe("recovery — choice (R-E)", () => {
   });
 
   test("WF-RECOVERY-012: choice mode → pick magicLink → email sent", async ({ page, request }) => {
-    test.fixme(true, MAILBOX_OUTLET_GAP);
     await page.goto(wfUrl("auth.recovery", "choice"));
 
     await waitForFormInput(page, "email", 15_000);
@@ -264,7 +225,6 @@ test.describe("recovery — fresh-login (R-G)", () => {
     request,
     baseURL,
   }) => {
-    test.fixme(true, MAILBOX_OUTLET_GAP);
     await page.goto(wfUrl("auth.recovery", "fresh-login"));
 
     await waitForFormInput(page, "email", 15_000);
@@ -284,7 +244,7 @@ test.describe("recovery — fresh-login (R-G)", () => {
     await submitForm(page);
 
     await expect(page.getByText("Workflow finished.")).toBeVisible();
-    const envelope = (await readFinishedEnvelope(page)) as {
+    const envelope = (await readFinishEnvelope(page)) as {
       finished?: boolean;
       next?: { trigger?: string; timeoutMs?: number; action?: { type?: string } };
       data?: { accessToken?: string };

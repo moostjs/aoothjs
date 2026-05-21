@@ -49,7 +49,16 @@ import type { Page, Response } from "@playwright/test";
 
 import type { APIRequestContext } from "@playwright/test";
 
-import { fillField, submitForm, USERS, wfUrl } from "./harness";
+import {
+  fillField,
+  loginViaUi,
+  rewriteToBaseUrl,
+  submitForm,
+  uniqueEmail,
+  USERS,
+  waitForEmail,
+  wfUrl,
+} from "./harness";
 
 /**
  * Resilient reset wrapping the harness one. The demo's `__test/reset` is
@@ -107,49 +116,68 @@ async function seedPendingInviteeByEmail(page: Page, email: string): Promise<voi
   await sentPromise;
 }
 
-/**
- * Drive `auth.login` (variant `minimal`) through the SPA so the finish
- * cookies are written to the browser context. Asserts the rendered finish
- * envelope so subsequent invite calls can assume an authenticated cookie
- * jar.
- */
-async function loginAdminViaUi(page: Page): Promise<void> {
-  await page.goto(wfUrl("auth.login", "minimal"));
-  await fillField(page, "username", USERS.admin_inviter.username);
-  await fillField(page, "password", USERS.admin_inviter.password);
-  await submitForm(page);
-  await expect(page.locator("text=Workflow finished")).toBeVisible({ timeout: 5000 });
-  await expect(page.locator("pre").first()).toContainText("accessToken");
-}
-
 test.describe("WF-INVITE — auth.invite family (P0)", () => {
   test.beforeEach(async ({ request }) => {
     await resetAppResilient(request);
   });
 
   // ── WF-INVITE-001 ────────────────────────────────────────────────────────
-  test("WF-INVITE-001 admin invites new email → invitee redeems → tokens", async ({ page }) => {
-    // Full end-to-end story (admin send → invitee redemption → tokens)
-    // requires reading the magic-link URL out of the mailbox. The demo's
-    // `__test/emails` returns [] even after `outlet:email` fires (the
-    // running server's email outlet writes to a different EmailSender
-    // instance than the test mailbox endpoint reads from). Without the
-    // URL there's no way to drive the invitee accept tail. The admin-side
-    // outlet leg is exercised end-to-end by WF-INVITE-011 + WF-INVITE-013
-    // (where the assertion is just "outlet fired").
-    test.fixme(
-      true,
-      "demo infra: `__test/emails` returns [] even after outlet:email fires — can't extract magic-link URL to drive invitee redemption. See file header.",
+  test("WF-INVITE-001 admin invites new email → invitee redeems → tokens", async ({
+    page,
+    request,
+    baseURL,
+  }) => {
+    await loginViaUi(page, USERS.admin_inviter);
+    await page.goto(wfUrl("auth.invite", "email-no-roles"));
+    await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
+
+    const inviteeEmail = uniqueEmail("invite-001");
+    await fillField(page, "email", inviteeEmail);
+    const sentPromise = nextTriggerResponse(page, (b) => b.sent === true);
+    await submitForm(page);
+    const sentEnvelope = await sentPromise;
+    expect(sentEnvelope.outlet).toBe("email");
+
+    // Pick the captured magic-link email for this run.
+    const magic = await waitForEmail(
+      request,
+      (e) => e.kind === "invite.magicLink" && e.recipient === inviteeEmail,
     );
-    // Intentionally unreachable — kept for future-implementer's reference.
-    await loginAdminViaUi(page);
+    expect(magic.url, "magic-link email must carry a resume url").toBeTruthy();
+    expect(magic.url).toContain("wfs=");
+
+    // Invitee resumes via the SPA — router rewrites `/signup?wfs=…` (and any
+    // pretty path the magic-link uses) onto `/wf?id=auth.invite&wfs=…`, which
+    // WfPage forwards to AsWfForm as `initialToken`.
+    const resumeUrl = rewriteToBaseUrl(magic.url as string, baseURL ?? "");
+    // Fresh browser context to drop the admin cookies — invitee is anonymous.
+    const ctx = await page.context().browser()!.newContext();
+    const inviteePage = await ctx.newPage();
+    await inviteePage.goto(resumeUrl);
+
+    // Invitee SetPasswordForm pause.
+    await expect(inviteePage.locator('[name="newPassword"]')).toBeVisible({ timeout: 15_000 });
+    await inviteePage.locator('[name="newPassword"]').fill("InviteePass-1!");
+    await inviteePage.locator('[name="confirmPassword"]').fill("InviteePass-1!");
+    await inviteePage.locator("button.as-submit-btn, button[type=submit]").first().click();
+
+    // `DemoInviteWorkflow.getProfileForm()` always returns
+    // `InviteAcceptProfileForm`, so even the no-roles variant pauses on the
+    // profile-collect step. Both fields (`displayName`, `phone`) are optional
+    // → submit with empty input to advance to the issue step.
+    await expect(inviteePage.getByText("Display name")).toBeVisible({ timeout: 15_000 });
+    await inviteePage.locator("button.as-submit-btn, button[type=submit]").first().click();
+
+    await expect(inviteePage.locator("text=Workflow finished")).toBeVisible({ timeout: 15_000 });
+    await expect(inviteePage.locator("pre").first()).toContainText("accessToken");
+    await ctx.close();
   });
 
   // ── WF-INVITE-005 ────────────────────────────────────────────────────────
   test("WF-INVITE-005 role-whitelist variant `roles-profile` renders role field", async ({
     page,
   }) => {
-    await loginAdminViaUi(page);
+    await loginViaUi(page, USERS.admin_inviter);
     await page.goto(wfUrl("auth.invite", "roles-profile"));
     await expect(page.locator('[name="email"]')).toBeVisible();
 
@@ -173,25 +201,51 @@ test.describe("WF-INVITE — auth.invite family (P0)", () => {
   // ── WF-INVITE-007 ────────────────────────────────────────────────────────
   test("WF-INVITE-007 profile collection at accept pauses InviteAcceptProfileForm", async ({
     page,
+    request,
+    baseURL,
   }) => {
-    // The accept-tail `inviteCollectProfile` pause is reachable only after
-    // resuming the workflow with the wfs token carried by the magic link.
-    // Same mailbox-capture gap as WF-INVITE-001 — the token is
-    // unreachable from the spec. The demo wires `getProfileForm()` →
-    // `InviteAcceptProfileForm` (src/app.ts), so the wiring is in place;
-    // only the capture seam needs fixing.
-    test.fixme(
-      true,
-      "demo infra: `__test/emails` returns [] — can't extract wfs token to drive the accept tail to `inviteCollectProfile`. See file header.",
+    await loginViaUi(page, USERS.admin_inviter);
+    // The `roles-profile` variant flips `collectProfile: true` so after the
+    // invitee sets their password the workflow pauses on the profile form
+    // returned by `DemoInviteWorkflow.getProfileForm()` (`InviteAcceptProfileForm`).
+    await page.goto(wfUrl("auth.invite", "roles-profile"));
+    await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
+
+    const inviteeEmail = uniqueEmail("invite-007");
+    await fillField(page, "email", inviteeEmail);
+    const sentPromise = nextTriggerResponse(page, (b) => b.sent === true);
+    await submitForm(page);
+    await sentPromise;
+
+    const magic = await waitForEmail(
+      request,
+      (e) => e.kind === "invite.magicLink" && e.recipient === inviteeEmail,
     );
-    await loginAdminViaUi(page);
+    const resumeUrl = rewriteToBaseUrl(magic.url as string, baseURL ?? "");
+    const ctx = await page.context().browser()!.newContext();
+    const inviteePage = await ctx.newPage();
+    await inviteePage.goto(resumeUrl);
+
+    // SetPasswordForm pause first.
+    await expect(inviteePage.locator('[name="newPassword"]')).toBeVisible({ timeout: 15_000 });
+    await inviteePage.locator('[name="newPassword"]').fill("InviteePass-1!");
+    await inviteePage.locator('[name="confirmPassword"]').fill("InviteePass-1!");
+    await inviteePage.locator("button.as-submit-btn, button[type=submit]").first().click();
+
+    // InviteAcceptProfileForm — declares `displayName` and `phone` (both
+    // optional, see packages/e2e-demo/src/models/user.as). The atscript-ui
+    // renderer paints optional empty fields as "Not set" buttons rather than
+    // bare inputs, so assert on the rendered labels.
+    await expect(inviteePage.getByText("Display name")).toBeVisible({ timeout: 15_000 });
+    await expect(inviteePage.getByText("Phone")).toBeVisible();
+    await ctx.close();
   });
 
   // ── WF-INVITE-011 ────────────────────────────────────────────────────────
   test("WF-INVITE-011 choice variant renders InviteSendModeForm; admin picks email", async ({
     page,
   }) => {
-    await loginAdminViaUi(page);
+    await loginViaUi(page, USERS.admin_inviter);
 
     await page.goto(wfUrl("auth.invite", "choice-freshlogin"));
     // First pause is `InviteSendModeForm` (because `send.mode === 'choice'`
@@ -204,7 +258,7 @@ test.describe("WF-INVITE — auth.invite family (P0)", () => {
     // Next pause is the InviteForm (email field) — proves the choice → email
     // branch advanced the workflow past `inviteSelectSendMode`.
     await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
-    await fillField(page, "email", `choice-011-${Date.now()}@test.example`);
+    await fillField(page, "email", uniqueEmail("choice-011"));
 
     // Submitting the invite produces the outlet envelope.
     const sendPromise = nextTriggerResponse(page, (b) => b.sent === true);
@@ -226,11 +280,11 @@ test.describe("WF-INVITE — auth.invite family (P0)", () => {
   test("WF-INVITE-013 reInvite on a freshly-created pending invitee → outlet fires", async ({
     page,
   }) => {
-    await loginAdminViaUi(page);
+    await loginViaUi(page, USERS.admin_inviter);
     // Per-run unique email so re-runs against the same server don't trip the
     // demo's `Invite already pending, use reInvite` 409 (the `__test/reset`
     // currently fails to delete rows from a previous run — see file header).
-    const inviteeEmail = `reinvite-013-${Date.now()}@test.example`;
+    const inviteeEmail = uniqueEmail("reinvite-013");
     await seedPendingInviteeByEmail(page, inviteeEmail);
 
     await page.goto(wfUrl("auth.reInvite", "email-no-roles"));
@@ -249,8 +303,8 @@ test.describe("WF-INVITE — auth.invite family (P0)", () => {
   test("WF-INVITE-015 cancelInvite on a freshly-created pending invitee → cancelled:true", async ({
     page,
   }) => {
-    await loginAdminViaUi(page);
-    const inviteeEmail = `cancel-015-${Date.now()}@test.example`;
+    await loginViaUi(page, USERS.admin_inviter);
+    const inviteeEmail = uniqueEmail("cancel-015");
     await seedPendingInviteeByEmail(page, inviteeEmail);
 
     await page.goto(wfUrl("auth.cancelInvite", "email-no-roles"));
