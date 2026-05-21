@@ -132,9 +132,9 @@ describe("InviteWorkflow — default flow end-to-end", () => {
 });
 
 describe("InviteWorkflow — send.mode shareableLink", () => {
-  it("shareableLink: admin form completes; magic-link URL is round-trippable (PUNT: email leaks per impl note)", async () => {
-    // PUNT per impl report: shareableLink currently piggy-backs on the email
-    // outlet so the admin's UI sees the same URL the email envelope carries.
+  it("shareableLink: admin form completes; magic-link URL returned in trigger response (no email sent)", async () => {
+    // shareableLink mode uses the dedicated `shareableLink` outlet — the URL
+    // is surfaced in the admin's HTTP response body, no email envelope.
     const app = await prepareWfApp({
       inviteOpts: {
         send: { mode: "shareableLink" },
@@ -143,21 +143,22 @@ describe("InviteWorkflow — send.mode shareableLink", () => {
     });
 
     const r1 = await app.trigger({ wfid: "auth.invite" });
-    await app.trigger({
+    const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "share@test.com" },
     });
 
-    expect(app.emails).toHaveLength(1);
-    expect(app.emails[0].kind).toBe("invite.magicLink");
-    const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
+    expect(app.emails).toHaveLength(0);
+    const url = r2.body?.url as string | undefined;
+    expect(url, "shareableLink outlet returns a magic-link url in the trigger body").toBeTruthy();
+    const token = new URL(url as string).searchParams.get("wfs") as string;
     const r3 = await app.resumeViaQuery(token);
     expect(r3.body?.wfs).toBeTruthy();
   });
 });
 
 describe("InviteWorkflow — send.mode choice", () => {
-  it("choice: admin picks 'shareableLink' at runtime → metadata.shareableLink: true on the email", async () => {
+  it("choice: admin picks 'shareableLink' at runtime → URL surfaced in trigger response (no email)", async () => {
     const app = await prepareWfApp({
       inviteOpts: {
         send: { mode: "choice" },
@@ -173,16 +174,16 @@ describe("InviteWorkflow — send.mode choice", () => {
     });
     // Second pause: invite form (InviteForm).
     expect(JSON.stringify(r2.body)).toMatch(/InviteForm|email/);
-    await app.trigger({
+    const r3 = await app.trigger({
       wfs: r2.body?.wfs as string,
       input: { email: "choice@test.com" },
     });
-    // shareableLink path goes through inviteReturnShareableLink — email
-    // captured (PUNT: piggy-backs on email outlet). The link is round-trippable.
-    expect(app.emails).toHaveLength(1);
-    const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
-    const r3 = await app.resumeViaQuery(token);
-    expect(r3.body?.wfs).toBeTruthy();
+    expect(app.emails).toHaveLength(0);
+    const url = r3.body?.url as string | undefined;
+    expect(url).toBeTruthy();
+    const token = new URL(url as string).searchParams.get("wfs") as string;
+    const r4 = await app.resumeViaQuery(token);
+    expect(r4.body?.wfs).toBeTruthy();
   });
 
   it("choice: admin picks 'email' → email sent normally", async () => {

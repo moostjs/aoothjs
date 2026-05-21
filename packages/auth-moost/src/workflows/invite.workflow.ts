@@ -61,6 +61,7 @@ import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { abortWf, finishWf, useAtscriptWf, type WfFinished } from "@atscript/moost-wf";
 import { HttpError } from "@moostjs/event-http";
 import {
+  outlet,
   outletEmail,
   Step,
   useWfFinished,
@@ -684,17 +685,19 @@ export class InviteWorkflow extends AuthWorkflowBase {
   @Public()
   returnShareableLink(@WorkflowParam("context") ctx: InviteWfCtx): unknown {
     if (ctx.linkSent) return undefined;
-    // PUNT: shareable-link mode currently piggy-backs on the email outlet
-    // (admin's UI is expected to display the same magic-link URL that gets
-    // emailed). A dedicated `shareableLinkSink` outlet that finishes admin-
-    // side with the URL instead of sending email is future work.
     ctx.linkSent = true;
+    // Dedicated `shareableLink` outlet — surfaces the URL in the admin's HTTP
+    // response so the trigger provider can wire `createAuthShareableLinkOutlet`
+    // (no email send). The state token is still minted + persisted normally.
     return {
-      ...outletEmail(ctx.email as string, "invite.magicLink", {
-        username: ctx.username,
-        ...(ctx.roles && { roles: ctx.roles }),
-        expiresAtMs: this.opts.send.tokenTtlMs,
-        shareableLink: true,
+      ...outlet("shareableLink", {
+        target: ctx.email as string,
+        template: "invite.magicLink",
+        context: {
+          username: ctx.username,
+          ...(ctx.roles && { roles: ctx.roles }),
+          expiresAtMs: this.opts.send.tokenTtlMs,
+        },
       }),
       expires: Date.now() + this.opts.send.tokenTtlMs,
     };

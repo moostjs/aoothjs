@@ -549,6 +549,12 @@ async function seedUser(handle: AppHandle, spec: UserSpec): Promise<SeededUser> 
       activeSessionTokens.push(issued.accessToken);
     }
     console.log(`[seed] ${spec.username} active sessions: ${activeSessionTokens.length}`);
+    // JWT credential store is stateless so `authCredential` can't be queried
+    // for an active-session count — record it here for `loadActiveSessions`.
+    /* eslint-disable no-underscore-dangle -- intentional globalThis slot */
+    const g = globalThis as { __aoothE2eActiveSessions?: Map<string, number> };
+    g.__aoothE2eActiveSessions?.set(spec.username, spec.activeSessions);
+    /* eslint-enable no-underscore-dangle */
   }
 
   return {

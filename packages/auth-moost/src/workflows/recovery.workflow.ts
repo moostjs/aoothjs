@@ -80,6 +80,8 @@ export interface RecoveryWfCtx {
   pinExpire?: number;
   pinResendAllowedAt?: number;
   pinVerified?: boolean;
+  /** Mirror of `opts.delivery.otp.transports.length`. Passed to `PincodeForm` so the `useDifferentTransport` action hides when only one transport is configured. */
+  recoveryTransportCount?: number;
 
   // Magic-link state:
   linkSent?: boolean;
@@ -259,6 +261,7 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     if (this.opts.delivery.mode !== "choice") {
       ctx.resolvedMode = this.opts.delivery.mode;
     }
+    ctx.recoveryTransportCount = this.opts.delivery.otp.transports.length;
     return undefined;
   }
 

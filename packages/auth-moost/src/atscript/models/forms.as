@@ -262,6 +262,8 @@ export interface Select2faForm {
 @wf.context.pass 'pinSentTo'
 @wf.context.pass 'mfaMethodCount'
 @wf.context.pass 'mfaBackupCodes'
+@wf.context.pass 'deviceTrustOptIn'
+@wf.context.pass 'recoveryTransportCount'
 @ui.form.submit.text 'Verify'
 export interface PincodeForm {
     @ui.form.fn.value '(_, _d, ctx) => ctx.mfaMethod === "totp" ? "Enter the current 6-digit code from your authenticator app." : ctx.mfaMethod ? "Code sent to " + (ctx.pinSentTo || "your " + ctx.mfaMethod) + " — check the dev server console for the code." : "Enter your verification code."'
@@ -279,6 +281,7 @@ export interface PincodeForm {
     @ui.form.type 'checkbox'
     @meta.label 'Remember this device'
     @meta.default 'false'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.deviceTrustOptIn'
     rememberDevice?: boolean
 
     @ui.form.action 'resend', 'Resend code'
@@ -296,6 +299,7 @@ export interface PincodeForm {
     backToLogin?: ui.action
 
     @ui.form.action 'useDifferentTransport', 'Use a different transport'
+    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.recoveryTransportCount ?? 0) < 2'
     useDifferentTransport?: ui.action
 }
 

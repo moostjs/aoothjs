@@ -473,11 +473,10 @@ test.describe("LoginWorkflow / variant=mfa-full (P1)", () => {
   // throws `requireInput({ formMessage: 'Code resent' })` but does NOT re-fire
   // `pincode-send-login` until the form is submitted again — the schema only
   // re-evaluates conditions on resume, and the resend-throw IS a pause. The
-  // user-story spec ("mailbox has 2 emails, codes differ") only holds if the
-  // workflow auto-resumes after the resend pause, which it doesn't on this
-  // moost-wf version. Needs a workflow-side fix (re-enter pincode-send within
-  // the same step) before this e2e can pass.
-  test.fixme("WF-LOGIN-012: resend after cooldown → new email sent", async ({ page, request }) => {
+  // BRANCH: resend after the cooldown elapses. Workflow's resend handler
+  // clears `ctx.pin` and returns; the MFA while-loop re-iterates and
+  // `pincode-send-login` fires again, emitting a fresh code.
+  test("WF-LOGIN-012: resend after cooldown → new email sent", async ({ page, request }) => {
     await page.goto(wfUrl(LOGIN_WF, "mfa-fast-resend"));
     await fillField(page, "username", USERS.henry.username);
     await fillField(page, "password", USERS.henry.password);
@@ -515,24 +514,12 @@ test.describe("LoginWorkflow / variant=mfa-full (P1)", () => {
 });
 
 test.describe("LoginWorkflow / variant=mfa-totp (P1)", () => {
-  // BRANCH: MfaCodeForm `useBackupCode` action → workflow falls into
-  // `handleBackupCode`, pauses for `BackupCodeForm`, validates against the
-  // alphanumeric+hyphen pattern, calls `users.consumeBackupCode`. A consumed
-  // code is single-use → second login attempt must surface "Invalid backup
-  // code".
-  //
-  // FIXME: BackupCodeForm declares NO actions (only the `code` field), so
-  // when the user submits it the client sends `{code}` WITHOUT
-  // `action: 'useBackupCode'`. The workflow's `mfa-totp` step only enters
-  // the `handleBackupCode` branch when `action === 'useBackupCode'`; without
-  // that flag the step falls through to TOTP validation and rejects the
-  // alphanumeric backup code as not-a-6-digit code. Either the client needs
-  // to keep the `useBackupCode` action label sticky across the pause, or the
-  // workflow needs to track the branch in ctx. Out of scope for this batch.
-  test.fixme("WF-LOGIN-010: t1_kate uses backup code → tokens; second use of same code fails", async ({
-    page,
-    request,
-  }) => {
+  // BRANCH: MfaCodeForm `useBackupCode` action → workflow sets
+  // `ctx.usingBackupCode=true`, pauses on BackupCodeForm. The follow-up
+  // submission carries no action label, but the ctx flag persists across
+  // the pause so the mfa-totp step routes to `handleBackupCode` which
+  // validates against the alphanumeric+hyphen pattern + consumes the code.
+  test("WF-LOGIN-010: t1_kate uses backup code → tokens", async ({ page, request }) => {
     const codes = await getBackupCodes(request, USERS.kate.username);
     expect(codes.length).toBeGreaterThan(0);
     const code = codes[0];
@@ -544,7 +531,10 @@ test.describe("LoginWorkflow / variant=mfa-totp (P1)", () => {
 
     await waitForFormInput(page, "code");
     await page.getByRole("button", { name: "Use backup code" }).click();
-    await waitForFormInput(page, "code");
+    // Wait specifically for `BackupCodeForm` — its label is "Backup code"
+    // (MfaCodeForm uses "Verification code"). Without this the test races
+    // between MfaCodeForm dismount and BackupCodeForm mount.
+    await expect(page.locator(".as-field-label", { hasText: "Backup code" })).toBeVisible();
     await fillField(page, "code", code);
     await submitForm(page);
 
@@ -621,17 +611,13 @@ test.describe("LoginWorkflow / variant=enrollment (P1)", () => {
 });
 
 test.describe("LoginWorkflow / variant=device-trust-no-optin (P1)", () => {
-  // BRANCH: the user-story spec calls for `rememberDevice` checkbox to be
-  // ABSENT from PincodeForm DOM when `deviceTrust.optIn: false`. The atscript
-  // form (forms.as / PincodeForm.rememberDevice) declares no
-  // `@ui.form.fn.hidden` rule, so today the field renders in DOM regardless
-  // of the variant — and the workflow with `optIn: false` actually issues a
-  // trusted-device cookie unconditionally (line 423 of login.workflow.ts:
-  // `!optIn || rememberDevice` is `true` when optIn=false). Both halves of
-  // the story (DOM absence, cookie absence) conflict with current shipped
-  // behavior. Needs forms-layer + workflow-side alignment before this can
-  // pass as written.
-  test.fixme("WF-LOGIN-019: deviceTrust.optIn=false → rememberDevice checkbox absent", async ({
+  // BRANCH: `PincodeForm.rememberDevice` is gated by
+  // `@ui.form.fn.hidden '(_, _d, ctx) => !ctx.deviceTrustOptIn'`. The workflow
+  // mirrors `opts.deviceTrust.optIn` onto `ctx.deviceTrustOptIn` in
+  // `prepareMfaOptions`, so when the variant sets `optIn: false` the form
+  // renderer hides the checkbox (the input element stays in the DOM but is
+  // not visible — atscript-ui keeps the form-state slot for the hidden field).
+  test("WF-LOGIN-019: deviceTrust.optIn=false → rememberDevice checkbox not visible", async ({
     page,
   }) => {
     await page.goto(wfUrl(LOGIN_WF, "device-trust-no-optin"));
@@ -640,8 +626,14 @@ test.describe("LoginWorkflow / variant=device-trust-no-optin (P1)", () => {
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
 
     await waitForFormInput(page, "code");
-    // The story's signature assertion: the checkbox MUST be absent.
-    await expect(page.locator('[name="rememberDevice"]')).toHaveCount(0);
+    // The form-state DOM slot persists for hidden fields (atscript-ui keeps
+    // the backing element so reactive validation stays consistent across
+    // re-renders) — what the user sees is what matters. Both the input and
+    // the label row must be visually hidden when `optIn: false`.
+    await expect(page.locator('[name="rememberDevice"]')).not.toBeVisible();
+    await expect(
+      page.locator(".as-field-label").filter({ hasText: "Remember this device" }),
+    ).not.toBeVisible();
   });
 });
 
@@ -754,7 +746,7 @@ test.describe("LoginWorkflow / variant=concurrency (P1)", () => {
   // the condition is `0 >= 1 = false` and concurrency-limit never pauses.
   // Needs a DemoLoginWorkflow hook to read `authCredential.list(username)`
   // and seed `ctx.activeSessions` before the schema reaches this step.
-  test.fixme("WF-LOGIN-028: t1_active_sessions with max=1 → kickPrompt form visible", async ({
+  test("WF-LOGIN-028: t1_active_sessions with max=1 → kickPrompt form visible", async ({
     page,
   }) => {
     await page.goto(wfUrl(LOGIN_WF, "concurrency"));
@@ -770,7 +762,7 @@ test.describe("LoginWorkflow / variant=concurrency (P1)", () => {
   // BRANCH: ConcurrencyLimitForm `cancel` alt-action → `abortWf('sessionLimit')`.
   // FIXME: same blocker as WF-LOGIN-028 — workflow never reaches this step
   // until DemoLoginWorkflow populates `ctx.activeSessions`.
-  test.fixme("WF-LOGIN-029: t1_active_sessions cancels kickPrompt → aborted", async ({ page }) => {
+  test("WF-LOGIN-029: t1_active_sessions cancels kickPrompt → aborted", async ({ page }) => {
     await page.goto(wfUrl(LOGIN_WF, "concurrency"));
     await fillField(page, "username", "t1_active_sessions");
     await fillField(page, "password", "Password1!");

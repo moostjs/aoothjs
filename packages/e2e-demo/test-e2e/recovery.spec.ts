@@ -370,28 +370,23 @@ test.describe("recovery — otp-email P1 branches", () => {
     await resetApp(request);
   });
 
-  test("WF-RECOVERY-008: useDifferentTransport rejected when only 1 transport configured", async ({
+  test("WF-RECOVERY-008: useDifferentTransport hidden when only 1 transport configured", async ({
     page,
   }) => {
-    // BRANCH: PincodeForm declares `useDifferentTransport` as an unconditional
-    // action — the form's atscript spec carries no `@ui.form.fn.hidden`, so
-    // the button is rendered regardless of `delivery.otp.transports.length`.
-    // The contract is enforced server-side: `recoveryCheckOtp` throws
-    // `requireInput({ formMessage: 'Only one transport configured' })` when
-    // the array has < 2 entries, leaving the form paused without re-sending.
-    // The USER_STORIES.md §4.3 "button absent in DOM" assertion is a future
-    // form-spec change; this test pins today's behavioural contract.
+    // BRANCH: `PincodeForm.useDifferentTransport` is gated by
+    // `@ui.form.fn.hidden '(_, _d, ctx) => (ctx.recoveryTransportCount ?? 0) < 2'`.
+    // `recoveryInit` mirrors `opts.delivery.otp.transports.length` into
+    // `ctx.recoveryTransportCount`, so a single-transport variant hides the
+    // alt-action button entirely.
     await page.goto(wfUrl("auth.recovery", "otp-email"));
     await waitForFormInput(page, "email", 15_000);
     await fillField(page, "email", ALICE_EMAIL);
     await submitForm(page);
 
     await waitForFormInput(page, "code", 15_000);
-    await clickAction(page, "Use a different transport");
-    // Server formMessage shown; form remains on PincodeForm.
-    await expect(page.getByText("Only one transport configured")).toBeVisible();
-    await expect(page.locator('[name="code"]').first()).toBeVisible();
-    await expect(page.getByText("Workflow finished.")).not.toBeVisible();
+    await expect(page.getByRole("button", { name: "Use a different transport" })).toHaveCount(0);
+    // The other PincodeForm actions ARE expected to render.
+    await expect(page.getByRole("button", { name: "Resend code" })).toBeVisible();
   });
 
   test("WF-RECOVERY-009: wrong OTP → errors.code='Invalid code', form re-renders", async ({

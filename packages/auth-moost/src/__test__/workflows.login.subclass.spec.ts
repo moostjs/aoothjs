@@ -330,13 +330,8 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
     @Injectable("FOR_EVENT")
     @Controller()
     class KickLogin extends LoginWorkflow {
-      constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
-        super(opts, users, auth);
-      }
-      override async credentials(ctx: LoginWfCtx): Promise<unknown> {
-        const out = await super.credentials(ctx);
-        if (ctx.username) ctx.activeSessions = 9; // way past the max
-        return out;
+      protected override async loadActiveSessions(_username: string): Promise<number> {
+        return 9; // way past the max
       }
       protected override async logoutOtherSessions(username: string): Promise<void> {
         calls.push(username);
@@ -371,13 +366,8 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
     @Injectable("FOR_EVENT")
     @Controller()
     class KickLogin extends LoginWorkflow {
-      constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
-        super(opts, users, auth);
-      }
-      override async credentials(ctx: LoginWfCtx): Promise<unknown> {
-        const out = await super.credentials(ctx);
-        if (ctx.username) ctx.activeSessions = 9;
-        return out;
+      protected override async loadActiveSessions(_username: string): Promise<number> {
+        return 9;
       }
       protected override async logoutOtherSessions(username: string): Promise<void> {
         calls.push(username);
@@ -417,13 +407,8 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
     @Injectable("FOR_EVENT")
     @Controller()
     class KickLogin extends LoginWorkflow {
-      constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
-        super(opts, users, auth);
-      }
-      override async credentials(ctx: LoginWfCtx): Promise<unknown> {
-        const out = await super.credentials(ctx);
-        if (ctx.username) ctx.activeSessions = 9;
-        return out;
+      protected override async loadActiveSessions(_username: string): Promise<number> {
+        return 9;
       }
     }
     const app = await prepareWfApp({

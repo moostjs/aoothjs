@@ -105,6 +105,13 @@ export interface LoginWfCtx {
   mfaSaveAsDefault?: boolean;
   ignoreMfaDefault?: boolean;
   mfaChecked?: boolean;
+  /**
+   * Set true the first time the user picks `useBackupCode` on the MFA step,
+   * so the workflow remembers to route the subsequent `BackupCodeForm`
+   * submission (which carries no `action`) through `handleBackupCode` instead
+   * of falling through to `verifyMfa` / pincode-verify.
+   */
+  usingBackupCode?: boolean;
   /** Counter incremented by the `risk-step-up` step so MFA reruns for the extra factor. */
   mfaRunsRemaining?: number;
   /** Mirror of `mfaEnrolledMethods.length`. Passed to client forms via `@wf.context.pass` so action buttons (`useDifferentMethod`) can hide when only one method exists. */
@@ -129,6 +136,8 @@ export interface LoginWfCtx {
   newDevice?: boolean;
   /** Captured from the OTP/pincode form when `opts.deviceTrust.optIn`. */
   rememberDevice?: boolean;
+  /** Mirror of `opts.deviceTrust.optIn`. Passed to `PincodeForm` so the `rememberDevice` checkbox can hide when the consumer's device-trust is off-by-default (no user choice to make). */
+  deviceTrustOptIn?: boolean;
 
   // Terms / profile:
   termsAcceptedVersion?: string;
@@ -480,6 +489,11 @@ export class LoginWorkflow extends AuthWorkflowBase {
     },
     // Phase 8 session policy:
     {
+      id: "load-active-sessions",
+      condition: (ctx) =>
+        !!ctx.username && !!ctx.opts!.sessionPolicy.concurrencyLimit && !ctx.aborted,
+    },
+    {
       id: "concurrency-limit",
       condition: (ctx) =>
         !!ctx.username &&
@@ -805,6 +819,9 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // `useDifferentMethod` / `useBackupCode` buttons when not applicable.
     ctx.mfaMethodCount = summary.length;
     ctx.mfaBackupCodes = !!this.opts.mfa.backupCodes;
+    // Mirror so `PincodeForm` can hide `rememberDevice` when the consumer
+    // doesn't ask the user to opt in (skipsMfa auto-trusts the device).
+    ctx.deviceTrustOptIn = !!(this.opts.deviceTrust.enabled && this.opts.deviceTrust.optIn);
     // Short-circuit: no methods → MFA is skipped (covered by mfa-enroll-required
     // when policy demands enrolment; otherwise we let the user through).
     if (summary.length === 0) {
@@ -826,9 +843,14 @@ export class LoginWorkflow extends AuthWorkflowBase {
   async select2fa(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
     const wf = useAtscriptWf(this.opts.forms.select2fa);
     const action = wf.resolveAction();
+    if (ctx.usingBackupCode && this.opts.mfa.backupCodes) {
+      const code = getInputField("code");
+      return this.handleBackupCode(code ? { code } : undefined, ctx);
+    }
     if (action === "useBackupCode" && this.opts.mfa.backupCodes) {
       // Peek raw input for the backup `code` field — it lives outside the
       // select2fa form schema, so we read the envelope directly.
+      ctx.usingBackupCode = true;
       const code = getInputField("code");
       return this.handleBackupCode(code ? { code } : undefined, ctx);
     }
@@ -890,12 +912,13 @@ export class LoginWorkflow extends AuthWorkflowBase {
       }
       delete ctx.pin;
       delete ctx.pinExpire;
-      // Re-runs `pincode-send-login` on the next iteration because `!ctx.pin`.
-      // Throwing a paused form would short-circuit the schema; instead, fall
-      // through to the resend by clearing and re-invoking via the schema.
-      // moost-wf re-evaluates conditions on resume — clearing `pin` causes
-      // `pincode-send-login` to be re-included next pass.
-      throw wf.requireInput({ formMessage: "Code resent" });
+      // Returning lets the MFA while-loop re-iterate; `pincode-send-login`
+      // fires again because `!ctx.pin`, emits a fresh code, and the next
+      // `pincode-check-login` pause renders `PincodeForm` with the new code.
+      // (Previously this threw `requireInput`, which paused HERE and never
+      // re-ran the send step — the user got a "Code resent" toast but no
+      // new code was actually delivered.)
+      return undefined;
     }
     if (action === "useDifferentMethod") {
       ctx.ignoreMfaDefault = true;
@@ -904,10 +927,15 @@ export class LoginWorkflow extends AuthWorkflowBase {
       delete ctx.pinExpire;
       return undefined;
     }
+    if (ctx.usingBackupCode && this.opts.mfa.backupCodes) {
+      const code = getInputField("code");
+      return this.handleBackupCode(code ? { code } : undefined, ctx);
+    }
     if (action === "useBackupCode" && this.opts.mfa.backupCodes) {
       // First click → no `code` field → handleBackupCode pauses for the form.
       // Resume with the backup code populated → handleBackupCode validates and
       // consumes. The presence of `code` is the toggle.
+      ctx.usingBackupCode = true;
       const code = getInputField("code");
       return this.handleBackupCode(code ? { code } : undefined, ctx);
     }
@@ -932,7 +960,12 @@ export class LoginWorkflow extends AuthWorkflowBase {
       delete ctx.mfaMethod;
       return undefined;
     }
+    if (ctx.usingBackupCode && this.opts.mfa.backupCodes) {
+      const code = getInputField("code");
+      return this.handleBackupCode(code ? { code } : undefined, ctx);
+    }
     if (action === "useBackupCode" && this.opts.mfa.backupCodes) {
+      ctx.usingBackupCode = true;
       const code = getInputField("code");
       return this.handleBackupCode(code ? { code } : undefined, ctx);
     }
@@ -1154,6 +1187,23 @@ export class LoginWorkflow extends AuthWorkflowBase {
   }
 
   // ── Phase 8: session policy ───────────────────────────────────────────
+  @Step("load-active-sessions")
+  async loadActiveSessionsStep(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
+    if (!ctx.username) return undefined;
+    ctx.activeSessions = await this.loadActiveSessions(ctx.username);
+    return undefined;
+  }
+
+  /**
+   * Return the number of active (non-revoked, non-expired) sessions for the
+   * user — consulted by `concurrency-limit` to decide whether the kickPrompt
+   * branch fires. Default returns `0` (no enforcement). Override with a real
+   * count from your credential store or session table.
+   */
+  protected async loadActiveSessions(_username: string): Promise<number> {
+    return 0;
+  }
+
   @Step("concurrency-limit")
   async concurrencyLimit(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
     const cfg = this.opts.sessionPolicy.concurrencyLimit;

@@ -47,6 +47,7 @@ import { AuthController } from "../auth.controller";
 import { authGuardInterceptor } from "../auth.guard";
 import { Public } from "../auth.decorator";
 import { createAuthEmailOutlet } from "../workflows/auth-email-outlet";
+import { createAuthShareableLinkOutlet } from "../workflows/auth-shareable-link-outlet";
 import { DEFAULT_INVITE_TOKEN_TTL_MS } from "../workflows/invite.workflow.options";
 import type { DeliverPayload } from "../workflows/login.workflow";
 import { DEFAULT_RECOVERY_TOKEN_TTL_MS } from "../workflows/recovery.workflow.options";
@@ -454,7 +455,14 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
             "auth.cancelInvite",
           ],
           state: strategy,
-          outlets: [createHttpOutlet(), createAuthEmailOutlet(emailOutletDeps)],
+          outlets: [
+            createHttpOutlet(),
+            createAuthEmailOutlet(emailOutletDeps),
+            createAuthShareableLinkOutlet({
+              buildMagicLinkUrl: emailOutletDeps.buildMagicLinkUrl,
+              magicLinkTtlMs: emailOutletDeps.magicLinkTtlMs,
+            }),
+          ],
           token: { read: ["body", "query"], write: "body", name: "wfs" },
         },
         deps,

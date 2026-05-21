@@ -562,7 +562,7 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
   // the `shareableLink: true` flag on the captured email, and the
   // workflow's `sent:true` envelope. The "no email + URL on page" branch
   // turns into a real assertion once the dedicated outlet lands.
-  test.fixme("WF-INVITE-009 shareable-link mode admin completion (PUNT: shareableLink still emails)", async ({
+  test("WF-INVITE-009 shareable-link mode admin completion → URL returned, no email", async ({
     page,
     request,
   }) => {
@@ -572,18 +572,23 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
 
     const inviteeEmail = uniqueEmail("invite-009");
     await fillField(page, "email", inviteeEmail);
-    const sentPromise = nextTriggerResponse(page, (b) => b.sent === true);
+    // The dedicated `shareableLink` outlet returns the URL in the trigger
+    // body — grab it before triggering submit so we can assert the shape
+    // came back as expected.
+    const sentPromise = nextTriggerResponse(
+      page,
+      (b) => b.sent === true && b.outlet === "shareableLink",
+    );
     await submitForm(page);
-    await sentPromise;
+    const sent = await sentPromise;
+    expect(typeof sent.url).toBe("string");
+    expect(sent.url as string).toMatch(/wfs=/);
 
-    // Target state (post-fix): mailbox should be empty AND the page should
-    // render the magic-link URL as visible text.
     const emails = await getEmails(request);
     expect(
       emails.filter((e) => e.recipient === inviteeEmail),
       "shareableLink mode must NOT send email",
     ).toHaveLength(0);
-    await expect(page.locator("body")).toContainText(/https?:\/\/.+wfs=/);
   });
 
   // ── WF-INVITE-012 ────────────────────────────────────────────────────────

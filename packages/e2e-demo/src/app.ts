@@ -16,6 +16,7 @@ import {
   AuthController,
   authGuardInterceptor,
   createAuthEmailOutlet,
+  createAuthShareableLinkOutlet,
   DEFAULT_AUTH_WORKFLOWS,
   type DeliverPayload,
   InviteWorkflow,
@@ -108,13 +109,16 @@ const g = globalThis as {
   __aoothE2eEmails?: AuthEmailEvent[];
   __aoothE2eSms?: AuthSmsEvent[];
   __aoothE2eBackupCodes?: Map<string, string[]>;
+  __aoothE2eActiveSessions?: Map<string, number>;
 };
 g.__aoothE2eEmails ??= [];
 g.__aoothE2eSms ??= [];
 g.__aoothE2eBackupCodes ??= new Map();
+g.__aoothE2eActiveSessions ??= new Map();
 const sharedEmailsBuffer: AuthEmailEvent[] = g.__aoothE2eEmails;
 const sharedSmsBuffer: AuthSmsEvent[] = g.__aoothE2eSms;
 const sharedBackupCodesBuffer: Map<string, string[]> = g.__aoothE2eBackupCodes;
+const sharedActiveSessionsBuffer: Map<string, number> = g.__aoothE2eActiveSessions;
 /* eslint-enable no-underscore-dangle */
 
 /** Two-level deep merge — sufficient for the nested-pojo workflow opts. */
@@ -261,6 +265,13 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     protected override deliver(payload: DeliverPayload) {
       return forwardDeliver(payload);
     }
+    // The credential store is JWT-based (stateless) so the demo can't query
+    // "how many sessions for user X" from `authCredential`. The seed counts
+    // its own `issue()` calls into a globalThis map; reading it here wires
+    // `ctx.activeSessions` for the `concurrency-limit` step.
+    protected override async loadActiveSessions(username: string): Promise<number> {
+      return sharedActiveSessionsBuffer.get(username) ?? 0;
+    }
   }
 
   // Phase-3 reshape: `RecoveryWorkflow` is configured via a consumer subclass
@@ -396,7 +407,14 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     constructor(wf: MoostWf) {
       super(wf);
       this.state = new HandleStateStrategy({ store: wfStateStore });
-      this.outlets = [...this.outlets, createAuthEmailOutlet(demoEmailOutletDeps)];
+      this.outlets = [
+        ...this.outlets,
+        createAuthEmailOutlet(demoEmailOutletDeps),
+        createAuthShareableLinkOutlet({
+          buildMagicLinkUrl: aooth.buildMagicLinkUrl,
+          magicLinkTtlMs: demoEmailOutletDeps.magicLinkTtlMs,
+        }),
+      ];
     }
   }
 
@@ -478,6 +496,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     // populates the map, callers must clear it here so stale codes don't
     // outlive the user records they refer to.
     sharedBackupCodesBuffer.clear();
+    // Same lifecycle for active-session counts (used by `loadActiveSessions`
+    // override below to drive the `concurrency-limit` step).
+    sharedActiveSessionsBuffer.clear();
     // Order matters for FKs: drop dependent rows first. The model-typed
     // `AtscriptDbTable<T>` overloads produce a TS2590 union when combined in
     // one array — widen the whole array once to a plain `deleteMany` shape
