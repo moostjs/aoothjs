@@ -1,7 +1,8 @@
 import type { AuthEmailEvent, AuthSmsEvent } from "@aooth/auth";
 import { Public } from "@aooth/auth-moost";
+import type { UserService } from "@aooth/user";
 import { Delete, Get, Post } from "@moostjs/event-http";
-import { Controller } from "moost";
+import { Controller, Param } from "moost";
 
 export interface TestMailboxDeps {
   /** Live reference to the captured-email buffer (mutated in place). */
@@ -14,6 +15,13 @@ export interface TestMailboxDeps {
    * actually re-populated fixtures (vs. silently failing).
    */
   reseed: () => Promise<number>;
+  /**
+   * Look-up handle for `GET /__test/totp-secret/:username`. Playwright specs
+   * need the TOTP secret to compute a current code for users like `t1_grace`
+   * / `t1_multi_mfa` — secrets are randomized each seed cycle so they can't
+   * be hard-coded in test code.
+   */
+  userService: UserService;
 }
 
 /**
@@ -27,7 +35,7 @@ export interface TestMailboxDeps {
 export function createTestMailboxController(
   deps: TestMailboxDeps,
 ): new (...args: never[]) => unknown {
-  const { emails, sms, reseed } = deps;
+  const { emails, sms, reseed, userService } = deps;
 
   // `@Public()` bypasses the global auth guard — these endpoints are the
   // entry point used BY tests, before any login has happened.
@@ -57,6 +65,20 @@ export function createTestMailboxController(
       sms.length = 0;
       const seeded = await reseed();
       return { ok: true, seeded };
+    }
+
+    /**
+     * Surfaces the TOTP secret seeded for `:username`. Used by Playwright
+     * specs that exercise the TOTP branch — seed-time secrets rotate per
+     * boot so specs can't hard-code. Returns 404 if user lacks a confirmed
+     * TOTP method.
+     */
+    @Get("totp-secret/:username")
+    async totpSecret(@Param("username") username: string): Promise<{ secret: string }> {
+      const user = await userService.getUser(username);
+      const method = user.mfa.methods.find((m) => m.name === "totp" && m.confirmed);
+      if (!method) throw new Error(`No confirmed TOTP method for ${username}`);
+      return { secret: method.value };
     }
   }
 

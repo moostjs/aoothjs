@@ -16,6 +16,14 @@ const variant = computed(() => {
   const raw = route.query.variant;
   return typeof raw === "string" && raw.length > 0 ? raw : null;
 });
+// Magic-link / pincode-link resume token. `auth.recovery` and `auth.invite`
+// finish their first leg by emailing a URL like `/recover?wfs=<token>`; the
+// router rewrites that into `/wf?id=auth.recovery&wfs=<token>`. AsWfForm
+// honours `initialToken` to skip the kickoff POST and resume the paused state.
+const initialToken = computed(() => {
+  const raw = route.query.wfs;
+  return typeof raw === "string" && raw.length > 0 ? raw : undefined;
+});
 const descriptor = computed(() => WORKFLOWS.find((w) => w.id === wfId.value) ?? null);
 // Variant travels via header → server picks the preset in the workflow
 // controller constructor. Re-keying on `wfId + variant` forces `<AsWfForm>` to
@@ -123,6 +131,7 @@ async function navigate(url: string): Promise<void> {
           :types="types"
           :navigate="navigate"
           :fetch-options="fetchOptions"
+          :initial-token="initialToken"
           @finished="onFinished"
           @error="onError"
         />

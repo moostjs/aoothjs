@@ -14,7 +14,13 @@ import type {
   LoginWorkflowOpts,
   RecoveryWorkflowOpts,
 } from "@aooth/auth-moost";
-import { useHeaders } from "@wooksjs/event-http";
+
+// `readVariantHeader` is intentionally NOT imported here — it pulls in
+// `@wooksjs/event-http`, which transitively requires `node:async_hooks` and
+// breaks the Vue dev-server client bundle when `HomePage.vue` imports the
+// variant maps below. The server-side wiring imports it directly from
+// `./variants-server` instead. See e2e-demo/CLAUDE.md if you're tempted to
+// re-add it here — Playwright tests catch the regression at hydrate time.
 
 /**
  * Login profiles — keys mirror `USER_STORIES.md` §3 variants L-A…L-J plus the
@@ -23,7 +29,10 @@ import { useHeaders } from "@wooksjs/event-http";
 export const LOGIN_VARIANTS: Record<string, Partial<LoginWorkflowOpts>> = {
   minimal: {
     mfa: { enabled: false },
-    alternateCredentials: { forgotPassword: true },
+    // Explicit false on signup/magicLink so the variant clears the demo
+    // defaults (which set signup:true for the dev-UI dropdown). Tests assert
+    // those alt-action buttons are hidden under `minimal`.
+    alternateCredentials: { forgotPassword: true, signup: false, magicLink: false },
   },
   "mfa-totp": {
     mfa: { enabled: true, transports: ["totp"], backupCodes: true },
@@ -145,20 +154,4 @@ export function pickVariant<T>(
 ): Partial<T> | undefined {
   if (!name) return undefined;
   return Object.prototype.hasOwnProperty.call(map, name) ? map[name] : undefined;
-}
-
-/**
- * Reads the `x-wf-variant` request header. Wrapped in try/catch because the
- * workflow subclass constructors that call this also run during moost's
- * non-HTTP DI resolution phase, where `useHeaders()` throws.
- */
-export function readVariantHeader(): string | null {
-  try {
-    const raw = useHeaders()["x-wf-variant"];
-    if (typeof raw === "string") return raw;
-    if (Array.isArray(raw) && typeof raw[0] === "string") return raw[0];
-    return null;
-  } catch {
-    return null;
-  }
 }

@@ -14,6 +14,11 @@ export const WORKFLOW_URL_REDIRECTS: Readonly<Record<string, string>> = {
   "/login": "auth.login",
   "/recover": "auth.recovery",
   "/signup": "auth.invite",
+  // `/accept-invite?wfs=…` is the URL emitted by the demo's `buildMagicLinkUrl`
+  // for the `invite.magicLink` outlet (see aooth.ts). Mapping it to
+  // `auth.invite` lets WfPage pick up the `wfs` query as `initialToken` and
+  // resume the paused workflow inside the same SPA.
+  "/accept-invite": "auth.invite",
 };
 
 export function createRouter() {

@@ -256,8 +256,10 @@ export async function seedAll(handle: AppHandle): Promise<SeedFixtures> {
     {
       // Pending invitee — MUST NOT appear in any login-workflow testCreds
       // (pending users can't log in); drives reInvite/cancelInvite paths.
+      // Invite workflows look up by EMAIL via UserService.getUser which
+      // matches username → seed username=email so the lookup resolves.
       handle: "t1_pending",
-      username: "t1_pending",
+      username: "t1_pending@example.com",
       email: "t1_pending@example.com",
       tenantId: tenantAId,
       roles: ["member"],
@@ -265,7 +267,7 @@ export async function seedAll(handle: AppHandle): Promise<SeedFixtures> {
     },
     {
       handle: "t1_redeemed",
-      username: "t1_redeemed",
+      username: "t1_redeemed@example.com",
       email: "t1_redeemed@example.com",
       tenantId: tenantAId,
       departmentId: deptA.eng,

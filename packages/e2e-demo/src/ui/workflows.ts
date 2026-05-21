@@ -109,12 +109,12 @@ const INVITE_ADMIN_USERS: ReadonlyArray<TestCred> = [
 const REINVITE_ADMIN_USERS: ReadonlyArray<TestCred> = [
   ...INVITE_ADMIN_USERS,
   {
-    username: "t1_pending",
+    username: "t1_pending@example.com",
     password: "n/a — target user",
     notes: "Target email for reInvite happy path (record is `pendingInvitation = true`).",
   },
   {
-    username: "t1_redeemed",
+    username: "t1_redeemed@example.com",
     password: "n/a — target user",
     notes:
       "Target email for the 409 path — user already accepted, reInvite/cancelInvite should refuse.",

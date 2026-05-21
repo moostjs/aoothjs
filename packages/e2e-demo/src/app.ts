@@ -5,7 +5,13 @@ import {
   MoostArbac,
 } from "@aooth/arbac-moost";
 import { AtscriptArbacUserProvider } from "@aooth/arbac-moost/atscript";
-import { AuthCredential, type AuthSmsEvent, type EmailSender, type SmsSender } from "@aooth/auth";
+import {
+  AuthCredential,
+  type AuthEmailEvent,
+  type AuthSmsEvent,
+  type EmailSender,
+  type SmsSender,
+} from "@aooth/auth";
 import {
   AuthController,
   authGuardInterceptor,
@@ -41,7 +47,6 @@ import type { AddressInfo } from "node:net";
 
 import { type AppAuth, createAooth } from "./aooth";
 import { type AppDb, createAppDb, syncAppSchema } from "./db";
-import { CaptureEmailSender } from "./email/capture-email-sender";
 import { ConsoleEmailSender } from "./email/console-email-sender";
 import { type AppEnv, ENV } from "./env";
 import {
@@ -59,13 +64,8 @@ import { DemoUser, InviteAcceptProfileForm } from "./models/user.as";
 import { allRoles, type UserAttrs } from "./roles";
 import { seedAll } from "./seed";
 import { createTestMailboxController } from "./test-mailbox";
-import {
-  INVITE_VARIANTS,
-  LOGIN_VARIANTS,
-  pickVariant,
-  readVariantHeader,
-  RECOVERY_VARIANTS,
-} from "./variants";
+import { INVITE_VARIANTS, LOGIN_VARIANTS, pickVariant, RECOVERY_VARIANTS } from "./variants";
+import { readVariantHeader } from "./variants-server";
 import { createWfStore } from "./wf-store";
 import { makeHandoverWorkflow } from "./workflows/handover.workflow";
 
@@ -96,6 +96,23 @@ export interface BuildAppOptions {
   recoveryOpts?: RecoveryWorkflowOpts;
   inviteOpts?: InviteWorkflowOpts;
 }
+
+// Test-mode mailbox buffers anchored on `globalThis` so they survive vite's
+// HMR re-evaluations of this module. Without this, every HMR cycle produces a
+// fresh `CaptureEmailSender` instance with its own `.events` array; the
+// `__test` controller (registered at boot) keeps reading the FIRST array
+// while the workflow's `forwardDeliver` writes to the LATEST. globalThis is
+// process-scoped, not module-scoped → both references converge.
+/* eslint-disable no-underscore-dangle -- intentional `__`-prefix marks internal globalThis slots */
+const g = globalThis as {
+  __aoothE2eEmails?: AuthEmailEvent[];
+  __aoothE2eSms?: AuthSmsEvent[];
+};
+g.__aoothE2eEmails ??= [];
+g.__aoothE2eSms ??= [];
+const sharedEmailsBuffer: AuthEmailEvent[] = g.__aoothE2eEmails;
+const sharedSmsBuffer: AuthSmsEvent[] = g.__aoothE2eSms;
+/* eslint-enable no-underscore-dangle */
 
 /** Two-level deep merge — sufficient for the nested-pojo workflow opts. */
 function mergeWfOpts<T>(base: T, over?: T): T {
@@ -149,12 +166,21 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   const appDb = createAppDb(dbPath);
   await syncAppSchema(appDb);
 
-  // In test mode, default to a capturing email sender so the `__test/emails`
-  // endpoint has something to read. An explicit `opts.emailSender` still wins
-  // (the in-process vitest harness passes its own CaptureEmailSender).
-  const captureEmailSender = isTestMode && !opts.emailSender ? new CaptureEmailSender() : undefined;
+  // In test mode, route every outgoing email through the globalThis-anchored
+  // shared buffer so the `__test/emails` controller and the workflow outlet
+  // see the same array even across HMR module-reloads. The buffer survives
+  // module re-eval; the sender is a thin adapter that pushes to it.
+  // An explicit `opts.emailSender` still wins (vitest harness passes its own).
+  const testCaptureSender: EmailSender | undefined = isTestMode
+    ? {
+        send(event) {
+          sharedEmailsBuffer.push(event);
+          return Promise.resolve();
+        },
+      }
+    : undefined;
   const emailSender: EmailSender =
-    opts.emailSender ?? captureEmailSender ?? new ConsoleEmailSender();
+    opts.emailSender ?? testCaptureSender ?? new ConsoleEmailSender();
   const aooth = createAooth({ tables: appDb.tables, env });
   const wfStateStore = createWfStore(appDb);
 
@@ -163,14 +189,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   app.adapter(moostHttp);
   app.adapter(new MoostWf());
 
-  // Captured SMS buffer — only populated when `isTestMode` is on. Lives in the
-  // `buildApp` closure so the `__test` controller can read it without a
-  // singleton. The console-stub remains for dev (DEMO_MODE!=='test').
-  const capturedSms: AuthSmsEvent[] = [];
+  // SMS: in test mode, push into the shared globalThis buffer (same HMR-survival
+  // rationale as the email buffer above); otherwise console-log.
   const demoSmsSender: SmsSender = {
     async send(event) {
       if (isTestMode) {
-        capturedSms.push(event);
+        sharedSmsBuffer.push(event);
         return;
       }
       console.log("[demo SMS]", event.kind, event.recipient, event.code);
@@ -477,9 +501,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // when DEMO_MODE='test' — never in dev, never in CI prod boots.
   if (isTestMode) {
     const TestMailboxController = createTestMailboxController({
-      emails: captureEmailSender?.events ?? [],
-      sms: capturedSms,
+      emails: sharedEmailsBuffer,
+      sms: sharedSmsBuffer,
       reseed,
+      userService: aooth.userService,
     });
     app.registerControllers(TestMailboxController);
   }
