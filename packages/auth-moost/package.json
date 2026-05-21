@@ -61,7 +61,8 @@
     "@aooth/arbac-moost": "workspace:^",
     "@aooth/auth": "workspace:*",
     "@aooth/user": "workspace:*",
-    "@atscript/moost-wf": "catalog:"
+    "@atscript/moost-wf": "catalog:",
+    "@wooksjs/http-body": "catalog:"
   },
   "devDependencies": {
     "@atscript/core": "catalog:",
@@ -80,6 +81,7 @@
     "@moostjs/event-wf": ">=0.6.10",
     "@wooksjs/event-core": ">=0.7.12",
     "@wooksjs/event-http": ">=0.7.12",
+    "@wooksjs/http-body": ">=0.7.12",
     "moost": ">=0.6.10"
   },
   "peerDependenciesMeta": {

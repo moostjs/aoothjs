@@ -47,6 +47,12 @@ export interface AuthBindings {
 /**
  * `sameSite` is upper-cased because wooks accepts `'Lax' | 'Strict' | 'None'`
  * while `ResolvedAuthCookieConfig` stores lower-case for ergonomics.
+ *
+ * `domain` is conditionally spread — pre-0.7.13 wooks renders `domain: undefined`
+ * as the literal string `Domain=undefined`, which browsers reject (drops the
+ * whole `Set-Cookie`). Newer wooks ignores undefined attrs, but the conditional
+ * spread keeps us correct against any version and matches the same pattern used
+ * by `resolveAuthOptions` to inherit `domain` onto the refresh cookie.
  */
 function cookieAttrsFrom(
   c: ResolvedAuthOptions["cookie"],
@@ -60,7 +66,7 @@ function cookieAttrsFrom(
       | "Strict"
       | "None",
     path: c.path,
-    domain: c.domain,
+    ...(c.domain !== undefined && { domain: c.domain }),
     ...extra,
   };
 }
