@@ -4,5 +4,5 @@
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true
   },
-  "include": ["src", "test"]
+  "include": ["src/**/*.ts", "src/**/*.vue", "test", "vite-env.d.ts"]
 }
