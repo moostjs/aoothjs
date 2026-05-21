@@ -721,8 +721,8 @@ export class LoginWorkflow extends AuthWorkflowBase {
     if (pinErr) throw pincodeWf.requireInput({ errors: pinErr });
     await this.users.confirmMfaMethod(ctx.username, "email");
     ctx.emailConfirmed = true;
-    ctx.pin = undefined;
-    ctx.pinExpire = undefined;
+    delete ctx.pin;
+    delete ctx.pinExpire;
     return undefined;
   }
 
@@ -755,8 +755,8 @@ export class LoginWorkflow extends AuthWorkflowBase {
     if (pinErr) throw pincodeWf.requireInput({ errors: pinErr });
     await this.users.confirmMfaMethod(ctx.username, "sms");
     ctx.phoneConfirmed = true;
-    ctx.pin = undefined;
-    ctx.pinExpire = undefined;
+    delete ctx.pin;
+    delete ctx.pinExpire;
     return undefined;
   }
 
@@ -888,8 +888,8 @@ export class LoginWorkflow extends AuthWorkflowBase {
         const waitSec = Math.ceil((ctx.pinTimeout - Date.now()) / 1000);
         throw wf.requireInput({ formMessage: `Please wait ${waitSec}s` });
       }
-      ctx.pin = undefined;
-      ctx.pinExpire = undefined;
+      delete ctx.pin;
+      delete ctx.pinExpire;
       // Re-runs `pincode-send-login` on the next iteration because `!ctx.pin`.
       // Throwing a paused form would short-circuit the schema; instead, fall
       // through to the resend by clearing and re-invoking via the schema.
@@ -899,9 +899,9 @@ export class LoginWorkflow extends AuthWorkflowBase {
     }
     if (action === "useDifferentMethod") {
       ctx.ignoreMfaDefault = true;
-      ctx.mfaMethod = undefined;
-      ctx.pin = undefined;
-      ctx.pinExpire = undefined;
+      delete ctx.mfaMethod;
+      delete ctx.pin;
+      delete ctx.pinExpire;
       return undefined;
     }
     if (action === "useBackupCode" && this.opts.mfa.backupCodes) {
@@ -929,7 +929,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
     const action = wf.resolveAction();
     if (action === "useDifferentMethod") {
       ctx.ignoreMfaDefault = true;
-      ctx.mfaMethod = undefined;
+      delete ctx.mfaMethod;
       return undefined;
     }
     if (action === "useBackupCode" && this.opts.mfa.backupCodes) {

@@ -122,14 +122,10 @@ test.describe("LoginWorkflow / variant=mfa-full (multi-method)", () => {
   // workflow's `prepare-mfa-options` step pre-selects TOTP and SKIPS
   // `Select2faForm` (which only renders when `!ctx.mfaMethod`). We assert the
   // TOTP form is reached with both alt-actions visible — the original story
-  // also called for picking SMS → PincodeForm → tokens, but two pieces of
-  // infra are missing for the full round-trip:
-  //   1. `useDifferentMethod` currently returns HTTP 500 from the trigger
-  //      endpoint (probe-confirmed; action-only submits seem to mismatch the
-  //      wf-trigger wire envelope — orchestrator follow-up).
-  //   2. `__test/sms` returns `[]` even after a workflow step forwards a code
-  //      through `forwardDeliver`, so even if we could pick SMS we couldn't
-  //      retrieve the OTP.
+  // also called for picking SMS → PincodeForm → tokens, but `__test/sms`
+  // returns `[]` even after a workflow step forwards a code through
+  // `forwardDeliver`, so we can't retrieve the OTP to submit. The
+  // `useDifferentMethod` round-trip itself works (resumes Select2faForm).
   test("WF-LOGIN-007: t1_multi_mfa → MfaCodeForm (default TOTP) with all alt-actions visible", async ({
     page,
   }) => {
@@ -149,15 +145,11 @@ test.describe("LoginWorkflow / variant=mfa-full (multi-method)", () => {
     await expect(page.getByRole("button", { name: "Use backup code" })).toBeVisible();
   });
 
-  test.fixme("WF-LOGIN-007b: Select2faForm → SMS → tokens (needs a multi-MFA user without defaultMfaMethod, or a working useDifferentMethod action)", () => {
-    // Seed `t1_multi_mfa` pins `defaultMfaMethod='totp'` so the workflow's
-    // `prepare-mfa-options` step short-circuits to MfaCodeForm and never
-    // renders Select2faForm. The only way to reach Select2faForm with the
-    // existing fixtures is via the `useDifferentMethod` alt-action, which is
-    // currently broken upstream (action-only POST returns HTTP 500 from the
-    // wf-state store — see orchestrator notes). Unblock by either:
-    //   1. seeding a multi-MFA user without `defaultMfaMethod`, OR
-    //   2. fixing the action-only POST on the pincode-check step.
+  test.fixme("WF-LOGIN-007b: Select2faForm → SMS → tokens (blocked on __test/sms returning [] after forwardDeliver — useDifferentMethod itself works)", () => {
+    // Reaching Select2faForm now works (via useDifferentMethod, or by seeding
+    // a user without defaultMfaMethod). The remaining blocker is that
+    // `__test/sms` does not surface the SMS code emitted by `forwardDeliver`,
+    // so we can't submit the pincode end-to-end.
   });
 });
 
@@ -235,19 +227,10 @@ test.describe("LoginWorkflow / variant=enrollment", () => {
 });
 
 test.describe("LoginWorkflow / variant=guards (passwordInitial)", () => {
-  test.fixme("WF-LOGIN-021: t1_jack → SetPasswordForm pause → mismatch error → tokens on match", async ({
+  test("WF-LOGIN-021: t1_jack → SetPasswordForm pause → mismatch error → tokens on match", async ({
     page,
     request,
   }) => {
-    // Upstream bug: pincode-verify resume on this variant triggers the
-    // wf-state-store `state.context: Value does not match any of the allowed
-    // types` 500 (same shape orchestrator flagged for useDifferentMethod).
-    // The `guards` variant enables BOTH `passwordInitial` AND
-    // `emailVerifiedRequired`, so t1_jack first runs ensureEmail → pincode
-    // verify, which is where the store rejects the resumed ctx. Unblock by
-    // either (a) fixing the upstream wf-state ctx serialization bug, or (b)
-    // shipping a dedicated `password-initial-only` variant that skips
-    // emailVerifiedRequired.
     // The shipped `guards` variant turns on BOTH `passwordInitial` and
     // `emailVerifiedRequired`. Because t1_jack has no confirmed email MFA,
     // the workflow runs `ensureEmail` (AskEmailForm → pincode) BEFORE
