@@ -228,11 +228,15 @@ export interface InviteSendModeForm {
  * The workflow renders this only when the user has >1 enrolled methods after
  * `opts.mfaTransports` filtering. `methodName` is the `MfaMethod.name`
  * (e.g. `"totp"`, `"email"`, `"sms"`); the workflow itself validates that the
- * supplied value is in the user's enrolled set.
+ * supplied value is in the user's enrolled set. The dropdown options are
+ * built from `ctx.mfaEnrolledMethods` (a `MfaSummary[]` populated by
+ * `prepareMfaOptions`) so the user only sees factors they actually have.
  */
 @wf.context.pass 'mfaBackupCodes'
+@wf.context.pass 'mfaEnrolledMethods'
 export interface Select2faForm {
-    @ui.form.type 'text'
+    @ui.form.type 'select'
+    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.mfaEnrolledMethods) ? ctx.mfaEnrolledMethods.map(m => ({ value: m.methodName, label: m.masked ? m.kind + " (" + m.masked + ")" : m.kind })) : []'
     @meta.label 'MFA method'
     @meta.required
     methodName: string
