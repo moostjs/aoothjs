@@ -450,6 +450,9 @@ importers:
       '@atscript/ui':
         specifier: 'catalog:'
         version: 0.1.71(@atscript/core@0.1.58(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0))(@atscript/db@0.1.82)(@atscript/typescript@0.1.58)
+      '@atscript/ui-fns':
+        specifier: 'catalog:'
+        version: 0.1.71(@atscript/core@0.1.58(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0))(@atscript/db@0.1.82)(@atscript/typescript@0.1.58)
       '@moostjs/event-http':
         specifier: 'catalog:'
         version: 0.6.14(@prostojs/infact@0.4.1)(@prostojs/logger@0.4.3)(@prostojs/router@0.3.4)(@wooksjs/event-core@0.7.13)(moost@0.6.14)(wooks@0.7.13)
@@ -508,6 +511,9 @@ importers:
         specifier: 'catalog:'
         version: 0.1.58(@atscript/core@0.1.58(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0))(@atscript/db@0.1.82)(@prostojs/logger@0.4.3)(@prostojs/router@0.3.4)(@wooksjs/event-core@0.7.13)(wooks@0.7.13)
       '@atscript/ui':
+        specifier: 'catalog:'
+        version: 0.1.71(@atscript/core@0.1.58(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0))(@atscript/db@0.1.82)(@atscript/typescript@0.1.58)
+      '@atscript/ui-fns':
         specifier: 'catalog:'
         version: 0.1.71(@atscript/core@0.1.58(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0))(@atscript/db@0.1.82)(@atscript/typescript@0.1.58)
       '@atscript/ui-styles':

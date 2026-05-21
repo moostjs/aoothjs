@@ -68,6 +68,7 @@
     "@atscript/core": "catalog:",
     "@atscript/typescript": "catalog:",
     "@atscript/ui": "catalog:",
+    "@atscript/ui-fns": "catalog:",
     "@moostjs/event-http": "catalog:",
     "@moostjs/event-wf": "catalog:",
     "moost": "catalog:",

@@ -9,6 +9,7 @@
  * matching phantom `ui.action` field per provider so
  * `useAtscriptWf(form).resolveAction()` accepts the dynamic ids.
  */
+@ui.form.submit.text 'Sign in'
 export interface LoginCredentialsForm {
     @ui.form.type 'text'
     @meta.label 'Username'
@@ -35,9 +36,21 @@ export interface LoginCredentialsForm {
 }
 
 /**
- * MFA code form (TOTP today; email/SMS OTP later).
+ * MFA code form. Shared by TOTP, email-OTP, and SMS-OTP branches — the
+ * leading `transportHint` paragraph reads `mfaMethod` + `pinSentTo` (masked
+ * recipient) out of the workflow context so the operator knows which factor
+ * the workflow is currently verifying. The hint requires `installDynamicResolver()`
+ * from `@atscript/ui-fns` on the consumer side; without it `@ui.form.fn.value`
+ * stays inert and the paragraph renders empty.
  */
+@wf.context.pass 'mfaMethod'
+@wf.context.pass 'pinSentTo'
+@ui.form.submit.text 'Verify'
 export interface MfaCodeForm {
+    @ui.form.type 'paragraph'
+    @ui.form.fn.value '(_, _d, ctx) => ctx.mfaMethod === "totp" ? "Enter the current 6-digit code from your authenticator app." : ctx.mfaMethod ? "Code sent to " + (ctx.pinSentTo || "your " + ctx.mfaMethod) + " — check the dev server console for the code." : "Enter your verification code."'
+    transportHint?: string
+
     @ui.form.type 'text'
     @meta.label 'Verification code'
     @ui.form.autocomplete 'one-time-code'
@@ -226,8 +239,21 @@ export interface Select2faForm {
  * Generic 6-digit pincode form — used by both login and recovery OTP flows.
  *
  * `rememberDevice` is rendered only when `opts.deviceTrust && opts.deviceTrustOptIn`.
+ *
+ * The leading `transportHint` paragraph reads `mfaMethod` + `pinSentTo` (the
+ * masked recipient set by the pincode-send step) out of the workflow context
+ * so the operator can see which factor the workflow is currently verifying.
+ * Requires `installDynamicResolver()` from `@atscript/ui-fns` on the consumer
+ * side; without it `@ui.form.fn.value` stays inert and the paragraph renders empty.
  */
+@wf.context.pass 'mfaMethod'
+@wf.context.pass 'pinSentTo'
+@ui.form.submit.text 'Verify'
 export interface PincodeForm {
+    @ui.form.type 'paragraph'
+    @ui.form.fn.value '(_, _d, ctx) => ctx.mfaMethod === "totp" ? "Enter the current 6-digit code from your authenticator app." : ctx.mfaMethod ? "Code sent to " + (ctx.pinSentTo || "your " + ctx.mfaMethod) + " — check the dev server console for the code." : "Enter your verification code."'
+    transportHint?: string
+
     @ui.form.type 'text'
     @meta.label 'Verification code'
     @ui.form.autocomplete 'one-time-code'

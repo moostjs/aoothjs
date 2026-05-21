@@ -29,6 +29,7 @@
     "@atscript/moost-wf": "catalog:",
     "@atscript/typescript": "catalog:",
     "@atscript/ui": "catalog:",
+    "@atscript/ui-fns": "catalog:",
     "@atscript/ui-styles": "catalog:",
     "@atscript/vue-form": "catalog:",
     "@atscript/vue-wf": "catalog:",
