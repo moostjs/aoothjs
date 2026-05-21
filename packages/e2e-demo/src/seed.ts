@@ -20,6 +20,8 @@ export interface SeededUser {
   /** Plaintext backup codes returned by `generateBackupCodes` — only present when seeded. */
   backupCodes?: string[];
   passwordInitial?: boolean;
+  /** Access tokens minted at seed time. */
+  activeSessionTokens?: string[];
 }
 
 export interface SeedFixtures {
@@ -43,6 +45,17 @@ export interface SeedFixtures {
     t1_ivy: SeededUser;
     t1_jack: SeededUser;
     t1_kate: SeededUser;
+    t1_locked: SeededUser;
+    t1_multi_mfa: SeededUser;
+    t1_pending: SeededUser;
+    t1_redeemed: SeededUser;
+    t1_active_sessions: SeededUser;
+    t1_terms_old: SeededUser;
+    t1_profile_incomplete: SeededUser;
+    t1_two_tenants: SeededUser;
+    /** Parallel `tenant-b` row sharing email with `t1_two_tenants`. */
+    t2_two_tenants: SeededUser;
+    _admin_inviter: SeededUser;
     t2_olivia: SeededUser;
     t2_oscar: SeededUser;
     _super: SeededUser;
@@ -66,6 +79,10 @@ export interface SeedFixtures {
 
 const PASSWORD = "Password1!";
 
+/** Two seeded users (`t1_two_tenants` + `t2_two_tenants`) share this email
+ * so the tenant-select variant can resolve it to both rows. */
+export const TWO_TENANTS_SHARED_EMAIL = "two_tenants@shared.test";
+
 interface UserSpec {
   handle: keyof SeedFixtures["users"];
   username: string;
@@ -82,6 +99,14 @@ interface UserSpec {
   backupCodes?: boolean;
   /** Insert with `password.isInitial = true` to exercise the forced-password-change guard. */
   passwordInitial?: boolean;
+  /** Insert with `account.locked = true`. */
+  locked?: boolean;
+  /** Insert with `account.active = false, pendingInvitation = true`. */
+  pendingInvitation?: boolean;
+  /** Override `mfa.defaultMethod` after enrolment (only honored if that method is present). */
+  defaultMfaMethod?: string;
+  /** Mint N access tokens via `authCredential.issue` post-seed (returned on `activeSessionTokens`). */
+  activeSessions?: number;
 }
 
 export async function seedAll(handle: AppHandle): Promise<SeedFixtures> {
@@ -208,12 +233,104 @@ export async function seedAll(handle: AppHandle): Promise<SeedFixtures> {
       backupCodes: true,
     },
     {
+      handle: "t1_locked",
+      username: "t1_locked",
+      email: "locked@acme.test",
+      tenantId: tenantAId,
+      departmentId: deptA.eng,
+      roles: ["member"],
+      locked: true,
+    },
+    {
+      handle: "t1_multi_mfa",
+      username: "t1_multi_mfa",
+      email: "t1_multi_mfa@example.com",
+      tenantId: tenantAId,
+      departmentId: deptA.eng,
+      roles: ["member"],
+      totp: true,
+      mfaEmail: true,
+      mfaSms: { phone: "+15555550110" },
+      defaultMfaMethod: "totp",
+    },
+    {
+      // Pending invitee — MUST NOT appear in any login-workflow testCreds
+      // (pending users can't log in); drives reInvite/cancelInvite paths.
+      handle: "t1_pending",
+      username: "t1_pending",
+      email: "t1_pending@example.com",
+      tenantId: tenantAId,
+      roles: ["member"],
+      pendingInvitation: true,
+    },
+    {
+      handle: "t1_redeemed",
+      username: "t1_redeemed",
+      email: "t1_redeemed@example.com",
+      tenantId: tenantAId,
+      departmentId: deptA.eng,
+      roles: ["member"],
+    },
+    {
+      handle: "t1_active_sessions",
+      username: "t1_active_sessions",
+      email: "active_sessions@acme.test",
+      tenantId: tenantAId,
+      departmentId: deptA.eng,
+      roles: ["member"],
+      activeSessions: 2,
+    },
+    // t1_terms_old / t1_profile_incomplete: no DB column carries the state
+    // today — the variant-config layer (PR-D) injects ctx values at runtime.
+    {
+      handle: "t1_terms_old",
+      username: "t1_terms_old",
+      email: "terms_old@acme.test",
+      tenantId: tenantAId,
+      departmentId: deptA.eng,
+      roles: ["member"],
+    },
+    {
+      handle: "t1_profile_incomplete",
+      username: "t1_profile_incomplete",
+      email: "profile_incomplete@acme.test",
+      tenantId: tenantAId,
+      departmentId: deptA.eng,
+      roles: ["member"],
+    },
+    {
+      handle: "t1_two_tenants",
+      username: "t1_two_tenants",
+      email: TWO_TENANTS_SHARED_EMAIL,
+      tenantId: tenantAId,
+      departmentId: deptA.eng,
+      roles: ["member"],
+    },
+    {
+      // `_super` lacks `auth.invite/start` (scope is `none` but its allow-list
+      // omits the resource), so invite stories need a real `admin` user.
+      handle: "_admin_inviter",
+      username: "_admin_inviter",
+      email: "admin_inviter@acme.test",
+      tenantId: tenantAId,
+      departmentId: deptA.eng,
+      roles: ["admin"],
+    },
+    {
       handle: "t2_olivia",
       username: "t2_olivia",
       email: "olivia@globex.test",
       tenantId: tenantBId,
       departmentId: deptB.eng,
       roles: ["admin"],
+    },
+    {
+      handle: "t2_two_tenants",
+      username: "t2_two_tenants",
+      email: TWO_TENANTS_SHARED_EMAIL,
+      tenantId: tenantBId,
+      departmentId: deptB.eng,
+      roles: ["member"],
     },
     {
       handle: "t2_oscar",
@@ -355,12 +472,13 @@ async function seedUser(handle: AppHandle, spec: UserSpec): Promise<SeededUser> 
     roles: spec.roles,
     password: { hash, history: [], lastChanged: now, isInitial: spec.passwordInitial ?? false },
     account: {
-      active: true,
-      locked: false,
-      lockReason: "",
+      active: !spec.pendingInvitation,
+      locked: spec.locked ?? false,
+      lockReason: spec.locked ? "seed: pre-locked" : "",
       lockEnds: 0,
       failedLoginAttempts: 0,
       lastLogin: 0,
+      ...(spec.pendingInvitation && { pendingInvitation: true }),
     },
     mfa: { methods: [], defaultMethod: "", autoSend: false },
   } as never);
@@ -410,6 +528,20 @@ async function seedUser(handle: AppHandle, spec: UserSpec): Promise<SeededUser> 
     console.log(`[seed] ${spec.username} backup codes (plaintext): ${backupCodes.join(" ")}`);
   }
 
+  if (spec.defaultMfaMethod) {
+    await aooth.userService.setDefaultMfaMethod(spec.username, spec.defaultMfaMethod);
+  }
+
+  let activeSessionTokens: string[] | undefined;
+  if (spec.activeSessions) {
+    activeSessionTokens = [];
+    for (let i = 0; i < spec.activeSessions; i++) {
+      const issued = await aooth.authCredential.issue(spec.username);
+      activeSessionTokens.push(issued.accessToken);
+    }
+    console.log(`[seed] ${spec.username} active sessions: ${activeSessionTokens.length}`);
+  }
+
   return {
     id,
     username: spec.username,
@@ -422,6 +554,7 @@ async function seedUser(handle: AppHandle, spec: UserSpec): Promise<SeededUser> 
     totpSecret,
     backupCodes,
     passwordInitial: spec.passwordInitial,
+    activeSessionTokens,
   };
 }
 
