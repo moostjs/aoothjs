@@ -16,10 +16,12 @@ import {
   clickAction,
   fillField,
   getEmails,
+  loginViaUi,
   readFinishEnvelope,
   resetApp,
   rewriteToBaseUrl,
   submitForm,
+  USERS,
   waitForEmail,
   waitForFormInput,
   waitForSms,
@@ -582,5 +584,157 @@ test.describe("recovery — pre-factor (R-F) P1 branches", () => {
     await waitForFormInput(page, "newPassword", 15_000);
     await expect(page.locator('[name="newPassword"]').first()).toBeVisible();
     await expect(page.locator('[name="confirmPassword"]').first()).toBeVisible();
+  });
+});
+
+// =====================================================================
+// ─── P2 STORIES ───
+// Edge cases: wrong factor, post-reset session revocation, audit events.
+// =====================================================================
+
+test.describe("recovery — pre-factor (R-F) P2 branches", () => {
+  test.beforeEach(async ({ request }) => {
+    await resetApp(request);
+  });
+
+  test("WF-RECOVERY-015: pre-reset factor wrong → opaque 'Invalid factor' error", async ({
+    page,
+    request,
+    baseURL,
+  }) => {
+    // BRANCH: `recoveryVerifyFactor` step calls `verifyRecoveryFactor` and
+    // throws `requireInput({ errors: { value: "Invalid factor" } })` when the
+    // last-4 doesn't match. Opaque-by-design: same string regardless of
+    // which factor was attempted (no enumeration). The variant `pre-factor`
+    // inherits demoRecoveryOpts' default `delivery.mode: 'magicLink'`, so
+    // the factor step runs AFTER the magic-link click (resume path).
+    await page.goto(wfUrl("auth.recovery", "pre-factor"));
+    await waitForFormInput(page, "email", 15_000);
+    await fillField(page, "email", "ivy@acme.test");
+    await submitForm(page);
+
+    const email = await waitForEmail(request, (e) => e.kind === "recovery.magicLink");
+    await page.goto(rewriteToBaseUrl(email.url as string, baseURL ?? ""));
+
+    // RecoveryFactorForm renders factor + value inputs. Submit the right
+    // factor but a wrong last-4 — `verifyRecoveryFactor` returns false →
+    // inline error on the `value` field.
+    await waitForFormInput(page, "factor", 15_000);
+    await fillField(page, "factor", "phone");
+    await fillField(page, "value", "9999");
+    await submitForm(page);
+
+    // Error is keyed on `value` (per recovery.workflow.ts:485) — the opaque
+    // string "Invalid factor" doesn't reveal which factor was tried.
+    await expect(page.getByText("Invalid factor")).toBeVisible();
+    // Form re-rendered: factor input still present, setPassword not reached.
+    await expect(page.locator('[name="factor"]').first()).toBeVisible();
+    await expect(page.locator('[name="newPassword"]')).toHaveCount(0);
+  });
+});
+
+test.describe("recovery — fresh-login (R-G) P2 branches", () => {
+  test.beforeEach(async ({ request }) => {
+    await resetApp(request);
+  });
+
+  test("WF-RECOVERY-018: post-reset old session token rejected (revokeAllSessions=true)", async ({
+    page,
+    request,
+    baseURL,
+    context,
+  }) => {
+    // BRANCH: `recoveryRevokeSessions` step calls `auth.revokeAllForUser`
+    // (gated on `opts.postReset.revokeAllSessions === true` — `fresh-login`
+    // variant). With CredentialStoreJwt this bumps the user's epoch so the
+    // pre-recovery token fails the guard's `passesEpoch` check on the next
+    // request → 401 on `/__test/whoami`.
+    //
+    // Phase 1: log alice in via the SPA so the browser context's cookie jar
+    // gets the `aooth_session` cookie. Capture the cookie value as the "old"
+    // token snapshot before recovery revokes it.
+    await loginViaUi(page, USERS.alice);
+    const cookiesBefore = await context.cookies();
+    const oldSession = cookiesBefore.find((c) => c.name === "aooth_session");
+    expect(oldSession?.value, "login must set aooth_session cookie").toBeTruthy();
+
+    // whoami with the old session returns 200. `request` is a fresh
+    // APIRequestContext (no cookie jar shared with `context`) so we hand the
+    // token over via Authorization. Proves the token IS valid pre-recovery.
+    const oldAuth = { Authorization: `Bearer ${oldSession?.value}` };
+    const before = await request.get("/__test/whoami", { headers: oldAuth });
+    expect(before.status()).toBe(200);
+
+    // Phase 2: drive the `fresh-login` recovery flow on the same page/context.
+    // The recovery workflow is @Public() so it doesn't need auth; the resume
+    // happens anonymously. After setPassword the revokeSessions step runs and
+    // bumps the epoch on alice.
+    await page.goto(wfUrl("auth.recovery", "fresh-login"));
+    await waitForFormInput(page, "email", 15_000);
+    await fillField(page, "email", ALICE_EMAIL);
+    await submitForm(page);
+
+    const email = await waitForEmail(request, (e) => e.kind === "recovery.magicLink");
+    await page.goto(rewriteToBaseUrl(email.url as string, baseURL ?? ""));
+
+    await waitForFormInput(page, "newPassword", 15_000);
+    await fillField(page, "newPassword", NEW_PASSWORD);
+    await fillField(page, "confirmPassword", NEW_PASSWORD);
+    await submitForm(page);
+    await expect(page.getByText("Workflow finished.")).toBeVisible();
+
+    // Use the OLD session token explicitly via Authorization header — even if
+    // the browser cookie jar still holds it, the JWT credential store's
+    // `passesEpoch` check now rejects it because `revokeAllForUser` bumped
+    // alice's epoch past the token's iat.
+    const after = await request.get("/__test/whoami", { headers: oldAuth });
+    expect(after.status(), "old token must be rejected after revokeAllSessions").toBe(401);
+  });
+});
+
+test.describe("recovery — default-magiclink (R-A) P2 audit", () => {
+  test.beforeEach(async ({ request }) => {
+    await resetApp(request);
+  });
+
+  test("WF-RECOVERY-019: audit events emitted — requested + completed", async ({
+    page,
+    request,
+    baseURL,
+  }) => {
+    // BRANCH: `audit.enabled` defaults to true (see mergeRecoveryOpts) so the
+    // demo's default-magiclink variant already fires:
+    //   - `recovery.requested` (kind) — emitted inside `recoveryRequest` via
+    //     `emitRequested(ctx, username)` after the email→userId lookup.
+    //   - `recovery.completed` (kind) — emitted by the `recoveryAudit` step
+    //     after `passwordChanged === true`.
+    // The demo's `DemoRecoveryWorkflow.audit()` override pushes into the
+    // globalThis-anchored buffer; `/__test/audit` returns it.
+    await page.goto(wfUrl("auth.recovery", "default-magiclink"));
+    await waitForFormInput(page, "email", 15_000);
+    await fillField(page, "email", ALICE_EMAIL);
+    await submitForm(page);
+
+    const email = await waitForEmail(request, (e) => e.kind === "recovery.magicLink");
+    await page.goto(rewriteToBaseUrl(email.url as string, baseURL ?? ""));
+
+    await waitForFormInput(page, "newPassword", 15_000);
+    await fillField(page, "newPassword", NEW_PASSWORD);
+    await fillField(page, "confirmPassword", NEW_PASSWORD);
+    await submitForm(page);
+    await expect(page.getByText("Workflow finished.")).toBeVisible();
+
+    // Audit buffer must contain both phases. `event.kind` carries the event
+    // name (see audit/index.ts AuditEvent shape).
+    const res = await request.get("/__test/audit");
+    expect(res.status()).toBe(200);
+    const events = (await res.json()) as Array<{ kind: string; userId?: string }>;
+    const requested = events.find((e) => e.kind === "recovery.requested");
+    const completed = events.find((e) => e.kind === "recovery.completed");
+    expect(requested, "recovery.requested audit event must be emitted").toBeTruthy();
+    expect(completed, "recovery.completed audit event must be emitted").toBeTruthy();
+    // Both events resolve to alice's userId (username in this demo).
+    expect(requested?.userId).toBe(USERS.alice.username);
+    expect(completed?.userId).toBe(USERS.alice.username);
   });
 });
