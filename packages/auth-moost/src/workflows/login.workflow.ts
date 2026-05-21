@@ -129,6 +129,16 @@ export interface LoginWfCtx {
   pinExpire?: number;
   pinTimeout?: number;
   pinSentTo?: string;
+  /**
+   * Per-method "next-allowed-send-at" timestamp. Written by
+   * `pincode-send-login` after each send and consulted by `select2fa` to
+   * reject re-picking a method while it's still in cooldown. Closes the
+   * `useDifferentMethod → same method → fresh SMS` abuse loop: without this
+   * an attacker (or an impatient user) can spam SMS/email by alternating
+   * methods. Persists across `delete ctx.pin` (resend/useDifferentMethod)
+   * so the throttle survives a method switch.
+   */
+  pincodeCooldowns?: { sms?: number; email?: number };
 
   // Device trust:
   deviceTrustToken?: string;
@@ -859,6 +869,18 @@ export class LoginWorkflow extends AuthWorkflowBase {
     if (!picked) {
       throw wf.requireInput({ errors: { methodName: "Unknown MFA method" } });
     }
+    if (picked.kind === "sms" || picked.kind === "email") {
+      const cooldownUntil = ctx.pincodeCooldowns?.[picked.kind];
+      if (cooldownUntil && Date.now() < cooldownUntil) {
+        const waitSec = Math.ceil((cooldownUntil - Date.now()) / 1000);
+        const channel = picked.kind === "sms" ? "SMS" : "email";
+        throw wf.requireInput({
+          errors: {
+            methodName: `Please wait ${waitSec}s before requesting another ${channel} code`,
+          },
+        });
+      }
+    }
     ctx.mfaMethod = picked.kind;
     ctx.mfaSaveAsDefault = Boolean(input.saveAsDefault);
     if (ctx.mfaSaveAsDefault && ctx.username) {
@@ -897,6 +919,10 @@ export class LoginWorkflow extends AuthWorkflowBase {
         ttlMs: this.opts.mfa.pincodeTtlMs,
         userId: ctx.username,
       });
+    }
+    if (ctx.mfaMethod === "sms" || ctx.mfaMethod === "email") {
+      ctx.pincodeCooldowns ??= {};
+      ctx.pincodeCooldowns[ctx.mfaMethod] = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
     }
     return undefined;
   }

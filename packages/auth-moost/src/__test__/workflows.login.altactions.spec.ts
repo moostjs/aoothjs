@@ -109,6 +109,28 @@ describe("LoginWorkflow alt-actions — pincode-check-login", () => {
     expect(JSON.stringify(r.body)).toMatch(/methodName/);
   });
 
+  // SECURITY: useDifferentMethod → select2fa → re-pick same channel must not
+  // re-send another SMS/email within the per-method cooldown. Without this
+  // throttle an attacker could spam SMS/email by alternating pick → switch →
+  // pick. The `select2fa` step rejects with a `methodName` error and the
+  // pincode-send step never re-fires.
+  it("useDifferentMethod → re-pick same method within cooldown → rejected, no new send", async () => {
+    const app = await prepareWfApp({
+      loginOpts: { mfa: { pincodeResendTimeoutMs: 60_000 } },
+    });
+    const { wfs } = await driveToPincodeCheck(app);
+    const sentBefore = app.emails.length;
+
+    const sw = await app.trigger({ wfs, input: { action: "useDifferentMethod" } });
+    const back = await app.trigger({
+      wfs: sw.body?.wfs as string,
+      input: { methodName: "email" },
+    });
+    const errors = back.body?.errors as Record<string, string> | undefined;
+    expect(errors?.methodName).toMatch(/wait \d+s before requesting another email code/i);
+    expect(app.emails.length).toBe(sentBefore);
+  });
+
   it("valid code → mfaChecked true → tokens issued", async () => {
     const app = await prepareWfApp();
     const { wfs, pin } = await driveToPincodeCheck(app);
