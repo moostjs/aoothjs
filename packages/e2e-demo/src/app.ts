@@ -107,11 +107,14 @@ export interface BuildAppOptions {
 const g = globalThis as {
   __aoothE2eEmails?: AuthEmailEvent[];
   __aoothE2eSms?: AuthSmsEvent[];
+  __aoothE2eBackupCodes?: Map<string, string[]>;
 };
 g.__aoothE2eEmails ??= [];
 g.__aoothE2eSms ??= [];
+g.__aoothE2eBackupCodes ??= new Map();
 const sharedEmailsBuffer: AuthEmailEvent[] = g.__aoothE2eEmails;
 const sharedSmsBuffer: AuthSmsEvent[] = g.__aoothE2eSms;
+const sharedBackupCodesBuffer: Map<string, string[]> = g.__aoothE2eBackupCodes;
 /* eslint-enable no-underscore-dangle */
 
 /** Two-level deep merge — sufficient for the nested-pojo workflow opts. */
@@ -471,6 +474,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // endpoint go through ONE implementation — there is no other way to drop
   // back to a known-good fixture set.
   const reseed = async (): Promise<number> => {
+    // Plaintext backup-code list is only known at generation time — seed
+    // populates the map, callers must clear it here so stale codes don't
+    // outlive the user records they refer to.
+    sharedBackupCodesBuffer.clear();
     // Order matters for FKs: drop dependent rows first. The model-typed
     // `AtscriptDbTable<T>` overloads produce a TS2590 union when combined in
     // one array — widen the whole array once to a plain `deleteMany` shape
@@ -511,6 +518,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       sms: sharedSmsBuffer,
       reseed,
       userService: aooth.userService,
+      backupCodes: sharedBackupCodesBuffer,
     });
     app.registerControllers(TestMailboxController);
   }

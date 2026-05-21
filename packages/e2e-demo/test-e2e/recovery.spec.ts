@@ -13,6 +13,7 @@
 import { expect, test } from "@playwright/test";
 
 import {
+  clickAction,
   fillField,
   getEmails,
   readFinishEnvelope,
@@ -24,6 +25,22 @@ import {
   waitForSms,
   wfUrl,
 } from "./harness";
+
+/**
+ * Extract the `wfs=<token>` from a magic-link URL emitted by the demo's
+ * `buildMagicLinkUrl`. Tests that need to resume into a non-default variant
+ * (e.g. WF-RECOVERY-004's short-TTL variant) can't just `rewriteToBaseUrl`
+ * the email — the SPA router collapses `/recover?wfs=…` into
+ * `/wf?id=auth.recovery&wfs=…`, dropping any `?variant=` the test boot used.
+ * Reconstructing the URL with `wfUrl(wfId, variant) + "&wfs="` keeps the
+ * variant header alive on the resume request.
+ */
+function extractWfs(url: string): string {
+  const parsed = new URL(url);
+  const wfs = parsed.searchParams.get("wfs");
+  if (!wfs) throw new Error(`magic-link URL missing wfs param: ${url}`);
+  return wfs;
+}
 
 const ALICE_EMAIL = "alice@acme.test";
 const NEW_PASSWORD = "NewPassword2!";
@@ -255,5 +272,320 @@ test.describe("recovery — fresh-login (R-G)", () => {
     expect(envelope.next?.action?.type).toBe("redirect");
     // freshLoginRequired skips the auto-login step entirely.
     expect(envelope.data?.accessToken).toBeFalsy();
+  });
+});
+
+// =====================================================================
+// P1 stories — secondary branches and validation/error paths.
+// =====================================================================
+
+test.describe("recovery — default-magiclink P1 branches", () => {
+  test.beforeEach(async ({ request }) => {
+    await resetApp(request);
+  });
+
+  test("WF-RECOVERY-003: password mismatch on SetPasswordForm → inline 'Passwords do not match'", async ({
+    page,
+    request,
+    baseURL,
+  }) => {
+    // BRANCH: setPassword step's `newPassword !== confirmPassword` guard —
+    // workflow throws `requireInput({ errors: { confirmPassword: ... } })`
+    // which AsWfForm renders next to the confirmPassword field.
+    await page.goto(wfUrl("auth.recovery", "default-magiclink"));
+    await waitForFormInput(page, "email", 15_000);
+    await fillField(page, "email", ALICE_EMAIL);
+    await submitForm(page);
+
+    const email = await waitForEmail(request, (e) => e.kind === "recovery.magicLink");
+    await page.goto(rewriteToBaseUrl(email.url as string, baseURL ?? ""));
+
+    await waitForFormInput(page, "newPassword", 15_000);
+    await fillField(page, "newPassword", NEW_PASSWORD);
+    await fillField(page, "confirmPassword", "DifferentPass2!");
+    await submitForm(page);
+
+    // The error text appears inline; form remains paused (no finish banner).
+    await expect(page.getByText("Passwords do not match")).toBeVisible();
+    await expect(page.getByText("Workflow finished.")).not.toBeVisible();
+  });
+
+  test("WF-RECOVERY-004: expired magic link → error banner on resume, no setPassword form", async ({
+    page,
+    request,
+  }) => {
+    // BRANCH: @wooksjs/event-wf strategy.consume returns null for an
+    // expired state → controller responds 410 `{ error: "Invalid or expired
+    // workflow state" }`. AsWfForm surfaces a non-ok response as `error.value`
+    // which WfPage renders inside the `scope-error` div.
+    await page.goto(wfUrl("auth.recovery", "recovery-short-ttl"));
+    await waitForFormInput(page, "email", 15_000);
+    await fillField(page, "email", ALICE_EMAIL);
+    await submitForm(page);
+
+    const email = await waitForEmail(request, (e) => e.kind === "recovery.magicLink");
+    const wfs = extractWfs(email.url as string);
+
+    // Wait past the 1ms TTL — 50ms is generous against clock jitter.
+    await page.waitForTimeout(50);
+
+    // Rebuild the resume URL so the `recovery-short-ttl` variant header is
+    // re-sent on the resume request (`rewriteToBaseUrl` would strip it).
+    // `page.goto` resolves the relative URL against playwright's `use.baseURL`.
+    await page.goto(`${wfUrl("auth.recovery", "recovery-short-ttl")}&wfs=${wfs}`);
+
+    // SetPasswordForm must NOT appear; the error block must be shown.
+    await expect(page.locator(".as-wf-form-error, .scope-error")).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('[name="newPassword"]')).toHaveCount(0);
+  });
+
+  test("WF-RECOVERY-017: backToLogin on request form → finish envelope with reason='user-cancelled'", async ({
+    page,
+  }) => {
+    // BRANCH: `recoveryRequest` resolves the `backToLogin` alt-action BEFORE
+    // form validation. `abortToLogin` calls `finishWf({ next: { action: {
+    // type:'redirect', reason:'user-cancelled' } } })` and sets ctx.aborted
+    // so every downstream step short-circuits.
+    await page.goto(wfUrl("auth.recovery", "default-magiclink"));
+    await waitForFormInput(page, "email", 15_000);
+    // Click the `Back to sign-in` action — no email value needed since the
+    // action is resolved before required-field validation.
+    await clickAction(page, "Back to sign-in");
+
+    await expect(page.getByText("Workflow finished.")).toBeVisible();
+    const envelope = (await readFinishEnvelope(page)) as {
+      finished?: boolean;
+      next?: { action?: { type?: string; reason?: string } };
+      data?: { accessToken?: string };
+    };
+    expect(envelope.finished).toBe(true);
+    expect(envelope.next?.action?.type).toBe("redirect");
+    expect(envelope.next?.action?.reason).toBe("user-cancelled");
+    expect(envelope.data?.accessToken).toBeFalsy();
+  });
+});
+
+test.describe("recovery — otp-email P1 branches", () => {
+  test.beforeEach(async ({ request }) => {
+    await resetApp(request);
+  });
+
+  test("WF-RECOVERY-008: useDifferentTransport rejected when only 1 transport configured", async ({
+    page,
+  }) => {
+    // BRANCH: PincodeForm declares `useDifferentTransport` as an unconditional
+    // action — the form's atscript spec carries no `@ui.form.fn.hidden`, so
+    // the button is rendered regardless of `delivery.otp.transports.length`.
+    // The contract is enforced server-side: `recoveryCheckOtp` throws
+    // `requireInput({ formMessage: 'Only one transport configured' })` when
+    // the array has < 2 entries, leaving the form paused without re-sending.
+    // The USER_STORIES.md §4.3 "button absent in DOM" assertion is a future
+    // form-spec change; this test pins today's behavioural contract.
+    await page.goto(wfUrl("auth.recovery", "otp-email"));
+    await waitForFormInput(page, "email", 15_000);
+    await fillField(page, "email", ALICE_EMAIL);
+    await submitForm(page);
+
+    await waitForFormInput(page, "code", 15_000);
+    await clickAction(page, "Use a different transport");
+    // Server formMessage shown; form remains on PincodeForm.
+    await expect(page.getByText("Only one transport configured")).toBeVisible();
+    await expect(page.locator('[name="code"]').first()).toBeVisible();
+    await expect(page.getByText("Workflow finished.")).not.toBeVisible();
+  });
+
+  test("WF-RECOVERY-009: wrong OTP → errors.code='Invalid code', form re-renders", async ({
+    page,
+    request,
+  }) => {
+    // BRANCH: `recoveryCheckOtp` → `verifyPin` returns `{ code: "Invalid
+    // code" }` for any pin !== ctx.pin. The error is rendered inline next to
+    // the `code` field via AsWfForm's per-field error map.
+    await page.goto(wfUrl("auth.recovery", "otp-email"));
+    await waitForFormInput(page, "email", 15_000);
+    await fillField(page, "email", ALICE_EMAIL);
+    await submitForm(page);
+
+    // Drain the captured pincode email so we know the code was minted (but
+    // we deliberately submit a wrong one).
+    await waitForEmail(request, (e) => e.kind === "recovery.pincode");
+
+    await waitForFormInput(page, "code", 15_000);
+    await fillField(page, "code", "000000");
+    await submitForm(page);
+
+    await expect(page.getByText("Invalid code")).toBeVisible();
+    // Still paused — pincode input still present, no setPassword pause yet.
+    await expect(page.locator('[name="code"]').first()).toBeVisible();
+    await expect(page.locator('[name="newPassword"]')).toHaveCount(0);
+  });
+});
+
+test.describe("recovery — fast-resend P1 branches", () => {
+  test.beforeEach(async ({ request }) => {
+    await resetApp(request);
+  });
+
+  test("WF-RECOVERY-010: resend within cooldown → 'Please wait Ns' form error, no new email", async ({
+    page,
+    request,
+  }) => {
+    // BRANCH: `recoveryCheckOtp` `resend` action checks `ctx.pinResendAllowedAt`
+    // and throws `requireInput({ formMessage: 'Please wait Ns' })` when still
+    // inside the cooldown. The mailbox must NOT gain a second pincode email.
+    await page.goto(wfUrl("auth.recovery", "recovery-fast-resend"));
+    await waitForFormInput(page, "email", 15_000);
+    await fillField(page, "email", ALICE_EMAIL);
+    await submitForm(page);
+
+    const firstEmail = await waitForEmail(request, (e) => e.kind === "recovery.pincode");
+    await waitForFormInput(page, "code", 15_000);
+
+    // Click `Resend code` immediately — well inside the 1s cooldown.
+    await clickAction(page, "Resend code");
+    await expect(page.getByText(/Please wait \d+s/)).toBeVisible();
+
+    // Mailbox still has exactly one pincode email — no fresh code was minted.
+    const events = await getEmails(request);
+    const pincodeEmails = events.filter((e) => e.kind === "recovery.pincode");
+    expect(pincodeEmails).toHaveLength(1);
+    expect(pincodeEmails[0].code).toBe(firstEmail.code);
+  });
+
+  test("WF-RECOVERY-011: resend after cooldown → new code emitted, codes differ", async ({
+    page,
+    request,
+  }) => {
+    // BRANCH: same `resend` action — after the cooldown elapses the action
+    // deletes `ctx.pin` and the while-loop re-fires `sendOtp`, minting a
+    // fresh code and re-delivering. Mailbox ends up with 2 pincode emails.
+    await page.goto(wfUrl("auth.recovery", "recovery-fast-resend"));
+    await waitForFormInput(page, "email", 15_000);
+    await fillField(page, "email", ALICE_EMAIL);
+    await submitForm(page);
+
+    const firstEmail = await waitForEmail(request, (e) => e.kind === "recovery.pincode");
+    await waitForFormInput(page, "code", 15_000);
+
+    // Wait past the 1s cooldown configured by `recovery-fast-resend`.
+    await page.waitForTimeout(1200);
+    await clickAction(page, "Resend code");
+
+    // A second pincode email must arrive with a different code. We poll until
+    // the buffer has 2 entries, then compare.
+    await expect
+      .poll(
+        async () => (await getEmails(request)).filter((e) => e.kind === "recovery.pincode").length,
+        { timeout: 5_000 },
+      )
+      .toBe(2);
+
+    const events = await getEmails(request);
+    const pincodeEmails = events.filter((e) => e.kind === "recovery.pincode");
+    expect(pincodeEmails[0].code).toBe(firstEmail.code);
+    // Different code on the resend.
+    expect(pincodeEmails[1].code).not.toBe(firstEmail.code);
+  });
+});
+
+test.describe("recovery — otp-both (R-D) P1 branches", () => {
+  test.beforeEach(async ({ request }) => {
+    await resetApp(request);
+  });
+
+  test("WF-RECOVERY-007: switch transport email → sms via useDifferentTransport", async ({
+    page,
+    request,
+  }) => {
+    // BRANCH: `recoveryCheckOtp` `useDifferentTransport` rotates
+    // `ctx.otpTransport` from the first element of `delivery.otp.transports`
+    // (`email`) to the next (`sms`), clears the pin, and the while-loop
+    // re-runs `recoverySendOtp` on the new channel. Mailbox: 1 email
+    // pincode + 1 sms pincode. Uses t1_ivy because she has a confirmed phone
+    // (+15555550101) so the SMS deliver has a real recipient.
+    await page.goto(wfUrl("auth.recovery", "otp-both"));
+    await waitForFormInput(page, "email", 15_000);
+    await fillField(page, "email", "ivy@acme.test");
+    await submitForm(page);
+
+    // First leg — email pincode.
+    const emailCode = await waitForEmail(request, (e) => e.kind === "recovery.pincode");
+    expect(emailCode.recipient).toBe("ivy@acme.test");
+
+    await waitForFormInput(page, "code", 15_000);
+    await clickAction(page, "Use a different transport");
+
+    // Second leg — SMS pincode delivered to the user's recorded phone.
+    const sms = await waitForSms(request, (e) => e.kind === "recovery.pincode");
+    expect(sms.recipient).toBe("+15555550101");
+    expect(sms.code).toMatch(/^\d{6}$/);
+  });
+});
+
+test.describe("recovery — choice (R-E) P1 branches", () => {
+  test.beforeEach(async ({ request }) => {
+    await resetApp(request);
+  });
+
+  test("WF-RECOVERY-013: choice mode → pick otp → PincodeForm appears", async ({
+    page,
+    request,
+  }) => {
+    // BRANCH: `recoverySelectMode` sets `ctx.resolvedMode = 'otp'` and
+    // selects the default OTP transport (`email` per merge defaults). The
+    // schema's while-loop then runs sendOtp + checkOtp, so the next form is
+    // PincodeForm rather than SetPasswordForm.
+    await page.goto(wfUrl("auth.recovery", "choice"));
+    await waitForFormInput(page, "email", 15_000);
+    await fillField(page, "email", ALICE_EMAIL);
+    await submitForm(page);
+
+    await waitForFormInput(page, "mode", 15_000);
+    await fillField(page, "mode", "otp");
+    await submitForm(page);
+
+    // Pincode email arrives; PincodeForm's `code` input becomes visible.
+    const email = await waitForEmail(request, (e) => e.kind === "recovery.pincode");
+    expect(email.recipient).toBe(ALICE_EMAIL);
+    expect(email.code).toMatch(/^\d{6}$/);
+
+    await waitForFormInput(page, "code", 15_000);
+    await expect(page.locator('[name="code"]').first()).toBeVisible();
+  });
+});
+
+test.describe("recovery — pre-factor (R-F) P1 branches", () => {
+  test.beforeEach(async ({ request }) => {
+    await resetApp(request);
+  });
+
+  test("WF-RECOVERY-014: pre-reset factor (phone last-4) → SetPasswordForm renders", async ({
+    page,
+    request,
+    baseURL,
+  }) => {
+    // BRANCH: `preReset.requireKnownFactor=true` inserts `recoveryVerifyFactor`
+    // between the magic-link click and `recoverySetPassword`. t1_ivy is
+    // enrolled with phone +15555550101, so submitting factor='phone' value=
+    // last-4 '0101' should pass `verifyRecoveryFactor` and advance to the
+    // setPassword step.
+    await page.goto(wfUrl("auth.recovery", "pre-factor"));
+    await waitForFormInput(page, "email", 15_000);
+    await fillField(page, "email", "ivy@acme.test");
+    await submitForm(page);
+
+    const email = await waitForEmail(request, (e) => e.kind === "recovery.magicLink");
+    await page.goto(rewriteToBaseUrl(email.url as string, baseURL ?? ""));
+
+    // RecoveryFactorForm — factor + value text inputs.
+    await waitForFormInput(page, "factor", 15_000);
+    await fillField(page, "factor", "phone");
+    await fillField(page, "value", "0101");
+    await submitForm(page);
+
+    // setPassword pause — newPassword input must now be visible.
+    await waitForFormInput(page, "newPassword", 15_000);
+    await expect(page.locator('[name="newPassword"]').first()).toBeVisible();
+    await expect(page.locator('[name="confirmPassword"]').first()).toBeVisible();
   });
 });

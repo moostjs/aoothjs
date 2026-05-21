@@ -84,6 +84,23 @@ export const LOGIN_VARIANTS: Record<string, Partial<LoginWorkflowOpts>> = {
   "redirect-home": {
     finalize: { redirect: "home" },
   },
+  // Like `mfa-full` but with a 1s pincode-resend cooldown so the resend-throttled
+  // / resend-after-cooldown stories (WF-LOGIN-011 / -012) run inside a single e2e
+  // tick rather than the 60s production default.
+  "mfa-fast-resend": {
+    mfa: {
+      enabled: true,
+      transports: ["sms", "email", "totp"],
+      backupCodes: true,
+      pincodeResendTimeoutMs: 1000,
+    },
+  },
+  // Like `device-trust` but with `optIn: false` so the workflow does NOT render
+  // the `rememberDevice` checkbox on `PincodeForm` (WF-LOGIN-019).
+  "device-trust-no-optin": {
+    deviceTrust: { enabled: true, optIn: false, skipsMfa: true },
+    mfa: { enabled: true, transports: ["email"] },
+  },
 };
 
 /**
@@ -110,6 +127,21 @@ export const RECOVERY_VARIANTS: Record<string, Partial<RecoveryWorkflowOpts>> = 
   },
   "fresh-login": {
     postReset: { freshLoginRequired: true, revokeAllSessions: true },
+  },
+  // Fast-expire magic-link variant — WF-RECOVERY-004. The persisted state
+  // strategy honours `output.expires` so 1ms guarantees the resumed `wfs`
+  // hits the "Invalid or expired workflow state" branch in @wooksjs/event-wf.
+  "recovery-short-ttl": {
+    delivery: { mode: "magicLink", magicLinkTtlMs: 1 },
+  },
+  // Short OTP resend cooldown — WF-RECOVERY-010/011. 1s cooldown lets the
+  // first `Resend code` click trip the rate-limit branch, while a >1s wait
+  // proves a second click after the cooldown sends a fresh code.
+  "recovery-fast-resend": {
+    delivery: {
+      mode: "otp",
+      otp: { transports: ["email"], resendCooldownMs: 1000 },
+    },
   },
 };
 

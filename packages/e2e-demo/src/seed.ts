@@ -528,6 +528,13 @@ async function seedUser(handle: AppHandle, spec: UserSpec): Promise<SeededUser> 
   if (spec.backupCodes) {
     backupCodes = await aooth.userService.generateBackupCodes(spec.username, 10);
     console.log(`[seed] ${spec.username} backup codes (plaintext): ${backupCodes.join(" ")}`);
+    // Surface to /__test/backup-codes/:username so Playwright specs can
+    // submit a known-good code (stored form is hashed; the seed is the only
+    // place plaintext exists).
+    /* eslint-disable no-underscore-dangle -- intentional globalThis slot */
+    const g = globalThis as { __aoothE2eBackupCodes?: Map<string, string[]> };
+    g.__aoothE2eBackupCodes?.set(spec.username, [...backupCodes]);
+    /* eslint-enable no-underscore-dangle */
   }
 
   if (spec.defaultMfaMethod) {

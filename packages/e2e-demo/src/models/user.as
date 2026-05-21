@@ -62,4 +62,7 @@ export interface InviteAcceptProfileForm {
     @meta.label 'Phone'
     @expect.maxLength 32
     phone?: string
+
+    @ui.form.action 'skip', 'Skip'
+    skip?: ui.action
 }
