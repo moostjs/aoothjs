@@ -178,9 +178,11 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // class.
   const demoLoginOpts: LoginWorkflowOpts = mergeWfOpts(
     {
-      // Representative demo subset — no SMS gateway in the demo, so we strip
-      // 'sms' from the default mfa.transports list.
-      mfa: { transports: ["email", "totp"] },
+      // SMS is exercised via `demoSmsSender` which console-logs the code — fine for the UI harness.
+      mfa: {
+        transports: ["email", "sms", "totp"],
+        backupCodes: true,
+      },
       alternateCredentials: { forgotPassword: true },
       guards: { passwordInitial: true },
     },

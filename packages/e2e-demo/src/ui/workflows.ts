@@ -10,13 +10,15 @@ export const WORKFLOWS: ReadonlyArray<WfDescriptor> = [
   {
     id: "auth.login",
     label: "Login",
-    description: "Username/password login with optional MFA branches.",
+    description:
+      "Username/password (+ optional MFA). Try: t1_alice (no MFA), t1_grace (TOTP), t1_henry (email OTP), t1_ivy (SMS OTP), t1_jack (forced password change). All passwords: Password1!",
     requiresAuth: false,
   },
   {
     id: "auth.recovery",
     label: "Password recovery",
-    description: "Forgot-password — magic link or OTP.",
+    description:
+      "Forgot-password — magic link or OTP. Email-recoverable: any seeded user. SMS-recoverable: t1_ivy.",
     requiresAuth: false,
   },
   {

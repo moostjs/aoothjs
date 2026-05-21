@@ -6,6 +6,7 @@ export interface SeededUser {
   id: string;
   username: string;
   email: string;
+  phone?: string;
   password: string;
   /**
    * Set to `_global` (sentinel) for `_super` — the model validator requires a
@@ -14,8 +15,11 @@ export interface SeededUser {
   tenantId: string;
   departmentId?: string;
   roles: string[];
-  /** Only present for `t1_grace`, the user with confirmed TOTP MFA. */
+  /** Only present for users seeded with TOTP MFA. */
   totpSecret?: string;
+  /** Plaintext backup codes returned by `generateBackupCodes` — only present when seeded. */
+  backupCodes?: string[];
+  passwordInitial?: boolean;
 }
 
 export interface SeedFixtures {
@@ -35,6 +39,10 @@ export interface SeedFixtures {
     t1_eve: SeededUser;
     t1_frank: SeededUser;
     t1_grace: SeededUser;
+    t1_henry: SeededUser;
+    t1_ivy: SeededUser;
+    t1_jack: SeededUser;
+    t1_kate: SeededUser;
     t2_olivia: SeededUser;
     t2_oscar: SeededUser;
     _super: SeededUser;
@@ -66,6 +74,14 @@ interface UserSpec {
   departmentId?: string;
   roles: string[];
   totp?: boolean;
+  /** Enroll + confirm `email` MFA on `spec.email`. */
+  mfaEmail?: boolean;
+  /** Enroll + confirm `sms` MFA on the provided phone; persisted on `users.phone`. */
+  mfaSms?: { phone: string };
+  /** Generate 10 backup codes — requires `totp` so the `useBackupCode` MFA action is reachable. */
+  backupCodes?: boolean;
+  /** Insert with `password.isInitial = true` to exercise the forced-password-change guard. */
+  passwordInitial?: boolean;
 }
 
 export async function seedAll(handle: AppHandle): Promise<SeedFixtures> {
@@ -153,6 +169,43 @@ export async function seedAll(handle: AppHandle): Promise<SeedFixtures> {
       departmentId: deptA.ops,
       roles: ["member"],
       totp: true,
+    },
+    {
+      handle: "t1_henry",
+      username: "t1_henry",
+      email: "henry@acme.test",
+      tenantId: tenantAId,
+      departmentId: deptA.eng,
+      roles: ["member"],
+      mfaEmail: true,
+    },
+    {
+      handle: "t1_ivy",
+      username: "t1_ivy",
+      email: "ivy@acme.test",
+      tenantId: tenantAId,
+      departmentId: deptA.ops,
+      roles: ["member"],
+      mfaSms: { phone: "+15555550101" },
+    },
+    {
+      handle: "t1_jack",
+      username: "t1_jack",
+      email: "jack@acme.test",
+      tenantId: tenantAId,
+      departmentId: deptA.sales,
+      roles: ["member"],
+      passwordInitial: true,
+    },
+    {
+      handle: "t1_kate",
+      username: "t1_kate",
+      email: "kate@acme.test",
+      tenantId: tenantAId,
+      departmentId: deptA.eng,
+      roles: ["member"],
+      totp: true,
+      backupCodes: true,
     },
     {
       handle: "t2_olivia",
@@ -291,14 +344,16 @@ async function seedUser(handle: AppHandle, spec: UserSpec): Promise<SeededUser> 
   const { appDb, aooth } = handle;
   const hash = await aooth.userService.getPasswordHasher().hash(PASSWORD);
   const now = Date.now();
+  const phone = spec.mfaSms?.phone;
 
   const insert = await appDb.tables.users.insertOne({
     username: spec.username,
     email: spec.email,
+    phone,
     tenantId: spec.tenantId,
     departmentId: spec.departmentId,
     roles: spec.roles,
-    password: { hash, history: [], lastChanged: now, isInitial: false },
+    password: { hash, history: [], lastChanged: now, isInitial: spec.passwordInitial ?? false },
     account: {
       active: true,
       locked: false,
@@ -325,15 +380,44 @@ async function seedUser(handle: AppHandle, spec: UserSpec): Promise<SeededUser> 
     await aooth.userService.confirmMfaMethod(spec.username, "totp");
   }
 
+  if (spec.mfaEmail) {
+    await aooth.userService.addMfaMethod(spec.username, {
+      name: "email",
+      confirmed: false,
+      value: spec.email,
+    });
+    await aooth.userService.confirmMfaMethod(spec.username, "email");
+  }
+
+  if (spec.mfaSms) {
+    await aooth.userService.addMfaMethod(spec.username, {
+      name: "sms",
+      confirmed: false,
+      value: spec.mfaSms.phone,
+    });
+    await aooth.userService.confirmMfaMethod(spec.username, "sms");
+  }
+
+  // Backup codes must go in AFTER TOTP enrolment — the `useBackupCode` MFA
+  // action only surfaces from inside an MFA step, which requires at least
+  // one confirmed factor.
+  let backupCodes: string[] | undefined;
+  if (spec.backupCodes) {
+    backupCodes = await aooth.userService.generateBackupCodes(spec.username, 10);
+  }
+
   return {
     id,
     username: spec.username,
     email: spec.email,
+    phone,
     password: PASSWORD,
     tenantId: spec.tenantId,
     departmentId: spec.departmentId,
     roles: spec.roles,
     totpSecret,
+    backupCodes,
+    passwordInitial: spec.passwordInitial,
   };
 }
 

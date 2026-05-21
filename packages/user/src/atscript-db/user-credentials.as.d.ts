@@ -46,6 +46,7 @@ export declare class AoothUserCredentials {
     expiresAt: number /* timestamp */
     name?: string
   }[]
+  backupCodes?: string[]
   static __is_atscript_annotated_type: true
   static type: TAtscriptTypeObject<keyof AoothUserCredentials, AoothUserCredentials>
   static metadata: TMetadataMap<AtscriptMetadata>
