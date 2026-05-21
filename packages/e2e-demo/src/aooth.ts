@@ -93,6 +93,10 @@ export function createAooth({ tables, env }: AppAuthOptions): AppAuth {
       threshold: env.LOCKOUT_THRESHOLD,
       duration: env.LOCKOUT_DURATION_MS,
     },
+    // Required to use trusted-device APIs (issue/verify HMAC-signed tokens).
+    // The `device-trust` login variant relies on this; without a secret the
+    // workflow throws on `issueTrustedDevice` and the MFA step never finishes.
+    deviceTrust: { secret: env.JWT_SECRET },
   });
 
   const credentialStore = new CredentialStoreJwt<Record<string, unknown>>({

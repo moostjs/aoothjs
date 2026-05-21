@@ -181,21 +181,12 @@ test.describe("WF-INVITE — auth.invite family (P0)", () => {
     await page.goto(wfUrl("auth.invite", "roles-profile"));
     await expect(page.locator('[name="email"]')).toBeVisible();
 
-    // `collectRoles: true` on the variant ⇒ the `roles` field renders.
-    // The library default `getAvailableRoles()` returns `undefined`, so
-    // the demo's role picker collapses to an empty AsArray with no
-    // options. We assert STRUCTURAL presence; the "3 options exactly"
-    // assertion from the brief needs a demo-side `getAvailableRoles`
-    // override (fixme below if the field is absent entirely).
-    const rolesField = page.locator('[name="roles"]');
-    const rolesPresent = (await rolesField.count()) > 0;
-    test.fixme(
-      !rolesPresent,
-      "Demo `DemoInviteWorkflow` does not override `getAvailableRoles()` — the role field's array renderer may collapse to 0 rows. Wire the override in src/app.ts to unblock the 3-option assertion.",
-    );
-    // When the field renders we still assert visibility — that's the
-    // minimum the variant header is meant to deliver.
-    await expect(rolesField.first()).toBeVisible();
+    // `collectRoles: true` on the variant ⇒ `roles?: string[]` renders as an
+    // `as-multi-select-field` (not a native `[name="roles"]` input). The
+    // field is structurally present when the label "Roles" is visible AND a
+    // multi-select container is in the DOM.
+    await expect(page.locator(".as-field-label", { hasText: "Roles" })).toBeVisible();
+    await expect(page.locator(".as-multi-select-field")).toHaveCount(1);
   });
 
   // ── WF-INVITE-007 ────────────────────────────────────────────────────────

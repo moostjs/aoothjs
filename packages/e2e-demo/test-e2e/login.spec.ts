@@ -22,6 +22,7 @@ import {
   USERS,
   waitForEmail,
   waitForFormInput,
+  waitForSms,
   wfUrl,
 } from "./harness";
 
@@ -145,11 +146,38 @@ test.describe("LoginWorkflow / variant=mfa-full (multi-method)", () => {
     await expect(page.getByRole("button", { name: "Use backup code" })).toBeVisible();
   });
 
-  test.fixme("WF-LOGIN-007b: Select2faForm → SMS → tokens (blocked on __test/sms returning [] after forwardDeliver — useDifferentMethod itself works)", () => {
-    // Reaching Select2faForm now works (via useDifferentMethod, or by seeding
-    // a user without defaultMfaMethod). The remaining blocker is that
-    // `__test/sms` does not surface the SMS code emitted by `forwardDeliver`,
-    // so we can't submit the pincode end-to-end.
+  test("WF-LOGIN-007b: useDifferentMethod → Select2faForm → SMS → PincodeForm → tokens", async ({
+    page,
+    request,
+  }) => {
+    await page.goto(wfUrl(LOGIN_WF, "mfa-full"));
+    await fillField(page, "username", USERS.multi_mfa.username);
+    await fillField(page, "password", USERS.multi_mfa.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    // Default-method short-circuit lands on TOTP form; alt-action clears
+    // `mfaMethod` so the workflow re-runs prepare-mfa-options without
+    // honouring the default, surfacing Select2faForm.
+    await waitForFormInput(page, "code");
+    await page.getByRole("button", { name: "Use a different method" }).click();
+
+    // Select2faForm — pick SMS.
+    await waitForFormInput(page, "methodName");
+    await fillField(page, "methodName", "sms");
+    await page.locator("button.as-submit-btn, button[type=submit]").first().click();
+
+    // Pincode form → read captured SMS code → submit.
+    await waitForFormInput(page, "code");
+    const sms = await waitForSms(
+      request,
+      (e) => e.kind === "login.pincode" && (e.recipient ?? "").startsWith("+"),
+    );
+    expect(sms.code, "sms pincode captured").toBeTruthy();
+    await fillField(page, "code", sms.code);
+    await page.getByRole("button", { name: "Verify", exact: true }).click();
+
+    const envelope = (await readFinishEnvelope(page)) as { data?: { accessToken?: string } };
+    expect(typeof envelope.data?.accessToken).toBe("string");
   });
 });
 
@@ -294,12 +322,42 @@ test.describe("LoginWorkflow / variant=guards (passwordInitial)", () => {
 });
 
 test.describe("LoginWorkflow / variant=device-trust", () => {
-  test.fixme("WF-LOGIN-018: device-trust new-device → MFA → rememberDevice → 2nd login skips MFA", () => {
-    // Needs (a) deterministic TOTP arithmetic (variant uses `transports: ['totp']`
-    // and t1_grace's secret rotates per boot — same blocker as WF-LOGIN-008)
-    // AND (b) cookie persistence across two distinct page sessions inside
-    // one Playwright run. Both are tractable but out of scope for this P0
-    // pass — the orchestrator should surface a `__test/totp-secret` endpoint
-    // and the harness can grow a "second context" helper.
+  test("WF-LOGIN-018: device-trust new-device → MFA → rememberDevice → 2nd login skips MFA", async ({
+    page,
+    context,
+    request,
+  }) => {
+    // First login: MFA must run, opt in to remember the device.
+    // Variant uses `transports: ['email']` so the MFA pause is `PincodeForm`,
+    // which carries the `rememberDevice` checkbox.
+    await page.goto(wfUrl(LOGIN_WF, "device-trust"));
+    await fillField(page, "username", USERS.henry.username);
+    await fillField(page, "password", USERS.henry.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    await waitForFormInput(page, "code");
+    const otp = await waitForEmail(
+      request,
+      (e) => e.kind === "login.pincode" && e.recipient === "henry@acme.test",
+    );
+    await fillField(page, "code", otp.code as string);
+    await page.locator('[name="rememberDevice"]').first().check();
+    await page.getByRole("button", { name: "Verify", exact: true }).click();
+
+    await expect(page.getByText("Workflow finished")).toBeVisible({ timeout: 15_000 });
+    // Server set `aooth_trusted_device` cookie via the `device-trust` step.
+    const cookies = await context.cookies();
+    expect(cookies.some((c) => c.name === "aooth_trusted_device")).toBe(true);
+
+    // Second login in the same browser context: MFA step must be skipped
+    // because the trusted-device cookie matches a stored token for this user.
+    await page.goto(wfUrl(LOGIN_WF, "device-trust"));
+    await fillField(page, "username", USERS.henry.username);
+    await fillField(page, "password", USERS.henry.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    // No PincodeForm pause — workflow goes straight to issue/redirect.
+    await expect(page.getByText("Workflow finished")).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator('[name="code"]')).toHaveCount(0);
   });
 });

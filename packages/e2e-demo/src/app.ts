@@ -342,6 +342,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     protected override async prepareUser(): Promise<Record<string, unknown>> {
       return { tenantId: "_global" };
     }
+    protected override async getAvailableRoles(): Promise<string[]> {
+      // Includes "member" because existing vitest specs submit it; the
+      // returned set is the workflow's whitelist, so anything tests pass
+      // through has to appear here.
+      return ["admin", "editor", "viewer", "member"];
+    }
     // Demonstrates the consumer-supplied profile form. `applyProfile` defaults
     // to `users.update(username, profile)` when not overridden; the explicit
     // override below proves the escape hatch reaches user-supplied code.

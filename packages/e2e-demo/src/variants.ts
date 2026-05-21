@@ -46,7 +46,9 @@ export const LOGIN_VARIANTS: Record<string, Partial<LoginWorkflowOpts>> = {
   },
   "device-trust": {
     deviceTrust: { enabled: true, optIn: true, skipsMfa: true },
-    mfa: { enabled: true, transports: ["totp"] },
+    // Use email transport so the MFA pause renders `PincodeForm`, which
+    // carries the `rememberDevice` checkbox (MfaCodeForm doesn't).
+    mfa: { enabled: true, transports: ["email"] },
   },
   guards: {
     guards: { passwordInitial: true, emailVerifiedRequired: true },
