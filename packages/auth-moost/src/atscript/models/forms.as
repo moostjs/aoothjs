@@ -182,7 +182,7 @@ export interface InviteForm {
     // UX: select-on-array currently renders single-text-per-item via AsArray;
     // dedicated multi-select widget tracked as atscript-ui follow-up.
     @ui.form.type 'select'
-    @ui.form.fn.options '(_, _data, context) => Array.isArray(context.availableRoles) ? context.availableRoles.map(r => ({ value: r, label: r })) : []'
+    @ui.form.fn.options '(_, _data, context) => Array.isArray(context.availableRoles) ? context.availableRoles.map(r => ({ key: r, label: r })) : []'
     @meta.label 'Roles'
     roles?: string[]
 
@@ -236,7 +236,7 @@ export interface InviteSendModeForm {
 @wf.context.pass 'mfaEnrolledMethods'
 export interface Select2faForm {
     @ui.form.type 'select'
-    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.mfaEnrolledMethods) ? ctx.mfaEnrolledMethods.map(m => ({ value: m.methodName, label: m.masked ? m.kind + " (" + m.masked + ")" : m.kind })) : []'
+    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.mfaEnrolledMethods) ? ctx.mfaEnrolledMethods.map(m => ({ key: m.methodName, label: m.kind === "totp" ? "TOTP (Authenticator app)" : m.kind === "email" ? "Email" : m.kind === "sms" ? "SMS" : m.kind })) : []'
     @meta.label 'MFA method'
     @meta.required
     methodName: string

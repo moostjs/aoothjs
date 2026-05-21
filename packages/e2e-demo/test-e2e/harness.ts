@@ -129,12 +129,20 @@ export async function waitForFormInput(page: Page, name: string, timeoutMs = 500
 }
 
 /**
- * Synthetic input event on a v-model'd field so Vue's reactive `formData`
- * picks it up. The `Fill` button in WfPage.vue uses the same trick.
+ * Set a form field value by name. Native `fill(value)` for inputs and
+ * textareas; `selectOption(value)` for `<select>` (dynamic-options selects
+ * built by `@ui.form.fn.options` ship `{ key, label }` entries — the option's
+ * `value` attribute is `key`, so callers pass the key string).
  */
 export async function fillField(page: Page, name: string, value: string): Promise<void> {
   await waitForFormInput(page, name);
-  await page.locator(`[name="${name}"]`).first().fill(value);
+  const locator = page.locator(`[name="${name}"]`).first();
+  const tag = await locator.evaluate((el) => el.tagName.toLowerCase());
+  if (tag === "select") {
+    await locator.selectOption(value);
+  } else {
+    await locator.fill(value);
+  }
 }
 
 export async function clickAction(page: Page, label: string): Promise<void> {
