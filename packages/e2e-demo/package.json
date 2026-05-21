@@ -10,6 +10,8 @@
     "build": "vite build",
     "start": "vite-node src/main.ts",
     "test": "vp test",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
     "check": "vp check",
     "gen:atscript": "asc",
     "db:init": "vite-node src/scripts/init-db.ts",
@@ -51,6 +53,7 @@
     "vunor": "^0.2.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.55.0",
     "@types/node": "catalog:",
     "@unocss/vite": "^66.6.8",
     "@vitejs/plugin-vue": "^6.0.5",

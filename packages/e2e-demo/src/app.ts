@@ -5,7 +5,7 @@ import {
   MoostArbac,
 } from "@aooth/arbac-moost";
 import { AtscriptArbacUserProvider } from "@aooth/arbac-moost/atscript";
-import { AuthCredential, type EmailSender, type SmsSender } from "@aooth/auth";
+import { AuthCredential, type AuthSmsEvent, type EmailSender, type SmsSender } from "@aooth/auth";
 import {
   AuthController,
   authGuardInterceptor,
@@ -41,6 +41,7 @@ import type { AddressInfo } from "node:net";
 
 import { type AppAuth, createAooth } from "./aooth";
 import { type AppDb, createAppDb, syncAppSchema } from "./db";
+import { CaptureEmailSender } from "./email/capture-email-sender";
 import { ConsoleEmailSender } from "./email/console-email-sender";
 import { type AppEnv, ENV } from "./env";
 import {
@@ -56,6 +57,8 @@ import {
 } from "./controllers";
 import { DemoUser, InviteAcceptProfileForm } from "./models/user.as";
 import { allRoles, type UserAttrs } from "./roles";
+import { seedAll } from "./seed";
+import { createTestMailboxController } from "./test-mailbox";
 import { createWfStore } from "./wf-store";
 import { makeHandoverWorkflow } from "./workflows/handover.workflow";
 
@@ -117,6 +120,13 @@ export interface AppHandle {
   baseUrl: string;
   emailSender: EmailSender;
   aooth: AppAuth;
+  /**
+   * Truncates every app DB table and re-runs `seedAll(handle)`. Returns the
+   * number of seeded user records — used by the `__test/reset` endpoint and by
+   * `src/main.ts` so the dev-entry seed path and the test-reset path share
+   * exactly one implementation.
+   */
+  reseed: () => Promise<number>;
   close: () => Promise<void>;
 }
 
@@ -124,11 +134,20 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   const env: AppEnv = { ...ENV, ...opts.envOverrides };
   const dbPath = opts.dbPath ?? env.DB_PATH;
   const port = opts.port ?? env.PORT;
+  // Single-source DEMO_MODE check. `'test'` swaps in capturing senders and
+  // mounts the `__test/*` controller. NEVER read this variable elsewhere —
+  // the rest of the app gets test capability via the explicit refs below.
+  const isTestMode = process.env.DEMO_MODE === "test";
 
   const appDb = createAppDb(dbPath);
   await syncAppSchema(appDb);
 
-  const emailSender: EmailSender = opts.emailSender ?? new ConsoleEmailSender();
+  // In test mode, default to a capturing email sender so the `__test/emails`
+  // endpoint has something to read. An explicit `opts.emailSender` still wins
+  // (the in-process vitest harness passes its own CaptureEmailSender).
+  const captureEmailSender = isTestMode && !opts.emailSender ? new CaptureEmailSender() : undefined;
+  const emailSender: EmailSender =
+    opts.emailSender ?? captureEmailSender ?? new ConsoleEmailSender();
   const aooth = createAooth({ tables: appDb.tables, env });
   const wfStateStore = createWfStore(appDb);
 
@@ -137,11 +156,16 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   app.adapter(moostHttp);
   app.adapter(new MoostWf());
 
-  // Console-stub SMS sender — kept here as a closure for the workflow
-  // overrides. Defaults strip 'sms' from mfa.transports, so this only fires
-  // if a consumer flips it back on.
+  // Captured SMS buffer — only populated when `isTestMode` is on. Lives in the
+  // `buildApp` closure so the `__test` controller can read it without a
+  // singleton. The console-stub remains for dev (DEMO_MODE!=='test').
+  const capturedSms: AuthSmsEvent[] = [];
   const demoSmsSender: SmsSender = {
     async send(event) {
+      if (isTestMode) {
+        capturedSms.push(event);
+        return;
+      }
       console.log("[demo SMS]", event.kind, event.recipient, event.code);
     },
   };
@@ -390,6 +414,54 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
 
   app.registerControllers(...buildAppControllers(appDb));
 
+  // `reseed()` truncates every app DB table and re-runs `seedAll`. Defined
+  // up here so both `main.ts` (dev-entry seed) and the `__test/reset`
+  // endpoint go through ONE implementation — there is no other way to drop
+  // back to a known-good fixture set.
+  const reseed = async (): Promise<number> => {
+    // Order matters for FKs: drop dependent rows first. The model-typed
+    // `AtscriptDbTable<T>` overloads produce a TS2590 union when combined in
+    // one array — widen the whole array once to a plain `deleteMany` shape
+    // (the runtime is identical; `{}` matches every row in atscript-db).
+    type AnyDeletable = { deleteMany: (filter: Record<string, unknown>) => Promise<unknown> };
+    const t = appDb.tables;
+    const dropOrder = [
+      t.documents,
+      t.comments,
+      t.tasks,
+      t.projects,
+      t.audit,
+      t.wfStates,
+      t.users,
+      t.departments,
+      t.tenants,
+    ] as unknown as AnyDeletable[];
+    for (const tbl of dropOrder) {
+      await tbl.deleteMany({});
+    }
+    const fixtures = await seedAll({
+      app,
+      appDb,
+      baseUrl: "",
+      emailSender,
+      aooth,
+      reseed: async () => 0,
+      close: async () => {},
+    });
+    return Object.keys(fixtures.users).length;
+  };
+
+  // Test-only mailbox/reset endpoints. The `__test` controller is mounted ONLY
+  // when DEMO_MODE='test' — never in dev, never in CI prod boots.
+  if (isTestMode) {
+    const TestMailboxController = createTestMailboxController({
+      emails: captureEmailSender?.events ?? [],
+      sms: capturedSms,
+      reseed,
+    });
+    app.registerControllers(TestMailboxController);
+  }
+
   await app.init();
   await moostHttp.listen(port);
 
@@ -407,7 +479,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     appDb.close();
   };
 
-  return { app, appDb, baseUrl, emailSender, aooth, close };
+  return { app, appDb, baseUrl, emailSender, aooth, reseed, close };
 }
 
 function buildAppControllers(appDb: AppDb): ReadonlyArray<new (...args: never[]) => unknown> {
