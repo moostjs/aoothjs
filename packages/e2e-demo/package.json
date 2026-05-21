@@ -30,6 +30,8 @@
     "@atscript/typescript": "catalog:",
     "@atscript/ui": "catalog:",
     "@atscript/ui-styles": "catalog:",
+    "@atscript/vue-form": "catalog:",
+    "@atscript/vue-wf": "catalog:",
     "@moostjs/event-http": "catalog:",
     "@moostjs/event-wf": "catalog:",
     "@moostjs/vite": "catalog:",

@@ -334,7 +334,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     @Post("trigger")
     @Public()
     @WfTrigger({
-      allow: [...DEFAULT_AUTH_WORKFLOWS, "project.handover"],
+      allow: [...DEFAULT_AUTH_WORKFLOWS, "auth.reInvite", "auth.cancelInvite", "project.handover"],
     })
     override triggerWf(): void {
       // see AuthController.triggerWf — body intentionally empty.
