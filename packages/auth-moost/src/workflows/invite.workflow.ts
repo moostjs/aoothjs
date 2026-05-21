@@ -916,12 +916,12 @@ export class InviteWorkflow extends AuthWorkflowBase {
   @Public()
   confirmation(@WorkflowParam("context") ctx: InviteWfCtx): undefined {
     ctx.confirmationShown = true;
-    // When auto-login is the next step, the data finish here is OVERWRITTEN
-    // by `inviteAutoLoginFinish` (which calls useWfFinished().set with the
-    // login response). When freshLoginRequired, the freshLoginFinish step
-    // overrides with a redirect. The confirmation message is therefore only
-    // visible in flows where BOTH freshLoginRequired AND showConfirmation are
-    // tuned together — that's by design per WF_INVITE.md §"confirmation".
+    // The auto-login terminal (`inviteAutoLoginFinish`) merges this envelope's
+    // `message` into its own data response so the SPA still surfaces the
+    // configured confirmation text alongside the tokens (WF-INVITE-020). The
+    // `freshLoginFinish` terminal still overwrites with an immediate redirect
+    // — there's no SPA surface to paint the message before the redirect
+    // fires, so that branch intentionally drops it.
     finishWf({
       data: { confirmed: true },
       message: { level: "success", text: this.opts.accept.confirmationMessage },
@@ -954,10 +954,17 @@ export class InviteWorkflow extends AuthWorkflowBase {
     const issue = await this.auth.issue(ctx.username);
     ctx.tokensIssued = true;
     const auth = useAuth();
+    // Preserve a `message` set by an earlier terminal (typically
+    // `inviteConfirmation` when `accept.showConfirmation` is on) so the SPA
+    // can paint the configured confirmation text alongside the tokens.
+    // Additive only — when nothing set a message we emit the envelope as
+    // before. See WF-INVITE-020.
+    const previousMessage = (useWfFinished().get()?.value as WfFinished | undefined)?.message;
     // Raw `useWfFinished` path: cookies are wooks-level, helpers don't expose them.
     const envelope: WfFinished = {
       finished: true,
       data: auth.buildLoginResponse(ctx.username, issue),
+      ...(previousMessage && { message: previousMessage }),
     };
     useWfFinished().set({
       type: "data",

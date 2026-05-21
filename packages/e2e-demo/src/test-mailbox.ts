@@ -128,6 +128,21 @@ export function createTestMailboxController(
     backupCodesFor(@Param("username") username: string): { codes: string[] } {
       return { codes: backupCodes.get(username) ?? [] };
     }
+
+    /**
+     * Flip the globalThis flag that drives
+     * `DemoInviteWorkflow.duplicateCheck()` into the `'allow'` branch for
+     * WF-INVITE-018. Reset to `false` by `__test/reset` (via `reseed()`).
+     */
+    @Post("allow-duplicate-invites")
+    allowDuplicateInvites(): { ok: true } {
+      /* eslint-disable no-underscore-dangle -- intentional `__`-prefix marks internal globalThis slot */
+      (
+        globalThis as { __aoothE2eAllowDuplicateInvites?: boolean }
+      ).__aoothE2eAllowDuplicateInvites = true;
+      /* eslint-enable no-underscore-dangle */
+      return { ok: true };
+    }
   }
 
   return TestMailboxController;

@@ -890,26 +890,51 @@ test.describe("WF-INVITE — auth.invite family (P2)", () => {
   });
 
   // ── WF-INVITE-018 ────────────────────────────────────────────────────────
-  // BRANCH: §5.3 names this as "consumer overrides `duplicateCheck` to 'allow'
-  // and a store-level uniqueness constraint still rejects". Today there's no
-  // path to test that end-to-end in the demo:
-  //   1. `duplicateCheck` is a protected method on `BaseInviteWorkflow`, not
-  //      an `opts` field — it can't be flipped per-variant via the
-  //      `x-wf-variant` header (variants only deep-merge the `opts` literal).
-  //   2. The demo's `DemoInviteWorkflow.duplicateCheck()` override hard-returns
-  //      `'reject'` for any existing user. Wiring a per-variant hook ('reject'
-  //      vs 'allow') would require either an opts surface change on the base
-  //      workflow OR a demo-side `getDuplicateCheckMode(ctx)` shim that reads
-  //      from variant-merged opts. Neither exists today (see step-1 research).
-  //   3. The store-level "still 409s" branch needs a unique-constraint failure
-  //      AFTER `duplicateCheck` returns `'allow'` — the SQLite users table's
-  //      unique-on-username index would do this naturally, but only if
-  //      `duplicateCheck` actually returns `'allow'` first. Without (1)+(2)
-  //      there's no way to even reach the store-level branch.
-  // Tracking: WF_INVITE.md §"duplicate handling"; would need a follow-up
-  // making `duplicateCheck` an opts-driven function or exposing the mode as a
-  // variant-mergeable field on the demo subclass.
-  test.fixme("WF-INVITE-018 duplicateCheck='allow' override → store-level constraint still 409s", () => {});
+  // BRANCH: §5.3 — "consumer overrides `duplicateCheck` to 'allow', store-level
+  // uniqueness still rejects with 409 'User already exists'". The demo's
+  // `DemoInviteWorkflow.duplicateCheck()` consults a globalThis flag flipped
+  // by `POST /__test/allow-duplicate-invites`; when set, it returns `'allow'`
+  // so the workflow-level reject branch (line ~631 of invite.workflow.ts) is
+  // skipped. The admin then drives `auth.invite` against an existing seed
+  // user (`t1_redeemed@example.com`) — `invitePreCreateUser` calls
+  // `users.createUser(email, …)`, the store throws
+  // `UserAuthError.ALREADY_EXISTS`, and the catch-block at line ~691
+  // translates it to `HttpError(409, "User already exists")`. WfPage paints
+  // the message inside `.scope-error`, the same surface as WF-INVITE-002 —
+  // but the path through the workflow differs (store-level 409, not
+  // workflow-level reject).
+  test("WF-INVITE-018 duplicateCheck='allow' override → store-level constraint still 409s", async ({
+    page,
+    request,
+  }) => {
+    // Flip the demo-side flag BEFORE we drive the workflow. The reset hook
+    // in `beforeEach` zeroes the flag between tests so it doesn't leak.
+    const flip = await request.post("/__test/allow-duplicate-invites");
+    expect(flip.status()).toBeGreaterThanOrEqual(200);
+    expect(flip.status()).toBeLessThan(300);
+
+    await loginViaUi(page, USERS.admin_inviter);
+    await page.goto(wfUrl("auth.invite", "email-no-roles"));
+    await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
+
+    // `t1_redeemed@example.com` is the seed user whose `username = email`,
+    // so the store's `findByUsername(email)` resolves it (same target as
+    // WF-INVITE-002). With duplicateCheck='allow', the form step now passes
+    // and `invitePreCreateUser`'s `users.createUser` is what 409s.
+    await fillField(page, "email", "t1_redeemed@example.com");
+    const errorPromise = nextTriggerResponse(
+      page,
+      (b) => typeof b.message === "string" && /already exists|409/i.test(b.message),
+      10_000,
+    );
+    await submitForm(page);
+    const body = await errorPromise;
+    expect(body.message).toMatch(/User already exists/i);
+    await expect(page.locator(".scope-error")).toContainText(/User already exists/i);
+    // Form re-renders — the workflow stayed on the admin invite step (the
+    // 409 came from a step body, not from a validation error short-circuit).
+    await expect(page.locator('[name="email"]')).toBeVisible();
+  });
 
   // ── WF-INVITE-019 ────────────────────────────────────────────────────────
   // BRANCH: same TTL-expiry mechanism as -004 (same `short-ttl-confirmation`
@@ -961,33 +986,75 @@ test.describe("WF-INVITE — auth.invite family (P2)", () => {
   });
 
   // ── WF-INVITE-020 ────────────────────────────────────────────────────────
-  // BRANCH: §5.3 names this as "`showConfirmation: true` + `confirmationMessage`
-  // → invitee sees the configured success message after redemption". The
-  // `confirmation-message` variant flips both fields on.
-  // CONTRACT GAP (impl-documented at packages/auth-moost/src/workflows/invite.workflow.ts
-  // lines 888-893): `inviteConfirmation` does call `finishWf({ message: {
-  // level: 'success', text: opts.accept.confirmationMessage } })` — but the
-  // SUBSEQUENT `inviteAutoLoginFinish` step then calls `useWfFinished().set`
-  // with the auto-login response, OVERWRITING the confirmation envelope.
-  // The auto-login envelope carries `data: { accessToken, refreshToken, … }`
-  // and NO `message` field, so the configured "Your account has been created."
-  // text is dropped before the SPA renders.
-  // Empirically confirmed by Playwright (run before fixme'ing): post-redemption
-  // `<pre>` shows `{ finished: true, data: { accessToken, … } }` — message
-  // absent. The configured text is reachable to the end-user ONLY when
-  // BOTH `showConfirmation: true` AND `freshLoginRequired: true` are set
-  // (per the impl comment "only visible in flows where BOTH … are tuned
-  // together"); the demo's `confirmation-message` variant doesn't set
-  // `freshLoginRequired`, so the test would need a `confirmation-message-fresh`
-  // variant — and even then it overlaps with WF-INVITE-012's `fresh-login-required`
-  // assertion (which already covers the freshLoginFinish branch).
-  // Resolving end-to-end testability of THIS specific knob needs either:
-  //   (a) a finish-merge contract in `useWfFinished().set` (merge message,
-  //       not overwrite), OR
-  //   (b) a dedicated demo variant that combines `showConfirmation: true` +
-  //       `freshLoginRequired: true` (which the demo could add — but the
-  //       assertion would then be "confirmation message visible BEFORE the
-  //       redirect fires", which is a timing race the trigger=immediate
-  //       freshLoginFinish drowns out anyway).
-  test.fixme("WF-INVITE-020 showConfirmation=true → confirmation message rendered", () => {});
+  // BRANCH: §5.3 — "`showConfirmation: true` + `confirmationMessage` → invitee
+  // sees the configured success message after redemption". The
+  // `confirmation-message` variant flips `showConfirmation: true` AND sets
+  // `confirmationMessage: 'Your account has been created.'`.
+  //
+  // `inviteConfirmation` calls `finishWf({ message: { level: 'success',
+  // text: opts.accept.confirmationMessage } })`; the subsequent
+  // `inviteAutoLoginFinish` step now MERGES that `message` into its own
+  // data envelope (instead of overwriting it as it used to) — so the SPA
+  // receives both the tokens AND the configured text. WfPage's `<pre>` JSON
+  // dump renders the full envelope, so we read it through the wire response
+  // and the rendered DOM as a cross-check.
+  test("WF-INVITE-020 showConfirmation=true → confirmation message rendered", async ({
+    page,
+    request,
+    baseURL,
+  }) => {
+    await loginViaUi(page, USERS.admin_inviter);
+    await page.goto(wfUrl("auth.invite", "confirmation-message"));
+    await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
+
+    const inviteeEmail = uniqueEmail("invite-020");
+    await fillField(page, "email", inviteeEmail);
+    const sentPromise = nextTriggerResponse(page, (b) => b.sent === true);
+    await submitForm(page);
+    await sentPromise;
+
+    const magic = await waitForEmail(
+      request,
+      (e) => e.kind === "invite.magicLink" && e.recipient === inviteeEmail,
+    );
+    const resumeUrl = rewriteToBaseUrl(magic.url as string, baseURL ?? "");
+    const ctx = await page.context().browser()!.newContext();
+    const inviteePage = await ctx.newPage();
+    await inviteePage.goto(resumeUrl);
+
+    // SetPasswordForm pause.
+    await expect(inviteePage.locator('[name="newPassword"]')).toBeVisible({ timeout: 15_000 });
+    await inviteePage.locator('[name="newPassword"]').fill("InviteePass-1!");
+    await inviteePage.locator('[name="confirmPassword"]').fill("InviteePass-1!");
+    await inviteePage.locator("button.as-submit-btn, button[type=submit]").first().click();
+
+    // Profile form (demo always provides one) — submit empty to advance.
+    await expect(inviteePage.getByText("Display name")).toBeVisible({ timeout: 15_000 });
+    // Capture the final auto-login envelope on the wire — must carry BOTH
+    // the access token AND the preserved confirmation message.
+    const finishPromise = nextTriggerResponse(
+      inviteePage,
+      (b) => b.finished === true && b.data !== undefined,
+      15_000,
+    );
+    await inviteePage.locator("button.as-submit-btn, button[type=submit]").first().click();
+    const envelope = await finishPromise;
+
+    expect(envelope.finished).toBe(true);
+    const data = envelope.data as Record<string, unknown> | undefined;
+    expect(data, "auto-login envelope must carry the issued tokens").toBeDefined();
+    expect(data?.accessToken, "auto-login still fires when showConfirmation=true").toBeTruthy();
+    const message = envelope.message as { level?: string; text?: string } | undefined;
+    expect(message, "confirmation message preserved through autoLoginFinish").toBeDefined();
+    expect(message?.text).toBe("Your account has been created.");
+    expect(message?.level).toBe("success");
+
+    // The rendered `<pre>` JSON dump on WfPage mirrors the wire envelope.
+    await expect(inviteePage.locator("text=Workflow finished")).toBeVisible({ timeout: 15_000 });
+    await expect(inviteePage.locator("pre").first()).toContainText(
+      "Your account has been created.",
+    );
+    await expect(inviteePage.locator("pre").first()).toContainText("accessToken");
+    await ctx.close();
+  });
 });

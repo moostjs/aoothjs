@@ -20,6 +20,7 @@ import {
   createAuthShareableLinkOutlet,
   DEFAULT_AUTH_WORKFLOWS,
   type DeliverPayload,
+  type DuplicateAction,
   InviteWorkflow,
   type InviteWorkflowOpts,
   type LoginWfCtx,
@@ -34,7 +35,7 @@ import {
 } from "@aooth/auth-moost";
 import { HandleStateStrategy } from "@moostjs/event-wf";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
-import { UserService } from "@aooth/user";
+import { type UserCredentials, UserService } from "@aooth/user";
 import { MoostHttp, Post } from "@moostjs/event-http";
 import { MoostWf } from "@moostjs/event-wf";
 import {
@@ -131,6 +132,11 @@ const g = globalThis as {
   // `/__test/audit` endpoint can return + the `__test/reset` flow can clear
   // (length = 0) without breaking the shared reference.
   __aoothE2eAuditEvents?: AuditEvent[];
+  // When `true`, `DemoInviteWorkflow.duplicateCheck()` returns `'allow'` for
+  // every email so the store-level uniqueness branch in `invitePreCreateUser`
+  // gets exercised (WF-INVITE-018). Flipped via POST /__test/allow-duplicate-invites
+  // and reset to `false` by `reseed()` / `__test/reset`.
+  __aoothE2eAllowDuplicateInvites?: boolean;
 };
 g.__aoothE2eEmails ??= [];
 g.__aoothE2eSms ??= [];
@@ -140,6 +146,7 @@ g.__aoothE2eTenants ??= new Map();
 g.__aoothE2ePersonas ??= new Map();
 g.__aoothE2eProfileMissingFields ??= new Map();
 g.__aoothE2eAuditEvents ??= [];
+g.__aoothE2eAllowDuplicateInvites ??= false;
 const sharedEmailsBuffer: AuthEmailEvent[] = g.__aoothE2eEmails;
 const sharedSmsBuffer: AuthSmsEvent[] = g.__aoothE2eSms;
 const sharedBackupCodesBuffer: Map<string, string[]> = g.__aoothE2eBackupCodes;
@@ -444,6 +451,17 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       // through has to appear here.
       return ["admin", "editor", "viewer", "member"];
     }
+    // WF-INVITE-018: when the test-only flag is flipped (via
+    // POST /__test/allow-duplicate-invites), bypass the workflow-level
+    // duplicate reject so `invitePreCreateUser`'s store-level 409 catch
+    // becomes reachable. Default behaviour (delegates to base) otherwise.
+    protected override async duplicateCheck(input: {
+      email: string;
+      existingUser: UserCredentials | null;
+    }): Promise<DuplicateAction> {
+      if (g.__aoothE2eAllowDuplicateInvites) return "allow";
+      return super.duplicateCheck(input);
+    }
     // Demonstrates the consumer-supplied profile form. `applyProfile` defaults
     // to `users.update(username, profile)` when not overridden; the explicit
     // override below proves the escape hatch reaches user-supplied code.
@@ -589,6 +607,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     sharedProfileMissingFieldsBuffer.clear();
     // Captured `audit(event)` events — cleared so the next test starts clean.
     sharedAuditEventsBuffer.length = 0;
+    // WF-INVITE-018 toggle — reset between tests so a flipped flag in one
+    // spec doesn't leak into the next.
+    g.__aoothE2eAllowDuplicateInvites = false;
     // Order matters for FKs: drop dependent rows first. The model-typed
     // `AtscriptDbTable<T>` overloads produce a TS2590 union when combined in
     // one array — widen the whole array once to a plain `deleteMany` shape
