@@ -22,6 +22,7 @@ import {
   type DeliverPayload,
   InviteWorkflow,
   type InviteWorkflowOpts,
+  type LoginWfCtx,
   LoginWorkflow,
   type LoginWorkflowOpts,
   Public,
@@ -115,6 +116,17 @@ const g = globalThis as {
   // and consulted by `DemoLoginWorkflow.loadTenants()` to drive the
   // tenant-select step (skipped when length ≤ 1).
   __aoothE2eTenants?: Map<string, string[]>;
+  // username → list of persona options the user can pick from. Populated by
+  // `seed.ts` and consulted by `DemoLoginWorkflow.loadPersonas()` to drive
+  // the `persona-select` step (skipped when length ≤ 1). Mirrors the tenants
+  // buffer pattern. See WF-LOGIN-032.
+  __aoothE2ePersonas?: Map<string, Array<{ id: string; label: string }>>;
+  // username → profile fields that must be collected before issue. Populated
+  // by `seed.ts` for users that have no real DB column carrying this state
+  // and consulted by `DemoLoginWorkflow.credentials()` to inject
+  // `ctx.profileMissingFields` so the `profile-complete` step fires. See
+  // WF-LOGIN-032.
+  __aoothE2eProfileMissingFields?: Map<string, string[]>;
   // Captured `RecoveryWorkflow.audit()` payloads. Plain array so the
   // `/__test/audit` endpoint can return + the `__test/reset` flow can clear
   // (length = 0) without breaking the shared reference.
@@ -125,12 +137,19 @@ g.__aoothE2eSms ??= [];
 g.__aoothE2eBackupCodes ??= new Map();
 g.__aoothE2eActiveSessions ??= new Map();
 g.__aoothE2eTenants ??= new Map();
+g.__aoothE2ePersonas ??= new Map();
+g.__aoothE2eProfileMissingFields ??= new Map();
 g.__aoothE2eAuditEvents ??= [];
 const sharedEmailsBuffer: AuthEmailEvent[] = g.__aoothE2eEmails;
 const sharedSmsBuffer: AuthSmsEvent[] = g.__aoothE2eSms;
 const sharedBackupCodesBuffer: Map<string, string[]> = g.__aoothE2eBackupCodes;
 const sharedActiveSessionsBuffer: Map<string, number> = g.__aoothE2eActiveSessions;
 const sharedTenantsBuffer: Map<string, string[]> = g.__aoothE2eTenants;
+const sharedPersonasBuffer: Map<
+  string,
+  Array<{ id: string; label: string }>
+> = g.__aoothE2ePersonas;
+const sharedProfileMissingFieldsBuffer: Map<string, string[]> = g.__aoothE2eProfileMissingFields;
 const sharedAuditEventsBuffer: AuditEvent[] = g.__aoothE2eAuditEvents;
 /* eslint-enable no-underscore-dangle */
 
@@ -293,6 +312,41 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     ): Promise<Array<{ id: string; name: string }>> {
       const ids = sharedTenantsBuffer.get(username) ?? [];
       return ids.map((id) => ({ id, name: id }));
+    }
+    // Drives the `persona-select` step: returns the user's personas from the
+    // globalThis-anchored buffer populated by `seed.ts`. Mirrors `loadTenants`
+    // — single-persona users (length ≤ 1) skip the step entirely. Needed by
+    // WF-LOGIN-032 so iris exercises the persona pause.
+    protected override async loadPersonas(
+      username: string,
+    ): Promise<Array<{ id: string; label: string }>> {
+      return sharedPersonasBuffer.get(username) ?? [];
+    }
+    // After the bundled `credentials` step authenticates the user, inject
+    // `ctx.profileMissingFields` from the demo's per-user buffer. There is no
+    // DB column carrying this state, so this override is the bridge between
+    // `seed.ts` and the `profile-complete` schema condition. Required by
+    // WF-LOGIN-032.
+    override async credentials(ctx: LoginWfCtx): Promise<unknown> {
+      const result = await super.credentials(ctx);
+      if (ctx.username) {
+        const missing = sharedProfileMissingFieldsBuffer.get(ctx.username);
+        if (missing && missing.length > 0) {
+          ctx.profileMissingFields = [...missing];
+        }
+        // Pre-populate tenant + persona arrays so the `tenant-select` and
+        // `persona-select` schema conditions (gated on `length > 1`) can
+        // evaluate BEFORE the step bodies run. The library's bundled step
+        // bodies load these on first entry, but the schema gate is evaluated
+        // first — so without this pre-fetch the steps are skipped.
+        if (!ctx.availableTenants) {
+          ctx.availableTenants = await this.loadTenants(ctx.username);
+        }
+        if (!ctx.availablePersonas) {
+          ctx.availablePersonas = await this.loadPersonas(ctx.username);
+        }
+      }
+      return result;
     }
   }
 
@@ -529,6 +583,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     sharedActiveSessionsBuffer.clear();
     // Tenants list keyed by username — repopulated per-seed by `seed.ts`.
     sharedTenantsBuffer.clear();
+    // Personas list keyed by username — mirrors tenants. Re-populated per-seed.
+    sharedPersonasBuffer.clear();
+    // Profile-missing-fields list keyed by username — same lifecycle.
+    sharedProfileMissingFieldsBuffer.clear();
     // Captured `audit(event)` events — cleared so the next test starts clean.
     sharedAuditEventsBuffer.length = 0;
     // Order matters for FKs: drop dependent rows first. The model-typed

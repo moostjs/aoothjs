@@ -112,6 +112,7 @@ export const USERS = {
   bob: { username: "t1_bob", password: "Password1!" },
   grace: { username: "t1_grace", password: "Password1!" }, // single TOTP
   henry: { username: "t1_henry", password: "Password1!" }, // single Email-OTP
+  iris: { username: "t1_iris", password: "Password1!" }, // full-variant walkthrough (WF-LOGIN-032)
   ivy: { username: "t1_ivy", password: "Password1!" }, // single SMS-OTP
   jack: { username: "t1_jack", password: "Password1!" }, // passwordInitial
   kate: { username: "t1_kate", password: "Password1!" }, // TOTP + backup codes

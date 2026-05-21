@@ -43,6 +43,7 @@ export interface SeedFixtures {
     t1_grace: SeededUser;
     t1_henry: SeededUser;
     t1_ivy: SeededUser;
+    t1_iris: SeededUser;
     t1_jack: SeededUser;
     t1_kate: SeededUser;
     t1_locked: SeededUser;
@@ -140,6 +141,27 @@ export async function seedAll(handle: AppHandle): Promise<SeedFixtures> {
   tenantsBuf?.set("t1_alice", [tenantAId]);
   tenantsBuf?.set("t1_two_tenants", [tenantAId, tenantBId]);
   tenantsBuf?.set("t2_two_tenants", [tenantAId, tenantBId]);
+  // `t1_iris` belongs to BOTH tenants so the multi-context picker fires under
+  // the `full` variant. Symbolic ids (not the DB tenant uuids) — the
+  // `tenant-select` step validates against this buffer, not the tenants table,
+  // so e2e tests can submit a predictable string. See WF-LOGIN-032.
+  tenantsBuf?.set("t1_iris", ["tenant-a", "tenant-b"]);
+  // Personas buffer — only `t1_iris` carries multiple personas (length > 1 is
+  // the schema condition for the `persona-select` step). Mirrors tenants.
+  const personasBuf = (
+    globalThis as { __aoothE2ePersonas?: Map<string, Array<{ id: string; label: string }>> }
+  ).__aoothE2ePersonas;
+  personasBuf?.set("t1_iris", [
+    { id: "persona-employee", label: "Employee" },
+    { id: "persona-contractor", label: "Contractor" },
+  ]);
+  // Profile-missing-fields buffer — drives the `profile-complete` step for
+  // users that have no real DB column for this state. `DemoLoginWorkflow.credentials`
+  // reads this map after a successful login and injects the fields onto ctx.
+  const profileMissingBuf = (
+    globalThis as { __aoothE2eProfileMissingFields?: Map<string, string[]> }
+  ).__aoothE2eProfileMissingFields;
+  profileMissingBuf?.set("t1_iris", ["firstName", "lastName"]);
   /* eslint-enable no-underscore-dangle */
 
   // Synthetic sentinel tenant so `_super` (`tenantId: '_global'`) satisfies
@@ -234,6 +256,22 @@ export async function seedAll(handle: AppHandle): Promise<SeedFixtures> {
       departmentId: deptA.sales,
       roles: ["member"],
       passwordInitial: true,
+    },
+    {
+      // WF-LOGIN-032: the single user that triggers every optional pausing
+      // step of the `full` login variant. `passwordInitial=true` → setPassword
+      // pause; no confirmed email/sms MFA methods → ensureEmail + ensurePhone
+      // pauses; the per-username buffers above add 2 tenants, 2 personas, and
+      // a missing-firstName/lastName marker. `activeSessions: 1` so the
+      // concurrency-limit (max=1) kickPrompt fires.
+      handle: "t1_iris",
+      username: "t1_iris",
+      email: "iris@acme.test",
+      tenantId: tenantAId,
+      departmentId: deptA.eng,
+      roles: ["member"],
+      passwordInitial: true,
+      activeSessions: 1,
     },
     {
       handle: "t1_kate",

@@ -1012,20 +1012,138 @@ test.describe("LoginWorkflow / variant=concurrency-reject (P2)", () => {
 });
 
 test.describe("LoginWorkflow / variant=full (P2)", () => {
-  // BRANCH: a single login flow that exercises every optional step at once
-  // (terms-accept + profile-complete + consent-marketing + tenant-select +
-  // persona-select + MFA enrollment + device-trust + password-change). No
-  // seed user covers all of that simultaneously today.
-  test.fixme("WF-LOGIN-032: iris walks through every step in one login", async () => {
-    // Body intentionally empty — see follow-up comment below.
+  // BRANCH: iris exercises every optional step in one flow under variant
+  // `full`. Pause order (verified against `LoginWorkflow.@WorkflowSchema` in
+  // login.workflow.ts): LoginCredentialsForm → AskEmailForm → PincodeForm
+  // (email enrollment) → AskPhoneForm → PincodeForm (sms enrollment) →
+  // Select2faForm → PincodeForm (email MFA, rememberDevice opt-in) →
+  // SetPasswordForm → TermsAcceptForm → ProfileCompleteForm →
+  // ConsentMarketingForm → TenantSelectForm → PersonaSelectForm →
+  // ConcurrencyLimitForm → finish envelope w/ accessToken. NB: the `full`
+  // variant turns on `guards.passwordExpiry: true` but the schema never
+  // references that flag (no `password-expired` step exists), so no extra
+  // pause appears for it — the option is currently inert.
+  test("WF-LOGIN-032: iris walks through every optional step in one login", async ({
+    page,
+    request,
+  }) => {
+    await page.goto(wfUrl(LOGIN_WF, "full"));
+
+    // 1. LoginCredentialsForm — username + password.
+    await fillField(page, "username", USERS.iris.username);
+    await fillField(page, "password", USERS.iris.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    // 2. AskEmailForm (ensureEmail, no confirmed email MFA yet).
+    await waitForFormInput(page, "email");
+    await fillField(page, "email", "iris@acme.test");
+    await submitForm(page);
+
+    // 3. PincodeForm — email OTP from the captured-mail buffer.
+    await waitForFormInput(page, "code");
+    const emailEnrollOtp = await waitForEmail(
+      request,
+      (e) => e.kind === "login.pincode" && e.recipient === "iris@acme.test",
+    );
+    await fillField(page, "code", emailEnrollOtp.code as string);
+    await submitForm(page);
+
+    // 4. AskPhoneForm (ensurePhone, no confirmed sms MFA yet).
+    await waitForFormInput(page, "phone");
+    await fillField(page, "phone", "+15555550777");
+    await submitForm(page);
+
+    // 5. PincodeForm — sms OTP from the captured-sms buffer.
+    await waitForFormInput(page, "code");
+    const phoneEnrollSms = await waitForSms(
+      request,
+      (e) => e.kind === "login.pincode" && (e.recipient ?? "").startsWith("+15555550777"),
+    );
+    await fillField(page, "code", phoneEnrollSms.code);
+    await submitForm(page);
+
+    // 6. Select2faForm — iris now has 2 confirmed methods (sms + email) with
+    // no default → user picks. `methodName` must equal an enrolled MfaMethod
+    // name. Pick `email` so the next pause is PincodeForm (email transport),
+    // which also carries the `rememberDevice` checkbox we want to toggle.
+    await waitForFormInput(page, "methodName");
+    await fillField(page, "methodName", "email");
+    await submitForm(page);
+
+    // 7. PincodeForm — email MFA code. Tick rememberDevice so the
+    // `device-trust` step issues + persists a trust record (one of the
+    // optional steps in the schema arc).
+    await waitForFormInput(page, "code");
+    const mfaOtp = await waitForEmail(
+      request,
+      (e) =>
+        e.kind === "login.pincode" &&
+        e.recipient === "iris@acme.test" &&
+        e.code !== emailEnrollOtp.code,
+    );
+    await fillField(page, "code", mfaOtp.code as string);
+    await page.locator('[name="rememberDevice"]').first().check();
+    await page.getByRole("button", { name: "Verify", exact: true }).click();
+
+    // 8. SetPasswordForm — `passwordInitial=true` seed → forced change.
+    await waitForFormInput(page, "newPassword");
+    await fillField(page, "newPassword", "NewIrisPass-1!");
+    await fillField(page, "confirmPassword", "NewIrisPass-1!");
+    await page.locator("button.as-submit-btn").first().click();
+
+    // 9. TermsAcceptForm — `ctx.termsAcceptedVersion` is undefined on first
+    // login, so the schema condition `!== 'v1'` is true.
+    await waitForFormInput(page, "acceptedVersion");
+    await fillField(page, "acceptedVersion", "v1");
+    await page.locator('[name="accepted"]').first().check();
+    await submitForm(page);
+
+    // 10. ProfileCompleteForm — injected by `DemoLoginWorkflow.credentials`
+    // override from the per-user buffer (no DB column carries this state).
+    // ProfileCompleteForm fields are `firstName?` / `lastName?` (optional) so
+    // the AsForm renderer starts each as a "Not set" placeholder button — the
+    // user clicks to enable, then types. We exercise the placeholder click
+    // path to prove the form rendered, then type into the now-visible input.
+    await expect(page.getByText("First name").first()).toBeVisible();
+    await page.getByRole("button", { name: "Not set" }).first().click();
+    await fillField(page, "firstName", "Iris");
+    await page.getByRole("button", { name: "Not set" }).first().click();
+    await fillField(page, "lastName", "Tester");
+    await submitForm(page);
+
+    // 11. ConsentMarketingForm — leave optIn unchecked (default).
+    await waitForFormInput(page, "optIn");
+    await submitForm(page);
+
+    // 12. TenantSelectForm — iris's buffer holds symbolic ids ("tenant-a",
+    // "tenant-b") so the test can type a deterministic value. The form is a
+    // free-text input (no select/options annotations on TenantSelectForm); the
+    // workflow validates against `ctx.availableTenants[].id` server-side.
+    await waitForFormInput(page, "tenantId");
+    await fillField(page, "tenantId", "tenant-a");
+    await submitForm(page);
+
+    // 13. PersonaSelectForm — same pattern, free-text input validated against
+    // the buffer-populated personas list.
+    await waitForFormInput(page, "personaId");
+    await fillField(page, "personaId", "persona-employee");
+    await submitForm(page);
+
+    // 14. ConcurrencyLimitForm (kickPrompt) — iris has 1 active session
+    // seeded, `full` variant has `concurrencyLimit: { max: 1, onLimit:
+    // 'kickPrompt' }`, so `1 >= 1` → the kick form pauses. Click
+    // "Log out other sessions" so the schema resumes through `issue`.
+    await waitForFormInput(page, "action");
+    await page.getByRole("button", { name: "Log out other sessions" }).click();
+
+    // 15. Finish envelope — `full` variant does NOT set `finalize.redirect`,
+    // so the `issue` step's data envelope stands.
+    const envelope = (await readFinishEnvelope(page)) as {
+      finished: boolean;
+      data?: { accessToken?: string };
+    };
+    expect(envelope.finished).toBe(true);
+    expect(typeof envelope.data?.accessToken).toBe("string");
+    expect((envelope.data?.accessToken ?? "").length).toBeGreaterThan(0);
   });
-  // Why fixme: no `t1_iris` seed user exists with the combined state required
-  // by this story — terms_old + profileMissingFields + tenants.length > 1 +
-  // personas.length > 1 + pending email/sms/totp enrollments + passwordInitial
-  // all at once. The current `full` variant turns the OPTIONS on but the seed
-  // doesn't carry per-user state to actually trigger every branch. Writing a
-  // half-complete assertion here would lie about coverage. Follow-up: seed
-  // `t1_iris` per USER_STORIES.md §2.2 AND wire a `loadPersonas` override on
-  // DemoLoginWorkflow that mirrors the `__aoothE2eTenants` pattern so multi-
-  // persona users actually surface a list with length > 1.
 });
