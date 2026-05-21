@@ -804,3 +804,228 @@ test.describe("LoginWorkflow / variant=redirect-home (P1)", () => {
     expect(new URL(page.url()).pathname).toBe("/");
   });
 });
+
+// ─── P2 STORIES ──────────────────────────────────────────────────────────────
+//
+// Tier=P2 covers brute-force / MFA-failure / config-driven UI hiding / session
+// policy edges and contract-gap fixmes (USER_STORIES.md §3, P2 subset). The
+// demo seed sets `LOCKOUT_THRESHOLD=3` (verified in `src/env.ts` +
+// `src/aooth.ts`), so attempt 4 — not 6 — is the one the workflow surfaces as
+// HTTP 423 "Account locked". Stories below adapt to the actual demo config
+// rather than the story-spec literal numbers.
+
+test.describe("LoginWorkflow / variant=minimal (P2)", () => {
+  // BRANCH: `verify-credentials` step → `UserService.login` increments
+  // `failedLoginAttempts` and locks the account once `newAttempts >= threshold`
+  // (threshold=3 in this demo). Attempts 1..3 each throw INVALID_CREDENTIALS
+  // (surfaced as `wf.requireInput({ formMessage: 'Invalid credentials' })`).
+  // The 4th attempt hits `ensureNotLockedOrThrow` BEFORE the password check,
+  // throws `UserAuthError(LOCKED)` → re-mapped to `HttpError(423, 'Account
+  // locked')` → rendered in the `.scope-error` banner. Each attempt is a
+  // fresh `wfUrl(...)` navigation because the SPA finishes the workflow with
+  // a failure envelope on `requireInput`-throw'd errors and the form may
+  // re-render in different states between submissions.
+  test("WF-LOGIN-005: brute-force → bob locks out after threshold attempts", async ({ page }) => {
+    for (let i = 0; i < 3; i++) {
+      await page.goto(wfUrl(LOGIN_WF, "minimal"));
+      await fillField(page, "username", USERS.bob.username);
+      await fillField(page, "password", "Definitely-Wrong!");
+      await page.getByRole("button", { name: "Sign in", exact: true }).click();
+      await expect(page.getByText("Invalid credentials")).toBeVisible();
+    }
+
+    // Attempt 4: account is now locked → `ensureNotLockedOrThrow` fires
+    // before password verification → 423 surfaces in the error banner. Even
+    // the *correct* password would be rejected at this point; we keep the
+    // wrong password to mirror the brute-force scenario.
+    await page.goto(wfUrl(LOGIN_WF, "minimal"));
+    await fillField(page, "username", USERS.bob.username);
+    await fillField(page, "password", USERS.bob.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect(page.getByText(/Account locked|423/)).toBeVisible();
+    // No tokens issued, no finish-envelope rendered.
+    await expect(page.getByText("Workflow finished")).toHaveCount(0);
+  });
+});
+
+test.describe("LoginWorkflow / variant=mfa-totp (P2)", () => {
+  // BRANCH: `mfa-totp` step → `UserService.verifyMfa(username, code)` throws
+  // `UserAuthError(MFA_INVALID)` for an arithmetically-wrong code. The login
+  // workflow's catch re-throws as `wf.requireInput({ errors: { code: 'Invalid
+  // code' } })` (login.workflow.ts L988) when `err.details?.lockEnds` is
+  // undefined — i.e. before the failure counter trips the lockout. So the
+  // user sees an inline field error on the `code` input and the MfaCodeForm
+  // re-renders, NOT a finish-envelope or 423 banner. `000000` is chosen
+  // because it deterministically can't match a TOTP for a random secret on
+  // the current 30s step.
+  test("WF-LOGIN-013: t1_grace wrong TOTP code → inline 'Invalid code' error", async ({ page }) => {
+    await page.goto(wfUrl(LOGIN_WF, "mfa-totp"));
+    await fillField(page, "username", USERS.grace.username);
+    await fillField(page, "password", USERS.grace.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    await waitForFormInput(page, "code");
+    await fillField(page, "code", "000000");
+    await page.getByRole("button", { name: "Verify", exact: true }).click();
+
+    // `errors: { code: 'Invalid code' }` renders inline under the `code` field.
+    await expect(page.getByText("Invalid code")).toBeVisible();
+    // Form re-rendered, not finished — code field is still present.
+    await expect(page.locator('[name="code"]').first()).toBeVisible();
+    await expect(page.getByText("Workflow finished")).toHaveCount(0);
+  });
+});
+
+test.describe("LoginWorkflow / variant=mfa-no-backup (P2)", () => {
+  // BRANCH: MfaCodeForm `useBackupCode` action is gated by
+  // `@ui.form.fn.hidden '(_, _d, ctx) => !ctx.mfaBackupCodes'`. The login
+  // workflow mirrors `opts.mfa.backupCodes` onto `ctx.mfaBackupCodes` in
+  // `prepareMfaOptions` (login.workflow.ts L821) and `mfaBackupCodes` is
+  // declared `@wf.context.pass` on the form — so the SPA renderer sees
+  // `false` and hides the button. Same DOM-slot-but-not-visible contract as
+  // WF-LOGIN-019.
+  test("WF-LOGIN-014: mfa.backupCodes=false → 'Use backup code' not visible", async ({ page }) => {
+    await page.goto(wfUrl(LOGIN_WF, "mfa-no-backup"));
+    await fillField(page, "username", USERS.grace.username);
+    await fillField(page, "password", USERS.grace.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    await waitForFormInput(page, "code");
+    // Sanity: TOTP form was reached (the `Verify` submit button is here).
+    await expect(page.getByRole("button", { name: "Verify", exact: true })).toBeVisible();
+    // The contract: the alt-action button MUST NOT be visible to the user.
+    // atscript-ui may keep the slot in the DOM, but the visible state must
+    // be off — same not-visible pattern as WF-LOGIN-019.
+    await expect(page.getByRole("button", { name: "Use backup code" })).not.toBeVisible();
+  });
+});
+
+test.describe("LoginWorkflow / variant=device-trust-short-ttl (P2)", () => {
+  // BRANCH: first login mints a trusted-device cookie via
+  // `issueTrustedDevice(..., ttlMs: 1)` → cookie is delivered to the browser
+  // jar but its embedded `exp` is already in the past by the time the
+  // workflow returns. Second login: `check-trusted-device` reads the cookie,
+  // calls `loadTrustedDevice` → HMAC verify passes but expiry check fails →
+  // returns falsy → `ctx.newDevice = true` → MFA runs again. Inverse of
+  // WF-LOGIN-018 (which proves the skip-MFA branch when the cookie is fresh).
+  test("WF-LOGIN-020: ttlMs=1 trusted-device cookie expires → MFA required on 2nd login", async ({
+    page,
+    request,
+  }) => {
+    // First login: MFA + opt-in. Variant uses `transports: ['email']` so the
+    // MFA pause is `PincodeForm` with a `rememberDevice` checkbox.
+    await page.goto(wfUrl(LOGIN_WF, "device-trust-short-ttl"));
+    await fillField(page, "username", USERS.henry.username);
+    await fillField(page, "password", USERS.henry.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    await waitForFormInput(page, "code");
+    const otp = await waitForEmail(
+      request,
+      (e) => e.kind === "login.pincode" && e.recipient === "henry@acme.test",
+    );
+    await fillField(page, "code", otp.code as string);
+    await page.locator('[name="rememberDevice"]').first().check();
+    await page.getByRole("button", { name: "Verify", exact: true }).click();
+    await expect(page.getByText("Workflow finished")).toBeVisible({ timeout: 15_000 });
+
+    // Wait past the 1ms TTL — generous buffer because the cookie's `exp` is
+    // a wall-clock timestamp and we want to be confidently past it before
+    // the second login resumes.
+    await page.waitForTimeout(1500);
+
+    // Second login: cookie is still in the jar but past-expiry → workflow
+    // must pause on `PincodeForm` again (code field re-appears). That's the
+    // proof `verify-trusted-device` rejected the stale cookie.
+    await page.goto(wfUrl(LOGIN_WF, "device-trust-short-ttl"));
+    await fillField(page, "username", USERS.henry.username);
+    await fillField(page, "password", USERS.henry.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    await waitForFormInput(page, "code");
+    // Strong signature: another pincode email was actually sent on this
+    // second login — proves the workflow ran the MFA branch, not just that
+    // some unrelated `code` input is on screen.
+    await waitForEmail(
+      request,
+      (e) => e.kind === "login.pincode" && e.recipient === "henry@acme.test",
+      8000,
+    );
+  });
+});
+
+test.describe("LoginWorkflow / variant=multi-context (P2)", () => {
+  // BRANCH: `tenant-select` step condition includes `availableTenants.length
+  // > 1` (login.workflow.ts L478). Alice is seeded with exactly one tenant
+  // (`__aoothE2eTenants → ['tenant_a']` in `seed.ts` L140), so even with
+  // `tenantSelect: true` the step is skipped. `persona-select` uses the
+  // same `> 1` gate AND the default `loadPersonas` returns `[]`, so it also
+  // skips → workflow proceeds straight to `issue` and finishes with tokens.
+  // No `[name=tenantId]` / `[name=personaId]` form input EVER appears.
+  test("WF-LOGIN-027: alice has 1 tenant → tenant-select skipped, tokens issued", async ({
+    page,
+  }) => {
+    await page.goto(wfUrl(LOGIN_WF, "multi-context"));
+    await fillField(page, "username", USERS.alice.username);
+    await fillField(page, "password", USERS.alice.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    const envelope = (await readFinishEnvelope(page)) as { data?: { accessToken?: string } };
+    expect(typeof envelope.data?.accessToken).toBe("string");
+    expect((envelope.data?.accessToken ?? "").length).toBeGreaterThan(0);
+
+    // Hard negative: neither form was ever rendered. Asserted AFTER the
+    // finish envelope lands so we know the workflow ran to completion.
+    await expect(page.locator('[name="tenantId"]')).toHaveCount(0);
+    await expect(page.locator('[name="personaId"]')).toHaveCount(0);
+  });
+});
+
+test.describe("LoginWorkflow / variant=concurrency-reject (P2)", () => {
+  // BRANCH: `concurrency-limit` step → `cfg.onLimit === 'reject'` →
+  // `throw new HttpError(429, 'Session limit reached')` (login.workflow.ts
+  // L1211–1212). The error escapes the workflow rather than pausing on
+  // `kickPrompt`. WfPage's `onError` handler renders the message into the
+  // `.scope-error` banner — same channel as WF-LOGIN-004 (423 lock). The
+  // seed records `activeSessions: 2` for t1_active_sessions and the
+  // `DemoLoginWorkflow.loadActiveSessions` override surfaces that count into
+  // `ctx.activeSessions`, so the schema reaches `concurrency-limit` with
+  // `2 >= 1`.
+  test("WF-LOGIN-030: t1_active_sessions + onLimit=reject → 429 surfaced in error banner", async ({
+    page,
+  }) => {
+    await page.goto(wfUrl(LOGIN_WF, "concurrency-reject"));
+    await fillField(page, "username", "t1_active_sessions");
+    await fillField(page, "password", "Password1!");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    // 429 message renders in the error banner. Match by text so the
+    // assertion is insulated from CSS-class renames. The message surfaces in
+    // BOTH `.scope-error` and `.as-wf-form-error` slots (atscript-ui mirrors
+    // workflow-level errors into both) so we anchor on the first match.
+    await expect(page.getByText(/Session limit reached|429/).first()).toBeVisible();
+    // No tokens, no finish envelope, no follow-up form (kickPrompt was
+    // skipped — that's the whole point of `onLimit: 'reject'`).
+    await expect(page.getByText("Workflow finished")).toHaveCount(0);
+    await expect(page.locator('[name="action"]')).toHaveCount(0);
+  });
+});
+
+test.describe("LoginWorkflow / variant=full (P2)", () => {
+  // BRANCH: a single login flow that exercises every optional step at once
+  // (terms-accept + profile-complete + consent-marketing + tenant-select +
+  // persona-select + MFA enrollment + device-trust + password-change). No
+  // seed user covers all of that simultaneously today.
+  test.fixme("WF-LOGIN-032: iris walks through every step in one login", async () => {
+    // Body intentionally empty — see follow-up comment below.
+  });
+  // Why fixme: no `t1_iris` seed user exists with the combined state required
+  // by this story — terms_old + profileMissingFields + tenants.length > 1 +
+  // personas.length > 1 + pending email/sms/totp enrollments + passwordInitial
+  // all at once. The current `full` variant turns the OPTIONS on but the seed
+  // doesn't carry per-user state to actually trigger every branch. Writing a
+  // half-complete assertion here would lie about coverage. Follow-up: seed
+  // `t1_iris` per USER_STORIES.md §2.2 AND wire a `loadPersonas` override on
+  // DemoLoginWorkflow that mirrors the `__aoothE2eTenants` pattern so multi-
+  // persona users actually surface a list with length > 1.
+});
