@@ -233,7 +233,7 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
       });
       expectOk(submit);
       const redirect = expectRedirect(await expectFinished(submit));
-      expect(redirect.mode).toBe("immediate");
+      expect(redirect.trigger).toBe("immediate");
       expect(redirect.target).toBe("/");
     } finally {
       await redirApp.close();

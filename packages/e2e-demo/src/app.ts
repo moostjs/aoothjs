@@ -26,7 +26,6 @@ import {
 import { HandleStateStrategy } from "@moostjs/event-wf";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { UserService } from "@aooth/user";
-import { formInputInterceptor } from "@atscript/moost-wf";
 import { MoostHttp, Post } from "@moostjs/event-http";
 import { MoostWf } from "@moostjs/event-wf";
 import {
@@ -299,7 +298,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   ];
   app.setProvideRegistry(createProvideRegistry(...authProviders));
   app.applyGlobalInterceptors(authGuardInterceptor({ cookie: { secure: false } }));
-  app.applyGlobalInterceptors(formInputInterceptor());
 
   // AUTH-MOOST-5: `DemoWfTriggerProvider` is the consumer subclass of
   // `WfTriggerProvider` that wires this app's DB-backed wf state store and

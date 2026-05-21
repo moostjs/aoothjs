@@ -171,7 +171,7 @@ describe("WF-RECOVERY — postReset options", () => {
         finalize,
       );
       const redirect = expectRedirect(body);
-      expect(redirect.mode).toBe("auto");
+      expect(redirect.trigger).toBe("auto");
       expect(redirect.target).toBe("/sign-in");
       expect(redirect.reason).toBe("reset-success");
       expect(body.data?.accessToken).toBeUndefined();

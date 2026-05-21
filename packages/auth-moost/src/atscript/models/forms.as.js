@@ -254,6 +254,22 @@ $("object", LoginCredentialsForm)
       .annotate("meta.sensitive", true)
       .annotate("meta.required", { })
       .annotate("expect.minLength", { length: 1,  })
+      .annotate("ui.form.action", { id: "forgotPassword",  label: "Forgot password?" })
+      .annotate("wf.action.withData", "forgotPassword")
+      .$type
+  ).prop(
+    "signup",
+    $().designType("phantom")
+      .tags("action", "ui")
+      .annotate("ui.form.action", { id: "signup",  label: "Sign up" })
+      .optional()
+      .$type
+  ).prop(
+    "magicLink",
+    $().designType("phantom")
+      .tags("action", "ui")
+      .annotate("ui.form.action", { id: "magicLink",  label: "Sign in with a magic link" })
+      .optional()
       .$type
   )
 
@@ -269,6 +285,20 @@ $("object", MfaCodeForm)
       .annotate("expect.minLength", { length: 4,  })
       .annotate("expect.maxLength", { length: 12,  })
       .annotate("expect.pattern", { pattern: "^[0-9]+$",  }, true)
+      .$type
+  ).prop(
+    "useDifferentMethod",
+    $().designType("phantom")
+      .tags("action", "ui")
+      .annotate("ui.form.action", { id: "useDifferentMethod",  label: "Use a different method" })
+      .optional()
+      .$type
+  ).prop(
+    "useBackupCode",
+    $().designType("phantom")
+      .tags("action", "ui")
+      .annotate("ui.form.action", { id: "useBackupCode",  label: "Use backup code" })
+      .optional()
       .$type
   )
 
@@ -298,6 +328,13 @@ $("object", EmailIdentifierForm)
       .annotate("meta.required", { })
       .annotate("expect.pattern", { pattern: "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",  flags: "",  message: "Invalid email format." }, true)
       .$type
+  ).prop(
+    "backToLogin",
+    $().designType("phantom")
+      .tags("action", "ui")
+      .annotate("ui.form.action", { id: "backToLogin",  label: "Back to sign-in" })
+      .optional()
+      .$type
   )
   .annotate("wf.context.pass", "defaults", true)
 
@@ -324,7 +361,29 @@ $("object", SetPasswordForm)
       .annotate("meta.required", { })
       .annotate("expect.minLength", { length: 8,  })
       .$type
+  ).prop(
+    "logout",
+    $().designType("phantom")
+      .tags("action", "ui")
+      .annotate("ui.form.action", { id: "logout",  label: "Logout" })
+      .optional()
+      .$type
+  ).prop(
+    "cancel",
+    $().designType("phantom")
+      .tags("action", "ui")
+      .annotate("ui.form.action", { id: "cancel",  label: "Cancel" })
+      .optional()
+      .$type
+  ).prop(
+    "backToLogin",
+    $().designType("phantom")
+      .tags("action", "ui")
+      .annotate("ui.form.action", { id: "backToLogin",  label: "Back to sign-in" })
+      .optional()
+      .$type
   )
+  .annotate("wf.context.pass", "passwordPolicies", true)
 
 $("object", InviteForm)
   .prop(
@@ -364,6 +423,13 @@ $("object", InviteForm)
       .annotate("meta.label", "Roles")
       .optional()
       .$type
+  ).prop(
+    "cancel",
+    $().designType("phantom")
+      .tags("action", "ui")
+      .annotate("ui.form.action", { id: "cancel",  label: "Cancel" })
+      .optional()
+      .$type
   )
   .annotate("wf.context.pass", "availableRoles", true)
 
@@ -378,6 +444,13 @@ $("object", InviteEmailForm)
       .annotate("meta.required", { })
       .annotate("expect.pattern", { pattern: "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",  flags: "",  message: "Invalid email format." }, true)
       .$type
+  ).prop(
+    "cancel",
+    $().designType("phantom")
+      .tags("action", "ui")
+      .annotate("ui.form.action", { id: "cancel",  label: "Cancel" })
+      .optional()
+      .$type
   )
 
 $("object", InviteSendModeForm)
@@ -389,6 +462,13 @@ $("object", InviteSendModeForm)
       .annotate("meta.label", "Delivery mode")
       .annotate("meta.required", { })
       .annotate("expect.pattern", { pattern: "^(email|shareableLink)$",  }, true)
+      .$type
+  ).prop(
+    "cancel",
+    $().designType("phantom")
+      .tags("action", "ui")
+      .annotate("ui.form.action", { id: "cancel",  label: "Cancel" })
+      .optional()
       .$type
   )
 
@@ -407,6 +487,13 @@ $("object", Select2faForm)
       .tags("boolean")
       .annotate("ui.form.type", "checkbox")
       .annotate("meta.label", "Save as default")
+      .optional()
+      .$type
+  ).prop(
+    "useBackupCode",
+    $().designType("phantom")
+      .tags("action", "ui")
+      .annotate("ui.form.action", { id: "useBackupCode",  label: "Use backup code" })
       .optional()
       .$type
   )
@@ -430,6 +517,41 @@ $("object", PincodeForm)
       .tags("boolean")
       .annotate("ui.form.type", "checkbox")
       .annotate("meta.label", "Remember this device")
+      .optional()
+      .$type
+  ).prop(
+    "resend",
+    $().designType("phantom")
+      .tags("action", "ui")
+      .annotate("ui.form.action", { id: "resend",  label: "Resend code" })
+      .optional()
+      .$type
+  ).prop(
+    "useDifferentMethod",
+    $().designType("phantom")
+      .tags("action", "ui")
+      .annotate("ui.form.action", { id: "useDifferentMethod",  label: "Use a different method" })
+      .optional()
+      .$type
+  ).prop(
+    "useBackupCode",
+    $().designType("phantom")
+      .tags("action", "ui")
+      .annotate("ui.form.action", { id: "useBackupCode",  label: "Use backup code" })
+      .optional()
+      .$type
+  ).prop(
+    "backToLogin",
+    $().designType("phantom")
+      .tags("action", "ui")
+      .annotate("ui.form.action", { id: "backToLogin",  label: "Back to sign-in" })
+      .optional()
+      .$type
+  ).prop(
+    "useDifferentTransport",
+    $().designType("phantom")
+      .tags("action", "ui")
+      .annotate("ui.form.action", { id: "useDifferentTransport",  label: "Use a different transport" })
       .optional()
       .$type
   )
@@ -475,6 +597,13 @@ $("object", TermsAcceptForm)
       .annotate("ui.form.type", "checkbox")
       .annotate("meta.label", "I accept the Terms & Conditions")
       .annotate("meta.required", { })
+      .$type
+  ).prop(
+    "decline",
+    $().designType("phantom")
+      .tags("action", "ui")
+      .annotate("ui.form.action", { id: "decline",  label: "Decline" })
+      .optional()
       .$type
   )
 
@@ -540,6 +669,20 @@ $("object", ConcurrencyLimitForm)
       .annotate("meta.required", { })
       .annotate("expect.pattern", { pattern: "^(logoutOthers|cancel)$",  }, true)
       .$type
+  ).prop(
+    "cancel",
+    $().designType("phantom")
+      .tags("action", "ui")
+      .annotate("ui.form.action", { id: "cancel",  label: "Cancel" })
+      .optional()
+      .$type
+  ).prop(
+    "logoutOthers",
+    $().designType("phantom")
+      .tags("action", "ui")
+      .annotate("ui.form.action", { id: "logoutOthers",  label: "Log out other sessions" })
+      .optional()
+      .$type
   )
 
 $("object", MagicLinkRequestForm)
@@ -564,6 +707,13 @@ $("object", RecoveryModeSelectForm)
       .annotate("meta.required", { })
       .annotate("expect.pattern", { pattern: "^(magicLink|otp)$",  }, true)
       .$type
+  ).prop(
+    "backToLogin",
+    $().designType("phantom")
+      .tags("action", "ui")
+      .annotate("ui.form.action", { id: "backToLogin",  label: "Back to sign-in" })
+      .optional()
+      .$type
   )
 
 $("object", RecoveryFactorForm)
@@ -585,6 +735,13 @@ $("object", RecoveryFactorForm)
       .annotate("meta.required", { })
       .annotate("expect.minLength", { length: 4,  })
       .annotate("expect.maxLength", { length: 12,  })
+      .$type
+  ).prop(
+    "backToLogin",
+    $().designType("phantom")
+      .tags("action", "ui")
+      .annotate("ui.form.action", { id: "backToLogin",  label: "Back to sign-in" })
+      .optional()
       .$type
   )
 

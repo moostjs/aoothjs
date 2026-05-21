@@ -5,31 +5,31 @@
       "source": "moostjs/atscript",
       "sourceType": "github",
       "skillPath": "skills/atscript/SKILL.md",
-      "computedHash": "65f8f1411f956c881a46945f351255b974eeef10bc506e86648371360374a1db"
+      "computedHash": "0bac8cdd28e452d77707c9ee2ae0595ec474c4870bff27eda429415baa0c391c"
     },
     "atscript-db": {
       "source": "moostjs/atscript-db",
       "sourceType": "github",
       "skillPath": "skills/atscript-db/SKILL.md",
-      "computedHash": "82dcc6a951399ab42d83e765d7bf8cf681682d96eb93e6a10ca502ec7441e109"
+      "computedHash": "48ed0afdf5220ef0f95831d4068195c3726c55da2a18597fe7c2d36878f6eb9d"
     },
     "atscript-ui": {
       "source": "moostjs/atscript-ui",
       "sourceType": "github",
       "skillPath": "skills/atscript-ui/SKILL.md",
-      "computedHash": "59707b867b7520c2d08dc2320d78aa0d186c6d14999c7b55470c488f0aee181d"
+      "computedHash": "aa25c680cf98262f4ba0e26bcb045e19a8a89c09ce7c8f7d152e4527baca3e87"
     },
     "atscript-ui-forms": {
       "source": "moostjs/atscript-ui",
       "sourceType": "github",
       "skillPath": "skills/atscript-ui-forms/SKILL.md",
-      "computedHash": "3dd139da704720850e9f6325a93ad942cfbbee2cec1b9690324d8c3b7737306d"
+      "computedHash": "a39ce22497392145d947500d5337d9d41143a90498d6d9d4c4685df6699866e5"
     },
     "atscript-ui-styles": {
       "source": "moostjs/atscript-ui",
       "sourceType": "github",
       "skillPath": "skills/atscript-ui-styles/SKILL.md",
-      "computedHash": "f8d301c3ec8b0411a743d5bf20f507e7e451978023709132a95afcfc42626d92"
+      "computedHash": "8b7fc374615fac742257837928da3767d018851bc289dba3f899745404e1514b"
     },
     "atscript-ui-tables": {
       "source": "moostjs/atscript-ui",
@@ -41,7 +41,7 @@
       "source": "moostjs/atscript-ui",
       "sourceType": "github",
       "skillPath": "skills/atscript-ui-wf/SKILL.md",
-      "computedHash": "73756ee626cc201205bdcf52ab25bba920ee7af49d9272fa8b763c8ab4d431e7"
+      "computedHash": "130452f5ecf5898376f35bf80d88729bfbd25049438b534c1c4a4148094f930f"
     },
     "frontend-design": {
       "source": "anthropics/skills",
@@ -65,7 +65,7 @@
       "source": "mav-rik/vunor",
       "sourceType": "github",
       "skillPath": "skills/vunor/SKILL.md",
-      "computedHash": "6880f16e966d1e6429941b601320c9484e1b1eb139176677bf25ea96d657fb39"
+      "computedHash": "3932b49bfe7335fcae53ad6c724329a1f714a6cc0b88819765238658627ef766"
     },
     "wooksjs": {
       "source": "wooksjs/wooksjs",

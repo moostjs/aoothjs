@@ -23,6 +23,11 @@ import { Injectable } from "moost";
  * Uses `handleAsOutletRequest` (not `MoostWf.handleOutlet`) because the atscript
  * wrapper restores the `finished: true` marker that `<AsWfForm>` keys off — the
  * bare wooks request handler strips it during `useWfFinished()` unwrap.
+ *
+ * The trigger is a thin pass-through to `handleAsOutletRequest`: the new
+ * `@atscript/moost-wf` wire envelope is `{ wfs, input: { action?, formData? } }`,
+ * and the wf engine reads action + form data directly from `body.input`. No
+ * app-level bridging of `body.action` is needed.
  */
 @Injectable()
 export class WfTriggerProvider {

@@ -15,11 +15,15 @@
  * `emailToUserId` short-cut for the most common case.
  */
 import { AuthCredential } from "@aooth/auth";
-import { generateTotpCode, generateTotpSecret, UserService } from "@aooth/user";
+import { generateTotpCode, generateTotpSecret, ppHasMinLength, UserService } from "@aooth/user";
 import { Controller, Inherit, Injectable } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
-import { RecoveryWorkflow, type RecoveryWorkflowOpts } from "../workflows/index";
+import {
+  RecoveryWorkflow,
+  type RecoveryWfCtx,
+  type RecoveryWorkflowOpts,
+} from "../workflows/index";
 import { expectFinished, prepareWfApp, seedActiveUser } from "./workflow-utils";
 
 /**
@@ -32,11 +36,7 @@ function makeRecoverySubclass(
     emailToUserId: (this: RecoveryWorkflow, email: string) => Promise<string | null>;
     verifyRecoveryFactor: (
       this: RecoveryWorkflow,
-      input: {
-        factor: string;
-        value: string;
-        ctx: Parameters<RecoveryWorkflow["verifyFactor"]>[1];
-      },
+      input: { factor: string; value: string; ctx: RecoveryWfCtx },
     ) => Promise<boolean>;
   }>,
 ): typeof RecoveryWorkflow {
@@ -55,7 +55,7 @@ function makeRecoverySubclass(
     protected override async verifyRecoveryFactor(input: {
       factor: string;
       value: string;
-      ctx: Parameters<RecoveryWorkflow["verifyFactor"]>[1];
+      ctx: RecoveryWfCtx;
     }): Promise<boolean> {
       return overrides.verifyRecoveryFactor
         ? overrides.verifyRecoveryFactor.call(this, input)
@@ -416,15 +416,15 @@ describe("RecoveryWorkflowOpts — freshLoginRequired terminal", () => {
     });
     expect(r.status).not.toBe(302);
     const env = expectFinished<{ accessToken?: string; userId?: string }>(r);
-    const end = env.end as Extract<NonNullable<typeof env.end>, { mode: "immediate" }>;
-    expect(end?.action?.type).toBe("redirect");
-    expect(end?.action?.type === "redirect" && end.action.target).toBe("/sign-in");
+    const next = env.next as Extract<NonNullable<typeof env.next>, { trigger: "immediate" }>;
+    expect(next?.action?.type).toBe("redirect");
+    expect(next?.action?.type === "redirect" && next.action.target).toBe("/sign-in");
     // No auto-login payload.
     expect(env.data?.accessToken).toBeUndefined();
     expect(env.data?.userId).toBeUndefined();
   });
 
-  it("freshLoginFinish emits auto-mode envelope with 5s countdown + success message", async () => {
+  it("freshLoginFinish emits auto-trigger envelope with 5s countdown + success message", async () => {
     const app = await prepareWfApp({
       recoveryOpts: {
         postReset: { freshLoginRequired: true, loginUrl: "/sign-in" },
@@ -437,13 +437,13 @@ describe("RecoveryWorkflowOpts — freshLoginRequired terminal", () => {
       input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
     });
     const env = expectFinished(r);
-    const end = env.end as Extract<NonNullable<typeof env.end>, { mode: "auto" }>;
-    expect(end?.mode).toBe("auto");
-    expect(end?.timeoutMs).toBe(5000);
-    expect(end?.skipButton?.label).toBe("Go now");
-    expect(end?.action?.type).toBe("redirect");
-    expect(end?.action?.type === "redirect" && end.action.target).toBe("/sign-in");
-    expect(end?.action?.type === "redirect" && end.action.reason).toBe("reset-success");
+    const next = env.next as Extract<NonNullable<typeof env.next>, { trigger: "auto" }>;
+    expect(next?.trigger).toBe("auto");
+    expect(next?.timeoutMs).toBe(5000);
+    expect(next?.skipButton?.label).toBe("Go now");
+    expect(next?.action?.type).toBe("redirect");
+    expect(next?.action?.type === "redirect" && next.action.target).toBe("/sign-in");
+    expect(next?.action?.type === "redirect" && next.action.reason).toBe("reset-success");
     expect(env.message?.level).toBe("success");
     expect(env.message?.text).toMatch(/Password updated/);
   });
@@ -509,11 +509,11 @@ describe("RecoveryWorkflowOpts — backToLogin alt-action", () => {
     });
     expect(r2.status).not.toBe(302);
     const env2 = expectFinished(r2);
-    const end2 = env2.end as Extract<NonNullable<typeof env2.end>, { mode: "immediate" }>;
-    expect(end2?.mode).toBe("immediate");
-    expect(end2?.action?.type).toBe("redirect");
-    expect(end2?.action?.type === "redirect" && end2.action.target).toBe("/login");
-    expect(end2?.action?.type === "redirect" && end2.action.reason).toBe("user-cancelled");
+    const next2 = env2.next as Extract<NonNullable<typeof env2.next>, { trigger: "immediate" }>;
+    expect(next2?.trigger).toBe("immediate");
+    expect(next2?.action?.type).toBe("redirect");
+    expect(next2?.action?.type === "redirect" && next2.action.target).toBe("/login");
+    expect(next2?.action?.type === "redirect" && next2.action.reason).toBe("user-cancelled");
     expect(app.emails).toHaveLength(0);
   });
 
@@ -529,8 +529,8 @@ describe("RecoveryWorkflowOpts — backToLogin alt-action", () => {
     const r = await app.trigger({ wfs, input: { action: "backToLogin" } });
     expect(r.status).not.toBe(302);
     const env = expectFinished(r);
-    const end = env.end as Extract<NonNullable<typeof env.end>, { mode: "immediate" }>;
-    expect(end?.action?.type === "redirect" && end.action.target).toBe("/login");
+    const next = env.next as Extract<NonNullable<typeof env.next>, { trigger: "immediate" }>;
+    expect(next?.action?.type === "redirect" && next.action.target).toBe("/login");
     // Old password still works.
     const ok = await app.users.verifyPassword("alice@test.com", "OldPassword1");
     expect(ok).toBe(true);
@@ -670,5 +670,44 @@ describe("RecoveryWorkflow subclass — protected method overrides", () => {
     const env2 = expectFinished<{ sent: boolean }>(r2);
     expect(env2.data?.sent).toBe(true);
     expect(app.emails).toHaveLength(0);
+  });
+});
+
+describe("RecoveryWorkflow — passwordPolicies surfaces on SetPasswordForm pause", () => {
+  it("WF-RECOVERY-PWPOLICY — passwordPolicies reaches client on SetPasswordForm pause", async () => {
+    // Guards two regressions at once:
+    //   1. `@wf.context.pass 'passwordPolicies'` on SetPasswordForm — without
+    //      it `extractPassContext` strips the key before the inputRequired
+    //      envelope leaves the engine.
+    //   2. `recoverySetPassword` seeding `ctx.passwordPolicies` BEFORE
+    //      `requireInput()` — `requireInput()` snapshots `wfState.ctx()` at
+    //      throw time, so the previous catch-then-rethrow pattern shipped a
+    //      pre-mutation ctx and the field never reached the client.
+    const policy = ppHasMinLength(8);
+    const app = await prepareWfApp({
+      userConfig: { password: { policies: [policy] } },
+    });
+    await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
+
+    const r1 = await app.trigger({ wfid: "auth.recovery" });
+    await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { email: "alice@test.com" },
+    });
+    const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
+    const r3 = await app.resumeViaQuery(token);
+
+    // The inputRequired wire envelope from `createHttpOutlet` is a flat object
+    // (`{ id, type, ..., passwordPolicies, wfs }`) — whitelisted ctx keys are
+    // merged in alongside the form schema. See the existing
+    // "WF-RECOVERY pre-fill" test for the same shape via `defaults`.
+    const body = r3.body as { id?: string; passwordPolicies?: unknown };
+    expect(body.id).toBe("SetPasswordForm");
+    expect(body.passwordPolicies).toEqual(app.users.getTransferablePolicies());
+    expect(Array.isArray(body.passwordPolicies)).toBe(true);
+    expect((body.passwordPolicies as unknown[]).length).toBeGreaterThan(0);
+    expect(String((body.passwordPolicies as Array<{ rule: string }>)[0].rule)).toContain(
+      "v.length",
+    );
   });
 });

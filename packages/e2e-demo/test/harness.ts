@@ -40,24 +40,24 @@ export async function expectFinished<T = Record<string, unknown>>(
 }
 
 /**
- * Narrows a `WfFinished` envelope to its redirect end. Throws when the
- * envelope is in `manual` mode (no action) or the action isn't a redirect.
- * Saves the inline `mode !== 'manual' && action.type === 'redirect'`
+ * Narrows a `WfFinished` envelope to its redirect next. Throws when the
+ * envelope is in `manual` trigger (no action) or the action isn't a redirect.
+ * Saves the inline `trigger !== 'manual' && action.type === 'redirect'`
  * narrowing dance at every assertion site.
  */
 export function expectRedirect(env: WfFinished): {
-  mode: "immediate" | "auto";
+  trigger: "immediate" | "auto";
   target: string;
   reason?: string;
 } {
-  const end = env.end;
-  if (!end || end.mode === "manual") {
-    throw new Error(`expected redirect-bearing end, got mode=${end?.mode ?? "undefined"}`);
+  const next = env.next;
+  if (!next || next.trigger === "manual") {
+    throw new Error(`expected redirect-bearing next, got trigger=${next?.trigger ?? "undefined"}`);
   }
-  if (end.action.type !== "redirect") {
-    throw new Error(`expected redirect action, got type=${end.action.type}`);
+  if (next.action.type !== "redirect") {
+    throw new Error(`expected redirect action, got type=${next.action.type}`);
   }
-  return { mode: end.mode, target: end.action.target, reason: end.action.reason };
+  return { trigger: next.trigger, target: next.action.target, reason: next.action.reason };
 }
 
 type LoginPause = {
@@ -135,6 +135,30 @@ export interface TestApp {
 }
 
 const SENTINEL_FIXTURES = {} as SeedFixtures;
+
+// Legacy harness shim: existing spec callsites pre-date the new
+// `@atscript/moost-wf` wire envelope `{ wfs, input: { action?, formData? } }`
+// and write `input` as a flat data bag (sometimes with an inline `action`
+// key, e.g. `{ input: { username, action: "forgotPassword" } }`). Split
+// those into the new shape inside the harness so the ~100 spec callsites
+// don't need a global rewrite. Bodies already in the new shape (whose
+// `input` keys are only `action` / `formData`) pass through unchanged.
+// Mirrors `normalize()` in packages/auth-moost/src/__test__/workflow-utils.ts.
+function normalizeWfBody(body: unknown): unknown {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return body;
+  const obj = body as Record<string, unknown>;
+  const rawInput = obj.input;
+  if (!rawInput || typeof rawInput !== "object" || Array.isArray(rawInput)) return body;
+  const inputObj = rawInput as Record<string, unknown>;
+  const keys = Object.keys(inputObj);
+  const isNewShape = keys.length > 0 && keys.every((k) => k === "action" || k === "formData");
+  if (isNewShape) return body;
+  const { action: innerAction, ...formData } = inputObj;
+  const wrapped: { action?: string; formData?: Record<string, unknown> } = {};
+  if (typeof innerAction === "string") wrapped.action = innerAction;
+  if (Object.keys(formData).length > 0) wrapped.formData = formData;
+  return { ...obj, input: wrapped };
+}
 
 export async function buildTestApp(opts: BuildTestAppOptions = {}): Promise<TestApp> {
   // Wooks defaults to a process-global router (`getGlobalWooks`). Without this
@@ -232,10 +256,10 @@ export async function buildTestApp(opts: BuildTestAppOptions = {}): Promise<Test
     }
     const credRes = await doFetch("/auth/trigger", {
       method: "POST",
-      json: {
+      json: normalizeWfBody({
         wfs: initBody.wfs,
         input: { username: user.username, password: user.password },
-      },
+      }),
     });
     if (credRes.status >= 400) {
       const text = await credRes.text().catch(() => "<unreadable>");
@@ -256,7 +280,7 @@ export async function buildTestApp(opts: BuildTestAppOptions = {}): Promise<Test
       const code = generateTotpCode(user.totpSecret);
       const mfaRes = await doFetch("/auth/trigger", {
         method: "POST",
-        json: { wfs: body.wfs, input: { code } },
+        json: normalizeWfBody({ wfs: body.wfs, input: { code } }),
       });
       if (mfaRes.status >= 400) {
         const text = await mfaRes.text().catch(() => "<unreadable>");
@@ -303,7 +327,7 @@ export async function buildTestApp(opts: BuildTestAppOptions = {}): Promise<Test
     if (!wfs) return init;
     return doFetch("/auth/trigger", {
       method: "POST",
-      json: { wfs, input: { username, password } },
+      json: normalizeWfBody({ wfs, input: { username, password } }),
     });
   };
 
@@ -325,7 +349,7 @@ export async function buildTestApp(opts: BuildTestAppOptions = {}): Promise<Test
   ): Promise<Response> => {
     return doFetch("/auth/trigger", {
       method: "POST",
-      json: body,
+      json: normalizeWfBody(body),
       token: triggerOpts.token,
     });
   };
@@ -344,7 +368,7 @@ export async function buildTestApp(opts: BuildTestAppOptions = {}): Promise<Test
         : { wfs, input: body };
     return doFetch("/auth/trigger", {
       method: "POST",
-      json: merged,
+      json: normalizeWfBody(merged),
       token: resumeOpts.token,
     });
   };

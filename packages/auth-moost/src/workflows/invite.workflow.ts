@@ -14,9 +14,12 @@
  * `auth.reInvite` schemas by re-referencing the same step IDs.
  *
  * **Step routing model.** Same shape as `RecoveryWorkflow`: alt-action
- * handlers run BEFORE form validation (so `cancel` works without filling
- * fields) and return the `ALT_HANDLED` sentinel after short-circuiting via
- * `useWfFinished().set(...)`. Terminal steps gate on `!ctx.aborted` so the
+ * handlers run BEFORE form validation so `cancel` works without filling
+ * fields, then return the `ALT_HANDLED` sentinel after short-circuiting via
+ * `useWfFinished().set(...)`. Actions are read via
+ * `useAtscriptWf(form).resolveAction()` — the form's static `@ui.form.action`
+ * whitelist validates the action id; unknown ids throw `StepRetriableError`
+ * before the step body runs. Terminal steps gate on `!ctx.aborted` so the
  * abort response stays.
  *
  * **Consumer subclass pattern (Phase 4 reshape).** Consumers subclass
@@ -55,13 +58,7 @@ import { ArbacAction, ArbacResource } from "@aooth/arbac-moost";
 import { AuthCredential } from "@aooth/auth";
 import { UserAuthError, type UserCredentials, UserService } from "@aooth/user";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
-import {
-  finishWfAborted,
-  finishWfWithChoice,
-  finishWfWithData,
-  finishWfWithRedirect,
-  type WfFinished,
-} from "@atscript/moost-wf";
+import { abortWf, finishWf, useAtscriptWf, type WfFinished } from "@atscript/moost-wf";
 import { HttpError } from "@moostjs/event-http";
 import {
   outletEmail,
@@ -83,14 +80,8 @@ import {
   type PreparedUserInput,
   type ResolvedInviteWorkflowOpts,
 } from "./invite.workflow.options";
+import { AuthWorkflowBase } from "./auth-workflow.base";
 import type { DeliverPayload } from "./login.workflow";
-import {
-  httpInputRequired,
-  requireUsername,
-  resolveClientIp,
-  translatePasswordSetError,
-  validateFormInput,
-} from "./wf-helpers";
 
 export interface InviteWfCtx {
   opts?: ResolvedInviteWorkflowOpts;
@@ -205,12 +196,13 @@ export function parseInviteRoles(input?: string[]): string[] {
 @ArbacAction("start")
 @Injectable("FOR_EVENT")
 @Controller()
-export class InviteWorkflow {
+export class InviteWorkflow extends AuthWorkflowBase {
   protected readonly opts: ResolvedInviteWorkflowOpts;
   protected readonly users: UserService;
   protected readonly auth: AuthCredential;
 
   constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
+    super();
     this.opts = mergeInviteOpts(opts);
     this.users = users;
     this.auth = auth;
@@ -542,16 +534,12 @@ export class InviteWorkflow {
 
   // ── Phase A: selectSendMode ───────────────────────────────────────────
   @Step("inviteSelectSendMode")
-  selectSendMode(
-    @WorkflowParam("input") input: { mode?: string; action?: string } | undefined,
-    @WorkflowParam("context") ctx: InviteWfCtx,
-  ): unknown {
-    if (!input) return httpInputRequired(this.opts.forms.inviteSendMode, ctx);
-    if (input.action === "cancel") {
+  selectSendMode(@WorkflowParam("context") ctx: InviteWfCtx): unknown {
+    const wf = useAtscriptWf(this.opts.forms.inviteSendMode);
+    if (wf.resolveAction() === "cancel") {
       return this.abort(ctx, "cancel");
     }
-    const errors = validateFormInput(this.opts.forms.inviteSendMode, input);
-    if (errors) return httpInputRequired(this.opts.forms.inviteSendMode, ctx, errors);
+    const input = wf.resolveInput() as { mode: string };
     const mode = input.mode as "email" | "shareableLink";
     ctx.selectedSendMode = mode;
     ctx.resolvedSendMode = mode;
@@ -560,27 +548,19 @@ export class InviteWorkflow {
 
   // ── Phase A: adminInviteForm ──────────────────────────────────────────
   @Step("inviteAdminInviteForm")
-  async adminInviteForm(
-    @WorkflowParam("input") input:
-      | {
-          email?: string;
-          firstName?: string;
-          lastName?: string;
-          roles?: string[];
-          action?: string;
-        }
-      | undefined,
-    @WorkflowParam("context") ctx: InviteWfCtx,
-  ): Promise<unknown> {
-    if (!input) return httpInputRequired(this.opts.forms.invite, ctx);
-    if (input.action === "cancel") {
+  async adminInviteForm(@WorkflowParam("context") ctx: InviteWfCtx): Promise<unknown> {
+    const wf = useAtscriptWf(this.opts.forms.invite);
+    if (wf.resolveAction() === "cancel") {
       return this.abort(ctx, "cancel");
     }
+    const input = wf.resolveInput() as {
+      email: string;
+      firstName?: string;
+      lastName?: string;
+      roles?: string[];
+    };
 
-    const errors = validateFormInput(this.opts.forms.invite, input);
-    if (errors) return httpInputRequired(this.opts.forms.invite, ctx, errors);
-
-    const email = input.email as string;
+    const email = input.email;
 
     const parsed = parseInviteRoles(input.roles);
     // Server-side whitelist enforcement: when `getAvailableRoles()` returned a
@@ -591,7 +571,7 @@ export class InviteWorkflow {
       const allowed = new Set(ctx.availableRoles);
       const bad = parsed.find((r) => !allowed.has(r));
       if (bad !== undefined) {
-        return httpInputRequired(this.opts.forms.invite, ctx, { roles: "Invalid role" });
+        throw wf.requireInput({ errors: { roles: "Invalid role" } });
       }
     }
 
@@ -722,18 +702,14 @@ export class InviteWorkflow {
 
   // ── Phase A (reInvite): loadPendingUser ───────────────────────────────
   @Step("inviteLoadPendingUser")
-  async loadPendingUser(
-    @WorkflowParam("input") input: { email?: string; action?: string } | undefined,
-    @WorkflowParam("context") ctx: InviteWfCtx,
-  ): Promise<unknown> {
-    if (!input) return httpInputRequired(this.opts.forms.inviteEmail, ctx);
-    if (input.action === "cancel") {
+  async loadPendingUser(@WorkflowParam("context") ctx: InviteWfCtx): Promise<unknown> {
+    const wf = useAtscriptWf(this.opts.forms.inviteEmail);
+    if (wf.resolveAction() === "cancel") {
       return this.abort(ctx, "cancel");
     }
-    const errors = validateFormInput(this.opts.forms.inviteEmail, input);
-    if (errors) return httpInputRequired(this.opts.forms.inviteEmail, ctx, errors);
+    const input = wf.resolveInput() as { email: string };
 
-    const email = input.email as string;
+    const email = input.email;
     const existing = await this.loadUserOrNull(email);
     if (!existing) throw new HttpError(404, "No pending invite for this email");
     if (!existing.account?.pendingInvitation) {
@@ -783,24 +759,27 @@ export class InviteWorkflow {
     // Labels are hardcoded English (consistent with login/recovery finishers);
     // localization is a cross-workflow concern not yet wired.
     const altUrl = this.opts.accept.alreadyAcceptedRedirectUrl;
-    finishWfWithChoice({
+    finishWf({
       message: { level: "info", text: "This invite was already accepted." },
-      primary: {
-        label: "Go to sign-in",
-        action: {
-          type: "redirect",
-          target: this.opts.accept.loginUrl,
-          reason: "already-accepted",
-        },
-      },
-      ...(altUrl && {
-        options: [
-          {
-            label: "Request a new invite",
-            action: { type: "redirect", target: altUrl, reason: "request-new-invite" },
+      next: {
+        trigger: "manual",
+        primary: {
+          label: "Go to sign-in",
+          action: {
+            type: "redirect",
+            target: this.opts.accept.loginUrl,
+            reason: "already-accepted",
           },
-        ],
-      }),
+        },
+        ...(altUrl && {
+          options: [
+            {
+              label: "Request a new invite",
+              action: { type: "redirect", target: altUrl, reason: "request-new-invite" },
+            },
+          ],
+        }),
+      },
     });
     ctx.aborted = true;
     return undefined;
@@ -817,31 +796,22 @@ export class InviteWorkflow {
   // ── Phase B: createPasswordForm ───────────────────────────────────────
   @Step("inviteCreatePasswordForm")
   @Public()
-  async createPasswordForm(
-    @WorkflowParam("input") input:
-      | { newPassword?: string; confirmPassword?: string; action?: string }
-      | undefined,
-    @WorkflowParam("context") ctx: InviteWfCtx,
-  ): Promise<unknown> {
-    if (!input) return httpInputRequired(this.opts.forms.setPassword, ctx);
-    if (input.action === "cancel") {
+  async createPasswordForm(@WorkflowParam("context") ctx: InviteWfCtx): Promise<unknown> {
+    const wf = useAtscriptWf(this.opts.forms.setPassword);
+    if (wf.resolveAction() === "cancel") {
       // User abort: stop the flow but DO NOT delete the user record. Admin can
       // reInvite later. The pending-invitation flag stays true.
       return this.abort(ctx, "cancel");
     }
-
-    const errors = validateFormInput(this.opts.forms.setPassword, input);
-    if (errors) return httpInputRequired(this.opts.forms.setPassword, ctx, errors);
+    const input = wf.resolveInput() as { newPassword: string; confirmPassword: string };
     if (input.newPassword !== input.confirmPassword) {
-      return httpInputRequired(this.opts.forms.setPassword, ctx, {
-        confirmPassword: "Passwords do not match",
-      });
+      throw wf.requireInput({ errors: { confirmPassword: "Passwords do not match" } });
     }
-    requireUsername(ctx);
+    this.requireUsername(ctx);
     try {
-      await this.users.setPassword(ctx.username, input.newPassword as string);
+      await this.users.setPassword(ctx.username, input.newPassword);
     } catch (err) {
-      translatePasswordSetError(err);
+      this.translatePasswordSetError(err);
     }
     ctx.passwordSet = true;
     return undefined;
@@ -850,21 +820,22 @@ export class InviteWorkflow {
   // ── Phase B: collectProfile ───────────────────────────────────────────
   @Step("inviteCollectProfile")
   @Public()
-  async collectProfile(
-    @WorkflowParam("input") input: Record<string, unknown> | undefined,
-    @WorkflowParam("context") ctx: InviteWfCtx,
-  ): Promise<unknown> {
+  async collectProfile(@WorkflowParam("context") ctx: InviteWfCtx): Promise<unknown> {
     const form = this.getProfileForm();
     if (!form) return undefined; // Defensive — condition gates on `acceptProfileFormPresent`.
-    if (!input) return httpInputRequired(form, ctx);
-    if ((input as { action?: string }).action === "skip") {
+    const wf = useAtscriptWf(form);
+    // Consumer contract: the profile form supplied via `getProfileForm()`
+    // MUST declare a `'skip'` action (phantom `ui.action` field annotated
+    // `@ui.form.action 'skip', 'Skip'`) for this step to accept skip clicks.
+    // Without the declaration, `wf.resolveAction()` rejects the action and
+    // throws `StepRetriableError` — that is correct and fail-loud.
+    if (wf.resolveAction() === "skip") {
       // 'skip' alt-action — record an empty profile and let `applyProfile` no-op.
       ctx.profile = {};
       return undefined;
     }
-    const errors = validateFormInput(form, input, { partial: "deep" });
-    if (errors) return httpInputRequired(form, ctx, errors);
-    ctx.profile = input;
+    const input = wf.resolveInput({ partial: "deep" });
+    ctx.profile = input as Record<string, unknown>;
     return undefined;
   }
 
@@ -872,7 +843,7 @@ export class InviteWorkflow {
   @Step("inviteApplyProfile")
   @Public()
   async applyProfileStep(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
-    requireUsername(ctx);
+    this.requireUsername(ctx);
     const profile = ctx.profile ?? {};
     if (Object.keys(profile).length === 0) {
       ctx.profileApplied = true;
@@ -887,7 +858,7 @@ export class InviteWorkflow {
   @Step("inviteUnsetPendingInvitation")
   @Public()
   async unsetPendingInvitation(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
-    requireUsername(ctx);
+    this.requireUsername(ctx);
     await this.users.update(ctx.username, {
       account: { pendingInvitation: false },
     } as Partial<UserCredentials>);
@@ -899,7 +870,7 @@ export class InviteWorkflow {
   @Step("inviteActivateUser")
   @Public()
   async activateUser(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
-    requireUsername(ctx);
+    this.requireUsername(ctx);
     await this.users.activateAccount(ctx.username);
     ctx.activated = true;
     await this.emitAudit("invite.accepted", ctx);
@@ -917,10 +888,10 @@ export class InviteWorkflow {
     // overrides with a redirect. The confirmation message is therefore only
     // visible in flows where BOTH freshLoginRequired AND showConfirmation are
     // tuned together — that's by design per WF_INVITE.md §"confirmation".
-    finishWfWithData(
-      { confirmed: true },
-      { level: "success", text: this.opts.accept.confirmationMessage },
-    );
+    finishWf({
+      data: { confirmed: true },
+      message: { level: "success", text: this.opts.accept.confirmationMessage },
+    });
     return undefined;
   }
 
@@ -928,7 +899,16 @@ export class InviteWorkflow {
   @Step("inviteFreshLoginFinish")
   @Public()
   freshLoginFinish(@WorkflowParam("context") _ctx: InviteWfCtx): undefined {
-    finishWfWithRedirect(this.opts.accept.loginUrl, { reason: "fresh-login-required" });
+    finishWf({
+      next: {
+        trigger: "immediate",
+        action: {
+          type: "redirect",
+          target: this.opts.accept.loginUrl,
+          reason: "fresh-login-required",
+        },
+      },
+    });
     return undefined;
   }
 
@@ -936,7 +916,7 @@ export class InviteWorkflow {
   @Step("inviteAutoLoginFinish")
   @Public()
   async autoLoginFinish(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
-    requireUsername(ctx);
+    this.requireUsername(ctx);
     const issue = await this.auth.issue(ctx.username);
     ctx.tokensIssued = true;
     const auth = useAuth();
@@ -955,17 +935,13 @@ export class InviteWorkflow {
 
   // ── auth.cancelInvite ─────────────────────────────────────────────────
   @Step("inviteCancelInvite")
-  async cancelInvite(
-    @WorkflowParam("input") input: { email?: string } | undefined,
-    @WorkflowParam("context") ctx: InviteWfCtx,
-  ): Promise<unknown> {
+  async cancelInvite(@WorkflowParam("context") ctx: InviteWfCtx): Promise<unknown> {
     if (!this.opts.cancellation.allowed) {
       throw new HttpError(403, "Invite cancellation is disabled");
     }
-    if (!input) return httpInputRequired(this.opts.forms.inviteEmail, ctx);
-    const errors = validateFormInput(this.opts.forms.inviteEmail, input);
-    if (errors) return httpInputRequired(this.opts.forms.inviteEmail, ctx, errors);
-    const email = input.email as string;
+    const wf = useAtscriptWf(this.opts.forms.inviteEmail);
+    const input = wf.resolveInput() as { email: string };
+    const email = input.email;
     const existing = await this.loadUserOrNull(email);
     if (!existing) throw new HttpError(404, "No invite to cancel for this email");
     if (!existing.account?.pendingInvitation) {
@@ -977,13 +953,16 @@ export class InviteWorkflow {
       email,
       username: existing.username,
     });
-    finishWfWithData({ cancelled: true, email }, { level: "info", text: "Invite cancelled." });
+    finishWf({
+      data: { cancelled: true, email },
+      message: { level: "info", text: "Invite cancelled." },
+    });
     return undefined;
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────
   private abort(ctx: InviteWfCtx, reason: string): AltHandled {
-    finishWfAborted(reason, { message: { level: "info", text: "Invite cancelled." } });
+    abortWf(reason, { message: { level: "info", text: "Invite cancelled." } });
     ctx.aborted = true;
     return ALT_HANDLED;
   }
@@ -1006,7 +985,7 @@ export class InviteWorkflow {
       ...(ctx.username && { userId: ctx.username }),
       ...(invitedBy && { invitedBy }),
       ...(ctx.email && { email: ctx.email }),
-      ip: resolveClientIp(),
+      ip: this.resolveClientIp(),
     });
   }
 }

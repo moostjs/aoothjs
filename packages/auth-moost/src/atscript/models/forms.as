@@ -2,6 +2,12 @@
  * Default login credentials form.
  *
  * Override via `setupAuthWorkflows({ forms: { loginCredentials: MyForm } })`.
+ *
+ * SSO provider ids (configured via
+ * `opts.alternateCredentials.ssoProviders[].id`) are NOT declared here —
+ * consumers who enable SSO supply their own `loginCredentials` form and add a
+ * matching phantom `ui.action` field per provider so
+ * `useAtscriptWf(form).resolveAction()` accepts the dynamic ids.
  */
 export interface LoginCredentialsForm {
     @ui.form.type 'text'
@@ -17,7 +23,15 @@ export interface LoginCredentialsForm {
     @meta.sensitive
     @meta.required
     @expect.minLength 1
+    @ui.form.action 'forgotPassword', 'Forgot password?'
+    @wf.action.withData 'forgotPassword'
     password: string
+
+    @ui.form.action 'signup', 'Sign up'
+    signup?: ui.action
+
+    @ui.form.action 'magicLink', 'Sign in with a magic link'
+    magicLink?: ui.action
 }
 
 /**
@@ -32,6 +46,12 @@ export interface MfaCodeForm {
     @expect.maxLength 12
     @expect.pattern '^[0-9]+$'
     code: string
+
+    @ui.form.action 'useDifferentMethod', 'Use a different method'
+    useDifferentMethod?: ui.action
+
+    @ui.form.action 'useBackupCode', 'Use backup code'
+    useBackupCode?: ui.action
 }
 
 /**
@@ -69,6 +89,9 @@ export interface EmailIdentifierForm {
     @ui.form.autocomplete 'email'
     @meta.required
     email: string.email
+
+    @ui.form.action 'backToLogin', 'Back to sign-in'
+    backToLogin?: ui.action
 }
 
 /**
@@ -76,7 +99,14 @@ export interface EmailIdentifierForm {
  *
  * `confirmPassword` equality is enforced in the workflow step (cross-field
  * checks are not expressible via atscript annotations).
+ *
+ * `@wf.context.pass 'passwordPolicies'` whitelists the workflow ctx key so the
+ * prior preparePasswordRules / setPassword steps can ship the transferable
+ * password-policy rules (`UserService.getTransferablePolicies()`) to the
+ * client for rendering rule hints next to the inputs. Without this annotation
+ * the key is stripped by `extractPassContext` before reaching the client.
  */
+@wf.context.pass 'passwordPolicies'
 export interface SetPasswordForm {
     @ui.form.type 'password'
     @meta.label 'New password'
@@ -93,6 +123,15 @@ export interface SetPasswordForm {
     @meta.required
     @expect.minLength 8
     confirmPassword: string
+
+    @ui.form.action 'logout', 'Logout'
+    logout?: ui.action
+
+    @ui.form.action 'cancel', 'Cancel'
+    cancel?: ui.action
+
+    @ui.form.action 'backToLogin', 'Back to sign-in'
+    backToLogin?: ui.action
 }
 
 /**
@@ -124,6 +163,9 @@ export interface InviteForm {
     @ui.form.fn.options '(_, _data, context) => Array.isArray(context.availableRoles) ? context.availableRoles.map(r => ({ value: r, label: r })) : []'
     @meta.label 'Roles'
     roles?: string[]
+
+    @ui.form.action 'cancel', 'Cancel'
+    cancel?: ui.action
 }
 
 /**
@@ -137,6 +179,9 @@ export interface InviteEmailForm {
     @ui.form.autocomplete 'email'
     @meta.required
     email: string.email
+
+    @ui.form.action 'cancel', 'Cancel'
+    cancel?: ui.action
 }
 
 /**
@@ -150,6 +195,9 @@ export interface InviteSendModeForm {
     @meta.required
     @expect.pattern '^(email|shareableLink)$'
     mode: string
+
+    @ui.form.action 'cancel', 'Cancel'
+    cancel?: ui.action
 }
 
 /**
@@ -169,6 +217,9 @@ export interface Select2faForm {
     @ui.form.type 'checkbox'
     @meta.label 'Save as default'
     saveAsDefault?: boolean
+
+    @ui.form.action 'useBackupCode', 'Use backup code'
+    useBackupCode?: ui.action
 }
 
 /**
@@ -189,6 +240,21 @@ export interface PincodeForm {
     @ui.form.type 'checkbox'
     @meta.label 'Remember this device'
     rememberDevice?: boolean
+
+    @ui.form.action 'resend', 'Resend code'
+    resend?: ui.action
+
+    @ui.form.action 'useDifferentMethod', 'Use a different method'
+    useDifferentMethod?: ui.action
+
+    @ui.form.action 'useBackupCode', 'Use backup code'
+    useBackupCode?: ui.action
+
+    @ui.form.action 'backToLogin', 'Back to sign-in'
+    backToLogin?: ui.action
+
+    @ui.form.action 'useDifferentTransport', 'Use a different transport'
+    useDifferentTransport?: ui.action
 }
 
 /**
@@ -227,6 +293,9 @@ export interface TermsAcceptForm {
     @meta.label 'I accept the Terms & Conditions'
     @meta.required
     accepted: boolean
+
+    @ui.form.action 'decline', 'Decline'
+    decline?: ui.action
 }
 
 /**
@@ -282,6 +351,12 @@ export interface ConcurrencyLimitForm {
     @meta.required
     @expect.pattern '^(logoutOthers|cancel)$'
     action: string
+
+    @ui.form.action 'cancel', 'Cancel'
+    cancel?: ui.action
+
+    @ui.form.action 'logoutOthers', 'Log out other sessions'
+    logoutOthers?: ui.action
 }
 
 /**
@@ -307,6 +382,9 @@ export interface RecoveryModeSelectForm {
     @meta.required
     @expect.pattern '^(magicLink|otp)$'
     mode: string
+
+    @ui.form.action 'backToLogin', 'Back to sign-in'
+    backToLogin?: ui.action
 }
 
 /**
@@ -328,4 +406,7 @@ export interface RecoveryFactorForm {
     @expect.minLength 4
     @expect.maxLength 12
     value: string
+
+    @ui.form.action 'backToLogin', 'Back to sign-in'
+    backToLogin?: ui.action
 }

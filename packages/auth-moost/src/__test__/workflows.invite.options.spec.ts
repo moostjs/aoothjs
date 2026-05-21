@@ -12,7 +12,7 @@
  * wires onto the new `protected` overrides). The pre-reshape options-class +
  * the rate-limit feature are gone — see WF_INVITE.md.
  */
-import { UserStoreMemory } from "@aooth/user";
+import { ppHasMinLength, UserStoreMemory } from "@aooth/user";
 import type { UserCredentials } from "@aooth/user";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -536,11 +536,11 @@ describe("InviteWorkflow — accept.freshLoginRequired", () => {
       },
     });
     const r = await driveDefaultInviteAccept(app, "fresh@test.com");
-    // Envelope: immediate redirect via finishWfWithRedirect, no auto-login data.
-    const end = (r.body as Record<string, unknown>)?.end as
-      | { mode?: string; action?: { type?: string; target?: string; reason?: string } }
+    // Envelope: immediate redirect via finishWf({ next: immediate }), no auto-login data.
+    const end = (r.body as Record<string, unknown>)?.next as
+      | { trigger?: string; action?: { type?: string; target?: string; reason?: string } }
       | undefined;
-    expect(end?.mode).toBe("immediate");
+    expect(end?.trigger).toBe("immediate");
     expect(end?.action?.type).toBe("redirect");
     expect(end?.action?.target).toBe("/sign-in");
     expect(end?.action?.reason).toBe("fresh-login-required");
@@ -805,7 +805,7 @@ describe("InviteWorkflow — admin form firstName/lastName/roles wiring", () => 
 
 // ─── WfFinished envelope migration (UI-MIGRATION.md §invite.workflow.ts) ───
 describe("InviteWorkflow — WfFinished envelope shape", () => {
-  it("idempotent magic-link click (already-accepted parallel token) → finishWfWithChoice envelope with primary + option buttons", async () => {
+  it("idempotent magic-link click (already-accepted parallel token) → finishWf({ next: manual }) envelope with primary + option buttons", async () => {
     // Drive the parallel-token scenario: admin invites; auth.reInvite issues
     // tokenB while the first invite still pending; user accepts via tokenA;
     // tokenB resume now lands on `inviteIdempotentRedirect`.
@@ -839,13 +839,13 @@ describe("InviteWorkflow — WfFinished envelope shape", () => {
       input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
     });
 
-    // tokenB now resumes into the already-accepted branch → finishWfWithChoice.
+    // tokenB now resumes into the already-accepted branch → finishWf({ next: manual }).
     const b1 = await app.resumeViaQuery(tokenB);
     const body = b1.body as Record<string, unknown>;
     expect(body.finished).toBe(true);
-    const end = body.end as
+    const end = body.next as
       | {
-          mode: string;
+          trigger: string;
           primary?: { label: string; action: { type: string; target: string; reason?: string } };
           options?: Array<{
             label: string;
@@ -853,7 +853,7 @@ describe("InviteWorkflow — WfFinished envelope shape", () => {
           }>;
         }
       | undefined;
-    expect(end?.mode).toBe("manual");
+    expect(end?.trigger).toBe("manual");
     expect(end?.primary?.action?.target).toBe("/sign-in");
     expect(end?.primary?.action?.reason).toBe("already-accepted");
     expect(end?.options?.[0]?.action?.target).toBe("/request-new");
@@ -862,7 +862,7 @@ describe("InviteWorkflow — WfFinished envelope shape", () => {
     expect(message?.level).toBe("info");
   });
 
-  it("password-form cancel alt-action → finishWfAborted envelope with reason='cancel'", async () => {
+  it("password-form cancel alt-action → abortWf envelope with reason='cancel'", async () => {
     const app = await prepareWfApp();
     const r1 = await app.trigger({ wfid: "auth.invite" });
     await app.trigger({
@@ -886,7 +886,7 @@ describe("InviteWorkflow — WfFinished envelope shape", () => {
     expect(u.account?.pendingInvitation).toBe(true);
   });
 
-  it("freshLoginRequired → finishWfWithRedirect envelope with reason='fresh-login-required'", async () => {
+  it("freshLoginRequired → finishWf({ next: immediate redirect }) envelope with reason='fresh-login-required'", async () => {
     const app = await prepareWfApp({
       inviteOpts: {
         accept: { showConfirmation: false, freshLoginRequired: true, loginUrl: "/post-accept" },
@@ -896,10 +896,10 @@ describe("InviteWorkflow — WfFinished envelope shape", () => {
     expect(r.status).toBeLessThan(400);
     const body = r.body as Record<string, unknown>;
     expect(body.finished).toBe(true);
-    const end = body.end as
-      | { mode: string; action: { target: string; reason?: string } }
+    const end = body.next as
+      | { trigger: string; action: { target: string; reason?: string } }
       | undefined;
-    expect(end?.mode).toBe("immediate");
+    expect(end?.trigger).toBe("immediate");
     expect(end?.action?.target).toBe("/post-accept");
     expect(end?.action?.reason).toBe("fresh-login-required");
   });
@@ -928,7 +928,7 @@ describe("InviteWorkflow — WfFinished envelope shape", () => {
     expect(r4.setCookies.length).toBeGreaterThan(0);
   });
 
-  it("cancelInvite terminal → finishWfWithData envelope with data.cancelled + info message", async () => {
+  it("cancelInvite terminal → finishWf({ data }) envelope with data.cancelled + info message", async () => {
     const app = await prepareWfApp();
     const r1 = await app.trigger({ wfid: "auth.invite" });
     await app.trigger({
@@ -972,5 +972,34 @@ describe("InviteForm.roles multiselect metadata", () => {
     // Annotation is a callback string referring to the role-options resolver
     // (consumes ctx.availableRoles populated by `invitePrepareAvailableRoles`).
     expect(String(optionsAnnotation)).toMatch(/availableRoles/);
+  });
+});
+
+describe("InviteWorkflow — passwordPolicies surfaces on SetPasswordForm pause", () => {
+  it("WF-INVITE-PWPOLICY — passwordPolicies reaches client on SetPasswordForm pause", async () => {
+    // Guards two regressions at once:
+    //   1. `@wf.context.pass 'passwordPolicies'` on SetPasswordForm — without
+    //      it `extractPassContext` strips the key before the inputRequired
+    //      envelope leaves the engine.
+    //   2. `invitePreparePasswordRules` seeding `ctx.passwordPolicies` so the
+    //      next step's `inviteCreatePasswordForm` ships the rules to the client.
+    const app = await prepareWfApp({
+      userConfig: { password: { policies: [ppHasMinLength(8)] } },
+    });
+    const r1 = await app.trigger({ wfid: "auth.invite" });
+    await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { email: "alice@test.com" },
+    });
+    const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
+    const r3 = await app.resumeViaQuery(token);
+
+    // Same flat-object wire shape as recovery — whitelisted ctx keys merged
+    // alongside the form schema.
+    const body = r3.body as { id?: string; passwordPolicies?: unknown };
+    expect(body.id).toBe("SetPasswordForm");
+    expect(body.passwordPolicies).toEqual(app.users.getTransferablePolicies());
+    expect(Array.isArray(body.passwordPolicies)).toBe(true);
+    expect((body.passwordPolicies as unknown[]).length).toBeGreaterThan(0);
   });
 });

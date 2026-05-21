@@ -1,12 +1,10 @@
 import { useArbac } from "@aooth/arbac-moost";
 import { Public, useAuth } from "@aooth/auth-moost";
 import type { AtscriptDbTable } from "@atscript/db";
-import { extractPassContext, serializeFormSchema } from "@atscript/moost-wf";
-import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
+import { useAtscriptWf } from "@atscript/moost-wf";
 import { HttpError } from "@moostjs/event-http";
 import {
   outletEmail,
-  outletHttp,
   Step,
   StepTTL,
   useWfFinished,
@@ -63,40 +61,6 @@ export function parseHandoverRoles(roles: string[]): {
   return out;
 }
 
-function reqInput(
-  type: TAtscriptAnnotatedType,
-  ctx: object,
-  errors?: Record<string, string>,
-): ReturnType<typeof outletHttp> {
-  const context: Record<string, unknown> = {
-    ...extractPassContext(type, ctx as Record<string, unknown>),
-  };
-  if (errors) context.errors = errors;
-  return outletHttp(serializeFormSchema(type), context);
-}
-
-function validateForm(type: TAtscriptAnnotatedType, input: unknown): Record<string, string> | null {
-  const validator = type.validator({ unknownProps: "strip" });
-  try {
-    validator.validate(input);
-    return null;
-  } catch (err) {
-    if (
-      err !== null &&
-      typeof err === "object" &&
-      "errors" in err &&
-      Array.isArray((err as { errors: unknown }).errors)
-    ) {
-      const out: Record<string, string> = {};
-      for (const e of (err as { errors: Array<{ path: string; message: string }> }).errors) {
-        out[e.path || "__form"] = e.message;
-      }
-      return out;
-    }
-    throw err;
-  }
-}
-
 export function makeHandoverWorkflow(tables: HandoverWfTables): HandoverWorkflowCtor {
   const { projectsTable, usersTable, auditTable } = tables;
 
@@ -114,19 +78,15 @@ export function makeHandoverWorkflow(tables: HandoverWfTables): HandoverWorkflow
     flow(): void {}
 
     @Step("handoverSelectTarget")
-    async selectTarget(
-      @WorkflowParam("input") input: { projectId?: string; targetOwner?: string } | undefined,
-      @WorkflowParam("context") ctx: HandoverWfCtx,
-    ): Promise<unknown> {
-      if (!input) return reqInput(HandoverTargetForm, ctx);
-      const errors = validateForm(HandoverTargetForm, input);
-      if (errors) return reqInput(HandoverTargetForm, ctx, errors);
+    async selectTarget(@WorkflowParam("context") ctx: HandoverWfCtx): Promise<unknown> {
+      const wf = useAtscriptWf(HandoverTargetForm);
+      const input = wf.resolveInput() as { projectId: string; targetOwner: string };
 
       const project = await projectsTable.findOne({
-        filter: { id: input.projectId as string },
+        filter: { id: input.projectId },
       });
       if (!project) {
-        return reqInput(HandoverTargetForm, ctx, { projectId: "Project not found" });
+        throw wf.requireInput({ errors: { projectId: "Project not found" } });
       }
 
       const currentUser = useAuth().getUserId();
@@ -143,21 +103,17 @@ export function makeHandoverWorkflow(tables: HandoverWfTables): HandoverWorkflow
 
       ctx.projectId = project.id;
       ctx.currentOwner = project.ownerUsername;
-      ctx.targetOwner = input.targetOwner as string;
+      ctx.targetOwner = input.targetOwner;
       ctx.tenantId = project.tenantId;
       return undefined;
     }
 
     @Step("handoverConfirm")
-    async confirm(
-      @WorkflowParam("input") input: { confirm?: boolean } | undefined,
-      @WorkflowParam("context") ctx: HandoverWfCtx,
-    ): Promise<unknown> {
-      if (!input) return reqInput(HandoverConfirmForm, ctx);
-      const errors = validateForm(HandoverConfirmForm, input);
-      if (errors) return reqInput(HandoverConfirmForm, ctx, errors);
+    async confirm(@WorkflowParam("context") ctx: HandoverWfCtx): Promise<unknown> {
+      const wf = useAtscriptWf(HandoverConfirmForm);
+      const input = wf.resolveInput() as { confirm?: boolean };
       if (input.confirm !== true) {
-        return reqInput(HandoverConfirmForm, ctx, { confirm: "Must confirm to proceed" });
+        throw wf.requireInput({ errors: { confirm: "Must confirm to proceed" } });
       }
       ctx.confirmed = true;
       return undefined;

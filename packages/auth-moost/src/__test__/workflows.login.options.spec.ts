@@ -13,11 +13,14 @@
  * `loginWorkflowClass`.
  */
 import { AuthCredential } from "@aooth/auth";
-import { generateTotpCode, generateTotpSecret, UserService } from "@aooth/user";
+import { generateTotpCode, generateTotpSecret, ppHasMinLength, UserService } from "@aooth/user";
 import { Controller, Inherit, Injectable } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
+import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
+
 import { type LoginWfCtx, LoginWorkflow, type LoginWorkflowOpts } from "../workflows/index";
+import { SsoLoginCredentialsForm } from "./fixtures/sso-login.as.js";
 import { prepareWfApp, seedActiveUser } from "./workflow-utils";
 
 /**
@@ -94,8 +97,8 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
       input: { username: "typed-user", action: "forgotPassword" },
     });
     expect(r2.body?.finished).toBe(true);
-    const end = r2.body?.end as { mode: string; action: { target: string } };
-    expect(end?.mode).toBe("immediate");
+    const end = r2.body?.next as { trigger: string; action: { target: string } };
+    expect(end?.trigger).toBe("immediate");
     expect(end?.action?.target).toBe("/recover?username=typed-user");
   });
 
@@ -113,7 +116,7 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
       wfs: r1.body?.wfs as string,
       input: { username: "bob", action: "forgotPassword" },
     });
-    const end = r2.body?.end as { action: { target: string } };
+    const end = r2.body?.next as { action: { target: string } };
     expect(end?.action?.target).toBe("#/forgot?u=bob");
   });
 
@@ -128,7 +131,7 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
       wfs: r1.body?.wfs as string,
       input: { username: "alice", action: "forgotPassword" },
     });
-    expect(r2.body?.end).toBeUndefined();
+    expect(r2.body?.next).toBeUndefined();
     expect(r2.body?.errors).toBeTruthy();
   });
 
@@ -144,8 +147,8 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
       input: { action: "signup" },
     });
     expect(r2.body?.finished).toBe(true);
-    const end = r2.body?.end as { mode: string; action: { target: string } };
-    expect(end?.mode).toBe("immediate");
+    const end = r2.body?.next as { trigger: string; action: { target: string } };
+    expect(end?.trigger).toBe("immediate");
     expect(end?.action?.target).toBe("/sign-me-up");
   });
 
@@ -158,6 +161,11 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
             { id: "okta", label: "Okta", url: "https://idp.example/oauth/okta" },
           ],
         },
+        // SSO providers are dynamic per consumer — the bundled
+        // `LoginCredentialsForm` does NOT whitelist them. Opt into the test
+        // fixture form that declares phantom `ui.action` fields for
+        // `google` + `okta`.
+        forms: { loginCredentials: SsoLoginCredentialsForm as unknown as TAtscriptAnnotatedType },
       },
     });
     const r1 = await app.trigger({ wfid: "auth.login" });
@@ -165,7 +173,7 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
       wfs: r1.body?.wfs as string,
       input: { action: "okta" },
     });
-    const end = r2.body?.end as { action: { target: string } };
+    const end = r2.body?.next as { action: { target: string } };
     expect(end?.action?.target).toBe("https://idp.example/oauth/okta");
   });
 
@@ -178,6 +186,7 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
         alternateCredentials: {
           ssoProviders: [{ id: "okta", label: "Okta", url: "https://idp.example/oauth/okta" }],
         },
+        forms: { loginCredentials: SsoLoginCredentialsForm as unknown as TAtscriptAnnotatedType },
       },
     });
     const r1 = await app.trigger({ wfid: "auth.login" });
@@ -189,8 +198,8 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
     expect(r2.body?.finished).toBe(true);
     expect(r2.body).toMatchObject({
       finished: true,
-      end: {
-        mode: "immediate",
+      next: {
+        trigger: "immediate",
         action: {
           type: "redirect",
           target: "https://idp.example/oauth/okta",
@@ -259,6 +268,36 @@ describe("LoginWorkflowOpts — Phase 2 password guards", () => {
     const data = r2.body?.data as Record<string, unknown> | undefined;
     expect(data?.userId).toBe("alice");
     expect(typeof data?.accessToken).toBe("string");
+  });
+
+  it("WF-LOGIN-PWPOLICY — passwordPolicies reaches client on SetPasswordForm pause (forced password change)", async () => {
+    // Guards two regressions at once:
+    //   1. `@wf.context.pass 'passwordPolicies'` on SetPasswordForm — without
+    //      it `extractPassContext` strips the key before the inputRequired
+    //      envelope leaves the engine.
+    //   2. `prepare-password-rules` step seeding `ctx.passwordPolicies` so the
+    //      next step's `createPasswordForm` ships the rules to the client.
+    const app = await prepareWfApp({
+      loginOpts: {
+        guards: { passwordInitial: true },
+        mfa: { enabled: false },
+      },
+      userConfig: { password: { policies: [ppHasMinLength(8)] } },
+    });
+    await app.users.createUser("alice");
+    await app.users.activateAccount("alice");
+    await app.users.setPassword("alice", "Knowable1!");
+    const store = (app.users as unknown as { store: { update: Function } }).store;
+    await store.update("alice", { set: { password: { isInitial: true } } });
+
+    const r2 = await startAndCredentials(app, "alice", "Knowable1!");
+    // Same flat-object wire shape as recovery — whitelisted ctx keys merged
+    // alongside the form schema.
+    const body = r2.body as { id?: string; passwordPolicies?: unknown };
+    expect(body.id).toBe("SetPasswordForm");
+    expect(body.passwordPolicies).toEqual(app.users.getTransferablePolicies());
+    expect(Array.isArray(body.passwordPolicies)).toBe(true);
+    expect((body.passwordPolicies as unknown[]).length).toBeGreaterThan(0);
   });
 });
 
@@ -538,8 +577,8 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
     expect(r2.body?.finished).toBe(true);
     expect(r2.body).toMatchObject({
       finished: true,
-      end: {
-        mode: "immediate",
+      next: {
+        trigger: "immediate",
         action: { type: "redirect", target: "/", reason: "finalize-redirect" },
       },
     });
@@ -556,7 +595,7 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
-    const end = r2.body?.end as { action: { target: string } };
+    const end = r2.body?.next as { action: { target: string } };
     expect(end?.action?.target).toBe("/welcome/alice");
   });
 
@@ -566,7 +605,7 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
-    expect(r2.body?.end).toBeUndefined();
+    expect(r2.body?.next).toBeUndefined();
     expect((r2.body?.data as Record<string, unknown>)?.userId).toBe("alice");
   });
 
@@ -576,7 +615,7 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
-    expect(r2.body?.end).toBeUndefined();
+    expect(r2.body?.next).toBeUndefined();
     const data = r2.body?.data as Record<string, unknown> | undefined;
     expect(data?.userId).toBe("alice");
     expect(typeof data?.accessToken).toBe("string");

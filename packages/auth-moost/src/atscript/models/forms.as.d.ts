@@ -11,11 +11,13 @@ import type { TAtscriptTypeObject, TAtscriptTypeComplex, TAtscriptTypeFinal, TAt
 
 /**
  * Atscript interface **LoginCredentialsForm**
- * @see {@link ./forms.as:6:18}
+ * @see {@link ./forms.as:12:18}
  */
 export declare class LoginCredentialsForm {
   username: string
   password: string
+  // signup: ui.action
+  // magicLink: ui.action
   static __is_atscript_annotated_type: true
   static type: TAtscriptTypeObject<keyof LoginCredentialsForm, LoginCredentialsForm>
   static metadata: TMetadataMap<AtscriptMetadata>
@@ -28,10 +30,12 @@ export declare class LoginCredentialsForm {
 
 /**
  * Atscript interface **MfaCodeForm**
- * @see {@link ./forms.as:26:18}
+ * @see {@link ./forms.as:40:18}
  */
 export declare class MfaCodeForm {
   code: string
+  // useDifferentMethod: ui.action
+  // useBackupCode: ui.action
   static __is_atscript_annotated_type: true
   static type: TAtscriptTypeObject<keyof MfaCodeForm, MfaCodeForm>
   static metadata: TMetadataMap<AtscriptMetadata>
@@ -44,7 +48,7 @@ export declare class MfaCodeForm {
 
 /**
  * Atscript interface **BackupCodeForm**
- * @see {@link ./forms.as:45:18}
+ * @see {@link ./forms.as:65:18}
  */
 export declare class BackupCodeForm {
   code: string
@@ -60,10 +64,11 @@ export declare class BackupCodeForm {
 
 /**
  * Atscript interface **EmailIdentifierForm**
- * @see {@link ./forms.as:66:18}
+ * @see {@link ./forms.as:86:18}
  */
 export declare class EmailIdentifierForm {
   email: string /* email */
+  // backToLogin: ui.action
   static __is_atscript_annotated_type: true
   static type: TAtscriptTypeObject<keyof EmailIdentifierForm, EmailIdentifierForm>
   static metadata: TMetadataMap<AtscriptMetadata>
@@ -76,11 +81,14 @@ export declare class EmailIdentifierForm {
 
 /**
  * Atscript interface **SetPasswordForm**
- * @see {@link ./forms.as:80:18}
+ * @see {@link ./forms.as:110:18}
  */
 export declare class SetPasswordForm {
   newPassword: string
   confirmPassword: string
+  // logout: ui.action
+  // cancel: ui.action
+  // backToLogin: ui.action
   static __is_atscript_annotated_type: true
   static type: TAtscriptTypeObject<keyof SetPasswordForm, SetPasswordForm>
   static metadata: TMetadataMap<AtscriptMetadata>
@@ -93,13 +101,14 @@ export declare class SetPasswordForm {
 
 /**
  * Atscript interface **InviteForm**
- * @see {@link ./forms.as:106:18}
+ * @see {@link ./forms.as:145:18}
  */
 export declare class InviteForm {
   email: string /* email */
   firstName?: string
   lastName?: string
   roles?: string[]
+  // cancel: ui.action
   static __is_atscript_annotated_type: true
   static type: TAtscriptTypeObject<keyof InviteForm, InviteForm>
   static metadata: TMetadataMap<AtscriptMetadata>
@@ -112,10 +121,11 @@ export declare class InviteForm {
 
 /**
  * Atscript interface **InviteEmailForm**
- * @see {@link ./forms.as:134:18}
+ * @see {@link ./forms.as:176:18}
  */
 export declare class InviteEmailForm {
   email: string /* email */
+  // cancel: ui.action
   static __is_atscript_annotated_type: true
   static type: TAtscriptTypeObject<keyof InviteEmailForm, InviteEmailForm>
   static metadata: TMetadataMap<AtscriptMetadata>
@@ -128,10 +138,11 @@ export declare class InviteEmailForm {
 
 /**
  * Atscript interface **InviteSendModeForm**
- * @see {@link ./forms.as:147:18}
+ * @see {@link ./forms.as:192:18}
  */
 export declare class InviteSendModeForm {
   mode: string
+  // cancel: ui.action
   static __is_atscript_annotated_type: true
   static type: TAtscriptTypeObject<keyof InviteSendModeForm, InviteSendModeForm>
   static metadata: TMetadataMap<AtscriptMetadata>
@@ -144,11 +155,12 @@ export declare class InviteSendModeForm {
 
 /**
  * Atscript interface **Select2faForm**
- * @see {@link ./forms.as:163:18}
+ * @see {@link ./forms.as:211:18}
  */
 export declare class Select2faForm {
   methodName: string
   saveAsDefault?: boolean
+  // useBackupCode: ui.action
   static __is_atscript_annotated_type: true
   static type: TAtscriptTypeObject<keyof Select2faForm, Select2faForm>
   static metadata: TMetadataMap<AtscriptMetadata>
@@ -161,11 +173,16 @@ export declare class Select2faForm {
 
 /**
  * Atscript interface **PincodeForm**
- * @see {@link ./forms.as:179:18}
+ * @see {@link ./forms.as:230:18}
  */
 export declare class PincodeForm {
   code: string
   rememberDevice?: boolean
+  // resend: ui.action
+  // useDifferentMethod: ui.action
+  // useBackupCode: ui.action
+  // backToLogin: ui.action
+  // useDifferentTransport: ui.action
   static __is_atscript_annotated_type: true
   static type: TAtscriptTypeObject<keyof PincodeForm, PincodeForm>
   static metadata: TMetadataMap<AtscriptMetadata>
@@ -178,7 +195,7 @@ export declare class PincodeForm {
 
 /**
  * Atscript interface **AskEmailForm**
- * @see {@link ./forms.as:197:18}
+ * @see {@link ./forms.as:263:18}
  */
 export declare class AskEmailForm {
   email: string /* email */
@@ -194,7 +211,7 @@ export declare class AskEmailForm {
 
 /**
  * Atscript interface **AskPhoneForm**
- * @see {@link ./forms.as:209:18}
+ * @see {@link ./forms.as:275:18}
  */
 export declare class AskPhoneForm {
   phone: string
@@ -210,11 +227,12 @@ export declare class AskPhoneForm {
 
 /**
  * Atscript interface **TermsAcceptForm**
- * @see {@link ./forms.as:220:18}
+ * @see {@link ./forms.as:286:18}
  */
 export declare class TermsAcceptForm {
   acceptedVersion: string
   accepted: boolean
+  // decline: ui.action
   static __is_atscript_annotated_type: true
   static type: TAtscriptTypeObject<keyof TermsAcceptForm, TermsAcceptForm>
   static metadata: TMetadataMap<AtscriptMetadata>
@@ -227,7 +245,7 @@ export declare class TermsAcceptForm {
 
 /**
  * Atscript interface **ProfileCompleteForm**
- * @see {@link ./forms.as:236:18}
+ * @see {@link ./forms.as:305:18}
  */
 export declare class ProfileCompleteForm {
   firstName?: string
@@ -244,7 +262,7 @@ export declare class ProfileCompleteForm {
 
 /**
  * Atscript interface **ConsentMarketingForm**
- * @see {@link ./forms.as:249:18}
+ * @see {@link ./forms.as:318:18}
  */
 export declare class ConsentMarketingForm {
   optIn?: boolean
@@ -260,7 +278,7 @@ export declare class ConsentMarketingForm {
 
 /**
  * Atscript interface **TenantSelectForm**
- * @see {@link ./forms.as:258:18}
+ * @see {@link ./forms.as:327:18}
  */
 export declare class TenantSelectForm {
   tenantId: string
@@ -276,7 +294,7 @@ export declare class TenantSelectForm {
 
 /**
  * Atscript interface **PersonaSelectForm**
- * @see {@link ./forms.as:268:18}
+ * @see {@link ./forms.as:337:18}
  */
 export declare class PersonaSelectForm {
   personaId: string
@@ -292,10 +310,12 @@ export declare class PersonaSelectForm {
 
 /**
  * Atscript interface **ConcurrencyLimitForm**
- * @see {@link ./forms.as:279:18}
+ * @see {@link ./forms.as:348:18}
  */
 export declare class ConcurrencyLimitForm {
   action: string
+  // cancel: ui.action
+  // logoutOthers: ui.action
   static __is_atscript_annotated_type: true
   static type: TAtscriptTypeObject<keyof ConcurrencyLimitForm, ConcurrencyLimitForm>
   static metadata: TMetadataMap<AtscriptMetadata>
@@ -308,7 +328,7 @@ export declare class ConcurrencyLimitForm {
 
 /**
  * Atscript interface **MagicLinkRequestForm**
- * @see {@link ./forms.as:292:18}
+ * @see {@link ./forms.as:367:18}
  */
 export declare class MagicLinkRequestForm {
   identifier: string
@@ -324,10 +344,11 @@ export declare class MagicLinkRequestForm {
 
 /**
  * Atscript interface **RecoveryModeSelectForm**
- * @see {@link ./forms.as:304:18}
+ * @see {@link ./forms.as:379:18}
  */
 export declare class RecoveryModeSelectForm {
   mode: string
+  // backToLogin: ui.action
   static __is_atscript_annotated_type: true
   static type: TAtscriptTypeObject<keyof RecoveryModeSelectForm, RecoveryModeSelectForm>
   static metadata: TMetadataMap<AtscriptMetadata>
@@ -340,11 +361,12 @@ export declare class RecoveryModeSelectForm {
 
 /**
  * Atscript interface **RecoveryFactorForm**
- * @see {@link ./forms.as:318:18}
+ * @see {@link ./forms.as:396:18}
  */
 export declare class RecoveryFactorForm {
   factor: string
   value: string
+  // backToLogin: ui.action
   static __is_atscript_annotated_type: true
   static type: TAtscriptTypeObject<keyof RecoveryFactorForm, RecoveryFactorForm>
   static metadata: TMetadataMap<AtscriptMetadata>

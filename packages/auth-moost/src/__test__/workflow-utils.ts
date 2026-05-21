@@ -17,12 +17,11 @@ for (const key of [
 
 import { AuthCredential, type AuthCredentialOptions, CredentialStoreMemory } from "@aooth/auth";
 import { UserService, type UserServiceConfig, UserStoreMemory } from "@aooth/user";
-import { formInputInterceptor, type WfFinished } from "@atscript/moost-wf";
+import { handleAsOutletRequest, type WfFinished } from "@atscript/moost-wf";
 import { Body, MoostHttp, Post } from "@moostjs/event-http";
 import {
   createHttpOutlet,
   HandleStateStrategy,
-  handleWfOutletRequest,
   MoostWf,
   WfStateStoreMemory,
   type WfOutletTriggerDeps,
@@ -86,7 +85,6 @@ export interface WfRequestBody {
   wfid?: string;
   wfs?: string;
   input?: unknown;
-  action?: string;
 }
 
 export interface WfResponse {
@@ -403,7 +401,6 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
   // object below takes it directly via closure.
   moost.setProvideRegistry(createProvideRegistry(...providers));
   moost.applyGlobalInterceptors(authGuardInterceptor({ cookie: { secure: false } }));
-  moost.applyGlobalInterceptors(formInputInterceptor());
   moost.registerControllers(AuthController);
 
   const wfEnabled = opts.workflows ?? {};
@@ -430,6 +427,10 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
   class WfTriggerController {
     @Post("trigger")
     async trigger(@Body() _body: WfRequestBody): Promise<unknown> {
+      // Mirror `WfTriggerProvider.handle()`: thin pass-through to
+      // `handleAsOutletRequest`. The new `@atscript/moost-wf` wire envelope is
+      // `{ wfs, input: { action?, formData? } }`; the wf engine reads action +
+      // form data directly from `body.input`. No app-level bridging needed.
       const wfApp = wf.getWfApp();
       const deps: WfOutletTriggerDeps = {
         start: (schemaId, context, opts) =>
@@ -443,7 +444,7 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
             eventContext: (opts?.eventContext ?? current()) as never,
           }),
       };
-      return handleWfOutletRequest(
+      return handleAsOutletRequest(
         {
           allow: [
             "auth.login",
@@ -483,11 +484,30 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     };
   }
 
+  // Legacy test harness shim: existing tests pre-date the new wire envelope
+  // `{ wfs, input: { action?, formData? } }` and write `input` as a flat bag
+  // mixing form data with an optional `action` key (e.g.
+  // `{ input: { username, action: "forgotPassword" } }`). Split that into the
+  // new envelope so existing call sites keep working without a global rewrite.
+  // Bodies already in the new shape pass through unchanged.
+  function normalize(body: WfRequestBody): WfRequestBody {
+    const rawInput = body.input;
+    if (!rawInput || typeof rawInput !== "object" || Array.isArray(rawInput)) return body;
+    const keys = Object.keys(rawInput as Record<string, unknown>);
+    const isNewShape = keys.length > 0 && keys.every((k) => k === "action" || k === "formData");
+    if (isNewShape) return body;
+    const { action: innerAction, ...formData } = rawInput as Record<string, unknown>;
+    const wrapped: { action?: string; formData?: Record<string, unknown> } = {};
+    if (typeof innerAction === "string") wrapped.action = innerAction;
+    if (Object.keys(formData).length > 0) wrapped.formData = formData;
+    return { ...body, input: wrapped };
+  }
+
   async function trigger(body: WfRequestBody): Promise<WfResponse> {
     const response = await http.request("/wf/trigger", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify(normalize(body)),
     });
     return readResponse(response);
   }
@@ -499,7 +519,7 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     const response = await http.request("/wf/trigger", {
       method: "POST",
       headers: { "content-type": "application/json", ...extraHeaders },
-      body: JSON.stringify(body),
+      body: JSON.stringify(normalize(body)),
     });
     return readResponse(response);
   }
@@ -508,7 +528,7 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     const response = await http.request(`/wf/trigger?wfs=${encodeURIComponent(token)}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify(normalize(body)),
     });
     return readResponse(response);
   }

@@ -215,18 +215,12 @@ describe("AUTH — token forgery / expiry / transport precedence", () => {
     const alice = app.fixtures.users.t1_alice;
     // Drive the login workflow and capture the cookies set by the finalize
     // step (handled by `useAuth().buildFinishedCookies` inside the wf outlet).
-    const initRes = await app.fetch("/auth/trigger", {
-      method: "POST",
-      json: { wfid: "auth.login" },
-    });
+    const initRes = await app.triggerWf("public", { wfid: "auth.login" });
     const initBody = (await initRes.json()) as { wfs?: string };
     expect(initBody.wfs).toBeTruthy();
-    const loginRes = await app.fetch("/auth/trigger", {
-      method: "POST",
-      json: {
-        wfs: initBody.wfs,
-        input: { username: alice.username, password: alice.password },
-      },
+    const loginRes = await app.triggerWf("public", {
+      wfs: initBody.wfs,
+      input: { username: alice.username, password: alice.password },
     });
     expectOk(loginRes);
 

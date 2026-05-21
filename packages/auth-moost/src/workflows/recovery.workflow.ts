@@ -7,9 +7,12 @@
  * etc. via `RecoveryWorkflowOpts`.
  *
  * **Step routing model.** Mirrors `LoginWorkflow`: alt-action handlers run
- * BEFORE form validation (so `backToLogin` works without filling fields) and
+ * BEFORE form validation so `backToLogin` works without filling fields, and
  * return the `ALT_HANDLED` sentinel after short-circuiting via
- * `useWfFinished().set(...)`. The step body then returns `undefined` so the
+ * `useWfFinished().set(...)`. Actions are read via
+ * `useAtscriptWf(form).resolveAction()` — the form's static `@ui.form.action`
+ * whitelist validates the action id; unknown ids throw `StepRetriableError`
+ * before the step body runs. The step body then returns `undefined` so the
  * schema advances cleanly, with terminal steps gated on `!ctx.aborted` so the
  * abort response set via `useWfFinished()` is not overwritten.
  *
@@ -33,11 +36,12 @@
  */
 import { AuthCredential } from "@aooth/auth";
 import { UserAuthError, UserService, verifyTotpCode } from "@aooth/user";
-import { finishWfWithData, finishWfWithRedirect, type WfFinished } from "@atscript/moost-wf";
+import { finishWf, useAtscriptWf, type WfFinished } from "@atscript/moost-wf";
 import {
   outletEmail,
   Step,
   useWfFinished,
+  useWfState,
   Workflow,
   WorkflowParam,
   WorkflowSchema,
@@ -49,21 +53,13 @@ import { Controller, Injectable } from "moost";
 import type { AuditEvent } from "../audit/index";
 import { useAuth } from "../auth.composables";
 import { Public } from "../auth.decorator";
+import { AuthWorkflowBase } from "./auth-workflow.base";
 import type { DeliverPayload } from "./login.workflow";
 import {
   mergeRecoveryOpts,
   type RecoveryWorkflowOpts,
   type ResolvedRecoveryWorkflowOpts,
 } from "./recovery.workflow.options";
-import {
-  httpInputRequired,
-  mintPin,
-  requireUsername,
-  resolveClientIp,
-  translatePasswordSetError,
-  validateFormInput,
-  verifyPin,
-} from "./wf-helpers";
 
 export interface RecoveryWfCtx {
   opts?: ResolvedRecoveryWorkflowOpts;
@@ -130,12 +126,13 @@ function validateOpts(opts: ResolvedRecoveryWorkflowOpts): void {
 @Public()
 @Injectable("FOR_EVENT")
 @Controller()
-export class RecoveryWorkflow {
+export class RecoveryWorkflow extends AuthWorkflowBase {
   protected readonly opts: ResolvedRecoveryWorkflowOpts;
   protected readonly users: UserService;
   protected readonly auth: AuthCredential;
 
   constructor(opts: RecoveryWorkflowOpts, users: UserService, auth: AuthCredential) {
+    super();
     this.opts = mergeRecoveryOpts(opts);
     this.users = users;
     this.auth = auth;
@@ -281,30 +278,34 @@ export class RecoveryWorkflow {
 
   // ── request ──────────────────────────────────────────────────────────
   @Step("recoveryRequest")
-  async request(
-    @WorkflowParam("input") input: { email?: string; action?: string } | undefined,
-    @WorkflowParam("context") ctx: RecoveryWfCtx,
-  ): Promise<unknown> {
-    // First entry: read `?username=` from the resume URL (carried in by the
-    // login workflow's `forgotPassword` alt-action) to pre-fill the form.
-    if (!input) {
-      const prefilled = readUsernameQueryParam();
-      const formCtx: Record<string, unknown> = { ...(ctx as Record<string, unknown>) };
-      if (prefilled) {
-        formCtx.defaults = { email: prefilled };
-      }
-      return httpInputRequired(this.opts.forms.emailIdentifier, formCtx);
-    }
-
-    if (input.action === "backToLogin" && this.opts.altActions.backToLogin) {
+  async request(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<unknown> {
+    const emailWf = useAtscriptWf(this.opts.forms.emailIdentifier);
+    const action = emailWf.resolveAction();
+    if (action === "backToLogin" && this.opts.altActions.backToLogin) {
       this.abortToLogin(ctx);
       return undefined;
     }
 
-    const errors = validateFormInput(this.opts.forms.emailIdentifier, input);
-    if (errors) return httpInputRequired(this.opts.forms.emailIdentifier, ctx, errors);
+    // First entry: read `?username=` from the resume URL (carried in by the
+    // login workflow's `forgotPassword` alt-action) to pre-fill the form.
+    // `requireInput()` SNAPSHOTS `wfState.ctx()` at call time (it builds the
+    // pass-context payload from the ctx-as-it-stands), so we must seed
+    // `ctx.defaults` BEFORE building the requireInput sentinel — otherwise
+    // the snapshot carries the pre-mutation ctx and the prefill is lost.
+    // `EmailIdentifierForm` declares `@wf.context.pass 'defaults'` so the
+    // engine surfaces the key to the client when it is present.
+    const rawFormData = useWfState().input<{ formData?: unknown }>()?.formData;
+    if (rawFormData === undefined) {
+      const prefilled = readUsernameQueryParam();
+      if (prefilled) {
+        (ctx as Record<string, unknown>).defaults = { email: prefilled };
+      }
+      throw emailWf.requireInput();
+    }
 
-    const email = input.email as string;
+    const input = emailWf.resolveInput() as { email: string };
+
+    const email = input.email;
     ctx.email = email;
 
     let username: string | undefined;
@@ -347,17 +348,14 @@ export class RecoveryWorkflow {
 
   // ── selectMode ───────────────────────────────────────────────────────
   @Step("recoverySelectMode")
-  selectMode(
-    @WorkflowParam("input") input: { mode?: string; action?: string } | undefined,
-    @WorkflowParam("context") ctx: RecoveryWfCtx,
-  ): unknown {
-    if (!input) return httpInputRequired(this.opts.forms.recoveryModeSelect, ctx);
-    if (input.action === "backToLogin" && this.opts.altActions.backToLogin) {
+  selectMode(@WorkflowParam("context") ctx: RecoveryWfCtx): unknown {
+    const wf = useAtscriptWf(this.opts.forms.recoveryModeSelect);
+    const action = wf.resolveAction();
+    if (action === "backToLogin" && this.opts.altActions.backToLogin) {
       this.abortToLogin(ctx);
       return undefined;
     }
-    const errors = validateFormInput(this.opts.forms.recoveryModeSelect, input);
-    if (errors) return httpInputRequired(this.opts.forms.recoveryModeSelect, ctx, errors);
+    const input = wf.resolveInput() as { mode: string };
     const mode = input.mode as "magicLink" | "otp";
     ctx.selectedMode = mode;
     ctx.resolvedMode = mode;
@@ -387,12 +385,12 @@ export class RecoveryWorkflow {
   // ── sendOtp ──────────────────────────────────────────────────────────
   @Step("recoverySendOtp")
   async sendOtp(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<undefined> {
-    requireUsername(ctx);
+    this.requireUsername(ctx);
     const transport: "sms" | "email" =
       ctx.otpTransport ?? this.opts.delivery.otp.transports[0] ?? "email";
     ctx.otpTransport = transport;
     ctx.otpCodeLength = this.opts.delivery.otp.codeLength;
-    const code = mintPin(ctx, this.opts.delivery.otp.codeLength, this.opts.delivery.otp.ttlMs);
+    const code = this.mintPin(ctx, this.opts.delivery.otp.codeLength, this.opts.delivery.otp.ttlMs);
     ctx.pinResendAllowedAt = Date.now() + this.opts.delivery.otp.resendCooldownMs;
 
     if (transport === "email") {
@@ -423,22 +421,17 @@ export class RecoveryWorkflow {
 
   // ── checkOtp ─────────────────────────────────────────────────────────
   @Step("recoveryCheckOtp")
-  async checkOtp(
-    @WorkflowParam("input") input: { code?: string; action?: string } | undefined,
-    @WorkflowParam("context") ctx: RecoveryWfCtx,
-  ): Promise<unknown> {
-    if (!input) return httpInputRequired(this.opts.forms.pincode, ctx);
-
-    if (input.action === "backToLogin" && this.opts.altActions.backToLogin) {
+  async checkOtp(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<unknown> {
+    const wf = useAtscriptWf(this.opts.forms.pincode);
+    const action = wf.resolveAction();
+    if (action === "backToLogin" && this.opts.altActions.backToLogin) {
       this.abortToLogin(ctx);
       return undefined;
     }
-    if (input.action === "resend") {
+    if (action === "resend") {
       if (ctx.pinResendAllowedAt && Date.now() < ctx.pinResendAllowedAt) {
         const waitSec = Math.ceil((ctx.pinResendAllowedAt - Date.now()) / 1000);
-        return httpInputRequired(this.opts.forms.pincode, ctx, {
-          __form: `Please wait ${waitSec}s`,
-        });
+        throw wf.requireInput({ formMessage: `Please wait ${waitSec}s` });
       }
       // Clear pin so the while-loop's `sendOtp` condition re-fires.
       // `delete` (not `= undefined`) so the persisted ctx remains JSON-clean
@@ -448,12 +441,10 @@ export class RecoveryWorkflow {
       delete ctx.pinExpire;
       return undefined;
     }
-    if (input.action === "useDifferentTransport") {
+    if (action === "useDifferentTransport") {
       const transports = this.opts.delivery.otp.transports;
       if (transports.length < 2) {
-        return httpInputRequired(this.opts.forms.pincode, ctx, {
-          __form: "Only one transport configured",
-        });
+        throw wf.requireInput({ formMessage: "Only one transport configured" });
       }
       const current = ctx.otpTransport ?? transports[0];
       const next = transports.find((t) => t !== current) ?? transports[0];
@@ -462,11 +453,9 @@ export class RecoveryWorkflow {
       delete ctx.pinExpire;
       return undefined;
     }
-
-    const errors = validateFormInput(this.opts.forms.pincode, input);
-    if (errors) return httpInputRequired(this.opts.forms.pincode, ctx, errors);
-    const pinErr = verifyPin(ctx, input.code);
-    if (pinErr) return httpInputRequired(this.opts.forms.pincode, ctx, pinErr);
+    const input = wf.resolveInput() as { code: string };
+    const pinErr = this.verifyPin(ctx, input.code);
+    if (pinErr) throw wf.requireInput({ errors: pinErr });
     ctx.pinVerified = true;
     delete ctx.pin;
     delete ctx.pinExpire;
@@ -475,25 +464,22 @@ export class RecoveryWorkflow {
 
   // ── verifyFactor ─────────────────────────────────────────────────────
   @Step("recoveryVerifyFactor")
-  async verifyFactor(
-    @WorkflowParam("input") input: { factor?: string; value?: string; action?: string } | undefined,
-    @WorkflowParam("context") ctx: RecoveryWfCtx,
-  ): Promise<unknown> {
-    if (!input) return httpInputRequired(this.opts.forms.recoveryFactor, ctx);
-    if (input.action === "backToLogin" && this.opts.altActions.backToLogin) {
+  async verifyFactor(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<unknown> {
+    const wf = useAtscriptWf(this.opts.forms.recoveryFactor);
+    const action = wf.resolveAction();
+    if (action === "backToLogin" && this.opts.altActions.backToLogin) {
       this.abortToLogin(ctx);
       return undefined;
     }
-    const errors = validateFormInput(this.opts.forms.recoveryFactor, input);
-    if (errors) return httpInputRequired(this.opts.forms.recoveryFactor, ctx, errors);
-    requireUsername(ctx);
-    const factor = input.factor as string;
-    const value = input.value as string;
+    const input = wf.resolveInput() as { factor: string; value: string };
+    this.requireUsername(ctx);
+    const factor = input.factor;
+    const value = input.value;
 
     const ok = await this.verifyRecoveryFactor({ factor, value, ctx });
     if (!ok) {
       // Opaque error — never reveal which factor is enrolled.
-      return httpInputRequired(this.opts.forms.recoveryFactor, ctx, { value: "Invalid factor" });
+      throw wf.requireInput({ errors: { value: "Invalid factor" } });
     }
     ctx.factorVerified = true;
     return undefined;
@@ -531,41 +517,37 @@ export class RecoveryWorkflow {
 
   // ── setPassword ──────────────────────────────────────────────────────
   @Step("recoverySetPassword")
-  async setPassword(
-    @WorkflowParam("input") input:
-      | { newPassword?: string; confirmPassword?: string; action?: string }
-      | undefined,
-    @WorkflowParam("context") ctx: RecoveryWfCtx,
-  ): Promise<unknown> {
-    if (!input) {
-      // Surface policy rules into the form context so the front-end can
-      // render hints alongside the inputs.
-      const formCtx: Record<string, unknown> = { ...(ctx as Record<string, unknown>) };
-      formCtx.passwordPolicies = this.users.getTransferablePolicies();
-      return httpInputRequired(this.opts.forms.setPassword, formCtx);
-    }
-
-    if (input.action === "backToLogin" && this.opts.altActions.backToLogin) {
+  async setPassword(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<unknown> {
+    const wf = useAtscriptWf(this.opts.forms.setPassword);
+    const action = wf.resolveAction();
+    if (action === "backToLogin" && this.opts.altActions.backToLogin) {
       this.abortToLogin(ctx);
       return undefined;
     }
 
-    const errors = validateFormInput(this.opts.forms.setPassword, input);
-    if (errors) return httpInputRequired(this.opts.forms.setPassword, ctx, errors);
+    const rawFormData = useWfState().input<{ formData?: unknown }>()?.formData;
+    if (rawFormData === undefined) {
+      // First entry: seed policy rules onto ctx BEFORE building requireInput
+      // so the wfState.ctx() snapshot the engine sends with the
+      // inputRequired envelope includes them. SetPasswordForm declares
+      // `@wf.context.pass 'passwordPolicies'` so the engine surfaces the
+      // key to the client. Mirrors the peek-then-throw-fresh pattern used
+      // in `recoveryRequest` — the previous catch-and-rethrow snapshotted
+      // ctx PRE-mutation, so the policies never reached the client.
+      (ctx as Record<string, unknown>).passwordPolicies = this.users.getTransferablePolicies();
+      throw wf.requireInput();
+    }
+    const input = wf.resolveInput() as { newPassword: string; confirmPassword: string };
     if (input.newPassword !== input.confirmPassword) {
-      return httpInputRequired(this.opts.forms.setPassword, ctx, {
-        confirmPassword: "Passwords do not match",
-      });
+      throw wf.requireInput({ errors: { confirmPassword: "Passwords do not match" } });
     }
     if (!ctx.username) {
-      return httpInputRequired(this.opts.forms.setPassword, ctx, {
-        __form: "Recovery session expired",
-      });
+      throw wf.requireInput({ formMessage: "Recovery session expired" });
     }
     try {
-      await this.users.setPassword(ctx.username, input.newPassword as string);
+      await this.users.setPassword(ctx.username, input.newPassword);
     } catch (err) {
-      translatePasswordSetError(err);
+      this.translatePasswordSetError(err);
     }
     ctx.passwordChanged = true;
     return undefined;
@@ -588,7 +570,7 @@ export class RecoveryWorkflow {
       userId: ctx.username,
       workflow: "auth.recovery",
       deliveryMode: ctx.resolvedMode ?? this.opts.delivery.mode,
-      ip: resolveClientIp(),
+      ip: this.resolveClientIp(),
       ...(ctx.sessionsRevoked && { sessionsRevoked: true }),
     });
     return undefined;
@@ -598,14 +580,21 @@ export class RecoveryWorkflow {
   @Step("recoveryFreshLoginFinish")
   freshLoginFinish(@WorkflowParam("context") _ctx: RecoveryWfCtx): undefined {
     // Auto-mode countdown: user reads the success confirmation before redirect.
-    finishWfWithRedirect(this.opts.postReset.loginUrl, {
-      autoMs: 5000,
-      skipLabel: "Go now",
+    finishWf({
       message: {
         level: "success",
         text: "Password updated. Redirecting to sign-in…",
       },
-      reason: "reset-success",
+      next: {
+        trigger: "auto",
+        timeoutMs: 5000,
+        action: {
+          type: "redirect",
+          target: this.opts.postReset.loginUrl,
+          reason: "reset-success",
+        },
+        skipButton: { label: "Go now" },
+      },
     });
     return undefined;
   }
@@ -613,7 +602,7 @@ export class RecoveryWorkflow {
   // ── autoLoginFinish ──────────────────────────────────────────────────
   @Step("recoveryAutoLoginFinish")
   async autoLoginFinish(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<undefined> {
-    requireUsername(ctx);
+    this.requireUsername(ctx);
     const issue = await this.auth.issue(ctx.username);
     ctx.tokensIssued = true;
     const auth = useAuth();
@@ -637,14 +626,23 @@ export class RecoveryWorkflow {
    * indistinguishable to the client (anti-enumeration).
    */
   private finishGeneric(): void {
-    finishWfWithData(
-      { sent: true },
-      { level: "info", text: "If an account exists, you will receive instructions." },
-    );
+    finishWf({
+      data: { sent: true },
+      message: { level: "info", text: "If an account exists, you will receive instructions." },
+    });
   }
 
   private abortToLogin(ctx: RecoveryWfCtx): AltHandled {
-    finishWfWithRedirect(this.opts.postReset.loginUrl, { reason: "user-cancelled" });
+    finishWf({
+      next: {
+        trigger: "immediate",
+        action: {
+          type: "redirect",
+          target: this.opts.postReset.loginUrl,
+          reason: "user-cancelled",
+        },
+      },
+    });
     ctx.aborted = true;
     return ALT_HANDLED;
   }
@@ -656,7 +654,7 @@ export class RecoveryWorkflow {
       workflow: "auth.recovery",
       userId: username,
       email: ctx.email,
-      ip: resolveClientIp(),
+      ip: this.resolveClientIp(),
     });
   }
 

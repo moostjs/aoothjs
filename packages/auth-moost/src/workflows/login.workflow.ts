@@ -13,10 +13,17 @@
  * single-pass ask-and-verify per the brief, since moost-wf does not provide
  * a clean "loop while" primitive at the @WorkflowSchema level.
  *
- * **Alt-action delivery.** Form payloads carry `action?: string` alongside
- * the regular form fields. Each form-bearing step inspects `input.action`
- * for routing rather than wiring `@AltAction()` (the existing trigger
- * controller does not call `useWfAction().setAction()`).
+ * **Alt-action delivery.** The wire shape `<AsWfForm>` emits when an action
+ * button is clicked nests the action inside the workflow input envelope:
+ * `{ wfs, input: { action: "<id>" } }`. Each form-bearing step reads its
+ * alt-action via `useAtscriptWf(form).resolveAction()` — the form's
+ * `@ui.form.action` / `@wf.action.withData` whitelist validates the action id
+ * and unknown ids throw `StepRetriableError` before the step body runs. SSO
+ * provider ids (consumer-configured via
+ * `opts.alternateCredentials.ssoProviders[].id`) MUST be declared as phantom
+ * `ui.action` fields on the consumer's custom `LoginCredentialsForm`. Action
+ * handling runs BEFORE form validation so the user can hit "Forgot password?"
+ * / "Cancel" without filling the form.
  *
  * **Consumer subclass pattern (Phase 2 reshape).** Consumers subclass
  * `LoginWorkflow` to override `protected` hook methods. The subclass MUST
@@ -51,9 +58,16 @@ import {
   maskEmail,
   maskPhone,
 } from "@aooth/user";
-import { finishWfAborted, finishWfWithRedirect, type WfFinished } from "@atscript/moost-wf";
+import { abortWf, finishWf, useAtscriptWf, type WfFinished } from "@atscript/moost-wf";
 import { HttpError } from "@moostjs/event-http";
-import { Step, useWfFinished, Workflow, WorkflowParam, WorkflowSchema } from "@moostjs/event-wf";
+import {
+  Step,
+  useWfFinished,
+  useWfState,
+  Workflow,
+  WorkflowParam,
+  WorkflowSchema,
+} from "@moostjs/event-wf";
 import { current } from "@wooksjs/event-core";
 import { useCookies, useRequest, useResponse } from "@wooksjs/event-http";
 import { Controller, Injectable } from "moost";
@@ -61,17 +75,12 @@ import { Controller, Injectable } from "moost";
 import type { AuditEvent } from "../audit/index";
 import { useAuth } from "../auth.composables";
 import { Public } from "../auth.decorator";
+import { AuthWorkflowBase } from "./auth-workflow.base";
 import {
   type LoginWorkflowOpts,
   type ResolvedLoginWorkflowOpts,
   mergeLoginOpts,
 } from "./login.workflow.options";
-import {
-  httpInputRequired,
-  requireUsername,
-  translatePasswordSetError,
-  validateFormInput,
-} from "./wf-helpers";
 
 export interface LoginWfCtx {
   // Populated by `init`:
@@ -166,33 +175,15 @@ function mfaKindOf(methodName: string): "sms" | "email" | "totp" | null {
 const ALT_HANDLED: unique symbol = Symbol("ALT_HANDLED");
 type AltHandled = typeof ALT_HANDLED;
 
-/** Mint a numeric pincode of the requested length using Math.random — fine for OTPs. */
-function generatePincode(length: number): string {
-  let out = "";
-  for (let i = 0; i < length; i++) out += Math.floor(Math.random() * 10).toString();
-  return out;
-}
-
 /**
- * Mint and stash a fresh pincode + its expiry on `ctx`. Returns the code so
- * the caller can hand it to the delivery transport.
+ * Read a single field from the raw wf input envelope (`wfState.input().formData`)
+ * without validating against any form schema. Used by alt-action handlers that
+ * carry a payload field outside the current step's form (e.g. a backup `code`
+ * posted alongside `select2fa`, or the typed `username` read on a
+ * `forgotPassword` click before the password is filled in).
  */
-function mintPin(ctx: LoginWfCtx, length: number, ttlMs: number): string {
-  const code = generatePincode(length);
-  ctx.pin = code;
-  ctx.pinExpire = Date.now() + ttlMs;
-  return code;
-}
-
-/**
- * Verify a submitted pincode against the one stashed on `ctx`. Returns a
- * `{ code: '…' }` error map when expired/invalid, or `null` on success.
- * Callers wrap with `httpInputRequired(PincodeForm, ctx, …)` to render.
- */
-function verifyPin(ctx: LoginWfCtx, submitted: string | undefined): { code: string } | null {
-  if (!ctx.pin || !ctx.pinExpire || Date.now() > ctx.pinExpire) return { code: "Code expired" };
-  if (submitted !== ctx.pin) return { code: "Invalid code" };
-  return null;
+function getInputField<T = string>(name: string): T | undefined {
+  return useWfState().input<{ formData?: Record<string, T> }>()?.formData?.[name];
 }
 
 /**
@@ -252,12 +243,13 @@ export type DeliverPayload = DeliverEmail | DeliverSms;
 @Public()
 @Injectable("FOR_EVENT")
 @Controller()
-export class LoginWorkflow {
+export class LoginWorkflow extends AuthWorkflowBase {
   protected readonly opts: ResolvedLoginWorkflowOpts;
   protected readonly users: UserService;
   protected readonly auth: AuthCredential;
 
   constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
+    super();
     this.opts = mergeLoginOpts(opts);
     this.users = users;
     this.auth = auth;
@@ -540,30 +532,38 @@ export class LoginWorkflow {
 
   // ── Phase 1 ───────────────────────────────────────────────────────────
   @Step("credentials")
-  async credentials(
-    @WorkflowParam("input") input:
-      | { username?: string; password?: string; action?: string }
-      | undefined,
-    @WorkflowParam("context") ctx: LoginWfCtx,
-  ): Promise<unknown> {
-    if (!input) return httpInputRequired(this.opts.forms.loginCredentials, ctx);
+  async credentials(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
+    const wf = useAtscriptWf(this.opts.forms.loginCredentials);
 
-    // Alt-action routing — handled BEFORE form validation so the user can
-    // hit "Forgot password?" without filling in the password field. The
+    // Alt-action routing — handled BEFORE the form-input pause so the user
+    // can hit "Forgot password?" without filling in the form at all. The
     // handler returns `ALT_HANDLED` (sentinel) when it has already
-    // short-circuited via `useWfFinished().set(...)` or by throwing — the
-    // caller then returns `undefined` so the step finishes cleanly without
-    // running validation on a payload that lacks the form's required fields.
-    if (input.action) {
-      const handled = this.handleCredentialsAlt(input.action, input.username);
+    // short-circuited via `finishWf(...)` or by throwing.
+    //
+    // `wf.resolveAction()` validates the incoming action against the form's
+    // static `@ui.form.action` / `@wf.action.withData` whitelist and throws
+    // `StepRetriableError` for anything else. The bundled default
+    // `LoginCredentialsForm` declares `forgotPassword`, `signup`, and
+    // `magicLink` — SSO provider ids (from
+    // `opts.alternateCredentials.ssoProviders[].id`) are dynamic per consumer
+    // and MUST be declared on the consumer's custom `LoginCredentialsForm` as
+    // phantom `ui.action` fields with matching `@ui.form.action 'providerId'`
+    // annotations. Without that, `resolveAction()` rejects unknown ids — that
+    // is correct and desired (fail-loud).
+    const action = wf.resolveAction();
+    if (action) {
+      // `forgotPassword` needs the typed username to pre-fill recovery. Peek
+      // at the raw envelope (no validation) — password is intentionally
+      // absent on alt-action submits.
+      const typedUsername = getInputField("username");
+      const handled = this.handleCredentialsAlt(action, typedUsername);
       if (handled === ALT_HANDLED) return undefined;
     }
 
-    const errors = validateFormInput(this.opts.forms.loginCredentials, input);
-    if (errors) return httpInputRequired(this.opts.forms.loginCredentials, ctx, errors);
+    const input = wf.resolveInput() as { username: string; password: string };
 
     try {
-      const result = await this.users.login(input.username as string, input.password as string);
+      const result = await this.users.login(input.username, input.password);
       ctx.username = result.user.username;
       // Preserve legacy `mfaRequired` for tests / consumer subclasses; the
       // step catalog decides MFA inclusion via `mfa.enabled` + enrolled
@@ -588,9 +588,7 @@ export class LoginWorkflow {
     } catch (err) {
       if (err instanceof UserAuthError) {
         if (err.type === "LOCKED") throw new HttpError(423, "Account locked");
-        return httpInputRequired(this.opts.forms.loginCredentials, ctx, {
-          __form: "Invalid credentials",
-        });
+        throw wf.requireInput({ formMessage: "Invalid credentials" });
       }
       throw err;
     }
@@ -604,11 +602,21 @@ export class LoginWorkflow {
     const alt = this.opts.alternateCredentials;
     if (action === "forgotPassword" && alt.forgotPassword) {
       const url = this.buildRecoveryUrl(typedUsername);
-      finishWfWithRedirect(url, { reason: "forgot-password" });
+      finishWf({
+        next: {
+          trigger: "immediate",
+          action: { type: "redirect", target: url, reason: "forgot-password" },
+        },
+      });
       return ALT_HANDLED;
     }
     if (action === "signup" && alt.signup) {
-      finishWfWithRedirect(alt.signupUrl, { reason: "signup" });
+      finishWf({
+        next: {
+          trigger: "immediate",
+          action: { type: "redirect", target: alt.signupUrl, reason: "signup" },
+        },
+      });
       return ALT_HANDLED;
     }
     if (action === "magicLink" && alt.magicLink) {
@@ -619,7 +627,12 @@ export class LoginWorkflow {
     if (sso) {
       // Per-provider discriminator so consumer analytics can distinguish which
       // IdP the user picked without parsing the URL.
-      finishWfWithRedirect(sso.url, { reason: `sso-${sso.id}` });
+      finishWf({
+        next: {
+          trigger: "immediate",
+          action: { type: "redirect", target: sso.url, reason: `sso-${sso.id}` },
+        },
+      });
       return ALT_HANDLED;
     }
     return undefined;
@@ -663,16 +676,13 @@ export class LoginWorkflow {
 
   // ── Phase 3: enrollment loops (single-pass per brief) ─────────────────
   @Step("ensureEmail")
-  async ensureEmail(
-    @WorkflowParam("input") input: { email?: string; code?: string } | undefined,
-    @WorkflowParam("context") ctx: LoginWfCtx,
-  ): Promise<unknown> {
-    requireUsername(ctx);
+  async ensureEmail(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
+    this.requireUsername(ctx);
+    const pincodeWf = useAtscriptWf(this.opts.forms.pincode);
     // Step 1: collect the email if we don't have one.
     if (!ctx.email) {
-      if (!input?.email) return httpInputRequired(this.opts.forms.askEmail, ctx);
-      const errors = validateFormInput(this.opts.forms.askEmail, input);
-      if (errors) return httpInputRequired(this.opts.forms.askEmail, ctx, errors);
+      const askEmailWf = useAtscriptWf(this.opts.forms.askEmail);
+      const input = askEmailWf.resolveInput() as { email: string };
       await this.users.addMfaMethod(ctx.username, {
         name: "email",
         value: input.email,
@@ -680,7 +690,7 @@ export class LoginWorkflow {
       });
       ctx.email = input.email;
       // Generate + send the OTP, then ask for it next round.
-      const code = mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
+      const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
       await this.deliver({
         channel: "email",
         kind: "login.pincode",
@@ -688,14 +698,12 @@ export class LoginWorkflow {
         code,
         expiresAt: ctx.pinExpire as number,
       });
-      return httpInputRequired(this.opts.forms.pincode, ctx);
+      throw pincodeWf.requireInput();
     }
     // Step 2: verify the OTP.
-    if (!input?.code) return httpInputRequired(this.opts.forms.pincode, ctx);
-    const errors = validateFormInput(this.opts.forms.pincode, input);
-    if (errors) return httpInputRequired(this.opts.forms.pincode, ctx, errors);
-    const pinErr = verifyPin(ctx, input.code);
-    if (pinErr) return httpInputRequired(this.opts.forms.pincode, ctx, pinErr);
+    const input = pincodeWf.resolveInput() as { code: string };
+    const pinErr = this.verifyPin(ctx, input.code);
+    if (pinErr) throw pincodeWf.requireInput({ errors: pinErr });
     await this.users.confirmMfaMethod(ctx.username, "email");
     ctx.emailConfirmed = true;
     ctx.pin = undefined;
@@ -704,22 +712,19 @@ export class LoginWorkflow {
   }
 
   @Step("ensurePhone")
-  async ensurePhone(
-    @WorkflowParam("input") input: { phone?: string; code?: string } | undefined,
-    @WorkflowParam("context") ctx: LoginWfCtx,
-  ): Promise<unknown> {
-    requireUsername(ctx);
+  async ensurePhone(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
+    this.requireUsername(ctx);
+    const pincodeWf = useAtscriptWf(this.opts.forms.pincode);
     if (!ctx.phone) {
-      if (!input?.phone) return httpInputRequired(this.opts.forms.askPhone, ctx);
-      const errors = validateFormInput(this.opts.forms.askPhone, input);
-      if (errors) return httpInputRequired(this.opts.forms.askPhone, ctx, errors);
+      const askPhoneWf = useAtscriptWf(this.opts.forms.askPhone);
+      const input = askPhoneWf.resolveInput() as { phone: string };
       await this.users.addMfaMethod(ctx.username, {
         name: "sms",
         value: input.phone,
         confirmed: false,
       });
       ctx.phone = input.phone;
-      const code = mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
+      const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
       await this.deliver({
         channel: "sms",
         kind: "login.pincode",
@@ -728,13 +733,11 @@ export class LoginWorkflow {
         ttlMs: this.opts.mfa.pincodeTtlMs,
         userId: ctx.username,
       });
-      return httpInputRequired(this.opts.forms.pincode, ctx);
+      throw pincodeWf.requireInput();
     }
-    if (!input?.code) return httpInputRequired(this.opts.forms.pincode, ctx);
-    const errors = validateFormInput(this.opts.forms.pincode, input);
-    if (errors) return httpInputRequired(this.opts.forms.pincode, ctx, errors);
-    const pinErr = verifyPin(ctx, input.code);
-    if (pinErr) return httpInputRequired(this.opts.forms.pincode, ctx, pinErr);
+    const input = pincodeWf.resolveInput() as { code: string };
+    const pinErr = this.verifyPin(ctx, input.code);
+    if (pinErr) throw pincodeWf.requireInput({ errors: pinErr });
     await this.users.confirmMfaMethod(ctx.username, "sms");
     ctx.phoneConfirmed = true;
     ctx.pin = undefined;
@@ -801,26 +804,19 @@ export class LoginWorkflow {
   }
 
   @Step("select2fa")
-  async select2fa(
-    @WorkflowParam("input") input:
-      | { methodName?: string; saveAsDefault?: boolean; action?: string }
-      | undefined,
-    @WorkflowParam("context") ctx: LoginWfCtx,
-  ): Promise<unknown> {
-    if (!input) return httpInputRequired(this.opts.forms.select2fa, ctx);
-    if (input.action === "useBackupCode" && this.opts.mfa.backupCodes) {
-      return this.handleBackupCode(
-        (input as { code?: string }).code ? { code: (input as { code?: string }).code } : undefined,
-        ctx,
-      );
+  async select2fa(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
+    const wf = useAtscriptWf(this.opts.forms.select2fa);
+    const action = wf.resolveAction();
+    if (action === "useBackupCode" && this.opts.mfa.backupCodes) {
+      // Peek raw input for the backup `code` field — it lives outside the
+      // select2fa form schema, so we read the envelope directly.
+      const code = getInputField("code");
+      return this.handleBackupCode(code ? { code } : undefined, ctx);
     }
-    const errors = validateFormInput(this.opts.forms.select2fa, input);
-    if (errors) return httpInputRequired(this.opts.forms.select2fa, ctx, errors);
+    const input = wf.resolveInput() as { methodName: string; saveAsDefault?: boolean };
     const picked = (ctx.mfaEnrolledMethods ?? []).find((m) => m.methodName === input.methodName);
     if (!picked) {
-      return httpInputRequired(this.opts.forms.select2fa, ctx, {
-        methodName: "Unknown MFA method",
-      });
+      throw wf.requireInput({ errors: { methodName: "Unknown MFA method" } });
     }
     ctx.mfaMethod = picked.kind;
     ctx.mfaSaveAsDefault = Boolean(input.saveAsDefault);
@@ -838,7 +834,7 @@ export class LoginWorkflow {
     const user = await this.users.getUser(ctx.username);
     const method = user.mfa.methods.find((m) => m.name === summary.methodName && m.confirmed);
     if (!method) throw new HttpError(500, "MFA method no longer present");
-    const code = mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
+    const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
     ctx.pinTimeout = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
     if (ctx.mfaMethod === "email") {
       ctx.pinSentTo = maskEmail(method.value);
@@ -865,46 +861,40 @@ export class LoginWorkflow {
   }
 
   @Step("pincode-check-login")
-  async pincodeCheckLogin(
-    @WorkflowParam("input") input:
-      | { code?: string; action?: string; rememberDevice?: boolean }
-      | undefined,
-    @WorkflowParam("context") ctx: LoginWfCtx,
-  ): Promise<unknown> {
-    if (!input) return httpInputRequired(this.opts.forms.pincode, ctx);
-    if (input.action === "resend") {
+  async pincodeCheckLogin(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
+    const wf = useAtscriptWf(this.opts.forms.pincode);
+    const action = wf.resolveAction();
+    if (action === "resend") {
       if (ctx.pinTimeout && Date.now() < ctx.pinTimeout) {
         const waitSec = Math.ceil((ctx.pinTimeout - Date.now()) / 1000);
-        return httpInputRequired(this.opts.forms.pincode, ctx, {
-          __form: `Please wait ${waitSec}s`,
-        });
+        throw wf.requireInput({ formMessage: `Please wait ${waitSec}s` });
       }
       ctx.pin = undefined;
       ctx.pinExpire = undefined;
       // Re-runs `pincode-send-login` on the next iteration because `!ctx.pin`.
-      // Returning a paused form would short-circuit the schema; instead, fall
+      // Throwing a paused form would short-circuit the schema; instead, fall
       // through to the resend by clearing and re-invoking via the schema.
       // moost-wf re-evaluates conditions on resume — clearing `pin` causes
       // `pincode-send-login` to be re-included next pass.
-      return httpInputRequired(this.opts.forms.pincode, ctx, { __form: "Code resent" });
+      throw wf.requireInput({ formMessage: "Code resent" });
     }
-    if (input.action === "useDifferentMethod") {
+    if (action === "useDifferentMethod") {
       ctx.ignoreMfaDefault = true;
       ctx.mfaMethod = undefined;
       ctx.pin = undefined;
       ctx.pinExpire = undefined;
       return undefined;
     }
-    if (input.action === "useBackupCode" && this.opts.mfa.backupCodes) {
+    if (action === "useBackupCode" && this.opts.mfa.backupCodes) {
       // First click → no `code` field → handleBackupCode pauses for the form.
       // Resume with the backup code populated → handleBackupCode validates and
       // consumes. The presence of `code` is the toggle.
-      return this.handleBackupCode(input.code ? { code: input.code } : undefined, ctx);
+      const code = getInputField("code");
+      return this.handleBackupCode(code ? { code } : undefined, ctx);
     }
-    const errors = validateFormInput(this.opts.forms.pincode, input);
-    if (errors) return httpInputRequired(this.opts.forms.pincode, ctx, errors);
-    const pinErr = verifyPin(ctx, input.code);
-    if (pinErr) return httpInputRequired(this.opts.forms.pincode, ctx, pinErr);
+    const input = wf.resolveInput() as { code: string; rememberDevice?: boolean };
+    const pinErr = this.verifyPin(ctx, input.code);
+    if (pinErr) throw wf.requireInput({ errors: pinErr });
     ctx.mfaChecked = true;
     // Allow the risk-step-up gate to re-evaluate after this re-verification.
     ctx.riskStepUpEvaluated = false;
@@ -915,26 +905,22 @@ export class LoginWorkflow {
   }
 
   @Step("mfa-totp")
-  async mfaTotp(
-    @WorkflowParam("input") input:
-      | { code?: string; action?: string; rememberDevice?: boolean }
-      | undefined,
-    @WorkflowParam("context") ctx: LoginWfCtx,
-  ): Promise<unknown> {
-    if (!input) return httpInputRequired(this.opts.forms.mfaCode, ctx);
-    if (input.action === "useDifferentMethod") {
+  async mfaTotp(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
+    const wf = useAtscriptWf(this.opts.forms.mfaCode);
+    const action = wf.resolveAction();
+    if (action === "useDifferentMethod") {
       ctx.ignoreMfaDefault = true;
       ctx.mfaMethod = undefined;
       return undefined;
     }
-    if (input.action === "useBackupCode" && this.opts.mfa.backupCodes) {
-      return this.handleBackupCode(input.code ? { code: input.code } : undefined, ctx);
+    if (action === "useBackupCode" && this.opts.mfa.backupCodes) {
+      const code = getInputField("code");
+      return this.handleBackupCode(code ? { code } : undefined, ctx);
     }
-    const errors = validateFormInput(this.opts.forms.mfaCode, input);
-    if (errors) return httpInputRequired(this.opts.forms.mfaCode, ctx, errors);
-    requireUsername(ctx);
+    const input = wf.resolveInput() as { code: string; rememberDevice?: boolean };
+    this.requireUsername(ctx);
     try {
-      await this.users.verifyMfa(ctx.username, input.code as string);
+      await this.users.verifyMfa(ctx.username, input.code);
       ctx.mfaChecked = true;
       ctx.riskStepUpEvaluated = false;
       if (this.opts.deviceTrust.enabled && this.opts.deviceTrust.optIn) {
@@ -947,7 +933,7 @@ export class LoginWorkflow {
         if (err.type === "MFA_NOT_CONFIGURED") throw new HttpError(400, "No TOTP MFA configured");
         if (err.type === "MFA_INVALID") {
           if (err.details?.lockEnds !== undefined) throw new HttpError(423, "Account locked");
-          return httpInputRequired(this.opts.forms.mfaCode, ctx, { code: "Invalid code" });
+          throw wf.requireInput({ errors: { code: "Invalid code" } });
         }
       }
       throw err;
@@ -965,13 +951,16 @@ export class LoginWorkflow {
     input: { code?: string } | undefined,
     ctx: LoginWfCtx,
   ): Promise<unknown> {
-    if (!input) return httpInputRequired(this.opts.forms.backupCode, ctx);
-    const errors = validateFormInput(this.opts.forms.backupCode, input);
-    if (errors) return httpInputRequired(this.opts.forms.backupCode, ctx, errors);
-    requireUsername(ctx);
-    const ok = await this.users.consumeBackupCode(ctx.username, input.code as string);
-    if (!ok)
-      return httpInputRequired(this.opts.forms.backupCode, ctx, { code: "Invalid backup code" });
+    const wf = useAtscriptWf(this.opts.forms.backupCode);
+    // First click → caller passes `undefined` → pause for the form.
+    if (!input) throw wf.requireInput();
+    // Resume click — re-validate against BackupCodeForm's pattern. The caller
+    // already extracted `code` from the raw envelope; resolveInput re-reads
+    // it from the same envelope and enforces the alphanumeric+hyphen rule.
+    const validated = wf.resolveInput() as { code: string };
+    this.requireUsername(ctx);
+    const ok = await this.users.consumeBackupCode(ctx.username, validated.code);
+    if (!ok) throw wf.requireInput({ errors: { code: "Invalid backup code" } });
     ctx.mfaChecked = true;
     ctx.riskStepUpEvaluated = false;
     return undefined;
@@ -1007,33 +996,26 @@ export class LoginWorkflow {
   }
 
   @Step("create-password-form")
-  async createPasswordForm(
-    @WorkflowParam("input") input:
-      | { newPassword?: string; confirmPassword?: string; action?: string }
-      | undefined,
-    @WorkflowParam("context") ctx: LoginWfCtx,
-  ): Promise<unknown> {
-    if (!input) return httpInputRequired(this.opts.forms.setPassword, ctx);
-    if (input.action === "logout") {
-      finishWfAborted("logout", { message: { level: "info", text: "Signed out." } });
+  async createPasswordForm(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
+    const wf = useAtscriptWf(this.opts.forms.setPassword);
+    const action = wf.resolveAction();
+    if (action === "logout") {
+      abortWf("logout", { message: { level: "info", text: "Signed out." } });
       // Gate downstream steps (issue/audit/notify/redirect) — without this
       // the schema continues and the `issue` step overwrites the abort
       // response with tokens. See BUG-LOGIN-5.
       ctx.aborted = true;
       return undefined;
     }
-    const errors = validateFormInput(this.opts.forms.setPassword, input);
-    if (errors) return httpInputRequired(this.opts.forms.setPassword, ctx, errors);
+    const input = wf.resolveInput() as { newPassword: string; confirmPassword: string };
     if (input.newPassword !== input.confirmPassword) {
-      return httpInputRequired(this.opts.forms.setPassword, ctx, {
-        confirmPassword: "Passwords do not match",
-      });
+      throw wf.requireInput({ errors: { confirmPassword: "Passwords do not match" } });
     }
-    requireUsername(ctx);
+    this.requireUsername(ctx);
     try {
-      await this.users.setPassword(ctx.username, input.newPassword as string);
+      await this.users.setPassword(ctx.username, input.newPassword);
     } catch (err) {
-      translatePasswordSetError(err);
+      this.translatePasswordSetError(err);
     }
     ctx.passwordChanged = true;
     ctx.isPasswordInitial = false;
@@ -1042,32 +1024,23 @@ export class LoginWorkflow {
 
   // ── Phase 6: acceptance / onboarding ──────────────────────────────────
   @Step("terms-accept")
-  async termsAccept(
-    @WorkflowParam("input") input:
-      | { acceptedVersion?: string; accepted?: boolean; action?: string }
-      | undefined,
-    @WorkflowParam("context") ctx: LoginWfCtx,
-  ): Promise<unknown> {
-    if (!input) return httpInputRequired(this.opts.forms.termsAccept, ctx);
-    if (input.action === "decline") {
-      finishWfAborted("termsDeclined", {
+  async termsAccept(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
+    const wf = useAtscriptWf(this.opts.forms.termsAccept);
+    const action = wf.resolveAction();
+    if (action === "decline") {
+      abortWf("termsDeclined", {
         message: { level: "info", text: "You must accept to continue" },
       });
       // BUG-LOGIN-5: stop the schema progressing into `issue` etc.
       ctx.aborted = true;
       return undefined;
     }
-    const errors = validateFormInput(this.opts.forms.termsAccept, input);
-    if (errors) return httpInputRequired(this.opts.forms.termsAccept, ctx, errors);
-    if (input.accepted !== true) {
-      return httpInputRequired(this.opts.forms.termsAccept, ctx, {
-        accepted: "You must accept the terms",
-      });
+    const input = wf.resolveInput() as { acceptedVersion: string; accepted: boolean };
+    if (!input.accepted) {
+      throw wf.requireInput({ errors: { accepted: "You must accept the terms" } });
     }
     if (input.acceptedVersion !== this.opts.acceptance.termsVersion) {
-      return httpInputRequired(this.opts.forms.termsAccept, ctx, {
-        acceptedVersion: "Version mismatch — please retry",
-      });
+      throw wf.requireInput({ errors: { acceptedVersion: "Version mismatch — please retry" } });
     }
     ctx.termsAcceptedVersion = input.acceptedVersion;
     ctx.termsAcceptedDone = true;
@@ -1075,16 +1048,11 @@ export class LoginWorkflow {
   }
 
   @Step("profile-complete")
-  async profileComplete(
-    @WorkflowParam("input") input: Record<string, unknown> | undefined,
-    @WorkflowParam("context") ctx: LoginWfCtx,
-  ): Promise<unknown> {
-    const form = this.opts.forms.profileComplete;
-    if (!input) return httpInputRequired(form, ctx);
-    const errors = validateFormInput(form, input, { partial: "deep" });
-    if (errors) return httpInputRequired(form, ctx, errors);
-    requireUsername(ctx);
-    await this.applyProfile(ctx.username, input);
+  async profileComplete(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
+    const wf = useAtscriptWf(this.opts.forms.profileComplete);
+    const input = wf.resolveInput({ partial: "deep" });
+    this.requireUsername(ctx);
+    await this.applyProfile(ctx.username, input as Record<string, unknown>);
     ctx.profileApplied = true;
     return undefined;
   }
@@ -1102,12 +1070,10 @@ export class LoginWorkflow {
   }
 
   @Step("consent-marketing")
-  async consentMarketing(
-    @WorkflowParam("input") input: { optIn?: boolean; action?: string } | undefined,
-    @WorkflowParam("context") ctx: LoginWfCtx,
-  ): Promise<unknown> {
-    if (!input) return httpInputRequired(this.opts.forms.consentMarketing, ctx);
-    requireUsername(ctx);
+  async consentMarketing(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
+    const wf = useAtscriptWf(this.opts.forms.consentMarketing);
+    const input = wf.resolveInput() as { optIn?: boolean };
+    this.requireUsername(ctx);
     await this.applyConsentMarketing(ctx.username, Boolean(input.optIn));
     ctx.consentApplied = true;
     return undefined;
@@ -1122,19 +1088,15 @@ export class LoginWorkflow {
 
   // ── Phase 7: tenant / persona ─────────────────────────────────────────
   @Step("tenant-select")
-  async tenantSelect(
-    @WorkflowParam("input") input: { tenantId?: string } | undefined,
-    @WorkflowParam("context") ctx: LoginWfCtx,
-  ): Promise<unknown> {
+  async tenantSelect(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
     if (!ctx.availableTenants && ctx.username) {
       ctx.availableTenants = await this.loadTenants(ctx.username);
     }
-    if (!input) return httpInputRequired(this.opts.forms.tenantSelect, ctx);
-    const errors = validateFormInput(this.opts.forms.tenantSelect, input);
-    if (errors) return httpInputRequired(this.opts.forms.tenantSelect, ctx, errors);
+    const wf = useAtscriptWf(this.opts.forms.tenantSelect);
+    const input = wf.resolveInput() as { tenantId: string };
     const ok = (ctx.availableTenants ?? []).some((t) => t.id === input.tenantId);
     if (!ok) {
-      return httpInputRequired(this.opts.forms.tenantSelect, ctx, { tenantId: "Unknown tenant" });
+      throw wf.requireInput({ errors: { tenantId: "Unknown tenant" } });
     }
     ctx.selectedTenantId = input.tenantId;
     return undefined;
@@ -1150,21 +1112,15 @@ export class LoginWorkflow {
   }
 
   @Step("persona-select")
-  async personaSelect(
-    @WorkflowParam("input") input: { personaId?: string } | undefined,
-    @WorkflowParam("context") ctx: LoginWfCtx,
-  ): Promise<unknown> {
+  async personaSelect(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
     if (!ctx.availablePersonas && ctx.username) {
       ctx.availablePersonas = await this.loadPersonas(ctx.username);
     }
-    if (!input) return httpInputRequired(this.opts.forms.personaSelect, ctx);
-    const errors = validateFormInput(this.opts.forms.personaSelect, input);
-    if (errors) return httpInputRequired(this.opts.forms.personaSelect, ctx, errors);
+    const wf = useAtscriptWf(this.opts.forms.personaSelect);
+    const input = wf.resolveInput() as { personaId: string };
     const ok = (ctx.availablePersonas ?? []).some((p) => p.id === input.personaId);
     if (!ok) {
-      return httpInputRequired(this.opts.forms.personaSelect, ctx, {
-        personaId: "Unknown persona",
-      });
+      throw wf.requireInput({ errors: { personaId: "Unknown persona" } });
     }
     ctx.selectedPersonaId = input.personaId;
     return undefined;
@@ -1180,30 +1136,27 @@ export class LoginWorkflow {
 
   // ── Phase 8: session policy ───────────────────────────────────────────
   @Step("concurrency-limit")
-  async concurrencyLimit(
-    @WorkflowParam("input") input: { action?: string } | undefined,
-    @WorkflowParam("context") ctx: LoginWfCtx,
-  ): Promise<unknown> {
+  async concurrencyLimit(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
     const cfg = this.opts.sessionPolicy.concurrencyLimit;
     if (!cfg) return undefined;
     if (cfg.onLimit === "reject") {
       throw new HttpError(429, "Session limit reached");
     }
-    if (!input) return httpInputRequired(this.opts.forms.concurrencyLimit, ctx);
-    if (input.action === "cancel") {
-      finishWfAborted("sessionLimit", {
+    const wf = useAtscriptWf(this.opts.forms.concurrencyLimit);
+    const action = wf.resolveAction();
+    if (action === "cancel") {
+      abortWf("sessionLimit", {
         message: { level: "warn", text: "Concurrent session limit reached." },
       });
       // BUG-LOGIN-5: stop the schema progressing into `issue` etc.
       ctx.aborted = true;
       return undefined;
     }
-    const errors = validateFormInput(this.opts.forms.concurrencyLimit, input);
-    if (errors) return httpInputRequired(this.opts.forms.concurrencyLimit, ctx, errors);
-    if (input.action === "logoutOthers" && ctx.username) {
+    if (action === "logoutOthers" && ctx.username) {
       await this.logoutOtherSessions(ctx.username);
+      return undefined;
     }
-    return undefined;
+    throw wf.requireInput();
   }
 
   /**
@@ -1251,7 +1204,7 @@ export class LoginWorkflow {
   // ── Phase 9: finalize ─────────────────────────────────────────────────
   @Step("issue")
   async issue(@WorkflowParam("context") ctx: LoginWfCtx): Promise<void> {
-    requireUsername(ctx);
+    this.requireUsername(ctx);
     const issue = await this.auth.issue(ctx.username);
     ctx.tokensIssued = true;
     // Build response payload + cookies and stash on the finished response.
@@ -1305,12 +1258,12 @@ export class LoginWorkflow {
     const url = this.resolveRedirect(ctx);
     if (!url) return undefined;
     // Raw envelope path: cookies from `issue` must be preserved, and
-    // `finishWfWithRedirect` doesn't accept cookies — that's a wooks concern.
+    // `finishWf` doesn't accept cookies — that's a wooks concern.
     const existing = useWfFinished().get();
     const envelope: WfFinished = {
       finished: true,
-      end: {
-        mode: "immediate",
+      next: {
+        trigger: "immediate",
         action: { type: "redirect", target: url, reason: "finalize-redirect" },
       },
     };
@@ -1350,17 +1303,5 @@ export class LoginWorkflow {
       }
     }
     return undefined;
-  }
-
-  // ── Helpers ───────────────────────────────────────────────────────────
-  private resolveClientIp(): string | undefined {
-    try {
-      const req = useRequest(current());
-      // wooks getIp(): some adapters return null for tests; cast loosely.
-      const ip = (req as unknown as { getIp?: () => string | undefined }).getIp?.();
-      return ip || undefined;
-    } catch {
-      return undefined;
-    }
   }
 }

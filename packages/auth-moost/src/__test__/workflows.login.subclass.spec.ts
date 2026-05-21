@@ -89,11 +89,8 @@ describe("LoginWorkflow subclass — applyProfile override", () => {
       constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
         super(opts, users, auth);
       }
-      override async credentials(
-        input: { username?: string; password?: string; action?: string } | undefined,
-        ctx: LoginWfCtx,
-      ): Promise<unknown> {
-        const out = await super.credentials(input, ctx);
+      override async credentials(ctx: LoginWfCtx): Promise<unknown> {
+        const out = await super.credentials(ctx);
         if (ctx.username) ctx.profileMissingFields = ["firstName"];
         return out;
       }
@@ -199,11 +196,8 @@ describe("LoginWorkflow subclass — loadTenants override", () => {
       constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
         super(opts, users, auth);
       }
-      override async credentials(
-        input: { username?: string; password?: string; action?: string } | undefined,
-        ctx: LoginWfCtx,
-      ): Promise<unknown> {
-        const out = await super.credentials(input, ctx);
+      override async credentials(ctx: LoginWfCtx): Promise<unknown> {
+        const out = await super.credentials(ctx);
         if (ctx.username) ctx.availableTenants = await this.loadTenants(ctx.username);
         return out;
       }
@@ -247,11 +241,8 @@ describe("LoginWorkflow subclass — loadTenants override", () => {
       constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
         super(opts, users, auth);
       }
-      override async credentials(
-        input: { username?: string; password?: string; action?: string } | undefined,
-        ctx: LoginWfCtx,
-      ): Promise<unknown> {
-        const out = await super.credentials(input, ctx);
+      override async credentials(ctx: LoginWfCtx): Promise<unknown> {
+        const out = await super.credentials(ctx);
         if (ctx.username) ctx.availableTenants = await this.loadTenants(ctx.username);
         return out;
       }
@@ -293,11 +284,8 @@ describe("LoginWorkflow subclass — loadPersonas override", () => {
       constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
         super(opts, users, auth);
       }
-      override async credentials(
-        input: { username?: string; password?: string; action?: string } | undefined,
-        ctx: LoginWfCtx,
-      ): Promise<unknown> {
-        const out = await super.credentials(input, ctx);
+      override async credentials(ctx: LoginWfCtx): Promise<unknown> {
+        const out = await super.credentials(ctx);
         if (ctx.username) ctx.availablePersonas = await this.loadPersonas(ctx.username);
         return out;
       }
@@ -345,11 +333,8 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
       constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
         super(opts, users, auth);
       }
-      override async credentials(
-        input: { username?: string; password?: string; action?: string } | undefined,
-        ctx: LoginWfCtx,
-      ): Promise<unknown> {
-        const out = await super.credentials(input, ctx);
+      override async credentials(ctx: LoginWfCtx): Promise<unknown> {
+        const out = await super.credentials(ctx);
         if (ctx.username) ctx.activeSessions = 9; // way past the max
         return out;
       }
@@ -389,11 +374,8 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
       constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
         super(opts, users, auth);
       }
-      override async credentials(
-        input: { username?: string; password?: string; action?: string } | undefined,
-        ctx: LoginWfCtx,
-      ): Promise<unknown> {
-        const out = await super.credentials(input, ctx);
+      override async credentials(ctx: LoginWfCtx): Promise<unknown> {
+        const out = await super.credentials(ctx);
         if (ctx.username) ctx.activeSessions = 9;
         return out;
       }
@@ -438,11 +420,8 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
       constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
         super(opts, users, auth);
       }
-      override async credentials(
-        input: { username?: string; password?: string; action?: string } | undefined,
-        ctx: LoginWfCtx,
-      ): Promise<unknown> {
-        const out = await super.credentials(input, ctx);
+      override async credentials(ctx: LoginWfCtx): Promise<unknown> {
+        const out = await super.credentials(ctx);
         if (ctx.username) ctx.activeSessions = 9;
         return out;
       }
