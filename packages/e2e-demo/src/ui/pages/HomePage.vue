@@ -1,6 +1,21 @@
 <script setup lang="ts">
+import { ref } from "vue";
 import { RouterLink } from "vue-router";
+import { INVITE_VARIANTS, LOGIN_VARIANTS, RECOVERY_VARIANTS } from "../../variants";
 import { WORKFLOWS } from "../workflows";
+
+// Map each workflow id to the names of its registered variant presets so the
+// dropdown only surfaces options the backend will actually merge.
+const VARIANTS_BY_WF: Record<string, string[]> = {
+  "auth.login": Object.keys(LOGIN_VARIANTS),
+  "auth.recovery": Object.keys(RECOVERY_VARIANTS),
+  "auth.invite": Object.keys(INVITE_VARIANTS),
+  "auth.reInvite": Object.keys(INVITE_VARIANTS),
+  "auth.cancelInvite": Object.keys(INVITE_VARIANTS),
+};
+
+// Per-row selection — keyed by wf id so each row remembers its own pick.
+const selectedVariant = ref<Record<string, string>>({});
 </script>
 
 <template>
@@ -13,7 +28,12 @@ import { WORKFLOWS } from "../workflows";
     <ul class="flex flex-col gap-$s">
       <li v-for="wf in WORKFLOWS" :key="wf.id">
         <RouterLink
-          :to="{ name: 'wf', query: { id: wf.id } }"
+          :to="{
+            name: 'wf',
+            query: selectedVariant[wf.id]
+              ? { id: wf.id, variant: selectedVariant[wf.id] }
+              : { id: wf.id },
+          }"
           class="card layer-3 hover:layer-4 transition-colors block p-$m no-underline"
         >
           <div class="flex items-center justify-between gap-$s">
@@ -29,6 +49,19 @@ import { WORKFLOWS } from "../workflows";
             <code>{{ wf.id }}</code> — {{ wf.description }}
           </p>
         </RouterLink>
+        <div v-if="VARIANTS_BY_WF[wf.id]" class="mt-$xs flex items-center gap-$xs text-xs">
+          <label :for="`variant-${wf.id}`" class="text-current-muted">variant:</label>
+          <select
+            :id="`variant-${wf.id}`"
+            v-model="selectedVariant[wf.id]"
+            class="layer-4 text-xs px-$xs py-$xs rounded-r0"
+          >
+            <option value="">(default)</option>
+            <option v-for="name in VARIANTS_BY_WF[wf.id]" :key="name" :value="name">
+              {{ name }}
+            </option>
+          </select>
+        </div>
       </li>
     </ul>
   </div>

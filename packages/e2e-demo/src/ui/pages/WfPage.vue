@@ -12,7 +12,19 @@ const wfId = computed(() => {
   const raw = route.query.id;
   return typeof raw === "string" ? raw : null;
 });
+const variant = computed(() => {
+  const raw = route.query.variant;
+  return typeof raw === "string" && raw.length > 0 ? raw : null;
+});
 const descriptor = computed(() => WORKFLOWS.find((w) => w.id === wfId.value) ?? null);
+// Variant travels via header → server picks the preset in the workflow
+// controller constructor. Re-keying on `wfId + variant` forces `<AsWfForm>` to
+// remount when the user switches variant mid-page, so the next request hits a
+// freshly-constructed (and freshly-merged) workflow controller.
+const formKey = computed(() => `${wfId.value}:${variant.value ?? ""}`);
+const fetchOptions = computed(() =>
+  variant.value ? { headers: { "x-wf-variant": variant.value } } : undefined,
+);
 
 const hydrated = useHydrated();
 const types = createDefaultTypes();
@@ -105,11 +117,12 @@ async function navigate(url: string): Promise<void> {
       <div ref="formHost" class="card layer-3 p-$l">
         <AsWfForm
           v-if="hydrated"
-          :key="wfId"
+          :key="formKey"
           path="/auth/trigger"
           :name="wfId"
           :types="types"
           :navigate="navigate"
+          :fetch-options="fetchOptions"
           @finished="onFinished"
           @error="onError"
         />

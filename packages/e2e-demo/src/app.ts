@@ -59,6 +59,13 @@ import { DemoUser, InviteAcceptProfileForm } from "./models/user.as";
 import { allRoles, type UserAttrs } from "./roles";
 import { seedAll } from "./seed";
 import { createTestMailboxController } from "./test-mailbox";
+import {
+  INVITE_VARIANTS,
+  LOGIN_VARIANTS,
+  pickVariant,
+  readVariantHeader,
+  RECOVERY_VARIANTS,
+} from "./variants";
 import { createWfStore } from "./wf-store";
 import { makeHandoverWorkflow } from "./workflows/handover.workflow";
 
@@ -217,7 +224,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   @Controller()
   class DemoLoginWorkflow extends LoginWorkflow {
     constructor(users: UserService, authCred: AuthCredential) {
-      super(demoLoginOpts, users, authCred);
+      const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
+      super(
+        variant ? mergeWfOpts(demoLoginOpts, variant as LoginWorkflowOpts) : demoLoginOpts,
+        users,
+        authCred,
+      );
     }
     protected override deliver(payload: DeliverPayload) {
       return forwardDeliver(payload);
@@ -246,7 +258,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   @Controller()
   class DemoRecoveryWorkflow extends RecoveryWorkflow {
     constructor(users: UserService, authCred: AuthCredential) {
-      super(demoRecoveryOpts, users, authCred);
+      const variant = pickVariant(RECOVERY_VARIANTS, readVariantHeader());
+      super(
+        variant ? mergeWfOpts(demoRecoveryOpts, variant as RecoveryWorkflowOpts) : demoRecoveryOpts,
+        users,
+        authCred,
+      );
     }
     protected override deliver(payload: DeliverPayload) {
       return forwardDeliver(payload);
@@ -282,7 +299,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   @Controller()
   class DemoInviteWorkflow extends InviteWorkflow {
     constructor(users: UserService, authCred: AuthCredential) {
-      super(demoInviteOpts, users, authCred);
+      const variant = pickVariant(INVITE_VARIANTS, readVariantHeader());
+      super(
+        variant ? mergeWfOpts(demoInviteOpts, variant as InviteWorkflowOpts) : demoInviteOpts,
+        users,
+        authCred,
+      );
     }
     protected override deliver(payload: DeliverPayload) {
       // Invite's default send path uses `outletEmail` (handled by the
