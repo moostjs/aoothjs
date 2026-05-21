@@ -47,9 +47,8 @@ export interface LoginCredentialsForm {
 @wf.context.pass 'pinSentTo'
 @ui.form.submit.text 'Verify'
 export interface MfaCodeForm {
-    @ui.form.type 'paragraph'
     @ui.form.fn.value '(_, _d, ctx) => ctx.mfaMethod === "totp" ? "Enter the current 6-digit code from your authenticator app." : ctx.mfaMethod ? "Code sent to " + (ctx.pinSentTo || "your " + ctx.mfaMethod) + " — check the dev server console for the code." : "Enter your verification code."'
-    transportHint?: phantom
+    transportHint?: ui.paragraph
 
     @ui.form.type 'text'
     @meta.label 'Verification code'
@@ -250,9 +249,8 @@ export interface Select2faForm {
 @wf.context.pass 'pinSentTo'
 @ui.form.submit.text 'Verify'
 export interface PincodeForm {
-    @ui.form.type 'paragraph'
     @ui.form.fn.value '(_, _d, ctx) => ctx.mfaMethod === "totp" ? "Enter the current 6-digit code from your authenticator app." : ctx.mfaMethod ? "Code sent to " + (ctx.pinSentTo || "your " + ctx.mfaMethod) + " — check the dev server console for the code." : "Enter your verification code."'
-    transportHint?: phantom
+    transportHint?: ui.paragraph
 
     @ui.form.type 'text'
     @meta.label 'Verification code'
