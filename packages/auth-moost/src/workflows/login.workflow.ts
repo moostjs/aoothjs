@@ -107,6 +107,15 @@ export interface LoginWfCtx {
   mfaChecked?: boolean;
   /** Counter incremented by the `risk-step-up` step so MFA reruns for the extra factor. */
   mfaRunsRemaining?: number;
+  /** Mirror of `mfaEnrolledMethods.length`. Passed to client forms via `@wf.context.pass` so action buttons (`useDifferentMethod`) can hide when only one method exists. */
+  mfaMethodCount?: number;
+  /** Mirror of `opts.mfa.backupCodes`. Passed to client forms so `useBackupCode` can hide when backup codes are disabled. */
+  mfaBackupCodes?: boolean;
+
+  // Alternate-credentials flags mirrored from `opts.alternateCredentials` for `@ui.form.fn.hidden`:
+  altForgotPassword?: boolean;
+  altSignup?: boolean;
+  altMagicLink?: boolean;
 
   // Pincode state:
   pin?: string;
@@ -533,6 +542,12 @@ export class LoginWorkflow extends AuthWorkflowBase {
   // ── Phase 1 ───────────────────────────────────────────────────────────
   @Step("credentials")
   async credentials(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
+    // Mirror alt-credentials config into ctx so the form can hide each alt-action
+    // button when its corresponding feature is disabled (`@ui.form.fn.hidden`).
+    const alt = this.opts.alternateCredentials;
+    ctx.altForgotPassword = !!alt.forgotPassword;
+    ctx.altSignup = !!alt.signup;
+    ctx.altMagicLink = !!alt.magicLink;
     const wf = useAtscriptWf(this.opts.forms.loginCredentials);
 
     // Alt-action routing — handled BEFORE the form-input pause so the user
@@ -786,6 +801,10 @@ export class LoginWorkflow extends AuthWorkflowBase {
         };
       });
     ctx.mfaEnrolledMethods = summary;
+    // Mirror count + backup-code flag into ctx so MFA forms can hide
+    // `useDifferentMethod` / `useBackupCode` buttons when not applicable.
+    ctx.mfaMethodCount = summary.length;
+    ctx.mfaBackupCodes = !!this.opts.mfa.backupCodes;
     // Short-circuit: no methods → MFA is skipped (covered by mfa-enroll-required
     // when policy demands enrolment; otherwise we let the user through).
     if (summary.length === 0) {

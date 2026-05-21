@@ -23,7 +23,7 @@
       "source": "moostjs/atscript-ui",
       "sourceType": "github",
       "skillPath": "skills/atscript-ui-forms/SKILL.md",
-      "computedHash": "a39ce22497392145d947500d5337d9d41143a90498d6d9d4c4685df6699866e5"
+      "computedHash": "57cac5a899c31f5d593faec2f3ba44c223712c4794abcb0589131dc11e77ab02"
     },
     "atscript-ui-styles": {
       "source": "moostjs/atscript-ui",
@@ -41,7 +41,7 @@
       "source": "moostjs/atscript-ui",
       "sourceType": "github",
       "skillPath": "skills/atscript-ui-wf/SKILL.md",
-      "computedHash": "130452f5ecf5898376f35bf80d88729bfbd25049438b534c1c4a4148094f930f"
+      "computedHash": "19641cf12583f995abebe25f617b936c00696ce11265b0e3376c799782dc387a"
     },
     "frontend-design": {
       "source": "anthropics/skills",

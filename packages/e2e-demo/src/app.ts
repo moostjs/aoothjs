@@ -183,7 +183,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
         transports: ["email", "sms", "totp"],
         backupCodes: true,
       },
-      alternateCredentials: { forgotPassword: true },
+      alternateCredentials: { forgotPassword: true, signup: true },
       guards: { passwordInitial: true },
     },
     opts.loginOpts,

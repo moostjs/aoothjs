@@ -19,6 +19,7 @@ const types = createDefaultTypes();
 
 const finished = ref<unknown>(null);
 const error = ref<string | null>(null);
+const formHost = ref<HTMLElement | null>(null);
 
 function onFinished(result: unknown): void {
   finished.value = result;
@@ -28,6 +29,34 @@ function onFinished(result: unknown): void {
 function onError(err: { message?: string }): void {
   error.value = err?.message ?? "Workflow failed";
   finished.value = null;
+}
+
+// Demo helper: synthesize an `input` event on the rendered field so Vue's
+// v-model picks the value up and writes it back into the reactive formData.
+// Using the native setter is the standard workaround for triggering framework
+// listeners from outside the framework (React/Vue both rely on the event).
+function fillField(name: string, value: string): boolean {
+  const root = formHost.value;
+  if (!root) return false;
+  const el = root.querySelector(`[name="${name}"]`) as
+    | HTMLInputElement
+    | HTMLTextAreaElement
+    | null;
+  if (!el) return false;
+  const proto =
+    el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+  setter?.call(el, value);
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  return true;
+}
+
+function applyCreds(cred: { username: string; password: string }): void {
+  const ok = fillField("username", cred.username) && fillField("password", cred.password);
+  if (!ok) {
+    // Likely on a later workflow step where these fields aren't present.
+    // No-op rather than throw — the panel stays useful across steps.
+  }
 }
 
 // Drives `AsWfForm.navigate` — workflows finishing with a redirect action
@@ -73,7 +102,7 @@ async function navigate(url: string): Promise<void> {
         }}</pre>
       </div>
 
-      <div class="card layer-3 p-$l">
+      <div ref="formHost" class="card layer-3 p-$l">
         <AsWfForm
           v-if="hydrated"
           :key="wfId"
@@ -104,6 +133,14 @@ async function navigate(url: string): Promise<void> {
               <code class="font-mono">{{ cred.username }}</code>
               <span class="text-current-muted">/</span>
               <code class="font-mono">{{ cred.password }}</code>
+              <button
+                type="button"
+                class="ml-auto text-xs scope-good px-$s py-$xs rounded-r0 border-1 border-current hover:layer-5"
+                title="Fill username & password into the form"
+                @click="applyCreds(cred)"
+              >
+                Fill
+              </button>
             </div>
             <p class="text-xs text-current-muted mt-$xs">{{ cred.notes }}</p>
           </li>

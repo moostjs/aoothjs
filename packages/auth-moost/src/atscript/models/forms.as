@@ -9,6 +9,9 @@
  * matching phantom `ui.action` field per provider so
  * `useAtscriptWf(form).resolveAction()` accepts the dynamic ids.
  */
+@wf.context.pass 'altForgotPassword'
+@wf.context.pass 'altSignup'
+@wf.context.pass 'altMagicLink'
 @ui.form.submit.text 'Sign in'
 export interface LoginCredentialsForm {
     @ui.form.type 'text'
@@ -25,13 +28,16 @@ export interface LoginCredentialsForm {
     @meta.required
     @expect.minLength 1
     @ui.form.action 'forgotPassword', 'Forgot password?'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.altForgotPassword'
     @wf.action.withData 'forgotPassword'
     password: string
 
     @ui.form.action 'signup', 'Sign up'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.altSignup'
     signup?: ui.action
 
     @ui.form.action 'magicLink', 'Sign in with a magic link'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.altMagicLink'
     magicLink?: ui.action
 }
 
@@ -45,6 +51,8 @@ export interface LoginCredentialsForm {
  */
 @wf.context.pass 'mfaMethod'
 @wf.context.pass 'pinSentTo'
+@wf.context.pass 'mfaMethodCount'
+@wf.context.pass 'mfaBackupCodes'
 @ui.form.submit.text 'Verify'
 export interface MfaCodeForm {
     @ui.form.fn.value '(_, _d, ctx) => ctx.mfaMethod === "totp" ? "Enter the current 6-digit code from your authenticator app." : ctx.mfaMethod ? "Code sent to " + (ctx.pinSentTo || "your " + ctx.mfaMethod) + " — check the dev server console for the code." : "Enter your verification code."'
@@ -60,9 +68,11 @@ export interface MfaCodeForm {
     code: string
 
     @ui.form.action 'useDifferentMethod', 'Use a different method'
+    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.mfaMethodCount ?? 0) < 2'
     useDifferentMethod?: ui.action
 
     @ui.form.action 'useBackupCode', 'Use backup code'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.mfaBackupCodes'
     useBackupCode?: ui.action
 }
 
@@ -220,6 +230,7 @@ export interface InviteSendModeForm {
  * (e.g. `"totp"`, `"email"`, `"sms"`); the workflow itself validates that the
  * supplied value is in the user's enrolled set.
  */
+@wf.context.pass 'mfaBackupCodes'
 export interface Select2faForm {
     @ui.form.type 'text'
     @meta.label 'MFA method'
@@ -228,9 +239,11 @@ export interface Select2faForm {
 
     @ui.form.type 'checkbox'
     @meta.label 'Save as default'
+    @meta.default 'false'
     saveAsDefault?: boolean
 
     @ui.form.action 'useBackupCode', 'Use backup code'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.mfaBackupCodes'
     useBackupCode?: ui.action
 }
 
@@ -247,6 +260,8 @@ export interface Select2faForm {
  */
 @wf.context.pass 'mfaMethod'
 @wf.context.pass 'pinSentTo'
+@wf.context.pass 'mfaMethodCount'
+@wf.context.pass 'mfaBackupCodes'
 @ui.form.submit.text 'Verify'
 export interface PincodeForm {
     @ui.form.fn.value '(_, _d, ctx) => ctx.mfaMethod === "totp" ? "Enter the current 6-digit code from your authenticator app." : ctx.mfaMethod ? "Code sent to " + (ctx.pinSentTo || "your " + ctx.mfaMethod) + " — check the dev server console for the code." : "Enter your verification code."'
@@ -263,15 +278,18 @@ export interface PincodeForm {
 
     @ui.form.type 'checkbox'
     @meta.label 'Remember this device'
+    @meta.default 'false'
     rememberDevice?: boolean
 
     @ui.form.action 'resend', 'Resend code'
     resend?: ui.action
 
     @ui.form.action 'useDifferentMethod', 'Use a different method'
+    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.mfaMethodCount ?? 0) < 2'
     useDifferentMethod?: ui.action
 
     @ui.form.action 'useBackupCode', 'Use backup code'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.mfaBackupCodes'
     useBackupCode?: ui.action
 
     @ui.form.action 'backToLogin', 'Back to sign-in'
@@ -342,6 +360,7 @@ export interface ProfileCompleteForm {
 export interface ConsentMarketingForm {
     @ui.form.type 'checkbox'
     @meta.label 'I would like to receive marketing emails'
+    @meta.default 'false'
     optIn?: boolean
 }
 
