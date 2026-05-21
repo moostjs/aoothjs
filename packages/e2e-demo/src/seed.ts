@@ -378,6 +378,9 @@ async function seedUser(handle: AppHandle, spec: UserSpec): Promise<SeededUser> 
       value: totpSecret,
     });
     await aooth.userService.confirmMfaMethod(spec.username, "totp");
+    // Surfaced for the dev operator running pnpm run dev — copy into an
+    // authenticator app to drive the TOTP MFA branch from the UI.
+    console.log(`[seed] ${spec.username} totp secret: ${totpSecret}`);
   }
 
   if (spec.mfaEmail) {
@@ -404,6 +407,7 @@ async function seedUser(handle: AppHandle, spec: UserSpec): Promise<SeededUser> 
   let backupCodes: string[] | undefined;
   if (spec.backupCodes) {
     backupCodes = await aooth.userService.generateBackupCodes(spec.username, 10);
+    console.log(`[seed] ${spec.username} backup codes (plaintext): ${backupCodes.join(" ")}`);
   }
 
   return {

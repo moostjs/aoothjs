@@ -8,6 +8,13 @@ export function createRouter() {
     routes: [
       { path: "/", name: "home", component: HomePage },
       { path: "/wf", name: "wf", component: WfPage },
+      // LoginWorkflow.alternateCredentials.recoveryUrl defaults to "/recover".
+      // Bridge it to our single workflow page so the forgotPassword redirect
+      // lands somewhere live without forking the server-side default.
+      {
+        path: "/recover",
+        redirect: (to) => ({ path: "/wf", query: { ...to.query, id: "auth.recovery" } }),
+      },
     ],
   });
 }
