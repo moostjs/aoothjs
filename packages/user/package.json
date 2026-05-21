@@ -49,7 +49,9 @@
     "build": "vp pack",
     "dev": "vp pack --watch",
     "test": "vp test",
-    "check": "vp check"
+    "check": "vp check",
+    "gen:atscript": "asc",
+    "postinstall": "asc"
   },
   "dependencies": {
     "@prostojs/ftring": "^0.0.3"

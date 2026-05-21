@@ -11,8 +11,9 @@
     "start": "vite-node src/main.ts",
     "test": "vp test",
     "check": "vp check",
-    "gen:atscript": "asc -f dts",
-    "db:init": "vite-node src/scripts/init-db.ts"
+    "gen:atscript": "asc",
+    "db:init": "vite-node src/scripts/init-db.ts",
+    "postinstall": "asc"
   },
   "dependencies": {
     "@aooth/arbac": "workspace:*",

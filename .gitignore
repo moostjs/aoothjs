@@ -23,3 +23,6 @@ FRICTION.md
 
 # Atscript runtime output — bundler transforms .as on the fly via unplugin-atscript
 *.as.js
+*.as.d.ts
+src/atscript.d.ts
+**/src/atscript.d.ts
