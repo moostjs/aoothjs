@@ -33,7 +33,9 @@ export function createAuthShareableLinkOutlet(deps: AuthShareableLinkOutletDeps)
       const context = request.context ?? {};
       const ttlHint = typeof context.expiresAtMs === "number" ? context.expiresAtMs : 0;
       const expiresAt = Date.now() + (ttlHint || deps.magicLinkTtlMs(template));
-      const url = deps.buildMagicLinkUrl(template, token);
+      const url = deps.buildMagicLinkUrl(template, token, {
+        userId: typeof context.userId === "string" ? context.userId : undefined,
+      });
       return {
         response: {
           sent: true,

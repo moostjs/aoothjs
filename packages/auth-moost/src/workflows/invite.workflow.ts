@@ -58,7 +58,13 @@ import { ArbacAction, ArbacResource } from "@aooth/arbac-moost";
 import { AuthCredential } from "@aooth/auth";
 import { UserAuthError, type UserCredentials, UserService } from "@aooth/user";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
-import { abortWf, finishWf, useAtscriptWf, type WfFinished } from "@atscript/moost-wf";
+import {
+  abortWf,
+  finishWf,
+  type FinishWfOpts,
+  useAtscriptWf,
+  type WfFinished,
+} from "@atscript/moost-wf";
 import { HttpError } from "@moostjs/event-http";
 import {
   outlet,
@@ -166,6 +172,41 @@ export function parseInviteRoles(input?: string[]): string[] {
     if (trimmed) seen.add(trimmed);
   }
   return [...seen];
+}
+
+/**
+ * Single source of truth for the "this invite was already accepted" finish
+ * envelope. Used by both `inviteIdempotentRedirect` (in-workflow) and by
+ * `AuthController.invitePostRedemption` (side route reached when the wf
+ * state store has evicted the finished row and re-resume hits 410).
+ *
+ * Secondary "Request a new invite" option is gated on `alreadyAcceptedRedirectUrl`
+ * being non-empty — mirrors how `mergeInviteOpts` defaults it to `/login`,
+ * but lets consumers blank it to suppress the secondary button.
+ */
+export function buildInviteAlreadyAcceptedEnvelope(opts: {
+  loginUrl: string;
+  alreadyAcceptedRedirectUrl: string;
+}): FinishWfOpts {
+  const altUrl = opts.alreadyAcceptedRedirectUrl;
+  return {
+    message: { level: "info", text: "This invite was already accepted." },
+    next: {
+      trigger: "manual",
+      primary: {
+        label: "Go to sign-in",
+        action: { type: "redirect", target: opts.loginUrl, reason: "already-accepted" },
+      },
+      ...(altUrl && {
+        options: [
+          {
+            label: "Request a new invite",
+            action: { type: "redirect", target: altUrl, reason: "request-new-invite" },
+          },
+        ],
+      }),
+    },
+  };
 }
 
 /**
@@ -673,6 +714,11 @@ export class InviteWorkflow extends AuthWorkflowBase {
     return {
       ...outletEmail(ctx.email as string, "invite.magicLink", {
         username: ctx.username,
+        // userId travels in the outlet context so `buildMagicLinkUrl` can embed
+        // `&uid=…` in the URL. The SPA uses it to fall through to the
+        // post-redemption side route when a second click hits a 410. In this
+        // workflow `username` IS the user-id (see `autoLoginFinish` → `auth.issue(ctx.username)`).
+        ...(ctx.username && { userId: ctx.username }),
         ...(ctx.roles && { roles: ctx.roles }),
         expiresAtMs: this.opts.send.tokenTtlMs,
       }),
@@ -695,6 +741,9 @@ export class InviteWorkflow extends AuthWorkflowBase {
         template: "invite.magicLink",
         context: {
           username: ctx.username,
+          // See `sendInviteEmail` — userId rides in the outlet context so the
+          // demo's `buildMagicLinkUrl` can append `&uid=…` to the URL.
+          ...(ctx.username && { userId: ctx.username }),
           ...(ctx.roles && { roles: ctx.roles }),
           expiresAtMs: this.opts.send.tokenTtlMs,
         },
@@ -758,32 +807,14 @@ export class InviteWorkflow extends AuthWorkflowBase {
   @Step("inviteIdempotentRedirect")
   @Public()
   idempotentRedirect(@WorkflowParam("context") ctx: InviteWfCtx): undefined {
-    // Choice envelope: primary = sign-in, optional secondary = request new invite.
     // Labels are hardcoded English (consistent with login/recovery finishers);
     // localization is a cross-workflow concern not yet wired.
-    const altUrl = this.opts.accept.alreadyAcceptedRedirectUrl;
-    finishWf({
-      message: { level: "info", text: "This invite was already accepted." },
-      next: {
-        trigger: "manual",
-        primary: {
-          label: "Go to sign-in",
-          action: {
-            type: "redirect",
-            target: this.opts.accept.loginUrl,
-            reason: "already-accepted",
-          },
-        },
-        ...(altUrl && {
-          options: [
-            {
-              label: "Request a new invite",
-              action: { type: "redirect", target: altUrl, reason: "request-new-invite" },
-            },
-          ],
-        }),
-      },
-    });
+    finishWf(
+      buildInviteAlreadyAcceptedEnvelope({
+        loginUrl: this.opts.accept.loginUrl,
+        alreadyAcceptedRedirectUrl: this.opts.accept.alreadyAcceptedRedirectUrl,
+      }),
+    );
     ctx.aborted = true;
     return undefined;
   }

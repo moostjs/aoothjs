@@ -509,8 +509,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   @Inherit()
   @Controller("auth")
   class DemoAuthController extends AuthController {
-    constructor(auth: AuthCredential) {
-      super(auth);
+    constructor(auth: AuthCredential, users: UserService) {
+      super(auth, users);
     }
     @Post("trigger")
     @Public()

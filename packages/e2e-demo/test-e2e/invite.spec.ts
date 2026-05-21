@@ -802,39 +802,92 @@ test.describe("WF-INVITE — auth.invite family (P2)", () => {
 
   // ── WF-INVITE-010 ────────────────────────────────────────────────────────
   // BRANCH: §5.3 names this as "second click on the SAME magic link after the
-  // invitee has already redeemed → `inviteIdempotentRedirect` paints the
-  // 2-button finish (primary: 'Go to sign-in', secondary: 'Request a new
-  // invite' — secondary gated on `opts.accept.alreadyAcceptedRedirectUrl`).
-  // Today there's no end-to-end path to reach `inviteIdempotentRedirect` via
-  // the same-token re-click contract:
-  //   1. The first redemption completes the wf-state (the workflow reaches a
-  //      terminal `finishWf` via either `inviteAutoLoginFinish` or
-  //      `inviteFreshLoginFinish`). A finished wf-state is removed/consumed
-  //      by the moost-wf store on completion.
-  //   2. Re-clicking the SAME magic link then resumes against a missing
-  //      wf-state row — the moost-wf adapter responds `410 Gone` BEFORE the
-  //      flow re-enters `inviteCheckPendingInvitation`. The SPA paints "Gone"
-  //      under `.scope-error` (verified empirically — second click shows
-  //      `text=Gone`, no primary/option buttons rendered).
-  //   3. `inviteCheckPendingInvitation`'s `ctx.alreadyAccepted = true` branch
-  //      is therefore reachable ONLY in the narrow window where the wf-state
-  //      is still resumable AND the `pendingInvitation` flag has flipped to
-  //      false — e.g. if a second `auth.invite` call to the SAME email after
-  //      the first redemption issued a fresh token. The demo doesn't currently
-  //      expose a single-test path that reproduces that window: the second
-  //      `auth.invite` call hits the 409 'User already exists' branch
-  //      (covered by WF-INVITE-002) and never reaches the send step that
-  //      would mint a new token.
-  // Resolving this needs either:
-  //   (a) a `duplicateCheck: 'allow'` override path (blocked by WF-INVITE-018
-  //       — `duplicateCheck` is protected, not opts-driven), OR
-  //   (b) a moost-wf adapter knob that keeps the wf-state row resumable past
-  //       the terminal finish so the same token can re-resume into the
-  //       idempotent branch (today the store evicts finished states).
-  // The wire/render contract for the envelope itself (primary +
-  // options[0].label) is exercised by the impl unit suite — this row is the
-  // gap on the END-USER same-link re-click path.
-  test.fixme("WF-INVITE-010 second click on accepted invite → 2-button idempotent finish", () => {});
+  // invitee has already redeemed → 2-button idempotent finish (primary: 'Go
+  // to sign-in', secondary: 'Request a new invite').
+  //
+  // BACKGROUND on the workaround. The first redemption completes the
+  // wf-state; the moost-wf store evicts finished rows. A second click on
+  // the SAME magic link resumes against a missing wf-state row and the
+  // store responds 410 BEFORE `inviteCheckPendingInvitation` re-enters —
+  // so the original `inviteIdempotentRedirect` step is structurally
+  // unreachable on a same-token re-click (see prior fixme notes).
+  //
+  // Workaround: the demo's `buildMagicLinkUrl` embeds `&uid=<userId>` in
+  // the magic-link URL; `WfPage.vue`'s `onError` handler fetches
+  // `/auth/invite/post-redemption?uid=…` when a wf request fails AND `uid`
+  // is present in the URL. The bundled `AuthController` route looks up
+  // the user via `UserService.getUser(uid)` and returns the same envelope
+  // shape `inviteIdempotentRedirect` would have produced when the user is
+  // no longer `pendingInvitation`; the SPA renders it through
+  // `<AsWfFinish>` so the two paths are visually identical to the user.
+  test("WF-INVITE-010 second click on accepted invite → 2-button idempotent finish", async ({
+    page,
+    request,
+    baseURL,
+  }) => {
+    await loginViaUi(page, USERS.admin_inviter);
+    await page.goto(wfUrl("auth.invite", "idempotent-redirect"));
+    await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
+
+    const inviteeEmail = uniqueEmail("invite-010");
+    await fillField(page, "email", inviteeEmail);
+    const sentPromise = nextTriggerResponse(page, (b) => b.sent === true);
+    await submitForm(page);
+    await sentPromise;
+
+    // Pick the captured magic-link email — assert `uid=` is in the URL so
+    // the fallback can resolve the invitee. This also documents the
+    // wire-shape change (Piece E in the workaround).
+    const magic = await waitForEmail(
+      request,
+      (e) => e.kind === "invite.magicLink" && e.recipient === inviteeEmail,
+    );
+    expect(magic.url, "magic-link email must carry a resume url").toBeTruthy();
+    expect(magic.url).toContain("wfs=");
+    expect(magic.url, "magic-link must embed uid for the post-redemption fallback").toContain(
+      `uid=${encodeURIComponent(inviteeEmail)}`,
+    );
+
+    const resumeUrl = rewriteToBaseUrl(magic.url as string, baseURL ?? "");
+
+    // First click: invitee redeems normally (mirrors WF-INVITE-001). Use a
+    // fresh browser context so the admin's cookies don't leak in.
+    const ctx = await page.context().browser()!.newContext();
+    const inviteePage = await ctx.newPage();
+    await inviteePage.goto(resumeUrl);
+
+    await expect(inviteePage.locator('[name="newPassword"]')).toBeVisible({ timeout: 15_000 });
+    await inviteePage.locator('[name="newPassword"]').fill("InviteePass-1!");
+    await inviteePage.locator('[name="confirmPassword"]').fill("InviteePass-1!");
+    await inviteePage.locator("button.as-submit-btn, button[type=submit]").first().click();
+
+    // `DemoInviteWorkflow.getProfileForm()` always returns
+    // `InviteAcceptProfileForm` — submit empty to advance to the issue step.
+    await expect(inviteePage.getByText("Display name")).toBeVisible({ timeout: 15_000 });
+    await inviteePage.locator("button.as-submit-btn, button[type=submit]").first().click();
+    await expect(inviteePage.locator("text=Workflow finished")).toBeVisible({ timeout: 15_000 });
+
+    // Second click: SAME magic-link URL again. Drop the post-redemption
+    // cookies via a brand-new browser context so the second click is fully
+    // anonymous (the first redemption auto-logged-in via cookies).
+    await ctx.close();
+    const ctx2 = await page.context().browser()!.newContext();
+    const reclickPage = await ctx2.newPage();
+    await reclickPage.goto(resumeUrl);
+
+    // Both buttons rendered via `<AsWfFinish>` — primary + the
+    // `Request a new invite` option (guaranteed by the `idempotent-redirect`
+    // variant explicitly setting `accept.alreadyAcceptedRedirectUrl = '/login'`,
+    // which is also the library default — kept for clarity).
+    await expect(reclickPage.getByRole("button", { name: "Go to sign-in" })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(reclickPage.getByRole("button", { name: "Request a new invite" })).toBeVisible();
+    // Confirm the painted error UI was NOT used — the fallback short-circuits
+    // it. (`onError` clears `error` on a successful side-route fetch.)
+    await expect(reclickPage.locator(".scope-error")).toHaveCount(0);
+    await ctx2.close();
+  });
 
   // ── WF-INVITE-018 ────────────────────────────────────────────────────────
   // BRANCH: §5.3 names this as "consumer overrides `duplicateCheck` to 'allow'

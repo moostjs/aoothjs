@@ -1,9 +1,11 @@
 import { ArbacResource } from "@aooth/arbac-moost";
 import { type AuthContext, AuthCredential, AuthError, type IssueResult } from "@aooth/auth";
+import { UserAuthError, type UserCredentials, UserService } from "@aooth/user";
+import type { WfFinished } from "@atscript/moost-wf";
 import { current } from "@wooksjs/event-core";
-import { Body, Get, HttpError, Post } from "@moostjs/event-http";
+import { Body, Get, HttpError, Post, Query } from "@moostjs/event-http";
 import { useCookies } from "@wooksjs/event-http";
-import { Controller } from "moost";
+import { Controller, Optional } from "moost";
 
 import { type AuthBindings, useAuth } from "./auth.composables";
 import { Public } from "./auth.decorator";
@@ -14,6 +16,7 @@ import type {
   AuthRefreshBody,
 } from "./auth.dto";
 import { WfTrigger } from "./wf-trigger/decorator";
+import { buildInviteAlreadyAcceptedEnvelope } from "./workflows/invite.workflow";
 
 /** Workflows allowed by the bundled `/auth/trigger` endpoint. Subclasses override `triggerWf()` to extend. */
 export const DEFAULT_AUTH_WORKFLOWS = ["auth.login", "auth.recovery", "auth.invite"] as const;
@@ -45,7 +48,13 @@ function resolveRefreshToken(auth: AuthBindings, body: { refreshToken?: string }
 @Controller("auth")
 @ArbacResource("auth")
 export class AuthController {
-  constructor(protected readonly auth: AuthCredential) {}
+  constructor(
+    protected readonly auth: AuthCredential,
+    // `@Optional()` — only `invitePostRedemption` touches `users`. Apps that
+    // don't register a `UserService` still wire the other 4 endpoints; the
+    // post-redemption route returns 500 when unset.
+    @Optional() protected readonly users?: UserService,
+  ) {}
 
   // `@Public()` bypasses ARBAC — logout is a self-scoped primitive ("kill
   // my own session"). Subclass + `@ArbacAction(...)` to gate it. The null
@@ -132,5 +141,63 @@ export class AuthController {
     // response when the handler returns `undefined`. Subclasses that want to
     // short-circuit (e.g. emit a custom error) override this and return a
     // non-undefined value; the interceptor then skips.
+  }
+
+  /**
+   * Side route mapping a redeemed-invite `uid` to the same idempotent
+   * envelope the `inviteIdempotentRedirect` workflow step renders. The SPA
+   * falls through to this when an invite magic-link is re-clicked after
+   * redemption: the wf state store has already evicted the finished state
+   * (returns 410) so the workflow can't re-enter `inviteCheckPendingInvitation`,
+   * but the user-id baked into the magic-link URL by `buildMagicLinkUrl(…, {
+   * userId })` lets the SPA resolve the "already accepted" condition itself.
+   *
+   * `@Public()` — invitees aren't signed in at this point.
+   *
+   * Defaults for `loginUrl` / `alreadyAcceptedRedirectUrl` mirror the bundled
+   * `InviteWorkflowOpts` defaults (`/login` / `/login`). Subclasses override
+   * `resolveInvitePostRedemption()` to read live workflow opts.
+   */
+  @Get("invite/post-redemption")
+  @Public()
+  async invitePostRedemption(@Query("uid") uid: string | undefined): Promise<WfFinished> {
+    if (!uid) throw new HttpError(400, "Missing uid query parameter");
+    if (!this.users) {
+      throw new HttpError(500, "UserService not wired — cannot resolve post-redemption state");
+    }
+    let user: UserCredentials;
+    try {
+      user = await this.users.getUser(uid);
+    } catch (err) {
+      if (err instanceof UserAuthError && err.type === "NOT_FOUND") {
+        throw new HttpError(404, "User not found");
+      }
+      throw err;
+    }
+    // Still pending → the magic link genuinely failed for some other reason
+    // (wf state store eviction, etc.). Return 404 so the SPA keeps showing
+    // the actual error rather than masking it with an idempotent envelope.
+    if (user.account?.pendingInvitation) {
+      throw new HttpError(404, "Invite still pending");
+    }
+    // Wire shape parity with the workflow path: the SPA's `<AsWfFinish>`
+    // expects a `WfFinished` (with `finished: true`); the workflow gets that
+    // marker from `finishWf()`, the side route adds it directly.
+    return {
+      finished: true,
+      ...buildInviteAlreadyAcceptedEnvelope(this.resolveInvitePostRedemption()),
+    };
+  }
+
+  /**
+   * URLs used by `invitePostRedemption`. Defaults mirror
+   * `mergeInviteOpts({})` so subclasses that customize either of those
+   * options can override here to keep the side route in sync.
+   */
+  protected resolveInvitePostRedemption(): {
+    loginUrl: string;
+    alreadyAcceptedRedirectUrl: string;
+  } {
+    return { loginUrl: "/login", alreadyAcceptedRedirectUrl: "/login" };
   }
 }

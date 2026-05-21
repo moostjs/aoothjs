@@ -58,7 +58,9 @@ export function createAuthEmailOutlet(deps: AuthEmailOutletDeps): WfOutlet {
     const ttlHint = typeof opts.context?.expiresAtMs === "number" ? opts.context.expiresAtMs : 0;
     const expiresAt = Date.now() + (ttlHint || deps.magicLinkTtlMs(template));
 
-    const url = deps.buildMagicLinkUrl(template, opts.token);
+    const url = deps.buildMagicLinkUrl(template, opts.token, {
+      userId: typeof opts.context?.userId === "string" ? opts.context.userId : undefined,
+    });
 
     const event: AuthEmailEvent = {
       kind: template,

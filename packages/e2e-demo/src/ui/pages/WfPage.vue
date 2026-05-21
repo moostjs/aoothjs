@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
-import { AsWfForm } from "@atscript/vue-wf";
+import { AsWfFinish, AsWfForm, type WfFinished } from "@atscript/vue-wf";
 import { createDefaultTypes } from "@atscript/vue-form";
 import { useHydrated } from "../composables/useHydrated";
 import { WORKFLOWS } from "../workflows";
@@ -40,15 +40,47 @@ const types = createDefaultTypes();
 const finished = ref<unknown>(null);
 const error = ref<string | null>(null);
 const formHost = ref<HTMLElement | null>(null);
+// `idempotentEnvelope` paints the 2-button finish for the invite re-click
+// fallback (WF-INVITE-010). Kept separate from `finished` because that one
+// emits an arbitrary unknown JSON to a `<pre>`, while this one is a typed
+// `WfFinished` we hand straight to `<AsWfFinish>` for envelope-shape parity
+// with the wire path.
+const idempotentEnvelope = ref<WfFinished | null>(null);
 
 function onFinished(result: unknown): void {
   finished.value = result;
   error.value = null;
+  idempotentEnvelope.value = null;
 }
 
-function onError(err: { message?: string }): void {
+async function onError(err: { message?: string }): Promise<void> {
+  // Invite re-click after redemption: the wf state store returns 410 (the
+  // workflow can't re-enter `inviteCheckPendingInvitation`). The magic-link
+  // URL has a `&uid=…` we can use to ask the side route for the same
+  // idempotent envelope the workflow would have rendered. Gate on `uid`
+  // being present so non-invite 410s (recovery short-TTL, etc.) keep their
+  // existing error UX.
+  const uidRaw = route.query.uid;
+  const uid = typeof uidRaw === "string" && uidRaw.length > 0 ? uidRaw : null;
+  if (uid) {
+    try {
+      const res = await fetch(`/auth/invite/post-redemption?uid=${encodeURIComponent(uid)}`, {
+        credentials: "include",
+      });
+      if (res.ok) {
+        const envelope = (await res.json()) as WfFinished;
+        idempotentEnvelope.value = envelope;
+        error.value = null;
+        finished.value = null;
+        return;
+      }
+    } catch {
+      // Network/parse failure → fall through to the plain error UI below.
+    }
+  }
   error.value = err?.message ?? "Workflow failed";
   finished.value = null;
+  idempotentEnvelope.value = null;
 }
 
 // Demo helper: synthesize an `input` event on the rendered field so Vue's
@@ -123,8 +155,9 @@ async function navigate(url: string): Promise<void> {
       </div>
 
       <div ref="formHost" class="card layer-3 p-$l">
+        <AsWfFinish v-if="idempotentEnvelope" :payload="idempotentEnvelope" :navigate="navigate" />
         <AsWfForm
-          v-if="hydrated"
+          v-else-if="hydrated"
           :key="formKey"
           path="/auth/trigger"
           :name="wfId"
