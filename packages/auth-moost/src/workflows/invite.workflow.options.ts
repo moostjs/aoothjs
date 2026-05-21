@@ -19,7 +19,7 @@ import {
   InviteForm,
   InviteSendModeForm,
   SetPasswordForm,
-} from "../atscript/models/forms.as.js";
+} from "../atscript/models/forms.as";
 
 export const DEFAULT_INVITE_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 

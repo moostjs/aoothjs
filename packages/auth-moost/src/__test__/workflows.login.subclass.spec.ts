@@ -20,7 +20,7 @@ import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { Controller, Inherit, Injectable } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
-import { ProfileCompleteForm } from "../atscript/models/forms.as.js";
+import { ProfileCompleteForm } from "../atscript/models/forms.as";
 import { type LoginWfCtx, LoginWorkflow, type LoginWorkflowOpts } from "../workflows/index";
 import { prepareWfApp, seedActiveUser } from "./workflow-utils";
 

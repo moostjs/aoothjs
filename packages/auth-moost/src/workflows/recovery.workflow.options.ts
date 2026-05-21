@@ -21,7 +21,7 @@ import {
   RecoveryFactorForm,
   RecoveryModeSelectForm,
   SetPasswordForm,
-} from "../atscript/models/forms.as.js";
+} from "../atscript/models/forms.as";
 
 /** Magic-link TTL default — also used as the persisted wf-state token TTL. */
 export const DEFAULT_RECOVERY_TOKEN_TTL_MS = 60 * 60 * 1000;

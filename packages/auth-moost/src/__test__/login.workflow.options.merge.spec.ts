@@ -14,7 +14,7 @@
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { describe, expect, it } from "vite-plus/test";
 
-import { LoginCredentialsForm } from "../atscript/models/forms.as.js";
+import { LoginCredentialsForm } from "../atscript/models/forms.as";
 import { mergeLoginOpts } from "../workflows/login.workflow.options";
 
 describe("mergeLoginOpts — defaults survive partial input", () => {

@@ -20,7 +20,7 @@ import { describe, expect, it } from "vite-plus/test";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 
 import { type LoginWfCtx, LoginWorkflow, type LoginWorkflowOpts } from "../workflows/index";
-import { SsoLoginCredentialsForm } from "./fixtures/sso-login.as.js";
+import { SsoLoginCredentialsForm } from "./fixtures/sso-login.as";
 import { prepareWfApp, seedActiveUser } from "./workflow-utils";
 
 /**

@@ -8,7 +8,7 @@
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { describe, expect, it } from "vite-plus/test";
 
-import { EmailIdentifierForm } from "../atscript/models/forms.as.js";
+import { EmailIdentifierForm } from "../atscript/models/forms.as";
 import { mergeRecoveryOpts } from "../workflows/recovery.workflow.options";
 
 describe("mergeRecoveryOpts — defaults survive partial input", () => {

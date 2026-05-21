@@ -24,7 +24,7 @@ import {
   SetPasswordForm,
   TenantSelectForm,
   TermsAcceptForm,
-} from "../atscript/models/forms.as.js";
+} from "../atscript/models/forms.as";
 
 export const DEFAULT_MFA_CODE_TTL_MS = 5 * 60 * 1000;
 

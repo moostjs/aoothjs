@@ -16,7 +16,7 @@ import { ppHasMinLength, UserStoreMemory } from "@aooth/user";
 import type { UserCredentials } from "@aooth/user";
 import { describe, expect, it } from "vite-plus/test";
 
-import { InviteForm, ProfileCompleteForm } from "../atscript/models/forms.as.js";
+import { InviteForm, ProfileCompleteForm } from "../atscript/models/forms.as";
 import { prepareWfApp, seedActiveUser } from "./workflow-utils";
 
 /**

@@ -16,7 +16,7 @@
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { describe, expect, it } from "vite-plus/test";
 
-import { InviteForm } from "../atscript/models/forms.as.js";
+import { InviteForm } from "../atscript/models/forms.as";
 import { parseInviteRoles } from "../workflows/invite.workflow";
 import { DEFAULT_INVITE_TOKEN_TTL_MS, mergeInviteOpts } from "../workflows/invite.workflow.options";
 

@@ -20,3 +20,6 @@ FRICTION.md
 .playwright-mcp
 .playwright-cli
 *.png
+
+# Atscript runtime output — bundler transforms .as on the fly via unplugin-atscript
+*.as.js
