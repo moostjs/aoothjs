@@ -13,6 +13,7 @@ import {
   type SmsSender,
 } from "@aooth/auth";
 import {
+  type AuditEvent,
   AuthController,
   authGuardInterceptor,
   createAuthEmailOutlet,
@@ -110,15 +111,27 @@ const g = globalThis as {
   __aoothE2eSms?: AuthSmsEvent[];
   __aoothE2eBackupCodes?: Map<string, string[]>;
   __aoothE2eActiveSessions?: Map<string, number>;
+  // username → list of tenant ids the user belongs to. Populated by `seed.ts`
+  // and consulted by `DemoLoginWorkflow.loadTenants()` to drive the
+  // tenant-select step (skipped when length ≤ 1).
+  __aoothE2eTenants?: Map<string, string[]>;
+  // Captured `RecoveryWorkflow.audit()` payloads. Plain array so the
+  // `/__test/audit` endpoint can return + the `__test/reset` flow can clear
+  // (length = 0) without breaking the shared reference.
+  __aoothE2eAuditEvents?: AuditEvent[];
 };
 g.__aoothE2eEmails ??= [];
 g.__aoothE2eSms ??= [];
 g.__aoothE2eBackupCodes ??= new Map();
 g.__aoothE2eActiveSessions ??= new Map();
+g.__aoothE2eTenants ??= new Map();
+g.__aoothE2eAuditEvents ??= [];
 const sharedEmailsBuffer: AuthEmailEvent[] = g.__aoothE2eEmails;
 const sharedSmsBuffer: AuthSmsEvent[] = g.__aoothE2eSms;
 const sharedBackupCodesBuffer: Map<string, string[]> = g.__aoothE2eBackupCodes;
 const sharedActiveSessionsBuffer: Map<string, number> = g.__aoothE2eActiveSessions;
+const sharedTenantsBuffer: Map<string, string[]> = g.__aoothE2eTenants;
+const sharedAuditEventsBuffer: AuditEvent[] = g.__aoothE2eAuditEvents;
 /* eslint-enable no-underscore-dangle */
 
 /** Two-level deep merge — sufficient for the nested-pojo workflow opts. */
@@ -272,6 +285,15 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     protected override async loadActiveSessions(username: string): Promise<number> {
       return sharedActiveSessionsBuffer.get(username) ?? 0;
     }
+    // Drives the `tenant-select` step: returns the user's tenants from the
+    // globalThis-anchored buffer populated by `seed.ts`. Single-tenant users
+    // (length ≤ 1) cause the schema to skip the step entirely.
+    protected override async loadTenants(
+      username: string,
+    ): Promise<Array<{ id: string; name: string }>> {
+      const ids = sharedTenantsBuffer.get(username) ?? [];
+      return ids.map((id) => ({ id, name: id }));
+    }
   }
 
   // Phase-3 reshape: `RecoveryWorkflow` is configured via a consumer subclass
@@ -313,6 +335,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     protected override async emailToUserId(email: string): Promise<string | null> {
       const user = await aooth.userStore.findByUsername(email);
       return user ? user.username : null;
+    }
+    // Captures audit payloads into the shared globalThis buffer so
+    // `/__test/audit` can return them to Playwright specs (WF-RECOVERY audit
+    // assertions). Default base impl is a no-op.
+    protected override async audit(event: AuditEvent): Promise<void> {
+      sharedAuditEventsBuffer.push(event);
     }
   }
 
@@ -499,6 +527,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     // Same lifecycle for active-session counts (used by `loadActiveSessions`
     // override below to drive the `concurrency-limit` step).
     sharedActiveSessionsBuffer.clear();
+    // Tenants list keyed by username — repopulated per-seed by `seed.ts`.
+    sharedTenantsBuffer.clear();
+    // Captured `audit(event)` events — cleared so the next test starts clean.
+    sharedAuditEventsBuffer.length = 0;
     // Order matters for FKs: drop dependent rows first. The model-typed
     // `AtscriptDbTable<T>` overloads produce a TS2590 union when combined in
     // one array — widen the whole array once to a plain `deleteMany` shape
@@ -540,6 +572,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       reseed,
       userService: aooth.userService,
       backupCodes: sharedBackupCodesBuffer,
+      auditEvents: sharedAuditEventsBuffer,
     });
     app.registerControllers(TestMailboxController);
   }

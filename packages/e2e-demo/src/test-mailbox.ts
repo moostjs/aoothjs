@@ -1,5 +1,5 @@
 import type { AuthEmailEvent, AuthSmsEvent } from "@aooth/auth";
-import { Public } from "@aooth/auth-moost";
+import { type AuditEvent, AuthGuarded, Public, UserId } from "@aooth/auth-moost";
 import type { UserService } from "@aooth/user";
 import { Delete, Get, Post } from "@moostjs/event-http";
 import { Controller, Param } from "moost";
@@ -29,6 +29,12 @@ export interface TestMailboxDeps {
    * `/__test/backup-codes/:username` endpoint reads it.
    */
   backupCodes: Map<string, string[]>;
+  /**
+   * Captured `RecoveryWorkflow.audit(event)` payloads. The demo's recovery
+   * subclass pushes here; `/__test/audit` returns the array; `__test/reset`
+   * clears it via `length = 0`.
+   */
+  auditEvents: AuditEvent[];
 }
 
 /**
@@ -42,7 +48,7 @@ export interface TestMailboxDeps {
 export function createTestMailboxController(
   deps: TestMailboxDeps,
 ): new (...args: never[]) => unknown {
-  const { emails, sms, reseed, userService, backupCodes } = deps;
+  const { emails, sms, reseed, userService, backupCodes, auditEvents } = deps;
 
   // `@Public()` bypasses the global auth guard — these endpoints are the
   // entry point used BY tests, before any login has happened.
@@ -70,8 +76,33 @@ export function createTestMailboxController(
     async reset(): Promise<{ ok: true; seeded: number }> {
       emails.length = 0;
       sms.length = 0;
+      auditEvents.length = 0;
       const seeded = await reseed();
       return { ok: true, seeded };
+    }
+
+    /**
+     * Returns the live captured-audit buffer (populated by
+     * `DemoRecoveryWorkflow.audit()`). Cleared on `POST /__test/reset` and on
+     * boot-time `reseed()`.
+     */
+    @Get("audit")
+    listAudit(): AuditEvent[] {
+      return auditEvents;
+    }
+
+    /**
+     * Auth-guarded probe so Playwright specs can prove that a previously
+     * issued access token has been invalidated by a password reset
+     * (WF-RECOVERY old-token rejection). Returns the resolved `userId` from
+     * the guard — `useAuth()` throws HTTP 401 when the token is missing /
+     * expired / revoked. Uses method-level `@AuthGuarded()` to override the
+     * class-level `@Public()`.
+     */
+    @AuthGuarded()
+    @Get("whoami")
+    whoami(@UserId() userId: string): { userId: string } {
+      return { userId };
     }
 
     /**

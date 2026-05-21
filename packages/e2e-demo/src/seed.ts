@@ -129,6 +129,19 @@ export async function seedAll(handle: AppHandle): Promise<SeedFixtures> {
     tables.tenants.insertOne({ name: "Globex", plan: "enterprise" }),
   );
 
+  // Populate the per-username tenants buffer consulted by
+  // `DemoLoginWorkflow.loadTenants()`. `t1_alice` gets a single tenant (so the
+  // `tenant-select` step is skipped — WF-LOGIN tenant-skip story); the shared
+  // `two_tenants@shared.test` username gets both so the multi-context variant
+  // renders the picker.
+  /* eslint-disable no-underscore-dangle -- intentional globalThis slot */
+  const tenantsBuf = (globalThis as { __aoothE2eTenants?: Map<string, string[]> })
+    .__aoothE2eTenants;
+  tenantsBuf?.set("t1_alice", [tenantAId]);
+  tenantsBuf?.set("t1_two_tenants", [tenantAId, tenantBId]);
+  tenantsBuf?.set("t2_two_tenants", [tenantAId, tenantBId]);
+  /* eslint-enable no-underscore-dangle */
+
   // Synthetic sentinel tenant so `_super` (`tenantId: '_global'`) satisfies
   // the FK declared in `user.as`. The superadmin role's scope is `none`, so
   // this row is never queried by tenant-scoped business logic; it exists

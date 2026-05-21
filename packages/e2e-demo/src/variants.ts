@@ -101,6 +101,23 @@ export const LOGIN_VARIANTS: Record<string, Partial<LoginWorkflowOpts>> = {
     deviceTrust: { enabled: true, optIn: false, skipsMfa: true },
     mfa: { enabled: true, transports: ["email"] },
   },
+  // Like `mfa-totp` but `backupCodes: false` so the `useBackupCode` alt-action
+  // MUST be hidden on the MFA forms (WF-LOGIN-014).
+  "mfa-no-backup": {
+    mfa: { enabled: true, transports: ["totp"], backupCodes: false },
+  },
+  // 1ms TTL so the cookie minted on the first login is already past `exp`
+  // by the time the second login resumes (WF-LOGIN-020). MFA email forces the
+  // `device-trust` step to mint a fresh cookie on the first pass.
+  "device-trust-short-ttl": {
+    deviceTrust: { enabled: true, optIn: true, skipsMfa: true, ttlMs: 1 },
+    mfa: { enabled: true, transports: ["email"] },
+  },
+  // Same as `concurrency` but rejects with HTTP 429 instead of pausing on
+  // kickPrompt (WF-LOGIN-030).
+  "concurrency-reject": {
+    sessionPolicy: { concurrencyLimit: { max: 1, onLimit: "reject" } },
+  },
 };
 
 /**
@@ -173,6 +190,16 @@ export const INVITE_VARIANTS: Record<string, Partial<InviteWorkflowOpts>> = {
   "short-ttl-confirmation": {
     send: { tokenTtlMs: 1000 },
     accept: { showConfirmation: true },
+  },
+  // Surfaces the confirmation message in the finish envelope (WF-INVITE-020).
+  // Demo's other variants leave the message blank.
+  "confirmation-message": {
+    accept: { showConfirmation: true, confirmationMessage: "Your account has been created." },
+  },
+  // Enables the secondary 'Request a new invite' button on the
+  // idempotent-redirect step (WF-INVITE-010).
+  "idempotent-redirect": {
+    accept: { alreadyAcceptedRedirectUrl: "/login" },
   },
 };
 
