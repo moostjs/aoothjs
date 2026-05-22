@@ -421,9 +421,11 @@ test.describe("LoginWorkflow / variant=mfa-full (P1)", () => {
     await page.getByRole("button", { name: "Use a different method" }).click();
 
     // After the loop the `methodName` input must reappear, proving the
-    // workflow re-entered the select2fa step.
+    // workflow re-entered the select2fa step. The Select2faForm renders a
+    // radio group so `[name="methodName"]` matches three inputs — use the
+    // group's accessible role instead.
     await waitForFormInput(page, "methodName");
-    await expect(page.locator('[name="methodName"]')).toBeVisible();
+    await expect(page.getByRole("radiogroup", { name: /MFA method/ })).toBeVisible();
   });
 
   // BRANCH: pincode resend within `pincodeResendTimeoutMs` → workflow throws

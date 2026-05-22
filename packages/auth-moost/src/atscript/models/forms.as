@@ -212,10 +212,11 @@ export interface InviteEmailForm {
  * `'email'` or `'shareableLink'`.
  */
 export interface InviteSendModeForm {
-    @ui.form.type 'text'
+    @ui.form.type 'radio'
+    @ui.form.options 'Email', 'email'
+    @ui.form.options 'Shareable link', 'shareableLink'
     @meta.label 'Delivery mode'
     @meta.required
-    @expect.pattern '^(email|shareableLink)$'
     mode: string
 
     @ui.form.action 'cancel', 'Cancel'
@@ -235,7 +236,7 @@ export interface InviteSendModeForm {
 @wf.context.pass 'mfaBackupCodes'
 @wf.context.pass 'mfaEnrolledMethods'
 export interface Select2faForm {
-    @ui.form.type 'select'
+    @ui.form.type 'radio'
     @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.mfaEnrolledMethods) ? ctx.mfaEnrolledMethods.map(m => ({ key: m.methodName, label: m.kind === "totp" ? "TOTP (Authenticator app)" : m.kind === "email" ? "Email" : m.kind === "sms" ? "SMS" : m.kind })) : []'
     @meta.label 'MFA method'
     @meta.required
@@ -244,7 +245,7 @@ export interface Select2faForm {
     @ui.form.type 'checkbox'
     @meta.label 'Save as default'
     @meta.default 'false'
-    saveAsDefault?: boolean
+    saveAsDefault: boolean
 
     @ui.form.action 'useBackupCode', 'Use backup code'
     @ui.form.fn.hidden '(_, _d, ctx) => !ctx.mfaBackupCodes'
@@ -286,7 +287,7 @@ export interface PincodeForm {
     @meta.label 'Remember this device'
     @meta.default 'false'
     @ui.form.fn.hidden '(_, _d, ctx) => !ctx.deviceTrustOptIn'
-    rememberDevice?: boolean
+    rememberDevice: boolean
 
     @ui.form.action 'resend', 'Resend code'
     resend?: ui.action
@@ -369,14 +370,19 @@ export interface ConsentMarketingForm {
     @ui.form.type 'checkbox'
     @meta.label 'I would like to receive marketing emails'
     @meta.default 'false'
-    optIn?: boolean
+    optIn: boolean
 }
 
 /**
  * Tenant picker — `tenantId` matches one of `ctx.availableTenants[].id`.
+ * Options are built from `ctx.availableTenants` (set by the workflow's
+ * `tenant-select` step / `loadTenants` hook); `@wf.context.pass` whitelists
+ * the key so it survives `extractPassContext`.
  */
+@wf.context.pass 'availableTenants'
 export interface TenantSelectForm {
-    @ui.form.type 'text'
+    @ui.form.type 'radio'
+    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.availableTenants) ? ctx.availableTenants.map(t => ({ key: t.id, label: t.name })) : []'
     @meta.label 'Tenant'
     @meta.required
     tenantId: string
@@ -384,9 +390,14 @@ export interface TenantSelectForm {
 
 /**
  * Persona picker — `personaId` matches one of `ctx.availablePersonas[].id`.
+ * Options are built from `ctx.availablePersonas` (set by the workflow's
+ * `persona-select` step / `loadPersonas` hook); `@wf.context.pass` whitelists
+ * the key so it survives `extractPassContext`.
  */
+@wf.context.pass 'availablePersonas'
 export interface PersonaSelectForm {
-    @ui.form.type 'text'
+    @ui.form.type 'radio'
+    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.availablePersonas) ? ctx.availablePersonas.map(p => ({ key: p.id, label: p.label })) : []'
     @meta.label 'Persona'
     @meta.required
     personaId: string
@@ -428,10 +439,11 @@ export interface MagicLinkRequestForm {
  * `RecoveryWorkflowOptions.deliveryMode === 'choice'`.
  */
 export interface RecoveryModeSelectForm {
-    @ui.form.type 'text'
+    @ui.form.type 'radio'
+    @ui.form.options 'Magic link', 'magicLink'
+    @ui.form.options 'One-time code', 'otp'
     @meta.label 'Recovery method'
     @meta.required
-    @expect.pattern '^(magicLink|otp)$'
     mode: string
 
     @ui.form.action 'backToLogin', 'Back to sign-in'
@@ -442,13 +454,17 @@ export interface RecoveryModeSelectForm {
  * Recovery factor-verification form — used when
  * `RecoveryWorkflowOptions.requireKnownRecoveryFactor` is true. The user
  * picks a factor type and supplies its value; the server validates against
- * the enrolled factor (phone last-4 or current TOTP code).
+ * the enrolled factor (phone last-4 or current TOTP code). Options are
+ * built from `ctx.availableRecoveryFactors` (workflow whitelist ∩ user's
+ * enrolled factors), so users only see factors they can actually verify
+ * AND that the admin hasn't disabled via `opts.preReset.allowedFactors`.
  */
+@wf.context.pass 'availableRecoveryFactors'
 export interface RecoveryFactorForm {
-    @ui.form.type 'text'
+    @ui.form.type 'radio'
+    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.availableRecoveryFactors) ? ctx.availableRecoveryFactors : []'
     @meta.label 'Factor'
     @meta.required
-    @expect.pattern '^(phone|totp)$'
     factor: string
 
     @ui.form.type 'text'

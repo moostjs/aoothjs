@@ -129,20 +129,36 @@ export async function waitForFormInput(page: Page, name: string, timeoutMs = 500
 }
 
 /**
- * Set a form field value by name. Native `fill(value)` for inputs and
- * textareas; `selectOption(value)` for `<select>` (dynamic-options selects
- * built by `@ui.form.fn.options` ship `{ key, label }` entries — the option's
- * `value` attribute is `key`, so callers pass the key string).
+ * Set a form field value by name. Handles four cases:
+ * - `<input type="radio">` (multiple inputs share `name`): click the input
+ *   whose `value` attribute matches `value`.
+ * - `<select>`: `selectOption(value)` (atscript-ui's dynamic-options selects
+ *   ship `{ key, label }` entries — the option's `value` is `key`).
+ * - `<input type="checkbox">`: check/uncheck based on truthy `value`.
+ * - everything else (text, password, number, textarea): native `fill(value)`.
  */
 export async function fillField(page: Page, name: string, value: string): Promise<void> {
   await waitForFormInput(page, name);
-  const locator = page.locator(`[name="${name}"]`).first();
-  const tag = await locator.evaluate((el) => el.tagName.toLowerCase());
-  if (tag === "select") {
-    await locator.selectOption(value);
-  } else {
-    await locator.fill(value);
+  const named = page.locator(`[name="${name}"]`);
+  const first = named.first();
+  const meta = await first.evaluate((el) => ({
+    tag: el.tagName.toLowerCase(),
+    type: (el as HTMLInputElement).type?.toLowerCase() ?? "",
+  }));
+  if (meta.tag === "input" && meta.type === "radio") {
+    await page.locator(`input[type="radio"][name="${name}"][value="${value}"]`).first().check();
+    return;
   }
+  if (meta.tag === "input" && meta.type === "checkbox") {
+    if (value === "true" || value === "1") await first.check();
+    else await first.uncheck();
+    return;
+  }
+  if (meta.tag === "select") {
+    await first.selectOption(value);
+    return;
+  }
+  await first.fill(value);
 }
 
 export async function clickAction(page: Page, label: string): Promise<void> {

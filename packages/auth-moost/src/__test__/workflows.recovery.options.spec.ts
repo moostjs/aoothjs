@@ -143,7 +143,7 @@ describe("RecoveryWorkflowOpts — deliveryMode otp end-to-end", () => {
     expect(app.sms).toHaveLength(0);
 
     // Submit the code → advances to setPassword form.
-    const r3 = await app.trigger({ wfs: checkOtpWfs, input: { code } });
+    const r3 = await app.trigger({ wfs: checkOtpWfs, input: { code, rememberDevice: false } });
     expect(r3.body?.wfs).toBeTruthy();
     expect(JSON.stringify(r3.body)).toMatch(/newPassword/);
 
@@ -168,7 +168,7 @@ describe("RecoveryWorkflowOpts — deliveryMode otp end-to-end", () => {
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
     const { wfs } = await driveOtpToCheck(app, "alice@test.com");
-    const r = await app.trigger({ wfs, input: { code: "999999" } });
+    const r = await app.trigger({ wfs, input: { code: "999999", rememberDevice: false } });
     const errors = r.body?.errors as Record<string, string> | undefined;
     expect(errors?.code).toMatch(/Invalid code/);
     // Still paused at checkOtp form (re-rendered with the error).
@@ -246,7 +246,7 @@ describe("RecoveryWorkflowOpts — deliveryMode otp end-to-end", () => {
     // Code from the SMS verifies and advances.
     const r2 = await app.trigger({
       wfs: r.body?.wfs as string,
-      input: { code: app.sms[0].code },
+      input: { code: app.sms[0].code, rememberDevice: false },
     });
     expect(JSON.stringify(r2.body)).toMatch(/newPassword/);
   });

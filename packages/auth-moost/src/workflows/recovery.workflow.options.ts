@@ -42,6 +42,13 @@ export interface RecoveryWorkflowOpts {
   };
   preReset?: {
     requireKnownFactor?: boolean;
+    /**
+     * Restrict which factor kinds the `RecoveryFactorForm` offers. Default
+     * (`undefined`) → both `phone` and `totp` are eligible; the actual list
+     * shown to the user is further filtered to factors they have enrolled.
+     * Set e.g. to `["totp"]` to disable phone-last-4 verification entirely.
+     */
+    allowedFactors?: Array<"phone" | "totp">;
   };
   postReset?: {
     revokeAllSessions?: boolean;
@@ -85,6 +92,7 @@ export interface ResolvedRecoveryWorkflowOpts {
   };
   preReset: {
     requireKnownFactor: boolean;
+    allowedFactors?: Array<"phone" | "totp">;
   };
   postReset: {
     revokeAllSessions: boolean;

@@ -38,7 +38,7 @@ async function driveToPincodeCheck(
   // 2 methods → select2fa fires.
   const sel = await app.trigger({
     wfs: credResp.body?.wfs as string,
-    input: { methodName: "email" },
+    input: { methodName: "email", saveAsDefault: false },
   });
   // Now paused for pincode entry — pin was sent via email transport.
   const last = app.emails[app.emails.length - 1];
@@ -124,7 +124,7 @@ describe("LoginWorkflow alt-actions — pincode-check-login", () => {
     const sw = await app.trigger({ wfs, input: { action: "useDifferentMethod" } });
     const back = await app.trigger({
       wfs: sw.body?.wfs as string,
-      input: { methodName: "email" },
+      input: { methodName: "email", saveAsDefault: false },
     });
     const errors = back.body?.errors as Record<string, string> | undefined;
     expect(errors?.methodName).toMatch(/wait \d+s before requesting another email code/i);
@@ -134,14 +134,14 @@ describe("LoginWorkflow alt-actions — pincode-check-login", () => {
   it("valid code → mfaChecked true → tokens issued", async () => {
     const app = await prepareWfApp();
     const { wfs, pin } = await driveToPincodeCheck(app);
-    const r = await app.trigger({ wfs, input: { code: pin } });
+    const r = await app.trigger({ wfs, input: { code: pin, rememberDevice: false } });
     expect((r.body?.data as Record<string, unknown>)?.userId).toBe("alice");
   });
 
   it("invalid code → form error 'Invalid code'", async () => {
     const app = await prepareWfApp();
     const { wfs } = await driveToPincodeCheck(app);
-    const r = await app.trigger({ wfs, input: { code: "999999" } });
+    const r = await app.trigger({ wfs, input: { code: "999999", rememberDevice: false } });
     const errors = r.body?.errors as Record<string, string> | undefined;
     expect(errors?.code).toMatch(/Invalid code/);
   });

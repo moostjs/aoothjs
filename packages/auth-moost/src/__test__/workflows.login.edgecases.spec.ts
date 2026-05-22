@@ -164,7 +164,7 @@ describe("LoginWorkflow edge cases — MFA", () => {
 
     const final = await app.trigger({
       wfs: cred.body?.wfs as string,
-      input: { code: sent.code },
+      input: { code: sent.code, rememberDevice: false },
     });
     expect((final.body?.data as Record<string, unknown>)?.userId).toBe("alice");
   });
@@ -191,7 +191,7 @@ describe("LoginWorkflow edge cases — MFA", () => {
 
     const final = await app.trigger({
       wfs: cred.body?.wfs as string,
-      input: { code: pinMail?.code },
+      input: { code: pinMail?.code, rememberDevice: false },
     });
     expect((final.body?.data as Record<string, unknown>)?.userId).toBe("alice");
   });

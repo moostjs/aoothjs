@@ -88,6 +88,15 @@ export interface RecoveryWfCtx {
 
   // Pre-reset factor:
   factorVerified?: boolean;
+  /**
+   * Recovery factors the user is actually able to verify on this attempt —
+   * intersection of `opts.preReset.allowedFactors` (workflow whitelist) and
+   * what the user has enrolled (e.g. phone only if a confirmed SMS method
+   * exists). Populated by `recoveryVerifyFactor` before its form pauses and
+   * consumed by `RecoveryFactorForm` via `@wf.context.pass` to render only
+   * the available radio options.
+   */
+  availableRecoveryFactors?: Array<{ key: string; label: string }>;
 
   // Post-reset:
   passwordChanged?: boolean;
@@ -469,6 +478,14 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
   @Step("recoveryVerifyFactor")
   async verifyFactor(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<unknown> {
     const wf = useAtscriptWf(this.opts.forms.recoveryFactor);
+    // Populate the radio options BEFORE `resolveInput()` — `requireInput`
+    // (the implicit pause when no input is present) embeds the current ctx
+    // into the form envelope, so the client needs the list ready on first
+    // render. Filtered down to factors the user is actually able to verify
+    // (workflow whitelist ∩ user enrollment).
+    if (!ctx.availableRecoveryFactors) {
+      ctx.availableRecoveryFactors = await this.loadAvailableRecoveryFactors(ctx);
+    }
     const action = wf.resolveAction();
     if (action === "backToLogin" && this.opts.altActions.backToLogin) {
       this.abortToLogin(ctx);
@@ -486,6 +503,33 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     }
     ctx.factorVerified = true;
     return undefined;
+  }
+
+  /**
+   * Returns the factor options to show on `RecoveryFactorForm`. Default:
+   * intersection of `opts.preReset.allowedFactors` (workflow whitelist —
+   * `undefined` means both `phone` and `totp` are eligible) and the kinds
+   * the user has actually enrolled (`phone` if a confirmed SMS method
+   * exists, `totp` if a confirmed TOTP method exists). Override to add
+   * custom factors (e.g. security questions) — call `super` to keep the
+   * built-in pair.
+   */
+  protected async loadAvailableRecoveryFactors(
+    ctx: RecoveryWfCtx,
+  ): Promise<Array<{ key: string; label: string }>> {
+    if (!ctx.username) return [];
+    const user = await this.users.getUser(ctx.username);
+    const allowed = this.opts.preReset.allowedFactors ?? ["phone", "totp"];
+    const has = {
+      phone: user.mfa.methods.some((m) => m.name === "sms" && m.confirmed),
+      totp: user.mfa.methods.some((m) => m.name === "totp" && m.confirmed),
+    };
+    const out: Array<{ key: string; label: string }> = [];
+    if (allowed.includes("phone") && has.phone) out.push({ key: "phone", label: "Phone number" });
+    if (allowed.includes("totp") && has.totp) {
+      out.push({ key: "totp", label: "Authenticator app" });
+    }
+    return out;
   }
 
   /**
