@@ -142,6 +142,8 @@ export interface LoginWfCtx {
   enrollMode?: "required" | "optional";
   /** Set true by the shared `runMfaEnrollment` helper on Phase 3 completion; mirrored to `mfaChecked`. */
   enrollDone?: boolean;
+  /** Phase 3 confirm-pincode resend cooldown (sms/email). See `MfaEnrollCtx.enrollPincodeCooldown`. */
+  enrollPincodeCooldown?: number;
 
   // Pincode state:
   pin?: string;
@@ -1105,6 +1107,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
       transports: this.opts.mfa.transports,
       pincodeLength: this.opts.mfa.pincodeLength,
       pincodeTtlMs: this.opts.mfa.pincodeTtlMs,
+      pincodeResendTimeoutMs: this.opts.mfa.pincodeResendTimeoutMs,
       issuer: "aooth",
       mode,
     });

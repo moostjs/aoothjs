@@ -42,6 +42,13 @@ export interface MfaEnrollCtx {
   pin?: string;
   pinExpire?: number;
   pinSentTo?: string;
+  /**
+   * Next-allowed-resend timestamp for the Phase 3 confirm pincode (sms/email
+   * only). Written by the Phase 2 initial send + the Phase 3 `resend`
+   * alt-action; consulted by `resend` to throttle re-emits. Mirrors the
+   * `pinTimeout` pattern used by the login `pincode-check-login` step.
+   */
+  enrollPincodeCooldown?: number;
 }
 
 /**
@@ -73,6 +80,11 @@ export interface MfaEnrollDeps {
   transports: MfaTransport[];
   pincodeLength: number;
   pincodeTtlMs: number;
+  /**
+   * Per-method resend cooldown for the Phase 3 confirm pincode (sms/email).
+   * Mirrors `LoginWorkflowOpts.mfa.pincodeResendTimeoutMs`.
+   */
+  pincodeResendTimeoutMs: number;
   /** TOTP provisioning issuer (rendered in the authenticator app). */
   issuer: string;
   /**
@@ -228,11 +240,11 @@ export class AuthWorkflowBase {
       ctx,
       username,
       users,
-      deliver,
       forms,
       transports,
       pincodeLength,
       pincodeTtlMs,
+      pincodeResendTimeoutMs,
       issuer,
     } = deps;
 
@@ -242,11 +254,35 @@ export class AuthWorkflowBase {
       if (!ctx.enrollAvailableTransports) {
         ctx.enrollAvailableTransports = [...transports];
       }
+      // AUTO-PICK when only one transport is configured — skip the picker
+      // form entirely, no input pause. For TOTP we still provision the secret
+      // here so Phase 3 can verify against it (same branch as the user-picks-
+      // totp path below). For sms/email the loop iterates to Phase 2 to
+      // collect the address.
+      if (transports.length === 1) {
+        const only = transports[0];
+        ctx.enrollMethod = only;
+        if (only === "totp") {
+          const secret = generateTotpSecret();
+          const uri = generateTotpUri(secret, issuer, username);
+          await this.withStoreErrorTranslation(() =>
+            users.addMfaMethod(username, {
+              name: "totp",
+              value: secret,
+              confirmed: false,
+            }),
+          );
+          ctx.enrollSecret = secret;
+          ctx.enrollUri = uri;
+        }
+        return;
+      }
       const wf = useAtscriptWf(forms.pickMethod);
       // `'optional'` mode: the pickMethod form exposes a `skip` action. Read
       // it BEFORE `resolveInput()` so the user can decline without filling in
       // any field. A skip marks enrollment complete without persisting a
-      // method — the caller's loop-exit signal flips next iteration.
+      // method — the caller's loop-exit signal flips next iteration. No
+      // cleanup needed at Phase 1 — nothing has been persisted yet.
       if (deps.mode === "optional" && wf.resolveAction() === "skip") {
         ctx.enrollDone = true;
         return;
@@ -276,6 +312,20 @@ export class AuthWorkflowBase {
     // Phase 2: collect address + send pincode (sms/email only).
     if ((ctx.enrollMethod === "sms" || ctx.enrollMethod === "email") && !ctx.enrollAddress) {
       const wf = useAtscriptWf(forms.address);
+      // Alt-actions read BEFORE `resolveInput()` so the user can skip / switch
+      // method without filling the address field. At Phase 2 entry no sms/email
+      // method has been persisted yet (Phase 1 only sets ctx.enrollMethod for
+      // sms/email; the addMfaMethod call lives further down in this block) so
+      // no cleanup is needed for either branch.
+      const action = wf.resolveAction();
+      if (deps.mode === "optional" && action === "skip") {
+        ctx.enrollDone = true;
+        return;
+      }
+      if (action === "useDifferentMethod") {
+        delete ctx.enrollMethod;
+        return;
+      }
       const input = wf.resolveInput() as { address: string };
       const methodName = ctx.enrollMethod;
       await this.withStoreErrorTranslation(() =>
@@ -287,32 +337,44 @@ export class AuthWorkflowBase {
       );
       ctx.enrollAddress = input.address;
       const code = this.mintPin(ctx, pincodeLength, pincodeTtlMs);
-      if (methodName === "email") {
-        ctx.pinSentTo = maskEmail(input.address);
-        await deliver({
-          channel: "email",
-          kind: "login.pincode",
-          recipient: input.address,
-          code,
-          expiresAt: ctx.pinExpire as number,
-          userId: username,
-        });
-      } else {
-        ctx.pinSentTo = maskPhone(input.address);
-        await deliver({
-          channel: "sms",
-          kind: "login.pincode",
-          recipient: input.address,
-          code,
-          ttlMs: pincodeTtlMs,
-          userId: username,
-        });
-      }
+      ctx.enrollPincodeCooldown = Date.now() + pincodeResendTimeoutMs;
+      await this.sendEnrollPincode(ctx, deps, input.address, code);
       return;
     }
 
     // Phase 3: confirm.
     const wf = useAtscriptWf(forms.confirm);
+    // Alt-actions read BEFORE `resolveInput()`. By Phase 3 the method row IS
+    // persisted (Phase 1 totp / Phase 2 sms+email both call addMfaMethod
+    // unconfirmed), so skip + useDifferentMethod must clean up via
+    // `cleanupEnrollment` before letting the loop exit / re-enter.
+    const action = wf.resolveAction();
+    if (deps.mode === "optional" && action === "skip") {
+      await this.cleanupEnrollment(ctx, users, username);
+      ctx.enrollDone = true;
+      return;
+    }
+    if (action === "useDifferentMethod") {
+      await this.cleanupEnrollment(ctx, users, username);
+      return;
+    }
+    if (action === "resend") {
+      if (ctx.enrollMethod === "totp") {
+        // TOTP has no pincode to resend — the secret is fixed. The form hides
+        // the button for totp; this guard is defense-in-depth.
+        throw wf.requireInput({ formMessage: "Resend is not applicable for TOTP" });
+      }
+      if (ctx.enrollPincodeCooldown && Date.now() < ctx.enrollPincodeCooldown) {
+        const waitSec = Math.ceil((ctx.enrollPincodeCooldown - Date.now()) / 1000);
+        throw wf.requireInput({
+          formMessage: `Please wait ${waitSec}s before requesting another code`,
+        });
+      }
+      const code = this.mintPin(ctx, pincodeLength, pincodeTtlMs);
+      ctx.enrollPincodeCooldown = Date.now() + pincodeResendTimeoutMs;
+      await this.sendEnrollPincode(ctx, deps, ctx.enrollAddress as string, code);
+      return;
+    }
     const input = wf.resolveInput() as { code: string };
     if (ctx.enrollMethod === "totp") {
       try {
@@ -333,5 +395,70 @@ export class AuthWorkflowBase {
     ctx.enrollDone = true;
     delete ctx.pin;
     delete ctx.pinExpire;
+    delete ctx.enrollPincodeCooldown;
+  }
+
+  /**
+   * Send a pincode for the active sms/email enrollment method and stamp
+   * `ctx.pinSentTo` with the masked recipient. Shared by Phase 2 initial
+   * dispatch and Phase 3 `resend`. Caller is responsible for `mintPin` +
+   * stamping `enrollPincodeCooldown` BEFORE calling — this just dispatches.
+   * Not called for TOTP (no pincode to send).
+   */
+  protected async sendEnrollPincode(
+    ctx: MfaEnrollCtx,
+    deps: MfaEnrollDeps,
+    address: string,
+    code: string,
+  ): Promise<void> {
+    if (ctx.enrollMethod === "email") {
+      ctx.pinSentTo = maskEmail(address);
+      await deps.deliver({
+        channel: "email",
+        kind: "login.pincode",
+        recipient: address,
+        code,
+        expiresAt: ctx.pinExpire as number,
+        userId: deps.username,
+      });
+    } else {
+      ctx.pinSentTo = maskPhone(address);
+      await deps.deliver({
+        channel: "sms",
+        kind: "login.pincode",
+        recipient: address,
+        code,
+        ttlMs: deps.pincodeTtlMs,
+        userId: deps.username,
+      });
+    }
+  }
+
+  /**
+   * Cleanup any partially-persisted enrollment state (unconfirmed method row +
+   * ctx scratch). Called when the user picks `skip` or `useDifferentMethod`
+   * mid-flow on Phase 3, where the unconfirmed method has already been written
+   * via `addMfaMethod` (Phase 1 for totp, Phase 2 for sms/email). On
+   * `useDifferentMethod` the caller relies on `enrollMethod` being cleared so
+   * the loop re-enters Phase 1.
+   */
+  protected async cleanupEnrollment(
+    ctx: MfaEnrollCtx,
+    users: UserService,
+    username: string,
+  ): Promise<void> {
+    if (ctx.enrollMethod) {
+      await this.withStoreErrorTranslation(() =>
+        users.removeMfaMethod(username, ctx.enrollMethod!),
+      );
+    }
+    delete ctx.enrollMethod;
+    delete ctx.enrollAddress;
+    delete ctx.enrollSecret;
+    delete ctx.enrollUri;
+    delete ctx.pin;
+    delete ctx.pinExpire;
+    delete ctx.pinSentTo;
+    delete ctx.enrollPincodeCooldown;
   }
 }

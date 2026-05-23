@@ -539,6 +539,80 @@ describe("WF-INVITE — MFA enrollment", () => {
     }
   });
 
+  it("WF-INVITE-12 — mode='required' + transports=['totp'] auto-pick during invite: NO picker pause, account activates after confirm", async () => {
+    // PR7-1: invite-side adds `inviteEnrollAutoPick` schema entry gated on
+    // `transports.length === 1`, while existing `inviteEnrollPickMethod` is
+    // now gated on `transports.length > 1`. WHY: without `inviteEnrollAutoPick`,
+    // single-transport invites would slip past MFA entirely — the gated-out
+    // pick step would be filtered, but address/confirm steps require
+    // `enrollMethod` to be set, so they'd no-op and the account would activate
+    // with no second factor. The mid-flow form-id assertion (EnrollConfirmForm,
+    // NOT EnrollPickMethodForm) pins the new auto-pick step firing through the
+    // demo's HTTP wire; the post-confirm assertion proves the second factor
+    // landed before activation.
+    const inviteEmail = "newcomer-autopick@acme.test";
+    const app = await buildTestApp({
+      inviteOpts: {
+        mfa: { mode: "required", transports: ["totp"] },
+        accept: { showConfirmation: false },
+      },
+    });
+    try {
+      const { pwBody } = await startInviteAcceptTail(app, inviteEmail);
+      expect(pwBody.wfs).toBeTruthy();
+      // Critical: NO picker pause. With a single transport, `inviteEnrollAutoPick`
+      // fires transparently between password-set and confirm. A regression that
+      // removed the auto-pick step would either pause on EnrollPickMethodForm
+      // (if it ungated back) or skip MFA entirely (if it didn't).
+      // The demo uses `createAsHttpOutlet` which wraps the form schema under
+      // `inputRequired.payload` (see workflows.recovery.options.spec.ts:610-614);
+      // if auto-pick is removed, the payload id would be "EnrollPickMethodForm".
+      expect((pwBody.inputRequired?.payload as { id?: string } | undefined)?.id).toBe(
+        "EnrollConfirmForm",
+      );
+      // Account NOT yet active — activation must wait for confirm.
+      expect((await app.appHandle.aooth.userService.getUser(inviteEmail)).account.active).toBe(
+        false,
+      );
+      // TOTP must NOT route through email at invite time either.
+      const pincodeLeak = app.emailSender.events.find(
+        (e) => e.kind === "login.pincode" && e.recipient === inviteEmail,
+      );
+      expect(pincodeLeak).toBeUndefined();
+
+      // Read the auto-provisioned secret, compute a code, submit confirm.
+      const interim = await app.appHandle.aooth.userService.getUser(inviteEmail);
+      const totp = interim.mfa.methods.find((m) => m.name === "totp");
+      expect(totp?.confirmed).toBe(false);
+      expect(typeof totp?.value).toBe("string");
+      expect(totp!.value.length).toBeGreaterThan(0);
+      const code = generateTotpCode(totp!.value);
+
+      const confirm = await app.triggerWf("public", {
+        wfid: "auth.invite",
+        wfs: pwBody.wfs,
+        input: { code },
+      });
+      // Demo wires acceptProfileForm — one more pause after MFA confirm.
+      const profileBody = await readWfPause(confirm);
+      const finalRes = await app.triggerWf("public", {
+        wfid: "auth.invite",
+        wfs: profileBody.wfs,
+        input: { displayName: "Auto Pick" },
+      });
+      const finalBody = await expectFinished<{ userId?: string; accessToken?: string }>(finalRes);
+      expect(finalBody.data?.userId).toBe(inviteEmail);
+      expect(typeof finalBody.data?.accessToken).toBe("string");
+
+      const user = await app.appHandle.aooth.userService.getUser(inviteEmail);
+      expect(user.mfa.methods.find((m) => m.name === "totp")?.confirmed).toBe(true);
+      expect(user.mfa.defaultMethod).toBe("totp");
+      expect(user.account.active).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("WF-INVITE-10 — mode='optional' + invitee picks `skip` → account active, no MFA enrolled", async () => {
     // Pins the invite-side optional-mode skip short-circuit. An inverted gate
     // would either force every invitee through full enrollment (breaks opt-out)

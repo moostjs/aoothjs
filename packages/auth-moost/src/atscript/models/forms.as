@@ -353,13 +353,27 @@ export interface EnrollPickMethodForm {
 /**
  * Forced MFA enrollment — address collection for sms/email. TOTP skips this
  * form (secret is provisioned server-side).
+ *
+ * `skip` is hidden unless `enrollMode === 'optional'` (`'required'` mode
+ * forbids backing out mid-flow). `useDifferentMethod` is hidden when the
+ * consumer has only one transport configured (nothing to switch to).
  */
 @wf.context.pass 'enrollMethod'
+@wf.context.pass 'enrollMode'
+@wf.context.pass 'enrollAvailableTransports'
 export interface EnrollAddressForm {
     @ui.form.type 'text'
     @meta.label 'Address'
     @meta.required
     address: string
+
+    @ui.form.action 'skip', 'Skip for now'
+    @ui.form.fn.hidden '(_, _d, ctx) => ctx.enrollMode !== "optional"'
+    skip?: ui.action
+
+    @ui.form.action 'useDifferentMethod', 'Use a different method'
+    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.enrollAvailableTransports?.length ?? 0) < 2'
+    useDifferentMethod?: ui.action
 }
 
 /**
@@ -369,8 +383,10 @@ export interface EnrollAddressForm {
  * for the totp QR + manual-entry fallback.
  */
 @wf.context.pass 'enrollMethod'
+@wf.context.pass 'enrollMode'
 @wf.context.pass 'enrollSecret'
 @wf.context.pass 'enrollUri'
+@wf.context.pass 'enrollAvailableTransports'
 @wf.context.pass 'pinSentTo'
 @ui.form.submit.text 'Confirm'
 export interface EnrollConfirmForm {
@@ -385,6 +401,18 @@ export interface EnrollConfirmForm {
     @expect.maxLength 12
     @expect.pattern '^[0-9]+$'
     code: string
+
+    @ui.form.action 'resend', 'Resend code'
+    @ui.form.fn.hidden '(_, _d, ctx) => ctx.enrollMethod === "totp"'
+    resend?: ui.action
+
+    @ui.form.action 'useDifferentMethod', 'Use a different method'
+    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.enrollAvailableTransports?.length ?? 0) < 2'
+    useDifferentMethod?: ui.action
+
+    @ui.form.action 'skip', 'Skip for now'
+    @ui.form.fn.hidden '(_, _d, ctx) => ctx.enrollMode !== "optional"'
+    skip?: ui.action
 }
 
 /**

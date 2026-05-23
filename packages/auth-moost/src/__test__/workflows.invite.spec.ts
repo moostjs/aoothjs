@@ -568,3 +568,160 @@ describe("InviteWorkflowOpts — mfa.mode='optional' skip action", () => {
     expect(user.account.active).toBe(true);
   });
 });
+
+describe("InviteWorkflowOpts — mfa enrollment ergonomics (PR7-1)", () => {
+  // WHY (T-I1): pins the new `inviteEnrollAutoPick` schema entry
+  // (gated on `transports.length === 1`) AND the matching update to
+  // `inviteEnrollPickMethod`'s gate (`transports.length > 1`). The invite
+  // schema is linear (no loop), so a 1-transport config MUST be routed via
+  // the auto-pick step or no step would set `enrollMethod` — the schema
+  // would then skip both address (no method) AND confirm (no method) and
+  // race straight into activation with NO MFA enrolled, defeating
+  // `mode: 'required'`. The "no picker pause + secret on user row + code
+  // accepted" sequence pins all three pieces: auto-pick schema entry
+  // present, helper's TOTP-secret provisioning runs inside auto-pick, and
+  // the schema downstream `inviteEnrollConfirm` step routes correctly.
+  it("T-I1: required + transports=['totp'] → no picker pause, secret auto-provisioned, code accepted", async () => {
+    const app = await prepareWfApp({
+      inviteOpts: {
+        mfa: { mode: "required", transports: ["totp"] },
+        accept: { showConfirmation: false },
+      },
+    });
+
+    const r4 = await driveToPostPassword(app, "auto-totp@example.com");
+    // No picker pause — body MUST be the confirm form (carries `code`),
+    // NOT the picker form (which would carry `method`).
+    expect(r4.body?.wfs).toBeTruthy();
+    expect(r4.body?.data).toBeUndefined();
+    const bodyJson = JSON.stringify(r4.body);
+    expect(bodyJson).toMatch(/"code"/);
+    // The picker form would expose a `method` field. Negative assertion
+    // pins that the auto-pick step bypassed the picker. (Avoid matching
+    // `methodName` which belongs to a different form unused in invite.)
+    expect(bodyJson).not.toMatch(/"method"(?!Name)/);
+
+    // Secret WAS provisioned in auto-pick — confirms the TOTP branch of
+    // the helper's `transports.length === 1` block ran.
+    const interim = await app.users.getUser("auto-totp@example.com");
+    const totp = interim.mfa.methods.find((m) => m.name === "totp");
+    expect(totp?.confirmed).toBe(false);
+    expect(typeof totp?.value).toBe("string");
+    expect(totp!.value.length).toBeGreaterThan(0);
+    // Account NOT yet active — proves the schema is genuinely paused at
+    // the confirm step, not racing past activation.
+    expect(interim.account.active).toBe(false);
+
+    const code = generateTotpCode(totp!.value);
+    const r5 = await app.trigger({ wfs: r4.body?.wfs as string, input: { code } });
+    const data = r5.body?.data as Record<string, unknown> | undefined;
+    expect(data?.userId).toBe("auto-totp@example.com");
+    expect(typeof data?.accessToken).toBe("string");
+
+    const user = await app.users.getUser("auto-totp@example.com");
+    const totpFinal = user.mfa.methods.find((m) => m.name === "totp");
+    expect(totpFinal?.confirmed).toBe(true);
+    expect(user.mfa.defaultMethod).toBe("totp");
+    expect(user.account.active).toBe(true);
+  });
+
+  // WHY (T-I2): mirrors login T2 for invite — pins the Phase 2 `skip`
+  // branch in the invite tail. Without it, an optional-mode invitee who
+  // picks sms (commits to a method) then changes their mind at the address
+  // form would be trapped (the schema entries for address/confirm both
+  // gate on `enrollMethod` being set, with no escape hatch other than
+  // the helper's skip handler). The post-skip assertions (account active +
+  // 0 methods) prove the skip ran AND that activation proceeded normally.
+  it("T-I2: optional + picks sms + skip from address form → activates, no method persisted", async () => {
+    const app = await prepareWfApp({
+      inviteOpts: {
+        mfa: { mode: "optional" },
+        accept: { showConfirmation: false },
+      },
+    });
+
+    const r4 = await driveToPostPassword(app, "opt-addr-skip@example.com");
+    // Pick sms → pause at address form.
+    const r5 = await app.trigger({
+      wfs: r4.body?.wfs as string,
+      input: { method: "sms" },
+    });
+    expect(r5.body?.wfs).toBeTruthy();
+    expect(app.sms.length).toBe(0);
+
+    // Skip at address → schema falls through to activation.
+    const r6 = await app.trigger({
+      wfs: r5.body?.wfs as string,
+      input: { action: "skip" },
+    });
+    const data = r6.body?.data as Record<string, unknown> | undefined;
+    expect(data?.userId).toBe("opt-addr-skip@example.com");
+    expect(typeof data?.accessToken).toBe("string");
+
+    const user = await app.users.getUser("opt-addr-skip@example.com");
+    expect(user.account.active).toBe(true);
+    expect(user.mfa.methods).toHaveLength(0);
+  });
+
+  // WHY (T-I3): mirrors login T5 for invite — pins that
+  // `cleanupEnrollment` runs in the invite tail too AND that the schema's
+  // while-loop wrapper around the 4 enrolment entries causes re-entry to
+  // `inviteEnrollPickMethod` after the switch. TOTP-then-switch is the
+  // load-bearing case: Phase 1 has already persisted the unconfirmed TOTP
+  // row, so without cleanup the user would activate (post-re-pick) with a
+  // stale unconfirmed TOTP row PLUS the confirmed sms. Without the
+  // while-loop wrapper, control would fall through to
+  // `inviteCollectProfile` → `inviteActivateUser` with zero confirmed
+  // methods (defeating `mfa.mode: 'required'`). The final assertion
+  // (only sms present + account active) pins both halves.
+  it("T-I3: useDifferentMethod from Phase 3 (totp) → totp row REMOVED, re-pick sms completes", async () => {
+    const app = await prepareWfApp({
+      inviteOpts: {
+        mfa: { mode: "required" },
+        accept: { showConfirmation: false },
+      },
+    });
+
+    const r4 = await driveToPostPassword(app, "invite-switch@example.com");
+    const r5 = await app.trigger({
+      wfs: r4.body?.wfs as string,
+      input: { method: "totp" },
+    });
+    expect(r5.body?.wfs).toBeTruthy();
+    const interim = await app.users.getUser("invite-switch@example.com");
+    expect(interim.mfa.methods.find((m) => m.name === "totp")?.confirmed).toBe(false);
+
+    const r6 = await app.trigger({
+      wfs: r5.body?.wfs as string,
+      input: { action: "useDifferentMethod" },
+    });
+    // Required-mode invariant: schema MUST hold at enrolment (re-prompt
+    // at picker), NOT activate the account with no confirmed method.
+    expect(r6.body?.wfs).toBeTruthy();
+    expect(r6.body?.data).toBeUndefined();
+    const afterSwitch = await app.users.getUser("invite-switch@example.com");
+    expect(afterSwitch.mfa.methods.find((m) => m.name === "totp")).toBeUndefined();
+    expect(afterSwitch.account.active).toBe(false);
+
+    const r7 = await app.trigger({
+      wfs: r6.body?.wfs as string,
+      input: { method: "sms" },
+    });
+    const r8 = await app.trigger({
+      wfs: r7.body?.wfs as string,
+      input: { address: "+15558889999" },
+    });
+    expect(app.sms.length).toBe(1);
+    const code = app.sms[0].code;
+    const r9 = await app.trigger({ wfs: r8.body?.wfs as string, input: { code } });
+    const data = r9.body?.data as Record<string, unknown> | undefined;
+    expect(typeof data?.accessToken).toBe("string");
+
+    const final = await app.users.getUser("invite-switch@example.com");
+    expect(final.mfa.methods).toHaveLength(1);
+    expect(final.mfa.methods[0].name).toBe("sms");
+    expect(final.mfa.methods[0].confirmed).toBe(true);
+    expect(final.mfa.defaultMethod).toBe("sms");
+    expect(final.account.active).toBe(true);
+  });
+});

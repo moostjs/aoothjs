@@ -1174,3 +1174,379 @@ describe("LoginWorkflowOpts — mfa.mode='optional' skip action", () => {
     expect(user.mfa.methods).toHaveLength(0);
   });
 });
+
+describe("LoginWorkflowOpts — mfa enrollment ergonomics (PR7-1)", () => {
+  // WHY (T1): pins the 1-transport AUTO-PICK branch in `runMfaEnrollment`
+  // Phase 1 (`if (transports.length === 1) { … return; }`). Without it, a
+  // single-transport config would either silently force the user through a
+  // 1-option radio (bad UX) OR — worse for the TOTP case — fail outright,
+  // because the secret/uri provisioning lives inside that same branch. A
+  // regression that auto-picked but DIDN'T provision the secret would land
+  // at confirm without `enrollSecret`, so Phase 3 would have no TOTP secret
+  // on the user row to verify against. The two assertions below — (a) no
+  // picker pause + (b) confirm succeeds against the auto-provisioned
+  // secret — together pin both halves of the branch.
+  it("T1: required + transports=['totp'] + 0 methods → no picker pause, secret auto-provisioned, code accepted", async () => {
+    const app = await prepareWfApp({
+      loginOpts: { mfa: { mode: "required", transports: ["totp"] } },
+    });
+    await seedActiveUser(app.users, "auto-totp", "pwd-12345678");
+
+    // Credentials → MUST land at the confirm form directly, NOT at the
+    // picker. Picker form carries a `method` field; confirm form carries
+    // a `code` field. Picker absence is the load-bearing assertion.
+    const r2 = await startAndCredentials(app, "auto-totp", "pwd-12345678");
+    expect(r2.body?.wfs).toBeTruthy();
+    expect(r2.body?.data).toBeUndefined();
+    const bodyJson = JSON.stringify(r2.body);
+    expect(bodyJson).toMatch(/"code"/);
+    // Picker would expose a `method` schema field (NOT to be confused with
+    // the `methodName` of select2fa). A regression that fell through to the
+    // picker form would surface `"method"` in the body schema.
+    expect(bodyJson).not.toMatch(/"method"(?!Name)/);
+
+    // Secret WAS provisioned server-side inside the auto-pick branch.
+    const interim = await app.users.getUser("auto-totp");
+    const totp = interim.mfa.methods.find((m) => m.name === "totp");
+    expect(totp?.confirmed).toBe(false);
+    expect(typeof totp?.value).toBe("string");
+    expect(totp!.value.length).toBeGreaterThan(0);
+
+    const code = generateTotpCode(totp!.value);
+    const r3 = await app.trigger({ wfs: r2.body?.wfs as string, input: { code } });
+    const data = r3.body?.data as Record<string, unknown> | undefined;
+    expect(typeof data?.accessToken).toBe("string");
+
+    const final = await app.users.getUser("auto-totp");
+    const totpFinal = final.mfa.methods.find((m) => m.name === "totp");
+    expect(totpFinal?.confirmed).toBe(true);
+    expect(final.mfa.defaultMethod).toBe("totp");
+  });
+
+  // WHY (T2): pins the Phase 2 `skip` branch AND the invariant that no
+  // method row exists at Phase 2 entry for sms/email (so cleanup is
+  // deliberately NOT called — calling it would still be safe because
+  // `removeMfaMethod` is filter-based, but it would mask a real bug if a
+  // future change persisted the method row at Phase 1 for sms/email). The
+  // test asserts skip works AND that `mfa.methods` stays empty — proving
+  // the helper short-circuited via the optional-mode skip handler, not via
+  // some other code path that might have persisted the method first.
+  it("T2: optional + sms picked + skip from address form → finishes, no method persisted", async () => {
+    const app = await prepareWfApp({
+      loginOpts: { mfa: { mode: "optional" } },
+    });
+    await seedActiveUser(app.users, "opt-sms-skip", "pwd-12345678");
+
+    const r2 = await startAndCredentials(app, "opt-sms-skip", "pwd-12345678");
+    expect(r2.body?.wfs).toBeTruthy();
+
+    // Pick sms → pause at address form (no SMS dispatched yet — no address
+    // means no addMfaMethod call).
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { method: "sms" },
+    });
+    expect(r3.body?.wfs).toBeTruthy();
+    expect(app.sms.length).toBe(0);
+    // Critical pre-skip invariant: at Phase 2 entry for sms/email, NO
+    // method row exists yet. The Phase 2 skip handler relies on this
+    // (no cleanup needed). If a future change started persisting earlier,
+    // this assertion would fail and force the skip handler to call
+    // `cleanupEnrollment`.
+    expect((await app.users.getUser("opt-sms-skip")).mfa.methods).toHaveLength(0);
+
+    // Skip at address → workflow short-circuits to login finish.
+    const r4 = await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { action: "skip" },
+    });
+    const data = r4.body?.data as Record<string, unknown> | undefined;
+    expect(typeof data?.accessToken).toBe("string");
+
+    // Still no method persisted — proves the skip handler ran, not a
+    // covert enroll path.
+    const user = await app.users.getUser("opt-sms-skip");
+    expect(user.mfa.methods).toHaveLength(0);
+  });
+
+  // WHY (T3): pins the Phase 3 `skip` branch + the `cleanupEnrollment` call
+  // it depends on. At Phase 3 the unconfirmed sms method row IS persisted
+  // (Phase 2 wrote it via addMfaMethod). Without the cleanup call, the
+  // workflow would finish with a stale unconfirmed sms row on the user —
+  // `prepareMfaOptions` filters by `confirmed`, so the user could still log
+  // in, but the dead row would block re-enrolling sms with a different
+  // address (or worse — leak metadata depending on consumer code paths).
+  // The pre-skip assertion proves the row IS there (so cleanup is doing
+  // real work, not no-op); the post-skip assertion proves it's gone.
+  it("T3: optional + sms picked + address submitted + skip from confirm → unconfirmed sms REMOVED", async () => {
+    const app = await prepareWfApp({
+      loginOpts: { mfa: { mode: "optional" } },
+    });
+    await seedActiveUser(app.users, "opt-sms-cleanup", "pwd-12345678");
+
+    const r2 = await startAndCredentials(app, "opt-sms-cleanup", "pwd-12345678");
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { method: "sms" },
+    });
+    const r4 = await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { address: "+15551112222" },
+    });
+    expect(r4.body?.wfs).toBeTruthy();
+    expect(app.sms.length).toBe(1);
+
+    // Pre-skip: unconfirmed sms row EXISTS — proves cleanup is non-trivial.
+    const interim = await app.users.getUser("opt-sms-cleanup");
+    const interimSms = interim.mfa.methods.find((m) => m.name === "sms");
+    expect(interimSms?.value).toBe("+15551112222");
+    expect(interimSms?.confirmed).toBe(false);
+
+    // Skip at confirm → cleanupEnrollment fires → row removed → finish.
+    const r5 = await app.trigger({
+      wfs: r4.body?.wfs as string,
+      input: { action: "skip" },
+    });
+    const data = r5.body?.data as Record<string, unknown> | undefined;
+    expect(typeof data?.accessToken).toBe("string");
+
+    const final = await app.users.getUser("opt-sms-cleanup");
+    expect(final.mfa.methods.find((m) => m.name === "sms")).toBeUndefined();
+    expect(final.mfa.methods).toHaveLength(0);
+  });
+
+  // WHY (T4): pins the Phase 2 `useDifferentMethod` branch
+  // (`delete ctx.enrollMethod` → loop re-enters Phase 1). A regression that
+  // didn't clear `enrollMethod` would leave the user trapped on the address
+  // form for sms forever; a regression that handled the action only for
+  // optional mode would deny the switch under required mode. We assert
+  // under default (`optional`) mode but the switch invariant is mode-
+  // independent so the assertion holds regardless. The post-switch pick of
+  // a DIFFERENT method (email) → full completion proves the loop actually
+  // re-entered Phase 1, not got stuck or fell through.
+  it("T4: useDifferentMethod from address form → loops back to picker, can pick another method", async () => {
+    const app = await prepareWfApp({
+      loginOpts: { mfa: { mode: "optional" } },
+    });
+    await seedActiveUser(app.users, "switch-method", "pwd-12345678");
+
+    const r2 = await startAndCredentials(app, "switch-method", "pwd-12345678");
+    // Pick sms → at address form → switch.
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { method: "sms" },
+    });
+    expect(r3.body?.wfs).toBeTruthy();
+    const r4 = await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { action: "useDifferentMethod" },
+    });
+    expect(r4.body?.wfs).toBeTruthy();
+    expect(r4.body?.data).toBeUndefined();
+    // No method persisted in the interim — Phase 2 entry for sms hasn't
+    // run addMfaMethod yet, and the action handler must not have triggered
+    // it either.
+    expect((await app.users.getUser("switch-method")).mfa.methods).toHaveLength(0);
+
+    // Picking email → next pause MUST be the email address form (NOT a
+    // re-prompt of pick → if `enrollMethod` weren't cleared, the helper
+    // would have re-prompted address for SMS instead of routing email).
+    const r5 = await app.trigger({
+      wfs: r4.body?.wfs as string,
+      input: { method: "email" },
+    });
+    expect(r5.body?.wfs).toBeTruthy();
+    // Address form schema for email — submit + confirm to prove the new
+    // method routes end-to-end.
+    const r6 = await app.trigger({
+      wfs: r5.body?.wfs as string,
+      input: { address: "switch@example.com" },
+    });
+    expect(app.emails.length).toBe(1);
+    expect(app.emails[0].recipient).toBe("switch@example.com");
+    const code = app.emails[0].code as string;
+    const r7 = await app.trigger({ wfs: r6.body?.wfs as string, input: { code } });
+    const data = r7.body?.data as Record<string, unknown> | undefined;
+    expect(typeof data?.accessToken).toBe("string");
+
+    const user = await app.users.getUser("switch-method");
+    // Only email present — no leftover sms row (none was created), no
+    // dangling unconfirmed entries.
+    expect(user.mfa.methods).toHaveLength(1);
+    expect(user.mfa.methods[0].name).toBe("email");
+    expect(user.mfa.methods[0].confirmed).toBe(true);
+  });
+
+  // WHY (T5): pins Phase 3 `useDifferentMethod` for TOTP specifically — the
+  // case where cleanupEnrollment matters most. For TOTP, Phase 1 persists
+  // the unconfirmed secret onto the user row, so by the time we reach
+  // Phase 3 the row is real. A regression that didn't call
+  // cleanupEnrollment on the switch would leave a dead unconfirmed TOTP
+  // row, and the user's re-pick of sms would land with stale state on the
+  // user (and depending on store semantics, a subsequent re-pick of TOTP
+  // would either upsert over the dead row or fail outright). The
+  // re-pick-sms-and-complete tail proves the switch worked AND that the
+  // user ends up with ONLY the confirmed sms method — no stale TOTP row.
+  it("T5: useDifferentMethod from confirm form (totp) → totp row REMOVED, re-pick sms completes cleanly", async () => {
+    const app = await prepareWfApp({
+      loginOpts: { mfa: { mode: "optional" } },
+    });
+    await seedActiveUser(app.users, "switch-totp", "pwd-12345678");
+
+    const r2 = await startAndCredentials(app, "switch-totp", "pwd-12345678");
+    // Pick totp → secret persisted unconfirmed → pause at confirm.
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { method: "totp" },
+    });
+    expect(r3.body?.wfs).toBeTruthy();
+    const interim = await app.users.getUser("switch-totp");
+    expect(interim.mfa.methods.find((m) => m.name === "totp")?.confirmed).toBe(false);
+
+    // Switch away at confirm → cleanupEnrollment MUST remove the totp row.
+    const r4 = await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { action: "useDifferentMethod" },
+    });
+    expect(r4.body?.wfs).toBeTruthy();
+    expect(r4.body?.data).toBeUndefined();
+    const afterSwitch = await app.users.getUser("switch-totp");
+    expect(afterSwitch.mfa.methods.find((m) => m.name === "totp")).toBeUndefined();
+
+    // Re-pick sms → full flow → ends with ONLY sms (no stale totp row).
+    const r5 = await app.trigger({
+      wfs: r4.body?.wfs as string,
+      input: { method: "sms" },
+    });
+    const r6 = await app.trigger({
+      wfs: r5.body?.wfs as string,
+      input: { address: "+15553334444" },
+    });
+    expect(app.sms.length).toBe(1);
+    const code = app.sms[0].code;
+    const r7 = await app.trigger({ wfs: r6.body?.wfs as string, input: { code } });
+    expect(typeof (r7.body?.data as Record<string, unknown>)?.accessToken).toBe("string");
+
+    const final = await app.users.getUser("switch-totp");
+    expect(final.mfa.methods).toHaveLength(1);
+    expect(final.mfa.methods[0].name).toBe("sms");
+    expect(final.mfa.methods[0].confirmed).toBe(true);
+    expect(final.mfa.defaultMethod).toBe("sms");
+  });
+
+  // WHY (T6): pins BOTH halves of the Phase 3 `resend` branch:
+  //   (a) cooldown gate — `Date.now() < enrollPincodeCooldown` rejects with
+  //       a "wait Ns" formMessage and DOES NOT re-mint/re-dispatch. Without
+  //       this gate, an attacker (or an impatient user) could spam an
+  //       arbitrary phone with SMS pumping fraud / burn an email by
+  //       hammering the resend button. The `app.sms.length` invariant
+  //       across the rejected attempt is the load-bearing assertion.
+  //   (b) post-cooldown re-mint — once the cooldown elapses, `mintPin` runs
+  //       AGAIN (new code) AND `deliver` fires AGAIN (new SMS). Without
+  //       re-mint, the user would submit the original (now-expired) code;
+  //       without re-dispatch, the user would never receive the new code.
+  // The final submission of the SECOND code (not the first) proves both.
+  it("T6: resend on Phase 3 sms — cooldown blocks immediate retry; post-cooldown re-mint dispatches new code", async () => {
+    const app = await prepareWfApp({
+      // 50ms cooldown — short enough to wait out in-test without a
+      // deterministic clock. The defense is the same regardless of the
+      // window size.
+      loginOpts: { mfa: { mode: "required", pincodeResendTimeoutMs: 50 } },
+    });
+    await seedActiveUser(app.users, "resend-user", "pwd-12345678");
+
+    const r2 = await startAndCredentials(app, "resend-user", "pwd-12345678");
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { method: "sms" },
+    });
+    const r4 = await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { address: "+15557776666" },
+    });
+    expect(app.sms.length).toBe(1);
+    expect(app.sms[0].recipient).toBe("+15557776666");
+    const firstCode = app.sms[0].code;
+
+    // Immediate resend → cooldown rejects with formMessage. No new SMS.
+    const r5 = await app.trigger({
+      wfs: r4.body?.wfs as string,
+      input: { action: "resend" },
+    });
+    const errors5 = r5.body?.errors as Record<string, string> | undefined;
+    expect(errors5?.__form).toMatch(/wait \d+s/i);
+    expect(app.sms.length).toBe(1);
+
+    // Wait past the cooldown window.
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Resend now succeeds: re-mints + re-dispatches.
+    const r6 = await app.trigger({
+      wfs: r5.body?.wfs as string,
+      input: { action: "resend" },
+    });
+    expect(r6.body?.wfs).toBeTruthy();
+    expect(app.sms.length).toBe(2);
+    expect(app.sms[1].recipient).toBe("+15557776666");
+    const secondCode = app.sms[1].code;
+    // The new code MUST be the one the workflow now expects — submitting
+    // the first (stale) code at this point would fail. Submitting the
+    // second proves `mintPin` actually overwrote `ctx.pin`.
+    expect(secondCode).toBeTruthy();
+
+    const r7 = await app.trigger({
+      wfs: r6.body?.wfs as string,
+      input: { code: secondCode },
+    });
+    const data = r7.body?.data as Record<string, unknown> | undefined;
+    expect(typeof data?.accessToken).toBe("string");
+    // Cross-check: pin was rotated — first code is NOT the same as the
+    // accepted-second code (probabilistic — collisions are <1/10^pincodeLength;
+    // for the default 6-digit length this is 1e-6, well within test
+    // tolerance).
+    expect(firstCode).not.toBe(secondCode);
+
+    const user = await app.users.getUser("resend-user");
+    const sms = user.mfa.methods.find((m) => m.name === "sms");
+    expect(sms?.confirmed).toBe(true);
+    expect(sms?.value).toBe("+15557776666");
+  });
+
+  // WHY (T7): the negative counterpart to T2 — `required` mode MUST NEVER
+  // accept a skip at Phase 2. The helper's
+  // `deps.mode === "optional" && action === "skip"` gate is the only thing
+  // separating policy-enforced enrollment from a client-side opt-out. A
+  // regression that dropped the mode check (e.g. blanket skip handling)
+  // would let `required`-mode users dodge enrollment by submitting
+  // `{action: "skip"}` from the address form — defeating the entire
+  // purpose of `mode: 'required'`. The exact failure mode here is server-
+  // side: with `required` mode the skip handler doesn't fire; control
+  // falls through to `resolveInput()` which requires an `address` field —
+  // the form throws and the workflow does NOT finish AND no method row
+  // gets persisted (addMfaMethod is reached AFTER resolveInput succeeds).
+  it("T7: required + skip at Phase 2 address form → workflow does NOT short-circuit", async () => {
+    const app = await prepareWfApp({
+      loginOpts: { mfa: { mode: "required" } },
+    });
+    await seedActiveUser(app.users, "req-addr-skip", "pwd-12345678");
+
+    const r2 = await startAndCredentials(app, "req-addr-skip", "pwd-12345678");
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { method: "sms" },
+    });
+    expect(r3.body?.wfs).toBeTruthy();
+
+    // Skip submitted under required mode → MUST NOT finish.
+    const r4 = await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { action: "skip" },
+    });
+    expect(r4.body?.data).toBeUndefined();
+    // No method persisted — proves the helper did NOT take the skip path
+    // (which would also short-circuit before addMfaMethod) AND did NOT
+    // race past validation into addMfaMethod.
+    const user = await app.users.getUser("req-addr-skip");
+    expect(user.mfa.methods).toHaveLength(0);
+  });
+});

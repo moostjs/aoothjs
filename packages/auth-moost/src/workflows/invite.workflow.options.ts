@@ -79,6 +79,8 @@ export interface InviteWorkflowOpts {
     mode?: "required" | "optional" | "disabled";
     transports?: MfaTransport[];
     pincodeTtlMs?: number;
+    /** Per-method resend cooldown for the Phase 3 confirm pincode (sms/email). Default: 60_000. */
+    pincodeResendTimeoutMs?: number;
     pincodeLength?: number;
     /** TOTP provisioning issuer (rendered in the authenticator app). Default: 'aooth'. */
     issuer?: string;
@@ -128,6 +130,7 @@ export interface ResolvedInviteWorkflowOpts {
     mode: "required" | "optional" | "disabled";
     transports: MfaTransport[];
     pincodeTtlMs: number;
+    pincodeResendTimeoutMs: number;
     pincodeLength: number;
     issuer: string;
   };
@@ -178,6 +181,7 @@ export function mergeInviteOpts(opts: InviteWorkflowOpts = {}): ResolvedInviteWo
       mode: "optional",
       transports: ["sms", "email", "totp"],
       pincodeTtlMs: 5 * 60 * 1000,
+      pincodeResendTimeoutMs: 60_000,
       pincodeLength: 6,
       issuer: "aooth",
       ...opts.mfa,

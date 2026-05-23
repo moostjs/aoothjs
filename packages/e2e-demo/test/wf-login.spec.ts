@@ -426,6 +426,157 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
     }
   });
 
+  it("WF-LOGIN-12 — mfa.mode='required' + transports=['totp'] auto-pick: no picker pause, secret auto-provisioned, code submission goes straight to confirm and finishes", async () => {
+    // PR7-1: runMfaEnrollment Phase 1 auto-picks when transports.length === 1.
+    // WHY: a regression that removed the auto-pick branch would either force
+    // a 1-option picker (degraded UX) or stall the loop with no input form.
+    // The mid-flow form-id assertion (EnrollConfirmForm, NOT EnrollPickMethodForm)
+    // pins the auto-pick path end-to-end through the demo's HTTP + DI +
+    // atscript-db stack; a wiring regression would surface here, not in the
+    // unit suite, because the schema-level gating involves both Phase 1
+    // (auto-pick + secret provisioning) and Phase 3 (skip-to-confirm with
+    // no Phase 2 pincode delivery for totp).
+    const reqApp = await buildTestApp({
+      loginOpts: { mfa: { mode: "required", transports: ["totp"] } },
+    });
+    try {
+      const alice = reqApp.fixtures.users.t1_alice;
+      const seeded = await reqApp.appHandle.aooth.userService.getUser(alice.username);
+      expect(seeded.mfa.methods).toHaveLength(0);
+
+      const start = await reqApp.triggerWf("public", { wfid: "auth.login" });
+      const startBody = await readWfPause(start);
+      const cred = await reqApp.triggerWf("public", {
+        wfid: "auth.login",
+        wfs: startBody.wfs,
+        input: { username: alice.username, password: alice.password },
+      });
+      expectOk(cred);
+      const confirmBody = await readWfPause(cred);
+      expect(confirmBody.wfs).toBeTruthy();
+      // The critical invariant: NO picker pause when transports.length === 1.
+      // The demo uses `createAsHttpOutlet` which wraps the form schema under
+      // `inputRequired.payload` (see workflows.recovery.options.spec.ts:610-614);
+      // if auto-pick is removed, the payload id would be "EnrollPickMethodForm".
+      expect((confirmBody.inputRequired?.payload as { id?: string } | undefined)?.id).toBe(
+        "EnrollConfirmForm",
+      );
+      // No pincode side-channel — TOTP must NOT route through email.
+      expect(reqApp.emailSender.events.filter((e) => e.kind === "login.pincode")).toHaveLength(0);
+
+      // Secret was auto-provisioned by Phase 1's auto-pick branch — read and
+      // use it to confirm the round-trip.
+      const interim = await reqApp.appHandle.aooth.userService.getUser(alice.username);
+      const totp = interim.mfa.methods.find((m) => m.name === "totp");
+      expect(totp?.confirmed).toBe(false);
+      expect(typeof totp?.value).toBe("string");
+      expect(totp!.value.length).toBeGreaterThan(0);
+      const code = generateTotpCode(totp!.value);
+
+      const confirm = await reqApp.triggerWf("public", {
+        wfid: "auth.login",
+        wfs: confirmBody.wfs,
+        input: { code },
+      });
+      expectOk(confirm);
+      const issued = await expectFinished<{ userId?: string; accessToken?: string }>(confirm);
+      expect(issued.data?.userId).toBe(alice.username);
+      expect(typeof issued.data?.accessToken).toBe("string");
+
+      const after = await reqApp.appHandle.aooth.userService.getUser(alice.username);
+      expect(after.mfa.methods.find((m) => m.name === "totp")?.confirmed).toBe(true);
+      expect(after.mfa.defaultMethod).toBe("totp");
+    } finally {
+      await reqApp.close();
+    }
+  });
+
+  it("WF-LOGIN-13 — mfa.mode='optional' + skip from EnrollConfirmForm: cleanup runs, no unconfirmed method persisted, tokens issued", async () => {
+    // PR7-1: skip / useDifferentMethod alt-actions on EnrollConfirmForm
+    // trigger `cleanupEnrollment` which removes the unconfirmed method row.
+    // WHY: without the cleanup, a Phase 3 skip would leave stale unconfirmed
+    // rows in atscript-db that would corrupt future enrollments (the user's
+    // next login would see an "email" method that was never confirmed, which
+    // could be auto-picked or rejected unpredictably). The mid-flow assertion
+    // that the unconfirmed row WAS persisted (Phase 2 wrote it) is the proof
+    // that this test exercises the cleanup branch — without it, "no methods
+    // after skip" could be a vacuous pass on a system that never persisted.
+    const optApp = await buildTestApp({ loginOpts: { mfa: { mode: "optional" } } });
+    try {
+      const alice = optApp.fixtures.users.t1_alice;
+      const seeded = await optApp.appHandle.aooth.userService.getUser(alice.username);
+      expect(seeded.mfa.methods).toHaveLength(0);
+
+      const start = await optApp.triggerWf("public", { wfid: "auth.login" });
+      const startBody = await readWfPause(start);
+      const cred = await optApp.triggerWf("public", {
+        wfid: "auth.login",
+        wfs: startBody.wfs,
+        input: { username: alice.username, password: alice.password },
+      });
+      expectOk(cred);
+      const pickBody = await readWfPause(cred);
+      expect(pickBody.wfs).toBeTruthy();
+
+      // Pick email — drives Phase 2 (address) then pauses on confirm.
+      const pick = await optApp.triggerWf("public", {
+        wfid: "auth.login",
+        wfs: pickBody.wfs,
+        input: { method: "email" },
+      });
+      expectOk(pick);
+      const addrBody = await readWfPause(pick);
+      expect(addrBody.wfs).toBeTruthy();
+
+      const enrollAddress = "foo@demo.test";
+      const addr = await optApp.triggerWf("public", {
+        wfid: "auth.login",
+        wfs: addrBody.wfs,
+        input: { address: enrollAddress },
+      });
+      expectOk(addr);
+      const confirmBody = await readWfPause(addr);
+      expect(confirmBody.wfs).toBeTruthy();
+      expect((confirmBody.inputRequired?.payload as { id?: string } | undefined)?.id).toBe(
+        "EnrollConfirmForm",
+      );
+
+      // Pincode WAS sent (Phase 2 fired delivery as a side-effect of address submit).
+      const pinMail = await optApp.emailSender.next(
+        (e) => e.kind === "login.pincode" && e.recipient === enrollAddress,
+        2000,
+      );
+      expect(typeof pinMail.code).toBe("string");
+
+      // Mid-flow: the unconfirmed email method MUST exist now — proves Phase 2
+      // persisted it via `addMfaMethod`. If this assertion fails, the post-skip
+      // "no methods" check below would be a vacuous pass.
+      const mid = await optApp.appHandle.aooth.userService.getUser(alice.username);
+      const midEmail = mid.mfa.methods.find((m) => m.name === "email");
+      expect(midEmail?.value).toBe(enrollAddress);
+      expect(midEmail?.confirmed).toBe(false);
+
+      // Skip from EnrollConfirmForm — cleanupEnrollment must remove the row.
+      const skip = await optApp.triggerWf("public", {
+        wfid: "auth.login",
+        wfs: confirmBody.wfs,
+        input: { action: "skip" },
+      });
+      expectOk(skip);
+      const issued = await expectFinished<{ userId?: string; accessToken?: string }>(skip);
+      expect(issued.data?.userId).toBe(alice.username);
+      expect(typeof issued.data?.accessToken).toBe("string");
+
+      // Critical: cleanup removed the unconfirmed row. A regression that
+      // skipped cleanup on the skip path would leave the email method in place.
+      const after = await optApp.appHandle.aooth.userService.getUser(alice.username);
+      expect(after.mfa.methods.find((m) => m.name === "email")).toBeUndefined();
+      expect(after.mfa.methods).toHaveLength(0);
+    } finally {
+      await optApp.close();
+    }
+  });
+
   it("WF-LOGIN-11 — mfa.mode='optional' + 0 methods + picks email: full enrollment runs (skip does NOT preempt pick)", async () => {
     // Positive branch of optional: users who DO opt in must still complete
     // the 3-phase enrollment. A regression hardwiring optional → skip would

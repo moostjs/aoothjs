@@ -136,6 +136,8 @@ export interface InviteWfCtx {
    */
   enrollMode?: "required" | "optional";
   enrollDone?: boolean;
+  /** Phase 3 confirm-pincode resend cooldown (sms/email). See `MfaEnrollCtx.enrollPincodeCooldown`. */
+  enrollPincodeCooldown?: number;
   /** Pincode scratch shared with the enrollment helper. */
   pin?: string;
   pinExpire?: number;
@@ -423,47 +425,45 @@ export class InviteWorkflow extends AuthWorkflowBase {
       condition: (ctx) =>
         !!(ctx.linkSent && !ctx.alreadyAccepted && !ctx.passwordSet && !ctx.aborted),
     },
-    // ── Forced MFA enrollment (3 entries — one per phase, since the invite
-    // schema is linear and can't loop a single step like login does). The
-    // shared `runMfaEnrollment` helper routes internally based on ctx state.
+    // ── Forced MFA enrollment (4 entries — auto-pick + 3 phases). The
+    // invite schema is linear and can't loop a single step like login does,
+    // so each phase is a distinct entry; the shared `runMfaEnrollment`
+    // helper routes internally based on ctx state.
     {
-      // `!ctx.enrollDone` is critical when `mfa.mode === 'optional'`: after a
-      // user clicks `skip` in Phase 1, the helper sets `enrollDone` without
-      // setting `enrollMethod`. Without this gate the schema would re-enter
-      // the pick form forever.
-      id: "inviteEnrollPickMethod",
-      condition: (ctx) =>
-        !!(
-          ctx.passwordSet &&
-          ctx.opts!.mfa.mode !== "disabled" &&
-          !ctx.enrollMethod &&
-          !ctx.enrollDone &&
-          !ctx.aborted
-        ),
-    },
-    {
-      id: "inviteEnrollAddress",
-      condition: (ctx) =>
-        !!(
-          ctx.passwordSet &&
-          ctx.opts!.mfa.mode !== "disabled" &&
-          ctx.enrollMethod &&
-          (ctx.enrollMethod === "sms" || ctx.enrollMethod === "email") &&
-          !ctx.enrollAddress &&
-          !ctx.aborted
-        ),
-    },
-    {
-      id: "inviteEnrollConfirm",
-      condition: (ctx) =>
-        !!(
-          ctx.passwordSet &&
-          ctx.opts!.mfa.mode !== "disabled" &&
-          ctx.enrollMethod &&
-          (ctx.enrollMethod === "totp" || !!ctx.enrollAddress) &&
-          !ctx.enrollDone &&
-          !ctx.aborted
-        ),
+      // Wrap the 4 enrolment entries in a while-loop so `useDifferentMethod`
+      // (which clears `enrollMethod` via `cleanupEnrollment`) causes the schema
+      // to re-evaluate from auto-pick/picker instead of falling through to
+      // activation with no method enrolled. Mirrors login's MFA loop. Loop
+      // exits when `enrollDone` flips true (Phase-3 confirm OR user-skip in
+      // optional mode). `passwordSet` + `!aborted` + `mode !== 'disabled'`
+      // live on the while-gate so each inner step condition only checks the
+      // ctx fields that distinguish ITS phase.
+      while: (ctx) =>
+        !!(ctx.passwordSet && ctx.opts!.mfa.mode !== "disabled" && !ctx.enrollDone && !ctx.aborted),
+      steps: [
+        {
+          id: "inviteEnrollAutoPick",
+          condition: (ctx) => !!(ctx.opts!.mfa.transports.length === 1 && !ctx.enrollMethod),
+        },
+        {
+          id: "inviteEnrollPickMethod",
+          condition: (ctx) => !!(ctx.opts!.mfa.transports.length > 1 && !ctx.enrollMethod),
+        },
+        {
+          id: "inviteEnrollAddress",
+          condition: (ctx) =>
+            !!(
+              ctx.enrollMethod &&
+              (ctx.enrollMethod === "sms" || ctx.enrollMethod === "email") &&
+              !ctx.enrollAddress
+            ),
+        },
+        {
+          id: "inviteEnrollConfirm",
+          condition: (ctx) =>
+            !!(ctx.enrollMethod && (ctx.enrollMethod === "totp" || !!ctx.enrollAddress)),
+        },
+      ],
     },
     {
       id: "inviteCollectProfile",
@@ -550,47 +550,45 @@ export class InviteWorkflow extends AuthWorkflowBase {
       condition: (ctx) =>
         !!(ctx.linkSent && !ctx.alreadyAccepted && !ctx.passwordSet && !ctx.aborted),
     },
-    // ── Forced MFA enrollment (3 entries — one per phase, since the invite
-    // schema is linear and can't loop a single step like login does). The
-    // shared `runMfaEnrollment` helper routes internally based on ctx state.
+    // ── Forced MFA enrollment (4 entries — auto-pick + 3 phases). The
+    // invite schema is linear and can't loop a single step like login does,
+    // so each phase is a distinct entry; the shared `runMfaEnrollment`
+    // helper routes internally based on ctx state.
     {
-      // `!ctx.enrollDone` is critical when `mfa.mode === 'optional'`: after a
-      // user clicks `skip` in Phase 1, the helper sets `enrollDone` without
-      // setting `enrollMethod`. Without this gate the schema would re-enter
-      // the pick form forever.
-      id: "inviteEnrollPickMethod",
-      condition: (ctx) =>
-        !!(
-          ctx.passwordSet &&
-          ctx.opts!.mfa.mode !== "disabled" &&
-          !ctx.enrollMethod &&
-          !ctx.enrollDone &&
-          !ctx.aborted
-        ),
-    },
-    {
-      id: "inviteEnrollAddress",
-      condition: (ctx) =>
-        !!(
-          ctx.passwordSet &&
-          ctx.opts!.mfa.mode !== "disabled" &&
-          ctx.enrollMethod &&
-          (ctx.enrollMethod === "sms" || ctx.enrollMethod === "email") &&
-          !ctx.enrollAddress &&
-          !ctx.aborted
-        ),
-    },
-    {
-      id: "inviteEnrollConfirm",
-      condition: (ctx) =>
-        !!(
-          ctx.passwordSet &&
-          ctx.opts!.mfa.mode !== "disabled" &&
-          ctx.enrollMethod &&
-          (ctx.enrollMethod === "totp" || !!ctx.enrollAddress) &&
-          !ctx.enrollDone &&
-          !ctx.aborted
-        ),
+      // Wrap the 4 enrolment entries in a while-loop so `useDifferentMethod`
+      // (which clears `enrollMethod` via `cleanupEnrollment`) causes the schema
+      // to re-evaluate from auto-pick/picker instead of falling through to
+      // activation with no method enrolled. Mirrors login's MFA loop. Loop
+      // exits when `enrollDone` flips true (Phase-3 confirm OR user-skip in
+      // optional mode). `passwordSet` + `!aborted` + `mode !== 'disabled'`
+      // live on the while-gate so each inner step condition only checks the
+      // ctx fields that distinguish ITS phase.
+      while: (ctx) =>
+        !!(ctx.passwordSet && ctx.opts!.mfa.mode !== "disabled" && !ctx.enrollDone && !ctx.aborted),
+      steps: [
+        {
+          id: "inviteEnrollAutoPick",
+          condition: (ctx) => !!(ctx.opts!.mfa.transports.length === 1 && !ctx.enrollMethod),
+        },
+        {
+          id: "inviteEnrollPickMethod",
+          condition: (ctx) => !!(ctx.opts!.mfa.transports.length > 1 && !ctx.enrollMethod),
+        },
+        {
+          id: "inviteEnrollAddress",
+          condition: (ctx) =>
+            !!(
+              ctx.enrollMethod &&
+              (ctx.enrollMethod === "sms" || ctx.enrollMethod === "email") &&
+              !ctx.enrollAddress
+            ),
+        },
+        {
+          id: "inviteEnrollConfirm",
+          condition: (ctx) =>
+            !!(ctx.enrollMethod && (ctx.enrollMethod === "totp" || !!ctx.enrollAddress)),
+        },
+      ],
     },
     {
       id: "inviteCollectProfile",
@@ -981,9 +979,20 @@ export class InviteWorkflow extends AuthWorkflowBase {
       transports: this.opts.mfa.transports,
       pincodeLength: this.opts.mfa.pincodeLength,
       pincodeTtlMs: this.opts.mfa.pincodeTtlMs,
+      pincodeResendTimeoutMs: this.opts.mfa.pincodeResendTimeoutMs,
       issuer: this.opts.mfa.issuer,
       mode,
     });
+  }
+
+  @Step("inviteEnrollAutoPick")
+  @Public()
+  async inviteEnrollAutoPick(@WorkflowParam("context") ctx: InviteWfCtx): Promise<unknown> {
+    // Delegates to the same helper; Phase 1's auto-pick branch fires because
+    // `transports.length === 1` and `!ctx.enrollMethod`, sets enrollMethod
+    // (and provisions TOTP secret if applicable) without pausing for input.
+    await this.runInviteEnrollment(ctx);
+    return undefined;
   }
 
   @Step("inviteEnrollPickMethod")
