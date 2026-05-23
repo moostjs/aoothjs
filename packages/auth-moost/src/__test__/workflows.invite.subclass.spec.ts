@@ -18,14 +18,18 @@
  */
 import { AuthCredential } from "@aooth/auth";
 import { UserService, type UserCredentials } from "@aooth/user";
+import { useAtscriptWf } from "@atscript/moost-wf";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
+import { Step, useWfState } from "@moostjs/event-wf";
 import { Controller, Inherit, Injectable } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import { ProfileCompleteForm } from "../atscript/models/forms.as";
+import { Public } from "../auth.decorator";
 import {
   type DuplicateAction,
   InviteWorkflow,
+  type InviteWfCtx,
   type InviteWorkflowOpts,
   type PreparedUserInput,
 } from "../workflows/index";
@@ -356,4 +360,87 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
   // §"audit events", which proves the workflow EMITS the events with the
   // correct workflow + payload — independent of which subclass body actually
   // forwards them.
+});
+
+describe("InviteWorkflow subclass — inviteExtraStep override", () => {
+  // WHY: the documented override shape for `inviteExtraStep` is a no-arg
+  // method that reads ctx + input via composables. A regression that re-typed
+  // the parent to require `@WorkflowParam('context') ctx` would silently break
+  // consumer overrides (moost DI feeds args by parameter decorators, so a
+  // no-arg override would see undefined for ctx). This pins the contract:
+  // subclass overrides with literally `(): Promise<unknown>`, reads ctx + form
+  // input purely via composables, drives a pause-resume cycle, and the schema
+  // advances through to activation.
+  it("no-arg override → pauses for input, captures ctx + input via composables, schema advances to activation", async () => {
+    let captured: { username: string | undefined; first: string; last: string } | null = null;
+    let calls = 0;
+
+    @Inherit()
+    @Injectable("FOR_EVENT")
+    @Controller()
+    class OverrideInvite extends InviteWorkflow {
+      constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
+        super(opts, users, auth);
+      }
+
+      @Step("inviteExtraStep")
+      @Public()
+      override async inviteExtraStep(): Promise<unknown> {
+        calls++;
+        const wf = useAtscriptWf(ProfileCompleteForm as unknown as TAtscriptAnnotatedType);
+        // resolveInput throws (pause) on first hit; resolves on the resume tick.
+        const input = wf.resolveInput() as { firstName?: string; lastName?: string };
+        const ctx = useWfState().ctx<InviteWfCtx>();
+        captured = {
+          username: ctx.username,
+          first: input.firstName ?? "",
+          last: input.lastName ?? "",
+        };
+        return undefined;
+      }
+    }
+
+    const app = await prepareWfApp({
+      inviteOpts: { accept: { showConfirmation: false } },
+      inviteWorkflowClass: OverrideInvite,
+    });
+
+    const r1 = await app.trigger({ wfid: "auth.invite" });
+    await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { email: "extra@test.com" },
+    });
+    const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
+    const r3 = await app.resumeViaQuery(token);
+    const r4 = await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
+    });
+    // Pause site, NOT terminal — override fired requireInput, schema sits
+    // here waiting for the consumer's form payload.
+    expect(r4.body?.userId).toBeUndefined();
+    expect(r4.body?.wfs).toBeTruthy();
+    expect(calls).toBe(1);
+
+    const r5 = await app.trigger({
+      wfs: r4.body?.wfs as string,
+      input: { firstName: "Extra", lastName: "Override" },
+    });
+    const data = r5.body?.data as Record<string, unknown> | undefined;
+    expect(data?.userId).toBe("extra@test.com");
+    expect(typeof data?.accessToken).toBe("string");
+
+    // Override ran twice (initial pause + resume); composables resolved ctx +
+    // input through the no-arg override body.
+    expect(calls).toBe(2);
+    expect(captured).not.toBeNull();
+    expect(captured!.username).toBe("extra@test.com");
+    expect(captured!.first).toBe("Extra");
+    expect(captured!.last).toBe("Override");
+
+    // Schema advanced past the extra step to activation — override returning
+    // `undefined` lets the workflow continue.
+    const user = await app.users.getUser("extra@test.com");
+    expect(user.account.active).toBe(true);
+  });
 });

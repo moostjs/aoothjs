@@ -143,11 +143,6 @@ export interface InviteWfCtx {
   /** Raw input from `inviteCollectProfile`. */
   profile?: Record<string, unknown>;
   profileApplied?: boolean;
-  /** Current index into `opts.extraSteps`. The while-loop bumps this on each completed step. */
-  extraStepIndex?: number;
-  /** Captured form input per step (keyed by `InviteExtraStep.id`) — written
-   *  AFTER the handler succeeds so a re-prompt-on-error reverts cleanly. */
-  extraStepResults?: Record<string, Record<string, unknown>>;
   pendingInvitationCleared?: boolean;
   activated?: boolean;
   confirmationShown?: boolean;
@@ -367,18 +362,13 @@ export class InviteWorkflow extends AuthWorkflowBase {
 
   /**
    * Returns the JSON-safe projection of `opts` stashed onto `ctx` for schema
-   * conditions to read. Default: drop the `forms` group (atscript form classes
-   * are not plain JSON) so `AsWfStore`'s plain-JSON persistence doesn't choke.
-   * Step bodies still consult the form classes via `this.opts.forms.*`.
-   *
-   * Consumers who extend the opts type with non-JSON values can override this
-   * to strip them so `AsWfStore`'s plain-JSON persistence doesn't choke.
+   * conditions to read. Default: drop `forms` (atscript classes aren't plain
+   * JSON) so `AsWfStore` persistence doesn't choke; step bodies still read
+   * form classes via `this.opts.forms.*`. Override to strip any extra
+   * non-JSON values you've added to the opts type.
    */
   protected snapshotOpts(opts: ResolvedInviteWorkflowOpts): ResolvedInviteWorkflowOpts {
-    // Drop non-JSON entries (`forms` = atscript classes, `extraSteps` = closures).
-    // The schema reads `extraStepCount` (computed by `mergeInviteOpts`) for its
-    // while-condition; step bodies consult the live `this.opts` for handlers/forms.
-    const { forms: _forms, extraSteps: _extraSteps, ...rest } = opts;
+    const { forms: _forms, ...rest } = opts;
     return rest as ResolvedInviteWorkflowOpts;
   }
 
@@ -491,27 +481,8 @@ export class InviteWorkflow extends AuthWorkflowBase {
           !ctx.aborted
         ),
     },
-    {
-      // Entire loop short-circuits when no extra steps are configured —
-      // both the while-condition and the inner step's condition gate on
-      // `extraStepCount > 0` so the block is completely skipped (no body
-      // evaluation, no per-tick state mutation) when consumers omit
-      // `inviteOpts.extraSteps`. The inner gate is belt-and-suspenders
-      // against a future while-condition refactor that drops the count check.
-      while: (ctx) =>
-        !!(
-          ctx.passwordSet &&
-          !ctx.aborted &&
-          (ctx.opts!.extraStepCount ?? 0) > 0 &&
-          (ctx.extraStepIndex ?? 0) < (ctx.opts!.extraStepCount ?? 0)
-        ),
-      steps: [
-        {
-          id: "inviteExtraStep",
-          condition: (ctx) => (ctx.opts!.extraStepCount ?? 0) > 0,
-        },
-      ],
-    },
+    // Consumer extension point — see `inviteExtraStep()` method.
+    { id: "inviteExtraStep" },
     {
       id: "inviteUnsetPendingInvitation",
       condition: (ctx) => !!(ctx.passwordSet && !ctx.pendingInvitationCleared && !ctx.aborted),
@@ -637,27 +608,8 @@ export class InviteWorkflow extends AuthWorkflowBase {
           !ctx.aborted
         ),
     },
-    {
-      // Entire loop short-circuits when no extra steps are configured —
-      // both the while-condition and the inner step's condition gate on
-      // `extraStepCount > 0` so the block is completely skipped (no body
-      // evaluation, no per-tick state mutation) when consumers omit
-      // `inviteOpts.extraSteps`. The inner gate is belt-and-suspenders
-      // against a future while-condition refactor that drops the count check.
-      while: (ctx) =>
-        !!(
-          ctx.passwordSet &&
-          !ctx.aborted &&
-          (ctx.opts!.extraStepCount ?? 0) > 0 &&
-          (ctx.extraStepIndex ?? 0) < (ctx.opts!.extraStepCount ?? 0)
-        ),
-      steps: [
-        {
-          id: "inviteExtraStep",
-          condition: (ctx) => (ctx.opts!.extraStepCount ?? 0) > 0,
-        },
-      ],
-    },
+    // Consumer extension point — see `inviteExtraStep()` method.
+    { id: "inviteExtraStep" },
     {
       id: "inviteUnsetPendingInvitation",
       condition: (ctx) => !!(ctx.passwordSet && !ctx.pendingInvitationCleared && !ctx.aborted),
@@ -1092,31 +1044,17 @@ export class InviteWorkflow extends AuthWorkflowBase {
     return undefined;
   }
 
-  // ── Phase B: extraSteps loop ───────────────────────────────────────────
+  // ── Phase B: consumer extension point ──────────────────────────────────
+  /**
+   * Consumer extension point — override in your subclass to inject extra
+   * accept-tail logic (input pauses, alt actions, persistence). Default:
+   * no-op. Runs AFTER profile collection, BEFORE activation. Signature is
+   * intentionally arg-less; read ctx + form input via composables
+   * (`useWfState`, `useAtscriptWf`) in the override body.
+   */
   @Step("inviteExtraStep")
   @Public()
-  async inviteExtraStep(@WorkflowParam("context") ctx: InviteWfCtx): Promise<unknown> {
-    this.requireUsername(ctx);
-    const idx = ctx.extraStepIndex ?? 0;
-    const step = this.opts.extraSteps[idx];
-    if (!step) {
-      // Unreachable under the schema's `idx < extraStepCount` gate; fail loud
-      // if that gate ever drifts rather than silently advance.
-      throw new HttpError(500, "Workflow state corrupted: extraStep index out of bounds");
-    }
-    const wf = useAtscriptWf(step.form);
-    const input = wf.resolveInput({ partial: "deep" });
-    const sanitized = stripReservedUserKeys(input as Record<string, unknown>);
-    try {
-      await step.handle({ username: ctx.username, data: sanitized });
-    } catch (err) {
-      if (err instanceof HttpError) throw err;
-      const message = err instanceof Error ? err.message : "Invalid input";
-      throw wf.requireInput({ formMessage: message });
-    }
-    ctx.extraStepResults ??= {};
-    ctx.extraStepResults[step.id] = sanitized;
-    ctx.extraStepIndex = idx + 1;
+  async inviteExtraStep(): Promise<unknown> {
     return undefined;
   }
 

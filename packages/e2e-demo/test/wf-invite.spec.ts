@@ -1,8 +1,6 @@
 import { generateTotpCode } from "@aooth/user";
-import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
-import { ExtraInfoForm } from "../src/test-fixtures/extra-info.as";
 import {
   buildTestApp,
   expectFinished,
@@ -11,7 +9,6 @@ import {
   readWfPause,
   sleep,
   type TestApp,
-  wfErrors,
 } from "./harness";
 
 const STRONG_PASSWORD = "WelcomeP1ss!";
@@ -576,126 +573,6 @@ describe("WF-INVITE — MFA enrollment", () => {
       expect(user.account.active).toBe(true);
       // No leftover unconfirmed method — proves skip ran, not a covert enroll.
       expect(user.mfa.methods).toHaveLength(0);
-    } finally {
-      await app.close();
-    }
-  });
-});
-
-describe("WF-INVITE — extraSteps", () => {
-  it("WF-INVITE-11 — single extraStep: handler invoked with sanitized data; user activates", async () => {
-    // Pins the consumer-facing extraSteps API: typed form values round-trip
-    // through the wire and arrive at the handler as `{ username, data }`
-    // (not a raw request body), and activation still runs after the loop.
-    const inviteEmail = "newcomer-extra@acme.test";
-    const captured: Array<{ username: string; data: Record<string, unknown> }> = [];
-    const app = await buildTestApp({
-      inviteOpts: {
-        accept: { showConfirmation: false },
-        extraSteps: [
-          {
-            id: "info",
-            form: ExtraInfoForm as unknown as TAtscriptAnnotatedType,
-            handle: ({ username, data }) => {
-              captured.push({ username, data });
-            },
-          },
-        ],
-      },
-    });
-    try {
-      const { pwBody } = await startInviteAcceptTail(app, inviteEmail);
-      // Demo wires acceptProfileForm — profile prompt runs BEFORE extraSteps.
-      const afterProfile = await app.triggerWf("public", {
-        wfid: "auth.invite",
-        wfs: pwBody.wfs,
-        input: { displayName: "Extra User" },
-      });
-      const extraBody = await readWfPause(afterProfile);
-      expect(extraBody.wfs).toBeTruthy();
-
-      const submit = await app.triggerWf("public", {
-        wfid: "auth.invite",
-        wfs: extraBody.wfs,
-        input: { fullName: "Alice Cooper", dateOfBirth: "1990-05-15" },
-      });
-      const finalBody = await expectFinished<{ userId?: string }>(submit);
-      expect(finalBody.data?.userId).toBe(inviteEmail);
-
-      expect(captured).toHaveLength(1);
-      expect(captured[0].username).toBe(inviteEmail);
-      expect(captured[0].data.fullName).toBe("Alice Cooper");
-      expect(captured[0].data.dateOfBirth).toBe("1990-05-15");
-
-      expect((await app.appHandle.aooth.userService.getUser(inviteEmail)).account.active).toBe(
-        true,
-      );
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("WF-INVITE-12 — extraStep handler throws Error → form re-prompt with formMessage; retry succeeds", async () => {
-    // Pins error-recovery wire: a handler throwing `Error("...")` must surface
-    // as a re-prompt with the message on `inputRequired.context.errors.__form`
-    // (NOT a 500, NOT a workflow abort), and account activation must NOT
-    // advance past the rejected step. The `fullName.length < 5` rule is
-    // server-side ONLY — the form's `@expect.minLength 2` accepts both inputs
-    // so the handler is the isolated rejector under test.
-    const inviteEmail = "newcomer-retry@acme.test";
-    let invocations = 0;
-    const app = await buildTestApp({
-      inviteOpts: {
-        accept: { showConfirmation: false },
-        extraSteps: [
-          {
-            id: "info",
-            form: ExtraInfoForm as unknown as TAtscriptAnnotatedType,
-            handle: ({ data }) => {
-              invocations++;
-              const raw = data.fullName;
-              const name = typeof raw === "string" ? raw : "";
-              if (name.length < 5) throw new Error("Name too short");
-            },
-          },
-        ],
-      },
-    });
-    try {
-      const { pwBody } = await startInviteAcceptTail(app, inviteEmail);
-      const afterProfile = await app.triggerWf("public", {
-        wfid: "auth.invite",
-        wfs: pwBody.wfs,
-        input: { displayName: "Retry User" },
-      });
-      const extraBody = await readWfPause(afterProfile);
-      expect(extraBody.wfs).toBeTruthy();
-
-      const reject = await app.triggerWf("public", {
-        wfid: "auth.invite",
-        wfs: extraBody.wfs,
-        input: { fullName: "Bob", dateOfBirth: "1985-01-01" },
-      });
-      const rejectBody = await readWfPause(reject);
-      expect(rejectBody.wfs).toBeTruthy();
-      expect((rejectBody as { finished?: unknown }).finished).not.toBe(true);
-      expect(wfErrors(rejectBody)["__form"]).toBe("Name too short");
-      expect(invocations).toBe(1);
-      expect((await app.appHandle.aooth.userService.getUser(inviteEmail)).account.active).toBe(
-        false,
-      );
-
-      const accept = await app.triggerWf("public", {
-        wfid: "auth.invite",
-        wfs: rejectBody.wfs,
-        input: { fullName: "Robert", dateOfBirth: "1985-01-01" },
-      });
-      const finalBody = await expectFinished<{ userId?: string }>(accept);
-      expect(finalBody.data?.userId).toBe(inviteEmail);
-      expect(invocations).toBe(2);
-      expect((await app.appHandle.aooth.userService.getUser(inviteEmail)).account.active).toBe(
-        true,
-      );
     } finally {
       await app.close();
     }
