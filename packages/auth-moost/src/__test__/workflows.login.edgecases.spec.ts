@@ -206,7 +206,7 @@ describe("LoginWorkflow edge cases — JSON-safety of opts snapshot", () => {
   // pause+resume.
   it("default forms group (atscript classes) does NOT poison ctx.opts — pause+resume survives", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { enabled: false } },
+      loginOpts: { mfa: { mode: "disabled" } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r1 = await app.trigger({ wfid: "auth.login" });
@@ -226,7 +226,7 @@ describe("LoginWorkflow edge cases — silent-audit fallback", () => {
     // truthy — provide an explicit no-op so we're testing the FALLBACK path
     // when the registered emitter does nothing (proxies the absence case).
     const app = await prepareWfApp({
-      loginOpts: { finalize: { auditLogin: true }, mfa: { enabled: false } },
+      loginOpts: { finalize: { auditLogin: true }, mfa: { mode: "disabled" } },
       auditEmitter: { emit: () => undefined },
     });
     await seedActiveUser(app.users, "alice", "Password123");

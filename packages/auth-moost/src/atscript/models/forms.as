@@ -337,12 +337,17 @@ export interface AskPhoneForm {
  * transports appear.
  */
 @wf.context.pass 'enrollAvailableTransports'
+@wf.context.pass 'enrollMode'
 export interface EnrollPickMethodForm {
     @ui.form.type 'radio'
     @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.enrollAvailableTransports) ? ctx.enrollAvailableTransports.map(t => ({ key: t, label: t === "totp" ? "Authenticator app (TOTP)" : t === "sms" ? "SMS" : t === "email" ? "Email" : t })) : []'
     @meta.label 'Choose a verification method'
     @meta.required
     method: string
+
+    @ui.form.action 'skip', 'Skip for now'
+    @ui.form.fn.hidden '(_, _d, ctx) => ctx.enrollMode !== "optional"'
+    skip?: ui.action
 }
 
 /**

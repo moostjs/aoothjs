@@ -233,7 +233,7 @@ describe("LoginWorkflowOpts — Phase 2 password guards", () => {
     const app = await prepareWfApp({
       loginOpts: {
         guards: { passwordInitial: true },
-        mfa: { enabled: false }, // skip MFA so we observe the password-change branch directly
+        mfa: { mode: "disabled" }, // skip MFA so we observe the password-change branch directly
       },
     });
     // createUser without a password marks `password.isInitial = true` (see UserService.createUser).
@@ -261,7 +261,7 @@ describe("LoginWorkflowOpts — Phase 2 password guards", () => {
     const app = await prepareWfApp({
       loginOpts: {
         guards: { passwordInitial: false },
-        mfa: { enabled: false },
+        mfa: { mode: "disabled" },
       },
     });
     await app.users.createUser("alice", "Password123");
@@ -286,7 +286,7 @@ describe("LoginWorkflowOpts — Phase 2 password guards", () => {
     const app = await prepareWfApp({
       loginOpts: {
         guards: { passwordInitial: true },
-        mfa: { enabled: false },
+        mfa: { mode: "disabled" },
       },
       userConfig: { password: { policies: [ppHasMinLength(8)] } },
     });
@@ -308,9 +308,9 @@ describe("LoginWorkflowOpts — Phase 2 password guards", () => {
 });
 
 describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
-  it("mfa.enabled false → Phase 4 skipped entirely (credentials → issue) even with enrolled TOTP", async () => {
+  it("mfa.mode='disabled' → Phase 4 skipped entirely (credentials → issue) even with enrolled TOTP", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { enabled: false } },
+      loginOpts: { mfa: { mode: "disabled" } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const secret = generateTotpSecret();
@@ -324,8 +324,11 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
   });
 
   it("mfa.transports: ['email'] + user has only TOTP enrolled → MFA short-circuits (no methods after filter)", async () => {
+    // mode='disabled' to preserve the no-prompt semantics this test pins —
+    // under the default 'optional' mode the same 0-methods state would route
+    // to `mfa-enroll-required` with a skip action instead of silently issuing.
     const app = await prepareWfApp({
-      loginOpts: { mfa: { transports: ["email"] } },
+      loginOpts: { mfa: { mode: "disabled", transports: ["email"] } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const secret = generateTotpSecret();
@@ -378,9 +381,9 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
     expect(JSON.stringify(r2.body)).toMatch(/SmsSender/);
   });
 
-  it("mfa.transports empty with mfa.enabled true → fail loud (500 with 'mfa.transports cannot be empty')", async () => {
+  it("mfa.transports empty with mfa.mode!=='disabled' → fail loud (500 with 'mfa.transports cannot be empty')", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { transports: [], enabled: true } },
+      loginOpts: { mfa: { transports: [], mode: "optional" } },
     });
     const r = await app.trigger({ wfid: "auth.login" });
     expect(r.status).toBe(500);
@@ -394,7 +397,7 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
     // wire the default secret here — proves the no-cookie branch is the
     // structural short-circuit).
     const app = await prepareWfApp({
-      loginOpts: { deviceTrust: { enabled: true }, mfa: { enabled: false } },
+      loginOpts: { deviceTrust: { enabled: true }, mfa: { mode: "disabled" } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r1 = await app.trigger({ wfid: "auth.login" });
@@ -406,8 +409,9 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
   });
 
   it("mfa.transports: ['email'] (default user has TOTP only) — falls back to issue (no enrolled allowed methods)", async () => {
+    // mode='disabled' preserves the no-prompt fallback semantics this test pins.
     const app = await prepareWfApp({
-      loginOpts: { mfa: { transports: ["email"] } },
+      loginOpts: { mfa: { mode: "disabled", transports: ["email"] } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
@@ -577,7 +581,7 @@ describe("LoginWorkflowOpts — Phase 4 device trust", () => {
 describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, redirect)", () => {
   it("finalize.auditLogin true → emits one 'login.success' event with userId + method", async () => {
     const app = await prepareWfApp({
-      loginOpts: { finalize: { auditLogin: true }, mfa: { enabled: false } },
+      loginOpts: { finalize: { auditLogin: true }, mfa: { mode: "disabled" } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     await startAndCredentials(app, "alice", "Password123");
@@ -591,7 +595,7 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
 
   it("finalize.auditLogin false → emits NO events", async () => {
     const app = await prepareWfApp({
-      loginOpts: { finalize: { auditLogin: false }, mfa: { enabled: false } },
+      loginOpts: { finalize: { auditLogin: false }, mfa: { mode: "disabled" } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     await startAndCredentials(app, "alice", "Password123");
@@ -659,7 +663,7 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
 
   it("finalize.redirect: 'home' → envelope with end:immediate redirect to /", async () => {
     const app = await prepareWfApp({
-      loginOpts: { finalize: { redirect: "home" }, mfa: { enabled: false } },
+      loginOpts: { finalize: { redirect: "home" }, mfa: { mode: "disabled" } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
@@ -675,7 +679,7 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
 
   it("resolveRedirect override → envelope redirect to overridden URL", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { enabled: false } },
+      loginOpts: { mfa: { mode: "disabled" } },
       loginWorkflowClass: makeLoginSubclass({
         resolveRedirect(ctx) {
           return `/welcome/${ctx.username ?? "guest"}`;
@@ -690,7 +694,7 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
 
   it("finalize.redirect: 'referer' with no Referer header → data envelope (no redirect override)", async () => {
     const app = await prepareWfApp({
-      loginOpts: { finalize: { redirect: "referer" }, mfa: { enabled: false } },
+      loginOpts: { finalize: { redirect: "referer" }, mfa: { mode: "disabled" } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
@@ -700,7 +704,7 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
 
   it("finalize.redirect: false → data envelope (no redirect end)", async () => {
     const app = await prepareWfApp({
-      loginOpts: { finalize: { redirect: false }, mfa: { enabled: false } },
+      loginOpts: { finalize: { redirect: false }, mfa: { mode: "disabled" } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
@@ -717,7 +721,7 @@ describe("LoginWorkflowOpts — Phase 6 terms acceptance", () => {
     const app = await prepareWfApp({
       loginOpts: {
         acceptance: { termsVersion: "v2" },
-        mfa: { enabled: false },
+        mfa: { mode: "disabled" },
       },
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -736,7 +740,7 @@ describe("LoginWorkflowOpts — Phase 6 terms acceptance", () => {
 
   it("acceptance.termsVersion unset → step is skipped", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { enabled: false } },
+      loginOpts: { mfa: { mode: "disabled" } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
@@ -748,7 +752,7 @@ describe("LoginWorkflowOpts — Phase 6 terms acceptance", () => {
     const app = await prepareWfApp({
       loginOpts: {
         acceptance: { termsVersion: "v2" },
-        mfa: { enabled: false },
+        mfa: { mode: "disabled" },
       },
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -773,7 +777,7 @@ describe("LoginWorkflowOpts — Phase 8 session policy", () => {
     const app = await prepareWfApp({
       loginOpts: {
         sessionPolicy: { concurrencyLimit: { max: 2, onLimit: "reject" } },
-        mfa: { enabled: false },
+        mfa: { mode: "disabled" },
       },
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -819,7 +823,7 @@ describe("LoginWorkflowOpts — Phase 8 session policy", () => {
   });
 });
 
-describe("LoginWorkflowOpts — mfa.enrollRequired forced enrollment", () => {
+describe("LoginWorkflowOpts — mfa.mode='required' forced enrollment", () => {
   // WHY: a policy tightening from "no MFA" to "MFA required" must NOT let
   // existing un-enrolled users in unchallenged. The enroll step must run
   // BECAUSE `mfaEnrolledMethods.length === 0` (the gate at line 433-436) —
@@ -827,7 +831,7 @@ describe("LoginWorkflowOpts — mfa.enrollRequired forced enrollment", () => {
   // forever without ever enrolling a second factor.
   it("sms path: pick → address → pincode confirm; method stored confirmed + becomes default + sms is sent", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { enrollRequired: true } },
+      loginOpts: { mfa: { mode: "required" } },
     });
     await seedActiveUser(app.users, "user-a", "pwd-12345678");
     // Sanity baseline — no methods before the flow runs.
@@ -889,7 +893,7 @@ describe("LoginWorkflowOpts — mfa.enrollRequired forced enrollment", () => {
   // over SMS to email addresses, breaking delivery while looking healthy.
   it("email path: pincode is sent via email channel and method is confirmed", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { enrollRequired: true } },
+      loginOpts: { mfa: { mode: "required" } },
     });
     await seedActiveUser(app.users, "user-b", "pwd-12345678");
 
@@ -929,7 +933,7 @@ describe("LoginWorkflowOpts — mfa.enrollRequired forced enrollment", () => {
   // NO pincode must be emitted (otherwise app.sms / app.emails leaks).
   it("totp path: secret provisioned in Phase 1, code accepted, method confirmed, no pincode emitted", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { enrollRequired: true } },
+      loginOpts: { mfa: { mode: "required" } },
     });
     await seedActiveUser(app.users, "user-c", "pwd-12345678");
 
@@ -975,7 +979,7 @@ describe("LoginWorkflowOpts — mfa.enrollRequired forced enrollment", () => {
   // a form error (not a 500 / not a silent pass).
   it("totp path: invalid setup code is rejected with form error; method stays unconfirmed", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { enrollRequired: true } },
+      loginOpts: { mfa: { mode: "required" } },
     });
     await seedActiveUser(app.users, "user-d", "pwd-12345678");
 
@@ -998,14 +1002,14 @@ describe("LoginWorkflowOpts — mfa.enrollRequired forced enrollment", () => {
     expect(totp?.confirmed).toBe(false);
   });
 
-  // WHY: policy-loosening direction — without `enrollRequired`, the
-  // `prepare-mfa-options` short-circuit (line 856-858: 0 methods →
-  // mfaChecked=true) must let the user through. A future inversion of the
+  // WHY: policy-loosening direction — with `mode: 'disabled'` the while-loop
+  // guard in the schema filters out Phase 4 entirely, so an un-enrolled user
+  // must complete login with zero MFA prompts. A future inversion of the
   // gate would silently force every un-enrolled user into MFA enrollment,
   // breaking the no-MFA configuration this test guards.
-  it("enrollRequired=false (default) + no MFA: enrollment SKIPPED, login completes immediately", async () => {
+  it("mode='disabled' + no MFA: enrollment SKIPPED, login completes immediately", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { enrollRequired: false } },
+      loginOpts: { mfa: { mode: "disabled" } },
     });
     await seedActiveUser(app.users, "user-e", "pwd-12345678");
     expect((await app.users.getUser("user-e")).mfa.methods).toHaveLength(0);
@@ -1021,6 +1025,152 @@ describe("LoginWorkflowOpts — mfa.enrollRequired forced enrollment", () => {
     // never ran (otherwise Phase 1's totp branch / Phase 2's address branch
     // would have inserted an unconfirmed row).
     const user = await app.users.getUser("user-e");
+    expect(user.mfa.methods).toHaveLength(0);
+  });
+});
+
+describe("LoginWorkflowOpts — mfa.mode='optional' skip action", () => {
+  // WHY (L1): pins the headline NEW behavior of `mode: 'optional'` — without
+  // the `wf.resolveAction() === 'skip'` short-circuit in
+  // `AuthWorkflowBase.runMfaEnrollment` (Phase 1), optional mode would behave
+  // identically to required and force users through enrollment. Removing that
+  // branch (or inverting the mode check) silently breaks the user opt-out
+  // contract this mode exists for.
+  it("optional + 0 methods + skip action → workflow completes WITHOUT enrolling", async () => {
+    const app = await prepareWfApp({
+      loginOpts: { mfa: { mode: "optional" } },
+    });
+    await seedActiveUser(app.users, "opt-skip", "pwd-12345678");
+    expect((await app.users.getUser("opt-skip")).mfa.methods).toHaveLength(0);
+
+    const r2 = await startAndCredentials(app, "opt-skip", "pwd-12345678");
+    // Paused at EnrollPickMethodForm — optional mode still PROMPTS, the
+    // server-side gate is the skip action itself, not absence of the prompt.
+    expect(r2.body?.wfs).toBeTruthy();
+    expect(r2.body?.data).toBeUndefined();
+
+    // Submit `skip` action (no `method` field) — Phase 1 short-circuit fires.
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { action: "skip" },
+    });
+    const data = r3.body?.data as Record<string, unknown> | undefined;
+    expect(typeof data?.accessToken).toBe("string");
+    expect(data?.userId).toBe("opt-skip");
+
+    // No method was persisted — proves the skip short-circuit ran instead of
+    // falling through to Phase 1's `resolveInput()` / `addMfaMethod()` branch.
+    const user = await app.users.getUser("opt-skip");
+    expect(user.mfa.methods).toHaveLength(0);
+  });
+
+  // WHY (L2): pins the positive branch of optional mode — users who pick a
+  // method instead of skipping must still complete the full 3-phase enrollment
+  // exactly like required mode. A regression that hardwired optional→skip
+  // (treating any submit as a decline) would silently break the enroll path
+  // for users who DO want MFA.
+  it("optional + 0 methods + picks sms → full enrollment runs and method confirmed", async () => {
+    const app = await prepareWfApp({
+      loginOpts: { mfa: { mode: "optional" } },
+    });
+    await seedActiveUser(app.users, "opt-sms", "pwd-12345678");
+
+    const r2 = await startAndCredentials(app, "opt-sms", "pwd-12345678");
+    expect(r2.body?.wfs).toBeTruthy();
+
+    // Phase 1: pick (no skip action).
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { method: "sms" },
+    });
+    expect(r3.body?.wfs).toBeTruthy();
+    expect(r3.body?.data).toBeUndefined();
+    expect(app.sms.length).toBe(0);
+
+    // Phase 2: supply address.
+    const r4 = await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { address: "+15559876543" },
+    });
+    expect(r4.body?.wfs).toBeTruthy();
+    expect(app.sms.length).toBe(1);
+    const code = app.sms[0].code;
+
+    // Phase 3: confirm pincode → enrollment commits + login completes.
+    const r5 = await app.trigger({
+      wfs: r4.body?.wfs as string,
+      input: { code },
+    });
+    const data = r5.body?.data as Record<string, unknown> | undefined;
+    expect(typeof data?.accessToken).toBe("string");
+
+    const user = await app.users.getUser("opt-sms");
+    const sms = user.mfa.methods.find((m) => m.name === "sms");
+    expect(sms?.value).toBe("+15559876543");
+    expect(sms?.confirmed).toBe(true);
+    expect(user.mfa.defaultMethod).toBe("sms");
+  });
+
+  // WHY (L3): `mode: 'disabled'` is the maintenance escape hatch — it must
+  // skip MFA EVEN IF the user has confirmed methods (e.g. ops turning off
+  // MFA during an SMS provider outage). The schema gate at line 410
+  // (`mfa.mode !== "disabled"`) is the load-bearing branch; a regression that
+  // gated 'disabled' only on the 0-methods case (or only on the enroll branch)
+  // would silently force enrolled users through MFA challenges when the policy
+  // says off.
+  it("disabled + user HAS confirmed totp → login completes WITHOUT MFA prompt", async () => {
+    const app = await prepareWfApp({
+      loginOpts: { mfa: { mode: "disabled" } },
+    });
+    await seedActiveUser(app.users, "dis-totp", "pwd-12345678");
+    const secret = generateTotpSecret();
+    await app.users.addMfaMethod("dis-totp", {
+      name: "totp",
+      value: secret,
+      confirmed: true,
+    });
+    await app.users.setDefaultMfaMethod("dis-totp", "totp");
+    const seeded = await app.users.getUser("dis-totp");
+    expect(seeded.mfa.methods.find((m) => m.name === "totp")?.confirmed).toBe(true);
+
+    const r2 = await startAndCredentials(app, "dis-totp", "pwd-12345678");
+    // Immediate completion — no MFA prompt despite a confirmed totp.
+    const data = r2.body?.data as Record<string, unknown> | undefined;
+    expect(typeof data?.accessToken).toBe("string");
+    expect(data?.userId).toBe("dis-totp");
+    // No pincode side-channel either (totp is silent, but proves no
+    // accidental sms/email kick).
+    expect(app.sms.length).toBe(0);
+    expect(app.emails.length).toBe(0);
+  });
+
+  // WHY (L4): negative — `required` must NEVER accept a skip. The helper's
+  // `deps.mode === "optional"` guard is the gate; if a regression dropped the
+  // mode check (e.g. unconditional skip handling), `required`-mode users
+  // could opt out and defeat the very policy this mode exists for. The
+  // failure mode here is "skip is ignored" — the helper proceeds to
+  // `resolveInput()` and reports a form error on `method` (Unknown method),
+  // never short-circuiting enrollment.
+  it("required + 0 methods + skip action submitted → workflow does NOT short-circuit", async () => {
+    const app = await prepareWfApp({
+      loginOpts: { mfa: { mode: "required" } },
+    });
+    await seedActiveUser(app.users, "req-skip", "pwd-12345678");
+
+    const r2 = await startAndCredentials(app, "req-skip", "pwd-12345678");
+    expect(r2.body?.wfs).toBeTruthy();
+
+    // Submit `skip` action under `required` mode. Either: (a) form action
+    // whitelist rejects it OR (b) helper ignores the action because mode is
+    // not 'optional' and tries to read `input.method`. Either way the
+    // workflow MUST NOT finish and no method may be persisted.
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { action: "skip" },
+    });
+    expect(r3.body?.data).toBeUndefined();
+
+    const user = await app.users.getUser("req-skip");
     expect(user.mfa.methods).toHaveLength(0);
   });
 });

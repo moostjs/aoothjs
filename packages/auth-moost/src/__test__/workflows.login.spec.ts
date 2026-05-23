@@ -21,7 +21,11 @@ import { prepareWfApp, seedActiveUser } from "./workflow-utils";
  */
 describe("LoginWorkflow", () => {
   it("happy path: no MFA → finished with tokens + cookies", async () => {
-    const app = await prepareWfApp();
+    // mfa.mode='disabled' so the Phase-4 loop is filtered at the schema guard
+    // and the un-enrolled user passes straight through to `issue`. The 3-state
+    // opts default is `'optional'` which would otherwise prompt for enrollment
+    // (with skip) for users with 0 methods.
+    const app = await prepareWfApp({ loginOpts: { mfa: { mode: "disabled" } } });
     await seedActiveUser(app.users, "alice", "Password123");
 
     const r1 = await app.trigger({ wfid: "auth.login" });

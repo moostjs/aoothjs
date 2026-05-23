@@ -28,31 +28,31 @@ import type {
  */
 export const LOGIN_VARIANTS: Record<string, Partial<LoginWorkflowOpts>> = {
   minimal: {
-    mfa: { enabled: false },
+    mfa: { mode: "disabled" },
     // Explicit false on signup/magicLink so the variant clears the demo
     // defaults (which set signup:true for the dev-UI dropdown). Tests assert
     // those alt-action buttons are hidden under `minimal`.
     alternateCredentials: { forgotPassword: true, signup: false, magicLink: false },
   },
   "mfa-totp": {
-    mfa: { enabled: true, transports: ["totp"], backupCodes: true },
+    mfa: { mode: "optional", transports: ["totp"], backupCodes: true },
   },
   "mfa-full": {
-    mfa: { enabled: true, transports: ["sms", "email", "totp"], backupCodes: true },
+    mfa: { mode: "optional", transports: ["sms", "email", "totp"], backupCodes: true },
   },
   enrollment: {
     enrollment: { ensureEmail: true, ensurePhone: true },
-    mfa: { enabled: true, transports: ["email", "sms", "totp"] },
+    mfa: { mode: "optional", transports: ["email", "sms", "totp"] },
   },
   "device-trust": {
     deviceTrust: { enabled: true, optIn: true, skipsMfa: true },
     // Use email transport so the MFA pause renders `PincodeForm`, which
     // carries the `rememberDevice` checkbox (MfaCodeForm doesn't).
-    mfa: { enabled: true, transports: ["email"] },
+    mfa: { mode: "optional", transports: ["email"] },
   },
   guards: {
     guards: { passwordInitial: true, emailVerifiedRequired: true },
-    mfa: { enabled: false },
+    mfa: { mode: "disabled" },
   },
   acceptance: {
     acceptance: {
@@ -71,7 +71,7 @@ export const LOGIN_VARIANTS: Record<string, Partial<LoginWorkflowOpts>> = {
     alternateCredentials: { forgotPassword: true, signup: true, magicLink: true },
     guards: { passwordInitial: true, emailVerifiedRequired: true, passwordExpiry: true },
     enrollment: { ensureEmail: true, ensurePhone: true },
-    mfa: { enabled: true, transports: ["sms", "email", "totp"], backupCodes: true },
+    mfa: { mode: "optional", transports: ["sms", "email", "totp"], backupCodes: true },
     deviceTrust: { enabled: true, optIn: true, skipsMfa: true },
     acceptance: {
       termsVersion: "v1",
@@ -89,7 +89,7 @@ export const LOGIN_VARIANTS: Record<string, Partial<LoginWorkflowOpts>> = {
   // tick rather than the 60s production default.
   "mfa-fast-resend": {
     mfa: {
-      enabled: true,
+      mode: "optional",
       transports: ["sms", "email", "totp"],
       backupCodes: true,
       pincodeResendTimeoutMs: 1000,
@@ -99,19 +99,19 @@ export const LOGIN_VARIANTS: Record<string, Partial<LoginWorkflowOpts>> = {
   // the `rememberDevice` checkbox on `PincodeForm` (WF-LOGIN-019).
   "device-trust-no-optin": {
     deviceTrust: { enabled: true, optIn: false, skipsMfa: true },
-    mfa: { enabled: true, transports: ["email"] },
+    mfa: { mode: "optional", transports: ["email"] },
   },
   // Like `mfa-totp` but `backupCodes: false` so the `useBackupCode` alt-action
   // MUST be hidden on the MFA forms (WF-LOGIN-014).
   "mfa-no-backup": {
-    mfa: { enabled: true, transports: ["totp"], backupCodes: false },
+    mfa: { mode: "optional", transports: ["totp"], backupCodes: false },
   },
   // 1ms TTL so the cookie minted on the first login is already past `exp`
   // by the time the second login resumes (WF-LOGIN-020). MFA email forces the
   // `device-trust` step to mint a fresh cookie on the first pass.
   "device-trust-short-ttl": {
     deviceTrust: { enabled: true, optIn: true, skipsMfa: true, ttlMs: 1 },
-    mfa: { enabled: true, transports: ["email"] },
+    mfa: { mode: "optional", transports: ["email"] },
   },
   // Same as `concurrency` but rejects with HTTP 429 instead of pausing on
   // kickPrompt (WF-LOGIN-030).

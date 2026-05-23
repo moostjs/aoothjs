@@ -360,12 +360,24 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     emailToUserId: opts.emailToUserId,
   }) as unknown as new (users: UserService, auth: AuthCredential) => RecoveryWorkflow;
 
-  const inviteOpts: InviteWorkflowOpts = opts.inviteOpts ?? {
-    send: { tokenTtlMs: inviteTokenTtlMs },
-    // Existing tests assert the auto-login response shape directly,
-    // pre-dating the confirmation pause introduced by BIG 3.3. New
-    // tests that exercise the confirmation step set this to true.
-    accept: { showConfirmation: false },
+  // Test-harness defaults:
+  //   - `send.tokenTtlMs` — fast magic-link expiry tweak (overridable).
+  //   - `accept.showConfirmation: false` — most tests assert the auto-login
+  //     response shape directly, pre-dating the BIG 3.3 confirmation pause.
+  //   - `mfa.mode: 'disabled'` — preserves the prior "no MFA prompt unless
+  //     test opts in" behaviour through the 3-state MFA opts shift. The
+  //     library default flipped from `enabled: true, enrollRequired: false`
+  //     (silent skip when 0 methods) to `mode: 'optional'` (prompts with a
+  //     skip action when 0 methods). Tests that exercise enrollment override
+  //     by passing `mfa: { mode: 'required' }` (or `'optional'`).
+  // User-supplied `opts.inviteOpts` is shallow-merged per-group so per-test
+  // overrides survive while unspecified groups inherit the harness defaults.
+  const userInviteOpts = opts.inviteOpts ?? {};
+  const inviteOpts: InviteWorkflowOpts = {
+    ...userInviteOpts,
+    send: { tokenTtlMs: inviteTokenTtlMs, ...userInviteOpts.send },
+    accept: { showConfirmation: false, ...userInviteOpts.accept },
+    mfa: { mode: "disabled", ...userInviteOpts.mfa },
   };
   // Layer the per-test `prepareUser` shortcut onto `inviteHooks.prepareUser`
   // so existing tests that only need to populate extras don't have to

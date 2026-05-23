@@ -134,6 +134,12 @@ export interface LoginWfCtx {
   enrollUri?: string;
   /** Mirror of `opts.mfa.transports`, surfaced to `EnrollPickMethodForm` via `@wf.context.pass`. */
   enrollAvailableTransports?: MfaTransport[];
+  /**
+   * Mirror of `opts.mfa.mode` (only set when not `'disabled'`). Surfaced to
+   * `EnrollPickMethodForm` via `@wf.context.pass` so the `skip` action can
+   * hide unless mode is `'optional'`.
+   */
+  enrollMode?: "required" | "optional";
   /** Set true by the shared `runMfaEnrollment` helper on Phase 3 completion; mirrored to `mfaChecked`. */
   enrollDone?: boolean;
 
@@ -234,8 +240,10 @@ function getInputField<T = string>(name: string): T | undefined {
  * override.
  */
 function validateOpts(opts: ResolvedLoginWorkflowOpts): void {
-  if (opts.mfa.enabled && opts.mfa.transports.length === 0) {
-    throw new Error("LoginWorkflow: mfa.transports cannot be empty when mfa.enabled is true");
+  if (opts.mfa.mode !== "disabled" && opts.mfa.transports.length === 0) {
+    throw new Error(
+      "LoginWorkflow: mfa.transports cannot be empty when mfa.mode is not 'disabled'",
+    );
   }
 }
 
@@ -398,7 +406,8 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // The loop exits the moment `mfaChecked` flips true with no pending risk
     // step-up — at which point linear execution resumes.
     {
-      while: (ctx) => !!(ctx.username && ctx.opts!.mfa.enabled && !ctx.mfaChecked && !ctx.aborted),
+      while: (ctx) =>
+        !!(ctx.username && ctx.opts!.mfa.mode !== "disabled" && !ctx.mfaChecked && !ctx.aborted),
       steps: [
         {
           id: "check-trusted-device",
@@ -429,9 +438,11 @@ export class LoginWorkflow extends AuthWorkflowBase {
           condition: (ctx) => !ctx.mfaChecked && ctx.mfaMethod === "totp",
         },
         {
+          // Defense-in-depth: the while-guard above already filters `disabled`;
+          // the explicit gate here keeps the step catalog self-documenting.
           id: "mfa-enroll-required",
           condition: (ctx) =>
-            ctx.opts!.mfa.enrollRequired &&
+            ctx.opts!.mfa.mode !== "disabled" &&
             !ctx.mfaChecked &&
             (ctx.mfaEnrolledMethods?.length ?? 0) === 0,
         },
@@ -618,7 +629,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
       const result = await this.users.login(input.username, input.password);
       ctx.username = result.user.username;
       // Preserve legacy `mfaRequired` for tests / consumer subclasses; the
-      // step catalog decides MFA inclusion via `mfa.enabled` + enrolled
+      // step catalog decides MFA inclusion via `mfa.mode` + enrolled
       // methods, not this flag.
       ctx.mfaRequired = result.mfaRequired;
       // Phase 2 inline guards:
@@ -851,12 +862,11 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // Mirror so `PincodeForm` can hide `rememberDevice` when the consumer
     // doesn't ask the user to opt in (skipsMfa auto-trusts the device).
     ctx.deviceTrustOptIn = !!(this.opts.deviceTrust.enabled && this.opts.deviceTrust.optIn);
-    // Short-circuit: no methods → let `mfa-enroll-required` run when policy
-    // demands enrolment; otherwise mark MFA satisfied and let the user through.
-    if (summary.length === 0) {
-      if (!this.opts.mfa.enrollRequired) ctx.mfaChecked = true;
-      return undefined;
-    }
+    // Short-circuit: no methods → let `mfa-enroll-required` handle it.
+    // `mode === 'required'` blocks until enrolment; `mode === 'optional'` lets
+    // the user `skip`; `mode === 'disabled'` never reaches this step (the
+    // while-loop guard filters it out).
+    if (summary.length === 0) return undefined;
     if (summary.length === 1) {
       ctx.mfaMethod = summary[0].kind;
       return undefined;
@@ -1077,6 +1087,11 @@ export class LoginWorkflow extends AuthWorkflowBase {
   @Step("mfa-enroll-required")
   async mfaEnrollRequired(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
     this.requireUsername(ctx);
+    // `'disabled'` is filtered at the step's schema condition, so the cast is
+    // safe. Mirror onto ctx so `EnrollPickMethodForm` can hide the `skip`
+    // action unless mode is `'optional'`.
+    const mode = this.opts.mfa.mode as "required" | "optional";
+    ctx.enrollMode = mode;
     await this.runMfaEnrollment({
       ctx,
       username: ctx.username,
@@ -1091,9 +1106,11 @@ export class LoginWorkflow extends AuthWorkflowBase {
       pincodeLength: this.opts.mfa.pincodeLength,
       pincodeTtlMs: this.opts.mfa.pincodeTtlMs,
       issuer: "aooth",
+      mode,
     });
     // Login uses `mfaChecked` as the loop-exit signal; the helper sets
-    // `enrollDone` on Phase 3 completion so we mirror it here.
+    // `enrollDone` on Phase 3 completion (or on a skip in `'optional'` mode)
+    // so we mirror it here.
     if (ctx.enrollDone) ctx.mfaChecked = true;
     return undefined;
   }

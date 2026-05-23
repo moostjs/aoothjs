@@ -95,7 +95,7 @@ describe("LoginWorkflow security — profile-complete payload escalation (audit 
           // own `stripReservedUserKeys()` call.
           profileComplete: ProfileWithRolesForm as unknown as TAtscriptAnnotatedType,
         },
-        mfa: { enabled: false },
+        mfa: { mode: "disabled" },
       },
       loginWorkflowClass: ProfileLogin,
     });
@@ -121,7 +121,7 @@ describe("LoginWorkflow security — profile-complete payload escalation (audit 
         password: { hash: "pwned" },
         passwordHistory: ["pwned"],
         account: { active: true, locked: true, pendingInvitation: true },
-        mfa: { enabled: true },
+        mfa: { mode: "optional" },
         trustedDevices: ["attacker-device"],
         backupCodes: ["attacker-code"],
         version: 9999,

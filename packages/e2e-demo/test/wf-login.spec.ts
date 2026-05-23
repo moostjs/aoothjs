@@ -48,41 +48,9 @@ describe("WF-LOGIN — auth.login workflow", () => {
     expect(typeof finished.data?.refreshToken).toBe("string");
   });
 
-  it("WF-LOGIN-02 — MFA required branch: credentials → MFA form → valid TOTP → tokens", async () => {
-    const grace = app.fixtures.users.t1_grace;
-    expect(grace.totpSecret).toBeTruthy();
-
-    const start = await app.triggerWf("public", { wfid: "auth.login" });
-    const startBody = await readWfPause(start);
-
-    const credResp = await app.triggerWf("public", {
-      wfid: "auth.login",
-      wfs: startBody.wfs,
-      input: { username: grace.username, password: grace.password },
-    });
-    expectOk(credResp);
-    const credBody = await readWfPause(credResp);
-    expect(credBody.inputRequired).toBeTruthy();
-
-    const wrong = await app.triggerWf("public", {
-      wfid: "auth.login",
-      wfs: credBody.wfs,
-      input: { code: "000000" },
-    });
-    const wrongBody = await readWfPause(wrong);
-    expect(wfErrors(wrongBody)).toMatchObject({ code: "Invalid code" });
-
-    const code = generateTotpCode(grace.totpSecret as string);
-    const final = await app.triggerWf("public", {
-      wfid: "auth.login",
-      wfs: wrongBody.wfs,
-      input: { code },
-    });
-    expectOk(final);
-    const issued = await expectFinished<{ userId?: string; accessToken?: string }>(final);
-    expect(issued.data?.userId).toBe(grace.username);
-    expect(typeof issued.data?.accessToken).toBe("string");
-  });
+  // WF-LOGIN-02 (MFA required) lives in its own describe (below) so that
+  // building a fresh app with `mfa.mode: 'optional'` doesn't clobber the
+  // process-global Wooks router this describe's shared `app` is bound to.
 
   // ── BIG 3.1 coverage (subset wired in the demo app) ──────────────────────
   // The demo wires LoginWorkflowOptions({ mfaTransports: ['email','totp'],
@@ -194,13 +162,13 @@ describe("WF-LOGIN — auth.login workflow", () => {
 // shared `app` in the suite above (a fresh-app call mid-suite would invalidate
 // it). Each test exercises ONE option flag's end-to-end runtime effect.
 describe("WF-LOGIN — option overrides (isolated apps)", () => {
-  it("WF-LOGIN-06 — mfa.enabled=false: TOTP-enrolled user logs in WITHOUT MFA prompt", async () => {
-    // End-to-end signal: when the demo flips `mfa.enabled` off, the workflow
-    // skips Phase 4 entirely even for a user with a confirmed TOTP secret.
-    // Verifies the option threads through buildApp → DemoLoginWorkflow over
-    // the real HTTP / DI stack (the unit suite proves the schema-level skip
-    // in isolation; this test proves the demo wiring honours it).
-    const mfaOff = await buildTestApp({ loginOpts: { mfa: { enabled: false } } });
+  it("WF-LOGIN-06 — mfa.mode='disabled': TOTP-enrolled user logs in WITHOUT MFA prompt", async () => {
+    // End-to-end signal: when the demo flips `mfa.mode` to 'disabled', the
+    // workflow skips Phase 4 entirely even for a user with a confirmed TOTP
+    // secret. Verifies the option threads through buildApp → DemoLoginWorkflow
+    // over the real HTTP / DI stack (the unit suite proves the schema-level
+    // skip in isolation; this test proves the demo wiring honours it).
+    const mfaOff = await buildTestApp({ loginOpts: { mfa: { mode: "disabled" } } });
     try {
       const grace = mfaOff.fixtures.users.t1_grace;
       expect(grace.totpSecret).toBeTruthy();
@@ -237,6 +205,53 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
       expect(redirect.target).toBe("/");
     } finally {
       await redirApp.close();
+    }
+  });
+
+  it("WF-LOGIN-02 — MFA required branch: credentials → MFA form → valid TOTP → tokens", async () => {
+    // Demo default is `mfa.mode: 'disabled'` (per the 3-state opts shift) so
+    // the Phase-4 loop is filtered out at the schema guard. This test exercises
+    // the TOTP verification branch and spins its own app with
+    // `mode: 'optional'` (or `'required'` — either fires the loop; grace HAS
+    // a confirmed TOTP method so prepare-mfa-options auto-picks it and routes
+    // straight to mfa-totp).
+    const mfaOn = await buildTestApp({ loginOpts: { mfa: { mode: "optional" } } });
+    try {
+      const grace = mfaOn.fixtures.users.t1_grace;
+      expect(grace.totpSecret).toBeTruthy();
+
+      const start = await mfaOn.triggerWf("public", { wfid: "auth.login" });
+      const startBody = await readWfPause(start);
+
+      const credResp = await mfaOn.triggerWf("public", {
+        wfid: "auth.login",
+        wfs: startBody.wfs,
+        input: { username: grace.username, password: grace.password },
+      });
+      expectOk(credResp);
+      const credBody = await readWfPause(credResp);
+      expect(credBody.inputRequired).toBeTruthy();
+
+      const wrong = await mfaOn.triggerWf("public", {
+        wfid: "auth.login",
+        wfs: credBody.wfs,
+        input: { code: "000000" },
+      });
+      const wrongBody = await readWfPause(wrong);
+      expect(wfErrors(wrongBody)).toMatchObject({ code: "Invalid code" });
+
+      const code = generateTotpCode(grace.totpSecret as string);
+      const final = await mfaOn.triggerWf("public", {
+        wfid: "auth.login",
+        wfs: wrongBody.wfs,
+        input: { code },
+      });
+      expectOk(final);
+      const issued = await expectFinished<{ userId?: string; accessToken?: string }>(final);
+      expect(issued.data?.userId).toBe(grace.username);
+      expect(typeof issued.data?.accessToken).toBe("string");
+    } finally {
+      await mfaOn.close();
     }
   });
 });

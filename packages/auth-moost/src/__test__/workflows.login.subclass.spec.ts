@@ -109,7 +109,7 @@ describe("LoginWorkflow subclass — applyProfile override", () => {
         forms: {
           profileComplete: ProfileCompleteForm as unknown as TAtscriptAnnotatedType,
         },
-        mfa: { enabled: false },
+        mfa: { mode: "disabled" },
       },
       loginWorkflowClass: ProfileLogin,
     });
@@ -157,7 +157,7 @@ describe("LoginWorkflow subclass — applyConsentMarketing override", () => {
     const app = await prepareWfApp({
       loginOpts: {
         acceptance: { consentMarketing: true },
-        mfa: { enabled: false },
+        mfa: { mode: "disabled" },
       },
       loginWorkflowClass: ConsentLogin,
     });
@@ -211,7 +211,7 @@ describe("LoginWorkflow subclass — loadTenants override", () => {
       }
     }
     const app = await prepareWfApp({
-      loginOpts: { multiContext: { tenantSelect: true }, mfa: { enabled: false } },
+      loginOpts: { multiContext: { tenantSelect: true }, mfa: { mode: "disabled" } },
       loginWorkflowClass: TenantLogin,
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -254,7 +254,7 @@ describe("LoginWorkflow subclass — loadTenants override", () => {
       }
     }
     const app = await prepareWfApp({
-      loginOpts: { multiContext: { tenantSelect: true }, mfa: { enabled: false } },
+      loginOpts: { multiContext: { tenantSelect: true }, mfa: { mode: "disabled" } },
       loginWorkflowClass: TenantLogin,
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -297,7 +297,7 @@ describe("LoginWorkflow subclass — loadPersonas override", () => {
       }
     }
     const app = await prepareWfApp({
-      loginOpts: { multiContext: { personaSelect: true }, mfa: { enabled: false } },
+      loginOpts: { multiContext: { personaSelect: true }, mfa: { mode: "disabled" } },
       loginWorkflowClass: PersonaLogin,
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -340,7 +340,7 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
     const app = await prepareWfApp({
       loginOpts: {
         sessionPolicy: { concurrencyLimit: { max: 2, onLimit: "kickPrompt" } },
-        mfa: { enabled: false },
+        mfa: { mode: "disabled" },
       },
       loginWorkflowClass: KickLogin,
     });
@@ -376,7 +376,7 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
     const app = await prepareWfApp({
       loginOpts: {
         sessionPolicy: { concurrencyLimit: { max: 2, onLimit: "kickPrompt" } },
-        mfa: { enabled: false },
+        mfa: { mode: "disabled" },
       },
       loginWorkflowClass: KickLogin,
     });
@@ -414,7 +414,7 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
     const app = await prepareWfApp({
       loginOpts: {
         sessionPolicy: { concurrencyLimit: { max: 2, onLimit: "kickPrompt" } },
-        mfa: { enabled: false },
+        mfa: { mode: "disabled" },
       },
       loginWorkflowClass: KickLogin,
     });
@@ -448,7 +448,7 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
 describe("LoginWorkflow runtime fail-loud — deliver() not configured", () => {
   it("mfa email path + NO EmailSender registered → runtime throw (500 with 'EmailSender required')", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { transports: ["email"], enabled: true } },
+      loginOpts: { mfa: { transports: ["email"], mode: "optional" } },
       registerEmailSender: false,
     });
     await seedActiveUser(app.users, "alice", "Password123");

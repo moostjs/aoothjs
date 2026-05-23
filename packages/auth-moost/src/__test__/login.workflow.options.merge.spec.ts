@@ -20,7 +20,7 @@ import { mergeLoginOpts } from "../workflows/login.workflow.options";
 describe("mergeLoginOpts — defaults survive partial input", () => {
   it("undefined input → every nested group is populated with its full defaults", () => {
     const opts = mergeLoginOpts();
-    expect(opts.mfa.enabled).toBe(true);
+    expect(opts.mfa.mode).toBe("optional");
     expect(opts.mfa.transports).toEqual(["sms", "email", "totp"]);
     expect(opts.mfa.pincodeLength).toBe(6);
     expect(opts.alternateCredentials.forgotPassword).toBe(true);
@@ -32,12 +32,12 @@ describe("mergeLoginOpts — defaults survive partial input", () => {
     expect(opts.forms.profileComplete).toBeTruthy();
   });
 
-  it("partial mfa override (enabled:false) keeps mfa.transports default", () => {
+  it("partial mfa override (mode:'disabled') keeps mfa.transports default", () => {
     // Regression: a naive merge like `mfa: opts.mfa ?? defaults` would drop
     // `transports`, breaking the boot-time validator that gates on
-    // `mfa.transports.length > 0`.
-    const opts = mergeLoginOpts({ mfa: { enabled: false } });
-    expect(opts.mfa.enabled).toBe(false);
+    // `mfa.transports.length > 0` (only enforced when mode !== 'disabled').
+    const opts = mergeLoginOpts({ mfa: { mode: "disabled" } });
+    expect(opts.mfa.mode).toBe("disabled");
     expect(opts.mfa.transports).toEqual(["sms", "email", "totp"]);
     expect(opts.mfa.pincodeLength).toBe(6);
     expect(opts.mfa.backupCodes).toBe(true);

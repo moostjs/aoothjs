@@ -542,6 +542,15 @@ describe("SEC — lockout / brute-force", () => {
   });
 
   it("SEC-19 — TOTP brute force trips the shared lockout after threshold failures", async () => {
+    // Demo default is now `mfa.mode: 'disabled'` (3-state opts shift) — the
+    // shared `app` skips Phase 4 entirely. Spin a dedicated app with
+    // `mode: 'optional'` so the TOTP prompt fires for grace (who has a
+    // confirmed TOTP method seeded), then we can exercise the lockout.
+    await app.close();
+    app = await buildTestApp({
+      envOverrides: { LOCKOUT_THRESHOLD: 3, LOCKOUT_DURATION_MS: 1500 },
+      loginOpts: { mfa: { mode: "optional" } },
+    });
     const grace = app.fixtures.users.t1_grace;
     expect(grace.totpSecret).toBeTruthy();
 
@@ -641,7 +650,9 @@ describe("SEC — password attacks", () => {
 describe("SEC — TOTP attacks", () => {
   let app: TestApp;
   beforeEach(async () => {
-    app = await buildTestApp();
+    // mode='optional' so the Phase-4 loop fires for grace (who has a confirmed
+    // TOTP seeded) — the demo default is now 'disabled' (no MFA prompt).
+    app = await buildTestApp({ loginOpts: { mfa: { mode: "optional" } } });
   });
   afterEach(async () => {
     await app.close();

@@ -295,7 +295,7 @@ describe("LoginWorkflow alt-actions — create-password-form", () => {
     const app = await prepareWfApp({
       loginOpts: {
         guards: { passwordInitial: true },
-        mfa: { enabled: false },
+        mfa: { mode: "disabled" },
       },
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -320,7 +320,7 @@ describe("LoginWorkflow alt-actions — create-password-form", () => {
     const app = await prepareWfApp({
       loginOpts: {
         guards: { passwordInitial: true },
-        mfa: { enabled: false },
+        mfa: { mode: "disabled" },
       },
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -350,7 +350,7 @@ describe("LoginWorkflow alt-actions — terms-accept", () => {
     const app = await prepareWfApp({
       loginOpts: {
         acceptance: { termsVersion: "v2" },
-        mfa: { enabled: false },
+        mfa: { mode: "disabled" },
       },
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -375,7 +375,7 @@ describe("LoginWorkflow alt-actions — terms-accept", () => {
     const app = await prepareWfApp({
       loginOpts: {
         acceptance: { termsVersion: "v2" },
-        mfa: { enabled: false },
+        mfa: { mode: "disabled" },
       },
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -400,7 +400,7 @@ describe("LoginWorkflow alt-actions — terms-accept", () => {
     const app = await prepareWfApp({
       loginOpts: {
         acceptance: { termsVersion: "v2" },
-        mfa: { enabled: false },
+        mfa: { mode: "disabled" },
       },
     });
     await seedActiveUser(app.users, "alice", "Password123");

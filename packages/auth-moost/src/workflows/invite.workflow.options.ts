@@ -90,12 +90,13 @@ export interface InviteWorkflowOpts {
     enabled?: boolean;
   };
   /**
-   * Forced MFA enrollment during the accept tail. When `enrollRequired` is
-   * true, the invitee MUST enroll a second factor BEFORE activation — closes
-   * the gap where a policy demanding MFA would otherwise 501 on first login.
+   * MFA enrollment during the accept tail.
+   *   - `'required'` — invitee MUST enroll a second factor BEFORE activation.
+   *   - `'optional'` — invitee is prompted but may `skip` the enrollment form.
+   *   - `'disabled'` — enrollment loop is skipped entirely.
    */
   mfa?: {
-    enrollRequired?: boolean;
+    mode?: "required" | "optional" | "disabled";
     transports?: MfaTransport[];
     pincodeTtlMs?: number;
     pincodeLength?: number;
@@ -152,7 +153,7 @@ export interface ResolvedInviteWorkflowOpts {
     enabled: boolean;
   };
   mfa: {
-    enrollRequired: boolean;
+    mode: "required" | "optional" | "disabled";
     transports: MfaTransport[];
     pincodeTtlMs: number;
     pincodeLength: number;
@@ -207,7 +208,7 @@ export function mergeInviteOpts(opts: InviteWorkflowOpts = {}): ResolvedInviteWo
       ...opts.audit,
     },
     mfa: {
-      enrollRequired: false,
+      mode: "optional",
       transports: ["sms", "email", "totp"],
       pincodeTtlMs: 5 * 60 * 1000,
       pincodeLength: 6,

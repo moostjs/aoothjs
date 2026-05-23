@@ -75,6 +75,13 @@ export interface MfaEnrollDeps {
   pincodeTtlMs: number;
   /** TOTP provisioning issuer (rendered in the authenticator app). */
   issuer: string;
+  /**
+   * Enrollment policy. `'required'` runs through all 3 phases. `'optional'`
+   * additionally watches for a `skip` action on the Phase 1 pickMethod form —
+   * a skip click short-circuits by setting `ctx.enrollDone = true`. The
+   * caller is expected to gate this step out entirely when `mode === 'disabled'`.
+   */
+  mode: "required" | "optional";
 }
 
 /**
@@ -236,6 +243,14 @@ export class AuthWorkflowBase {
         ctx.enrollAvailableTransports = [...transports];
       }
       const wf = useAtscriptWf(forms.pickMethod);
+      // `'optional'` mode: the pickMethod form exposes a `skip` action. Read
+      // it BEFORE `resolveInput()` so the user can decline without filling in
+      // any field. A skip marks enrollment complete without persisting a
+      // method — the caller's loop-exit signal flips next iteration.
+      if (deps.mode === "optional" && wf.resolveAction() === "skip") {
+        ctx.enrollDone = true;
+        return;
+      }
       const input = wf.resolveInput() as { method: string };
       const picked = input.method as MfaTransport;
       if (!ctx.enrollAvailableTransports.includes(picked)) {

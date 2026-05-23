@@ -70,10 +70,16 @@ export interface LoginWorkflowOpts {
     ensurePhone?: boolean;
   };
   mfa?: {
-    enabled?: boolean;
+    /**
+     * 3-state MFA policy:
+     *   - `'required'` — MFA enforced; users with 0 methods MUST enroll (no skip).
+     *   - `'optional'` — MFA prompted; users with 0 methods see an enrollment
+     *     form that offers a `skip` action (in-flight opt-out).
+     *   - `'disabled'` — MFA loops never fire; Phase 4 is skipped entirely.
+     */
+    mode?: "required" | "optional" | "disabled";
     transports?: MfaTransport[];
     backupCodes?: boolean;
-    enrollRequired?: boolean;
     pincodeTtlMs?: number;
     pincodeResendTimeoutMs?: number;
     /** Numeric length of the server-generated OTP for SMS/email pincodes. */
@@ -160,10 +166,9 @@ export interface ResolvedLoginWorkflowOpts {
     ensurePhone: boolean;
   };
   mfa: {
-    enabled: boolean;
+    mode: "required" | "optional" | "disabled";
     transports: MfaTransport[];
     backupCodes: boolean;
-    enrollRequired: boolean;
     pincodeTtlMs: number;
     pincodeResendTimeoutMs: number;
     pincodeLength: number;
@@ -245,10 +250,9 @@ export function mergeLoginOpts(opts: LoginWorkflowOpts = {}): ResolvedLoginWorkf
       ...opts.enrollment,
     },
     mfa: {
-      enabled: true,
+      mode: "optional",
       transports: ["sms", "email", "totp"],
       backupCodes: true,
-      enrollRequired: false,
       pincodeTtlMs: DEFAULT_MFA_CODE_TTL_MS,
       pincodeResendTimeoutMs: 60_000,
       pincodeLength: 6,

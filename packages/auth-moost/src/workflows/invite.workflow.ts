@@ -129,6 +129,12 @@ export interface InviteWfCtx {
   enrollSecret?: string;
   enrollUri?: string;
   enrollAvailableTransports?: Array<"sms" | "email" | "totp">;
+  /**
+   * Mirror of `opts.mfa.mode` (only set when not `'disabled'`). Surfaced to
+   * `EnrollPickMethodForm` via `@wf.context.pass` so the `skip` action can
+   * hide unless mode is `'optional'`.
+   */
+  enrollMode?: "required" | "optional";
   enrollDone?: boolean;
   /** Pincode scratch shared with the enrollment helper. */
   pin?: string;
@@ -431,16 +437,26 @@ export class InviteWorkflow extends AuthWorkflowBase {
     // schema is linear and can't loop a single step like login does). The
     // shared `runMfaEnrollment` helper routes internally based on ctx state.
     {
+      // `!ctx.enrollDone` is critical when `mfa.mode === 'optional'`: after a
+      // user clicks `skip` in Phase 1, the helper sets `enrollDone` without
+      // setting `enrollMethod`. Without this gate the schema would re-enter
+      // the pick form forever.
       id: "inviteEnrollPickMethod",
       condition: (ctx) =>
-        !!(ctx.passwordSet && ctx.opts!.mfa.enrollRequired && !ctx.enrollMethod && !ctx.aborted),
+        !!(
+          ctx.passwordSet &&
+          ctx.opts!.mfa.mode !== "disabled" &&
+          !ctx.enrollMethod &&
+          !ctx.enrollDone &&
+          !ctx.aborted
+        ),
     },
     {
       id: "inviteEnrollAddress",
       condition: (ctx) =>
         !!(
           ctx.passwordSet &&
-          ctx.opts!.mfa.enrollRequired &&
+          ctx.opts!.mfa.mode !== "disabled" &&
           ctx.enrollMethod &&
           (ctx.enrollMethod === "sms" || ctx.enrollMethod === "email") &&
           !ctx.enrollAddress &&
@@ -452,7 +468,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
       condition: (ctx) =>
         !!(
           ctx.passwordSet &&
-          ctx.opts!.mfa.enrollRequired &&
+          ctx.opts!.mfa.mode !== "disabled" &&
           ctx.enrollMethod &&
           (ctx.enrollMethod === "totp" || !!ctx.enrollAddress) &&
           !ctx.enrollDone &&
@@ -555,16 +571,26 @@ export class InviteWorkflow extends AuthWorkflowBase {
     // schema is linear and can't loop a single step like login does). The
     // shared `runMfaEnrollment` helper routes internally based on ctx state.
     {
+      // `!ctx.enrollDone` is critical when `mfa.mode === 'optional'`: after a
+      // user clicks `skip` in Phase 1, the helper sets `enrollDone` without
+      // setting `enrollMethod`. Without this gate the schema would re-enter
+      // the pick form forever.
       id: "inviteEnrollPickMethod",
       condition: (ctx) =>
-        !!(ctx.passwordSet && ctx.opts!.mfa.enrollRequired && !ctx.enrollMethod && !ctx.aborted),
+        !!(
+          ctx.passwordSet &&
+          ctx.opts!.mfa.mode !== "disabled" &&
+          !ctx.enrollMethod &&
+          !ctx.enrollDone &&
+          !ctx.aborted
+        ),
     },
     {
       id: "inviteEnrollAddress",
       condition: (ctx) =>
         !!(
           ctx.passwordSet &&
-          ctx.opts!.mfa.enrollRequired &&
+          ctx.opts!.mfa.mode !== "disabled" &&
           ctx.enrollMethod &&
           (ctx.enrollMethod === "sms" || ctx.enrollMethod === "email") &&
           !ctx.enrollAddress &&
@@ -576,7 +602,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
       condition: (ctx) =>
         !!(
           ctx.passwordSet &&
-          ctx.opts!.mfa.enrollRequired &&
+          ctx.opts!.mfa.mode !== "disabled" &&
           ctx.enrollMethod &&
           (ctx.enrollMethod === "totp" || !!ctx.enrollAddress) &&
           !ctx.enrollDone &&
@@ -961,6 +987,11 @@ export class InviteWorkflow extends AuthWorkflowBase {
   // invite schema is linear; a single step couldn't pause between phases.
   private async runInviteEnrollment(ctx: InviteWfCtx): Promise<void> {
     this.requireUsername(ctx);
+    // `'disabled'` is filtered at each step's schema condition, so the cast is
+    // safe. Mirror onto ctx so `EnrollPickMethodForm` can hide the `skip`
+    // action unless mode is `'optional'`.
+    const mode = this.opts.mfa.mode as "required" | "optional";
+    ctx.enrollMode = mode;
     await this.runMfaEnrollment({
       ctx,
       username: ctx.username,
@@ -975,6 +1006,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
       pincodeLength: this.opts.mfa.pincodeLength,
       pincodeTtlMs: this.opts.mfa.pincodeTtlMs,
       issuer: this.opts.mfa.issuer,
+      mode,
     });
   }
 

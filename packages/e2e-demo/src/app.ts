@@ -91,8 +91,8 @@ export interface BuildAppOptions {
   authEndpointsEnabled?: boolean;
   /**
    * E2E coverage hook — per-workflow option overrides deep-merged into the
-   * demo defaults (one nested group at a time, e.g. `{ mfa: { enabled: false } }`
-   * replaces only `mfa.enabled` and preserves `mfa.transports`). Used by the
+   * demo defaults (one nested group at a time, e.g. `{ mfa: { mode: 'disabled' } }`
+   * replaces only `mfa.mode` and preserves `mfa.transports`). Used by the
    * workflow-options e2e specs to flip a single flag without forking the
    * whole demo wiring.
    */
@@ -280,7 +280,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   const demoLoginOpts: LoginWorkflowOpts = mergeWfOpts(
     {
       // SMS is exercised via `demoSmsSender` which console-logs the code — fine for the UI harness.
+      // Default `mfa.mode: 'disabled'` — most seeded users have no MFA enrolled
+      // and the e2e harness's `loginAs` helper expects to finish login without
+      // a prompt. Variants override to `'optional'` / `'required'` to exercise
+      // the enrollment + verification flows.
       mfa: {
+        mode: "disabled",
         transports: ["email", "sms", "totp"],
         backupCodes: true,
       },
@@ -414,6 +419,11 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       // the BIG 3.3 confirmation pause. Off here so the demo matches today's
       // behavior; production should keep the default ON.
       accept: { showConfirmation: false },
+      // Default `mfa.mode: 'disabled'` — the demo's invite e2e tests assert the
+      // auto-login response after password-set. Library default is now
+      // `'optional'` (would insert an enrollment pause with a skip action).
+      // Variants override to exercise the enrollment branches.
+      mfa: { mode: "disabled" },
     },
     opts.inviteOpts,
   );

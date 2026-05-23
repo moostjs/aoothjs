@@ -295,7 +295,7 @@ describe("InviteWorkflow", () => {
 
 // Shared driver: admin invites → email arrives → resume magic link → set
 // password. Stops at whatever pause follows password-set (e.g.
-// `inviteEnrollPickMethod` when `mfa.enrollRequired: true`, the first
+// `inviteEnrollPickMethod` when `mfa.mode: "required"`, the first
 // `inviteExtraStep` when `extraSteps` are configured, or workflow end).
 // Returns the response of the set-password POST.
 async function driveToPostPassword(app: Awaited<ReturnType<typeof prepareWfApp>>, email: string) {
@@ -309,17 +309,17 @@ async function driveToPostPassword(app: Awaited<ReturnType<typeof prepareWfApp>>
   });
 }
 
-describe("InviteWorkflowOpts — mfa.enrollRequired forced enrollment", () => {
+describe("InviteWorkflowOpts — mfa.mode='required' forced enrollment", () => {
   // WHY: the headline invariant — when policy says "MFA required", an invitee
   // must NOT be able to activate without enrolling a second factor first. The
-  // 3 schema entries gated on `passwordSet && mfa.enrollRequired` MUST hold
+  // 3 schema entries gated on `passwordSet && mfa.mode !== 'disabled'` MUST hold
   // the workflow at enrollment until a method is confirmed. Remove the SMS
   // branch (or invert the gate) and the user activates with `methods.length === 0`,
   // defeating the policy this option exists to enforce.
   it("sms path: invitee enrolls before activation; account active + sms method confirmed + default", async () => {
     const app = await prepareWfApp({
       inviteOpts: {
-        mfa: { enrollRequired: true },
+        mfa: { mode: "required" },
         accept: { showConfirmation: false },
       },
     });
@@ -380,7 +380,7 @@ describe("InviteWorkflowOpts — mfa.enrollRequired forced enrollment", () => {
   it("totp path: secret provisioned, code accepted, method confirmed, no pincode emitted", async () => {
     const app = await prepareWfApp({
       inviteOpts: {
-        mfa: { enrollRequired: true },
+        mfa: { mode: "required" },
         accept: { showConfirmation: false },
       },
     });
@@ -425,13 +425,14 @@ describe("InviteWorkflowOpts — mfa.enrollRequired forced enrollment", () => {
     expect(user.account.active).toBe(true);
   });
 
-  // WHY: policy-loosening direction. Default is `enrollRequired: false`;
-  // consumers who haven't opted in must NOT be forced through enrollment. A
-  // future inversion of the gate would push every invitee into enrollment
-  // and break backward-compat. Pins the default branch.
-  it("enrollRequired=false (default): invite skips enrollment, user activates with no MFA", async () => {
+  // WHY: policy-loosening direction. With `mode: 'disabled'` the 3 enrollment
+  // schema entries are gated out entirely, so the invitee MUST activate with
+  // no MFA prompt. Pins that the disabled-mode branch routes around enrollment.
+  // (Default `mode: 'optional'` would prompt with a skip available — different
+  // semantics — so the test pins the no-prompt branch explicitly.)
+  it("mode='disabled': invite skips enrollment, user activates with no MFA", async () => {
     const app = await prepareWfApp({
-      inviteOpts: { accept: { showConfirmation: false } },
+      inviteOpts: { accept: { showConfirmation: false }, mfa: { mode: "disabled" } },
     });
 
     const r4 = await driveToPostPassword(app, "nomfa@example.com");
@@ -454,7 +455,7 @@ describe("InviteWorkflowOpts — mfa.enrollRequired forced enrollment", () => {
   it("totp path: invalid setup code → form error, method stays unconfirmed, account NOT activated", async () => {
     const app = await prepareWfApp({
       inviteOpts: {
-        mfa: { enrollRequired: true },
+        mfa: { mode: "required" },
         accept: { showConfirmation: false },
       },
     });
@@ -701,6 +702,91 @@ describe("InviteWorkflowOpts — extraSteps configurable post-profile inputs", (
     expect(typeof data?.accessToken).toBe("string");
 
     const user = await app.users.getUser("extra4@example.com");
+    expect(user.account.active).toBe(true);
+  });
+});
+
+describe("InviteWorkflowOpts — mfa.mode='optional' skip action", () => {
+  // WHY (I1): mirrors L1 for invite — under optional mode the invitee MUST be
+  // able to decline MFA via the `skip` action and still complete onboarding
+  // (account activated, tokens issued). Without the helper's
+  // `mode === 'optional' && resolveAction() === 'skip'` short-circuit, optional
+  // would be indistinguishable from required at the invite tail, breaking the
+  // onboarding opt-out contract.
+  it("optional + invitee skips MFA setup → invite completes, account active, no MFA on user", async () => {
+    const app = await prepareWfApp({
+      inviteOpts: {
+        mfa: { mode: "optional" },
+        accept: { showConfirmation: false },
+      },
+    });
+
+    const r4 = await driveToPostPassword(app, "optskip@example.com");
+    // Paused at EnrollPickMethodForm (optional still PROMPTS) — not finished.
+    expect(r4.body?.wfs).toBeTruthy();
+    expect(r4.body?.data).toBeUndefined();
+    // Account NOT yet active — proves activation is gated behind enrollment
+    // (or its skip) at the schema level.
+    expect((await app.users.getUser("optskip@example.com")).account.active).toBe(false);
+
+    // Submit `skip` — short-circuit fires, schema falls through to activation.
+    const r5 = await app.trigger({
+      wfs: r4.body?.wfs as string,
+      input: { action: "skip" },
+    });
+    const data = r5.body?.data as Record<string, unknown> | undefined;
+    expect(data?.userId).toBe("optskip@example.com");
+    expect(typeof data?.accessToken).toBe("string");
+
+    const user = await app.users.getUser("optskip@example.com");
+    expect(user.account.active).toBe(true);
+    // No method persisted — proves the skip path ran, not a covert enroll.
+    expect(user.mfa.methods).toHaveLength(0);
+  });
+
+  // WHY (I2): mirrors L2 for invite — under optional mode invitees who DO
+  // pick a method must still get the full 3-phase enrollment. A regression
+  // that hardwired optional→skip in the invite tail would silently leave
+  // would-be MFA users without a confirmed second factor while still flipping
+  // the account active.
+  it("optional + invitee enrolls totp → totp confirmed + default, account active", async () => {
+    const app = await prepareWfApp({
+      inviteOpts: {
+        mfa: { mode: "optional" },
+        accept: { showConfirmation: false },
+      },
+    });
+
+    const r4 = await driveToPostPassword(app, "optenroll@example.com");
+    expect(r4.body?.wfs).toBeTruthy();
+
+    // Phase 1: pick totp — secret persisted unconfirmed.
+    const r5 = await app.trigger({
+      wfs: r4.body?.wfs as string,
+      input: { method: "totp" },
+    });
+    expect(r5.body?.wfs).toBeTruthy();
+    expect(r5.body?.data).toBeUndefined();
+
+    const interimUser = await app.users.getUser("optenroll@example.com");
+    const totp = interimUser.mfa.methods.find((m) => m.name === "totp");
+    expect(totp?.confirmed).toBe(false);
+    expect(typeof totp?.value).toBe("string");
+    expect(totp!.value.length).toBeGreaterThan(0);
+
+    const code = generateTotpCode(totp!.value);
+    const r6 = await app.trigger({
+      wfs: r5.body?.wfs as string,
+      input: { code },
+    });
+    const data = r6.body?.data as Record<string, unknown> | undefined;
+    expect(data?.userId).toBe("optenroll@example.com");
+    expect(typeof data?.accessToken).toBe("string");
+
+    const user = await app.users.getUser("optenroll@example.com");
+    const totpFinal = user.mfa.methods.find((m) => m.name === "totp");
+    expect(totpFinal?.confirmed).toBe(true);
+    expect(user.mfa.defaultMethod).toBe("totp");
     expect(user.account.active).toBe(true);
   });
 });
