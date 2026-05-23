@@ -254,4 +254,235 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
       await mfaOn.close();
     }
   });
+
+  it("WF-LOGIN-08 — mfa.mode='required' + 0 methods: email enrollment (pick → address → confirm) end-to-end", async () => {
+    // Pins forced enrollment through the demo's HTTP wire + deliver() override +
+    // atscript-db `addMfaMethod` / `confirmMfaMethod` persistence — a wrong
+    // transport route or a nested-array set regression would slip past unit
+    // tests and surface only here.
+    const reqApp = await buildTestApp({ loginOpts: { mfa: { mode: "required" } } });
+    try {
+      const alice = reqApp.fixtures.users.t1_alice;
+      const seeded = await reqApp.appHandle.aooth.userService.getUser(alice.username);
+      expect(seeded.mfa.methods).toHaveLength(0);
+
+      const start = await reqApp.triggerWf("public", { wfid: "auth.login" });
+      const startBody = await readWfPause(start);
+      const cred = await reqApp.triggerWf("public", {
+        wfid: "auth.login",
+        wfs: startBody.wfs,
+        input: { username: alice.username, password: alice.password },
+      });
+      expectOk(cred);
+      const pickBody = await readWfPause(cred);
+      expect(pickBody.wfs).toBeTruthy();
+      expect(pickBody.inputRequired).toBeTruthy();
+
+      const pick = await reqApp.triggerWf("public", {
+        wfid: "auth.login",
+        wfs: pickBody.wfs,
+        input: { method: "email" },
+      });
+      expectOk(pick);
+      const addrBody = await readWfPause(pick);
+      expect(addrBody.wfs).toBeTruthy();
+      // No pincode yet — only fires after address is submitted.
+      expect(reqApp.emailSender.events.filter((e) => e.kind === "login.pincode")).toHaveLength(0);
+
+      const enrollAddress = "alice-mfa@demo.test";
+      const addr = await reqApp.triggerWf("public", {
+        wfid: "auth.login",
+        wfs: addrBody.wfs,
+        input: { address: enrollAddress },
+      });
+      expectOk(addr);
+      const confirmBody = await readWfPause(addr);
+      expect(confirmBody.wfs).toBeTruthy();
+
+      const pinMail = await reqApp.emailSender.next(
+        (e) => e.kind === "login.pincode" && e.recipient === enrollAddress,
+        2000,
+      );
+      expect(typeof pinMail.code).toBe("string");
+
+      const confirm = await reqApp.triggerWf("public", {
+        wfid: "auth.login",
+        wfs: confirmBody.wfs,
+        input: { code: pinMail.code },
+      });
+      expectOk(confirm);
+      const issued = await expectFinished<{ userId?: string; accessToken?: string }>(confirm);
+      expect(issued.data?.userId).toBe(alice.username);
+      expect(typeof issued.data?.accessToken).toBe("string");
+
+      const after = await reqApp.appHandle.aooth.userService.getUser(alice.username);
+      const emailMethod = after.mfa.methods.find((m) => m.name === "email");
+      expect(emailMethod?.value).toBe(enrollAddress);
+      expect(emailMethod?.confirmed).toBe(true);
+      // defaultMethod must be set on confirm — otherwise future required-mode
+      // logins re-prompt to pick instead of auto-selecting the enrolled method.
+      expect(after.mfa.defaultMethod).toBe("email");
+    } finally {
+      await reqApp.close();
+    }
+  });
+
+  it("WF-LOGIN-09 — mfa.mode='required' + 0 methods: TOTP enrollment (pick → confirm) end-to-end", async () => {
+    // Pins the TOTP secret round-trip through @atscript/db-sqlite text storage —
+    // an encoding regression would corrupt the secret silently and the
+    // round-trip generateTotpCode(persisted) → server-recompute would fail.
+    // Also asserts no pincode email fires (TOTP path must NOT route to email).
+    const reqApp = await buildTestApp({ loginOpts: { mfa: { mode: "required" } } });
+    try {
+      const alice = reqApp.fixtures.users.t1_alice;
+      const seeded = await reqApp.appHandle.aooth.userService.getUser(alice.username);
+      expect(seeded.mfa.methods).toHaveLength(0);
+
+      const start = await reqApp.triggerWf("public", { wfid: "auth.login" });
+      const startBody = await readWfPause(start);
+      const cred = await reqApp.triggerWf("public", {
+        wfid: "auth.login",
+        wfs: startBody.wfs,
+        input: { username: alice.username, password: alice.password },
+      });
+      expectOk(cred);
+      const pickBody = await readWfPause(cred);
+
+      // TOTP skips the address phase — server provisions the secret on pick
+      // and pauses on the confirm form directly.
+      const pick = await reqApp.triggerWf("public", {
+        wfid: "auth.login",
+        wfs: pickBody.wfs,
+        input: { method: "totp" },
+      });
+      expectOk(pick);
+      const confirmBody = await readWfPause(pick);
+      expect(confirmBody.wfs).toBeTruthy();
+
+      const mid = await reqApp.appHandle.aooth.userService.getUser(alice.username);
+      const totp = mid.mfa.methods.find((m) => m.name === "totp");
+      expect(totp?.confirmed).toBe(false);
+      expect(typeof totp?.value).toBe("string");
+      const code = generateTotpCode(totp!.value);
+
+      const confirm = await reqApp.triggerWf("public", {
+        wfid: "auth.login",
+        wfs: confirmBody.wfs,
+        input: { code },
+      });
+      expectOk(confirm);
+      const issued = await expectFinished<{ userId?: string; accessToken?: string }>(confirm);
+      expect(issued.data?.userId).toBe(alice.username);
+      expect(typeof issued.data?.accessToken).toBe("string");
+
+      const after = await reqApp.appHandle.aooth.userService.getUser(alice.username);
+      expect(after.mfa.methods.find((m) => m.name === "totp")?.confirmed).toBe(true);
+      expect(after.mfa.defaultMethod).toBe("totp");
+      expect(reqApp.emailSender.events.filter((e) => e.kind === "login.pincode")).toHaveLength(0);
+    } finally {
+      await reqApp.close();
+    }
+  });
+
+  it("WF-LOGIN-10 — mfa.mode='optional' + 0 methods + skip action: tokens issued, no enrollment persisted", async () => {
+    // Pins the `action: 'skip'` envelope through atscript-moost-wf's action
+    // serialization into the server-side `mode === 'optional'` short-circuit.
+    // An inverted gate or a stripped action key would either silently persist
+    // an unconfirmed method or refuse to finish — both surface here.
+    const optApp = await buildTestApp({ loginOpts: { mfa: { mode: "optional" } } });
+    try {
+      const alice = optApp.fixtures.users.t1_alice;
+      const seeded = await optApp.appHandle.aooth.userService.getUser(alice.username);
+      expect(seeded.mfa.methods).toHaveLength(0);
+
+      const start = await optApp.triggerWf("public", { wfid: "auth.login" });
+      const startBody = await readWfPause(start);
+      const cred = await optApp.triggerWf("public", {
+        wfid: "auth.login",
+        wfs: startBody.wfs,
+        input: { username: alice.username, password: alice.password },
+      });
+      expectOk(cred);
+      const pickBody = await readWfPause(cred);
+      // Optional STILL prompts — the gate is the action, not absence of prompt.
+      expect(pickBody.wfs).toBeTruthy();
+      expect(pickBody.inputRequired).toBeTruthy();
+
+      const skip = await optApp.triggerWf("public", {
+        wfid: "auth.login",
+        wfs: pickBody.wfs,
+        input: { action: "skip" },
+      });
+      expectOk(skip);
+      const issued = await expectFinished<{ userId?: string; accessToken?: string }>(skip);
+      expect(issued.data?.userId).toBe(alice.username);
+      expect(typeof issued.data?.accessToken).toBe("string");
+
+      // No leftover unconfirmed row — proves skip short-circuited Phase 1.
+      const after = await optApp.appHandle.aooth.userService.getUser(alice.username);
+      expect(after.mfa.methods).toHaveLength(0);
+    } finally {
+      await optApp.close();
+    }
+  });
+
+  it("WF-LOGIN-11 — mfa.mode='optional' + 0 methods + picks email: full enrollment runs (skip does NOT preempt pick)", async () => {
+    // Positive branch of optional: users who DO opt in must still complete
+    // the 3-phase enrollment. A regression hardwiring optional → skip would
+    // treat every submit as a decline and silently break opt-in intent.
+    const optApp = await buildTestApp({ loginOpts: { mfa: { mode: "optional" } } });
+    try {
+      const alice = optApp.fixtures.users.t1_alice;
+
+      const start = await optApp.triggerWf("public", { wfid: "auth.login" });
+      const startBody = await readWfPause(start);
+      const cred = await optApp.triggerWf("public", {
+        wfid: "auth.login",
+        wfs: startBody.wfs,
+        input: { username: alice.username, password: alice.password },
+      });
+      expectOk(cred);
+      const pickBody = await readWfPause(cred);
+
+      const pick = await optApp.triggerWf("public", {
+        wfid: "auth.login",
+        wfs: pickBody.wfs,
+        input: { method: "email" },
+      });
+      expectOk(pick);
+      const addrBody = await readWfPause(pick);
+
+      const enrollAddress = "alice-optin@demo.test";
+      const addr = await optApp.triggerWf("public", {
+        wfid: "auth.login",
+        wfs: addrBody.wfs,
+        input: { address: enrollAddress },
+      });
+      expectOk(addr);
+      const confirmBody = await readWfPause(addr);
+
+      const pinMail = await optApp.emailSender.next(
+        (e) => e.kind === "login.pincode" && e.recipient === enrollAddress,
+        2000,
+      );
+
+      const confirm = await optApp.triggerWf("public", {
+        wfid: "auth.login",
+        wfs: confirmBody.wfs,
+        input: { code: pinMail.code },
+      });
+      expectOk(confirm);
+      const issued = await expectFinished<{ userId?: string; accessToken?: string }>(confirm);
+      expect(issued.data?.userId).toBe(alice.username);
+      expect(typeof issued.data?.accessToken).toBe("string");
+
+      const after = await optApp.appHandle.aooth.userService.getUser(alice.username);
+      const emailMethod = after.mfa.methods.find((m) => m.name === "email");
+      expect(emailMethod?.value).toBe(enrollAddress);
+      expect(emailMethod?.confirmed).toBe(true);
+      expect(after.mfa.defaultMethod).toBe("email");
+    } finally {
+      await optApp.close();
+    }
+  });
 });

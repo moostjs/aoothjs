@@ -1,5 +1,8 @@
+import { generateTotpCode } from "@aooth/user";
+import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
+import { ExtraInfoForm } from "../src/test-fixtures/extra-info.as";
 import {
   buildTestApp,
   expectFinished,
@@ -8,6 +11,7 @@ import {
   readWfPause,
   sleep,
   type TestApp,
+  wfErrors,
 } from "./harness";
 
 const STRONG_PASSWORD = "WelcomeP1ss!";
@@ -364,6 +368,334 @@ describe("WF-INVITE — TTL expiry", () => {
 
       const replay = await app.resumeWfFromUrl(captured.url as string);
       expect(replay.status).toBe(410);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// Drives the invite happy-path tail: admin invites → invitee receives magic
+// link → resumes → sets password. Returns the password-POST response (which,
+// depending on opts, either finishes or pauses on the next form). Email param
+// scopes the captured magic-link event so parallel apps can't cross-talk.
+async function startInviteAcceptTail(
+  app: TestApp,
+  email: string,
+): Promise<{ resp: Response; pwBody: Awaited<ReturnType<typeof readWfPause>> }> {
+  const dave = app.fixtures.users.t1_dave;
+  const daveTokens = await app.loginAs(dave);
+
+  const start = await app.triggerWf(
+    "admin",
+    { wfid: "auth.invite" },
+    { token: daveTokens.accessToken },
+  );
+  const startBody = await readWfPause(start);
+  await app.triggerWf(
+    "admin",
+    {
+      wfid: "auth.invite",
+      wfs: startBody.wfs,
+      input: { email, roles: ["member"] },
+    },
+    { token: daveTokens.accessToken },
+  );
+
+  const magicLink = await app.emailSender.next(
+    (e) => e.kind === "invite.magicLink" && e.recipient === email,
+    2000,
+  );
+  const resumed = await app.resumeWfFromUrl(magicLink.url as string);
+  const resumedBody = await readWfPause(resumed);
+
+  const pwRes = await app.triggerWf("public", {
+    wfid: "auth.invite",
+    wfs: resumedBody.wfs,
+    input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
+  });
+  return { resp: pwRes, pwBody: await readWfPause(pwRes) };
+}
+
+describe("WF-INVITE — MFA enrollment", () => {
+  it("WF-INVITE-08 — mode='required' + email enrollment: account inactive until confirmed, then activates with email default", async () => {
+    // Pins invite-time forced enrollment end-to-end. The mid-flow
+    // `account.active === false` check (after password-set, before pincode
+    // confirm) pins the schema-level activation gate — a regression letting
+    // activation race past a paused enroll step would produce active accounts
+    // with no second factor.
+    const inviteEmail = "newcomer-email@acme.test";
+    const otpEmail = "newcomer-otp@acme.test";
+    const app = await buildTestApp({
+      inviteOpts: { mfa: { mode: "required" }, accept: { showConfirmation: false } },
+    });
+    try {
+      const { pwBody } = await startInviteAcceptTail(app, inviteEmail);
+      // Paused at EnrollPickMethodForm, activation gate NOT yet flipped.
+      expect(pwBody.wfs).toBeTruthy();
+      expect((await app.appHandle.aooth.userService.getUser(inviteEmail)).account.active).toBe(
+        false,
+      );
+
+      const r5 = await app.triggerWf("public", {
+        wfid: "auth.invite",
+        wfs: pwBody.wfs,
+        input: { method: "email" },
+      });
+      const r5Body = await readWfPause(r5);
+      expect(r5Body.wfs).toBeTruthy();
+
+      const r6 = await app.triggerWf("public", {
+        wfid: "auth.invite",
+        wfs: r5Body.wfs,
+        input: { address: otpEmail },
+      });
+      const r6Body = await readWfPause(r6);
+      expect(r6Body.wfs).toBeTruthy();
+
+      const pincodeEmail = await app.emailSender.next(
+        (e) => e.kind === "login.pincode" && e.recipient === otpEmail,
+        2000,
+      );
+      expect(pincodeEmail.code).toBeTruthy();
+
+      const r7 = await app.triggerWf("public", {
+        wfid: "auth.invite",
+        wfs: r6Body.wfs,
+        input: { code: pincodeEmail.code },
+      });
+      // Demo wires `acceptProfileForm: InviteAcceptProfileForm` — one more pause.
+      const profileBody = await readWfPause(r7);
+      const finalRes = await app.triggerWf("public", {
+        wfid: "auth.invite",
+        wfs: profileBody.wfs,
+        input: { displayName: "New Comer" },
+      });
+      const finalBody = await expectFinished<{ userId?: string; accessToken?: string }>(finalRes);
+      expect(finalBody.data?.userId).toBe(inviteEmail);
+      expect(typeof finalBody.data?.accessToken).toBe("string");
+
+      const user = await app.appHandle.aooth.userService.getUser(inviteEmail);
+      const emailMethod = user.mfa.methods.find((m) => m.name === "email");
+      expect(emailMethod?.value).toBe(otpEmail);
+      expect(emailMethod?.confirmed).toBe(true);
+      expect(user.mfa.defaultMethod).toBe("email");
+      expect(user.account.active).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("WF-INVITE-09 — mode='required' + TOTP enrollment: secret persisted, code accepted, no pincode side-channel", async () => {
+    // Pins the TOTP Phase-2 short-circuit + `verifyTotpSetupCode` round-trip
+    // at invite time. The no-pincode assertion guards against a wiring
+    // regression that leaks the secret via email/SMS; the persisted-secret
+    // round-trip guards against accepting any code (activation without a
+    // real second factor).
+    const inviteEmail = "newcomer-totp@acme.test";
+    const app = await buildTestApp({
+      inviteOpts: { mfa: { mode: "required" }, accept: { showConfirmation: false } },
+    });
+    try {
+      const { pwBody } = await startInviteAcceptTail(app, inviteEmail);
+      expect(pwBody.wfs).toBeTruthy();
+
+      const r5 = await app.triggerWf("public", {
+        wfid: "auth.invite",
+        wfs: pwBody.wfs,
+        input: { method: "totp" },
+      });
+      const r5Body = await readWfPause(r5);
+      expect(r5Body.wfs).toBeTruthy();
+
+      const interim = await app.appHandle.aooth.userService.getUser(inviteEmail);
+      const totp = interim.mfa.methods.find((m) => m.name === "totp");
+      expect(totp?.confirmed).toBe(false);
+      expect(typeof totp?.value).toBe("string");
+      expect(totp!.value.length).toBeGreaterThan(0);
+
+      const code = generateTotpCode(totp!.value);
+      const r6 = await app.triggerWf("public", {
+        wfid: "auth.invite",
+        wfs: r5Body.wfs,
+        input: { code },
+      });
+      const profileBody = await readWfPause(r6);
+      const finalRes = await app.triggerWf("public", {
+        wfid: "auth.invite",
+        wfs: profileBody.wfs,
+        input: { displayName: "Totp User" },
+      });
+      const finalBody = await expectFinished<{ userId?: string }>(finalRes);
+      expect(finalBody.data?.userId).toBe(inviteEmail);
+
+      const pincodeLeak = app.emailSender.events.find(
+        (e) => e.kind === "login.pincode" && e.recipient === inviteEmail,
+      );
+      expect(pincodeLeak).toBeUndefined();
+
+      const user = await app.appHandle.aooth.userService.getUser(inviteEmail);
+      expect(user.mfa.methods.find((m) => m.name === "totp")?.confirmed).toBe(true);
+      expect(user.mfa.defaultMethod).toBe("totp");
+      expect(user.account.active).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("WF-INVITE-10 — mode='optional' + invitee picks `skip` → account active, no MFA enrolled", async () => {
+    // Pins the invite-side optional-mode skip short-circuit. An inverted gate
+    // would either force every invitee through full enrollment (breaks opt-out)
+    // or leave a covert half-committed `mfa.methods` row behind.
+    const inviteEmail = "newcomer-skip@acme.test";
+    const app = await buildTestApp({
+      inviteOpts: { mfa: { mode: "optional" }, accept: { showConfirmation: false } },
+    });
+    try {
+      const { pwBody } = await startInviteAcceptTail(app, inviteEmail);
+      // Optional STILL prompts — pause is expected here.
+      expect(pwBody.wfs).toBeTruthy();
+      expect((await app.appHandle.aooth.userService.getUser(inviteEmail)).account.active).toBe(
+        false,
+      );
+
+      const r5 = await app.triggerWf("public", {
+        wfid: "auth.invite",
+        wfs: pwBody.wfs,
+        input: { action: "skip" },
+      });
+      const profileBody = await readWfPause(r5);
+      const finalRes = await app.triggerWf("public", {
+        wfid: "auth.invite",
+        wfs: profileBody.wfs,
+        input: { displayName: "Skip User" },
+      });
+      const finalBody = await expectFinished<{ userId?: string }>(finalRes);
+      expect(finalBody.data?.userId).toBe(inviteEmail);
+
+      const user = await app.appHandle.aooth.userService.getUser(inviteEmail);
+      expect(user.account.active).toBe(true);
+      // No leftover unconfirmed method — proves skip ran, not a covert enroll.
+      expect(user.mfa.methods).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("WF-INVITE — extraSteps", () => {
+  it("WF-INVITE-11 — single extraStep: handler invoked with sanitized data; user activates", async () => {
+    // Pins the consumer-facing extraSteps API: typed form values round-trip
+    // through the wire and arrive at the handler as `{ username, data }`
+    // (not a raw request body), and activation still runs after the loop.
+    const inviteEmail = "newcomer-extra@acme.test";
+    const captured: Array<{ username: string; data: Record<string, unknown> }> = [];
+    const app = await buildTestApp({
+      inviteOpts: {
+        accept: { showConfirmation: false },
+        extraSteps: [
+          {
+            id: "info",
+            form: ExtraInfoForm as unknown as TAtscriptAnnotatedType,
+            handle: ({ username, data }) => {
+              captured.push({ username, data });
+            },
+          },
+        ],
+      },
+    });
+    try {
+      const { pwBody } = await startInviteAcceptTail(app, inviteEmail);
+      // Demo wires acceptProfileForm — profile prompt runs BEFORE extraSteps.
+      const afterProfile = await app.triggerWf("public", {
+        wfid: "auth.invite",
+        wfs: pwBody.wfs,
+        input: { displayName: "Extra User" },
+      });
+      const extraBody = await readWfPause(afterProfile);
+      expect(extraBody.wfs).toBeTruthy();
+
+      const submit = await app.triggerWf("public", {
+        wfid: "auth.invite",
+        wfs: extraBody.wfs,
+        input: { fullName: "Alice Cooper", dateOfBirth: "1990-05-15" },
+      });
+      const finalBody = await expectFinished<{ userId?: string }>(submit);
+      expect(finalBody.data?.userId).toBe(inviteEmail);
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0].username).toBe(inviteEmail);
+      expect(captured[0].data.fullName).toBe("Alice Cooper");
+      expect(captured[0].data.dateOfBirth).toBe("1990-05-15");
+
+      expect((await app.appHandle.aooth.userService.getUser(inviteEmail)).account.active).toBe(
+        true,
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("WF-INVITE-12 — extraStep handler throws Error → form re-prompt with formMessage; retry succeeds", async () => {
+    // Pins error-recovery wire: a handler throwing `Error("...")` must surface
+    // as a re-prompt with the message on `inputRequired.context.errors.__form`
+    // (NOT a 500, NOT a workflow abort), and account activation must NOT
+    // advance past the rejected step. The `fullName.length < 5` rule is
+    // server-side ONLY — the form's `@expect.minLength 2` accepts both inputs
+    // so the handler is the isolated rejector under test.
+    const inviteEmail = "newcomer-retry@acme.test";
+    let invocations = 0;
+    const app = await buildTestApp({
+      inviteOpts: {
+        accept: { showConfirmation: false },
+        extraSteps: [
+          {
+            id: "info",
+            form: ExtraInfoForm as unknown as TAtscriptAnnotatedType,
+            handle: ({ data }) => {
+              invocations++;
+              const raw = data.fullName;
+              const name = typeof raw === "string" ? raw : "";
+              if (name.length < 5) throw new Error("Name too short");
+            },
+          },
+        ],
+      },
+    });
+    try {
+      const { pwBody } = await startInviteAcceptTail(app, inviteEmail);
+      const afterProfile = await app.triggerWf("public", {
+        wfid: "auth.invite",
+        wfs: pwBody.wfs,
+        input: { displayName: "Retry User" },
+      });
+      const extraBody = await readWfPause(afterProfile);
+      expect(extraBody.wfs).toBeTruthy();
+
+      const reject = await app.triggerWf("public", {
+        wfid: "auth.invite",
+        wfs: extraBody.wfs,
+        input: { fullName: "Bob", dateOfBirth: "1985-01-01" },
+      });
+      const rejectBody = await readWfPause(reject);
+      expect(rejectBody.wfs).toBeTruthy();
+      expect((rejectBody as { finished?: unknown }).finished).not.toBe(true);
+      expect(wfErrors(rejectBody)["__form"]).toBe("Name too short");
+      expect(invocations).toBe(1);
+      expect((await app.appHandle.aooth.userService.getUser(inviteEmail)).account.active).toBe(
+        false,
+      );
+
+      const accept = await app.triggerWf("public", {
+        wfid: "auth.invite",
+        wfs: rejectBody.wfs,
+        input: { fullName: "Robert", dateOfBirth: "1985-01-01" },
+      });
+      const finalBody = await expectFinished<{ userId?: string }>(accept);
+      expect(finalBody.data?.userId).toBe(inviteEmail);
+      expect(invocations).toBe(2);
+      expect((await app.appHandle.aooth.userService.getUser(inviteEmail)).account.active).toBe(
+        true,
+      );
     } finally {
       await app.close();
     }
