@@ -28,7 +28,12 @@ export function generateTotpCode(secret: string, config?: TotpConfig): string {
   return hotpCode(base32.decode(secret), counter, digits);
 }
 
-export function verifyTotpCode(secret: string, code: string, config?: TotpConfig): boolean {
+/**
+ * Returns the matched HOTP counter when `code` is valid within the verification
+ * window, otherwise `null`. Returning the counter (not a bool) lets the caller
+ * persist `lastUsedWindow` and reject same-window replays (RFC 6238 §5.2 SHOULD).
+ */
+export function verifyTotpCode(secret: string, code: string, config?: TotpConfig): number | null {
   const period = config?.period ?? 30;
   const digits = config?.digits ?? 6;
   const window = config?.window ?? 1;
@@ -40,19 +45,20 @@ export function verifyTotpCode(secret: string, code: string, config?: TotpConfig
   // Submitted code must match expected `digits` length; reject otherwise so
   // `timingSafeEqual` (equal-length-buffer requirement) receives a clean input
   // and an attacker can't probe digit-count via a length-mismatch shortcut.
-  if (typeof code !== "string" || code.length !== digits) return false;
+  if (typeof code !== "string" || code.length !== digits) return null;
   const submitted = Buffer.from(code, "utf8");
 
   // Constant-time per-window check: iterate the full window unconditionally so
   // a valid early-window match doesn't return faster than a late-window one.
-  let matched = false;
+  let matchedCounter: number | null = null;
   for (let i = -window; i <= window; i++) {
-    const expected = Buffer.from(hotpCode(key, counter + i, digits), "utf8");
+    const stepCounter = counter + i;
+    const expected = Buffer.from(hotpCode(key, stepCounter, digits), "utf8");
     if (expected.length === submitted.length && timingSafeEqual(expected, submitted)) {
-      matched = true;
+      matchedCounter = stepCounter;
     }
   }
-  return matched;
+  return matchedCounter;
 }
 
 export function generateMfaCode(length = 6): string {

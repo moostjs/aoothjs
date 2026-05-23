@@ -425,15 +425,42 @@ export class UserService<T extends object = object> {
     const totp = user.mfa.methods.find((m) => m.name === "totp" && m.confirmed);
     if (!totp) throw new UserAuthError("MFA_NOT_CONFIGURED");
 
-    if (verifyTotpCode(totp.value, code, config)) {
-      if (user.account.failedLoginAttempts > 0) {
-        await this.store.update(username, {
-          set: {
-            account: { failedLoginAttempts: 0 },
-          } as DeepPartial<UserCredentials>,
-        });
-      }
-      return;
+    const matchedCounter = verifyTotpCode(totp.value, code, config);
+    // Replay guard: a code whose HOTP counter is `<= lastUsedWindow` was already
+    // consumed in this or an earlier window. Fall through to the same wrong-code
+    // path so we don't leak "replay" vs "wrong" to an attacker.
+    const isReplay =
+      matchedCounter !== null &&
+      totp.lastUsedWindow !== undefined &&
+      matchedCounter <= totp.lastUsedWindow;
+    if (matchedCounter !== null && !isReplay) {
+      // Re-check replay inside the CAS mutator against the FRESH snapshot so two
+      // concurrent same-window logins resolve to exactly one winner: the loser
+      // re-reads, sees the winner's `lastUsedWindow`, returns `null` (no-op),
+      // and falls through to the wrong-code path. Without this re-check the
+      // outer `isReplay` is bypassed by a race between `getUser` and `withCas`.
+      let replayDuringCas = false;
+      await this.store.withCas(username, (current) => {
+        const currentTotp = current.mfa.methods.find((m) => m.name === "totp" && m.confirmed);
+        if (
+          currentTotp?.lastUsedWindow !== undefined &&
+          matchedCounter <= currentTotp.lastUsedWindow
+        ) {
+          replayDuringCas = true;
+          return null;
+        }
+        const methods = current.mfa.methods.map((m) =>
+          m.name === "totp" && m.confirmed ? { ...m, lastUsedWindow: matchedCounter } : m,
+        );
+        const set: DeepPartial<UserCredentials> = {
+          mfa: { methods } as DeepPartial<MfaData>,
+        };
+        if (current.account.failedLoginAttempts > 0) {
+          set.account = { failedLoginAttempts: 0 };
+        }
+        return { set };
+      });
+      if (!replayDuringCas) return;
     }
 
     await this.incrementAndMaybeLock(username, user.account, "MFA_INVALID");

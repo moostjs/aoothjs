@@ -568,18 +568,31 @@ describe("SEC — TOTP attacks", () => {
     await app.close();
   });
 
-  it("SEC-18 — TOTP replay within window: same code accepted twice (RFC 6238 documented behavior)", async () => {
+  it("SEC-18 — TOTP replay within window: same code rejected on second submit (RFC 6238 enforcement)", async () => {
+    // Replay-protection (not documentation): an attacker who intercepts a
+    // freshly-used code (sniff, shoulder-surf, malicious extension) within the
+    // live 30 s window must not be able to log in by replaying it. The first
+    // submission persists `lastUsedWindow`; the second one is rejected as
+    // MFA_INVALID — same UX as a wrong code, no oracle for "this was already
+    // used" leaks back to the attacker.
     const grace = app.fixtures.users.t1_grace;
     const code = generateTotpCode(grace.totpSecret as string);
 
     const loginOnce = async (): Promise<boolean> => {
       const final = await runTotpLoginWorkflow(app, grace, { code });
-      const body = await expectFinished<{ accessToken?: string }>(final);
-      return typeof body.data?.accessToken === "string";
+      if (final.status >= 400) return false;
+      const body = (await final.json()) as {
+        finished?: boolean;
+        data?: { accessToken?: string };
+        inputRequired?: unknown;
+      };
+      // Replay-rejected on the workflow returns `{ inputRequired: …errors: {code:'Invalid code'} }`
+      // (mfa-totp step re-prompts via `wf.requireInput`) — i.e. NOT a finished envelope.
+      return body.finished === true && typeof body.data?.accessToken === "string";
     };
 
     expect(await loginOnce()).toBe(true);
-    expect(await loginOnce()).toBe(true);
+    expect(await loginOnce()).toBe(false);
   });
 });
 

@@ -938,6 +938,23 @@ describe("UserService", () => {
         expect((e as UserAuthError).type).toBe("NOT_FOUND");
       }
     });
+
+    it("rejects a same-window TOTP replay (RFC 6238 SHOULD)", async () => {
+      // An attacker who observes a freshly-used code (network sniff, malicious
+      // browser ext, shoulder-surf) must not be able to reuse it within the
+      // live 30 s window. The replay surfaces as MFA_INVALID — same UX as a
+      // wrong code, so we don't leak "replayed" vs "wrong" to the attacker.
+      const code = generateTotpCode(secret, { clock: () => now });
+      await mfaSvc.verifyMfa("alice", code, { clock: () => now });
+      try {
+        await mfaSvc.verifyMfa("alice", code, { clock: () => now });
+        expect.unreachable();
+      } catch (e) {
+        expect((e as UserAuthError).type).toBe("MFA_INVALID");
+      }
+      const user = await mfaSvc.getUser("alice");
+      expect(user.account.failedLoginAttempts).toBe(1);
+    });
   });
 
   describe("trustedDevices", () => {

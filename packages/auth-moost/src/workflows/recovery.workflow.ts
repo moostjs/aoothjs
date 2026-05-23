@@ -557,7 +557,7 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     if (factor === "totp") {
       const totpMethod = user.mfa.methods.find((m) => m.name === "totp" && m.confirmed);
       if (!totpMethod) return false;
-      return verifyTotpCode(totpMethod.value, value);
+      return verifyTotpCode(totpMethod.value, value) !== null;
     }
     return false;
   }

@@ -61,49 +61,63 @@ describe("generateTotpCode / verifyTotpCode", () => {
 
   it("should verify a correct code", () => {
     const code = generateTotpCode(secret, { clock: fixedClock });
-    expect(verifyTotpCode(secret, code, { clock: fixedClock })).toBe(true);
+    const result = verifyTotpCode(secret, code, { clock: fixedClock });
+    expect(result).not.toBeNull();
+    expect(typeof result).toBe("number");
   });
 
   it("should verify within window tolerance", () => {
     const code = generateTotpCode(secret, { clock: fixedClock });
     // 30 seconds later, should still verify with window=1
     const laterClock = () => fixedClock() + 30000;
-    expect(verifyTotpCode(secret, code, { clock: laterClock, window: 1 })).toBe(true);
+    const result = verifyTotpCode(secret, code, { clock: laterClock, window: 1 });
+    expect(result).not.toBeNull();
+    expect(typeof result).toBe("number");
   });
 
   it("should reject code outside window", () => {
     const code = generateTotpCode(secret, { clock: fixedClock });
     // 90 seconds later with window=1 (only checks ±1 step)
     const farClock = () => fixedClock() + 90000;
-    expect(verifyTotpCode(secret, code, { clock: farClock, window: 1 })).toBe(false);
+    expect(verifyTotpCode(secret, code, { clock: farClock, window: 1 })).toBeNull();
   });
 
   it("should reject an incorrect code", () => {
-    expect(verifyTotpCode(secret, "000000", { clock: fixedClock })).toBe(false);
+    expect(verifyTotpCode(secret, "000000", { clock: fixedClock })).toBeNull();
   });
 
   it("should support 8-digit codes", () => {
     const code = generateTotpCode(secret, { clock: fixedClock, digits: 8 });
     expect(code).toMatch(/^\d{8}$/);
-    expect(verifyTotpCode(secret, code, { clock: fixedClock, digits: 8 })).toBe(true);
+    const result = verifyTotpCode(secret, code, { clock: fixedClock, digits: 8 });
+    expect(result).not.toBeNull();
+    expect(typeof result).toBe("number");
+  });
+
+  it("returns the matched HOTP counter (replay-protection hook)", () => {
+    // Counter return enables the storage layer to persist `lastUsedWindow` and
+    // reject same-window replays (RFC 6238 §5.2 SHOULD).
+    const code = generateTotpCode(secret, { clock: fixedClock });
+    const expectedCounter = Math.floor(fixedClock() / 1000 / 30);
+    expect(verifyTotpCode(secret, code, { clock: fixedClock })).toBe(expectedCounter);
   });
 
   it("rejects codes of the wrong length (digit-count probe defence)", () => {
     // Wrong length is a quick-reject path; ensures `timingSafeEqual` never
     // sees a length-mismatched buffer pair.
-    expect(verifyTotpCode(secret, "12345", { clock: fixedClock })).toBe(false);
-    expect(verifyTotpCode(secret, "1234567", { clock: fixedClock })).toBe(false);
-    expect(verifyTotpCode(secret, "", { clock: fixedClock })).toBe(false);
+    expect(verifyTotpCode(secret, "12345", { clock: fixedClock })).toBeNull();
+    expect(verifyTotpCode(secret, "1234567", { clock: fixedClock })).toBeNull();
+    expect(verifyTotpCode(secret, "", { clock: fixedClock })).toBeNull();
   });
 
   it("rejects non-string inputs without throwing", () => {
     // Defensive: handler boundaries should be the validator, but the function
     // must not crash on a coerced wrong-type input either.
-    expect(verifyTotpCode(secret, undefined as unknown as string, { clock: fixedClock })).toBe(
-      false,
-    );
-    expect(verifyTotpCode(secret, null as unknown as string, { clock: fixedClock })).toBe(false);
-    expect(verifyTotpCode(secret, 123 as unknown as string, { clock: fixedClock })).toBe(false);
+    expect(
+      verifyTotpCode(secret, undefined as unknown as string, { clock: fixedClock }),
+    ).toBeNull();
+    expect(verifyTotpCode(secret, null as unknown as string, { clock: fixedClock })).toBeNull();
+    expect(verifyTotpCode(secret, 123 as unknown as string, { clock: fixedClock })).toBeNull();
   });
 });
 

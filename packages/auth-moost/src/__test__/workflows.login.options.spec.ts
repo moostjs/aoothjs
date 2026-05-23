@@ -720,7 +720,10 @@ describe("LoginWorkflowOpts — Phase 8 session policy", () => {
     const r3 = await app.trigger({ wfs: r2.body?.wfs as string, input: { code } });
     expect(r3.body?.wfs).toBeTruthy();
     expect((r3.body?.data as Record<string, unknown>)?.userId).toBeUndefined();
-    const code2 = generateTotpCode(secret);
+    // Step-up re-MFA in the same window: must use a NEXT-window code, not the
+    // same code again — same-window replay is now blocked by `verifyMfa`.
+    // Server accepts a +1-window code via the default `window=1` tolerance.
+    const code2 = generateTotpCode(secret, { clock: () => Date.now() + 30_000 });
     const r4 = await app.trigger({ wfs: r3.body?.wfs as string, input: { code: code2 } });
     expect((r4.body?.data as Record<string, unknown>)?.userId).toBe("alice");
     expect(calls).toBeGreaterThanOrEqual(1);

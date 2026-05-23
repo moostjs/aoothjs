@@ -33,7 +33,7 @@ export interface AoothUserCredentials {
 
     @db.patch.strategy 'merge'
     mfa: {
-        methods: { name: string, confirmed: boolean, value: string }[]
+        methods: { name: string, confirmed: boolean, value: string, lastUsedWindow?: number.int }[]
 
         defaultMethod: string
         autoSend: boolean

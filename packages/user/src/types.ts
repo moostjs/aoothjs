@@ -81,6 +81,12 @@ export interface MfaMethod {
   confirmed: boolean;
   /** The method's value: email address, phone number, or TOTP secret */
   value: string;
+  /**
+   * Last HOTP counter accepted for this method (TOTP only). Server-managed
+   * replay guard — `verifyMfa` rejects any code whose matched counter is
+   * `<= lastUsedWindow`. Never written from user-facing input.
+   */
+  lastUsedWindow?: number;
 }
 
 // ---- Configuration ----
