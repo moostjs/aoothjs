@@ -75,7 +75,7 @@ import { Controller, Injectable } from "moost";
 import type { AuditEvent } from "../audit/index";
 import { useAuth } from "../auth.composables";
 import { Public } from "../auth.decorator";
-import { AuthWorkflowBase } from "./auth-workflow.base";
+import { AuthWorkflowBase, stripReservedUserKeys } from "./auth-workflow.base";
 import {
   type LoginWorkflowOpts,
   type ResolvedLoginWorkflowOpts,
@@ -1128,9 +1128,20 @@ export class LoginWorkflow extends AuthWorkflowBase {
   @Step("profile-complete")
   async profileComplete(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
     const wf = useAtscriptWf(this.opts.forms.profileComplete);
-    const input = wf.resolveInput({ partial: "deep" });
+    const input = wf.resolveInput({ partial: "deep" }) as Record<string, unknown>;
     this.requireUsername(ctx);
-    await this.applyProfile(ctx.username, input as Record<string, unknown>);
+    // Defense (audit hole #15 Sink A): strip privileged top-level
+    // `UserCredentials` keys before handing off to `applyProfile`. The
+    // form parser preserves unknown extras (`partial: "deep"`), and a
+    // consumer's `.as` profile form may legitimize keys like `roles` /
+    // `account` / `password`. Without this strip, a default `applyProfile`
+    // override that deep-merges the payload onto the user row would let
+    // any logged-in user self-promote / overwrite their password hash via
+    // the post-login profile-complete prompt. Strip lives at the step so
+    // consumer overrides of `applyProfile` (external CRM, etc.) still
+    // receive a sanitized payload — see `auth-workflow.base.ts`.
+    const sanitized = stripReservedUserKeys(input);
+    await this.applyProfile(ctx.username, sanitized);
     ctx.profileApplied = true;
     return undefined;
   }

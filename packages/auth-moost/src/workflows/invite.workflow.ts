@@ -87,7 +87,7 @@ import {
   type PreparedUserInput,
   type ResolvedInviteWorkflowOpts,
 } from "./invite.workflow.options";
-import { AuthWorkflowBase } from "./auth-workflow.base";
+import { AuthWorkflowBase, stripReservedUserKeys } from "./auth-workflow.base";
 import type { DeliverPayload } from "./login.workflow";
 
 export interface InviteWfCtx {
@@ -172,47 +172,6 @@ export function parseInviteRoles(input?: string[]): string[] {
     if (trimmed) seen.add(trimmed);
   }
   return [...seen];
-}
-
-/**
- * Top-level `UserCredentials` keys that the accept-time profile payload MUST
- * NEVER carry through to persistence. Server sets these out-of-band (admin-
- * supplied `ctx.roles`, password-set step, account activation, MFA enrolment
- * elsewhere). If the consumer's `.as` profile form mistakenly declares one
- * — or an attacker submits one as an extra field — the strip at
- * `applyProfileStep` (NOT at the `applyProfile` override seam) blocks
- * shadowing.
- *
- * Defense lives at the workflow step so consumer subclasses that replace
- * `applyProfile` with a different storage path (e.g. external CRM) still
- * receive a sanitized payload.
- *
- * Shared with #15 (login/recovery ctx-pass shadowing — handled separately).
- */
-const STRIPPED_FROM_PROFILE = new Set<string>([
-  "roles",
-  "version",
-  "id",
-  "username",
-  "account",
-  "password",
-  "passwordHistory",
-  "mfa",
-  "trustedDevices",
-  "backupCodes",
-  "pendingInvitation",
-]);
-
-/**
- * Return a shallow copy of `profile` with `STRIPPED_FROM_PROFILE` keys
- * removed. Does not mutate the input.
- */
-function stripStructuralKeys(profile: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(profile)) {
-    if (!STRIPPED_FROM_PROFILE.has(key)) out[key] = profile[key];
-  }
-  return out;
 }
 
 /**
@@ -919,7 +878,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
   @Public()
   async applyProfileStep(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     this.requireUsername(ctx);
-    const sanitized = stripStructuralKeys(ctx.profile ?? {});
+    const sanitized = stripReservedUserKeys(ctx.profile ?? {});
     if (Object.keys(sanitized).length === 0) {
       ctx.profileApplied = true;
       return undefined;

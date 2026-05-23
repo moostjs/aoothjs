@@ -10,6 +10,47 @@ import { UserAuthError } from "@aooth/user";
 import { HttpError } from "@moostjs/event-http";
 import { useRequest } from "@wooksjs/event-http";
 
+/**
+ * Top-level `UserCredentials` keys that workflow-collected profile payloads
+ * MUST NEVER carry through to persistence. The server sets these out-of-band
+ * (admin-supplied `ctx.roles`, password-set step, account activation, MFA
+ * enrolment elsewhere). If the consumer's `.as` profile form mistakenly
+ * declares one — or an attacker submits one as an extra field — the
+ * strip applied at the workflow step (NOT at the `applyProfile` override
+ * seam) blocks shadowing.
+ *
+ * Shared between `InviteWorkflow.applyProfileStep` (audit hole #6) and
+ * `LoginWorkflow.profileComplete` (audit hole #15 Sink A). The strip lives
+ * at the workflow step so consumer subclasses that replace `applyProfile`
+ * with a different storage path (e.g. external CRM) still receive a
+ * sanitized payload.
+ */
+export const RESERVED_USER_KEYS: ReadonlySet<string> = new Set<string>([
+  "roles",
+  "version",
+  "id",
+  "username",
+  "account",
+  "password",
+  "passwordHistory",
+  "mfa",
+  "trustedDevices",
+  "backupCodes",
+  "pendingInvitation",
+]);
+
+/**
+ * Return a shallow copy of `profile` with `RESERVED_USER_KEYS` removed.
+ * Does not mutate the input.
+ */
+export function stripReservedUserKeys(profile: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(profile)) {
+    if (!RESERVED_USER_KEYS.has(key)) out[key] = profile[key];
+  }
+  return out;
+}
+
 /** Workflow context shape expected by `mintPin` + `verifyPin`. */
 interface PinCtx {
   pin?: string;
