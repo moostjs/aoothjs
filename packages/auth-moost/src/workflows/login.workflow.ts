@@ -323,7 +323,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
    * carries no user identifier).
    */
   protected async storeTrustedDevice(userId: string, record: TrustedDeviceRecord): Promise<void> {
-    await this.users.addTrustedDevice(userId, record);
+    await this.withStoreErrorTranslation(() => this.users.addTrustedDevice(userId, record));
   }
 
   /**
@@ -722,11 +722,14 @@ export class LoginWorkflow extends AuthWorkflowBase {
     if (!ctx.email) {
       const askEmailWf = useAtscriptWf(this.opts.forms.askEmail);
       const input = askEmailWf.resolveInput() as { email: string };
-      await this.users.addMfaMethod(ctx.username, {
-        name: "email",
-        value: input.email,
-        confirmed: false,
-      });
+      const username = ctx.username;
+      await this.withStoreErrorTranslation(() =>
+        this.users.addMfaMethod(username, {
+          name: "email",
+          value: input.email,
+          confirmed: false,
+        }),
+      );
       ctx.email = input.email;
       // Generate + send the OTP, then ask for it next round.
       const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
@@ -743,7 +746,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
     const input = pincodeWf.resolveInput() as { code: string };
     const pinErr = this.verifyPin(ctx, input.code);
     if (pinErr) throw pincodeWf.requireInput({ errors: pinErr });
-    await this.users.confirmMfaMethod(ctx.username, "email");
+    await this.withStoreErrorTranslation(() => this.users.confirmMfaMethod(ctx.username, "email"));
     ctx.emailConfirmed = true;
     delete ctx.pin;
     delete ctx.pinExpire;
@@ -757,11 +760,14 @@ export class LoginWorkflow extends AuthWorkflowBase {
     if (!ctx.phone) {
       const askPhoneWf = useAtscriptWf(this.opts.forms.askPhone);
       const input = askPhoneWf.resolveInput() as { phone: string };
-      await this.users.addMfaMethod(ctx.username, {
-        name: "sms",
-        value: input.phone,
-        confirmed: false,
-      });
+      const username = ctx.username;
+      await this.withStoreErrorTranslation(() =>
+        this.users.addMfaMethod(username, {
+          name: "sms",
+          value: input.phone,
+          confirmed: false,
+        }),
+      );
       ctx.phone = input.phone;
       const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
       await this.deliver({
@@ -777,7 +783,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
     const input = pincodeWf.resolveInput() as { code: string };
     const pinErr = this.verifyPin(ctx, input.code);
     if (pinErr) throw pincodeWf.requireInput({ errors: pinErr });
-    await this.users.confirmMfaMethod(ctx.username, "sms");
+    await this.withStoreErrorTranslation(() => this.users.confirmMfaMethod(ctx.username, "sms"));
     ctx.phoneConfirmed = true;
     delete ctx.pin;
     delete ctx.pinExpire;
@@ -1013,6 +1019,9 @@ export class LoginWorkflow extends AuthWorkflowBase {
           if (err.details?.lockEnds !== undefined) throw new HttpError(423, "Account locked");
           throw wf.requireInput({ errors: { code: "Invalid code" } });
         }
+        // `verifyMfa` writes `lastUsedWindow` via `withCas` for replay defense
+        // (audit #1) — exhausted CAS budget surfaces as 409 Conflict.
+        if (err.type === "CAS_EXHAUSTED") throw new HttpError(409, err.message);
       }
       throw err;
     }
@@ -1037,7 +1046,9 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // it from the same envelope and enforces the alphanumeric+hyphen rule.
     const validated = wf.resolveInput() as { code: string };
     this.requireUsername(ctx);
-    const ok = await this.users.consumeBackupCode(ctx.username, validated.code);
+    const ok = await this.withStoreErrorTranslation(() =>
+      this.users.consumeBackupCode(ctx.username, validated.code),
+    );
     if (!ok) throw wf.requireInput({ errors: { code: "Invalid backup code" } });
     ctx.mfaChecked = true;
     ctx.riskStepUpEvaluated = false;

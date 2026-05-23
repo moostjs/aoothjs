@@ -12,6 +12,7 @@ const defaultMessages: Record<UserAuthErrorType, string> = {
   MFA_REQUIRED: "Multi-factor authentication is required",
   MFA_INVALID: "Invalid MFA code",
   MFA_NOT_CONFIGURED: "MFA method is not configured",
+  CAS_EXHAUSTED: "Update conflict — please retry",
 };
 
 export class UserAuthError extends Error {

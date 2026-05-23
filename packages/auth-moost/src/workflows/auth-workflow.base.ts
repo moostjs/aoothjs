@@ -82,6 +82,26 @@ export class AuthWorkflowBase {
   }
 
   /**
+   * Wrap an `UserStore` mutation that can race (`withCas`-backed paths:
+   * `consumeBackupCode`, `addMfaMethod`, `confirmMfaMethod`, `addTrustedDevice`)
+   * so a CAS retry-budget exhaustion surfaces as 409 Conflict — the canonical
+   * OCC status — rather than bubbling to the moost default 500. Client SHOULD
+   * retry; a 500 falsely implies the server is broken. Other `UserAuthError`
+   * shapes pass through unchanged so step-local catch blocks (e.g. ALREADY_EXISTS
+   * → 409 with a different reason) still see them.
+   */
+  protected async withStoreErrorTranslation<T>(op: () => Promise<T>): Promise<T> {
+    try {
+      return await op();
+    } catch (err) {
+      if (err instanceof UserAuthError && err.type === "CAS_EXHAUSTED") {
+        throw new HttpError(409, err.message);
+      }
+      throw err;
+    }
+  }
+
+  /**
    * Resolve the client IP from the active HTTP request, swallowing the case
    * where there is no HTTP context (unit tests that hand-roll the wf runtime).
    */
