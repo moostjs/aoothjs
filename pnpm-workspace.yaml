@@ -6,21 +6,21 @@ packages:
 
 catalog:
   "@atscript/core": ^0.1.59
-  "@atscript/db": ^0.1.83
-  "@atscript/db-client": ^0.1.83
-  "@atscript/db-sql-tools": ^0.1.83
-  "@atscript/db-sqlite": ^0.1.83
-  "@atscript/moost-db": ^0.1.83
-  "@atscript/moost-ui-presets": ^0.1.72
-  "@atscript/moost-wf": ^0.1.72
+  "@atscript/db": ^0.1.85
+  "@atscript/db-client": ^0.1.85
+  "@atscript/db-sql-tools": ^0.1.85
+  "@atscript/db-sqlite": ^0.1.85
+  "@atscript/moost-db": ^0.1.85
+  "@atscript/moost-ui-presets": ^0.1.73
+  "@atscript/moost-wf": ^0.1.73
   "@atscript/typescript": ^0.1.59
-  "@atscript/ui": ^0.1.72
-  "@atscript/ui-fns": ^0.1.72
-  "@atscript/ui-styles": ^0.1.72
-  "@atscript/ui-table": ^0.1.72
-  "@atscript/vue-form": ^0.1.72
-  "@atscript/vue-table": ^0.1.72
-  "@atscript/vue-wf": ^0.1.72
+  "@atscript/ui": ^0.1.73
+  "@atscript/ui-fns": ^0.1.73
+  "@atscript/ui-styles": ^0.1.73
+  "@atscript/ui-table": ^0.1.73
+  "@atscript/vue-form": ^0.1.73
+  "@atscript/vue-table": ^0.1.73
+  "@atscript/vue-wf": ^0.1.73
   "@moostjs/event-http": ^0.6.15
   "@moostjs/event-wf": ^0.6.15
   "@moostjs/vite": ^0.6.15

@@ -102,6 +102,10 @@ export class UsersStoreAtscriptDb<
     // If only username was set (no actual changes), no-op
     if (Object.keys(patch).length <= 1) return true;
 
+    if (update.expectedVersion !== undefined) {
+      patch.$cas = { version: update.expectedVersion };
+    }
+
     const result = await this.table.updateOne(patch);
     return result.matchedCount > 0;
   }

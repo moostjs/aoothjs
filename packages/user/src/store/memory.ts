@@ -28,12 +28,18 @@ export class UserStoreMemory<T extends object = object> extends UserStore<T> {
     if (this.store.has(data.username)) {
       throw new UserAuthError("ALREADY_EXISTS", `User "${data.username}" already exists`);
     }
-    this.store.set(data.username, structuredClone(data));
+    // OCC counter is server-managed: seed unconditionally, ignore caller-supplied version.
+    const cloned = structuredClone(data);
+    cloned.version = 0;
+    this.store.set(data.username, cloned);
   }
 
   async update(username: string, update: UserStoreUpdate): Promise<boolean> {
     const user = this.store.get(username);
     if (!user) return false;
+    if (update.expectedVersion !== undefined && (user.version ?? 0) !== update.expectedVersion) {
+      return false;
+    }
     if (update.set) {
       deepMerge(user, update.set as Record<string, unknown>);
     }
@@ -42,6 +48,7 @@ export class UserStoreMemory<T extends object = object> extends UserStore<T> {
         incrementAtPath(user, path, amount);
       }
     }
+    user.version = (user.version ?? 0) + 1;
     return true;
   }
 

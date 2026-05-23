@@ -1,6 +1,14 @@
 export interface UserCredentials {
   id: string;
   username: string;
+  /**
+   * Server-managed optimistic-concurrency counter. Bumped by `UserStore.update`
+   * on every successful write; checked against `UserStoreUpdate.expectedVersion`
+   * for CAS. Callers MUST NOT write it directly — atscript-db rejects direct
+   * writes with `DbError("VERSION_COLUMN_WRITE")`. Optional in TS so pre-OCC
+   * fixtures keep compiling; the store seeds `0` on insert.
+   */
+  version?: number;
   password: PasswordData;
   account: AccountData;
   mfa: MfaData;
@@ -152,6 +160,13 @@ export interface UserStoreUpdate {
   set?: DeepPartial<UserCredentials>;
   /** Dot-paths to atomically increment: e.g. {'account.failedLoginAttempts': 1} */
   inc?: Record<string, number>;
+  /**
+   * Optimistic concurrency control: when supplied, the store applies the
+   * update iff the row's current `version` equals this value. On mismatch
+   * the store returns `false` (same shape as "not found") and does NOT
+   * mutate. Service callers treat both states as "stale read, retry".
+   */
+  expectedVersion?: number;
 }
 
 // ---- Error ----
@@ -167,7 +182,8 @@ export type UserAuthErrorType =
   | "PASSWORD_IN_HISTORY"
   | "MFA_REQUIRED"
   | "MFA_INVALID"
-  | "MFA_NOT_CONFIGURED";
+  | "MFA_NOT_CONFIGURED"
+  | "CAS_EXHAUSTED";
 
 // ---- Service results ----
 

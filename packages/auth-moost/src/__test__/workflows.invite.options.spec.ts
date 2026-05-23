@@ -55,6 +55,7 @@ const BASE_USER_COLUMNS = new Set([
   "trustedDevices",
   "createdAt",
   "updatedAt",
+  "version",
 ]);
 
 const PASSWORD = "NewPassword123";

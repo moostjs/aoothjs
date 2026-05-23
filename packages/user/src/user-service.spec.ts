@@ -605,6 +605,34 @@ describe("UserService", () => {
       const user = await svc.getUser("alice");
       expect(user.mfa.autoSend).toBe(true);
     });
+
+    it("REGRESSION — concurrent addMfaMethod must not lose a method", async () => {
+      // Two devices enrolling different MFA factors at the same time must
+      // both land — the read-modify-write of mfa.methods[] used to drop one.
+      await Promise.all([
+        svc.addMfaMethod("alice", { name: "totp", confirmed: false, value: "SECRET" }),
+        svc.addMfaMethod("alice", { name: "email", confirmed: false, value: "alice@test.com" }),
+      ]);
+      const user = await svc.getUser("alice");
+      expect(user.mfa.methods.map((m) => m.name).toSorted((a, b) => a.localeCompare(b))).toEqual([
+        "email",
+        "totp",
+      ]);
+    });
+
+    it("REGRESSION — concurrent confirmMfaMethod must not race with addMfaMethod", async () => {
+      // User adds totp via one tab while confirming a pre-existing email
+      // factor in another. Both writes must compose — confirming email
+      // shouldn't wipe the newly-added totp from the methods array.
+      await svc.addMfaMethod("alice", { name: "email", confirmed: false, value: "alice@test.com" });
+      await Promise.all([
+        svc.addMfaMethod("alice", { name: "totp", confirmed: false, value: "SECRET" }),
+        svc.confirmMfaMethod("alice", "email"),
+      ]);
+      const user = await svc.getUser("alice");
+      const byName = Object.fromEntries(user.mfa.methods.map((m) => [m.name, m.confirmed]));
+      expect(byName).toEqual({ email: true, totp: false });
+    });
   });
 
   describe("getPasswordHasher", () => {
@@ -742,6 +770,15 @@ describe("UserService", () => {
       const codes = await svc.generateBackupCodes("alice", 3);
       expect(await svc.consumeBackupCode("alice", codes[0])).toBe(true);
       expect(await svc.consumeBackupCode("alice", codes[0])).toBe(false);
+    });
+
+    it("REGRESSION — concurrent consume of the same code must succeed at most once", async () => {
+      const codes = await svc.generateBackupCodes("alice", 3);
+      const [a, b] = await Promise.all([
+        svc.consumeBackupCode("alice", codes[0]),
+        svc.consumeBackupCode("alice", codes[0]),
+      ]);
+      expect([a, b].filter(Boolean)).toHaveLength(1);
     });
 
     it("should return false when user has no backup codes", async () => {
@@ -978,6 +1015,20 @@ describe("UserService", () => {
       expect(list.length).toBe(2);
       expect(list[0].name).toBe("macbook");
       expect(list[1].name).toBe("phone");
+    });
+
+    it("REGRESSION — concurrent addTrustedDevice must not lose a record", async () => {
+      // Two devices opting in to "remember me" at the same instant: both
+      // records must land. Pre-OCC the read-modify-write of trustedDevices[]
+      // could drop one because both reads saw the empty list.
+      const r1 = dtSvc.issueTrustedDevice("alice", { ttlMs: 60_000, name: "macbook" });
+      const r2 = dtSvc.issueTrustedDevice("alice", { ttlMs: 60_000, name: "phone" });
+      await Promise.all([dtSvc.addTrustedDevice("alice", r1), dtSvc.addTrustedDevice("alice", r2)]);
+      const list = await dtSvc.listTrustedDevices("alice");
+      const names = list.map((r) => r.name);
+      expect(names).toHaveLength(2);
+      expect(names).toContain("macbook");
+      expect(names).toContain("phone");
     });
 
     it("issueTrustedDevice throws clearly when deviceTrust.secret is not configured", () => {

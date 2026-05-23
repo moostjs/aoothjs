@@ -22,6 +22,7 @@ import type {
   TrustedDeviceRecord,
   UserCredentials,
   UserServiceConfig,
+  UserStoreUpdate,
 } from "./types";
 import { UserStore } from "./store/user-store";
 import { maskMfaValue } from "./utils";
@@ -302,26 +303,24 @@ export class UserService<T extends object = object> {
   }
 
   async addMfaMethod(username: string, method: MfaMethod): Promise<void> {
-    const user = await this.getUser(username);
-    const methods = [...user.mfa.methods.filter((m) => m.name !== method.name), method];
-    await this.store.update(username, {
-      set: { mfa: { methods } } as DeepPartial<UserCredentials>,
+    await this.withCas(username, (user) => {
+      const methods = [...user.mfa.methods.filter((m) => m.name !== method.name), method];
+      return { set: { mfa: { methods } } as DeepPartial<UserCredentials> };
     });
   }
 
   async confirmMfaMethod(username: string, name: string): Promise<void> {
-    const user = await this.getUser(username);
-    let found = false;
-    const methods = user.mfa.methods.map((m) => {
-      if (m.name === name) {
-        found = true;
-        return { ...m, confirmed: true };
-      }
-      return m;
-    });
-    if (!found) throw new UserAuthError("MFA_NOT_CONFIGURED");
-    await this.store.update(username, {
-      set: { mfa: { methods } } as DeepPartial<UserCredentials>,
+    await this.withCas(username, (user) => {
+      let found = false;
+      const methods = user.mfa.methods.map((m) => {
+        if (m.name === name) {
+          found = true;
+          return { ...m, confirmed: true };
+        }
+        return m;
+      });
+      if (!found) throw new UserAuthError("MFA_NOT_CONFIGURED");
+      return { set: { mfa: { methods } } as DeepPartial<UserCredentials> };
     });
   }
 
@@ -383,27 +382,30 @@ export class UserService<T extends object = object> {
   /**
    * Consume a backup code: returns `true` and removes the matching hash
    * from storage if `code` matches a stored backup code; returns `false`
-   * if no match (without modifying storage).
-   *
-   * Read-then-write is not atomic at this layer: two concurrent consumes
-   * of the same code may both succeed, with the last write winning. The
-   * underlying store API does not expose an atomic match-and-remove, so
-   * this is acceptable at the intended scale (backup codes are a fallback
-   * path, not a hot one). Wrap in your store's transaction primitive if a
-   * stricter guarantee is required.
+   * if no match (without modifying storage). Single-use is enforced by
+   * optimistic-concurrency CAS on the version column — concurrent consumes
+   * of the same code race fairly and only one wins; the loser re-reads,
+   * finds the hash already removed, and returns `false`.
    *
    * Throws `UserAuthError("NOT_FOUND")` if the user does not exist.
+   * Throws `UserAuthError("CAS_EXHAUSTED")` if retries are saturated.
    */
   async consumeBackupCode(username: string, code: string): Promise<boolean> {
-    const user = await this.getUser(username);
-    const hashes = user.backupCodes ?? [];
-    const idx = hashes.findIndex((h) => verifyMfaCode(code, h));
-    if (idx < 0) return false;
-    const remaining = hashes.filter((_, i) => i !== idx);
-    await this.store.update(username, {
-      set: { backupCodes: remaining } as DeepPartial<UserCredentials>,
+    let consumed = false;
+    await this.withCas(username, (user) => {
+      const hashes = user.backupCodes ?? [];
+      const idx = hashes.findIndex((h) => verifyMfaCode(code, h));
+      if (idx < 0) {
+        // Reset across retries: previous attempt may have set true before CAS miss;
+        // if the competing writer consumed this code, we now correctly report false.
+        consumed = false;
+        return null;
+      }
+      consumed = true;
+      const remaining = hashes.filter((_, i) => i !== idx);
+      return { set: { backupCodes: remaining } as DeepPartial<UserCredentials> };
     });
-    return true;
+    return consumed;
   }
 
   /**
@@ -474,10 +476,9 @@ export class UserService<T extends object = object> {
    * merge strategy replace the whole array.
    */
   async addTrustedDevice(username: string, record: TrustedDeviceRecord): Promise<void> {
-    const user = await this.getUser(username);
-    const next = [...(user.trustedDevices ?? []), record];
-    await this.store.update(username, {
-      set: { trustedDevices: next } as DeepPartial<UserCredentials>,
+    await this.withCas(username, (user) => {
+      const next = [...(user.trustedDevices ?? []), record];
+      return { set: { trustedDevices: next } as DeepPartial<UserCredentials> };
     });
   }
 
@@ -534,6 +535,34 @@ export class UserService<T extends object = object> {
   }
 
   // ---- private helpers ----
+
+  /**
+   * Run a read-modify-write cycle under optimistic concurrency: re-reads the
+   * user on each attempt, hands it to `mutator`, and submits the returned
+   * patch with `expectedVersion: user.version ?? 0`. On CAS miss (`store.update`
+   * returns `false`) we re-read and retry up to `maxAttempts`. A `null` patch
+   * means "nothing to do" — exits early without writing. `MFA_NOT_CONFIGURED`-
+   * style errors thrown from `mutator` propagate immediately. `CAS_EXHAUSTED`
+   * is thrown when the budget is spent — pathological contention, not a
+   * normal-flow outcome.
+   */
+  private async withCas(
+    username: string,
+    mutator: (user: UserCredentials & T) => UserStoreUpdate | null,
+    maxAttempts = 5,
+  ): Promise<void> {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const user = await this.getUser(username);
+      const patch = mutator(user);
+      if (patch === null) return;
+      const applied = await this.store.update(username, {
+        ...patch,
+        expectedVersion: user.version ?? 0,
+      });
+      if (applied) return;
+    }
+    throw new UserAuthError("CAS_EXHAUSTED");
+  }
 
   private async applyPasswordChange(
     username: string,

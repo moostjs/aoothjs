@@ -83,6 +83,21 @@ describe("CredentialStoreJwt", () => {
       expect(await store.retrieve("garbage")).toBeNull();
     });
 
+    it("rejects a 2-segment token (signature stripped)", async () => {
+      // SEC: stripping the trailing `.signature` from a valid token leaves a
+      // syntactically plausible `header.payload` form. jose has been observed
+      // historically to interpret 2-segment input as alg=none when the configured
+      // verifier is permissive. The store pins HS256 verification, so a 2-segment
+      // input must always be rejected — distinct attack from the alg=none forge
+      // (3 segments with empty signature) covered by SEC-07 in the e2e suite.
+      const store = new CredentialStoreJwt({ secret: SECRET, clock });
+      const token = await store.persist(makeState("alice", clock.now()));
+      const segments = token.split(".");
+      expect(segments).toHaveLength(3);
+      const stripped = `${segments[0]}.${segments[1]}`;
+      expect(await store.retrieve(stripped)).toBeNull();
+    });
+
     it("revokes via denylist", async () => {
       const denylist = new DenylistStoreMemory({ clock });
       const store = new CredentialStoreJwt({ secret: SECRET, denylist, clock });
