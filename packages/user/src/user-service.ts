@@ -469,6 +469,25 @@ export class UserService<T extends object = object> {
     await this.incrementAndMaybeLock(username, user.account, "MFA_INVALID");
   }
 
+  /**
+   * Verify a TOTP code against an UNCONFIRMED `totp` MFA method during initial
+   * enrollment. Differs from `verifyMfa`:
+   *   - Looks up unconfirmed (not confirmed) — confirmed totp uses verifyMfa.
+   *   - Throws MFA_INVALID on bad code; no failed-login counter bump (this is
+   *     pre-activation; lockout doesn't apply).
+   *   - No replay/lastUsedWindow tracking — confirmMfaMethod gates further use.
+   *
+   * Throws: NOT_FOUND if user missing; MFA_NOT_CONFIGURED if no unconfirmed
+   * totp method; MFA_INVALID on wrong code.
+   */
+  async verifyTotpSetupCode(username: string, code: string, config?: TotpConfig): Promise<void> {
+    const user = await this.getUser(username);
+    const totp = user.mfa.methods.find((m) => m.name === "totp" && !m.confirmed);
+    if (!totp) throw new UserAuthError("MFA_NOT_CONFIGURED");
+    const matched = verifyTotpCode(totp.value, code, config);
+    if (matched === null) throw new UserAuthError("MFA_INVALID");
+  }
+
   getPasswordHasher(): PasswordHasher {
     return this.hasher;
   }

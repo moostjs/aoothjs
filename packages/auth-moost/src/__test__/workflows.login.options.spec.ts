@@ -818,3 +818,209 @@ describe("LoginWorkflowOpts — Phase 8 session policy", () => {
     expect(calls).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe("LoginWorkflowOpts — mfa.enrollRequired forced enrollment", () => {
+  // WHY: a policy tightening from "no MFA" to "MFA required" must NOT let
+  // existing un-enrolled users in unchallenged. The enroll step must run
+  // BECAUSE `mfaEnrolledMethods.length === 0` (the gate at line 433-436) —
+  // remove that branch and an attacker who phished a password walks in
+  // forever without ever enrolling a second factor.
+  it("sms path: pick → address → pincode confirm; method stored confirmed + becomes default + sms is sent", async () => {
+    const app = await prepareWfApp({
+      loginOpts: { mfa: { enrollRequired: true } },
+    });
+    await seedActiveUser(app.users, "user-a", "pwd-12345678");
+    // Sanity baseline — no methods before the flow runs.
+    expect((await app.users.getUser("user-a")).mfa.methods).toHaveLength(0);
+
+    const r2 = await startAndCredentials(app, "user-a", "pwd-12345678");
+    // Paused at EnrollPickMethodForm — enrollment is required, not the existing
+    // select2fa/pincode path (those gate on enrolled methods > 0; this user has
+    // 0). NOTE: paused responses carry `wfs` plus the form schema; the form
+    // schema serialization itself has `finished: true` as metadata so we use
+    // `wfs` truthiness (and absence of `data`) to detect pause vs WF-finish.
+    expect(r2.body?.wfs).toBeTruthy();
+    expect(r2.body?.data).toBeUndefined();
+
+    // Phase 1: pick method.
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { method: "sms" },
+    });
+    expect(r3.body?.wfs).toBeTruthy();
+    expect(r3.body?.data).toBeUndefined();
+    // No sms sent yet — Phase 2 hasn't run.
+    expect(app.sms.length).toBe(0);
+
+    // Phase 2: supply address — pincode dispatched.
+    const r4 = await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { address: "+15551234567" },
+    });
+    expect(r4.body?.wfs).toBeTruthy();
+    expect(r4.body?.data).toBeUndefined();
+    expect(app.sms.length).toBe(1);
+    expect(app.sms[0].recipient).toBe("+15551234567");
+    expect(app.sms[0].kind).toBe("login.pincode");
+    const code = app.sms[0].code;
+
+    // Phase 3: confirm pincode → enrollment commits + login completes.
+    const r5 = await app.trigger({
+      wfs: r4.body?.wfs as string,
+      input: { code },
+    });
+    const data = r5.body?.data as Record<string, unknown> | undefined;
+    expect(typeof data?.accessToken).toBe("string");
+    expect(data?.userId).toBe("user-a");
+
+    // Method was actually persisted, confirmed, and made default — without
+    // these flips the user's NEXT login would re-trigger enrollment (or worse,
+    // accept any code).
+    const user = await app.users.getUser("user-a");
+    const sms = user.mfa.methods.find((m) => m.name === "sms");
+    expect(sms).toBeDefined();
+    expect(sms?.value).toBe("+15551234567");
+    expect(sms?.confirmed).toBe(true);
+    expect(user.mfa.defaultMethod).toBe("sms");
+  });
+
+  // WHY: ensures Phase 2 routes the email branch to the `emails[]` capture
+  // (NOT the sms array) — a wiring mix-up would silently dispatch login codes
+  // over SMS to email addresses, breaking delivery while looking healthy.
+  it("email path: pincode is sent via email channel and method is confirmed", async () => {
+    const app = await prepareWfApp({
+      loginOpts: { mfa: { enrollRequired: true } },
+    });
+    await seedActiveUser(app.users, "user-b", "pwd-12345678");
+
+    const r2 = await startAndCredentials(app, "user-b", "pwd-12345678");
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { method: "email" },
+    });
+    const r4 = await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { address: "user@example.com" },
+    });
+    // Email sent, NOT sms — wiring proof.
+    expect(app.sms.length).toBe(0);
+    expect(app.emails.length).toBeGreaterThanOrEqual(1);
+    const sent = app.emails.find((e) => e.kind === "login.pincode");
+    expect(sent?.recipient).toBe("user@example.com");
+    expect(sent?.code).toBeTruthy();
+
+    const r5 = await app.trigger({
+      wfs: r4.body?.wfs as string,
+      input: { code: sent?.code },
+    });
+    const data = r5.body?.data as Record<string, unknown> | undefined;
+    expect(typeof data?.accessToken).toBe("string");
+
+    const user = await app.users.getUser("user-b");
+    const email = user.mfa.methods.find((m) => m.name === "email");
+    expect(email?.value).toBe("user@example.com");
+    expect(email?.confirmed).toBe(true);
+    expect(user.mfa.defaultMethod).toBe("email");
+  });
+
+  // WHY: TOTP has no Phase 2 (no address — secret is server-provisioned in
+  // Phase 1). The branch at lines 1095-1108 persists an UNCONFIRMED totp row;
+  // a valid TOTP code derived from THAT secret must flip it to confirmed and
+  // NO pincode must be emitted (otherwise app.sms / app.emails leaks).
+  it("totp path: secret provisioned in Phase 1, code accepted, method confirmed, no pincode emitted", async () => {
+    const app = await prepareWfApp({
+      loginOpts: { mfa: { enrollRequired: true } },
+    });
+    await seedActiveUser(app.users, "user-c", "pwd-12345678");
+
+    const r2 = await startAndCredentials(app, "user-c", "pwd-12345678");
+    // Phase 1: pick totp — secret should be persisted unconfirmed.
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { method: "totp" },
+    });
+    expect(r3.body?.wfs).toBeTruthy();
+    expect(r3.body?.data).toBeUndefined();
+
+    // Secret lives on the unconfirmed method row — read it back.
+    const interimUser = await app.users.getUser("user-c");
+    const totp = interimUser.mfa.methods.find((m) => m.name === "totp");
+    expect(totp).toBeDefined();
+    expect(totp?.confirmed).toBe(false);
+    expect(typeof totp?.value).toBe("string");
+    expect(totp?.value.length).toBeGreaterThan(0);
+
+    const code = generateTotpCode(totp!.value);
+    const r4 = await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { code },
+    });
+    const data = r4.body?.data as Record<string, unknown> | undefined;
+    expect(typeof data?.accessToken).toBe("string");
+
+    // No pincode side-channel for TOTP — proves Phase 2 short-circuit at line
+    // 1113 (the `enrollMethod === "sms" || "email"` guard).
+    expect(app.sms.length).toBe(0);
+    expect(app.emails.length).toBe(0);
+
+    const user = await app.users.getUser("user-c");
+    const totpFinal = user.mfa.methods.find((m) => m.name === "totp");
+    expect(totpFinal?.confirmed).toBe(true);
+    expect(user.mfa.defaultMethod).toBe("totp");
+  });
+
+  // WHY: if Phase 3 accepted any code for TOTP, an attacker with the password
+  // could enroll a TOTP secret they DON'T control and pass the gate. Pins
+  // that `verifyTotpSetupCode` is actually called and MFA_INVALID surfaces as
+  // a form error (not a 500 / not a silent pass).
+  it("totp path: invalid setup code is rejected with form error; method stays unconfirmed", async () => {
+    const app = await prepareWfApp({
+      loginOpts: { mfa: { enrollRequired: true } },
+    });
+    await seedActiveUser(app.users, "user-d", "pwd-12345678");
+
+    const r2 = await startAndCredentials(app, "user-d", "pwd-12345678");
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { method: "totp" },
+    });
+    const r4 = await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { code: "000000" },
+    });
+    // Not finished — must re-prompt with a form error, not crash or pass.
+    expect(r4.body?.data).toBeUndefined();
+    const errors = r4.body?.errors as Record<string, unknown> | undefined;
+    expect(errors?.code).toBeTruthy();
+
+    const user = await app.users.getUser("user-d");
+    const totp = user.mfa.methods.find((m) => m.name === "totp");
+    expect(totp?.confirmed).toBe(false);
+  });
+
+  // WHY: policy-loosening direction — without `enrollRequired`, the
+  // `prepare-mfa-options` short-circuit (line 856-858: 0 methods →
+  // mfaChecked=true) must let the user through. A future inversion of the
+  // gate would silently force every un-enrolled user into MFA enrollment,
+  // breaking the no-MFA configuration this test guards.
+  it("enrollRequired=false (default) + no MFA: enrollment SKIPPED, login completes immediately", async () => {
+    const app = await prepareWfApp({
+      loginOpts: { mfa: { enrollRequired: false } },
+    });
+    await seedActiveUser(app.users, "user-e", "pwd-12345678");
+    expect((await app.users.getUser("user-e")).mfa.methods).toHaveLength(0);
+
+    const r2 = await startAndCredentials(app, "user-e", "pwd-12345678");
+    // No paused enrollment forms — issues directly. Presence of `data` (not
+    // just `finished: true`) is the unambiguous WF-finish signal.
+    const data = r2.body?.data as Record<string, unknown> | undefined;
+    expect(typeof data?.accessToken).toBe("string");
+    expect(data?.userId).toBe("user-e");
+
+    // No leftover unconfirmed method was attached — proves the enroll step
+    // never ran (otherwise Phase 1's totp branch / Phase 2's address branch
+    // would have inserted an unconfirmed row).
+    const user = await app.users.getUser("user-e");
+    expect(user.mfa.methods).toHaveLength(0);
+  });
+});

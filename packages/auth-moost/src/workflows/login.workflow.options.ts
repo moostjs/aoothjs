@@ -15,6 +15,9 @@ import {
   BackupCodeForm,
   ConcurrencyLimitForm,
   ConsentMarketingForm,
+  EnrollAddressForm,
+  EnrollConfirmForm,
+  EnrollPickMethodForm,
   LoginCredentialsForm,
   MfaCodeForm,
   PersonaSelectForm,
@@ -110,6 +113,9 @@ export interface LoginWorkflowOpts {
     backupCode?: TAtscriptAnnotatedType;
     concurrencyLimit?: TAtscriptAnnotatedType;
     consentMarketing?: TAtscriptAnnotatedType;
+    enrollAddress?: TAtscriptAnnotatedType;
+    enrollConfirm?: TAtscriptAnnotatedType;
+    enrollPickMethod?: TAtscriptAnnotatedType;
     loginCredentials?: TAtscriptAnnotatedType;
     mfaCode?: TAtscriptAnnotatedType;
     personaSelect?: TAtscriptAnnotatedType;
@@ -191,6 +197,9 @@ export interface ResolvedLoginWorkflowOpts {
     backupCode: TAtscriptAnnotatedType;
     concurrencyLimit: TAtscriptAnnotatedType;
     consentMarketing: TAtscriptAnnotatedType;
+    enrollAddress: TAtscriptAnnotatedType;
+    enrollConfirm: TAtscriptAnnotatedType;
+    enrollPickMethod: TAtscriptAnnotatedType;
     loginCredentials: TAtscriptAnnotatedType;
     mfaCode: TAtscriptAnnotatedType;
     personaSelect: TAtscriptAnnotatedType;
@@ -278,6 +287,9 @@ export function mergeLoginOpts(opts: LoginWorkflowOpts = {}): ResolvedLoginWorkf
       backupCode: BackupCodeForm as unknown as TAtscriptAnnotatedType,
       concurrencyLimit: ConcurrencyLimitForm as unknown as TAtscriptAnnotatedType,
       consentMarketing: ConsentMarketingForm as unknown as TAtscriptAnnotatedType,
+      enrollAddress: EnrollAddressForm as unknown as TAtscriptAnnotatedType,
+      enrollConfirm: EnrollConfirmForm as unknown as TAtscriptAnnotatedType,
+      enrollPickMethod: EnrollPickMethodForm as unknown as TAtscriptAnnotatedType,
       loginCredentials: LoginCredentialsForm as unknown as TAtscriptAnnotatedType,
       mfaCode: MfaCodeForm as unknown as TAtscriptAnnotatedType,
       personaSelect: PersonaSelectForm as unknown as TAtscriptAnnotatedType,

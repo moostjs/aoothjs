@@ -332,6 +332,57 @@ export interface AskPhoneForm {
 }
 
 /**
+ * Forced MFA enrollment — method picker for `mfa-enroll-required`. Options
+ * come from `ctx.enrollAvailableTransports` so only consumer-enabled
+ * transports appear.
+ */
+@wf.context.pass 'enrollAvailableTransports'
+export interface EnrollPickMethodForm {
+    @ui.form.type 'radio'
+    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.enrollAvailableTransports) ? ctx.enrollAvailableTransports.map(t => ({ key: t, label: t === "totp" ? "Authenticator app (TOTP)" : t === "sms" ? "SMS" : t === "email" ? "Email" : t })) : []'
+    @meta.label 'Choose a verification method'
+    @meta.required
+    method: string
+}
+
+/**
+ * Forced MFA enrollment — address collection for sms/email. TOTP skips this
+ * form (secret is provisioned server-side).
+ */
+@wf.context.pass 'enrollMethod'
+export interface EnrollAddressForm {
+    @ui.form.type 'text'
+    @meta.label 'Address'
+    @meta.required
+    address: string
+}
+
+/**
+ * Forced MFA enrollment — confirm code, shared by all three transports. The
+ * leading paragraph swaps between "scan this QR" (totp) and "code sent to …"
+ * (sms/email) based on `enrollMethod`; `enrollSecret` / `enrollUri` are passed
+ * for the totp QR + manual-entry fallback.
+ */
+@wf.context.pass 'enrollMethod'
+@wf.context.pass 'enrollSecret'
+@wf.context.pass 'enrollUri'
+@wf.context.pass 'pinSentTo'
+@ui.form.submit.text 'Confirm'
+export interface EnrollConfirmForm {
+    @ui.form.fn.value '(_, _d, ctx) => ctx.enrollMethod === "totp" ? "Scan the QR with your authenticator app, or enter the secret manually. Then type the 6-digit code it generates." : ctx.enrollMethod ? "Code sent to " + (ctx.pinSentTo || "your " + ctx.enrollMethod) + ". Enter it below to confirm." : "Enter the code to confirm enrollment."'
+    transportHint?: ui.paragraph
+
+    @ui.form.type 'text'
+    @meta.label 'Code'
+    @ui.form.autocomplete 'one-time-code'
+    @meta.required
+    @expect.minLength 4
+    @expect.maxLength 12
+    @expect.pattern '^[0-9]+$'
+    code: string
+}
+
+/**
  * Terms & conditions acceptance form.
  */
 export interface TermsAcceptForm {

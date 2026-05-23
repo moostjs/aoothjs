@@ -51,6 +51,8 @@
  */
 import { AuthCredential, type AuthEmailKind, type AuthSmsKind } from "@aooth/auth";
 import {
+  generateTotpSecret,
+  generateTotpUri,
   type MfaMethodInfo,
   type TrustedDeviceRecord,
   UserAuthError,
@@ -78,6 +80,7 @@ import { Public } from "../auth.decorator";
 import { AuthWorkflowBase, stripReservedUserKeys } from "./auth-workflow.base";
 import {
   type LoginWorkflowOpts,
+  type MfaTransport,
   type ResolvedLoginWorkflowOpts,
   mergeLoginOpts,
 } from "./login.workflow.options";
@@ -123,6 +126,16 @@ export interface LoginWfCtx {
   altForgotPassword?: boolean;
   altSignup?: boolean;
   altMagicLink?: boolean;
+
+  // MFA forced-enrollment state (Phase 4 `mfa-enroll-required` sub-flow):
+  enrollMethod?: MfaTransport;
+  enrollAddress?: string;
+  /** TOTP secret in flight (passed to UI via `@wf.context.pass` for QR rendering). */
+  enrollSecret?: string;
+  /** Provisioning URI for TOTP QR rendering. */
+  enrollUri?: string;
+  /** Mirror of `opts.mfa.transports`, surfaced to `EnrollPickMethodForm` via `@wf.context.pass`. */
+  enrollAvailableTransports?: MfaTransport[];
 
   // Pincode state:
   pin?: string;
@@ -838,10 +851,10 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // Mirror so `PincodeForm` can hide `rememberDevice` when the consumer
     // doesn't ask the user to opt in (skipsMfa auto-trusts the device).
     ctx.deviceTrustOptIn = !!(this.opts.deviceTrust.enabled && this.opts.deviceTrust.optIn);
-    // Short-circuit: no methods → MFA is skipped (covered by mfa-enroll-required
-    // when policy demands enrolment; otherwise we let the user through).
+    // Short-circuit: no methods → let `mfa-enroll-required` run when policy
+    // demands enrolment; otherwise mark MFA satisfied and let the user through.
     if (summary.length === 0) {
-      ctx.mfaChecked = true;
+      if (!this.opts.mfa.enrollRequired) ctx.mfaChecked = true;
       return undefined;
     }
     if (summary.length === 1) {
@@ -1055,9 +1068,111 @@ export class LoginWorkflow extends AuthWorkflowBase {
     return undefined;
   }
 
+  /**
+   * Forced MFA enrollment — pick method → collect address (sms/email) OR
+   * provision TOTP secret → confirm code. The step body branches on ctx flags
+   * so the schema while-loop iterates through each phase. Mirrors the
+   * `ensureEmail` / `ensurePhone` ask-and-verify pattern.
+   */
   @Step("mfa-enroll-required")
-  mfaEnrollRequired(): never {
-    throw new HttpError(501, "mfa-enroll-required step not implemented");
+  async mfaEnrollRequired(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
+    this.requireUsername(ctx);
+
+    // Phase 1: pick method.
+    if (!ctx.enrollMethod) {
+      if (!ctx.enrollAvailableTransports) {
+        ctx.enrollAvailableTransports = [...this.opts.mfa.transports];
+      }
+      const wf = useAtscriptWf(this.opts.forms.enrollPickMethod);
+      const input = wf.resolveInput() as { method: string };
+      const picked = input.method as MfaTransport;
+      if (!ctx.enrollAvailableTransports.includes(picked)) {
+        throw wf.requireInput({ errors: { method: "Unknown method" } });
+      }
+      ctx.enrollMethod = picked;
+      // TOTP provisions+persists the secret here so the confirm step can render
+      // the QR and verify against the UNCONFIRMED method row.
+      if (picked === "totp") {
+        const secret = generateTotpSecret();
+        const uri = generateTotpUri(secret, "aooth", ctx.username);
+        const username = ctx.username;
+        await this.withStoreErrorTranslation(() =>
+          this.users.addMfaMethod(username, {
+            name: "totp",
+            value: secret,
+            confirmed: false,
+          }),
+        );
+        ctx.enrollSecret = secret;
+        ctx.enrollUri = uri;
+      }
+      return undefined;
+    }
+
+    // Phase 2: collect address + send pincode (sms/email only — TOTP skips).
+    if ((ctx.enrollMethod === "sms" || ctx.enrollMethod === "email") && !ctx.enrollAddress) {
+      const wf = useAtscriptWf(this.opts.forms.enrollAddress);
+      const input = wf.resolveInput() as { address: string };
+      const username = ctx.username;
+      const methodName = ctx.enrollMethod;
+      await this.withStoreErrorTranslation(() =>
+        this.users.addMfaMethod(username, {
+          name: methodName,
+          value: input.address,
+          confirmed: false,
+        }),
+      );
+      ctx.enrollAddress = input.address;
+      const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
+      if (methodName === "email") {
+        ctx.pinSentTo = maskEmail(input.address);
+        await this.deliver({
+          channel: "email",
+          kind: "login.pincode",
+          recipient: input.address,
+          code,
+          expiresAt: ctx.pinExpire as number,
+          userId: username,
+        });
+      } else {
+        ctx.pinSentTo = maskPhone(input.address);
+        await this.deliver({
+          channel: "sms",
+          kind: "login.pincode",
+          recipient: input.address,
+          code,
+          ttlMs: this.opts.mfa.pincodeTtlMs,
+          userId: username,
+        });
+      }
+      return undefined;
+    }
+
+    // Phase 3: confirm code.
+    const wf = useAtscriptWf(this.opts.forms.enrollConfirm);
+    const input = wf.resolveInput() as { code: string };
+    if (ctx.enrollMethod === "totp") {
+      try {
+        await this.users.verifyTotpSetupCode(ctx.username, input.code);
+      } catch (err) {
+        if (err instanceof UserAuthError && err.type === "MFA_INVALID") {
+          throw wf.requireInput({ errors: { code: "Invalid code" } });
+        }
+        throw err;
+      }
+    } else {
+      const pinErr = this.verifyPin(ctx, input.code);
+      if (pinErr) throw wf.requireInput({ errors: pinErr });
+    }
+    const methodName = ctx.enrollMethod;
+    const username = ctx.username;
+    await this.withStoreErrorTranslation(() => this.users.confirmMfaMethod(username, methodName));
+    // No contention with an existing default: this is the user's only method.
+    await this.users.setDefaultMfaMethod(username, methodName);
+    ctx.mfaChecked = true;
+    delete ctx.pin;
+    delete ctx.pinExpire;
+    return undefined;
   }
 
   @Step("device-trust")
