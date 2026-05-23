@@ -88,16 +88,44 @@ describe("SEC — ARBAC bypass attacks", () => {
   });
 
   it("SEC-02 — projection escape via $select cannot leak password/mfa/account", async () => {
+    // WHY: Eve has read access to /users but her ARBAC scope projection MUST
+    // strip credential-bearing fields (password, mfa, account). The attack is
+    // a client passing forbidden field names in $select hoping the server
+    // honors the request literally. Two acceptable outcomes:
+    //   (a) 200 with those fields stripped from every row (current behaviour:
+    //       AsArbacDbController.transformProjection intersects $select with the
+    //       scope's allowed projection union — see shared-read-helpers.ts), or
+    //   (b) explicit 400 rejecting the projection (a future-tightening server).
+    // A 400 for an UNRELATED reason (parse error, validator bug, etc.) must NOT
+    // silently pass — the previous early-return `if (res.status === 400) return`
+    // hid exactly that class of regression. Anything else (403/500) is a real
+    // defect: 403 means the scope auth changed (eve lost read), 500 means the
+    // server crashed on the malicious input.
     const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_eve);
     const res = await fetch("/users/query?$select=password,mfa,account.lockEnds");
-    if (res.status === 400) return;
-    expect(res.status).toBe(200);
-    const rows = (await res.json()) as Array<Record<string, unknown>>;
-    for (const row of rows) {
-      const keys = Object.keys(row);
-      expect(keys.includes("password")).toBe(false);
-      expect(keys.includes("mfa")).toBe(false);
-      expect(keys.includes("account")).toBe(false);
+    expect(
+      [200, 400].includes(res.status),
+      `expected 200 (stripped) or 400 (rejected), got ${res.status}`,
+    ).toBe(true);
+    if (res.status === 200) {
+      const rows = (await res.json()) as Array<Record<string, unknown>>;
+      // Must have at least one row to prove the no-leak claim (an empty array
+      // would vacuously satisfy the loop — fail loud per Rule 12).
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) {
+        const keys = Object.keys(row);
+        expect(keys.includes("password")).toBe(false);
+        expect(keys.includes("mfa")).toBe(false);
+        expect(keys.includes("account")).toBe(false);
+      }
+    } else {
+      // 400 path: assert the body is a non-empty structured rejection so we
+      // know the server REFUSED the projection (vs an unrelated parse error
+      // that happens to be 400). Loose match: any of the forbidden field
+      // names or a "$select" / "projection" hint should appear in the body.
+      const text = await res.text();
+      expect(text.length).toBeGreaterThan(0);
+      expect(text).toMatch(/password|mfa|account|\$select|projection|select/i);
     }
   });
 

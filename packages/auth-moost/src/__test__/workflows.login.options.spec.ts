@@ -13,7 +13,13 @@
  * `loginWorkflowClass`.
  */
 import { AuthCredential } from "@aooth/auth";
-import { generateTotpCode, generateTotpSecret, ppHasMinLength, UserService } from "@aooth/user";
+import {
+  generateTotpCode,
+  generateTotpSecret,
+  ppHasMinLength,
+  UserService,
+  UserStoreMemory,
+} from "@aooth/user";
 import { Controller, Inherit, Injectable } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -472,7 +478,6 @@ describe("LoginWorkflowOpts — Phase 4 device trust", () => {
     // requires the request adapter to expose req.ip, which the in-process
     // Wooks test harness doesn't surface for synthetic requests).
     // `UserService` IS the authoritative IP-binding check.
-    const { UserStoreMemory } = await import("@aooth/user");
     const userStore = new UserStoreMemory();
     const users = new UserService(userStore, {
       deviceTrust: { secret: "test-secret" },
@@ -482,6 +487,90 @@ describe("LoginWorkflowOpts — Phase 4 device trust", () => {
     await users.addTrustedDevice("alice", rec);
     expect(await users.verifyTrustedDevice("alice", rec.token, "10.0.0.1")).toBe(true);
     expect(await users.verifyTrustedDevice("alice", rec.token, "10.0.0.2")).toBe(false);
+  });
+
+  it("deviceTrust: alice's cookie attached to bob's login is rejected (cross-user binding)", async () => {
+    // WHY: a trusted-device cookie proves "this device was trusted FOR a
+    // specific user", not "this device is trusted in general". Attack: Alice
+    // exfils her `aooth_trusted_device=…` cookie and pastes it into Bob's
+    // login attempt (same IP/UA — she's on the corporate LAN). If the trust
+    // record were keyed only on the token/signature without re-binding to the
+    // submitted username, Bob's MFA prompt would be skipped, handing Alice
+    // free MFA-bypass on any account that shares her network.
+    //
+    // `UserService.verifyTrustedDevice(username, token)` is the authoritative
+    // gate — it loads the record from the user named in the *first* argument
+    // (i.e. the user attempting to authenticate) and rejects when the stored
+    // record was issued for a different user. We mint a trust record for
+    // alice, then call verify with username="bob" and the same token: must
+    // return false even though the signature is otherwise valid.
+    const userStore = new UserStoreMemory();
+    const users = new UserService(userStore, {
+      deviceTrust: { secret: "test-secret" },
+    });
+    await users.createUser("alice", "Password123");
+    await users.createUser("bob", "Password123");
+    const aliceRec = users.issueTrustedDevice("alice", { ttlMs: 60_000 });
+    await users.addTrustedDevice("alice", aliceRec);
+    // Sanity: alice can verify her own cookie.
+    expect(await users.verifyTrustedDevice("alice", aliceRec.token)).toBe(true);
+    // Attack: bob attempts to verify alice's cookie → must be rejected.
+    // No trust record exists for bob with this token; the store lookup fails
+    // even though the HMAC signature on the token itself is well-formed.
+    expect(await users.verifyTrustedDevice("bob", aliceRec.token)).toBe(false);
+  });
+
+  it("deviceTrust workflow: alice's cookie attached to bob's login does NOT skip MFA", async () => {
+    // WHY: end-to-end pin of the cross-user binding at the workflow layer.
+    // The check-trusted-device step in `LoginWorkflow` MUST scope cookie
+    // verification to the username submitted in credentials — not to whoever
+    // the cookie was originally minted for. Without that scoping, an attacker
+    // who steals alice's cookie can hand it to bob's session and skip MFA.
+    //
+    // Setup mirrors the "valid cookie → MFA skipped" test directly above
+    // (line 413), but POSTs bob's credentials with alice's cookie attached.
+    // Expected: bob is still prompted for TOTP (workflow paused, not finished),
+    // proving the trust path was bypassed and the normal MFA gate fires.
+    const app = await prepareWfApp({
+      loginOpts: {
+        deviceTrust: {
+          enabled: true,
+          skipsMfa: true,
+          optIn: false,
+        },
+      },
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    await seedActiveUser(app.users, "bob", "Password123");
+    const aliceSecret = generateTotpSecret();
+    const bobSecret = generateTotpSecret();
+    await app.users.addMfaMethod("alice", {
+      name: "totp",
+      value: aliceSecret,
+      confirmed: true,
+    });
+    await app.users.addMfaMethod("bob", { name: "totp", value: bobSecret, confirmed: true });
+
+    // Mint a trust cookie for alice and persist it.
+    const aliceRec = app.users.issueTrustedDevice("alice", { ttlMs: 60_000 });
+    await app.users.addTrustedDevice("alice", aliceRec);
+
+    // Bob's login with alice's cookie attached.
+    const r1 = await app.triggerWithHeaders(
+      { wfid: "auth.login" },
+      { cookie: `aooth_trusted_device=${aliceRec.token}` },
+    );
+    const r2 = await app.triggerWithHeaders(
+      {
+        wfs: r1.body?.wfs as string,
+        input: { username: "bob", password: "Password123" },
+      },
+      { cookie: `aooth_trusted_device=${aliceRec.token}` },
+    );
+    // MFA NOT skipped: workflow must still be paused (wfs present, no tokens).
+    const data2 = r2.body?.data as Record<string, unknown> | undefined;
+    expect(r2.body?.wfs).toBeTruthy();
+    expect(data2?.accessToken).toBeUndefined();
   });
 });
 
