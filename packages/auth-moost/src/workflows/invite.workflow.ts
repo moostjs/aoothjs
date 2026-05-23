@@ -175,6 +175,47 @@ export function parseInviteRoles(input?: string[]): string[] {
 }
 
 /**
+ * Top-level `UserCredentials` keys that the accept-time profile payload MUST
+ * NEVER carry through to persistence. Server sets these out-of-band (admin-
+ * supplied `ctx.roles`, password-set step, account activation, MFA enrolment
+ * elsewhere). If the consumer's `.as` profile form mistakenly declares one
+ * — or an attacker submits one as an extra field — the strip at
+ * `applyProfileStep` (NOT at the `applyProfile` override seam) blocks
+ * shadowing.
+ *
+ * Defense lives at the workflow step so consumer subclasses that replace
+ * `applyProfile` with a different storage path (e.g. external CRM) still
+ * receive a sanitized payload.
+ *
+ * Shared with #15 (login/recovery ctx-pass shadowing — handled separately).
+ */
+const STRIPPED_FROM_PROFILE = new Set<string>([
+  "roles",
+  "version",
+  "id",
+  "username",
+  "account",
+  "password",
+  "passwordHistory",
+  "mfa",
+  "trustedDevices",
+  "backupCodes",
+  "pendingInvitation",
+]);
+
+/**
+ * Return a shallow copy of `profile` with `STRIPPED_FROM_PROFILE` keys
+ * removed. Does not mutate the input.
+ */
+function stripStructuralKeys(profile: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(profile)) {
+    if (!STRIPPED_FROM_PROFILE.has(key)) out[key] = profile[key];
+  }
+  return out;
+}
+
+/**
  * Single source of truth for the "this invite was already accepted" finish
  * envelope. Used by both `inviteIdempotentRedirect` (in-workflow) and by
  * `AuthController.invitePostRedemption` (side route reached when the wf
@@ -878,12 +919,12 @@ export class InviteWorkflow extends AuthWorkflowBase {
   @Public()
   async applyProfileStep(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     this.requireUsername(ctx);
-    const profile = ctx.profile ?? {};
-    if (Object.keys(profile).length === 0) {
+    const sanitized = stripStructuralKeys(ctx.profile ?? {});
+    if (Object.keys(sanitized).length === 0) {
       ctx.profileApplied = true;
       return undefined;
     }
-    await this.applyProfile({ username: ctx.username, profile });
+    await this.applyProfile({ username: ctx.username, profile: sanitized });
     ctx.profileApplied = true;
     return undefined;
   }
