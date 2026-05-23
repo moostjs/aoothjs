@@ -87,6 +87,57 @@ describe("SEC — ARBAC bypass attacks", () => {
     expectAllInTenant(rows, tenantA);
   });
 
+  it("SEC-17 — classic SQLi payloads in a filter VALUE go through @atscript/db as parameterised bindings (no crash, no leak, no corruption)", async () => {
+    // WHY: SEC-01 covers logical-operator overlay ($or/$and). This pins the
+    // orthogonal invariant: a raw STRING VALUE inside a filter must be bound
+    // as a parameter — never interpolated into SQL. A regression here would
+    // let any caller with read access to a filterable route exfiltrate
+    // (truthy-OR) or destroy (DROP TABLE) via crafted query-string values.
+    //
+    // Payloads are wrapped in single quotes because @uniqu/url's filter lexer
+    // only accepts arbitrary characters inside string literals (per the same
+    // single-quote convention used in CTRL-08). The single quotes are STRIPPED
+    // by the lexer and the resulting string becomes the bound filter VALUE —
+    // this is exactly the surface where SQL injection would land if the DB
+    // layer interpolated instead of parameterising.
+    //
+    // Per payload, the response MUST: NOT be 500 (server didn't crash on the
+    // value), AND return [] (no row's status literally equals the payload —
+    // confirms the value was treated as a literal, not as SQL). The benign
+    // follow-up query MUST return real rows — proving the table wasn't
+    // dropped / corrupted / locked by any prior payload. If the follow-up
+    // fails, that's a critical bug.
+    const tenantA = app.fixtures.tenants["tenant-a"];
+    const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_alice);
+
+    const payloads = ["' OR 1=1 --", "'; DROP TABLE tasks; --", "\\"];
+    for (const p of payloads) {
+      // Wrap in single quotes so the URL filter parser treats the payload as
+      // a string literal value (lexer rule: r: /^'(?:\\.|[^'\\])*'/u, type: "string").
+      // Inner single quotes / backslashes are escaped per that lexer rule.
+      const escaped = p.replaceAll("\\", "\\\\").replaceAll("'", "\\'");
+      const quoted = encodeURIComponent(`'${escaped}'`);
+      const res = await fetch(`/tasks/query?status=${quoted}`);
+      const debugBody = res.status >= 400 ? await res.clone().text() : "";
+      expect(res.status, `payload=${p} must not crash the server (body: ${debugBody})`).not.toBe(
+        500,
+      );
+      expect(res.status, `payload=${p} expected 200, got ${res.status} (body: ${debugBody})`).toBe(
+        200,
+      );
+      const rows = (await res.json()) as TaskRow[];
+      expect(rows, `payload=${p} must return [] (no row literally has this status)`).toEqual([]);
+    }
+
+    // Benign follow-up: if any payload had executed DDL, this would fail or
+    // return 0 rows. Alice has tasks in tenant-a — expect a non-empty result.
+    const benign = await fetch("/tasks/query?status=open");
+    expect(benign.status).toBe(200);
+    const benignRows = (await benign.json()) as TaskRow[];
+    expect(benignRows.length).toBeGreaterThan(0);
+    expectAllInTenant(benignRows, tenantA);
+  });
+
   it("SEC-02 — projection escape via $select cannot leak password/mfa/account", async () => {
     // WHY: Eve has read access to /users but her ARBAC scope projection MUST
     // strip credential-bearing fields (password, mfa, account). The attack is

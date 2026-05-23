@@ -296,6 +296,89 @@ describe("UserService", () => {
     });
   });
 
+  describe("lockout — case sensitivity invariant", () => {
+    // WHY: `findByUsername` and the lockout key are both case-sensitive today
+    // (literal `username` string). These tests pin that invariant so a future
+    // "let's make username lookup case-insensitive" change can't silently
+    // break the lockout side: if lookup goes case-insensitive while the
+    // lockout key stays literal, an attacker could dodge throttle via case
+    // variants on the SAME underlying account. Conversely, NOT_FOUND probes
+    // on a non-existent variant must not leak into a real account's budget.
+    let lockSvc: UserService;
+
+    beforeEach(() => {
+      lockSvc = new UserService(store, {
+        password: { ...FAST_SCRYPT },
+        lockout: { threshold: 3, duration: 60000 },
+        clock: () => now,
+      });
+    });
+
+    it("alice and Alice are independent accounts — locking alice does not affect Alice", async () => {
+      // Two accounts that differ only in case must have INDEPENDENT lockout
+      // budgets. Two accounts = two budgets; collapsing them would let one
+      // account's failures DoS the other.
+      await createActiveUser(lockSvc, "alice", "pass123");
+      await createActiveUser(lockSvc, "Alice", "pass123");
+
+      for (let i = 0; i < 3; i++) {
+        try {
+          await lockSvc.login("alice", "wrong");
+        } catch {}
+      }
+      const lower = await lockSvc.getUser("alice");
+      expect(lower.account.locked).toBe(true);
+
+      // `Alice` must still authenticate cleanly with her own credentials.
+      const result = await lockSvc.login("Alice", "pass123");
+      expect(result.user.username).toBe("Alice");
+      const upper = await lockSvc.getUser("Alice");
+      expect(upper.account.locked).toBe(false);
+      expect(upper.account.failedLoginAttempts).toBe(0);
+    });
+
+    it("case-variant probing of a non-existent account does NOT inflate the real account's lockout budget", async () => {
+      // Seed only `alice` (lowercase). `Alice` does not exist.
+      await createActiveUser(lockSvc, "alice", "pass123");
+
+      // Probe the non-existent variant `Alice` 3 times — each must surface as
+      // NOT_FOUND and must NOT be charged to `alice`'s budget.
+      for (let i = 0; i < 3; i++) {
+        try {
+          await lockSvc.login("Alice", "wrong");
+          expect.unreachable();
+        } catch (e) {
+          expect((e as UserAuthError).type).toBe("NOT_FOUND");
+        }
+      }
+
+      // `alice`'s failure counter must still be zero — variant probes did not
+      // bleed across.
+      const before = await lockSvc.getUser("alice");
+      expect(before.account.failedLoginAttempts).toBe(0);
+      expect(before.account.locked).toBe(false);
+
+      // Now drive `alice` to (threshold - 1) bad attempts: she must STILL be
+      // unlocked — proving the variant probes didn't pre-charge her counter.
+      for (let i = 0; i < 2; i++) {
+        try {
+          await lockSvc.login("alice", "wrong");
+        } catch {}
+      }
+      const mid = await lockSvc.getUser("alice");
+      expect(mid.account.locked).toBe(false);
+      expect(mid.account.failedLoginAttempts).toBe(2);
+
+      // The Nth (threshold) bad alice-attempt must trip the lock — exactly N,
+      // not 2N. If the variant probes had counted, this would have fired earlier.
+      try {
+        await lockSvc.login("alice", "wrong");
+      } catch {}
+      const locked = await lockSvc.getUser("alice");
+      expect(locked.account.locked).toBe(true);
+    });
+  });
+
   describe("changePassword", () => {
     it("should change password with correct current password", async () => {
       await svc.createUser("alice", "oldpass");
