@@ -492,13 +492,25 @@ export class InviteWorkflow extends AuthWorkflowBase {
         ),
     },
     {
+      // Entire loop short-circuits when no extra steps are configured —
+      // both the while-condition and the inner step's condition gate on
+      // `extraStepCount > 0` so the block is completely skipped (no body
+      // evaluation, no per-tick state mutation) when consumers omit
+      // `inviteOpts.extraSteps`. The inner gate is belt-and-suspenders
+      // against a future while-condition refactor that drops the count check.
       while: (ctx) =>
         !!(
           ctx.passwordSet &&
           !ctx.aborted &&
+          (ctx.opts!.extraStepCount ?? 0) > 0 &&
           (ctx.extraStepIndex ?? 0) < (ctx.opts!.extraStepCount ?? 0)
         ),
-      steps: [{ id: "inviteExtraStep" }],
+      steps: [
+        {
+          id: "inviteExtraStep",
+          condition: (ctx) => (ctx.opts!.extraStepCount ?? 0) > 0,
+        },
+      ],
     },
     {
       id: "inviteUnsetPendingInvitation",
@@ -626,13 +638,25 @@ export class InviteWorkflow extends AuthWorkflowBase {
         ),
     },
     {
+      // Entire loop short-circuits when no extra steps are configured —
+      // both the while-condition and the inner step's condition gate on
+      // `extraStepCount > 0` so the block is completely skipped (no body
+      // evaluation, no per-tick state mutation) when consumers omit
+      // `inviteOpts.extraSteps`. The inner gate is belt-and-suspenders
+      // against a future while-condition refactor that drops the count check.
       while: (ctx) =>
         !!(
           ctx.passwordSet &&
           !ctx.aborted &&
+          (ctx.opts!.extraStepCount ?? 0) > 0 &&
           (ctx.extraStepIndex ?? 0) < (ctx.opts!.extraStepCount ?? 0)
         ),
-      steps: [{ id: "inviteExtraStep" }],
+      steps: [
+        {
+          id: "inviteExtraStep",
+          condition: (ctx) => (ctx.opts!.extraStepCount ?? 0) > 0,
+        },
+      ],
     },
     {
       id: "inviteUnsetPendingInvitation",
