@@ -99,6 +99,13 @@ export interface BuildAppOptions {
   loginOpts?: LoginWorkflowOpts;
   recoveryOpts?: RecoveryWorkflowOpts;
   inviteOpts?: InviteWorkflowOpts;
+  /**
+   * Replace the default `DemoInviteWorkflow` controller with a consumer-
+   * supplied class. Used by override-pattern e2e tests that need their own
+   * `InviteWorkflow` subclass wired through the full HTTP+DI stack —
+   * `inviteOpts` is opts-only, this knob swaps the whole class.
+   */
+  inviteWorkflowClass?: new (...args: never[]) => unknown;
 }
 
 // Test-mode mailbox buffers anchored on `globalThis` so they survive vite's
@@ -559,7 +566,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   const wfControllers: Array<new (...args: never[]) => unknown> = [];
   if (wfEnabled.login !== false) wfControllers.push(DemoLoginWorkflow);
   if (wfEnabled.recovery !== false) wfControllers.push(DemoRecoveryWorkflow);
-  if (wfEnabled.invite !== false) wfControllers.push(DemoInviteWorkflow);
+  if (wfEnabled.invite !== false)
+    wfControllers.push(opts.inviteWorkflowClass ?? DemoInviteWorkflow);
   if (wfControllers.length > 0) {
     app.registerControllers(...wfControllers);
   }

@@ -1,4 +1,12 @@
-import { generateTotpCode } from "@aooth/user";
+// Value imports (not `type`) — these classes are referenced by the
+// `OverrideInviteWorkflow` constructor's design:paramtypes metadata that
+// moost's DI reads to resolve dependencies. A `type`-only import erases at
+// compile time, leaving the metadata `undefined` and moost throwing
+// "Class is not Injectable and not Optional" on first request.
+import { AuthCredential } from "@aooth/auth";
+import { InviteWorkflow } from "@aooth/auth-moost";
+import { generateTotpCode, UserService } from "@aooth/user";
+import { Controller, Inherit, Injectable } from "moost";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
@@ -647,6 +655,280 @@ describe("WF-INVITE — MFA enrollment", () => {
       expect(user.account.active).toBe(true);
       // No leftover unconfirmed method — proves skip ran, not a covert enroll.
       expect(user.mfa.methods).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+/**
+ * Drive `auth.invite` admin path far enough to leave a `pendingInvitation`
+ * row in the user store, then STOP (don't accept the magic link). Returns
+ * the admin tokens so callers (e.g. `startReInviteAcceptTail`) can reuse
+ * them for the subsequent `auth.reInvite` admin call without a second
+ * `loginAs` round-trip.
+ */
+async function createPendingInvitee(
+  app: TestApp,
+  email: string,
+): Promise<{ daveTokens: Awaited<ReturnType<TestApp["loginAs"]>> }> {
+  const dave = app.fixtures.users.t1_dave;
+  const daveTokens = await app.loginAs(dave);
+  const start = await app.triggerWf(
+    "admin",
+    { wfid: "auth.invite" },
+    { token: daveTokens.accessToken },
+  );
+  const startBody = await readWfPause(start);
+  await app.triggerWf(
+    "admin",
+    {
+      wfid: "auth.invite",
+      wfs: startBody.wfs,
+      input: { email, roles: ["member"] },
+    },
+    { token: daveTokens.accessToken },
+  );
+  // Drain the first magic-link email so the reInvite path can assert on a
+  // fresh one without the test grabbing the stale auth.invite send.
+  await app.emailSender.next((e) => e.kind === "invite.magicLink" && e.recipient === email, 2000);
+  return { daveTokens };
+}
+
+/**
+ * Re-invite an existing pendingInvitation user. Mirrors `startInviteAcceptTail`
+ * but starts via `auth.reInvite` (InviteEmailForm — just `email`, no roles)
+ * instead of the admin invite form, then drives the magic-link resume + the
+ * password-set step. Returns the paused body so the caller can inspect the
+ * next step (enrollment, etc.).
+ */
+async function startReInviteAcceptTail(
+  app: TestApp,
+  email: string,
+): Promise<{ pwBody: Awaited<ReturnType<typeof readWfPause>> }> {
+  const { daveTokens } = await createPendingInvitee(app, email);
+  const start = await app.triggerWf(
+    "admin",
+    { wfid: "auth.reInvite" },
+    { token: daveTokens.accessToken },
+  );
+  const startBody = await readWfPause(start);
+  await app.triggerWf(
+    "admin",
+    {
+      wfid: "auth.reInvite",
+      wfs: startBody.wfs,
+      input: { email },
+    },
+    { token: daveTokens.accessToken },
+  );
+  const magicLink = await app.emailSender.next(
+    (e) => e.kind === "invite.magicLink" && e.recipient === email,
+    2000,
+  );
+  const resumed = await app.resumeWfFromUrl(magicLink.url as string);
+  const resumedBody = await readWfPause(resumed);
+  const pwRes = await app.triggerWf("public", {
+    wfid: "auth.reInvite",
+    wfs: resumedBody.wfs,
+    input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
+  });
+  return { pwBody: await readWfPause(pwRes) };
+}
+
+describe("WF-INVITE — reInvite enrollment", () => {
+  it("WF-INVITE-15 — reInvite + mode='required' + transports=['totp'] auto-pick: same enrollment branches as auth.invite", async () => {
+    // Pins schema symmetry between `auth.invite` and `auth.reInvite`: both
+    // wrap the 4 enrolment entries in the same while-loop with identical
+    // conditions (invite.workflow.ts:557-592 mirrors invite.workflow.ts:391+).
+    // A regression that drifted one schema (e.g. dropped the while-loop in
+    // reInvite or re-typed `inviteEnrollAutoPick`'s condition) would silently
+    // ship reInvitees past activation without a second factor even when
+    // `mode='required'` — this test fails if reInvite's auto-pick branch
+    // doesn't fire OR if the post-confirm activation gate is bypassed.
+    const inviteEmail = "reinvite-autopick@acme.test";
+    const app = await buildTestApp({
+      inviteOpts: {
+        mfa: { mode: "required", transports: ["totp"] },
+        accept: { showConfirmation: false },
+      },
+    });
+    try {
+      const { pwBody } = await startReInviteAcceptTail(app, inviteEmail);
+      expect(pwBody.wfs).toBeTruthy();
+      // Auto-pick → straight to confirm, no picker pause.
+      expect((pwBody.inputRequired?.payload as { id?: string } | undefined)?.id).toBe(
+        "EnrollConfirmForm",
+      );
+      // Activation gated until confirm completes.
+      expect((await app.appHandle.aooth.userService.getUser(inviteEmail)).account.active).toBe(
+        false,
+      );
+
+      const interim = await app.appHandle.aooth.userService.getUser(inviteEmail);
+      const totp = interim.mfa.methods.find((m) => m.name === "totp");
+      expect(totp?.confirmed).toBe(false);
+      const code = generateTotpCode(totp!.value);
+
+      const confirm = await app.triggerWf("public", {
+        wfid: "auth.reInvite",
+        wfs: pwBody.wfs,
+        input: { code },
+      });
+      const profileBody = await readWfPause(confirm);
+      const finalRes = await app.triggerWf("public", {
+        wfid: "auth.reInvite",
+        wfs: profileBody.wfs,
+        input: { displayName: "ReInvite Auto" },
+      });
+      const finalBody = await expectFinished<{ userId?: string; accessToken?: string }>(finalRes);
+      expect(finalBody.data?.userId).toBe(inviteEmail);
+      expect(typeof finalBody.data?.accessToken).toBe("string");
+
+      const user = await app.appHandle.aooth.userService.getUser(inviteEmail);
+      expect(user.mfa.methods.find((m) => m.name === "totp")?.confirmed).toBe(true);
+      expect(user.mfa.defaultMethod).toBe("totp");
+      expect(user.account.active).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("WF-INVITE-16 — reInvite + mode='optional' + invitee picks `skip`: activates with no MFA enrolled", async () => {
+    // Pins the reInvite-side optional-mode skip short-circuit. If the
+    // while-loop guard or the cleanupEnrollment branch drifted, an opt-out
+    // reInvite would either fall through with a covert unconfirmed `mfa.methods`
+    // row OR loop forever on the picker.
+    const inviteEmail = "reinvite-skip@acme.test";
+    const app = await buildTestApp({
+      inviteOpts: { mfa: { mode: "optional" }, accept: { showConfirmation: false } },
+    });
+    try {
+      const { pwBody } = await startReInviteAcceptTail(app, inviteEmail);
+      expect(pwBody.wfs).toBeTruthy();
+      expect((pwBody.inputRequired?.payload as { id?: string } | undefined)?.id).toBe(
+        "EnrollPickMethodForm",
+      );
+      expect((await app.appHandle.aooth.userService.getUser(inviteEmail)).account.active).toBe(
+        false,
+      );
+
+      const r5 = await app.triggerWf("public", {
+        wfid: "auth.reInvite",
+        wfs: pwBody.wfs,
+        input: { action: "skip" },
+      });
+      const profileBody = await readWfPause(r5);
+      const finalRes = await app.triggerWf("public", {
+        wfid: "auth.reInvite",
+        wfs: profileBody.wfs,
+        input: { displayName: "ReInvite Skip" },
+      });
+      const finalBody = await expectFinished<{ userId?: string }>(finalRes);
+      expect(finalBody.data?.userId).toBe(inviteEmail);
+
+      const user = await app.appHandle.aooth.userService.getUser(inviteEmail);
+      expect(user.account.active).toBe(true);
+      expect(user.mfa.methods).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// Module-level capture for the `inviteExtraStep` override test. The custom
+// workflow class is defined once at module scope so its decorators run a
+// single time; the per-test reset in `beforeEach` keeps the captured value
+// from leaking between runs.
+let extraStepCapture: { fired: boolean; runs: number } = { fired: false, runs: 0 };
+
+@Inherit()
+@Injectable("FOR_EVENT")
+@Controller()
+class OverrideInviteWorkflow extends InviteWorkflow {
+  constructor(users: UserService, authCred: AuthCredential) {
+    // mfa disabled keeps the flow short — the test only needs to prove the
+    // override fires, not exercise enrollment. Profile form left undefined
+    // (base default) so the accept tail goes password → extraStep → activate
+    // directly.
+    super(
+      {
+        mfa: { mode: "disabled" },
+        accept: { showConfirmation: false },
+      },
+      users,
+      authCred,
+    );
+  }
+  // DemoUser requires tenantId on insert; without this override the
+  // `invitePreCreateUser` step would 500 inside `userService.createUser`.
+  protected override async prepareUser(): Promise<Record<string, unknown>> {
+    return { tenantId: "_global" };
+  }
+  override async inviteExtraStep(): Promise<unknown> {
+    extraStepCapture.fired = true;
+    extraStepCapture.runs += 1;
+    return undefined;
+  }
+}
+
+describe("WF-INVITE — consumer subclass via inviteWorkflowClass", () => {
+  beforeEach(() => {
+    extraStepCapture = { fired: false, runs: 0 };
+  });
+
+  it("WF-INVITE-17 — custom InviteWorkflow subclass registered via inviteWorkflowClass: overridden `inviteExtraStep` fires through the HTTP+DI stack", async () => {
+    // Pins the documented OOP extension point end-to-end: the unit test in
+    // workflows.invite.subclass.spec.ts proves the override fires under the
+    // in-memory test harness; this proves it ALSO fires when the subclass is
+    // resolved by the demo's full DI graph + reaches the inviteExtraStep slot
+    // via the real HTTP wire. A regression that re-typed the parent's
+    // `inviteExtraStep` signature (e.g. added a required arg) would silently
+    // break subclass overrides that didn't add the matching arg — those
+    // wouldn't dispatch, this test would catch it.
+    const inviteEmail = "override-extrastep@acme.test";
+    const app = await buildTestApp({ inviteWorkflowClass: OverrideInviteWorkflow });
+    try {
+      const dave = app.fixtures.users.t1_dave;
+      const daveTokens = await app.loginAs(dave);
+      const start = await app.triggerWf(
+        "admin",
+        { wfid: "auth.invite" },
+        { token: daveTokens.accessToken },
+      );
+      const startBody = await readWfPause(start);
+      await app.triggerWf(
+        "admin",
+        {
+          wfid: "auth.invite",
+          wfs: startBody.wfs,
+          input: { email: inviteEmail, roles: ["member"] },
+        },
+        { token: daveTokens.accessToken },
+      );
+      const magicLink = await app.emailSender.next(
+        (e) => e.kind === "invite.magicLink" && e.recipient === inviteEmail,
+        2000,
+      );
+      const resumed = await app.resumeWfFromUrl(magicLink.url as string);
+      const resumedBody = await readWfPause(resumed);
+      const finalRes = await app.triggerWf("public", {
+        wfid: "auth.invite",
+        wfs: resumedBody.wfs,
+        input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
+      });
+      const finalBody = await expectFinished<{ userId?: string; accessToken?: string }>(finalRes);
+      expect(finalBody.data?.userId).toBe(inviteEmail);
+      expect(typeof finalBody.data?.accessToken).toBe("string");
+
+      // The core proof: the override ran exactly once in the accept-tail
+      // slot. `runs === 1` rules out a regression where the schema iterated
+      // the step or skipped it.
+      expect(extraStepCapture.fired).toBe(true);
+      expect(extraStepCapture.runs).toBe(1);
+
+      const user = await app.appHandle.aooth.userService.getUser(inviteEmail);
+      expect(user.account.active).toBe(true);
     } finally {
       await app.close();
     }

@@ -91,6 +91,12 @@ export interface BuildTestAppOptions {
   recoveryOpts?: RecoveryWorkflowOpts;
   /** Deep-merged into the demo's `demoInviteOpts` — see `buildApp`. */
   inviteOpts?: InviteWorkflowOpts;
+  /**
+   * Replace the default `DemoInviteWorkflow` with a consumer-supplied class —
+   * lets override-pattern tests wire their own `InviteWorkflow` subclass
+   * through the full HTTP+DI stack instead of monkey-patching opts.
+   */
+  inviteWorkflowClass?: new (...args: never[]) => unknown;
 }
 
 export interface FetchInit extends RequestInit {
@@ -185,6 +191,7 @@ export async function buildTestApp(opts: BuildTestAppOptions = {}): Promise<Test
     loginOpts: opts.loginOpts,
     recoveryOpts: opts.recoveryOpts,
     inviteOpts: opts.inviteOpts,
+    inviteWorkflowClass: opts.inviteWorkflowClass,
   });
 
   const fixtures = opts.seed === false ? SENTINEL_FIXTURES : await seedAll(appHandle);
