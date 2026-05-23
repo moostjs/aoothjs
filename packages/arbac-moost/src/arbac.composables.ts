@@ -93,6 +93,10 @@ export const useArbac = (_ctx?: EventContext): ArbacBindings => {
     (cc.getMethod() ?? "");
   const isPublic = mMeta?.arbacPublic || cMeta?.arbacPublic || false;
 
+  // TScope is a deliberate caller-side type witness: it appears only in the
+  // return type so callers (`arbac.evaluate<ArbacDbScope>()`) name the scope
+  // shape they expect without having to cast `.scopes` at every use site.
+  // oxlint-disable-next-line typescript/no-unnecessary-type-parameters
   const evaluate = async <TScope extends object>(opts?: {
     resource?: string;
     action?: string;
@@ -125,6 +129,8 @@ export const useArbac = (_ctx?: EventContext): ArbacBindings => {
     return { ...result, userId };
   };
 
+  // See `evaluate` above for the type-witness rationale.
+  // oxlint-disable-next-line typescript/no-unnecessary-type-parameters
   const evaluateOrThrow = async <TScope extends object>(opts?: {
     resource?: string;
     action?: string;
