@@ -1,6 +1,7 @@
 import { generateTotpCode } from "@aooth/user";
 import { describe, expect, it } from "vite-plus/test";
 
+import { AgeForm, BirthDateForm, FullNameForm } from "./fixtures/extra-steps-forms.as";
 import { ProfileWithRolesForm } from "./fixtures/profile-with-roles.as";
 import { prepareWfApp, seedActiveUser } from "./workflow-utils";
 
@@ -292,22 +293,23 @@ describe("InviteWorkflow", () => {
   });
 });
 
-describe("InviteWorkflowOpts — mfa.enrollRequired forced enrollment", () => {
-  // Shared driver: admin invites → email arrives → resume magic link → set
-  // password. Stops at the next pause (which is `inviteEnrollPickMethod` when
-  // `mfa.enrollRequired: true`, otherwise the workflow ends). Returns the
-  // response of the set-password POST.
-  async function driveToPostPassword(app: Awaited<ReturnType<typeof prepareWfApp>>, email: string) {
-    const r1 = await app.trigger({ wfid: "auth.invite" });
-    await app.trigger({ wfs: r1.body?.wfs as string, input: { email } });
-    const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
-    const r3 = await app.resumeViaQuery(token);
-    return app.trigger({
-      wfs: r3.body?.wfs as string,
-      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
-    });
-  }
+// Shared driver: admin invites → email arrives → resume magic link → set
+// password. Stops at whatever pause follows password-set (e.g.
+// `inviteEnrollPickMethod` when `mfa.enrollRequired: true`, the first
+// `inviteExtraStep` when `extraSteps` are configured, or workflow end).
+// Returns the response of the set-password POST.
+async function driveToPostPassword(app: Awaited<ReturnType<typeof prepareWfApp>>, email: string) {
+  const r1 = await app.trigger({ wfid: "auth.invite" });
+  await app.trigger({ wfs: r1.body?.wfs as string, input: { email } });
+  const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
+  const r3 = await app.resumeViaQuery(token);
+  return app.trigger({
+    wfs: r3.body?.wfs as string,
+    input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
+  });
+}
 
+describe("InviteWorkflowOpts — mfa.enrollRequired forced enrollment", () => {
   // WHY: the headline invariant — when policy says "MFA required", an invitee
   // must NOT be able to activate without enrolling a second factor first. The
   // 3 schema entries gated on `passwordSet && mfa.enrollRequired` MUST hold
@@ -480,5 +482,225 @@ describe("InviteWorkflowOpts — mfa.enrollRequired forced enrollment", () => {
     const totp = user.mfa.methods.find((m) => m.name === "totp");
     expect(totp?.confirmed).toBe(false);
     expect(user.account.active).toBe(false);
+  });
+});
+
+describe("InviteWorkflowOpts — extraSteps configurable post-profile inputs", () => {
+  // WHY: pins the basic single-step contract. The schema's `while:` loop must
+  // run the body exactly once when `extraSteps.length === 1`, hand the parsed
+  // form input to `handle` with the right `username` AND `data` shape, and
+  // then advance through `inviteUnsetPendingInvitation` → `inviteActivateUser`
+  // → terminal. Without the loop bumping `extraStepIndex`, activation never
+  // fires (infinite re-pause) — without the handler receiving the parsed input,
+  // any consumer-side persistence is silently corrupted.
+  it("single extraStep: handler invoked with sanitized input; result stashed on ctx; user activates", async () => {
+    const captured: Array<{ username: string; data: Record<string, unknown> }> = [];
+    const app = await prepareWfApp({
+      inviteOpts: {
+        accept: { showConfirmation: false },
+        extraSteps: [
+          {
+            id: "fullName",
+            form: FullNameForm,
+            handle: ({ username, data }) => {
+              captured.push({ username, data: { ...data } });
+            },
+          },
+        ],
+      },
+    });
+
+    const r4 = await driveToPostPassword(app, "extra1@example.com");
+    // Paused at the extraStep — not finished. If `data` were truthy here, the
+    // loop short-circuited past the step (or the schema's `while:` condition
+    // is mis-gated) and the handler would never see the input.
+    expect(r4.body?.wfs).toBeTruthy();
+    expect(r4.body?.data).toBeUndefined();
+    // Account still inactive — activation must wait for the loop to drain.
+    expect((await app.users.getUser("extra1@example.com")).account.active).toBe(false);
+    expect(captured).toHaveLength(0);
+
+    const r5 = await app.trigger({
+      wfs: r4.body?.wfs as string,
+      input: { fullName: "Alice Smith" },
+    });
+    const data = r5.body?.data as Record<string, unknown> | undefined;
+    expect(data?.userId).toBe("extra1@example.com");
+    expect(typeof data?.accessToken).toBe("string");
+
+    // Handler fired exactly once with the username the workflow committed
+    // (== email) AND the field the consumer's form declared. Anything else
+    // means the loop ran the wrong entry, ran twice, or stripped legitimate
+    // form fields.
+    expect(captured).toHaveLength(1);
+    expect(captured[0].username).toBe("extra1@example.com");
+    expect(captured[0].data.fullName).toBe("Alice Smith");
+
+    // User activated AFTER the loop drained — proves the schema's
+    // `inviteUnsetPendingInvitation` / `inviteActivateUser` gates ran.
+    const user = await app.users.getUser("extra1@example.com");
+    expect(user.account.active).toBe(true);
+  });
+
+  // WHY: pins iteration ORDER + per-step pause. The schema entry is a single
+  // `while:` loop with one step — without the loop bumping `extraStepIndex`
+  // AND re-pausing per body iteration, multi-step consumers would either drain
+  // all entries in one tick (only the last `handle` sees fresh user input;
+  // earlier handlers would receive {} or the latest form's payload) OR
+  // collapse to step #1 forever. The order assertion catches a future bug
+  // that iterates `opts.extraSteps` in reverse / by id-sort / via a Map.
+  it("multiple extraSteps run sequentially in order with separate handler invocations", async () => {
+    const order: string[] = [];
+    const captured: Record<string, Record<string, unknown>> = {};
+    const app = await prepareWfApp({
+      inviteOpts: {
+        accept: { showConfirmation: false },
+        extraSteps: [
+          {
+            id: "fullName",
+            form: FullNameForm,
+            handle: ({ data }) => {
+              order.push("fullName");
+              captured.fullName = { ...data };
+            },
+          },
+          {
+            id: "birthDate",
+            form: BirthDateForm,
+            handle: ({ data }) => {
+              order.push("birthDate");
+              captured.birthDate = { ...data };
+            },
+          },
+        ],
+      },
+    });
+
+    // Pause #1 — first step (FullNameForm).
+    const r4 = await driveToPostPassword(app, "extra2@example.com");
+    expect(r4.body?.wfs).toBeTruthy();
+    expect(r4.body?.data).toBeUndefined();
+    expect(order).toEqual([]); // No handler fired before user input.
+
+    // Submit step #1 — workflow MUST re-pause for step #2 (NOT finish).
+    // If the response is `data`-bearing here, both steps drained in one tick
+    // and step #2's handler never saw the user's birthDate input.
+    const r5 = await app.trigger({
+      wfs: r4.body?.wfs as string,
+      input: { fullName: "Bob" },
+    });
+    expect(r5.body?.wfs).toBeTruthy();
+    expect(r5.body?.data).toBeUndefined();
+    // First handler ran; second handler MUST NOT have fired yet.
+    expect(order).toEqual(["fullName"]);
+
+    // Submit step #2 — workflow finishes.
+    const r6 = await app.trigger({
+      wfs: r5.body?.wfs as string,
+      input: { birthDate: "1990-01-01" },
+    });
+    const data = r6.body?.data as Record<string, unknown> | undefined;
+    expect(data?.userId).toBe("extra2@example.com");
+    expect(typeof data?.accessToken).toBe("string");
+
+    // Final invocation order MUST match declaration order — pins iteration
+    // direction. The per-step capture proves each handler saw its OWN form's
+    // payload (no cross-contamination from a shared input slot).
+    expect(order).toEqual(["fullName", "birthDate"]);
+    expect(captured.fullName.fullName).toBe("Bob");
+    expect(captured.birthDate.birthDate).toBe("1990-01-01");
+
+    const user = await app.users.getUser("extra2@example.com");
+    expect(user.account.active).toBe(true);
+  });
+
+  // WHY: error-recovery contract. Consumers commonly want to reject input on
+  // server-side rules the form schema can't express (e.g. uniqueness check
+  // against a DB, age threshold, profanity filter). The workflow MUST surface
+  // the thrown `Error.message` to the same form as a re-prompt — NOT 500,
+  // NOT silently advance. Without this branch the consumer has no way to
+  // signal validation errors from `handle`. The "handler can retry on the
+  // same wfs token" half pins that the workflow stays at THIS step on
+  // failure (does not advance `extraStepIndex` until success).
+  it("handler throws Error → workflow re-prompts the same form with the error message; handler can retry", async () => {
+    let invocations = 0;
+    const app = await prepareWfApp({
+      inviteOpts: {
+        accept: { showConfirmation: false },
+        extraSteps: [
+          {
+            id: "age",
+            form: AgeForm,
+            handle: ({ data }) => {
+              invocations++;
+              if (Number(data.age) < 18) throw new Error("Must be 18 or older");
+            },
+          },
+        ],
+      },
+    });
+
+    const r4 = await driveToPostPassword(app, "extra3@example.com");
+    expect(r4.body?.wfs).toBeTruthy();
+
+    // Submit invalid input — handler throws plain Error.
+    const r5 = await app.trigger({
+      wfs: r4.body?.wfs as string,
+      input: { age: "10" },
+    });
+
+    // Paused (NOT finished) — `data` would be truthy if activation slipped
+    // through. If this fails with `data?.accessToken` set, the workflow
+    // swallowed the handler error and advanced past the step.
+    expect(r5.body?.wfs).toBeTruthy();
+    expect(r5.body?.data).toBeUndefined();
+
+    // Error surface: invite step wires `wf.requireInput({ formMessage })`
+    // which serializes to `body.errors.__form` (same shape login/recovery use
+    // for top-level form errors — see workflows.login.spec.ts line 64,
+    // workflows.recovery.options.spec.ts line 193).
+    const errors = r5.body?.errors as Record<string, unknown> | undefined;
+    expect(errors?.__form).toBe("Must be 18 or older");
+
+    // Handler ran exactly once. Account NOT activated — proves the schema
+    // did not advance past this step.
+    expect(invocations).toBe(1);
+    expect((await app.users.getUser("extra3@example.com")).account.active).toBe(false);
+
+    // Retry on the SAME wfs token with valid input → succeeds. Without
+    // staying-on-step on failure, the second submission's wfs would be stale
+    // (410) or land on a different step.
+    const r6 = await app.trigger({
+      wfs: r5.body?.wfs as string,
+      input: { age: "25" },
+    });
+    const data = r6.body?.data as Record<string, unknown> | undefined;
+    expect(data?.userId).toBe("extra3@example.com");
+    expect(typeof data?.accessToken).toBe("string");
+    expect(invocations).toBe(2);
+    expect((await app.users.getUser("extra3@example.com")).account.active).toBe(true);
+  });
+
+  // WHY: backward-compat guard. `extraSteps` defaults to `[]` via
+  // `mergeInviteOpts`. Existing consumers who don't opt in must see ZERO
+  // behavior change — no extra pauses, straight from password-set →
+  // activation. Without this assertion, a future bug that ran the loop body
+  // unconditionally would hit `this.opts.extraSteps[0]` (undefined) and trip
+  // the defensive `throw new HttpError(500)` in the step body — a hard 500
+  // for every existing invite consumer. Inverting the `while:` gate (e.g.
+  // `<=` instead of `<`) would also surface here.
+  it("extraSteps empty (default): no extra forms; workflow goes straight to activation", async () => {
+    const app = await prepareWfApp({
+      inviteOpts: { accept: { showConfirmation: false } },
+    });
+
+    const r4 = await driveToPostPassword(app, "extra4@example.com");
+    // No pauses — workflow finished on the password-set tick.
+    const data = r4.body?.data as Record<string, unknown> | undefined;
+    expect(data?.userId).toBe("extra4@example.com");
+    expect(typeof data?.accessToken).toBe("string");
+
+    const user = await app.users.getUser("extra4@example.com");
+    expect(user.account.active).toBe(true);
   });
 });

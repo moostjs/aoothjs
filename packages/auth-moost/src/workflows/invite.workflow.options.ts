@@ -48,6 +48,26 @@ export type DuplicateAction = "allow" | "reject" | "reuseAsReInvite";
 
 export type InviteSendMode = "email" | "shareableLink" | "choice";
 
+/**
+ * Extra accept-tail input step injected via `inviteOpts.extraSteps`. Each
+ * entry renders its own form, invokes its `handle` callback with the
+ * parsed input (after `stripReservedUserKeys` defense), and advances on
+ * success. Handlers that throw an `Error` re-prompt the form with the
+ * error's message as the `__form` error key; throwing `HttpError` bubbles
+ * unchanged so consumers can return real HTTP semantics (e.g. 409 on a
+ * uniqueness violation when persisting).
+ */
+export interface InviteExtraStep {
+  /** Stable identifier — used as the schema step id (prefixed `inviteExtra_`)
+   * and as the ctx key (`extraStepResults[id]`). Must be unique per opts. */
+  id: string;
+  /** Atscript-annotated form schema (same shape as `forms.invite`). */
+  form: TAtscriptAnnotatedType;
+  /** Server-side processor. Receives `{ username, data }`. May throw `Error`
+   * (→ form re-prompt) or `HttpError` (→ bubbles). */
+  handle: (input: { username: string; data: Record<string, unknown> }) => Promise<void> | void;
+}
+
 export interface InviteWorkflowOpts {
   adminForm?: {
     collectRoles?: boolean;
@@ -95,6 +115,14 @@ export interface InviteWorkflowOpts {
     inviteSendMode?: TAtscriptAnnotatedType;
     setPassword?: TAtscriptAnnotatedType;
   };
+  /**
+   * Additional accept-tail input steps rendered AFTER `inviteCollectProfile`
+   * (the legacy single-form slot) and BEFORE `inviteUnsetPendingInvitation`.
+   * Each step runs sequentially via a single schema while-loop that drives
+   * `extraStepIndex`. Coexists with `getProfileForm()` / `applyProfile()` —
+   * additive, not a replacement.
+   */
+  extraSteps?: InviteExtraStep[];
 }
 
 /**
@@ -139,6 +167,11 @@ export interface ResolvedInviteWorkflowOpts {
     inviteSendMode: TAtscriptAnnotatedType;
     setPassword: TAtscriptAnnotatedType;
   };
+  extraSteps: InviteExtraStep[];
+  /** Mirror of `extraSteps.length`, computed by `mergeInviteOpts`. Lives on
+   * the snapshot (`ctx.opts`) so the schema's while-condition can read it
+   * after `snapshotOpts` strips the non-JSON `extraSteps` array. */
+  extraStepCount: number;
 }
 
 /**
@@ -191,6 +224,8 @@ export function mergeInviteOpts(opts: InviteWorkflowOpts = {}): ResolvedInviteWo
       setPassword: SetPasswordForm as unknown as TAtscriptAnnotatedType,
       ...opts.forms,
     },
+    extraSteps: opts.extraSteps ?? [],
+    extraStepCount: opts.extraSteps?.length ?? 0,
   };
 }
 

@@ -137,6 +137,11 @@ export interface InviteWfCtx {
   /** Raw input from `inviteCollectProfile`. */
   profile?: Record<string, unknown>;
   profileApplied?: boolean;
+  /** Current index into `opts.extraSteps`. The while-loop bumps this on each completed step. */
+  extraStepIndex?: number;
+  /** Captured form input per step (keyed by `InviteExtraStep.id`) — written
+   *  AFTER the handler succeeds so a re-prompt-on-error reverts cleanly. */
+  extraStepResults?: Record<string, Record<string, unknown>>;
   pendingInvitationCleared?: boolean;
   activated?: boolean;
   confirmationShown?: boolean;
@@ -364,7 +369,10 @@ export class InviteWorkflow extends AuthWorkflowBase {
    * to strip them so `AsWfStore`'s plain-JSON persistence doesn't choke.
    */
   protected snapshotOpts(opts: ResolvedInviteWorkflowOpts): ResolvedInviteWorkflowOpts {
-    const { forms: _forms, ...rest } = opts;
+    // Drop non-JSON entries (`forms` = atscript classes, `extraSteps` = closures).
+    // The schema reads `extraStepCount` (computed by `mergeInviteOpts`) for its
+    // while-condition; step bodies consult the live `this.opts` for handlers/forms.
+    const { forms: _forms, extraSteps: _extraSteps, ...rest } = opts;
     return rest as ResolvedInviteWorkflowOpts;
   }
 
@@ -466,6 +474,15 @@ export class InviteWorkflow extends AuthWorkflowBase {
           !ctx.profileApplied &&
           !ctx.aborted
         ),
+    },
+    {
+      while: (ctx) =>
+        !!(
+          ctx.passwordSet &&
+          !ctx.aborted &&
+          (ctx.extraStepIndex ?? 0) < (ctx.opts!.extraStepCount ?? 0)
+        ),
+      steps: [{ id: "inviteExtraStep" }],
     },
     {
       id: "inviteUnsetPendingInvitation",
@@ -581,6 +598,15 @@ export class InviteWorkflow extends AuthWorkflowBase {
           !ctx.profileApplied &&
           !ctx.aborted
         ),
+    },
+    {
+      while: (ctx) =>
+        !!(
+          ctx.passwordSet &&
+          !ctx.aborted &&
+          (ctx.extraStepIndex ?? 0) < (ctx.opts!.extraStepCount ?? 0)
+        ),
+      steps: [{ id: "inviteExtraStep" }],
     },
     {
       id: "inviteUnsetPendingInvitation",
@@ -1007,6 +1033,34 @@ export class InviteWorkflow extends AuthWorkflowBase {
     }
     await this.applyProfile({ username: ctx.username, profile: sanitized });
     ctx.profileApplied = true;
+    return undefined;
+  }
+
+  // ── Phase B: extraSteps loop ───────────────────────────────────────────
+  @Step("inviteExtraStep")
+  @Public()
+  async inviteExtraStep(@WorkflowParam("context") ctx: InviteWfCtx): Promise<unknown> {
+    this.requireUsername(ctx);
+    const idx = ctx.extraStepIndex ?? 0;
+    const step = this.opts.extraSteps[idx];
+    if (!step) {
+      // Unreachable under the schema's `idx < extraStepCount` gate; fail loud
+      // if that gate ever drifts rather than silently advance.
+      throw new HttpError(500, "Workflow state corrupted: extraStep index out of bounds");
+    }
+    const wf = useAtscriptWf(step.form);
+    const input = wf.resolveInput({ partial: "deep" });
+    const sanitized = stripReservedUserKeys(input as Record<string, unknown>);
+    try {
+      await step.handle({ username: ctx.username, data: sanitized });
+    } catch (err) {
+      if (err instanceof HttpError) throw err;
+      const message = err instanceof Error ? err.message : "Invalid input";
+      throw wf.requireInput({ formMessage: message });
+    }
+    ctx.extraStepResults ??= {};
+    ctx.extraStepResults[step.id] = sanitized;
+    ctx.extraStepIndex = idx + 1;
     return undefined;
   }
 
