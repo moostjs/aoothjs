@@ -122,4 +122,97 @@ describe("UserStoreMemory", () => {
       expect(await store.exists("alice")).toBe(true);
     });
   });
+
+  describe("withCas", () => {
+    it("applies the patch on the first attempt when uncontended", async () => {
+      const store = new UserStoreMemory();
+      await store.create(makeUser("alice"));
+      let calls = 0;
+      await store.withCas("alice", (user) => {
+        calls++;
+        expect(user.username).toBe("alice");
+        return { set: { account: { active: true } } as any };
+      });
+      expect(calls).toBe(1);
+      const after = await store.findByUsername("alice");
+      expect(after!.account.active).toBe(true);
+      expect(after!.version).toBe(1);
+    });
+
+    it("mutator returning null exits cleanly without writing or bumping version", async () => {
+      const store = new UserStoreMemory();
+      await store.create(makeUser("alice"));
+      await store.withCas("alice", () => null);
+      const after = await store.findByUsername("alice");
+      expect(after!.version).toBe(0);
+    });
+
+    it("throws NOT_FOUND when the user does not exist", async () => {
+      const store = new UserStoreMemory();
+      try {
+        await store.withCas("ghost", () => ({ set: { account: { active: true } } as any }));
+        expect.unreachable();
+      } catch (e) {
+        expect((e as UserAuthError).type).toBe("NOT_FOUND");
+      }
+    });
+
+    it("throws CAS_EXHAUSTED after maxAttempts retries when every attempt loses to contention", async () => {
+      // The default budget is 2 (one initial attempt + one retry). To force
+      // exhaustion we inject a competing write inside the mutator: memory
+      // store's `update` body is synchronous, so the void update lands
+      // BEFORE withCas reaches its CAS check, guaranteeing the version is
+      // stale every time. Two such losses → CAS_EXHAUSTED.
+      const store = new UserStoreMemory();
+      await store.create(makeUser("alice"));
+      let calls = 0;
+      try {
+        await store.withCas("alice", () => {
+          calls++;
+          // Sneak a competing write in between this attempt's read and its CAS.
+          void store.update("alice", { set: { account: { lastLogin: calls } } as any });
+          // We don't care about the patch contents — it'll never apply.
+          return { set: { account: { failedLoginAttempts: calls } } as any };
+        });
+        expect.unreachable();
+      } catch (e) {
+        expect((e as UserAuthError).type).toBe("CAS_EXHAUSTED");
+      }
+      // Mutator ran exactly maxAttempts (2) times: 1 initial + 1 retry.
+      expect(calls).toBe(2);
+      // The competing writes DID land (they don't use expectedVersion), so
+      // version is bumped twice — once per failed attempt's sneaked update.
+      const after = await store.findByUsername("alice");
+      expect(after!.version).toBe(2);
+      // The withCas patches (failedLoginAttempts) never landed.
+      expect(after!.account.failedLoginAttempts).toBe(0);
+    });
+
+    it("honors a custom maxAttempts — succeeds when budget covers the contention", async () => {
+      // Same contention pattern as above, but with maxAttempts=5 we give the
+      // writer enough budget that on the 5th attempt the competing-write
+      // counter has stopped firing (we only sneak a write on the first 4).
+      const store = new UserStoreMemory();
+      await store.create(makeUser("alice"));
+      let calls = 0;
+      await store.withCas(
+        "alice",
+        () => {
+          calls++;
+          if (calls <= 4) {
+            // Compete for the first 4 attempts; let the 5th win.
+            void store.update("alice", { set: { account: { lastLogin: calls } } as any });
+          }
+          return { set: { account: { failedLoginAttempts: calls } } as any };
+        },
+        { maxAttempts: 5 },
+      );
+      expect(calls).toBe(5);
+      const after = await store.findByUsername("alice");
+      // 4 competing writes bumped the version, then attempt 5 succeeded
+      // (its own +1). Total bumps = 5.
+      expect(after!.version).toBe(5);
+      expect(after!.account.failedLoginAttempts).toBe(5);
+    });
+  });
 });
