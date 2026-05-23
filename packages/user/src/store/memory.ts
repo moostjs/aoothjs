@@ -1,6 +1,6 @@
 import { UserAuthError } from "../errors";
 import type { UserCredentials, UserStoreUpdate } from "../types";
-import { UserStore } from "./user-store";
+import { UserStore, type WithCasOptions } from "./user-store";
 import { deepMerge, incrementAtPath } from "../utils";
 
 export class UserStoreMemory<T extends object = object> extends UserStore<T> {
@@ -54,5 +54,25 @@ export class UserStoreMemory<T extends object = object> extends UserStore<T> {
 
   async delete(username: string): Promise<boolean> {
     return this.store.delete(username);
+  }
+
+  async withCas(
+    username: string,
+    mutator: (current: UserCredentials & T) => UserStoreUpdate | null,
+    opts?: WithCasOptions,
+  ): Promise<void> {
+    const maxAttempts = opts?.maxAttempts ?? 2;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const current = await this.findByUsername(username);
+      if (!current) throw new UserAuthError("NOT_FOUND");
+      const patch = mutator(current);
+      if (patch === null) return;
+      const applied = await this.update(username, {
+        ...patch,
+        expectedVersion: current.version ?? 0,
+      });
+      if (applied) return;
+    }
+    throw new UserAuthError("CAS_EXHAUSTED");
   }
 }

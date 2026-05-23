@@ -22,7 +22,6 @@ import type {
   TrustedDeviceRecord,
   UserCredentials,
   UserServiceConfig,
-  UserStoreUpdate,
 } from "./types";
 import { UserStore } from "./store/user-store";
 import { maskMfaValue } from "./utils";
@@ -303,14 +302,14 @@ export class UserService<T extends object = object> {
   }
 
   async addMfaMethod(username: string, method: MfaMethod): Promise<void> {
-    await this.withCas(username, (user) => {
+    await this.store.withCas(username, (user) => {
       const methods = [...user.mfa.methods.filter((m) => m.name !== method.name), method];
       return { set: { mfa: { methods } } as DeepPartial<UserCredentials> };
     });
   }
 
   async confirmMfaMethod(username: string, name: string): Promise<void> {
-    await this.withCas(username, (user) => {
+    await this.store.withCas(username, (user) => {
       let found = false;
       const methods = user.mfa.methods.map((m) => {
         if (m.name === name) {
@@ -392,7 +391,7 @@ export class UserService<T extends object = object> {
    */
   async consumeBackupCode(username: string, code: string): Promise<boolean> {
     let consumed = false;
-    await this.withCas(username, (user) => {
+    await this.store.withCas(username, (user) => {
       const hashes = user.backupCodes ?? [];
       const idx = hashes.findIndex((h) => verifyMfaCode(code, h));
       if (idx < 0) {
@@ -476,7 +475,7 @@ export class UserService<T extends object = object> {
    * merge strategy replace the whole array.
    */
   async addTrustedDevice(username: string, record: TrustedDeviceRecord): Promise<void> {
-    await this.withCas(username, (user) => {
+    await this.store.withCas(username, (user) => {
       const next = [...(user.trustedDevices ?? []), record];
       return { set: { trustedDevices: next } as DeepPartial<UserCredentials> };
     });
@@ -535,34 +534,6 @@ export class UserService<T extends object = object> {
   }
 
   // ---- private helpers ----
-
-  /**
-   * Run a read-modify-write cycle under optimistic concurrency: re-reads the
-   * user on each attempt, hands it to `mutator`, and submits the returned
-   * patch with `expectedVersion: user.version ?? 0`. On CAS miss (`store.update`
-   * returns `false`) we re-read and retry up to `maxAttempts`. A `null` patch
-   * means "nothing to do" — exits early without writing. `MFA_NOT_CONFIGURED`-
-   * style errors thrown from `mutator` propagate immediately. `CAS_EXHAUSTED`
-   * is thrown when the budget is spent — pathological contention, not a
-   * normal-flow outcome.
-   */
-  private async withCas(
-    username: string,
-    mutator: (user: UserCredentials & T) => UserStoreUpdate | null,
-    maxAttempts = 5,
-  ): Promise<void> {
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const user = await this.getUser(username);
-      const patch = mutator(user);
-      if (patch === null) return;
-      const applied = await this.store.update(username, {
-        ...patch,
-        expectedVersion: user.version ?? 0,
-      });
-      if (applied) return;
-    }
-    throw new UserAuthError("CAS_EXHAUSTED");
-  }
 
   private async applyPasswordChange(
     username: string,

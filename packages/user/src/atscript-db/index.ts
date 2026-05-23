@@ -1,5 +1,5 @@
 import { UserAuthError } from "../errors";
-import { UserStore } from "../store/user-store";
+import { UserStore, type WithCasOptions } from "../store/user-store";
 import type { UserCredentials, UserStoreUpdate } from "../types";
 import { setAtPath } from "../utils";
 
@@ -113,5 +113,34 @@ export class UsersStoreAtscriptDb<
   async delete(username: string): Promise<boolean> {
     const result = await this.table.deleteMany({ username });
     return result.deletedCount > 0;
+  }
+
+  /**
+   * Inline retry loop rather than delegating to @atscript/db's
+   * `withOptimisticRetry`: that helper expects the mutator to always return a
+   * patch object, but our contract lets the mutator return `null` (the
+   * race-loser detects nothing to do — see `UserService.consumeBackupCode`).
+   * Bridging would need a sentinel exception. The version-bump + $cas
+   * atomicity still happen at the atscript-db table layer via the
+   * `expectedVersion` we thread through `update()`.
+   */
+  async withCas(
+    username: string,
+    mutator: (current: UserCredentials & TUserCustom) => UserStoreUpdate | null,
+    opts?: WithCasOptions,
+  ): Promise<void> {
+    const maxAttempts = opts?.maxAttempts ?? 2;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const current = await this.findByUsername(username);
+      if (!current) throw new UserAuthError("NOT_FOUND");
+      const patch = mutator(current);
+      if (patch === null) return;
+      const applied = await this.update(username, {
+        ...patch,
+        expectedVersion: current.version ?? 0,
+      });
+      if (applied) return;
+    }
+    throw new UserAuthError("CAS_EXHAUSTED");
   }
 }
