@@ -237,4 +237,142 @@ describe("UsersStoreAtscriptDb", () => {
       expect(await svc.verifyPassword("carol", "wrong")).toBe(false);
     });
   });
+
+  describe("OCC / withCas", () => {
+    it("expectedVersion threads to $cas: SQL-layer rejects stale writes", async () => {
+      // Proves the adapter's `if (expectedVersion !== undefined) patch.$cas`
+      // wiring actually reaches the atscript-db UPDATE generator and the
+      // version predicate fires in SQL. Without this, withCas would silently
+      // degrade to last-write-wins on this backend.
+      await store.create(makeUserData());
+      const initial = await store.findByUsername("alice");
+      expect(initial!.version).toBe(0);
+
+      // Winner: CAS with expectedVersion=0 applies, version auto-bumps to 1.
+      expect(
+        await store.update("alice", {
+          set: { account: { active: true } } as any,
+          expectedVersion: 0,
+        }),
+      ).toBe(true);
+      const afterWinner = await store.findByUsername("alice");
+      expect(afterWinner!.version).toBe(1);
+      expect(afterWinner!.account.active).toBe(true);
+
+      // Stale writer: expectedVersion=0 ≠ stored 1 → rejected, no mutation.
+      expect(
+        await store.update("alice", {
+          set: { account: { lastLogin: 999 } } as any,
+          expectedVersion: 0,
+        }),
+      ).toBe(false);
+      const afterStale = await store.findByUsername("alice");
+      expect(afterStale!.account.lastLogin).toBe(0);
+      expect(afterStale!.version).toBe(1);
+
+      // Same patch without expectedVersion goes through (no CAS predicate).
+      expect(
+        await store.update("alice", {
+          set: { account: { lastLogin: 999 } } as any,
+        }),
+      ).toBe(true);
+      const afterUnchecked = await store.findByUsername("alice");
+      expect(afterUnchecked!.account.lastLogin).toBe(999);
+      expect(afterUnchecked!.version).toBe(2);
+    });
+
+    it("withCas: applies the patch and auto-bumps version when uncontended", async () => {
+      await store.create(makeUserData());
+      let calls = 0;
+      await store.withCas("alice", (user) => {
+        calls++;
+        expect(user.version).toBe(0);
+        return { set: { account: { active: true } } as any };
+      });
+      expect(calls).toBe(1);
+      const after = await store.findByUsername("alice");
+      expect(after!.account.active).toBe(true);
+      expect(after!.version).toBe(1);
+    });
+
+    it("withCas: mutator returning null exits without writing or bumping version", async () => {
+      await store.create(makeUserData());
+      await store.withCas("alice", () => null);
+      const after = await store.findByUsername("alice");
+      expect(after!.version).toBe(0);
+    });
+
+    it("withCas: throws NOT_FOUND when the user does not exist", async () => {
+      try {
+        await store.withCas("ghost", () => ({ set: { account: { active: true } } as any }));
+        expect.unreachable();
+      } catch (e) {
+        expect((e as UserAuthError).type).toBe("NOT_FOUND");
+      }
+    });
+
+    it("withCas: throws CAS_EXHAUSTED when CAS checks repeatedly miss", async () => {
+      // Forcing a real race on better-sqlite3 isn't workable here: it
+      // serializes all writes through a single connection and rejects nested
+      // transactions, so the in-memory "void competing update" trick blows up
+      // with "cannot start a transaction within a transaction". Instead we
+      // simulate CAS misses by overriding `update` to return false whenever an
+      // expectedVersion is supplied. This exercises the EXACT same loop +
+      // throw machinery (the abstract loop in UsersStoreAtscriptDb.withCas)
+      // running against real SQLite reads — only the write side is stubbed.
+      class FailingStore extends UsersStoreAtscriptDb {
+        public missesInjected = 0;
+        override async update(username: string, update: any): Promise<boolean> {
+          if (update.expectedVersion !== undefined) {
+            this.missesInjected++;
+            return false;
+          }
+          return super.update(username, update);
+        }
+      }
+      const failStore = new FailingStore({ table: table as unknown as AuthUserTable });
+      await failStore.create(makeUserData());
+
+      let calls = 0;
+      try {
+        await failStore.withCas("alice", () => {
+          calls++;
+          return { set: { account: { active: true } } as any };
+        });
+        expect.unreachable();
+      } catch (e) {
+        expect((e as UserAuthError).type).toBe("CAS_EXHAUSTED");
+      }
+      expect(calls).toBe(2); // 1 initial + 1 retry, both rejected
+      expect(failStore.missesInjected).toBe(2);
+    });
+
+    it("withCas: addMfaMethod through UserService composes sequential writes (end-to-end on real SQLite)", async () => {
+      // Sequential rather than Promise.all because better-sqlite3 serializes
+      // a single connection and rejects nested transactions ("cannot start a
+      // transaction within a transaction"). True concurrent writes against
+      // the same SQLite connection aren't a useful test target — in
+      // production, concurrent HTTP requests serialize at the SQL layer
+      // anyway. What we DO verify here: the addMfaMethod flow's
+      // service-layer mutator + store-layer withCas + atscript-db $cas all
+      // compose correctly against real SQL — both methods land, the
+      // mfa.methods array patch survives the round-trip through
+      // @db.patch.strategy 'merge', and version auto-bumps once per call.
+      const svc = new UserService(store, {
+        password: { scryptN: 1024, scryptR: 1, scryptP: 1, keyLength: 32 },
+      });
+      await svc.createUser("dave", "Secret1!");
+      await svc.activateAccount("dave");
+
+      await svc.addMfaMethod("dave", { name: "email", confirmed: false, value: "d@x.test" });
+      await svc.addMfaMethod("dave", { name: "totp", confirmed: false, value: "SECRET" });
+
+      const persisted = await store.findByUsername("dave");
+      const names = persisted!.mfa.methods.map((m) => m.name);
+      expect(names).toContain("email");
+      expect(names).toContain("totp");
+      // Version bumped once per addMfaMethod call (plus 1 from activateAccount).
+      expect(persisted!.version).toBe(3);
+    });
+  });
 });
