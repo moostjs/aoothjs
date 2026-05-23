@@ -15,11 +15,17 @@ import type { UserCredentials } from "@aooth/user";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 
 import {
+  EnrollAddressForm,
+  EnrollConfirmForm,
+  EnrollPickMethodForm,
   InviteEmailForm,
   InviteForm,
   InviteSendModeForm,
   SetPasswordForm,
 } from "../atscript/models/forms.as";
+import type { MfaTransport } from "./login.workflow.options";
+
+export type { MfaTransport } from "./login.workflow.options";
 
 export const DEFAULT_INVITE_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -64,10 +70,26 @@ export interface InviteWorkflowOpts {
     enabled?: boolean;
   };
   /**
+   * Forced MFA enrollment during the accept tail. When `enrollRequired` is
+   * true, the invitee MUST enroll a second factor BEFORE activation — closes
+   * the gap where a policy demanding MFA would otherwise 501 on first login.
+   */
+  mfa?: {
+    enrollRequired?: boolean;
+    transports?: MfaTransport[];
+    pincodeTtlMs?: number;
+    pincodeLength?: number;
+    /** TOTP provisioning issuer (rendered in the authenticator app). Default: 'aooth'. */
+    issuer?: string;
+  };
+  /**
    * Replaceable form schemas. Each field defaults to the corresponding
    * `.as` form shipped under `@aooth/auth-moost/atscript/models`.
    */
   forms?: {
+    enrollAddress?: TAtscriptAnnotatedType;
+    enrollConfirm?: TAtscriptAnnotatedType;
+    enrollPickMethod?: TAtscriptAnnotatedType;
     invite?: TAtscriptAnnotatedType;
     inviteEmail?: TAtscriptAnnotatedType;
     inviteSendMode?: TAtscriptAnnotatedType;
@@ -101,7 +123,17 @@ export interface ResolvedInviteWorkflowOpts {
   audit: {
     enabled: boolean;
   };
+  mfa: {
+    enrollRequired: boolean;
+    transports: MfaTransport[];
+    pincodeTtlMs: number;
+    pincodeLength: number;
+    issuer: string;
+  };
   forms: {
+    enrollAddress: TAtscriptAnnotatedType;
+    enrollConfirm: TAtscriptAnnotatedType;
+    enrollPickMethod: TAtscriptAnnotatedType;
     invite: TAtscriptAnnotatedType;
     inviteEmail: TAtscriptAnnotatedType;
     inviteSendMode: TAtscriptAnnotatedType;
@@ -141,7 +173,18 @@ export function mergeInviteOpts(opts: InviteWorkflowOpts = {}): ResolvedInviteWo
       enabled: true,
       ...opts.audit,
     },
+    mfa: {
+      enrollRequired: false,
+      transports: ["sms", "email", "totp"],
+      pincodeTtlMs: 5 * 60 * 1000,
+      pincodeLength: 6,
+      issuer: "aooth",
+      ...opts.mfa,
+    },
     forms: {
+      enrollAddress: EnrollAddressForm as unknown as TAtscriptAnnotatedType,
+      enrollConfirm: EnrollConfirmForm as unknown as TAtscriptAnnotatedType,
+      enrollPickMethod: EnrollPickMethodForm as unknown as TAtscriptAnnotatedType,
       invite: InviteForm as unknown as TAtscriptAnnotatedType,
       inviteEmail: InviteEmailForm as unknown as TAtscriptAnnotatedType,
       inviteSendMode: InviteSendModeForm as unknown as TAtscriptAnnotatedType,

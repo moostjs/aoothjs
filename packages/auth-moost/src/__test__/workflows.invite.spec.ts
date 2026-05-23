@@ -1,3 +1,4 @@
+import { generateTotpCode } from "@aooth/user";
 import { describe, expect, it } from "vite-plus/test";
 
 import { ProfileWithRolesForm } from "./fixtures/profile-with-roles.as";
@@ -288,5 +289,196 @@ describe("InviteWorkflow", () => {
     expect((r4.body?.data as Record<string, unknown>)?.userId).toBe("henry@test.com");
     const user = await app.users.getUser("henry@test.com");
     expect(user.account.active).toBe(true);
+  });
+});
+
+describe("InviteWorkflowOpts — mfa.enrollRequired forced enrollment", () => {
+  // Shared driver: admin invites → email arrives → resume magic link → set
+  // password. Stops at the next pause (which is `inviteEnrollPickMethod` when
+  // `mfa.enrollRequired: true`, otherwise the workflow ends). Returns the
+  // response of the set-password POST.
+  async function driveToPostPassword(app: Awaited<ReturnType<typeof prepareWfApp>>, email: string) {
+    const r1 = await app.trigger({ wfid: "auth.invite" });
+    await app.trigger({ wfs: r1.body?.wfs as string, input: { email } });
+    const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
+    const r3 = await app.resumeViaQuery(token);
+    return app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
+    });
+  }
+
+  // WHY: the headline invariant — when policy says "MFA required", an invitee
+  // must NOT be able to activate without enrolling a second factor first. The
+  // 3 schema entries gated on `passwordSet && mfa.enrollRequired` MUST hold
+  // the workflow at enrollment until a method is confirmed. Remove the SMS
+  // branch (or invert the gate) and the user activates with `methods.length === 0`,
+  // defeating the policy this option exists to enforce.
+  it("sms path: invitee enrolls before activation; account active + sms method confirmed + default", async () => {
+    const app = await prepareWfApp({
+      inviteOpts: {
+        mfa: { enrollRequired: true },
+        accept: { showConfirmation: false },
+      },
+    });
+
+    const r4 = await driveToPostPassword(app, "invitee@example.com");
+    // Paused at EnrollPickMethodForm — NOT workflow-finished. `data` would
+    // carry the auto-login envelope if activation slipped through.
+    expect(r4.body?.wfs).toBeTruthy();
+    expect(r4.body?.data).toBeUndefined();
+    // Account NOT yet active — proves activation is gated behind enrollment.
+    expect((await app.users.getUser("invitee@example.com")).account.active).toBe(false);
+
+    // Phase 1: pick sms.
+    const r5 = await app.trigger({
+      wfs: r4.body?.wfs as string,
+      input: { method: "sms" },
+    });
+    expect(r5.body?.wfs).toBeTruthy();
+    expect(r5.body?.data).toBeUndefined();
+    // No sms dispatched yet — Phase 2 (address) hasn't run.
+    expect(app.sms.length).toBe(0);
+
+    // Phase 2: supply address — pincode dispatched.
+    const r6 = await app.trigger({
+      wfs: r5.body?.wfs as string,
+      input: { address: "+15551234567" },
+    });
+    expect(r6.body?.wfs).toBeTruthy();
+    expect(r6.body?.data).toBeUndefined();
+    expect(app.sms.length).toBe(1);
+    expect(app.sms[0].recipient).toBe("+15551234567");
+    const code = app.sms[0].code;
+
+    // Phase 3: confirm pincode → enrollment commits → activation runs → finish.
+    const r7 = await app.trigger({
+      wfs: r6.body?.wfs as string,
+      input: { code },
+    });
+    const data = r7.body?.data as Record<string, unknown> | undefined;
+    expect(data?.userId).toBe("invitee@example.com");
+    expect(typeof data?.accessToken).toBe("string");
+
+    // Method persisted + confirmed + default — without these the next login
+    // would re-trigger enrollment (or worse, accept any code).
+    const user = await app.users.getUser("invitee@example.com");
+    const sms = user.mfa.methods.find((m) => m.name === "sms");
+    expect(sms?.value).toBe("+15551234567");
+    expect(sms?.confirmed).toBe(true);
+    expect(user.mfa.defaultMethod).toBe("sms");
+    // Activation ran AFTER enrollment (schema order).
+    expect(user.account.active).toBe(true);
+  });
+
+  // WHY: TOTP has no Phase 2 — the secret is server-provisioned in Phase 1
+  // and the confirm code is derived from THAT secret. A wiring mistake could
+  // either spuriously emit a pincode (TOTP secret leaks via SMS/email) or
+  // accept any code (security hole at activation).
+  it("totp path: secret provisioned, code accepted, method confirmed, no pincode emitted", async () => {
+    const app = await prepareWfApp({
+      inviteOpts: {
+        mfa: { enrollRequired: true },
+        accept: { showConfirmation: false },
+      },
+    });
+
+    const r4 = await driveToPostPassword(app, "totper@example.com");
+    expect(r4.body?.wfs).toBeTruthy();
+
+    // Phase 1: pick totp — secret persisted unconfirmed on the user row.
+    const r5 = await app.trigger({
+      wfs: r4.body?.wfs as string,
+      input: { method: "totp" },
+    });
+    expect(r5.body?.wfs).toBeTruthy();
+    expect(r5.body?.data).toBeUndefined();
+
+    const interimUser = await app.users.getUser("totper@example.com");
+    const totp = interimUser.mfa.methods.find((m) => m.name === "totp");
+    expect(totp?.confirmed).toBe(false);
+    expect(typeof totp?.value).toBe("string");
+    expect(totp!.value.length).toBeGreaterThan(0);
+
+    const code = generateTotpCode(totp!.value);
+    const r6 = await app.trigger({
+      wfs: r5.body?.wfs as string,
+      input: { code },
+    });
+    const data = r6.body?.data as Record<string, unknown> | undefined;
+    expect(data?.userId).toBe("totper@example.com");
+    expect(typeof data?.accessToken).toBe("string");
+
+    // No pincode side-channel for TOTP — proves Phase 2 short-circuits on
+    // method==='totp'. Sms stays empty; emails has ONLY the original invite
+    // magic-link (no enrollment pincode email leaked).
+    expect(app.sms.length).toBe(0);
+    expect(app.emails.length).toBe(1);
+    expect(app.emails[0].kind).toBe("invite.magicLink");
+
+    const user = await app.users.getUser("totper@example.com");
+    const totpFinal = user.mfa.methods.find((m) => m.name === "totp");
+    expect(totpFinal?.confirmed).toBe(true);
+    expect(user.mfa.defaultMethod).toBe("totp");
+    expect(user.account.active).toBe(true);
+  });
+
+  // WHY: policy-loosening direction. Default is `enrollRequired: false`;
+  // consumers who haven't opted in must NOT be forced through enrollment. A
+  // future inversion of the gate would push every invitee into enrollment
+  // and break backward-compat. Pins the default branch.
+  it("enrollRequired=false (default): invite skips enrollment, user activates with no MFA", async () => {
+    const app = await prepareWfApp({
+      inviteOpts: { accept: { showConfirmation: false } },
+    });
+
+    const r4 = await driveToPostPassword(app, "nomfa@example.com");
+    // No paused enrollment forms — workflow finishes directly with auto-login.
+    const data = r4.body?.data as Record<string, unknown> | undefined;
+    expect(data?.userId).toBe("nomfa@example.com");
+    expect(typeof data?.accessToken).toBe("string");
+
+    const user = await app.users.getUser("nomfa@example.com");
+    expect(user.account.active).toBe(true);
+    // Enrollment never ran — no unconfirmed method left dangling either.
+    expect(user.mfa.methods).toHaveLength(0);
+  });
+
+  // WHY: if Phase 3 accepted any code, an attacker who intercepted the magic
+  // link could enroll a TOTP they don't control. Pins that
+  // `verifyTotpSetupCode` is actually called AND that the workflow stays
+  // paused at the confirm step (does NOT progress to
+  // `inviteUnsetPendingInvitation`/`inviteActivateUser`) on rejection.
+  it("totp path: invalid setup code → form error, method stays unconfirmed, account NOT activated", async () => {
+    const app = await prepareWfApp({
+      inviteOpts: {
+        mfa: { enrollRequired: true },
+        accept: { showConfirmation: false },
+      },
+    });
+
+    const r4 = await driveToPostPassword(app, "badcode@example.com");
+    const r5 = await app.trigger({
+      wfs: r4.body?.wfs as string,
+      input: { method: "totp" },
+    });
+    const r6 = await app.trigger({
+      wfs: r5.body?.wfs as string,
+      input: { code: "000000" },
+    });
+
+    // Not finished — workflow re-prompts with a form error.
+    expect(r6.body?.data).toBeUndefined();
+    const errors = r6.body?.errors as Record<string, unknown> | undefined;
+    expect(errors?.code).toBeTruthy();
+
+    // Method stays unconfirmed AND account stays inactive — proves the
+    // workflow paused at the enroll step and did NOT race past it to
+    // unsetPendingInvitation/activate (the gates on those steps don't mention
+    // `enrollDone`, so the only thing stopping activation is the pause itself).
+    const user = await app.users.getUser("badcode@example.com");
+    const totp = user.mfa.methods.find((m) => m.name === "totp");
+    expect(totp?.confirmed).toBe(false);
+    expect(user.account.active).toBe(false);
   });
 });

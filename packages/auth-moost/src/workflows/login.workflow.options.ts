@@ -9,6 +9,8 @@
  */
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 
+import type { MfaTransport } from "./auth-workflow.base";
+
 import {
   AskEmailForm,
   AskPhoneForm,
@@ -33,7 +35,7 @@ export const DEFAULT_MFA_CODE_TTL_MS = 5 * 60 * 1000;
 
 export type LoginRedirect = "referer" | "home" | false | null;
 
-export type MfaTransport = "sms" | "email" | "totp";
+export type { MfaTransport } from "./auth-workflow.base";
 
 export interface SsoProvider {
   id: string;

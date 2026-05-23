@@ -51,8 +51,6 @@
  */
 import { AuthCredential, type AuthEmailKind, type AuthSmsKind } from "@aooth/auth";
 import {
-  generateTotpSecret,
-  generateTotpUri,
   type MfaMethodInfo,
   type TrustedDeviceRecord,
   UserAuthError,
@@ -136,6 +134,8 @@ export interface LoginWfCtx {
   enrollUri?: string;
   /** Mirror of `opts.mfa.transports`, surfaced to `EnrollPickMethodForm` via `@wf.context.pass`. */
   enrollAvailableTransports?: MfaTransport[];
+  /** Set true by the shared `runMfaEnrollment` helper on Phase 3 completion; mirrored to `mfaChecked`. */
+  enrollDone?: boolean;
 
   // Pincode state:
   pin?: string;
@@ -1069,109 +1069,32 @@ export class LoginWorkflow extends AuthWorkflowBase {
   }
 
   /**
-   * Forced MFA enrollment — pick method → collect address (sms/email) OR
-   * provision TOTP secret → confirm code. The step body branches on ctx flags
-   * so the schema while-loop iterates through each phase. Mirrors the
-   * `ensureEmail` / `ensurePhone` ask-and-verify pattern.
+   * Forced MFA enrollment — delegates to the shared
+   * `AuthWorkflowBase.runMfaEnrollment` 3-phase driver. The schema while-loop
+   * re-enters this step until `ctx.enrollDone` (mirrored to `ctx.mfaChecked`
+   * for login's loop-exit signal).
    */
   @Step("mfa-enroll-required")
   async mfaEnrollRequired(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
     this.requireUsername(ctx);
-
-    // Phase 1: pick method.
-    if (!ctx.enrollMethod) {
-      if (!ctx.enrollAvailableTransports) {
-        ctx.enrollAvailableTransports = [...this.opts.mfa.transports];
-      }
-      const wf = useAtscriptWf(this.opts.forms.enrollPickMethod);
-      const input = wf.resolveInput() as { method: string };
-      const picked = input.method as MfaTransport;
-      if (!ctx.enrollAvailableTransports.includes(picked)) {
-        throw wf.requireInput({ errors: { method: "Unknown method" } });
-      }
-      ctx.enrollMethod = picked;
-      // TOTP provisions+persists the secret here so the confirm step can render
-      // the QR and verify against the UNCONFIRMED method row.
-      if (picked === "totp") {
-        const secret = generateTotpSecret();
-        const uri = generateTotpUri(secret, "aooth", ctx.username);
-        const username = ctx.username;
-        await this.withStoreErrorTranslation(() =>
-          this.users.addMfaMethod(username, {
-            name: "totp",
-            value: secret,
-            confirmed: false,
-          }),
-        );
-        ctx.enrollSecret = secret;
-        ctx.enrollUri = uri;
-      }
-      return undefined;
-    }
-
-    // Phase 2: collect address + send pincode (sms/email only — TOTP skips).
-    if ((ctx.enrollMethod === "sms" || ctx.enrollMethod === "email") && !ctx.enrollAddress) {
-      const wf = useAtscriptWf(this.opts.forms.enrollAddress);
-      const input = wf.resolveInput() as { address: string };
-      const username = ctx.username;
-      const methodName = ctx.enrollMethod;
-      await this.withStoreErrorTranslation(() =>
-        this.users.addMfaMethod(username, {
-          name: methodName,
-          value: input.address,
-          confirmed: false,
-        }),
-      );
-      ctx.enrollAddress = input.address;
-      const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
-      if (methodName === "email") {
-        ctx.pinSentTo = maskEmail(input.address);
-        await this.deliver({
-          channel: "email",
-          kind: "login.pincode",
-          recipient: input.address,
-          code,
-          expiresAt: ctx.pinExpire as number,
-          userId: username,
-        });
-      } else {
-        ctx.pinSentTo = maskPhone(input.address);
-        await this.deliver({
-          channel: "sms",
-          kind: "login.pincode",
-          recipient: input.address,
-          code,
-          ttlMs: this.opts.mfa.pincodeTtlMs,
-          userId: username,
-        });
-      }
-      return undefined;
-    }
-
-    // Phase 3: confirm code.
-    const wf = useAtscriptWf(this.opts.forms.enrollConfirm);
-    const input = wf.resolveInput() as { code: string };
-    if (ctx.enrollMethod === "totp") {
-      try {
-        await this.users.verifyTotpSetupCode(ctx.username, input.code);
-      } catch (err) {
-        if (err instanceof UserAuthError && err.type === "MFA_INVALID") {
-          throw wf.requireInput({ errors: { code: "Invalid code" } });
-        }
-        throw err;
-      }
-    } else {
-      const pinErr = this.verifyPin(ctx, input.code);
-      if (pinErr) throw wf.requireInput({ errors: pinErr });
-    }
-    const methodName = ctx.enrollMethod;
-    const username = ctx.username;
-    await this.withStoreErrorTranslation(() => this.users.confirmMfaMethod(username, methodName));
-    // No contention with an existing default: this is the user's only method.
-    await this.users.setDefaultMfaMethod(username, methodName);
-    ctx.mfaChecked = true;
-    delete ctx.pin;
-    delete ctx.pinExpire;
+    await this.runMfaEnrollment({
+      ctx,
+      username: ctx.username,
+      users: this.users,
+      deliver: (p) => this.deliver(p as DeliverPayload),
+      forms: {
+        pickMethod: this.opts.forms.enrollPickMethod,
+        address: this.opts.forms.enrollAddress,
+        confirm: this.opts.forms.enrollConfirm,
+      },
+      transports: this.opts.mfa.transports,
+      pincodeLength: this.opts.mfa.pincodeLength,
+      pincodeTtlMs: this.opts.mfa.pincodeTtlMs,
+      issuer: "aooth",
+    });
+    // Login uses `mfaChecked` as the loop-exit signal; the helper sets
+    // `enrollDone` on Phase 3 completion so we mirror it here.
+    if (ctx.enrollDone) ctx.mfaChecked = true;
     return undefined;
   }
 

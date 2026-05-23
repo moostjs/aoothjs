@@ -6,9 +6,76 @@
  * `resolveClientIp()` reader. Workflows extend this class and call helpers
  * via `this.<name>(...)`.
  */
-import { UserAuthError } from "@aooth/user";
+import {
+  generateTotpSecret,
+  generateTotpUri,
+  maskEmail,
+  maskPhone,
+  UserAuthError,
+  type UserService,
+} from "@aooth/user";
+import { useAtscriptWf } from "@atscript/moost-wf";
+import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { HttpError } from "@moostjs/event-http";
 import { useRequest } from "@wooksjs/event-http";
+
+/**
+ * Method names for the MFA enrollment helper. Re-exported from
+ * `login.workflow.options` as `MfaTransport` (kept as the public alias) so
+ * existing consumers don't need to switch import paths.
+ */
+export type MfaTransport = "sms" | "email" | "totp";
+
+/**
+ * Context shape consumed by `runMfaEnrollment`. Both `LoginWfCtx` and
+ * `InviteWfCtx` extend this implicitly (they declare the same field set).
+ * Kept structural so neither workflow's full ctx union has to be imported
+ * here — base stays workflow-agnostic.
+ */
+export interface MfaEnrollCtx {
+  enrollMethod?: MfaTransport;
+  enrollAddress?: string;
+  enrollSecret?: string;
+  enrollUri?: string;
+  enrollAvailableTransports?: MfaTransport[];
+  enrollDone?: boolean;
+  pin?: string;
+  pinExpire?: number;
+  pinSentTo?: string;
+}
+
+/**
+ * Looser structural mirror of `DeliverPayload` from `login.workflow.ts`.
+ * The base file mustn't import from a sibling workflow file; the concrete
+ * workflow's strict discriminated union is structurally assignable to this.
+ */
+export interface DeliverPayloadLike {
+  channel: "email" | "sms";
+  kind: string;
+  recipient: string;
+  code?: string;
+  expiresAt?: number;
+  ttlMs?: number;
+  userId?: string;
+}
+
+export interface MfaEnrollDeps {
+  ctx: MfaEnrollCtx;
+  username: string;
+  users: UserService;
+  /** Concrete workflow's `deliver` hook, narrowed to the payloads this flow emits. */
+  deliver: (payload: DeliverPayloadLike) => Promise<void>;
+  forms: {
+    pickMethod: TAtscriptAnnotatedType;
+    address: TAtscriptAnnotatedType;
+    confirm: TAtscriptAnnotatedType;
+  };
+  transports: MfaTransport[];
+  pincodeLength: number;
+  pincodeTtlMs: number;
+  /** TOTP provisioning issuer (rendered in the authenticator app). */
+  issuer: string;
+}
 
 /**
  * Top-level `UserCredentials` keys that workflow-collected profile payloads
@@ -134,5 +201,122 @@ export class AuthWorkflowBase {
     if (!ctx.pin || !ctx.pinExpire || Date.now() > ctx.pinExpire) return { code: "Code expired" };
     if (submitted !== ctx.pin) return { code: "Invalid code" };
     return null;
+  }
+
+  /**
+   * Shared 3-phase MFA enrollment driver — pick method, collect address (or
+   * provision TOTP secret), confirm code. Used by both
+   * `LoginWorkflow.mfa-enroll-required` (forced enrollment when policy tightens
+   * for an existing user) and `InviteWorkflow.inviteEnrollMfa*` (forced
+   * enrollment during the accept tail when policy demands MFA at activation
+   * time). The step body in each workflow delegates here; `@Step` decorators
+   * must stay on the concrete class (moost requirement).
+   *
+   * Sets `deps.ctx.enrollDone = true` when the 3 phases complete. Callers gate
+   * their step on `!ctx.enrollDone` and translate that into their own
+   * loop-exit signal (login: `mfaChecked = true`; invite: `enrollDone` directly).
+   */
+  protected async runMfaEnrollment(deps: MfaEnrollDeps): Promise<void> {
+    const {
+      ctx,
+      username,
+      users,
+      deliver,
+      forms,
+      transports,
+      pincodeLength,
+      pincodeTtlMs,
+      issuer,
+    } = deps;
+
+    // Phase 1: pick method. For TOTP also provision + persist the secret
+    // immediately so the confirm step can render the QR.
+    if (!ctx.enrollMethod) {
+      if (!ctx.enrollAvailableTransports) {
+        ctx.enrollAvailableTransports = [...transports];
+      }
+      const wf = useAtscriptWf(forms.pickMethod);
+      const input = wf.resolveInput() as { method: string };
+      const picked = input.method as MfaTransport;
+      if (!ctx.enrollAvailableTransports.includes(picked)) {
+        throw wf.requireInput({ errors: { method: "Unknown method" } });
+      }
+      ctx.enrollMethod = picked;
+      if (picked === "totp") {
+        const secret = generateTotpSecret();
+        const uri = generateTotpUri(secret, issuer, username);
+        await this.withStoreErrorTranslation(() =>
+          users.addMfaMethod(username, {
+            name: "totp",
+            value: secret,
+            confirmed: false,
+          }),
+        );
+        ctx.enrollSecret = secret;
+        ctx.enrollUri = uri;
+      }
+      return;
+    }
+
+    // Phase 2: collect address + send pincode (sms/email only).
+    if ((ctx.enrollMethod === "sms" || ctx.enrollMethod === "email") && !ctx.enrollAddress) {
+      const wf = useAtscriptWf(forms.address);
+      const input = wf.resolveInput() as { address: string };
+      const methodName = ctx.enrollMethod;
+      await this.withStoreErrorTranslation(() =>
+        users.addMfaMethod(username, {
+          name: methodName,
+          value: input.address,
+          confirmed: false,
+        }),
+      );
+      ctx.enrollAddress = input.address;
+      const code = this.mintPin(ctx, pincodeLength, pincodeTtlMs);
+      if (methodName === "email") {
+        ctx.pinSentTo = maskEmail(input.address);
+        await deliver({
+          channel: "email",
+          kind: "login.pincode",
+          recipient: input.address,
+          code,
+          expiresAt: ctx.pinExpire as number,
+          userId: username,
+        });
+      } else {
+        ctx.pinSentTo = maskPhone(input.address);
+        await deliver({
+          channel: "sms",
+          kind: "login.pincode",
+          recipient: input.address,
+          code,
+          ttlMs: pincodeTtlMs,
+          userId: username,
+        });
+      }
+      return;
+    }
+
+    // Phase 3: confirm.
+    const wf = useAtscriptWf(forms.confirm);
+    const input = wf.resolveInput() as { code: string };
+    if (ctx.enrollMethod === "totp") {
+      try {
+        await users.verifyTotpSetupCode(username, input.code);
+      } catch (err) {
+        if (err instanceof UserAuthError && err.type === "MFA_INVALID") {
+          throw wf.requireInput({ errors: { code: "Invalid code" } });
+        }
+        throw err;
+      }
+    } else {
+      const pinErr = this.verifyPin(ctx, input.code);
+      if (pinErr) throw wf.requireInput({ errors: pinErr });
+    }
+    const methodName = ctx.enrollMethod as MfaTransport;
+    await this.withStoreErrorTranslation(() => users.confirmMfaMethod(username, methodName));
+    await users.setDefaultMfaMethod(username, methodName);
+    ctx.enrollDone = true;
+    delete ctx.pin;
+    delete ctx.pinExpire;
   }
 }

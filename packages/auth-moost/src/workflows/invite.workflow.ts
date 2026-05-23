@@ -122,6 +122,18 @@ export interface InviteWfCtx {
   /** Detected at `inviteCheckPendingInvitation`; triggers `inviteIdempotentRedirect`. */
   alreadyAccepted?: boolean;
   passwordSet?: boolean;
+  // MFA enrollment state (mirrors LoginWfCtx fields used by the shared
+  // `AuthWorkflowBase.runMfaEnrollment` helper).
+  enrollMethod?: "sms" | "email" | "totp";
+  enrollAddress?: string;
+  enrollSecret?: string;
+  enrollUri?: string;
+  enrollAvailableTransports?: Array<"sms" | "email" | "totp">;
+  enrollDone?: boolean;
+  /** Pincode scratch shared with the enrollment helper. */
+  pin?: string;
+  pinExpire?: number;
+  pinSentTo?: string;
   /** Raw input from `inviteCollectProfile`. */
   profile?: Record<string, unknown>;
   profileApplied?: boolean;
@@ -407,6 +419,38 @@ export class InviteWorkflow extends AuthWorkflowBase {
       condition: (ctx) =>
         !!(ctx.linkSent && !ctx.alreadyAccepted && !ctx.passwordSet && !ctx.aborted),
     },
+    // ── Forced MFA enrollment (3 entries — one per phase, since the invite
+    // schema is linear and can't loop a single step like login does). The
+    // shared `runMfaEnrollment` helper routes internally based on ctx state.
+    {
+      id: "inviteEnrollPickMethod",
+      condition: (ctx) =>
+        !!(ctx.passwordSet && ctx.opts!.mfa.enrollRequired && !ctx.enrollMethod && !ctx.aborted),
+    },
+    {
+      id: "inviteEnrollAddress",
+      condition: (ctx) =>
+        !!(
+          ctx.passwordSet &&
+          ctx.opts!.mfa.enrollRequired &&
+          ctx.enrollMethod &&
+          (ctx.enrollMethod === "sms" || ctx.enrollMethod === "email") &&
+          !ctx.enrollAddress &&
+          !ctx.aborted
+        ),
+    },
+    {
+      id: "inviteEnrollConfirm",
+      condition: (ctx) =>
+        !!(
+          ctx.passwordSet &&
+          ctx.opts!.mfa.enrollRequired &&
+          ctx.enrollMethod &&
+          (ctx.enrollMethod === "totp" || !!ctx.enrollAddress) &&
+          !ctx.enrollDone &&
+          !ctx.aborted
+        ),
+    },
     {
       id: "inviteCollectProfile",
       condition: (ctx) =>
@@ -489,6 +533,38 @@ export class InviteWorkflow extends AuthWorkflowBase {
       id: "inviteCreatePasswordForm",
       condition: (ctx) =>
         !!(ctx.linkSent && !ctx.alreadyAccepted && !ctx.passwordSet && !ctx.aborted),
+    },
+    // ── Forced MFA enrollment (3 entries — one per phase, since the invite
+    // schema is linear and can't loop a single step like login does). The
+    // shared `runMfaEnrollment` helper routes internally based on ctx state.
+    {
+      id: "inviteEnrollPickMethod",
+      condition: (ctx) =>
+        !!(ctx.passwordSet && ctx.opts!.mfa.enrollRequired && !ctx.enrollMethod && !ctx.aborted),
+    },
+    {
+      id: "inviteEnrollAddress",
+      condition: (ctx) =>
+        !!(
+          ctx.passwordSet &&
+          ctx.opts!.mfa.enrollRequired &&
+          ctx.enrollMethod &&
+          (ctx.enrollMethod === "sms" || ctx.enrollMethod === "email") &&
+          !ctx.enrollAddress &&
+          !ctx.aborted
+        ),
+    },
+    {
+      id: "inviteEnrollConfirm",
+      condition: (ctx) =>
+        !!(
+          ctx.passwordSet &&
+          ctx.opts!.mfa.enrollRequired &&
+          ctx.enrollMethod &&
+          (ctx.enrollMethod === "totp" || !!ctx.enrollAddress) &&
+          !ctx.enrollDone &&
+          !ctx.aborted
+        ),
     },
     {
       id: "inviteCollectProfile",
@@ -848,6 +924,52 @@ export class InviteWorkflow extends AuthWorkflowBase {
       this.translatePasswordSetError(err);
     }
     ctx.passwordSet = true;
+    return undefined;
+  }
+
+  // ── Phase B: forced MFA enrollment ────────────────────────────────────
+  // Three @Step methods (pick / address / confirm) all delegate to the same
+  // helper — the schema's per-phase conditions ensure only one fires per
+  // workflow tick, and `runMfaEnrollment` internally routes to the matching
+  // phase based on ctx state. Three steps (vs one) is required because the
+  // invite schema is linear; a single step couldn't pause between phases.
+  private async runInviteEnrollment(ctx: InviteWfCtx): Promise<void> {
+    this.requireUsername(ctx);
+    await this.runMfaEnrollment({
+      ctx,
+      username: ctx.username,
+      users: this.users,
+      deliver: (p) => this.deliver(p as DeliverPayload),
+      forms: {
+        pickMethod: this.opts.forms.enrollPickMethod,
+        address: this.opts.forms.enrollAddress,
+        confirm: this.opts.forms.enrollConfirm,
+      },
+      transports: this.opts.mfa.transports,
+      pincodeLength: this.opts.mfa.pincodeLength,
+      pincodeTtlMs: this.opts.mfa.pincodeTtlMs,
+      issuer: this.opts.mfa.issuer,
+    });
+  }
+
+  @Step("inviteEnrollPickMethod")
+  @Public()
+  async inviteEnrollPickMethod(@WorkflowParam("context") ctx: InviteWfCtx): Promise<unknown> {
+    await this.runInviteEnrollment(ctx);
+    return undefined;
+  }
+
+  @Step("inviteEnrollAddress")
+  @Public()
+  async inviteEnrollAddress(@WorkflowParam("context") ctx: InviteWfCtx): Promise<unknown> {
+    await this.runInviteEnrollment(ctx);
+    return undefined;
+  }
+
+  @Step("inviteEnrollConfirm")
+  @Public()
+  async inviteEnrollConfirm(@WorkflowParam("context") ctx: InviteWfCtx): Promise<unknown> {
+    await this.runInviteEnrollment(ctx);
     return undefined;
   }
 
