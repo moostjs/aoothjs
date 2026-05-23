@@ -1,5 +1,5 @@
 export { PasswordHasher } from "./hasher";
-export { PasswordPolicy, normalizePolicies } from "./policy";
+export { definePasswordPolicy, PasswordPolicy, normalizePolicies } from "./policy";
 export {
   ppHasMinLength,
   ppHasUpperCase,

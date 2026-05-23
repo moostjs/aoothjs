@@ -1,6 +1,6 @@
 import { AuthCredential, CredentialStoreJwt, DenylistStoreMemory } from "@aooth/auth";
 import type { BuildMagicLinkUrl } from "@aooth/auth-moost";
-import { type UserCredentials, UserService } from "@aooth/user";
+import { definePasswordPolicy, type UserCredentials, UserService } from "@aooth/user";
 import { type AuthUserTable, UsersStoreAtscriptDb } from "@aooth/user/atscript-db";
 
 import type { AppDb } from "./db";
@@ -69,24 +69,28 @@ export function createAooth({ tables, env }: AppAuthOptions): AppAuth {
   const userService = new UserService<DemoUser>(userStore, {
     password: {
       historyLength: 5,
-      // Transferable string rules so the same policy can pre-validate on the
-      // frontend. `v` is the candidate password.
+      // Transferable function rules: `definePasswordPolicy` runs the fn on
+      // the backend directly (no sandbox) AND ships a `(v) => (fn)(v, ...args)`
+      // text form via `getTransferablePolicies()` for cross-tier pre-validation.
       policies: [
-        {
-          rule: "v.length >= 8",
+        definePasswordPolicy({
+          rule: (v: string, min: number) => v.length >= min,
+          args: [8] as const,
           description: "At least 8 characters",
           errorMessage: "Password must be at least 8 characters long",
-        },
-        {
-          rule: "/[A-Za-z]/.test(v)",
+        }),
+        definePasswordPolicy({
+          rule: (v: string) => /[A-Za-z]/.test(v),
+          args: [] as const,
           description: "Contains a letter",
           errorMessage: "Password must contain at least one letter",
-        },
-        {
-          rule: "/[0-9]/.test(v)",
+        }),
+        definePasswordPolicy({
+          rule: (v: string) => /[0-9]/.test(v),
+          args: [] as const,
           description: "Contains a digit",
           errorMessage: "Password must contain at least one digit",
-        },
+        }),
       ],
     },
     lockout: {

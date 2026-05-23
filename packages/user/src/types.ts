@@ -134,7 +134,23 @@ export interface LockoutConfig {
 // ---- Password Policy ----
 
 export interface PasswordPolicyDef {
-  rule: string | PasswordPolicyEvalFn;
+  /**
+   * Backend evaluator. Function only — executed directly with no sandbox.
+   * String rules were removed: `@prostojs/ftring`'s sandbox does NOT block
+   * prototype-chain escapes (`constructor.constructor("return process")()`,
+   * `__proto__.x = ...`), so accepting strings was an RCE vector. Authors
+   * use `definePasswordPolicy({ rule, args })` to get both this fn AND the
+   * serialized form for free.
+   */
+  rule: PasswordPolicyEvalFn;
+  /**
+   * Pre-baked function-literal text shipped to clients for cross-tier
+   * validation via `getTransferablePolicies()`. Authored as
+   * `(v) => (${ruleSource})(v, ${args.map(JSON.stringify).join(', ')})` by
+   * `definePasswordPolicy`. Absent → the policy is backend-only (frontend
+   * skips it; server-side check remains authoritative).
+   */
+  serialized?: string;
   description?: string;
   errorMessage?: string;
 }

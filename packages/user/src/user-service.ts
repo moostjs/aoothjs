@@ -295,7 +295,10 @@ export class UserService<T extends object = object> {
     return this.config.password.policies
       .filter((p) => p.transferable)
       .map((p) => ({
-        rule: p.rule as string,
+        // `serialized` is the pre-baked `(v) => (fn)(v, ...args)` text built
+        // by `definePasswordPolicy`. `.filter(transferable)` above guarantees
+        // it's present; the `!` reflects that contract.
+        rule: p.serialized as string,
         description: p.description,
         errorMessage: p.errorMessage,
       }));

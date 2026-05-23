@@ -53,9 +53,6 @@
     "gen:atscript": "asc",
     "postinstall": "asc"
   },
-  "dependencies": {
-    "@prostojs/ftring": "^0.0.3"
-  },
   "devDependencies": {
     "@atscript/core": "catalog:",
     "@atscript/db": "catalog:",

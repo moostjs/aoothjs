@@ -36,7 +36,7 @@ export { UserStoreMemory } from "./store/memory";
 
 // Password
 export { PasswordHasher } from "./password/hasher";
-export { PasswordPolicy, normalizePolicies } from "./password/policy";
+export { definePasswordPolicy, PasswordPolicy, normalizePolicies } from "./password/policy";
 export {
   ppHasMinLength,
   ppHasUpperCase,
