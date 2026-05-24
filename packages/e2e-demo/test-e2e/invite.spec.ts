@@ -59,6 +59,7 @@ import {
   uniqueEmail,
   USERS,
   waitForEmail,
+  waitForFormInput,
   wfUrl,
 } from "./harness";
 
@@ -242,8 +243,14 @@ test.describe("WF-INVITE — auth.invite family (P0)", () => {
 
     await page.goto(wfUrl("auth.invite", "choice-freshlogin"));
     // First pause is `InviteSendModeForm` (because `send.mode === 'choice'`
-    // defers to `inviteSelectSendMode`).
-    await expect(page.locator('[name="mode"]')).toBeVisible({ timeout: 5000 });
+    // defers to `inviteSelectSendMode`). The `mode` field is rendered as a
+    // radio group (one input per option — 'email' + 'shareableLink'), so a
+    // bare `[name="mode"]` locator strict-mode-violates on 2 elements. Use
+    // `waitForFormInput` (which `.first()`s the locator) + assert on the
+    // radiogroup role with its label — mirrors the Select2faForm pattern at
+    // login.spec.ts:425-428.
+    await waitForFormInput(page, "mode");
+    await expect(page.getByRole("radiogroup", { name: /Delivery mode/ })).toBeVisible();
 
     await fillField(page, "mode", "email");
     await submitForm(page);
@@ -606,7 +613,9 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
   }) => {
     await loginViaUi(page, USERS.admin_inviter);
     await page.goto(wfUrl("auth.invite", "choice-freshlogin"));
-    await expect(page.locator('[name="mode"]')).toBeVisible({ timeout: 5000 });
+    // See WF-INVITE-011 for the radio-group locator pattern rationale.
+    await waitForFormInput(page, "mode");
+    await expect(page.getByRole("radiogroup", { name: /Delivery mode/ })).toBeVisible();
     await fillField(page, "mode", "email");
     await submitForm(page);
 
