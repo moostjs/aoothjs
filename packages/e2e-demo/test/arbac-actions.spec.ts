@@ -240,6 +240,45 @@ describe("ACT — mutating per-action gating (fresh app per test)", () => {
     expect([200, 201, 202]).toContain(delRes.status);
   });
 
+  it("ACT-08 — action handler body's secondary DB calls still flow through arbac (no raw-db escape hatch)", async () => {
+    // Pins that the action's `scope.filter: { assigneeUsername: self }` gates the
+    // underlying UPDATE inside the handler body — not via a per-handler check the
+    // next developer could forget. The `markDone` body calls
+    // `this.table.updateMany(scopedFilter({ id }), …)`, where `scopedFilter`
+    // resolves the active arbac scopes and ANDs them onto the WHERE clause.
+    //
+    // Setup mirrors ACT-02's pre-condition but INVERTS it: do NOT reassign the
+    // tenantA[0] task to grace. The row is seeded as `assigneeUsername: "t1_bob"`,
+    // grace's entry-gate on `tasks.markDone` PASSES (she holds the action), and
+    // the row sits in her tenant (entry tenantId scope passes too). The ONLY thing
+    // that should block the mutation is the row-level scope filter being merged
+    // into the handler's own `updateMany` call.
+    //
+    // Distinct from ACT-01 (entry-gate 403 for viewers) and ACT-02 (happy path
+    // when assignee matches). Covers the scenario where entry-gate PASSES but the
+    // row's metadata puts it out of row-level scope — proving the handler body
+    // honors `scope.filter`, not just the framework's pre-handler gate.
+    const taskId = app.fixtures.tasks.tenantA[0];
+    // Sanity: the row is assigned to bob, NOT grace.
+    const before = (await dbFindOne(app, "tasks", { id: taskId })) as TaskRow;
+    expect(before.assigneeUsername).toBe("t1_bob");
+    expect(before.status).not.toBe("done");
+
+    const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_grace);
+    const res = await fetch("/tasks/actions/markDone", {
+      method: "POST",
+      json: { ids: { id: taskId } },
+    });
+    // `assertWritten` throws HttpError(404) when the scoped updateMany matches 0
+    // rows. If the handler had a raw-db escape hatch (bypassing scopedFilter), the
+    // call would succeed (200) and grace would have just mutated bob's task.
+    expect(res.status).toBe(404);
+
+    const after = (await dbFindOne(app, "tasks", { id: taskId })) as TaskRow;
+    expect(after.status).not.toBe("done");
+    expect(after.assigneeUsername).toBe("t1_bob");
+  });
+
   it("ACT-05 — `disabled: perRow` predicate blocks markDone on already-done tasks (rejects, no mutation)", async () => {
     // Pre-condition: assign a tenantA task to grace and mark it done.
     const taskId = app.fixtures.tasks.tenantA[0];

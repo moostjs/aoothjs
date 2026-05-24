@@ -109,6 +109,51 @@ describe("PROJ — field-level projection", () => {
     expect(rejected.status).toBe(403);
   });
 
+  it("PROJ-04b — user $select on $with-relation intersects with child role projection (cannot escape exclusion)", async () => {
+    // PROJ-04 proves the default case: with no user-supplied $select on the
+    // `comments` relation, viewer.tasks.with.comments.projection
+    // (= PROJ_COMMENT_VIEWER = { tenantId: 0 }) masks tenantId on expanded rows.
+    //
+    // This pins the adversarial case: when the user explicitly asks the
+    // server for tenantId via `$with=comments($select=...,tenantId,...)`,
+    // the child role projection STILL wins. `applyArbacRelationScopes` calls
+    // `applyArbacProjection(normalizeSelect(entry.controls.$select), subScopes)`,
+    // which routes through `restrictProjection(desired, accessControl)` — an
+    // intersection, not a union. User $select cannot widen the role grant.
+    //
+    // Crucial: include-mode `$select` ∩ exclude-mode `{tenantId: 0}` → include-mode
+    // result with `tenantId` dropped (see restrictProjection's
+    // include/exclude branch). So `body` + `authorUsername` survive (proving
+    // intersection actually applied) and `tenantId` is gone (proving role wins).
+    //
+    // `taskId` is included in the user $select because the relation loader
+    // needs the FK column to attach child rows back to parent tasks — strip it
+    // and comments expansion comes back as `[]` for every task. Orthogonal to
+    // the projection-intersection invariant under test.
+    const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_eve);
+    const res = await fetch(
+      "/tasks/query?$with=comments($select=tenantId,body,authorUsername,taskId)",
+    );
+    expect(res.status).toBe(200);
+    const rows = (await res.json()) as Array<{
+      comments?: Array<Record<string, unknown>>;
+    }>;
+    const expanded = rows.flatMap((r) => r.comments ?? []);
+    expect(expanded.length).toBeGreaterThan(0);
+
+    let sawBody = false;
+    for (const c of expanded) {
+      // Role child projection beats user-supplied $select — tenantId stays out
+      // even though the user explicitly named it.
+      expect(Object.hasOwn(c, "tenantId")).toBe(false);
+      if (Object.hasOwn(c, "body")) sawBody = true;
+    }
+    // At least one comment must carry `body` — proves the user $select was
+    // honored where it didn't conflict (so the empty-tenantId result isn't
+    // just an empty projection swallowing every field).
+    expect(sawBody).toBe(true);
+  });
+
   it("PROJ-05 — /one honors projection (viewer fetching a known user by id)", async () => {
     const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_eve);
     const targetId = app.fixtures.users.t1_dave.id;

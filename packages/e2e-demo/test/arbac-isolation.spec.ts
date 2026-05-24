@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { buildTestApp, dbFindOne, expectAllInTenant, loginAndFetch, type TestApp } from "./harness";
 
@@ -170,5 +170,66 @@ describe("ISO — write isolation (mutations; isolated app per test)", () => {
     const body = (await res.json()) as { insertedId: string };
     const row = (await dbFindOne(app, "tasks", { id: body.insertedId })) as TaskRow;
     expect(row.tenantId).toBe(tenantA);
+  });
+});
+
+// Without a filter-bound count, an attacker can infer cross-tenant table size
+// by polling `$count=true` while side-channel events (e.g. a teammate's signup
+// in another tenant) inflate the global count. Filter-bounded count must be
+// invariant to inserts outside the caller's scope. Fresh app per test so the
+// adversarial tenant-B inserts don't leak into the shared read-only suite.
+describe("ISO — count is filter-bounded (adversarial cross-tenant inserts)", () => {
+  let app: TestApp;
+
+  beforeEach(async () => {
+    app = await buildTestApp();
+  });
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it("ISO-04b — $count=true is filter-bounded, not table-bounded (adversarial cross-tenant inserts must not change alice's count)", async () => {
+    const tenantB = app.fixtures.tenants["tenant-b"];
+    const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_alice);
+
+    const cntBefore = await fetch("/tasks/query?$count=true");
+    expect(cntBefore.status).toBe(200);
+    const before = (await cntBefore.json()) as number;
+    // Pins the existing ISO-04 invariant — alice's count starts at her scope size.
+    expect(before).toBe(app.fixtures.tasks.tenantA.length);
+
+    // Adversarial inserts: tenant-B rows added DIRECTLY to the DB (bypassing
+    // Moost/ARBAC, mirroring an out-of-band side channel like a signup).
+    // Direct DB insert (option 2) is chosen over a superadmin POST so the
+    // test measures table growth against alice's count without routing
+    // through any scope/filter HTTP layer that could mask the leak.
+    const tasksTbl = app.appHandle.appDb.tables.tasks as unknown as {
+      insertOne: (row: Record<string, unknown>) => Promise<{ insertedId: string }>;
+    };
+    const decoyTitles = ["ISO-04b decoy 1", "ISO-04b decoy 2", "ISO-04b decoy 3"];
+    const projectB = app.fixtures.projects["proj-b-1"];
+    for (const title of decoyTitles) {
+      await tasksTbl.insertOne({
+        tenantId: tenantB,
+        projectId: projectB,
+        title,
+        creatorUsername: "_decoy",
+        status: "open",
+      });
+    }
+
+    // Confirm a decoy actually landed in tenant-B — otherwise the
+    // `after === before` assertion below would trivially pass for the wrong
+    // reason (e.g. insertOne silently no-op'd). One check covers it; insertOne
+    // resolving without throwing covers the rest.
+    const landed = (await dbFindOne(app, "tasks", { title: decoyTitles[0] })) as TaskRow | null;
+    expect(landed?.tenantId).toBe(tenantB);
+
+    const cntAfter = await fetch("/tasks/query?$count=true");
+    expect(cntAfter.status).toBe(200);
+    const after = (await cntAfter.json()) as number;
+
+    // Load-bearing: alice's count MUST NOT observe the 3 cross-tenant inserts.
+    expect(after).toBe(before);
   });
 });

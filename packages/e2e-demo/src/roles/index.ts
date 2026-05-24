@@ -4,6 +4,7 @@ import { guestRole } from "./guest";
 import { managerRole } from "./manager";
 import { memberRole } from "./member";
 import { superadminRole } from "./superadmin";
+import { tasksWriteDeniedRole } from "./tasks-write-denied";
 import { viewerRole } from "./viewer";
 
 export const allRoles = [
@@ -14,6 +15,7 @@ export const allRoles = [
   viewerRole,
   guestRole,
   commentsDeniedRole,
+  tasksWriteDeniedRole,
 ] as const;
 
 export type { ArbacDbScope, UserAttrs } from "./attrs";
@@ -26,5 +28,6 @@ export {
   managerRole,
   memberRole,
   superadminRole,
+  tasksWriteDeniedRole,
   viewerRole,
 };

@@ -181,4 +181,104 @@ describe("WRITE — write-side enforcement (fresh app per test)", () => {
     expect(row.creatorUsername).toBe("t1_grace");
     expect(row.assigneeUsername).toBe("t1_grace");
   });
+
+  // Without this defense an admin in tenant-A could exfil rows by PATCH-laundering
+  // them into tenant-B. Admin's `tasks` write scope `set: tenantSet(attrs)` must
+  // overlay the body-supplied tenantId on UPDATE just like INSERT (ISO-07a/b).
+  it("WRITE-08 — PATCH cannot move a row to another tenant via body.tenantId (scope.set wins on UPDATE)", async () => {
+    const tenantA = app.fixtures.tenants["tenant-a"];
+    const tenantB = app.fixtures.tenants["tenant-b"];
+    const targetId = app.fixtures.tasks.tenantA[0];
+
+    const before = (await dbFindOne(app, "tasks", { id: targetId })) as TaskRow;
+    expect(before.tenantId).toBe(tenantA);
+
+    const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_dave);
+    const patch = await fetch("/tasks", {
+      method: "PATCH",
+      json: { id: targetId, tenantId: tenantB, title: "WRITE-08-launder" },
+    });
+
+    const after = (await dbFindOne(app, "tasks", { id: targetId })) as TaskRow;
+    // The privilege-laundering invariant: row stays in tenant-A no matter
+    // what the body said. Whether the request was accepted (2xx, strip + overlay)
+    // or rejected (4xx) is a defense detail — both are acceptable.
+    expect(after.tenantId).toBe(tenantA);
+    expect(after.tenantId).not.toBe(tenantB);
+    if (patch.status >= 200 && patch.status < 300) {
+      // Surgical strip: other writeable fields DID apply.
+      expect(after.title).toBe("WRITE-08-launder");
+    } else {
+      expect(patch.status).toBeGreaterThanOrEqual(400);
+      expect(patch.status).toBeLessThan(500);
+    }
+  });
+
+  // Distinct from WRITE-02/03 which pins set on fields the user couldn't legitimately
+  // send (they're stripped by NewTaskForm's schema). This test pins set on a field
+  // the user CAN send through a wire-level back door — `applyPreparedOverlay` must
+  // run Object.assign LAST so scope.set value wins over body.
+  it('WRITE-09 — scope.set value pins overlay over body on a writeable field (status forced to "open")', async () => {
+    const tenantA = app.fixtures.tenants["tenant-a"];
+    const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_grace);
+    const res = await fetch("/tasks/actions/new", {
+      method: "POST",
+      json: {
+        input: {
+          projectId: app.fixtures.projects["proj-a-1"],
+          title: "WRITE-09 grace-status-override",
+          status: "closed",
+        },
+      },
+    });
+    expect([200, 201]).toContain(res.status);
+    const insertedId = ((await res.json()) as { insertedId: string }).insertedId;
+
+    const row = (await dbFindOne(app, "tasks", { id: insertedId })) as TaskRow;
+    expect(row.tenantId).toBe(tenantA);
+    // scope.set { status: "open" } MUST win over body's { status: "closed" }.
+    expect(row.status).toBe("open");
+  });
+
+  // Bulk INSERT goes through the `Array.isArray(data)` branch at
+  // as-arbac-db-controller.ts:371-375; without per-element overlay, a single
+  // multi-row POST could plant cross-tenant rows in one request bypassing the
+  // per-request scope.set.
+  it("WRITE-10 — bare POST /tasks with an array payload applies scope.set element-wise", async () => {
+    const tenantA = app.fixtures.tenants["tenant-a"];
+    const tenantB = app.fixtures.tenants["tenant-b"];
+    const projectId = app.fixtures.projects["proj-a-1"];
+    const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_dave);
+
+    const res = await fetch("/tasks", {
+      method: "POST",
+      json: [
+        {
+          tenantId: tenantB,
+          projectId,
+          title: "WRITE-10 row-1",
+          creatorUsername: "t1_dave",
+          status: "open",
+        },
+        {
+          tenantId: tenantB,
+          projectId,
+          title: "WRITE-10 row-2",
+          creatorUsername: "t1_dave",
+          status: "open",
+        },
+      ],
+    });
+    expect([200, 201]).toContain(res.status);
+    const body = (await res.json()) as { insertedIds: string[] };
+    expect(Array.isArray(body.insertedIds)).toBe(true);
+    expect(body.insertedIds).toHaveLength(2);
+
+    for (const id of body.insertedIds) {
+      const row = (await dbFindOne(app, "tasks", { id })) as TaskRow;
+      // Per-element overlay: every row pinned to caller's tenant despite body's tenantB.
+      expect(row.tenantId).toBe(tenantA);
+      expect(row.tenantId).not.toBe(tenantB);
+    }
+  });
 });

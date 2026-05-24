@@ -327,6 +327,111 @@ describe("useArbac().evaluateOrThrow", () => {
   });
 });
 
+describe("useArbac().evaluate live-read of roles", () => {
+  beforeEach(() => {
+    clearGlobalWooks();
+  });
+
+  /**
+   * Mutable variant of TestUserProvider — `roles` is a public field that the
+   * test rewrites between requests. The provider instance is registered once
+   * with DI; the test never re-registers it, never refreshes a token, never
+   * touches any persistence layer.
+   */
+  class MutableRolesProvider extends ArbacUserProvider<Record<string, never>> {
+    public roles: string[];
+    constructor(
+      private readonly userId: string,
+      initialRoles: string[],
+    ) {
+      super();
+      this.roles = initialRoles;
+    }
+    override getUserId() {
+      return this.userId;
+    }
+    override getRoles() {
+      return this.roles;
+    }
+    override getAttrs() {
+      return {} as Record<string, never>;
+    }
+  }
+
+  function buildReaderArbac(): MoostArbac<Record<string, never>, DemoScope> {
+    const arbac = new MoostArbac<Record<string, never>, DemoScope>();
+    arbac.registerRole({
+      id: "reader",
+      rules: [{ resource: "thing", action: "read" }],
+    });
+    return arbac;
+  }
+
+  /**
+   * Captures `{ allowed }` from a live useArbac().evaluate() call. The
+   * resource/action are pinned via opts so the test does not depend on the
+   * controller's auto-resolved action name.
+   */
+  const ProbeEvaluate = () =>
+    Resolve(async () => {
+      const r = await useArbac().evaluate({ resource: "thing", action: "read" });
+      return { allowed: r.allowed };
+    });
+
+  @Controller("live")
+  class LiveReadController {
+    @Get("a")
+    handler(@ProbeEvaluate() result?: { allowed: boolean }) {
+      return { result };
+    }
+  }
+
+  /**
+   * Pins live-read of roles per evaluate() call. A future optimization that
+   * memoizes roles per-request or per-token would silently retain revoked
+   * privileges until refresh — this test fails fast on that regression.
+   *
+   * Read by humans as: "roles must drift with the source of truth, not the
+   * token." We mutate the provider's roles field directly between requests —
+   * no token refresh, no DB write, no DI re-registration — and assert each
+   * subsequent evaluate() reflects the new roles immediately.
+   */
+  it("re-reads roles from the user provider on every call (no per-token / per-request memoization)", async () => {
+    const arbac = buildReaderArbac();
+    const provider = new MutableRolesProvider("u1", ["reader"]);
+    const app = new Moost();
+    app.setReplaceRegistry(createReplaceRegistry([ArbacUserProviderToken, MutableRolesProvider]));
+    app.setProvideRegistry(
+      createProvideRegistry([MutableRolesProvider, () => provider], [MoostArbac, () => arbac]),
+    );
+    const http = new MoostHttp();
+    app.adapter(http);
+    app.registerControllers(LiveReadController);
+    await app.init();
+
+    const readAllowed = async (): Promise<boolean> => {
+      const res = await http.request("/live/a");
+      expect(res?.status).toBe(200);
+      const body = (await res!.json()) as { result: { allowed: boolean } };
+      return body.result.allowed;
+    };
+
+    // 1) Initial state: holds "reader" → allowed.
+    expect(await readAllowed()).toBe(true);
+
+    // 2) Revoke role in-place. No refresh, no re-register — just a mutation
+    //    of the provider's internal state. A cached lookup would still see
+    //    ["reader"] and incorrectly allow.
+    provider.roles = [];
+    expect(await readAllowed()).toBe(false);
+
+    // 3) Restore role in-place. Confirms step (2) wasn't a one-shot bypass —
+    //    the next evaluate() truly reads the current value, not a stale one.
+    provider.roles = ["reader"];
+    expect(await readAllowed()).toBe(true);
+  });
+});
+
 describe("useArbac integration: @DbAction('new') resolves to action 'new'", () => {
   beforeEach(() => {
     clearGlobalWooks();

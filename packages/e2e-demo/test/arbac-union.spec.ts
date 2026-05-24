@@ -129,3 +129,67 @@ describe("UNION-04 — superadmin overlapped with viewer", () => {
     expect(rows.length).toBe(app.fixtures.tasks.tenantA.length + app.fixtures.tasks.tenantB.length);
   });
 });
+
+describe("UNION-05 — wildcard action deny short-circuits granular allows", () => {
+  let app: TestApp;
+
+  beforeEach(async () => {
+    app = await buildTestApp();
+    // Grace is a `member`: member grants `tasks.markDone` with
+    // `scope.filter = { tenantId, assigneeUsername: self }` AND
+    // `tasks.new` with `scope.set` that auto-assigns the new row to self.
+    // Layer `tasks-write-denied` (a SINGLE `.deny("tasks", "*")` rule) on
+    // top so the union becomes [member, tasks-write-denied].
+    await dbUpdateOne(app, "users", {
+      username: "t1_grace",
+      roles: ["member", "tasks-write-denied"],
+    });
+    // Pre-load: reassign tenantA[0] to grace so her member-scope allow on
+    // `tasks.markDone` WOULD match the row. The deny must beat the allow
+    // even though the row-level filter is satisfied.
+    const taskId = app.fixtures.tasks.tenantA[0];
+    await dbUpdateOne(app, "tasks", { id: taskId, assigneeUsername: "t1_grace" });
+  });
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it("UNION-05 — wildcard `.deny('tasks', '*')` 403s both markDone (row-allow exists) and new (set-allow exists)", async () => {
+    // Pins arbac-core's binary-deny contract: `deny` matches via
+    // `_actionRegex.test(action)` and returns `{ allowed: false }`
+    // BEFORE any scope is evaluated (arbac.ts:127-131). A future
+    // regression that made deny scope-aware (allowing partial visibility)
+    // would fail this test by letting grace's row-level allow on
+    // markDone leak through.
+    //
+    // The `*` glob compiles to `[^.]*` (utils.ts:4), so ONE deny rule
+    // matches MULTIPLE distinct actions — exercising the regex-matching
+    // side of the contract, not just literal-string equality.
+    const taskId = app.fixtures.tasks.tenantA[0];
+    const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_grace);
+
+    // markDone: grace's member scope.filter (assigneeUsername=self) is
+    // satisfied by the pre-load — without deny, ACT-02 proves this returns 2xx.
+    // With wildcard deny, the entry-gate must 403 before scope evaluation.
+    const markDone = await fetch("/tasks/actions/markDone", {
+      method: "POST",
+      json: { ids: { id: taskId } },
+    });
+    expect(markDone.status).toBe(403);
+
+    // new: grace's member scope.set would auto-assign self — without deny,
+    // ACT-03 proves this returns 2xx. With wildcard deny, the SAME rule
+    // (different action) must 403, proving the regex matched more than
+    // just `markDone`.
+    const newRes = await fetch("/tasks/actions/new", {
+      method: "POST",
+      json: {
+        input: {
+          projectId: app.fixtures.projects["proj-a-1"],
+          title: "UNION-05 grace-new",
+        },
+      },
+    });
+    expect(newRes.status).toBe(403);
+  });
+});
