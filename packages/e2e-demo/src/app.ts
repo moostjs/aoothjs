@@ -74,6 +74,7 @@ import {
   type InviteMfaCtxOverrides,
   LOGIN_VARIANTS,
   type LoginMfaCtxOverrides,
+  type LoginPolicyOverrides,
   pickVariant,
   RECOVERY_VARIANTS,
 } from "./variants";
@@ -106,6 +107,15 @@ export interface BuildAppOptions {
    * opts in PR9) use `loginMfaCtx` below.
    */
   loginOpts?: LoginWorkflowOpts;
+  /**
+   * Per-test login policy overrides applied via the `resolveXxx(ctx)` getters
+   * on `DemoLoginWorkflow`. Each group in this payload wins over both the
+   * demo's per-resolver defaults and the active variant's `policy.<group>`
+   * — same precedence pattern as `loginMfaCtx` for the MFA setter. Use this
+   * for tests that previously did `loginOpts: { guards: { ... } }` /
+   * `loginOpts: { acceptance: { ... } }` etc.; those keys moved off opts.
+   */
+  loginPolicy?: LoginPolicyOverrides;
   recoveryOpts?: RecoveryWorkflowOpts;
   inviteOpts?: InviteWorkflowOpts;
   /**
@@ -317,15 +327,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // 3-transport availability) now live on the single `prepareMfaSetup`
   // override below. Variants that previously poked those opts keys carry
   // `mfaCtx` payloads consumed by the same override.
-  const demoLoginOpts: LoginWorkflowOpts = mergeWfOpts(
-    {
-      // SMS is exercised via `demoSmsSender` which console-logs the code — fine for the UI harness.
-      mfa: { backupCodes: true },
-      alternateCredentials: { forgotPassword: true, signup: true },
-      guards: { passwordInitial: true },
-    },
-    opts.loginOpts,
-  );
+  //
+  // Post-resolver reshape: `LoginWorkflowOpts` is infrastructure-only — policy
+  // (alt-cred flags, guards, mfa.backupCodes, …) lives on `resolveXxx(ctx)`
+  // overrides below. Variants supply `policy.<group>` payloads that those
+  // resolvers merge with the demo's per-group defaults.
+  const demoLoginOpts: LoginWorkflowOpts = mergeWfOpts({}, opts.loginOpts);
   // FOR_EVENT scope is REQUIRED here: the ctor reads per-request HTTP headers
   // via `readVariantHeader()` to pick a variant config; SINGLETON would freeze
   // the variant decision at app boot. The base `LoginWorkflow` itself is fine
@@ -347,6 +354,86 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     }
     protected override deliver(payload: DeliverPayload) {
       return forwardDeliver(payload);
+    }
+    // ── Variant-driven resolveXxx policy overrides ──
+    //
+    // Each override layers the active variant's `policy.<group>` payload on
+    // top of the demo's per-group default. The base library defaults remain
+    // available via `super.resolveXxx(ctx)` for groups the variant doesn't
+    // touch. Reads `readVariantHeader()` per request (FOR_EVENT scope ensures
+    // a fresh instance per request).
+    //
+    // Precedence (high → low):
+    //   1. test-time `opts.loginPolicy.<group>` (set by `buildTestApp`)
+    //   2. variant `policy.<group>` (via `x-wf-variant` header)
+    //   3. demo per-group default (tweaks on top of base)
+    //   4. library default (`super.resolveXxx(ctx)`)
+    protected override resolveAcceptance(ctx: LoginWfCtx): NonNullable<LoginWfCtx["acceptance"]> {
+      if (opts.loginPolicy?.acceptance) return opts.loginPolicy.acceptance;
+      const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
+      if (variant?.policy?.acceptance) return variant.policy.acceptance;
+      return super.resolveAcceptance(ctx) as NonNullable<LoginWfCtx["acceptance"]>;
+    }
+    protected override resolveAlternateCredentials(
+      ctx: LoginWfCtx,
+    ): NonNullable<LoginWfCtx["alternateCredentials"]> {
+      if (opts.loginPolicy?.alternateCredentials) return opts.loginPolicy.alternateCredentials;
+      const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
+      if (variant?.policy?.alternateCredentials) return variant.policy.alternateCredentials;
+      // Demo default: forgotPassword + signup ON (dev UI dropdown surfaces them).
+      const base = super.resolveAlternateCredentials(ctx) as NonNullable<
+        LoginWfCtx["alternateCredentials"]
+      >;
+      return { ...base, forgotPassword: true, signup: true };
+    }
+    protected override resolveDeviceTrust(ctx: LoginWfCtx): NonNullable<LoginWfCtx["deviceTrust"]> {
+      if (opts.loginPolicy?.deviceTrust) return opts.loginPolicy.deviceTrust;
+      const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
+      if (variant?.policy?.deviceTrust) return variant.policy.deviceTrust;
+      return super.resolveDeviceTrust(ctx) as NonNullable<LoginWfCtx["deviceTrust"]>;
+    }
+    protected override resolveEnrollment(ctx: LoginWfCtx): NonNullable<LoginWfCtx["enrollment"]> {
+      if (opts.loginPolicy?.enrollment) return opts.loginPolicy.enrollment;
+      const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
+      if (variant?.policy?.enrollment) return variant.policy.enrollment;
+      return super.resolveEnrollment(ctx) as NonNullable<LoginWfCtx["enrollment"]>;
+    }
+    protected override resolveFinalize(ctx: LoginWfCtx): NonNullable<LoginWfCtx["finalize"]> {
+      if (opts.loginPolicy?.finalize) return opts.loginPolicy.finalize;
+      const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
+      if (variant?.policy?.finalize) return variant.policy.finalize;
+      return super.resolveFinalize(ctx) as NonNullable<LoginWfCtx["finalize"]>;
+    }
+    protected override resolveGuards(ctx: LoginWfCtx): NonNullable<LoginWfCtx["guards"]> {
+      if (opts.loginPolicy?.guards) return opts.loginPolicy.guards;
+      const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
+      if (variant?.policy?.guards) return variant.policy.guards;
+      // Demo default: passwordInitial ON (seed users land on the
+      // create-password-form on first login).
+      const base = super.resolveGuards(ctx) as NonNullable<LoginWfCtx["guards"]>;
+      return { ...base, passwordInitial: true };
+    }
+    protected override resolveMfaConfig(ctx: LoginWfCtx): NonNullable<LoginWfCtx["mfaConfig"]> {
+      if (opts.loginPolicy?.mfaConfig) return opts.loginPolicy.mfaConfig;
+      const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
+      if (variant?.policy?.mfaConfig) return variant.policy.mfaConfig;
+      return super.resolveMfaConfig(ctx) as NonNullable<LoginWfCtx["mfaConfig"]>;
+    }
+    protected override resolveMultiContext(
+      ctx: LoginWfCtx,
+    ): NonNullable<LoginWfCtx["multiContext"]> {
+      if (opts.loginPolicy?.multiContext) return opts.loginPolicy.multiContext;
+      const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
+      if (variant?.policy?.multiContext) return variant.policy.multiContext;
+      return super.resolveMultiContext(ctx) as NonNullable<LoginWfCtx["multiContext"]>;
+    }
+    protected override resolveSessionPolicy(
+      ctx: LoginWfCtx,
+    ): NonNullable<LoginWfCtx["sessionPolicy"]> {
+      if (opts.loginPolicy?.sessionPolicy) return opts.loginPolicy.sessionPolicy;
+      const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
+      if (variant?.policy?.sessionPolicy) return variant.policy.sessionPolicy;
+      return super.resolveSessionPolicy(ctx) as NonNullable<LoginWfCtx["sessionPolicy"]>;
     }
     // ── Variant-driven mfa-ctx setter override ──
     // Reads the active variant from the request header; if a variant is active

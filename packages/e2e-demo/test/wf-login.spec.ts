@@ -189,7 +189,11 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
   });
 
   it("WF-LOGIN-07 — finalize.redirect='home': successful login emits redirect envelope to '/'", async () => {
-    const redirApp = await buildTestApp({ loginOpts: { finalize: { redirect: "home" } } });
+    const redirApp = await buildTestApp({
+      loginPolicy: {
+        finalize: { auditLogin: true, notifyNewDevice: false, redirect: "home" },
+      },
+    });
     try {
       const alice = redirApp.fixtures.users.t1_alice;
       const start = await redirApp.triggerWf("public", { wfid: "auth.login" });

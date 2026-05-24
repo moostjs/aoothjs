@@ -19,10 +19,16 @@
  */
 import type {
   InviteWorkflowOpts,
+  LoginPolicyOverrides,
+  LoginWfCtx,
   LoginWorkflowOpts,
   MfaTransport,
   RecoveryWorkflowOpts,
 } from "@aooth/auth-moost";
+
+// Re-export so consumers that import the demo's variant types keep a single
+// import surface (`@e2e-demo` re-exports from "./variants" elsewhere).
+export type { LoginPolicyOverrides };
 
 /**
  * Static MFA ctx overrides applied by `DemoLoginWorkflow`'s setter steps
@@ -57,9 +63,17 @@ export interface InviteMfaCtxOverrides {
 // `./variants-server` instead. See e2e-demo/CLAUDE.md if you're tempted to
 // re-add it here — Playwright tests catch the regression at hydrate time.
 
-/** Login variant entry — opts (merged into `demoLoginOpts`) + mfa ctx overrides. */
+/**
+ * Login variant entry. `opts` carries infrastructure-only overrides (pincode
+ * timers, cookie name/TTL, magic-link TTL) merged into `demoLoginOpts`.
+ * `policy` carries per-request policy groups (alternateCredentials, guards,
+ * acceptance, …) applied by `DemoLoginWorkflow`'s `resolveXxx(ctx)` overrides.
+ * `mfaCtx` carries the static MFA-ctx overrides written by the
+ * `prepare-mfa-setup` step.
+ */
 export interface LoginVariant {
   opts?: Partial<LoginWorkflowOpts>;
+  policy?: LoginPolicyOverrides;
   mfaCtx?: LoginMfaCtxOverrides;
 }
 
@@ -81,40 +95,63 @@ export interface InviteVariant {
  * Login profiles — keys mirror `USER_STORIES.md` §3 variants L-A…L-J plus the
  * dedicated `redirect-home` row used by WF-LOGIN-031.
  */
+/**
+ * Defaults for the alt-cred policy used in `policy.alternateCredentials`
+ * payloads. Mirrors the base `LoginWorkflow.resolveAlternateCredentials`
+ * defaults so a variant only needs to flip the flags it cares about.
+ */
+const ALT_DEFAULTS: NonNullable<LoginWfCtx["alternateCredentials"]> = {
+  forgotPassword: true,
+  signup: false,
+  magicLink: false,
+  magicLinkSkipsMfa: false,
+  ssoProviders: [],
+  recoveryUrl: "/recover",
+  signupUrl: "/signup",
+  embedRecovery: false,
+};
+
 export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
   minimal: {
-    opts: {
-      // Explicit false on signup/magicLink so the variant clears the demo
-      // defaults (which set signup:true for the dev-UI dropdown). Tests assert
-      // those alt-action buttons are hidden under `minimal`.
-      alternateCredentials: { forgotPassword: true, signup: false, magicLink: false },
+    // Explicit false on signup/magicLink so the variant clears the demo
+    // defaults (which set signup:true for the dev-UI dropdown). Tests assert
+    // those alt-action buttons are hidden under `minimal`.
+    policy: {
+      alternateCredentials: {
+        ...ALT_DEFAULTS,
+        forgotPassword: true,
+        signup: false,
+        magicLink: false,
+      },
     },
     mfaCtx: { mfaMode: "disabled" },
   },
   "mfa-totp": {
-    opts: { mfa: { backupCodes: true } },
+    policy: { mfaConfig: { backupCodes: true } },
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["totp"] },
   },
   "mfa-full": {
-    opts: { mfa: { backupCodes: true } },
+    policy: { mfaConfig: { backupCodes: true } },
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["sms", "email", "totp"] },
   },
   enrollment: {
-    opts: { enrollment: { ensureEmail: true, ensurePhone: true } },
+    policy: { enrollment: { ensureEmail: true, ensurePhone: true } },
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["email", "sms", "totp"] },
   },
   "device-trust": {
-    opts: { deviceTrust: { enabled: true, optIn: true, skipsMfa: true } },
+    policy: { deviceTrust: { enabled: true, optIn: true, skipsMfa: true } },
     // Use email transport so the MFA pause renders `PincodeForm`, which
     // carries the `rememberDevice` checkbox (MfaCodeForm doesn't).
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["email"] },
   },
   guards: {
-    opts: { guards: { passwordInitial: true, emailVerifiedRequired: true } },
+    policy: {
+      guards: { passwordInitial: true, passwordExpiry: true, emailVerifiedRequired: true },
+    },
     mfaCtx: { mfaMode: "disabled" },
   },
   acceptance: {
-    opts: {
+    policy: {
       acceptance: {
         termsVersion: "v1",
         profileCompleteRequired: true,
@@ -123,17 +160,22 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
     },
   },
   "multi-context": {
-    opts: { multiContext: { tenantSelect: true, personaSelect: true } },
+    policy: { multiContext: { tenantSelect: true, personaSelect: true } },
   },
   concurrency: {
-    opts: { sessionPolicy: { concurrencyLimit: { max: 1, onLimit: "kickPrompt" } } },
+    policy: { sessionPolicy: { concurrencyLimit: { max: 1, onLimit: "kickPrompt" } } },
   },
   full: {
-    opts: {
-      alternateCredentials: { forgotPassword: true, signup: true, magicLink: true },
+    policy: {
+      alternateCredentials: {
+        ...ALT_DEFAULTS,
+        forgotPassword: true,
+        signup: true,
+        magicLink: true,
+      },
       guards: { passwordInitial: true, emailVerifiedRequired: true, passwordExpiry: true },
       enrollment: { ensureEmail: true, ensurePhone: true },
-      mfa: { backupCodes: true },
+      mfaConfig: { backupCodes: true },
       deviceTrust: { enabled: true, optIn: true, skipsMfa: true },
       acceptance: {
         termsVersion: "v1",
@@ -146,40 +188,42 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["sms", "email", "totp"] },
   },
   "redirect-home": {
-    opts: { finalize: { redirect: "home" } },
+    policy: { finalize: { auditLogin: true, notifyNewDevice: false, redirect: "home" } },
   },
   // Like `mfa-full` but with a 1s pincode-resend cooldown so the resend-throttled
   // / resend-after-cooldown stories (WF-LOGIN-011 / -012) run inside a single e2e
   // tick rather than the 60s production default.
   "mfa-fast-resend": {
     opts: {
-      mfa: { backupCodes: true, pincodeResendTimeoutMs: 1000 },
+      mfa: { pincodeResendTimeoutMs: 1000 },
     },
+    policy: { mfaConfig: { backupCodes: true } },
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["sms", "email", "totp"] },
   },
   // Like `device-trust` but with `optIn: false` so the workflow does NOT render
   // the `rememberDevice` checkbox on `PincodeForm` (WF-LOGIN-019).
   "device-trust-no-optin": {
-    opts: { deviceTrust: { enabled: true, optIn: false, skipsMfa: true } },
+    policy: { deviceTrust: { enabled: true, optIn: false, skipsMfa: true } },
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["email"] },
   },
   // Like `mfa-totp` but `backupCodes: false` so the `useBackupCode` alt-action
   // MUST be hidden on the MFA forms (WF-LOGIN-014).
   "mfa-no-backup": {
-    opts: { mfa: { backupCodes: false } },
+    policy: { mfaConfig: { backupCodes: false } },
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["totp"] },
   },
   // 1ms TTL so the cookie minted on the first login is already past `exp`
   // by the time the second login resumes (WF-LOGIN-020). MFA email forces the
   // `device-trust` step to mint a fresh cookie on the first pass.
   "device-trust-short-ttl": {
-    opts: { deviceTrust: { enabled: true, optIn: true, skipsMfa: true, ttlMs: 1 } },
+    opts: { deviceTrust: { ttlMs: 1 } },
+    policy: { deviceTrust: { enabled: true, optIn: true, skipsMfa: true } },
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["email"] },
   },
   // Same as `concurrency` but rejects with HTTP 429 instead of pausing on
   // kickPrompt (WF-LOGIN-030).
   "concurrency-reject": {
-    opts: { sessionPolicy: { concurrencyLimit: { max: 1, onLimit: "reject" } } },
+    policy: { sessionPolicy: { concurrencyLimit: { max: 1, onLimit: "reject" } } },
   },
   // ── MFA-enrollment variants (PW MFA coverage PR) ──
   //

@@ -53,6 +53,7 @@ import {
   type InviteWorkflowOpts,
   type PreparedUserInput,
   LoginWorkflow,
+  type LoginPolicyOverrides,
   type LoginWfCtx,
   type LoginWorkflowOpts,
   type MfaTransport,
@@ -153,13 +154,25 @@ export interface PrepareWfOpts {
   emailToUserId?: (email: string) => Promise<string | null> | string | null;
   /**
    * Nested-pojo opts handed to `LoginWorkflow`'s constructor. Per-test feature
-   * combinations supply their own here.
+   * combinations supply their own here. Post-resolver reshape this is
+   * infrastructure-only (pincode timers, cookie name/TTL, magic-link TTL);
+   * policy moved to the `resolveXxx(ctx)` getter surface — use
+   * `loginPolicy` below.
    */
   loginOpts?: LoginWorkflowOpts;
   /**
+   * Per-test login policy override applied by the harness's LoginWorkflow
+   * subclass via `resolveXxx(ctx)` overrides. Mirrors the resolved-ctx field
+   * shape exactly so test specs read like a snapshot of the in-flow policy.
+   * Tests that previously poked `loginOpts: { guards: { ... } }` etc. flip
+   * the matching group here. Falls through to `super.resolveXxx(ctx)` (the
+   * library defaults) for groups left undefined.
+   */
+  loginPolicy?: LoginPolicyOverrides;
+  /**
    * Consumer subclass of `LoginWorkflow` registered in place of the base
    * class. Use this when a test needs to override a `protected` method
-   * (`assessRiskStepUp`, `buildRecoveryUrl`, `resolveRedirect`, etc.). The
+   * (`resolveRiskStepUp`, `resolveRecoveryUrl`, `resolveRedirect`, etc.). The
    * subclass MUST re-apply `@Inherit() @Controller()`
    * and re-declare the ctor signature — see TASKS.md §"Probe outcomes".
    */
@@ -312,9 +325,10 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
   const registerEmail = opts.registerEmailSender !== false;
 
   const auditEvents: AuditEvent[] = [];
-  // Default auditLogin in `mergeLoginOpts` is `true`, so unless the test
-  // explicitly disables it, auto-capture audit events for assertions.
-  const auditLoginEnabled = loginOpts.finalize?.auditLogin !== false;
+  // Default auditLogin in `resolveFinalize` is `true`, so unless the test
+  // explicitly disables it via `loginPolicy.finalize.auditLogin: false`,
+  // auto-capture audit events for assertions.
+  const auditLoginEnabled = opts.loginPolicy?.finalize?.auditLogin !== false;
   const auditEmitter: AuditEmitter | undefined =
     opts.auditEmitter ??
     (auditLoginEnabled
@@ -333,6 +347,7 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
   const LoginCtor = buildHarnessLoginClass({
     base: opts.loginWorkflowClass ?? LoginWorkflow,
     opts: loginOpts,
+    policy: opts.loginPolicy,
     emails,
     sms,
     emailSender,
@@ -614,6 +629,7 @@ export async function seedActiveUser(
 interface HarnessLoginDeps {
   base: typeof LoginWorkflow;
   opts: LoginWorkflowOpts;
+  policy?: PrepareWfOpts["loginPolicy"];
   emails: CapturedEmail[];
   sms: CapturedSms[];
   emailSender: EmailSender;
@@ -627,6 +643,7 @@ function buildHarnessLoginClass(deps: HarnessLoginDeps): new (...args: never[]) 
   const {
     base: Base,
     opts: loginOpts,
+    policy,
     emails,
     sms,
     emailSender,
@@ -657,6 +674,70 @@ function buildHarnessLoginClass(deps: HarnessLoginDeps): new (...args: never[]) 
 
     protected override async audit(event: AuditEvent): Promise<void> {
       if (auditEmitter) await auditEmitter.emit(event);
+    }
+
+    // ── Per-test policy overrides ──
+    //
+    // When the test supplied `loginPolicy.<group>`, return it; otherwise fall
+    // through to `super.resolveXxx(ctx)` (library defaults). Lets specs pin
+    // policy from the outside without forking a subclass per case.
+    protected override resolveAcceptance(
+      ctx: LoginWfCtx,
+    ): NonNullable<LoginWfCtx["acceptance"]> | Promise<NonNullable<LoginWfCtx["acceptance"]>> {
+      if (policy?.acceptance) return policy.acceptance;
+      return super.resolveAcceptance(ctx);
+    }
+    protected override resolveAlternateCredentials(
+      ctx: LoginWfCtx,
+    ):
+      | NonNullable<LoginWfCtx["alternateCredentials"]>
+      | Promise<NonNullable<LoginWfCtx["alternateCredentials"]>> {
+      if (policy?.alternateCredentials) return policy.alternateCredentials;
+      return super.resolveAlternateCredentials(ctx);
+    }
+    protected override resolveDeviceTrust(
+      ctx: LoginWfCtx,
+    ): NonNullable<LoginWfCtx["deviceTrust"]> | Promise<NonNullable<LoginWfCtx["deviceTrust"]>> {
+      if (policy?.deviceTrust) return policy.deviceTrust;
+      return super.resolveDeviceTrust(ctx);
+    }
+    protected override resolveEnrollment(
+      ctx: LoginWfCtx,
+    ): NonNullable<LoginWfCtx["enrollment"]> | Promise<NonNullable<LoginWfCtx["enrollment"]>> {
+      if (policy?.enrollment) return policy.enrollment;
+      return super.resolveEnrollment(ctx);
+    }
+    protected override resolveFinalize(
+      ctx: LoginWfCtx,
+    ): NonNullable<LoginWfCtx["finalize"]> | Promise<NonNullable<LoginWfCtx["finalize"]>> {
+      if (policy?.finalize) return policy.finalize;
+      return super.resolveFinalize(ctx);
+    }
+    protected override resolveGuards(
+      ctx: LoginWfCtx,
+    ): NonNullable<LoginWfCtx["guards"]> | Promise<NonNullable<LoginWfCtx["guards"]>> {
+      if (policy?.guards) return policy.guards;
+      return super.resolveGuards(ctx);
+    }
+    protected override resolveMfaConfig(
+      ctx: LoginWfCtx,
+    ): NonNullable<LoginWfCtx["mfaConfig"]> | Promise<NonNullable<LoginWfCtx["mfaConfig"]>> {
+      if (policy?.mfaConfig) return policy.mfaConfig;
+      return super.resolveMfaConfig(ctx);
+    }
+    protected override resolveMultiContext(
+      ctx: LoginWfCtx,
+    ): NonNullable<LoginWfCtx["multiContext"]> | Promise<NonNullable<LoginWfCtx["multiContext"]>> {
+      if (policy?.multiContext) return policy.multiContext;
+      return super.resolveMultiContext(ctx);
+    }
+    protected override resolveSessionPolicy(
+      ctx: LoginWfCtx,
+    ):
+      | NonNullable<LoginWfCtx["sessionPolicy"]>
+      | Promise<NonNullable<LoginWfCtx["sessionPolicy"]>> {
+      if (policy?.sessionPolicy) return policy.sessionPolicy;
+      return super.resolveSessionPolicy(ctx);
     }
   }
   return HarnessLogin;

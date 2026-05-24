@@ -80,15 +80,61 @@ import { useAuth } from "../auth.composables";
 import { Public } from "../auth.decorator";
 import { AuthWorkflowBase, type MfaEnrollDeps, stripReservedUserKeys } from "./auth-workflow.base";
 import {
+  type ConcurrencyLimitOptions,
+  type LoginRedirect,
   type LoginWorkflowOpts,
   type MfaTransport,
   type ResolvedLoginWorkflowOpts,
+  type SsoProvider,
   mergeLoginOpts,
 } from "./login.workflow.options";
 
 export interface LoginWfCtx {
-  // Populated by `init`:
-  opts?: ResolvedLoginWorkflowOpts;
+  // Resolved policy (populated by prepare-* steps; reads via resolveXxx() getters):
+  acceptance?: {
+    termsVersion?: string;
+    profileCompleteRequired: boolean;
+    consentMarketing: boolean;
+  };
+  alternateCredentials?: {
+    forgotPassword: boolean;
+    signup: boolean;
+    magicLink: boolean;
+    magicLinkSkipsMfa: boolean;
+    ssoProviders: SsoProvider[];
+    recoveryUrl: string;
+    signupUrl: string;
+    embedRecovery: boolean;
+  };
+  deviceTrust?: {
+    enabled: boolean;
+    optIn: boolean;
+    skipsMfa: boolean;
+  };
+  enrollment?: {
+    ensureEmail: boolean;
+    ensurePhone: boolean;
+  };
+  finalize?: {
+    auditLogin: boolean;
+    notifyNewDevice: boolean;
+    redirect: LoginRedirect;
+  };
+  guards?: {
+    passwordInitial: boolean;
+    passwordExpiry: boolean;
+    emailVerifiedRequired: boolean;
+  };
+  mfaConfig?: {
+    backupCodes: boolean;
+  };
+  multiContext?: {
+    tenantSelect: boolean;
+    personaSelect: boolean;
+  };
+  sessionPolicy?: {
+    concurrencyLimit?: ConcurrencyLimitOptions;
+  };
 
   // Populated by `credentials`:
   username?: string;
@@ -215,6 +261,26 @@ export interface LoginWfCtx {
   aborted?: boolean;
   /** Tracks whether `risk-step-up` has already been evaluated this iteration. */
   riskStepUpEvaluated?: boolean;
+}
+
+/**
+ * Per-group policy override shape consumed by `resolveXxx(ctx)` subclass
+ * overrides. Mirrors the `ctx.<group>` fields that the `prepare-<group>`
+ * @Step methods populate — one entry per resolver. Library users typically
+ * accept a payload of this shape on their `LoginWorkflow` subclass ctor /
+ * test harness and have each `resolveXxx` return its matching key (falling
+ * back to `super.resolveXxx(ctx)` for unset groups).
+ */
+export interface LoginPolicyOverrides {
+  acceptance?: NonNullable<LoginWfCtx["acceptance"]>;
+  alternateCredentials?: NonNullable<LoginWfCtx["alternateCredentials"]>;
+  deviceTrust?: NonNullable<LoginWfCtx["deviceTrust"]>;
+  enrollment?: NonNullable<LoginWfCtx["enrollment"]>;
+  finalize?: NonNullable<LoginWfCtx["finalize"]>;
+  guards?: NonNullable<LoginWfCtx["guards"]>;
+  mfaConfig?: NonNullable<LoginWfCtx["mfaConfig"]>;
+  multiContext?: NonNullable<LoginWfCtx["multiContext"]>;
+  sessionPolicy?: NonNullable<LoginWfCtx["sessionPolicy"]>;
 }
 
 export interface MfaSummary {
@@ -390,6 +456,259 @@ export class LoginWorkflow extends AuthWorkflowBase {
     });
   }
 
+  // ── Resolved policy surface (override these to customize per-tenant/per-request behavior) ──
+  /**
+   * Resolve the acceptance / onboarding policy (terms version, profile-complete
+   * gating, marketing consent). Override per-tenant or per-user. Async-friendly
+   * via the union return type — sync defaults stay sync (engine fast path).
+   */
+  protected resolveAcceptance(
+    _ctx: LoginWfCtx,
+  ): NonNullable<LoginWfCtx["acceptance"]> | Promise<NonNullable<LoginWfCtx["acceptance"]>> {
+    return {
+      profileCompleteRequired: false,
+      consentMarketing: false,
+    };
+  }
+
+  /**
+   * Resolve the alternate-credentials policy (forgot-password / signup /
+   * magic-link / SSO providers + their URLs). Override to enable/disable per
+   * tenant. Sync default; async overrides supported.
+   */
+  protected resolveAlternateCredentials(
+    _ctx: LoginWfCtx,
+  ):
+    | NonNullable<LoginWfCtx["alternateCredentials"]>
+    | Promise<NonNullable<LoginWfCtx["alternateCredentials"]>> {
+    return {
+      forgotPassword: true,
+      signup: false,
+      magicLink: false,
+      magicLinkSkipsMfa: false,
+      ssoProviders: [],
+      recoveryUrl: "/recover",
+      signupUrl: "/signup",
+      embedRecovery: false,
+    };
+  }
+
+  /**
+   * Resolve the device-trust policy (enabled / opt-in / skipsMfa). Infrastructure
+   * (cookieName / ttlMs / bindsTo) still lives on `this.opts.deviceTrust` since
+   * those are app-wide constants, not per-request policy. Sync/async friendly.
+   */
+  protected resolveDeviceTrust(
+    _ctx: LoginWfCtx,
+  ): NonNullable<LoginWfCtx["deviceTrust"]> | Promise<NonNullable<LoginWfCtx["deviceTrust"]>> {
+    return {
+      enabled: false,
+      optIn: true,
+      skipsMfa: true,
+    };
+  }
+
+  /**
+   * Resolve the channel-enrollment policy (ensureEmail / ensurePhone gates).
+   * Override to force email/phone capture per user segment. Sync/async friendly.
+   */
+  protected resolveEnrollment(
+    _ctx: LoginWfCtx,
+  ): NonNullable<LoginWfCtx["enrollment"]> | Promise<NonNullable<LoginWfCtx["enrollment"]>> {
+    return {
+      ensureEmail: false,
+      ensurePhone: false,
+    };
+  }
+
+  /**
+   * Resolve the finalize policy (audit emission / new-device notification /
+   * redirect target). Override to drive per-tenant audit-log routing or
+   * per-app redirect targets. Sync/async friendly.
+   */
+  protected resolveFinalize(
+    _ctx: LoginWfCtx,
+  ): NonNullable<LoginWfCtx["finalize"]> | Promise<NonNullable<LoginWfCtx["finalize"]>> {
+    return {
+      auditLogin: true,
+      notifyNewDevice: false,
+      redirect: false,
+    };
+  }
+
+  /**
+   * Resolve the guards policy (passwordInitial / passwordExpiry /
+   * emailVerifiedRequired). Override per-tenant to tighten or loosen the
+   * post-credentials gates. Sync/async friendly.
+   */
+  protected resolveGuards(
+    _ctx: LoginWfCtx,
+  ): NonNullable<LoginWfCtx["guards"]> | Promise<NonNullable<LoginWfCtx["guards"]>> {
+    return {
+      passwordInitial: true,
+      passwordExpiry: true,
+      emailVerifiedRequired: false,
+    };
+  }
+
+  /**
+   * Resolve the MFA config (currently only backup-codes availability — pincode
+   * timings stay on `this.opts.mfa` as infrastructure). Override to enable or
+   * disable backup-code redemption per tenant. Sync/async friendly.
+   */
+  protected resolveMfaConfig(
+    _ctx: LoginWfCtx,
+  ): NonNullable<LoginWfCtx["mfaConfig"]> | Promise<NonNullable<LoginWfCtx["mfaConfig"]>> {
+    return {
+      backupCodes: true,
+    };
+  }
+
+  /**
+   * Resolve the multi-context policy (tenantSelect / personaSelect prompts).
+   * Override to require a tenant/persona pick when the user has more than one.
+   * Sync/async friendly.
+   */
+  protected resolveMultiContext(
+    _ctx: LoginWfCtx,
+  ): NonNullable<LoginWfCtx["multiContext"]> | Promise<NonNullable<LoginWfCtx["multiContext"]>> {
+    return {
+      tenantSelect: false,
+      personaSelect: false,
+    };
+  }
+
+  /**
+   * Resolve the session policy (concurrency limit). Override to enforce a
+   * per-tenant or per-user max-concurrent-sessions cap with reject / kickPrompt
+   * behaviour. Sync/async friendly.
+   */
+  protected resolveSessionPolicy(
+    _ctx: LoginWfCtx,
+  ): NonNullable<LoginWfCtx["sessionPolicy"]> | Promise<NonNullable<LoginWfCtx["sessionPolicy"]>> {
+    return {};
+  }
+
+  // ── Prepare steps (call resolveXxx getters; populate ctx for schema conditions) ──
+  @Step("prepare-acceptance")
+  prepareAcceptance(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
+    const result = this.resolveAcceptance(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.acceptance = resolved;
+        return undefined;
+      });
+    }
+    ctx.acceptance = result;
+    return undefined;
+  }
+
+  @Step("prepare-alternate-credentials")
+  prepareAlternateCredentials(
+    @WorkflowParam("context") ctx: LoginWfCtx,
+  ): undefined | Promise<undefined> {
+    const result = this.resolveAlternateCredentials(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.alternateCredentials = resolved;
+        return undefined;
+      });
+    }
+    ctx.alternateCredentials = result;
+    return undefined;
+  }
+
+  @Step("prepare-device-trust")
+  prepareDeviceTrust(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
+    const result = this.resolveDeviceTrust(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.deviceTrust = resolved;
+        return undefined;
+      });
+    }
+    ctx.deviceTrust = result;
+    return undefined;
+  }
+
+  @Step("prepare-enrollment")
+  prepareEnrollment(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
+    const result = this.resolveEnrollment(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.enrollment = resolved;
+        return undefined;
+      });
+    }
+    ctx.enrollment = result;
+    return undefined;
+  }
+
+  @Step("prepare-finalize")
+  prepareFinalize(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
+    const result = this.resolveFinalize(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.finalize = resolved;
+        return undefined;
+      });
+    }
+    ctx.finalize = result;
+    return undefined;
+  }
+
+  @Step("prepare-guards")
+  prepareGuards(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
+    const result = this.resolveGuards(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.guards = resolved;
+        return undefined;
+      });
+    }
+    ctx.guards = result;
+    return undefined;
+  }
+
+  @Step("prepare-mfa-config")
+  prepareMfaConfig(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
+    const result = this.resolveMfaConfig(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.mfaConfig = resolved;
+        return undefined;
+      });
+    }
+    ctx.mfaConfig = result;
+    return undefined;
+  }
+
+  @Step("prepare-multi-context")
+  prepareMultiContext(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
+    const result = this.resolveMultiContext(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.multiContext = resolved;
+        return undefined;
+      });
+    }
+    ctx.multiContext = result;
+    return undefined;
+  }
+
+  @Step("prepare-session-policy")
+  prepareSessionPolicy(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
+    const result = this.resolveSessionPolicy(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.sessionPolicy = resolved;
+        return undefined;
+      });
+    }
+    ctx.sessionPolicy = result;
+    return undefined;
+  }
+
   @Workflow("auth.login")
   @WorkflowSchema<LoginWfCtx>([
     { id: "init" },
@@ -398,6 +717,17 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // emit a finishWf envelope without setting ctx.username. Halt the schema
     // before downstream steps' `requireUsername` defense throws 500.
     { break: (ctx) => !ctx.username },
+
+    // Resolve all policy groups before any step reads them.
+    { id: "prepare-acceptance" },
+    { id: "prepare-alternate-credentials" },
+    { id: "prepare-device-trust" },
+    { id: "prepare-enrollment" },
+    { id: "prepare-finalize" },
+    { id: "prepare-guards" },
+    { id: "prepare-mfa-config" },
+    { id: "prepare-multi-context" },
+    { id: "prepare-session-policy" },
 
     // Phase 1 alt-cred paths — stubs registered for override; never executed.
     {
@@ -415,12 +745,12 @@ export class LoginWorkflow extends AuthWorkflowBase {
     {
       id: "ensure-email",
       condition: (ctx) =>
-        (ctx.opts!.enrollment.ensureEmail || ctx.opts!.guards.emailVerifiedRequired) &&
+        (!!ctx.enrollment?.ensureEmail || !!ctx.guards?.emailVerifiedRequired) &&
         !ctx.emailConfirmed,
     },
     {
       id: "ensure-phone",
-      condition: (ctx) => ctx.opts!.enrollment.ensurePhone && !ctx.phoneConfirmed,
+      condition: (ctx) => !!ctx.enrollment?.ensurePhone && !ctx.phoneConfirmed,
     },
 
     // Phase 4 MFA setup + verification loop:
@@ -431,7 +761,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
         {
           id: "check-trusted-device",
           condition: (ctx) =>
-            !ctx.mfaChecked && ctx.opts!.deviceTrust.enabled && ctx.opts!.deviceTrust.skipsMfa,
+            !ctx.mfaChecked && !!ctx.deviceTrust?.enabled && !!ctx.deviceTrust?.skipsMfa,
         },
         { id: "load-enrolled-mfa-methods", condition: (ctx) => !ctx.mfaChecked },
         { id: "select-mfa-method", condition: (ctx) => !ctx.mfaChecked },
@@ -484,10 +814,10 @@ export class LoginWorkflow extends AuthWorkflowBase {
     {
       id: "device-trust",
       condition: (ctx) =>
-        ctx.opts!.deviceTrust.enabled &&
+        !!ctx.deviceTrust?.enabled &&
         !!ctx.mfaChecked &&
         !!ctx.newDevice &&
-        (!ctx.opts!.deviceTrust.optIn || !!ctx.rememberDevice),
+        (!ctx.deviceTrust?.optIn || !!ctx.rememberDevice),
     },
 
     // Phase 5 forced password change:
@@ -502,8 +832,8 @@ export class LoginWorkflow extends AuthWorkflowBase {
     {
       id: "terms-accept",
       condition: (ctx) =>
-        !!ctx.opts!.acceptance.termsVersion &&
-        ctx.termsAcceptedVersion !== ctx.opts!.acceptance.termsVersion &&
+        !!ctx.acceptance?.termsVersion &&
+        ctx.termsAcceptedVersion !== ctx.acceptance?.termsVersion &&
         !ctx.termsAcceptedDone,
     },
     // Abort gate — terms-accept 'decline' alt-action sets ctx.aborted = true.
@@ -511,40 +841,39 @@ export class LoginWorkflow extends AuthWorkflowBase {
     {
       id: "profile-complete",
       condition: (ctx) =>
-        ctx.opts!.acceptance.profileCompleteRequired &&
+        !!ctx.acceptance?.profileCompleteRequired &&
         !ctx.profileApplied &&
         (ctx.profileMissingFields?.length ?? 0) > 0,
     },
     {
       id: "consent-marketing",
-      condition: (ctx) => ctx.opts!.acceptance.consentMarketing && !ctx.consentApplied,
+      condition: (ctx) => !!ctx.acceptance?.consentMarketing && !ctx.consentApplied,
     },
 
     // Phase 7 tenant / persona selection:
     {
       id: "tenant-select",
       condition: (ctx) =>
-        ctx.opts!.multiContext.tenantSelect &&
+        !!ctx.multiContext?.tenantSelect &&
         !ctx.selectedTenantId &&
         (ctx.availableTenants?.length ?? 0) > 1,
     },
     {
       id: "persona-select",
       condition: (ctx) =>
-        ctx.opts!.multiContext.personaSelect &&
+        !!ctx.multiContext?.personaSelect &&
         !ctx.selectedPersonaId &&
         (ctx.availablePersonas?.length ?? 0) > 1,
     },
 
     // Phase 8 session policy:
     {
-      condition: (ctx) => !!ctx.opts!.sessionPolicy.concurrencyLimit,
+      condition: (ctx) => !!ctx.sessionPolicy?.concurrencyLimit,
       steps: [
         { id: "load-active-sessions" },
         {
           id: "concurrency-limit",
-          condition: (ctx) =>
-            (ctx.activeSessions ?? 0) >= ctx.opts!.sessionPolicy.concurrencyLimit!.max,
+          condition: (ctx) => (ctx.activeSessions ?? 0) >= ctx.sessionPolicy!.concurrencyLimit!.max,
         },
       ],
     },
@@ -556,10 +885,10 @@ export class LoginWorkflow extends AuthWorkflowBase {
     {
       condition: (ctx) => !!ctx.tokensIssued,
       steps: [
-        { id: "audit-login", condition: (ctx) => ctx.opts!.finalize.auditLogin },
+        { id: "audit-login", condition: (ctx) => !!ctx.finalize?.auditLogin },
         {
           id: "notify-new-device",
-          condition: (ctx) => ctx.opts!.finalize.notifyNewDevice && !!ctx.newDevice,
+          condition: (ctx) => !!ctx.finalize?.notifyNewDevice && !!ctx.newDevice,
         },
         { id: "redirect" },
       ],
@@ -569,20 +898,17 @@ export class LoginWorkflow extends AuthWorkflowBase {
 
   // ── Phase 0 ───────────────────────────────────────────────────────────
   /**
-   * Stashes a JSON-safe projection of `opts` onto `ctx` so schema conditions
-   * can read `ctx.opts.<group>.<flag>` without optional chaining. Drops the
-   * `forms` group (atscript form classes are not plain JSON) so `AsWfStore`'s
-   * plain-JSON persistence doesn't choke. Step bodies still consult the form
-   * classes via `this.opts.forms.*`.
+   * First step of the workflow; remains as a no-op override hook for
+   * consumers (e.g. seeding pre-flight ctx fields, capturing request metadata).
+   * The pre-PR policy-pojo-on-ctx stash was dropped — policy now lives on
+   * `ctx.<group>` populated by the dedicated `prepare-<group>` steps.
    *
    * Return type is `undefined | Promise<undefined>` so consumers can override
    * with `async init(...)` without the default fast-path paying a Promise
    * allocation (the wf engine awaits only when the return value is a Promise).
    */
   @Step("init")
-  init(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
-    const { forms: _forms, ...rest } = this.opts;
-    ctx.opts = rest as ResolvedLoginWorkflowOpts;
+  init(@WorkflowParam("context") _ctx: LoginWfCtx): undefined | Promise<undefined> {
     return undefined;
   }
 
@@ -622,9 +948,19 @@ export class LoginWorkflow extends AuthWorkflowBase {
   // ── Phase 1 ───────────────────────────────────────────────────────────
   @Step("credentials")
   async credentials(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
+    // `credentials` runs BEFORE the `!ctx.username` gate and the prepare-*
+    // steps, but it needs `alternateCredentials` (for alt-action routing) and
+    // `guards` (for the passwordInitial flag) in scope. Call the resolvers
+    // inline and stash the result on ctx — the prepare-* steps that run later
+    // will overwrite with the same value (idempotent) once username is set.
+    const altResult = this.resolveAlternateCredentials(ctx);
+    const alt = altResult instanceof Promise ? await altResult : altResult;
+    ctx.alternateCredentials = alt;
+    const guardsResult = this.resolveGuards(ctx);
+    const guards = guardsResult instanceof Promise ? await guardsResult : guardsResult;
+    ctx.guards = guards;
     // Mirror alt-credentials config into ctx so the form can hide each alt-action
     // button when its corresponding feature is disabled (`@ui.form.fn.hidden`).
-    const alt = this.opts.alternateCredentials;
     ctx.altForgotPassword = !!alt.forgotPassword;
     ctx.altSignup = !!alt.signup;
     ctx.altMagicLink = !!alt.magicLink;
@@ -651,7 +987,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
       // at the raw envelope (no validation) — password is intentionally
       // absent on alt-action submits.
       const typedUsername = getInputField("username");
-      const handled = this.handleCredentialsAlt(action, typedUsername);
+      const handled = this.handleCredentialsAlt(action, typedUsername, alt);
       if (handled === ALT_HANDLED) return undefined;
     }
 
@@ -665,7 +1001,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
       // methods, not this flag.
       ctx.mfaRequired = result.mfaRequired;
       // Phase 2 inline guards:
-      if (this.opts.guards.passwordInitial && result.user.password.isInitial) {
+      if (ctx.guards?.passwordInitial && result.user.password.isInitial) {
         ctx.isPasswordInitial = true;
       }
       // Sync existing channel state so `ensureEmail`/`ensurePhone` skip
@@ -693,10 +1029,10 @@ export class LoginWorkflow extends AuthWorkflowBase {
   private handleCredentialsAlt(
     action: string,
     typedUsername: string | undefined,
+    alt: NonNullable<LoginWfCtx["alternateCredentials"]>,
   ): AltHandled | undefined {
-    const alt = this.opts.alternateCredentials;
     if (action === "forgotPassword" && alt.forgotPassword) {
-      const url = this.buildRecoveryUrl(typedUsername);
+      const url = this.resolveRecoveryUrl(typedUsername, alt);
       finishWf({
         next: {
           trigger: "immediate",
@@ -734,17 +1070,21 @@ export class LoginWorkflow extends AuthWorkflowBase {
   }
 
   /**
-   * Builds the redirect URL the `forgotPassword` alt-action navigates to.
+   * Resolves the redirect URL the `forgotPassword` alt-action navigates to.
    * Receives whatever the user typed into the username field so the recovery
    * page can pre-fill it. Default:
    * `${alternateCredentials.recoveryUrl}?username=${encodeURIComponent(username ?? '')}`.
    * Sync return type only — the caller (`credentials` step's alt-action
    * handler) uses the URL inline; consumers needing async URL construction
-   * should override the `credentials` @Step instead.
+   * should override the `credentials` @Step instead. The resolved
+   * `alternateCredentials` policy is supplied by the caller so the base impl
+   * doesn't have to re-call `resolveAlternateCredentials`.
    */
-  protected buildRecoveryUrl(username?: string): string {
-    const base = this.opts.alternateCredentials.recoveryUrl;
-    return `${base}?username=${encodeURIComponent(username ?? "")}`;
+  protected resolveRecoveryUrl(
+    username: string | undefined,
+    alt: NonNullable<LoginWfCtx["alternateCredentials"]>,
+  ): string {
+    return `${alt.recoveryUrl}?username=${encodeURIComponent(username ?? "")}`;
   }
 
   @Step("magic-link-request")
@@ -902,10 +1242,10 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // Mirror count + backup-code flag into ctx so MFA forms can hide
     // `useDifferentMethod` / `useBackupCode` buttons when not applicable.
     ctx.mfaMethodCount = summary.length;
-    ctx.mfaBackupCodes = !!this.opts.mfa.backupCodes;
+    ctx.mfaBackupCodes = !!ctx.mfaConfig?.backupCodes;
     // Mirror so `PincodeForm` can hide `rememberDevice` when the consumer
     // doesn't ask the user to opt in (skipsMfa auto-trusts the device).
-    ctx.deviceTrustOptIn = !!(this.opts.deviceTrust.enabled && this.opts.deviceTrust.optIn);
+    ctx.deviceTrustOptIn = !!(ctx.deviceTrust?.enabled && ctx.deviceTrust?.optIn);
     return undefined;
   }
 
@@ -954,11 +1294,11 @@ export class LoginWorkflow extends AuthWorkflowBase {
   async select2fa(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
     const wf = useAtscriptWf(this.opts.forms.select2fa);
     const action = wf.resolveAction();
-    if (ctx.usingBackupCode && this.opts.mfa.backupCodes) {
+    if (ctx.usingBackupCode && ctx.mfaConfig?.backupCodes) {
       const code = getInputField("code");
       return this.handleBackupCode(code ? { code } : undefined, ctx);
     }
-    if (action === "useBackupCode" && this.opts.mfa.backupCodes) {
+    if (action === "useBackupCode" && ctx.mfaConfig?.backupCodes) {
       // Peek raw input for the backup `code` field — it lives outside the
       // select2fa form schema, so we read the envelope directly.
       ctx.usingBackupCode = true;
@@ -1054,11 +1394,11 @@ export class LoginWorkflow extends AuthWorkflowBase {
       delete ctx.pinExpire;
       return undefined;
     }
-    if (ctx.usingBackupCode && this.opts.mfa.backupCodes) {
+    if (ctx.usingBackupCode && ctx.mfaConfig?.backupCodes) {
       const code = getInputField("code");
       return this.handleBackupCode(code ? { code } : undefined, ctx);
     }
-    if (action === "useBackupCode" && this.opts.mfa.backupCodes) {
+    if (action === "useBackupCode" && ctx.mfaConfig?.backupCodes) {
       // First click → no `code` field → handleBackupCode pauses for the form.
       // Resume with the backup code populated → handleBackupCode validates and
       // consumes. The presence of `code` is the toggle.
@@ -1072,7 +1412,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
     ctx.mfaChecked = true;
     // Allow the risk-step-up gate to re-evaluate after this re-verification.
     ctx.riskStepUpEvaluated = false;
-    if (this.opts.deviceTrust.enabled && this.opts.deviceTrust.optIn) {
+    if (ctx.deviceTrust?.enabled && ctx.deviceTrust?.optIn) {
       ctx.rememberDevice = Boolean(input.rememberDevice);
     }
     return undefined;
@@ -1087,11 +1427,11 @@ export class LoginWorkflow extends AuthWorkflowBase {
       delete ctx.mfaMethod;
       return undefined;
     }
-    if (ctx.usingBackupCode && this.opts.mfa.backupCodes) {
+    if (ctx.usingBackupCode && ctx.mfaConfig?.backupCodes) {
       const code = getInputField("code");
       return this.handleBackupCode(code ? { code } : undefined, ctx);
     }
-    if (action === "useBackupCode" && this.opts.mfa.backupCodes) {
+    if (action === "useBackupCode" && ctx.mfaConfig?.backupCodes) {
       ctx.usingBackupCode = true;
       const code = getInputField("code");
       return this.handleBackupCode(code ? { code } : undefined, ctx);
@@ -1102,7 +1442,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
       await this.users.verifyMfa(ctx.username, input.code);
       ctx.mfaChecked = true;
       ctx.riskStepUpEvaluated = false;
-      if (this.opts.deviceTrust.enabled && this.opts.deviceTrust.optIn) {
+      if (ctx.deviceTrust?.enabled && ctx.deviceTrust?.optIn) {
         ctx.rememberDevice = Boolean(input.rememberDevice);
       }
     } catch (err) {
@@ -1283,7 +1623,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
     if (!input.accepted) {
       throw wf.requireInput({ errors: { accepted: "You must accept the terms" } });
     }
-    if (input.acceptedVersion !== this.opts.acceptance.termsVersion) {
+    if (input.acceptedVersion !== ctx.acceptance?.termsVersion) {
       throw wf.requireInput({ errors: { acceptedVersion: "Version mismatch — please retry" } });
     }
     ctx.termsAcceptedVersion = input.acceptedVersion;
@@ -1409,7 +1749,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
 
   @Step("concurrency-limit")
   async concurrencyLimit(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
-    const cfg = this.opts.sessionPolicy.concurrencyLimit;
+    const cfg = ctx.sessionPolicy?.concurrencyLimit;
     if (!cfg) return undefined;
     if (cfg.onLimit === "reject") {
       throw new HttpError(429, "Session limit reached");
@@ -1447,7 +1787,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // step does not fire twice within one MFA round — the MFA steps reset it
     // on next successful verification.
     ctx.riskStepUpEvaluated = true;
-    const res = await this.assessRiskStepUp(ctx);
+    const res = await this.resolveRiskStepUp(ctx);
     if (res.require) {
       ctx.riskStepUpReason = res.reason ?? "additional verification required";
       ctx.mfaChecked = false;
@@ -1463,11 +1803,12 @@ export class LoginWorkflow extends AuthWorkflowBase {
   }
 
   /**
-   * Risk-step-up assessor. Default: never requires an extra factor. Consumers
-   * override to inspect ctx (IP, geo, time since last login, etc.) and return
-   * `{require: true, reason: '…'}` to force an additional MFA round.
+   * Resolves whether to require an additional MFA round (risk step-up).
+   * Default: never requires an extra factor. Consumers override to inspect ctx
+   * (IP, geo, time since last login, etc.) and return `{require: true, reason: '…'}`
+   * to force an additional MFA round.
    */
-  protected async assessRiskStepUp(
+  protected async resolveRiskStepUp(
     _ctx: LoginWfCtx,
   ): Promise<{ require: boolean; reason?: string }> {
     return { require: false };
@@ -1559,9 +1900,9 @@ export class LoginWorkflow extends AuthWorkflowBase {
    * uses the URL inline; consumers needing async redirect resolution should
    * override the `redirect` @Step instead.
    */
-  protected resolveRedirect(_ctx: LoginWfCtx): string | undefined {
-    const r = this.opts.finalize.redirect;
-    if (r === false || r === null) return undefined;
+  protected resolveRedirect(ctx: LoginWfCtx): string | undefined {
+    const r = ctx.finalize?.redirect;
+    if (!r) return undefined;
     if (r === "home") return "/";
     if (r === "referer") {
       const { referer, referrer } = useHeaders(current());

@@ -41,7 +41,7 @@ describe("LoginWorkflow subclass — end-to-end registration shape", () => {
       // Override an arbitrary protected method to prove the subclass body
       // actually runs on the dispatch path (i.e. the registered class is
       // ours, not the base).
-      protected override async assessRiskStepUp(
+      protected override async resolveRiskStepUp(
         _ctx: LoginWfCtx,
       ): Promise<{ require: boolean; reason?: string }> {
         credentialsRan++;
@@ -99,10 +99,10 @@ describe("LoginWorkflow subclass — applyProfile override", () => {
       }
     }
     const app = await prepareWfApp({
+      loginPolicy: {
+        acceptance: { profileCompleteRequired: true, consentMarketing: false },
+      },
       loginOpts: {
-        acceptance: {
-          profileCompleteRequired: true,
-        },
         forms: {
           profileComplete: ProfileCompleteForm as unknown as TAtscriptAnnotatedType,
         },
@@ -150,8 +150,11 @@ describe("LoginWorkflow subclass — applyConsentMarketing override", () => {
       }
     }
     const app = await prepareWfApp({
-      loginOpts: {
-        acceptance: { consentMarketing: true },
+      loginPolicy: {
+        acceptance: {
+          consentMarketing: true,
+          profileCompleteRequired: false,
+        },
       },
       loginWorkflowClass: withLoginMfaCtx(ConsentLogin, { mfaMode: "disabled" }),
     });
@@ -204,7 +207,7 @@ describe("LoginWorkflow subclass — loadTenants override", () => {
       }
     }
     const app = await prepareWfApp({
-      loginOpts: { multiContext: { tenantSelect: true } },
+      loginPolicy: { multiContext: { tenantSelect: true, personaSelect: false } },
       loginWorkflowClass: withLoginMfaCtx(TenantLogin, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -246,7 +249,7 @@ describe("LoginWorkflow subclass — loadTenants override", () => {
       }
     }
     const app = await prepareWfApp({
-      loginOpts: { multiContext: { tenantSelect: true } },
+      loginPolicy: { multiContext: { tenantSelect: true, personaSelect: false } },
       loginWorkflowClass: withLoginMfaCtx(TenantLogin, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -288,7 +291,7 @@ describe("LoginWorkflow subclass — loadPersonas override", () => {
       }
     }
     const app = await prepareWfApp({
-      loginOpts: { multiContext: { personaSelect: true } },
+      loginPolicy: { multiContext: { tenantSelect: false, personaSelect: true } },
       loginWorkflowClass: withLoginMfaCtx(PersonaLogin, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -328,7 +331,7 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
       }
     }
     const app = await prepareWfApp({
-      loginOpts: {
+      loginPolicy: {
         sessionPolicy: { concurrencyLimit: { max: 2, onLimit: "kickPrompt" } },
       },
       loginWorkflowClass: withLoginMfaCtx(KickLogin, { mfaMode: "disabled" }),
@@ -362,7 +365,7 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
       }
     }
     const app = await prepareWfApp({
-      loginOpts: {
+      loginPolicy: {
         sessionPolicy: { concurrencyLimit: { max: 2, onLimit: "kickPrompt" } },
       },
       loginWorkflowClass: withLoginMfaCtx(KickLogin, { mfaMode: "disabled" }),
@@ -398,7 +401,7 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
       }
     }
     const app = await prepareWfApp({
-      loginOpts: {
+      loginPolicy: {
         sessionPolicy: { concurrencyLimit: { max: 2, onLimit: "kickPrompt" } },
       },
       loginWorkflowClass: withLoginMfaCtx(KickLogin, { mfaMode: "disabled" }),
@@ -461,9 +464,9 @@ describe("LoginWorkflow runtime fail-loud — deliver() not configured", () => {
     // then `notify-new-device` invokes `deliver()` — which throws because
     // EmailSender is not registered.
     const app = await prepareWfApp({
-      loginOpts: {
-        finalize: { notifyNewDevice: true },
-        deviceTrust: { enabled: true, optIn: false },
+      loginPolicy: {
+        finalize: { auditLogin: true, notifyNewDevice: true, redirect: false },
+        deviceTrust: { enabled: true, optIn: false, skipsMfa: true },
       },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { availableMfaTransports: ["totp"] }),
       registerEmailSender: false,
@@ -496,5 +499,66 @@ describe("LoginWorkflow runtime fail-loud — deliver() not configured", () => {
     const final = await app.trigger({ wfs: sel.body?.wfs as string, input: { code } });
     expect(final.status).toBe(500);
     expect(JSON.stringify(final.body)).toMatch(/EmailSender/);
+  });
+});
+
+// ── resolveXxx async override (regression) ──────────────────────────────────
+describe("LoginWorkflow subclass — async resolveXxx override is awaited by prepare-* step", () => {
+  it("async resolveAcceptance returning profileCompleteRequired:true → workflow pauses on ProfileCompleteForm", async () => {
+    // WHY (Rule 9): pins the Promise-branch in `prepareAcceptance`. The default
+    // body of `prepareAcceptance` (and every other prepare-* step) checks
+    // `result instanceof Promise` and routes to a `.then()` continuation so an
+    // async override gets awaited before the schema condition reads
+    // `ctx.acceptance?.profileCompleteRequired`. A regression that drops the
+    // Promise branch (or returns the unresolved Promise as the ctx field) would
+    // make the condition see `undefined` and silently skip the profile pause —
+    // tokens would issue immediately. This test forces the async path by
+    // overriding `resolveAcceptance` with an `async` function that resolves
+    // `profileCompleteRequired: true` AFTER a microtask, and asserts the
+    // workflow paused on the ProfileCompleteForm rather than issuing tokens.
+    @Inherit()
+    @Controller()
+    class AsyncAcceptanceLogin extends LoginWorkflow {
+      constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
+        super(opts, users, auth);
+      }
+      override async credentials(ctx: LoginWfCtx): Promise<unknown> {
+        const out = await super.credentials(ctx);
+        if (ctx.username) ctx.profileMissingFields = ["firstName"];
+        return out;
+      }
+      // Async override — return type matches the sync/async union. The base
+      // default returns sync, so this is the path under test.
+      protected override async resolveAcceptance(
+        _ctx: LoginWfCtx,
+      ): Promise<NonNullable<LoginWfCtx["acceptance"]>> {
+        await Promise.resolve();
+        return {
+          profileCompleteRequired: true,
+          consentMarketing: false,
+        };
+      }
+    }
+    const app = await prepareWfApp({
+      loginOpts: {
+        forms: {
+          profileComplete: ProfileCompleteForm as unknown as TAtscriptAnnotatedType,
+        },
+      },
+      loginWorkflowClass: withLoginMfaCtx(AsyncAcceptanceLogin, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r2 = await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { username: "alice", password: "Password123" },
+    });
+    // Pause on ProfileCompleteForm proves the async resolver was awaited and
+    // its returned value reached the schema condition. If the Promise branch
+    // regressed, ctx.acceptance would be a pending Promise (or undefined) and
+    // the condition would fall through to issue.
+    expect(r2.body?.wfs).toBeTruthy();
+    expect(r2.body?.data).toBeUndefined();
+    expect(JSON.stringify(r2.body)).toMatch(/firstName/);
   });
 });

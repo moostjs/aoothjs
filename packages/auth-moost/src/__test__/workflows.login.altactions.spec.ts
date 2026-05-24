@@ -50,7 +50,7 @@ async function driveToPincodeCheck(
 describe("LoginWorkflow alt-actions — select2fa", () => {
   it("useBackupCode → pauses for MfaCodeForm (backup code entry)", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { backupCodes: true } },
+      loginPolicy: { mfaConfig: { backupCodes: true } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
     await app.users.addMfaMethod("alice", {
@@ -91,7 +91,7 @@ describe("LoginWorkflow alt-actions — pincode-check-login", () => {
 
   it("useBackupCode → branches to backup-code entry (MfaCodeForm)", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { backupCodes: true } },
+      loginPolicy: { mfaConfig: { backupCodes: true } },
     });
     const { wfs } = await driveToPincodeCheck(app);
     const r = await app.trigger({ wfs, input: { action: "useBackupCode" } });
@@ -225,7 +225,7 @@ describe("LoginWorkflow alt-actions — pincode-check-login", () => {
 describe("LoginWorkflow alt-actions — mfa-totp", () => {
   it("useBackupCode → branches to backup-code entry", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { backupCodes: true } },
+      loginPolicy: { mfaConfig: { backupCodes: true } },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { availableMfaTransports: ["totp"] }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -300,8 +300,12 @@ describe("LoginWorkflow alt-actions — create-password-form", () => {
   // `!ctx.aborted` so the abort response set via `useWfFinished()` survives.
   it("'logout' alt → aborts workflow with { aborted: true, reason: 'logout' }", async () => {
     const app = await prepareWfApp({
-      loginOpts: {
-        guards: { passwordInitial: true },
+      loginPolicy: {
+        guards: {
+          passwordInitial: true,
+          passwordExpiry: true,
+          emailVerifiedRequired: false,
+        },
       },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
@@ -325,8 +329,12 @@ describe("LoginWorkflow alt-actions — create-password-form", () => {
     // `message` envelope (level + text) so the UI can render a banner instead
     // of stalling silently.
     const app = await prepareWfApp({
-      loginOpts: {
-        guards: { passwordInitial: true },
+      loginPolicy: {
+        guards: {
+          passwordInitial: true,
+          passwordExpiry: true,
+          emailVerifiedRequired: false,
+        },
       },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
@@ -355,8 +363,12 @@ describe("LoginWorkflow alt-actions — terms-accept", () => {
   // Abort alt-action gates the schema via `ctx.aborted` (see BUG-LOGIN-5 fix).
   it("'decline' alt → aborts workflow with friendly 'You must accept to continue' message", async () => {
     const app = await prepareWfApp({
-      loginOpts: {
-        acceptance: { termsVersion: "v2" },
+      loginPolicy: {
+        acceptance: {
+          termsVersion: "v2",
+          profileCompleteRequired: false,
+          consentMarketing: false,
+        },
       },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
@@ -380,8 +392,12 @@ describe("LoginWorkflow alt-actions — terms-accept", () => {
 
   it("accept submit with mismatched version → form error", async () => {
     const app = await prepareWfApp({
-      loginOpts: {
-        acceptance: { termsVersion: "v2" },
+      loginPolicy: {
+        acceptance: {
+          termsVersion: "v2",
+          profileCompleteRequired: false,
+          consentMarketing: false,
+        },
       },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
@@ -405,8 +421,12 @@ describe("LoginWorkflow alt-actions — terms-accept", () => {
     // branch runs. Either rejection path satisfies the spec intent: the user
     // can't proceed without checking the box.
     const app = await prepareWfApp({
-      loginOpts: {
-        acceptance: { termsVersion: "v2" },
+      loginPolicy: {
+        acceptance: {
+          termsVersion: "v2",
+          profileCompleteRequired: false,
+          consentMarketing: false,
+        },
       },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });

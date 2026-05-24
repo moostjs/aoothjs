@@ -1,15 +1,14 @@
 /**
- * Unit coverage for `mergeLoginOpts`.
+ * Unit coverage for `mergeLoginOpts` (post-resolver reshape).
  *
- * The deep-merge is hand-rolled (one `{ ...defaults, ...input }` per nested
- * group). Tests here pin the contract that runtime-relevant defaults survive
- * a partial input — without this guarantee, schema conditions that read
- * `ctx.opts.<group>.<flag>` after `init` would NPE on missing nested keys.
- *
- * Each test asserts a specific WHY: "if a consumer overrides one nested key,
- * sibling defaults must still be present at runtime." That intent is broken
- * the moment someone replaces `{ ...defaults, ...input }` with `input` for any
- * group — which is exactly the regression this file guards against.
+ * After the policy-options → resolveXxx migration, `LoginWorkflowOpts` only
+ * carries infrastructure: pincode timers, magic-link TTL, device-trust cookie
+ * binding, and the form-schema replacements. Policy lives on the resolveXxx
+ * surface. The tests here pin the surviving groups' partial-merge contract:
+ * runtime-relevant defaults (`mfa.pincodeLength` / `deviceTrust.cookieName` /
+ * `alternateCredentials.magicLinkTtlMs` / `forms.loginCredentials`) must
+ * survive a partial consumer override or step bodies that read
+ * `this.opts.<group>.<flag>` would NPE.
  */
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { describe, expect, it } from "vite-plus/test";
@@ -17,49 +16,35 @@ import { describe, expect, it } from "vite-plus/test";
 import { LoginCredentialsForm } from "../atscript/models/forms.as";
 import { mergeLoginOpts } from "../workflows/login.workflow.options";
 
-describe("mergeLoginOpts — defaults survive partial input", () => {
+describe("mergeLoginOpts — infrastructure defaults survive partial input", () => {
   it("undefined input → every nested group is populated with its full defaults", () => {
     const opts = mergeLoginOpts();
-    // PR9: `mfa.mode` + `mfa.transports` moved off opts onto the
-    // single `prepareMfaSetup` step setter (default ctx values
-    // covered by the workflow-level integration tests). The remaining
-    // `mfa.*` opts fields stay defaulted here.
     expect(opts.mfa.pincodeLength).toBe(6);
-    expect(opts.mfa.backupCodes).toBe(true);
-    expect(opts.alternateCredentials.forgotPassword).toBe(true);
-    expect(opts.alternateCredentials.recoveryUrl).toBe("/recover");
-    expect(opts.guards.passwordInitial).toBe(true);
-    expect(opts.finalize.auditLogin).toBe(true);
-    expect(opts.finalize.redirect).toBe(false);
+    expect(opts.mfa.pincodeResendTimeoutMs).toBe(60_000);
+    expect(opts.mfa.pincodeTtlMs).toBeGreaterThan(0);
     expect(opts.deviceTrust.cookieName).toBe("aooth_trusted_device");
+    expect(opts.deviceTrust.ttlMs).toBeGreaterThan(0);
+    expect(opts.deviceTrust.bindsTo).toBe("cookie");
+    expect(opts.alternateCredentials.magicLinkTtlMs).toBeGreaterThan(0);
     expect(opts.forms.profileComplete).toBeTruthy();
   });
 
   it("partial mfa override (pincodeLength) keeps sibling mfa defaults", () => {
-    // Pins partial-merge for the remaining `mfa.*` group: a naive
-    // `mfa: opts.mfa ?? defaults` would drop sibling defaults like
-    // `backupCodes` and `pincodeResendTimeoutMs`, silently disabling
-    // backup-code login (default-on) for any consumer who tuned only the
+    // Pins partial-merge for `mfa.*`: a naive `mfa: opts.mfa ?? defaults`
+    // would drop sibling defaults like `pincodeResendTimeoutMs`, silently
+    // breaking the resend throttle for any consumer who tuned only the
     // pincode length.
     const opts = mergeLoginOpts({ mfa: { pincodeLength: 8 } });
     expect(opts.mfa.pincodeLength).toBe(8);
-    expect(opts.mfa.backupCodes).toBe(true);
-    expect(opts.mfa.pincodeResendTimeoutMs).toBeGreaterThan(0);
+    expect(opts.mfa.pincodeResendTimeoutMs).toBe(60_000);
+    expect(opts.mfa.pincodeTtlMs).toBeGreaterThan(0);
   });
 
-  it("partial alternateCredentials override keeps sibling defaults", () => {
-    const opts = mergeLoginOpts({ alternateCredentials: { signup: true } });
-    expect(opts.alternateCredentials.signup).toBe(true);
-    expect(opts.alternateCredentials.forgotPassword).toBe(true);
-    expect(opts.alternateCredentials.recoveryUrl).toBe("/recover");
-    expect(opts.alternateCredentials.ssoProviders).toEqual([]);
-  });
-
-  it("partial finalize override (redirect:'home') keeps auditLogin default true", () => {
-    const opts = mergeLoginOpts({ finalize: { redirect: "home" } });
-    expect(opts.finalize.redirect).toBe("home");
-    expect(opts.finalize.auditLogin).toBe(true);
-    expect(opts.finalize.notifyNewDevice).toBe(false);
+  it("partial deviceTrust override (cookieName) keeps sibling defaults", () => {
+    const opts = mergeLoginOpts({ deviceTrust: { cookieName: "custom_trust" } });
+    expect(opts.deviceTrust.cookieName).toBe("custom_trust");
+    expect(opts.deviceTrust.ttlMs).toBeGreaterThan(0);
+    expect(opts.deviceTrust.bindsTo).toBe("cookie");
   });
 
   it("explicit override of a default beats the default (no accidental defaulting)", () => {
@@ -67,13 +52,12 @@ describe("mergeLoginOpts — defaults survive partial input", () => {
     // `{ ...input, ...defaults }` and would always win — disabling consumer
     // configuration.
     const opts = mergeLoginOpts({
-      mfa: { pincodeLength: 8, backupCodes: false },
-      finalize: { auditLogin: false, notifyNewDevice: true },
+      mfa: { pincodeLength: 8, pincodeResendTimeoutMs: 1000 },
+      deviceTrust: { bindsTo: "cookie+ip" },
     });
     expect(opts.mfa.pincodeLength).toBe(8);
-    expect(opts.mfa.backupCodes).toBe(false);
-    expect(opts.finalize.auditLogin).toBe(false);
-    expect(opts.finalize.notifyNewDevice).toBe(true);
+    expect(opts.mfa.pincodeResendTimeoutMs).toBe(1000);
+    expect(opts.deviceTrust.bindsTo).toBe("cookie+ip");
   });
 
   it("forms group: default loginCredentials is the shipped form; consumer override wins", () => {
@@ -84,16 +68,5 @@ describe("mergeLoginOpts — defaults survive partial input", () => {
     expect(mergeLoginOpts({ forms: { loginCredentials: MyForm } }).forms.loginCredentials).toBe(
       MyForm,
     );
-  });
-
-  it("sessionPolicy.concurrencyLimit stays undefined by default (not a default-on group)", () => {
-    // The schema condition uses `!!ctx.opts.sessionPolicy.concurrencyLimit` so
-    // the absence MUST be preserved — defaulting it to anything truthy would
-    // turn on the concurrency-limit step for everyone.
-    expect(mergeLoginOpts().sessionPolicy.concurrencyLimit).toBeUndefined();
-    const opts = mergeLoginOpts({
-      sessionPolicy: { concurrencyLimit: { max: 3, onLimit: "kickPrompt" } },
-    });
-    expect(opts.sessionPolicy.concurrencyLimit).toEqual({ max: 3, onLimit: "kickPrompt" });
   });
 });

@@ -53,7 +53,21 @@ async function buildAuthApp(): Promise<AuthAppHandle> {
   @Controller()
   class DemoLoginWorkflow extends LoginWorkflow {
     constructor(u: UserService, a: AuthCredential) {
-      super({ alternateCredentials: { forgotPassword: true, recoveryUrl: "/recover" } }, u, a);
+      super({}, u, a);
+    }
+    // Post-resolver reshape: alt-cred policy now flows through
+    // `resolveAlternateCredentials(ctx)` rather than the ctor opts.
+    protected override resolveAlternateCredentials() {
+      return {
+        forgotPassword: true,
+        signup: false,
+        magicLink: false,
+        magicLinkSkipsMfa: false,
+        ssoProviders: [],
+        recoveryUrl: "/recover",
+        signupUrl: "/signup",
+        embedRecovery: false,
+      };
     }
   }
 

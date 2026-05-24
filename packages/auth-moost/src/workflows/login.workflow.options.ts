@@ -1,11 +1,16 @@
 /**
- * `LoginWorkflowOpts` — nested-pojo configuration for `LoginWorkflow`.
+ * `LoginWorkflowOpts` — infrastructure-only nested-pojo configuration for
+ * `LoginWorkflow`.
  *
- * Phase 2 of the workflow OOP-reshape (see TASKS.md): the options class +
- * callbacks have been replaced by a nested-object pojo passed as the first
- * ctor arg, plus protected methods on `LoginWorkflow` that consumers override
- * via subclassing. Defaults are applied by `mergeLoginOpts(opts)` so step
- * bodies + schema conditions can read `ctx.opts.<group>.<flag>` without `?.`.
+ * Phase 3 of the workflow OOP-reshape (see TASKS.md): policy fields
+ * (alternateCredentials.{forgotPassword,signup,…}, guards, enrollment,
+ * acceptance, multiContext, sessionPolicy, finalize, deviceTrust.{enabled,
+ * optIn,skipsMfa}, mfa.backupCodes) have moved off opts and onto protected
+ * `resolveXxx(ctx)` getter methods on `LoginWorkflow` (one per group). What
+ * remains here is infrastructure-only: pincode timers, cookie name/TTL +
+ * binding, magic-link TTL, and the form schemas. Step bodies + schema
+ * conditions read policy from `ctx.<group>` (populated by `prepare-<group>`
+ * @Step methods that call the resolvers).
  */
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 
@@ -47,57 +52,19 @@ export interface ConcurrencyLimitOptions {
 }
 
 export interface LoginWorkflowOpts {
-  alternateCredentials?: {
-    forgotPassword?: boolean;
-    signup?: boolean;
-    magicLink?: boolean;
-    magicLinkSkipsMfa?: boolean;
-    magicLinkTtlMs?: number;
-    ssoProviders?: SsoProvider[];
-    recoveryUrl?: string;
-    signupUrl?: string;
-    embedRecovery?: boolean;
-  };
-  guards?: {
-    emailVerifiedRequired?: boolean;
-    passwordExpiry?: boolean;
-    passwordInitial?: boolean;
-  };
-  enrollment?: {
-    ensureEmail?: boolean;
-    ensurePhone?: boolean;
-  };
   mfa?: {
-    backupCodes?: boolean;
     pincodeTtlMs?: number;
     pincodeResendTimeoutMs?: number;
     /** Numeric length of the server-generated OTP for SMS/email pincodes. */
     pincodeLength?: number;
   };
   deviceTrust?: {
-    enabled?: boolean;
-    optIn?: boolean;
     cookieName?: string;
     ttlMs?: number;
-    skipsMfa?: boolean;
     bindsTo?: "cookie" | "cookie+ip";
   };
-  acceptance?: {
-    termsVersion?: string;
-    profileCompleteRequired?: boolean;
-    consentMarketing?: boolean;
-  };
-  multiContext?: {
-    tenantSelect?: boolean;
-    personaSelect?: boolean;
-  };
-  sessionPolicy?: {
-    concurrencyLimit?: ConcurrencyLimitOptions;
-  };
-  finalize?: {
-    auditLogin?: boolean;
-    notifyNewDevice?: boolean;
-    redirect?: LoginRedirect;
+  alternateCredentials?: {
+    magicLinkTtlMs?: number;
   };
   /**
    * Replaceable form schemas. Each field defaults to the corresponding
@@ -127,63 +94,22 @@ export interface LoginWorkflowOpts {
 
 /**
  * Fully-resolved view used by the workflow at runtime — every nested group is
- * always populated by `mergeLoginOpts`, so schema conditions can read
- * `ctx.opts.<group>.<flag>` directly without optional chaining.
- *
- * Fields without sensible defaults (e.g. `termsVersion`, `concurrencyLimit`)
- * stay optional inside their group.
+ * always populated by `mergeLoginOpts`, so step bodies can read
+ * `this.opts.<group>.<flag>` directly without optional chaining.
  */
 export interface ResolvedLoginWorkflowOpts {
-  alternateCredentials: {
-    forgotPassword: boolean;
-    signup: boolean;
-    magicLink: boolean;
-    magicLinkSkipsMfa: boolean;
-    magicLinkTtlMs: number;
-    ssoProviders: SsoProvider[];
-    recoveryUrl: string;
-    signupUrl: string;
-    embedRecovery: boolean;
-  };
-  guards: {
-    emailVerifiedRequired: boolean;
-    passwordExpiry: boolean;
-    passwordInitial: boolean;
-  };
-  enrollment: {
-    ensureEmail: boolean;
-    ensurePhone: boolean;
-  };
   mfa: {
-    backupCodes: boolean;
     pincodeTtlMs: number;
     pincodeResendTimeoutMs: number;
     pincodeLength: number;
   };
   deviceTrust: {
-    enabled: boolean;
-    optIn: boolean;
     cookieName: string;
     ttlMs: number;
-    skipsMfa: boolean;
     bindsTo: "cookie" | "cookie+ip";
   };
-  acceptance: {
-    termsVersion?: string;
-    profileCompleteRequired: boolean;
-    consentMarketing: boolean;
-  };
-  multiContext: {
-    tenantSelect: boolean;
-    personaSelect: boolean;
-  };
-  sessionPolicy: {
-    concurrencyLimit?: ConcurrencyLimitOptions;
-  };
-  finalize: {
-    auditLogin: boolean;
-    notifyNewDevice: boolean;
-    redirect: LoginRedirect;
+  alternateCredentials: {
+    magicLinkTtlMs: number;
   };
   forms: {
     askEmail: TAtscriptAnnotatedType;
@@ -213,64 +139,21 @@ export interface ResolvedLoginWorkflowOpts {
  */
 export function mergeLoginOpts(opts: LoginWorkflowOpts = {}): ResolvedLoginWorkflowOpts {
   return {
-    alternateCredentials: {
-      forgotPassword: true,
-      signup: false,
-      magicLink: false,
-      magicLinkSkipsMfa: false,
-      magicLinkTtlMs: 30 * 60_000,
-      ssoProviders: [],
-      recoveryUrl: "/recover",
-      signupUrl: "/signup",
-      embedRecovery: false,
-      ...opts.alternateCredentials,
-    },
-    guards: {
-      emailVerifiedRequired: false,
-      passwordExpiry: true,
-      passwordInitial: true,
-      ...opts.guards,
-    },
-    enrollment: {
-      ensureEmail: false,
-      ensurePhone: false,
-      ...opts.enrollment,
-    },
     mfa: {
-      backupCodes: true,
       pincodeTtlMs: DEFAULT_MFA_CODE_TTL_MS,
       pincodeResendTimeoutMs: 60_000,
       pincodeLength: 6,
       ...opts.mfa,
     },
     deviceTrust: {
-      enabled: false,
-      optIn: true,
       cookieName: "aooth_trusted_device",
       ttlMs: 24 * 60 * 60_000,
-      skipsMfa: true,
       bindsTo: "cookie",
       ...opts.deviceTrust,
     },
-    acceptance: {
-      profileCompleteRequired: false,
-      consentMarketing: false,
-      ...opts.acceptance,
-    },
-    multiContext: {
-      tenantSelect: false,
-      personaSelect: false,
-      ...opts.multiContext,
-    },
-    sessionPolicy: {
-      ...opts.sessionPolicy,
-    },
-    finalize: {
-      auditLogin: true,
-      notifyNewDevice: false,
-      // SPA-friendly default; server-rendered apps opt in via redirect: "referer"
-      redirect: false,
-      ...opts.finalize,
+    alternateCredentials: {
+      magicLinkTtlMs: 30 * 60_000,
+      ...opts.alternateCredentials,
     },
     forms: {
       askEmail: AskEmailForm as unknown as TAtscriptAnnotatedType,

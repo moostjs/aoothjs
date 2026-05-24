@@ -85,8 +85,13 @@ describe("LoginWorkflow security — profile-complete payload escalation (audit 
     }
 
     const app = await prepareWfApp({
+      loginPolicy: {
+        acceptance: {
+          profileCompleteRequired: true,
+          consentMarketing: false,
+        },
+      },
       loginOpts: {
-        acceptance: { profileCompleteRequired: true },
         forms: {
           // `ProfileWithRolesForm` declares the privileged top-level keys
           // as accepted form fields, so the upstream atscript form validator

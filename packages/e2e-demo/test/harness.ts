@@ -3,6 +3,7 @@ import {
   type InviteWfCtx,
   InviteWorkflow,
   type InviteWorkflowOpts,
+  type LoginPolicyOverrides,
   type LoginWfCtx,
   LoginWorkflow,
   type LoginWorkflowOpts,
@@ -95,6 +96,14 @@ export interface BuildTestAppOptions {
   authEndpointsEnabled?: boolean;
   /** Deep-merged into the demo's `demoLoginOpts` — see `buildApp`. */
   loginOpts?: LoginWorkflowOpts;
+  /**
+   * Per-test login policy override — applied by `DemoLoginWorkflow`'s
+   * `resolveXxx(ctx)` overrides. Use for tests that previously poked
+   * `loginOpts: { guards: { ... } }` / `loginOpts: { acceptance: { ... } }`
+   * / `loginOpts: { finalize: { redirect: ... } }` — those keys moved off
+   * `LoginWorkflowOpts` and onto the resolver surface.
+   */
+  loginPolicy?: LoginPolicyOverrides;
   /** Deep-merged into the demo's `demoRecoveryOpts` — see `buildApp`. */
   recoveryOpts?: RecoveryWorkflowOpts;
   /** Deep-merged into the demo's `demoInviteOpts` — see `buildApp`. */
@@ -217,6 +226,7 @@ export async function buildTestApp(opts: BuildTestAppOptions = {}): Promise<Test
     workflowsEnabled: opts.workflowsEnabled,
     authEndpointsEnabled: opts.authEndpointsEnabled,
     loginOpts: opts.loginOpts,
+    loginPolicy: opts.loginPolicy,
     recoveryOpts: opts.recoveryOpts,
     inviteOpts: opts.inviteOpts,
     inviteWorkflowClass: opts.inviteWorkflowClass,

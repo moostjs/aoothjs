@@ -33,11 +33,23 @@ import { prepareWfApp, seedActiveUser, withLoginMfaCtx } from "./workflow-utils"
  * Build a `LoginWorkflow` subclass with a single override. Mirrors the
  * canonical consumer pattern (see TASKS.md §"Probe outcomes") — re-decorates
  * the class and re-declares the ctor so DI metadata regenerates.
+ *
+ * Post-resolver reshape: callers that previously overrode `buildRecoveryUrl`
+ * now override `resolveAlternateCredentials` (which produces the resolved
+ * `alternateCredentials.recoveryUrl` consumed by the credentials step's alt-
+ * action handler). Callers that overrode `assessRiskStepUp` now override
+ * `resolveRiskStepUp`. `resolveRedirect` is unchanged in name; it now reads
+ * `ctx.finalize.redirect` instead of `this.opts.finalize.redirect`.
  */
 function makeLoginSubclass(
   overrides: Partial<{
-    buildRecoveryUrl: (this: LoginWorkflow, username?: string) => string;
-    assessRiskStepUp: (
+    resolveAlternateCredentials: (
+      this: LoginWorkflow,
+      ctx: LoginWfCtx,
+    ) =>
+      | NonNullable<LoginWfCtx["alternateCredentials"]>
+      | Promise<NonNullable<LoginWfCtx["alternateCredentials"]>>;
+    resolveRiskStepUp: (
       this: LoginWorkflow,
       ctx: LoginWfCtx,
     ) => Promise<{ require: boolean; reason?: string }>;
@@ -50,17 +62,21 @@ function makeLoginSubclass(
     constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
       super(opts, users, auth);
     }
-    protected override buildRecoveryUrl(username?: string): string {
-      return overrides.buildRecoveryUrl
-        ? overrides.buildRecoveryUrl.call(this, username)
-        : super.buildRecoveryUrl(username);
+    protected override resolveAlternateCredentials(
+      ctx: LoginWfCtx,
+    ):
+      | NonNullable<LoginWfCtx["alternateCredentials"]>
+      | Promise<NonNullable<LoginWfCtx["alternateCredentials"]>> {
+      return overrides.resolveAlternateCredentials
+        ? overrides.resolveAlternateCredentials.call(this, ctx)
+        : super.resolveAlternateCredentials(ctx);
     }
-    protected override async assessRiskStepUp(
+    protected override async resolveRiskStepUp(
       ctx: LoginWfCtx,
     ): Promise<{ require: boolean; reason?: string }> {
-      return overrides.assessRiskStepUp
-        ? overrides.assessRiskStepUp.call(this, ctx)
-        : super.assessRiskStepUp(ctx);
+      return overrides.resolveRiskStepUp
+        ? overrides.resolveRiskStepUp.call(this, ctx)
+        : super.resolveRiskStepUp(ctx);
     }
     protected override resolveRedirect(ctx: LoginWfCtx): string | undefined {
       return overrides.resolveRedirect
@@ -69,6 +85,63 @@ function makeLoginSubclass(
     }
   }
   return SubclassedLogin;
+}
+
+/**
+ * Default-merged `alternateCredentials` policy — saves each test from spelling
+ * out the full 8-field shape just to flip one flag. Mirrors
+ * `LoginWorkflow.resolveAlternateCredentials` defaults.
+ */
+function altCreds(
+  partial: Partial<NonNullable<LoginWfCtx["alternateCredentials"]>> = {},
+): NonNullable<LoginWfCtx["alternateCredentials"]> {
+  return {
+    forgotPassword: true,
+    signup: false,
+    magicLink: false,
+    magicLinkSkipsMfa: false,
+    ssoProviders: [],
+    recoveryUrl: "/recover",
+    signupUrl: "/signup",
+    embedRecovery: false,
+    ...partial,
+  };
+}
+
+/** Default-merged guards policy — saves test boilerplate. */
+function guardsPolicy(
+  partial: Partial<NonNullable<LoginWfCtx["guards"]>> = {},
+): NonNullable<LoginWfCtx["guards"]> {
+  return {
+    passwordInitial: true,
+    passwordExpiry: true,
+    emailVerifiedRequired: false,
+    ...partial,
+  };
+}
+
+/** Default-merged finalize policy — saves test boilerplate. */
+function finalizePolicy(
+  partial: Partial<NonNullable<LoginWfCtx["finalize"]>> = {},
+): NonNullable<LoginWfCtx["finalize"]> {
+  return {
+    auditLogin: true,
+    notifyNewDevice: false,
+    redirect: false,
+    ...partial,
+  };
+}
+
+/** Default-merged deviceTrust policy — saves test boilerplate. */
+function deviceTrustPolicy(
+  partial: Partial<NonNullable<LoginWfCtx["deviceTrust"]>> = {},
+): NonNullable<LoginWfCtx["deviceTrust"]> {
+  return {
+    enabled: false,
+    optIn: true,
+    skipsMfa: true,
+    ...partial,
+  };
 }
 
 /** Helper: drive credentials → first paused/finished state. */
@@ -92,9 +165,7 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
   // validation (the payload lacks the password field by design).
   it("alternateCredentials.forgotPassword: 'forgotPassword' alt → redirect to recoveryUrl with typed username", async () => {
     const app = await prepareWfApp({
-      loginOpts: {
-        alternateCredentials: { forgotPassword: true, recoveryUrl: "/recover" },
-      },
+      loginPolicy: { alternateCredentials: altCreds({ forgotPassword: true }) },
     });
     const r1 = await app.trigger({ wfid: "auth.login" });
     const r2 = await app.trigger({
@@ -107,14 +178,18 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
     expect(end?.action?.target).toBe("/recover?username=typed-user");
   });
 
-  it("buildRecoveryUrl override: subclass returns custom URL", async () => {
+  it("resolveAlternateCredentials override: subclass swaps recoveryUrl → custom URL fragment", async () => {
+    // Post-resolver reshape: the redirect URL no longer flows through a
+    // dedicated `buildRecoveryUrl` method — instead, `resolveRecoveryUrl`
+    // pulls `recoveryUrl` off the resolved `alternateCredentials` policy. To
+    // customize it, override `resolveAlternateCredentials` (or
+    // `resolveRecoveryUrl` for full URL-construction control). This test
+    // pins the alternateCredentials path; a separate test below covers
+    // resolveRecoveryUrl directly.
     const app = await prepareWfApp({
-      loginOpts: { alternateCredentials: { forgotPassword: true } },
-      loginWorkflowClass: makeLoginSubclass({
-        buildRecoveryUrl(username) {
-          return `#/forgot?u=${username ?? ""}`;
-        },
-      }),
+      loginPolicy: {
+        alternateCredentials: altCreds({ forgotPassword: true, recoveryUrl: "#/forgot" }),
+      },
     });
     const r1 = await app.trigger({ wfid: "auth.login" });
     const r2 = await app.trigger({
@@ -122,14 +197,14 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
       input: { username: "bob", action: "forgotPassword" },
     });
     const end = r2.body?.next as { action: { target: string } };
-    expect(end?.action?.target).toBe("#/forgot?u=bob");
+    expect(end?.action?.target).toBe("#/forgot?username=bob");
   });
 
   it("alternateCredentials.forgotPassword: false → action is ignored (no redirect, falls through to validation)", async () => {
     // The handler returns undefined when it can't route the action, and
     // validation kicks in.
     const app = await prepareWfApp({
-      loginOpts: { alternateCredentials: { forgotPassword: false } },
+      loginPolicy: { alternateCredentials: altCreds({ forgotPassword: false }) },
     });
     const r1 = await app.trigger({ wfid: "auth.login" });
     const r2 = await app.trigger({
@@ -142,9 +217,7 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
 
   it("alternateCredentials.signup: 'signup' alt → redirect to signupUrl", async () => {
     const app = await prepareWfApp({
-      loginOpts: {
-        alternateCredentials: { signup: true, signupUrl: "/sign-me-up" },
-      },
+      loginPolicy: { alternateCredentials: altCreds({ signup: true, signupUrl: "/sign-me-up" }) },
     });
     const r1 = await app.trigger({ wfid: "auth.login" });
     const r2 = await app.trigger({
@@ -159,17 +232,19 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
 
   it("alternateCredentials.ssoProviders: matching provider id → redirect to provider url", async () => {
     const app = await prepareWfApp({
-      loginOpts: {
-        alternateCredentials: {
+      loginPolicy: {
+        alternateCredentials: altCreds({
           ssoProviders: [
             { id: "google", label: "Sign in with Google", url: "https://idp.example/oauth/google" },
             { id: "okta", label: "Okta", url: "https://idp.example/oauth/okta" },
           ],
-        },
-        // SSO providers are dynamic per consumer — the bundled
-        // `LoginCredentialsForm` does NOT whitelist them. Opt into the test
-        // fixture form that declares phantom `ui.action` fields for
-        // `google` + `okta`.
+        }),
+      },
+      // SSO providers are dynamic per consumer — the bundled
+      // `LoginCredentialsForm` does NOT whitelist them. Opt into the test
+      // fixture form that declares phantom `ui.action` fields for
+      // `google` + `okta`.
+      loginOpts: {
         forms: { loginCredentials: SsoLoginCredentialsForm as unknown as TAtscriptAnnotatedType },
       },
     });
@@ -187,10 +262,12 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
     // actions surface `reason: 'sso-<providerId>'` so consumer analytics can
     // disambiguate which IdP was picked without parsing the URL.
     const app = await prepareWfApp({
-      loginOpts: {
-        alternateCredentials: {
+      loginPolicy: {
+        alternateCredentials: altCreds({
           ssoProviders: [{ id: "okta", label: "Okta", url: "https://idp.example/oauth/okta" }],
-        },
+        }),
+      },
+      loginOpts: {
         forms: { loginCredentials: SsoLoginCredentialsForm as unknown as TAtscriptAnnotatedType },
       },
     });
@@ -216,7 +293,7 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
 
   it("alternateCredentials.magicLink: 'magicLink' alt → HttpError 501 (stub, see WF_LOGIN §Phase 1 doc)", async () => {
     const app = await prepareWfApp({
-      loginOpts: { alternateCredentials: { magicLink: true } },
+      loginPolicy: { alternateCredentials: altCreds({ magicLink: true }) },
     });
     const r1 = await app.trigger({ wfid: "auth.login" });
     const r2 = await app.trigger({
@@ -230,10 +307,8 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
 describe("LoginWorkflowOpts — Phase 2 password guards", () => {
   it("guards.passwordInitial true + user.password.isInitial → routes to create-password-form", async () => {
     const app = await prepareWfApp({
-      loginOpts: {
-        guards: { passwordInitial: true },
-        // skip MFA so we observe the password-change branch directly
-      },
+      loginPolicy: { guards: guardsPolicy({ passwordInitial: true }) },
+      // skip MFA so we observe the password-change branch directly
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     // createUser without a password marks `password.isInitial = true` (see UserService.createUser).
@@ -259,9 +334,7 @@ describe("LoginWorkflowOpts — Phase 2 password guards", () => {
 
   it("guards.passwordInitial false → skip the password-change branch even when isInitial is true", async () => {
     const app = await prepareWfApp({
-      loginOpts: {
-        guards: { passwordInitial: false },
-      },
+      loginPolicy: { guards: guardsPolicy({ passwordInitial: false }) },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await app.users.createUser("alice", "Password123");
@@ -284,9 +357,7 @@ describe("LoginWorkflowOpts — Phase 2 password guards", () => {
     //   2. `prepare-password-rules` step seeding `ctx.passwordPolicies` so the
     //      next step's `createPasswordForm` ships the rules to the client.
     const app = await prepareWfApp({
-      loginOpts: {
-        guards: { passwordInitial: true },
-      },
+      loginPolicy: { guards: guardsPolicy({ passwordInitial: true }) },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
       userConfig: { password: { policies: [ppHasMinLength(8)] } },
     });
@@ -401,7 +472,7 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
     // wire the default secret here — proves the no-cookie branch is the
     // structural short-circuit).
     const app = await prepareWfApp({
-      loginOpts: { deviceTrust: { enabled: true } },
+      loginPolicy: { deviceTrust: deviceTrustPolicy({ enabled: true }) },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -430,12 +501,8 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
 describe("LoginWorkflowOpts — Phase 4 device trust", () => {
   it("deviceTrust true + valid cookie → MFA skipped (mfaChecked set in check-trusted-device)", async () => {
     const app = await prepareWfApp({
-      loginOpts: {
-        deviceTrust: {
-          enabled: true,
-          skipsMfa: true,
-          optIn: false, // silently trust → device-trust step writes cookie unconditionally
-        },
+      loginPolicy: {
+        deviceTrust: deviceTrustPolicy({ enabled: true, skipsMfa: true, optIn: false }),
       },
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -466,9 +533,7 @@ describe("LoginWorkflowOpts — Phase 4 device trust", () => {
 
   it("deviceTrust true + NO cookie → marks newDevice, runs MFA normally, persists cookie", async () => {
     const app = await prepareWfApp({
-      loginOpts: {
-        deviceTrust: { enabled: true, optIn: false }, // unconditional persist on successful MFA
-      },
+      loginPolicy: { deviceTrust: deviceTrustPolicy({ enabled: true, optIn: false }) },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { availableMfaTransports: ["totp"] }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -544,12 +609,8 @@ describe("LoginWorkflowOpts — Phase 4 device trust", () => {
     // Expected: bob is still prompted for TOTP (workflow paused, not finished),
     // proving the trust path was bypassed and the normal MFA gate fires.
     const app = await prepareWfApp({
-      loginOpts: {
-        deviceTrust: {
-          enabled: true,
-          skipsMfa: true,
-          optIn: false,
-        },
+      loginPolicy: {
+        deviceTrust: deviceTrustPolicy({ enabled: true, skipsMfa: true, optIn: false }),
       },
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -589,7 +650,7 @@ describe("LoginWorkflowOpts — Phase 4 device trust", () => {
 describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, redirect)", () => {
   it("finalize.auditLogin true → emits one 'login.success' event with userId + method", async () => {
     const app = await prepareWfApp({
-      loginOpts: { finalize: { auditLogin: true } },
+      loginPolicy: { finalize: finalizePolicy({ auditLogin: true }) },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -604,7 +665,7 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
 
   it("finalize.auditLogin false → emits NO events", async () => {
     const app = await prepareWfApp({
-      loginOpts: { finalize: { auditLogin: false } },
+      loginPolicy: { finalize: finalizePolicy({ auditLogin: false }) },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -614,9 +675,9 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
 
   it("finalize.notifyNewDevice true + newDevice → sends 'notifyNewDevice' email after MFA", async () => {
     const app = await prepareWfApp({
-      loginOpts: {
-        finalize: { notifyNewDevice: true },
-        deviceTrust: { enabled: true, optIn: false }, // unconditional trust persist so newDevice flows through
+      loginPolicy: {
+        finalize: finalizePolicy({ notifyNewDevice: true }),
+        deviceTrust: deviceTrustPolicy({ enabled: true, optIn: false }), // unconditional trust persist so newDevice flows through
       },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { availableMfaTransports: ["totp"] }),
     });
@@ -646,9 +707,9 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
 
   it("finalize.notifyNewDevice false → no notifyNewDevice email even after MFA success", async () => {
     const app = await prepareWfApp({
-      loginOpts: {
-        finalize: { notifyNewDevice: false },
-        deviceTrust: { enabled: true, optIn: false },
+      loginPolicy: {
+        finalize: finalizePolicy({ notifyNewDevice: false }),
+        deviceTrust: deviceTrustPolicy({ enabled: true, optIn: false }),
       },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { availableMfaTransports: ["totp"] }),
     });
@@ -673,7 +734,7 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
 
   it("finalize.redirect: 'home' → envelope with end:immediate redirect to /", async () => {
     const app = await prepareWfApp({
-      loginOpts: { finalize: { redirect: "home" } },
+      loginPolicy: { finalize: finalizePolicy({ redirect: "home" }) },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -707,7 +768,7 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
 
   it("finalize.redirect: 'referer' with no Referer header → data envelope (no redirect override)", async () => {
     const app = await prepareWfApp({
-      loginOpts: { finalize: { redirect: "referer" } },
+      loginPolicy: { finalize: finalizePolicy({ redirect: "referer" }) },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -718,7 +779,7 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
 
   it("finalize.redirect: false → data envelope (no redirect end)", async () => {
     const app = await prepareWfApp({
-      loginOpts: { finalize: { redirect: false } },
+      loginPolicy: { finalize: finalizePolicy({ redirect: false }) },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -734,8 +795,12 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
 describe("LoginWorkflowOpts — Phase 6 terms acceptance", () => {
   it("acceptance.termsVersion set + user.termsVersion mismatched → terms-accept form fires", async () => {
     const app = await prepareWfApp({
-      loginOpts: {
-        acceptance: { termsVersion: "v2" },
+      loginPolicy: {
+        acceptance: {
+          termsVersion: "v2",
+          profileCompleteRequired: false,
+          consentMarketing: false,
+        },
       },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
@@ -765,8 +830,12 @@ describe("LoginWorkflowOpts — Phase 6 terms acceptance", () => {
 
   it("acceptance.termsVersion: mismatched 'acceptedVersion' on submit → form error 'Version mismatch'", async () => {
     const app = await prepareWfApp({
-      loginOpts: {
-        acceptance: { termsVersion: "v2" },
+      loginPolicy: {
+        acceptance: {
+          termsVersion: "v2",
+          profileCompleteRequired: false,
+          consentMarketing: false,
+        },
       },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
@@ -790,7 +859,7 @@ describe("LoginWorkflowOpts — Phase 8 session policy", () => {
     // Instead, we test the negative path here and the alt-action 'cancel'
     // path in the alt-actions spec.
     const app = await prepareWfApp({
-      loginOpts: {
+      loginPolicy: {
         sessionPolicy: { concurrencyLimit: { max: 2, onLimit: "reject" } },
       },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
@@ -807,12 +876,12 @@ describe("LoginWorkflowOpts — Phase 8 session policy", () => {
   // condition no longer gates on a presence-projection (always runs when
   // mfaChecked and not yet evaluated), and a `require:false` outcome lets
   // the loop exit.
-  it("assessRiskStepUp override returning require:true forces additional MFA re-run", async () => {
+  it("resolveRiskStepUp override returning require:true forces additional MFA re-run", async () => {
     let calls = 0;
     const app = await prepareWfApp({
       loginWorkflowClass: withLoginMfaCtx(
         makeLoginSubclass({
-          async assessRiskStepUp() {
+          async resolveRiskStepUp() {
             calls++;
             return { require: calls === 1, reason: "unusual" };
           },

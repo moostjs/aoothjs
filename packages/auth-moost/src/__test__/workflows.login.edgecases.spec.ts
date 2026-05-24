@@ -85,7 +85,7 @@ describe("LoginWorkflow edge cases — MFA", () => {
   // separate from `MfaCodeForm` (digits-only for TOTP). See BUG-LOGIN-6 fix.
   it("backup code consumed twice → second use fails (one-time semantics)", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { backupCodes: true } },
+      loginPolicy: { mfaConfig: { backupCodes: true } },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { availableMfaTransports: ["totp"] }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -228,7 +228,9 @@ describe("LoginWorkflow edge cases — silent-audit fallback", () => {
     // truthy — provide an explicit no-op so we're testing the FALLBACK path
     // when the registered emitter does nothing (proxies the absence case).
     const app = await prepareWfApp({
-      loginOpts: { finalize: { auditLogin: true } },
+      loginPolicy: {
+        finalize: { auditLogin: true, notifyNewDevice: false, redirect: false },
+      },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
       auditEmitter: { emit: () => undefined },
     });
