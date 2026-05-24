@@ -75,7 +75,7 @@ import { Controller, Injectable } from "moost";
 import type { AuditEvent } from "../audit/index";
 import { useAuth } from "../auth.composables";
 import { Public } from "../auth.decorator";
-import { AuthWorkflowBase, stripReservedUserKeys } from "./auth-workflow.base";
+import { AuthWorkflowBase, type MfaEnrollDeps, stripReservedUserKeys } from "./auth-workflow.base";
 import {
   type LoginWorkflowOpts,
   type MfaTransport,
@@ -153,7 +153,7 @@ export interface LoginWfCtx {
    * hide unless mode is `'optional'`.
    */
   enrollMode?: "required" | "optional";
-  /** Set true by the shared `runMfaEnrollment` helper on Phase 3 completion; mirrored to `mfaChecked`. */
+  /** Set true by `enrollConfirmPhase` (or `enrollPickPhase`/`enrollAddressPhase` on `skip` in `'optional'` mode); mirrored to `mfaChecked` via `buildLoginEnrollDeps` `onComplete`. */
   enrollDone?: boolean;
   /** Phase 3 confirm-pincode resend cooldown (sms/email). See `MfaEnrollCtx.enrollPincodeCooldown`. */
   enrollPincodeCooldown?: number;
@@ -455,14 +455,39 @@ export class LoginWorkflow extends AuthWorkflowBase {
           id: "mfa-totp",
           condition: (ctx) => !ctx.mfaChecked && ctx.mfaMethod === "totp",
         },
+        // ── Forced MFA enrollment (3 entries — pick / address / confirm).
+        // Mirrors the invite workflow's 3-entry layout: each step does ONE
+        // phase, the schema's per-phase conditions ensure only one fires per
+        // workflow tick, and `enrollDone` flips `mfaChecked` (via the
+        // `onComplete` bridge in `buildLoginEnrollDeps`) to exit the outer
+        // MFA while-loop. Defense-in-depth: the while-guard above already
+        // filters `disabled`; the explicit `mfaMode !== "disabled"` gate on
+        // each entry keeps the step catalog self-documenting.
         {
-          // Defense-in-depth: the while-guard above already filters `disabled`;
-          // the explicit gate here keeps the step catalog self-documenting.
-          id: "mfa-enroll-required",
+          id: "loginEnrollPickMethod",
           condition: (ctx) =>
             ctx.mfaMode !== "disabled" &&
             !ctx.mfaChecked &&
-            (ctx.mfaEnrolledMethods?.length ?? 0) === 0,
+            (ctx.mfaEnrolledMethods?.length ?? 0) === 0 &&
+            !ctx.enrollMethod,
+        },
+        {
+          id: "loginEnrollAddress",
+          condition: (ctx) =>
+            ctx.mfaMode !== "disabled" &&
+            !ctx.mfaChecked &&
+            !!ctx.enrollMethod &&
+            (ctx.enrollMethod === "sms" || ctx.enrollMethod === "email") &&
+            !ctx.enrollAddress,
+        },
+        {
+          id: "loginEnrollConfirm",
+          condition: (ctx) =>
+            ctx.mfaMode !== "disabled" &&
+            !ctx.mfaChecked &&
+            !!ctx.enrollMethod &&
+            (ctx.enrollMethod === "totp" || !!ctx.enrollAddress) &&
+            !ctx.enrollDone,
         },
         {
           // Inside the loop so a `require: true` result can clear `mfaChecked`
@@ -1141,20 +1166,52 @@ export class LoginWorkflow extends AuthWorkflowBase {
   }
 
   /**
-   * Forced MFA enrollment — delegates to the shared
-   * `AuthWorkflowBase.runMfaEnrollment` 3-phase driver. The schema while-loop
-   * re-enters this step until `ctx.enrollDone` (mirrored to `ctx.mfaChecked`
-   * for login's loop-exit signal).
+   * Forced MFA enrollment — Phase 1 (pick method). Auto-picks a single
+   * transport, otherwise pauses for the picker form. When TOTP is picked, the
+   * secret is provisioned in the same step body (see `enrollPickPhase`).
+   * Sync-friendly return: the auto-pick branch and the picker-form branch are
+   * both synchronous; only the TOTP-provisioning tail is async.
    */
-  @Step("mfa-enroll-required")
-  async mfaEnrollRequired(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
+  @Step("loginEnrollPickMethod")
+  @Public()
+  loginEnrollPickMethod(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
+    return this.enrollPickPhase(this.buildLoginEnrollDeps(ctx));
+  }
+
+  /**
+   * Forced MFA enrollment — Phase 2 (collect sms/email address + send
+   * pincode). Gated out for totp by the schema condition.
+   */
+  @Step("loginEnrollAddress")
+  @Public()
+  async loginEnrollAddress(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
+    return this.enrollAddressPhase(this.buildLoginEnrollDeps(ctx));
+  }
+
+  /**
+   * Forced MFA enrollment — Phase 3 (verify code + activate method). Fires
+   * `onComplete` to bridge `enrollDone` → `mfaChecked` so login's outer MFA
+   * while-loop (gated on `!mfaChecked`) exits.
+   */
+  @Step("loginEnrollConfirm")
+  @Public()
+  async loginEnrollConfirm(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
+    return this.enrollConfirmPhase(this.buildLoginEnrollDeps(ctx));
+  }
+
+  /**
+   * Build the `MfaEnrollDeps` payload shared by all three login enrollment
+   * step bodies. Sets `ctx.enrollMode` (mirrored onto ctx so
+   * `EnrollPickMethodForm` can hide the `skip` action unless mode is
+   * `'optional'`) and supplies `onComplete` to mirror `enrollDone` →
+   * `mfaChecked` for login's loop-exit signal.
+   */
+  private buildLoginEnrollDeps(ctx: LoginWfCtx): MfaEnrollDeps {
     this.requireUsername(ctx);
-    // `'disabled'` is filtered at the step's schema condition, so the cast is
-    // safe. Mirror onto ctx so `EnrollPickMethodForm` can hide the `skip`
-    // action unless mode is `'optional'`.
+    // `'disabled'` is filtered at each step's schema condition, so the cast is safe.
     const mode = (ctx.mfaMode ?? "optional") as "required" | "optional";
     ctx.enrollMode = mode;
-    await this.runMfaEnrollment({
+    return {
       ctx,
       username: ctx.username,
       users: this.users,
@@ -1170,12 +1227,10 @@ export class LoginWorkflow extends AuthWorkflowBase {
       pincodeResendTimeoutMs: this.opts.mfa.pincodeResendTimeoutMs,
       issuer: "aooth",
       mode,
-    });
-    // Login uses `mfaChecked` as the loop-exit signal; the helper sets
-    // `enrollDone` on Phase 3 completion (or on a skip in `'optional'` mode)
-    // so we mirror it here.
-    if (ctx.enrollDone) ctx.mfaChecked = true;
-    return undefined;
+      onComplete: (c) => {
+        (c as LoginWfCtx).mfaChecked = true;
+      },
+    };
   }
 
   @Step("device-trust")

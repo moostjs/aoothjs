@@ -87,7 +87,7 @@ import {
   type PreparedUserInput,
   type ResolvedInviteWorkflowOpts,
 } from "./invite.workflow.options";
-import { AuthWorkflowBase, stripReservedUserKeys } from "./auth-workflow.base";
+import { AuthWorkflowBase, type MfaEnrollDeps, stripReservedUserKeys } from "./auth-workflow.base";
 import type { DeliverPayload } from "./login.workflow";
 
 export interface InviteWfCtx {
@@ -123,7 +123,8 @@ export interface InviteWfCtx {
   alreadyAccepted?: boolean;
   passwordSet?: boolean;
   // MFA enrollment state (mirrors LoginWfCtx fields used by the shared
-  // `AuthWorkflowBase.runMfaEnrollment` helper).
+  // `enrollPickPhase` / `enrollAddressPhase` / `enrollConfirmPhase` helpers
+  // on `AuthWorkflowBase`).
   enrollMethod?: "sms" | "email" | "totp";
   enrollAddress?: string;
   enrollSecret?: string;
@@ -439,8 +440,9 @@ export class InviteWorkflow extends AuthWorkflowBase {
     { id: "inviteSetupMfa" },
     // ── Forced MFA enrollment (3 entries — pick / address / confirm). The
     // invite schema is linear and can't loop a single step like login does,
-    // so each phase is a distinct entry; the shared `runMfaEnrollment`
-    // helper routes internally based on ctx state.
+    // so each phase is a distinct entry; each step body calls the matching
+    // `enrollPickPhase` / `enrollAddressPhase` / `enrollConfirmPhase` helper
+    // on `AuthWorkflowBase` directly — no internal routing-by-ctx-state.
     {
       // Wrap the 3 enrolment entries in a while-loop so `useDifferentMethod`
       // (which clears `enrollMethod` via `cleanupEnrollment`) causes the schema
@@ -564,8 +566,9 @@ export class InviteWorkflow extends AuthWorkflowBase {
     { id: "inviteSetupMfa" },
     // ── Forced MFA enrollment (3 entries — pick / address / confirm). The
     // invite schema is linear and can't loop a single step like login does,
-    // so each phase is a distinct entry; the shared `runMfaEnrollment`
-    // helper routes internally based on ctx state.
+    // so each phase is a distinct entry; each step body calls the matching
+    // `enrollPickPhase` / `enrollAddressPhase` / `enrollConfirmPhase` helper
+    // on `AuthWorkflowBase` directly — no internal routing-by-ctx-state.
     {
       // Wrap the 3 enrolment entries in a while-loop so `useDifferentMethod`
       // (which clears `enrollMethod` via `cleanupEnrollment`) causes the schema
@@ -963,19 +966,25 @@ export class InviteWorkflow extends AuthWorkflowBase {
   }
 
   // ── Phase B: forced MFA enrollment ────────────────────────────────────
-  // Three @Step methods (pick / address / confirm) all delegate to the same
-  // helper — the schema's per-phase conditions ensure only one fires per
-  // workflow tick, and `runMfaEnrollment` internally routes to the matching
-  // phase based on ctx state. Three steps (vs one) is required because the
-  // invite schema is linear; a single step couldn't pause between phases.
-  private async runInviteEnrollment(ctx: InviteWfCtx): Promise<void> {
+  // Three @Step methods (pick / address / confirm) each call the matching
+  // phase helper on `AuthWorkflowBase` directly — one step = one phase, no
+  // internal routing-by-ctx-state. The schema's per-phase conditions ensure
+  // only one fires per workflow tick. Three steps (vs one) is required
+  // because the invite schema is linear; a single step couldn't pause between
+  // phases.
+  /**
+   * Build the `MfaEnrollDeps` payload shared by all three invite enrollment
+   * step bodies. Sets `ctx.enrollMode` (mirrored onto ctx so
+   * `EnrollPickMethodForm` can hide the `skip` action unless mode is
+   * `'optional'`). Omits `onComplete` because invite's enrollment while-loop
+   * is gated on `!enrollDone` directly — no mirror needed.
+   */
+  private buildInviteEnrollDeps(ctx: InviteWfCtx): MfaEnrollDeps {
     this.requireUsername(ctx);
-    // `'disabled'` is filtered at each step's schema condition, so the cast is
-    // safe. Mirror onto ctx so `EnrollPickMethodForm` can hide the `skip`
-    // action unless mode is `'optional'`.
+    // `'disabled'` is filtered at each step's schema condition, so the cast is safe.
     const mode = (ctx.mfaMode ?? "optional") as "required" | "optional";
     ctx.enrollMode = mode;
-    await this.runMfaEnrollment({
+    return {
       ctx,
       username: ctx.username,
       users: this.users,
@@ -991,7 +1000,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
       pincodeResendTimeoutMs: this.opts.mfa.pincodeResendTimeoutMs,
       issuer: this.opts.mfa.issuer,
       mode,
-    });
+    };
   }
 
   /**
@@ -1013,25 +1022,38 @@ export class InviteWorkflow extends AuthWorkflowBase {
     return undefined;
   }
 
+  /**
+   * Forced MFA enrollment — Phase 1 (pick method). Auto-picks a single
+   * transport, otherwise pauses for the picker form. When TOTP is picked, the
+   * secret is provisioned in the same step body (see `enrollPickPhase`).
+   */
   @Step("inviteEnrollPickMethod")
   @Public()
-  async inviteEnrollPickMethod(@WorkflowParam("context") ctx: InviteWfCtx): Promise<unknown> {
-    await this.runInviteEnrollment(ctx);
-    return undefined;
+  inviteEnrollPickMethod(
+    @WorkflowParam("context") ctx: InviteWfCtx,
+  ): undefined | Promise<undefined> {
+    return this.enrollPickPhase(this.buildInviteEnrollDeps(ctx));
   }
 
+  /**
+   * Forced MFA enrollment — Phase 2 (collect sms/email address + send
+   * pincode). Gated out for totp by the schema condition.
+   */
   @Step("inviteEnrollAddress")
   @Public()
-  async inviteEnrollAddress(@WorkflowParam("context") ctx: InviteWfCtx): Promise<unknown> {
-    await this.runInviteEnrollment(ctx);
-    return undefined;
+  async inviteEnrollAddress(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
+    return this.enrollAddressPhase(this.buildInviteEnrollDeps(ctx));
   }
 
+  /**
+   * Forced MFA enrollment — Phase 3 (verify code + activate method). Sets
+   * `enrollDone` on success, which the schema's enrollment while-loop reads
+   * as the exit signal directly.
+   */
   @Step("inviteEnrollConfirm")
   @Public()
-  async inviteEnrollConfirm(@WorkflowParam("context") ctx: InviteWfCtx): Promise<unknown> {
-    await this.runInviteEnrollment(ctx);
-    return undefined;
+  async inviteEnrollConfirm(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
+    return this.enrollConfirmPhase(this.buildInviteEnrollDeps(ctx));
   }
 
   // ── Phase B: collectProfile ───────────────────────────────────────────
