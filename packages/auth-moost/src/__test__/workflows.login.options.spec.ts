@@ -26,6 +26,7 @@ import { describe, expect, it } from "vite-plus/test";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 
 import { AuthOpts } from "../auth.opts";
+import type { ConsentEvent } from "../workflows/auth-workflow.base";
 import { type LoginWfCtx, LoginWorkflow, type LoginWorkflowOpts } from "../workflows/index";
 import { SsoLoginCredentialsForm } from "./fixtures/sso-login.as";
 import { prepareWfApp, seedActiveUser, withLoginMfaCtx } from "./workflow-utils";
@@ -801,26 +802,26 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
 // ── Phase 6: inline consent (terms + marketing on carrier forms) ───────────
 //
 // REPLACES: the Phase-2 deletion of standalone `terms-accept` +
-// `consent-marketing` steps. Acceptance + marketing opt-in are now collected
-// on whichever carrier form (`LoginCredentialsForm` first by default) renders
-// first via `WithInlineConsentForm`. Validation lives in
-// `AuthWorkflowBase.processInlineConsent` (HACK-CONSENT-* unit coverage in
-// `auth-workflow.base.spec.ts`); the integration tests below pin the END-TO-END
-// effect through the login workflow — that the inline fields ride alongside
-// real form data, terms close `ctx.termsAcceptedDone/Version`, and the
-// `apply-consent` step fires once `ctx.username` is bound. The companion
-// `CONSENT-OVERRIDE` test in `workflows.login.subclass.spec.ts` pins that the
-// customer-override seam (`applyConsentMarketing`) still receives the
-// inline-staged value.
-describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / CONSENT-INLINE)", () => {
-  it("TERMS-INLINE-01: acceptance.termsVersion + acceptedTerms:true on LoginCredentialsForm → ctx flips done + version captured", async () => {
-    // WHY: the headline guarantee of the inline refactor — terms ride on
-    // the SAME submit as credentials, not a separate paused form. Without
-    // the `processInlineConsent` call at login.workflow.ts:1044 the
-    // submitted `acceptedTerms` would be a stripped form-extra and the
-    // workflow would never record acceptance. Asserts via a subclass
-    // override of the post-`apply-consent` `issue` step that captures ctx
-    // before it dissolves with the workflow-finish state cleanup.
+// `consent-marketing` steps. The Phase-1 consent-storage refactor moved the
+// inline `WithInlineConsentForm` block OFF `LoginCredentialsForm` (so consent
+// is captured AFTER `ctx.username` is bound, enabling per-user override
+// logic) and replaced the singular `apply-consent` step / `applyConsentMarketing`
+// hook with a batched `persist-consents` step / `persistConsents(username,
+// events)` hook. Validation lives in `AuthWorkflowBase.processInlineConsent`
+// (HACK-CONSENT-* unit coverage in `auth-workflow.base.spec.ts`); the
+// integration tests below pin the END-TO-END effect through the login
+// workflow — that inline fields ride on the FIRST onboarding carrier form
+// to fire (AskEmailForm / AskPhoneForm / SetPasswordForm /
+// ProfileCompleteForm), and the `persist-consents` step batches the events
+// into one consumer-override call.
+describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / PERSIST-CONSENT)", () => {
+  it("TERMS-INLINE-01: acceptance.termsVersion + acceptedTerms:true on AskEmailForm → ctx flips done + version captured", async () => {
+    // WHY: the headline guarantee — terms ride on the FIRST onboarding
+    // carrier form to fire (not LoginCredentialsForm, post-Phase-1). Without
+    // the `processInlineConsent` call on AskEmailForm the submitted
+    // `acceptedTerms` would be a stripped form-extra and the workflow would
+    // never record acceptance. Asserts via a subclass override of `issue`
+    // that captures ctx before workflow-finish state cleanup.
     const captured: Array<{
       termsAcceptedDone?: boolean;
       termsAcceptedVersion?: string;
@@ -853,38 +854,45 @@ describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / CONSENT-I
           profileCompleteRequired: false,
           consentMarketing: false,
         },
+        enrollment: { ensureEmail: true, ensurePhone: false },
       },
       loginWorkflowClass: withLoginMfaCtx(TermsCaptureLogin, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
-    const r2 = await startAndCredentials(app, "alice", "Password123", {
-      acceptedTerms: true,
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    // Paused at AskEmailForm — submit email + accept terms inline.
+    expect(r2.body?.wfs).toBeTruthy();
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { email: "alice@example.com", acceptedTerms: true },
     });
-    // Issued immediately — single carrier-form submit carried both creds
-    // AND consent.
-    const data = r2.body?.data as Record<string, unknown> | undefined;
+    // Paused at PincodeForm.
+    expect(r3.body?.wfs).toBeTruthy();
+    // The last email is the OTP we need.
+    const sent = app.emails.find(
+      (e) => e.kind === "login.pincode" && e.recipient === "alice@example.com",
+    );
+    expect(sent).toBeTruthy();
+    const r4 = await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { code: sent!.code as string, rememberDevice: false },
+    });
+    const data = r4.body?.data as Record<string, unknown> | undefined;
     expect(data?.userId).toBe("alice");
-    // The inline-consent flip happened DURING credentials → by the time
+    // The inline-consent flip happened during AskEmailForm → by the time
     // `issue` runs, ctx reflects the captured state. The version was
-    // written by the server from `ctx.acceptance.termsVersion` (not echoed
-    // from the client — `acceptedTermsVersion` is no longer a client field).
+    // written by the server from `ctx.acceptance.termsVersion`.
     expect(captured).toEqual([{ termsAcceptedDone: true, termsAcceptedVersion: "v1" }]);
   });
 
-  it("CONSENT-INLINE-01: acceptance.consentMarketing + marketingOptIn:true → apply-consent step fires applyConsentMarketing(username, true)", async () => {
-    // WHY: pins the carrier-form → `apply-consent` step pipeline. The
-    // helper stages `pendingMarketingOptIn` on credentials submit (BEFORE
-    // ctx.username is set? no — credentials sets username first, then
-    // processInlineConsent runs); the `apply-consent` step then reads
-    // `pendingMarketingOptIn` and invokes `applyConsentMarketing`. The
-    // step's schema condition gates on
-    // `acceptance.consentMarketing && pendingMarketingOptIn !== undefined &&
-    // !consentApplied` — without either branch (staging by helper OR
-    // step's gate) the override would never fire.
-    const calls: Array<{ username: string; optIn: boolean }> = [];
+  it("PERSIST-CONSENT-01: terms-only flow → persistConsents receives [{kind:'terms',version,at}]", async () => {
+    // WHY: pins the terms-only event shape. The batched hook MUST receive a
+    // single `kind:'terms'` event when marketing policy is off (no marketing
+    // event should be added speculatively).
+    const calls: Array<{ username: string; events: ConsentEvent[] }> = [];
     @Inherit()
     @Controller("auth/login")
-    class ConsentLogin extends LoginWorkflow {
+    class TermsOnly extends LoginWorkflow {
       constructor(
         opts: LoginWorkflowOpts,
         users: UserService,
@@ -893,135 +901,326 @@ describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / CONSENT-I
       ) {
         super(opts, users, auth, authOpts);
       }
-      protected override async applyConsentMarketing(
+      protected override async persistConsents(
         username: string,
-        optIn: boolean,
+        events: ConsentEvent[],
       ): Promise<void> {
-        calls.push({ username, optIn });
+        calls.push({ username, events: [...events] });
       }
     }
     const app = await prepareWfApp({
       loginPolicy: {
         acceptance: {
+          termsVersion: "v2",
+          profileCompleteRequired: false,
+          consentMarketing: false,
+        },
+        enrollment: { ensureEmail: true, ensurePhone: false },
+      },
+      loginWorkflowClass: withLoginMfaCtx(TermsOnly, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    const before = Date.now();
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { email: "alice@example.com", acceptedTerms: true },
+    });
+    const sent = app.emails.find(
+      (e) => e.kind === "login.pincode" && e.recipient === "alice@example.com",
+    );
+    expect(sent).toBeTruthy();
+    await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { code: sent!.code as string, rememberDevice: false },
+    });
+    expect(calls.length).toBe(1);
+    expect(calls[0].username).toBe("alice");
+    expect(calls[0].events.length).toBe(1);
+    expect(calls[0].events[0].kind).toBe("terms");
+    expect(calls[0].events[0].version).toBe("v2");
+    expect(calls[0].events[0].at).toBeGreaterThanOrEqual(before);
+    expect(calls[0].events[0].at).toBeLessThanOrEqual(Date.now());
+  });
+
+  it("PERSIST-CONSENT-02: marketing-only flow → persistConsents receives [{kind:'marketing',optIn,at}]", async () => {
+    // WHY: pins the marketing-only event shape. No terms event should be
+    // added when terms policy is off.
+    const calls: Array<{ username: string; events: ConsentEvent[] }> = [];
+    @Inherit()
+    @Controller("auth/login")
+    class MarketingOnly extends LoginWorkflow {
+      constructor(
+        opts: LoginWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+      ) {
+        super(opts, users, auth, authOpts);
+      }
+      protected override async persistConsents(
+        username: string,
+        events: ConsentEvent[],
+      ): Promise<void> {
+        calls.push({ username, events: [...events] });
+      }
+    }
+    const app = await prepareWfApp({
+      loginPolicy: {
+        acceptance: { profileCompleteRequired: false, consentMarketing: true },
+        enrollment: { ensureEmail: true, ensurePhone: false },
+      },
+      loginWorkflowClass: withLoginMfaCtx(MarketingOnly, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    const before = Date.now();
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { email: "alice@example.com", marketingOptIn: true },
+    });
+    const sent = app.emails.find(
+      (e) => e.kind === "login.pincode" && e.recipient === "alice@example.com",
+    );
+    expect(sent).toBeTruthy();
+    await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { code: sent!.code as string, rememberDevice: false },
+    });
+    expect(calls.length).toBe(1);
+    expect(calls[0].events.length).toBe(1);
+    expect(calls[0].events[0].kind).toBe("marketing");
+    expect(calls[0].events[0].optIn).toBe(true);
+    expect(calls[0].events[0].at).toBeGreaterThanOrEqual(before);
+    expect(calls[0].events[0].at).toBeLessThanOrEqual(Date.now());
+  });
+
+  it("PERSIST-CONSENT-03: both kinds → events array contains terms THEN marketing (insertion order pins the batched shape)", async () => {
+    // WHY: pins the batched-events contract. The `persistConsentsStep`
+    // pushes terms first then marketing — a regression that reversed the
+    // order or split into two separate calls would silently break
+    // consumers that index events by position.
+    const calls: Array<{ username: string; events: ConsentEvent[] }> = [];
+    @Inherit()
+    @Controller("auth/login")
+    class BothKinds extends LoginWorkflow {
+      constructor(
+        opts: LoginWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+      ) {
+        super(opts, users, auth, authOpts);
+      }
+      protected override async persistConsents(
+        username: string,
+        events: ConsentEvent[],
+      ): Promise<void> {
+        calls.push({ username, events: [...events] });
+      }
+    }
+    const app = await prepareWfApp({
+      loginPolicy: {
+        acceptance: {
+          termsVersion: "v3",
           profileCompleteRequired: false,
           consentMarketing: true,
         },
+        enrollment: { ensureEmail: true, ensurePhone: false },
       },
-      loginWorkflowClass: withLoginMfaCtx(ConsentLogin, { mfaMode: "disabled" }),
-    });
-    await seedActiveUser(app.users, "alice", "Password123");
-    const r2 = await startAndCredentials(app, "alice", "Password123", {
-      marketingOptIn: true,
-    });
-    const data = r2.body?.data as Record<string, unknown> | undefined;
-    expect(data?.userId).toBe("alice");
-    // Override fired exactly once with the staged opt-in value and the
-    // resolved username — proves the staging path AND the apply-consent
-    // step's bind-to-username both worked. (The `apply-consent` step
-    // setting `ctx.consentApplied = true` is structurally guaranteed by
-    // the fact that the override fired AND the workflow completed — the
-    // base step's tail unconditionally writes the flag.)
-    expect(calls).toEqual([{ username: "alice", optIn: true }]);
-  });
-
-  it("CONSENT-INLINE-02 (opt-out): marketingOptIn:false → applyConsentMarketing(username, false) — opt-out is a distinct recorded choice", async () => {
-    // WHY: pins the `input.marketingOptIn !== undefined` guard at the
-    // helper, end-to-end. `false` is a valid recordable value (the user
-    // EXPLICITLY declined marketing); a regression that collapsed it to
-    // undefined would mean we'd never call the override with `false` and
-    // the user's opt-out would be silently dropped. The override-call
-    // assertion is the load-bearing check.
-    const calls: Array<{ username: string; optIn: boolean }> = [];
-    @Inherit()
-    @Controller("auth/login")
-    class ConsentLogin extends LoginWorkflow {
-      constructor(
-        opts: LoginWorkflowOpts,
-        users: UserService,
-        auth: AuthCredential,
-        authOpts: AuthOpts,
-      ) {
-        super(opts, users, auth, authOpts);
-      }
-      protected override async applyConsentMarketing(
-        username: string,
-        optIn: boolean,
-      ): Promise<void> {
-        calls.push({ username, optIn });
-      }
-    }
-    const app = await prepareWfApp({
-      loginPolicy: {
-        acceptance: { profileCompleteRequired: false, consentMarketing: true },
-      },
-      loginWorkflowClass: withLoginMfaCtx(ConsentLogin, { mfaMode: "disabled" }),
-    });
-    await seedActiveUser(app.users, "alice", "Password123");
-    await startAndCredentials(app, "alice", "Password123", { marketingOptIn: false });
-    expect(calls).toEqual([{ username: "alice", optIn: false }]);
-  });
-
-  it("CONSENT-INLINE-03 (field absent): marketingOptIn undefined → apply-consent step SKIPPED (schema condition, not helper)", async () => {
-    // WHY: pins the difference between "user declined" and "user didn't
-    // answer". If the helper staged a default (`Boolean(undefined)` →
-    // false) for the absent case, the workflow would silently record a
-    // marketing opt-OUT for every user who simply didn't toggle the
-    // checkbox — a GDPR-relevant divergence between user action and
-    // recorded preference. Two guards collaborate to prevent this: the
-    // helper's `input.marketingOptIn !== undefined` guard at
-    // auth-workflow.base.ts:320 (which keeps `pendingMarketingOptIn`
-    // undefined when the field is absent), AND the schema condition
-    // `pendingMarketingOptIn !== undefined` on the `apply-consent` step.
-    // To pin BOTH layers, the test asserts (a) the @Step body was NEVER
-    // ENTERED (capture via `applyConsent` override) — proving the schema
-    // condition short-circuited — and (b) the override seam was
-    // unreached. A regression that only removes the helper guard would
-    // pass an "applyConsentMarketing not called" assertion (the in-body
-    // defensive `if (pendingMarketingOptIn === undefined) return` would
-    // catch it), but FAIL the "step never entered" assertion below.
-    const calls: Array<{ username: string; optIn: boolean }> = [];
-    let applyEntered = 0;
-    @Inherit()
-    @Controller("auth/login")
-    class ConsentLogin extends LoginWorkflow {
-      constructor(
-        opts: LoginWorkflowOpts,
-        users: UserService,
-        auth: AuthCredential,
-        authOpts: AuthOpts,
-      ) {
-        super(opts, users, auth, authOpts);
-      }
-      override async applyConsent(ctx: LoginWfCtx): Promise<undefined> {
-        applyEntered++;
-        return super.applyConsent(ctx);
-      }
-      protected override async applyConsentMarketing(
-        username: string,
-        optIn: boolean,
-      ): Promise<void> {
-        calls.push({ username, optIn });
-      }
-    }
-    const app = await prepareWfApp({
-      loginPolicy: {
-        acceptance: { profileCompleteRequired: false, consentMarketing: true },
-      },
-      loginWorkflowClass: withLoginMfaCtx(ConsentLogin, { mfaMode: "disabled" }),
+      loginWorkflowClass: withLoginMfaCtx(BothKinds, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
-    // Step body NEVER entered — pins the schema-condition short-circuit
-    // (distinct from "entered then early-returned via in-body defensive
-    // check").
-    expect(applyEntered).toBe(0);
-    // And the override seam unreached either way.
-    expect(calls).toEqual([]);
-    // And workflow still succeeded — credentials path is unaffected by the
-    // absent inline field (proves the helper doesn't throw on missing
-    // marketingOptIn when policy is on).
-    const data = r2.body?.data as Record<string, unknown> | undefined;
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { email: "alice@example.com", acceptedTerms: true, marketingOptIn: true },
+    });
+    const sent = app.emails.find(
+      (e) => e.kind === "login.pincode" && e.recipient === "alice@example.com",
+    );
+    expect(sent).toBeTruthy();
+    await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { code: sent!.code as string, rememberDevice: false },
+    });
+    expect(calls.length).toBe(1);
+    expect(calls[0].events.length).toBe(2);
+    expect(calls[0].events[0].kind).toBe("terms");
+    expect(calls[0].events[0].version).toBe("v3");
+    expect(calls[0].events[1].kind).toBe("marketing");
+    expect(calls[0].events[1].optIn).toBe(true);
+  });
+
+  it("PERSIST-CONSENT-04: consentsPersisted=true after step → no second persistConsents call (idempotency)", async () => {
+    // WHY (Rule 9): the step MUST be idempotent — a paused-workflow that
+    // resumes through the `persist-consents` step a second time (or
+    // schema re-iteration) must not double-write consents. The
+    // `if (ctx.consentsPersisted) return undefined` guard at the top of
+    // the step body is the load-bearing defense. A regression that drops
+    // the guard would silently double-write consent records, polluting
+    // audit logs. Pinned via a call counter on the override + manually
+    // invoking the step twice via a subclass that wraps it.
+    let persistCalls = 0;
+    @Inherit()
+    @Controller("auth/login")
+    class IdempotentLogin extends LoginWorkflow {
+      constructor(
+        opts: LoginWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+      ) {
+        super(opts, users, auth, authOpts);
+      }
+      protected override async persistConsents(
+        _username: string,
+        _events: ConsentEvent[],
+      ): Promise<void> {
+        persistCalls++;
+      }
+      override async persistConsentsStep(ctx: LoginWfCtx): Promise<undefined> {
+        // First call runs the real step (writes consentsPersisted=true).
+        // Second call should short-circuit on the idempotency guard.
+        await super.persistConsentsStep(ctx);
+        await super.persistConsentsStep(ctx);
+        return undefined;
+      }
+    }
+    const app = await prepareWfApp({
+      loginPolicy: {
+        acceptance: { profileCompleteRequired: false, consentMarketing: true },
+        enrollment: { ensureEmail: true, ensurePhone: false },
+      },
+      loginWorkflowClass: withLoginMfaCtx(IdempotentLogin, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { email: "alice@example.com", marketingOptIn: true },
+    });
+    const sent = app.emails.find(
+      (e) => e.kind === "login.pincode" && e.recipient === "alice@example.com",
+    );
+    expect(sent).toBeTruthy();
+    await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { code: sent!.code as string, rememberDevice: false },
+    });
+    // Exactly one persist regardless of step re-invocation.
+    expect(persistCalls).toBe(1);
+  });
+
+  it("BUMP-PROMPT-01: returning user with stale terms + no carrier form → terms-bump-prompt pauses on TermsBumpForm, submit resumes + persists", async () => {
+    // WHY: pins the standalone bump-prompt path. A returning user whose
+    // accepted terms version is stale (consumer's `resolveAcceptance`
+    // returned a newer `termsVersion` than they previously accepted) MUST
+    // be prompted for re-acceptance even when no onboarding carrier form
+    // fires. Without the new `terms-bump-prompt` step the workflow would
+    // silently issue tokens without recording the bump acceptance.
+    const calls: Array<{ username: string; events: ConsentEvent[] }> = [];
+    @Inherit()
+    @Controller("auth/login")
+    class BumpLogin extends LoginWorkflow {
+      constructor(
+        opts: LoginWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+      ) {
+        super(opts, users, auth, authOpts);
+      }
+      protected override async persistConsents(
+        username: string,
+        events: ConsentEvent[],
+      ): Promise<void> {
+        calls.push({ username, events: [...events] });
+      }
+    }
+    const app = await prepareWfApp({
+      loginPolicy: {
+        acceptance: {
+          termsVersion: "v3",
+          profileCompleteRequired: false,
+          consentMarketing: false,
+        },
+        // No enrollment forms — forces the workflow to fall through to
+        // the standalone terms-bump-prompt.
+        enrollment: { ensureEmail: false, ensurePhone: false },
+      },
+      loginWorkflowClass: withLoginMfaCtx(BumpLogin, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    // Paused at TermsBumpForm (no other onboarding form to piggyback on).
+    expect(r2.body?.wfs).toBeTruthy();
+    expect((r2.body?.data as Record<string, unknown> | undefined)?.userId).toBeUndefined();
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { acceptedTerms: true },
+    });
+    const data = r3.body?.data as Record<string, unknown> | undefined;
     expect(data?.userId).toBe("alice");
+    expect(calls.length).toBe(1);
+    expect(calls[0].events.length).toBe(1);
+    expect(calls[0].events[0].kind).toBe("terms");
+    expect(calls[0].events[0].version).toBe("v3");
+  });
+
+  it("BUMP-PROMPT-02: carrier form already captured terms → terms-bump-prompt SKIPPED (condition short-circuit)", async () => {
+    // WHY: pins the schema-condition short-circuit. When an onboarding
+    // carrier form already captured terms via `WithInlineConsentForm`
+    // (`ctx.termsAcceptedDone === true`), the standalone bump-prompt
+    // condition `!ctx.termsAcceptedDone` is false and the step is
+    // SKIPPED — the user must not see a second consent prompt for the
+    // same acceptance. Asserted via a step-body call counter that stays
+    // at zero (distinct from "entered then early-returned").
+    let bumpEntered = 0;
+    @Inherit()
+    @Controller("auth/login")
+    class SkipBumpLogin extends LoginWorkflow {
+      constructor(
+        opts: LoginWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+      ) {
+        super(opts, users, auth, authOpts);
+      }
+      override termsBumpPrompt(ctx: LoginWfCtx): undefined {
+        bumpEntered++;
+        return super.termsBumpPrompt(ctx);
+      }
+    }
+    const app = await prepareWfApp({
+      loginPolicy: {
+        acceptance: {
+          termsVersion: "v3",
+          profileCompleteRequired: false,
+          consentMarketing: false,
+        },
+        enrollment: { ensureEmail: true, ensurePhone: false },
+      },
+      loginWorkflowClass: withLoginMfaCtx(SkipBumpLogin, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { email: "alice@example.com", acceptedTerms: true },
+    });
+    const sent = app.emails.find(
+      (e) => e.kind === "login.pincode" && e.recipient === "alice@example.com",
+    );
+    expect(sent).toBeTruthy();
+    const r4 = await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { code: sent!.code as string, rememberDevice: false },
+    });
+    expect((r4.body?.data as Record<string, unknown>)?.userId).toBe("alice");
+    // Bump step body NEVER entered — schema condition short-circuited.
+    expect(bumpEntered).toBe(0);
   });
 
   it("TERMS-INLINE-02 (carrier-form fallthrough on AskEmailForm): terms close when policy active mid-flow", async () => {
@@ -1049,30 +1248,18 @@ describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / CONSENT-I
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
-    // Submit credentials WITHOUT acceptedTerms (so the credentials step
-    // would normally reject — but we WANT it to land on AskEmailForm,
-    // proving the carrier-form fallthrough). To exercise the
-    // fallthrough cleanly, accept on credentials first (closing the
-    // gate) — then re-open the gate by clearing termsAcceptedDone via
-    // the workflow store mid-flow. The test value: a single login that
-    // SUBMITS terms on AskEmailForm and proves the helper accepted them
-    // there. The credentials step also processes terms, so the simplest
-    // structural assertion is: submit terms on credentials AND on
-    // AskEmailForm (the second submit is silently dropped by the gate
-    // since termsAcceptedDone is already true). The DIVERGENT FORM
-    // (AskEmailForm) must STILL accept the `email` field as primary
-    // input — pinning that the carrier-form inheritance doesn't break
-    // the host form's submit.
-    const r2 = await startAndCredentials(app, "alice", "Password123", {
-      acceptedTerms: true,
-    });
+    // Submit credentials (no consent fields on LoginCredentialsForm post
+    // Phase 1) → workflow pauses on AskEmailForm. Submit email + terms
+    // inline on AskEmailForm. The carrier form is the FIRST place inline
+    // consent can ride — pinning that the helper accepts the inherited
+    // fields on a non-credentials carrier form.
+    const r2 = await startAndCredentials(app, "alice", "Password123");
     // Paused for AskEmailForm.
     expect(r2.body?.wfs).toBeTruthy();
     expect(JSON.stringify(r2.body)).toMatch(/"email"/);
-    // Submit email + redundant consent fields on AskEmailForm — proves
-    // the carrier form ACCEPTS the inherited fields (no validation
-    // failure) AND that the helper's "already done" gate silently drops
-    // the redundant submit (no error, no rewrite).
+    // Submit email + inline acceptedTerms on AskEmailForm — proves the
+    // carrier form's `WithInlineConsentForm` inheritance is wired and
+    // the helper accepts the terms gate on a non-credentials carrier form.
     const r3 = await app.trigger({
       wfs: r2.body?.wfs as string,
       input: {

@@ -694,83 +694,57 @@ test.describe("LoginWorkflow / variant=guards (P1)", () => {
 });
 
 test.describe("LoginWorkflow / variant=acceptance (P1)", () => {
-  // BRANCH: inline consent on `LoginCredentialsForm` — the carrier form
-  // inherits `WithInlineConsentForm`'s `acceptedTerms` checkbox via the
-  // refactor that dropped the standalone TermsAcceptForm step. The
-  // `acceptance` variant flips `acceptance.termsVersion: 'v1'` so the
-  // checkbox renders (gated by `@ui.form.fn.hidden`). When the user
-  // submits without ticking it, `AuthWorkflowBase.processInlineConsent`
-  // throws `requireInput({ errors: { acceptedTerms: 'You must accept …' }})`
-  // — the workflow does NOT advance to issue + no tokens are minted.
-  //
-  // Replaces the pre-refactor "decline alt-action → aborted" semantic.
-  // In the inline model there's no separate decline action; refusing
-  // simply means not ticking the box, which surfaces as a form error
-  // and the user remains on `LoginCredentialsForm`.
-  test("WF-LOGIN-024: t1_frank submits credentials without ticking inline acceptedTerms → form error, no tokens", async ({
+  // BRANCH: post-Phase-1 the inline consent block lives on onboarding carrier
+  // forms — for the `acceptance` variant (no enrollment / no profile gates
+  // on t1_frank) the workflow lands on `TermsBumpForm` after credentials. The
+  // user must tick `acceptedTerms` to advance; without it
+  // `AuthWorkflowBase.processInlineConsent` throws
+  // `requireInput({ errors: { acceptedTerms: 'You must accept …' }})`.
+  test("WF-LOGIN-024: t1_frank submits TermsBumpForm without ticking acceptedTerms → form error, no tokens", async ({
     page,
   }) => {
     await page.goto(wfUrl(LOGIN_WF, "acceptance"));
     await fillField(page, "username", "t1_frank");
     await fillField(page, "password", "Password1!");
-    // Do NOT check the inline `acceptedTerms` box. Submit anyway.
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
 
-    // Server-side `processInlineConsent` rejects with a structured form
-    // error on the `acceptedTerms` field. AsForm renders form-field errors
-    // as visible text adjacent to the input; we match on the helper's
-    // canonical error string. The presence of this text proves the
-    // server enforces the gate even when the client doesn't render
-    // validation (defense-in-depth at the helper).
+    // Workflow lands on TermsBumpForm. The acceptedTerms checkbox is
+    // visible (gated by `@ui.form.fn.hidden` on the inherited mixin —
+    // policy active AND not yet captured).
+    const termsBox = page.locator('input[type="checkbox"][name="acceptedTerms"]').first();
+    await expect(termsBox).toBeVisible();
+    await expect(termsBox).not.toBeChecked();
+    // Submit without checking → server gate rejects.
+    await submitForm(page);
+
     await expect(page.getByText("You must accept the terms")).toBeVisible();
-    // And the workflow has NOT finished — no pre/envelope rendered.
     await expect(page.locator("pre").first())
       .not.toBeVisible({ timeout: 500 })
       .catch(() => {});
   });
 
-  // BRANCH: inline `marketingOptIn` defaults to false via `@meta.default 'false'`
-  // on `WithInlineConsentForm.marketingOptIn`. Driven end-to-end through the
-  // SPA — the prior `@ui.form.type 'hidden'` `acceptedTermsVersion` field
-  // (removed by the inline-consent simplification) is no longer in the form
-  // schema, so the SPA renders cleanly. The server records its own
-  // `ctx.acceptance.termsVersion` directly (see `processInlineConsent`),
-  // so no client round-trip for the version is needed.
-  //
-  // Replaces the pre-refactor "ConsentMarketingForm.optIn defaults false"
-  // test against the now-deleted standalone form. Asserts:
-  //   1. SPA renders the marketingOptIn checkbox unchecked by default
-  //      (proves @meta.default 'false' reached the client metadata).
-  //   2. A SPA submit with marketingOptIn left unchecked (explicit false on
-  //      the wire) + acceptedTerms ticked completes the workflow and the
-  //      server records the marketing opt-out without throwing.
-  test("WF-LOGIN-025: marketingOptIn checkbox renders unchecked; explicit-false submit completes the workflow", async ({
+  // BRANCH: post-Phase-1 the inline consent block rides on TermsBumpForm
+  // (for the `acceptance` variant where no other onboarding carrier form
+  // fires). `marketingOptIn` defaults to false via `@meta.default 'false'`;
+  // ticking acceptedTerms and submitting completes the workflow.
+  test("WF-LOGIN-025: marketingOptIn checkbox renders unchecked on TermsBumpForm; submit completes the workflow", async ({
     page,
   }) => {
-    // Step 1: navigate the SPA to confirm the default-unchecked render.
-    // Asserts the @meta.default 'false' annotation flowed through to the
-    // client metadata — a regression that inverted the default would
-    // surface here as `toBeChecked()` succeeding.
     await page.goto(wfUrl(LOGIN_WF, "acceptance"));
     await waitForFormInput(page, "username");
+    await fillField(page, "username", "t1_frank");
+    await fillField(page, "password", "Password1!");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    // Paused at TermsBumpForm — assert default-unchecked render of marketing.
     const marketingBox = page.locator('input[type="checkbox"][name="marketingOptIn"]').first();
     await expect(marketingBox).toBeVisible();
     await expect(marketingBox).not.toBeChecked();
-
-    // Step 2: fill credentials + tick acceptedTerms, leave marketingOptIn
-    // unchecked, submit through the SPA.
-    await fillField(page, "username", "t1_frank");
-    await fillField(page, "password", "Password1!");
+    // Tick acceptedTerms, leave marketing unchecked (explicit false on wire).
     await page.locator('input[type="checkbox"][name="acceptedTerms"]').first().check();
-    // Sanity: marketingOptIn still unchecked just before submit.
     await expect(marketingBox).not.toBeChecked();
-    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await submitForm(page);
 
-    // Workflow finishes — tokens issued. The marketing opt-OUT is the
-    // wire effect we're pinning (a false `marketingOptIn` payload),
-    // proven by the workflow completing (the server-side
-    // `apply-consent` step would have thrown if the helper had silently
-    // dropped the explicit-false case).
     const envelope = (await readFinishEnvelope(page)) as {
       finished: boolean;
       data?: { accessToken?: string };
@@ -780,18 +754,13 @@ test.describe("LoginWorkflow / variant=acceptance (P1)", () => {
   });
 
   // BRANCH: HACK-CONSENT-04 end-to-end — pin the helper's
-  // `if (!input.acceptedTerms)` server-side gate at the HTTP boundary. A
-  // crafted POST that omits `acceptedTerms` entirely (mimicking an attacker
-  // who hand-rolls a fetch with the server's `wfs` token + a payload that
-  // skips the consent fields) MUST surface the same `acceptedTerms` form
-  // error as the SPA submit. Without the helper's gate the workflow would
-  // silently accept the submit and issue tokens — leaving no acceptance
-  // record on the server while the user pre-pretended to comply.
-  test("WF-LOGIN-HACK-CONSENT-01: hand-rolled POST without acceptedTerms → form error, no tokens (server gate, not SPA gate)", async ({
+  // `if (!input.acceptedTerms)` server-side gate at the HTTP boundary on
+  // the post-credentials TermsBumpForm. A crafted POST that omits
+  // `acceptedTerms` MUST surface the same `acceptedTerms` form error.
+  test("WF-LOGIN-HACK-CONSENT-01: hand-rolled POST without acceptedTerms on TermsBumpForm → form error, no tokens", async ({
     request,
   }) => {
-    // Direct HTTP — the demo mounts the wf trigger at `/auth/trigger`
-    // (DemoAuthController), not the default library `/wf/trigger`.
+    // Direct HTTP — the demo mounts the wf trigger at `/auth/trigger`.
     const startRes = await request.post("/auth/trigger", {
       data: { wfid: "auth/login/flow" },
       headers: { "x-wf-variant": "acceptance" },
@@ -800,19 +769,22 @@ test.describe("LoginWorkflow / variant=acceptance (P1)", () => {
     const startBody = (await startRes.json()) as { wfs?: string };
     expect(startBody.wfs).toBeTruthy();
 
-    // Submit credentials WITHOUT the inline consent fields.
-    const submitRes = await request.post("/auth/trigger", {
+    // Submit credentials → workflow pauses on TermsBumpForm.
+    const credRes = await request.post("/auth/trigger", {
       data: {
         wfs: startBody.wfs,
         input: { formData: { username: "t1_frank", password: "Password1!" } },
       },
       headers: { "x-wf-variant": "acceptance" },
     });
-    // The server returns the standard wf-outlet inputRequired envelope —
-    // form schema + the ctx-passthrough block (which embeds `errors`).
-    // The errors live at `inputRequired.context.errors` (atscript-moost-wf
-    // builds the envelope as `{ ...passContext, errors }` and the outlet
-    // wraps it in `inputRequired.context`).
+    const credBody = (await credRes.json()) as { wfs?: string };
+    expect(credBody.wfs).toBeTruthy();
+
+    // Submit TermsBumpForm WITHOUT the inline consent fields.
+    const submitRes = await request.post("/auth/trigger", {
+      data: { wfs: credBody.wfs, input: { formData: {} } },
+      headers: { "x-wf-variant": "acceptance" },
+    });
     const submitBody = (await submitRes.json()) as {
       inputRequired?: { context?: { errors?: Record<string, string> } };
       data?: { accessToken?: string };
@@ -820,6 +792,69 @@ test.describe("LoginWorkflow / variant=acceptance (P1)", () => {
     const errors = submitBody.inputRequired?.context?.errors;
     expect(errors?.acceptedTerms).toMatch(/You must accept the terms/i);
     expect(submitBody.data?.accessToken).toBeUndefined();
+  });
+});
+
+test.describe("LoginWorkflow / variant=terms-bump (Phase 1 standalone terms re-prompt)", () => {
+  // BRANCH: Phase 1 consent-storage refactor added a standalone
+  // `terms-bump-prompt` @Step + matching `TermsBumpForm`. Fires when a
+  // returning user has `acceptance.termsVersion` set, has NOT accepted the
+  // current version inline on another carrier form, and no other onboarding
+  // carrier form (askEmail / askPhone / setPassword / profileComplete)
+  // collected terms during this login. The `terms-bump` variant flips
+  // `acceptance.termsVersion: 'v3'` with no enrollment + no
+  // profileCompleteRequired so the standalone bump prompt is the next pause
+  // after credentials.
+  //
+  // The post-form `persist-consents` step batches the captured terms event
+  // and hands it to `DemoLoginWorkflow.persistConsents`, which appends to a
+  // globalThis-anchored in-memory log; the `/__test/consent-log/:username`
+  // controller reads it back so this test can assert the wire effect.
+  test("WF-LOGIN-BUMP-01: terms-bump variant lands on TermsBumpForm; submit completes the workflow + records a terms event", async ({
+    page,
+    request,
+  }) => {
+    // Sanity: ensure the consent log starts empty for t1_frank (reset by
+    // `__test/reset` between tests, but belt-and-suspenders).
+    const before = await request.get(`/__test/consent-log/t1_frank`);
+    expect(before.status()).toBe(200);
+    expect((await before.json()) as unknown[]).toEqual([]);
+
+    await page.goto(wfUrl(LOGIN_WF, "terms-bump"));
+    await fillField(page, "username", "t1_frank");
+    await fillField(page, "password", "Password1!");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    // Workflow pauses on TermsBumpForm. Only acceptedTerms is visible
+    // (consentMarketing: false → marketingOptIn hidden).
+    const termsBox = page.locator('input[type="checkbox"][name="acceptedTerms"]').first();
+    await expect(termsBox).toBeVisible();
+    await termsBox.check();
+    await submitForm(page);
+
+    const envelope = (await readFinishEnvelope(page)) as {
+      finished: boolean;
+      data?: { accessToken?: string };
+    };
+    expect(envelope.finished).toBe(true);
+    expect(typeof envelope.data?.accessToken).toBe("string");
+
+    // The batched persist-consents call appended a `kind:'terms'` event
+    // with the new `v3` version. Asserts (a) the override seam fires,
+    // (b) the event shape carries `version`, and (c) the consumer-supplied
+    // log received it — proving the in-memory storage path works through
+    // the new batched hook.
+    const after = await request.get(`/__test/consent-log/t1_frank`);
+    expect(after.status()).toBe(200);
+    const events = (await after.json()) as Array<{
+      kind: string;
+      version?: string;
+      at: number;
+    }>;
+    expect(events.length).toBe(1);
+    expect(events[0].kind).toBe("terms");
+    expect(events[0].version).toBe("v3");
+    expect(typeof events[0].at).toBe("number");
   });
 });
 
@@ -1100,19 +1135,19 @@ test.describe("LoginWorkflow / variant=concurrency-reject (P2)", () => {
 test.describe("LoginWorkflow / variant=full (P2)", () => {
   // BRANCH: the "every optional step" walkthrough. Post-refactor the
   // standalone TermsAcceptForm + ConsentMarketingForm steps are GONE —
-  // inline consent now rides on `LoginCredentialsForm` (the first carrier
-  // form). The user ticks `acceptedTerms` + `marketingOptIn` AT THE TOP
-  // (before MFA enrollment, before profile-complete) and the workflow
-  // applies them via the new `apply-consent` step once username is bound.
-  // Steps removed vs. pre-refactor walkthrough: standalone TermsAcceptForm
-  // pause (#9 — collapsed into credentials), standalone ConsentMarketingForm
-  // pause (#11 — collapsed into credentials). Every other pause unchanged.
+  // inline consent rides on the first onboarding carrier form (AskEmailForm
+  // in this variant; LoginCredentialsForm itself no longer carries the
+  // mixin, so consent can only be collected once `ctx.username` is bound).
+  // The workflow batches the captured ticks via the `persist-consents`
+  // step once both terms + marketing are decided. Steps removed vs.
+  // pre-refactor walkthrough: standalone TermsAcceptForm + standalone
+  // ConsentMarketingForm pauses. Every other pause unchanged.
   //
   // The inline-consent refactor dropped the hidden `acceptedTermsVersion`
   // field (the server now writes its own version from
   // `ctx.acceptance.termsVersion`), so this SPA-driven walkthrough renders
   // cleanly through `@atscript/vue-form`'s default component map.
-  test("WF-LOGIN-032: iris walks through every optional step in one login (inline consent on credentials)", async ({
+  test("WF-LOGIN-032: iris walks through every optional step in one login (inline consent on AskEmailForm)", async ({
     page,
     request,
   }) => {
@@ -1125,16 +1160,19 @@ test.describe("LoginWorkflow / variant=full (P2)", () => {
     // into a single credentials submit.
     await fillField(page, "username", USERS.iris.username);
     await fillField(page, "password", USERS.iris.password);
-    // Inline consent checkboxes inherited from `WithInlineConsentForm`.
-    // Check both — `acceptedTerms` is REQUIRED (helper throws form error
-    // without it); `marketingOptIn` is recordable (apply-consent fires).
-    await page.locator('input[type="checkbox"][name="acceptedTerms"]').first().check();
-    await page.locator('input[type="checkbox"][name="marketingOptIn"]').first().check();
+    // Post-Phase-1 LoginCredentialsForm no longer carries consent — the
+    // inline `WithInlineConsentForm` block rides on the FIRST onboarding
+    // carrier form (AskEmailForm, next).
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
 
     // 2. AskEmailForm (ensureEmail, no confirmed email MFA yet).
+    // Inline consent checkboxes inherited from `WithInlineConsentForm`.
+    // Check both — `acceptedTerms` is REQUIRED (helper throws form error
+    // without it); `marketingOptIn` is recordable (persist-consents fires).
     await waitForFormInput(page, "email");
     await fillField(page, "email", "iris@acme.test");
+    await page.locator('input[type="checkbox"][name="acceptedTerms"]').first().check();
+    await page.locator('input[type="checkbox"][name="marketingOptIn"]').first().check();
     await submitForm(page);
 
     // 3. PincodeForm — email OTP from the captured-mail buffer.
@@ -1193,11 +1231,13 @@ test.describe("LoginWorkflow / variant=full (P2)", () => {
     // override from the per-user buffer (no DB column carries this state).
     // ProfileCompleteForm fields are `firstName?` / `lastName?` (optional) so
     // the AsForm renderer starts each as a "Not set" placeholder button — the
-    // user clicks to enable, then types. NOTE: the inline consent gates
-    // (termsAcceptedDone=true, consentApplied=true since credentials) are
-    // CLOSED by the time this form renders, so the inherited consent
-    // checkboxes are hidden via `@ui.form.fn.hidden` — the user doesn't
-    // double-submit terms.
+    // user clicks to enable, then types. NOTE: terms were captured on
+    // AskEmailForm earlier (termsAcceptedDone=true), so the inherited
+    // acceptedTerms checkbox is hidden via `@ui.form.fn.hidden`. The
+    // marketingOptIn checkbox is technically still rendered (consentsPersisted
+    // is still false at this point — persist-consents fires AFTER
+    // profile-complete in the schema), but the helper's gate will silently
+    // re-process the value; user doesn't have to re-tick.
     await expect(page.getByText("First name").first()).toBeVisible();
     await page.getByRole("button", { name: "Not set" }).first().click();
     await fillField(page, "firstName", "Iris");

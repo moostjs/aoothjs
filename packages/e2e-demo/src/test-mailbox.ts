@@ -1,5 +1,5 @@
 import type { AuthEmailEvent, AuthSmsEvent } from "@aooth/auth";
-import { type AuditEvent, AuthGuarded, Public, UserId } from "@aooth/auth-moost";
+import { type AuditEvent, AuthGuarded, type ConsentEvent, Public, UserId } from "@aooth/auth-moost";
 import type { UserService } from "@aooth/user";
 import { Delete, Get, Post } from "@moostjs/event-http";
 import { Controller, Param } from "moost";
@@ -35,6 +35,15 @@ export interface TestMailboxDeps {
    * clears it via `length = 0`.
    */
   auditEvents: AuditEvent[];
+  /**
+   * Consent events captured by `DemoLoginWorkflow.persistConsents`, keyed by
+   * username. `/__test/consent-log/:username` returns the array for a user;
+   * Playwright specs assert end-to-end that a stale-terms-bump login appends
+   * a `kind:'terms'` event with the new `version`. Cleared on
+   * `POST /__test/reset` via `reseed()` so a prior run doesn't bleed across
+   * tests.
+   */
+  consentLog: Map<string, ConsentEvent[]>;
 }
 
 /**
@@ -48,7 +57,7 @@ export interface TestMailboxDeps {
 export function createTestMailboxController(
   deps: TestMailboxDeps,
 ): new (...args: never[]) => unknown {
-  const { emails, sms, reseed, userService, backupCodes, auditEvents } = deps;
+  const { emails, sms, reseed, userService, backupCodes, auditEvents, consentLog } = deps;
 
   // `@Public()` bypasses the global auth guard — these endpoints are the
   // entry point used BY tests, before any login has happened.
@@ -201,6 +210,16 @@ export function createTestMailboxController(
       ).__aoothE2eAllowDuplicateInvites = true;
       /* eslint-enable no-underscore-dangle */
       return { ok: true };
+    }
+
+    /**
+     * Return consent events captured for `:username` by
+     * `DemoLoginWorkflow.persistConsents`. Returns `[]` when the user has
+     * never been through a persist-consents step on this app instance.
+     */
+    @Get("consent-log/:username")
+    consentLogFor(@Param("username") username: string): ConsentEvent[] {
+      return consentLog.get(username) ?? [];
     }
   }
 

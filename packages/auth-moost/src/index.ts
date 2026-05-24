@@ -59,6 +59,7 @@ export {
   type MfaTransport,
   type SsoProvider,
   type ConcurrencyLimitOptions,
+  type ConsentEvent,
   DefaultInviteWorkflow,
   DefaultLoginWorkflow,
   DefaultRecoveryWorkflow,

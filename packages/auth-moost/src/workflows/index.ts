@@ -50,3 +50,4 @@ export {
   type PreparedUserInput,
   type ResolvedInviteWorkflowOpts,
 } from "./invite.workflow.options";
+export { type ConsentEvent } from "./auth-workflow.base";

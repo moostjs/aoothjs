@@ -30,7 +30,7 @@
  */
 @wf.context.pass 'acceptance'
 @wf.context.pass 'termsAcceptedDone'
-@wf.context.pass 'consentApplied'
+@wf.context.pass 'consentsPersisted'
 export interface WithInlineConsentForm {
     @ui.form.type 'checkbox'
     @meta.label 'I accept the Terms & Conditions'
@@ -39,7 +39,7 @@ export interface WithInlineConsentForm {
 
     @ui.form.type 'checkbox'
     @meta.label 'I would like to receive marketing emails'
-    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.acceptance?.consentMarketing || !!ctx.consentApplied'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.acceptance?.consentMarketing || !!ctx.consentsPersisted'
     @meta.default 'false'
     marketingOptIn?: boolean
 }
@@ -58,11 +58,8 @@ export interface WithInlineConsentForm {
 @wf.context.pass 'altForgotPassword'
 @wf.context.pass 'altSignup'
 @wf.context.pass 'altMagicLink'
-@wf.context.pass 'acceptance'
-@wf.context.pass 'termsAcceptedDone'
-@wf.context.pass 'consentApplied'
 @ui.form.submit.text 'Sign in'
-export interface LoginCredentialsForm extends WithInlineConsentForm {
+export interface LoginCredentialsForm {
     @ui.form.order 10
     @ui.form.type 'text'
     @meta.label 'Username'
@@ -184,7 +181,7 @@ export interface EmailIdentifierForm {
 @wf.context.pass 'passwordPolicies'
 @wf.context.pass 'acceptance'
 @wf.context.pass 'termsAcceptedDone'
-@wf.context.pass 'consentApplied'
+@wf.context.pass 'consentsPersisted'
 export interface SetPasswordForm extends WithInlineConsentForm {
     @ui.form.order 10
     @ui.form.type 'password'
@@ -374,7 +371,7 @@ export interface PincodeForm {
  */
 @wf.context.pass 'acceptance'
 @wf.context.pass 'termsAcceptedDone'
-@wf.context.pass 'consentApplied'
+@wf.context.pass 'consentsPersisted'
 export interface AskEmailForm extends WithInlineConsentForm {
     @ui.form.order 10
     @ui.form.type 'text'
@@ -390,7 +387,7 @@ export interface AskEmailForm extends WithInlineConsentForm {
  */
 @wf.context.pass 'acceptance'
 @wf.context.pass 'termsAcceptedDone'
-@wf.context.pass 'consentApplied'
+@wf.context.pass 'consentsPersisted'
 export interface AskPhoneForm extends WithInlineConsentForm {
     @ui.form.order 10
     @ui.form.type 'text'
@@ -490,7 +487,7 @@ export interface EnrollConfirmForm {
  */
 @wf.context.pass 'acceptance'
 @wf.context.pass 'termsAcceptedDone'
-@wf.context.pass 'consentApplied'
+@wf.context.pass 'consentsPersisted'
 export interface ProfileCompleteForm extends WithInlineConsentForm {
     @ui.form.order 10
     @ui.form.type 'text'
@@ -501,6 +498,26 @@ export interface ProfileCompleteForm extends WithInlineConsentForm {
     @ui.form.type 'text'
     @meta.label 'Last name'
     lastName?: string
+}
+
+/**
+ * Standalone terms re-acceptance prompt. Fires for returning users whose
+ * accepted terms version is stale and who did NOT pass through any
+ * onboarding carrier form (`AskEmailForm` / `AskPhoneForm` / `SetPasswordForm` /
+ * `ProfileCompleteForm`) on this login — those forms collect terms inline via
+ * `WithInlineConsentForm`. The bump-prompt only renders the consent block
+ * (no additional fields).
+ *
+ * Inherits `acceptedTerms` (required when `ctx.acceptance.termsVersion` is set
+ * AND `ctx.termsAcceptedDone` is false — the bump prompt's whole reason for
+ * firing). `marketingOptIn` hides via `WithInlineConsentForm`'s predicate when
+ * `ctx.acceptance.consentMarketing` is false, which is the expected state on
+ * a routine-login terms re-prompt (marketing decision was captured earlier).
+ */
+@wf.context.pass 'acceptance'
+@wf.context.pass 'termsAcceptedDone'
+@wf.context.pass 'consentsPersisted'
+export interface TermsBumpForm extends WithInlineConsentForm {
 }
 
 /**

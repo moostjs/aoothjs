@@ -165,7 +165,9 @@ export interface InlineConsentCtx {
   };
   termsAcceptedVersion?: string;
   termsAcceptedDone?: boolean;
-  consentApplied?: boolean;
+  termsAcceptedAt?: number;
+  marketingDecidedAt?: number;
+  consentsPersisted?: boolean;
   pendingMarketingOptIn?: boolean;
 }
 
@@ -178,6 +180,20 @@ export interface InlineConsentCtx {
 export interface InlineConsentInput {
   acceptedTerms?: boolean;
   marketingOptIn?: boolean;
+}
+
+/**
+ * Consent event emitted to the consumer's `persistConsents(username, events)`
+ * hook. Storage shape is intentionally the consumer's call — Mongo users
+ * typically push the events onto an embedded array, SQL users insert into an
+ * audit table, event-bus users publish to a topic. The library batches all
+ * collected events from a single workflow run into one call.
+ */
+export interface ConsentEvent {
+  kind: "terms" | "marketing" | (string & {});
+  version?: string;
+  optIn?: boolean;
+  at: number;
 }
 
 /**
@@ -277,7 +293,7 @@ export class AuthWorkflowBase {
    * for this workflow run. If `ctx.termsAcceptedDone === true` OR
    * `ctx.acceptance?.termsVersion` is unset, the server SILENTLY IGNORES
    * `input.acceptedTerms` even when the payload contains it. Same gate for
-   * `marketingOptIn` — once `ctx.consentApplied === true`, subsequent
+   * `marketingOptIn` — once `ctx.consentsPersisted === true`, subsequent
    * payloads cannot flip the value. This is the load-bearing defense
    * against an attacker submitting falsified hidden-field values to withdraw
    * consent or flip a marketing opt-in.
@@ -295,8 +311,8 @@ export class AuthWorkflowBase {
    *
    * Terms are validated + stashed inline (workflow proceeds only when the
    * checkbox is ticked). Marketing is stashed only — the async user-store
-   * write defers to the `apply-consent` step which fires once `ctx.username`
-   * is set.
+   * write defers to the `persist-consents` step which fires once
+   * `ctx.username` is set.
    */
   protected processInlineConsent(
     ctx: InlineConsentCtx,
@@ -311,13 +327,15 @@ export class AuthWorkflowBase {
       // submitted by the client.
       ctx.termsAcceptedVersion = ctx.acceptance.termsVersion;
       ctx.termsAcceptedDone = true;
+      ctx.termsAcceptedAt = Date.now();
     }
     if (
       ctx.acceptance?.consentMarketing &&
-      !ctx.consentApplied &&
+      !ctx.consentsPersisted &&
       input.marketingOptIn !== undefined
     ) {
       ctx.pendingMarketingOptIn = Boolean(input.marketingOptIn);
+      ctx.marketingDecidedAt = Date.now();
     }
   }
 

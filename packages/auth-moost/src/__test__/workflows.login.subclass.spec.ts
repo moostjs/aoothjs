@@ -22,6 +22,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { ProfileCompleteForm } from "../atscript/models/forms.as";
 import { AuthOpts } from "../auth.opts";
+import type { ConsentEvent } from "../workflows/auth-workflow.base";
 import { type LoginWfCtx, LoginWorkflow, type LoginWorkflowOpts } from "../workflows/index";
 import { prepareWfApp, seedActiveUser, withLoginMfaCtx } from "./workflow-utils";
 
@@ -143,27 +144,28 @@ describe("LoginWorkflow subclass — applyProfile override", () => {
   });
 });
 
-// ── applyConsentMarketing override (replaces deleted standalone-step test) ─
+// ── persistConsents override (replaces deleted standalone-step test) ─
 //
-// REPLACES: the pre-refactor `applyConsentMarketing override` test against
-// the now-deleted standalone `consent-marketing` step. The customer-override
-// seam survived the refactor — the inline-staged `pendingMarketingOptIn` is
-// applied by the new `apply-consent` @Step which delegates to
-// `applyConsentMarketing(username, optIn)` (login.workflow.ts:1719). This
-// test pins that the override hook still fires through the new pipeline and
-// receives the inline-staged value verbatim.
-describe("LoginWorkflow subclass — applyConsentMarketing override (CONSENT-OVERRIDE)", () => {
-  it("CONSENT-OVERRIDE-01: inline marketingOptIn:true on credentials → applyConsentMarketing override receives (username, true)", async () => {
-    // WHY (Rule 9): asserts the consumer-override seam survives the refactor.
-    // A regression that wired `apply-consent` to call a different hook
-    // (e.g. an internal store method instead of the override) would silently
-    // break the customer extension contract — consumers wouldn't notice
-    // until production data integrity diverged. The captured-array assertion
-    // is load-bearing: it pins (a) the override IS the dispatch target,
-    // (b) the inline-staged value (NOT a fabricated default) is what's
-    // passed, and (c) the username binding from credentials is in scope by
-    // the time apply-consent fires.
-    const calls: Array<{ username: string; optIn: boolean }> = [];
+// REPLACES: the pre-refactor `applyConsentMarketing override` test. The
+// customer-override seam is now the batched `persistConsents(username,
+// events)` hook called by the new `persist-consents` @Step — replacing the
+// pre-Phase-1 singular `applyConsentMarketing(username, optIn)` write hook.
+// Marketing consent now arrives on an onboarding carrier form (no longer on
+// `LoginCredentialsForm` which dropped the consent mixin); the test routes
+// the opt-in through `AskEmailForm` to exercise the new path.
+describe("LoginWorkflow subclass — persistConsents override (CONSENT-OVERRIDE)", () => {
+  it("CONSENT-OVERRIDE-01: inline marketingOptIn:true on a carrier form → persistConsents override receives a marketing event", async () => {
+    // WHY (Rule 9): asserts the new batched consumer-override seam fires
+    // with the right shape. A regression that wired `persist-consents` to
+    // call a different hook, or skipped capturing `at`, or sent
+    // `applyConsentMarketing`-style positional args instead of an events
+    // array, would silently break the customer extension contract. The
+    // captured-array assertion is load-bearing — it pins (a) the override
+    // IS the dispatch target, (b) the inline-staged value is what's
+    // passed, (c) the username binding from credentials is in scope by
+    // the time persist-consents fires, and (d) the `at` timestamp is
+    // populated at acceptance moment.
+    const calls: Array<{ username: string; events: ConsentEvent[] }> = [];
     @Inherit()
     @Controller("auth/login")
     class ConsentMarketingLogin extends LoginWorkflow {
@@ -175,16 +177,21 @@ describe("LoginWorkflow subclass — applyConsentMarketing override (CONSENT-OVE
       ) {
         super(opts, users, auth, authOpts);
       }
-      protected override async applyConsentMarketing(
+      protected override async persistConsents(
         username: string,
-        optIn: boolean,
+        events: ConsentEvent[],
       ): Promise<void> {
-        calls.push({ username, optIn });
+        calls.push({ username, events: [...events] });
       }
     }
     const app = await prepareWfApp({
       loginPolicy: {
         acceptance: { profileCompleteRequired: false, consentMarketing: true },
+        // Force ensureEmail to route the workflow through `AskEmailForm`
+        // (a carrier form for `WithInlineConsentForm`) so the inline
+        // marketing opt-in is collectable after `LoginCredentialsForm`
+        // dropped the consent mixin.
+        enrollment: { ensureEmail: true, ensurePhone: false },
       },
       loginWorkflowClass: withLoginMfaCtx(ConsentMarketingLogin, { mfaMode: "disabled" }),
     });
@@ -192,10 +199,35 @@ describe("LoginWorkflow subclass — applyConsentMarketing override (CONSENT-OVE
     const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
-      input: { username: "alice", password: "Password123", marketingOptIn: true },
+      input: { username: "alice", password: "Password123" },
     });
-    expect((r2.body?.data as Record<string, unknown>)?.userId).toBe("alice");
-    expect(calls).toEqual([{ username: "alice", optIn: true }]);
+    // Paused at AskEmailForm — submit email + inline marketing opt-in.
+    expect(r2.body?.wfs).toBeTruthy();
+    const before = Date.now();
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { email: "alice@example.com", marketingOptIn: true },
+    });
+    // Paused at PincodeForm — supply the captured OTP from the sent email.
+    expect(r3.body?.wfs).toBeTruthy();
+    const sent = app.emails.find(
+      (e) => e.kind === "login.pincode" && e.recipient === "alice@example.com",
+    );
+    expect(sent).toBeTruthy();
+    const r4 = await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { code: sent!.code as string, rememberDevice: false },
+    });
+    expect((r4.body?.data as Record<string, unknown>)?.userId).toBe("alice");
+    // Override fired exactly once with the staged marketing event.
+    expect(calls.length).toBe(1);
+    expect(calls[0].username).toBe("alice");
+    expect(calls[0].events).toHaveLength(1);
+    const ev = calls[0].events[0];
+    expect(ev.kind).toBe("marketing");
+    expect(ev.optIn).toBe(true);
+    expect(ev.at).toBeGreaterThanOrEqual(before);
+    expect(ev.at).toBeLessThanOrEqual(Date.now());
   });
 });
 

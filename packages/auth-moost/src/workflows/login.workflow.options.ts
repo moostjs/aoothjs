@@ -27,6 +27,7 @@ import {
   Select2faForm,
   SetPasswordForm,
   TenantSelectForm,
+  TermsBumpForm,
 } from "../atscript/models/forms.as";
 
 export type LoginRedirect = "referer" | "home" | false | null;
@@ -71,6 +72,7 @@ export interface LoginWorkflowOpts {
     select2fa?: TAtscriptAnnotatedType;
     setPassword?: TAtscriptAnnotatedType;
     tenantSelect?: TAtscriptAnnotatedType;
+    termsBump?: TAtscriptAnnotatedType;
   };
 }
 
@@ -101,6 +103,7 @@ export interface ResolvedLoginWorkflowOpts {
     select2fa: TAtscriptAnnotatedType;
     setPassword: TAtscriptAnnotatedType;
     tenantSelect: TAtscriptAnnotatedType;
+    termsBump: TAtscriptAnnotatedType;
   };
 }
 
@@ -133,6 +136,7 @@ export function mergeLoginOpts(opts: LoginWorkflowOpts = {}): ResolvedLoginWorkf
       select2fa: Select2faForm as unknown as TAtscriptAnnotatedType,
       setPassword: SetPasswordForm as unknown as TAtscriptAnnotatedType,
       tenantSelect: TenantSelectForm as unknown as TAtscriptAnnotatedType,
+      termsBump: TermsBumpForm as unknown as TAtscriptAnnotatedType,
       ...opts.forms,
     },
   };

@@ -17,6 +17,7 @@ import {
   AuthController,
   authGuardInterceptor,
   AuthOpts,
+  type ConsentEvent,
   createAuthEmailOutlet,
   createAuthShareableLinkOutlet,
   DEFAULT_AUTH_WORKFLOWS,
@@ -214,6 +215,9 @@ const g = globalThis as {
   // gets exercised (WF-INVITE-018). Flipped via POST /__test/allow-duplicate-invites
   // and reset to `false` by `reseed()` / `__test/reset`.
   __aoothE2eAllowDuplicateInvites?: boolean;
+  // username → ordered list of consent events captured by
+  // `DemoLoginWorkflow.persistConsents`. Drives WF-LOGIN-BUMP-01 etc.
+  __aoothE2eConsentLog?: Map<string, ConsentEvent[]>;
 };
 g.__aoothE2eEmails ??= [];
 g.__aoothE2eSms ??= [];
@@ -224,6 +228,7 @@ g.__aoothE2ePersonas ??= new Map();
 g.__aoothE2eProfileMissingFields ??= new Map();
 g.__aoothE2eAuditEvents ??= [];
 g.__aoothE2eAllowDuplicateInvites ??= false;
+g.__aoothE2eConsentLog ??= new Map();
 const sharedEmailsBuffer: AuthEmailEvent[] = g.__aoothE2eEmails;
 const sharedSmsBuffer: AuthSmsEvent[] = g.__aoothE2eSms;
 const sharedBackupCodesBuffer: Map<string, string[]> = g.__aoothE2eBackupCodes;
@@ -235,6 +240,7 @@ const sharedPersonasBuffer: Map<
 > = g.__aoothE2ePersonas;
 const sharedProfileMissingFieldsBuffer: Map<string, string[]> = g.__aoothE2eProfileMissingFields;
 const sharedAuditEventsBuffer: AuditEvent[] = g.__aoothE2eAuditEvents;
+const sharedConsentLogBuffer: Map<string, ConsentEvent[]> = g.__aoothE2eConsentLog;
 /* eslint-enable no-underscore-dangle */
 
 /** Two-level deep merge — sufficient for the nested-pojo workflow opts. */
@@ -437,6 +443,19 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     }
     protected override deliver(payload: DeliverPayload) {
       return forwardDeliver(payload);
+    }
+    // Captured consent events — batched per-run via the new
+    // `persistConsents(username, events)` hook (Phase 1 of the consent-
+    // storage refactor). Appends to the globalThis-anchored buffer so the
+    // `__test/consent-log/:username` controller can read them and the
+    // WF-LOGIN-BUMP-01 playwright test can assert end-to-end that a stale-
+    // terms login produces a `kind:'terms'` event with the new version.
+    protected override async persistConsents(
+      username: string,
+      events: ConsentEvent[],
+    ): Promise<void> {
+      const prior = sharedConsentLogBuffer.get(username) ?? [];
+      sharedConsentLogBuffer.set(username, [...prior, ...events]);
     }
     // ── Variant-driven resolveXxx policy overrides ──
     //
@@ -1084,6 +1103,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     sharedProfileMissingFieldsBuffer.clear();
     // Captured `audit(event)` events — cleared so the next test starts clean.
     sharedAuditEventsBuffer.length = 0;
+    // Captured consent events — cleared so a prior login's events don't bleed
+    // into the next test's assertions.
+    sharedConsentLogBuffer.clear();
     // WF-INVITE-018 toggle — reset between tests so a flipped flag in one
     // spec doesn't leak into the next.
     g.__aoothE2eAllowDuplicateInvites = false;
@@ -1129,6 +1151,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       userService: aooth.userService,
       backupCodes: sharedBackupCodesBuffer,
       auditEvents: sharedAuditEventsBuffer,
+      consentLog: sharedConsentLogBuffer,
     });
     app.registerControllers(TestMailboxController);
   }

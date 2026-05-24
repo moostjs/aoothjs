@@ -147,32 +147,32 @@ describe("AuthWorkflowBase.processInlineConsent — security gates (HACK-CONSENT
     expect(ctx.termsAcceptedVersion).toBe("v1");
   });
 
-  it("HACK-CONSENT-02: consentApplied=true → submitted marketingOptIn:false is SILENTLY IGNORED (no second write)", () => {
+  it("HACK-CONSENT-02: consentsPersisted=true → submitted marketingOptIn:false is SILENTLY IGNORED (no second write)", () => {
     // WHY: mirror anti-tamper guarantee for marketing opt-in. Once the
-    // `apply-consent` step has persisted the user's choice (consentApplied
-    // = true), no subsequent payload can re-stage `pendingMarketingOptIn`
-    // and trigger a second write. The `if (… && !ctx.consentApplied …)`
-    // guard at auth-workflow.base.ts:303-306 closes the loop. Without it,
-    // an attacker who flips a user's opt-in by posting a new
+    // `persist-consents` step has persisted the user's choice
+    // (consentsPersisted = true), no subsequent payload can re-stage
+    // `pendingMarketingOptIn` and trigger a second write. The
+    // `if (… && !ctx.consentsPersisted …)` guard closes the loop.
+    // Without it, an attacker who flips a user's opt-in by posting a new
     // `marketingOptIn:false` on any later carrier form would trigger a
-    // second `applyConsentMarketing(username, false)` call — silently
-    // toggling the user's preference against their wishes. Distinct from
-    // HACK-CONSENT-01 because marketing has a separate apply-step gate.
+    // second `persistConsents` call — silently toggling the user's
+    // preference against their wishes. Distinct from HACK-CONSENT-01
+    // because marketing has a separate persist-step gate.
     // No `termsVersion` here — isolates the marketing gate from the terms
-    // gate so the test focuses on the consentApplied branch alone.
+    // gate so the test focuses on the consentsPersisted branch alone.
     const base = new ExposedBase();
     const ctx: InlineConsentCtx = {
       acceptance: { consentMarketing: true },
-      consentApplied: true,
+      consentsPersisted: true,
     };
     const wf = makeWf();
     base.consent(ctx, { marketingOptIn: false }, wf);
     expect(wf.lastCall).toBeUndefined();
     // The key load-bearing assertion — `pendingMarketingOptIn` MUST stay
-    // undefined so the `apply-consent` step (gated on
+    // undefined so the `persist-consents` step (gated on
     // `pendingMarketingOptIn !== undefined`) doesn't fire a second time.
     expect(ctx.pendingMarketingOptIn).toBeUndefined();
-    expect(ctx.consentApplied).toBe(true);
+    expect(ctx.consentsPersisted).toBe(true);
   });
 
   it("HACK-CONSENT-03: server is authoritative for terms version — client cannot smuggle a fabricated version into ctx", () => {
@@ -235,7 +235,7 @@ describe("AuthWorkflowBase.processInlineConsent — security gates (HACK-CONSENT
     // says `consentMarketing: false` (no marketing collection), a malicious
     // client posting `marketingOptIn: true` MUST NOT cause the workflow to
     // stage a `pendingMarketingOptIn` — that would then fire the
-    // `apply-consent` step and write a marketing record the server's
+    // `persist-consents` step and write a marketing record the server's
     // policy never asked for (potential GDPR / CASL liability). The
     // `if (ctx.acceptance?.consentMarketing && …)` guard at
     // auth-workflow.base.ts:303 closes this loop.
@@ -247,7 +247,7 @@ describe("AuthWorkflowBase.processInlineConsent — security gates (HACK-CONSENT
     base.consent(ctx, { marketingOptIn: true }, wf);
     expect(wf.lastCall).toBeUndefined();
     // Critical: `pendingMarketingOptIn` MUST stay undefined so the
-    // `apply-consent` step (gated on its presence) never fires.
+    // `persist-consents` step (gated on its presence) never fires.
     expect(ctx.pendingMarketingOptIn).toBeUndefined();
   });
 
@@ -278,7 +278,7 @@ describe("AuthWorkflowBase.processInlineConsent — security gates (HACK-CONSENT
     expect(ctxB.termsAcceptedVersion).toBeUndefined();
   });
 
-  it("happy path: opens both gates → terms captured + marketing staged for apply-consent", () => {
+  it("happy path: opens both gates → terms captured + marketing staged for persist-consents", () => {
     // WHY: positive control alongside the HACK-CONSENT-* negatives. Pins
     // that when the gates are OPEN — policy on, not yet captured — the
     // helper writes both `termsAcceptedDone/Version` and stages
@@ -306,8 +306,8 @@ describe("AuthWorkflowBase.processInlineConsent — security gates (HACK-CONSENT
     // (b) be re-applied identically to `marketingOptIn: undefined`.
     // Both are wrong — opting OUT is a valid recordable choice, distinct
     // from "field never submitted". The downstream `apply-consent` step
-    // calls `applyConsentMarketing(username, false)` on a false stage; an
-    // off-by-one would silently swallow opt-outs.
+    // emits a `{kind:'marketing',optIn:false,…}` event in the batched
+    // `persistConsents` call; an off-by-one would silently swallow opt-outs.
     const base = new ExposedBase();
     const ctx: InlineConsentCtx = {
       acceptance: { consentMarketing: true },
@@ -320,5 +320,30 @@ describe("AuthWorkflowBase.processInlineConsent — security gates (HACK-CONSENT
     const ctx2: InlineConsentCtx = { acceptance: { consentMarketing: true } };
     base.consent(ctx2, {}, wf);
     expect(ctx2.pendingMarketingOptIn).toBeUndefined();
+  });
+
+  it("both gates open → timestamps captured at acceptance moment (not at persist time)", () => {
+    // WHY (Rule 9): the batched `persistConsents(username, events)` hook
+    // receives `at` for each event — the WHY of that field is "when the
+    // user actually clicked accept", which must survive a paused-workflow
+    // resume gap. If the helper deferred the timestamp to the persist step
+    // (or didn't capture it at all), the recorded `at` could drift hours
+    // away from the user-action moment for a paused workflow that resumes
+    // later. This pins that both timestamps are written by
+    // `processInlineConsent` at the moment the gate accepts the input —
+    // bound to wall-clock ms around `Date.now()` (not exact equality —
+    // we're verifying the INTENT, not the WHAT).
+    const base = new ExposedBase();
+    const ctx: InlineConsentCtx = {
+      acceptance: { termsVersion: "v1", consentMarketing: true },
+    };
+    const wf = makeWf();
+    const before = Date.now();
+    base.consent(ctx, { acceptedTerms: true, marketingOptIn: true }, wf);
+    const after = Date.now();
+    expect(ctx.termsAcceptedAt).toBeGreaterThanOrEqual(before);
+    expect(ctx.termsAcceptedAt).toBeLessThanOrEqual(after);
+    expect(ctx.marketingDecidedAt).toBeGreaterThanOrEqual(before);
+    expect(ctx.marketingDecidedAt).toBeLessThanOrEqual(after);
   });
 });

@@ -181,6 +181,19 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
       },
     },
   },
+  // Standalone terms re-acceptance prompt — `termsVersion: 'v3'` with NO
+  // other carrier form (no enrollment / no profileComplete) so the workflow
+  // lands on `TermsBumpForm` after credentials. Drives WF-LOGIN-BUMP-01.
+  "terms-bump": {
+    policy: {
+      acceptance: {
+        termsVersion: "v3",
+        profileCompleteRequired: false,
+        consentMarketing: false,
+      },
+    },
+    mfaCtx: { mfaMode: "disabled" },
+  },
   "multi-context": {
     policy: { multiContext: { tenantSelect: true, personaSelect: true } },
   },
