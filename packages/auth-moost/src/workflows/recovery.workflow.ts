@@ -63,7 +63,7 @@ import type { AuditEvent } from "../audit/index";
 import { AuthOpts } from "../auth.opts";
 import { useAuth } from "../auth.composables";
 import { Public } from "../auth.decorator";
-import { AuthWorkflowBase } from "./auth-workflow.base";
+import { AuthWorkflowBase, type ConsentEvent, type InlineConsentInput } from "./auth-workflow.base";
 import type { DeliverPayload } from "./login.workflow";
 import {
   mergeRecoveryOpts,
@@ -93,6 +93,17 @@ export interface RecoveryWfCtx {
   };
   audit?: {
     enabled: boolean;
+  };
+  /**
+   * Acceptance / onboarding policy (terms version + marketing consent). For
+   * recovery the headline use-case is terms-version bump re-acceptance
+   * ("since you last set your password we updated our terms"). Marketing
+   * re-prompt at recovery time is unusual UX — defaults are off; consumers
+   * override `resolveAcceptance(ctx)` to enable. Populated by `prepare-acceptance`.
+   */
+  acceptance?: {
+    termsVersion?: string;
+    consentMarketing: boolean;
   };
 
   // Phase 1 — request:
@@ -133,6 +144,23 @@ export interface RecoveryWfCtx {
   passwordChanged?: boolean;
   sessionsRevoked?: boolean;
   tokensIssued?: boolean;
+
+  // Inline-consent state (mirrors LoginWfCtx / InviteWfCtx — populated by
+  // `processInlineConsent` when `SetPasswordForm` is submitted and consumed
+  // by the `persist-consents` step before tokens are issued):
+  /** Server-authoritative version captured at acceptance moment. */
+  termsAcceptedVersion?: string;
+  /** Wall-clock ms when `processInlineConsent` accepted the terms gate. */
+  termsAcceptedAt?: number;
+  /** Wall-clock ms when `processInlineConsent` staged the marketing opt-in/out. */
+  marketingDecidedAt?: number;
+  /** Set true once `processInlineConsent` has consumed the acceptedTerms field. */
+  termsAcceptedDone?: boolean;
+  /** Marketing opt-in value captured inline; persisted by `persist-consents`. */
+  pendingMarketingOptIn?: boolean;
+  /** Set true by `persist-consents` after the batched `persistConsents` hook fires. */
+  consentsPersisted?: boolean;
+
   /** Set by abort alt-actions (`backToLogin`). Gates all terminal steps. */
   aborted?: boolean;
 }
@@ -151,6 +179,7 @@ export interface RecoveryPolicyOverrides {
   postReset?: NonNullable<RecoveryWfCtx["postReset"]>;
   altActions?: NonNullable<RecoveryWfCtx["altActions"]>;
   audit?: NonNullable<RecoveryWfCtx["audit"]>;
+  acceptance?: NonNullable<RecoveryWfCtx["acceptance"]>;
 }
 
 /**
@@ -285,6 +314,22 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     return { enabled: true };
   }
 
+  /**
+   * Resolve the acceptance / onboarding policy (terms version + marketing
+   * consent). For recovery the canonical scenario is terms-version bump
+   * re-acceptance during password reset. Override per-tenant to drive
+   * collection. Sync/async friendly.
+   *
+   * Default: `{ consentMarketing: false }` — no terms collected, no marketing
+   * collected. Inline-consent is opt-in for recovery (marketing prompt during
+   * a password reset is unusual UX; terms bump is the headline scenario).
+   */
+  protected resolveAcceptance(
+    _ctx: RecoveryWfCtx,
+  ): NonNullable<RecoveryWfCtx["acceptance"]> | Promise<NonNullable<RecoveryWfCtx["acceptance"]>> {
+    return { consentMarketing: false };
+  }
+
   // ── Prepare steps (call resolveXxx getters; populate ctx for schema conditions) ──
   //
   // Step IDs are bare (`prepare-delivery`, `prepare-audit`, …) because the
@@ -382,6 +427,19 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     return undefined;
   }
 
+  @Step("prepare-acceptance")
+  prepareAcceptance(@WorkflowParam("context") ctx: RecoveryWfCtx): undefined | Promise<undefined> {
+    const result = this.resolveAcceptance(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.acceptance = resolved;
+        return undefined;
+      });
+    }
+    ctx.acceptance = result;
+    return undefined;
+  }
+
   @Workflow("flow")
   @WorkflowSchema<RecoveryWfCtx>([
     // Step IDs are bare; the class-level `@Controller("auth/recovery")` prefix
@@ -404,6 +462,12 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     { id: "prepare-post-reset" },
     { id: "prepare-alt-actions" },
     { id: "prepare-audit" },
+    // Resolve acceptance policy BEFORE `set-password` so `processInlineConsent`
+    // (called from inside `set-password`) can read `ctx.acceptance.termsVersion`
+    // / `consentMarketing` to decide whether to record consent fields submitted
+    // on the form. Headline use-case: terms-version bump re-acceptance during
+    // password reset.
+    { id: "prepare-acceptance" },
 
     // Mode picker — only when delivery.mode === 'choice' AND not already chosen.
     {
@@ -465,6 +529,17 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
         {
           id: "revoke-sessions",
           condition: (ctx) => !!ctx.postReset?.revokeAllSessions,
+        },
+        // Batched consent persistence. Fires once per workflow run after any
+        // inline consent capture (terms / marketing via `processInlineConsent`
+        // on `SetPasswordForm`). No recovery-specific terms-bump-prompt:
+        // recovery always reaches `SetPasswordForm` as a guaranteed carrier
+        // form, so the inline path covers terms-bump too.
+        {
+          id: "persist-consents",
+          condition: (ctx) =>
+            !ctx.consentsPersisted &&
+            (ctx.termsAcceptedDone === true || ctx.pendingMarketingOptIn !== undefined),
         },
         {
           id: "audit",
@@ -807,7 +882,10 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
       (ctx as Record<string, unknown>).passwordPolicies = this.users.getTransferablePolicies();
       throw wf.requireInput();
     }
-    const input = wf.resolveInput() as { newPassword: string; confirmPassword: string };
+    const input = wf.resolveInput() as {
+      newPassword: string;
+      confirmPassword: string;
+    } & InlineConsentInput;
     if (input.newPassword !== input.confirmPassword) {
       throw wf.requireInput({ errors: { confirmPassword: "Passwords do not match" } });
     }
@@ -819,6 +897,11 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     } catch (err) {
       this.translatePasswordSetError(err);
     }
+    // SetPasswordForm `extends WithInlineConsentForm` — capture acceptedTerms
+    // + marketingOptIn inline. `processInlineConsent` silently ignores both
+    // when the matching `acceptance` policy is off (see its security gate),
+    // so the call is safe to make on every recovery run.
+    this.processInlineConsent(ctx, input, wf);
     ctx.passwordChanged = true;
     return undefined;
   }
@@ -844,6 +927,52 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
       ...(ctx.sessionsRevoked && { sessionsRevoked: true }),
     });
     return undefined;
+  }
+
+  // ── persistConsents ──────────────────────────────────────────────────
+  /**
+   * Batched consent persistence — fans every consent event captured during
+   * this recovery run (terms acceptance + marketing opt-in/out) out to the
+   * consumer's `persistConsents(username, events)` hook in one call.
+   * Idempotent via `ctx.consentsPersisted`; short-circuits with no events
+   * when neither gate fired but the schema still routed here (defensive —
+   * the schema condition normally filters this case).
+   */
+  @Step("persist-consents")
+  async persistConsentsStep(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<undefined> {
+    this.requireUsername(ctx);
+    if (ctx.consentsPersisted) return undefined;
+    const events: ConsentEvent[] = [];
+    if (ctx.termsAcceptedDone && ctx.termsAcceptedVersion && ctx.termsAcceptedAt) {
+      events.push({
+        kind: "terms",
+        version: ctx.termsAcceptedVersion,
+        at: ctx.termsAcceptedAt,
+      });
+    }
+    if (ctx.pendingMarketingOptIn !== undefined && ctx.marketingDecidedAt) {
+      events.push({
+        kind: "marketing",
+        optIn: ctx.pendingMarketingOptIn,
+        at: ctx.marketingDecidedAt,
+      });
+    }
+    if (events.length === 0) {
+      ctx.consentsPersisted = true;
+      return undefined;
+    }
+    await this.persistConsents(ctx.username, events);
+    ctx.consentsPersisted = true;
+    return undefined;
+  }
+
+  /**
+   * Persist consent events collected during this recovery run. Default: no-op.
+   * Override to write to your DB of choice — storage shape is intentionally
+   * the consumer's call. Recovery's headline scenario is terms-bump capture.
+   */
+  protected async persistConsents(_username: string, _events: ConsentEvent[]): Promise<void> {
+    // No-op default.
   }
 
   // ── freshLoginFinish ─────────────────────────────────────────────────

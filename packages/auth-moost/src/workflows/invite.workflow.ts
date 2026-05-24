@@ -98,7 +98,13 @@ import {
   type PreparedUserInput,
   type ResolvedInviteWorkflowOpts,
 } from "./invite.workflow.options";
-import { AuthWorkflowBase, type MfaEnrollDeps, stripReservedUserKeys } from "./auth-workflow.base";
+import {
+  AuthWorkflowBase,
+  type ConsentEvent,
+  type InlineConsentInput,
+  type MfaEnrollDeps,
+  stripReservedUserKeys,
+} from "./auth-workflow.base";
 import type { DeliverPayload } from "./login.workflow";
 
 export interface InviteWfCtx {
@@ -111,6 +117,18 @@ export interface InviteWfCtx {
     loginUrl: string;
     showConfirmation: boolean;
     confirmationMessage: string;
+  };
+  /**
+   * Acceptance / onboarding policy (terms version + marketing consent).
+   * Mirrors `LoginWfCtx["acceptance"]` — the inline-consent surface is shared
+   * via `WithInlineConsentForm` on the carrier form (`SetPasswordForm`) the
+   * invitee submits during the accept tail. Populated by `prepare-acceptance`.
+   * Defaults are no-terms + no-marketing; consumers override
+   * `resolveAcceptance(ctx)` to drive collection.
+   */
+  acceptance?: {
+    termsVersion?: string;
+    consentMarketing: boolean;
   };
   cancellation?: { allowed: boolean };
   audit?: { enabled: boolean };
@@ -192,6 +210,22 @@ export interface InviteWfCtx {
   confirmationShown?: boolean;
   tokensIssued?: boolean;
 
+  // Inline-consent state (mirrors LoginWfCtx — populated by
+  // `processInlineConsent` when the carrier `SetPasswordForm` is submitted and
+  // consumed by the `persist-consents` step at the end of the accept tail):
+  /** Server-authoritative version captured at acceptance moment. */
+  termsAcceptedVersion?: string;
+  /** Wall-clock ms when `processInlineConsent` accepted the terms gate. */
+  termsAcceptedAt?: number;
+  /** Wall-clock ms when `processInlineConsent` staged the marketing opt-in/out. */
+  marketingDecidedAt?: number;
+  /** Set true once `processInlineConsent` has consumed the acceptedTerms field. */
+  termsAcceptedDone?: boolean;
+  /** Marketing opt-in value captured inline; persisted by `persist-consents`. */
+  pendingMarketingOptIn?: boolean;
+  /** Set true by `persist-consents` after the batched `persistConsents` hook fires. */
+  consentsPersisted?: boolean;
+
   /** Set true by abort alt-actions (`cancel`). Gates all terminal steps. */
   aborted?: boolean;
 }
@@ -211,6 +245,7 @@ export interface InvitePolicyOverrides {
   cancellation?: NonNullable<InviteWfCtx["cancellation"]>;
   audit?: NonNullable<InviteWfCtx["audit"]>;
   mfa?: NonNullable<InviteWfCtx["mfa"]>;
+  acceptance?: NonNullable<InviteWfCtx["acceptance"]>;
 }
 
 /**
@@ -502,6 +537,21 @@ export class InviteWorkflow extends AuthWorkflowBase {
     return { issuer: this.authOpts.totpIssuer };
   }
 
+  /**
+   * Resolve the acceptance / onboarding policy (terms version + marketing
+   * consent). Override per-tenant or per-user to drive inline-consent collection
+   * on `SetPasswordForm` during invite acceptance. Sync/async friendly.
+   *
+   * Default: `{ consentMarketing: false }` — no terms collected, no marketing
+   * collected. Inline-consent is opt-in for invite (the headline consumer
+   * scenario after login).
+   */
+  protected resolveAcceptance(
+    _ctx: InviteWfCtx,
+  ): NonNullable<InviteWfCtx["acceptance"]> | Promise<NonNullable<InviteWfCtx["acceptance"]>> {
+    return { consentMarketing: false };
+  }
+
   // ── Prepare steps (call resolveXxx getters; populate ctx for schema conditions) ──
   @Step("prepare-admin-form")
   prepareAdminForm(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
@@ -588,6 +638,20 @@ export class InviteWorkflow extends AuthWorkflowBase {
     return undefined;
   }
 
+  @Step("prepare-acceptance")
+  @Public()
+  prepareAcceptance(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
+    const result = this.resolveAcceptance(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.acceptance = resolved;
+        return undefined;
+      });
+    }
+    ctx.acceptance = result;
+    return undefined;
+  }
+
   // ╔═══════════════════════════════════════════════════════════════════════╗
   // ║ Workflow definitions                                                  ║
   // ╚═══════════════════════════════════════════════════════════════════════╝
@@ -653,6 +717,11 @@ export class InviteWorkflow extends AuthWorkflowBase {
         // short-circuit the accept tail when the invite was already accepted.
         { break: (ctx) => !!ctx.aborted },
         { id: "prepare-password-rules" },
+        // Resolve acceptance policy BEFORE the carrier `SetPasswordForm` so
+        // `processInlineConsent` (called from inside `create-password-form`)
+        // can read `ctx.acceptance.termsVersion` / `consentMarketing` to decide
+        // whether to record consent fields submitted on the form.
+        { id: "prepare-acceptance" },
         {
           id: "create-password-form",
           condition: (ctx) => !ctx.passwordSet,
@@ -716,6 +785,18 @@ export class InviteWorkflow extends AuthWorkflowBase {
         },
         // Consumer extension point — see `inviteExtraStep()` method.
         { id: "extra-step" },
+        // Batched consent persistence. Fires once per workflow run after any
+        // inline consent capture (terms / marketing via `processInlineConsent`
+        // on `SetPasswordForm`). Mirrors login's `persist-consents` placement
+        // — before the tail that issues tokens. No invite-specific
+        // terms-bump-prompt: invite always has `SetPasswordForm` as a
+        // guaranteed carrier form, so the inline path covers terms-bump too.
+        {
+          id: "persist-consents",
+          condition: (ctx) =>
+            !ctx.consentsPersisted &&
+            (ctx.termsAcceptedDone === true || ctx.pendingMarketingOptIn !== undefined),
+        },
         {
           id: "unset-pending-invitation",
           condition: (ctx) => !!(ctx.passwordSet && !ctx.pendingInvitationCleared),
@@ -1185,7 +1266,10 @@ export class InviteWorkflow extends AuthWorkflowBase {
       // reInvite later. The pending-invitation flag stays true.
       return this.abort(ctx, "cancel");
     }
-    const input = wf.resolveInput() as { newPassword: string; confirmPassword: string };
+    const input = wf.resolveInput() as {
+      newPassword: string;
+      confirmPassword: string;
+    } & InlineConsentInput;
     if (input.newPassword !== input.confirmPassword) {
       throw wf.requireInput({ errors: { confirmPassword: "Passwords do not match" } });
     }
@@ -1195,6 +1279,11 @@ export class InviteWorkflow extends AuthWorkflowBase {
     } catch (err) {
       this.translatePasswordSetError(err);
     }
+    // SetPasswordForm `extends WithInlineConsentForm` — capture acceptedTerms
+    // + marketingOptIn inline. `processInlineConsent` silently ignores both
+    // when the matching `acceptance` policy is off (see its security gate),
+    // so the call is safe to make on every accept-tail invite run.
+    this.processInlineConsent(ctx, input, wf);
     ctx.passwordSet = true;
     return undefined;
   }
@@ -1339,6 +1428,53 @@ export class InviteWorkflow extends AuthWorkflowBase {
   @Public()
   inviteExtraStep(): unknown {
     return undefined;
+  }
+
+  // ── Phase B: persistConsents ──────────────────────────────────────────
+  /**
+   * Batched consent persistence — fans every consent event captured during
+   * this invite run (terms acceptance + marketing opt-in/out) out to the
+   * consumer's `persistConsents(username, events)` hook in one call.
+   * Idempotent via `ctx.consentsPersisted`; short-circuits with no events
+   * when neither gate fired but the schema still routed here (defensive —
+   * the schema condition normally filters this case).
+   */
+  @Step("persist-consents")
+  @Public()
+  async persistConsentsStep(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
+    this.requireUsername(ctx);
+    if (ctx.consentsPersisted) return undefined;
+    const events: ConsentEvent[] = [];
+    if (ctx.termsAcceptedDone && ctx.termsAcceptedVersion && ctx.termsAcceptedAt) {
+      events.push({
+        kind: "terms",
+        version: ctx.termsAcceptedVersion,
+        at: ctx.termsAcceptedAt,
+      });
+    }
+    if (ctx.pendingMarketingOptIn !== undefined && ctx.marketingDecidedAt) {
+      events.push({
+        kind: "marketing",
+        optIn: ctx.pendingMarketingOptIn,
+        at: ctx.marketingDecidedAt,
+      });
+    }
+    if (events.length === 0) {
+      ctx.consentsPersisted = true;
+      return undefined;
+    }
+    await this.persistConsents(ctx.username, events);
+    ctx.consentsPersisted = true;
+    return undefined;
+  }
+
+  /**
+   * Persist consent events collected during this invite run. Default: no-op.
+   * Override to write to your DB of choice — storage shape is intentionally
+   * the consumer's call.
+   */
+  protected async persistConsents(_username: string, _events: ConsentEvent[]): Promise<void> {
+    // No-op default.
   }
 
   // ── Phase B: unsetPendingInvitation ───────────────────────────────────

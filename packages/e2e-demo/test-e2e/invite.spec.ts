@@ -1256,3 +1256,82 @@ test.describe("WF-INVITE — auth.invite family (MFA enrollment, PW MFA coverage
     await ctx.close();
   });
 });
+
+// ── Phase-2 inline-consent on invite ─────────────────────────────────────────
+//
+// Mirrors WF-LOGIN-BUMP-01 in login.spec.ts. The `invite-terms` variant flips
+// `acceptance.termsVersion: 'v1'` so `SetPasswordForm` renders the
+// `acceptedTerms` checkbox during the accept tail. The post-form
+// `persist-consents` step batches the captured terms event into a single
+// `DemoInviteWorkflow.persistConsents` call, which appends to the SAME
+// globalThis-anchored consent log the login override writes to. The
+// `/__test/consent-log/:username` endpoint then returns the event for
+// assertion here. Without the new `processInlineConsent` call in
+// `createPasswordForm` (Phase-2 production change), the submitted
+// `acceptedTerms` would be stripped as a form-extra and the log would stay
+// empty.
+test.describe("WF-INVITE — inline-consent on accept (Phase 2)", () => {
+  test.beforeEach(async ({ request }) => {
+    await resetAppResilient(request);
+  });
+
+  test("WF-INVITE-CONSENT-01: invite-terms variant → SetPasswordForm shows acceptedTerms; tick + submit → consent-log carries kind:'terms' v1", async ({
+    page,
+    request,
+    baseURL,
+  }) => {
+    await loginViaUi(page, USERS.admin_inviter);
+    await page.goto(wfUrl("auth/invite/start", "invite-terms"));
+    await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
+
+    const inviteeEmail = uniqueEmail("invite-consent-01");
+    await fillField(page, "email", inviteeEmail);
+    const sentPromise = nextTriggerResponse(page, (b) => b.sent === true);
+    await submitForm(page);
+    await sentPromise;
+
+    const magic = await waitForEmail(
+      request,
+      (e) => e.kind === "invite.magicLink" && e.recipient === inviteeEmail,
+    );
+    const resumeUrl = rewriteToBaseUrl(magic.url as string, baseURL ?? "");
+    const ctx = await page.context().browser()!.newContext();
+    const inviteePage = await ctx.newPage();
+    await inviteePage.goto(resumeUrl);
+
+    // SetPasswordForm pause — `acceptedTerms` checkbox is visible BECAUSE
+    // the variant set `acceptance.termsVersion: 'v1'` (the inline-consent
+    // surface on `WithInlineConsentForm` hides when the policy is off).
+    await expect(inviteePage.locator('[name="newPassword"]')).toBeVisible({ timeout: 15_000 });
+    const termsBox = inviteePage.locator('input[type="checkbox"][name="acceptedTerms"]').first();
+    await expect(termsBox).toBeVisible();
+    await inviteePage.locator('[name="newPassword"]').fill("InviteePass-1!");
+    await inviteePage.locator('[name="confirmPassword"]').fill("InviteePass-1!");
+    await termsBox.check();
+    await submitForm(inviteePage);
+
+    // Profile pause — submit empty to advance.
+    await expect(inviteePage.getByText("Display name")).toBeVisible({ timeout: 15_000 });
+    await submitForm(inviteePage);
+
+    // Auto-login finish issues tokens — proof the workflow completed
+    // through the new `persist-consents` step.
+    await expect(inviteePage.locator("text=Workflow finished")).toBeVisible({ timeout: 15_000 });
+    await expect(inviteePage.locator("pre").first()).toContainText("accessToken");
+
+    // The unified consent log (fed by login + invite + recovery) carries the
+    // captured event. The username on the invite path is the email.
+    const after = await request.get(`/__test/consent-log/${encodeURIComponent(inviteeEmail)}`);
+    expect(after.status()).toBe(200);
+    const events = (await after.json()) as Array<{
+      kind: string;
+      version?: string;
+      at: number;
+    }>;
+    expect(events.length).toBe(1);
+    expect(events[0].kind).toBe("terms");
+    expect(events[0].version).toBe("v1");
+    expect(typeof events[0].at).toBe("number");
+    await ctx.close();
+  });
+});

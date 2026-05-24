@@ -361,6 +361,17 @@ export const RECOVERY_VARIANTS: Record<string, RecoveryVariant> = {
     authOpts: { mfa: { pincodeResendTimeoutMs: 1000 } },
     policy: { delivery: { mode: "otp", otpTransports: ["email"] } },
   },
+  // Phase-2 inline-consent on recovery — `acceptance.termsVersion: 'v2'`
+  // drives a terms-bump prompt on `SetPasswordForm`. Drives
+  // WF-RECOVERY-CONSENT-01. Terms-bump is the headline recovery scenario for
+  // inline consent ("since you last set your password we updated our terms");
+  // marketing re-prompt during a password reset is unusual UX and stays off.
+  "recovery-terms-bump": {
+    policy: {
+      delivery: { mode: "magicLink", otpTransports: ["email"] },
+      acceptance: { termsVersion: "v2", consentMarketing: false },
+    },
+  },
 };
 
 /**
@@ -447,6 +458,19 @@ export const INVITE_VARIANTS: Record<string, InviteVariant> = {
       send: { mode: "email" },
     },
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["sms", "email", "totp"] },
+  },
+  // Phase-2 inline-consent on invite — `acceptance.termsVersion: 'v1'` drives
+  // the `acceptedTerms` checkbox on `SetPasswordForm` during the accept tail.
+  // Drives WF-INVITE-CONSENT-01. Invite is the headline-value scenario for
+  // consent collection after login (new user onboarding). `mfaMode: 'disabled'`
+  // so the test stays focused on the consent path without an MFA pause.
+  "invite-terms": {
+    policy: {
+      adminForm: { collectRoles: false },
+      send: { mode: "email" },
+      acceptance: { termsVersion: "v1", consentMarketing: false },
+    },
+    mfaCtx: { mfaMode: "disabled" },
   },
 };
 

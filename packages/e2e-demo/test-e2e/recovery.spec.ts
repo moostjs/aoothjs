@@ -738,3 +738,83 @@ test.describe("recovery — default-magiclink (R-A) P2 audit", () => {
     expect(completed?.userId).toBe(USERS.alice.username);
   });
 });
+
+// ── Phase-2 inline-consent on recovery ───────────────────────────────────────
+//
+// Mirrors WF-LOGIN-BUMP-01 + WF-INVITE-CONSENT-01. The `recovery-terms-bump`
+// variant flips `acceptance.termsVersion: 'v2'` so `SetPasswordForm` renders
+// the `acceptedTerms` checkbox on the recovery completion form. The post-form
+// `persist-consents` step batches the captured terms event into one
+// `DemoRecoveryWorkflow.persistConsents` call, which appends to the SAME
+// globalThis consent log fed by login + invite. The `/__test/consent-log/:username`
+// endpoint returns the event for assertion here. Without the new
+// `processInlineConsent` call in `setPassword` (Phase-2 production change),
+// the submitted `acceptedTerms` would be a stripped form-extra and the log
+// would stay empty.
+test.describe("recovery — inline-consent (Phase 2)", () => {
+  test.beforeEach(async ({ request }) => {
+    await resetApp(request);
+  });
+
+  test("WF-RECOVERY-CONSENT-01: recovery-terms-bump variant → SetPasswordForm shows acceptedTerms; tick + submit → consent-log carries kind:'terms' v2", async ({
+    page,
+    request,
+    baseURL,
+  }) => {
+    // The consent log keys by the resolved username, which is what
+    // `emailToUserId(ALICE_EMAIL)` returns — for alice in this demo that's
+    // `t1_alice`, not the email. Mirrors how WF-LOGIN-BUMP-01 reads the log
+    // by `t1_frank` (not an email).
+    const username = USERS.alice.username;
+
+    // Sanity: consent log starts empty for alice.
+    const before = await request.get(`/__test/consent-log/${encodeURIComponent(username)}`);
+    expect(before.status()).toBe(200);
+    expect((await before.json()) as unknown[]).toEqual([]);
+
+    await page.goto(wfUrl("auth/recovery/flow", "recovery-terms-bump"));
+
+    // Phase 1 — EmailIdentifierForm.
+    await waitForFormInput(page, "email", 15_000);
+    await fillField(page, "email", ALICE_EMAIL);
+    await submitForm(page);
+
+    // Magic link → resume.
+    const email = await waitForEmail(request, (e) => e.kind === "recovery.magicLink");
+    expect(email.recipient).toBe(ALICE_EMAIL);
+    await page.goto(rewriteToBaseUrl(email.url as string, baseURL ?? ""));
+
+    // SetPasswordForm — `acceptedTerms` checkbox visible because the variant
+    // set `acceptance.termsVersion: 'v2'`.
+    await waitForFormInput(page, "newPassword", 15_000);
+    const termsBox = page.locator('input[type="checkbox"][name="acceptedTerms"]').first();
+    await expect(termsBox).toBeVisible();
+    await fillField(page, "newPassword", NEW_PASSWORD);
+    await fillField(page, "confirmPassword", NEW_PASSWORD);
+    await termsBox.check();
+    await submitForm(page);
+
+    // Workflow finishes with tokens — proof recovery completed through the
+    // new `persist-consents` step.
+    await expect(page.getByText("Workflow finished.")).toBeVisible();
+    const envelope = (await readFinishEnvelope(page)) as {
+      finished?: boolean;
+      data?: { accessToken?: string };
+    };
+    expect(envelope.finished).toBe(true);
+    expect(envelope.data?.accessToken, "auto-login issues tokens after reset").toBeTruthy();
+
+    // Unified consent log carries the captured event.
+    const after = await request.get(`/__test/consent-log/${encodeURIComponent(username)}`);
+    expect(after.status()).toBe(200);
+    const events = (await after.json()) as Array<{
+      kind: string;
+      version?: string;
+      at: number;
+    }>;
+    expect(events.length).toBe(1);
+    expect(events[0].kind).toBe("terms");
+    expect(events[0].version).toBe("v2");
+    expect(typeof events[0].at).toBe("number");
+  });
+});
