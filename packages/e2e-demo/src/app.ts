@@ -348,9 +348,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     // and supplies `mfaCtx.<field>`, force it onto ctx (after the base setter
     // ran). Otherwise the demo's default takes over: `mfaMode: 'disabled'`
     // (most seeded users have no MFA enrolled and the e2e harness's `loginAs`
-    // helper expects to finish login without a prompt). When a variant IS
-    // active but its `mfaCtx` is empty, the base setter's defaults stand —
-    // we only force `disabled` when there is no variant at all.
+    // helper expects to finish login without a prompt). This default fires
+    // BOTH when no variant is active (UI tests) AND when an active variant
+    // omits `mfaCtx` (e.g. `acceptance` / `concurrency` / `multi-context` /
+    // `redirect-home` / `choice` — variants exercising non-MFA concerns that
+    // need MFA out of the flow so the test step reaches the form under test
+    // without an MFA prompt blocking it).
     @Step("prepareMfaSetup")
     @Public()
     override prepareMfaSetup(
@@ -360,8 +363,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       const apply = (): undefined => {
         const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
         const v = variant?.mfaCtx;
-        if (v?.mfaMode !== undefined) ctx.mfaMode = v.mfaMode;
-        else if (!variant) ctx.mfaMode = "disabled";
+        ctx.mfaMode = v?.mfaMode ?? "disabled";
         if (v?.availableMfaTransports !== undefined) {
           ctx.availableMfaTransports = [...v.availableMfaTransports];
         }
