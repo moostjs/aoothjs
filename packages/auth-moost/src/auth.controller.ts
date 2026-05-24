@@ -19,7 +19,11 @@ import { WfTrigger } from "./wf-trigger/decorator";
 import { buildInviteAlreadyAcceptedEnvelope } from "./workflows/invite.workflow";
 
 /** Workflows allowed by the bundled `/auth/trigger` endpoint. Subclasses override `triggerWf()` to extend. */
-export const DEFAULT_AUTH_WORKFLOWS = ["auth.login", "auth.recovery", "auth.invite"] as const;
+export const DEFAULT_AUTH_WORKFLOWS = [
+  "auth/login/flow",
+  "auth/recovery/flow",
+  "auth/invite/start",
+] as const;
 
 /** Prefer an explicit body field, fall back to the refresh cookie when enabled. */
 function resolveRefreshToken(auth: AuthBindings, body: { refreshToken?: string } | undefined) {
@@ -34,8 +38,8 @@ function resolveRefreshToken(auth: AuthBindings, body: { refreshToken?: string }
  * - `POST /auth/logout` — best-effort token revocation + cookie clear.
  * - `POST /auth/refresh` — rotate access/refresh tokens.
  * - `GET /auth/status` — return the current `AuthContext`.
- * - `POST /auth/trigger` — single workflow trigger covering `auth.login`,
- *   `auth.recovery`, and `auth.invite`.
+ * - `POST /auth/trigger` — single workflow trigger covering `auth/login/flow`,
+ *   `auth/recovery/flow`, and `auth/invite/start`.
  *
  * The historical `/auth/login` and `/auth/password` endpoints were dropped —
  * both flows go through the workflow trigger now (full MFA / SSO / etc.

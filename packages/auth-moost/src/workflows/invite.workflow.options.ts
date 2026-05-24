@@ -2,14 +2,11 @@
  * `InviteWorkflowOpts` — infrastructure-only nested-pojo configuration for
  * `InviteWorkflow`.
  *
- * Phase 5 of the workflow OOP-reshape (Step 2 of the InviteWorkflow refactor):
- * policy fields (`adminForm.collectRoles`, `send.mode`, `accept.*`,
- * `cancellation.allowed`, `audit.enabled`, `mfa.issuer`) have moved off opts
- * and onto protected `resolveXxx(ctx)` getter methods on `InviteWorkflow` (one
- * per group), mirroring `LoginWorkflow`. What remains here is infrastructure
- * only: magic-link TTL, pincode timers/length, and the form schemas. Step
- * bodies + schema conditions read policy from `ctx.<group>` (populated by
- * `prepare-<group>` @Step methods that call the resolvers).
+ * Post-`AuthOpts` reshape: cross-workflow infrastructure (magic-link TTL,
+ * pincode timers/length, TOTP issuer) moved onto the shared `AuthOpts` DI
+ * provider — see `auth.opts.ts`. What remains here is invite-specific
+ * infrastructure only: the form-schema replacement map. Policy still lives on
+ * the `resolveXxx(ctx)` getter surface on `InviteWorkflow`.
  *
  * Rate limiting will be addressed systematically in a later pass — for now
  * consumers who want a cap wire it themselves at the trigger / HTTP layer.
@@ -51,15 +48,6 @@ export type DuplicateAction = "allow" | "reject" | "reuseAsReInvite";
 export type InviteSendMode = "email" | "shareableLink" | "choice";
 
 export interface InviteWorkflowOpts {
-  send?: {
-    tokenTtlMs?: number;
-  };
-  mfa?: {
-    pincodeTtlMs?: number;
-    /** Per-method resend cooldown for the Phase 3 confirm pincode (sms/email). Default: 60_000. */
-    pincodeResendTimeoutMs?: number;
-    pincodeLength?: number;
-  };
   /**
    * Replaceable form schemas. Each field defaults to the corresponding
    * `.as` form shipped under `@aooth/auth-moost/atscript/models`.
@@ -81,14 +69,6 @@ export interface InviteWorkflowOpts {
  * `this.opts.<group>.<flag>` directly without optional chaining.
  */
 export interface ResolvedInviteWorkflowOpts {
-  send: {
-    tokenTtlMs: number;
-  };
-  mfa: {
-    pincodeTtlMs: number;
-    pincodeResendTimeoutMs: number;
-    pincodeLength: number;
-  };
   forms: {
     enrollAddress: TAtscriptAnnotatedType;
     enrollConfirm: TAtscriptAnnotatedType;
@@ -107,16 +87,6 @@ export interface ResolvedInviteWorkflowOpts {
  */
 export function mergeInviteOpts(opts: InviteWorkflowOpts = {}): ResolvedInviteWorkflowOpts {
   return {
-    send: {
-      tokenTtlMs: DEFAULT_INVITE_TOKEN_TTL_MS,
-      ...opts.send,
-    },
-    mfa: {
-      pincodeTtlMs: 5 * 60 * 1000,
-      pincodeResendTimeoutMs: 60_000,
-      pincodeLength: 6,
-      ...opts.mfa,
-    },
     forms: {
       enrollAddress: EnrollAddressForm as unknown as TAtscriptAnnotatedType,
       enrollConfirm: EnrollConfirmForm as unknown as TAtscriptAnnotatedType,

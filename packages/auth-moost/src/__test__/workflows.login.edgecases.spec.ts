@@ -23,7 +23,7 @@ describe("LoginWorkflow edge cases — credentials guards", () => {
     // that switches to per-field errors trips this test.
     const app = await prepareWfApp();
     await seedActiveUser(app.users, "alice", "Password123");
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Wrong0000" },
@@ -38,7 +38,7 @@ describe("LoginWorkflow edge cases — credentials guards", () => {
   it("unknown username → same form error key/value as wrong password (anti-enumeration)", async () => {
     const app = await prepareWfApp();
     await seedActiveUser(app.users, "alice", "Password123");
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "ghost", password: "Password123" },
@@ -62,7 +62,7 @@ describe("LoginWorkflow edge cases — MFA", () => {
     const secret = generateTotpSecret();
     await app.users.addMfaMethod("alice", { name: "totp", value: secret, confirmed: true });
 
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     let last = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -94,7 +94,7 @@ describe("LoginWorkflow edge cases — MFA", () => {
     const codes = await app.users.generateBackupCodes("alice", 2);
     const [first, second] = codes;
 
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const cred1 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -109,7 +109,7 @@ describe("LoginWorkflow edge cases — MFA", () => {
     });
     expect((consume1.body?.data as Record<string, unknown>)?.userId).toBe("alice");
 
-    const r2 = await app.trigger({ wfid: "auth.login" });
+    const r2 = await app.trigger({ wfid: "auth/login/flow" });
     const cred2 = await app.trigger({
       wfs: r2.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -124,7 +124,7 @@ describe("LoginWorkflow edge cases — MFA", () => {
     });
     expect((consume2.body?.errors as Record<string, string>)?.code).toMatch(/Invalid backup code/);
 
-    const r3 = await app.trigger({ wfid: "auth.login" });
+    const r3 = await app.trigger({ wfid: "auth/login/flow" });
     const cred3 = await app.trigger({
       wfs: r3.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -151,7 +151,7 @@ describe("LoginWorkflow edge cases — MFA", () => {
       confirmed: true,
     });
 
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const cred = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -181,7 +181,7 @@ describe("LoginWorkflow edge cases — MFA", () => {
       value: "alice@example.com",
       confirmed: true,
     });
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const cred = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -211,7 +211,7 @@ describe("LoginWorkflow edge cases — JSON-safety of opts snapshot", () => {
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     expect(r1.body?.wfs).toBeTruthy(); // first pause → state was persisted
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
@@ -235,7 +235,7 @@ describe("LoginWorkflow edge cases — silent-audit fallback", () => {
       auditEmitter: { emit: () => undefined },
     });
     await seedActiveUser(app.users, "alice", "Password123");
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },

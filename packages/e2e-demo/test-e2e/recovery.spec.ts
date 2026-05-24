@@ -57,7 +57,7 @@ test.describe("recovery — default-magiclink (R-A)", () => {
     request,
     baseURL,
   }) => {
-    await page.goto(wfUrl("auth.recovery", "default-magiclink"));
+    await page.goto(wfUrl("auth/recovery/flow", "default-magiclink"));
 
     // Phase 1 — EmailIdentifierForm
     await waitForFormInput(page, "email", 15_000);
@@ -100,7 +100,7 @@ test.describe("recovery — default-magiclink (R-A)", () => {
     page,
     request,
   }) => {
-    await page.goto(wfUrl("auth.recovery", "default-magiclink"));
+    await page.goto(wfUrl("auth/recovery/flow", "default-magiclink"));
 
     await waitForFormInput(page, "email", 15_000);
     await fillField(page, "email", "ghost@nowhere.test");
@@ -131,7 +131,7 @@ test.describe("recovery — otp-email (R-B)", () => {
     page,
     request,
   }) => {
-    await page.goto(wfUrl("auth.recovery", "otp-email"));
+    await page.goto(wfUrl("auth/recovery/flow", "otp-email"));
 
     await waitForFormInput(page, "email", 15_000);
     await fillField(page, "email", ALICE_EMAIL);
@@ -176,7 +176,7 @@ test.describe("recovery — otp-sms (R-C)", () => {
     page,
     request,
   }) => {
-    await page.goto(wfUrl("auth.recovery", "otp-sms"));
+    await page.goto(wfUrl("auth/recovery/flow", "otp-sms"));
 
     // `t1_ivy` is seeded with SMS MFA confirmed on +15555550101 — see seed.ts.
     // RecoveryWorkflow.emailToUserId maps email → username; in this demo the
@@ -213,7 +213,7 @@ test.describe("recovery — choice (R-E)", () => {
   });
 
   test("WF-RECOVERY-012: choice mode → pick magicLink → email sent", async ({ page, request }) => {
-    await page.goto(wfUrl("auth.recovery", "choice"));
+    await page.goto(wfUrl("auth/recovery/flow", "choice"));
 
     await waitForFormInput(page, "email", 15_000);
     await fillField(page, "email", ALICE_EMAIL);
@@ -244,7 +244,7 @@ test.describe("recovery — fresh-login (R-G)", () => {
     request,
     baseURL,
   }) => {
-    await page.goto(wfUrl("auth.recovery", "fresh-login"));
+    await page.goto(wfUrl("auth/recovery/flow", "fresh-login"));
 
     await waitForFormInput(page, "email", 15_000);
     await fillField(page, "email", ALICE_EMAIL);
@@ -294,7 +294,7 @@ test.describe("recovery — default-magiclink P1 branches", () => {
     // BRANCH: setPassword step's `newPassword !== confirmPassword` guard —
     // workflow throws `requireInput({ errors: { confirmPassword: ... } })`
     // which AsWfForm renders next to the confirmPassword field.
-    await page.goto(wfUrl("auth.recovery", "default-magiclink"));
+    await page.goto(wfUrl("auth/recovery/flow", "default-magiclink"));
     await waitForFormInput(page, "email", 15_000);
     await fillField(page, "email", ALICE_EMAIL);
     await submitForm(page);
@@ -320,7 +320,7 @@ test.describe("recovery — default-magiclink P1 branches", () => {
     // expired state → controller responds 410 `{ error: "Invalid or expired
     // workflow state" }`. AsWfForm surfaces a non-ok response as `error.value`
     // which WfPage renders inside the `scope-error` div.
-    await page.goto(wfUrl("auth.recovery", "recovery-short-ttl"));
+    await page.goto(wfUrl("auth/recovery/flow", "recovery-short-ttl"));
     await waitForFormInput(page, "email", 15_000);
     await fillField(page, "email", ALICE_EMAIL);
     await submitForm(page);
@@ -334,7 +334,7 @@ test.describe("recovery — default-magiclink P1 branches", () => {
     // Rebuild the resume URL so the `recovery-short-ttl` variant header is
     // re-sent on the resume request (`rewriteToBaseUrl` would strip it).
     // `page.goto` resolves the relative URL against playwright's `use.baseURL`.
-    await page.goto(`${wfUrl("auth.recovery", "recovery-short-ttl")}&wfs=${wfs}`);
+    await page.goto(`${wfUrl("auth/recovery/flow", "recovery-short-ttl")}&wfs=${wfs}`);
 
     // SetPasswordForm must NOT appear; the error block must be shown.
     await expect(page.locator(".as-wf-form-error, .scope-error")).toBeVisible({ timeout: 5_000 });
@@ -348,7 +348,7 @@ test.describe("recovery — default-magiclink P1 branches", () => {
     // form validation. `abortToLogin` calls `finishWf({ next: { action: {
     // type:'redirect', reason:'user-cancelled' } } })` and sets ctx.aborted
     // so every downstream step short-circuits.
-    await page.goto(wfUrl("auth.recovery", "default-magiclink"));
+    await page.goto(wfUrl("auth/recovery/flow", "default-magiclink"));
     await waitForFormInput(page, "email", 15_000);
     // Click the `Back to sign-in` action — no email value needed since the
     // action is resolved before required-field validation.
@@ -380,7 +380,7 @@ test.describe("recovery — otp-email P1 branches", () => {
     // `recoveryInit` mirrors `opts.delivery.otp.transports.length` into
     // `ctx.recoveryTransportCount`, so a single-transport variant hides the
     // alt-action button entirely.
-    await page.goto(wfUrl("auth.recovery", "otp-email"));
+    await page.goto(wfUrl("auth/recovery/flow", "otp-email"));
     await waitForFormInput(page, "email", 15_000);
     await fillField(page, "email", ALICE_EMAIL);
     await submitForm(page);
@@ -398,7 +398,7 @@ test.describe("recovery — otp-email P1 branches", () => {
     // BRANCH: `recoveryCheckOtp` → `verifyPin` returns `{ code: "Invalid
     // code" }` for any pin !== ctx.pin. The error is rendered inline next to
     // the `code` field via AsWfForm's per-field error map.
-    await page.goto(wfUrl("auth.recovery", "otp-email"));
+    await page.goto(wfUrl("auth/recovery/flow", "otp-email"));
     await waitForFormInput(page, "email", 15_000);
     await fillField(page, "email", ALICE_EMAIL);
     await submitForm(page);
@@ -430,7 +430,7 @@ test.describe("recovery — fast-resend P1 branches", () => {
     // BRANCH: `recoveryCheckOtp` `resend` action checks `ctx.pinResendAllowedAt`
     // and throws `requireInput({ formMessage: 'Please wait Ns' })` when still
     // inside the cooldown. The mailbox must NOT gain a second pincode email.
-    await page.goto(wfUrl("auth.recovery", "recovery-fast-resend"));
+    await page.goto(wfUrl("auth/recovery/flow", "recovery-fast-resend"));
     await waitForFormInput(page, "email", 15_000);
     await fillField(page, "email", ALICE_EMAIL);
     await submitForm(page);
@@ -456,7 +456,7 @@ test.describe("recovery — fast-resend P1 branches", () => {
     // BRANCH: same `resend` action — after the cooldown elapses the action
     // deletes `ctx.pin` and the while-loop re-fires `sendOtp`, minting a
     // fresh code and re-delivering. Mailbox ends up with 2 pincode emails.
-    await page.goto(wfUrl("auth.recovery", "recovery-fast-resend"));
+    await page.goto(wfUrl("auth/recovery/flow", "recovery-fast-resend"));
     await waitForFormInput(page, "email", 15_000);
     await fillField(page, "email", ALICE_EMAIL);
     await submitForm(page);
@@ -500,7 +500,7 @@ test.describe("recovery — otp-both (R-D) P1 branches", () => {
     // re-runs `recoverySendOtp` on the new channel. Mailbox: 1 email
     // pincode + 1 sms pincode. Uses t1_ivy because she has a confirmed phone
     // (+15555550101) so the SMS deliver has a real recipient.
-    await page.goto(wfUrl("auth.recovery", "otp-both"));
+    await page.goto(wfUrl("auth/recovery/flow", "otp-both"));
     await waitForFormInput(page, "email", 15_000);
     await fillField(page, "email", "ivy@acme.test");
     await submitForm(page);
@@ -532,7 +532,7 @@ test.describe("recovery — choice (R-E) P1 branches", () => {
     // selects the default OTP transport (`email` per merge defaults). The
     // schema's while-loop then runs sendOtp + checkOtp, so the next form is
     // PincodeForm rather than SetPasswordForm.
-    await page.goto(wfUrl("auth.recovery", "choice"));
+    await page.goto(wfUrl("auth/recovery/flow", "choice"));
     await waitForFormInput(page, "email", 15_000);
     await fillField(page, "email", ALICE_EMAIL);
     await submitForm(page);
@@ -566,7 +566,7 @@ test.describe("recovery — pre-factor (R-F) P1 branches", () => {
     // enrolled with phone +15555550101, so submitting factor='phone' value=
     // last-4 '0101' should pass `verifyRecoveryFactor` and advance to the
     // setPassword step.
-    await page.goto(wfUrl("auth.recovery", "pre-factor"));
+    await page.goto(wfUrl("auth/recovery/flow", "pre-factor"));
     await waitForFormInput(page, "email", 15_000);
     await fillField(page, "email", "ivy@acme.test");
     await submitForm(page);
@@ -608,7 +608,7 @@ test.describe("recovery — pre-factor (R-F) P2 branches", () => {
     // which factor was attempted (no enumeration). The variant `pre-factor`
     // inherits demoRecoveryOpts' default `delivery.mode: 'magicLink'`, so
     // the factor step runs AFTER the magic-link click (resume path).
-    await page.goto(wfUrl("auth.recovery", "pre-factor"));
+    await page.goto(wfUrl("auth/recovery/flow", "pre-factor"));
     await waitForFormInput(page, "email", 15_000);
     await fillField(page, "email", "ivy@acme.test");
     await submitForm(page);
@@ -669,7 +669,7 @@ test.describe("recovery — fresh-login (R-G) P2 branches", () => {
     // The recovery workflow is @Public() so it doesn't need auth; the resume
     // happens anonymously. After setPassword the revokeSessions step runs and
     // bumps the epoch on alice.
-    await page.goto(wfUrl("auth.recovery", "fresh-login"));
+    await page.goto(wfUrl("auth/recovery/flow", "fresh-login"));
     await waitForFormInput(page, "email", 15_000);
     await fillField(page, "email", ALICE_EMAIL);
     await submitForm(page);
@@ -710,7 +710,7 @@ test.describe("recovery — default-magiclink (R-A) P2 audit", () => {
     //     after `passwordChanged === true`.
     // The demo's `DemoRecoveryWorkflow.audit()` override pushes into the
     // globalThis-anchored buffer; `/__test/audit` returns it.
-    await page.goto(wfUrl("auth.recovery", "default-magiclink"));
+    await page.goto(wfUrl("auth/recovery/flow", "default-magiclink"));
     await waitForFormInput(page, "email", 15_000);
     await fillField(page, "email", ALICE_EMAIL);
     await submitForm(page);

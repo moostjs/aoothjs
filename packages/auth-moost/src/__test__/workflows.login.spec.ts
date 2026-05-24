@@ -7,7 +7,7 @@ import { prepareWfApp, seedActiveUser, withLoginMfaCtx } from "./workflow-utils"
 /**
  * Wire trace for the login workflow:
  *
- * 1. `POST /wf/trigger { wfid: 'auth.login' }`
+ * 1. `POST /wf/trigger { wfid: 'auth/login/flow' }`
  *    → step `credentials` returns `outletHttp(formSchema, ctx)` → HTTP outlet
  *      flattens to body = `{ ...formSchema, ...ctx, wfs: '<token>' }`.
  * 2. `POST /wf/trigger { wfs, input: { username, password } }`
@@ -31,7 +31,7 @@ describe("LoginWorkflow", () => {
     });
     await seedActiveUser(app.users, "alice", "Password123");
 
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     expect(r1.status).toBe(201);
     expect(typeof r1.body?.wfs).toBe("string");
     const wfs1 = r1.body?.wfs as string;
@@ -57,7 +57,7 @@ describe("LoginWorkflow", () => {
     const app = await prepareWfApp();
     await seedActiveUser(app.users, "alice", "Password123");
 
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const wfs1 = r1.body?.wfs as string;
 
     const r2 = await app.trigger({
@@ -75,7 +75,7 @@ describe("LoginWorkflow", () => {
   it("re-renders credentials form on unknown user (no enumeration)", async () => {
     const app = await prepareWfApp();
     await seedActiveUser(app.users, "alice", "Password123");
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "ghost", password: "Password123" },
@@ -89,7 +89,7 @@ describe("LoginWorkflow", () => {
     await seedActiveUser(app.users, "alice", "Password123");
     await app.users.lockAccount("alice", "manual");
 
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -102,7 +102,7 @@ describe("LoginWorkflow", () => {
     // createUser without activateAccount → account.active === false
     await app.users.createUser("inactive_user", "Password123");
 
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "inactive_user", password: "Password123" },
@@ -118,7 +118,7 @@ describe("LoginWorkflow", () => {
     const secret = generateTotpSecret();
     await app.users.addMfaMethod("alice", { name: "totp", value: secret, confirmed: true });
 
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -140,7 +140,7 @@ describe("LoginWorkflow", () => {
     const secret = generateTotpSecret();
     await app.users.addMfaMethod("alice", { name: "totp", value: secret, confirmed: true });
 
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -155,7 +155,7 @@ describe("LoginWorkflow", () => {
 
   it("validates form input on missing fields", async () => {
     const app = await prepareWfApp();
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "", password: "" },

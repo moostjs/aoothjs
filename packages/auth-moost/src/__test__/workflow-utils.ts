@@ -17,6 +17,7 @@ for (const key of [
 
 import { AuthCredential, type AuthCredentialOptions, CredentialStoreMemory } from "@aooth/auth";
 import { UserService, type UserServiceConfig, UserStoreMemory } from "@aooth/user";
+import { AuthOpts } from "../auth.opts";
 import { handleAsOutletRequest, type WfFinished } from "@atscript/moost-wf";
 import { Body, MoostHttp, Post } from "@moostjs/event-http";
 import {
@@ -122,9 +123,29 @@ export interface PreparedWfApp {
   resumeViaQuery: (token: string, body?: WfRequestBody) => Promise<WfResponse>;
 }
 
+/**
+ * Partial override for the singleton `AuthOpts` provider. The harness builds
+ * a fresh `AuthOpts` instance and shallow-merges supplied fields onto it.
+ * The nested `mfa` group is deep-merged (one level) so callers can flip a
+ * single pincode field without spelling out the other defaults.
+ */
+export interface AuthOptsOverrides {
+  mfa?: Partial<AuthOpts["mfa"]>;
+  magicLinkTtlMs?: number;
+  loginUrl?: string;
+  totpIssuer?: string;
+}
+
 export interface PrepareWfOpts {
   authOptions?: Partial<AuthCredentialOptions<Record<string, unknown>>>;
   userConfig?: UserServiceConfig;
+  /**
+   * Override the cross-workflow `AuthOpts` defaults (pincode timers,
+   * magic-link TTL, login URL, TOTP issuer). When supplied as a partial, the
+   * harness merges it onto a fresh `AuthOpts` instance; nested `mfa` group is
+   * replaced wholesale. Pass an `AuthOpts` instance to use it verbatim.
+   */
+  authOpts?: AuthOpts | AuthOptsOverrides;
   /**
    * Override the in-memory user store. Used by regression tests that simulate
    * strict-schema persistence (e.g. atscript-db rejecting unknown columns) to
@@ -176,8 +197,9 @@ export interface PrepareWfOpts {
    * Consumer subclass of `LoginWorkflow` registered in place of the base
    * class. Use this when a test needs to override a `protected` method
    * (`resolveRiskStepUp`, `resolveRecoveryUrl`, `resolveRedirect`, etc.). The
-   * subclass MUST re-apply `@Inherit() @Controller()`
-   * and re-declare the ctor signature — see TASKS.md §"Probe outcomes".
+   * subclass MUST re-apply `@Inherit() @Controller("auth/login")` (the
+   * explicit prefix is load-bearing — see the base class JSDoc) and
+   * re-declare the ctor signature — see TASKS.md §"Probe outcomes".
    */
   loginWorkflowClass?: typeof LoginWorkflow;
   /**
@@ -207,10 +229,10 @@ export interface PrepareWfOpts {
    */
   auditEmitter?: AuditEmitter;
   /**
-   * Nested-pojo opts handed to `RecoveryWorkflow`'s constructor. Post-resolver
-   * reshape this is infrastructure-only (magic-link TTL, OTP codeLength/ttlMs/
-   * resendCooldownMs, forms); policy moved to the `resolveXxx(ctx)` getter
-   * surface — use `recoveryPolicy` below.
+   * Nested-pojo opts handed to `RecoveryWorkflow`'s constructor. Post-AuthOpts
+   * reshape this is forms-only (magic-link TTL + OTP pincode timers moved onto
+   * `AuthOpts` — override via `authOpts` above); policy lives on the
+   * `resolveXxx(ctx)` getter surface — use `recoveryPolicy` below.
    */
   recoveryOpts?: RecoveryWorkflowOpts;
   /**
@@ -228,8 +250,9 @@ export interface PrepareWfOpts {
    * Consumer subclass of `RecoveryWorkflow` registered in place of the base
    * class. Use this when a test needs to override a `protected` method
    * (`emailToUserId`, `verifyRecoveryFactor`). The subclass MUST re-apply
-   * `@Inherit() @Controller()` and re-declare the
-   * ctor signature — see the Phase-2 LoginWorkflow subclass spec for shape.
+   * `@Inherit() @Controller("auth/recovery")` (the explicit prefix is
+   * load-bearing — see the base class JSDoc) and re-declare the ctor
+   * signature — see the Phase-2 LoginWorkflow subclass spec for shape.
    */
   recoveryWorkflowClass?: typeof RecoveryWorkflow;
   /**
@@ -252,8 +275,9 @@ export interface PrepareWfOpts {
    * Consumer subclass of `InviteWorkflow` registered in place of the base
    * class. Use this when a test needs to override a `protected` method
    * (`prepareUser`, `applyProfile`, `duplicateCheck`, `getProfileForm`, …).
-   * The subclass MUST re-apply `@Inherit() @Controller()`
-   * and re-declare the ctor signature.
+   * The subclass MUST re-apply `@Inherit() @Controller("auth/invite")` (the
+   * explicit prefix is load-bearing — see the base class JSDoc) and
+   * re-declare the ctor signature.
    */
   inviteWorkflowClass?: typeof InviteWorkflow;
   /**
@@ -345,6 +369,34 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
   const recoveryTokenTtlMs = opts.recoveryTokenTtlMs ?? DEFAULT_RECOVERY_TOKEN_TTL_MS;
   const inviteTokenTtlMs = opts.inviteTokenTtlMs ?? DEFAULT_INVITE_TOKEN_TTL_MS;
 
+  // Build the cross-workflow `AuthOpts` singleton instance. The `recoveryTokenTtlMs`
+  // / `inviteTokenTtlMs` harness knobs feed BOTH the magic-link outlet TTL
+  // (used by `createAuthEmailOutlet`'s `magicLinkTtlMs(kind)` callback below —
+  // still per-kind because the outlet expires its own state-store row) AND
+  // the workflow-side `AuthOpts.magicLinkTtlMs` (read by
+  // `recovery-send-magic-link` / `invite-send-email`). The workflow side is now
+  // a single knob shared across all three workflows; take the minimum of the
+  // two harness values so a test that shrinks ONE of them (the expiry tests
+  // pass `recoveryTokenTtlMs: 1000` / `inviteTokenTtlMs: 1000`) still gets the
+  // short window on the workflow side. Per-test `opts.authOpts` overrides win.
+  const authOpts = new AuthOpts();
+  authOpts.magicLinkTtlMs = Math.min(recoveryTokenTtlMs, inviteTokenTtlMs);
+  const overrideAuthOpts = opts.authOpts;
+  if (overrideAuthOpts) {
+    if (overrideAuthOpts instanceof AuthOpts) {
+      Object.assign(authOpts, overrideAuthOpts);
+    } else {
+      if (overrideAuthOpts.mfa) authOpts.mfa = { ...authOpts.mfa, ...overrideAuthOpts.mfa };
+      if (overrideAuthOpts.magicLinkTtlMs !== undefined) {
+        authOpts.magicLinkTtlMs = overrideAuthOpts.magicLinkTtlMs;
+      }
+      if (overrideAuthOpts.loginUrl !== undefined) authOpts.loginUrl = overrideAuthOpts.loginUrl;
+      if (overrideAuthOpts.totpIssuer !== undefined) {
+        authOpts.totpIssuer = overrideAuthOpts.totpIssuer;
+      }
+    }
+  }
+
   const loginOpts: LoginWorkflowOpts = opts.loginOpts ?? {};
   const registerSms = opts.registerSmsSender !== false;
   const registerEmail = opts.registerEmailSender !== false;
@@ -380,11 +432,17 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     registerEmail,
     registerSms,
     auditEmitter,
-  }) as unknown as new (users: UserService, auth: AuthCredential) => LoginWorkflow;
+  }) as unknown as new (
+    users: UserService,
+    auth: AuthCredential,
+    authOpts: AuthOpts,
+  ) => LoginWorkflow;
 
-  const recoveryOpts: RecoveryWorkflowOpts = opts.recoveryOpts ?? {
-    delivery: { magicLinkTtlMs: recoveryTokenTtlMs },
-  };
+  // `recoveryOpts` is now forms-only after the AuthOpts reshape (magic-link
+  // TTL + OTP timers moved onto `AuthOpts`); the test-harness magic-link TTL
+  // is wired through `authOpts.magicLinkTtlMs` above and the email-outlet
+  // `magicLinkTtlMs` callback below.
+  const recoveryOpts: RecoveryWorkflowOpts = opts.recoveryOpts ?? {};
   const RecoveryCtor = buildHarnessRecoveryClass({
     base: opts.recoveryWorkflowClass ?? RecoveryWorkflow,
     opts: recoveryOpts,
@@ -397,10 +455,13 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     registerSms,
     auditEmitter,
     emailToUserId: opts.emailToUserId,
-  }) as unknown as new (users: UserService, auth: AuthCredential) => RecoveryWorkflow;
+  }) as unknown as new (
+    users: UserService,
+    auth: AuthCredential,
+    authOpts: AuthOpts,
+  ) => RecoveryWorkflow;
 
   // Test-harness defaults:
-  //   - `send.tokenTtlMs` — fast magic-link expiry tweak (overridable via inviteOpts).
   //   - `accept.showConfirmation: false` — most tests assert the auto-login
   //     response shape directly, pre-dating the BIG 3.3 confirmation pause.
   //     Lives in the harness's `resolveAccept` override now (post-resolver
@@ -413,13 +474,10 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
   //     base setter runs. When a consumer supplies their own
   //     `inviteWorkflowClass` we trust them and skip the wrap (the
   //     consumer's class is the source of truth).
-  // User-supplied `opts.inviteOpts` is shallow-merged per-group so per-test
-  // overrides survive while unspecified groups inherit the harness defaults.
-  const userInviteOpts = opts.inviteOpts ?? {};
-  const inviteOpts: InviteWorkflowOpts = {
-    ...userInviteOpts,
-    send: { tokenTtlMs: inviteTokenTtlMs, ...userInviteOpts.send },
-  };
+  //
+  // After the AuthOpts reshape, `inviteOpts` is forms-only — the magic-link
+  // TTL moved onto `AuthOpts.magicLinkTtlMs` (see authOpts wiring above).
+  const inviteOpts: InviteWorkflowOpts = opts.inviteOpts ?? {};
   // Layer the per-test `prepareUser` shortcut onto `inviteHooks.prepareUser`
   // so existing tests that only need to populate extras don't have to
   // assemble the full `inviteHooks` object.
@@ -442,15 +500,20 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     registerSms,
     auditEmitter,
     hooks: inviteHooks,
-  }) as unknown as new (users: UserService, auth: AuthCredential) => InviteWorkflow;
+  }) as unknown as new (
+    users: UserService,
+    auth: AuthCredential,
+    authOpts: AuthOpts,
+  ) => InviteWorkflow;
 
   type ProvideEntry = Parameters<typeof createProvideRegistry>[number];
   const providers: ProvideEntry[] = [
     [AuthCredential, () => auth],
     [UserService, () => users],
-    [LoginCtor, () => new LoginCtor(users, auth)],
-    [RecoveryCtor, () => new RecoveryCtor(users, auth)],
-    [InviteCtor, () => new InviteCtor(users, auth)],
+    [AuthOpts, () => authOpts],
+    [LoginCtor, () => new LoginCtor(users, auth, authOpts)],
+    [RecoveryCtor, () => new RecoveryCtor(users, auth, authOpts)],
+    [InviteCtor, () => new InviteCtor(users, auth, authOpts)],
   ];
   // The three workflows now all use `protected` method overrides for
   // sender/store/audit hooks — no DI registrations needed for them. The
@@ -505,11 +568,11 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
       return handleAsOutletRequest(
         {
           allow: [
-            "auth.login",
-            "auth.recovery",
-            "auth.invite",
-            "auth.reInvite",
-            "auth.cancelInvite",
+            "auth/login/flow",
+            "auth/recovery/flow",
+            "auth/invite/start",
+            "auth/invite/resend",
+            "auth/invite/cancel",
           ],
           state: strategy,
           outlets: [
@@ -682,10 +745,10 @@ function buildHarnessLoginClass(deps: HarnessLoginDeps): new (...args: never[]) 
   } = deps;
 
   @Inherit()
-  @Controller()
+  @Controller("auth/login")
   class HarnessLogin extends Base {
-    constructor(usersDep: UserService, authDep: AuthCredential) {
-      super(loginOpts, usersDep, authDep);
+    constructor(usersDep: UserService, authDep: AuthCredential, authOptsDep: AuthOpts) {
+      super(loginOpts, usersDep, authDep, authOptsDep);
     }
 
     protected override async deliver(payload: DeliverPayload): Promise<void> {
@@ -850,10 +913,10 @@ function buildHarnessRecoveryClass(
   } = deps;
 
   @Inherit()
-  @Controller()
+  @Controller("auth/recovery")
   class HarnessRecovery extends Base {
-    constructor(usersDep: UserService, authDep: AuthCredential) {
-      super(recoveryOpts, usersDep, authDep);
+    constructor(usersDep: UserService, authDep: AuthCredential, authOptsDep: AuthOpts) {
+      super(recoveryOpts, usersDep, authDep, authOptsDep);
     }
 
     protected override async deliver(payload: DeliverPayload): Promise<void> {
@@ -952,10 +1015,10 @@ function buildHarnessInviteClass(
   } = deps;
 
   @Inherit()
-  @Controller()
+  @Controller("auth/invite")
   class HarnessInvite extends Base {
-    constructor(usersDep: UserService, authDep: AuthCredential) {
-      super(inviteOpts, usersDep, authDep);
+    constructor(usersDep: UserService, authDep: AuthCredential, authOptsDep: AuthOpts) {
+      super(inviteOpts, usersDep, authDep, authOptsDep);
     }
 
     protected override async deliver(payload: DeliverPayload): Promise<void> {
@@ -1107,14 +1170,20 @@ export function withLoginMfaCtx<W extends typeof LoginWorkflow>(
   ctx: WithLoginMfaCtxOverrides,
 ): W {
   @Inherit()
-  @Controller()
+  @Controller("auth/login")
   class WithLoginCtx extends (Base as unknown as new (
     opts: LoginWorkflowOpts,
     users: UserService,
     auth: AuthCredential,
+    authOpts: AuthOpts,
   ) => LoginWorkflow) {
-    constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
-      super(opts, users, auth);
+    constructor(
+      opts: LoginWorkflowOpts,
+      users: UserService,
+      auth: AuthCredential,
+      authOpts: AuthOpts,
+    ) {
+      super(opts, users, auth, authOpts);
     }
 
     @Step("prepare-mfa-setup")
@@ -1160,17 +1229,23 @@ export function withInviteMfaCtx<W extends typeof InviteWorkflow>(
   ctx: WithInviteMfaCtxOverrides,
 ): W {
   @Inherit()
-  @Controller()
+  @Controller("auth/invite")
   class WithInviteCtx extends (Base as unknown as new (
     opts: InviteWorkflowOpts,
     users: UserService,
     auth: AuthCredential,
+    authOpts: AuthOpts,
   ) => InviteWorkflow) {
-    constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
-      super(opts, users, auth);
+    constructor(
+      opts: InviteWorkflowOpts,
+      users: UserService,
+      auth: AuthCredential,
+      authOpts: AuthOpts,
+    ) {
+      super(opts, users, auth, authOpts);
     }
 
-    @Step("invite-setup-mfa")
+    @Step("setup-mfa")
     @Public()
     override inviteSetupMfa(
       @WorkflowParam("context") c: InviteWfCtx,

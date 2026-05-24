@@ -31,7 +31,7 @@ async function driveToPincodeCheck(
   const secret = generateTotpSecret();
   await app.users.addMfaMethod(username, { name: "totp", value: secret, confirmed: true });
 
-  const r1 = await app.trigger({ wfid: "auth.login" });
+  const r1 = await app.trigger({ wfid: "auth/login/flow" });
   const credResp = await app.trigger({
     wfs: r1.body?.wfs as string,
     input: { username, password: "Password123" },
@@ -61,7 +61,7 @@ describe("LoginWorkflow alt-actions — select2fa", () => {
     const secret = generateTotpSecret();
     await app.users.addMfaMethod("alice", { name: "totp", value: secret, confirmed: true });
 
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const cred = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -81,7 +81,7 @@ describe("LoginWorkflow alt-actions — select2fa", () => {
 describe("LoginWorkflow alt-actions — pincode-check-login", () => {
   it("resend within pinTimeout → form error 'Please wait Ns'", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { pincodeResendTimeoutMs: 60_000 } }, // generous so we land inside the window
+      authOpts: { mfa: { pincodeResendTimeoutMs: 60_000 } }, // generous so we land inside the window
     });
     const { wfs } = await driveToPincodeCheck(app);
     const r = await app.trigger({ wfs, input: { action: "resend" } });
@@ -117,7 +117,7 @@ describe("LoginWorkflow alt-actions — pincode-check-login", () => {
   // pincode-send step never re-fires.
   it("useDifferentMethod → re-pick same method within cooldown → rejected, no new send", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { pincodeResendTimeoutMs: 60_000 } },
+      authOpts: { mfa: { pincodeResendTimeoutMs: 60_000 } },
     });
     const { wfs } = await driveToPincodeCheck(app);
     const sentBefore = app.emails.length;
@@ -144,7 +144,7 @@ describe("LoginWorkflow alt-actions — pincode-check-login", () => {
   // sms array length is unchanged from the first send.
   it("useDifferentMethod → sms→email→sms alternation: sms cooldown holds across channel switches (per-method, not per-pick)", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { pincodeResendTimeoutMs: 60_000 } },
+      authOpts: { mfa: { pincodeResendTimeoutMs: 60_000 } },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, {
         availableMfaTransports: ["email", "sms"],
       }),
@@ -162,7 +162,7 @@ describe("LoginWorkflow alt-actions — pincode-check-login", () => {
       confirmed: true,
     });
 
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const cred = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -232,7 +232,7 @@ describe("LoginWorkflow alt-actions — mfa-totp", () => {
     const secret = generateTotpSecret();
     await app.users.addMfaMethod("alice", { name: "totp", value: secret, confirmed: true });
 
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const cred = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -264,7 +264,7 @@ describe("LoginWorkflow alt-actions — mfa-totp", () => {
     await app.users.addMfaMethod("alice", { name: "totp", value: secret, confirmed: true });
     await app.users.setDefaultMfaMethod("alice", "totp");
 
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const cred = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -284,7 +284,7 @@ describe("LoginWorkflow alt-actions — mfa-totp", () => {
     const secret = generateTotpSecret();
     await app.users.addMfaMethod("alice", { name: "totp", value: secret, confirmed: true });
 
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const cred = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -312,7 +312,7 @@ describe("LoginWorkflow alt-actions — create-password-form", () => {
     await seedActiveUser(app.users, "alice", "Password123");
     const store = (app.users as unknown as { store: { update: Function } }).store;
     await store.update("alice", { set: { password: { isInitial: true } } });
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const cred = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -341,7 +341,7 @@ describe("LoginWorkflow alt-actions — create-password-form", () => {
     await seedActiveUser(app.users, "alice", "Password123");
     const store = (app.users as unknown as { store: { update: Function } }).store;
     await store.update("alice", { set: { password: { isInitial: true } } });
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const cred = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -373,7 +373,7 @@ describe("LoginWorkflow alt-actions — terms-accept", () => {
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const cred = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -402,7 +402,7 @@ describe("LoginWorkflow alt-actions — terms-accept", () => {
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const cred = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -431,7 +431,7 @@ describe("LoginWorkflow alt-actions — terms-accept", () => {
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const cred = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },

@@ -1,17 +1,18 @@
 /**
  * InviteWorkflow — registers three workflow ids:
  *
- *   - `auth.invite`       — admin invites a new user → user accepts (full flow)
- *   - `auth.reInvite`     — admin resends to an existing `pendingInvitation` user
- *   - `auth.cancelInvite` — admin hard-deletes a pending invite (gated by
- *                           `opts.cancellation.allowed`)
+ *   - `auth/invite/start`  — admin invites a new user → user accepts (full flow)
+ *   - `auth/invite/resend` — admin resends to an existing `pendingInvitation` user
+ *   - `auth/invite/cancel` — admin hard-deletes a pending invite (gated by
+ *                            `opts.cancellation.allowed`)
  *
- * Full step catalog per `WF_INVITE.md`. Step IDs are workflow-scoped (all
- * prefixed `invite-*`) because `@moostjs/event-wf` registers `@Step('id')`
- * globally — identical IDs across login/recovery/invite would silently
- * collide and overwrite handlers. The accept tail (`invite-check-pending-invitation`
- * through `invite-auto-login-finish`) is shared between `auth.invite` and
- * `auth.reInvite` schemas by re-referencing the same step IDs.
+ * Full step catalog per `WF_INVITE.md`. Step IDs are namespaced via the
+ * class-level `@Controller("auth/invite")` prefix — `@moostjs/event-wf`
+ * prepends it before registering with the @prostojs/wf engine, so bare
+ * step IDs (`init`, `setup-mfa`, …) become `auth/invite/init` etc. at
+ * registration time. The accept tail (`check-pending-invitation` through
+ * `auto-login-finish`) is shared between `auth/invite/start` and
+ * `auth/invite/resend` schemas by re-referencing the same step IDs.
  *
  * **Step routing model.** Same shape as `RecoveryWorkflow`: alt-action
  * handlers run BEFORE form validation so `cancel` works without filling
@@ -24,11 +25,16 @@
  *
  * **Consumer subclass pattern (Phase 4 reshape).** Consumers subclass
  * `InviteWorkflow` to override `protected` hook methods. The subclass MUST
- * re-apply `@Inherit() @Controller()` and re-declare the constructor
- * signature (TS emits fresh design-paramtypes per class). `@Controller()`
- * implicitly applies SINGLETON DI scope — workflow controllers hold no
- * per-event mutable state on `this` (per-event state lives on ctx + wooks
- * composables), so one instance per app lifetime is correct.
+ * re-apply `@Inherit() @Controller("auth/invite")` and re-declare the
+ * constructor signature (TS emits fresh design-paramtypes per class).
+ * Re-applying the prefix is load-bearing: moost shallow-merges the
+ * subclass's `controller` metadata over the parent's, so a bare
+ * `@Controller()` would override the inherited prefix with the empty
+ * string and the wfid would lose its `auth/invite` namespace.
+ * `@Controller(...)` implicitly applies SINGLETON DI scope — workflow
+ * controllers hold no per-event mutable state on `this` (per-event state
+ * lives on ctx + wooks composables), so one instance per app lifetime is
+ * correct.
  *
  * **Side-effect deps as protected methods.** Sender/store/emitter DI
  * providers have been DROPPED from the constructor. Hooks live as `protected`
@@ -81,6 +87,7 @@ import {
 import { Controller } from "moost";
 
 import type { AuditEvent } from "../audit/index";
+import { AuthOpts } from "../auth.opts";
 import { useAuth } from "../auth.composables";
 import { Public } from "../auth.decorator";
 import {
@@ -114,10 +121,10 @@ export interface InviteWfCtx {
 
   // ── Admin-side (Phase A) ────────────────────────────────────────────────
   /**
-   * Populated by `invite-prepare-available-roles` when the override returns a list.
+   * Populated by `prepare-available-roles` when the override returns a list.
    * Surfaced into the `InviteForm` via `@wf.context.pass 'availableRoles'` so
    * the role multi-select renders the whitelisted choices; also used by
-   * `invite-admin-form` to reject admin-submitted roles outside the list.
+   * `admin-form` to reject admin-submitted roles outside the list.
    */
   availableRoles?: string[];
   email?: string;
@@ -127,24 +134,24 @@ export interface InviteWfCtx {
   lastName?: string;
   roles?: string[];
   /**
-   * Extras dict prepared by `invite-build-user-extras` (calls `prepareUser`) and
-   * consumed by `invite-create-user` to populate the user-row fields beyond the
+   * Extras dict prepared by `build-user-extras` (calls `prepareUser`) and
+   * consumed by `create-user` to populate the user-row fields beyond the
    * base credential shape. Split apart so consumers can inject e.g. a
    * tenant-validation step between extras-build and create-user without
    * copying either body.
    */
   userExtras?: Record<string, unknown>;
-  /** Populated by `invite-select-send-mode` (when `send.mode === 'choice'`). */
+  /** Populated by `select-send-mode` (when `send.mode === 'choice'`). */
   selectedSendMode?: "email" | "shareableLink";
-  /** Resolved send mode the workflow committed to (set in `prepare-send` or `invite-select-send-mode`). */
+  /** Resolved send mode the workflow committed to (set in `prepare-send` or `select-send-mode`). */
   resolvedSendMode?: "email" | "shareableLink";
-  /** Populated by `invite-return-shareable-link` so the admin's UI can display it. */
+  /** Populated by `return-shareable-link` so the admin's UI can display it. */
   shareableLinkUrl?: string;
-  /** Marks that `invite-send-email` already emitted the outlet — resume → advance. */
+  /** Marks that `send-email` already emitted the outlet — resume → advance. */
   linkSent?: boolean;
 
   // ── User-side (Phase B) ─────────────────────────────────────────────────
-  /** Detected at `invite-check-pending-invitation`; triggers `invite-idempotent-redirect`. */
+  /** Detected at `check-pending-invitation`; triggers `idempotent-redirect`. */
   alreadyAccepted?: boolean;
   passwordSet?: boolean;
   // MFA enrollment state (mirrors LoginWfCtx fields used by the shared
@@ -177,7 +184,7 @@ export interface InviteWfCtx {
   pin?: string;
   pinExpire?: number;
   pinSentTo?: string;
-  /** Raw input from `invite-collect-profile`. */
+  /** Raw input from `collect-profile`. */
   profile?: Record<string, unknown>;
   profileApplied?: boolean;
   pendingInvitationCleared?: boolean;
@@ -229,10 +236,10 @@ function validateOpts(_opts: ResolvedInviteWorkflowOpts): void {
   // No cross-field invariants today.
 }
 
-/** Audit `kind` → `wfid` reverse map. Default falls through to `auth.invite`. */
+/** Audit `kind` → `wfid` reverse map. Default falls through to `auth/invite/start`. */
 const AUDIT_WORKFLOW_BY_KIND: Record<string, string> = {
-  "invite.cancelled": "auth.cancelInvite",
-  "invite.resent": "auth.reInvite",
+  "invite.cancelled": "auth/invite/cancel",
+  "invite.resent": "auth/invite/resend",
 };
 
 /** Trim + de-duplicate role identifiers submitted via the admin invite form. */
@@ -248,7 +255,7 @@ export function parseInviteRoles(input?: string[]): string[] {
 
 /**
  * Single source of truth for the "this invite was already accepted" finish
- * envelope. Used by both `invite-idempotent-redirect` (in-workflow) and by
+ * envelope. Used by both `idempotent-redirect` (in-workflow) and by
  * `AuthController.invitePostRedemption` (side route reached when the wf
  * state store has evicted the finished row and re-resume hits 410).
  *
@@ -286,7 +293,9 @@ export function buildInviteAlreadyAcceptedEnvelope(opts: {
  * inherit the class-level `@ArbacResource('auth.invite') @ArbacAction('start')`
  * so every admin-side step event is gated. Apps that wire
  * `arbacAuthorizeInterceptor` globally grant admin a single rule:
- * `allow('auth.invite', 'start')`.
+ * `allow('auth.invite', 'start')`. The ARBAC resource name is intentionally
+ * distinct from the wfid path (`auth/invite/start`) — RBAC policy ids and
+ * wfid namespacing are separate naming schemes.
  *
  * The three `@Workflow` body methods (`inviteFlow` / `reInviteFlow` /
  * `cancelInviteFlow`) are `@Public()` because the wf adapter dispatches the
@@ -297,28 +306,35 @@ export function buildInviteAlreadyAcceptedEnvelope(opts: {
  *
  * Phase-B steps (post `ctx.linkSent`, accept tail) are method-level
  * `@Public()` because they fire on the anonymous magic-link resume.
- * `invite-send-email` / `invite-return-shareable-link` are the boundary:
- * also `@Public()` because the @prostojs/wf runtime re-enters the saved step
- * on resume (the loop restarts at `indexes[level]`, not after it). Their
- * bodies are idempotent via `if (ctx.linkSent) return`.
+ * `send-email` / `return-shareable-link` are the boundary: also `@Public()`
+ * because the @prostojs/wf runtime re-enters the saved step on resume (the
+ * loop restarts at `indexes[level]`, not after it). Their bodies are
+ * idempotent via `if (ctx.linkSent) return`.
  *
- * `auth.reInvite` / `auth.cancelInvite` are admin-only end-to-end (admin
- * confirms in their own UI; no anonymous boundary), so their phase-A steps
- * stay class-gated under the same `auth.invite` / `start` grant.
+ * `auth/invite/resend` / `auth/invite/cancel` are admin-only end-to-end
+ * (admin confirms in their own UI; no anonymous boundary), so their phase-A
+ * steps stay class-gated under the same `auth.invite` / `start` grant.
  */
 @ArbacResource("auth.invite")
 @ArbacAction("start")
-@Controller()
+@Controller("auth/invite")
 export class InviteWorkflow extends AuthWorkflowBase {
   protected readonly opts: ResolvedInviteWorkflowOpts;
   protected readonly users: UserService;
   protected readonly auth: AuthCredential;
+  protected readonly authOpts: AuthOpts;
 
-  constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
+  constructor(
+    opts: InviteWorkflowOpts,
+    users: UserService,
+    auth: AuthCredential,
+    authOpts: AuthOpts,
+  ) {
     super();
     this.opts = mergeInviteOpts(opts);
     this.users = users;
     this.auth = auth;
+    this.authOpts = authOpts;
     validateOpts(this.opts);
   }
 
@@ -358,7 +374,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
    * Return the list of selectable role identifiers for the admin invite form.
    * When defined AND `adminForm.collectRoles` is true → form ships
    * `ctx.availableRoles` so the UI renders a multi-select AND the
-   * `invite-admin-form` step rejects admin-submitted roles outside the
+   * `admin-form` step rejects admin-submitted roles outside the
    * list. When `undefined` (default) → no whitelist is enforced and any role
    * value the admin form supplies is accepted.
    */
@@ -392,7 +408,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
   }
 
   /**
-   * Override the structural duplicate rule for `invite-admin-form`.
+   * Override the structural duplicate rule for `admin-form`.
    * Default: any existing row → `'reject'`; nothing → `'allow'`. Multi-tenant
    * apps that allow re-inviting the same email into a different tenant
    * override to return `'allow'` for those cases.
@@ -406,7 +422,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
 
   /**
    * Return the consumer-supplied `.as` form schema rendered in the
-   * `invite-collect-profile` step. `undefined` (default) skips the step
+   * `collect-profile` step. `undefined` (default) skips the step
    * entirely (just password collection).
    */
   protected getProfileForm(): TAtscriptAnnotatedType | undefined {
@@ -438,14 +454,17 @@ export class InviteWorkflow extends AuthWorkflowBase {
   /**
    * Resolve the accept-tail policy (idempotent-redirect URL, fresh-login gate,
    * loginUrl, confirmation message). Override per-tenant. Sync/async friendly.
+   * `loginUrl` defaults to `this.authOpts.loginUrl` (the cross-workflow shared
+   * login URL); customers can still override per-tenant by overriding this
+   * resolver — the field stays on the policy surface.
    */
   protected resolveAccept(
     _ctx: InviteWfCtx,
   ): NonNullable<InviteWfCtx["accept"]> | Promise<NonNullable<InviteWfCtx["accept"]>> {
     return {
-      alreadyAcceptedRedirectUrl: "/login",
+      alreadyAcceptedRedirectUrl: this.authOpts.loginUrl,
       freshLoginRequired: false,
-      loginUrl: "/login",
+      loginUrl: this.authOpts.loginUrl,
       showConfirmation: true,
       confirmationMessage: "Your account has been created.",
     };
@@ -473,13 +492,14 @@ export class InviteWorkflow extends AuthWorkflowBase {
 
   /**
    * Resolve the MFA-issuer policy (TOTP provisioning issuer string rendered
-   * in the authenticator app). Pincode TTL / length / resend timeout stay on
-   * `this.opts.mfa` as infrastructure. Sync/async friendly.
+   * in the authenticator app). Default tracks `this.authOpts.totpIssuer` —
+   * customers override the resolver for per-tenant issuers. Pincode timers/
+   * length live on `AuthOpts.mfa`. Sync/async friendly.
    */
   protected resolveMfa(
     _ctx: InviteWfCtx,
   ): NonNullable<InviteWfCtx["mfa"]> | Promise<NonNullable<InviteWfCtx["mfa"]>> {
-    return { issuer: "aooth" };
+    return { issuer: this.authOpts.totpIssuer };
   }
 
   // ── Prepare steps (call resolveXxx getters; populate ctx for schema conditions) ──
@@ -502,7 +522,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
     const apply = (resolved: NonNullable<InviteWfCtx["send"]>): undefined => {
       ctx.send = resolved;
       // Auto-resolve send-mode up-front when fixed; `'choice'` defers to
-      // `invite-select-send-mode`.
+      // `select-send-mode`.
       if (resolved.mode !== "choice" && !ctx.resolvedSendMode) {
         ctx.resolvedSendMode = resolved.mode;
       }
@@ -572,48 +592,48 @@ export class InviteWorkflow extends AuthWorkflowBase {
   // ║ Workflow definitions                                                  ║
   // ╚═══════════════════════════════════════════════════════════════════════╝
 
-  @Workflow("auth.invite")
+  @Workflow("start")
   @WorkflowSchema<InviteWfCtx>([
-    { id: "invite-init" },
+    { id: "init" },
     // Resolve send-mode + admin-form + audit policies before any phase-A step reads them.
     { id: "prepare-send" },
     { id: "prepare-admin-form" },
     { id: "prepare-audit" },
     {
-      id: "invite-prepare-available-roles",
+      id: "prepare-available-roles",
       condition: (ctx) => !!ctx.adminForm?.collectRoles,
     },
     {
-      id: "invite-select-send-mode",
+      id: "select-send-mode",
       condition: (ctx) => ctx.send?.mode === "choice" && !ctx.resolvedSendMode,
     },
-    // Abort gate — invite-select-send-mode 'cancel' alt-action sets ctx.aborted = true.
+    // Abort gate — select-send-mode 'cancel' alt-action sets ctx.aborted = true.
     { break: (ctx) => !!ctx.aborted },
-    { id: "invite-admin-form", condition: (ctx) => !ctx.email },
-    // Abort gate — invite-admin-form 'cancel' alt-action sets ctx.aborted = true.
+    { id: "admin-form", condition: (ctx) => !ctx.email },
+    // Abort gate — admin-form 'cancel' alt-action sets ctx.aborted = true.
     { break: (ctx) => !!ctx.aborted },
     {
-      id: "invite-infer-roles",
+      id: "infer-roles",
       condition: (ctx) => !!ctx.email,
     },
     {
-      id: "invite-build-user-extras",
+      id: "build-user-extras",
       condition: (ctx) => !!(ctx.email && !ctx.username && !ctx.userExtras),
     },
     {
-      id: "invite-create-user",
+      id: "create-user",
       condition: (ctx) => !!(ctx.email && !ctx.username && !!ctx.userExtras),
     },
     {
-      id: "invite-send-email",
+      id: "send-email",
       condition: (ctx) => !!(ctx.username && ctx.resolvedSendMode === "email"),
     },
     {
-      id: "invite-return-shareable-link",
+      id: "return-shareable-link",
       condition: (ctx) => !!(ctx.username && ctx.resolvedSendMode === "shareableLink"),
     },
     // ── Phase B (accept tail): runs only after the magic link resumes here.
-    // `ctx.linkSent` flips ONCE in `invite-send-email`/`invite-return-shareable-link`
+    // `ctx.linkSent` flips ONCE in `send-email`/`return-shareable-link`
     // and stays true — safe to hoist as a subflow condition (evaluated once
     // when the engine reaches the subflow).
     {
@@ -624,25 +644,25 @@ export class InviteWorkflow extends AuthWorkflowBase {
         // magic-link boundary in all cases; re-resolve here so accept-tail
         // step bodies + schema conditions read populated ctx slots.
         { id: "prepare-accept" },
-        { id: "invite-check-pending-invitation" },
+        { id: "check-pending-invitation" },
         {
-          id: "invite-idempotent-redirect",
+          id: "idempotent-redirect",
           condition: (ctx) => !!ctx.alreadyAccepted,
         },
-        // Abort gate — invite-idempotent-redirect sets ctx.aborted = true to
+        // Abort gate — idempotent-redirect sets ctx.aborted = true to
         // short-circuit the accept tail when the invite was already accepted.
         { break: (ctx) => !!ctx.aborted },
-        { id: "invite-prepare-password-rules" },
+        { id: "prepare-password-rules" },
         {
-          id: "invite-create-password-form",
+          id: "create-password-form",
           condition: (ctx) => !ctx.passwordSet,
         },
-        // Abort gate — invite-create-password-form 'cancel' alt-action sets ctx.aborted = true.
+        // Abort gate — create-password-form 'cancel' alt-action sets ctx.aborted = true.
         { break: (ctx) => !!ctx.aborted },
         // MFA policy setters — fire once before the enrolment loop so consumer
         // overrides can compute mode/transports/enrollMethod from request context.
         { id: "prepare-mfa" },
-        { id: "invite-setup-mfa" },
+        { id: "setup-mfa" },
         // ── Forced MFA enrollment (3 entries — pick / address / confirm). The
         // invite schema is linear and can't loop a single step like login does,
         // so each phase is a distinct entry; each step body calls the matching
@@ -660,12 +680,12 @@ export class InviteWorkflow extends AuthWorkflowBase {
           while: (ctx) => !!(ctx.passwordSet && ctx.mfaMode !== "disabled" && !ctx.enrollDone),
           steps: [
             {
-              id: "invite-enroll-pick-method",
+              id: "enroll-pick-method",
               condition: (ctx) =>
                 !!((ctx.availableMfaTransports?.length ?? 0) > 1 && !ctx.enrollMethod),
             },
             {
-              id: "invite-enroll-address",
+              id: "enroll-address",
               condition: (ctx) =>
                 !!(
                   ctx.enrollMethod &&
@@ -674,18 +694,18 @@ export class InviteWorkflow extends AuthWorkflowBase {
                 ),
             },
             {
-              id: "invite-enroll-confirm",
+              id: "enroll-confirm",
               condition: (ctx) =>
                 !!(ctx.enrollMethod && (ctx.enrollMethod === "totp" || !!ctx.enrollAddress)),
             },
           ],
         },
         {
-          id: "invite-collect-profile",
+          id: "collect-profile",
           condition: (ctx) => !!(ctx.passwordSet && ctx.acceptProfileFormPresent && !ctx.profile),
         },
         {
-          id: "invite-apply-profile",
+          id: "apply-profile",
           condition: (ctx) =>
             !!(
               ctx.passwordSet &&
@@ -695,26 +715,26 @@ export class InviteWorkflow extends AuthWorkflowBase {
             ),
         },
         // Consumer extension point — see `inviteExtraStep()` method.
-        { id: "invite-extra-step" },
+        { id: "extra-step" },
         {
-          id: "invite-unset-pending-invitation",
+          id: "unset-pending-invitation",
           condition: (ctx) => !!(ctx.passwordSet && !ctx.pendingInvitationCleared),
         },
         {
-          id: "invite-activate-user",
+          id: "activate-user",
           condition: (ctx) => !!(ctx.pendingInvitationCleared && !ctx.activated),
         },
         {
-          id: "invite-confirmation",
+          id: "confirmation",
           condition: (ctx) =>
             !!(ctx.activated && ctx.accept?.showConfirmation && !ctx.confirmationShown),
         },
         {
-          id: "invite-fresh-login-finish",
+          id: "fresh-login-finish",
           condition: (ctx) => !!(ctx.activated && ctx.accept?.freshLoginRequired),
         },
         {
-          id: "invite-auto-login-finish",
+          id: "auto-login-finish",
           condition: (ctx) =>
             !!(ctx.activated && !ctx.accept?.freshLoginRequired && !ctx.tokensIssued),
         },
@@ -724,24 +744,24 @@ export class InviteWorkflow extends AuthWorkflowBase {
   @Public()
   inviteFlow(): void {}
 
-  @Workflow("auth.reInvite")
+  @Workflow("resend")
   @WorkflowSchema<InviteWfCtx>([
-    { id: "invite-init" },
+    { id: "init" },
     { id: "prepare-send" },
     { id: "prepare-audit" },
-    { id: "invite-load-pending-user" },
-    // Abort gate — invite-load-pending-user 'cancel' alt-action sets ctx.aborted = true.
+    { id: "load-pending-user" },
+    // Abort gate — load-pending-user 'cancel' alt-action sets ctx.aborted = true.
     { break: (ctx) => !!ctx.aborted },
     {
-      id: "invite-send-email",
+      id: "send-email",
       condition: (ctx) => !!(ctx.username && ctx.resolvedSendMode === "email"),
     },
     {
-      id: "invite-return-shareable-link",
+      id: "return-shareable-link",
       condition: (ctx) => !!(ctx.username && ctx.resolvedSendMode === "shareableLink"),
     },
     // Accept tail — same steps; runs only after the magic link resumes.
-    // `ctx.linkSent` flips ONCE in `invite-send-email`/`invite-return-shareable-link`
+    // `ctx.linkSent` flips ONCE in `send-email`/`return-shareable-link`
     // and stays true — safe to hoist as a subflow condition.
     {
       condition: (ctx) => !!ctx.linkSent,
@@ -749,25 +769,25 @@ export class InviteWorkflow extends AuthWorkflowBase {
         // Resolve accept + mfa policies on the anonymous resume side. Mirrors
         // the `auth.invite` accept tail (see comment there).
         { id: "prepare-accept" },
-        { id: "invite-check-pending-invitation" },
+        { id: "check-pending-invitation" },
         {
-          id: "invite-idempotent-redirect",
+          id: "idempotent-redirect",
           condition: (ctx) => !!ctx.alreadyAccepted,
         },
-        // Abort gate — invite-idempotent-redirect sets ctx.aborted = true to
+        // Abort gate — idempotent-redirect sets ctx.aborted = true to
         // short-circuit the accept tail when the invite was already accepted.
         { break: (ctx) => !!ctx.aborted },
-        { id: "invite-prepare-password-rules" },
+        { id: "prepare-password-rules" },
         {
-          id: "invite-create-password-form",
+          id: "create-password-form",
           condition: (ctx) => !ctx.passwordSet,
         },
-        // Abort gate — invite-create-password-form 'cancel' alt-action sets ctx.aborted = true.
+        // Abort gate — create-password-form 'cancel' alt-action sets ctx.aborted = true.
         { break: (ctx) => !!ctx.aborted },
         // MFA policy setters — fire once before the enrolment loop so consumer
         // overrides can compute mode/transports/enrollMethod from request context.
         { id: "prepare-mfa" },
-        { id: "invite-setup-mfa" },
+        { id: "setup-mfa" },
         // ── Forced MFA enrollment (3 entries — pick / address / confirm). The
         // invite schema is linear and can't loop a single step like login does,
         // so each phase is a distinct entry; each step body calls the matching
@@ -785,12 +805,12 @@ export class InviteWorkflow extends AuthWorkflowBase {
           while: (ctx) => !!(ctx.passwordSet && ctx.mfaMode !== "disabled" && !ctx.enrollDone),
           steps: [
             {
-              id: "invite-enroll-pick-method",
+              id: "enroll-pick-method",
               condition: (ctx) =>
                 !!((ctx.availableMfaTransports?.length ?? 0) > 1 && !ctx.enrollMethod),
             },
             {
-              id: "invite-enroll-address",
+              id: "enroll-address",
               condition: (ctx) =>
                 !!(
                   ctx.enrollMethod &&
@@ -799,18 +819,18 @@ export class InviteWorkflow extends AuthWorkflowBase {
                 ),
             },
             {
-              id: "invite-enroll-confirm",
+              id: "enroll-confirm",
               condition: (ctx) =>
                 !!(ctx.enrollMethod && (ctx.enrollMethod === "totp" || !!ctx.enrollAddress)),
             },
           ],
         },
         {
-          id: "invite-collect-profile",
+          id: "collect-profile",
           condition: (ctx) => !!(ctx.passwordSet && ctx.acceptProfileFormPresent && !ctx.profile),
         },
         {
-          id: "invite-apply-profile",
+          id: "apply-profile",
           condition: (ctx) =>
             !!(
               ctx.passwordSet &&
@@ -820,26 +840,26 @@ export class InviteWorkflow extends AuthWorkflowBase {
             ),
         },
         // Consumer extension point — see `inviteExtraStep()` method.
-        { id: "invite-extra-step" },
+        { id: "extra-step" },
         {
-          id: "invite-unset-pending-invitation",
+          id: "unset-pending-invitation",
           condition: (ctx) => !!(ctx.passwordSet && !ctx.pendingInvitationCleared),
         },
         {
-          id: "invite-activate-user",
+          id: "activate-user",
           condition: (ctx) => !!(ctx.pendingInvitationCleared && !ctx.activated),
         },
         {
-          id: "invite-confirmation",
+          id: "confirmation",
           condition: (ctx) =>
             !!(ctx.activated && ctx.accept?.showConfirmation && !ctx.confirmationShown),
         },
         {
-          id: "invite-fresh-login-finish",
+          id: "fresh-login-finish",
           condition: (ctx) => !!(ctx.activated && ctx.accept?.freshLoginRequired),
         },
         {
-          id: "invite-auto-login-finish",
+          id: "auto-login-finish",
           condition: (ctx) =>
             !!(ctx.activated && !ctx.accept?.freshLoginRequired && !ctx.tokensIssued),
         },
@@ -849,12 +869,12 @@ export class InviteWorkflow extends AuthWorkflowBase {
   @Public()
   reInviteFlow(): void {}
 
-  @Workflow("auth.cancelInvite")
+  @Workflow("cancel")
   @WorkflowSchema<InviteWfCtx>([
-    { id: "invite-init" },
+    { id: "init" },
     { id: "prepare-cancellation" },
     { id: "prepare-audit" },
-    { id: "invite-cancel-invite" },
+    { id: "cancel-invite" },
   ])
   @Public()
   cancelInviteFlow(): void {}
@@ -864,14 +884,14 @@ export class InviteWorkflow extends AuthWorkflowBase {
   // ╚═══════════════════════════════════════════════════════════════════════╝
 
   // ── Phase 0 ────────────────────────────────────────────────────────────
-  @Step("invite-init")
+  @Step("init")
   init(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
     ctx.acceptProfileFormPresent = this.getProfileForm() !== undefined;
     return undefined;
   }
 
   // ── Phase A: prepareAvailableRoles ────────────────────────────────────
-  @Step("invite-prepare-available-roles")
+  @Step("prepare-available-roles")
   async prepareAvailableRoles(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     const roles = await this.getAvailableRoles();
     if (roles) ctx.availableRoles = roles;
@@ -879,7 +899,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
   }
 
   // ── Phase A: selectSendMode ───────────────────────────────────────────
-  @Step("invite-select-send-mode")
+  @Step("select-send-mode")
   selectSendMode(@WorkflowParam("context") ctx: InviteWfCtx): unknown {
     const wf = useAtscriptWf(this.opts.forms.inviteSendMode);
     if (wf.resolveAction() === "cancel") {
@@ -893,7 +913,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
   }
 
   // ── Phase A: adminInviteForm ──────────────────────────────────────────
-  @Step("invite-admin-form")
+  @Step("admin-form")
   async adminInviteForm(@WorkflowParam("context") ctx: InviteWfCtx): Promise<unknown> {
     const wf = useAtscriptWf(this.opts.forms.invite);
     if (wf.resolveAction() === "cancel") {
@@ -910,7 +930,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
 
     const parsed = parseInviteRoles(input.roles);
     // Server-side whitelist enforcement: when `getAvailableRoles()` returned a
-    // list (surfaced as `ctx.availableRoles` by `invite-prepare-available-roles`),
+    // list (surfaced as `ctx.availableRoles` by `prepare-available-roles`),
     // reject any admin-submitted role outside the whitelist. Skipped when no
     // whitelist is configured — see `getAvailableRoles` doc.
     if (Array.isArray(ctx.availableRoles)) {
@@ -944,7 +964,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
   }
 
   // ── Phase A: inferRolesStep ───────────────────────────────────────────
-  @Step("invite-infer-roles")
+  @Step("infer-roles")
   async inferRolesStep(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     if (!ctx.email) return undefined;
     const inferred = await this.inferRoles({
@@ -960,14 +980,14 @@ export class InviteWorkflow extends AuthWorkflowBase {
 
   // ── Phase A: buildUserExtras ──────────────────────────────────────────
   /**
-   * Build the extras dict that `invite-create-user` merges into the new user
+   * Build the extras dict that `create-user` merges into the new user
    * row. Calls `prepareUser({email, firstName, lastName, roles, invitedBy})`
    * and writes the result onto `ctx.userExtras`. Split out of the old
    * `invitePreCreateUser` step so consumers can inject e.g. a
    * tenant-validation step between extras-build and create-user without
    * copying the createUser body.
    */
-  @Step("invite-build-user-extras")
+  @Step("build-user-extras")
   async buildUserExtras(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     if (!ctx.email) throw new HttpError(500, "Workflow state corrupted: missing email");
 
@@ -991,10 +1011,10 @@ export class InviteWorkflow extends AuthWorkflowBase {
    * `pendingInvitation = true` via a deep-merge update so the
    * `createUser`-applied account defaults (`active: false`, `locked: false`)
    * survive. Split out of the old `invitePreCreateUser` step so consumers can
-   * override extras-build (`invite-build-user-extras`) without touching the
+   * override extras-build (`build-user-extras`) without touching the
    * store-write transaction.
    */
-  @Step("invite-create-user")
+  @Step("create-user")
   async createUserStep(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     if (!ctx.email) throw new HttpError(500, "Workflow state corrupted: missing email");
 
@@ -1034,7 +1054,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
   }
 
   // ── Boundary: sendInviteEmail (fires on admin send AND on anonymous resume) ─
-  @Step("invite-send-email")
+  @Step("send-email")
   @Public()
   sendInviteEmail(@WorkflowParam("context") ctx: InviteWfCtx): unknown {
     if (ctx.linkSent) return undefined;
@@ -1048,14 +1068,14 @@ export class InviteWorkflow extends AuthWorkflowBase {
         // workflow `username` IS the user-id (see `autoLoginFinish` → `auth.issue(ctx.username)`).
         ...(ctx.username && { userId: ctx.username }),
         ...(ctx.roles && { roles: ctx.roles }),
-        expiresAtMs: this.opts.send.tokenTtlMs,
+        expiresAtMs: this.authOpts.magicLinkTtlMs,
       }),
-      expires: Date.now() + this.opts.send.tokenTtlMs,
+      expires: Date.now() + this.authOpts.magicLinkTtlMs,
     };
   }
 
   // ── Boundary: returnShareableLink (same boundary semantics as sendInviteEmail) ─
-  @Step("invite-return-shareable-link")
+  @Step("return-shareable-link")
   @Public()
   returnShareableLink(@WorkflowParam("context") ctx: InviteWfCtx): unknown {
     if (ctx.linkSent) return undefined;
@@ -1073,15 +1093,15 @@ export class InviteWorkflow extends AuthWorkflowBase {
           // demo's `buildMagicLinkUrl` can append `&uid=…` to the URL.
           ...(ctx.username && { userId: ctx.username }),
           ...(ctx.roles && { roles: ctx.roles }),
-          expiresAtMs: this.opts.send.tokenTtlMs,
+          expiresAtMs: this.authOpts.magicLinkTtlMs,
         },
       }),
-      expires: Date.now() + this.opts.send.tokenTtlMs,
+      expires: Date.now() + this.authOpts.magicLinkTtlMs,
     };
   }
 
   // ── Phase A (reInvite): loadPendingUser ───────────────────────────────
-  @Step("invite-load-pending-user")
+  @Step("load-pending-user")
   async loadPendingUser(@WorkflowParam("context") ctx: InviteWfCtx): Promise<unknown> {
     const wf = useAtscriptWf(this.opts.forms.inviteEmail);
     if (wf.resolveAction() === "cancel") {
@@ -1112,7 +1132,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
   }
 
   // ── Phase B: checkPendingInvitation ───────────────────────────────────
-  @Step("invite-check-pending-invitation")
+  @Step("check-pending-invitation")
   @Public()
   async checkPendingInvitation(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     if (!ctx.username) {
@@ -1132,7 +1152,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
   }
 
   // ── Phase B: idempotentRedirect ───────────────────────────────────────
-  @Step("invite-idempotent-redirect")
+  @Step("idempotent-redirect")
   @Public()
   idempotentRedirect(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
     // Labels are hardcoded English (consistent with login/recovery finishers);
@@ -1148,7 +1168,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
   }
 
   // ── Phase B: preparePasswordRules ─────────────────────────────────────
-  @Step("invite-prepare-password-rules")
+  @Step("prepare-password-rules")
   @Public()
   preparePasswordRules(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
     (ctx as Record<string, unknown>).passwordPolicies = this.users.getTransferablePolicies();
@@ -1156,7 +1176,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
   }
 
   // ── Phase B: createPasswordForm ───────────────────────────────────────
-  @Step("invite-create-password-form")
+  @Step("create-password-form")
   @Public()
   async createPasswordForm(@WorkflowParam("context") ctx: InviteWfCtx): Promise<unknown> {
     const wf = useAtscriptWf(this.opts.forms.setPassword);
@@ -1209,10 +1229,10 @@ export class InviteWorkflow extends AuthWorkflowBase {
         confirm: this.opts.forms.enrollConfirm,
       },
       transports: ctx.availableMfaTransports ?? [],
-      pincodeLength: this.opts.mfa.pincodeLength,
-      pincodeTtlMs: this.opts.mfa.pincodeTtlMs,
-      pincodeResendTimeoutMs: this.opts.mfa.pincodeResendTimeoutMs,
-      issuer: ctx.mfa?.issuer ?? "aooth",
+      pincodeLength: this.authOpts.mfa.pincodeLength,
+      pincodeTtlMs: this.authOpts.mfa.pincodeTtlMs,
+      pincodeResendTimeoutMs: this.authOpts.mfa.pincodeResendTimeoutMs,
+      issuer: ctx.mfa?.issuer ?? this.authOpts.totpIssuer,
       mode,
     };
   }
@@ -1225,7 +1245,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
    * type allows a sync override (skip the promise round-trip) when no async
    * work is needed.
    */
-  @Step("invite-setup-mfa")
+  @Step("setup-mfa")
   @Public()
   inviteSetupMfa(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
     ctx.mfaMode = "optional";
@@ -1241,7 +1261,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
    * transport, otherwise pauses for the picker form. When TOTP is picked, the
    * secret is provisioned in the same step body (see `enrollPickPhase`).
    */
-  @Step("invite-enroll-pick-method")
+  @Step("enroll-pick-method")
   @Public()
   inviteEnrollPickMethod(
     @WorkflowParam("context") ctx: InviteWfCtx,
@@ -1253,7 +1273,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
    * Forced MFA enrollment — Phase 2 (collect sms/email address + send
    * pincode). Gated out for totp by the schema condition.
    */
-  @Step("invite-enroll-address")
+  @Step("enroll-address")
   @Public()
   inviteEnrollAddress(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
     return this.enrollAddressPhase(this.buildInviteEnrollDeps(ctx));
@@ -1264,14 +1284,14 @@ export class InviteWorkflow extends AuthWorkflowBase {
    * `enrollDone` on success, which the schema's enrollment while-loop reads
    * as the exit signal directly.
    */
-  @Step("invite-enroll-confirm")
+  @Step("enroll-confirm")
   @Public()
   inviteEnrollConfirm(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
     return this.enrollConfirmPhase(this.buildInviteEnrollDeps(ctx));
   }
 
   // ── Phase B: collectProfile ───────────────────────────────────────────
-  @Step("invite-collect-profile")
+  @Step("collect-profile")
   @Public()
   async collectProfile(@WorkflowParam("context") ctx: InviteWfCtx): Promise<unknown> {
     const form = this.getProfileForm();
@@ -1293,7 +1313,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
   }
 
   // ── Phase B: applyProfile ─────────────────────────────────────────────
-  @Step("invite-apply-profile")
+  @Step("apply-profile")
   @Public()
   async applyProfileStep(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     this.requireUsername(ctx);
@@ -1315,14 +1335,14 @@ export class InviteWorkflow extends AuthWorkflowBase {
    * intentionally arg-less; read ctx + form input via composables
    * (`useWfState`, `useAtscriptWf`) in the override body.
    */
-  @Step("invite-extra-step")
+  @Step("extra-step")
   @Public()
   inviteExtraStep(): unknown {
     return undefined;
   }
 
   // ── Phase B: unsetPendingInvitation ───────────────────────────────────
-  @Step("invite-unset-pending-invitation")
+  @Step("unset-pending-invitation")
   @Public()
   async unsetPendingInvitation(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     this.requireUsername(ctx);
@@ -1334,7 +1354,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
   }
 
   // ── Phase B: activateUser ─────────────────────────────────────────────
-  @Step("invite-activate-user")
+  @Step("activate-user")
   @Public()
   async activateUser(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     this.requireUsername(ctx);
@@ -1345,11 +1365,11 @@ export class InviteWorkflow extends AuthWorkflowBase {
   }
 
   // ── Phase B: confirmation ─────────────────────────────────────────────
-  @Step("invite-confirmation")
+  @Step("confirmation")
   @Public()
   confirmation(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
     ctx.confirmationShown = true;
-    // The auto-login terminal (`invite-auto-login-finish`) merges this envelope's
+    // The auto-login terminal (`auto-login-finish`) merges this envelope's
     // `message` into its own data response so the SPA still surfaces the
     // configured confirmation text alongside the tokens (WF-INVITE-020). The
     // `freshLoginFinish` terminal still overwrites with an immediate redirect
@@ -1363,7 +1383,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
   }
 
   // ── Phase B: freshLoginFinish ─────────────────────────────────────────
-  @Step("invite-fresh-login-finish")
+  @Step("fresh-login-finish")
   @Public()
   freshLoginFinish(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
     finishWf({
@@ -1380,7 +1400,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
   }
 
   // ── Phase B: autoLoginFinish ──────────────────────────────────────────
-  @Step("invite-auto-login-finish")
+  @Step("auto-login-finish")
   @Public()
   async autoLoginFinish(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     this.requireUsername(ctx);
@@ -1388,7 +1408,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
     ctx.tokensIssued = true;
     const auth = useAuth();
     // Preserve a `message` set by an earlier terminal (typically
-    // `invite-confirmation` when `accept.showConfirmation` is on) so the SPA
+    // `confirmation` when `accept.showConfirmation` is on) so the SPA
     // can paint the configured confirmation text alongside the tokens.
     // Additive only — when nothing set a message we emit the envelope as
     // before. See WF-INVITE-020.
@@ -1408,7 +1428,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
   }
 
   // ── auth.cancelInvite ─────────────────────────────────────────────────
-  @Step("invite-cancel-invite")
+  @Step("cancel-invite")
   async cancelInvite(@WorkflowParam("context") ctx: InviteWfCtx): Promise<unknown> {
     if (!ctx.cancellation?.allowed) {
       throw new HttpError(403, "Invite cancellation is disabled");
@@ -1455,7 +1475,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
     const invitedBy = useAuth().getAuthContext()?.userId;
     await this.audit({
       kind,
-      workflow: AUDIT_WORKFLOW_BY_KIND[kind] ?? "auth.invite",
+      workflow: AUDIT_WORKFLOW_BY_KIND[kind] ?? "auth/invite/start",
       ...(ctx.username && { userId: ctx.username }),
       ...(invitedBy && { invitedBy }),
       ...(ctx.email && { email: ctx.email }),

@@ -1,5 +1,5 @@
 /**
- * LoginWorkflow — `wfid = 'auth.login'`.
+ * LoginWorkflow — `wfid = 'auth/login/flow'`.
  *
  * Full step catalog per `WF_LOGIN.md`. Every advanced step is gated by the
  * matching `LoginWorkflowOpts` flag so the default-opts flow matches today's
@@ -27,9 +27,14 @@
  *
  * **Consumer subclass pattern (Phase 2 reshape).** Consumers subclass
  * `LoginWorkflow` to override `protected` hook methods. The subclass MUST
- * re-apply `@Inherit() @Controller()` and re-declare the constructor
- * signature (TS emits fresh design-paramtypes per class). `@Controller()`
- * implicitly applies SINGLETON DI scope — workflow controllers hold no
+ * re-apply `@Inherit() @Controller("auth/login")` and re-declare the
+ * constructor signature (TS emits fresh design-paramtypes per class).
+ * Re-applying the prefix is load-bearing: moost shallow-merges the
+ * subclass's `controller` metadata over the parent's, so a bare
+ * `@Controller()` would override the inherited prefix with the empty
+ * string and the wfid would lose its `auth/login` namespace.
+ * `@Controller(...)` implicitly applies SINGLETON DI scope — workflow
+ * controllers hold no
  * per-event mutable state on `this` (per-event state lives on ctx + wooks
  * composables), so one instance per app lifetime is correct.
  *
@@ -76,6 +81,7 @@ import { useCookies, useHeaders, useResponse } from "@wooksjs/event-http";
 import { Controller } from "moost";
 
 import type { AuditEvent } from "../audit/index";
+import { AuthOpts } from "../auth.opts";
 import { useAuth } from "../auth.composables";
 import { Public } from "../auth.decorator";
 import { AuthWorkflowBase, type MfaEnrollDeps, stripReservedUserKeys } from "./auth-workflow.base";
@@ -372,17 +378,24 @@ export type DeliverPayload = DeliverEmail | DeliverSms;
 // name on workflow events and either deny (no matching role) or require a
 // configured grant.
 @Public()
-@Controller()
+@Controller("auth/login")
 export class LoginWorkflow extends AuthWorkflowBase {
   protected readonly opts: ResolvedLoginWorkflowOpts;
   protected readonly users: UserService;
   protected readonly auth: AuthCredential;
+  protected readonly authOpts: AuthOpts;
 
-  constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
+  constructor(
+    opts: LoginWorkflowOpts,
+    users: UserService,
+    auth: AuthCredential,
+    authOpts: AuthOpts,
+  ) {
     super();
     this.opts = mergeLoginOpts(opts);
     this.users = users;
     this.auth = auth;
+    this.authOpts = authOpts;
     validateOpts(this.opts);
   }
 
@@ -709,7 +722,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
     return undefined;
   }
 
-  @Workflow("auth.login")
+  @Workflow("flow")
   @WorkflowSchema<LoginWfCtx>([
     { id: "init" },
     { id: "credentials" },
@@ -786,18 +799,18 @@ export class LoginWorkflow extends AuthWorkflowBase {
           condition: (ctx) => !ctx.mfaChecked && (ctx.mfaEnrolledMethods?.length ?? 0) === 0,
           steps: [
             {
-              id: "login-enroll-pick-method",
+              id: "enroll-pick-method",
               condition: (ctx) => !ctx.enrollMethod,
             },
             {
-              id: "login-enroll-address",
+              id: "enroll-address",
               condition: (ctx) =>
                 !!ctx.enrollMethod &&
                 (ctx.enrollMethod === "sms" || ctx.enrollMethod === "email") &&
                 !ctx.enrollAddress,
             },
             {
-              id: "login-enroll-confirm",
+              id: "enroll-confirm",
               condition: (ctx) =>
                 !!ctx.enrollMethod &&
                 (ctx.enrollMethod === "totp" || !!ctx.enrollAddress) &&
@@ -1131,7 +1144,11 @@ export class LoginWorkflow extends AuthWorkflowBase {
       );
       ctx.email = input.email;
       // Generate + send the OTP, then ask for it next round.
-      const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
+      const code = this.mintPin(
+        ctx,
+        this.authOpts.mfa.pincodeLength,
+        this.authOpts.mfa.pincodeTtlMs,
+      );
       await this.deliver({
         channel: "email",
         kind: "login.pincode",
@@ -1168,13 +1185,17 @@ export class LoginWorkflow extends AuthWorkflowBase {
         }),
       );
       ctx.phone = input.phone;
-      const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
+      const code = this.mintPin(
+        ctx,
+        this.authOpts.mfa.pincodeLength,
+        this.authOpts.mfa.pincodeTtlMs,
+      );
       await this.deliver({
         channel: "sms",
         kind: "login.pincode",
         recipient: input.phone,
         code,
-        ttlMs: this.opts.mfa.pincodeTtlMs,
+        ttlMs: this.authOpts.mfa.pincodeTtlMs,
         userId: ctx.username,
       });
       throw pincodeWf.requireInput();
@@ -1338,8 +1359,8 @@ export class LoginWorkflow extends AuthWorkflowBase {
     const user = await this.users.getUser(ctx.username);
     const method = user.mfa.methods.find((m) => m.name === summary.methodName && m.confirmed);
     if (!method) throw new HttpError(500, "MFA method no longer present");
-    const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
-    ctx.pinTimeout = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
+    const code = this.mintPin(ctx, this.authOpts.mfa.pincodeLength, this.authOpts.mfa.pincodeTtlMs);
+    ctx.pinTimeout = Date.now() + this.authOpts.mfa.pincodeResendTimeoutMs;
     if (ctx.mfaMethod === "email") {
       ctx.pinSentTo = maskEmail(method.value);
       await this.deliver({
@@ -1357,13 +1378,13 @@ export class LoginWorkflow extends AuthWorkflowBase {
         kind: "login.pincode",
         recipient: method.value,
         code,
-        ttlMs: this.opts.mfa.pincodeTtlMs,
+        ttlMs: this.authOpts.mfa.pincodeTtlMs,
         userId: ctx.username,
       });
     }
     if (ctx.mfaMethod === "sms" || ctx.mfaMethod === "email") {
       ctx.pincodeCooldowns ??= {};
-      ctx.pincodeCooldowns[ctx.mfaMethod] = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
+      ctx.pincodeCooldowns[ctx.mfaMethod] = Date.now() + this.authOpts.mfa.pincodeResendTimeoutMs;
     }
     return undefined;
   }
@@ -1497,7 +1518,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
    * Sync-friendly return: the auto-pick branch and the picker-form branch are
    * both synchronous; only the TOTP-provisioning tail is async.
    */
-  @Step("login-enroll-pick-method")
+  @Step("enroll-pick-method")
   loginEnrollPickMethod(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
     return this.enrollPickPhase(this.buildLoginEnrollDeps(ctx));
   }
@@ -1506,7 +1527,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
    * Forced MFA enrollment — Phase 2 (collect sms/email address + send
    * pincode). Gated out for totp by the schema condition.
    */
-  @Step("login-enroll-address")
+  @Step("enroll-address")
   loginEnrollAddress(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
     return this.enrollAddressPhase(this.buildLoginEnrollDeps(ctx));
   }
@@ -1516,7 +1537,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
    * `onComplete` to bridge `enrollDone` → `mfaChecked` so login's outer MFA
    * while-loop (gated on `!mfaChecked`) exits.
    */
-  @Step("login-enroll-confirm")
+  @Step("enroll-confirm")
   loginEnrollConfirm(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
     return this.enrollConfirmPhase(this.buildLoginEnrollDeps(ctx));
   }
@@ -1544,10 +1565,10 @@ export class LoginWorkflow extends AuthWorkflowBase {
         confirm: this.opts.forms.enrollConfirm,
       },
       transports: ctx.availableMfaTransports ?? [],
-      pincodeLength: this.opts.mfa.pincodeLength,
-      pincodeTtlMs: this.opts.mfa.pincodeTtlMs,
-      pincodeResendTimeoutMs: this.opts.mfa.pincodeResendTimeoutMs,
-      issuer: "aooth",
+      pincodeLength: this.authOpts.mfa.pincodeLength,
+      pincodeTtlMs: this.authOpts.mfa.pincodeTtlMs,
+      pincodeResendTimeoutMs: this.authOpts.mfa.pincodeResendTimeoutMs,
+      issuer: this.authOpts.totpIssuer,
       mode,
       onComplete: (c) => {
         (c as LoginWfCtx).mfaChecked = true;
@@ -1841,7 +1862,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
     await this.audit({
       kind: "login.success",
       userId: ctx.username,
-      workflow: "auth.login",
+      workflow: "auth/login/flow",
       method: ctx.mfaMethod ?? (ctx.mfaChecked ? "mfa.skipped" : "password"),
       ip: this.resolveClientIp(),
       ...(ctx.selectedTenantId && { tenantId: ctx.selectedTenantId }),

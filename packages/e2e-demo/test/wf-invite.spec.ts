@@ -4,7 +4,7 @@
 // compile time, leaving the metadata `undefined` and moost throwing
 // "Class is not Injectable and not Optional" on first request.
 import { AuthCredential } from "@aooth/auth";
-import { type InviteWfCtx, InviteWorkflow } from "@aooth/auth-moost";
+import { AuthOpts, type InviteWfCtx, InviteWorkflow } from "@aooth/auth-moost";
 import { generateTotpCode, UserService } from "@aooth/user";
 import { Controller, Inherit } from "moost";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
@@ -34,14 +34,14 @@ describe("WF-INVITE — admin-gated invite", () => {
 
   it("WF-INVITE-01 — non-admin gated; admin caller succeeds + email captured", async () => {
     // Non-admin caller is denied at the first phase-A event (class-level
-    // `@ArbacResource('auth.invite') @ArbacAction('start')` on the bundled
-    // `InviteWorkflow`). Admin holds `allow('auth.invite', 'start')` and
+    // `@ArbacResource('auth/invite/start') @ArbacAction('start')` on the bundled
+    // `InviteWorkflow`). Admin holds `allow('auth/invite/start', 'start')` and
     // drives the workflow to the magic-link send.
     const alice = app.fixtures.users.t1_alice; // member/viewer — no auth.invite grant
     const aliceTokens = await app.loginAs(alice);
     const denied = await app.triggerWf(
       "admin",
-      { wfid: "auth.invite" },
+      { wfid: "auth/invite/start" },
       { token: aliceTokens.accessToken },
     );
     expect(denied.status).toBe(403);
@@ -51,7 +51,7 @@ describe("WF-INVITE — admin-gated invite", () => {
 
     const start = await app.triggerWf(
       "admin",
-      { wfid: "auth.invite" },
+      { wfid: "auth/invite/start" },
       {
         token: daveTokens.accessToken,
       },
@@ -63,7 +63,7 @@ describe("WF-INVITE — admin-gated invite", () => {
     const submit = await app.triggerWf(
       "admin",
       {
-        wfid: "auth.invite",
+        wfid: "auth/invite/start",
         wfs: startBody.wfs,
         input: { email: NEW_INVITEE_EMAIL, roles: ["member", "viewer"] },
       },
@@ -85,7 +85,7 @@ describe("WF-INVITE — admin-gated invite", () => {
 
     const start = await app.triggerWf(
       "admin",
-      { wfid: "auth.invite" },
+      { wfid: "auth/invite/start" },
       {
         token: daveTokens.accessToken,
       },
@@ -94,7 +94,7 @@ describe("WF-INVITE — admin-gated invite", () => {
     await app.triggerWf(
       "admin",
       {
-        wfid: "auth.invite",
+        wfid: "auth/invite/start",
         wfs: startBody.wfs,
         input: { email: NEW_INVITEE_EMAIL, roles: ["member"] },
       },
@@ -112,7 +112,7 @@ describe("WF-INVITE — admin-gated invite", () => {
     expect(resumedBody.inputRequired).toBeTruthy();
 
     const passwordRes = await app.triggerWf("public", {
-      wfid: "auth.invite",
+      wfid: "auth/invite/start",
       wfs: resumedBody.wfs,
       input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
     });
@@ -120,7 +120,7 @@ describe("WF-INVITE — admin-gated invite", () => {
     // pauses for profile collection after password-set.
     const profileBody = await readWfPause(passwordRes);
     const finalRes = await app.triggerWf("public", {
-      wfid: "auth.invite",
+      wfid: "auth/invite/start",
       wfs: profileBody.wfs,
       input: { displayName: "New Hire" },
     });
@@ -139,7 +139,7 @@ describe("WF-INVITE — admin-gated invite", () => {
 
     const start = await app.triggerWf(
       "admin",
-      { wfid: "auth.invite" },
+      { wfid: "auth/invite/start" },
       {
         token: daveTokens.accessToken,
       },
@@ -148,7 +148,7 @@ describe("WF-INVITE — admin-gated invite", () => {
     const conflict = await app.triggerWf(
       "admin",
       {
-        wfid: "auth.invite",
+        wfid: "auth/invite/start",
         wfs: startBody.wfs,
         input: { email: bob.email },
       },
@@ -169,14 +169,14 @@ describe("WF-INVITE — admin-gated invite", () => {
 
     const start = await app.triggerWf(
       "admin",
-      { wfid: "auth.invite" },
+      { wfid: "auth/invite/start" },
       { token: daveTokens.accessToken },
     );
     const startBody = await readWfPause(start);
     await app.triggerWf(
       "admin",
       {
-        wfid: "auth.invite",
+        wfid: "auth/invite/start",
         wfs: startBody.wfs,
         input: { email: profileEmail, roles: ["member"] },
       },
@@ -193,7 +193,7 @@ describe("WF-INVITE — admin-gated invite", () => {
 
     // Step 1 of accept tail: set-password form.
     const afterPw = await app.triggerWf("public", {
-      wfid: "auth.invite",
+      wfid: "auth/invite/start",
       wfs: resumedBody.wfs,
       input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
     });
@@ -204,7 +204,7 @@ describe("WF-INVITE — admin-gated invite", () => {
 
     // Submit the profile form → workflow continues into activate + auto-login.
     const finalRes = await app.triggerWf("public", {
-      wfid: "auth.invite",
+      wfid: "auth/invite/start",
       wfs: profileBody.wfs,
       input: { displayName: "Profile User", phone: "+15555550100" },
     });
@@ -228,7 +228,7 @@ describe("WF-INVITE — admin-gated invite", () => {
 
     const start = await app.triggerWf(
       "admin",
-      { wfid: "auth.invite" },
+      { wfid: "auth/invite/start" },
       {
         token: daveTokens.accessToken,
       },
@@ -237,7 +237,7 @@ describe("WF-INVITE — admin-gated invite", () => {
     await app.triggerWf(
       "admin",
       {
-        wfid: "auth.invite",
+        wfid: "auth/invite/start",
         wfs: startBody.wfs,
         input: { email: email1 },
       },
@@ -254,14 +254,14 @@ describe("WF-INVITE — admin-gated invite", () => {
     expect(firstBody.wfs).toBeTruthy();
 
     const passwordRes = await app.triggerWf("public", {
-      wfid: "auth.invite",
+      wfid: "auth/invite/start",
       wfs: firstBody.wfs,
       input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
     });
     // Demo wires `acceptProfileForm` — submit the profile to fully consume.
     const profileBody = await readWfPause(passwordRes);
     const finalize = await app.triggerWf("public", {
-      wfid: "auth.invite",
+      wfid: "auth/invite/start",
       wfs: profileBody.wfs,
       input: { displayName: "Single Use" },
     });
@@ -295,14 +295,14 @@ describe("WF-INVITE — accept options", () => {
 
       const start = await app.triggerWf(
         "admin",
-        { wfid: "auth.invite" },
+        { wfid: "auth/invite/start" },
         { token: daveTokens.accessToken },
       );
       const startBody = await readWfPause(start);
       await app.triggerWf(
         "admin",
         {
-          wfid: "auth.invite",
+          wfid: "auth/invite/start",
           wfs: startBody.wfs,
           input: { email: inviteEmail, roles: ["member"] },
         },
@@ -316,13 +316,13 @@ describe("WF-INVITE — accept options", () => {
       const resumed = await app.resumeWfFromUrl(email.url as string);
       const resumedBody = await readWfPause(resumed);
       const afterPw = await app.triggerWf("public", {
-        wfid: "auth.invite",
+        wfid: "auth/invite/start",
         wfs: resumedBody.wfs,
         input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
       });
       const profileBody = await readWfPause(afterPw);
       const finalize = await app.triggerWf("public", {
-        wfid: "auth.invite",
+        wfid: "auth/invite/start",
         wfs: profileBody.wfs,
         input: { displayName: "Fresh Login User" },
       });
@@ -353,7 +353,7 @@ describe("WF-INVITE — TTL expiry", () => {
 
       const start = await app.triggerWf(
         "admin",
-        { wfid: "auth.invite" },
+        { wfid: "auth/invite/start" },
         {
           token: daveTokens.accessToken,
         },
@@ -362,7 +362,7 @@ describe("WF-INVITE — TTL expiry", () => {
       await app.triggerWf(
         "admin",
         {
-          wfid: "auth.invite",
+          wfid: "auth/invite/start",
           wfs: startBody.wfs,
           input: { email: inviteEmail },
         },
@@ -398,14 +398,14 @@ async function startInviteAcceptTail(
 
   const start = await app.triggerWf(
     "admin",
-    { wfid: "auth.invite" },
+    { wfid: "auth/invite/start" },
     { token: daveTokens.accessToken },
   );
   const startBody = await readWfPause(start);
   await app.triggerWf(
     "admin",
     {
-      wfid: "auth.invite",
+      wfid: "auth/invite/start",
       wfs: startBody.wfs,
       input: { email, roles: ["member"] },
     },
@@ -420,7 +420,7 @@ async function startInviteAcceptTail(
   const resumedBody = await readWfPause(resumed);
 
   const pwRes = await app.triggerWf("public", {
-    wfid: "auth.invite",
+    wfid: "auth/invite/start",
     wfs: resumedBody.wfs,
     input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
   });
@@ -448,7 +448,7 @@ describe("WF-INVITE — MFA enrollment", () => {
       );
 
       const r5 = await app.triggerWf("public", {
-        wfid: "auth.invite",
+        wfid: "auth/invite/start",
         wfs: pwBody.wfs,
         input: { method: "email" },
       });
@@ -456,7 +456,7 @@ describe("WF-INVITE — MFA enrollment", () => {
       expect(r5Body.wfs).toBeTruthy();
 
       const r6 = await app.triggerWf("public", {
-        wfid: "auth.invite",
+        wfid: "auth/invite/start",
         wfs: r5Body.wfs,
         input: { address: otpEmail },
       });
@@ -470,14 +470,14 @@ describe("WF-INVITE — MFA enrollment", () => {
       expect(pincodeEmail.code).toBeTruthy();
 
       const r7 = await app.triggerWf("public", {
-        wfid: "auth.invite",
+        wfid: "auth/invite/start",
         wfs: r6Body.wfs,
         input: { code: pincodeEmail.code },
       });
       // Demo wires `acceptProfileForm: InviteAcceptProfileForm` — one more pause.
       const profileBody = await readWfPause(r7);
       const finalRes = await app.triggerWf("public", {
-        wfid: "auth.invite",
+        wfid: "auth/invite/start",
         wfs: profileBody.wfs,
         input: { displayName: "New Comer" },
       });
@@ -511,7 +511,7 @@ describe("WF-INVITE — MFA enrollment", () => {
       expect(pwBody.wfs).toBeTruthy();
 
       const r5 = await app.triggerWf("public", {
-        wfid: "auth.invite",
+        wfid: "auth/invite/start",
         wfs: pwBody.wfs,
         input: { method: "totp" },
       });
@@ -526,13 +526,13 @@ describe("WF-INVITE — MFA enrollment", () => {
 
       const code = generateTotpCode(totp!.value);
       const r6 = await app.triggerWf("public", {
-        wfid: "auth.invite",
+        wfid: "auth/invite/start",
         wfs: r5Body.wfs,
         input: { code },
       });
       const profileBody = await readWfPause(r6);
       const finalRes = await app.triggerWf("public", {
-        wfid: "auth.invite",
+        wfid: "auth/invite/start",
         wfs: profileBody.wfs,
         input: { displayName: "Totp User" },
       });
@@ -600,14 +600,14 @@ describe("WF-INVITE — MFA enrollment", () => {
       const code = generateTotpCode(totp!.value);
 
       const confirm = await app.triggerWf("public", {
-        wfid: "auth.invite",
+        wfid: "auth/invite/start",
         wfs: pwBody.wfs,
         input: { code },
       });
       // Demo wires acceptProfileForm — one more pause after MFA confirm.
       const profileBody = await readWfPause(confirm);
       const finalRes = await app.triggerWf("public", {
-        wfid: "auth.invite",
+        wfid: "auth/invite/start",
         wfs: profileBody.wfs,
         input: { displayName: "Auto Pick" },
       });
@@ -641,13 +641,13 @@ describe("WF-INVITE — MFA enrollment", () => {
       );
 
       const r5 = await app.triggerWf("public", {
-        wfid: "auth.invite",
+        wfid: "auth/invite/start",
         wfs: pwBody.wfs,
         input: { action: "skip" },
       });
       const profileBody = await readWfPause(r5);
       const finalRes = await app.triggerWf("public", {
-        wfid: "auth.invite",
+        wfid: "auth/invite/start",
         wfs: profileBody.wfs,
         input: { displayName: "Skip User" },
       });
@@ -679,14 +679,14 @@ async function createPendingInvitee(
   const daveTokens = await app.loginAs(dave);
   const start = await app.triggerWf(
     "admin",
-    { wfid: "auth.invite" },
+    { wfid: "auth/invite/start" },
     { token: daveTokens.accessToken },
   );
   const startBody = await readWfPause(start);
   await app.triggerWf(
     "admin",
     {
-      wfid: "auth.invite",
+      wfid: "auth/invite/start",
       wfs: startBody.wfs,
       input: { email, roles: ["member"] },
     },
@@ -712,14 +712,14 @@ async function startReInviteAcceptTail(
   const { daveTokens } = await createPendingInvitee(app, email);
   const start = await app.triggerWf(
     "admin",
-    { wfid: "auth.reInvite" },
+    { wfid: "auth/invite/resend" },
     { token: daveTokens.accessToken },
   );
   const startBody = await readWfPause(start);
   await app.triggerWf(
     "admin",
     {
-      wfid: "auth.reInvite",
+      wfid: "auth/invite/resend",
       wfs: startBody.wfs,
       input: { email },
     },
@@ -732,7 +732,7 @@ async function startReInviteAcceptTail(
   const resumed = await app.resumeWfFromUrl(magicLink.url as string);
   const resumedBody = await readWfPause(resumed);
   const pwRes = await app.triggerWf("public", {
-    wfid: "auth.reInvite",
+    wfid: "auth/invite/resend",
     wfs: resumedBody.wfs,
     input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
   });
@@ -771,13 +771,13 @@ describe("WF-INVITE — reInvite enrollment", () => {
       const code = generateTotpCode(totp!.value);
 
       const confirm = await app.triggerWf("public", {
-        wfid: "auth.reInvite",
+        wfid: "auth/invite/resend",
         wfs: pwBody.wfs,
         input: { code },
       });
       const profileBody = await readWfPause(confirm);
       const finalRes = await app.triggerWf("public", {
-        wfid: "auth.reInvite",
+        wfid: "auth/invite/resend",
         wfs: profileBody.wfs,
         input: { displayName: "ReInvite Auto" },
       });
@@ -814,13 +814,13 @@ describe("WF-INVITE — reInvite enrollment", () => {
       );
 
       const r5 = await app.triggerWf("public", {
-        wfid: "auth.reInvite",
+        wfid: "auth/invite/resend",
         wfs: pwBody.wfs,
         input: { action: "skip" },
       });
       const profileBody = await readWfPause(r5);
       const finalRes = await app.triggerWf("public", {
-        wfid: "auth.reInvite",
+        wfid: "auth/invite/resend",
         wfs: profileBody.wfs,
         input: { displayName: "ReInvite Skip" },
       });
@@ -843,16 +843,16 @@ describe("WF-INVITE — reInvite enrollment", () => {
 let extraStepCapture: { fired: boolean; runs: number } = { fired: false, runs: 0 };
 
 @Inherit()
-@Controller()
+@Controller("auth/invite")
 class OverrideInviteWorkflow extends InviteWorkflow {
-  constructor(users: UserService, authCred: AuthCredential) {
+  constructor(users: UserService, authCred: AuthCredential, authOpts: AuthOpts) {
     // Profile form left undefined (base default) so the accept tail goes
     // password → extraStep → activate directly. MFA is disabled via the
     // `inviteMfaCtx: { mfaMode: 'disabled' }` knob on `buildTestApp` (PR9
     // stripped `mfa.mode` from `InviteWorkflowOpts`; the value now lives on
     // ctx via the `inviteSetupMfa` setter step — `buildApp` wraps this
     // class with `withInviteMfaCtx` when `inviteMfaCtx` is supplied).
-    super({}, users, authCred);
+    super({}, users, authCred, authOpts);
   }
   // Post-resolver reshape: `accept.showConfirmation` moved off opts to the
   // `resolveAccept` getter. Existing tests assert the auto-login response
@@ -903,14 +903,14 @@ describe("WF-INVITE — consumer subclass via inviteWorkflowClass", () => {
       const daveTokens = await app.loginAs(dave);
       const start = await app.triggerWf(
         "admin",
-        { wfid: "auth.invite" },
+        { wfid: "auth/invite/start" },
         { token: daveTokens.accessToken },
       );
       const startBody = await readWfPause(start);
       await app.triggerWf(
         "admin",
         {
-          wfid: "auth.invite",
+          wfid: "auth/invite/start",
           wfs: startBody.wfs,
           input: { email: inviteEmail, roles: ["member"] },
         },
@@ -923,7 +923,7 @@ describe("WF-INVITE — consumer subclass via inviteWorkflowClass", () => {
       const resumed = await app.resumeWfFromUrl(magicLink.url as string);
       const resumedBody = await readWfPause(resumed);
       const finalRes = await app.triggerWf("public", {
-        wfid: "auth.invite",
+        wfid: "auth/invite/start",
         wfs: resumedBody.wfs,
         input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
       });

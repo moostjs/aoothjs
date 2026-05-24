@@ -11,14 +11,14 @@ import WfPage from "./pages/WfPage.vue";
 // Every key in this map is a real default emitted by an @aooth/auth-moost
 // workflow — see test/ui-routes.spec.ts which asserts they all resolve.
 export const WORKFLOW_URL_REDIRECTS: Readonly<Record<string, string>> = {
-  "/login": "auth.login",
-  "/recover": "auth.recovery",
-  "/signup": "auth.invite",
+  "/login": "auth/login/flow",
+  "/recover": "auth/recovery/flow",
+  "/signup": "auth/invite/start",
   // `/accept-invite?wfs=…` is the URL emitted by the demo's `buildMagicLinkUrl`
   // for the `invite.magicLink` outlet (see aooth.ts). Mapping it to
-  // `auth.invite` lets WfPage pick up the `wfs` query as `initialToken` and
-  // resume the paused workflow inside the same SPA.
-  "/accept-invite": "auth.invite",
+  // `auth/invite/start` lets WfPage pick up the `wfs` query as `initialToken`
+  // and resume the paused workflow inside the same SPA.
+  "/accept-invite": "auth/invite/start",
 };
 
 export function createRouter() {

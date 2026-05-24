@@ -8,7 +8,6 @@ export {
   type MfaSummary,
 } from "./login.workflow";
 export {
-  DEFAULT_MFA_CODE_TTL_MS,
   type LoginWorkflowOpts,
   type ResolvedLoginWorkflowOpts,
   mergeLoginOpts,

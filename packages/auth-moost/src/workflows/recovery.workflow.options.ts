@@ -1,10 +1,11 @@
 /**
  * `RecoveryWorkflowOpts` — nested-pojo configuration for `RecoveryWorkflow`.
  *
- * Post-resolver reshape: this is infrastructure-only (magic-link TTL, OTP
- * timers/length, replaceable forms). Policy (delivery mode + OTP transports,
- * preReset, postReset, altActions, audit) moved to `resolveXxx(ctx)` getter
- * overrides on `RecoveryWorkflow` — see `RecoveryPolicyOverrides`.
+ * Post-`AuthOpts` reshape: cross-workflow infrastructure (magic-link TTL, OTP
+ * pincode timers/length) moved onto the shared `AuthOpts` DI provider — see
+ * `auth.opts.ts`. What remains here is recovery-specific infrastructure only:
+ * the form-schema replacement map. Policy still lives on the `resolveXxx(ctx)`
+ * getter surface on `RecoveryWorkflow`.
  */
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 
@@ -16,21 +17,13 @@ import {
   SetPasswordForm,
 } from "../atscript/models/forms.as";
 
-/** Magic-link TTL default — also used as the persisted wf-state token TTL. */
+/** Magic-link TTL default — kept as a public constant for harness wiring. */
 export const DEFAULT_RECOVERY_TOKEN_TTL_MS = 60 * 60 * 1000;
 
 export type RecoveryDeliveryMode = "magicLink" | "otp" | "choice";
 export type RecoveryOtpTransport = "sms" | "email";
 
 export interface RecoveryWorkflowOpts {
-  delivery?: {
-    magicLinkTtlMs?: number;
-    otp?: {
-      codeLength?: number;
-      ttlMs?: number;
-      resendCooldownMs?: number;
-    };
-  };
   /**
    * Replaceable form schemas. Each field defaults to the corresponding
    * `.as` form shipped under `@aooth/auth-moost/atscript/models`.
@@ -50,14 +43,6 @@ export interface RecoveryWorkflowOpts {
  * `this.opts.<group>.<flag>` directly without optional chaining.
  */
 export interface ResolvedRecoveryWorkflowOpts {
-  delivery: {
-    magicLinkTtlMs: number;
-    otp: {
-      codeLength: number;
-      ttlMs: number;
-      resendCooldownMs: number;
-    };
-  };
   forms: {
     emailIdentifier: TAtscriptAnnotatedType;
     pincode: TAtscriptAnnotatedType;
@@ -73,19 +58,7 @@ export interface ResolvedRecoveryWorkflowOpts {
  * would be silly.
  */
 export function mergeRecoveryOpts(opts: RecoveryWorkflowOpts = {}): ResolvedRecoveryWorkflowOpts {
-  const inputDelivery = opts.delivery ?? {};
-  const inputOtp = inputDelivery.otp ?? {};
   return {
-    delivery: {
-      magicLinkTtlMs: DEFAULT_RECOVERY_TOKEN_TTL_MS,
-      ...inputDelivery,
-      otp: {
-        codeLength: 6,
-        ttlMs: 5 * 60_000,
-        resendCooldownMs: 60_000,
-        ...inputOtp,
-      },
-    },
     forms: {
       emailIdentifier: EmailIdentifierForm as unknown as TAtscriptAnnotatedType,
       pincode: PincodeForm as unknown as TAtscriptAnnotatedType,

@@ -7,30 +7,31 @@ import { AuthCredential } from "@aooth/auth";
 import { UserService } from "@aooth/user";
 import { Controller, Inherit } from "moost";
 
+import { AuthOpts } from "../auth.opts";
 import { InviteWorkflow } from "./invite.workflow";
 import { LoginWorkflow } from "./login.workflow";
 import { RecoveryWorkflow } from "./recovery.workflow";
 
 @Inherit()
-@Controller()
+@Controller("auth/login")
 export class DefaultLoginWorkflow extends LoginWorkflow {
-  constructor(users: UserService, auth: AuthCredential) {
-    super({}, users, auth);
+  constructor(users: UserService, auth: AuthCredential, authOpts: AuthOpts) {
+    super({}, users, auth, authOpts);
   }
 }
 
 @Inherit()
-@Controller()
+@Controller("auth/invite")
 export class DefaultInviteWorkflow extends InviteWorkflow {
-  constructor(users: UserService, auth: AuthCredential) {
-    super({}, users, auth);
+  constructor(users: UserService, auth: AuthCredential, authOpts: AuthOpts) {
+    super({}, users, auth, authOpts);
   }
 }
 
 @Inherit()
-@Controller()
+@Controller("auth/recovery")
 export class DefaultRecoveryWorkflow extends RecoveryWorkflow {
-  constructor(users: UserService, auth: AuthCredential) {
-    super({}, users, auth);
+  constructor(users: UserService, auth: AuthCredential, authOpts: AuthOpts) {
+    super({}, users, auth, authOpts);
   }
 }

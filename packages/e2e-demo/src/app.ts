@@ -16,6 +16,7 @@ import {
   type AuditEvent,
   AuthController,
   authGuardInterceptor,
+  AuthOpts,
   createAuthEmailOutlet,
   createAuthShareableLinkOutlet,
   DEFAULT_AUTH_WORKFLOWS,
@@ -109,6 +110,18 @@ export interface BuildAppOptions {
    * forking the whole demo wiring. For MFA mode/transports (stripped from
    * opts in PR9) use `loginMfaCtx` below.
    */
+  /**
+   * Override the shared `AuthOpts` defaults (pincode timers, magic-link TTL,
+   * login URL, TOTP issuer). The demo builds a fresh `AuthOpts` instance,
+   * shallow-merges this partial onto it (deep-merging the nested `mfa` group),
+   * and registers the result via moost's DI so each workflow ctor resolves it.
+   */
+  authOpts?: {
+    mfa?: Partial<AuthOpts["mfa"]>;
+    magicLinkTtlMs?: number;
+    loginUrl?: string;
+    totpIssuer?: string;
+  };
   loginOpts?: LoginWorkflowOpts;
   /**
    * Per-test login policy overrides applied via the `resolveXxx(ctx)` getters
@@ -299,6 +312,49 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   app.adapter(moostHttp);
   app.adapter(new MoostWf());
 
+  // Build the cross-workflow `AuthOpts` singleton — defaults seeded from
+  // `min(env.RECOVERY_TTL_MS, env.INVITE_TTL_MS)` so a test that shrinks ONE
+  // of the env vars (the per-workflow TTL-expiry tests) gets the short window
+  // on the shared `AuthOpts.magicLinkTtlMs` knob. The cross-workflow singleton
+  // means both flows now share a window — pre-AuthOpts each workflow had its
+  // own `delivery.magicLinkTtlMs` / `send.tokenTtlMs`. `opts.authOpts` partial
+  // layers on top here. Production consumers that want a separate per-flow
+  // window override `resolveXxx` to compute an env-driven `expires` themselves,
+  // or override `sendInviteEmail` / `sendMagicLink` step bodies.
+  const authOpts = new AuthOpts();
+  authOpts.magicLinkTtlMs = Math.min(env.RECOVERY_TTL_MS, env.INVITE_TTL_MS);
+  const userAuthOpts = opts.authOpts;
+  if (userAuthOpts) {
+    if (userAuthOpts.mfa) authOpts.mfa = { ...authOpts.mfa, ...userAuthOpts.mfa };
+    if (userAuthOpts.magicLinkTtlMs !== undefined) {
+      authOpts.magicLinkTtlMs = userAuthOpts.magicLinkTtlMs;
+    }
+    if (userAuthOpts.loginUrl !== undefined) authOpts.loginUrl = userAuthOpts.loginUrl;
+    if (userAuthOpts.totpIssuer !== undefined) authOpts.totpIssuer = userAuthOpts.totpIssuer;
+  }
+
+  /**
+   * Per-event `AuthOpts` override applied inside each demo workflow subclass
+   * ctor (FOR_EVENT scope). The cross-workflow `AuthOpts` instance is a moost
+   * SINGLETON (per the brief), but the Playwright variant mechanism still needs
+   * a per-request escape hatch for fields like `mfa.pincodeResendTimeoutMs`
+   * (driven by `mfa-fast-resend` / `recovery-fast-resend`) and
+   * `magicLinkTtlMs` (driven by `device-trust-short-ttl` etc.). We clone the
+   * singleton and overlay the variant's `authOpts` payload — the override is
+   * scoped to the current event instance only.
+   */
+  const cloneAuthOptsWithVariant = (
+    overrides: { mfa?: Partial<AuthOpts["mfa"]>; magicLinkTtlMs?: number } | undefined,
+  ): AuthOpts => {
+    if (!overrides) return authOpts;
+    const clone = new AuthOpts();
+    clone.mfa = { ...authOpts.mfa, ...overrides.mfa };
+    clone.magicLinkTtlMs = overrides.magicLinkTtlMs ?? authOpts.magicLinkTtlMs;
+    clone.loginUrl = authOpts.loginUrl;
+    clone.totpIssuer = authOpts.totpIssuer;
+    return clone;
+  };
+
   // SMS: in test mode, push into the shared globalThis buffer (same HMR-survival
   // rationale as the email buffer above); otherwise console-log.
   const demoSmsSender: SmsSender = {
@@ -360,9 +416,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // subclass ctors must opt into FOR_EVENT.
   @Inherit()
   @Injectable("FOR_EVENT")
-  @Controller()
+  @Controller("auth/login")
   class DemoLoginWorkflow extends LoginWorkflow {
-    constructor(users: UserService, authCred: AuthCredential) {
+    constructor(users: UserService, authCred: AuthCredential, demoAuthOpts: AuthOpts) {
       const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
       super(
         variant?.opts
@@ -370,7 +426,14 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
           : demoLoginOpts,
         users,
         authCred,
+        // Apply the variant's per-request `authOpts` overlay (e.g.
+        // `mfa-fast-resend` shrinks `mfa.pincodeResendTimeoutMs` to 1s);
+        // returns the singleton verbatim when no overlay is supplied.
+        // `demoAuthOpts` is captured but unused — the closure already has
+        // `authOpts`; the param exists so moost can resolve `AuthOpts` DI.
+        cloneAuthOptsWithVariant(variant?.authOpts),
       );
+      void demoAuthOpts;
     }
     protected override deliver(payload: DeliverPayload) {
       return forwardDeliver(payload);
@@ -547,24 +610,24 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // otpTransports, preReset, postReset, altActions, audit) lives on
   // `resolveXxx(ctx)` overrides below. Variants supply `policy.<group>`
   // payloads that those resolvers merge with the demo's per-group defaults.
-  const demoRecoveryOpts: RecoveryWorkflowOpts = mergeWfOpts(
-    {
-      delivery: { magicLinkTtlMs: env.RECOVERY_TTL_MS },
-    },
-    opts.recoveryOpts,
-  );
+  // `RecoveryWorkflowOpts` is forms-only after the AuthOpts reshape; the
+  // `magicLinkTtlMs` default moved to the singleton `AuthOpts.magicLinkTtlMs`
+  // built above (seeded from `env.RECOVERY_TTL_MS`).
+  const demoRecoveryOpts: RecoveryWorkflowOpts = mergeWfOpts({}, opts.recoveryOpts);
   // FOR_EVENT — see DemoLoginWorkflow comment; ctor reads variant header.
   @Inherit()
   @Injectable("FOR_EVENT")
-  @Controller()
+  @Controller("auth/recovery")
   class DemoRecoveryWorkflow extends RecoveryWorkflow {
-    constructor(users: UserService, authCred: AuthCredential) {
+    constructor(users: UserService, authCred: AuthCredential, demoAuthOpts: AuthOpts) {
       const variant = pickVariant(RECOVERY_VARIANTS, readVariantHeader());
       super(
         variant?.opts ? mergeWfOpts(demoRecoveryOpts, variant.opts) : demoRecoveryOpts,
         users,
         authCred,
+        cloneAuthOptsWithVariant(variant?.authOpts),
       );
+      void demoAuthOpts;
     }
     protected override deliver(payload: DeliverPayload) {
       return forwardDeliver(payload);
@@ -656,22 +719,20 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // (adminForm, send.mode, accept, cancellation, audit, mfa.issuer) lives on
   // `resolveXxx(ctx)` overrides below. Variants supply `policy.<group>`
   // payloads that those resolvers merge with the demo's per-group defaults.
-  const demoInviteOpts: InviteWorkflowOpts = mergeWfOpts(
-    {
-      send: { tokenTtlMs: env.INVITE_TTL_MS },
-    },
-    opts.inviteOpts,
-  );
+  // `InviteWorkflowOpts` is forms-only after the AuthOpts reshape; the
+  // `send.tokenTtlMs` default moved to the singleton `AuthOpts.magicLinkTtlMs`
+  // built above (seeded from min(RECOVERY_TTL_MS, INVITE_TTL_MS)).
+  const demoInviteOpts: InviteWorkflowOpts = mergeWfOpts({}, opts.inviteOpts);
   // ARBAC is carried by the base `InviteWorkflow`: class-level
-  // `@ArbacResource('auth.invite') @ArbacAction('start')` gates phase A,
+  // `@ArbacResource('auth/invite/start') @ArbacAction('start')` gates phase A,
   // per-method `@Public()` opens phase B (post magic-link send) so the
   // anonymous resume isn't denied. `@Inherit()` flows the class meta down.
   // FOR_EVENT — see DemoLoginWorkflow comment; ctor reads variant header.
   @Inherit()
   @Injectable("FOR_EVENT")
-  @Controller()
+  @Controller("auth/invite")
   class DemoInviteWorkflow extends InviteWorkflow {
-    constructor(users: UserService, authCred: AuthCredential) {
+    constructor(users: UserService, authCred: AuthCredential, demoAuthOpts: AuthOpts) {
       const variant = pickVariant(INVITE_VARIANTS, readVariantHeader());
       super(
         variant?.opts
@@ -679,7 +740,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
           : demoInviteOpts,
         users,
         authCred,
+        cloneAuthOptsWithVariant(variant?.authOpts),
       );
+      void demoAuthOpts;
     }
     protected override deliver(payload: DeliverPayload) {
       // Invite's default send path uses `outletEmail` (handled by the
@@ -697,7 +760,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     // `invite-mfa-optional-full` variant's mode/transports never reach the
     // enrolment loop on the invitee side and the workflow silently
     // skips MFA enrolment.
-    @Step("invite-init")
+    @Step("init")
     @Public()
     override init(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
       const baseResult = super.init(ctx);
@@ -728,7 +791,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     // assert the auto-login envelope after password-set keep working without
     // an enrolment pause. Variants like `invite-mfa-optional-full` flip the
     // mode + transport list per request via this override (PW MFA coverage).
-    @Step("invite-setup-mfa")
+    @Step("setup-mfa")
     @Public()
     override inviteSetupMfa(
       @WorkflowParam("context") ctx: InviteWfCtx,
@@ -853,6 +916,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   const authProviders: Parameters<typeof createProvideRegistry> = [
     [AuthCredential, () => aooth.authCredential],
     [UserService, () => aooth.userService],
+    [AuthOpts, () => authOpts],
     // `EmailSender` is still consumed by `createAuthEmailOutlet` (the
     // trigger-side mailer for magic-link outlets). The three auth workflows
     // themselves no longer consume DI for senders/audit/trust/rate-limit —
@@ -904,7 +968,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     @Post("trigger")
     @Public()
     @WfTrigger({
-      allow: [...DEFAULT_AUTH_WORKFLOWS, "auth.reInvite", "auth.cancelInvite", "project.handover"],
+      allow: [
+        ...DEFAULT_AUTH_WORKFLOWS,
+        "auth/invite/resend",
+        "auth/invite/cancel",
+        "project.handover",
+      ],
     })
     override triggerWf(): void {
       // see AuthController.triggerWf — body intentionally empty.
@@ -1117,18 +1186,19 @@ function wrapWithLoginMfaCtx<W extends new (...args: never[]) => LoginWorkflow>(
   // composable-using ctor; the scope must propagate.
   @Inherit()
   @Injectable("FOR_EVENT")
-  @Controller()
+  @Controller("auth/login")
   class WithLoginCtx extends (Base as unknown as new (
     users: UserService,
     auth: AuthCredential,
+    authOpts: AuthOpts,
   ) => LoginWorkflow) {
     // The forwarding ctor is required: moost reads `design:paramtypes`
     // metadata off the subclass to resolve DI, and TS only emits the
     // metadata when the ctor is explicit. Without it moost can't construct
     // the wrapper.
     // eslint-disable-next-line no-useless-constructor
-    constructor(users: UserService, auth: AuthCredential) {
-      super(users, auth);
+    constructor(users: UserService, auth: AuthCredential, authOpts: AuthOpts) {
+      super(users, auth, authOpts);
     }
     @Step("prepare-mfa-setup")
     @Public()
@@ -1161,16 +1231,17 @@ function wrapWithInviteMfaCtx<W extends new (...args: never[]) => InviteWorkflow
   // composable-using ctor; the scope must propagate.
   @Inherit()
   @Injectable("FOR_EVENT")
-  @Controller()
+  @Controller("auth/invite")
   class WithInviteCtx extends (Base as unknown as new (
     users: UserService,
     auth: AuthCredential,
+    authOpts: AuthOpts,
   ) => InviteWorkflow) {
     // eslint-disable-next-line no-useless-constructor -- see wrapWithLoginMfaCtx for why
-    constructor(users: UserService, auth: AuthCredential) {
-      super(users, auth);
+    constructor(users: UserService, auth: AuthCredential, authOpts: AuthOpts) {
+      super(users, auth, authOpts);
     }
-    @Step("invite-setup-mfa")
+    @Step("setup-mfa")
     @Public()
     override inviteSetupMfa(
       @WorkflowParam("context") c: InviteWfCtx,

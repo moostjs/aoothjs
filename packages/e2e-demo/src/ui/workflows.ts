@@ -123,7 +123,7 @@ const REINVITE_ADMIN_USERS: ReadonlyArray<TestCred> = [
 
 export const WORKFLOWS: ReadonlyArray<WfDescriptor> = [
   {
-    id: "auth.login",
+    id: "auth/login/flow",
     label: "Login",
     description:
       "Username/password with optional MFA (TOTP / email-OTP / SMS-OTP / backup codes) and a forced-password-change branch.",
@@ -131,7 +131,7 @@ export const WORKFLOWS: ReadonlyArray<WfDescriptor> = [
     testCreds: LOGIN_USERS,
   },
   {
-    id: "auth.recovery",
+    id: "auth/recovery/flow",
     label: "Password recovery",
     description:
       "Forgot-password — magic link or OTP. Any seeded email works; SMS-recoverable via t1_ivy's phone.",
@@ -139,21 +139,21 @@ export const WORKFLOWS: ReadonlyArray<WfDescriptor> = [
     testCreds: LOGIN_USERS,
   },
   {
-    id: "auth.invite",
+    id: "auth/invite/start",
     label: "Invite user (admin)",
     description: "Admin creates a pending invitation; resume via emailed magic link.",
     requiresAuth: true,
     testCreds: INVITE_ADMIN_USERS,
   },
   {
-    id: "auth.reInvite",
+    id: "auth/invite/resend",
     label: "Re-invite user (admin)",
     description: "Resend invitation to a pending user.",
     requiresAuth: true,
     testCreds: REINVITE_ADMIN_USERS,
   },
   {
-    id: "auth.cancelInvite",
+    id: "auth/invite/cancel",
     label: "Cancel pending invite (admin)",
     description: "Delete a pending invitation before acceptance.",
     requiresAuth: true,

@@ -7,6 +7,7 @@ export {
   type ResolvedAuthCookieConfig,
   type ResolvedAuthOptions,
 } from "./auth.config";
+export { AuthOpts } from "./auth.opts";
 export { authGuardInterceptor, AuthGuarded } from "./auth.guard";
 export { useAuth, type AuthBindings } from "./auth.composables";
 export { Public, UserId } from "./auth.decorator";

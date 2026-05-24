@@ -91,7 +91,7 @@ async function driveDefaultInviteAccept(
   app: Awaited<ReturnType<typeof prepareWfApp>>,
   email: string,
 ): Promise<{ status: number; body: Record<string, unknown> | null }> {
-  const r1 = await app.trigger({ wfid: "auth.invite" });
+  const r1 = await app.trigger({ wfid: "auth/invite/start" });
   await app.trigger({ wfs: r1.body?.wfs as string, input: { email } });
   const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
   const r3 = await app.resumeViaQuery(token);
@@ -108,7 +108,7 @@ describe("InviteWorkflow — default flow end-to-end", () => {
     // `pendingInvitation` flag round-trips through UsersStoreMemory: TRUE
     // after pre-create, FALSE after accept.
     const app = await prepareWfApp();
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "alice@test.com" },
@@ -139,12 +139,12 @@ describe("InviteWorkflow — default flow end-to-end", () => {
     // Belt-and-braces: confirms the pendingInvitation flag survives a
     // round-trip and influences the structural duplicate check.
     const app = await prepareWfApp();
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "twice2@test.com" },
     });
-    const r2 = await app.trigger({ wfid: "auth.invite" });
+    const r2 = await app.trigger({ wfid: "auth/invite/start" });
     const r2b = await app.trigger({
       wfs: r2.body?.wfs as string,
       input: { email: "twice2@test.com" },
@@ -164,7 +164,7 @@ describe("InviteWorkflow — send.mode shareableLink", () => {
       },
     });
 
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "share@test.com" },
@@ -184,7 +184,7 @@ describe("InviteWorkflow — send.mode choice", () => {
     const app = await prepareWfApp({
       invitePolicy: { send: { mode: "choice" } },
     });
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     // First pause: send-mode picker (InviteSendModeForm).
     expect(JSON.stringify(r1.body)).toMatch(/InviteSendModeForm|mode/);
     const r2 = await app.trigger({
@@ -209,7 +209,7 @@ describe("InviteWorkflow — send.mode choice", () => {
     const app = await prepareWfApp({
       invitePolicy: { send: { mode: "choice" } },
     });
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { mode: "email" },
@@ -236,7 +236,7 @@ describe("InviteWorkflow — getProfileForm + applyProfile", () => {
       },
     });
 
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({ wfs: r1.body?.wfs as string, input: { email: "pp@test.com" } });
     const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
     const r3 = await app.resumeViaQuery(token);
@@ -266,7 +266,7 @@ describe("InviteWorkflow — getProfileForm + applyProfile", () => {
       },
     });
 
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({ wfs: r1.body?.wfs as string, input: { email: "dm@test.com" } });
     const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
     const r3 = await app.resumeViaQuery(token);
@@ -298,7 +298,7 @@ describe("InviteWorkflow — getAvailableRoles + inferRoles", () => {
         getAvailableRoles: async () => ["admin", "viewer"],
       },
     });
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     // Admin form returned; availableRoles whitelisted via `@wf.context.pass`.
     expect(r1.body?.availableRoles).toEqual(["admin", "viewer"]);
   });
@@ -312,7 +312,7 @@ describe("InviteWorkflow — getAvailableRoles + inferRoles", () => {
         getAvailableRoles: async () => ["admin", "viewer"],
       },
     });
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "bad-role@test.com", roles: ["admin", "superuser"] },
@@ -333,7 +333,7 @@ describe("InviteWorkflow — getAvailableRoles + inferRoles", () => {
         },
       },
     });
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "infer@test.com", roles: ["viewer", "admin"] },
@@ -350,14 +350,14 @@ describe("InviteWorkflow — getAvailableRoles + inferRoles", () => {
 describe("InviteWorkflow — re-invite", () => {
   it("re-invite happy path: original link works, then re-invite issues new magic link", async () => {
     const app = await prepareWfApp();
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "redo@test.com" },
     });
     expect(app.emails).toHaveLength(1);
     // Admin re-invites — second magic link captured.
-    const ri1 = await app.trigger({ wfid: "auth.reInvite" });
+    const ri1 = await app.trigger({ wfid: "auth/invite/resend" });
     await app.trigger({
       wfs: ri1.body?.wfs as string,
       input: { email: "redo@test.com" },
@@ -381,7 +381,7 @@ describe("InviteWorkflow — re-invite", () => {
     // Complete a full invite + accept first.
     await driveDefaultInviteAccept(app, "done@test.com");
     // Now try to re-invite.
-    const ri1 = await app.trigger({ wfid: "auth.reInvite" });
+    const ri1 = await app.trigger({ wfid: "auth/invite/resend" });
     const ri2 = await app.trigger({
       wfs: ri1.body?.wfs as string,
       input: { email: "done@test.com" },
@@ -391,7 +391,7 @@ describe("InviteWorkflow — re-invite", () => {
 
   it("re-invite on never-invited user → 404", async () => {
     const app = await prepareWfApp();
-    const ri1 = await app.trigger({ wfid: "auth.reInvite" });
+    const ri1 = await app.trigger({ wfid: "auth/invite/resend" });
     const ri2 = await app.trigger({
       wfs: ri1.body?.wfs as string,
       input: { email: "ghost@nowhere.test" },
@@ -403,7 +403,7 @@ describe("InviteWorkflow — re-invite", () => {
 describe("InviteWorkflow — cancel-invite", () => {
   it("cancel removes the pending user; subsequent magic-link click → 410", async () => {
     const app = await prepareWfApp();
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "kill@test.com" },
@@ -414,7 +414,7 @@ describe("InviteWorkflow — cancel-invite", () => {
     const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
 
     // Admin cancels.
-    const c1 = await app.trigger({ wfid: "auth.cancelInvite" });
+    const c1 = await app.trigger({ wfid: "auth/invite/cancel" });
     const c2 = await app.trigger({
       wfs: c1.body?.wfs as string,
       input: { email: "kill@test.com" },
@@ -438,7 +438,7 @@ describe("InviteWorkflow — cancel-invite", () => {
   it("cancel on already-accepted user → 409", async () => {
     const app = await prepareWfApp();
     await driveDefaultInviteAccept(app, "live@test.com");
-    const c1 = await app.trigger({ wfid: "auth.cancelInvite" });
+    const c1 = await app.trigger({ wfid: "auth/invite/cancel" });
     const c2 = await app.trigger({
       wfs: c1.body?.wfs as string,
       input: { email: "live@test.com" },
@@ -448,7 +448,7 @@ describe("InviteWorkflow — cancel-invite", () => {
 
   it("cancel on no-such-user → 404", async () => {
     const app = await prepareWfApp();
-    const c1 = await app.trigger({ wfid: "auth.cancelInvite" });
+    const c1 = await app.trigger({ wfid: "auth/invite/cancel" });
     const c2 = await app.trigger({
       wfs: c1.body?.wfs as string,
       input: { email: "nobody@test.com" },
@@ -463,7 +463,7 @@ describe("InviteWorkflow — cancel-invite", () => {
     // The `cancelInvite` step's allowed-gate fires on the first trigger
     // (before the form input pause), so the workflow returns 403 immediately
     // rather than handing back an InviteEmailForm prompt.
-    const c1 = await app.trigger({ wfid: "auth.cancelInvite" });
+    const c1 = await app.trigger({ wfid: "auth/invite/cancel" });
     expect(c1.status).toBe(403);
     expect(JSON.stringify(c1.body)).toMatch(/disabled|forbidden/i);
   });
@@ -474,7 +474,7 @@ describe("InviteWorkflow — idempotent magic-link click", () => {
     const app = await prepareWfApp({
       invitePolicy: { accept: acceptPolicy({ alreadyAcceptedRedirectUrl: "/already-in" }) },
     });
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "idem@test.com" },
@@ -504,7 +504,7 @@ describe("InviteWorkflow — idempotent magic-link click", () => {
     const app = await prepareWfApp({
       invitePolicy: { accept: acceptPolicy({ alreadyAcceptedRedirectUrl: "/already-in" }) },
     });
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "twice@test.com" },
@@ -520,7 +520,7 @@ describe("InviteWorkflow — idempotent magic-link click", () => {
     // Sanity: user is fully accepted.
     expect((await app.users.getUser("twice@test.com")).account?.pendingInvitation).toBe(false);
 
-    const ri1 = await app.trigger({ wfid: "auth.reInvite" });
+    const ri1 = await app.trigger({ wfid: "auth/invite/resend" });
     const ri2 = await app.trigger({
       wfs: ri1.body?.wfs as string,
       input: { email: "twice@test.com" },
@@ -553,13 +553,13 @@ describe("InviteWorkflow — duplicate-invite structural rule", () => {
   it("invite for an email that already has pendingInvitation=true → 409 'Invite already pending, use reInvite'", async () => {
     const app = await prepareWfApp();
     // First invite: pre-creates the user with pendingInvitation: true.
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "dup@test.com" },
     });
     // Second invite for same email → 409 with the reInvite hint.
-    const r2 = await app.trigger({ wfid: "auth.invite" });
+    const r2 = await app.trigger({ wfid: "auth/invite/start" });
     const r2b = await app.trigger({
       wfs: r2.body?.wfs as string,
       input: { email: "dup@test.com" },
@@ -571,7 +571,7 @@ describe("InviteWorkflow — duplicate-invite structural rule", () => {
   it("invite for an email that exists with pendingInvitation=false → 409 'User already exists'", async () => {
     const app = await prepareWfApp();
     await seedActiveUser(app.users, "live@test.com", "ExistingPass1");
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "live@test.com" },
@@ -593,7 +593,7 @@ describe("InviteWorkflow — duplicate-invite structural rule", () => {
         },
       },
     });
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "fresh@test.com" },
@@ -627,7 +627,7 @@ describe("InviteWorkflow — audit events", () => {
     expect(kinds).toContain("invite.accepted");
     const accepted = events.find((e) => e.kind === "invite.accepted");
     expect(accepted?.userId).toBe("audit@test.com");
-    expect(accepted?.workflow).toBe("auth.invite");
+    expect(accepted?.workflow).toBe("auth/invite/start");
   });
 
   it("emits invite.resent on auth.reInvite (loadPendingUser)", async () => {
@@ -640,19 +640,19 @@ describe("InviteWorkflow — audit events", () => {
         },
       },
     });
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "resent@test.com" },
     });
-    const ri1 = await app.trigger({ wfid: "auth.reInvite" });
+    const ri1 = await app.trigger({ wfid: "auth/invite/resend" });
     await app.trigger({
       wfs: ri1.body?.wfs as string,
       input: { email: "resent@test.com" },
     });
     const resent = events.find((e) => e.kind === "invite.resent");
     expect(resent).toBeDefined();
-    expect(resent?.workflow).toBe("auth.reInvite");
+    expect(resent?.workflow).toBe("auth/invite/resend");
     expect(resent?.userId).toBe("resent@test.com");
   });
 
@@ -666,19 +666,19 @@ describe("InviteWorkflow — audit events", () => {
         },
       },
     });
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "bye@test.com" },
     });
-    const c1 = await app.trigger({ wfid: "auth.cancelInvite" });
+    const c1 = await app.trigger({ wfid: "auth/invite/cancel" });
     await app.trigger({
       wfs: c1.body?.wfs as string,
       input: { email: "bye@test.com" },
     });
     const cancelled = events.find((e) => e.kind === "invite.cancelled");
     expect(cancelled).toBeDefined();
-    expect(cancelled?.workflow).toBe("auth.cancelInvite");
+    expect(cancelled?.workflow).toBe("auth/invite/cancel");
     expect(cancelled?.email).toBe("bye@test.com");
   });
 
@@ -719,7 +719,7 @@ describe("InviteWorkflow — admin form firstName/lastName/roles wiring", () => 
       },
     });
 
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: {
@@ -769,7 +769,7 @@ describe("InviteWorkflow — admin form firstName/lastName/roles wiring", () => 
       },
     });
 
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "mapped@x.com", firstName: "Jane", lastName: "Doe" },
@@ -789,7 +789,7 @@ describe("InviteWorkflow — admin form firstName/lastName/roles wiring", () => 
       userStore: new StrictSchemaUserStore(BASE_USER_COLUMNS),
       inviteHooks: { getAvailableRoles: async () => ["admin", "viewer"] },
     });
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "bad@x.com", roles: ["admin", "superuser"] },
@@ -814,14 +814,14 @@ describe("InviteWorkflow — WfFinished envelope shape", () => {
         }),
       },
     });
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "parallel@test.com" },
     });
     const tokenA = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
     // reInvite issues tokenB while pendingInvitation is still true.
-    const ri = await app.trigger({ wfid: "auth.reInvite" });
+    const ri = await app.trigger({ wfid: "auth/invite/resend" });
     await app.trigger({
       wfs: ri.body?.wfs as string,
       input: { email: "parallel@test.com" },
@@ -860,7 +860,7 @@ describe("InviteWorkflow — WfFinished envelope shape", () => {
 
   it("password-form cancel alt-action → abortWf envelope with reason='cancel'", async () => {
     const app = await prepareWfApp();
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "abort@test.com" },
@@ -904,7 +904,7 @@ describe("InviteWorkflow — WfFinished envelope shape", () => {
     // The cookies-bearing finish stays on the raw `useWfFinished` path because
     // helpers don't expose `cookies`. Envelope shape: { finished: true, data }.
     const app = await prepareWfApp();
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "cookie@test.com" },
@@ -926,12 +926,12 @@ describe("InviteWorkflow — WfFinished envelope shape", () => {
 
   it("cancelInvite terminal → finishWf({ data }) envelope with data.cancelled + info message", async () => {
     const app = await prepareWfApp();
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "wipe@test.com" },
     });
-    const c1 = await app.trigger({ wfid: "auth.cancelInvite" });
+    const c1 = await app.trigger({ wfid: "auth/invite/cancel" });
     const c2 = await app.trigger({
       wfs: c1.body?.wfs as string,
       input: { email: "wipe@test.com" },
@@ -982,7 +982,7 @@ describe("InviteWorkflow — passwordPolicies surfaces on SetPasswordForm pause"
     const app = await prepareWfApp({
       userConfig: { password: { policies: [ppHasMinLength(8)] } },
     });
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "alice@test.com" },

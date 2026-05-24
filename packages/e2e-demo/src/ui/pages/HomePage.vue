@@ -7,11 +7,11 @@ import { WORKFLOWS } from "../workflows";
 // Map each workflow id to the names of its registered variant presets so the
 // dropdown only surfaces options the backend will actually merge.
 const VARIANTS_BY_WF: Record<string, string[]> = {
-  "auth.login": Object.keys(LOGIN_VARIANTS),
-  "auth.recovery": Object.keys(RECOVERY_VARIANTS),
-  "auth.invite": Object.keys(INVITE_VARIANTS),
-  "auth.reInvite": Object.keys(INVITE_VARIANTS),
-  "auth.cancelInvite": Object.keys(INVITE_VARIANTS),
+  "auth/login/flow": Object.keys(LOGIN_VARIANTS),
+  "auth/recovery/flow": Object.keys(RECOVERY_VARIANTS),
+  "auth/invite/start": Object.keys(INVITE_VARIANTS),
+  "auth/invite/resend": Object.keys(INVITE_VARIANTS),
+  "auth/invite/cancel": Object.keys(INVITE_VARIANTS),
 };
 
 // Per-row selection — keyed by wf id so each row remembers its own pick.

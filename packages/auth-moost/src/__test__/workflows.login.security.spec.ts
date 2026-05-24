@@ -36,6 +36,7 @@ import { Controller, Inherit } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import { ProfileWithRolesForm } from "./fixtures/profile-with-roles.as";
+import { AuthOpts } from "../auth.opts";
 import { RESERVED_USER_KEYS } from "../workflows/auth-workflow.base";
 import { type LoginWfCtx, LoginWorkflow, type LoginWorkflowOpts } from "../workflows/index";
 import { prepareWfApp, seedActiveUser, withLoginMfaCtx } from "./workflow-utils";
@@ -59,10 +60,15 @@ describe("LoginWorkflow security — profile-complete payload escalation (audit 
     const seenAtHook: Array<Record<string, unknown>> = [];
 
     @Inherit()
-    @Controller()
+    @Controller("auth/login")
     class ProfileLogin extends LoginWorkflow {
-      constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
-        super(opts, users, auth);
+      constructor(
+        opts: LoginWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+      ) {
+        super(opts, users, auth, authOpts);
       }
       override async credentials(ctx: LoginWfCtx): Promise<unknown> {
         const out = await super.credentials(ctx);
@@ -105,7 +111,7 @@ describe("LoginWorkflow security — profile-complete payload escalation (audit 
 
     await seedActiveUser(app.users, "victim", "Password123");
 
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const cred = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "victim", password: "Password123" },
@@ -200,7 +206,7 @@ describe("LoginWorkflow security — @wf.context.pass key shadowing (audit #15 S
     const secret = generateTotpSecret();
     await app.users.addMfaMethod("alice", { name: "totp", value: secret, confirmed: true });
 
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const cred = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },

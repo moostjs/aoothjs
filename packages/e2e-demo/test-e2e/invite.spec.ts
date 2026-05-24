@@ -112,7 +112,7 @@ async function nextTriggerResponse(
  * row where `username = ctx.username = ctx.email`, which IS findable.
  */
 async function seedPendingInviteeByEmail(page: Page, email: string): Promise<void> {
-  await page.goto(wfUrl("auth.invite", "email-no-roles"));
+  await page.goto(wfUrl("auth/invite/start", "email-no-roles"));
   await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
   await fillField(page, "email", email);
   const sentPromise = nextTriggerResponse(page, (b) => b.sent === true);
@@ -132,7 +132,7 @@ test.describe("WF-INVITE — auth.invite family (P0)", () => {
     baseURL,
   }) => {
     await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth.invite", "email-no-roles"));
+    await page.goto(wfUrl("auth/invite/start", "email-no-roles"));
     await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
 
     const inviteeEmail = uniqueEmail("invite-001");
@@ -182,7 +182,7 @@ test.describe("WF-INVITE — auth.invite family (P0)", () => {
     page,
   }) => {
     await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth.invite", "roles-profile"));
+    await page.goto(wfUrl("auth/invite/start", "roles-profile"));
     await expect(page.locator('[name="email"]')).toBeVisible();
 
     // `collectRoles: true` on the variant ⇒ `roles?: string[]` renders as an
@@ -203,7 +203,7 @@ test.describe("WF-INVITE — auth.invite family (P0)", () => {
     // The `roles-profile` variant flips `collectProfile: true` so after the
     // invitee sets their password the workflow pauses on the profile form
     // returned by `DemoInviteWorkflow.getProfileForm()` (`InviteAcceptProfileForm`).
-    await page.goto(wfUrl("auth.invite", "roles-profile"));
+    await page.goto(wfUrl("auth/invite/start", "roles-profile"));
     await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
 
     const inviteeEmail = uniqueEmail("invite-007");
@@ -242,7 +242,7 @@ test.describe("WF-INVITE — auth.invite family (P0)", () => {
   }) => {
     await loginViaUi(page, USERS.admin_inviter);
 
-    await page.goto(wfUrl("auth.invite", "choice-freshlogin"));
+    await page.goto(wfUrl("auth/invite/start", "choice-freshlogin"));
     // First pause is `InviteSendModeForm` (because `send.mode === 'choice'`
     // defers to `inviteSelectSendMode`). The `mode` field is rendered as a
     // radio group (one input per option — 'email' + 'shareableLink'), so a
@@ -288,7 +288,7 @@ test.describe("WF-INVITE — auth.invite family (P0)", () => {
     const inviteeEmail = uniqueEmail("reinvite-013");
     await seedPendingInviteeByEmail(page, inviteeEmail);
 
-    await page.goto(wfUrl("auth.reInvite", "email-no-roles"));
+    await page.goto(wfUrl("auth/invite/resend", "email-no-roles"));
     // `auth.reInvite` opens on `InviteEmailForm` — single `email` field.
     await expect(page.locator('[name="email"]')).toBeVisible();
     await fillField(page, "email", inviteeEmail);
@@ -308,7 +308,7 @@ test.describe("WF-INVITE — auth.invite family (P0)", () => {
     const inviteeEmail = uniqueEmail("cancel-015");
     await seedPendingInviteeByEmail(page, inviteeEmail);
 
-    await page.goto(wfUrl("auth.cancelInvite", "email-no-roles"));
+    await page.goto(wfUrl("auth/invite/cancel", "email-no-roles"));
     await expect(page.locator('[name="email"]')).toBeVisible();
     await fillField(page, "email", inviteeEmail);
 
@@ -367,7 +367,7 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
   // it under `.scope-error`.
   test("WF-INVITE-002 admin invites already-redeemed user → 409 inline error", async ({ page }) => {
     await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth.invite", "email-no-roles"));
+    await page.goto(wfUrl("auth/invite/start", "email-no-roles"));
     await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
 
     await fillField(page, "email", "t1_redeemed@example.com");
@@ -403,7 +403,7 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
     baseURL,
   }) => {
     await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth.invite", "email-no-roles"));
+    await page.goto(wfUrl("auth/invite/start", "email-no-roles"));
     await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
     const inviteeEmail = uniqueEmail("invite-003");
     await fillField(page, "email", inviteeEmail);
@@ -452,7 +452,7 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
   // payload, then assert the server's `requireInput` errors envelope.
   test("WF-INVITE-006 admin submits role outside whitelist → form error", async ({ page }) => {
     await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth.invite", "roles-profile"));
+    await page.goto(wfUrl("auth/invite/start", "roles-profile"));
     await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
 
     // Inject `roles: ['superuser']` into the InviteForm submission. The UI
@@ -520,7 +520,7 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
     baseURL,
   }) => {
     await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth.invite", "roles-profile"));
+    await page.goto(wfUrl("auth/invite/start", "roles-profile"));
     await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
 
     const inviteeEmail = uniqueEmail("invite-008");
@@ -575,7 +575,7 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
     request,
   }) => {
     await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth.invite", "shareable-link"));
+    await page.goto(wfUrl("auth/invite/start", "shareable-link"));
     await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
 
     const inviteeEmail = uniqueEmail("invite-009");
@@ -613,7 +613,7 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
     baseURL,
   }) => {
     await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth.invite", "choice-freshlogin"));
+    await page.goto(wfUrl("auth/invite/start", "choice-freshlogin"));
     // See WF-INVITE-011 for the radio-group locator pattern rationale.
     await waitForFormInput(page, "mode");
     await expect(page.getByRole("radiogroup", { name: /Delivery mode/ })).toBeVisible();
@@ -665,7 +665,7 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
   // surfaces 409 via `@error` → WfPage paints under `.scope-error`.
   test("WF-INVITE-014 reInvite on already-accepted user → 409 inline error", async ({ page }) => {
     await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth.reInvite", "email-no-roles"));
+    await page.goto(wfUrl("auth/invite/resend", "email-no-roles"));
     await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
 
     await fillField(page, "email", "t1_redeemed@example.com");
@@ -689,7 +689,7 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
     page,
   }) => {
     await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth.cancelInvite", "email-no-roles"));
+    await page.goto(wfUrl("auth/invite/cancel", "email-no-roles"));
     await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
 
     await fillField(page, "email", "t1_redeemed@example.com");
@@ -724,7 +724,7 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
       (r) => r.url().includes("/auth/trigger") && r.status() >= 400,
       { timeout: 10_000 },
     );
-    await page.goto(wfUrl("auth.cancelInvite", "cancellation-disabled"));
+    await page.goto(wfUrl("auth/invite/cancel", "cancellation-disabled"));
     const res = await errorPromise;
     expect(res.status()).toBe(403);
     const body = (await res.json()) as Record<string, unknown>;
@@ -773,7 +773,7 @@ test.describe("WF-INVITE — auth.invite family (P2)", () => {
     baseURL,
   }) => {
     await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth.invite", "short-ttl-confirmation"));
+    await page.goto(wfUrl("auth/invite/start", "short-ttl-confirmation"));
     await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
 
     const inviteeEmail = uniqueEmail("invite-004");
@@ -836,7 +836,7 @@ test.describe("WF-INVITE — auth.invite family (P2)", () => {
     baseURL,
   }) => {
     await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth.invite", "idempotent-redirect"));
+    await page.goto(wfUrl("auth/invite/start", "idempotent-redirect"));
     await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
 
     const inviteeEmail = uniqueEmail("invite-010");
@@ -924,7 +924,7 @@ test.describe("WF-INVITE — auth.invite family (P2)", () => {
     expect(flip.status()).toBeLessThan(300);
 
     await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth.invite", "email-no-roles"));
+    await page.goto(wfUrl("auth/invite/start", "email-no-roles"));
     await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
 
     // `t1_redeemed@example.com` is the seed user whose `username = email`,
@@ -960,7 +960,7 @@ test.describe("WF-INVITE — auth.invite family (P2)", () => {
     baseURL,
   }) => {
     await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth.invite", "short-ttl-confirmation"));
+    await page.goto(wfUrl("auth/invite/start", "short-ttl-confirmation"));
     await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
 
     const inviteeEmail = uniqueEmail("invite-019");
@@ -1014,7 +1014,7 @@ test.describe("WF-INVITE — auth.invite family (P2)", () => {
     baseURL,
   }) => {
     await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth.invite", "confirmation-message"));
+    await page.goto(wfUrl("auth/invite/start", "confirmation-message"));
     await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
 
     const inviteeEmail = uniqueEmail("invite-020");
@@ -1099,7 +1099,7 @@ test.describe("WF-INVITE — auth.invite family (MFA enrollment, PW MFA coverage
     baseURL,
   }) => {
     await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth.invite", "invite-mfa-optional-full"));
+    await page.goto(wfUrl("auth/invite/start", "invite-mfa-optional-full"));
     await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
 
     const inviteeEmail = uniqueEmail("invite-021");
@@ -1166,7 +1166,7 @@ test.describe("WF-INVITE — auth.invite family (MFA enrollment, PW MFA coverage
     baseURL,
   }) => {
     await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth.invite", "invite-mfa-optional-full"));
+    await page.goto(wfUrl("auth/invite/start", "invite-mfa-optional-full"));
     await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
 
     const inviteeEmail = uniqueEmail("invite-022");

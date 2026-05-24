@@ -4,14 +4,45 @@ Canonical reference: [LoginWorkflow](src/workflows/login.workflow.ts) (commits `
 
 ## Layering — what lives where
 
-| Concern                                                               | Lives on                            | Read/write surface               |
-| --------------------------------------------------------------------- | ----------------------------------- | -------------------------------- |
-| Infrastructure (TTLs, cookie names, form schemas, magic-link timeout) | `LoginWorkflowOpts`                 | `this.opts.<infra-group>.<flag>` |
-| Policy (per-tenant / per-request / per-user flags)                    | `protected resolveXxx(ctx)` getters | Override seam                    |
-| Resolved policy (set by `prepare-<group>` @Step)                      | `ctx.<group>?.<flag>`               | Schema conditions + step bodies  |
-| Per-event state (form input, step decisions)                          | `ctx.<field>`                       | Step bodies                      |
+| Concern                                                                     | Lives on                            | Read/write surface               |
+| --------------------------------------------------------------------------- | ----------------------------------- | -------------------------------- |
+| Cross-workflow infra (pincode timers, magic-link TTL, loginUrl, totpIssuer) | `AuthOpts` (singleton DI provider)  | `this.authOpts.<field>`          |
+| Per-workflow infra (cookie names, form schemas)                             | `<Wf>WorkflowOpts`                  | `this.opts.<infra-group>.<flag>` |
+| Policy (per-tenant / per-request / per-user flags)                          | `protected resolveXxx(ctx)` getters | Override seam                    |
+| Resolved policy (set by `prepare-<group>` @Step)                            | `ctx.<group>?.<flag>`               | Schema conditions + step bodies  |
+| Per-event state (form input, step decisions)                                | `ctx.<field>`                       | Step bodies                      |
 
-**`LoginWorkflowOpts` is infrastructure-only.** Policy NEVER lives on opts. If a knob varies by request/tenant/user, it goes on a `resolveXxx()` method.
+**`LoginWorkflowOpts` is per-workflow infrastructure-only.** Policy NEVER lives on opts. If a knob varies by request/tenant/user, it goes on a `resolveXxx()` method.
+
+## Cross-workflow defaults — `AuthOpts`
+
+`AuthOpts` is the singleton DI provider holding cross-workflow infrastructure
+defaults (pincode lengths/TTLs, magic-link TTL, login URL, TOTP issuer). The
+three workflows (`LoginWorkflow`, `InviteWorkflow`, `RecoveryWorkflow`) take
+`authOpts: AuthOpts` as the 4th ctor param and read fields directly via
+`this.authOpts.<field>`.
+
+**Customer override.** Extend the class and register the replacement via
+moost's `createReplaceRegistry()`:
+
+```ts
+@Injectable() // SINGLETON
+class MyAuthOpts extends AuthOpts {
+  override mfa = { pincodeLength: 8, pincodeTtlMs: 10 * 60 * 1000, pincodeResendTimeoutMs: 30_000 };
+  override magicLinkTtlMs = 15 * 60 * 1000;
+  override loginUrl = "/sign-in";
+  override totpIssuer = "MyApp";
+}
+
+app.setReplaceRegistry(createReplaceRegistry([AuthOpts, MyAuthOpts]));
+```
+
+Singleton scope is required — `@Injectable()` (no scope arg) → SINGLETON.
+Do NOT add `@Injectable("FOR_EVENT")` to a custom `AuthOpts`; the workflow
+ctors are typically SINGLETON too and FOR_EVENT-scope providers can't be
+injected into SINGLETON consumers. For per-request overrides, the e2e-demo
+clones the singleton inside its FOR_EVENT workflow ctors — see
+`cloneAuthOptsWithVariant` in `packages/e2e-demo/src/app.ts`.
 
 ## `resolveXxx(ctx)` — policy getter convention
 
@@ -157,8 +188,13 @@ If a composable exists for what you need, use it. Don't cast `req`/`res` objects
 @Inherit()
 @Controller() // SINGLETON; add @Injectable("FOR_EVENT") ONLY if ctor reads composables
 class MyLogin extends LoginWorkflow {
-  constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
-    super(opts, users, auth); // re-declared so TS emits design:paramtypes
+  constructor(
+    opts: LoginWorkflowOpts,
+    users: UserService,
+    auth: AuthCredential,
+    authOpts: AuthOpts, // 4th param — cross-workflow infra (pincode timers, magic-link TTL, ...)
+  ) {
+    super(opts, users, auth, authOpts); // re-declared so TS emits design:paramtypes
   }
 
   protected resolveAcceptance(ctx: LoginWfCtx) {

@@ -207,7 +207,7 @@ export class UserService<T extends object = object> {
   /**
    * Hard-delete the user row. Returns nothing on success. Throws
    * `UserAuthError("NOT_FOUND")` when no row matches `username`. Used by the
-   * invite workflow's `auth.cancelInvite` to revoke a pending invitation.
+   * invite workflow's `auth/invite/cancel` to revoke a pending invitation.
    */
   async deleteUser(username: string): Promise<void> {
     const removed = await this.store.delete(username);

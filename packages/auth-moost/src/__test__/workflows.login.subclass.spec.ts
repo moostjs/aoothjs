@@ -21,6 +21,7 @@ import { Controller, Inherit } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import { ProfileCompleteForm } from "../atscript/models/forms.as";
+import { AuthOpts } from "../auth.opts";
 import { type LoginWfCtx, LoginWorkflow, type LoginWorkflowOpts } from "../workflows/index";
 import { prepareWfApp, seedActiveUser, withLoginMfaCtx } from "./workflow-utils";
 
@@ -33,10 +34,15 @@ describe("LoginWorkflow subclass — end-to-end registration shape", () => {
     // exact shape catches regressions in moost's @Inherit metadata handling.
     let credentialsRan = 0;
     @Inherit()
-    @Controller()
+    @Controller("auth/login")
     class MyLogin extends LoginWorkflow {
-      constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
-        super(opts, users, auth);
+      constructor(
+        opts: LoginWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+      ) {
+        super(opts, users, auth, authOpts);
       }
       // Override an arbitrary protected method to prove the subclass body
       // actually runs on the dispatch path (i.e. the registered class is
@@ -54,7 +60,7 @@ describe("LoginWorkflow subclass — end-to-end registration shape", () => {
     await seedActiveUser(app.users, "alice", "Password123");
     const secret = generateTotpSecret();
     await app.users.addMfaMethod("alice", { name: "totp", value: secret, confirmed: true });
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -81,10 +87,15 @@ describe("LoginWorkflow subclass — applyProfile override", () => {
     // with the submitted payload + the workflow's known username.
     const calls: Array<{ username: string; payload: Record<string, unknown> }> = [];
     @Inherit()
-    @Controller()
+    @Controller("auth/login")
     class ProfileLogin extends LoginWorkflow {
-      constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
-        super(opts, users, auth);
+      constructor(
+        opts: LoginWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+      ) {
+        super(opts, users, auth, authOpts);
       }
       override async credentials(ctx: LoginWfCtx): Promise<unknown> {
         const out = await super.credentials(ctx);
@@ -110,7 +121,7 @@ describe("LoginWorkflow subclass — applyProfile override", () => {
       loginWorkflowClass: withLoginMfaCtx(ProfileLogin, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const cred = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -137,10 +148,15 @@ describe("LoginWorkflow subclass — applyConsentMarketing override", () => {
   it("override fires when acceptance.consentMarketing is true with the submitted opt-in value", async () => {
     const captured: Array<{ username: string; optIn: boolean }> = [];
     @Inherit()
-    @Controller()
+    @Controller("auth/login")
     class ConsentLogin extends LoginWorkflow {
-      constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
-        super(opts, users, auth);
+      constructor(
+        opts: LoginWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+      ) {
+        super(opts, users, auth, authOpts);
       }
       protected override async applyConsentMarketing(
         username: string,
@@ -159,7 +175,7 @@ describe("LoginWorkflow subclass — applyConsentMarketing override", () => {
       loginWorkflowClass: withLoginMfaCtx(ConsentLogin, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const cred = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -187,10 +203,15 @@ describe("LoginWorkflow subclass — applyConsentMarketing override", () => {
 describe("LoginWorkflow subclass — loadTenants override", () => {
   it("multiContext.tenantSelect: tenants from override drive form validation (valid id → tokens)", async () => {
     @Inherit()
-    @Controller()
+    @Controller("auth/login")
     class TenantLogin extends LoginWorkflow {
-      constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
-        super(opts, users, auth);
+      constructor(
+        opts: LoginWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+      ) {
+        super(opts, users, auth, authOpts);
       }
       override async credentials(ctx: LoginWfCtx): Promise<unknown> {
         const out = await super.credentials(ctx);
@@ -211,7 +232,7 @@ describe("LoginWorkflow subclass — loadTenants override", () => {
       loginWorkflowClass: withLoginMfaCtx(TenantLogin, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const cred = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -231,10 +252,15 @@ describe("LoginWorkflow subclass — loadTenants override", () => {
 
   it("multiContext.tenantSelect + bogus tenantId submission → form error 'Unknown tenant' (override's set IS authoritative)", async () => {
     @Inherit()
-    @Controller()
+    @Controller("auth/login")
     class TenantLogin extends LoginWorkflow {
-      constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
-        super(opts, users, auth);
+      constructor(
+        opts: LoginWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+      ) {
+        super(opts, users, auth, authOpts);
       }
       override async credentials(ctx: LoginWfCtx): Promise<unknown> {
         const out = await super.credentials(ctx);
@@ -253,7 +279,7 @@ describe("LoginWorkflow subclass — loadTenants override", () => {
       loginWorkflowClass: withLoginMfaCtx(TenantLogin, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const cred = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -273,10 +299,15 @@ describe("LoginWorkflow subclass — loadTenants override", () => {
 describe("LoginWorkflow subclass — loadPersonas override", () => {
   it("multiContext.personaSelect: personas from override drive form validation", async () => {
     @Inherit()
-    @Controller()
+    @Controller("auth/login")
     class PersonaLogin extends LoginWorkflow {
-      constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
-        super(opts, users, auth);
+      constructor(
+        opts: LoginWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+      ) {
+        super(opts, users, auth, authOpts);
       }
       override async credentials(ctx: LoginWfCtx): Promise<unknown> {
         const out = await super.credentials(ctx);
@@ -295,7 +326,7 @@ describe("LoginWorkflow subclass — loadPersonas override", () => {
       loginWorkflowClass: withLoginMfaCtx(PersonaLogin, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const cred = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -321,7 +352,7 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
     // (and exactly one call) pins the wire-up.
     const calls: string[] = [];
     @Inherit()
-    @Controller()
+    @Controller("auth/login")
     class KickLogin extends LoginWorkflow {
       protected override async loadActiveSessions(_username: string): Promise<number> {
         return 9; // way past the max
@@ -337,7 +368,7 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
       loginWorkflowClass: withLoginMfaCtx(KickLogin, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const cred = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -355,7 +386,7 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
   it("sessionPolicy.concurrencyLimit kickPrompt + 'cancel' alt → workflow aborts, override NOT called", async () => {
     const calls: string[] = [];
     @Inherit()
-    @Controller()
+    @Controller("auth/login")
     class KickLogin extends LoginWorkflow {
       protected override async loadActiveSessions(_username: string): Promise<number> {
         return 9;
@@ -371,7 +402,7 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
       loginWorkflowClass: withLoginMfaCtx(KickLogin, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const cred = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -394,7 +425,7 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
     // Pins the WfFinished migration for the session-limit cancel path — the
     // structured `message` envelope is the new UI banner contract.
     @Inherit()
-    @Controller()
+    @Controller("auth/login")
     class KickLogin extends LoginWorkflow {
       protected override async loadActiveSessions(_username: string): Promise<number> {
         return 9;
@@ -407,7 +438,7 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
       loginWorkflowClass: withLoginMfaCtx(KickLogin, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const cred = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -449,7 +480,7 @@ describe("LoginWorkflow runtime fail-loud — deliver() not configured", () => {
       value: "alice@example.com",
       confirmed: true,
     });
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -485,7 +516,7 @@ describe("LoginWorkflow runtime fail-loud — deliver() not configured", () => {
       value: secret,
       confirmed: true,
     });
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -517,10 +548,15 @@ describe("LoginWorkflow subclass — async resolveXxx override is awaited by pre
     // `profileCompleteRequired: true` AFTER a microtask, and asserts the
     // workflow paused on the ProfileCompleteForm rather than issuing tokens.
     @Inherit()
-    @Controller()
+    @Controller("auth/login")
     class AsyncAcceptanceLogin extends LoginWorkflow {
-      constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
-        super(opts, users, auth);
+      constructor(
+        opts: LoginWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+      ) {
+        super(opts, users, auth, authOpts);
       }
       override async credentials(ctx: LoginWfCtx): Promise<unknown> {
         const out = await super.credentials(ctx);
@@ -548,7 +584,7 @@ describe("LoginWorkflow subclass — async resolveXxx override is awaited by pre
       loginWorkflowClass: withLoginMfaCtx(AsyncAcceptanceLogin, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },

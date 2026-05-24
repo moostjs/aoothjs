@@ -2,15 +2,12 @@
  * `LoginWorkflowOpts` — infrastructure-only nested-pojo configuration for
  * `LoginWorkflow`.
  *
- * Phase 3 of the workflow OOP-reshape (see TASKS.md): policy fields
- * (alternateCredentials.{forgotPassword,signup,…}, guards, enrollment,
- * acceptance, multiContext, sessionPolicy, finalize, deviceTrust.{enabled,
- * optIn,skipsMfa}, mfa.backupCodes) have moved off opts and onto protected
- * `resolveXxx(ctx)` getter methods on `LoginWorkflow` (one per group). What
- * remains here is infrastructure-only: pincode timers, cookie name/TTL +
- * binding, magic-link TTL, and the form schemas. Step bodies + schema
- * conditions read policy from `ctx.<group>` (populated by `prepare-<group>`
- * @Step methods that call the resolvers).
+ * Post-`AuthOpts` reshape: cross-workflow infrastructure (pincode timers/length,
+ * magic-link TTL, TOTP issuer, login URL) moved off this opts shape and onto
+ * the shared `AuthOpts` DI provider — see `auth.opts.ts`. What remains here is
+ * login-specific infrastructure only: the `deviceTrust` cookie binding and the
+ * form-schema replacement map. Policy still lives on the `resolveXxx(ctx)`
+ * getter surface on `LoginWorkflow`.
  */
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 
@@ -34,8 +31,6 @@ import {
   TermsAcceptForm,
 } from "../atscript/models/forms.as";
 
-export const DEFAULT_MFA_CODE_TTL_MS = 5 * 60 * 1000;
-
 export type LoginRedirect = "referer" | "home" | false | null;
 
 export type { MfaTransport } from "./auth-workflow.base";
@@ -52,19 +47,10 @@ export interface ConcurrencyLimitOptions {
 }
 
 export interface LoginWorkflowOpts {
-  mfa?: {
-    pincodeTtlMs?: number;
-    pincodeResendTimeoutMs?: number;
-    /** Numeric length of the server-generated OTP for SMS/email pincodes. */
-    pincodeLength?: number;
-  };
   deviceTrust?: {
     cookieName?: string;
     ttlMs?: number;
     bindsTo?: "cookie" | "cookie+ip";
-  };
-  alternateCredentials?: {
-    magicLinkTtlMs?: number;
   };
   /**
    * Replaceable form schemas. Each field defaults to the corresponding
@@ -98,18 +84,10 @@ export interface LoginWorkflowOpts {
  * `this.opts.<group>.<flag>` directly without optional chaining.
  */
 export interface ResolvedLoginWorkflowOpts {
-  mfa: {
-    pincodeTtlMs: number;
-    pincodeResendTimeoutMs: number;
-    pincodeLength: number;
-  };
   deviceTrust: {
     cookieName: string;
     ttlMs: number;
     bindsTo: "cookie" | "cookie+ip";
-  };
-  alternateCredentials: {
-    magicLinkTtlMs: number;
   };
   forms: {
     askEmail: TAtscriptAnnotatedType;
@@ -139,21 +117,11 @@ export interface ResolvedLoginWorkflowOpts {
  */
 export function mergeLoginOpts(opts: LoginWorkflowOpts = {}): ResolvedLoginWorkflowOpts {
   return {
-    mfa: {
-      pincodeTtlMs: DEFAULT_MFA_CODE_TTL_MS,
-      pincodeResendTimeoutMs: 60_000,
-      pincodeLength: 6,
-      ...opts.mfa,
-    },
     deviceTrust: {
       cookieName: "aooth_trusted_device",
       ttlMs: 24 * 60 * 60_000,
       bindsTo: "cookie",
       ...opts.deviceTrust,
-    },
-    alternateCredentials: {
-      magicLinkTtlMs: 30 * 60_000,
-      ...opts.alternateCredentials,
     },
     forms: {
       askEmail: AskEmailForm as unknown as TAtscriptAnnotatedType,

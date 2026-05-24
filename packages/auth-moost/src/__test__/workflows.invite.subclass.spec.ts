@@ -9,7 +9,7 @@
  *
  * This file proves the override path ALSO works when a consumer pastes the
  * literal subclass shape documented in the class doc + WF_INVITE.md — i.e.
- * `@Inherit() @Controller()` plus the re-declared
+ * `@Inherit() @Controller("auth/invite")` plus the re-declared
  * ctor. The harness still wraps the consumer subclass (so it can pin captures
  * for emails / audit), but the harness's overrides delegate to `super.X()`
  * when no `inviteHooks` entry is set — which routes back into the consumer's
@@ -26,6 +26,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { ProfileCompleteForm } from "../atscript/models/forms.as";
 import { Public } from "../auth.decorator";
+import { AuthOpts } from "../auth.opts";
 import {
   type DuplicateAction,
   InviteWorkflow,
@@ -48,10 +49,15 @@ describe("InviteWorkflow subclass — end-to-end registration shape", () => {
     // to our subclass's body.
     let prepareUserCalls = 0;
     @Inherit()
-    @Controller()
+    @Controller("auth/invite")
     class MyInvite extends InviteWorkflow {
-      constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
-        super(opts, users, auth);
+      constructor(
+        opts: InviteWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+      ) {
+        super(opts, users, auth, authOpts);
       }
       protected override async prepareUser(
         _input: PreparedUserInput,
@@ -64,7 +70,7 @@ describe("InviteWorkflow subclass — end-to-end registration shape", () => {
       inviteWorkflowClass: withInviteMfaCtx(MyInvite, { mfaMode: "disabled" }),
     });
 
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "sub@test.com" },
@@ -90,10 +96,15 @@ describe("InviteWorkflow subclass — end-to-end registration shape", () => {
     // implementation if the subclass weren't actually registered.
     let duplicateCheckCalls = 0;
     @Inherit()
-    @Controller()
+    @Controller("auth/invite")
     class MyInvite extends InviteWorkflow {
-      constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
-        super(opts, users, auth);
+      constructor(
+        opts: InviteWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+      ) {
+        super(opts, users, auth, authOpts);
       }
       protected override async duplicateCheck(input: {
         email: string;
@@ -108,7 +119,7 @@ describe("InviteWorkflow subclass — end-to-end registration shape", () => {
     });
 
     // 1) auth.invite — first hit; duplicateCheck runs.
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "tri@test.com" },
@@ -117,7 +128,7 @@ describe("InviteWorkflow subclass — end-to-end registration shape", () => {
     expect(app.emails).toHaveLength(1);
 
     // 2) auth.reInvite — pre-existing pendingInvitation user; emits a second magic link.
-    const ri1 = await app.trigger({ wfid: "auth.reInvite" });
+    const ri1 = await app.trigger({ wfid: "auth/invite/resend" });
     const ri2 = await app.trigger({
       wfs: ri1.body?.wfs as string,
       input: { email: "tri@test.com" },
@@ -126,7 +137,7 @@ describe("InviteWorkflow subclass — end-to-end registration shape", () => {
     expect(app.emails).toHaveLength(2);
 
     // 3) auth.cancelInvite — wipes the pending user row.
-    const c1 = await app.trigger({ wfid: "auth.cancelInvite" });
+    const c1 = await app.trigger({ wfid: "auth/invite/cancel" });
     const c2 = await app.trigger({
       wfs: c1.body?.wfs as string,
       input: { email: "tri@test.com" },
@@ -149,10 +160,15 @@ describe("InviteWorkflow subclass — end-to-end registration shape", () => {
 describe("InviteWorkflow subclass — protected method overrides", () => {
   it("getAvailableRoles override populates the admin form's ctx.availableRoles", async () => {
     @Inherit()
-    @Controller()
+    @Controller("auth/invite")
     class MyInvite extends InviteWorkflow {
-      constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
-        super(opts, users, auth);
+      constructor(
+        opts: InviteWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+      ) {
+        super(opts, users, auth, authOpts);
       }
       protected override async getAvailableRoles(): Promise<string[] | undefined> {
         return ["tenant-admin", "tenant-member"];
@@ -161,7 +177,7 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
     const app = await prepareWfApp({
       inviteWorkflowClass: withInviteMfaCtx(MyInvite, { mfaMode: "disabled" }),
     });
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     // Workflow paused on the admin form WITH availableRoles whitelisted via
     // `@wf.context.pass` — UI uses this to render the multi-select. The
     // override could not be detected without this projection being attached
@@ -172,10 +188,15 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
   it("inferRoles override merges with admin-supplied roles (set-union persisted)", async () => {
     let calls = 0;
     @Inherit()
-    @Controller()
+    @Controller("auth/invite")
     class MyInvite extends InviteWorkflow {
-      constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
-        super(opts, users, auth);
+      constructor(
+        opts: InviteWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+      ) {
+        super(opts, users, auth, authOpts);
       }
       protected override async inferRoles(_input: {
         email: string;
@@ -189,7 +210,7 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
     const app = await prepareWfApp({
       inviteWorkflowClass: withInviteMfaCtx(MyInvite, { mfaMode: "disabled" }),
     });
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "infer-sub@test.com", roles: ["admin", "viewer"] },
@@ -202,10 +223,15 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
   it("applyProfile override receives username + profile after collectProfile pause", async () => {
     const seen: Array<{ username: string; profile: Record<string, unknown> }> = [];
     @Inherit()
-    @Controller()
+    @Controller("auth/invite")
     class MyInvite extends InviteWorkflow {
-      constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
-        super(opts, users, auth);
+      constructor(
+        opts: InviteWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+      ) {
+        super(opts, users, auth, authOpts);
       }
       protected override getProfileForm(): TAtscriptAnnotatedType {
         return ProfileCompleteForm as unknown as TAtscriptAnnotatedType;
@@ -220,7 +246,7 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
     const app = await prepareWfApp({
       inviteWorkflowClass: withInviteMfaCtx(MyInvite, { mfaMode: "disabled" }),
     });
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "ap@test.com" },
@@ -249,10 +275,15 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
     // ran for an existing user.
     let calls = 0;
     @Inherit()
-    @Controller()
+    @Controller("auth/invite")
     class MyInvite extends InviteWorkflow {
-      constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
-        super(opts, users, auth);
+      constructor(
+        opts: InviteWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+      ) {
+        super(opts, users, auth, authOpts);
       }
       protected override async duplicateCheck(input: {
         email: string;
@@ -267,7 +298,7 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
       inviteWorkflowClass: withInviteMfaCtx(MyInvite, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "existing@test.com", "ExistingPass1");
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "existing@test.com" },
@@ -286,7 +317,7 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
     // First app: no override → default behavior skips collectProfile.
     const appNoForm = await prepareWfApp();
     {
-      const r1 = await appNoForm.trigger({ wfid: "auth.invite" });
+      const r1 = await appNoForm.trigger({ wfid: "auth/invite/start" });
       await appNoForm.trigger({
         wfs: r1.body?.wfs as string,
         input: { email: "no-prof-sub@test.com" },
@@ -305,10 +336,15 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
 
     // Second app: consumer subclass DEFINES the profile form.
     @Inherit()
-    @Controller()
+    @Controller("auth/invite")
     class MyInvite extends InviteWorkflow {
-      constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
-        super(opts, users, auth);
+      constructor(
+        opts: InviteWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+      ) {
+        super(opts, users, auth, authOpts);
       }
       protected override getProfileForm(): TAtscriptAnnotatedType {
         return ProfileCompleteForm as unknown as TAtscriptAnnotatedType;
@@ -318,7 +354,7 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
       inviteWorkflowClass: withInviteMfaCtx(MyInvite, { mfaMode: "disabled" }),
     });
     {
-      const r1 = await appWithForm.trigger({ wfid: "auth.invite" });
+      const r1 = await appWithForm.trigger({ wfid: "auth/invite/start" });
       await appWithForm.trigger({
         wfs: r1.body?.wfs as string,
         input: { email: "yes-prof-sub@test.com" },
@@ -360,13 +396,18 @@ describe("InviteWorkflow subclass — inviteExtraStep override", () => {
     let calls = 0;
 
     @Inherit()
-    @Controller()
+    @Controller("auth/invite")
     class OverrideInvite extends InviteWorkflow {
-      constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
-        super(opts, users, auth);
+      constructor(
+        opts: InviteWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+      ) {
+        super(opts, users, auth, authOpts);
       }
 
-      @Step("invite-extra-step")
+      @Step("extra-step")
       @Public()
       override async inviteExtraStep(): Promise<unknown> {
         calls++;
@@ -387,7 +428,7 @@ describe("InviteWorkflow subclass — inviteExtraStep override", () => {
       inviteWorkflowClass: withInviteMfaCtx(OverrideInvite, { mfaMode: "disabled" }),
     });
 
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "extra@test.com" },

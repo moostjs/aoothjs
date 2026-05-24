@@ -25,6 +25,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 
+import { AuthOpts } from "../auth.opts";
 import { type LoginWfCtx, LoginWorkflow, type LoginWorkflowOpts } from "../workflows/index";
 import { SsoLoginCredentialsForm } from "./fixtures/sso-login.as";
 import { prepareWfApp, seedActiveUser, withLoginMfaCtx } from "./workflow-utils";
@@ -57,10 +58,15 @@ function makeLoginSubclass(
   }>,
 ): typeof LoginWorkflow {
   @Inherit()
-  @Controller()
+  @Controller("auth/login")
   class SubclassedLogin extends LoginWorkflow {
-    constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
-      super(opts, users, auth);
+    constructor(
+      opts: LoginWorkflowOpts,
+      users: UserService,
+      auth: AuthCredential,
+      authOpts: AuthOpts,
+    ) {
+      super(opts, users, auth, authOpts);
     }
     protected override resolveAlternateCredentials(
       ctx: LoginWfCtx,
@@ -151,7 +157,7 @@ async function startAndCredentials(
   password: string,
   extra: Record<string, unknown> = {},
 ): Promise<Awaited<ReturnType<typeof app.trigger>>> {
-  const r1 = await app.trigger({ wfid: "auth.login" });
+  const r1 = await app.trigger({ wfid: "auth/login/flow" });
   return app.trigger({
     wfs: r1.body?.wfs as string,
     input: { username, password, ...extra },
@@ -167,7 +173,7 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
     const app = await prepareWfApp({
       loginPolicy: { alternateCredentials: altCreds({ forgotPassword: true }) },
     });
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "typed-user", action: "forgotPassword" },
@@ -191,7 +197,7 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
         alternateCredentials: altCreds({ forgotPassword: true, recoveryUrl: "#/forgot" }),
       },
     });
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "bob", action: "forgotPassword" },
@@ -206,7 +212,7 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
     const app = await prepareWfApp({
       loginPolicy: { alternateCredentials: altCreds({ forgotPassword: false }) },
     });
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", action: "forgotPassword" },
@@ -219,7 +225,7 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
     const app = await prepareWfApp({
       loginPolicy: { alternateCredentials: altCreds({ signup: true, signupUrl: "/sign-me-up" }) },
     });
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { action: "signup" },
@@ -248,7 +254,7 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
         forms: { loginCredentials: SsoLoginCredentialsForm as unknown as TAtscriptAnnotatedType },
       },
     });
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { action: "okta" },
@@ -271,7 +277,7 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
         forms: { loginCredentials: SsoLoginCredentialsForm as unknown as TAtscriptAnnotatedType },
       },
     });
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { action: "okta" },
@@ -295,7 +301,7 @@ describe("LoginWorkflowOpts — Phase 1 alt-action redirects (credentials step)"
     const app = await prepareWfApp({
       loginPolicy: { alternateCredentials: altCreds({ magicLink: true }) },
     });
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { action: "magicLink" },
@@ -448,7 +454,7 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
       value: "+15555550100",
       confirmed: true,
     });
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -476,7 +482,7 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
-    const r1 = await app.trigger({ wfid: "auth.login" });
+    const r1 = await app.trigger({ wfid: "auth/login/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
@@ -515,7 +521,7 @@ describe("LoginWorkflowOpts — Phase 4 device trust", () => {
 
     // First request: send the cookie.
     const r1 = await app.triggerWithHeaders(
-      { wfid: "auth.login" },
+      { wfid: "auth/login/flow" },
       { cookie: `aooth_trusted_device=${rec.token}` },
     );
     const r2 = await app.triggerWithHeaders(
@@ -630,7 +636,7 @@ describe("LoginWorkflowOpts — Phase 4 device trust", () => {
 
     // Bob's login with alice's cookie attached.
     const r1 = await app.triggerWithHeaders(
-      { wfid: "auth.login" },
+      { wfid: "auth/login/flow" },
       { cookie: `aooth_trusted_device=${aliceRec.token}` },
     );
     const r2 = await app.triggerWithHeaders(
@@ -659,7 +665,7 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
     expect(app.auditEvents[0]).toMatchObject({
       kind: "login.success",
       userId: "alice",
-      workflow: "auth.login",
+      workflow: "auth/login/flow",
     });
   });
 
@@ -1540,7 +1546,7 @@ describe("LoginWorkflowOpts — mfa enrollment ergonomics (PR7-1)", () => {
       // 50ms cooldown — short enough to wait out in-test without a
       // deterministic clock. The defense is the same regardless of the
       // window size.
-      loginOpts: { mfa: { pincodeResendTimeoutMs: 50 } },
+      authOpts: { mfa: { pincodeResendTimeoutMs: 50 } },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "required" }),
     });
     await seedActiveUser(app.users, "resend-user", "pwd-12345678");

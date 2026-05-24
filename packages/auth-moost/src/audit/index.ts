@@ -12,7 +12,7 @@ export interface AuditEvent {
   kind: string;
   /** Auth-scoped user identity (the `username` resolved by the workflow). */
   userId?: string;
-  /** Workflow id that emitted the event (e.g. `auth.login`). */
+  /** Workflow id that emitted the event (e.g. `auth/login/flow`). */
   workflow?: string;
   /** Source IP (when the workflow could resolve one). */
   ip?: string;

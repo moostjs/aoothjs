@@ -197,7 +197,7 @@ export async function loginViaUi(
   page: Page,
   user: { username: string; password: string },
 ): Promise<void> {
-  await page.goto(wfUrl("auth.login", "minimal"));
+  await page.goto(wfUrl("auth/login/flow", "minimal"));
   await fillField(page, "username", user.username);
   await fillField(page, "password", user.password);
   await submitForm(page);

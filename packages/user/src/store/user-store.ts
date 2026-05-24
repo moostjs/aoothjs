@@ -18,7 +18,7 @@ export abstract class UserStore<T extends object = object> {
   /**
    * Hard-delete the row. Returns `true` when a row was removed, `false` when
    * the username was not found. Used by `UserService.deleteUser` (and in turn
-   * by the invite workflow's `auth.cancelInvite` step).
+   * by the invite workflow's `auth/invite/cancel` step).
    */
   abstract delete(username: string): Promise<boolean>;
   /**

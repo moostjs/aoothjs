@@ -24,6 +24,7 @@ import { Wooks } from "wooks";
 
 import { AuthController } from "../auth.controller";
 import { authGuardInterceptor } from "../auth.guard";
+import { AuthOpts } from "../auth.opts";
 import { LoginWorkflow } from "../workflows/index";
 
 interface AuthAppHandle {
@@ -48,12 +49,13 @@ async function buildAuthApp(): Promise<AuthAppHandle> {
     refresh: { ttl: 600_000, rotation: "always" },
   });
   const users = new UserService(new UserStoreMemory());
+  const authOpts = new AuthOpts();
 
   @Inherit()
-  @Controller()
+  @Controller("auth/login")
   class DemoLoginWorkflow extends LoginWorkflow {
-    constructor(u: UserService, a: AuthCredential) {
-      super({}, u, a);
+    constructor(u: UserService, a: AuthCredential, ao: AuthOpts) {
+      super({}, u, a, ao);
     }
     // Post-resolver reshape: alt-cred policy now flows through
     // `resolveAlternateCredentials(ctx)` rather than the ctor opts.
@@ -72,7 +74,11 @@ async function buildAuthApp(): Promise<AuthAppHandle> {
   }
 
   moost.setProvideRegistry(
-    createProvideRegistry([AuthCredential, () => auth], [UserService, () => users]),
+    createProvideRegistry(
+      [AuthCredential, () => auth],
+      [UserService, () => users],
+      [AuthOpts, () => authOpts],
+    ),
   );
   moost.applyGlobalInterceptors(authGuardInterceptor({ cookie: { secure: false } }));
   moost.registerControllers(AuthController, DemoLoginWorkflow);
@@ -112,7 +118,7 @@ describe("WfTriggerProvider — action wire (`{ wfs, input: { action, formData? 
     // Phase 1: start auth.login → server pauses and returns the credentials form.
     const start = await app.request("/auth/trigger", {
       method: "POST",
-      json: { wfid: "auth.login" },
+      json: { wfid: "auth/login/flow" },
     });
     expect(start.status).toBeLessThan(400);
     const wfs = start.body?.wfs as string | undefined;
@@ -152,7 +158,7 @@ describe("WfTriggerProvider — action wire (`{ wfs, input: { action, formData? 
 
     const start = await app.request("/auth/trigger", {
       method: "POST",
-      json: { wfid: "auth.login" },
+      json: { wfid: "auth/login/flow" },
     });
     const wfs = start.body?.wfs as string;
 

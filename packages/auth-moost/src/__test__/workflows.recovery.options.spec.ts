@@ -26,6 +26,7 @@ import { generateTotpCode, generateTotpSecret, ppHasMinLength, UserService } fro
 import { Controller, Inherit } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
+import { AuthOpts } from "../auth.opts";
 import {
   RecoveryWorkflow,
   type RecoveryWfCtx,
@@ -48,10 +49,15 @@ function makeRecoverySubclass(
   }>,
 ): typeof RecoveryWorkflow {
   @Inherit()
-  @Controller()
+  @Controller("auth/recovery")
   class SubclassedRecovery extends RecoveryWorkflow {
-    constructor(opts: RecoveryWorkflowOpts, users: UserService, auth: AuthCredential) {
-      super(opts, users, auth);
+    constructor(
+      opts: RecoveryWorkflowOpts,
+      users: UserService,
+      auth: AuthCredential,
+      authOpts: AuthOpts,
+    ) {
+      super(opts, users, auth, authOpts);
     }
     protected override async emailToUserId(email: string): Promise<string | null> {
       return overrides.emailToUserId
@@ -76,7 +82,7 @@ async function driveMagicLinkToSetPassword(
   app: Awaited<ReturnType<typeof prepareWfApp>>,
   email: string,
 ): Promise<{ wfs: string }> {
-  const r1 = await app.trigger({ wfid: "auth.recovery" });
+  const r1 = await app.trigger({ wfid: "auth/recovery/flow" });
   await app.trigger({ wfs: r1.body?.wfs as string, input: { email } });
   const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
   const r3 = await app.resumeViaQuery(token);
@@ -88,7 +94,7 @@ async function driveOtpToCheck(
   app: Awaited<ReturnType<typeof prepareWfApp>>,
   email: string,
 ): Promise<{ wfs: string; code: string }> {
-  const r1 = await app.trigger({ wfid: "auth.recovery" });
+  const r1 = await app.trigger({ wfid: "auth/recovery/flow" });
   const r2 = await app.trigger({ wfs: r1.body?.wfs as string, input: { email } });
   const last = app.emails[app.emails.length - 1];
   if (!last?.code) throw new Error(`expected pincode email, got ${JSON.stringify(last)}`);
@@ -108,7 +114,7 @@ describe("RecoveryWorkflow — runtime validators (fail loud)", () => {
       registerSmsSender: false,
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
-    const r1 = await app.trigger({ wfid: "auth.recovery" });
+    const r1 = await app.trigger({ wfid: "auth/recovery/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "alice@test.com" },
@@ -130,7 +136,7 @@ describe("RecoveryWorkflow — runtime validators (fail loud)", () => {
       },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
-    const r1 = await app.trigger({ wfid: "auth.recovery" });
+    const r1 = await app.trigger({ wfid: "auth/recovery/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "alice@test.com" },
@@ -195,9 +201,7 @@ describe("RecoveryWorkflowOpts — deliveryMode otp end-to-end", () => {
       recoveryPolicy: {
         delivery: { mode: "otp", otpTransports: ["email"] },
       },
-      recoveryOpts: {
-        delivery: { otp: { resendCooldownMs: 60_000 } },
-      },
+      authOpts: { mfa: { pincodeResendTimeoutMs: 60_000 } },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
     const { wfs } = await driveOtpToCheck(app, "alice@test.com");
@@ -215,9 +219,7 @@ describe("RecoveryWorkflowOpts — deliveryMode otp end-to-end", () => {
       recoveryPolicy: {
         delivery: { mode: "otp", otpTransports: ["email"] },
       },
-      recoveryOpts: {
-        delivery: { otp: { resendCooldownMs: 50 } },
-      },
+      authOpts: { mfa: { pincodeResendTimeoutMs: 50 } },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
     const { wfs } = await driveOtpToCheck(app, "alice@test.com");
@@ -287,7 +289,7 @@ describe("RecoveryWorkflowOpts — anti-enumeration response parity", () => {
     const app = await prepareWfApp({
       recoveryOpts: {},
     });
-    const r1 = await app.trigger({ wfid: "auth.recovery" });
+    const r1 = await app.trigger({ wfid: "auth/recovery/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "ghost@nowhere.test" },
@@ -519,7 +521,7 @@ describe("RecoveryWorkflowOpts — backToLogin alt-action", () => {
         postReset: { revokeAllSessions: true, freshLoginRequired: false, loginUrl: "/login" },
       },
     });
-    const r1 = await app.trigger({ wfid: "auth.recovery" });
+    const r1 = await app.trigger({ wfid: "auth/recovery/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { action: "backToLogin" },
@@ -580,7 +582,7 @@ describe("RecoveryWorkflowOpts — audit", () => {
     expect(kinds).toContain("recovery.completed");
     const completed = captured.find((e) => e.kind === "recovery.completed");
     expect(completed?.userId).toBe("alice@test.com");
-    expect(completed?.workflow).toBe("auth.recovery");
+    expect(completed?.workflow).toBe("auth/recovery/flow");
     expect(completed?.deliveryMode).toBe("magicLink");
     // revokeAllSessions defaults to true → sessionsRevoked flag set.
     expect(completed?.sessionsRevoked).toBe(true);
@@ -622,7 +624,7 @@ describe("RecoveryWorkflow — request step pre-fill from ?username= query", () 
     const response = await app.http.request("/wf/trigger?username=alice%40example.com", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ wfid: "auth.recovery" }),
+      body: JSON.stringify({ wfid: "auth/recovery/flow" }),
     });
     // `createHttpOutlet()` (test wiring) returns the form schema at the
     // response root with the whitelisted context keys merged in alongside it
@@ -658,7 +660,7 @@ describe("RecoveryWorkflow subclass — protected method overrides", () => {
     });
     await seedActiveUser(app.users, "alice42", "OldPassword1");
 
-    const r1 = await app.trigger({ wfid: "auth.recovery" });
+    const r1 = await app.trigger({ wfid: "auth/recovery/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "alice@corp.example" },
@@ -679,7 +681,7 @@ describe("RecoveryWorkflow subclass — protected method overrides", () => {
       }),
     });
     await seedActiveUser(app.users, "alice42", "OldPassword1");
-    const r1 = await app.trigger({ wfid: "auth.recovery" });
+    const r1 = await app.trigger({ wfid: "auth/recovery/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "anyone@nowhere.test" },
@@ -706,7 +708,7 @@ describe("RecoveryWorkflow — passwordPolicies surfaces on SetPasswordForm paus
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
 
-    const r1 = await app.trigger({ wfid: "auth.recovery" });
+    const r1 = await app.trigger({ wfid: "auth/recovery/flow" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "alice@test.com" },

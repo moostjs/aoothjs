@@ -96,6 +96,17 @@ export interface BuildTestAppOptions {
   dbPath?: string;
   workflowsEnabled?: { login?: boolean; recovery?: boolean; invite?: boolean };
   authEndpointsEnabled?: boolean;
+  /**
+   * Override the demo's cross-workflow `AuthOpts` defaults (pincode timers,
+   * magic-link TTL, login URL, TOTP issuer). Forwarded to `buildApp` which
+   * shallow-merges onto a fresh `AuthOpts` instance (mfa group is deep-merged).
+   */
+  authOpts?: {
+    mfa?: { pincodeLength?: number; pincodeTtlMs?: number; pincodeResendTimeoutMs?: number };
+    magicLinkTtlMs?: number;
+    loginUrl?: string;
+    totpIssuer?: string;
+  };
   /** Deep-merged into the demo's `demoLoginOpts` — see `buildApp`. */
   loginOpts?: LoginWorkflowOpts;
   /**
@@ -243,6 +254,7 @@ export async function buildTestApp(opts: BuildTestAppOptions = {}): Promise<Test
     envOverrides: opts.envOverrides,
     workflowsEnabled: opts.workflowsEnabled,
     authEndpointsEnabled: opts.authEndpointsEnabled,
+    authOpts: opts.authOpts,
     loginOpts: opts.loginOpts,
     loginPolicy: opts.loginPolicy,
     recoveryOpts: opts.recoveryOpts,
@@ -300,7 +312,7 @@ export async function buildTestApp(opts: BuildTestAppOptions = {}): Promise<Test
   // AUTH-MOOST-5 dropped `/auth/login` — minting tokens for tests now drives
   // the `auth.login` workflow through `/auth/trigger`. Three-step protocol
   // for users with TOTP (e.g. `t1_grace`); two steps otherwise:
-  //   1. POST /auth/trigger { wfid: 'auth.login' } → returns `{ wfs }`.
+  //   1. POST /auth/trigger { wfid: 'auth/login/flow' } → returns `{ wfs }`.
   //   2. POST /auth/trigger { wfs, input: { username, password } } →
   //      either the finalized AuthLoginResponse (no MFA) OR another `{ wfs }`
   //      payload prompting for an MFA code.
@@ -308,7 +320,7 @@ export async function buildTestApp(opts: BuildTestAppOptions = {}): Promise<Test
   const loginAs = async (user: SeededUser): Promise<LoginTokens> => {
     const initRes = await doFetch("/auth/trigger", {
       method: "POST",
-      json: { wfid: "auth.login" },
+      json: { wfid: "auth/login/flow" },
     });
     if (initRes.status >= 400) {
       const text = await initRes.text().catch(() => "<unreadable>");
@@ -388,7 +400,7 @@ export async function buildTestApp(opts: BuildTestAppOptions = {}): Promise<Test
   const loginRequest = async (username: string, password: string): Promise<Response> => {
     const init = await doFetch("/auth/trigger", {
       method: "POST",
-      json: { wfid: "auth.login" },
+      json: { wfid: "auth/login/flow" },
     });
     if (init.status >= 400) return init;
     const { wfs } = (await init.json()) as { wfs?: string };
@@ -541,10 +553,10 @@ export async function startRecoveryAndResume(
   emailEvent: Awaited<ReturnType<CaptureEmailSender["next"]>>;
   resumedBody: WfFormPause & Record<string, unknown>;
 }> {
-  const start = await app.triggerWf("public", { wfid: "auth.recovery" });
+  const start = await app.triggerWf("public", { wfid: "auth/recovery/flow" });
   const startBody = await readWfPause(start);
   await app.triggerWf("public", {
-    wfid: "auth.recovery",
+    wfid: "auth/recovery/flow",
     wfs: startBody.wfs,
     input: { email },
   });
@@ -567,7 +579,7 @@ export function submitRecoveryPassword(
   return app.triggerWf(
     "public",
     {
-      wfid: "auth.recovery",
+      wfid: "auth/recovery/flow",
       wfs,
       input: { newPassword, confirmPassword: opts.confirmPassword ?? newPassword },
     },
@@ -586,17 +598,17 @@ export async function runTotpLoginWorkflow(
   user: { username: string; password: string; totpSecret?: string },
   opts: { code?: string } = {},
 ): Promise<Response> {
-  const start = await app.triggerWf("public", { wfid: "auth.login" });
+  const start = await app.triggerWf("public", { wfid: "auth/login/flow" });
   const startBody = await readWfPause(start);
   const credResp = await app.triggerWf("public", {
-    wfid: "auth.login",
+    wfid: "auth/login/flow",
     wfs: startBody.wfs,
     input: { username: user.username, password: user.password },
   });
   const credBody = await readWfPause(credResp);
   const code = opts.code ?? generateTotpCode(user.totpSecret as string);
   return app.triggerWf("public", {
-    wfid: "auth.login",
+    wfid: "auth/login/flow",
     wfs: credBody.wfs,
     input: { code },
   });
@@ -640,7 +652,7 @@ export function withLoginMfaCtx<W extends typeof LoginWorkflow>(
   ctx: WithLoginMfaCtxOverrides,
 ): W {
   @Inherit()
-  @Controller()
+  @Controller("auth/login")
   class WithLoginCtx extends (Base as unknown as new (
     users: UserService,
     auth: AuthCredential,
@@ -690,7 +702,7 @@ export function withInviteMfaCtx<W extends typeof InviteWorkflow>(
   ctx: WithInviteMfaCtxOverrides,
 ): W {
   @Inherit()
-  @Controller()
+  @Controller("auth/invite")
   class WithInviteCtx extends (Base as unknown as new (
     users: UserService,
     auth: AuthCredential,
@@ -700,7 +712,7 @@ export function withInviteMfaCtx<W extends typeof InviteWorkflow>(
       super(users, auth);
     }
 
-    @Step("invite-setup-mfa")
+    @Step("setup-mfa")
     @Public()
     override inviteSetupMfa(
       @WorkflowParam("context") c: InviteWfCtx,

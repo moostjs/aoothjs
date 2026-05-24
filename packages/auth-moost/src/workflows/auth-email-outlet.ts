@@ -23,7 +23,7 @@
  * \@Public()
  * async trigger() {
  *   return this.wf.handleOutlet({
- *     allow: ['auth.login', 'auth.recovery', 'auth.invite'],
+ *     allow: ['auth/login/flow', 'auth/recovery/flow', 'auth/invite/start'],
  *     state: handleStrategy,
  *     outlets: [createHttpOutlet(), createAuthEmailOutlet(emailOutletDeps)],
  *   })

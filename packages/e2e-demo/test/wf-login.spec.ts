@@ -25,7 +25,7 @@ describe("WF-LOGIN — auth.login workflow", () => {
   });
 
   it("WF-LOGIN-01 — credentials step (no MFA) finishes immediately with tokens", async () => {
-    const start = await app.triggerWf("public", { wfid: "auth.login" });
+    const start = await app.triggerWf("public", { wfid: "auth/login/flow" });
     expectOk(start);
     const startBody = await readWfPause(start);
     expect(startBody.wfs).toBeTruthy();
@@ -33,7 +33,7 @@ describe("WF-LOGIN — auth.login workflow", () => {
 
     const alice = app.fixtures.users.t1_alice;
     const submit = await app.triggerWf("public", {
-      wfid: "auth.login",
+      wfid: "auth/login/flow",
       wfs: startBody.wfs,
       input: { username: alice.username, password: alice.password },
     });
@@ -60,10 +60,10 @@ describe("WF-LOGIN — auth.login workflow", () => {
   // in `@aooth/auth-moost` per WF_LOGIN.md §"Tasks" item #6.
 
   it("WF-LOGIN-04 — forgotPassword alt-action redirects to /recover", async () => {
-    const start = await app.triggerWf("public", { wfid: "auth.login" });
+    const start = await app.triggerWf("public", { wfid: "auth/login/flow" });
     const startBody = await readWfPause(start);
     const r = await app.triggerWf("public", {
-      wfid: "auth.login",
+      wfid: "auth/login/flow",
       wfs: startBody.wfs,
       input: { username: "alice@demo.test", action: "forgotPassword" },
     });
@@ -89,10 +89,10 @@ describe("WF-LOGIN — auth.login workflow", () => {
       password: { isInitial: true },
     } as never);
 
-    const start = await app.triggerWf("public", { wfid: "auth.login" });
+    const start = await app.triggerWf("public", { wfid: "auth/login/flow" });
     const startBody = await readWfPause(start);
     const cred = await app.triggerWf("public", {
-      wfid: "auth.login",
+      wfid: "auth/login/flow",
       wfs: startBody.wfs,
       input: { username: alice.username, password: alice.password },
     });
@@ -106,7 +106,7 @@ describe("WF-LOGIN — auth.login workflow", () => {
 
     // Submit a fresh password.
     const setResp = await app.triggerWf("public", {
-      wfid: "auth.login",
+      wfid: "auth/login/flow",
       wfs: credBody.wfs,
       input: { newPassword: "FreshPass99!", confirmPassword: "FreshPass99!" },
     });
@@ -124,18 +124,18 @@ describe("WF-LOGIN — auth.login workflow", () => {
 
   it("WF-LOGIN-03 — MFA bypass attempt with empty/skip input still requires a code", async () => {
     const grace = app.fixtures.users.t1_grace;
-    const start = await app.triggerWf("public", { wfid: "auth.login" });
+    const start = await app.triggerWf("public", { wfid: "auth/login/flow" });
     const startBody = await readWfPause(start);
 
     const credResp = await app.triggerWf("public", {
-      wfid: "auth.login",
+      wfid: "auth/login/flow",
       wfs: startBody.wfs,
       input: { username: grace.username, password: grace.password },
     });
     const credBody = await readWfPause(credResp);
 
     const skipAttempt = await app.triggerWf("public", {
-      wfid: "auth.login",
+      wfid: "auth/login/flow",
       wfs: credBody.wfs,
       input: { __skip: true },
     });
@@ -147,7 +147,7 @@ describe("WF-LOGIN — auth.login workflow", () => {
     }
 
     const emptyAttempt = await app.triggerWf("public", {
-      wfid: "auth.login",
+      wfid: "auth/login/flow",
       wfs: skipBody.wfs ?? credBody.wfs,
       input: {},
     });
@@ -172,10 +172,10 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
     try {
       const grace = mfaOff.fixtures.users.t1_grace;
       expect(grace.totpSecret).toBeTruthy();
-      const start = await mfaOff.triggerWf("public", { wfid: "auth.login" });
+      const start = await mfaOff.triggerWf("public", { wfid: "auth/login/flow" });
       const startBody = await readWfPause(start);
       const submit = await mfaOff.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: startBody.wfs,
         input: { username: grace.username, password: grace.password },
       });
@@ -196,10 +196,10 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
     });
     try {
       const alice = redirApp.fixtures.users.t1_alice;
-      const start = await redirApp.triggerWf("public", { wfid: "auth.login" });
+      const start = await redirApp.triggerWf("public", { wfid: "auth/login/flow" });
       const startBody = await readWfPause(start);
       const submit = await redirApp.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: startBody.wfs,
         input: { username: alice.username, password: alice.password },
       });
@@ -224,11 +224,11 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
       const grace = mfaOn.fixtures.users.t1_grace;
       expect(grace.totpSecret).toBeTruthy();
 
-      const start = await mfaOn.triggerWf("public", { wfid: "auth.login" });
+      const start = await mfaOn.triggerWf("public", { wfid: "auth/login/flow" });
       const startBody = await readWfPause(start);
 
       const credResp = await mfaOn.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: startBody.wfs,
         input: { username: grace.username, password: grace.password },
       });
@@ -237,7 +237,7 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
       expect(credBody.inputRequired).toBeTruthy();
 
       const wrong = await mfaOn.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: credBody.wfs,
         input: { code: "000000" },
       });
@@ -246,7 +246,7 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
 
       const code = generateTotpCode(grace.totpSecret as string);
       const final = await mfaOn.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: wrongBody.wfs,
         input: { code },
       });
@@ -270,10 +270,10 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
       const seeded = await reqApp.appHandle.aooth.userService.getUser(alice.username);
       expect(seeded.mfa.methods).toHaveLength(0);
 
-      const start = await reqApp.triggerWf("public", { wfid: "auth.login" });
+      const start = await reqApp.triggerWf("public", { wfid: "auth/login/flow" });
       const startBody = await readWfPause(start);
       const cred = await reqApp.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: startBody.wfs,
         input: { username: alice.username, password: alice.password },
       });
@@ -283,7 +283,7 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
       expect(pickBody.inputRequired).toBeTruthy();
 
       const pick = await reqApp.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: pickBody.wfs,
         input: { method: "email" },
       });
@@ -295,7 +295,7 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
 
       const enrollAddress = "alice-mfa@demo.test";
       const addr = await reqApp.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: addrBody.wfs,
         input: { address: enrollAddress },
       });
@@ -310,7 +310,7 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
       expect(typeof pinMail.code).toBe("string");
 
       const confirm = await reqApp.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: confirmBody.wfs,
         input: { code: pinMail.code },
       });
@@ -342,10 +342,10 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
       const seeded = await reqApp.appHandle.aooth.userService.getUser(alice.username);
       expect(seeded.mfa.methods).toHaveLength(0);
 
-      const start = await reqApp.triggerWf("public", { wfid: "auth.login" });
+      const start = await reqApp.triggerWf("public", { wfid: "auth/login/flow" });
       const startBody = await readWfPause(start);
       const cred = await reqApp.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: startBody.wfs,
         input: { username: alice.username, password: alice.password },
       });
@@ -355,7 +355,7 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
       // TOTP skips the address phase — server provisions the secret on pick
       // and pauses on the confirm form directly.
       const pick = await reqApp.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: pickBody.wfs,
         input: { method: "totp" },
       });
@@ -370,7 +370,7 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
       const code = generateTotpCode(totp!.value);
 
       const confirm = await reqApp.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: confirmBody.wfs,
         input: { code },
       });
@@ -399,10 +399,10 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
       const seeded = await optApp.appHandle.aooth.userService.getUser(alice.username);
       expect(seeded.mfa.methods).toHaveLength(0);
 
-      const start = await optApp.triggerWf("public", { wfid: "auth.login" });
+      const start = await optApp.triggerWf("public", { wfid: "auth/login/flow" });
       const startBody = await readWfPause(start);
       const cred = await optApp.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: startBody.wfs,
         input: { username: alice.username, password: alice.password },
       });
@@ -413,7 +413,7 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
       expect(pickBody.inputRequired).toBeTruthy();
 
       const skip = await optApp.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: pickBody.wfs,
         input: { action: "skip" },
       });
@@ -448,10 +448,10 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
       const seeded = await reqApp.appHandle.aooth.userService.getUser(alice.username);
       expect(seeded.mfa.methods).toHaveLength(0);
 
-      const start = await reqApp.triggerWf("public", { wfid: "auth.login" });
+      const start = await reqApp.triggerWf("public", { wfid: "auth/login/flow" });
       const startBody = await readWfPause(start);
       const cred = await reqApp.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: startBody.wfs,
         input: { username: alice.username, password: alice.password },
       });
@@ -478,7 +478,7 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
       const code = generateTotpCode(totp!.value);
 
       const confirm = await reqApp.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: confirmBody.wfs,
         input: { code },
       });
@@ -511,10 +511,10 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
       const seeded = await optApp.appHandle.aooth.userService.getUser(alice.username);
       expect(seeded.mfa.methods).toHaveLength(0);
 
-      const start = await optApp.triggerWf("public", { wfid: "auth.login" });
+      const start = await optApp.triggerWf("public", { wfid: "auth/login/flow" });
       const startBody = await readWfPause(start);
       const cred = await optApp.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: startBody.wfs,
         input: { username: alice.username, password: alice.password },
       });
@@ -524,7 +524,7 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
 
       // Pick email — drives Phase 2 (address) then pauses on confirm.
       const pick = await optApp.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: pickBody.wfs,
         input: { method: "email" },
       });
@@ -534,7 +534,7 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
 
       const enrollAddress = "foo@demo.test";
       const addr = await optApp.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: addrBody.wfs,
         input: { address: enrollAddress },
       });
@@ -562,7 +562,7 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
 
       // Skip from EnrollConfirmForm — cleanupEnrollment must remove the row.
       const skip = await optApp.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: confirmBody.wfs,
         input: { action: "skip" },
       });
@@ -589,10 +589,10 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
     try {
       const alice = optApp.fixtures.users.t1_alice;
 
-      const start = await optApp.triggerWf("public", { wfid: "auth.login" });
+      const start = await optApp.triggerWf("public", { wfid: "auth/login/flow" });
       const startBody = await readWfPause(start);
       const cred = await optApp.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: startBody.wfs,
         input: { username: alice.username, password: alice.password },
       });
@@ -600,7 +600,7 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
       const pickBody = await readWfPause(cred);
 
       const pick = await optApp.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: pickBody.wfs,
         input: { method: "email" },
       });
@@ -609,7 +609,7 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
 
       const enrollAddress = "alice-optin@demo.test";
       const addr = await optApp.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: addrBody.wfs,
         input: { address: enrollAddress },
       });
@@ -622,7 +622,7 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
       );
 
       const confirm = await optApp.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: confirmBody.wfs,
         input: { code: pinMail.code },
       });

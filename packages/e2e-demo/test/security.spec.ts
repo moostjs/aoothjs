@@ -620,15 +620,15 @@ describe("SEC — magic-link attacks", () => {
   });
 
   it("SEC-12 — non-admin cannot start auth.invite; admin succeeds", async () => {
-    // Phase-A steps inherit class-level `@ArbacResource('auth.invite')
+    // Phase-A steps inherit class-level `@ArbacResource('auth/invite/start')
     // @ArbacAction('start')` so the arbac interceptor denies the non-admin
-    // caller on the first event. Admin has `allow('auth.invite', 'start')`
+    // caller on the first event. Admin has `allow('auth/invite/start', 'start')`
     // (see roles/admin.ts) so the same trigger returns the admin-form prompt.
     const alice = app.fixtures.users.t1_alice; // member/viewer — no auth.invite grant
     const aliceTokens = await app.loginAs(alice);
     const denied = await app.triggerWf(
       "admin",
-      { wfid: "auth.invite" },
+      { wfid: "auth/invite/start" },
       { token: aliceTokens.accessToken },
     );
     expect(denied.status).toBe(403);
@@ -637,7 +637,7 @@ describe("SEC — magic-link attacks", () => {
     const daveTokens = await app.loginAs(dave);
     const allowed = await app.triggerWf(
       "admin",
-      { wfid: "auth.invite" },
+      { wfid: "auth/invite/start" },
       { token: daveTokens.accessToken },
     );
     expectOk(allowed);
@@ -652,7 +652,7 @@ describe("SEC — magic-link attacks", () => {
 
     const start = await app.triggerWf(
       "admin",
-      { wfid: "auth.invite" },
+      { wfid: "auth/invite/start" },
       {
         token: daveTokens.accessToken,
       },
@@ -661,7 +661,7 @@ describe("SEC — magic-link attacks", () => {
     await app.triggerWf(
       "admin",
       {
-        wfid: "auth.invite",
+        wfid: "auth/invite/start",
         wfs: startBody.wfs,
         input: { email: targetEmail },
       },
@@ -723,10 +723,10 @@ describe("SEC — lockout / brute-force", () => {
     const grace = app.fixtures.users.t1_grace;
     expect(grace.totpSecret).toBeTruthy();
 
-    const start = await app.triggerWf("public", { wfid: "auth.login" });
+    const start = await app.triggerWf("public", { wfid: "auth/login/flow" });
     const startBody = await readWfPause(start);
     const credResp = await app.triggerWf("public", {
-      wfid: "auth.login",
+      wfid: "auth/login/flow",
       wfs: startBody.wfs,
       input: { username: grace.username, password: grace.password },
     });
@@ -738,7 +738,7 @@ describe("SEC — lockout / brute-force", () => {
     for (let i = 0; i < 5; i++) {
       const guess = String(i % 1_000_000).padStart(6, "0");
       const att = await app.triggerWf("public", {
-        wfid: "auth.login",
+        wfid: "auth/login/flow",
         wfs: body.wfs,
         input: { code: guess },
       });
@@ -781,10 +781,10 @@ describe("SEC — enumeration", () => {
   });
 
   it("SEC-15 — recovery enumeration: unknown email returns same {sent:true} (see WF-RECOVERY-02)", async () => {
-    const start = await app.triggerWf("public", { wfid: "auth.recovery" });
+    const start = await app.triggerWf("public", { wfid: "auth/recovery/flow" });
     const startBody = await readWfPause(start);
     const submit = await app.triggerWf("public", {
-      wfid: "auth.recovery",
+      wfid: "auth/recovery/flow",
       wfs: startBody.wfs,
       input: { email: "ghost-sec15@nowhere.test" },
     });

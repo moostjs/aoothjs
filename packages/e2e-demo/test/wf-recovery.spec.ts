@@ -35,7 +35,7 @@ describe("WF-RECOVERY — auth.recovery happy path + enumeration + single-use", 
     expect(resumedBody.inputRequired).toBeTruthy();
 
     const finalRes = await app.triggerWf("public", {
-      wfid: "auth.recovery",
+      wfid: "auth/recovery/flow",
       wfs: resumedBody.wfs,
       input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
     });
@@ -59,11 +59,11 @@ describe("WF-RECOVERY — auth.recovery happy path + enumeration + single-use", 
   });
 
   it("WF-RECOVERY-02 — unknown email: no enumeration, no email captured", async () => {
-    const start = await app.triggerWf("public", { wfid: "auth.recovery" });
+    const start = await app.triggerWf("public", { wfid: "auth/recovery/flow" });
     const startBody = await readWfPause(start);
 
     const submit = await app.triggerWf("public", {
-      wfid: "auth.recovery",
+      wfid: "auth/recovery/flow",
       wfs: startBody.wfs,
       input: { email: "ghost-no-such-user@nowhere.test" },
     });
@@ -95,7 +95,7 @@ describe("WF-RECOVERY — single-use + session-survival", () => {
     const { emailEvent, resumedBody } = await startRecoveryAndResume(app, carol.email);
 
     const finalize = await app.triggerWf("public", {
-      wfid: "auth.recovery",
+      wfid: "auth/recovery/flow",
       wfs: resumedBody.wfs,
       input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
     });
@@ -113,7 +113,7 @@ describe("WF-RECOVERY — single-use + session-survival", () => {
 
     const { resumedBody } = await startRecoveryAndResume(app, carol.email);
     const finalize = await app.triggerWf("public", {
-      wfid: "auth.recovery",
+      wfid: "auth/recovery/flow",
       wfs: resumedBody.wfs,
       input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
     });
@@ -141,7 +141,7 @@ describe("WF-RECOVERY — postReset options", () => {
 
       const { resumedBody } = await startRecoveryAndResume(app, carol.email);
       const finalize = await app.triggerWf("public", {
-        wfid: "auth.recovery",
+        wfid: "auth/recovery/flow",
         wfs: resumedBody.wfs,
         input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
       });
@@ -166,7 +166,7 @@ describe("WF-RECOVERY — postReset options", () => {
       const bob = app.fixtures.users.t1_bob;
       const { resumedBody } = await startRecoveryAndResume(app, bob.email);
       const finalize = await app.triggerWf("public", {
-        wfid: "auth.recovery",
+        wfid: "auth/recovery/flow",
         wfs: resumedBody.wfs,
         input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
       });
@@ -193,10 +193,10 @@ describe("WF-RECOVERY — TTL expiry", () => {
     const app = await buildTestApp({ envOverrides: { RECOVERY_TTL_MS: 1000 } });
     try {
       const bob = app.fixtures.users.t1_bob;
-      const start = await app.triggerWf("public", { wfid: "auth.recovery" });
+      const start = await app.triggerWf("public", { wfid: "auth/recovery/flow" });
       const startBody = await readWfPause(start);
       await app.triggerWf("public", {
-        wfid: "auth.recovery",
+        wfid: "auth/recovery/flow",
         wfs: startBody.wfs,
         input: { email: bob.email },
       });

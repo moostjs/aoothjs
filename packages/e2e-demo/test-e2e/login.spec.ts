@@ -30,7 +30,7 @@ import {
   wfUrl,
 } from "./harness";
 
-const LOGIN_WF = "auth.login";
+const LOGIN_WF = "auth/login/flow";
 
 test.beforeEach(async ({ request }) => {
   await resetApp(request);
@@ -92,7 +92,9 @@ test.describe("LoginWorkflow / variant=minimal", () => {
       const id = url.searchParams.get("id");
       const username = url.searchParams.get("username");
       return (
-        (url.pathname === "/wf" && id === "auth.recovery" && username === USERS.alice.username) ||
+        (url.pathname === "/wf" &&
+          id === "auth/recovery/flow" &&
+          username === USERS.alice.username) ||
         (url.pathname === "/recover" && username === USERS.alice.username)
       );
     });
@@ -117,7 +119,9 @@ test.describe("LoginWorkflow / variant=full (signup enabled)", () => {
     // SPA router rewrites `/signup` → `/wf?id=auth.invite`.
     await page.waitForURL((url) => {
       const id = url.searchParams.get("id");
-      return (url.pathname === "/wf" && id === "auth.invite") || url.pathname.startsWith("/signup");
+      return (
+        (url.pathname === "/wf" && id === "auth/invite/start") || url.pathname.startsWith("/signup")
+      );
     });
   });
 });

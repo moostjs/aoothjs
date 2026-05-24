@@ -8,7 +8,7 @@ import { prepareWfApp, seedActiveUser, withInviteMfaCtx } from "./workflow-utils
 /**
  * Wire trace for the invite workflow:
  *
- * 1. `POST /wf/trigger { wfid: 'auth.invite' }`
+ * 1. `POST /wf/trigger { wfid: 'auth/invite/start' }`
  *    → `createInvite` returns `outletHttp` → form (InviteForm) + wfs token.
  * 2. `POST /wf/trigger { wfs, input: { email, roles? } }`
  *    → step calls `EmailSender.send` (invite.magicLink), pauses via `outletEmail`.
@@ -21,7 +21,7 @@ describe("InviteWorkflow", () => {
   it("happy path: admin invites → email → accept → user created + tokens", async () => {
     const app = await prepareWfApp();
 
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     const wfs1 = r1.body?.wfs as string;
     expect(wfs1).toBeTruthy();
 
@@ -58,7 +58,7 @@ describe("InviteWorkflow", () => {
     // Pre-seed an existing user with the same email
     await seedActiveUser(app.users, "bob@test.com", "Password123");
 
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "bob@test.com" },
@@ -68,7 +68,7 @@ describe("InviteWorkflow", () => {
 
   it("confirm-password mismatch on accept", async () => {
     const app = await prepareWfApp();
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "carol@test.com" },
@@ -90,7 +90,7 @@ describe("InviteWorkflow", () => {
     // BUG-12 fix: `inviteTokenTtlMs` now drives the actual replay window,
     // not just the email envelope.
     const app = await prepareWfApp({ inviteTokenTtlMs: 1000 });
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "dave@test.com" },
@@ -106,7 +106,7 @@ describe("InviteWorkflow", () => {
 
   it("roles trimming / parsing: empty entries skipped + duplicates collapsed", async () => {
     const app = await prepareWfApp();
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "eve@test.com", roles: ["  admin  ", "", "editor", "admin"] },
@@ -116,7 +116,7 @@ describe("InviteWorkflow", () => {
 
   it("invite form without roles: metadata absent", async () => {
     const app = await prepareWfApp();
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "frank@test.com" },
@@ -133,7 +133,7 @@ describe("InviteWorkflow", () => {
       },
     });
 
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "grace@test.com", roles: ["admin", "viewer"] },
@@ -181,7 +181,6 @@ describe("InviteWorkflow", () => {
     // takeover via the magic-link landing page).
     const seenAtHook: Array<Record<string, unknown>> = [];
     const app = await prepareWfApp({
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteHooks: {
         // `ProfileWithRolesForm` legitimizes the privileged top-level keys
         // as accepted form fields, so the upstream atscript form validator
@@ -198,7 +197,7 @@ describe("InviteWorkflow", () => {
     });
 
     // Admin grants the invitee only the 'user' role.
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "victim@test.com", roles: ["user"] },
@@ -276,7 +275,7 @@ describe("InviteWorkflow", () => {
   it("prepareUser hook is optional: invite still completes without it", async () => {
     // No `prepareUser` configured — `prepareWfApp` default does not set one.
     const app = await prepareWfApp();
-    const r1 = await app.trigger({ wfid: "auth.invite" });
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "henry@test.com" },
@@ -298,7 +297,7 @@ describe("InviteWorkflow", () => {
 // `inviteEnrollPickMethod` when `mfa.mode: "required"`, or workflow end).
 // Returns the response of the set-password POST.
 async function driveToPostPassword(app: Awaited<ReturnType<typeof prepareWfApp>>, email: string) {
-  const r1 = await app.trigger({ wfid: "auth.invite" });
+  const r1 = await app.trigger({ wfid: "auth/invite/start" });
   await app.trigger({ wfs: r1.body?.wfs as string, input: { email } });
   const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
   const r3 = await app.resumeViaQuery(token);
@@ -317,9 +316,6 @@ describe("InviteWorkflowOpts — mfa.mode='required' forced enrollment", () => {
   // defeating the policy this option exists to enforce.
   it("sms path: invitee enrolls before activation; account active + sms method confirmed + default", async () => {
     const app = await prepareWfApp({
-      inviteOpts: {
-        accept: { showConfirmation: false },
-      },
       inviteWorkflowClass: withInviteMfaCtx(InviteWorkflow, { mfaMode: "required" }),
     });
 
@@ -378,9 +374,6 @@ describe("InviteWorkflowOpts — mfa.mode='required' forced enrollment", () => {
   // accept any code (security hole at activation).
   it("totp path: secret provisioned, code accepted, method confirmed, no pincode emitted", async () => {
     const app = await prepareWfApp({
-      inviteOpts: {
-        accept: { showConfirmation: false },
-      },
       inviteWorkflowClass: withInviteMfaCtx(InviteWorkflow, { mfaMode: "required" }),
     });
 
@@ -431,7 +424,6 @@ describe("InviteWorkflowOpts — mfa.mode='required' forced enrollment", () => {
   // semantics — so the test pins the no-prompt branch explicitly.)
   it("mode='disabled': invite skips enrollment, user activates with no MFA", async () => {
     const app = await prepareWfApp({
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteWorkflowClass: withInviteMfaCtx(InviteWorkflow, { mfaMode: "disabled" }),
     });
 
@@ -454,9 +446,6 @@ describe("InviteWorkflowOpts — mfa.mode='required' forced enrollment", () => {
   // `inviteUnsetPendingInvitation`/`inviteActivateUser`) on rejection.
   it("totp path: invalid setup code → form error, method stays unconfirmed, account NOT activated", async () => {
     const app = await prepareWfApp({
-      inviteOpts: {
-        accept: { showConfirmation: false },
-      },
       inviteWorkflowClass: withInviteMfaCtx(InviteWorkflow, { mfaMode: "required" }),
     });
 
@@ -495,9 +484,6 @@ describe("InviteWorkflowOpts — mfa.mode='optional' skip action", () => {
   // onboarding opt-out contract.
   it("optional + invitee skips MFA setup → invite completes, account active, no MFA on user", async () => {
     const app = await prepareWfApp({
-      inviteOpts: {
-        accept: { showConfirmation: false },
-      },
       inviteWorkflowClass: withInviteMfaCtx(InviteWorkflow, { mfaMode: "optional" }),
     });
 
@@ -531,9 +517,6 @@ describe("InviteWorkflowOpts — mfa.mode='optional' skip action", () => {
   // the account active.
   it("optional + invitee enrolls totp → totp confirmed + default, account active", async () => {
     const app = await prepareWfApp({
-      inviteOpts: {
-        accept: { showConfirmation: false },
-      },
       inviteWorkflowClass: withInviteMfaCtx(InviteWorkflow, { mfaMode: "optional" }),
     });
 
@@ -585,9 +568,6 @@ describe("InviteWorkflowOpts — mfa enrollment ergonomics (PR7-1)", () => {
   // the schema downstream `inviteEnrollConfirm` step routes correctly.
   it("T-I1: required + transports=['totp'] → no picker pause, secret auto-provisioned, code accepted", async () => {
     const app = await prepareWfApp({
-      inviteOpts: {
-        accept: { showConfirmation: false },
-      },
       inviteWorkflowClass: withInviteMfaCtx(InviteWorkflow, {
         mfaMode: "required",
         availableMfaTransports: ["totp"],
@@ -639,9 +619,6 @@ describe("InviteWorkflowOpts — mfa enrollment ergonomics (PR7-1)", () => {
   // 0 methods) prove the skip ran AND that activation proceeded normally.
   it("T-I2: optional + picks sms + skip from address form → activates, no method persisted", async () => {
     const app = await prepareWfApp({
-      inviteOpts: {
-        accept: { showConfirmation: false },
-      },
       inviteWorkflowClass: withInviteMfaCtx(InviteWorkflow, { mfaMode: "optional" }),
     });
 
@@ -681,9 +658,6 @@ describe("InviteWorkflowOpts — mfa enrollment ergonomics (PR7-1)", () => {
   // (only sms present + account active) pins both halves.
   it("T-I3: useDifferentMethod from Phase 3 (totp) → totp row REMOVED, re-pick sms completes", async () => {
     const app = await prepareWfApp({
-      inviteOpts: {
-        accept: { showConfirmation: false },
-      },
       inviteWorkflowClass: withInviteMfaCtx(InviteWorkflow, { mfaMode: "required" }),
     });
 

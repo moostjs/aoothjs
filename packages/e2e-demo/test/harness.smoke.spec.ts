@@ -41,11 +41,11 @@ describe("test harness smoke", () => {
 
   it("captures workflow emails", async () => {
     const bob = app.fixtures.users.t1_bob;
-    const r1 = await app.triggerWf("public", { wfid: "auth.recovery" });
+    const r1 = await app.triggerWf("public", { wfid: "auth/recovery/flow" });
     const r1body = (await r1.json()) as { wfs?: string };
     expect(r1body.wfs).toBeTruthy();
     await app.triggerWf("public", {
-      wfid: "auth.recovery",
+      wfid: "auth/recovery/flow",
       wfs: r1body.wfs,
       input: { email: bob.email },
     });

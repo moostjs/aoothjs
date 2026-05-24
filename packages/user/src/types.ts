@@ -59,8 +59,8 @@ export interface AccountData {
    * True while the user record exists from an admin-issued invite but the
    * invitee has not yet accepted (set password + activate). Used by
    * `InviteWorkflow` to gate the accept tail, reject duplicate invites, and
-   * power `auth.reInvite` / `auth.cancelInvite`. Absent / `false` once the
-   * invite has been accepted.
+   * power `auth/invite/resend` / `auth/invite/cancel`. Absent / `false` once
+   * the invite has been accepted.
    */
   pendingInvitation?: boolean;
 }

@@ -107,7 +107,7 @@ describe("DX — read-only ergonomics (shared app)", () => {
     // missing the combined @Public() decoration (auth + arbac bypass), the
     // global ARBAC guard would 403 the request before the workflow even
     // started. A 200/202 with a wfs handle is the proof point.
-    const res = await app.triggerWf("public", { wfid: "auth.recovery" });
+    const res = await app.triggerWf("public", { wfid: "auth/recovery/flow" });
     expect([200, 201, 202]).toContain(res.status);
     const body = (await res.json()) as { wfs?: string };
     expect(body.wfs).toBeTruthy();
@@ -160,7 +160,7 @@ describe("DX-07 — workflowsEnabled: { invite: false } skips InviteWorkflow reg
 
     const res = await app.triggerWf(
       "admin",
-      { wfid: "auth.invite" },
+      { wfid: "auth/invite/start" },
       {
         token: tokens.accessToken,
       },
@@ -173,7 +173,7 @@ describe("DX-07 — workflowsEnabled: { invite: false } skips InviteWorkflow reg
 
     // Sanity: with invite disabled, recovery (still enabled) is reachable
     // anonymously — confirms only invite was skipped.
-    const recovery = await app.triggerWf("public", { wfid: "auth.recovery" });
+    const recovery = await app.triggerWf("public", { wfid: "auth/recovery/flow" });
     expect([200, 201, 202]).toContain(recovery.status);
   });
 });
@@ -195,7 +195,7 @@ describe("DX-08 — `authEndpointsEnabled: false` skips AuthController", () => {
     // subclass) is NOT registered, so /auth/trigger must be unserved.
     const login = await app.fetch("/auth/trigger", {
       method: "POST",
-      json: { wfid: "auth.login" },
+      json: { wfid: "auth/login/flow" },
     });
     expect(login.status).toBeGreaterThanOrEqual(400);
     expect(login.status).not.toBe(200);

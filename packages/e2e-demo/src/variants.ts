@@ -66,8 +66,26 @@ export interface InviteMfaCtxOverrides {
 // re-add it here — Playwright tests catch the regression at hydrate time.
 
 /**
- * Login variant entry. `opts` carries infrastructure-only overrides (pincode
- * timers, cookie name/TTL, magic-link TTL) merged into `demoLoginOpts`.
+ * Per-request `AuthOpts` overlay applied by `DemoLoginWorkflow` /
+ * `DemoRecoveryWorkflow` / `DemoInviteWorkflow` ctors (FOR_EVENT scope) on top
+ * of the demo's singleton `AuthOpts` instance. After the AuthOpts reshape the
+ * cross-workflow knobs (pincode timers, magic-link TTL) live on a SINGLETON
+ * provider — variants that need to flip them per-request go through this
+ * field instead. Note: `loginUrl` / `totpIssuer` are NOT included here because
+ * no current variant flips them per-request (and singleton scope makes that
+ * non-trivial; if a future variant needs them, add to the AuthOpts clone path
+ * in `cloneAuthOptsWithVariant` in `src/app.ts`).
+ */
+export interface AuthOptsVariantOverrides {
+  mfa?: { pincodeLength?: number; pincodeTtlMs?: number; pincodeResendTimeoutMs?: number };
+  magicLinkTtlMs?: number;
+}
+
+/**
+ * Login variant entry. `opts` carries login-only infrastructure overrides
+ * (cookie name/TTL — magic-link TTL + pincode timers moved to `authOpts`).
+ * `authOpts` carries per-request overlay onto the singleton `AuthOpts`
+ * (pincode cooldown, magic-link TTL).
  * `policy` carries per-request policy groups (alternateCredentials, guards,
  * acceptance, …) applied by `DemoLoginWorkflow`'s `resolveXxx(ctx)` overrides.
  * `mfaCtx` carries the static MFA-ctx overrides written by the
@@ -75,20 +93,22 @@ export interface InviteMfaCtxOverrides {
  */
 export interface LoginVariant {
   opts?: Partial<LoginWorkflowOpts>;
+  authOpts?: AuthOptsVariantOverrides;
   policy?: LoginPolicyOverrides;
   mfaCtx?: LoginMfaCtxOverrides;
 }
 
 /**
- * Invite variant entry — `{ opts?, policy?, mfaCtx? }`. `opts` carries
- * infrastructure overrides (magic-link TTL, pincode timers, forms) merged into
- * `demoInviteOpts`. `policy` carries per-request policy groups (adminForm,
- * send, accept, cancellation, audit, mfa) applied by `DemoInviteWorkflow`'s
- * `resolveXxx(ctx)` overrides. `mfaCtx` carries the static MFA-ctx overrides
- * written by the `invite-setup-mfa` step.
+ * Invite variant entry. `opts` is forms-only after the AuthOpts reshape
+ * (magic-link TTL + pincode timers moved). `authOpts` carries per-request
+ * overlay onto the singleton `AuthOpts`. `policy` carries per-request policy
+ * groups (adminForm, send, accept, cancellation, audit, mfa) applied by
+ * `DemoInviteWorkflow`'s `resolveXxx(ctx)` overrides. `mfaCtx` carries the
+ * static MFA-ctx overrides written by the `invite-setup-mfa` step.
  */
 export interface InviteVariant {
   opts?: Partial<InviteWorkflowOpts>;
+  authOpts?: AuthOptsVariantOverrides;
   policy?: InvitePolicyOverrides;
   mfaCtx?: InviteMfaCtxOverrides;
 }
@@ -194,11 +214,12 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
   },
   // Like `mfa-full` but with a 1s pincode-resend cooldown so the resend-throttled
   // / resend-after-cooldown stories (WF-LOGIN-011 / -012) run inside a single e2e
-  // tick rather than the 60s production default.
+  // tick rather than the 60s production default. Post-AuthOpts reshape the
+  // cooldown moved off `opts.mfa` onto the shared `AuthOpts.mfa` provider —
+  // declared on the variant's `authOpts` overlay (cloned per-event by
+  // `DemoLoginWorkflow`'s ctor; the workflow then reads `this.authOpts.mfa.pincodeResendTimeoutMs`).
   "mfa-fast-resend": {
-    opts: {
-      mfa: { pincodeResendTimeoutMs: 1000 },
-    },
+    authOpts: { mfa: { pincodeResendTimeoutMs: 1000 } },
     policy: { mfaConfig: { backupCodes: true } },
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["sms", "email", "totp"] },
   },
@@ -253,21 +274,23 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
   // Same as above but with a 1s pincode-resend cooldown so the
   // resend-throttled / resend-after-cooldown branches (WF-LOGIN-036) run
   // inside one test tick. Mirrors `mfa-fast-resend` for the enrolment side.
+  // Cooldown lives on `AuthOpts.mfa` post-AuthOpts reshape — see `mfa-fast-resend`.
   "mfa-enroll-optional-fast-resend": {
-    opts: { mfa: { pincodeResendTimeoutMs: 1000 } },
+    authOpts: { mfa: { pincodeResendTimeoutMs: 1000 } },
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["sms", "email", "totp"] },
   },
 };
 
 /**
- * Recovery variant entry — `{ opts?, policy? }`. `opts` carries infrastructure
- * overrides (magic-link TTL, OTP timers/length, forms) merged into
- * `demoRecoveryOpts`. `policy` carries per-request policy groups (delivery
- * mode + otpTransports, preReset, postReset, altActions, audit) applied by
- * `DemoRecoveryWorkflow`'s `resolveXxx(ctx)` overrides.
+ * Recovery variant entry. `opts` is forms-only after the AuthOpts reshape
+ * (magic-link TTL + OTP pincode timers moved). `authOpts` carries per-request
+ * overlay onto the singleton `AuthOpts`. `policy` carries per-request policy
+ * groups (delivery mode + otpTransports, preReset, postReset, altActions,
+ * audit) applied by `DemoRecoveryWorkflow`'s `resolveXxx(ctx)` overrides.
  */
 export interface RecoveryVariant {
   opts?: Partial<RecoveryWorkflowOpts>;
+  authOpts?: AuthOptsVariantOverrides;
   policy?: RecoveryPolicyOverrides;
 }
 
@@ -312,15 +335,17 @@ export const RECOVERY_VARIANTS: Record<string, RecoveryVariant> = {
   // Fast-expire magic-link variant — WF-RECOVERY-004. The persisted state
   // strategy honours `output.expires` so 1ms guarantees the resumed `wfs`
   // hits the "Invalid or expired workflow state" branch in @wooksjs/event-wf.
+  // Magic-link TTL moved off `RecoveryWorkflowOpts.delivery` onto `AuthOpts.magicLinkTtlMs`
+  // post-AuthOpts reshape — declared on the variant's `authOpts` overlay.
   "recovery-short-ttl": {
-    opts: { delivery: { magicLinkTtlMs: 1 } },
+    authOpts: { magicLinkTtlMs: 1 },
     policy: { delivery: { mode: "magicLink", otpTransports: ["email"] } },
   },
   // Short OTP resend cooldown — WF-RECOVERY-010/011. 1s cooldown lets the
   // first `Resend code` click trip the rate-limit branch, while a >1s wait
   // proves a second click after the cooldown sends a fresh code.
   "recovery-fast-resend": {
-    opts: { delivery: { otp: { resendCooldownMs: 1000 } } },
+    authOpts: { mfa: { pincodeResendTimeoutMs: 1000 } },
     policy: { delivery: { mode: "otp", otpTransports: ["email"] } },
   },
 };
@@ -375,7 +400,10 @@ export const INVITE_VARIANTS: Record<string, InviteVariant> = {
     policy: { cancellation: { allowed: false } },
   },
   "short-ttl-confirmation": {
-    opts: { send: { tokenTtlMs: 1000 } },
+    // Invite magic-link TTL moved off `InviteWorkflowOpts.send` onto
+    // `AuthOpts.magicLinkTtlMs` post-AuthOpts reshape — declared on the
+    // variant's `authOpts` overlay (cloned per-event by `DemoInviteWorkflow`'s ctor).
+    authOpts: { magicLinkTtlMs: 1000 },
     policy: { accept: { ...ACCEPT_DEMO_DEFAULTS, showConfirmation: true } },
   },
   // Surfaces the confirmation message in the finish envelope (WF-INVITE-020).

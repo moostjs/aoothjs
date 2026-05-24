@@ -5,7 +5,7 @@ import { expectFinished, prepareWfApp, seedActiveUser } from "./workflow-utils";
 /**
  * Wire trace for the recovery workflow:
  *
- * 1. `POST /wf/trigger { wfid: 'auth.recovery' }`
+ * 1. `POST /wf/trigger { wfid: 'auth/recovery/flow' }`
  *    → `requestRecovery` returns `outletHttp` → form (EmailIdentifierForm) +
  *       wfs token.
  * 2. `POST /wf/trigger { wfs, input: { email } }`
@@ -26,7 +26,7 @@ describe("RecoveryWorkflow", () => {
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
 
     // Step 1: start
-    const r1 = await app.trigger({ wfid: "auth.recovery" });
+    const r1 = await app.trigger({ wfid: "auth/recovery/flow" });
     expect(r1.status).toBe(201);
     const wfs1 = r1.body?.wfs as string;
     expect(wfs1).toBeTruthy();
@@ -73,7 +73,7 @@ describe("RecoveryWorkflow", () => {
 
   it("unknown email: no email sent, generic response", async () => {
     const app = await prepareWfApp();
-    const r1 = await app.trigger({ wfid: "auth.recovery" });
+    const r1 = await app.trigger({ wfid: "auth/recovery/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "ghost@test.com" },
@@ -88,7 +88,7 @@ describe("RecoveryWorkflow", () => {
   it("confirm-password mismatch re-renders form with error", async () => {
     const app = await prepareWfApp();
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
-    const r1 = await app.trigger({ wfid: "auth.recovery" });
+    const r1 = await app.trigger({ wfid: "auth/recovery/flow" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "alice@test.com" },
@@ -112,7 +112,7 @@ describe("RecoveryWorkflow", () => {
     // not just the email envelope.
     const app = await prepareWfApp({ recoveryTokenTtlMs: 1000 });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
-    const r1 = await app.trigger({ wfid: "auth.recovery" });
+    const r1 = await app.trigger({ wfid: "auth/recovery/flow" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "alice@test.com" },
@@ -138,7 +138,7 @@ describe("RecoveryWorkflow", () => {
     });
     await seedActiveUser(app.users, "alice42", "OldPassword1");
 
-    const r1 = await app.trigger({ wfid: "auth.recovery" });
+    const r1 = await app.trigger({ wfid: "auth/recovery/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "alice@corp.example" },
@@ -155,7 +155,7 @@ describe("RecoveryWorkflow", () => {
       emailToUserId: async () => null,
     });
     await seedActiveUser(app.users, "alice42", "OldPassword1");
-    const r1 = await app.trigger({ wfid: "auth.recovery" });
+    const r1 = await app.trigger({ wfid: "auth/recovery/flow" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
       input: { email: "anyone@nowhere.test" },
