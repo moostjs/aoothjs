@@ -109,6 +109,14 @@ export interface InviteWfCtx {
   firstName?: string;
   lastName?: string;
   roles?: string[];
+  /**
+   * Extras dict prepared by `inviteBuildUserExtras` (calls `prepareUser`) and
+   * consumed by `inviteCreateUser` to populate the user-row fields beyond the
+   * base credential shape. Split apart so consumers can inject e.g. a
+   * tenant-validation step between extras-build and create-user without
+   * copying either body.
+   */
+  userExtras?: Record<string, unknown>;
   /** Populated by `inviteSelectSendMode` (when `send.mode === 'choice'`). */
   selectedSendMode?: "email" | "shareableLink";
   /** Resolved send mode the workflow committed to (set in `inviteInit` or `inviteSelectSendMode`). */
@@ -405,8 +413,12 @@ export class InviteWorkflow extends AuthWorkflowBase {
       condition: (ctx) => !!(ctx.email && !ctx.aborted),
     },
     {
-      id: "invitePreCreateUser",
-      condition: (ctx) => !!(ctx.email && !ctx.username && !ctx.aborted),
+      id: "inviteBuildUserExtras",
+      condition: (ctx) => !!(ctx.email && !ctx.username && !ctx.userExtras && !ctx.aborted),
+    },
+    {
+      id: "inviteCreateUser",
+      condition: (ctx) => !!(ctx.email && !ctx.username && !!ctx.userExtras && !ctx.aborted),
     },
     {
       id: "inviteSendInviteEmail",
@@ -768,9 +780,17 @@ export class InviteWorkflow extends AuthWorkflowBase {
     return undefined;
   }
 
-  // ── Phase A: preCreateUser ────────────────────────────────────────────
-  @Step("invitePreCreateUser")
-  async preCreateUser(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
+  // ── Phase A: buildUserExtras ──────────────────────────────────────────
+  /**
+   * Build the extras dict that `inviteCreateUser` merges into the new user
+   * row. Calls `prepareUser({email, firstName, lastName, roles, invitedBy})`
+   * and writes the result onto `ctx.userExtras`. Split out of the old
+   * `invitePreCreateUser` step so consumers can inject e.g. a
+   * tenant-validation step between extras-build and create-user without
+   * copying the createUser body.
+   */
+  @Step("inviteBuildUserExtras")
+  async buildUserExtras(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     if (!ctx.email) throw new HttpError(500, "Workflow state corrupted: missing email");
 
     const invitedBy = useAuth().getAuthContext()?.userId;
@@ -782,7 +802,23 @@ export class InviteWorkflow extends AuthWorkflowBase {
       ...(invitedBy && { invitedBy }),
     };
 
-    const extras = await this.prepareUser(preparedInput);
+    ctx.userExtras = await this.prepareUser(preparedInput);
+    return undefined;
+  }
+
+  // ── Phase A: createUser ───────────────────────────────────────────────
+  /**
+   * Create the user row from `ctx.userExtras` (plus the admin-supplied
+   * `ctx.roles`), translate store-level CONFLICT into HTTP 409, then stamp
+   * `pendingInvitation = true` via a deep-merge update so the
+   * `createUser`-applied account defaults (`active: false`, `locked: false`)
+   * survive. Split out of the old `invitePreCreateUser` step so consumers can
+   * override extras-build (`inviteBuildUserExtras`) without touching the
+   * store-write transaction.
+   */
+  @Step("inviteCreateUser")
+  async createUserStep(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
+    if (!ctx.email) throw new HttpError(500, "Workflow state corrupted: missing email");
 
     // `UserService.createUser` shallow-merges `extras` over `base`, so passing
     // an `account` key would wipe out the base's `active: false` / `locked:
@@ -795,7 +831,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
     // not in the base credential shape, and a strict-schema store would 500
     // on unknown columns. They reach the consumer only via `prepareUser`.
     const fields: Record<string, unknown> = {
-      ...extras,
+      ...ctx.userExtras,
       ...(ctx.roles && ctx.roles.length > 0 && { roles: ctx.roles }),
     };
 

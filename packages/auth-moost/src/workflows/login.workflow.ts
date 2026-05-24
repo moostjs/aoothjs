@@ -433,7 +433,11 @@ export class LoginWorkflow extends AuthWorkflowBase {
             ctx.opts!.deviceTrust.enabled && ctx.opts!.deviceTrust.skipsMfa && !ctx.mfaChecked,
         },
         {
-          id: "prepare-mfa-options",
+          id: "loadEnrolledMfaMethods",
+          condition: (ctx) => !ctx.mfaChecked,
+        },
+        {
+          id: "selectMfaMethod",
           condition: (ctx) => !ctx.mfaChecked,
         },
         {
@@ -911,8 +915,17 @@ export class LoginWorkflow extends AuthWorkflowBase {
     return undefined;
   }
 
-  @Step("prepare-mfa-options")
-  async prepareMfaOptions(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
+  /**
+   * Load + summarise the user's enrolled MFA methods (filtered against
+   * `ctx.availableMfaTransports`) and mirror the form-gating flags
+   * (`mfaMethodCount`, `mfaBackupCodes`, `deviceTrustOptIn`) onto ctx. Pure
+   * data-load — no selection decision. Split out of the old
+   * `prepare-mfa-options` step so consumers can override the load/summary
+   * shape (custom MFA inventory source) without copying the selection
+   * heuristics in `selectMfaMethod`.
+   */
+  @Step("loadEnrolledMfaMethods")
+  async loadEnrolledMfaMethods(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
     if (!ctx.username) return undefined;
     const user = await this.users.getUser(ctx.username);
     const allowed = new Set(ctx.availableMfaTransports ?? []);
@@ -939,6 +952,24 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // Mirror so `PincodeForm` can hide `rememberDevice` when the consumer
     // doesn't ask the user to opt in (skipsMfa auto-trusts the device).
     ctx.deviceTrustOptIn = !!(this.opts.deviceTrust.enabled && this.opts.deviceTrust.optIn);
+    return undefined;
+  }
+
+  /**
+   * Pick which MFA method to use from the already-loaded
+   * `ctx.mfaEnrolledMethods` summary. Decision-only — no IO. Honors
+   * `ctx.currentMfa` (pre-selected by `prepareMfaSetup` from the user's
+   * `defaultMethod` or single-transport auto-pick), auto-picks when only one
+   * method is enrolled, falls back to the `isDefault` method. All paths are
+   * gated on `!ctx.ignoreMfaDefault` so the `useDifferentMethod` re-pick flow
+   * (which sets the flag) skips straight to the `select2fa` picker. Split out
+   * of the old `prepare-mfa-options` step so consumers can override selection
+   * heuristics (e.g. risk-based per-tenant defaults) without re-implementing
+   * the load/summary.
+   */
+  @Step("selectMfaMethod")
+  selectMfaMethod(@WorkflowParam("context") ctx: LoginWfCtx): undefined {
+    const summary = ctx.mfaEnrolledMethods ?? [];
     // `prepareMfaSetup` setter may have pre-selected a transport (existing-user
     // defaultMethod / single-transport auto-pick / consumer override). Honor
     // it if it matches an enrolled method. Gated on `!ctx.ignoreMfaDefault` so
