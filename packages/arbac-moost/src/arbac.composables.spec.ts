@@ -10,36 +10,18 @@ import {
 } from "moost";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
+import { FakeUserProvider } from "./__testing__/user-provider";
 import { useArbac } from "./arbac.composables";
 import {
   ArbacAction,
   arbacAuthorizeInterceptor,
   ArbacResource,
-  ArbacUserProvider,
   ArbacUserProviderToken,
   MoostArbac,
 } from "./index";
 
 interface DemoScope {
   filter?: Record<string, unknown>;
-}
-
-class TestUserProvider extends ArbacUserProvider<Record<string, never>> {
-  constructor(
-    private readonly userId: string,
-    private readonly roles: string[],
-  ) {
-    super();
-  }
-  override getUserId() {
-    return this.userId;
-  }
-  override getRoles() {
-    return this.roles;
-  }
-  override getAttrs() {
-    return {} as Record<string, never>;
-  }
 }
 
 /**
@@ -282,10 +264,10 @@ describe("useArbac().evaluateOrThrow", () => {
   it("returns { allowed: true, userId } when arbac evaluates allow", async () => {
     const arbac = buildArbacAllowing();
     const app = new Moost();
-    const user = new TestUserProvider("u1", ["creator"]);
-    app.setReplaceRegistry(createReplaceRegistry([ArbacUserProviderToken, TestUserProvider]));
+    const user = new FakeUserProvider("u1", ["creator"]);
+    app.setReplaceRegistry(createReplaceRegistry([ArbacUserProviderToken, FakeUserProvider]));
     app.setProvideRegistry(
-      createProvideRegistry([TestUserProvider, () => user], [MoostArbac, () => arbac]),
+      createProvideRegistry([FakeUserProvider, () => user], [MoostArbac, () => arbac]),
     );
     const http = new MoostHttp();
     app.adapter(http);
@@ -305,10 +287,10 @@ describe("useArbac().evaluateOrThrow", () => {
   it("throws HttpError(403) when arbac evaluates deny", async () => {
     const arbac = buildArbacAllowing();
     const app = new Moost();
-    const user = new TestUserProvider("u1", ["creator"]);
-    app.setReplaceRegistry(createReplaceRegistry([ArbacUserProviderToken, TestUserProvider]));
+    const user = new FakeUserProvider("u1", ["creator"]);
+    app.setReplaceRegistry(createReplaceRegistry([ArbacUserProviderToken, FakeUserProvider]));
     app.setProvideRegistry(
-      createProvideRegistry([TestUserProvider, () => user], [MoostArbac, () => arbac]),
+      createProvideRegistry([FakeUserProvider, () => user], [MoostArbac, () => arbac]),
     );
     const http = new MoostHttp();
     app.adapter(http);
@@ -333,30 +315,11 @@ describe("useArbac().evaluate live-read of roles", () => {
   });
 
   /**
-   * Mutable variant of TestUserProvider — `roles` is a public field that the
-   * test rewrites between requests. The provider instance is registered once
-   * with DI; the test never re-registers it, never refreshes a token, never
-   * touches any persistence layer.
+   * The provider instance is registered once with DI; the test rewrites its
+   * public `roles` field between requests — never re-registers, never refreshes
+   * a token, never touches any persistence layer. Pins the live-read invariant
+   * of `useArbac().evaluate()`.
    */
-  class MutableRolesProvider extends ArbacUserProvider<Record<string, never>> {
-    public roles: string[];
-    constructor(
-      private readonly userId: string,
-      initialRoles: string[],
-    ) {
-      super();
-      this.roles = initialRoles;
-    }
-    override getUserId() {
-      return this.userId;
-    }
-    override getRoles() {
-      return this.roles;
-    }
-    override getAttrs() {
-      return {} as Record<string, never>;
-    }
-  }
 
   function buildReaderArbac(): MoostArbac<Record<string, never>, DemoScope> {
     const arbac = new MoostArbac<Record<string, never>, DemoScope>();
@@ -398,11 +361,11 @@ describe("useArbac().evaluate live-read of roles", () => {
    */
   it("re-reads roles from the user provider on every call (no per-token / per-request memoization)", async () => {
     const arbac = buildReaderArbac();
-    const provider = new MutableRolesProvider("u1", ["reader"]);
+    const provider = new FakeUserProvider("u1", ["reader"]);
     const app = new Moost();
-    app.setReplaceRegistry(createReplaceRegistry([ArbacUserProviderToken, MutableRolesProvider]));
+    app.setReplaceRegistry(createReplaceRegistry([ArbacUserProviderToken, FakeUserProvider]));
     app.setProvideRegistry(
-      createProvideRegistry([MutableRolesProvider, () => provider], [MoostArbac, () => arbac]),
+      createProvideRegistry([FakeUserProvider, () => provider], [MoostArbac, () => arbac]),
     );
     const http = new MoostHttp();
     app.adapter(http);
@@ -455,10 +418,10 @@ describe("useArbac integration: @DbAction('new') resolves to action 'new'", () =
   it("a method with synthesized @DbAction('new') resolves action 'new' (200 for creator)", async () => {
     const arbac = buildArbac();
     const app = new Moost();
-    const user = new TestUserProvider("u1", ["creator"]);
-    app.setReplaceRegistry(createReplaceRegistry([ArbacUserProviderToken, TestUserProvider]));
+    const user = new FakeUserProvider("u1", ["creator"]);
+    app.setReplaceRegistry(createReplaceRegistry([ArbacUserProviderToken, FakeUserProvider]));
     app.setProvideRegistry(
-      createProvideRegistry([TestUserProvider, () => user], [MoostArbac, () => arbac]),
+      createProvideRegistry([FakeUserProvider, () => user], [MoostArbac, () => arbac]),
     );
     app.applyGlobalInterceptors(arbacAuthorizeInterceptor);
     const http = new MoostHttp();

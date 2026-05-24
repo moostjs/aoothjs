@@ -138,6 +138,29 @@ describe("SEC — ARBAC bypass attacks", () => {
     expectAllInTenant(benignRows, tenantA);
   });
 
+  it("SEC-33 — malformed @uniqu/url query string returns 400, not 500", async () => {
+    // WHY: pins parser-error → 400 contract. The @uniqu/url lexer requires
+    // string literals to be single-quoted; SEC-17 wraps its SQLi payloads in
+    // quotes for exactly that reason. An UNQUOTED single quote (or any other
+    // malformed token) trips parseUrl() with a native SyntaxError. The base
+    // moost-db query handler does NOT try/catch around parseQueryString, so
+    // without this fix the error bubbles as HTTP 500 — making the server
+    // look broken when the client simply sent bad input. AsArbacDbController
+    // overrides parseQueryString to remap SyntaxError → HttpError(400).
+    // Distinct from SEC-17 (which proves the parameterised-SQL invariant);
+    // this is the orthogonal robustness pin on the parse step itself.
+    const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_alice);
+
+    // Unquoted single quote at position 11 — the lexer cannot tokenise this.
+    const res = await fetch("/tasks/query?status=" + encodeURIComponent("'OR 1=1"));
+    expect(res.status, "must not surface as 500").not.toBe(500);
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { message?: string; statusMessage?: string };
+    const text = body.message ?? body.statusMessage ?? JSON.stringify(body);
+    // Body should mention the parser error, not be a generic 500 trace.
+    expect(text.toLowerCase()).toContain("invalid query string");
+  });
+
   it("SEC-02 — projection escape via $select cannot leak password/mfa/account", async () => {
     // WHY: Eve has read access to /users but her ARBAC scope projection MUST
     // strip credential-bearing fields (password, mfa, account). The attack is
@@ -251,6 +274,152 @@ describe("SEC — ARBAC bypass attacks", () => {
       ["/tasks/query", "/users/query", "/projects/query", "/comments/query"].map((p) => fetch(p)),
     );
     for (const r of responses) expect(r.status).toBe(403);
+  });
+
+  it("SEC-31 — every non-@Public HTTP route requires authentication (401 without token)", async () => {
+    // WHY: SEC-25 pins that one specific public route (/health) is reachable
+    // anonymously. This test pins the orthogonal global invariant: NO route is
+    // accidentally public. A future debug/metrics endpoint added without the
+    // auth guard (e.g. someone forgets `@Public()`-vs-default semantics) would
+    // slip into production undetected. The defense — `authGuardInterceptor`
+    // globally wired in `buildApp` — already exists; this test pins it.
+    //
+    // The allow-list below is the canonical inventory of intentional-public
+    // routes. Each entry must be justified (per-line comment). When a new
+    // public route is added: add it here with a clear rationale, or the test
+    // fails. When a previously-public route is removed: drop the entry, or
+    // the test fails (drift detection in BOTH directions — Rule 12 / fail-loud).
+    //
+    // The probe is unauthenticated (no Authorization header, no cookie). The
+    // guard's contract is: missing token + non-public → 401. Anything else
+    // (200/403/404/500) on a non-public route is a violation.
+
+    // Each key is `"METHOD /path"` with `{name}` for path params (matches
+    // Moost's `registeredAs.path` shape — see `MoostHttp.bindHandler`).
+    // 403 implies a token WAS present (we send none) — stay strict on 401.
+    const PUBLIC_ALLOWLIST: ReadonlySet<string> = new Set([
+      // Liveness probe — must be reachable without auth for orchestrators
+      // (LB health checks, Kubernetes readiness/liveness) that don't carry
+      // credentials. Verified in SEC-25.
+      "GET /health",
+      // Single workflow trigger endpoint covering auth.login / auth.recovery /
+      // auth.invite / project.handover. Anonymous callers MUST be able to
+      // start the login workflow — that's the whole point.
+      "POST /auth/trigger",
+      // Logout is self-scoped ("kill my own token") — the controller reads
+      // the bearer/refresh token from the body to denylist it, so the route
+      // itself bypasses the guard. A logged-out call is a harmless no-op.
+      "POST /auth/logout",
+      // Refresh is its own credential check (refresh-token grant) — the
+      // global auth guard would reject anonymous callers, but refresh by
+      // definition fires when the access token is gone. The handler does
+      // its own validation against the refresh token.
+      "POST /auth/refresh",
+      // Status is a "tell me who I am" introspection — returns `null` for
+      // anonymous callers, the userId for authenticated ones. Public so the
+      // SPA can call it on cold-boot without first proving auth.
+      "GET /auth/status",
+      // Invite redemption landing page — invitees aren't signed in at the
+      // moment the magic link is clicked (that's the whole point of the
+      // invite). The handler does its own one-time-token validation.
+      "GET /auth/invite/post-redemption",
+    ]);
+
+    interface ControllerOv {
+      meta: { authPublic?: boolean };
+      type: { name: string };
+      handlers: Array<{
+        meta: { authPublic?: boolean };
+        type: string;
+        method: string;
+        handler: { method?: string };
+        registeredAs: Array<{ path: string; args: string[] }>;
+      }>;
+    }
+    const moost = app.appHandle.app as unknown as {
+      getControllersOverview: () => ControllerOv[];
+    };
+    const overview = moost.getControllersOverview();
+
+    interface RouteEntry {
+      key: string;
+      method: string;
+      probePath: string;
+      isPublic: boolean;
+      controller: string;
+      methodName: string;
+    }
+    const routes: RouteEntry[] = [];
+    for (const c of overview) {
+      const classPublic = c.meta.authPublic === true;
+      for (const h of c.handlers) {
+        if (h.type !== "HTTP") continue;
+        const methodPublic = h.meta.authPublic === true;
+        const isPublic = methodPublic || classPublic;
+        const method = h.handler.method ?? "GET";
+        for (const r of h.registeredAs) {
+          // Substitute `{name}` placeholders with a non-empty literal — the
+          // guard runs BEFORE path-param validation / handler arg resolution,
+          // so the substituted value never needs to match a real entity.
+          routes.push({
+            key: `${method} ${r.path}`,
+            method,
+            probePath: r.path.replaceAll(/\{[^/}]+\}/g, "probe"),
+            isPublic,
+            controller: c.type.name,
+            methodName: h.method,
+          });
+        }
+      }
+    }
+
+    // Sanity: we found a non-trivial number of routes — guards against the
+    // route-enumeration API silently returning [] (which would vacuously
+    // pass the loop, exactly the "Rule 12" failure-mode we're avoiding).
+    expect(routes.length).toBeGreaterThan(20);
+    // Sanity: /health is the canonical public probe; if it's missing the
+    // enumeration is broken in a way the per-route loop would hide.
+    expect(routes.some((r) => r.key === "GET /health")).toBe(true);
+
+    const violations: string[] = [];
+
+    // Pass 1: every @Public route must be in the allow-list (catches a
+    // future PR that adds `@Public()` without a corresponding allow-list
+    // entry + rationale).
+    for (const r of routes) {
+      if (r.isPublic && !PUBLIC_ALLOWLIST.has(r.key)) {
+        violations.push(
+          `${r.key} (${r.controller}.${r.methodName}) is @Public but not in PUBLIC_ALLOWLIST`,
+        );
+      }
+    }
+
+    // Pass 2: every allow-list entry must correspond to an actual @Public
+    // route (catches stale entries when a route is removed / un-Public'd).
+    const presentPublicKeys = new Set(routes.filter((r) => r.isPublic).map((r) => r.key));
+    for (const key of PUBLIC_ALLOWLIST) {
+      if (!presentPublicKeys.has(key)) {
+        violations.push(`PUBLIC_ALLOWLIST entry ${key} does not match any @Public route`);
+      }
+    }
+
+    // Pass 3: every non-@Public route MUST reject an anonymous probe with
+    // 401 (the guard's contract). Probes carry no Authorization header and
+    // no cookie — `app.fetch` strips both unless explicitly passed.
+    for (const r of routes) {
+      if (r.isPublic) continue;
+      const res = await app.fetch(r.probePath, { method: r.method });
+      // Drain the body so the socket is released — vitest workers cap at a
+      // few hundred fds and unread bodies stay open under macOS.
+      await res.text().catch(() => "");
+      if (res.status !== 401) {
+        violations.push(
+          `${r.key} (${r.controller}.${r.methodName}) returned ${res.status} on anonymous probe, expected 401`,
+        );
+      }
+    }
+
+    expect(violations).toEqual([]);
   });
 
   it("SEC-27 — `tasks.**` glob anchors and does NOT match `tasks_secret` / `tasksprivate`", async () => {

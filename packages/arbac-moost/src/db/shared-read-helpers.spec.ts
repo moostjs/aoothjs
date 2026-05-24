@@ -9,13 +9,8 @@ import {
 } from "moost";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
-import {
-  ArbacAction,
-  ArbacResource,
-  ArbacUserProvider,
-  ArbacUserProviderToken,
-  MoostArbac,
-} from "../index";
+import { FakeUserProvider } from "../__testing__/user-provider";
+import { ArbacAction, ArbacResource, ArbacUserProviderToken, MoostArbac } from "../index";
 import type { ArbacDbScope } from "./as-arbac-db-controller";
 import { applyArbacRelationScopes, transformArbacFilter } from "./shared-read-helpers";
 
@@ -47,33 +42,15 @@ class ProbeController {
   }
 }
 
-class StaticUserProvider extends ArbacUserProvider<Record<string, never>> {
-  constructor(
-    private readonly userId: string,
-    private readonly roles: string[],
-  ) {
-    super();
-  }
-  override getUserId() {
-    return this.userId;
-  }
-  override getRoles() {
-    return this.roles;
-  }
-  override getAttrs() {
-    return {} as Record<string, never>;
-  }
-}
-
 async function buildAndInit(
   arbac: MoostArbac<Record<string, never>, ArbacDbScope>,
   roles: string[],
 ): Promise<MoostHttp> {
   const app = new Moost();
-  const user = new StaticUserProvider("u1", roles);
-  app.setReplaceRegistry(createReplaceRegistry([ArbacUserProviderToken, StaticUserProvider]));
+  const user = new FakeUserProvider("u1", roles);
+  app.setReplaceRegistry(createReplaceRegistry([ArbacUserProviderToken, FakeUserProvider]));
   app.setProvideRegistry(
-    createProvideRegistry([StaticUserProvider, () => user], [MoostArbac, () => arbac]),
+    createProvideRegistry([FakeUserProvider, () => user], [MoostArbac, () => arbac]),
   );
   const http = new MoostHttp();
   app.adapter(http);

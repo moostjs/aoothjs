@@ -118,6 +118,41 @@ export class AsArbacDbController<
   }
 
   /**
+   * Translate `@uniqu/url` parser failures into HTTP 400 instead of letting them
+   * bubble as 500. The base `parseQueryString` calls `parseUrl()` directly with
+   * no try/catch, so a malformed `?status=...` (e.g. unquoted single quote at a
+   * non-string position) surfaces as a server error — misleading, since the
+   * server is fine and the client sent bad input.
+   *
+   * Narrow targeting: only `SyntaxError` raised from inside the parser is
+   * remapped. Other errors (e.g. a programmer-introduced TypeError in a future
+   * override) still bubble as 500. SQL-injection-shaped payloads remain safely
+   * handled either way — see SEC-17 for the parameterisation invariant; this
+   * override is an orthogonal robustness pin around the parse step.
+   */
+  protected parseQueryString(url: string): ReturnType<AsDbController<T>["parseQueryString"]> {
+    try {
+      return super.parseQueryString(url);
+    } catch (err) {
+      throw remapUniquUrlSyntaxError(err);
+    }
+  }
+
+  /**
+   * Same parser-error → 400 remap as {@link parseQueryString}, applied to the
+   * `/one` and `/one?…` code paths which use `parseControlsOnlyFromUrl`.
+   */
+  protected parseControlsOnlyFromUrl(
+    url: string,
+  ): ReturnType<AsDbController<T>["parseControlsOnlyFromUrl"]> {
+    try {
+      return super.parseControlsOnlyFromUrl(url);
+    } catch (err) {
+      throw remapUniquUrlSyntaxError(err);
+    }
+  }
+
+  /**
    * Enforce per-role `ArbacDbScope.controls` gates against the parsed Uniquery
    * controls of a request. Runs after the base validator (which checks the
    * controls DTO shape) and BEFORE the query/aggregation pipeline executes.
@@ -416,4 +451,23 @@ function applyPreparedOverlay(data: unknown, prepared: PreparedScopeOverlay): un
   }
   if (prepared.setOverrides) Object.assign(merged, prepared.setOverrides);
   return merged;
+}
+
+/**
+ * Translate a `@uniqu/url` parser `SyntaxError` into `HttpError(400)`. Any
+ * other error (including a pre-existing `HttpError`) is returned as-is so the
+ * caller's `throw remapUniquUrlSyntaxError(err)` preserves the original
+ * status — no double-wrapping.
+ *
+ * Matching is narrow: only `SyntaxError` whose message carries the parser's
+ * "at pos N" / "at N" positional marker (every throw site in @uniqu/url's
+ * lexer + parser emits one). This avoids catching unrelated SyntaxErrors that
+ * a future override might surface from `JSON.parse` etc.
+ */
+function remapUniquUrlSyntaxError(err: unknown): unknown {
+  if (err instanceof HttpError) return err;
+  if (!(err instanceof SyntaxError)) return err;
+  const msg = err.message;
+  if (!/at (?:pos )?\d+/.test(msg)) return err;
+  return new HttpError(400, `Invalid query string: ${msg}`);
 }
