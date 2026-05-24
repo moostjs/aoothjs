@@ -503,7 +503,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     constructor(users: UserService, authCred: AuthCredential) {
       const variant = pickVariant(INVITE_VARIANTS, readVariantHeader());
       super(
-        variant ? mergeWfOpts(demoInviteOpts, variant as InviteWorkflowOpts) : demoInviteOpts,
+        variant?.opts
+          ? mergeWfOpts(demoInviteOpts, variant.opts as InviteWorkflowOpts)
+          : demoInviteOpts,
         users,
         authCred,
       );
@@ -515,13 +517,43 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       // parity with login/recovery.
       return forwardDeliver(payload);
     }
-    // Default `mfaMode: 'disabled'` — pre-PR9 lived under `opts.mfa.mode`.
-    // No invite variant currently flips this through the variant header (the
-    // few e2e tests that need enrolment pass `inviteMfaCtx` directly via
-    // `buildTestApp`, which wraps this class with `withInviteMfaCtx`). The
-    // override below is just the demo's static default; if a future variant
-    // needs per-request mfa shape, follow the login pattern above and read
-    // the variant header here.
+    // `inviteInit` runs on the admin's first trigger (variant header IS
+    // present); `inviteSetupMfa` runs LATER on the invitee's anonymous resume
+    // (variant header is NOT present — the magic-link click is plain HTTP).
+    // The wf-state ctx is the only thing that crosses the admin→invitee
+    // boundary, so stash the resolved mfaCtx on ctx here in `inviteInit` and
+    // read it back in `inviteSetupMfa` below. Without this stash the
+    // `invite-mfa-optional-full` variant's mode/transports never reach the
+    // enrolment loop on the invitee side and the workflow silently
+    // skips MFA enrolment.
+    @Step("inviteInit")
+    @Public()
+    override init(@WorkflowParam("context") ctx: InviteWfCtx): undefined {
+      super.init(ctx);
+      const variant = pickVariant(INVITE_VARIANTS, readVariantHeader());
+      const v = variant?.mfaCtx;
+      if (v) {
+        // Stash on a non-typed ctx slot — InviteWfCtx doesn't have a field
+        // for this and it's strictly a demo-test piece. The serializer is
+        // structural JSON so any plain field rides through wf-state fine.
+        (ctx as unknown as { __demoMfaCtx?: InviteMfaCtxOverrides }).__demoMfaCtx = {
+          ...(v.mfaMode !== undefined && { mfaMode: v.mfaMode }),
+          ...(v.availableMfaTransports !== undefined && {
+            availableMfaTransports: [...v.availableMfaTransports],
+          }),
+          ...(v.enrollMethod !== undefined && { enrollMethod: v.enrollMethod }),
+        };
+      }
+      return undefined;
+    }
+    // Variant-driven mfa-ctx setter override — mirrors the login side. Reads
+    // the resolved mfaCtx stashed in `inviteInit` (preferred path, survives
+    // admin→invitee resume) and falls back to the live request header
+    // (admin-only flows that re-enter inviteSetupMfa before a resume).
+    // Default is `mfaMode: 'disabled'` so existing invite e2e tests that
+    // assert the auto-login envelope after password-set keep working without
+    // an enrolment pause. Variants like `invite-mfa-optional-full` flip the
+    // mode + transport list per request via this override (PW MFA coverage).
     @Step("inviteSetupMfa")
     @Public()
     override inviteSetupMfa(
@@ -529,7 +561,14 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     ): undefined | Promise<undefined> {
       const baseResult = super.inviteSetupMfa(ctx);
       const apply = (): undefined => {
-        ctx.mfaMode = "disabled";
+        const stashed = (ctx as unknown as { __demoMfaCtx?: InviteMfaCtxOverrides }).__demoMfaCtx;
+        const variant = pickVariant(INVITE_VARIANTS, readVariantHeader());
+        const v = stashed ?? variant?.mfaCtx;
+        ctx.mfaMode = v?.mfaMode ?? "disabled";
+        if (v?.availableMfaTransports !== undefined) {
+          ctx.availableMfaTransports = [...v.availableMfaTransports];
+        }
+        if (v?.enrollMethod !== undefined) ctx.enrollMethod = v.enrollMethod;
         return undefined;
       };
       return baseResult instanceof Promise ? baseResult.then(apply) : apply();

@@ -60,6 +60,7 @@ import {
   USERS,
   waitForEmail,
   waitForFormInput,
+  waitForSms,
   wfUrl,
 } from "./harness";
 
@@ -1064,6 +1065,194 @@ test.describe("WF-INVITE — auth.invite family (P2)", () => {
       "Your account has been created.",
     );
     await expect(inviteePage.locator("pre").first()).toContainText("accessToken");
+    await ctx.close();
+  });
+});
+
+// ─── MFA-ENROLLMENT INVITE STORIES (PW MFA coverage PR) ────────────────────
+//
+// These pin the optional-mode invite-tail enrollment ergonomics shipped by
+// PR7-2 (which fixed a linear-schema bug where useDifferentMethod from
+// EnrollConfirmForm could activate the account with no MFA enrolled even
+// under required mode) end-to-end through the SPA. Vitest WF-INVITE-12/15/16/17
+// covers the wire layer. These add browser coverage so SPA-side regressions
+// in action-button visibility / form-scope re-render after action dispatch
+// surface here before they bite real users.
+test.describe("WF-INVITE — auth.invite family (MFA enrollment, PW MFA coverage)", () => {
+  test.beforeEach(async ({ request }) => {
+    await resetAppResilient(request);
+  });
+
+  /**
+   * BRANCH: `optional` mode + 3-transport menu on the invite tail → after
+   * password-set the workflow pauses on EnrollPickMethodForm. Clicking `skip`
+   * (visible only when `enrollMode === 'optional'`) short-circuits the
+   * enrolment loop; the invitee gets activated + tokens, with `mfa.methods`
+   * still empty. A regression that ungated skip in required mode would let
+   * invitees bypass forced MFA; a regression that wired skip into Phase 2
+   * (address) would persist a covert unconfirmed row before the loop exits.
+   * This is the SPA-layer pin for the vitest WF-INVITE-16 contract.
+   */
+  test("WF-INVITE-021 invite-tail optional + skip from EnrollPickMethodForm → activated, no mfa enrolled", async ({
+    page,
+    request,
+    baseURL,
+  }) => {
+    await loginViaUi(page, USERS.admin_inviter);
+    await page.goto(wfUrl("auth.invite", "invite-mfa-optional-full"));
+    await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
+
+    const inviteeEmail = uniqueEmail("invite-021");
+    await fillField(page, "email", inviteeEmail);
+    const sentPromise = nextTriggerResponse(page, (b) => b.sent === true);
+    await submitForm(page);
+    await sentPromise;
+
+    const magic = await waitForEmail(
+      request,
+      (e) => e.kind === "invite.magicLink" && e.recipient === inviteeEmail,
+    );
+    const resumeUrl = rewriteToBaseUrl(magic.url as string, baseURL ?? "");
+    const ctx = await page.context().browser()!.newContext();
+    const inviteePage = await ctx.newPage();
+    await inviteePage.goto(resumeUrl);
+
+    // SetPasswordForm pause first.
+    await expect(inviteePage.locator('[name="newPassword"]')).toBeVisible({ timeout: 15_000 });
+    await inviteePage.locator('[name="newPassword"]').fill("InviteePass-1!");
+    await inviteePage.locator('[name="confirmPassword"]').fill("InviteePass-1!");
+    await submitForm(inviteePage);
+
+    // EnrollPickMethodForm pause — `method` radio + `Skip for now` action
+    // visible because variant set mfaMode='optional'. Click skip.
+    await waitForFormInput(inviteePage, "method");
+    await clickAction(inviteePage, "Skip for now");
+
+    // Profile pause still runs (skip clears the MFA loop but leaves the
+    // profile-collect step in the schema). Submit empty to advance.
+    await expect(inviteePage.getByText("Display name")).toBeVisible({ timeout: 15_000 });
+    await submitForm(inviteePage);
+
+    // Auto-login finish runs because skip leaves `ctx.aborted` false.
+    await expect(inviteePage.locator("text=Workflow finished")).toBeVisible({ timeout: 15_000 });
+    await expect(inviteePage.locator("pre").first()).toContainText("accessToken");
+
+    // Activation + no MFA enrolled — both halves of the WF-INVITE-16 contract.
+    const userRes = await request.get(`/__test/user/${encodeURIComponent(inviteeEmail)}`);
+    expect(userRes.status()).toBe(200);
+    const userRec = (await userRes.json()) as {
+      mfa: { methods: unknown[] };
+      account: { active: boolean };
+    };
+    expect(userRec.account.active).toBe(true);
+    expect(userRec.mfa.methods).toHaveLength(0);
+    await ctx.close();
+  });
+
+  /**
+   * BRANCH: `EnrollConfirmForm.useDifferentMethod` (totp branch — `resend`
+   * is hidden when method='totp' so the only alt-action is the switch).
+   * Clicking it must (a) trigger `cleanupEnrollment` so the unconfirmed
+   * totp row is removed, (b) clear `ctx.enrollMethod`, (c) loop back to
+   * EnrollPickMethodForm. PR7-2 fixed a regression where the linear invite
+   * schema let useDifferentMethod from Phase 3 fall through to activation
+   * with NO MFA enrolled even under required mode — this test pins the
+   * cleanup half (the activation half is the vitest WF-INVITE-15 territory)
+   * AND proves a fresh totp pick after the switch can still complete normally.
+   */
+  test("WF-INVITE-022 invite-tail optional + useDifferentMethod from EnrollConfirmForm (totp→sms) → loops to picker, cleanup removes totp row, sms enroll completes", async ({
+    page,
+    request,
+    baseURL,
+  }) => {
+    await loginViaUi(page, USERS.admin_inviter);
+    await page.goto(wfUrl("auth.invite", "invite-mfa-optional-full"));
+    await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
+
+    const inviteeEmail = uniqueEmail("invite-022");
+    await fillField(page, "email", inviteeEmail);
+    const sentPromise = nextTriggerResponse(page, (b) => b.sent === true);
+    await submitForm(page);
+    await sentPromise;
+
+    const magic = await waitForEmail(
+      request,
+      (e) => e.kind === "invite.magicLink" && e.recipient === inviteeEmail,
+    );
+    const resumeUrl = rewriteToBaseUrl(magic.url as string, baseURL ?? "");
+    const ctx = await page.context().browser()!.newContext();
+    const inviteePage = await ctx.newPage();
+    await inviteePage.goto(resumeUrl);
+
+    // SetPasswordForm.
+    await expect(inviteePage.locator('[name="newPassword"]')).toBeVisible({ timeout: 15_000 });
+    await inviteePage.locator('[name="newPassword"]').fill("InviteePass-1!");
+    await inviteePage.locator('[name="confirmPassword"]').fill("InviteePass-1!");
+    await submitForm(inviteePage);
+
+    // Picker → pick totp. TOTP skips the EnrollAddressForm (no address to
+    // collect; secret is server-provisioned) and lands straight on
+    // EnrollConfirmForm. Wait for `method` first.
+    await waitForFormInput(inviteePage, "method");
+    await fillField(inviteePage, "method", "totp");
+    await submitForm(inviteePage);
+
+    // EnrollConfirmForm — `code` field. Mid-flow store assertion: the
+    // unconfirmed totp row was persisted by Phase 1 (proves the cleanup
+    // branch below isn't a vacuous pass on a system that never wrote one).
+    await waitForFormInput(inviteePage, "code");
+    const before = await request.get(`/__test/user/${encodeURIComponent(inviteeEmail)}`);
+    const beforeRec = (await before.json()) as {
+      mfa: { methods: Array<{ name: string; confirmed: boolean }> };
+    };
+    expect(beforeRec.mfa.methods.find((m) => m.name === "totp")?.confirmed).toBe(false);
+
+    // useDifferentMethod — loops back to picker, cleanupEnrollment removes
+    // the totp row.
+    await clickAction(inviteePage, "Use a different method");
+    await waitForFormInput(inviteePage, "method");
+
+    // Cleanup proof: no totp row left.
+    const mid = await request.get(`/__test/user/${encodeURIComponent(inviteeEmail)}`);
+    const midRec = (await mid.json()) as {
+      mfa: { methods: Array<{ name: string }> };
+    };
+    expect(midRec.mfa.methods.find((m) => m.name === "totp")).toBeUndefined();
+
+    // Now pick sms — drives EnrollAddressForm → EnrollConfirmForm (with
+    // pincode side-channel). Completing this branch proves the schema
+    // re-entered the loop cleanly after useDifferentMethod.
+    await fillField(inviteePage, "method", "sms");
+    await submitForm(inviteePage);
+
+    await waitForFormInput(inviteePage, "address");
+    const phone = "+15555550777";
+    await fillField(inviteePage, "address", phone);
+    await submitForm(inviteePage);
+
+    await waitForFormInput(inviteePage, "code");
+    const sms = await waitForSms(
+      request,
+      (e) => e.kind === "login.pincode" && (e.recipient ?? "").startsWith(phone),
+    );
+    expect(sms.code).toBeTruthy();
+    await fillField(inviteePage, "code", sms.code);
+    await submitForm(inviteePage);
+
+    // Profile pause — submit empty.
+    await expect(inviteePage.getByText("Display name")).toBeVisible({ timeout: 15_000 });
+    await submitForm(inviteePage);
+
+    await expect(inviteePage.locator("text=Workflow finished")).toBeVisible({ timeout: 15_000 });
+    await expect(inviteePage.locator("pre").first()).toContainText("accessToken");
+
+    // Final store state: sms confirmed, totp absent.
+    const after = await request.get(`/__test/user/${encodeURIComponent(inviteeEmail)}`);
+    const afterRec = (await after.json()) as {
+      mfa: { methods: Array<{ name: string; confirmed: boolean }> };
+    };
+    expect(afterRec.mfa.methods.find((m) => m.name === "sms")?.confirmed).toBe(true);
+    expect(afterRec.mfa.methods.find((m) => m.name === "totp")).toBeUndefined();
     await ctx.close();
   });
 });

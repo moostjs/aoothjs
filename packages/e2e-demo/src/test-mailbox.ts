@@ -130,6 +130,65 @@ export function createTestMailboxController(
     }
 
     /**
+     * Read a user record (mfa.methods + account flags) for Playwright specs
+     * that need to assert post-flow store state — e.g. the MFA-enrolment
+     * coverage tests pin "skip leaves no unconfirmed method" and
+     * "useDifferentMethod cleanup removes the row". Read-only; auth-bypassed
+     * since the whole controller is `@Public()` in test mode only.
+     */
+    @Get("user/:username")
+    async readUser(@Param("username") username: string): Promise<{
+      username: string;
+      mfa: {
+        methods: Array<{ name: string; confirmed: boolean; value: string }>;
+        defaultMethod: string;
+      };
+      account: { active: boolean; locked: boolean; pendingInvitation?: boolean };
+    }> {
+      const user = await userService.getUser(username);
+      return {
+        username: user.username,
+        mfa: {
+          methods: user.mfa.methods.map((m) => ({
+            name: m.name,
+            confirmed: m.confirmed,
+            value: m.value,
+          })),
+          defaultMethod: user.mfa.defaultMethod,
+        },
+        account: {
+          active: user.account.active,
+          locked: user.account.locked,
+          ...(user.account.pendingInvitation !== undefined && {
+            pendingInvitation: user.account.pendingInvitation,
+          }),
+        },
+      };
+    }
+
+    /**
+     * Clear every MFA method on `:username` so an existing seeded user can
+     * stand in as a freshly-unenrolled account for the MFA-enrolment
+     * Playwright coverage. Avoids polluting `seed.ts` with a one-off
+     * `t1_enroll_target` seed user — re-runs reset each test via the existing
+     * `__test/reset` hook and selectively zap MFA in the test body. Returns
+     * the post-clear method count (always 0 on success) so the caller can
+     * assert.
+     */
+    @Post("reset-mfa/:username")
+    async resetMfa(@Param("username") username: string): Promise<{ ok: true; methods: number }> {
+      const user = await userService.getUser(username);
+      // Iterate names rather than calling a bulk-clear (no such helper today).
+      // Snapshot first because `removeMfaMethod` re-reads + filters per call.
+      const names = user.mfa.methods.map((m) => m.name);
+      for (const name of names) {
+        await userService.removeMfaMethod(username, name);
+      }
+      const after = await userService.getUser(username);
+      return { ok: true, methods: after.mfa.methods.length };
+    }
+
+    /**
      * Flip the globalThis flag that drives
      * `DemoInviteWorkflow.duplicateCheck()` into the `'allow'` branch for
      * WF-INVITE-018. Reset to `false` by `__test/reset` (via `reseed()`).

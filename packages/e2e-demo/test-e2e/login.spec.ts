@@ -18,6 +18,7 @@ import {
   fillField,
   getBackupCodes,
   getEmails,
+  getSms,
   readFinishEnvelope,
   resetApp,
   submitForm,
@@ -1147,5 +1148,234 @@ test.describe("LoginWorkflow / variant=full (P2)", () => {
     expect(envelope.finished).toBe(true);
     expect(typeof envelope.data?.accessToken).toBe("string");
     expect((envelope.data?.accessToken ?? "").length).toBeGreaterThan(0);
+  });
+});
+
+// ─── MFA-ENROLLMENT STORIES (PW MFA coverage PR) ────────────────────────────
+//
+// These pin the auto-pick + skip + useDifferentMethod + resend ergonomics
+// (PR7-1/2 + PR9 work) end-to-end through the SPA. The vitest suite
+// (auth-moost T1-T7, e2e-demo WF-LOGIN-12/13) covers the wire layer but
+// can't see SPA-side regressions in hidden-fn button visibility, form-scope
+// re-render after action dispatch, or the action-envelope shape that
+// `clickAction` produces. Each variant uses an existing seeded user
+// (`t1_alice`, who has 0 confirmed MFA methods at fresh seed time) with
+// `POST /__test/reset-mfa/:username` called first as a belt-and-suspenders
+// guard against any cross-test bleed from a prior run that enrolled methods.
+
+test.describe("LoginWorkflow / MFA enrollment (PW MFA coverage)", () => {
+  /**
+   * BRANCH: `prepareMfaSetup` auto-picks when `availableMfaTransports.length === 1`
+   * AND `mfaMode === 'required'` (or 'optional'). The login workflow's
+   * `runMfaEnrollment` Phase-1 wrapper sees `currentMfa` already set and
+   * skips the picker pause, provisions the TOTP secret server-side, and
+   * pauses on `EnrollConfirmForm` directly. A regression that drops the
+   * 1-transport gate (auto-pick branch removed) would surface a redundant
+   * 1-option picker pause; a regression that drops the secret-provisioning
+   * branch would land on `EnrollConfirmForm` with `enrollSecret` empty and
+   * the QR / value would render blank. Mirrors vitest WF-LOGIN-12 but
+   * through the SPA + DI stack.
+   */
+  test("WF-LOGIN-033: required + single transport totp → auto-pick lands on EnrollConfirmForm, code submission issues tokens", async ({
+    page,
+    request,
+  }) => {
+    // Belt-and-suspenders MFA clear — beforeEach reseed already wipes alice's
+    // methods, but if a future seed change adds default MFA to alice the
+    // test should keep working without rewriting the user choice.
+    const cleared = await request.post(`/__test/reset-mfa/${USERS.alice.username}`);
+    expect(cleared.status()).toBe(201);
+
+    await page.goto(wfUrl(LOGIN_WF, "mfa-enroll-required-totp"));
+    await fillField(page, "username", USERS.alice.username);
+    await fillField(page, "password", USERS.alice.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    // Auto-pick proof: the `code` input is EnrollConfirmForm's signature
+    // field; EnrollPickMethodForm's signature is the `method` radio. If
+    // auto-pick is gone, `method` would render and `code` would not.
+    await waitForFormInput(page, "code");
+    await expect(page.locator('[name="method"]')).toHaveCount(0);
+
+    // Server-provisioned TOTP secret is on the unconfirmed mfa.methods row.
+    // Read via /__test/user/:username (the totp-secret endpoint filters on
+    // confirmed=true and would 500 here because the row isn't confirmed yet).
+    const userRes = await request.get(`/__test/user/${USERS.alice.username}`);
+    expect(userRes.status()).toBe(200);
+    const userRec = (await userRes.json()) as {
+      mfa: { methods: Array<{ name: string; confirmed: boolean; value: string }> };
+    };
+    const totpRow = userRec.mfa.methods.find((m) => m.name === "totp");
+    expect(totpRow, "auto-pick provisioned an unconfirmed totp method").toBeDefined();
+    expect(totpRow!.confirmed).toBe(false);
+    expect(totpRow!.value.length).toBeGreaterThan(0);
+
+    await fillField(page, "code", totp(totpRow!.value));
+    await submitForm(page);
+
+    const envelope = (await readFinishEnvelope(page)) as { data?: { accessToken?: string } };
+    expect(typeof envelope.data?.accessToken).toBe("string");
+    expect((envelope.data?.accessToken ?? "").length).toBeGreaterThan(0);
+  });
+
+  /**
+   * BRANCH: `EnrollPickMethodForm.skip` action is hidden unless
+   * `enrollMode === 'optional'`; clicking it short-circuits the enrollment
+   * loop and lets the workflow advance to `issue`. A regression that ungates
+   * skip in required mode would let attackers bypass MFA entirely; a
+   * regression that ignores skip would leave the user looping on the picker.
+   * This pins the optional-mode skip-from-picker path through the SPA.
+   * Mirrors vitest WF-LOGIN-13 but for the picker step (not the confirm step).
+   */
+  test("WF-LOGIN-034: optional + skip from EnrollPickMethodForm → tokens issued, no mfa.methods persisted", async ({
+    page,
+    request,
+  }) => {
+    await request.post(`/__test/reset-mfa/${USERS.alice.username}`);
+
+    await page.goto(wfUrl(LOGIN_WF, "mfa-enroll-optional-full"));
+    await fillField(page, "username", USERS.alice.username);
+    await fillField(page, "password", USERS.alice.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    // Picker pause — `method` is its signature input (radio group).
+    await waitForFormInput(page, "method");
+    // `skip` action button label is "Skip for now" (forms.as line 348).
+    await clickAction(page, "Skip for now");
+
+    const envelope = (await readFinishEnvelope(page)) as { data?: { accessToken?: string } };
+    expect(typeof envelope.data?.accessToken).toBe("string");
+
+    // No method was persisted — skip from the picker shouldn't have called
+    // `addMfaMethod`. A regression that ran Phase 2 before honouring skip
+    // would leave an unconfirmed row here.
+    const userRes = await request.get(`/__test/user/${USERS.alice.username}`);
+    const userRec = (await userRes.json()) as { mfa: { methods: unknown[] } };
+    expect(userRec.mfa.methods).toHaveLength(0);
+  });
+
+  /**
+   * BRANCH: `EnrollAddressForm.useDifferentMethod` (visible when ≥2
+   * transports) dispatches `action: 'useDifferentMethod'` which triggers
+   * `cleanupEnrollment` server-side (deletes the unconfirmed method row
+   * created by the picker pick), clears `ctx.enrollMethod`, and loops the
+   * schema back to `EnrollPickMethodForm`. A regression that skipped the
+   * cleanup would leave a covert unconfirmed sms row in the user record
+   * even after the user backed out; a regression that didn't clear
+   * `ctx.enrollMethod` would loop forever on the address form.
+   */
+  test("WF-LOGIN-035: optional + useDifferentMethod from EnrollAddressForm → returns to picker, unconfirmed row cleaned up", async ({
+    page,
+    request,
+  }) => {
+    await request.post(`/__test/reset-mfa/${USERS.alice.username}`);
+
+    await page.goto(wfUrl(LOGIN_WF, "mfa-enroll-optional-full"));
+    await fillField(page, "username", USERS.alice.username);
+    await fillField(page, "password", USERS.alice.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    // Picker — pick sms (drives EnrollAddressForm next, since sms needs an
+    // address before pincode delivery).
+    await waitForFormInput(page, "method");
+    await fillField(page, "method", "sms");
+    await submitForm(page);
+
+    // EnrollAddressForm — `address` field. Don't fill it; click
+    // `useDifferentMethod` so the cleanup path is exercised before any row
+    // is persisted via Phase 2 (Phase 2 only persists on submit).
+    await waitForFormInput(page, "address");
+    await clickAction(page, "Use a different method");
+
+    // Loop back to picker — signature radio re-appears.
+    await waitForFormInput(page, "method");
+    await expect(page.locator('[name="address"]')).toHaveCount(0);
+
+    // Cleanup proof: no covert sms row exists. (Address form submission was
+    // never made, so this also doubles as proof that the picker pick alone
+    // doesn't materialize a row before address submission — which would be
+    // a different defect-class.)
+    const userRes = await request.get(`/__test/user/${USERS.alice.username}`);
+    const userRec = (await userRes.json()) as {
+      mfa: { methods: Array<{ name: string }> };
+    };
+    expect(userRec.mfa.methods.find((m) => m.name === "sms")).toBeUndefined();
+  });
+
+  /**
+   * BRANCH: `EnrollConfirmForm.resend` action — within the cooldown
+   * (`pincodeResendTimeoutMs`) the workflow throws
+   * `requireInput({ formMessage: 'Please wait Ns…' })` and does NOT call
+   * the outlet a second time; after the cooldown elapses it clears
+   * `ctx.pin` and re-mints a fresh code on the next iteration. A regression
+   * dropping the cooldown gate would let attackers SMS-pump enrollment; a
+   * regression dropping the re-mint would freeze the user. Uses the
+   * `mfa-enroll-optional-fast-resend` variant (1s cooldown) so this fits
+   * in one test tick. Mirrors WF-LOGIN-011 / -012 but for the enrollment
+   * confirm step (those covered the MFA-login pincode form).
+   */
+  test("WF-LOGIN-036: optional + resend on EnrollConfirmForm → cooldown gates, post-cooldown re-mints fresh code", async ({
+    page,
+    request,
+  }) => {
+    await request.post(`/__test/reset-mfa/${USERS.alice.username}`);
+
+    await page.goto(wfUrl(LOGIN_WF, "mfa-enroll-optional-fast-resend"));
+    await fillField(page, "username", USERS.alice.username);
+    await fillField(page, "password", USERS.alice.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    // Picker → pick sms.
+    await waitForFormInput(page, "method");
+    await fillField(page, "method", "sms");
+    await submitForm(page);
+
+    // Address form → submit phone.
+    await waitForFormInput(page, "address");
+    const phone = "+15555550888";
+    await fillField(page, "address", phone);
+    await submitForm(page);
+
+    // EnrollConfirmForm — `code` field + first sms already sent.
+    await waitForFormInput(page, "code");
+    const first = await waitForSms(
+      request,
+      (e) => e.kind === "login.pincode" && (e.recipient ?? "").startsWith(phone),
+    );
+    expect(first.code).toBeTruthy();
+    const beforeCount = (await getSms(request)).filter(
+      (e) => e.kind === "login.pincode" && (e.recipient ?? "").startsWith(phone),
+    ).length;
+
+    // Immediate resend click — within the 1s cooldown the workflow throws
+    // `requireInput({ formMessage: 'Please wait Ns…' })`. No new sms emitted.
+    await clickAction(page, "Resend code");
+    await expect(page.getByText(/wait \d+s/i)).toBeVisible();
+    const afterCooldownReject = (await getSms(request)).filter(
+      (e) => e.kind === "login.pincode" && (e.recipient ?? "").startsWith(phone),
+    ).length;
+    expect(afterCooldownReject).toBe(beforeCount);
+
+    // Wait past the 1s cooldown and resend — Phase 2 re-mints (clears
+    // ctx.pin → next iteration's `pincode-send-enroll` step fires).
+    await page.waitForTimeout(1200);
+    await clickAction(page, "Resend code");
+
+    await expect
+      .poll(
+        async () =>
+          (await getSms(request)).filter(
+            (e) => e.kind === "login.pincode" && (e.recipient ?? "").startsWith(phone),
+          ).length,
+        { timeout: 5000 },
+      )
+      .toBeGreaterThan(beforeCount);
+
+    const after = (await getSms(request)).filter(
+      (e) => e.kind === "login.pincode" && (e.recipient ?? "").startsWith(phone),
+    );
+    const last = after[after.length - 1];
+    expect(last?.code).toBeTruthy();
+    expect(last?.code).not.toBe(first.code);
   });
 });

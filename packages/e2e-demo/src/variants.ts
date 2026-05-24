@@ -64,6 +64,20 @@ export interface LoginVariant {
 }
 
 /**
+ * Invite variant entry — same `{ opts?, mfaCtx? }` shape as `LoginVariant`.
+ * Pre-PR9 invite variants were opts-only (`Partial<InviteWorkflowOpts>`); the
+ * MFA enrolment variants added in the PW MFA coverage PR need the same setter
+ * override seam login has, so the shape was lifted to match. Existing variant
+ * entries wrap their `Partial<InviteWorkflowOpts>` under `opts` — the consumer
+ * (`DemoInviteWorkflow` ctor + `inviteSetupMfa` override) reads them through
+ * this discriminated shape.
+ */
+export interface InviteVariant {
+  opts?: Partial<InviteWorkflowOpts>;
+  mfaCtx?: InviteMfaCtxOverrides;
+}
+
+/**
  * Login profiles — keys mirror `USER_STORIES.md` §3 variants L-A…L-J plus the
  * dedicated `redirect-home` row used by WF-LOGIN-031.
  */
@@ -167,6 +181,36 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
   "concurrency-reject": {
     opts: { sessionPolicy: { concurrencyLimit: { max: 1, onLimit: "reject" } } },
   },
+  // ── MFA-enrollment variants (PW MFA coverage PR) ──
+  //
+  // These pin the auto-pick + skip + useDifferentMethod + resend ergonomics
+  // shipped by PR7-1/2 + PR9 end-to-end through the SPA. The vitest suite
+  // (auth-moost T1-T7, e2e-demo WF-LOGIN-12/13) covers the wire layer but
+  // can't see SPA-side regressions (hidden-fn button visibility, form-scope
+  // re-render after action dispatch, action-envelope shape from clickAction).
+  //
+  // `required` + single transport → `prepareMfaSetup` auto-picks and the
+  // login workflow skips EnrollPickMethodForm straight to EnrollConfirmForm
+  // (WF-LOGIN-033). The 1-transport gate is what enables auto-pick — drop it
+  // or widen to 2+ transports and the picker pause comes back.
+  "mfa-enroll-required-totp": {
+    mfaCtx: { mfaMode: "required", availableMfaTransports: ["totp"] },
+  },
+  // `optional` + full transport menu → EnrollPickMethodForm renders with
+  // `skip` + per-method picks; EnrollAddressForm renders `useDifferentMethod`
+  // (≥2 transports); EnrollConfirmForm renders `resend` + `skip` +
+  // `useDifferentMethod`. Drives WF-LOGIN-034 (skip) + WF-LOGIN-035
+  // (useDifferentMethod cleanup).
+  "mfa-enroll-optional-full": {
+    mfaCtx: { mfaMode: "optional", availableMfaTransports: ["sms", "email", "totp"] },
+  },
+  // Same as above but with a 1s pincode-resend cooldown so the
+  // resend-throttled / resend-after-cooldown branches (WF-LOGIN-036) run
+  // inside one test tick. Mirrors `mfa-fast-resend` for the enrolment side.
+  "mfa-enroll-optional-fast-resend": {
+    opts: { mfa: { pincodeResendTimeoutMs: 1000 } },
+    mfaCtx: { mfaMode: "optional", availableMfaTransports: ["sms", "email", "totp"] },
+  },
 };
 
 /**
@@ -212,43 +256,69 @@ export const RECOVERY_VARIANTS: Record<string, Partial<RecoveryWorkflowOpts>> = 
 };
 
 /**
- * Invite profiles — keys mirror `USER_STORIES.md` §5 variants I-A…I-G.
+ * Invite profiles — keys mirror `USER_STORIES.md` §5 variants I-A…I-G. Each
+ * entry uses the `{ opts?, mfaCtx? }` shape so MFA-enrolment variants can
+ * push static ctx through `inviteSetupMfa` (mirroring login). Entries that
+ * only override opts wrap their payload under `opts:` for shape consistency.
  */
-export const INVITE_VARIANTS: Record<string, Partial<InviteWorkflowOpts>> = {
+export const INVITE_VARIANTS: Record<string, InviteVariant> = {
   "email-no-roles": {
-    adminForm: { collectRoles: false },
-    send: { mode: "email" },
+    opts: {
+      adminForm: { collectRoles: false },
+      send: { mode: "email" },
+    },
   },
   "roles-profile": {
-    adminForm: { collectRoles: true },
-    send: { mode: "email" },
+    opts: {
+      adminForm: { collectRoles: true },
+      send: { mode: "email" },
+    },
   },
   "shareable-link": {
-    send: { mode: "shareableLink" },
+    opts: { send: { mode: "shareableLink" } },
   },
   "choice-freshlogin": {
-    send: { mode: "choice" },
-    accept: { freshLoginRequired: true },
+    opts: {
+      send: { mode: "choice" },
+      accept: { freshLoginRequired: true },
+    },
   },
   "audit-enabled": {
-    audit: { enabled: true },
+    opts: { audit: { enabled: true } },
   },
   "cancellation-disabled": {
-    cancellation: { allowed: false },
+    opts: { cancellation: { allowed: false } },
   },
   "short-ttl-confirmation": {
-    send: { tokenTtlMs: 1000 },
-    accept: { showConfirmation: true },
+    opts: {
+      send: { tokenTtlMs: 1000 },
+      accept: { showConfirmation: true },
+    },
   },
   // Surfaces the confirmation message in the finish envelope (WF-INVITE-020).
   // Demo's other variants leave the message blank.
   "confirmation-message": {
-    accept: { showConfirmation: true, confirmationMessage: "Your account has been created." },
+    opts: {
+      accept: { showConfirmation: true, confirmationMessage: "Your account has been created." },
+    },
   },
   // Enables the secondary 'Request a new invite' button on the
   // idempotent-redirect step (WF-INVITE-010).
   "idempotent-redirect": {
-    accept: { alreadyAcceptedRedirectUrl: "/login" },
+    opts: { accept: { alreadyAcceptedRedirectUrl: "/login" } },
+  },
+  // ── MFA-enrollment invite variants (PW MFA coverage PR) ──
+  //
+  // `optional` + full transport menu on the invite tail → after the invitee
+  // sets their password, the workflow pauses on EnrollPickMethodForm.
+  // Drives WF-INVITE-018 (skip from EnrollPickMethodForm) and WF-INVITE-019
+  // (useDifferentMethod from EnrollConfirmForm after picking totp).
+  "invite-mfa-optional-full": {
+    opts: {
+      adminForm: { collectRoles: false },
+      send: { mode: "email" },
+    },
+    mfaCtx: { mfaMode: "optional", availableMfaTransports: ["sms", "email", "totp"] },
   },
 };
 
