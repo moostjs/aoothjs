@@ -20,9 +20,12 @@ import { mergeLoginOpts } from "../workflows/login.workflow.options";
 describe("mergeLoginOpts — defaults survive partial input", () => {
   it("undefined input → every nested group is populated with its full defaults", () => {
     const opts = mergeLoginOpts();
-    expect(opts.mfa.mode).toBe("optional");
-    expect(opts.mfa.transports).toEqual(["sms", "email", "totp"]);
+    // PR9: `mfa.mode` + `mfa.transports` moved off opts onto the
+    // single `prepareMfaSetup` step setter (default ctx values
+    // covered by the workflow-level integration tests). The remaining
+    // `mfa.*` opts fields stay defaulted here.
     expect(opts.mfa.pincodeLength).toBe(6);
+    expect(opts.mfa.backupCodes).toBe(true);
     expect(opts.alternateCredentials.forgotPassword).toBe(true);
     expect(opts.alternateCredentials.recoveryUrl).toBe("/recover");
     expect(opts.guards.passwordInitial).toBe(true);
@@ -32,15 +35,16 @@ describe("mergeLoginOpts — defaults survive partial input", () => {
     expect(opts.forms.profileComplete).toBeTruthy();
   });
 
-  it("partial mfa override (mode:'disabled') keeps mfa.transports default", () => {
-    // Regression: a naive merge like `mfa: opts.mfa ?? defaults` would drop
-    // `transports`, breaking the boot-time validator that gates on
-    // `mfa.transports.length > 0` (only enforced when mode !== 'disabled').
-    const opts = mergeLoginOpts({ mfa: { mode: "disabled" } });
-    expect(opts.mfa.mode).toBe("disabled");
-    expect(opts.mfa.transports).toEqual(["sms", "email", "totp"]);
-    expect(opts.mfa.pincodeLength).toBe(6);
+  it("partial mfa override (pincodeLength) keeps sibling mfa defaults", () => {
+    // Pins partial-merge for the remaining `mfa.*` group: a naive
+    // `mfa: opts.mfa ?? defaults` would drop sibling defaults like
+    // `backupCodes` and `pincodeResendTimeoutMs`, silently disabling
+    // backup-code login (default-on) for any consumer who tuned only the
+    // pincode length.
+    const opts = mergeLoginOpts({ mfa: { pincodeLength: 8 } });
+    expect(opts.mfa.pincodeLength).toBe(8);
     expect(opts.mfa.backupCodes).toBe(true);
+    expect(opts.mfa.pincodeResendTimeoutMs).toBeGreaterThan(0);
   });
 
   it("partial alternateCredentials override keeps sibling defaults", () => {
@@ -63,11 +67,11 @@ describe("mergeLoginOpts — defaults survive partial input", () => {
     // `{ ...input, ...defaults }` and would always win — disabling consumer
     // configuration.
     const opts = mergeLoginOpts({
-      mfa: { transports: ["totp"], pincodeLength: 8 },
+      mfa: { pincodeLength: 8, backupCodes: false },
       finalize: { auditLogin: false, notifyNewDevice: true },
     });
-    expect(opts.mfa.transports).toEqual(["totp"]);
     expect(opts.mfa.pincodeLength).toBe(8);
+    expect(opts.mfa.backupCodes).toBe(false);
     expect(opts.finalize.auditLogin).toBe(false);
     expect(opts.finalize.notifyNewDevice).toBe(true);
   });

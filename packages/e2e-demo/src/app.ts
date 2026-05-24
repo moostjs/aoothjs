@@ -21,6 +21,7 @@ import {
   DEFAULT_AUTH_WORKFLOWS,
   type DeliverPayload,
   type DuplicateAction,
+  type InviteWfCtx,
   InviteWorkflow,
   type InviteWorkflowOpts,
   type LoginWfCtx,
@@ -33,7 +34,7 @@ import {
   WfTrigger,
   WfTriggerProvider,
 } from "@aooth/auth-moost";
-import { HandleStateStrategy } from "@moostjs/event-wf";
+import { HandleStateStrategy, Step, WorkflowParam } from "@moostjs/event-wf";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { type UserCredentials, UserService } from "@aooth/user";
 import { MoostHttp, Post } from "@moostjs/event-http";
@@ -68,7 +69,14 @@ import { DemoUser, InviteAcceptProfileForm } from "./models/user.as";
 import { allRoles, type UserAttrs } from "./roles";
 import { seedAll } from "./seed";
 import { createTestMailboxController } from "./test-mailbox";
-import { INVITE_VARIANTS, LOGIN_VARIANTS, pickVariant, RECOVERY_VARIANTS } from "./variants";
+import {
+  INVITE_VARIANTS,
+  type InviteMfaCtxOverrides,
+  LOGIN_VARIANTS,
+  type LoginMfaCtxOverrides,
+  pickVariant,
+  RECOVERY_VARIANTS,
+} from "./variants";
 import { readVariantHeader } from "./variants-server";
 import { createWfStore } from "./wf-store";
 import { makeHandoverWorkflow } from "./workflows/handover.workflow";
@@ -91,10 +99,11 @@ export interface BuildAppOptions {
   authEndpointsEnabled?: boolean;
   /**
    * E2E coverage hook — per-workflow option overrides deep-merged into the
-   * demo defaults (one nested group at a time, e.g. `{ mfa: { mode: 'disabled' } }`
-   * replaces only `mfa.mode` and preserves `mfa.transports`). Used by the
-   * workflow-options e2e specs to flip a single flag without forking the
-   * whole demo wiring.
+   * demo defaults (one nested group at a time, e.g. `{ mfa: { backupCodes: false } }`
+   * replaces only `mfa.backupCodes` and preserves the other `mfa.*` keys).
+   * Used by the workflow-options e2e specs to flip a single flag without
+   * forking the whole demo wiring. For MFA mode/transports (stripped from
+   * opts in PR9) use `loginMfaCtx` below.
    */
   loginOpts?: LoginWorkflowOpts;
   recoveryOpts?: RecoveryWorkflowOpts;
@@ -106,6 +115,24 @@ export interface BuildAppOptions {
    * `inviteOpts` is opts-only, this knob swaps the whole class.
    */
   inviteWorkflowClass?: new (...args: never[]) => unknown;
+  /**
+   * Replace the default `DemoLoginWorkflow` controller with a consumer-
+   * supplied class. Mirrors `inviteWorkflowClass`.
+   */
+  loginWorkflowClass?: new (...args: never[]) => unknown;
+  /**
+   * Static MFA ctx overrides injected via the single `prepareMfaSetup` step
+   * setter. PR9 stripped the corresponding opts shape
+   * (`mfa.mode` / `mfa.transports`); tests that previously poked those keys
+   * pass this object instead. `buildApp` wraps the demo (or
+   * `loginWorkflowClass` if supplied) with a tiny subclass that forces these
+   * values into ctx and falls through to the base setter for any field not
+   * supplied. Variant-driven mfa overrides (see `LOGIN_VARIANTS`) are applied
+   * by `DemoLoginWorkflow` itself; this knob is the test-time escape hatch.
+   */
+  loginMfaCtx?: LoginMfaCtxOverrides;
+  /** Invite-side counterpart of `loginMfaCtx`. */
+  inviteMfaCtx?: InviteMfaCtxOverrides;
 }
 
 // Test-mode mailbox buffers anchored on `globalThis` so they survive vite's
@@ -284,18 +311,16 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // class's `@Workflow` / `@WorkflowSchema` / `@Step` metadata; the
   // re-declared ctor is required because TS emits fresh design-paramtypes per
   // class.
+  //
+  // MFA shape note: `mfa.mode` / `mfa.transports` were stripped from
+  // `LoginWorkflowOpts` in PR9. The demo's defaults (`mfaMode: 'disabled'`,
+  // 3-transport availability) now live on the single `prepareMfaSetup`
+  // override below. Variants that previously poked those opts keys carry
+  // `mfaCtx` payloads consumed by the same override.
   const demoLoginOpts: LoginWorkflowOpts = mergeWfOpts(
     {
       // SMS is exercised via `demoSmsSender` which console-logs the code — fine for the UI harness.
-      // Default `mfa.mode: 'disabled'` — most seeded users have no MFA enrolled
-      // and the e2e harness's `loginAs` helper expects to finish login without
-      // a prompt. Variants override to `'optional'` / `'required'` to exercise
-      // the enrollment + verification flows.
-      mfa: {
-        mode: "disabled",
-        transports: ["email", "sms", "totp"],
-        backupCodes: true,
-      },
+      mfa: { backupCodes: true },
       alternateCredentials: { forgotPassword: true, signup: true },
       guards: { passwordInitial: true },
     },
@@ -308,13 +333,42 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     constructor(users: UserService, authCred: AuthCredential) {
       const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
       super(
-        variant ? mergeWfOpts(demoLoginOpts, variant as LoginWorkflowOpts) : demoLoginOpts,
+        variant?.opts
+          ? mergeWfOpts(demoLoginOpts, variant.opts as LoginWorkflowOpts)
+          : demoLoginOpts,
         users,
         authCred,
       );
     }
     protected override deliver(payload: DeliverPayload) {
       return forwardDeliver(payload);
+    }
+    // ── Variant-driven mfa-ctx setter override ──
+    // Reads the active variant from the request header; if a variant is active
+    // and supplies `mfaCtx.<field>`, force it onto ctx (after the base setter
+    // ran). Otherwise the demo's default takes over: `mfaMode: 'disabled'`
+    // (most seeded users have no MFA enrolled and the e2e harness's `loginAs`
+    // helper expects to finish login without a prompt). When a variant IS
+    // active but its `mfaCtx` is empty, the base setter's defaults stand —
+    // we only force `disabled` when there is no variant at all.
+    @Step("prepareMfaSetup")
+    @Public()
+    override prepareMfaSetup(
+      @WorkflowParam("context") ctx: LoginWfCtx,
+    ): undefined | Promise<undefined> {
+      const baseResult = super.prepareMfaSetup(ctx);
+      const apply = (): undefined => {
+        const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
+        const v = variant?.mfaCtx;
+        if (v?.mfaMode !== undefined) ctx.mfaMode = v.mfaMode;
+        else if (!variant) ctx.mfaMode = "disabled";
+        if (v?.availableMfaTransports !== undefined) {
+          ctx.availableMfaTransports = [...v.availableMfaTransports];
+        }
+        if (v?.currentMfa !== undefined) ctx.currentMfa = v.currentMfa;
+        return undefined;
+      };
+      return baseResult instanceof Promise ? baseResult.then(apply) : apply();
     }
     // The credential store is JWT-based (stateless) so the demo can't query
     // "how many sessions for user X" from `authCredential`. The seed counts
@@ -419,6 +473,13 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
 
   // Phase-4 reshape: `InviteWorkflow` is also configured via a consumer
   // subclass that overrides `protected` methods — matching login + recovery.
+  //
+  // MFA shape note: `mfa.mode` / `mfa.transports` were stripped from
+  // `InviteWorkflowOpts` in PR9. The demo's default (`mfaMode: 'disabled'` —
+  // most invite e2e tests assert the auto-login response payload after
+  // password-set, pre-dating the optional/required enrolment loops) lives on
+  // the single `inviteSetupMfa` override below; variants exercising enrolment
+  // override via `opts.inviteMfaCtx` / `withInviteMfaCtx`.
   const demoInviteOpts: InviteWorkflowOpts = mergeWfOpts(
     {
       send: { tokenTtlMs: env.INVITE_TTL_MS },
@@ -426,11 +487,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       // the BIG 3.3 confirmation pause. Off here so the demo matches today's
       // behavior; production should keep the default ON.
       accept: { showConfirmation: false },
-      // Default `mfa.mode: 'disabled'` — the demo's invite e2e tests assert the
-      // auto-login response after password-set. Library default is now
-      // `'optional'` (would insert an enrollment pause with a skip action).
-      // Variants override to exercise the enrollment branches.
-      mfa: { mode: "disabled" },
     },
     opts.inviteOpts,
   );
@@ -456,6 +512,25 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       // future override drives a manual send. Reuse the shared forwarder for
       // parity with login/recovery.
       return forwardDeliver(payload);
+    }
+    // Default `mfaMode: 'disabled'` — pre-PR9 lived under `opts.mfa.mode`.
+    // No invite variant currently flips this through the variant header (the
+    // few e2e tests that need enrolment pass `inviteMfaCtx` directly via
+    // `buildTestApp`, which wraps this class with `withInviteMfaCtx`). The
+    // override below is just the demo's static default; if a future variant
+    // needs per-request mfa shape, follow the login pattern above and read
+    // the variant header here.
+    @Step("inviteSetupMfa")
+    @Public()
+    override inviteSetupMfa(
+      @WorkflowParam("context") ctx: InviteWfCtx,
+    ): undefined | Promise<undefined> {
+      const baseResult = super.inviteSetupMfa(ctx);
+      const apply = (): undefined => {
+        ctx.mfaMode = "disabled";
+        return undefined;
+      };
+      return baseResult instanceof Promise ? baseResult.then(apply) : apply();
     }
     // Demonstrates the `prepareUser` hook: populate the consumer-required
     // `tenantId` field before `userService.createUser` runs.
@@ -564,10 +639,29 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
 
   const wfEnabled = opts.workflowsEnabled ?? {};
   const wfControllers: Array<new (...args: never[]) => unknown> = [];
-  if (wfEnabled.login !== false) wfControllers.push(DemoLoginWorkflow);
+  if (wfEnabled.login !== false) {
+    // Resolution order: (1) consumer `loginWorkflowClass` swaps the demo
+    // entirely; (2) `loginMfaCtx` then wraps whichever class is active with
+    // the static-ctx setter overrides — so tests can pass either knob alone
+    // or both together (e.g. custom subclass + injected mfa ctx).
+    const loginBase = (opts.loginWorkflowClass ?? DemoLoginWorkflow) as unknown as new (
+      ...args: never[]
+    ) => LoginWorkflow;
+    const LoginCtor = opts.loginMfaCtx
+      ? wrapWithLoginMfaCtx(loginBase, opts.loginMfaCtx)
+      : loginBase;
+    wfControllers.push(LoginCtor as unknown as new (...args: never[]) => unknown);
+  }
   if (wfEnabled.recovery !== false) wfControllers.push(DemoRecoveryWorkflow);
-  if (wfEnabled.invite !== false)
-    wfControllers.push(opts.inviteWorkflowClass ?? DemoInviteWorkflow);
+  if (wfEnabled.invite !== false) {
+    const inviteBase = (opts.inviteWorkflowClass ?? DemoInviteWorkflow) as unknown as new (
+      ...args: never[]
+    ) => InviteWorkflow;
+    const InviteCtor = opts.inviteMfaCtx
+      ? wrapWithInviteMfaCtx(inviteBase, opts.inviteMfaCtx)
+      : inviteBase;
+    wfControllers.push(InviteCtor as unknown as new (...args: never[]) => unknown);
+  }
   if (wfControllers.length > 0) {
     app.registerControllers(...wfControllers);
   }
@@ -717,4 +811,100 @@ function buildAppControllers(appDb: AppDb): ReadonlyArray<new (...args: never[])
 function resolveListeningPort(moostHttp: MoostHttp, fallback: number): number {
   const addr = moostHttp.getHttpApp().getServer()?.address() as AddressInfo | string | null;
   return addr && typeof addr === "object" && "port" in addr ? addr.port : fallback;
+}
+
+// ── Static-ctx setter override wrappers ──────────────────────────────────────
+//
+// PR9 stripped `mfa.mode` / `mfa.transports` from `LoginWorkflowOpts` and
+// `InviteWorkflowOpts`. The values now live on ctx (populated by the single
+// `prepareMfaSetup` / `inviteSetupMfa` `@Step` setter per workflow). Consumers
+// that need to inject static values without declaring a full subclass wrap
+// their target class with the helpers below; `buildApp` calls them when
+// `opts.loginMfaCtx` / `opts.inviteMfaCtx` is supplied. The wrapper calls
+// `super.X(ctx)` first and then writes ONLY the fields the caller supplied,
+// so test-supplied values win over the base setter's defaults and unsupplied
+// fields keep the wrapped base class's behaviour.
+
+// `W extends new (...args: never[]) => LoginWorkflow` (NOT `typeof LoginWorkflow`)
+// because the demo subclass has the moost FOR_EVENT 2-arg ctor signature
+// `(users, auth)` while the base class is 3-arg `(opts, users, auth)`. The
+// generic widens to "any LoginWorkflow-shaped class" so both fit.
+function wrapWithLoginMfaCtx<W extends new (...args: never[]) => LoginWorkflow>(
+  Base: W,
+  ctx: LoginMfaCtxOverrides,
+): W {
+  @Inherit()
+  @Injectable("FOR_EVENT")
+  @Controller()
+  class WithLoginCtx extends (Base as unknown as new (
+    users: UserService,
+    auth: AuthCredential,
+  ) => LoginWorkflow) {
+    // The forwarding ctor is required: moost reads `design:paramtypes`
+    // metadata off the subclass to resolve DI, and TS only emits the
+    // metadata when the ctor is explicit. Without it moost can't construct
+    // the wrapper.
+    // eslint-disable-next-line no-useless-constructor
+    constructor(users: UserService, auth: AuthCredential) {
+      super(users, auth);
+    }
+    @Step("prepareMfaSetup")
+    @Public()
+    override prepareMfaSetup(
+      @WorkflowParam("context") c: LoginWfCtx,
+    ): undefined | Promise<undefined> {
+      const baseResult = super.prepareMfaSetup(c);
+      const apply = (): undefined => {
+        if (ctx.mfaMode !== undefined) c.mfaMode = ctx.mfaMode;
+        if (ctx.availableMfaTransports !== undefined) {
+          c.availableMfaTransports = [...ctx.availableMfaTransports];
+        }
+        if (ctx.currentMfa !== undefined) c.currentMfa = ctx.currentMfa;
+        if (!c.currentMfa && c.availableMfaTransports?.length === 1) {
+          c.currentMfa = c.availableMfaTransports[0];
+        }
+        return undefined;
+      };
+      return baseResult instanceof Promise ? baseResult.then(apply) : apply();
+    }
+  }
+  return WithLoginCtx as unknown as W;
+}
+
+function wrapWithInviteMfaCtx<W extends new (...args: never[]) => InviteWorkflow>(
+  Base: W,
+  ctx: InviteMfaCtxOverrides,
+): W {
+  @Inherit()
+  @Injectable("FOR_EVENT")
+  @Controller()
+  class WithInviteCtx extends (Base as unknown as new (
+    users: UserService,
+    auth: AuthCredential,
+  ) => InviteWorkflow) {
+    // eslint-disable-next-line no-useless-constructor -- see wrapWithLoginMfaCtx for why
+    constructor(users: UserService, auth: AuthCredential) {
+      super(users, auth);
+    }
+    @Step("inviteSetupMfa")
+    @Public()
+    override inviteSetupMfa(
+      @WorkflowParam("context") c: InviteWfCtx,
+    ): undefined | Promise<undefined> {
+      const baseResult = super.inviteSetupMfa(c);
+      const apply = (): undefined => {
+        if (ctx.mfaMode !== undefined) c.mfaMode = ctx.mfaMode;
+        if (ctx.availableMfaTransports !== undefined) {
+          c.availableMfaTransports = [...ctx.availableMfaTransports];
+        }
+        if (ctx.enrollMethod !== undefined) c.enrollMethod = ctx.enrollMethod;
+        if (!c.enrollMethod && c.availableMfaTransports?.length === 1) {
+          c.enrollMethod = c.availableMfaTransports[0];
+        }
+        return undefined;
+      };
+      return baseResult instanceof Promise ? baseResult.then(apply) : apply();
+    }
+  }
+  return WithInviteCtx as unknown as W;
 }

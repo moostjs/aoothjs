@@ -23,7 +23,9 @@ import {
   createHttpOutlet,
   HandleStateStrategy,
   MoostWf,
+  Step,
   WfStateStoreMemory,
+  WorkflowParam,
   type WfOutletTriggerDeps,
   type WfStateStrategy,
 } from "@moostjs/event-wf";
@@ -54,10 +56,13 @@ import { DEFAULT_RECOVERY_TOKEN_TTL_MS } from "../workflows/recovery.workflow.op
 import {
   type DuplicateAction,
   InviteWorkflow,
+  type InviteWfCtx,
   type InviteWorkflowOpts,
   type PreparedUserInput,
   LoginWorkflow,
+  type LoginWfCtx,
   type LoginWorkflowOpts,
+  type MfaTransport,
   RecoveryWorkflow,
   type RecoveryWorkflowOpts,
 } from "../workflows/index";
@@ -364,12 +369,14 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
   //   - `send.tokenTtlMs` — fast magic-link expiry tweak (overridable).
   //   - `accept.showConfirmation: false` — most tests assert the auto-login
   //     response shape directly, pre-dating the BIG 3.3 confirmation pause.
-  //   - `mfa.mode: 'disabled'` — preserves the prior "no MFA prompt unless
-  //     test opts in" behaviour through the 3-state MFA opts shift. The
-  //     library default flipped from `enabled: true, enrollRequired: false`
-  //     (silent skip when 0 methods) to `mode: 'optional'` (prompts with a
-  //     skip action when 0 methods). Tests that exercise enrollment override
-  //     by passing `mfa: { mode: 'required' }` (or `'optional'`).
+  //   - `mfaMode: 'disabled'` via `withInviteMfaCtx` — preserves the prior
+  //     "no MFA prompt unless test opts in" behaviour. PR9 moved this from
+  //     `opts.mfa.mode` (deleted) to a `@Step('inviteSetupMfa')` setter
+  //     populating `ctx.mfaMode`; the helper builds a tiny override
+  //     subclass that statically sets `ctx.mfaMode = 'disabled'` after the
+  //     base setter runs. When a consumer supplies their own
+  //     `inviteWorkflowClass` we trust them and skip the wrap (the
+  //     consumer's class is the source of truth).
   // User-supplied `opts.inviteOpts` is shallow-merged per-group so per-test
   // overrides survive while unspecified groups inherit the harness defaults.
   const userInviteOpts = opts.inviteOpts ?? {};
@@ -377,7 +384,6 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     ...userInviteOpts,
     send: { tokenTtlMs: inviteTokenTtlMs, ...userInviteOpts.send },
     accept: { showConfirmation: false, ...userInviteOpts.accept },
-    mfa: { mode: "disabled", ...userInviteOpts.mfa },
   };
   // Layer the per-test `prepareUser` shortcut onto `inviteHooks.prepareUser`
   // so existing tests that only need to populate extras don't have to
@@ -386,8 +392,11 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
   if (opts.prepareUser && !inviteHooks.prepareUser) {
     inviteHooks.prepareUser = opts.prepareUser;
   }
+  const inviteBase = opts.inviteWorkflowClass
+    ? opts.inviteWorkflowClass
+    : withInviteMfaCtx(InviteWorkflow, { mfaMode: "disabled" });
   const InviteCtor = buildHarnessInviteClass({
-    base: opts.inviteWorkflowClass ?? InviteWorkflow,
+    base: inviteBase,
     opts: inviteOpts,
     emails,
     sms,
@@ -870,4 +879,131 @@ function buildHarnessInviteClass(
     }
   }
   return HarnessInvite;
+}
+
+// ── Static-ctx setter overrides ──────────────────────────────────────────────
+//
+// PR9 stripped `mfa.mode` / `mfa.transports` from `LoginWorkflowOpts` and
+// `InviteWorkflowOpts`. Those values are now produced by ONE atomic `@Step`
+// setter per workflow — `prepareMfaSetup` on `LoginWorkflow`, `inviteSetupMfa`
+// on `InviteWorkflow` — whose default bodies hardcode the library defaults.
+// Consumers (and tests) override the whole step to inject different values.
+//
+// The two helpers below generate a tiny override subclass for the common
+// "set static MFA ctx values" case so existing tests don't have to declare a
+// full subclass each. The override calls `super.X(ctx)` first and then writes
+// only the fields the test supplied — so test-supplied values win over the
+// base setter's defaults (currentMfa / enrollMethod auto-pick) while
+// unsupplied fields keep the wrapped base class's behaviour.
+
+export interface WithLoginMfaCtxOverrides {
+  mfaMode?: "required" | "optional" | "disabled";
+  availableMfaTransports?: MfaTransport[];
+  currentMfa?: MfaTransport;
+}
+
+/**
+ * Wrap a `LoginWorkflow` subclass with a tiny sub-subclass that statically
+ * sets the supplied MFA ctx fields. Useful for tests that previously did
+ * `loginOpts: { mfa: { mode: 'required' } }` — that opts shape was stripped
+ * in PR9; the value now lives on ctx, populated by the `prepareMfaSetup` step.
+ *
+ * Stacks cleanly on top of consumer subclasses:
+ *   loginWorkflowClass: withLoginMfaCtx(MyLoginSubclass, { mfaMode: 'disabled' })
+ */
+export function withLoginMfaCtx<W extends typeof LoginWorkflow>(
+  Base: W,
+  ctx: WithLoginMfaCtxOverrides,
+): W {
+  @Inherit()
+  @Injectable("FOR_EVENT")
+  @Controller()
+  class WithLoginCtx extends (Base as unknown as new (
+    opts: LoginWorkflowOpts,
+    users: UserService,
+    auth: AuthCredential,
+  ) => LoginWorkflow) {
+    constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
+      super(opts, users, auth);
+    }
+
+    @Step("prepareMfaSetup")
+    @Public()
+    override prepareMfaSetup(
+      @WorkflowParam("context") c: LoginWfCtx,
+    ): undefined | Promise<undefined> {
+      const baseResult = super.prepareMfaSetup(c);
+      const apply = (): undefined => {
+        if (ctx.mfaMode !== undefined) c.mfaMode = ctx.mfaMode;
+        if (ctx.availableMfaTransports !== undefined) {
+          c.availableMfaTransports = [...ctx.availableMfaTransports];
+        }
+        if (ctx.currentMfa !== undefined) c.currentMfa = ctx.currentMfa;
+        // Re-run single-transport auto-pick AFTER overrides so a test that
+        // shrinks availableMfaTransports to one transport still gets
+        // currentMfa auto-set (the base setter's auto-pick ran with the
+        // pre-override default 3-transport list).
+        if (!c.currentMfa && c.availableMfaTransports?.length === 1) {
+          c.currentMfa = c.availableMfaTransports[0];
+        }
+        return undefined;
+      };
+      return baseResult instanceof Promise ? baseResult.then(apply) : apply();
+    }
+  }
+  return WithLoginCtx as unknown as W;
+}
+
+export interface WithInviteMfaCtxOverrides {
+  mfaMode?: "required" | "optional" | "disabled";
+  availableMfaTransports?: MfaTransport[];
+  enrollMethod?: MfaTransport;
+}
+
+/**
+ * Invite-side counterpart of `withLoginMfaCtx`. Overrides the single
+ * `inviteSetupMfa` setter step, writing whichever fields are supplied AFTER
+ * `super.inviteSetupMfa(ctx)` runs so the test-supplied values win.
+ */
+export function withInviteMfaCtx<W extends typeof InviteWorkflow>(
+  Base: W,
+  ctx: WithInviteMfaCtxOverrides,
+): W {
+  @Inherit()
+  @Injectable("FOR_EVENT")
+  @Controller()
+  class WithInviteCtx extends (Base as unknown as new (
+    opts: InviteWorkflowOpts,
+    users: UserService,
+    auth: AuthCredential,
+  ) => InviteWorkflow) {
+    constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
+      super(opts, users, auth);
+    }
+
+    @Step("inviteSetupMfa")
+    @Public()
+    override inviteSetupMfa(
+      @WorkflowParam("context") c: InviteWfCtx,
+    ): undefined | Promise<undefined> {
+      const baseResult = super.inviteSetupMfa(c);
+      const apply = (): undefined => {
+        if (ctx.mfaMode !== undefined) c.mfaMode = ctx.mfaMode;
+        if (ctx.availableMfaTransports !== undefined) {
+          c.availableMfaTransports = [...ctx.availableMfaTransports];
+        }
+        if (ctx.enrollMethod !== undefined) c.enrollMethod = ctx.enrollMethod;
+        // Re-run the single-transport auto-pick AFTER overrides so a test
+        // that shrinks availableMfaTransports to `['totp']` still gets
+        // enrollMethod auto-set (mirrors the base setter's logic). Without
+        // this, the schema while-loop has nothing to fire and hangs.
+        if (!c.enrollMethod && c.availableMfaTransports?.length === 1) {
+          c.enrollMethod = c.availableMfaTransports[0];
+        }
+        return undefined;
+      };
+      return baseResult instanceof Promise ? baseResult.then(apply) : apply();
+    }
+  }
+  return WithInviteCtx as unknown as W;
 }

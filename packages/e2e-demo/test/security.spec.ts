@@ -549,7 +549,7 @@ describe("SEC — lockout / brute-force", () => {
     await app.close();
     app = await buildTestApp({
       envOverrides: { LOCKOUT_THRESHOLD: 3, LOCKOUT_DURATION_MS: 1500 },
-      loginOpts: { mfa: { mode: "optional" } },
+      loginMfaCtx: { mfaMode: "optional" },
     });
     const grace = app.fixtures.users.t1_grace;
     expect(grace.totpSecret).toBeTruthy();
@@ -652,7 +652,7 @@ describe("SEC — TOTP attacks", () => {
   beforeEach(async () => {
     // mode='optional' so the Phase-4 loop fires for grace (who has a confirmed
     // TOTP seeded) — the demo default is now 'disabled' (no MFA prompt).
-    app = await buildTestApp({ loginOpts: { mfa: { mode: "optional" } } });
+    app = await buildTestApp({ loginMfaCtx: { mfaMode: "optional" } });
   });
   afterEach(async () => {
     await app.close();

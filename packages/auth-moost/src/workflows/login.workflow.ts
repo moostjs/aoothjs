@@ -94,6 +94,19 @@ export interface LoginWfCtx {
   isPasswordInitial?: boolean;
   usedMagicLink?: boolean;
 
+  // MFA policy (populated by the single `prepareMfaSetup` setter — overridable per consumer):
+  /**
+   * 3-state MFA policy:
+   *   - `'required'` — MFA enforced; users with 0 methods MUST enroll (no skip).
+   *   - `'optional'` — MFA prompted; users with 0 methods see an enrollment
+   *     form that offers a `skip` action (in-flight opt-out).
+   *   - `'disabled'` — MFA loops never fire; Phase 4 is skipped entirely.
+   */
+  mfaMode?: "required" | "optional" | "disabled";
+  availableMfaTransports?: MfaTransport[];
+  /** Pre-selected MFA transport (e.g. existing-user default, single-transport auto-pick). */
+  currentMfa?: MfaTransport;
+
   // Channel state:
   email?: string;
   emailConfirmed?: boolean;
@@ -132,10 +145,10 @@ export interface LoginWfCtx {
   enrollSecret?: string;
   /** Provisioning URI for TOTP QR rendering. */
   enrollUri?: string;
-  /** Mirror of `opts.mfa.transports`, surfaced to `EnrollPickMethodForm` via `@wf.context.pass`. */
+  /** Mirror of `ctx.availableMfaTransports`, surfaced to `EnrollPickMethodForm` via `@wf.context.pass`. */
   enrollAvailableTransports?: MfaTransport[];
   /**
-   * Mirror of `opts.mfa.mode` (only set when not `'disabled'`). Surfaced to
+   * Mirror of `ctx.mfaMode` (only set when not `'disabled'`). Surfaced to
    * `EnrollPickMethodForm` via `@wf.context.pass` so the `skip` action can
    * hide unless mode is `'optional'`.
    */
@@ -241,12 +254,10 @@ function getInputField<T = string>(name: string): T | undefined {
  * no-op (`audit()`, `loadTrustedDevice()`) protected methods that consumers
  * override.
  */
-function validateOpts(opts: ResolvedLoginWorkflowOpts): void {
-  if (opts.mfa.mode !== "disabled" && opts.mfa.transports.length === 0) {
-    throw new Error(
-      "LoginWorkflow: mfa.transports cannot be empty when mfa.mode is not 'disabled'",
-    );
-  }
+function validateOpts(_opts: ResolvedLoginWorkflowOpts): void {
+  // No cross-field invariants today — mfa mode/transports are now set at
+  // runtime via the `prepareMfaSetup` @Step so their emptiness can't be
+  // checked at construct time.
 }
 
 /**
@@ -401,6 +412,11 @@ export class LoginWorkflow extends AuthWorkflowBase {
       condition: (ctx) =>
         !!ctx.username && ctx.opts!.enrollment.ensurePhone && !ctx.phoneConfirmed && !ctx.aborted,
     },
+    // MFA setup — single atomic step writing ctx.mfaMode +
+    // ctx.availableMfaTransports + ctx.currentMfa. Fires once before the MFA
+    // loop; consumer overrides can compute all three from request context in
+    // one override.
+    { id: "prepareMfaSetup" },
     // Phase 4 MFA + Phase 8 risk-step-up wrapped in a while-loop so:
     //   - `select2fa.useDifferentMethod` (BUG-LOGIN-3/4) can clear `mfaMethod`
     //     and loop back to method picking + re-verification,
@@ -409,7 +425,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // step-up — at which point linear execution resumes.
     {
       while: (ctx) =>
-        !!(ctx.username && ctx.opts!.mfa.mode !== "disabled" && !ctx.mfaChecked && !ctx.aborted),
+        !!(ctx.username && ctx.mfaMode !== "disabled" && !ctx.mfaChecked && !ctx.aborted),
       steps: [
         {
           id: "check-trusted-device",
@@ -444,7 +460,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
           // the explicit gate here keeps the step catalog self-documenting.
           id: "mfa-enroll-required",
           condition: (ctx) =>
-            ctx.opts!.mfa.mode !== "disabled" &&
+            ctx.mfaMode !== "disabled" &&
             !ctx.mfaChecked &&
             (ctx.mfaEnrolledMethods?.length ?? 0) === 0,
         },
@@ -589,6 +605,40 @@ export class LoginWorkflow extends AuthWorkflowBase {
     return rest as ResolvedLoginWorkflowOpts;
   }
 
+  /**
+   * Prepare MFA setup: writes `ctx.mfaMode`, `ctx.availableMfaTransports`, and
+   * (when the user is resolvable) pre-selects `ctx.currentMfa` from the
+   * existing-user `defaultMethod` or the single-available-transport auto-pick.
+   * Override to compute any of the three from tenant policy / user attrs /
+   * request context. Return type allows a sync override (skip the promise
+   * round-trip) when no async work is needed — the default body is async only
+   * because of the `users.getUser` lookup for `currentMfa`.
+   */
+  @Step("prepareMfaSetup")
+  @Public()
+  prepareMfaSetup(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
+    ctx.mfaMode = "optional";
+    ctx.availableMfaTransports = ["sms", "email", "totp"];
+    if (!ctx.username) return undefined;
+    return this.users.getUser(ctx.username).then(
+      (user) => {
+        const confirmed = (user?.mfa?.methods ?? []).filter((m) => m.confirmed);
+        if (confirmed.length > 0 && user?.mfa?.defaultMethod) {
+          ctx.currentMfa = user.mfa.defaultMethod as MfaTransport;
+          return undefined;
+        }
+        if ((ctx.availableMfaTransports?.length ?? 0) === 1) {
+          ctx.currentMfa = ctx.availableMfaTransports![0];
+        }
+        return undefined;
+      },
+      (err) => {
+        if (err instanceof UserAuthError && err.type === "NOT_FOUND") return undefined;
+        throw err;
+      },
+    );
+  }
+
   // ── Phase 1 ───────────────────────────────────────────────────────────
   @Step("credentials")
   async credentials(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
@@ -631,7 +681,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
       const result = await this.users.login(input.username, input.password);
       ctx.username = result.user.username;
       // Preserve legacy `mfaRequired` for tests / consumer subclasses; the
-      // step catalog decides MFA inclusion via `mfa.mode` + enrolled
+      // step catalog decides MFA inclusion via `ctx.mfaMode` + enrolled
       // methods, not this flag.
       ctx.mfaRequired = result.mfaRequired;
       // Phase 2 inline guards:
@@ -840,7 +890,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
   async prepareMfaOptions(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
     if (!ctx.username) return undefined;
     const user = await this.users.getUser(ctx.username);
-    const allowed = new Set(this.opts.mfa.transports);
+    const allowed = new Set(ctx.availableMfaTransports ?? []);
     const methods = this.users.getAvailableMfaMethods(user.mfa);
     const summary: MfaSummary[] = methods
       .filter((m: MfaMethodInfo) => {
@@ -864,6 +914,16 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // Mirror so `PincodeForm` can hide `rememberDevice` when the consumer
     // doesn't ask the user to opt in (skipsMfa auto-trusts the device).
     ctx.deviceTrustOptIn = !!(this.opts.deviceTrust.enabled && this.opts.deviceTrust.optIn);
+    // `prepareMfaSetup` setter may have pre-selected a transport (existing-user
+    // defaultMethod / single-transport auto-pick / consumer override). Honor
+    // it if it matches an enrolled method. Gated on `!ctx.ignoreMfaDefault` so
+    // the `useDifferentMethod` re-pick flow can clear the auto-selection and
+    // route the user back to the picker instead of looping straight back to
+    // the same method.
+    if (!ctx.ignoreMfaDefault && ctx.currentMfa && summary.some((m) => m.kind === ctx.currentMfa)) {
+      ctx.mfaMethod = ctx.currentMfa;
+      return undefined;
+    }
     // Short-circuit: no methods → let `mfa-enroll-required` handle it.
     // `mode === 'required'` blocks until enrolment; `mode === 'optional'` lets
     // the user `skip`; `mode === 'disabled'` never reaches this step (the
@@ -1092,7 +1152,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // `'disabled'` is filtered at the step's schema condition, so the cast is
     // safe. Mirror onto ctx so `EnrollPickMethodForm` can hide the `skip`
     // action unless mode is `'optional'`.
-    const mode = this.opts.mfa.mode as "required" | "optional";
+    const mode = (ctx.mfaMode ?? "optional") as "required" | "optional";
     ctx.enrollMode = mode;
     await this.runMfaEnrollment({
       ctx,
@@ -1104,7 +1164,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
         address: this.opts.forms.enrollAddress,
         confirm: this.opts.forms.enrollConfirm,
       },
-      transports: this.opts.mfa.transports,
+      transports: ctx.availableMfaTransports ?? [],
       pincodeLength: this.opts.mfa.pincodeLength,
       pincodeTtlMs: this.opts.mfa.pincodeTtlMs,
       pincodeResendTimeoutMs: this.opts.mfa.pincodeResendTimeoutMs,

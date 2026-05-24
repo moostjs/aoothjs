@@ -14,7 +14,8 @@
 import { generateTotpSecret } from "@aooth/user";
 import { describe, expect, it } from "vite-plus/test";
 
-import { prepareWfApp, seedActiveUser } from "./workflow-utils";
+import { LoginWorkflow } from "../workflows/index";
+import { prepareWfApp, seedActiveUser, withLoginMfaCtx } from "./workflow-utils";
 
 /** Drives credentials + select2fa pick to land at `pincode-check-login` (email transport). */
 async function driveToPincodeCheck(
@@ -143,7 +144,10 @@ describe("LoginWorkflow alt-actions — pincode-check-login", () => {
   // sms array length is unchanged from the first send.
   it("useDifferentMethod → sms→email→sms alternation: sms cooldown holds across channel switches (per-method, not per-pick)", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { pincodeResendTimeoutMs: 60_000, transports: ["email", "sms"] } },
+      loginOpts: { mfa: { pincodeResendTimeoutMs: 60_000 } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, {
+        availableMfaTransports: ["email", "sms"],
+      }),
     });
     // Enrol BOTH sms and email so select2fa offers two picks.
     await seedActiveUser(app.users, "alice", "Password123");
@@ -221,7 +225,8 @@ describe("LoginWorkflow alt-actions — pincode-check-login", () => {
 describe("LoginWorkflow alt-actions — mfa-totp", () => {
   it("useBackupCode → branches to backup-code entry", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { backupCodes: true, transports: ["totp"] } },
+      loginOpts: { mfa: { backupCodes: true } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { availableMfaTransports: ["totp"] }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const secret = generateTotpSecret();
@@ -244,7 +249,9 @@ describe("LoginWorkflow alt-actions — mfa-totp", () => {
   // Same loop wrapping as BUG-LOGIN-3 — `useDifferentMethod` re-enters select2fa.
   it("useDifferentMethod → loops back to select2fa", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { transports: ["email", "totp"] } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, {
+        availableMfaTransports: ["email", "totp"],
+      }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     await app.users.addMfaMethod("alice", {
@@ -295,8 +302,8 @@ describe("LoginWorkflow alt-actions — create-password-form", () => {
     const app = await prepareWfApp({
       loginOpts: {
         guards: { passwordInitial: true },
-        mfa: { mode: "disabled" },
       },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const store = (app.users as unknown as { store: { update: Function } }).store;
@@ -320,8 +327,8 @@ describe("LoginWorkflow alt-actions — create-password-form", () => {
     const app = await prepareWfApp({
       loginOpts: {
         guards: { passwordInitial: true },
-        mfa: { mode: "disabled" },
       },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const store = (app.users as unknown as { store: { update: Function } }).store;
@@ -350,8 +357,8 @@ describe("LoginWorkflow alt-actions — terms-accept", () => {
     const app = await prepareWfApp({
       loginOpts: {
         acceptance: { termsVersion: "v2" },
-        mfa: { mode: "disabled" },
       },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r1 = await app.trigger({ wfid: "auth.login" });
@@ -375,8 +382,8 @@ describe("LoginWorkflow alt-actions — terms-accept", () => {
     const app = await prepareWfApp({
       loginOpts: {
         acceptance: { termsVersion: "v2" },
-        mfa: { mode: "disabled" },
       },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r1 = await app.trigger({ wfid: "auth.login" });
@@ -400,8 +407,8 @@ describe("LoginWorkflow alt-actions — terms-accept", () => {
     const app = await prepareWfApp({
       loginOpts: {
         acceptance: { termsVersion: "v2" },
-        mfa: { mode: "disabled" },
       },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r1 = await app.trigger({ wfid: "auth.login" });

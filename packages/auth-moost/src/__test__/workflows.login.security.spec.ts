@@ -38,7 +38,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { ProfileWithRolesForm } from "./fixtures/profile-with-roles.as";
 import { RESERVED_USER_KEYS } from "../workflows/auth-workflow.base";
 import { type LoginWfCtx, LoginWorkflow, type LoginWorkflowOpts } from "../workflows/index";
-import { prepareWfApp, seedActiveUser } from "./workflow-utils";
+import { prepareWfApp, seedActiveUser, withLoginMfaCtx } from "./workflow-utils";
 
 // ── Sink A — profile-complete strip ─────────────────────────────────────────
 describe("LoginWorkflow security — profile-complete payload escalation (audit #15 Sink A)", () => {
@@ -95,9 +95,8 @@ describe("LoginWorkflow security — profile-complete payload escalation (audit 
           // own `stripReservedUserKeys()` call.
           profileComplete: ProfileWithRolesForm as unknown as TAtscriptAnnotatedType,
         },
-        mfa: { mode: "disabled" },
       },
-      loginWorkflowClass: ProfileLogin,
+      loginWorkflowClass: withLoginMfaCtx(ProfileLogin, { mfaMode: "disabled" }),
     });
 
     await seedActiveUser(app.users, "victim", "Password123");

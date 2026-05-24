@@ -23,8 +23,6 @@ import {
   InviteSendModeForm,
   SetPasswordForm,
 } from "../atscript/models/forms.as";
-import type { MfaTransport } from "./login.workflow.options";
-
 export type { MfaTransport } from "./login.workflow.options";
 
 export const DEFAULT_INVITE_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -69,15 +67,7 @@ export interface InviteWorkflowOpts {
   audit?: {
     enabled?: boolean;
   };
-  /**
-   * MFA enrollment during the accept tail.
-   *   - `'required'` — invitee MUST enroll a second factor BEFORE activation.
-   *   - `'optional'` — invitee is prompted but may `skip` the enrollment form.
-   *   - `'disabled'` — enrollment loop is skipped entirely.
-   */
   mfa?: {
-    mode?: "required" | "optional" | "disabled";
-    transports?: MfaTransport[];
     pincodeTtlMs?: number;
     /** Per-method resend cooldown for the Phase 3 confirm pincode (sms/email). Default: 60_000. */
     pincodeResendTimeoutMs?: number;
@@ -127,8 +117,6 @@ export interface ResolvedInviteWorkflowOpts {
     enabled: boolean;
   };
   mfa: {
-    mode: "required" | "optional" | "disabled";
-    transports: MfaTransport[];
     pincodeTtlMs: number;
     pincodeResendTimeoutMs: number;
     pincodeLength: number;
@@ -178,8 +166,6 @@ export function mergeInviteOpts(opts: InviteWorkflowOpts = {}): ResolvedInviteWo
       ...opts.audit,
     },
     mfa: {
-      mode: "optional",
-      transports: ["sms", "email", "totp"],
       pincodeTtlMs: 5 * 60 * 1000,
       pincodeResendTimeoutMs: 60_000,
       pincodeLength: 6,

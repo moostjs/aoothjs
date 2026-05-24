@@ -168,7 +168,7 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
     // secret. Verifies the option threads through buildApp → DemoLoginWorkflow
     // over the real HTTP / DI stack (the unit suite proves the schema-level
     // skip in isolation; this test proves the demo wiring honours it).
-    const mfaOff = await buildTestApp({ loginOpts: { mfa: { mode: "disabled" } } });
+    const mfaOff = await buildTestApp({ loginMfaCtx: { mfaMode: "disabled" } });
     try {
       const grace = mfaOff.fixtures.users.t1_grace;
       expect(grace.totpSecret).toBeTruthy();
@@ -215,7 +215,7 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
     // `mode: 'optional'` (or `'required'` — either fires the loop; grace HAS
     // a confirmed TOTP method so prepare-mfa-options auto-picks it and routes
     // straight to mfa-totp).
-    const mfaOn = await buildTestApp({ loginOpts: { mfa: { mode: "optional" } } });
+    const mfaOn = await buildTestApp({ loginMfaCtx: { mfaMode: "optional" } });
     try {
       const grace = mfaOn.fixtures.users.t1_grace;
       expect(grace.totpSecret).toBeTruthy();
@@ -260,7 +260,7 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
     // atscript-db `addMfaMethod` / `confirmMfaMethod` persistence — a wrong
     // transport route or a nested-array set regression would slip past unit
     // tests and surface only here.
-    const reqApp = await buildTestApp({ loginOpts: { mfa: { mode: "required" } } });
+    const reqApp = await buildTestApp({ loginMfaCtx: { mfaMode: "required" } });
     try {
       const alice = reqApp.fixtures.users.t1_alice;
       const seeded = await reqApp.appHandle.aooth.userService.getUser(alice.username);
@@ -332,7 +332,7 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
     // an encoding regression would corrupt the secret silently and the
     // round-trip generateTotpCode(persisted) → server-recompute would fail.
     // Also asserts no pincode email fires (TOTP path must NOT route to email).
-    const reqApp = await buildTestApp({ loginOpts: { mfa: { mode: "required" } } });
+    const reqApp = await buildTestApp({ loginMfaCtx: { mfaMode: "required" } });
     try {
       const alice = reqApp.fixtures.users.t1_alice;
       const seeded = await reqApp.appHandle.aooth.userService.getUser(alice.username);
@@ -389,7 +389,7 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
     // serialization into the server-side `mode === 'optional'` short-circuit.
     // An inverted gate or a stripped action key would either silently persist
     // an unconfirmed method or refuse to finish — both surface here.
-    const optApp = await buildTestApp({ loginOpts: { mfa: { mode: "optional" } } });
+    const optApp = await buildTestApp({ loginMfaCtx: { mfaMode: "optional" } });
     try {
       const alice = optApp.fixtures.users.t1_alice;
       const seeded = await optApp.appHandle.aooth.userService.getUser(alice.username);
@@ -437,7 +437,7 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
     // (auto-pick + secret provisioning) and Phase 3 (skip-to-confirm with
     // no Phase 2 pincode delivery for totp).
     const reqApp = await buildTestApp({
-      loginOpts: { mfa: { mode: "required", transports: ["totp"] } },
+      loginMfaCtx: { mfaMode: "required", availableMfaTransports: ["totp"] },
     });
     try {
       const alice = reqApp.fixtures.users.t1_alice;
@@ -501,7 +501,7 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
     // that the unconfirmed row WAS persisted (Phase 2 wrote it) is the proof
     // that this test exercises the cleanup branch — without it, "no methods
     // after skip" could be a vacuous pass on a system that never persisted.
-    const optApp = await buildTestApp({ loginOpts: { mfa: { mode: "optional" } } });
+    const optApp = await buildTestApp({ loginMfaCtx: { mfaMode: "optional" } });
     try {
       const alice = optApp.fixtures.users.t1_alice;
       const seeded = await optApp.appHandle.aooth.userService.getUser(alice.username);
@@ -581,7 +581,7 @@ describe("WF-LOGIN — option overrides (isolated apps)", () => {
     // Positive branch of optional: users who DO opt in must still complete
     // the 3-phase enrollment. A regression hardwiring optional → skip would
     // treat every submit as a decline and silently break opt-in intent.
-    const optApp = await buildTestApp({ loginOpts: { mfa: { mode: "optional" } } });
+    const optApp = await buildTestApp({ loginMfaCtx: { mfaMode: "optional" } });
     try {
       const alice = optApp.fixtures.users.t1_alice;
 

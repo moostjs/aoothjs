@@ -431,7 +431,8 @@ describe("WF-INVITE — MFA enrollment", () => {
     const inviteEmail = "newcomer-email@acme.test";
     const otpEmail = "newcomer-otp@acme.test";
     const app = await buildTestApp({
-      inviteOpts: { mfa: { mode: "required" }, accept: { showConfirmation: false } },
+      inviteOpts: { accept: { showConfirmation: false } },
+      inviteMfaCtx: { mfaMode: "required" },
     });
     try {
       const { pwBody } = await startInviteAcceptTail(app, inviteEmail);
@@ -498,7 +499,8 @@ describe("WF-INVITE — MFA enrollment", () => {
     // real second factor).
     const inviteEmail = "newcomer-totp@acme.test";
     const app = await buildTestApp({
-      inviteOpts: { mfa: { mode: "required" }, accept: { showConfirmation: false } },
+      inviteOpts: { accept: { showConfirmation: false } },
+      inviteMfaCtx: { mfaMode: "required" },
     });
     try {
       const { pwBody } = await startInviteAcceptTail(app, inviteEmail);
@@ -560,10 +562,8 @@ describe("WF-INVITE — MFA enrollment", () => {
     // landed before activation.
     const inviteEmail = "newcomer-autopick@acme.test";
     const app = await buildTestApp({
-      inviteOpts: {
-        mfa: { mode: "required", transports: ["totp"] },
-        accept: { showConfirmation: false },
-      },
+      inviteOpts: { accept: { showConfirmation: false } },
+      inviteMfaCtx: { mfaMode: "required", availableMfaTransports: ["totp"] },
     });
     try {
       const { pwBody } = await startInviteAcceptTail(app, inviteEmail);
@@ -627,7 +627,8 @@ describe("WF-INVITE — MFA enrollment", () => {
     // or leave a covert half-committed `mfa.methods` row behind.
     const inviteEmail = "newcomer-skip@acme.test";
     const app = await buildTestApp({
-      inviteOpts: { mfa: { mode: "optional" }, accept: { showConfirmation: false } },
+      inviteOpts: { accept: { showConfirmation: false } },
+      inviteMfaCtx: { mfaMode: "optional" },
     });
     try {
       const { pwBody } = await startInviteAcceptTail(app, inviteEmail);
@@ -748,10 +749,8 @@ describe("WF-INVITE — reInvite enrollment", () => {
     // doesn't fire OR if the post-confirm activation gate is bypassed.
     const inviteEmail = "reinvite-autopick@acme.test";
     const app = await buildTestApp({
-      inviteOpts: {
-        mfa: { mode: "required", transports: ["totp"] },
-        accept: { showConfirmation: false },
-      },
+      inviteOpts: { accept: { showConfirmation: false } },
+      inviteMfaCtx: { mfaMode: "required", availableMfaTransports: ["totp"] },
     });
     try {
       const { pwBody } = await startReInviteAcceptTail(app, inviteEmail);
@@ -801,7 +800,8 @@ describe("WF-INVITE — reInvite enrollment", () => {
     // row OR loop forever on the picker.
     const inviteEmail = "reinvite-skip@acme.test";
     const app = await buildTestApp({
-      inviteOpts: { mfa: { mode: "optional" }, accept: { showConfirmation: false } },
+      inviteOpts: { accept: { showConfirmation: false } },
+      inviteMfaCtx: { mfaMode: "optional" },
     });
     try {
       const { pwBody } = await startReInviteAcceptTail(app, inviteEmail);
@@ -847,18 +847,13 @@ let extraStepCapture: { fired: boolean; runs: number } = { fired: false, runs: 0
 @Controller()
 class OverrideInviteWorkflow extends InviteWorkflow {
   constructor(users: UserService, authCred: AuthCredential) {
-    // mfa disabled keeps the flow short — the test only needs to prove the
-    // override fires, not exercise enrollment. Profile form left undefined
-    // (base default) so the accept tail goes password → extraStep → activate
-    // directly.
-    super(
-      {
-        mfa: { mode: "disabled" },
-        accept: { showConfirmation: false },
-      },
-      users,
-      authCred,
-    );
+    // Profile form left undefined (base default) so the accept tail goes
+    // password → extraStep → activate directly. MFA is disabled via the
+    // `inviteMfaCtx: { mfaMode: 'disabled' }` knob on `buildTestApp` (PR9
+    // stripped `mfa.mode` from `InviteWorkflowOpts`; the value now lives on
+    // ctx via the `inviteSetupMfa` setter step — `buildApp` wraps this
+    // class with `withInviteMfaCtx` when `inviteMfaCtx` is supplied).
+    super({ accept: { showConfirmation: false } }, users, authCred);
   }
   // DemoUser requires tenantId on insert; without this override the
   // `invitePreCreateUser` step would 500 inside `userService.createUser`.
@@ -887,7 +882,10 @@ describe("WF-INVITE — consumer subclass via inviteWorkflowClass", () => {
     // break subclass overrides that didn't add the matching arg — those
     // wouldn't dispatch, this test would catch it.
     const inviteEmail = "override-extrastep@acme.test";
-    const app = await buildTestApp({ inviteWorkflowClass: OverrideInviteWorkflow });
+    const app = await buildTestApp({
+      inviteWorkflowClass: OverrideInviteWorkflow,
+      inviteMfaCtx: { mfaMode: "disabled" },
+    });
     try {
       const dave = app.fixtures.users.t1_dave;
       const daveTokens = await app.loginAs(dave);

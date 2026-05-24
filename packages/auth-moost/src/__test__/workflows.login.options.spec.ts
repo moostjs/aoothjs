@@ -27,7 +27,7 @@ import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 
 import { type LoginWfCtx, LoginWorkflow, type LoginWorkflowOpts } from "../workflows/index";
 import { SsoLoginCredentialsForm } from "./fixtures/sso-login.as";
-import { prepareWfApp, seedActiveUser } from "./workflow-utils";
+import { prepareWfApp, seedActiveUser, withLoginMfaCtx } from "./workflow-utils";
 
 /**
  * Build a `LoginWorkflow` subclass with a single override. Mirrors the
@@ -233,8 +233,9 @@ describe("LoginWorkflowOpts — Phase 2 password guards", () => {
     const app = await prepareWfApp({
       loginOpts: {
         guards: { passwordInitial: true },
-        mfa: { mode: "disabled" }, // skip MFA so we observe the password-change branch directly
+        // skip MFA so we observe the password-change branch directly
       },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     // createUser without a password marks `password.isInitial = true` (see UserService.createUser).
     await app.users.createUser("alice");
@@ -261,8 +262,8 @@ describe("LoginWorkflowOpts — Phase 2 password guards", () => {
     const app = await prepareWfApp({
       loginOpts: {
         guards: { passwordInitial: false },
-        mfa: { mode: "disabled" },
       },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await app.users.createUser("alice", "Password123");
     await app.users.activateAccount("alice");
@@ -286,8 +287,8 @@ describe("LoginWorkflowOpts — Phase 2 password guards", () => {
     const app = await prepareWfApp({
       loginOpts: {
         guards: { passwordInitial: true },
-        mfa: { mode: "disabled" },
       },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
       userConfig: { password: { policies: [ppHasMinLength(8)] } },
     });
     await app.users.createUser("alice");
@@ -310,7 +311,7 @@ describe("LoginWorkflowOpts — Phase 2 password guards", () => {
 describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
   it("mfa.mode='disabled' → Phase 4 skipped entirely (credentials → issue) even with enrolled TOTP", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { mode: "disabled" } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const secret = generateTotpSecret();
@@ -328,7 +329,10 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
     // under the default 'optional' mode the same 0-methods state would route
     // to `mfa-enroll-required` with a skip action instead of silently issuing.
     const app = await prepareWfApp({
-      loginOpts: { mfa: { mode: "disabled", transports: ["email"] } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, {
+        mfaMode: "disabled",
+        availableMfaTransports: ["email"],
+      }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const secret = generateTotpSecret();
@@ -343,7 +347,9 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
 
   it("mfa.transports: ['email', 'totp'] + user has TOTP only → auto-picks TOTP (1 method, no select2fa)", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { transports: ["email", "totp"] } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, {
+        availableMfaTransports: ["email", "totp"],
+      }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const secret = generateTotpSecret();
@@ -362,7 +368,7 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
     // rather than at boot. The harness's override throws when `registerSmsSender`
     // is false, mirroring the prior fail-loud surface (500 with SmsSender message).
     const app = await prepareWfApp({
-      loginOpts: { mfa: { transports: ["sms"] } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { availableMfaTransports: ["sms"] }),
       registerSmsSender: false,
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -381,14 +387,13 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
     expect(JSON.stringify(r2.body)).toMatch(/SmsSender/);
   });
 
-  it("mfa.transports empty with mfa.mode!=='disabled' → fail loud (500 with 'mfa.transports cannot be empty')", async () => {
-    const app = await prepareWfApp({
-      loginOpts: { mfa: { transports: [], mode: "optional" } },
-    });
-    const r = await app.trigger({ wfid: "auth.login" });
-    expect(r.status).toBe(500);
-    expect(JSON.stringify(r.body)).toMatch(/mfa\.transports.*empty/);
-  });
+  // DELETED in PR9: the "empty mfa.transports + non-disabled mode → fail loud"
+  // boot-time validator was removed when `mfa.mode` / `mfa.transports` moved
+  // off `LoginWorkflowOpts` onto `@Step` setter methods populating ctx.
+  // There is no longer an opts-shape to validate at boot — consumers control
+  // `ctx.availableMfaTransports` per-event via overriding `prepareMfaSetup`,
+  // and the runtime steps that read it tolerate empty/undefined transports
+  // by short-circuiting through the `mfaChecked = true` no-prompt branch.
 
   it("deviceTrust.enabled true with NO cookie → check-trusted-device flags newDevice and flow completes", async () => {
     // No cookie ⇒ `check-trusted-device` short-circuits to `newDevice = true`
@@ -397,7 +402,8 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
     // wire the default secret here — proves the no-cookie branch is the
     // structural short-circuit).
     const app = await prepareWfApp({
-      loginOpts: { deviceTrust: { enabled: true }, mfa: { mode: "disabled" } },
+      loginOpts: { deviceTrust: { enabled: true } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r1 = await app.trigger({ wfid: "auth.login" });
@@ -411,7 +417,10 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
   it("mfa.transports: ['email'] (default user has TOTP only) — falls back to issue (no enrolled allowed methods)", async () => {
     // mode='disabled' preserves the no-prompt fallback semantics this test pins.
     const app = await prepareWfApp({
-      loginOpts: { mfa: { mode: "disabled", transports: ["email"] } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, {
+        mfaMode: "disabled",
+        availableMfaTransports: ["email"],
+      }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
@@ -460,8 +469,8 @@ describe("LoginWorkflowOpts — Phase 4 device trust", () => {
     const app = await prepareWfApp({
       loginOpts: {
         deviceTrust: { enabled: true, optIn: false }, // unconditional persist on successful MFA
-        mfa: { transports: ["totp"] },
       },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { availableMfaTransports: ["totp"] }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const secret = generateTotpSecret();
@@ -581,7 +590,8 @@ describe("LoginWorkflowOpts — Phase 4 device trust", () => {
 describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, redirect)", () => {
   it("finalize.auditLogin true → emits one 'login.success' event with userId + method", async () => {
     const app = await prepareWfApp({
-      loginOpts: { finalize: { auditLogin: true }, mfa: { mode: "disabled" } },
+      loginOpts: { finalize: { auditLogin: true } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     await startAndCredentials(app, "alice", "Password123");
@@ -595,7 +605,8 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
 
   it("finalize.auditLogin false → emits NO events", async () => {
     const app = await prepareWfApp({
-      loginOpts: { finalize: { auditLogin: false }, mfa: { mode: "disabled" } },
+      loginOpts: { finalize: { auditLogin: false } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     await startAndCredentials(app, "alice", "Password123");
@@ -607,8 +618,8 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
       loginOpts: {
         finalize: { notifyNewDevice: true },
         deviceTrust: { enabled: true, optIn: false }, // unconditional trust persist so newDevice flows through
-        mfa: { transports: ["totp"] },
       },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { availableMfaTransports: ["totp"] }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     // Need a confirmed email channel so notifyNewDevice has a recipient.
@@ -639,8 +650,8 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
       loginOpts: {
         finalize: { notifyNewDevice: false },
         deviceTrust: { enabled: true, optIn: false },
-        mfa: { transports: ["totp"] },
       },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { availableMfaTransports: ["totp"] }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     await app.users.addMfaMethod("alice", {
@@ -663,7 +674,8 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
 
   it("finalize.redirect: 'home' → envelope with end:immediate redirect to /", async () => {
     const app = await prepareWfApp({
-      loginOpts: { finalize: { redirect: "home" }, mfa: { mode: "disabled" } },
+      loginOpts: { finalize: { redirect: "home" } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
@@ -679,12 +691,14 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
 
   it("resolveRedirect override → envelope redirect to overridden URL", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { mode: "disabled" } },
-      loginWorkflowClass: makeLoginSubclass({
-        resolveRedirect(ctx) {
-          return `/welcome/${ctx.username ?? "guest"}`;
-        },
-      }),
+      loginWorkflowClass: withLoginMfaCtx(
+        makeLoginSubclass({
+          resolveRedirect(ctx) {
+            return `/welcome/${ctx.username ?? "guest"}`;
+          },
+        }),
+        { mfaMode: "disabled" },
+      ),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
@@ -694,7 +708,8 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
 
   it("finalize.redirect: 'referer' with no Referer header → data envelope (no redirect override)", async () => {
     const app = await prepareWfApp({
-      loginOpts: { finalize: { redirect: "referer" }, mfa: { mode: "disabled" } },
+      loginOpts: { finalize: { redirect: "referer" } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
@@ -704,7 +719,8 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
 
   it("finalize.redirect: false → data envelope (no redirect end)", async () => {
     const app = await prepareWfApp({
-      loginOpts: { finalize: { redirect: false }, mfa: { mode: "disabled" } },
+      loginOpts: { finalize: { redirect: false } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
@@ -721,8 +737,8 @@ describe("LoginWorkflowOpts — Phase 6 terms acceptance", () => {
     const app = await prepareWfApp({
       loginOpts: {
         acceptance: { termsVersion: "v2" },
-        mfa: { mode: "disabled" },
       },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
@@ -740,7 +756,7 @@ describe("LoginWorkflowOpts — Phase 6 terms acceptance", () => {
 
   it("acceptance.termsVersion unset → step is skipped", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { mode: "disabled" } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
@@ -752,8 +768,8 @@ describe("LoginWorkflowOpts — Phase 6 terms acceptance", () => {
     const app = await prepareWfApp({
       loginOpts: {
         acceptance: { termsVersion: "v2" },
-        mfa: { mode: "disabled" },
       },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
@@ -777,8 +793,8 @@ describe("LoginWorkflowOpts — Phase 8 session policy", () => {
     const app = await prepareWfApp({
       loginOpts: {
         sessionPolicy: { concurrencyLimit: { max: 2, onLimit: "reject" } },
-        mfa: { mode: "disabled" },
       },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
@@ -795,13 +811,15 @@ describe("LoginWorkflowOpts — Phase 8 session policy", () => {
   it("assessRiskStepUp override returning require:true forces additional MFA re-run", async () => {
     let calls = 0;
     const app = await prepareWfApp({
-      loginOpts: { mfa: { transports: ["totp"] } },
-      loginWorkflowClass: makeLoginSubclass({
-        async assessRiskStepUp() {
-          calls++;
-          return { require: calls === 1, reason: "unusual" };
-        },
-      }),
+      loginWorkflowClass: withLoginMfaCtx(
+        makeLoginSubclass({
+          async assessRiskStepUp() {
+            calls++;
+            return { require: calls === 1, reason: "unusual" };
+          },
+        }),
+        { availableMfaTransports: ["totp"] },
+      ),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const secret = generateTotpSecret();
@@ -831,7 +849,7 @@ describe("LoginWorkflowOpts — mfa.mode='required' forced enrollment", () => {
   // forever without ever enrolling a second factor.
   it("sms path: pick → address → pincode confirm; method stored confirmed + becomes default + sms is sent", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { mode: "required" } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "required" }),
     });
     await seedActiveUser(app.users, "user-a", "pwd-12345678");
     // Sanity baseline — no methods before the flow runs.
@@ -893,7 +911,7 @@ describe("LoginWorkflowOpts — mfa.mode='required' forced enrollment", () => {
   // over SMS to email addresses, breaking delivery while looking healthy.
   it("email path: pincode is sent via email channel and method is confirmed", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { mode: "required" } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "required" }),
     });
     await seedActiveUser(app.users, "user-b", "pwd-12345678");
 
@@ -933,7 +951,7 @@ describe("LoginWorkflowOpts — mfa.mode='required' forced enrollment", () => {
   // NO pincode must be emitted (otherwise app.sms / app.emails leaks).
   it("totp path: secret provisioned in Phase 1, code accepted, method confirmed, no pincode emitted", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { mode: "required" } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "required" }),
     });
     await seedActiveUser(app.users, "user-c", "pwd-12345678");
 
@@ -979,7 +997,7 @@ describe("LoginWorkflowOpts — mfa.mode='required' forced enrollment", () => {
   // a form error (not a 500 / not a silent pass).
   it("totp path: invalid setup code is rejected with form error; method stays unconfirmed", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { mode: "required" } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "required" }),
     });
     await seedActiveUser(app.users, "user-d", "pwd-12345678");
 
@@ -1009,7 +1027,7 @@ describe("LoginWorkflowOpts — mfa.mode='required' forced enrollment", () => {
   // breaking the no-MFA configuration this test guards.
   it("mode='disabled' + no MFA: enrollment SKIPPED, login completes immediately", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { mode: "disabled" } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "user-e", "pwd-12345678");
     expect((await app.users.getUser("user-e")).mfa.methods).toHaveLength(0);
@@ -1038,7 +1056,7 @@ describe("LoginWorkflowOpts — mfa.mode='optional' skip action", () => {
   // contract this mode exists for.
   it("optional + 0 methods + skip action → workflow completes WITHOUT enrolling", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { mode: "optional" } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "optional" }),
     });
     await seedActiveUser(app.users, "opt-skip", "pwd-12345678");
     expect((await app.users.getUser("opt-skip")).mfa.methods).toHaveLength(0);
@@ -1071,7 +1089,7 @@ describe("LoginWorkflowOpts — mfa.mode='optional' skip action", () => {
   // for users who DO want MFA.
   it("optional + 0 methods + picks sms → full enrollment runs and method confirmed", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { mode: "optional" } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "optional" }),
     });
     await seedActiveUser(app.users, "opt-sms", "pwd-12345678");
 
@@ -1120,7 +1138,7 @@ describe("LoginWorkflowOpts — mfa.mode='optional' skip action", () => {
   // says off.
   it("disabled + user HAS confirmed totp → login completes WITHOUT MFA prompt", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { mode: "disabled" } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "dis-totp", "pwd-12345678");
     const secret = generateTotpSecret();
@@ -1153,7 +1171,7 @@ describe("LoginWorkflowOpts — mfa.mode='optional' skip action", () => {
   // never short-circuiting enrollment.
   it("required + 0 methods + skip action submitted → workflow does NOT short-circuit", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { mode: "required" } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "required" }),
     });
     await seedActiveUser(app.users, "req-skip", "pwd-12345678");
 
@@ -1188,7 +1206,10 @@ describe("LoginWorkflowOpts — mfa enrollment ergonomics (PR7-1)", () => {
   // secret — together pin both halves of the branch.
   it("T1: required + transports=['totp'] + 0 methods → no picker pause, secret auto-provisioned, code accepted", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { mode: "required", transports: ["totp"] } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, {
+        mfaMode: "required",
+        availableMfaTransports: ["totp"],
+      }),
     });
     await seedActiveUser(app.users, "auto-totp", "pwd-12345678");
 
@@ -1233,7 +1254,7 @@ describe("LoginWorkflowOpts — mfa enrollment ergonomics (PR7-1)", () => {
   // some other code path that might have persisted the method first.
   it("T2: optional + sms picked + skip from address form → finishes, no method persisted", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { mode: "optional" } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "optional" }),
     });
     await seedActiveUser(app.users, "opt-sms-skip", "pwd-12345678");
 
@@ -1280,7 +1301,7 @@ describe("LoginWorkflowOpts — mfa enrollment ergonomics (PR7-1)", () => {
   // real work, not no-op); the post-skip assertion proves it's gone.
   it("T3: optional + sms picked + address submitted + skip from confirm → unconfirmed sms REMOVED", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { mode: "optional" } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "optional" }),
     });
     await seedActiveUser(app.users, "opt-sms-cleanup", "pwd-12345678");
 
@@ -1326,7 +1347,7 @@ describe("LoginWorkflowOpts — mfa enrollment ergonomics (PR7-1)", () => {
   // re-entered Phase 1, not got stuck or fell through.
   it("T4: useDifferentMethod from address form → loops back to picker, can pick another method", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { mode: "optional" } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "optional" }),
     });
     await seedActiveUser(app.users, "switch-method", "pwd-12345678");
 
@@ -1389,7 +1410,7 @@ describe("LoginWorkflowOpts — mfa enrollment ergonomics (PR7-1)", () => {
   // user ends up with ONLY the confirmed sms method — no stale TOTP row.
   it("T5: useDifferentMethod from confirm form (totp) → totp row REMOVED, re-pick sms completes cleanly", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { mode: "optional" } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "optional" }),
     });
     await seedActiveUser(app.users, "switch-totp", "pwd-12345678");
 
@@ -1451,7 +1472,8 @@ describe("LoginWorkflowOpts — mfa enrollment ergonomics (PR7-1)", () => {
       // 50ms cooldown — short enough to wait out in-test without a
       // deterministic clock. The defense is the same regardless of the
       // window size.
-      loginOpts: { mfa: { mode: "required", pincodeResendTimeoutMs: 50 } },
+      loginOpts: { mfa: { pincodeResendTimeoutMs: 50 } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "required" }),
     });
     await seedActiveUser(app.users, "resend-user", "pwd-12345678");
 
@@ -1526,7 +1548,7 @@ describe("LoginWorkflowOpts — mfa enrollment ergonomics (PR7-1)", () => {
   // gets persisted (addMfaMethod is reached AFTER resolveInput succeeds).
   it("T7: required + skip at Phase 2 address form → workflow does NOT short-circuit", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { mode: "required" } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "required" }),
     });
     await seedActiveUser(app.users, "req-addr-skip", "pwd-12345678");
 

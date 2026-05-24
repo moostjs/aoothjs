@@ -9,8 +9,6 @@
  */
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 
-import type { MfaTransport } from "./auth-workflow.base";
-
 import {
   AskEmailForm,
   AskPhoneForm,
@@ -70,15 +68,6 @@ export interface LoginWorkflowOpts {
     ensurePhone?: boolean;
   };
   mfa?: {
-    /**
-     * 3-state MFA policy:
-     *   - `'required'` — MFA enforced; users with 0 methods MUST enroll (no skip).
-     *   - `'optional'` — MFA prompted; users with 0 methods see an enrollment
-     *     form that offers a `skip` action (in-flight opt-out).
-     *   - `'disabled'` — MFA loops never fire; Phase 4 is skipped entirely.
-     */
-    mode?: "required" | "optional" | "disabled";
-    transports?: MfaTransport[];
     backupCodes?: boolean;
     pincodeTtlMs?: number;
     pincodeResendTimeoutMs?: number;
@@ -166,8 +155,6 @@ export interface ResolvedLoginWorkflowOpts {
     ensurePhone: boolean;
   };
   mfa: {
-    mode: "required" | "optional" | "disabled";
-    transports: MfaTransport[];
     backupCodes: boolean;
     pincodeTtlMs: number;
     pincodeResendTimeoutMs: number;
@@ -250,8 +237,6 @@ export function mergeLoginOpts(opts: LoginWorkflowOpts = {}): ResolvedLoginWorkf
       ...opts.enrollment,
     },
     mfa: {
-      mode: "optional",
-      transports: ["sms", "email", "totp"],
       backupCodes: true,
       pincodeTtlMs: DEFAULT_MFA_CODE_TTL_MS,
       pincodeResendTimeoutMs: 60_000,

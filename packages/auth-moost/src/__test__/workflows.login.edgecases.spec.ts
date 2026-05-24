@@ -10,7 +10,8 @@
 import { generateTotpSecret, hashMfaCode as _hash } from "@aooth/user";
 import { describe, expect, it } from "vite-plus/test";
 
-import { prepareWfApp, seedActiveUser } from "./workflow-utils";
+import { LoginWorkflow } from "../workflows/index";
+import { prepareWfApp, seedActiveUser, withLoginMfaCtx } from "./workflow-utils";
 
 // Touch the import so the linter doesn't strip it (used as a doc anchor).
 void _hash;
@@ -54,7 +55,7 @@ describe("LoginWorkflow edge cases — MFA", () => {
     // once `failedLoginAttempts >= threshold` the next miss locks the account
     // and the workflow translates `MFA_INVALID(lockEnds: …)` to 423.
     const app = await prepareWfApp({
-      loginOpts: { mfa: { transports: ["totp"] } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { availableMfaTransports: ["totp"] }),
       userConfig: { lockout: { threshold: 2, duration: 60_000 } },
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -84,7 +85,8 @@ describe("LoginWorkflow edge cases — MFA", () => {
   // separate from `MfaCodeForm` (digits-only for TOTP). See BUG-LOGIN-6 fix.
   it("backup code consumed twice → second use fails (one-time semantics)", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { backupCodes: true, transports: ["totp"] } },
+      loginOpts: { mfa: { backupCodes: true } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { availableMfaTransports: ["totp"] }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const secret = generateTotpSecret();
@@ -140,7 +142,7 @@ describe("LoginWorkflow edge cases — MFA", () => {
 
   it("SMS transport: enrolled-via-sms user receives pin via SmsSender, can verify and finish", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { transports: ["sms"] } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { availableMfaTransports: ["sms"] }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     await app.users.addMfaMethod("alice", {
@@ -171,7 +173,7 @@ describe("LoginWorkflow edge cases — MFA", () => {
 
   it("Email transport: pin email carries 'login.pincode' kind + numeric code", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { transports: ["email"] } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { availableMfaTransports: ["email"] }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     await app.users.addMfaMethod("alice", {
@@ -206,7 +208,7 @@ describe("LoginWorkflow edge cases — JSON-safety of opts snapshot", () => {
   // pause+resume.
   it("default forms group (atscript classes) does NOT poison ctx.opts — pause+resume survives", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { mode: "disabled" } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r1 = await app.trigger({ wfid: "auth.login" });
@@ -226,7 +228,8 @@ describe("LoginWorkflow edge cases — silent-audit fallback", () => {
     // truthy — provide an explicit no-op so we're testing the FALLBACK path
     // when the registered emitter does nothing (proxies the absence case).
     const app = await prepareWfApp({
-      loginOpts: { finalize: { auditLogin: true }, mfa: { mode: "disabled" } },
+      loginOpts: { finalize: { auditLogin: true } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
       auditEmitter: { emit: () => undefined },
     });
     await seedActiveUser(app.users, "alice", "Password123");

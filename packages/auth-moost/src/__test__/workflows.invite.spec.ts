@@ -2,7 +2,8 @@ import { generateTotpCode } from "@aooth/user";
 import { describe, expect, it } from "vite-plus/test";
 
 import { ProfileWithRolesForm } from "./fixtures/profile-with-roles.as";
-import { prepareWfApp, seedActiveUser } from "./workflow-utils";
+import { InviteWorkflow } from "../workflows/index";
+import { prepareWfApp, seedActiveUser, withInviteMfaCtx } from "./workflow-utils";
 
 /**
  * Wire trace for the invite workflow:
@@ -317,9 +318,9 @@ describe("InviteWorkflowOpts — mfa.mode='required' forced enrollment", () => {
   it("sms path: invitee enrolls before activation; account active + sms method confirmed + default", async () => {
     const app = await prepareWfApp({
       inviteOpts: {
-        mfa: { mode: "required" },
         accept: { showConfirmation: false },
       },
+      inviteWorkflowClass: withInviteMfaCtx(InviteWorkflow, { mfaMode: "required" }),
     });
 
     const r4 = await driveToPostPassword(app, "invitee@example.com");
@@ -378,9 +379,9 @@ describe("InviteWorkflowOpts — mfa.mode='required' forced enrollment", () => {
   it("totp path: secret provisioned, code accepted, method confirmed, no pincode emitted", async () => {
     const app = await prepareWfApp({
       inviteOpts: {
-        mfa: { mode: "required" },
         accept: { showConfirmation: false },
       },
+      inviteWorkflowClass: withInviteMfaCtx(InviteWorkflow, { mfaMode: "required" }),
     });
 
     const r4 = await driveToPostPassword(app, "totper@example.com");
@@ -430,7 +431,8 @@ describe("InviteWorkflowOpts — mfa.mode='required' forced enrollment", () => {
   // semantics — so the test pins the no-prompt branch explicitly.)
   it("mode='disabled': invite skips enrollment, user activates with no MFA", async () => {
     const app = await prepareWfApp({
-      inviteOpts: { accept: { showConfirmation: false }, mfa: { mode: "disabled" } },
+      inviteOpts: { accept: { showConfirmation: false } },
+      inviteWorkflowClass: withInviteMfaCtx(InviteWorkflow, { mfaMode: "disabled" }),
     });
 
     const r4 = await driveToPostPassword(app, "nomfa@example.com");
@@ -453,9 +455,9 @@ describe("InviteWorkflowOpts — mfa.mode='required' forced enrollment", () => {
   it("totp path: invalid setup code → form error, method stays unconfirmed, account NOT activated", async () => {
     const app = await prepareWfApp({
       inviteOpts: {
-        mfa: { mode: "required" },
         accept: { showConfirmation: false },
       },
+      inviteWorkflowClass: withInviteMfaCtx(InviteWorkflow, { mfaMode: "required" }),
     });
 
     const r4 = await driveToPostPassword(app, "badcode@example.com");
@@ -494,9 +496,9 @@ describe("InviteWorkflowOpts — mfa.mode='optional' skip action", () => {
   it("optional + invitee skips MFA setup → invite completes, account active, no MFA on user", async () => {
     const app = await prepareWfApp({
       inviteOpts: {
-        mfa: { mode: "optional" },
         accept: { showConfirmation: false },
       },
+      inviteWorkflowClass: withInviteMfaCtx(InviteWorkflow, { mfaMode: "optional" }),
     });
 
     const r4 = await driveToPostPassword(app, "optskip@example.com");
@@ -530,9 +532,9 @@ describe("InviteWorkflowOpts — mfa.mode='optional' skip action", () => {
   it("optional + invitee enrolls totp → totp confirmed + default, account active", async () => {
     const app = await prepareWfApp({
       inviteOpts: {
-        mfa: { mode: "optional" },
         accept: { showConfirmation: false },
       },
+      inviteWorkflowClass: withInviteMfaCtx(InviteWorkflow, { mfaMode: "optional" }),
     });
 
     const r4 = await driveToPostPassword(app, "optenroll@example.com");
@@ -584,9 +586,12 @@ describe("InviteWorkflowOpts — mfa enrollment ergonomics (PR7-1)", () => {
   it("T-I1: required + transports=['totp'] → no picker pause, secret auto-provisioned, code accepted", async () => {
     const app = await prepareWfApp({
       inviteOpts: {
-        mfa: { mode: "required", transports: ["totp"] },
         accept: { showConfirmation: false },
       },
+      inviteWorkflowClass: withInviteMfaCtx(InviteWorkflow, {
+        mfaMode: "required",
+        availableMfaTransports: ["totp"],
+      }),
     });
 
     const r4 = await driveToPostPassword(app, "auto-totp@example.com");
@@ -635,9 +640,9 @@ describe("InviteWorkflowOpts — mfa enrollment ergonomics (PR7-1)", () => {
   it("T-I2: optional + picks sms + skip from address form → activates, no method persisted", async () => {
     const app = await prepareWfApp({
       inviteOpts: {
-        mfa: { mode: "optional" },
         accept: { showConfirmation: false },
       },
+      inviteWorkflowClass: withInviteMfaCtx(InviteWorkflow, { mfaMode: "optional" }),
     });
 
     const r4 = await driveToPostPassword(app, "opt-addr-skip@example.com");
@@ -677,9 +682,9 @@ describe("InviteWorkflowOpts — mfa enrollment ergonomics (PR7-1)", () => {
   it("T-I3: useDifferentMethod from Phase 3 (totp) → totp row REMOVED, re-pick sms completes", async () => {
     const app = await prepareWfApp({
       inviteOpts: {
-        mfa: { mode: "required" },
         accept: { showConfirmation: false },
       },
+      inviteWorkflowClass: withInviteMfaCtx(InviteWorkflow, { mfaMode: "required" }),
     });
 
     const r4 = await driveToPostPassword(app, "invite-switch@example.com");

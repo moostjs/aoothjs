@@ -248,64 +248,59 @@ export class AuthWorkflowBase {
       issuer,
     } = deps;
 
-    // Phase 1: pick method. For TOTP also provision + persist the secret
-    // immediately so the confirm step can render the QR.
+    // Phase 0: ensure `enrollAvailableTransports` populated whether the caller
+    // entered with no `enrollMethod` (Phase 1 will set it) or with one already
+    // chosen by a consumer setter override (e.g. `inviteSetupMfa`).
+    if (!ctx.enrollAvailableTransports) {
+      ctx.enrollAvailableTransports = [...transports];
+    }
+
+    // Phase 1: pick method when none is set yet. Auto-pick if only one
+    // transport; otherwise pause for the picker form. Returns at the end so
+    // TOTP secret provisioning / Phase 2 run on the next loop iteration —
+    // preserves the per-iteration form-scope boundary in `useAtscriptWf`.
     if (!ctx.enrollMethod) {
-      if (!ctx.enrollAvailableTransports) {
-        ctx.enrollAvailableTransports = [...transports];
-      }
-      // AUTO-PICK when only one transport is configured — skip the picker
-      // form entirely, no input pause. For TOTP we still provision the secret
-      // here so Phase 3 can verify against it (same branch as the user-picks-
-      // totp path below). For sms/email the loop iterates to Phase 2 to
-      // collect the address.
       if (transports.length === 1) {
-        const only = transports[0];
-        ctx.enrollMethod = only;
-        if (only === "totp") {
-          const secret = generateTotpSecret();
-          const uri = generateTotpUri(secret, issuer, username);
-          await this.withStoreErrorTranslation(() =>
-            users.addMfaMethod(username, {
-              name: "totp",
-              value: secret,
-              confirmed: false,
-            }),
-          );
-          ctx.enrollSecret = secret;
-          ctx.enrollUri = uri;
+        ctx.enrollMethod = transports[0];
+      } else {
+        const wf = useAtscriptWf(forms.pickMethod);
+        // `'optional'` mode: the pickMethod form exposes a `skip` action. Read
+        // it BEFORE `resolveInput()` so the user can decline without filling in
+        // any field. A skip marks enrollment complete without persisting a
+        // method — the caller's loop-exit signal flips next iteration. No
+        // cleanup needed at Phase 1 — nothing has been persisted yet.
+        if (deps.mode === "optional" && wf.resolveAction() === "skip") {
+          ctx.enrollDone = true;
+          return;
         }
-        return;
+        const input = wf.resolveInput() as { method: string };
+        const picked = input.method as MfaTransport;
+        if (!ctx.enrollAvailableTransports.includes(picked)) {
+          throw wf.requireInput({ errors: { method: "Unknown method" } });
+        }
+        ctx.enrollMethod = picked;
       }
-      const wf = useAtscriptWf(forms.pickMethod);
-      // `'optional'` mode: the pickMethod form exposes a `skip` action. Read
-      // it BEFORE `resolveInput()` so the user can decline without filling in
-      // any field. A skip marks enrollment complete without persisting a
-      // method — the caller's loop-exit signal flips next iteration. No
-      // cleanup needed at Phase 1 — nothing has been persisted yet.
-      if (deps.mode === "optional" && wf.resolveAction() === "skip") {
-        ctx.enrollDone = true;
-        return;
-      }
-      const input = wf.resolveInput() as { method: string };
-      const picked = input.method as MfaTransport;
-      if (!ctx.enrollAvailableTransports.includes(picked)) {
-        throw wf.requireInput({ errors: { method: "Unknown method" } });
-      }
-      ctx.enrollMethod = picked;
-      if (picked === "totp") {
-        const secret = generateTotpSecret();
-        const uri = generateTotpUri(secret, issuer, username);
-        await this.withStoreErrorTranslation(() =>
-          users.addMfaMethod(username, {
-            name: "totp",
-            value: secret,
-            confirmed: false,
-          }),
-        );
-        ctx.enrollSecret = secret;
-        ctx.enrollUri = uri;
-      }
+      return;
+    }
+
+    // Idempotent TOTP secret provisioning. Runs whether `enrollMethod` was
+    // chosen by the user (Phase 1 above), auto-picked from a single transport,
+    // or pre-set by a consumer setter override (e.g. `inviteSetupMfa`).
+    // Gated on `!ctx.enrollSecret` so it runs exactly once per enrollment
+    // attempt — re-entry after `useDifferentMethod` clears `enrollSecret` via
+    // `cleanupEnrollment`, so a switch FROM totp TO totp re-provisions cleanly.
+    if (ctx.enrollMethod === "totp" && !ctx.enrollSecret) {
+      const secret = generateTotpSecret();
+      const uri = generateTotpUri(secret, issuer, username);
+      await this.withStoreErrorTranslation(() =>
+        users.addMfaMethod(username, {
+          name: "totp",
+          value: secret,
+          confirmed: false,
+        }),
+      );
+      ctx.enrollSecret = secret;
+      ctx.enrollUri = uri;
       return;
     }
 

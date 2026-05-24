@@ -1,7 +1,8 @@
 import { generateTotpCode, generateTotpSecret } from "@aooth/user";
 import { describe, expect, it } from "vite-plus/test";
 
-import { prepareWfApp, seedActiveUser } from "./workflow-utils";
+import { LoginWorkflow } from "../workflows/index";
+import { prepareWfApp, seedActiveUser, withLoginMfaCtx } from "./workflow-utils";
 
 /**
  * Wire trace for the login workflow:
@@ -25,7 +26,9 @@ describe("LoginWorkflow", () => {
     // and the un-enrolled user passes straight through to `issue`. The 3-state
     // opts default is `'optional'` which would otherwise prompt for enrollment
     // (with skip) for users with 0 methods.
-    const app = await prepareWfApp({ loginOpts: { mfa: { mode: "disabled" } } });
+    const app = await prepareWfApp({
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
+    });
     await seedActiveUser(app.users, "alice", "Password123");
 
     const r1 = await app.trigger({ wfid: "auth.login" });

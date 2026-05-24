@@ -22,7 +22,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { ProfileCompleteForm } from "../atscript/models/forms.as";
 import { type LoginWfCtx, LoginWorkflow, type LoginWorkflowOpts } from "../workflows/index";
-import { prepareWfApp, seedActiveUser } from "./workflow-utils";
+import { prepareWfApp, seedActiveUser, withLoginMfaCtx } from "./workflow-utils";
 
 // ── Subclass end-to-end smoke ────────────────────────────────────────────────
 describe("LoginWorkflow subclass — end-to-end registration shape", () => {
@@ -50,8 +50,7 @@ describe("LoginWorkflow subclass — end-to-end registration shape", () => {
       }
     }
     const app = await prepareWfApp({
-      loginOpts: { mfa: { transports: ["totp"] } },
-      loginWorkflowClass: MyLogin,
+      loginWorkflowClass: withLoginMfaCtx(MyLogin, { availableMfaTransports: ["totp"] }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const secret = generateTotpSecret();
@@ -109,9 +108,8 @@ describe("LoginWorkflow subclass — applyProfile override", () => {
         forms: {
           profileComplete: ProfileCompleteForm as unknown as TAtscriptAnnotatedType,
         },
-        mfa: { mode: "disabled" },
       },
-      loginWorkflowClass: ProfileLogin,
+      loginWorkflowClass: withLoginMfaCtx(ProfileLogin, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r1 = await app.trigger({ wfid: "auth.login" });
@@ -157,9 +155,8 @@ describe("LoginWorkflow subclass — applyConsentMarketing override", () => {
     const app = await prepareWfApp({
       loginOpts: {
         acceptance: { consentMarketing: true },
-        mfa: { mode: "disabled" },
       },
-      loginWorkflowClass: ConsentLogin,
+      loginWorkflowClass: withLoginMfaCtx(ConsentLogin, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r1 = await app.trigger({ wfid: "auth.login" });
@@ -211,8 +208,8 @@ describe("LoginWorkflow subclass — loadTenants override", () => {
       }
     }
     const app = await prepareWfApp({
-      loginOpts: { multiContext: { tenantSelect: true }, mfa: { mode: "disabled" } },
-      loginWorkflowClass: TenantLogin,
+      loginOpts: { multiContext: { tenantSelect: true } },
+      loginWorkflowClass: withLoginMfaCtx(TenantLogin, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r1 = await app.trigger({ wfid: "auth.login" });
@@ -254,8 +251,8 @@ describe("LoginWorkflow subclass — loadTenants override", () => {
       }
     }
     const app = await prepareWfApp({
-      loginOpts: { multiContext: { tenantSelect: true }, mfa: { mode: "disabled" } },
-      loginWorkflowClass: TenantLogin,
+      loginOpts: { multiContext: { tenantSelect: true } },
+      loginWorkflowClass: withLoginMfaCtx(TenantLogin, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r1 = await app.trigger({ wfid: "auth.login" });
@@ -297,8 +294,8 @@ describe("LoginWorkflow subclass — loadPersonas override", () => {
       }
     }
     const app = await prepareWfApp({
-      loginOpts: { multiContext: { personaSelect: true }, mfa: { mode: "disabled" } },
-      loginWorkflowClass: PersonaLogin,
+      loginOpts: { multiContext: { personaSelect: true } },
+      loginWorkflowClass: withLoginMfaCtx(PersonaLogin, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r1 = await app.trigger({ wfid: "auth.login" });
@@ -340,9 +337,8 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
     const app = await prepareWfApp({
       loginOpts: {
         sessionPolicy: { concurrencyLimit: { max: 2, onLimit: "kickPrompt" } },
-        mfa: { mode: "disabled" },
       },
-      loginWorkflowClass: KickLogin,
+      loginWorkflowClass: withLoginMfaCtx(KickLogin, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r1 = await app.trigger({ wfid: "auth.login" });
@@ -376,9 +372,8 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
     const app = await prepareWfApp({
       loginOpts: {
         sessionPolicy: { concurrencyLimit: { max: 2, onLimit: "kickPrompt" } },
-        mfa: { mode: "disabled" },
       },
-      loginWorkflowClass: KickLogin,
+      loginWorkflowClass: withLoginMfaCtx(KickLogin, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r1 = await app.trigger({ wfid: "auth.login" });
@@ -414,9 +409,8 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
     const app = await prepareWfApp({
       loginOpts: {
         sessionPolicy: { concurrencyLimit: { max: 2, onLimit: "kickPrompt" } },
-        mfa: { mode: "disabled" },
       },
-      loginWorkflowClass: KickLogin,
+      loginWorkflowClass: withLoginMfaCtx(KickLogin, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r1 = await app.trigger({ wfid: "auth.login" });
@@ -448,7 +442,10 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
 describe("LoginWorkflow runtime fail-loud — deliver() not configured", () => {
   it("mfa email path + NO EmailSender registered → runtime throw (500 with 'EmailSender required')", async () => {
     const app = await prepareWfApp({
-      loginOpts: { mfa: { transports: ["email"], mode: "optional" } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, {
+        mfaMode: "optional",
+        availableMfaTransports: ["email"],
+      }),
       registerEmailSender: false,
     });
     await seedActiveUser(app.users, "alice", "Password123");
@@ -476,8 +473,8 @@ describe("LoginWorkflow runtime fail-loud — deliver() not configured", () => {
       loginOpts: {
         finalize: { notifyNewDevice: true },
         deviceTrust: { enabled: true, optIn: false },
-        mfa: { transports: ["totp"] },
       },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { availableMfaTransports: ["totp"] }),
       registerEmailSender: false,
     });
     await seedActiveUser(app.users, "alice", "Password123");

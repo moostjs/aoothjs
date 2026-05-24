@@ -1,12 +1,20 @@
-import type {
-  AuthLoginResponse,
-  InviteWorkflowOpts,
-  LoginWorkflowOpts,
-  RecoveryWorkflowOpts,
+import {
+  type AuthLoginResponse,
+  type InviteWfCtx,
+  InviteWorkflow,
+  type InviteWorkflowOpts,
+  type LoginWfCtx,
+  LoginWorkflow,
+  type LoginWorkflowOpts,
+  type MfaTransport,
+  Public,
+  type RecoveryWorkflowOpts,
 } from "@aooth/auth-moost";
 import type { WfFinished } from "@atscript/moost-wf";
-import { generateTotpCode } from "@aooth/user";
-import { clearGlobalWooks, getMoostInfact } from "moost";
+import { AuthCredential } from "@aooth/auth";
+import { generateTotpCode, UserService } from "@aooth/user";
+import { Step, WorkflowParam } from "@moostjs/event-wf";
+import { clearGlobalWooks, Controller, getMoostInfact, Inherit, Injectable } from "moost";
 import { expect } from "vite-plus/test";
 
 import { type AppHandle, buildApp } from "../src/app";
@@ -97,6 +105,26 @@ export interface BuildTestAppOptions {
    * through the full HTTP+DI stack instead of monkey-patching opts.
    */
   inviteWorkflowClass?: new (...args: never[]) => unknown;
+  /**
+   * Replace the default `DemoLoginWorkflow` with a consumer-supplied class.
+   * Mirrors `inviteWorkflowClass`. Most tests want the demo's `loadTenants` /
+   * `loadPersonas` / `credentials`-injection overrides preserved — prefer
+   * `loginMfaCtx` (below) for the common "just set mfa values" case, and
+   * use this knob only when you also need a full subclass override.
+   */
+  loginWorkflowClass?: new (...args: never[]) => unknown;
+  /**
+   * Inject static MFA ctx values into the login workflow without forking a
+   * subclass. PR9 stripped `mfa.mode` / `mfa.transports` from
+   * `LoginWorkflowOpts`; tests that previously did
+   * `loginOpts: { mfa: { mode: 'required', transports: ['totp'] } }` now pass
+   * `loginMfaCtx: { mfaMode: 'required', availableMfaTransports: ['totp'] }`.
+   * `buildApp` wraps the demo (or `loginWorkflowClass`, if provided) with
+   * `withLoginMfaCtx(...)`.
+   */
+  loginMfaCtx?: WithLoginMfaCtxOverrides;
+  /** Invite-side counterpart of `loginMfaCtx`. */
+  inviteMfaCtx?: WithInviteMfaCtxOverrides;
 }
 
 export interface FetchInit extends RequestInit {
@@ -192,6 +220,9 @@ export async function buildTestApp(opts: BuildTestAppOptions = {}): Promise<Test
     recoveryOpts: opts.recoveryOpts,
     inviteOpts: opts.inviteOpts,
     inviteWorkflowClass: opts.inviteWorkflowClass,
+    loginWorkflowClass: opts.loginWorkflowClass,
+    loginMfaCtx: opts.loginMfaCtx,
+    inviteMfaCtx: opts.inviteMfaCtx,
   });
 
   const fixtures = opts.seed === false ? SENTINEL_FIXTURES : await seedAll(appHandle);
@@ -539,4 +570,127 @@ export async function runTotpLoginWorkflow(
     wfs: credBody.wfs,
     input: { code },
   });
+}
+
+// ── Static-ctx setter overrides ──────────────────────────────────────────────
+//
+// PR9 stripped `mfa.mode` / `mfa.transports` from `LoginWorkflowOpts` and
+// `InviteWorkflowOpts`. Those values are now produced by ONE atomic `@Step`
+// setter per workflow — `prepareMfaSetup` on `LoginWorkflow`, `inviteSetupMfa`
+// on `InviteWorkflow` — whose default bodies hardcode the library defaults.
+// Consumers (and tests) override the whole step to inject different values.
+//
+// The two helpers below generate a tiny override subclass for the common
+// "set static MFA ctx values" case so e2e tests don't have to declare a
+// full subclass each. The override calls `super.X(ctx)` first and then writes
+// only the fields the test supplied — so test-supplied values win over the
+// base setter's defaults (currentMfa / enrollMethod auto-pick) while
+// unsupplied fields keep the wrapped base class's behaviour. These helpers
+// mirror the ones in `packages/auth-moost/src/__test__/workflow-utils.ts`
+// (test-only — not on the public surface) and are recreated here because
+// `e2e-demo` is itself `private: true`, so its harness can carry its own copy.
+
+export interface WithLoginMfaCtxOverrides {
+  mfaMode?: "required" | "optional" | "disabled";
+  availableMfaTransports?: MfaTransport[];
+  currentMfa?: MfaTransport;
+}
+
+/**
+ * Wrap a `LoginWorkflow` subclass with a tiny sub-subclass that statically
+ * sets the supplied MFA ctx fields. Useful for tests that previously did
+ * `loginOpts: { mfa: { mode: 'required' } }` — that opts shape was stripped
+ * in PR9; the value now lives on ctx, populated by the `prepareMfaSetup` step.
+ *
+ * Stacks cleanly on top of consumer subclasses (e.g. `DemoLoginWorkflow`):
+ *   loginWorkflowClass: withLoginMfaCtx(DemoLoginWorkflow, { mfaMode: 'disabled' })
+ */
+export function withLoginMfaCtx<W extends typeof LoginWorkflow>(
+  Base: W,
+  ctx: WithLoginMfaCtxOverrides,
+): W {
+  @Inherit()
+  @Injectable("FOR_EVENT")
+  @Controller()
+  class WithLoginCtx extends (Base as unknown as new (
+    users: UserService,
+    auth: AuthCredential,
+  ) => LoginWorkflow) {
+    // Forwarding ctor required so TS emits design:paramtypes metadata for moost DI.
+    // eslint-disable-next-line no-useless-constructor
+    constructor(users: UserService, auth: AuthCredential) {
+      super(users, auth);
+    }
+
+    @Step("prepareMfaSetup")
+    @Public()
+    override prepareMfaSetup(
+      @WorkflowParam("context") c: LoginWfCtx,
+    ): undefined | Promise<undefined> {
+      const baseResult = super.prepareMfaSetup(c);
+      const apply = (): undefined => {
+        if (ctx.mfaMode !== undefined) c.mfaMode = ctx.mfaMode;
+        if (ctx.availableMfaTransports !== undefined) {
+          c.availableMfaTransports = [...ctx.availableMfaTransports];
+        }
+        if (ctx.currentMfa !== undefined) c.currentMfa = ctx.currentMfa;
+        if (!c.currentMfa && c.availableMfaTransports?.length === 1) {
+          c.currentMfa = c.availableMfaTransports[0];
+        }
+        return undefined;
+      };
+      return baseResult instanceof Promise ? baseResult.then(apply) : apply();
+    }
+  }
+  return WithLoginCtx as unknown as W;
+}
+
+export interface WithInviteMfaCtxOverrides {
+  mfaMode?: "required" | "optional" | "disabled";
+  availableMfaTransports?: MfaTransport[];
+  enrollMethod?: MfaTransport;
+}
+
+/**
+ * Invite-side counterpart of `withLoginMfaCtx`. Overrides the single
+ * `inviteSetupMfa` setter step, writing whichever fields are supplied AFTER
+ * `super.inviteSetupMfa(ctx)` runs so the test-supplied values win.
+ */
+export function withInviteMfaCtx<W extends typeof InviteWorkflow>(
+  Base: W,
+  ctx: WithInviteMfaCtxOverrides,
+): W {
+  @Inherit()
+  @Injectable("FOR_EVENT")
+  @Controller()
+  class WithInviteCtx extends (Base as unknown as new (
+    users: UserService,
+    auth: AuthCredential,
+  ) => InviteWorkflow) {
+    // eslint-disable-next-line no-useless-constructor -- see withLoginMfaCtx for why
+    constructor(users: UserService, auth: AuthCredential) {
+      super(users, auth);
+    }
+
+    @Step("inviteSetupMfa")
+    @Public()
+    override inviteSetupMfa(
+      @WorkflowParam("context") c: InviteWfCtx,
+    ): undefined | Promise<undefined> {
+      const baseResult = super.inviteSetupMfa(c);
+      const apply = (): undefined => {
+        if (ctx.mfaMode !== undefined) c.mfaMode = ctx.mfaMode;
+        if (ctx.availableMfaTransports !== undefined) {
+          c.availableMfaTransports = [...ctx.availableMfaTransports];
+        }
+        if (ctx.enrollMethod !== undefined) c.enrollMethod = ctx.enrollMethod;
+        if (!c.enrollMethod && c.availableMfaTransports?.length === 1) {
+          c.enrollMethod = c.availableMfaTransports[0];
+        }
+        return undefined;
+      };
+      return baseResult instanceof Promise ? baseResult.then(apply) : apply();
+    }
+  }
+  return WithInviteCtx as unknown as W;
 }
