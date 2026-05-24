@@ -59,6 +59,8 @@ import {
   type LoginWorkflowOpts,
   type MfaTransport,
   RecoveryWorkflow,
+  type RecoveryPolicyOverrides,
+  type RecoveryWfCtx,
   type RecoveryWorkflowOpts,
 } from "../workflows/index";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
@@ -205,11 +207,23 @@ export interface PrepareWfOpts {
    */
   auditEmitter?: AuditEmitter;
   /**
-   * Nested-pojo opts handed to `RecoveryWorkflow`'s constructor. When omitted,
-   * the harness builds a magicLink-mode opts object from the per-test
-   * `recoveryTokenTtlMs` (passes as `delivery.magicLinkTtlMs`).
+   * Nested-pojo opts handed to `RecoveryWorkflow`'s constructor. Post-resolver
+   * reshape this is infrastructure-only (magic-link TTL, OTP codeLength/ttlMs/
+   * resendCooldownMs, forms); policy moved to the `resolveXxx(ctx)` getter
+   * surface — use `recoveryPolicy` below.
    */
   recoveryOpts?: RecoveryWorkflowOpts;
+  /**
+   * Per-test recovery policy override applied by the harness's
+   * RecoveryWorkflow subclass via `resolveXxx(ctx)` overrides. Mirrors the
+   * resolved-ctx field shape exactly so test specs read like a snapshot of
+   * the in-flow policy. Tests that previously poked
+   * `recoveryOpts: { delivery: { mode: 'otp', otp: { transports: [...] } } }` /
+   * `recoveryOpts: { preReset: { ... } }` / `recoveryOpts: { postReset: { ... } }`
+   * etc. flip the matching group here. Falls through to `super.resolveXxx(ctx)`
+   * for groups left undefined.
+   */
+  recoveryPolicy?: RecoveryPolicyOverrides;
   /**
    * Consumer subclass of `RecoveryWorkflow` registered in place of the base
    * class. Use this when a test needs to override a `protected` method
@@ -374,6 +388,7 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
   const RecoveryCtor = buildHarnessRecoveryClass({
     base: opts.recoveryWorkflowClass ?? RecoveryWorkflow,
     opts: recoveryOpts,
+    policy: opts.recoveryPolicy,
     emails,
     sms,
     emailSender,
@@ -806,6 +821,7 @@ async function harnessDeliver(
 interface HarnessRecoveryDeps {
   base: typeof RecoveryWorkflow;
   opts: RecoveryWorkflowOpts;
+  policy?: PrepareWfOpts["recoveryPolicy"];
   emails: CapturedEmail[];
   sms: CapturedSms[];
   emailSender: EmailSender;
@@ -822,6 +838,7 @@ function buildHarnessRecoveryClass(
   const {
     base: Base,
     opts: recoveryOpts,
+    policy,
     emails,
     sms,
     emailSender,
@@ -860,6 +877,44 @@ function buildHarnessRecoveryClass(
         return await emailToUserId(email);
       }
       return super.emailToUserId(email);
+    }
+
+    // ── Per-test policy overrides ──
+    //
+    // When the test supplied `recoveryPolicy.<group>`, return it; otherwise
+    // fall through to `super.resolveXxx(ctx)` (library defaults). Mirrors the
+    // login / invite harness pattern.
+    protected override resolveDelivery(
+      ctx: RecoveryWfCtx,
+    ): NonNullable<RecoveryWfCtx["delivery"]> | Promise<NonNullable<RecoveryWfCtx["delivery"]>> {
+      if (policy?.delivery) return policy.delivery;
+      return super.resolveDelivery(ctx);
+    }
+    protected override resolvePreReset(
+      ctx: RecoveryWfCtx,
+    ): NonNullable<RecoveryWfCtx["preReset"]> | Promise<NonNullable<RecoveryWfCtx["preReset"]>> {
+      if (policy?.preReset) return policy.preReset;
+      return super.resolvePreReset(ctx);
+    }
+    protected override resolvePostReset(
+      ctx: RecoveryWfCtx,
+    ): NonNullable<RecoveryWfCtx["postReset"]> | Promise<NonNullable<RecoveryWfCtx["postReset"]>> {
+      if (policy?.postReset) return policy.postReset;
+      return super.resolvePostReset(ctx);
+    }
+    protected override resolveAltActions(
+      ctx: RecoveryWfCtx,
+    ):
+      | NonNullable<RecoveryWfCtx["altActions"]>
+      | Promise<NonNullable<RecoveryWfCtx["altActions"]>> {
+      if (policy?.altActions) return policy.altActions;
+      return super.resolveAltActions(ctx);
+    }
+    protected override resolveAudit(
+      ctx: RecoveryWfCtx,
+    ): NonNullable<RecoveryWfCtx["audit"]> | Promise<NonNullable<RecoveryWfCtx["audit"]>> {
+      if (policy?.audit) return policy.audit;
+      return super.resolveAudit(ctx);
     }
   }
   return HarnessRecovery;

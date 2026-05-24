@@ -131,7 +131,9 @@ describe("WF-RECOVERY — postReset options", () => {
     // WF-RECOVERY-05 (the "false" case) with the opposite assertion to prove
     // the option threads through the full HTTP / session-store stack.
     const app = await buildTestApp({
-      recoveryOpts: { postReset: { revokeAllSessions: true, freshLoginRequired: false } },
+      recoveryPolicy: {
+        postReset: { revokeAllSessions: true, freshLoginRequired: false, loginUrl: "/login" },
+      },
     });
     try {
       const carol = app.fixtures.users.t1_carol;
@@ -156,7 +158,9 @@ describe("WF-RECOVERY — postReset options", () => {
     // Defence: no tokens leak when freshLoginRequired forces the user back
     // to sign-in.
     const app = await buildTestApp({
-      recoveryOpts: { postReset: { freshLoginRequired: true, loginUrl: "/sign-in" } },
+      recoveryPolicy: {
+        postReset: { freshLoginRequired: true, loginUrl: "/sign-in", revokeAllSessions: true },
+      },
     });
     try {
       const bob = app.fixtures.users.t1_bob;

@@ -10,6 +10,7 @@ import {
   type LoginWorkflowOpts,
   type MfaTransport,
   Public,
+  type RecoveryPolicyOverrides,
   type RecoveryWorkflowOpts,
 } from "@aooth/auth-moost";
 import type { WfFinished } from "@atscript/moost-wf";
@@ -107,6 +108,14 @@ export interface BuildTestAppOptions {
   loginPolicy?: LoginPolicyOverrides;
   /** Deep-merged into the demo's `demoRecoveryOpts` — see `buildApp`. */
   recoveryOpts?: RecoveryWorkflowOpts;
+  /**
+   * Per-test recovery policy override — applied by `DemoRecoveryWorkflow`'s
+   * `resolveXxx(ctx)` overrides. Use for tests that previously poked
+   * `recoveryOpts: { postReset: { ... } }` / `recoveryOpts: { delivery: {
+   * mode: ..., otp: { transports: [...] } } }` — those keys moved off
+   * `RecoveryWorkflowOpts` onto the resolver surface.
+   */
+  recoveryPolicy?: RecoveryPolicyOverrides;
   /** Deep-merged into the demo's `demoInviteOpts` — see `buildApp`. */
   inviteOpts?: InviteWorkflowOpts;
   /**
@@ -237,6 +246,7 @@ export async function buildTestApp(opts: BuildTestAppOptions = {}): Promise<Test
     loginOpts: opts.loginOpts,
     loginPolicy: opts.loginPolicy,
     recoveryOpts: opts.recoveryOpts,
+    recoveryPolicy: opts.recoveryPolicy,
     inviteOpts: opts.inviteOpts,
     invitePolicy: opts.invitePolicy,
     inviteWorkflowClass: opts.inviteWorkflowClass,

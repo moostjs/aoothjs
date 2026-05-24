@@ -63,6 +63,7 @@ export {
   DefaultRecoveryWorkflow,
   parseInviteRoles,
   RecoveryWorkflow,
+  type RecoveryPolicyOverrides,
   type RecoveryWfCtx,
   type RecoveryDeliveryMode,
   type RecoveryOtpTransport,

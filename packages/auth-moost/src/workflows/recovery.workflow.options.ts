@@ -1,17 +1,10 @@
 /**
  * `RecoveryWorkflowOpts` — nested-pojo configuration for `RecoveryWorkflow`.
  *
- * Phase 3 of the workflow OOP-reshape (see TASKS.md): the options class +
- * callbacks have been replaced by a nested-object pojo passed as the first
- * ctor arg, plus protected methods on `RecoveryWorkflow` that consumers
- * override via subclassing. Defaults are applied by `mergeRecoveryOpts(opts)`
- * so step bodies + schema conditions can read `ctx.opts.<group>.<flag>`
- * without `?.`.
- *
- * Defaults preserve today's behavior: one-step magic-link flow with anti-
- * enumeration short-circuit on unknown email, fresh-login redirect after
- * reset. (Rate-limit was dropped from the workflow surface — consumers who
- * want a cap wire it themselves at the trigger / HTTP layer.)
+ * Post-resolver reshape: this is infrastructure-only (magic-link TTL, OTP
+ * timers/length, replaceable forms). Policy (delivery mode + OTP transports,
+ * preReset, postReset, altActions, audit) moved to `resolveXxx(ctx)` getter
+ * overrides on `RecoveryWorkflow` — see `RecoveryPolicyOverrides`.
  */
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 
@@ -31,35 +24,12 @@ export type RecoveryOtpTransport = "sms" | "email";
 
 export interface RecoveryWorkflowOpts {
   delivery?: {
-    mode?: RecoveryDeliveryMode;
     magicLinkTtlMs?: number;
     otp?: {
-      transports?: RecoveryOtpTransport[];
       codeLength?: number;
       ttlMs?: number;
       resendCooldownMs?: number;
     };
-  };
-  preReset?: {
-    requireKnownFactor?: boolean;
-    /**
-     * Restrict which factor kinds the `RecoveryFactorForm` offers. Default
-     * (`undefined`) → both `phone` and `totp` are eligible; the actual list
-     * shown to the user is further filtered to factors they have enrolled.
-     * Set e.g. to `["totp"]` to disable phone-last-4 verification entirely.
-     */
-    allowedFactors?: Array<"phone" | "totp">;
-  };
-  postReset?: {
-    revokeAllSessions?: boolean;
-    freshLoginRequired?: boolean;
-    loginUrl?: string;
-  };
-  altActions?: {
-    backToLogin?: boolean;
-  };
-  audit?: {
-    enabled?: boolean;
   };
   /**
    * Replaceable form schemas. Each field defaults to the corresponding
@@ -76,34 +46,17 @@ export interface RecoveryWorkflowOpts {
 
 /**
  * Fully-resolved view used by the workflow at runtime — every nested group is
- * always populated by `mergeRecoveryOpts`, so schema conditions can read
- * `ctx.opts.<group>.<flag>` directly without optional chaining.
+ * always populated by `mergeRecoveryOpts`, so step bodies can read
+ * `this.opts.<group>.<flag>` directly without optional chaining.
  */
 export interface ResolvedRecoveryWorkflowOpts {
   delivery: {
-    mode: RecoveryDeliveryMode;
     magicLinkTtlMs: number;
     otp: {
-      transports: RecoveryOtpTransport[];
       codeLength: number;
       ttlMs: number;
       resendCooldownMs: number;
     };
-  };
-  preReset: {
-    requireKnownFactor: boolean;
-    allowedFactors?: Array<"phone" | "totp">;
-  };
-  postReset: {
-    revokeAllSessions: boolean;
-    freshLoginRequired: boolean;
-    loginUrl: string;
-  };
-  altActions: {
-    backToLogin: boolean;
-  };
-  audit: {
-    enabled: boolean;
   };
   forms: {
     emailIdentifier: TAtscriptAnnotatedType;
@@ -124,36 +77,14 @@ export function mergeRecoveryOpts(opts: RecoveryWorkflowOpts = {}): ResolvedReco
   const inputOtp = inputDelivery.otp ?? {};
   return {
     delivery: {
-      mode: "magicLink",
       magicLinkTtlMs: DEFAULT_RECOVERY_TOKEN_TTL_MS,
       ...inputDelivery,
       otp: {
-        transports: ["email"],
         codeLength: 6,
         ttlMs: 5 * 60_000,
         resendCooldownMs: 60_000,
         ...inputOtp,
       },
-    },
-    preReset: {
-      requireKnownFactor: false,
-      ...opts.preReset,
-    },
-    postReset: {
-      // safe to default-on since CredentialStoreJwt.passesEpoch uses >= (no race with issue in same tick)
-      revokeAllSessions: true,
-      // SPA-friendly default; server-rendered apps opt in via freshLoginRequired: true
-      freshLoginRequired: false,
-      loginUrl: "/login",
-      ...opts.postReset,
-    },
-    altActions: {
-      backToLogin: true,
-      ...opts.altActions,
-    },
-    audit: {
-      enabled: true,
-      ...opts.audit,
     },
     forms: {
       emailIdentifier: EmailIdentifierForm as unknown as TAtscriptAnnotatedType,

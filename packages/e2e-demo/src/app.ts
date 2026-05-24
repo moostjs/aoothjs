@@ -29,6 +29,8 @@ import {
   LoginWorkflow,
   type LoginWorkflowOpts,
   Public,
+  type RecoveryPolicyOverrides,
+  type RecoveryWfCtx,
   RecoveryWorkflow,
   type RecoveryWorkflowOpts,
   useAuth,
@@ -118,6 +120,16 @@ export interface BuildAppOptions {
    */
   loginPolicy?: LoginPolicyOverrides;
   recoveryOpts?: RecoveryWorkflowOpts;
+  /**
+   * Per-test recovery policy overrides applied via the `resolveXxx(ctx)`
+   * getters on `DemoRecoveryWorkflow`. Same precedence pattern as
+   * `loginPolicy` / `invitePolicy`. Tests that previously did
+   * `recoveryOpts: { postReset: { ... } }` / `recoveryOpts: { delivery: {
+   * mode: ..., otp: { transports: [...] } } }` etc. flip the matching group
+   * here — those keys moved off `RecoveryWorkflowOpts` onto the resolver
+   * surface.
+   */
+  recoveryPolicy?: RecoveryPolicyOverrides;
   inviteOpts?: InviteWorkflowOpts;
   /**
    * Per-test invite policy overrides applied via the `resolveXxx(ctx)` getters
@@ -525,20 +537,19 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     }
   }
 
-  // Phase-3 reshape: `RecoveryWorkflow` is configured via a consumer subclass
-  // that overrides `protected` methods. The demo overrides `deliver` for OTP
-  // emails (magic-link mode uses the email outlet on the trigger route) and
+  // `RecoveryWorkflow` is configured via a consumer subclass that overrides
+  // `protected` methods. The demo overrides `deliver` for OTP emails
+  // (magic-link mode uses the email outlet on the trigger route) and
   // `emailToUserId` to map a recovery-step email to the canonical username.
+  //
+  // Post-resolver reshape: `RecoveryWorkflowOpts` is infrastructure-only
+  // (magic-link TTL, OTP timers, forms). Policy (delivery.mode +
+  // otpTransports, preReset, postReset, altActions, audit) lives on
+  // `resolveXxx(ctx)` overrides below. Variants supply `policy.<group>`
+  // payloads that those resolvers merge with the demo's per-group defaults.
   const demoRecoveryOpts: RecoveryWorkflowOpts = mergeWfOpts(
     {
       delivery: { magicLinkTtlMs: env.RECOVERY_TTL_MS },
-      // The library default for `revokeAllSessions` is `true` (kick every
-      // active session after a password reset). The demo opts out so
-      // WF-RECOVERY-05 can keep documenting the "pre-existing session stays
-      // valid" branch; production consumers should leave the secure default
-      // on. `freshLoginRequired` defaults to false (auto-login), which is what
-      // this SPA demo wants — no override needed.
-      postReset: { revokeAllSessions: false },
     },
     opts.recoveryOpts,
   );
@@ -550,7 +561,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     constructor(users: UserService, authCred: AuthCredential) {
       const variant = pickVariant(RECOVERY_VARIANTS, readVariantHeader());
       super(
-        variant ? mergeWfOpts(demoRecoveryOpts, variant as RecoveryWorkflowOpts) : demoRecoveryOpts,
+        variant?.opts ? mergeWfOpts(demoRecoveryOpts, variant.opts) : demoRecoveryOpts,
         users,
         authCred,
       );
@@ -571,6 +582,63 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     // assertions). Default base impl is a no-op.
     protected override async audit(event: AuditEvent): Promise<void> {
       sharedAuditEventsBuffer.push(event);
+    }
+    // ── Variant-driven resolveXxx policy overrides ──
+    //
+    // Precedence (high → low):
+    //   1. test-time `opts.recoveryPolicy.<group>` (set by `buildTestApp`)
+    //   2. variant `policy.<group>` (via `x-wf-variant` header)
+    //   3. demo per-group default (tweaks on top of base)
+    //   4. library default (`super.resolveXxx(ctx)`)
+    protected override resolveDelivery(
+      ctx: RecoveryWfCtx,
+    ): NonNullable<RecoveryWfCtx["delivery"]> | Promise<NonNullable<RecoveryWfCtx["delivery"]>> {
+      if (opts.recoveryPolicy?.delivery) return opts.recoveryPolicy.delivery;
+      const variant = pickVariant(RECOVERY_VARIANTS, readVariantHeader());
+      if (variant?.policy?.delivery) return variant.policy.delivery;
+      return super.resolveDelivery(ctx);
+    }
+    protected override resolvePreReset(
+      ctx: RecoveryWfCtx,
+    ): NonNullable<RecoveryWfCtx["preReset"]> | Promise<NonNullable<RecoveryWfCtx["preReset"]>> {
+      if (opts.recoveryPolicy?.preReset) return opts.recoveryPolicy.preReset;
+      const variant = pickVariant(RECOVERY_VARIANTS, readVariantHeader());
+      if (variant?.policy?.preReset) return variant.policy.preReset;
+      return super.resolvePreReset(ctx);
+    }
+    protected override resolvePostReset(
+      ctx: RecoveryWfCtx,
+    ): NonNullable<RecoveryWfCtx["postReset"]> | Promise<NonNullable<RecoveryWfCtx["postReset"]>> {
+      if (opts.recoveryPolicy?.postReset) return opts.recoveryPolicy.postReset;
+      const variant = pickVariant(RECOVERY_VARIANTS, readVariantHeader());
+      if (variant?.policy?.postReset) return variant.policy.postReset;
+      // Demo default: opt out of revokeAllSessions so WF-RECOVERY-05 can keep
+      // documenting the "pre-existing session stays valid" branch. Production
+      // consumers should leave the secure default on. `freshLoginRequired`
+      // defaults to false (auto-login) — what this SPA demo wants.
+      const baseResult = super.resolvePostReset(ctx);
+      const patch = (
+        r: NonNullable<RecoveryWfCtx["postReset"]>,
+      ): NonNullable<RecoveryWfCtx["postReset"]> => ({ ...r, revokeAllSessions: false });
+      return baseResult instanceof Promise ? baseResult.then(patch) : patch(baseResult);
+    }
+    protected override resolveAltActions(
+      ctx: RecoveryWfCtx,
+    ):
+      | NonNullable<RecoveryWfCtx["altActions"]>
+      | Promise<NonNullable<RecoveryWfCtx["altActions"]>> {
+      if (opts.recoveryPolicy?.altActions) return opts.recoveryPolicy.altActions;
+      const variant = pickVariant(RECOVERY_VARIANTS, readVariantHeader());
+      if (variant?.policy?.altActions) return variant.policy.altActions;
+      return super.resolveAltActions(ctx);
+    }
+    protected override resolveAudit(
+      ctx: RecoveryWfCtx,
+    ): NonNullable<RecoveryWfCtx["audit"]> | Promise<NonNullable<RecoveryWfCtx["audit"]>> {
+      if (opts.recoveryPolicy?.audit) return opts.recoveryPolicy.audit;
+      const variant = pickVariant(RECOVERY_VARIANTS, readVariantHeader());
+      if (variant?.policy?.audit) return variant.policy.audit;
+      return super.resolveAudit(ctx);
     }
   }
 

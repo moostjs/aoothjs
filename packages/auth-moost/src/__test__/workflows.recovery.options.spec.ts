@@ -1,6 +1,6 @@
 /**
  * Per-option behaviour tests for `RecoveryWorkflow` — one (or two) cases per
- * `RecoveryWorkflowOpts` flag flagged in WF_RECOVERY.md §"Tasks" item #8.
+ * policy / infra knob flagged in WF_RECOVERY.md §"Tasks" item #8.
  *
  * Anti-test guard (Rule 9): every test below asserts an observable outcome
  * that DIRECTLY depends on the flag under test — i.e. flipping the flag (or
@@ -9,10 +9,17 @@
  * response payload, captured side effects (emails, sms, audit events,
  * revoked tokens), and the response shape parity required by anti-enumeration.
  *
- * Phase-3 reshape: callbacks (`emailToUserId`) are now `protected` methods on
- * `RecoveryWorkflow`. Tests that exercised those callbacks build a tiny
- * subclass and pass it via `recoveryWorkflowClass`. The harness has a built-in
- * `emailToUserId` short-cut for the most common case.
+ * Post-resolver reshape: policy (`delivery.mode` / `delivery.otpTransports`,
+ * `preReset`, `postReset`, `altActions`, `audit`) moved from
+ * `RecoveryWorkflowOpts` onto `resolveXxx(ctx)` getters. Tests flip the
+ * matching group via `recoveryPolicy` rather than `recoveryOpts`. The
+ * sender-absence runtime check still fires at first `deliver()` call;
+ * empty-otpTransports-when-otp-mode now throws at `prepare-delivery` step time
+ * (the ctx-driven equivalent of the old construction-time `validateOpts`).
+ *
+ * Callbacks (`emailToUserId`) remain `protected` methods on `RecoveryWorkflow`.
+ * Tests that exercise those callbacks build a tiny subclass and pass it via
+ * `recoveryWorkflowClass`. The harness has a built-in `emailToUserId` shortcut.
  */
 import { AuthCredential } from "@aooth/auth";
 import { generateTotpCode, generateTotpSecret, ppHasMinLength, UserService } from "@aooth/user";
@@ -64,7 +71,7 @@ function makeRecoverySubclass(
   return SubclassedRecovery;
 }
 
-/** Drive a magic-link recovery to the `setPassword` form and return the wfs token. */
+/** Drive a magic-link recovery to the `recovery-set-password` form and return the wfs token. */
 async function driveMagicLinkToSetPassword(
   app: Awaited<ReturnType<typeof prepareWfApp>>,
   email: string,
@@ -76,7 +83,7 @@ async function driveMagicLinkToSetPassword(
   return { wfs: r3.body?.wfs as string };
 }
 
-/** Drive an OTP recovery to the `checkOtp` form and return wfs + the captured code. */
+/** Drive an OTP recovery to the `recovery-check-otp` form and return wfs + the captured code. */
 async function driveOtpToCheck(
   app: Awaited<ReturnType<typeof prepareWfApp>>,
   email: string,
@@ -88,17 +95,15 @@ async function driveOtpToCheck(
   return { wfs: r2.body?.wfs as string, code: last.code };
 }
 
-describe("RecoveryWorkflowOpts — boot-time validators (fail loud)", () => {
-  // Post-reshape: only data-validity checks remain. Sender/emitter absence is
-  // surfaced at the first `deliver()` call via the fail-loud default.
-  // Rate-limit is no longer part of the recovery workflow surface.
+describe("RecoveryWorkflow — runtime validators (fail loud)", () => {
+  // Post-reshape: sender absence is enforced at the first `deliver()` call;
+  // empty-otpTransports-when-otp-mode is enforced at `prepare-delivery` step
+  // time (since policy is now ctx-driven, not construction-time).
 
-  it("delivery.mode 'otp' + otp.transports ['sms'] WITHOUT SmsSender → runtime throw at deliver()", async () => {
-    // Post-reshape: sender absence is enforced at the first `deliver()` call.
-    // The harness's override throws when `registerSmsSender: false`.
+  it("delivery.mode 'otp' + otpTransports ['sms'] WITHOUT SmsSender → runtime throw at deliver()", async () => {
     const app = await prepareWfApp({
-      recoveryOpts: {
-        delivery: { mode: "otp", otp: { transports: ["sms"] } },
+      recoveryPolicy: {
+        delivery: { mode: "otp", otpTransports: ["sms"] },
       },
       registerSmsSender: false,
     });
@@ -112,27 +117,35 @@ describe("RecoveryWorkflowOpts — boot-time validators (fail loud)", () => {
     expect(JSON.stringify(r2.body)).toMatch(/SmsSender/);
   });
 
-  it("delivery.mode 'otp' + empty otp.transports → fail loud at boot (validateOpts throws)", async () => {
-    // SINGLETON DI scope (the @Controller default after dropping FOR_EVENT)
-    // runs the workflow constructor once at app boot — `validateOpts` fires
-    // there, so misconfiguration surfaces as a boot-time throw rather than
-    // a per-request 500. Earlier failure surface; same fail-loud intent.
-    await expect(
-      prepareWfApp({
-        recoveryOpts: {
-          delivery: { mode: "otp", otp: { transports: [] } },
-        },
-      }),
-    ).rejects.toThrow(/transports.*empty/);
+  it("delivery.mode 'otp' + empty otpTransports → fail loud at prepare-delivery step", async () => {
+    // Post-reshape: the empty-transports check moved off construction-time
+    // `validateOpts` (policy left opts) onto the `prepare-delivery` step
+    // body (the ctx slot is set inside `applyResolvedDelivery`). Earlier
+    // failure surface than a per-request 500 on `deliver()`; same fail-loud
+    // intent — the workflow now refuses to advance instead of corrupting
+    // state.
+    const app = await prepareWfApp({
+      recoveryPolicy: {
+        delivery: { mode: "otp", otpTransports: [] },
+      },
+    });
+    await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
+    const r1 = await app.trigger({ wfid: "auth.recovery" });
+    const r2 = await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { email: "alice@test.com" },
+    });
+    expect(r2.status).toBe(500);
+    expect(JSON.stringify(r2.body)).toMatch(/otpTransports.*empty/);
   });
 });
 
 describe("RecoveryWorkflowOpts — deliveryMode otp end-to-end", () => {
   it("otp mode: request → sendOtp (email) → checkOtp (correct code) → setPassword → tokens (auto-login)", async () => {
     const app = await prepareWfApp({
-      recoveryOpts: {
-        delivery: { mode: "otp", otp: { transports: ["email"] } },
-        postReset: { freshLoginRequired: false, revokeAllSessions: false },
+      recoveryPolicy: {
+        delivery: { mode: "otp", otpTransports: ["email"] },
+        postReset: { freshLoginRequired: false, revokeAllSessions: false, loginUrl: "/login" },
       },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
@@ -164,8 +177,8 @@ describe("RecoveryWorkflowOpts — deliveryMode otp end-to-end", () => {
 
   it("otp mode: wrong code → form error 'Invalid code', no advance", async () => {
     const app = await prepareWfApp({
-      recoveryOpts: {
-        delivery: { mode: "otp", otp: { transports: ["email"] } },
+      recoveryPolicy: {
+        delivery: { mode: "otp", otpTransports: ["email"] },
       },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
@@ -179,11 +192,11 @@ describe("RecoveryWorkflowOpts — deliveryMode otp end-to-end", () => {
 
   it("otp resend within cooldown → form error 'wait Ns'; no second email sent", async () => {
     const app = await prepareWfApp({
+      recoveryPolicy: {
+        delivery: { mode: "otp", otpTransports: ["email"] },
+      },
       recoveryOpts: {
-        delivery: {
-          mode: "otp",
-          otp: { transports: ["email"], resendCooldownMs: 60_000 },
-        },
+        delivery: { otp: { resendCooldownMs: 60_000 } },
       },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
@@ -199,11 +212,11 @@ describe("RecoveryWorkflowOpts — deliveryMode otp end-to-end", () => {
 
   it("otp resend after cooldown elapsed → re-sends pincode (second email captured)", async () => {
     const app = await prepareWfApp({
+      recoveryPolicy: {
+        delivery: { mode: "otp", otpTransports: ["email"] },
+      },
       recoveryOpts: {
-        delivery: {
-          mode: "otp",
-          otp: { transports: ["email"], resendCooldownMs: 50 },
-        },
+        delivery: { otp: { resendCooldownMs: 50 } },
       },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
@@ -222,8 +235,8 @@ describe("RecoveryWorkflowOpts — deliveryMode otp end-to-end", () => {
 
   it("otp two transports + useDifferentTransport → switches email → sms, sms sender invoked", async () => {
     const app = await prepareWfApp({
-      recoveryOpts: {
-        delivery: { mode: "otp", otp: { transports: ["email", "sms"] } },
+      recoveryPolicy: {
+        delivery: { mode: "otp", otpTransports: ["email", "sms"] },
       },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
@@ -255,8 +268,8 @@ describe("RecoveryWorkflowOpts — deliveryMode otp end-to-end", () => {
 
   it("otp single transport: useDifferentTransport alt → form error 'Only one transport configured'", async () => {
     const app = await prepareWfApp({
-      recoveryOpts: {
-        delivery: { mode: "otp", otp: { transports: ["email"] } },
+      recoveryPolicy: {
+        delivery: { mode: "otp", otpTransports: ["email"] },
       },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
@@ -288,9 +301,9 @@ describe("RecoveryWorkflowOpts — anti-enumeration response parity", () => {
 describe("RecoveryWorkflowOpts — requireKnownFactor", () => {
   it("happy path: phone last-4 matches → advances to setPassword", async () => {
     const app = await prepareWfApp({
-      recoveryOpts: {
+      recoveryPolicy: {
         preReset: { requireKnownFactor: true },
-        postReset: { freshLoginRequired: false, revokeAllSessions: false },
+        postReset: { freshLoginRequired: false, revokeAllSessions: false, loginUrl: "/login" },
       },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
@@ -319,7 +332,7 @@ describe("RecoveryWorkflowOpts — requireKnownFactor", () => {
 
   it("bad factor: phone last-4 mismatch → opaque 'Invalid factor' error, no advance", async () => {
     const app = await prepareWfApp({
-      recoveryOpts: { preReset: { requireKnownFactor: true } },
+      recoveryPolicy: { preReset: { requireKnownFactor: true } },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
     await app.users.addMfaMethod("alice@test.com", {
@@ -338,9 +351,9 @@ describe("RecoveryWorkflowOpts — requireKnownFactor", () => {
 
   it("totp factor: correct current TOTP → advances", async () => {
     const app = await prepareWfApp({
-      recoveryOpts: {
+      recoveryPolicy: {
         preReset: { requireKnownFactor: true },
-        postReset: { freshLoginRequired: false, revokeAllSessions: false },
+        postReset: { freshLoginRequired: false, revokeAllSessions: false, loginUrl: "/login" },
       },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
@@ -361,8 +374,8 @@ describe("RecoveryWorkflowOpts — requireKnownFactor", () => {
 describe("RecoveryWorkflowOpts — revokeAllSessions", () => {
   it("revokeAllSessions true: pre-existing token rejected after successful reset", async () => {
     const app = await prepareWfApp({
-      recoveryOpts: {
-        postReset: { revokeAllSessions: true, freshLoginRequired: false },
+      recoveryPolicy: {
+        postReset: { revokeAllSessions: true, freshLoginRequired: false, loginUrl: "/login" },
       },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
@@ -385,8 +398,8 @@ describe("RecoveryWorkflowOpts — revokeAllSessions", () => {
 
   it("revokeAllSessions false: pre-existing token still valid after reset", async () => {
     const app = await prepareWfApp({
-      recoveryOpts: {
-        postReset: { revokeAllSessions: false, freshLoginRequired: false },
+      recoveryPolicy: {
+        postReset: { revokeAllSessions: false, freshLoginRequired: false, loginUrl: "/login" },
       },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
@@ -406,8 +419,8 @@ describe("RecoveryWorkflowOpts — revokeAllSessions", () => {
 describe("RecoveryWorkflowOpts — freshLoginRequired terminal", () => {
   it("freshLoginRequired true → envelope redirect to loginUrl, no tokens issued", async () => {
     const app = await prepareWfApp({
-      recoveryOpts: {
-        postReset: { freshLoginRequired: true, loginUrl: "/sign-in" },
+      recoveryPolicy: {
+        postReset: { freshLoginRequired: true, revokeAllSessions: true, loginUrl: "/sign-in" },
       },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
@@ -428,8 +441,8 @@ describe("RecoveryWorkflowOpts — freshLoginRequired terminal", () => {
 
   it("freshLoginFinish emits auto-trigger envelope with 5s countdown + success message", async () => {
     const app = await prepareWfApp({
-      recoveryOpts: {
-        postReset: { freshLoginRequired: true, loginUrl: "/sign-in" },
+      recoveryPolicy: {
+        postReset: { freshLoginRequired: true, revokeAllSessions: true, loginUrl: "/sign-in" },
       },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
@@ -452,7 +465,9 @@ describe("RecoveryWorkflowOpts — freshLoginRequired terminal", () => {
 
   it("freshLoginRequired false → auto-login (issues access token in envelope data)", async () => {
     const app = await prepareWfApp({
-      recoveryOpts: { postReset: { freshLoginRequired: false } },
+      recoveryPolicy: {
+        postReset: { freshLoginRequired: false, revokeAllSessions: true, loginUrl: "/login" },
+      },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
     const { wfs } = await driveMagicLinkToSetPassword(app, "alice@test.com");
@@ -468,11 +483,11 @@ describe("RecoveryWorkflowOpts — freshLoginRequired terminal", () => {
   it("default freshLoginRequired: false → autoLoginFinish issues tokens (recovery + immediate validate)", async () => {
     // Regression guard: the default flips `freshLoginRequired` to false and
     // keeps `revokeAllSessions` true. The `revokeAllForUser` call in
-    // `recoveryRevokeSessions` runs immediately before `auth.issue` in
-    // `recoveryAutoLoginFinish` — if `passesEpoch` used strict `>` the freshly
-    // minted token would race against the revoke epoch (same-ms) and silently
-    // fail validation. The `>=` fix makes this safe; this test fails the moment
-    // the comparison regresses.
+    // `recovery-revoke-sessions` runs immediately before `auth.issue` in
+    // `recovery-auto-login-finish` — if `passesEpoch` used strict `>` the
+    // freshly minted token would race against the revoke epoch (same-ms) and
+    // silently fail validation. The `>=` fix makes this safe; this test fails
+    // the moment the comparison regresses.
     const app = await prepareWfApp({}); // pure defaults
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
 
@@ -499,9 +514,9 @@ describe("RecoveryWorkflowOpts — freshLoginRequired terminal", () => {
 describe("RecoveryWorkflowOpts — backToLogin alt-action", () => {
   it("request step: backToLogin alt → immediate redirect envelope to loginUrl, no email sent", async () => {
     const app = await prepareWfApp({
-      recoveryOpts: {
+      recoveryPolicy: {
         altActions: { backToLogin: true },
-        postReset: { loginUrl: "/login" },
+        postReset: { revokeAllSessions: true, freshLoginRequired: false, loginUrl: "/login" },
       },
     });
     const r1 = await app.trigger({ wfid: "auth.recovery" });
@@ -521,9 +536,9 @@ describe("RecoveryWorkflowOpts — backToLogin alt-action", () => {
 
   it("setPassword step: backToLogin alt → envelope redirect, password NOT changed", async () => {
     const app = await prepareWfApp({
-      recoveryOpts: {
+      recoveryPolicy: {
         altActions: { backToLogin: true },
-        postReset: { loginUrl: "/login" },
+        postReset: { revokeAllSessions: true, freshLoginRequired: false, loginUrl: "/login" },
       },
     });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
@@ -543,9 +558,9 @@ describe("RecoveryWorkflowOpts — audit", () => {
   it("emits recovery.requested (request step) and recovery.completed (terminal)", async () => {
     const captured: Array<Record<string, unknown>> = [];
     const app = await prepareWfApp({
-      recoveryOpts: {
+      recoveryPolicy: {
         audit: { enabled: true },
-        postReset: { freshLoginRequired: false },
+        postReset: { freshLoginRequired: false, revokeAllSessions: true, loginUrl: "/login" },
       },
       auditEmitter: {
         emit(ev) {
@@ -574,9 +589,9 @@ describe("RecoveryWorkflowOpts — audit", () => {
   it("audit.enabled false → no recovery.requested or recovery.completed emitted", async () => {
     const captured: Array<Record<string, unknown>> = [];
     const app = await prepareWfApp({
-      recoveryOpts: {
+      recoveryPolicy: {
         audit: { enabled: false },
-        postReset: { freshLoginRequired: false },
+        postReset: { freshLoginRequired: false, revokeAllSessions: true, loginUrl: "/login" },
       },
       auditEmitter: {
         emit(ev) {
@@ -599,10 +614,10 @@ describe("RecoveryWorkflow — request step pre-fill from ?username= query", () 
   it("WF-RECOVERY pre-fill: ?username= populates the EmailIdentifierForm", async () => {
     // Login workflow's `forgotPassword` alt-action hands off to the recovery
     // workflow with `?username=<email>` on the trigger URL so the user does
-    // not have to retype the email they just typed. The `request` step reads
-    // the param, pushes `{ email }` onto `formCtx.defaults`, and only reaches
-    // the client if `@wf.context.pass 'defaults'` whitelists the key on
-    // `EmailIdentifierForm` — otherwise `extractPassContext` strips it.
+    // not have to retype the email they just typed. The `recovery-request`
+    // step reads the param, pushes `{ email }` onto `formCtx.defaults`, and
+    // only reaches the client if `@wf.context.pass 'defaults'` whitelists the
+    // key on `EmailIdentifierForm` — otherwise `extractPassContext` strips it.
     const app = await prepareWfApp({});
     const response = await app.http.request("/wf/trigger?username=alice%40example.com", {
       method: "POST",
@@ -681,7 +696,7 @@ describe("RecoveryWorkflow — passwordPolicies surfaces on SetPasswordForm paus
     //   1. `@wf.context.pass 'passwordPolicies'` on SetPasswordForm — without
     //      it `extractPassContext` strips the key before the inputRequired
     //      envelope leaves the engine.
-    //   2. `recoverySetPassword` seeding `ctx.passwordPolicies` BEFORE
+    //   2. `recovery-set-password` seeding `ctx.passwordPolicies` BEFORE
     //      `requireInput()` — `requireInput()` snapshots `wfState.ctx()` at
     //      throw time, so the previous catch-then-rethrow pattern shipped a
     //      pre-mutation ctx and the field never reached the client.

@@ -2,9 +2,10 @@
  * RecoveryWorkflow — `wfid = 'auth.recovery'`.
  *
  * Full step catalog per `WF_RECOVERY.md`. Defaults give today's 3-step
- * magic-link flow (`request` → `sendMagicLink` → `setPassword`); consumers
- * turn on OTP delivery, pre-reset factor verification, fresh-login redirect
- * etc. via `RecoveryWorkflowOpts`.
+ * magic-link flow (`recovery-request` → `recovery-send-magic-link` →
+ * `recovery-set-password`); consumers turn on OTP delivery, pre-reset factor
+ * verification, fresh-login redirect etc. via `resolveXxx(ctx)` overrides
+ * (delivery / preReset / postReset / altActions / audit).
  *
  * **Step routing model.** Mirrors `LoginWorkflow`: alt-action handlers run
  * BEFORE form validation so `backToLogin` works without filling fields, and
@@ -16,13 +17,14 @@
  * schema advances cleanly, with terminal steps gated on `!ctx.aborted` so the
  * abort response set via `useWfFinished()` is not overwritten.
  *
- * **Consumer subclass pattern (Phase 3 reshape).** Consumers subclass
- * `RecoveryWorkflow` to override `protected` hook methods. The subclass MUST
- * re-apply `@Inherit() @Controller()` and re-declare the constructor
- * signature (TS emits fresh design-paramtypes per class). `@Controller()`
- * implicitly applies SINGLETON DI scope — workflow controllers hold no
- * per-event mutable state on `this` (per-event state lives on ctx + wooks
- * composables), so one instance per app lifetime is correct.
+ * **Consumer subclass pattern.** Consumers subclass `RecoveryWorkflow` to
+ * override `protected` hook methods (`resolveXxx`, `deliver`, `audit`,
+ * `emailToUserId`, `verifyRecoveryFactor`). The subclass MUST re-apply
+ * `@Inherit() @Controller()` and re-declare the constructor signature (TS
+ * emits fresh design-paramtypes per class). `@Controller()` implicitly applies
+ * SINGLETON DI scope — workflow controllers hold no per-event mutable state
+ * on `this` (per-event state lives on ctx + wooks composables), so one
+ * instance per app lifetime is correct.
  *
  * **Side-effect deps as protected methods.** The optional sender/emitter DI
  * providers have been DROPPED from the constructor. The hooks live as
@@ -60,12 +62,33 @@ import { AuthWorkflowBase } from "./auth-workflow.base";
 import type { DeliverPayload } from "./login.workflow";
 import {
   mergeRecoveryOpts,
+  type RecoveryDeliveryMode,
+  type RecoveryOtpTransport,
   type RecoveryWorkflowOpts,
   type ResolvedRecoveryWorkflowOpts,
 } from "./recovery.workflow.options";
 
 export interface RecoveryWfCtx {
-  opts?: ResolvedRecoveryWorkflowOpts;
+  // Resolved policy (populated by prepare-* steps; reads via resolveXxx() getters):
+  delivery?: {
+    mode: RecoveryDeliveryMode;
+    otpTransports: RecoveryOtpTransport[];
+  };
+  preReset?: {
+    requireKnownFactor: boolean;
+    allowedFactors?: Array<"phone" | "totp">;
+  };
+  postReset?: {
+    revokeAllSessions: boolean;
+    freshLoginRequired: boolean;
+    loginUrl: string;
+  };
+  altActions?: {
+    backToLogin: boolean;
+  };
+  audit?: {
+    enabled: boolean;
+  };
 
   // Phase 1 — request:
   email?: string;
@@ -73,7 +96,7 @@ export interface RecoveryWfCtx {
 
   // Mode (when delivery.mode === 'choice'):
   selectedMode?: "magicLink" | "otp";
-  /** Resolved delivery mode the workflow committed to (populated by `selectMode` or `init`). */
+  /** Resolved delivery mode the workflow committed to (set by `prepare-delivery` for fixed modes, by `recovery-select-mode` for `'choice'`). */
   resolvedMode?: "magicLink" | "otp";
 
   // OTP-mode state:
@@ -83,7 +106,7 @@ export interface RecoveryWfCtx {
   pinExpire?: number;
   pinResendAllowedAt?: number;
   pinVerified?: boolean;
-  /** Mirror of `opts.delivery.otp.transports.length`. Passed to `PincodeForm` so the `useDifferentTransport` action hides when only one transport is configured. */
+  /** Mirror of `delivery.otpTransports.length`. Passed to `PincodeForm` so the `useDifferentTransport` action hides when only one transport is configured. */
   recoveryTransportCount?: number;
 
   // Magic-link state:
@@ -93,9 +116,9 @@ export interface RecoveryWfCtx {
   factorVerified?: boolean;
   /**
    * Recovery factors the user is actually able to verify on this attempt —
-   * intersection of `opts.preReset.allowedFactors` (workflow whitelist) and
+   * intersection of `preReset.allowedFactors` (workflow whitelist) and
    * what the user has enrolled (e.g. phone only if a confirmed SMS method
-   * exists). Populated by `recoveryVerifyFactor` before its form pauses and
+   * exists). Populated by `recovery-verify-factor` before its form pauses and
    * consumed by `RecoveryFactorForm` via `@wf.context.pass` to render only
    * the available radio options.
    */
@@ -110,6 +133,22 @@ export interface RecoveryWfCtx {
 }
 
 /**
+ * Per-group policy override shape consumed by `resolveXxx(ctx)` subclass
+ * overrides. Mirrors the `ctx.<group>` fields that the `prepare-<group>`
+ * @Step methods populate — one entry per resolver. Library users typically
+ * accept a payload of this shape on their `RecoveryWorkflow` subclass ctor /
+ * test harness and have each `resolveXxx` return its matching key (falling
+ * back to `super.resolveXxx(ctx)` for unset groups).
+ */
+export interface RecoveryPolicyOverrides {
+  delivery?: NonNullable<RecoveryWfCtx["delivery"]>;
+  preReset?: NonNullable<RecoveryWfCtx["preReset"]>;
+  postReset?: NonNullable<RecoveryWfCtx["postReset"]>;
+  altActions?: NonNullable<RecoveryWfCtx["altActions"]>;
+  audit?: NonNullable<RecoveryWfCtx["audit"]>;
+}
+
+/**
  * Sentinel returned by alt-action handlers that have already short-circuited
  * via `useWfFinished().set(...)`. The step body returns `undefined` after
  * seeing this so the schema advances without running form validation on the
@@ -121,15 +160,12 @@ type AltHandled = typeof ALT_HANDLED;
 /**
  * Construction-time invariants for DATA validity only. Sender/emitter absence
  * is no longer checked — those default to fail-loud (`deliver()`) or safe
- * (`audit()` no-op) protected methods that consumers override.
+ * (`audit()` no-op) protected methods that consumers override. Policy moved
+ * to `resolveXxx(ctx)` so empty-transports-while-otp checks now fire at
+ * `prepare-delivery` step time, not construction time.
  */
-function validateOpts(opts: ResolvedRecoveryWorkflowOpts): void {
-  const otpReachable = opts.delivery.mode !== "magicLink";
-  if (otpReachable && opts.delivery.otp.transports.length === 0) {
-    throw new Error(
-      "RecoveryWorkflow: delivery.otp.transports cannot be empty when delivery.mode includes OTP",
-    );
-  }
+function validateOpts(_opts: ResolvedRecoveryWorkflowOpts): void {
+  // No cross-field invariants today.
 }
 
 // `@Public()` — recovery is by definition reachable without authn (the user
@@ -174,128 +210,302 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     // No-op default.
   }
 
+  // ── Resolved policy surface (override these to customize per-tenant/per-request behavior) ──
+  /**
+   * Resolve the delivery policy (mode + OTP transports). Override per-tenant
+   * to drive magic-link vs OTP delivery preferences. Sync/async friendly.
+   */
+  protected resolveDelivery(
+    _ctx: RecoveryWfCtx,
+  ): NonNullable<RecoveryWfCtx["delivery"]> | Promise<NonNullable<RecoveryWfCtx["delivery"]>> {
+    return { mode: "magicLink", otpTransports: ["email"] };
+  }
+
+  /**
+   * Resolve the pre-reset policy (requireKnownFactor + allowedFactors whitelist).
+   * Override to enforce a factor check between the magic-link / OTP step and
+   * the new-password form. `allowedFactors` omitted means both phone and TOTP
+   * are eligible. Sync/async friendly.
+   */
+  protected resolvePreReset(
+    _ctx: RecoveryWfCtx,
+  ): NonNullable<RecoveryWfCtx["preReset"]> | Promise<NonNullable<RecoveryWfCtx["preReset"]>> {
+    return { requireKnownFactor: false };
+  }
+
+  /**
+   * Resolve the post-reset policy (session revocation / fresh-login redirect /
+   * loginUrl). Override per-tenant. Sync/async friendly.
+   */
+  protected resolvePostReset(
+    _ctx: RecoveryWfCtx,
+  ): NonNullable<RecoveryWfCtx["postReset"]> | Promise<NonNullable<RecoveryWfCtx["postReset"]>> {
+    return {
+      // safe to default-on since CredentialStoreJwt.passesEpoch uses >= (no race with issue in same tick)
+      revokeAllSessions: true,
+      // SPA-friendly default; server-rendered apps opt in via freshLoginRequired: true
+      freshLoginRequired: false,
+      loginUrl: "/login",
+    };
+  }
+
+  /**
+   * Resolve the alt-actions policy (whether `backToLogin` is offered on the
+   * recovery forms). Override to hide the escape hatch per-tenant. Sync/async
+   * friendly.
+   */
+  protected resolveAltActions(
+    _ctx: RecoveryWfCtx,
+  ): NonNullable<RecoveryWfCtx["altActions"]> | Promise<NonNullable<RecoveryWfCtx["altActions"]>> {
+    return { backToLogin: true };
+  }
+
+  /**
+   * Resolve the audit policy (whether recovery.* audit events fire). Override
+   * to route audit-log emission per-tenant. Sync/async friendly.
+   */
+  protected resolveAudit(
+    _ctx: RecoveryWfCtx,
+  ): NonNullable<RecoveryWfCtx["audit"]> | Promise<NonNullable<RecoveryWfCtx["audit"]>> {
+    return { enabled: true };
+  }
+
+  // ── Prepare steps (call resolveXxx getters; populate ctx for schema conditions) ──
+  //
+  // IDs are workflow-scoped (`recovery-prepare-*`) because @moostjs/event-wf
+  // registers `@Step('id')` globally — sharing the bare `prepare-audit` /
+  // `prepare-delivery` namespace with InviteWorkflow / LoginWorkflow would
+  // silently overwrite handlers across workflows. Recovery prefix is the same
+  // discipline already applied to `recovery-*` action steps.
+  @Step("recovery-prepare-delivery")
+  prepareDelivery(@WorkflowParam("context") ctx: RecoveryWfCtx): undefined | Promise<undefined> {
+    const result = this.resolveDelivery(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        this.applyResolvedDelivery(ctx, resolved);
+        return undefined;
+      });
+    }
+    this.applyResolvedDelivery(ctx, result);
+    return undefined;
+  }
+
+  /**
+   * Apply resolved delivery to ctx — also auto-resolves derived ctx fields:
+   *   - `resolvedMode` (when mode !== 'choice' — `'choice'` defers to `recovery-select-mode`)
+   *   - `recoveryTransportCount` (mirrored to ctx for the `useDifferentTransport` form gate)
+   *
+   * Validates the otpTransports-not-empty invariant at step time (replacing
+   * the old construction-time `validateOpts` check; the value is now
+   * ctx-driven so the check has to fire at step time).
+   */
+  private applyResolvedDelivery(
+    ctx: RecoveryWfCtx,
+    resolved: NonNullable<RecoveryWfCtx["delivery"]>,
+  ): void {
+    if (resolved.mode !== "magicLink" && resolved.otpTransports.length === 0) {
+      throw new Error(
+        "RecoveryWorkflow: delivery.otpTransports cannot be empty when delivery.mode includes OTP",
+      );
+    }
+    ctx.delivery = resolved;
+    if (resolved.mode !== "choice" && !ctx.resolvedMode) {
+      ctx.resolvedMode = resolved.mode;
+    }
+    ctx.recoveryTransportCount = resolved.otpTransports.length;
+  }
+
+  @Step("recovery-prepare-pre-reset")
+  preparePreReset(@WorkflowParam("context") ctx: RecoveryWfCtx): undefined | Promise<undefined> {
+    const result = this.resolvePreReset(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.preReset = resolved;
+        return undefined;
+      });
+    }
+    ctx.preReset = result;
+    return undefined;
+  }
+
+  @Step("recovery-prepare-post-reset")
+  preparePostReset(@WorkflowParam("context") ctx: RecoveryWfCtx): undefined | Promise<undefined> {
+    const result = this.resolvePostReset(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.postReset = resolved;
+        return undefined;
+      });
+    }
+    ctx.postReset = result;
+    return undefined;
+  }
+
+  @Step("recovery-prepare-alt-actions")
+  prepareAltActions(@WorkflowParam("context") ctx: RecoveryWfCtx): undefined | Promise<undefined> {
+    const result = this.resolveAltActions(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.altActions = resolved;
+        return undefined;
+      });
+    }
+    ctx.altActions = result;
+    return undefined;
+  }
+
+  @Step("recovery-prepare-audit")
+  prepareAudit(@WorkflowParam("context") ctx: RecoveryWfCtx): undefined | Promise<undefined> {
+    const result = this.resolveAudit(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.audit = resolved;
+        return undefined;
+      });
+    }
+    ctx.audit = result;
+    return undefined;
+  }
+
   @Workflow("auth.recovery")
   @WorkflowSchema<RecoveryWfCtx>([
     // Step IDs are globally registered by @moostjs/event-wf — keep them
     // workflow-scoped so the three auth workflows (login/recovery/invite)
     // don't collide on a shared `init` name and silently overwrite each
     // other's handlers.
-    { id: "recoveryInit" },
-    { id: "recoveryRequest" },
+    { id: "recovery-init" },
+    { id: "recovery-request" },
+    // Username gate — `recovery-request` finishes anonymously on unknown email
+    // (anti-enumeration short-circuit) without setting ctx.username. Halt the
+    // schema before downstream steps run.
+    { break: (ctx) => !ctx.username },
+
+    // Resolve remaining policy groups now that username is set.
+    // `recovery-prepare-alt-actions` + `recovery-prepare-audit` are also
+    // called INLINE by `recovery-request` (since that step needs them BEFORE
+    // the username gate); these re-runs are idempotent — they re-write the
+    // same values.
+    { id: "recovery-prepare-delivery" },
+    { id: "recovery-prepare-pre-reset" },
+    { id: "recovery-prepare-post-reset" },
+    { id: "recovery-prepare-alt-actions" },
+    { id: "recovery-prepare-audit" },
+
     // Mode picker — only when delivery.mode === 'choice' AND not already chosen.
     {
-      id: "recoverySelectMode",
-      condition: (ctx) =>
-        !!(
-          ctx.username &&
-          ctx.opts!.delivery.mode === "choice" &&
-          !ctx.selectedMode &&
-          !ctx.aborted
-        ),
+      id: "recovery-select-mode",
+      condition: (ctx) => ctx.delivery?.mode === "choice" && !ctx.selectedMode,
     },
+    // Abort gate — recovery-select-mode 'backToLogin' alt-action sets ctx.aborted.
+    { break: (ctx) => !!ctx.aborted },
+
     // Magic-link branch.
     {
-      id: "recoverySendMagicLink",
-      condition: (ctx) => !!(ctx.username && ctx.resolvedMode === "magicLink" && !ctx.aborted),
+      id: "recovery-send-magic-link",
+      condition: (ctx) => ctx.resolvedMode === "magicLink",
     },
     // OTP branch — sendOtp + checkOtp wrapped in a while-loop so the
     // `useDifferentTransport` and `resend` alt-actions can reset
     // `pin` + `otpTransport` and loop back through `sendOtp` on the new
     // channel. The loop exits when `pinVerified` flips true.
     {
-      while: (ctx) =>
-        !!(ctx.username && ctx.resolvedMode === "otp" && !ctx.pinVerified && !ctx.aborted),
+      while: (ctx) => ctx.resolvedMode === "otp" && !ctx.pinVerified && !ctx.aborted,
       steps: [
         {
-          id: "recoverySendOtp",
+          id: "recovery-send-otp",
           condition: (ctx) => !ctx.pin,
         },
-        { id: "recoveryCheckOtp" },
+        { id: "recovery-check-otp" },
       ],
     },
+    // Abort gate — recovery-check-otp 'backToLogin' alt-action sets ctx.aborted.
+    { break: (ctx) => !!ctx.aborted },
+
     // Pre-reset factor check.
     {
-      id: "recoveryVerifyFactor",
+      id: "recovery-verify-factor",
       condition: (ctx) =>
-        !!(
-          ctx.username &&
-          ctx.opts!.preReset.requireKnownFactor &&
-          !ctx.factorVerified &&
-          (ctx.linkSent || ctx.pinVerified) &&
-          !ctx.aborted
-        ),
+        !!ctx.preReset?.requireKnownFactor &&
+        !ctx.factorVerified &&
+        (!!ctx.linkSent || !!ctx.pinVerified),
     },
+    // Abort gate — recovery-verify-factor 'backToLogin' alt-action sets ctx.aborted.
+    { break: (ctx) => !!ctx.aborted },
+
     // Set password — gated on the chosen branch having completed.
     {
-      id: "recoverySetPassword",
+      id: "recovery-set-password",
       condition: (ctx) =>
-        !!(
-          ctx.username &&
-          (ctx.linkSent || ctx.pinVerified) &&
-          (!ctx.opts!.preReset.requireKnownFactor || ctx.factorVerified) &&
-          !ctx.aborted
-        ),
+        (!!ctx.linkSent || !!ctx.pinVerified) &&
+        (!ctx.preReset?.requireKnownFactor || !!ctx.factorVerified),
     },
+    // Abort gate — recovery-set-password 'backToLogin' alt-action sets ctx.aborted.
+    { break: (ctx) => !!ctx.aborted },
+
+    // Post-password subflow — `passwordChanged` flips ONCE in
+    // `recovery-set-password` and stays true; safe to hoist as a subflow
+    // condition (evaluated once when the engine reaches it).
     {
-      id: "recoveryRevokeSessions",
-      condition: (ctx) =>
-        !!(ctx.opts!.postReset.revokeAllSessions && ctx.passwordChanged && !ctx.aborted),
-    },
-    {
-      id: "recoveryAudit",
-      condition: (ctx) => !!(ctx.opts!.audit.enabled && ctx.passwordChanged && !ctx.aborted),
-    },
-    // Finalize: one of fresh-login or auto-login, never both.
-    {
-      id: "recoveryFreshLoginFinish",
-      condition: (ctx) =>
-        !!(ctx.opts!.postReset.freshLoginRequired && ctx.passwordChanged && !ctx.aborted),
-    },
-    {
-      id: "recoveryAutoLoginFinish",
-      condition: (ctx) =>
-        !!(
-          !ctx.opts!.postReset.freshLoginRequired &&
-          ctx.passwordChanged &&
-          !ctx.tokensIssued &&
-          !ctx.aborted
-        ),
+      condition: (ctx) => !!ctx.passwordChanged,
+      steps: [
+        {
+          id: "recovery-revoke-sessions",
+          condition: (ctx) => !!ctx.postReset?.revokeAllSessions,
+        },
+        {
+          id: "recovery-audit",
+          condition: (ctx) => !!ctx.audit?.enabled,
+        },
+        // Finalize: one of fresh-login or auto-login, never both.
+        {
+          id: "recovery-fresh-login-finish",
+          condition: (ctx) => !!ctx.postReset?.freshLoginRequired,
+        },
+        {
+          id: "recovery-auto-login-finish",
+          condition: (ctx) => !ctx.postReset?.freshLoginRequired && !ctx.tokensIssued,
+        },
+      ],
     },
   ])
   flow(): void {}
 
   // ── Phase 0 ───────────────────────────────────────────────────────────
-  @Step("recoveryInit")
-  init(@WorkflowParam("context") ctx: RecoveryWfCtx): undefined {
-    ctx.opts = this.snapshotOpts(this.opts);
-    // Resolve the mode up-front when fixed; `'choice'` defers to `selectMode`.
-    if (this.opts.delivery.mode !== "choice") {
-      ctx.resolvedMode = this.opts.delivery.mode;
-    }
-    ctx.recoveryTransportCount = this.opts.delivery.otp.transports.length;
+  /**
+   * First step of the workflow; remains as a no-op override hook for
+   * consumers. Policy populated by the dedicated `prepare-<group>` steps.
+   *
+   * Return type is `undefined | Promise<undefined>` so consumers can override
+   * with `async init(...)` without the default fast-path paying a Promise
+   * allocation (the wf engine awaits only when the return value is a Promise).
+   */
+  @Step("recovery-init")
+  init(@WorkflowParam("context") _ctx: RecoveryWfCtx): undefined | Promise<undefined> {
     return undefined;
   }
 
-  /**
-   * Returns the JSON-safe projection of `opts` stashed onto `ctx` for schema
-   * conditions to read. Default: drop the `forms` group (atscript form classes
-   * are not plain JSON) so `AsWfStore`'s plain-JSON persistence doesn't choke.
-   * Step bodies still consult the form classes via `this.opts.forms.*`.
-   *
-   * Consumers who extend the opts type with non-JSON values can override this
-   * to strip them so `AsWfStore`'s plain-JSON persistence doesn't choke.
-   */
-  protected snapshotOpts(opts: ResolvedRecoveryWorkflowOpts): ResolvedRecoveryWorkflowOpts {
-    const { forms: _forms, ...rest } = opts;
-    return rest as ResolvedRecoveryWorkflowOpts;
-  }
-
   // ── request ──────────────────────────────────────────────────────────
-  @Step("recoveryRequest")
+  @Step("recovery-request")
   async request(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<unknown> {
+    // `recovery-request` runs BEFORE the `!ctx.username` gate and the prepare-*
+    // steps, but it needs `altActions` (for the backToLogin alt-action) and
+    // `audit` (for `emitRequested`) in scope. Call the resolvers inline and
+    // stash the result on ctx — the prepare-* steps that run later will
+    // overwrite with the same value (idempotent) once username is set.
+    const altResult = this.resolveAltActions(ctx);
+    const alt = altResult instanceof Promise ? await altResult : altResult;
+    ctx.altActions = alt;
+    const auditResult = this.resolveAudit(ctx);
+    ctx.audit = auditResult instanceof Promise ? await auditResult : auditResult;
+
     const emailWf = useAtscriptWf(this.opts.forms.emailIdentifier);
     const action = emailWf.resolveAction();
-    if (action === "backToLogin" && this.opts.altActions.backToLogin) {
+    if (action === "backToLogin" && alt.backToLogin) {
+      // postReset is not yet resolved at this point — call the resolver inline
+      // (mirrors altActions + audit above). Idempotent w.r.t. the later
+      // `prepare-post-reset` step. `abortToLogin` reads `ctx.postReset!.loginUrl`.
+      const postResetResult = this.resolvePostReset(ctx);
+      ctx.postReset = postResetResult instanceof Promise ? await postResetResult : postResetResult;
       this.abortToLogin(ctx);
       return undefined;
     }
@@ -337,16 +547,12 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
 
     if (!username) {
       // Unknown email — same generic response. Downstream steps skip via the
-      // `ctx.username` guard.
+      // `ctx.username` gate.
       this.finishGeneric();
       return undefined;
     }
 
     ctx.username = username;
-    // Pick the default OTP transport so `sendOtp` knows the channel.
-    if (ctx.resolvedMode === "otp" && !ctx.otpTransport) {
-      ctx.otpTransport = this.opts.delivery.otp.transports[0];
-    }
     return undefined;
   }
 
@@ -361,11 +567,11 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
   }
 
   // ── selectMode ───────────────────────────────────────────────────────
-  @Step("recoverySelectMode")
+  @Step("recovery-select-mode")
   selectMode(@WorkflowParam("context") ctx: RecoveryWfCtx): unknown {
     const wf = useAtscriptWf(this.opts.forms.recoveryModeSelect);
     const action = wf.resolveAction();
-    if (action === "backToLogin" && this.opts.altActions.backToLogin) {
+    if (action === "backToLogin" && ctx.altActions!.backToLogin) {
       this.abortToLogin(ctx);
       return undefined;
     }
@@ -374,17 +580,17 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     ctx.selectedMode = mode;
     ctx.resolvedMode = mode;
     if (mode === "otp" && !ctx.otpTransport) {
-      ctx.otpTransport = this.opts.delivery.otp.transports[0];
+      ctx.otpTransport = ctx.delivery!.otpTransports[0];
     }
     return undefined;
   }
 
   // ── sendMagicLink ────────────────────────────────────────────────────
-  @Step("recoverySendMagicLink")
+  @Step("recovery-send-magic-link")
   sendMagicLink(@WorkflowParam("context") ctx: RecoveryWfCtx): unknown {
     // First run: emit outletEmail; engine persists state, our email outlet
     // ships the magic link. Resume run (link clicked): `linkSent` is set so
-    // we advance to `setPassword` without re-sending.
+    // we advance to `recovery-set-password` without re-sending.
     if (ctx.linkSent) return undefined;
     ctx.linkSent = true;
     return {
@@ -397,11 +603,11 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
   }
 
   // ── sendOtp ──────────────────────────────────────────────────────────
-  @Step("recoverySendOtp")
+  @Step("recovery-send-otp")
   async sendOtp(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<undefined> {
     this.requireUsername(ctx);
-    const transport: "sms" | "email" =
-      ctx.otpTransport ?? this.opts.delivery.otp.transports[0] ?? "email";
+    const transports = ctx.delivery!.otpTransports;
+    const transport: "sms" | "email" = ctx.otpTransport ?? transports[0] ?? "email";
     ctx.otpTransport = transport;
     ctx.otpCodeLength = this.opts.delivery.otp.codeLength;
     const code = this.mintPin(ctx, this.opts.delivery.otp.codeLength, this.opts.delivery.otp.ttlMs);
@@ -418,8 +624,9 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
       });
     } else {
       // The user's recorded phone wins over `ctx.email` (which is what the
-      // user typed at `request` time — could be an email even when delivering
-      // SMS). Fall back to the typed value if there is no recorded phone.
+      // user typed at `recovery-request` time — could be an email even when
+      // delivering SMS). Fall back to the typed value if there is no recorded
+      // phone.
       const phone = await this.resolveUserPhone(ctx.username);
       await this.deliver({
         channel: "sms",
@@ -434,11 +641,11 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
   }
 
   // ── checkOtp ─────────────────────────────────────────────────────────
-  @Step("recoveryCheckOtp")
+  @Step("recovery-check-otp")
   async checkOtp(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<unknown> {
     const wf = useAtscriptWf(this.opts.forms.pincode);
     const action = wf.resolveAction();
-    if (action === "backToLogin" && this.opts.altActions.backToLogin) {
+    if (action === "backToLogin" && ctx.altActions!.backToLogin) {
       this.abortToLogin(ctx);
       return undefined;
     }
@@ -447,7 +654,7 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
         const waitSec = Math.ceil((ctx.pinResendAllowedAt - Date.now()) / 1000);
         throw wf.requireInput({ formMessage: `Please wait ${waitSec}s` });
       }
-      // Clear pin so the while-loop's `sendOtp` condition re-fires.
+      // Clear pin so the while-loop's `recovery-send-otp` condition re-fires.
       // `delete` (not `= undefined`) so the persisted ctx remains JSON-clean
       // — AsWfStore validates state.context against a JSON-anyOf schema and
       // chokes on explicit `undefined` entries.
@@ -456,7 +663,7 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
       return undefined;
     }
     if (action === "useDifferentTransport") {
-      const transports = this.opts.delivery.otp.transports;
+      const transports = ctx.delivery!.otpTransports;
       if (transports.length < 2) {
         throw wf.requireInput({ formMessage: "Only one transport configured" });
       }
@@ -477,7 +684,7 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
   }
 
   // ── verifyFactor ─────────────────────────────────────────────────────
-  @Step("recoveryVerifyFactor")
+  @Step("recovery-verify-factor")
   async verifyFactor(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<unknown> {
     const wf = useAtscriptWf(this.opts.forms.recoveryFactor);
     // Populate the radio options BEFORE `resolveInput()` — `requireInput`
@@ -489,7 +696,7 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
       ctx.availableRecoveryFactors = await this.loadAvailableRecoveryFactors(ctx);
     }
     const action = wf.resolveAction();
-    if (action === "backToLogin" && this.opts.altActions.backToLogin) {
+    if (action === "backToLogin" && ctx.altActions!.backToLogin) {
       this.abortToLogin(ctx);
       return undefined;
     }
@@ -509,7 +716,7 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
 
   /**
    * Returns the factor options to show on `RecoveryFactorForm`. Default:
-   * intersection of `opts.preReset.allowedFactors` (workflow whitelist —
+   * intersection of `preReset.allowedFactors` (workflow whitelist —
    * `undefined` means both `phone` and `totp` are eligible) and the kinds
    * the user has actually enrolled (`phone` if a confirmed SMS method
    * exists, `totp` if a confirmed TOTP method exists). Override to add
@@ -521,7 +728,7 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
   ): Promise<Array<{ key: string; label: string }>> {
     if (!ctx.username) return [];
     const user = await this.users.getUser(ctx.username);
-    const allowed = this.opts.preReset.allowedFactors ?? ["phone", "totp"];
+    const allowed = ctx.preReset?.allowedFactors ?? ["phone", "totp"];
     const has = {
       phone: user.mfa.methods.some((m) => m.name === "sms" && m.confirmed),
       totp: user.mfa.methods.some((m) => m.name === "totp" && m.confirmed),
@@ -565,11 +772,11 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
   }
 
   // ── setPassword ──────────────────────────────────────────────────────
-  @Step("recoverySetPassword")
+  @Step("recovery-set-password")
   async setPassword(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<unknown> {
     const wf = useAtscriptWf(this.opts.forms.setPassword);
     const action = wf.resolveAction();
-    if (action === "backToLogin" && this.opts.altActions.backToLogin) {
+    if (action === "backToLogin" && ctx.altActions!.backToLogin) {
       this.abortToLogin(ctx);
       return undefined;
     }
@@ -581,7 +788,7 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
       // inputRequired envelope includes them. SetPasswordForm declares
       // `@wf.context.pass 'passwordPolicies'` so the engine surfaces the
       // key to the client. Mirrors the peek-then-throw-fresh pattern used
-      // in `recoveryRequest` — the previous catch-and-rethrow snapshotted
+      // in `recovery-request` — the previous catch-and-rethrow snapshotted
       // ctx PRE-mutation, so the policies never reached the client.
       (ctx as Record<string, unknown>).passwordPolicies = this.users.getTransferablePolicies();
       throw wf.requireInput();
@@ -603,7 +810,7 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
   }
 
   // ── revokeSessions ───────────────────────────────────────────────────
-  @Step("recoveryRevokeSessions")
+  @Step("recovery-revoke-sessions")
   async revokeSessions(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<undefined> {
     if (!ctx.username) return undefined;
     await this.auth.revokeAllForUser(ctx.username);
@@ -612,13 +819,13 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
   }
 
   // ── audit ────────────────────────────────────────────────────────────
-  @Step("recoveryAudit")
+  @Step("recovery-audit")
   async auditStep(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<undefined> {
     await this.audit({
       kind: "recovery.completed",
       userId: ctx.username,
       workflow: "auth.recovery",
-      deliveryMode: ctx.resolvedMode ?? this.opts.delivery.mode,
+      deliveryMode: ctx.resolvedMode ?? ctx.delivery!.mode,
       ip: this.resolveClientIp(),
       ...(ctx.sessionsRevoked && { sessionsRevoked: true }),
     });
@@ -626,8 +833,8 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
   }
 
   // ── freshLoginFinish ─────────────────────────────────────────────────
-  @Step("recoveryFreshLoginFinish")
-  freshLoginFinish(@WorkflowParam("context") _ctx: RecoveryWfCtx): undefined {
+  @Step("recovery-fresh-login-finish")
+  freshLoginFinish(@WorkflowParam("context") ctx: RecoveryWfCtx): undefined | Promise<undefined> {
     // Auto-mode countdown: user reads the success confirmation before redirect.
     finishWf({
       message: {
@@ -639,7 +846,7 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
         timeoutMs: 5000,
         action: {
           type: "redirect",
-          target: this.opts.postReset.loginUrl,
+          target: ctx.postReset!.loginUrl,
           reason: "reset-success",
         },
         skipButton: { label: "Go now" },
@@ -649,7 +856,7 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
   }
 
   // ── autoLoginFinish ──────────────────────────────────────────────────
-  @Step("recoveryAutoLoginFinish")
+  @Step("recovery-auto-login-finish")
   async autoLoginFinish(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<undefined> {
     this.requireUsername(ctx);
     const issue = await this.auth.issue(ctx.username);
@@ -687,7 +894,7 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
         trigger: "immediate",
         action: {
           type: "redirect",
-          target: this.opts.postReset.loginUrl,
+          target: ctx.postReset!.loginUrl,
           reason: "user-cancelled",
         },
       },
@@ -697,7 +904,7 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
   }
 
   private async emitRequested(ctx: RecoveryWfCtx, username?: string): Promise<void> {
-    if (!this.opts.audit.enabled) return;
+    if (!ctx.audit?.enabled) return;
     await this.audit({
       kind: "recovery.requested",
       workflow: "auth.recovery",

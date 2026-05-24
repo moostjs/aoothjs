@@ -24,12 +24,13 @@ import type {
   LoginWfCtx,
   LoginWorkflowOpts,
   MfaTransport,
+  RecoveryPolicyOverrides,
   RecoveryWorkflowOpts,
 } from "@aooth/auth-moost";
 
 // Re-export so consumers that import the demo's variant types keep a single
 // import surface (`@e2e-demo` re-exports from "./variants" elsewhere).
-export type { InvitePolicyOverrides, LoginPolicyOverrides };
+export type { InvitePolicyOverrides, LoginPolicyOverrides, RecoveryPolicyOverrides };
 
 /**
  * Static MFA ctx overrides applied by `DemoLoginWorkflow`'s setter steps
@@ -259,44 +260,68 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
 };
 
 /**
+ * Recovery variant entry — `{ opts?, policy? }`. `opts` carries infrastructure
+ * overrides (magic-link TTL, OTP timers/length, forms) merged into
+ * `demoRecoveryOpts`. `policy` carries per-request policy groups (delivery
+ * mode + otpTransports, preReset, postReset, altActions, audit) applied by
+ * `DemoRecoveryWorkflow`'s `resolveXxx(ctx)` overrides.
+ */
+export interface RecoveryVariant {
+  opts?: Partial<RecoveryWorkflowOpts>;
+  policy?: RecoveryPolicyOverrides;
+}
+
+/**
+ * Default-merged `postReset` policy — saves variants from spelling out the
+ * full 3-field shape just to flip one flag. Mirrors `RecoveryWorkflow`'s
+ * `resolvePostReset` defaults.
+ */
+const POST_RESET_DEMO_DEFAULTS: NonNullable<RecoveryPolicyOverrides["postReset"]> = {
+  revokeAllSessions: true,
+  freshLoginRequired: false,
+  loginUrl: "/login",
+};
+
+/**
  * Recovery profiles — keys mirror `USER_STORIES.md` §4 variants R-A…R-G.
  */
-export const RECOVERY_VARIANTS: Record<string, Partial<RecoveryWorkflowOpts>> = {
+export const RECOVERY_VARIANTS: Record<string, RecoveryVariant> = {
   "default-magiclink": {
-    delivery: { mode: "magicLink" },
+    policy: { delivery: { mode: "magicLink", otpTransports: ["email"] } },
   },
   "otp-email": {
-    delivery: { mode: "otp", otp: { transports: ["email"] } },
+    policy: { delivery: { mode: "otp", otpTransports: ["email"] } },
   },
   "otp-sms": {
-    delivery: { mode: "otp", otp: { transports: ["sms"] } },
+    policy: { delivery: { mode: "otp", otpTransports: ["sms"] } },
   },
   "otp-both": {
-    delivery: { mode: "otp", otp: { transports: ["email", "sms"] } },
+    policy: { delivery: { mode: "otp", otpTransports: ["email", "sms"] } },
   },
   choice: {
-    delivery: { mode: "choice" },
+    policy: { delivery: { mode: "choice", otpTransports: ["email"] } },
   },
   "pre-factor": {
-    preReset: { requireKnownFactor: true },
+    policy: { preReset: { requireKnownFactor: true } },
   },
   "fresh-login": {
-    postReset: { freshLoginRequired: true, revokeAllSessions: true },
+    policy: {
+      postReset: { ...POST_RESET_DEMO_DEFAULTS, freshLoginRequired: true },
+    },
   },
   // Fast-expire magic-link variant — WF-RECOVERY-004. The persisted state
   // strategy honours `output.expires` so 1ms guarantees the resumed `wfs`
   // hits the "Invalid or expired workflow state" branch in @wooksjs/event-wf.
   "recovery-short-ttl": {
-    delivery: { mode: "magicLink", magicLinkTtlMs: 1 },
+    opts: { delivery: { magicLinkTtlMs: 1 } },
+    policy: { delivery: { mode: "magicLink", otpTransports: ["email"] } },
   },
   // Short OTP resend cooldown — WF-RECOVERY-010/011. 1s cooldown lets the
   // first `Resend code` click trip the rate-limit branch, while a >1s wait
   // proves a second click after the cooldown sends a fresh code.
   "recovery-fast-resend": {
-    delivery: {
-      mode: "otp",
-      otp: { transports: ["email"], resendCooldownMs: 1000 },
-    },
+    opts: { delivery: { otp: { resendCooldownMs: 1000 } } },
+    policy: { delivery: { mode: "otp", otpTransports: ["email"] } },
   },
 };
 

@@ -17,7 +17,11 @@ export {
   type SsoProvider,
   type ConcurrencyLimitOptions,
 } from "./login.workflow.options";
-export { RecoveryWorkflow, type RecoveryWfCtx } from "./recovery.workflow";
+export {
+  RecoveryWorkflow,
+  type RecoveryPolicyOverrides,
+  type RecoveryWfCtx,
+} from "./recovery.workflow";
 export {
   DEFAULT_RECOVERY_TOKEN_TTL_MS,
   mergeRecoveryOpts,
