@@ -125,15 +125,8 @@ describe("PROJ — field-level projection", () => {
     // result with `tenantId` dropped (see restrictProjection's
     // include/exclude branch). So `body` + `authorUsername` survive (proving
     // intersection actually applied) and `tenantId` is gone (proving role wins).
-    //
-    // `taskId` is included in the user $select because the relation loader
-    // needs the FK column to attach child rows back to parent tasks — strip it
-    // and comments expansion comes back as `[]` for every task. Orthogonal to
-    // the projection-intersection invariant under test.
     const { fetch } = await loginAndFetch(app, app.fixtures.users.t1_eve);
-    const res = await fetch(
-      "/tasks/query?$with=comments($select=tenantId,body,authorUsername,taskId)",
-    );
+    const res = await fetch("/tasks/query?$with=comments($select=tenantId,body,authorUsername)");
     expect(res.status).toBe(200);
     const rows = (await res.json()) as Array<{
       comments?: Array<Record<string, unknown>>;
