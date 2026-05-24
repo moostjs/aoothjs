@@ -133,9 +133,18 @@ Regardless of the class-level decision, do NOT repeat `@Public()` on individual 
 ## Wooks composables for event-context access
 
 ```ts
-const { referer } = useHeaders(current()); // ✅
-const cookie = useCookies(current()).getCookie("name"); // ✅
-const req = useRequest(current()) as unknown as { headers? }; // ❌ duck-typing
+const { referer } = useHeaders(); // ✅ composable resolves current() itself
+const cookie = useCookies().getCookie("name"); // ✅
+const req = useRequest() as unknown as { headers? }; // ❌ duck-typing
+```
+
+Don't pass `current()` explicitly — every composable resolves the active event context on its own. The only reason to thread it through is micro-optimization when calling many composables in one handler:
+
+```ts
+const c = current();
+const { referer } = useHeaders(c);
+const cookies = useCookies(c);
+const res = useResponse(c);
 ```
 
 If a composable exists for what you need, use it. Don't cast `req`/`res` objects to custom shapes.
