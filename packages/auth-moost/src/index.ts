@@ -40,6 +40,7 @@ export {
   type DuplicateAction,
   InviteWorkflow,
   type InviteWfCtx,
+  type InvitePolicyOverrides,
   type InvitePrepareUserInput,
   type InviteSendMode,
   type InviteWorkflowOpts,

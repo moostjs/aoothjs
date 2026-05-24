@@ -128,7 +128,9 @@ moost@0.6.x does NOT inherit `@Injectable` across `extends`, so each subclass mu
 
 Pick the default by asking: **can an anonymous request legitimately start this workflow?** If yes, class-level `@Public()`. If no, leave it off and let arbac evaluate normally.
 
-Regardless of the class-level decision, do NOT repeat `@Public()` on individual `@Step` methods — the class-level decoration (or its absence) is the entire `arbac` policy surface for the workflow.
+**When the class IS `@Public()`**, do NOT repeat `@Public()` on individual `@Step` methods — it's redundant.
+
+**When the class is NOT `@Public()`**, per-step `@Public()` IS the mechanism for opting specific steps out of arbac. Use it on every step that the wf engine can land on under anonymous auth (e.g. Invite's accept tail fires on the anonymous magic-link resume; each step the engine may re-enter on resume — including pause boundaries — must be `@Public()`). The class-level `@Workflow` body (`inviteFlow()` etc.) must also be `@Public()` because the wf adapter dispatches the flow body on every `start()`/`resume()` call.
 
 ## Wooks composables for event-context access
 

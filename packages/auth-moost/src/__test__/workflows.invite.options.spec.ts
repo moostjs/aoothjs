@@ -8,16 +8,38 @@
  * test were removed.
  *
  * Phase 4 reshape: tests configure InviteWorkflow via the nested-pojo
- * `inviteOpts` + the harness's `inviteHooks` map (which the harness subclass
- * wires onto the new `protected` overrides). The pre-reshape options-class +
- * the rate-limit feature are gone — see WF_INVITE.md.
+ * `inviteOpts` (infrastructure: forms, TTLs, pincode length) + the
+ * `invitePolicy` knob (resolveXxx policy groups: adminForm, send, accept,
+ * cancellation, audit, mfa) + the harness's `inviteHooks` map (`protected`
+ * method overrides). Pre-reshape options-class + rate-limit are gone.
  */
 import { ppHasMinLength, UserStoreMemory } from "@aooth/user";
 import type { UserCredentials } from "@aooth/user";
+import type { InviteWfCtx } from "@aooth/auth-moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import { InviteForm, ProfileCompleteForm } from "../atscript/models/forms.as";
 import { prepareWfApp, seedActiveUser } from "./workflow-utils";
+
+/**
+ * Default-merged `accept` policy — saves each test from spelling out the full
+ * shape just to flip one flag. Mirrors `InviteWorkflow.resolveAccept`
+ * defaults, with `showConfirmation: false` swapped in to match the harness
+ * default (most tests assert the auto-login response shape directly,
+ * pre-dating the confirmation pause).
+ */
+function acceptPolicy(
+  partial: Partial<NonNullable<InviteWfCtx["accept"]>> = {},
+): NonNullable<InviteWfCtx["accept"]> {
+  return {
+    alreadyAcceptedRedirectUrl: "/login",
+    freshLoginRequired: false,
+    loginUrl: "/login",
+    showConfirmation: false,
+    confirmationMessage: "Your account has been created.",
+    ...partial,
+  };
+}
 
 /**
  * Simulates atscript-db's strict-schema persistence: rejects any property on
@@ -137,9 +159,8 @@ describe("InviteWorkflow — send.mode shareableLink", () => {
     // shareableLink mode uses the dedicated `shareableLink` outlet — the URL
     // is surfaced in the admin's HTTP response body, no email envelope.
     const app = await prepareWfApp({
-      inviteOpts: {
+      invitePolicy: {
         send: { mode: "shareableLink" },
-        accept: { showConfirmation: false },
       },
     });
 
@@ -161,10 +182,7 @@ describe("InviteWorkflow — send.mode shareableLink", () => {
 describe("InviteWorkflow — send.mode choice", () => {
   it("choice: admin picks 'shareableLink' at runtime → URL surfaced in trigger response (no email)", async () => {
     const app = await prepareWfApp({
-      inviteOpts: {
-        send: { mode: "choice" },
-        accept: { showConfirmation: false },
-      },
+      invitePolicy: { send: { mode: "choice" } },
     });
     const r1 = await app.trigger({ wfid: "auth.invite" });
     // First pause: send-mode picker (InviteSendModeForm).
@@ -189,10 +207,7 @@ describe("InviteWorkflow — send.mode choice", () => {
 
   it("choice: admin picks 'email' → email sent normally", async () => {
     const app = await prepareWfApp({
-      inviteOpts: {
-        send: { mode: "choice" },
-        accept: { showConfirmation: false },
-      },
+      invitePolicy: { send: { mode: "choice" } },
     });
     const r1 = await app.trigger({ wfid: "auth.invite" });
     const r2 = await app.trigger({
@@ -213,7 +228,6 @@ describe("InviteWorkflow — getProfileForm + applyProfile", () => {
   it("getProfileForm + custom applyProfile override fires with raw profile + username", async () => {
     const seen: Array<{ username: string; profile: Record<string, unknown> }> = [];
     const app = await prepareWfApp({
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteHooks: {
         getProfileForm: () => ProfileCompleteForm,
         applyProfile: async ({ username, profile }) => {
@@ -246,7 +260,6 @@ describe("InviteWorkflow — getProfileForm + applyProfile", () => {
 
   it("getProfileForm WITHOUT applyProfile override → default deep-merge fallback writes via UserService.update", async () => {
     const app = await prepareWfApp({
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteHooks: {
         getProfileForm: () => ProfileCompleteForm,
         // no applyProfile — default deep-merge runs.
@@ -281,7 +294,6 @@ describe("InviteWorkflow — getProfileForm + applyProfile", () => {
 describe("InviteWorkflow — getAvailableRoles + inferRoles", () => {
   it("getAvailableRoles populates ctx.availableRoles on the InviteForm pause", async () => {
     const app = await prepareWfApp({
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteHooks: {
         getAvailableRoles: async () => ["admin", "viewer"],
       },
@@ -296,7 +308,6 @@ describe("InviteWorkflow — getAvailableRoles + inferRoles", () => {
     // hook did not surface — without this, a tampered form payload could
     // assign arbitrary roles.
     const app = await prepareWfApp({
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteHooks: {
         getAvailableRoles: async () => ["admin", "viewer"],
       },
@@ -315,7 +326,6 @@ describe("InviteWorkflow — getAvailableRoles + inferRoles", () => {
   it("inferRoles merges with admin-supplied roles (set-union)", async () => {
     const calls: Array<Record<string, unknown>> = [];
     const app = await prepareWfApp({
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteHooks: {
         inferRoles: async (input) => {
           calls.push({ ...input });
@@ -448,10 +458,7 @@ describe("InviteWorkflow — cancel-invite", () => {
 
   it("cancellation.allowed=false → 403 from cancel step", async () => {
     const app = await prepareWfApp({
-      inviteOpts: {
-        accept: { showConfirmation: false },
-        cancellation: { allowed: false },
-      },
+      invitePolicy: { cancellation: { allowed: false } },
     });
     // The `cancelInvite` step's allowed-gate fires on the first trigger
     // (before the form input pause), so the workflow returns 403 immediately
@@ -465,9 +472,7 @@ describe("InviteWorkflow — cancel-invite", () => {
 describe("InviteWorkflow — idempotent magic-link click", () => {
   it("second click after a successful accept → redirect / 4xx (single-use token)", async () => {
     const app = await prepareWfApp({
-      inviteOpts: {
-        accept: { showConfirmation: false, alreadyAcceptedRedirectUrl: "/already-in" },
-      },
+      invitePolicy: { accept: acceptPolicy({ alreadyAcceptedRedirectUrl: "/already-in" }) },
     });
     const r1 = await app.trigger({ wfid: "auth.invite" });
     await app.trigger({
@@ -497,9 +502,7 @@ describe("InviteWorkflow — idempotent magic-link click", () => {
     // the alreadyAccepted invariant from the workflow level: once accepted,
     // no second token can be issued.
     const app = await prepareWfApp({
-      inviteOpts: {
-        accept: { showConfirmation: false, alreadyAcceptedRedirectUrl: "/already-in" },
-      },
+      invitePolicy: { accept: acceptPolicy({ alreadyAcceptedRedirectUrl: "/already-in" }) },
     });
     const r1 = await app.trigger({ wfid: "auth.invite" });
     await app.trigger({
@@ -529,12 +532,8 @@ describe("InviteWorkflow — idempotent magic-link click", () => {
 describe("InviteWorkflow — accept.freshLoginRequired", () => {
   it("freshLoginRequired=true skips auto-login (redirect to loginUrl)", async () => {
     const app = await prepareWfApp({
-      inviteOpts: {
-        accept: {
-          showConfirmation: false,
-          freshLoginRequired: true,
-          loginUrl: "/sign-in",
-        },
+      invitePolicy: {
+        accept: acceptPolicy({ freshLoginRequired: true, loginUrl: "/sign-in" }),
       },
     });
     const r = await driveDefaultInviteAccept(app, "fresh@test.com");
@@ -587,7 +586,6 @@ describe("InviteWorkflow — duplicate-invite structural rule", () => {
     // short-circuit on the structural duplicate check.
     const seen: Array<{ email: string; hadExisting: boolean }> = [];
     const app = await prepareWfApp({
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteHooks: {
         duplicateCheck: async ({ email, existingUser }) => {
           seen.push({ email, hadExisting: existingUser !== null });
@@ -615,7 +613,7 @@ describe("InviteWorkflow — audit events", () => {
   it("emits invite.created (preCreateUser), invite.accepted (activateUser)", async () => {
     const events: Array<Record<string, unknown>> = [];
     const app = await prepareWfApp({
-      inviteOpts: { accept: { showConfirmation: false }, audit: { enabled: true } },
+      invitePolicy: { audit: { enabled: true } },
       auditEmitter: {
         emit(e) {
           events.push(e);
@@ -635,7 +633,7 @@ describe("InviteWorkflow — audit events", () => {
   it("emits invite.resent on auth.reInvite (loadPendingUser)", async () => {
     const events: Array<Record<string, unknown>> = [];
     const app = await prepareWfApp({
-      inviteOpts: { accept: { showConfirmation: false }, audit: { enabled: true } },
+      invitePolicy: { audit: { enabled: true } },
       auditEmitter: {
         emit(e) {
           events.push(e);
@@ -661,7 +659,7 @@ describe("InviteWorkflow — audit events", () => {
   it("emits invite.cancelled on auth.cancelInvite", async () => {
     const events: Array<Record<string, unknown>> = [];
     const app = await prepareWfApp({
-      inviteOpts: { accept: { showConfirmation: false }, audit: { enabled: true } },
+      invitePolicy: { audit: { enabled: true } },
       auditEmitter: {
         emit(e) {
           events.push(e);
@@ -687,7 +685,7 @@ describe("InviteWorkflow — audit events", () => {
   it("audit.enabled=false → no invite.* events fired", async () => {
     const events: Array<Record<string, unknown>> = [];
     const app = await prepareWfApp({
-      inviteOpts: { accept: { showConfirmation: false }, audit: { enabled: false } },
+      invitePolicy: { audit: { enabled: false } },
       auditEmitter: {
         emit(e) {
           events.push(e);
@@ -713,7 +711,6 @@ describe("InviteWorkflow — admin form firstName/lastName/roles wiring", () => 
     const seenPrepare: Array<Record<string, unknown>> = [];
     const app = await prepareWfApp({
       userStore: new StrictSchemaUserStore(BASE_USER_COLUMNS),
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteHooks: {
         prepareUser: (input) => {
           seenPrepare.push({ ...input });
@@ -764,7 +761,6 @@ describe("InviteWorkflow — admin form firstName/lastName/roles wiring", () => 
     const allowed = new Set([...BASE_USER_COLUMNS, "displayName"]);
     const app = await prepareWfApp({
       userStore: new StrictSchemaUserStore(allowed),
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteHooks: {
         prepareUser: ({ firstName, lastName }) => {
           const display = [firstName, lastName].filter(Boolean).join(" ");
@@ -791,7 +787,6 @@ describe("InviteWorkflow — admin form firstName/lastName/roles wiring", () => 
     // tripping a downstream 500.
     const app = await prepareWfApp({
       userStore: new StrictSchemaUserStore(BASE_USER_COLUMNS),
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteHooks: { getAvailableRoles: async () => ["admin", "viewer"] },
     });
     const r1 = await app.trigger({ wfid: "auth.invite" });
@@ -812,12 +807,11 @@ describe("InviteWorkflow — WfFinished envelope shape", () => {
     // tokenB while the first invite still pending; user accepts via tokenA;
     // tokenB resume now lands on `inviteIdempotentRedirect`.
     const app = await prepareWfApp({
-      inviteOpts: {
-        accept: {
-          showConfirmation: false,
+      invitePolicy: {
+        accept: acceptPolicy({
           alreadyAcceptedRedirectUrl: "/request-new",
           loginUrl: "/sign-in",
-        },
+        }),
       },
     });
     const r1 = await app.trigger({ wfid: "auth.invite" });
@@ -890,8 +884,8 @@ describe("InviteWorkflow — WfFinished envelope shape", () => {
 
   it("freshLoginRequired → finishWf({ next: immediate redirect }) envelope with reason='fresh-login-required'", async () => {
     const app = await prepareWfApp({
-      inviteOpts: {
-        accept: { showConfirmation: false, freshLoginRequired: true, loginUrl: "/post-accept" },
+      invitePolicy: {
+        accept: acceptPolicy({ freshLoginRequired: true, loginUrl: "/post-accept" }),
       },
     });
     const r = await driveDefaultInviteAccept(app, "fl@test.com");

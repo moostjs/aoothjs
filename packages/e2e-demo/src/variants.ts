@@ -18,6 +18,7 @@
  * (`backupCodes`, `pincodeResendTimeoutMs`, …) remain on `opts.mfa`.
  */
 import type {
+  InvitePolicyOverrides,
   InviteWorkflowOpts,
   LoginPolicyOverrides,
   LoginWfCtx,
@@ -28,7 +29,7 @@ import type {
 
 // Re-export so consumers that import the demo's variant types keep a single
 // import surface (`@e2e-demo` re-exports from "./variants" elsewhere).
-export type { LoginPolicyOverrides };
+export type { InvitePolicyOverrides, LoginPolicyOverrides };
 
 /**
  * Static MFA ctx overrides applied by `DemoLoginWorkflow`'s setter steps
@@ -78,16 +79,16 @@ export interface LoginVariant {
 }
 
 /**
- * Invite variant entry — same `{ opts?, mfaCtx? }` shape as `LoginVariant`.
- * Pre-PR9 invite variants were opts-only (`Partial<InviteWorkflowOpts>`); the
- * MFA enrolment variants added in the PW MFA coverage PR need the same setter
- * override seam login has, so the shape was lifted to match. Existing variant
- * entries wrap their `Partial<InviteWorkflowOpts>` under `opts` — the consumer
- * (`DemoInviteWorkflow` ctor + `inviteSetupMfa` override) reads them through
- * this discriminated shape.
+ * Invite variant entry — `{ opts?, policy?, mfaCtx? }`. `opts` carries
+ * infrastructure overrides (magic-link TTL, pincode timers, forms) merged into
+ * `demoInviteOpts`. `policy` carries per-request policy groups (adminForm,
+ * send, accept, cancellation, audit, mfa) applied by `DemoInviteWorkflow`'s
+ * `resolveXxx(ctx)` overrides. `mfaCtx` carries the static MFA-ctx overrides
+ * written by the `invite-setup-mfa` step.
  */
 export interface InviteVariant {
   opts?: Partial<InviteWorkflowOpts>;
+  policy?: InvitePolicyOverrides;
   mfaCtx?: InviteMfaCtxOverrides;
 }
 
@@ -300,56 +301,73 @@ export const RECOVERY_VARIANTS: Record<string, Partial<RecoveryWorkflowOpts>> = 
 };
 
 /**
+ * Default-merged `accept` policy — saves variants from spelling out the full
+ * 5-field shape just to flip one flag. Mirrors `InviteWorkflow.resolveAccept`
+ * defaults, with `showConfirmation: false` swapped in to match the demo
+ * default (existing demo tests assert the auto-login response payload —
+ * pre-dating the BIG 3.3 confirmation pause).
+ */
+const ACCEPT_DEMO_DEFAULTS: NonNullable<InvitePolicyOverrides["accept"]> = {
+  alreadyAcceptedRedirectUrl: "/login",
+  freshLoginRequired: false,
+  loginUrl: "/login",
+  showConfirmation: false,
+  confirmationMessage: "Your account has been created.",
+};
+
+/**
  * Invite profiles — keys mirror `USER_STORIES.md` §5 variants I-A…I-G. Each
- * entry uses the `{ opts?, mfaCtx? }` shape so MFA-enrolment variants can
- * push static ctx through `inviteSetupMfa` (mirroring login). Entries that
- * only override opts wrap their payload under `opts:` for shape consistency.
+ * entry uses the `{ opts?, policy?, mfaCtx? }` shape: `opts` carries infra
+ * overrides (TTLs, pincode fields), `policy` carries `resolveXxx`-readable
+ * policy groups, `mfaCtx` pushes static ctx through `invite-setup-mfa`.
  */
 export const INVITE_VARIANTS: Record<string, InviteVariant> = {
   "email-no-roles": {
-    opts: {
+    policy: {
       adminForm: { collectRoles: false },
       send: { mode: "email" },
     },
   },
   "roles-profile": {
-    opts: {
+    policy: {
       adminForm: { collectRoles: true },
       send: { mode: "email" },
     },
   },
   "shareable-link": {
-    opts: { send: { mode: "shareableLink" } },
+    policy: { send: { mode: "shareableLink" } },
   },
   "choice-freshlogin": {
-    opts: {
+    policy: {
       send: { mode: "choice" },
-      accept: { freshLoginRequired: true },
+      accept: { ...ACCEPT_DEMO_DEFAULTS, freshLoginRequired: true },
     },
   },
   "audit-enabled": {
-    opts: { audit: { enabled: true } },
+    policy: { audit: { enabled: true } },
   },
   "cancellation-disabled": {
-    opts: { cancellation: { allowed: false } },
+    policy: { cancellation: { allowed: false } },
   },
   "short-ttl-confirmation": {
-    opts: {
-      send: { tokenTtlMs: 1000 },
-      accept: { showConfirmation: true },
-    },
+    opts: { send: { tokenTtlMs: 1000 } },
+    policy: { accept: { ...ACCEPT_DEMO_DEFAULTS, showConfirmation: true } },
   },
   // Surfaces the confirmation message in the finish envelope (WF-INVITE-020).
   // Demo's other variants leave the message blank.
   "confirmation-message": {
-    opts: {
-      accept: { showConfirmation: true, confirmationMessage: "Your account has been created." },
+    policy: {
+      accept: {
+        ...ACCEPT_DEMO_DEFAULTS,
+        showConfirmation: true,
+        confirmationMessage: "Your account has been created.",
+      },
     },
   },
   // Enables the secondary 'Request a new invite' button on the
   // idempotent-redirect step (WF-INVITE-010).
   "idempotent-redirect": {
-    opts: { accept: { alreadyAcceptedRedirectUrl: "/login" } },
+    policy: { accept: { ...ACCEPT_DEMO_DEFAULTS, alreadyAcceptedRedirectUrl: "/login" } },
   },
   // ── MFA-enrollment invite variants (PW MFA coverage PR) ──
   //
@@ -358,7 +376,7 @@ export const INVITE_VARIANTS: Record<string, InviteVariant> = {
   // Drives WF-INVITE-018 (skip from EnrollPickMethodForm) and WF-INVITE-019
   // (useDifferentMethod from EnrollConfirmForm after picking totp).
   "invite-mfa-optional-full": {
-    opts: {
+    policy: {
       adminForm: { collectRoles: false },
       send: { mode: "email" },
     },

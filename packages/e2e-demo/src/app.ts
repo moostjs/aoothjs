@@ -21,6 +21,7 @@ import {
   DEFAULT_AUTH_WORKFLOWS,
   type DeliverPayload,
   type DuplicateAction,
+  type InvitePolicyOverrides,
   type InviteWfCtx,
   InviteWorkflow,
   type InviteWorkflowOpts,
@@ -118,6 +119,13 @@ export interface BuildAppOptions {
   loginPolicy?: LoginPolicyOverrides;
   recoveryOpts?: RecoveryWorkflowOpts;
   inviteOpts?: InviteWorkflowOpts;
+  /**
+   * Per-test invite policy overrides applied via the `resolveXxx(ctx)` getters
+   * on `DemoInviteWorkflow`. Same precedence pattern as `loginPolicy`. Tests
+   * that previously did `inviteOpts: { accept: { ... } }` / `inviteOpts: {
+   * cancellation: { ... } }` etc. flip the matching group here.
+   */
+  invitePolicy?: InvitePolicyOverrides;
   /**
    * Replace the default `DemoInviteWorkflow` controller with a consumer-
    * supplied class. Used by override-pattern e2e tests that need their own
@@ -575,13 +583,14 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // password-set, pre-dating the optional/required enrolment loops) lives on
   // the single `inviteSetupMfa` override below; variants exercising enrolment
   // override via `opts.inviteMfaCtx` / `withInviteMfaCtx`.
+  //
+  // Post-resolver reshape: `InviteWorkflowOpts` is infrastructure-only — policy
+  // (adminForm, send.mode, accept, cancellation, audit, mfa.issuer) lives on
+  // `resolveXxx(ctx)` overrides below. Variants supply `policy.<group>`
+  // payloads that those resolvers merge with the demo's per-group defaults.
   const demoInviteOpts: InviteWorkflowOpts = mergeWfOpts(
     {
       send: { tokenTtlMs: env.INVITE_TTL_MS },
-      // Existing demo tests assert the auto-login response payload — pre-dating
-      // the BIG 3.3 confirmation pause. Off here so the demo matches today's
-      // behavior; production should keep the default ON.
-      accept: { showConfirmation: false },
     },
     opts.inviteOpts,
   );
@@ -611,44 +620,47 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       // parity with login/recovery.
       return forwardDeliver(payload);
     }
-    // `inviteInit` runs on the admin's first trigger (variant header IS
-    // present); `inviteSetupMfa` runs LATER on the invitee's anonymous resume
+    // `invite-init` runs on the admin's first trigger (variant header IS
+    // present); `invite-setup-mfa` runs LATER on the invitee's anonymous resume
     // (variant header is NOT present — the magic-link click is plain HTTP).
     // The wf-state ctx is the only thing that crosses the admin→invitee
-    // boundary, so stash the resolved mfaCtx on ctx here in `inviteInit` and
-    // read it back in `inviteSetupMfa` below. Without this stash the
+    // boundary, so stash the resolved mfaCtx on ctx here in `invite-init` and
+    // read it back in `invite-setup-mfa` below. Without this stash the
     // `invite-mfa-optional-full` variant's mode/transports never reach the
     // enrolment loop on the invitee side and the workflow silently
     // skips MFA enrolment.
-    @Step("inviteInit")
+    @Step("invite-init")
     @Public()
-    override init(@WorkflowParam("context") ctx: InviteWfCtx): undefined {
-      super.init(ctx);
-      const variant = pickVariant(INVITE_VARIANTS, readVariantHeader());
-      const v = variant?.mfaCtx;
-      if (v) {
-        // Stash on a non-typed ctx slot — InviteWfCtx doesn't have a field
-        // for this and it's strictly a demo-test piece. The serializer is
-        // structural JSON so any plain field rides through wf-state fine.
-        (ctx as unknown as { __demoMfaCtx?: InviteMfaCtxOverrides }).__demoMfaCtx = {
-          ...(v.mfaMode !== undefined && { mfaMode: v.mfaMode }),
-          ...(v.availableMfaTransports !== undefined && {
-            availableMfaTransports: [...v.availableMfaTransports],
-          }),
-          ...(v.enrollMethod !== undefined && { enrollMethod: v.enrollMethod }),
-        };
-      }
-      return undefined;
+    override init(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
+      const baseResult = super.init(ctx);
+      const apply = (): undefined => {
+        const variant = pickVariant(INVITE_VARIANTS, readVariantHeader());
+        const v = variant?.mfaCtx;
+        if (v) {
+          // Stash on a non-typed ctx slot — InviteWfCtx doesn't have a field
+          // for this and it's strictly a demo-test piece. The serializer is
+          // structural JSON so any plain field rides through wf-state fine.
+          (ctx as unknown as { __demoMfaCtx?: InviteMfaCtxOverrides }).__demoMfaCtx = {
+            ...(v.mfaMode !== undefined && { mfaMode: v.mfaMode }),
+            ...(v.availableMfaTransports !== undefined && {
+              availableMfaTransports: [...v.availableMfaTransports],
+            }),
+            ...(v.enrollMethod !== undefined && { enrollMethod: v.enrollMethod }),
+          };
+        }
+        return undefined;
+      };
+      return baseResult instanceof Promise ? baseResult.then(apply) : apply();
     }
     // Variant-driven mfa-ctx setter override — mirrors the login side. Reads
-    // the resolved mfaCtx stashed in `inviteInit` (preferred path, survives
+    // the resolved mfaCtx stashed in `invite-init` (preferred path, survives
     // admin→invitee resume) and falls back to the live request header
     // (admin-only flows that re-enter inviteSetupMfa before a resume).
     // Default is `mfaMode: 'disabled'` so existing invite e2e tests that
     // assert the auto-login envelope after password-set keep working without
     // an enrolment pause. Variants like `invite-mfa-optional-full` flip the
     // mode + transport list per request via this override (PW MFA coverage).
-    @Step("inviteSetupMfa")
+    @Step("invite-setup-mfa")
     @Public()
     override inviteSetupMfa(
       @WorkflowParam("context") ctx: InviteWfCtx,
@@ -666,6 +678,70 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
         return undefined;
       };
       return baseResult instanceof Promise ? baseResult.then(apply) : apply();
+    }
+    // ── Variant-driven resolveXxx policy overrides ──
+    //
+    // Precedence (high → low):
+    //   1. test-time `opts.invitePolicy.<group>` (set by `buildTestApp`)
+    //   2. variant `policy.<group>` (via `x-wf-variant` header)
+    //   3. demo per-group default (tweaks on top of base)
+    //   4. library default (`super.resolveXxx(ctx)`)
+    protected override resolveAdminForm(
+      ctx: InviteWfCtx,
+    ): NonNullable<InviteWfCtx["adminForm"]> | Promise<NonNullable<InviteWfCtx["adminForm"]>> {
+      if (opts.invitePolicy?.adminForm) return opts.invitePolicy.adminForm;
+      const variant = pickVariant(INVITE_VARIANTS, readVariantHeader());
+      if (variant?.policy?.adminForm) return variant.policy.adminForm;
+      return super.resolveAdminForm(ctx);
+    }
+    protected override resolveSend(
+      ctx: InviteWfCtx,
+    ): NonNullable<InviteWfCtx["send"]> | Promise<NonNullable<InviteWfCtx["send"]>> {
+      if (opts.invitePolicy?.send) return opts.invitePolicy.send;
+      const variant = pickVariant(INVITE_VARIANTS, readVariantHeader());
+      if (variant?.policy?.send) return variant.policy.send;
+      return super.resolveSend(ctx);
+    }
+    protected override resolveAccept(
+      ctx: InviteWfCtx,
+    ): NonNullable<InviteWfCtx["accept"]> | Promise<NonNullable<InviteWfCtx["accept"]>> {
+      if (opts.invitePolicy?.accept) return opts.invitePolicy.accept;
+      const variant = pickVariant(INVITE_VARIANTS, readVariantHeader());
+      if (variant?.policy?.accept) return variant.policy.accept;
+      // Demo default: existing tests assert the auto-login response payload —
+      // pre-dating the BIG 3.3 confirmation pause. Off here so the demo
+      // matches today's behaviour; production should keep the default ON.
+      const baseResult = super.resolveAccept(ctx);
+      const patch = (
+        r: NonNullable<InviteWfCtx["accept"]>,
+      ): NonNullable<InviteWfCtx["accept"]> => ({ ...r, showConfirmation: false });
+      return baseResult instanceof Promise ? baseResult.then(patch) : patch(baseResult);
+    }
+    protected override resolveCancellation(
+      ctx: InviteWfCtx,
+    ):
+      | NonNullable<InviteWfCtx["cancellation"]>
+      | Promise<NonNullable<InviteWfCtx["cancellation"]>> {
+      if (opts.invitePolicy?.cancellation) return opts.invitePolicy.cancellation;
+      const variant = pickVariant(INVITE_VARIANTS, readVariantHeader());
+      if (variant?.policy?.cancellation) return variant.policy.cancellation;
+      return super.resolveCancellation(ctx);
+    }
+    protected override resolveAudit(
+      ctx: InviteWfCtx,
+    ): NonNullable<InviteWfCtx["audit"]> | Promise<NonNullable<InviteWfCtx["audit"]>> {
+      if (opts.invitePolicy?.audit) return opts.invitePolicy.audit;
+      const variant = pickVariant(INVITE_VARIANTS, readVariantHeader());
+      if (variant?.policy?.audit) return variant.policy.audit;
+      return super.resolveAudit(ctx);
+    }
+    protected override resolveMfa(
+      ctx: InviteWfCtx,
+    ): NonNullable<InviteWfCtx["mfa"]> | Promise<NonNullable<InviteWfCtx["mfa"]>> {
+      if (opts.invitePolicy?.mfa) return opts.invitePolicy.mfa;
+      const variant = pickVariant(INVITE_VARIANTS, readVariantHeader());
+      if (variant?.policy?.mfa) return variant.policy.mfa;
+      return super.resolveMfa(ctx);
     }
     // Demonstrates the `prepareUser` hook: populate the consumer-required
     // `tenantId` field before `userService.createUser` runs.
@@ -1026,7 +1102,7 @@ function wrapWithInviteMfaCtx<W extends new (...args: never[]) => InviteWorkflow
     constructor(users: UserService, auth: AuthCredential) {
       super(users, auth);
     }
-    @Step("inviteSetupMfa")
+    @Step("invite-setup-mfa")
     @Public()
     override inviteSetupMfa(
       @WorkflowParam("context") c: InviteWfCtx,

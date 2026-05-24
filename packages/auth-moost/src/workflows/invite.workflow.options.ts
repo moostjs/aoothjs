@@ -1,11 +1,15 @@
 /**
- * `InviteWorkflowOpts` — nested-pojo configuration for `InviteWorkflow`.
+ * `InviteWorkflowOpts` — infrastructure-only nested-pojo configuration for
+ * `InviteWorkflow`.
  *
- * Phase 4 of the workflow OOP-reshape (see TASKS.md): the options class +
- * callbacks have been replaced by a nested-object pojo passed as the first
- * ctor arg, plus protected methods on `InviteWorkflow` that consumers override
- * via subclassing. Defaults are applied by `mergeInviteOpts(opts)` so step
- * bodies + schema conditions can read `ctx.opts.<group>.<flag>` without `?.`.
+ * Phase 5 of the workflow OOP-reshape (Step 2 of the InviteWorkflow refactor):
+ * policy fields (`adminForm.collectRoles`, `send.mode`, `accept.*`,
+ * `cancellation.allowed`, `audit.enabled`, `mfa.issuer`) have moved off opts
+ * and onto protected `resolveXxx(ctx)` getter methods on `InviteWorkflow` (one
+ * per group), mirroring `LoginWorkflow`. What remains here is infrastructure
+ * only: magic-link TTL, pincode timers/length, and the form schemas. Step
+ * bodies + schema conditions read policy from `ctx.<group>` (populated by
+ * `prepare-<group>` @Step methods that call the resolvers).
  *
  * Rate limiting will be addressed systematically in a later pass — for now
  * consumers who want a cap wire it themselves at the trigger / HTTP layer.
@@ -47,33 +51,14 @@ export type DuplicateAction = "allow" | "reject" | "reuseAsReInvite";
 export type InviteSendMode = "email" | "shareableLink" | "choice";
 
 export interface InviteWorkflowOpts {
-  adminForm?: {
-    collectRoles?: boolean;
-  };
   send?: {
-    mode?: InviteSendMode;
     tokenTtlMs?: number;
-  };
-  accept?: {
-    alreadyAcceptedRedirectUrl?: string;
-    freshLoginRequired?: boolean;
-    loginUrl?: string;
-    showConfirmation?: boolean;
-    confirmationMessage?: string;
-  };
-  cancellation?: {
-    allowed?: boolean;
-  };
-  audit?: {
-    enabled?: boolean;
   };
   mfa?: {
     pincodeTtlMs?: number;
     /** Per-method resend cooldown for the Phase 3 confirm pincode (sms/email). Default: 60_000. */
     pincodeResendTimeoutMs?: number;
     pincodeLength?: number;
-    /** TOTP provisioning issuer (rendered in the authenticator app). Default: 'aooth'. */
-    issuer?: string;
   };
   /**
    * Replaceable form schemas. Each field defaults to the corresponding
@@ -92,35 +77,17 @@ export interface InviteWorkflowOpts {
 
 /**
  * Fully-resolved view used by the workflow at runtime — every nested group is
- * always populated by `mergeInviteOpts`, so schema conditions can read
- * `ctx.opts.<group>.<flag>` directly without optional chaining.
+ * always populated by `mergeInviteOpts`, so step bodies can read
+ * `this.opts.<group>.<flag>` directly without optional chaining.
  */
 export interface ResolvedInviteWorkflowOpts {
-  adminForm: {
-    collectRoles: boolean;
-  };
   send: {
-    mode: InviteSendMode;
     tokenTtlMs: number;
-  };
-  accept: {
-    alreadyAcceptedRedirectUrl: string;
-    freshLoginRequired: boolean;
-    loginUrl: string;
-    showConfirmation: boolean;
-    confirmationMessage: string;
-  };
-  cancellation: {
-    allowed: boolean;
-  };
-  audit: {
-    enabled: boolean;
   };
   mfa: {
     pincodeTtlMs: number;
     pincodeResendTimeoutMs: number;
     pincodeLength: number;
-    issuer: string;
   };
   forms: {
     enrollAddress: TAtscriptAnnotatedType;
@@ -140,36 +107,14 @@ export interface ResolvedInviteWorkflowOpts {
  */
 export function mergeInviteOpts(opts: InviteWorkflowOpts = {}): ResolvedInviteWorkflowOpts {
   return {
-    adminForm: {
-      collectRoles: true,
-      ...opts.adminForm,
-    },
     send: {
-      mode: "email",
       tokenTtlMs: DEFAULT_INVITE_TOKEN_TTL_MS,
       ...opts.send,
-    },
-    accept: {
-      alreadyAcceptedRedirectUrl: "/login",
-      freshLoginRequired: false,
-      loginUrl: "/login",
-      showConfirmation: true,
-      confirmationMessage: "Your account has been created.",
-      ...opts.accept,
-    },
-    cancellation: {
-      allowed: true,
-      ...opts.cancellation,
-    },
-    audit: {
-      enabled: true,
-      ...opts.audit,
     },
     mfa: {
       pincodeTtlMs: 5 * 60 * 1000,
       pincodeResendTimeoutMs: 60_000,
       pincodeLength: 6,
-      issuer: "aooth",
       ...opts.mfa,
     },
     forms: {

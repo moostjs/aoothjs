@@ -1,17 +1,13 @@
 /**
  * Unit coverage for `mergeInviteOpts`.
  *
- * The deep-merge is hand-rolled (one `{ ...defaults, ...input }` per nested
- * group). These tests pin the contract that runtime-relevant defaults survive
- * a partial input — without this guarantee, schema conditions that read
- * `ctx.opts.<group>.<flag>` after `inviteInit` would NPE on missing nested
- * keys.
- *
- * Each test asserts a specific WHY: "if a consumer overrides one nested key,
- * sibling defaults must still be present at runtime." That intent is broken
- * the moment someone replaces `{ ...defaults, ...input }` with `input` (or
- * `?? defaults`) for any group — which is exactly the regression this file
- * guards against.
+ * Post-resolver reshape (Step 2 of the InviteWorkflow refactor): `InviteWorkflowOpts`
+ * is infrastructure-only — magic-link TTL, pincode timers/length, and form
+ * schemas. Policy fields (`adminForm`, `send.mode`, `accept`, `cancellation`,
+ * `audit`, `mfa.issuer`) moved off opts to `resolveXxx(ctx)` getters. These
+ * tests pin the contract that infra defaults survive a partial input —
+ * without this guarantee, step bodies reading `this.opts.<group>.<flag>`
+ * would NPE on missing nested keys.
  */
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { describe, expect, it } from "vite-plus/test";
@@ -23,51 +19,24 @@ import { DEFAULT_INVITE_TOKEN_TTL_MS, mergeInviteOpts } from "../workflows/invit
 describe("mergeInviteOpts — defaults survive partial input", () => {
   it("undefined input → every nested group is populated with its full defaults", () => {
     const opts = mergeInviteOpts();
-    expect(opts.adminForm.collectRoles).toBe(true);
-    expect(opts.send.mode).toBe("email");
     expect(opts.send.tokenTtlMs).toBe(DEFAULT_INVITE_TOKEN_TTL_MS);
-    expect(opts.accept.alreadyAcceptedRedirectUrl).toBe("/login");
-    expect(opts.accept.freshLoginRequired).toBe(false);
-    expect(opts.accept.loginUrl).toBe("/login");
-    expect(opts.accept.showConfirmation).toBe(true);
-    expect(opts.accept.confirmationMessage).toBe("Your account has been created.");
-    expect(opts.cancellation.allowed).toBe(true);
-    expect(opts.audit.enabled).toBe(true);
+    expect(opts.mfa.pincodeTtlMs).toBe(5 * 60 * 1000);
+    expect(opts.mfa.pincodeResendTimeoutMs).toBe(60_000);
+    expect(opts.mfa.pincodeLength).toBe(6);
   });
 
-  it("partial send override (tokenTtlMs only) keeps mode default 'email'", () => {
-    // The schema's `inviteSelectSendMode` step gates on `opts.send.mode ===
-    // 'choice'` — silently flipping mode to `undefined` would short-circuit
-    // the send-mode picker for consumers who only tuned the TTL.
+  it("partial send override (tokenTtlMs only) is honoured", () => {
+    // The `invite-send-email` step uses `this.opts.send.tokenTtlMs` as the
+    // magic-link expiry. Dropping it would lose the consumer's setting.
     const opts = mergeInviteOpts({ send: { tokenTtlMs: 1000 } });
     expect(opts.send.tokenTtlMs).toBe(1000);
-    expect(opts.send.mode).toBe("email");
   });
 
-  it("partial accept override (freshLoginRequired:true) keeps loginUrl / confirmation defaults", () => {
-    // The `inviteFreshLoginFinish` step issues a redirect to
-    // `opts.accept.loginUrl` — dropping it would 500 the workflow.
-    const opts = mergeInviteOpts({ accept: { freshLoginRequired: true } });
-    expect(opts.accept.freshLoginRequired).toBe(true);
-    expect(opts.accept.loginUrl).toBe("/login");
-    expect(opts.accept.alreadyAcceptedRedirectUrl).toBe("/login");
-    expect(opts.accept.showConfirmation).toBe(true);
-    expect(opts.accept.confirmationMessage).toBe("Your account has been created.");
-  });
-
-  it("partial cancellation override (allowed:false) does not leak into other groups", () => {
-    const opts = mergeInviteOpts({ cancellation: { allowed: false } });
-    expect(opts.cancellation.allowed).toBe(false);
-    // Sibling groups untouched.
-    expect(opts.adminForm.collectRoles).toBe(true);
-    expect(opts.send.mode).toBe("email");
-    expect(opts.audit.enabled).toBe(true);
-  });
-
-  it("partial audit override (enabled:false) keeps other groups' defaults intact", () => {
-    const opts = mergeInviteOpts({ audit: { enabled: false } });
-    expect(opts.audit.enabled).toBe(false);
-    expect(opts.cancellation.allowed).toBe(true);
+  it("partial mfa override (pincodeLength only) keeps the other mfa defaults", () => {
+    const opts = mergeInviteOpts({ mfa: { pincodeLength: 4 } });
+    expect(opts.mfa.pincodeLength).toBe(4);
+    expect(opts.mfa.pincodeTtlMs).toBe(5 * 60 * 1000);
+    expect(opts.mfa.pincodeResendTimeoutMs).toBe(60_000);
   });
 
   it("parseInviteRoles: trims, drops empties, dedupes", () => {
@@ -90,30 +59,14 @@ describe("mergeInviteOpts — defaults survive partial input", () => {
     // flipped to `{ ...input, ...defaults }` and the defaults would always
     // win — disabling consumer configuration.
     const opts = mergeInviteOpts({
-      adminForm: { collectRoles: false },
-      send: { mode: "shareableLink", tokenTtlMs: 5000 },
-      accept: {
-        alreadyAcceptedRedirectUrl: "/welcome",
-        freshLoginRequired: true,
-        loginUrl: "/sign-in",
-        showConfirmation: false,
-        confirmationMessage: "Welcome aboard.",
-      },
-      cancellation: { allowed: false },
-      audit: { enabled: false },
+      send: { tokenTtlMs: 5000 },
+      mfa: { pincodeTtlMs: 1000, pincodeResendTimeoutMs: 500, pincodeLength: 8 },
     });
-    expect(opts.adminForm).toEqual({
-      collectRoles: false,
+    expect(opts.send).toEqual({ tokenTtlMs: 5000 });
+    expect(opts.mfa).toEqual({
+      pincodeTtlMs: 1000,
+      pincodeResendTimeoutMs: 500,
+      pincodeLength: 8,
     });
-    expect(opts.send).toEqual({ mode: "shareableLink", tokenTtlMs: 5000 });
-    expect(opts.accept).toEqual({
-      alreadyAcceptedRedirectUrl: "/welcome",
-      freshLoginRequired: true,
-      loginUrl: "/sign-in",
-      showConfirmation: false,
-      confirmationMessage: "Welcome aboard.",
-    });
-    expect(opts.cancellation.allowed).toBe(false);
-    expect(opts.audit.enabled).toBe(false);
   });
 });

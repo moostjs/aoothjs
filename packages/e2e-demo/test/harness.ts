@@ -1,5 +1,6 @@
 import {
   type AuthLoginResponse,
+  type InvitePolicyOverrides,
   type InviteWfCtx,
   InviteWorkflow,
   type InviteWorkflowOpts,
@@ -108,6 +109,14 @@ export interface BuildTestAppOptions {
   recoveryOpts?: RecoveryWorkflowOpts;
   /** Deep-merged into the demo's `demoInviteOpts` — see `buildApp`. */
   inviteOpts?: InviteWorkflowOpts;
+  /**
+   * Per-test invite policy override — applied by `DemoInviteWorkflow`'s
+   * `resolveXxx(ctx)` overrides. Use for tests that previously poked
+   * `inviteOpts: { accept: { ... } }` / `inviteOpts: { cancellation: { ... } }`
+   * etc. — those keys moved off `InviteWorkflowOpts` onto the resolver
+   * surface.
+   */
+  invitePolicy?: InvitePolicyOverrides;
   /**
    * Replace the default `DemoInviteWorkflow` with a consumer-supplied class —
    * lets override-pattern tests wire their own `InviteWorkflow` subclass
@@ -229,6 +238,7 @@ export async function buildTestApp(opts: BuildTestAppOptions = {}): Promise<Test
     loginPolicy: opts.loginPolicy,
     recoveryOpts: opts.recoveryOpts,
     inviteOpts: opts.inviteOpts,
+    invitePolicy: opts.invitePolicy,
     inviteWorkflowClass: opts.inviteWorkflowClass,
     loginWorkflowClass: opts.loginWorkflowClass,
     loginMfaCtx: opts.loginMfaCtx,
@@ -680,7 +690,7 @@ export function withInviteMfaCtx<W extends typeof InviteWorkflow>(
       super(users, auth);
     }
 
-    @Step("inviteSetupMfa")
+    @Step("invite-setup-mfa")
     @Public()
     override inviteSetupMfa(
       @WorkflowParam("context") c: InviteWfCtx,

@@ -4,7 +4,7 @@
 // compile time, leaving the metadata `undefined` and moost throwing
 // "Class is not Injectable and not Optional" on first request.
 import { AuthCredential } from "@aooth/auth";
-import { InviteWorkflow } from "@aooth/auth-moost";
+import { type InviteWfCtx, InviteWorkflow } from "@aooth/auth-moost";
 import { generateTotpCode, UserService } from "@aooth/user";
 import { Controller, Inherit } from "moost";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
@@ -278,8 +278,14 @@ describe("WF-INVITE — accept options", () => {
     // Defence: with freshLoginRequired on, the terminal envelope MUST NOT
     // carry tokens — invitee is forced through a fresh sign-in.
     const app = await buildTestApp({
-      inviteOpts: {
-        accept: { freshLoginRequired: true, loginUrl: "/welcome" },
+      invitePolicy: {
+        accept: {
+          alreadyAcceptedRedirectUrl: "/login",
+          freshLoginRequired: true,
+          loginUrl: "/welcome",
+          showConfirmation: false,
+          confirmationMessage: "Your account has been created.",
+        },
       },
     });
     try {
@@ -431,7 +437,6 @@ describe("WF-INVITE — MFA enrollment", () => {
     const inviteEmail = "newcomer-email@acme.test";
     const otpEmail = "newcomer-otp@acme.test";
     const app = await buildTestApp({
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteMfaCtx: { mfaMode: "required" },
     });
     try {
@@ -499,7 +504,6 @@ describe("WF-INVITE — MFA enrollment", () => {
     // real second factor).
     const inviteEmail = "newcomer-totp@acme.test";
     const app = await buildTestApp({
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteMfaCtx: { mfaMode: "required" },
     });
     try {
@@ -562,7 +566,6 @@ describe("WF-INVITE — MFA enrollment", () => {
     // landed before activation.
     const inviteEmail = "newcomer-autopick@acme.test";
     const app = await buildTestApp({
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteMfaCtx: { mfaMode: "required", availableMfaTransports: ["totp"] },
     });
     try {
@@ -627,7 +630,6 @@ describe("WF-INVITE — MFA enrollment", () => {
     // or leave a covert half-committed `mfa.methods` row behind.
     const inviteEmail = "newcomer-skip@acme.test";
     const app = await buildTestApp({
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteMfaCtx: { mfaMode: "optional" },
     });
     try {
@@ -749,7 +751,6 @@ describe("WF-INVITE — reInvite enrollment", () => {
     // doesn't fire OR if the post-confirm activation gate is bypassed.
     const inviteEmail = "reinvite-autopick@acme.test";
     const app = await buildTestApp({
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteMfaCtx: { mfaMode: "required", availableMfaTransports: ["totp"] },
     });
     try {
@@ -800,7 +801,6 @@ describe("WF-INVITE — reInvite enrollment", () => {
     // row OR loop forever on the picker.
     const inviteEmail = "reinvite-skip@acme.test";
     const app = await buildTestApp({
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteMfaCtx: { mfaMode: "optional" },
     });
     try {
@@ -852,7 +852,20 @@ class OverrideInviteWorkflow extends InviteWorkflow {
     // stripped `mfa.mode` from `InviteWorkflowOpts`; the value now lives on
     // ctx via the `inviteSetupMfa` setter step — `buildApp` wraps this
     // class with `withInviteMfaCtx` when `inviteMfaCtx` is supplied).
-    super({ accept: { showConfirmation: false } }, users, authCred);
+    super({}, users, authCred);
+  }
+  // Post-resolver reshape: `accept.showConfirmation` moved off opts to the
+  // `resolveAccept` getter. Existing tests assert the auto-login response
+  // shape directly, so silence the confirmation pause here.
+  protected override resolveAccept(
+    ctx: InviteWfCtx,
+  ): NonNullable<InviteWfCtx["accept"]> | Promise<NonNullable<InviteWfCtx["accept"]>> {
+    const baseResult = super.resolveAccept(ctx);
+    const patch = (r: NonNullable<InviteWfCtx["accept"]>): NonNullable<InviteWfCtx["accept"]> => ({
+      ...r,
+      showConfirmation: false,
+    });
+    return baseResult instanceof Promise ? baseResult.then(patch) : patch(baseResult);
   }
   // DemoUser requires tenantId on insert; without this override the
   // `invitePreCreateUser` step would 500 inside `userService.createUser`.

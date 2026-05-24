@@ -49,6 +49,7 @@ import { DEFAULT_RECOVERY_TOKEN_TTL_MS } from "../workflows/recovery.workflow.op
 import {
   type DuplicateAction,
   InviteWorkflow,
+  type InvitePolicyOverrides,
   type InviteWfCtx,
   type InviteWorkflowOpts,
   type PreparedUserInput,
@@ -218,11 +219,21 @@ export interface PrepareWfOpts {
    */
   recoveryWorkflowClass?: typeof RecoveryWorkflow;
   /**
-   * Nested-pojo opts handed to `InviteWorkflow`'s constructor. When omitted,
-   * defaults to `{ send: { tokenTtlMs: inviteTokenTtlMs }, accept: { showConfirmation: false } }`
-   * for parity with existing tests.
+   * Nested-pojo opts handed to `InviteWorkflow`'s constructor. Post-resolver
+   * reshape this is infrastructure-only (magic-link TTL, pincode timers/length,
+   * forms); policy moved to the `resolveXxx(ctx)` getter surface — use
+   * `invitePolicy` below.
    */
   inviteOpts?: InviteWorkflowOpts;
+  /**
+   * Per-test invite policy override applied by the harness's InviteWorkflow
+   * subclass via `resolveXxx(ctx)` overrides. Mirrors the resolved-ctx field
+   * shape exactly so test specs read like a snapshot of the in-flow policy.
+   * Tests that previously poked `inviteOpts: { accept: { ... } }` /
+   * `inviteOpts: { cancellation: { ... } }` etc. flip the matching group here.
+   * Falls through to `super.resolveXxx(ctx)` for groups left undefined.
+   */
+  invitePolicy?: InvitePolicyOverrides;
   /**
    * Consumer subclass of `InviteWorkflow` registered in place of the base
    * class. Use this when a test needs to override a `protected` method
@@ -374,9 +385,11 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
   }) as unknown as new (users: UserService, auth: AuthCredential) => RecoveryWorkflow;
 
   // Test-harness defaults:
-  //   - `send.tokenTtlMs` — fast magic-link expiry tweak (overridable).
+  //   - `send.tokenTtlMs` — fast magic-link expiry tweak (overridable via inviteOpts).
   //   - `accept.showConfirmation: false` — most tests assert the auto-login
   //     response shape directly, pre-dating the BIG 3.3 confirmation pause.
+  //     Lives in the harness's `resolveAccept` override now (post-resolver
+  //     reshape) — see below.
   //   - `mfaMode: 'disabled'` via `withInviteMfaCtx` — preserves the prior
   //     "no MFA prompt unless test opts in" behaviour. PR9 moved this from
   //     `opts.mfa.mode` (deleted) to a `@Step('inviteSetupMfa')` setter
@@ -391,7 +404,6 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
   const inviteOpts: InviteWorkflowOpts = {
     ...userInviteOpts,
     send: { tokenTtlMs: inviteTokenTtlMs, ...userInviteOpts.send },
-    accept: { showConfirmation: false, ...userInviteOpts.accept },
   };
   // Layer the per-test `prepareUser` shortcut onto `inviteHooks.prepareUser`
   // so existing tests that only need to populate extras don't have to
@@ -406,6 +418,7 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
   const InviteCtor = buildHarnessInviteClass({
     base: inviteBase,
     opts: inviteOpts,
+    policy: opts.invitePolicy,
     emails,
     sms,
     emailSender,
@@ -855,6 +868,7 @@ function buildHarnessRecoveryClass(
 interface HarnessInviteDeps {
   base: typeof InviteWorkflow;
   opts: InviteWorkflowOpts;
+  policy?: PrepareWfOpts["invitePolicy"];
   emails: CapturedEmail[];
   sms: CapturedSms[];
   emailSender: EmailSender;
@@ -871,6 +885,7 @@ function buildHarnessInviteClass(
   const {
     base: Base,
     opts: inviteOpts,
+    policy,
     emails,
     sms,
     emailSender,
@@ -947,6 +962,56 @@ function buildHarnessInviteClass(
     protected override getProfileForm(): TAtscriptAnnotatedType | undefined {
       if (hooks.getProfileForm) return hooks.getProfileForm();
       return super.getProfileForm();
+    }
+
+    // ── Per-test policy overrides ──
+    //
+    // When the test supplied `invitePolicy.<group>`, return it; otherwise fall
+    // through to `super.resolveXxx(ctx)` (library defaults). Mirrors the login
+    // harness pattern. The `accept` default is patched to flip
+    // `showConfirmation: false` for parity with existing tests that pre-date
+    // the BIG 3.3 confirmation pause.
+    protected override resolveAdminForm(
+      ctx: InviteWfCtx,
+    ): NonNullable<InviteWfCtx["adminForm"]> | Promise<NonNullable<InviteWfCtx["adminForm"]>> {
+      if (policy?.adminForm) return policy.adminForm;
+      return super.resolveAdminForm(ctx);
+    }
+    protected override resolveSend(
+      ctx: InviteWfCtx,
+    ): NonNullable<InviteWfCtx["send"]> | Promise<NonNullable<InviteWfCtx["send"]>> {
+      if (policy?.send) return policy.send;
+      return super.resolveSend(ctx);
+    }
+    protected override resolveAccept(
+      ctx: InviteWfCtx,
+    ): NonNullable<InviteWfCtx["accept"]> | Promise<NonNullable<InviteWfCtx["accept"]>> {
+      if (policy?.accept) return policy.accept;
+      const baseResult = super.resolveAccept(ctx);
+      const patch = (
+        r: NonNullable<InviteWfCtx["accept"]>,
+      ): NonNullable<InviteWfCtx["accept"]> => ({ ...r, showConfirmation: false });
+      return baseResult instanceof Promise ? baseResult.then(patch) : patch(baseResult);
+    }
+    protected override resolveCancellation(
+      ctx: InviteWfCtx,
+    ):
+      | NonNullable<InviteWfCtx["cancellation"]>
+      | Promise<NonNullable<InviteWfCtx["cancellation"]>> {
+      if (policy?.cancellation) return policy.cancellation;
+      return super.resolveCancellation(ctx);
+    }
+    protected override resolveAudit(
+      ctx: InviteWfCtx,
+    ): NonNullable<InviteWfCtx["audit"]> | Promise<NonNullable<InviteWfCtx["audit"]>> {
+      if (policy?.audit) return policy.audit;
+      return super.resolveAudit(ctx);
+    }
+    protected override resolveMfa(
+      ctx: InviteWfCtx,
+    ): NonNullable<InviteWfCtx["mfa"]> | Promise<NonNullable<InviteWfCtx["mfa"]>> {
+      if (policy?.mfa) return policy.mfa;
+      return super.resolveMfa(ctx);
     }
   }
   return HarnessInvite;
@@ -1050,7 +1115,7 @@ export function withInviteMfaCtx<W extends typeof InviteWorkflow>(
       super(opts, users, auth);
     }
 
-    @Step("inviteSetupMfa")
+    @Step("invite-setup-mfa")
     @Public()
     override inviteSetupMfa(
       @WorkflowParam("context") c: InviteWfCtx,

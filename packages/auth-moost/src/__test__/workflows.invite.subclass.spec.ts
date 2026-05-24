@@ -61,7 +61,6 @@ describe("InviteWorkflow subclass — end-to-end registration shape", () => {
       }
     }
     const app = await prepareWfApp({
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteWorkflowClass: withInviteMfaCtx(MyInvite, { mfaMode: "disabled" }),
     });
 
@@ -105,7 +104,6 @@ describe("InviteWorkflow subclass — end-to-end registration shape", () => {
       }
     }
     const app = await prepareWfApp({
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteWorkflowClass: withInviteMfaCtx(MyInvite, { mfaMode: "disabled" }),
     });
 
@@ -161,7 +159,6 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
       }
     }
     const app = await prepareWfApp({
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteWorkflowClass: withInviteMfaCtx(MyInvite, { mfaMode: "disabled" }),
     });
     const r1 = await app.trigger({ wfid: "auth.invite" });
@@ -190,7 +187,6 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
       }
     }
     const app = await prepareWfApp({
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteWorkflowClass: withInviteMfaCtx(MyInvite, { mfaMode: "disabled" }),
     });
     const r1 = await app.trigger({ wfid: "auth.invite" });
@@ -222,7 +218,6 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
       }
     }
     const app = await prepareWfApp({
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteWorkflowClass: withInviteMfaCtx(MyInvite, { mfaMode: "disabled" }),
     });
     const r1 = await app.trigger({ wfid: "auth.invite" });
@@ -269,7 +264,6 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
       }
     }
     const app = await prepareWfApp({
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteWorkflowClass: withInviteMfaCtx(MyInvite, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "existing@test.com", "ExistingPass1");
@@ -290,9 +284,7 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
 
   it("getProfileForm: undefined (default) → NO collectProfile pause; defined → collectProfile pauses", async () => {
     // First app: no override → default behavior skips collectProfile.
-    const appNoForm = await prepareWfApp({
-      inviteOpts: { accept: { showConfirmation: false } },
-    });
+    const appNoForm = await prepareWfApp();
     {
       const r1 = await appNoForm.trigger({ wfid: "auth.invite" });
       await appNoForm.trigger({
@@ -323,7 +315,6 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
       }
     }
     const appWithForm = await prepareWfApp({
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteWorkflowClass: withInviteMfaCtx(MyInvite, { mfaMode: "disabled" }),
     });
     {
@@ -375,7 +366,7 @@ describe("InviteWorkflow subclass — inviteExtraStep override", () => {
         super(opts, users, auth);
       }
 
-      @Step("inviteExtraStep")
+      @Step("invite-extra-step")
       @Public()
       override async inviteExtraStep(): Promise<unknown> {
         calls++;
@@ -393,7 +384,6 @@ describe("InviteWorkflow subclass — inviteExtraStep override", () => {
     }
 
     const app = await prepareWfApp({
-      inviteOpts: { accept: { showConfirmation: false } },
       inviteWorkflowClass: withInviteMfaCtx(OverrideInvite, { mfaMode: "disabled" }),
     });
 

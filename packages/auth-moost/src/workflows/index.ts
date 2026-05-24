@@ -26,7 +26,12 @@ export {
   type RecoveryWorkflowOpts,
   type ResolvedRecoveryWorkflowOpts,
 } from "./recovery.workflow.options";
-export { InviteWorkflow, type InviteWfCtx, parseInviteRoles } from "./invite.workflow";
+export {
+  InviteWorkflow,
+  type InviteWfCtx,
+  type InvitePolicyOverrides,
+  parseInviteRoles,
+} from "./invite.workflow";
 export {
   DefaultInviteWorkflow,
   DefaultLoginWorkflow,
