@@ -5,14 +5,13 @@
  */
 import { AuthCredential } from "@aooth/auth";
 import { UserService } from "@aooth/user";
-import { Controller, Inherit, Injectable } from "moost";
+import { Controller, Inherit } from "moost";
 
 import { InviteWorkflow } from "./invite.workflow";
 import { LoginWorkflow } from "./login.workflow";
 import { RecoveryWorkflow } from "./recovery.workflow";
 
 @Inherit()
-@Injectable("FOR_EVENT")
 @Controller()
 export class DefaultLoginWorkflow extends LoginWorkflow {
   constructor(users: UserService, auth: AuthCredential) {
@@ -21,7 +20,6 @@ export class DefaultLoginWorkflow extends LoginWorkflow {
 }
 
 @Inherit()
-@Injectable("FOR_EVENT")
 @Controller()
 export class DefaultInviteWorkflow extends InviteWorkflow {
   constructor(users: UserService, auth: AuthCredential) {
@@ -30,7 +28,6 @@ export class DefaultInviteWorkflow extends InviteWorkflow {
 }
 
 @Inherit()
-@Injectable("FOR_EVENT")
 @Controller()
 export class DefaultRecoveryWorkflow extends RecoveryWorkflow {
   constructor(users: UserService, auth: AuthCredential) {

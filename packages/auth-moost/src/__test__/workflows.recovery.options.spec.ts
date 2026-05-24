@@ -16,7 +16,7 @@
  */
 import { AuthCredential } from "@aooth/auth";
 import { generateTotpCode, generateTotpSecret, ppHasMinLength, UserService } from "@aooth/user";
-import { Controller, Inherit, Injectable } from "moost";
+import { Controller, Inherit } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -41,7 +41,6 @@ function makeRecoverySubclass(
   }>,
 ): typeof RecoveryWorkflow {
   @Inherit()
-  @Injectable("FOR_EVENT")
   @Controller()
   class SubclassedRecovery extends RecoveryWorkflow {
     constructor(opts: RecoveryWorkflowOpts, users: UserService, auth: AuthCredential) {
@@ -113,15 +112,18 @@ describe("RecoveryWorkflowOpts — boot-time validators (fail loud)", () => {
     expect(JSON.stringify(r2.body)).toMatch(/SmsSender/);
   });
 
-  it("delivery.mode 'otp' + empty otp.transports → fail loud (500 with transports message)", async () => {
-    const app = await prepareWfApp({
-      recoveryOpts: {
-        delivery: { mode: "otp", otp: { transports: [] } },
-      },
-    });
-    const r = await app.trigger({ wfid: "auth.recovery" });
-    expect(r.status).toBe(500);
-    expect(JSON.stringify(r.body)).toMatch(/transports.*empty/);
+  it("delivery.mode 'otp' + empty otp.transports → fail loud at boot (validateOpts throws)", async () => {
+    // SINGLETON DI scope (the @Controller default after dropping FOR_EVENT)
+    // runs the workflow constructor once at app boot — `validateOpts` fires
+    // there, so misconfiguration surfaces as a boot-time throw rather than
+    // a per-request 500. Earlier failure surface; same fail-loud intent.
+    await expect(
+      prepareWfApp({
+        recoveryOpts: {
+          delivery: { mode: "otp", otp: { transports: [] } },
+        },
+      }),
+    ).rejects.toThrow(/transports.*empty/);
   });
 });
 

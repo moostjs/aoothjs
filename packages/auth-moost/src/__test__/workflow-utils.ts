@@ -32,14 +32,7 @@ import {
 import { current } from "@wooksjs/event-core";
 import { createWfApp } from "@wooksjs/event-wf";
 import { createHttpApp } from "@wooksjs/event-http";
-import {
-  Controller,
-  createProvideRegistry,
-  getMoostInfact,
-  Inherit,
-  Injectable,
-  Moost,
-} from "moost";
+import { Controller, createProvideRegistry, getMoostInfact, Inherit, Moost } from "moost";
 import { Wooks } from "wooks";
 
 import type { AuthEmailKind, BuildMagicLinkUrl, EmailSender, SmsSender } from "@aooth/auth";
@@ -167,7 +160,7 @@ export interface PrepareWfOpts {
    * Consumer subclass of `LoginWorkflow` registered in place of the base
    * class. Use this when a test needs to override a `protected` method
    * (`assessRiskStepUp`, `buildRecoveryUrl`, `resolveRedirect`, etc.). The
-   * subclass MUST re-apply `@Inherit() @Injectable('FOR_EVENT') @Controller()`
+   * subclass MUST re-apply `@Inherit() @Controller()`
    * and re-declare the ctor signature — see TASKS.md §"Probe outcomes".
    */
   loginWorkflowClass?: typeof LoginWorkflow;
@@ -207,7 +200,7 @@ export interface PrepareWfOpts {
    * Consumer subclass of `RecoveryWorkflow` registered in place of the base
    * class. Use this when a test needs to override a `protected` method
    * (`emailToUserId`, `verifyRecoveryFactor`). The subclass MUST re-apply
-   * `@Inherit() @Injectable('FOR_EVENT') @Controller()` and re-declare the
+   * `@Inherit() @Controller()` and re-declare the
    * ctor signature — see the Phase-2 LoginWorkflow subclass spec for shape.
    */
   recoveryWorkflowClass?: typeof RecoveryWorkflow;
@@ -221,7 +214,7 @@ export interface PrepareWfOpts {
    * Consumer subclass of `InviteWorkflow` registered in place of the base
    * class. Use this when a test needs to override a `protected` method
    * (`prepareUser`, `applyProfile`, `duplicateCheck`, `getProfileForm`, …).
-   * The subclass MUST re-apply `@Inherit() @Injectable('FOR_EVENT') @Controller()`
+   * The subclass MUST re-apply `@Inherit() @Controller()`
    * and re-declare the ctor signature.
    */
   inviteWorkflowClass?: typeof InviteWorkflow;
@@ -644,7 +637,6 @@ function buildHarnessLoginClass(deps: HarnessLoginDeps): new (...args: never[]) 
   } = deps;
 
   @Inherit()
-  @Injectable("FOR_EVENT")
   @Controller()
   class HarnessLogin extends Base {
     constructor(usersDep: UserService, authDep: AuthCredential) {
@@ -747,7 +739,6 @@ function buildHarnessRecoveryClass(
   } = deps;
 
   @Inherit()
-  @Injectable("FOR_EVENT")
   @Controller()
   class HarnessRecovery extends Base {
     constructor(usersDep: UserService, authDep: AuthCredential) {
@@ -810,7 +801,6 @@ function buildHarnessInviteClass(
   } = deps;
 
   @Inherit()
-  @Injectable("FOR_EVENT")
   @Controller()
   class HarnessInvite extends Base {
     constructor(usersDep: UserService, authDep: AuthCredential) {
@@ -916,7 +906,6 @@ export function withLoginMfaCtx<W extends typeof LoginWorkflow>(
   ctx: WithLoginMfaCtxOverrides,
 ): W {
   @Inherit()
-  @Injectable("FOR_EVENT")
   @Controller()
   class WithLoginCtx extends (Base as unknown as new (
     opts: LoginWorkflowOpts,
@@ -927,7 +916,7 @@ export function withLoginMfaCtx<W extends typeof LoginWorkflow>(
       super(opts, users, auth);
     }
 
-    @Step("prepareMfaSetup")
+    @Step("prepare-mfa-setup")
     @Public()
     override prepareMfaSetup(
       @WorkflowParam("context") c: LoginWfCtx,
@@ -970,7 +959,6 @@ export function withInviteMfaCtx<W extends typeof InviteWorkflow>(
   ctx: WithInviteMfaCtxOverrides,
 ): W {
   @Inherit()
-  @Injectable("FOR_EVENT")
   @Controller()
   class WithInviteCtx extends (Base as unknown as new (
     opts: InviteWorkflowOpts,

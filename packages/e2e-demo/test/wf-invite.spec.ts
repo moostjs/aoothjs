@@ -6,7 +6,7 @@
 import { AuthCredential } from "@aooth/auth";
 import { InviteWorkflow } from "@aooth/auth-moost";
 import { generateTotpCode, UserService } from "@aooth/user";
-import { Controller, Inherit, Injectable } from "moost";
+import { Controller, Inherit } from "moost";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
@@ -843,7 +843,6 @@ describe("WF-INVITE — reInvite enrollment", () => {
 let extraStepCapture: { fired: boolean; runs: number } = { fired: false, runs: 0 };
 
 @Inherit()
-@Injectable("FOR_EVENT")
 @Controller()
 class OverrideInviteWorkflow extends InviteWorkflow {
   constructor(users: UserService, authCred: AuthCredential) {

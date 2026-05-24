@@ -326,6 +326,11 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     },
     opts.loginOpts,
   );
+  // FOR_EVENT scope is REQUIRED here: the ctor reads per-request HTTP headers
+  // via `readVariantHeader()` to pick a variant config; SINGLETON would freeze
+  // the variant decision at app boot. The base `LoginWorkflow` itself is fine
+  // as SINGLETON (it just stores readonly fields), but composable-using
+  // subclass ctors must opt into FOR_EVENT.
   @Inherit()
   @Injectable("FOR_EVENT")
   @Controller()
@@ -354,7 +359,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     // `redirect-home` / `choice` — variants exercising non-MFA concerns that
     // need MFA out of the flow so the test step reaches the form under test
     // without an MFA prompt blocking it).
-    @Step("prepareMfaSetup")
+    @Step("prepare-mfa-setup")
     @Public()
     override prepareMfaSetup(
       @WorkflowParam("context") ctx: LoginWfCtx,
@@ -442,6 +447,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     },
     opts.recoveryOpts,
   );
+  // FOR_EVENT — see DemoLoginWorkflow comment; ctor reads variant header.
   @Inherit()
   @Injectable("FOR_EVENT")
   @Controller()
@@ -496,6 +502,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // `@ArbacResource('auth.invite') @ArbacAction('start')` gates phase A,
   // per-method `@Public()` opens phase B (post magic-link send) so the
   // anonymous resume isn't denied. `@Inherit()` flows the class meta down.
+  // FOR_EVENT — see DemoLoginWorkflow comment; ctor reads variant header.
   @Inherit()
   @Injectable("FOR_EVENT")
   @Controller()
@@ -867,13 +874,16 @@ function resolveListeningPort(moostHttp: MoostHttp, fallback: number): number {
 // fields keep the wrapped base class's behaviour.
 
 // `W extends new (...args: never[]) => LoginWorkflow` (NOT `typeof LoginWorkflow`)
-// because the demo subclass has the moost FOR_EVENT 2-arg ctor signature
-// `(users, auth)` while the base class is 3-arg `(opts, users, auth)`. The
-// generic widens to "any LoginWorkflow-shaped class" so both fit.
+// because the demo subclass has a 2-arg ctor signature `(users, auth)` (opts
+// is curried in by the factory closure) while the base class is 3-arg
+// `(opts, users, auth)`. The generic widens to "any LoginWorkflow-shaped
+// class" so both fit.
 function wrapWithLoginMfaCtx<W extends new (...args: never[]) => LoginWorkflow>(
   Base: W,
   ctx: LoginMfaCtxOverrides,
 ): W {
+  // FOR_EVENT — wrapper's super(users, auth) reaches into DemoLoginWorkflow's
+  // composable-using ctor; the scope must propagate.
   @Inherit()
   @Injectable("FOR_EVENT")
   @Controller()
@@ -889,7 +899,7 @@ function wrapWithLoginMfaCtx<W extends new (...args: never[]) => LoginWorkflow>(
     constructor(users: UserService, auth: AuthCredential) {
       super(users, auth);
     }
-    @Step("prepareMfaSetup")
+    @Step("prepare-mfa-setup")
     @Public()
     override prepareMfaSetup(
       @WorkflowParam("context") c: LoginWfCtx,
@@ -916,6 +926,8 @@ function wrapWithInviteMfaCtx<W extends new (...args: never[]) => InviteWorkflow
   Base: W,
   ctx: InviteMfaCtxOverrides,
 ): W {
+  // FOR_EVENT — wrapper's super(users, auth) reaches into DemoInviteWorkflow's
+  // composable-using ctor; the scope must propagate.
   @Inherit()
   @Injectable("FOR_EVENT")
   @Controller()

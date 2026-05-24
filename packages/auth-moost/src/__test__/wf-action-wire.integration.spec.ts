@@ -19,14 +19,7 @@ import { MoostHttp } from "@moostjs/event-http";
 import { MoostWf } from "@moostjs/event-wf";
 import { createHttpApp } from "@wooksjs/event-http";
 import { describe, expect, it } from "vite-plus/test";
-import {
-  Controller,
-  createProvideRegistry,
-  getMoostInfact,
-  Inherit,
-  Injectable,
-  Moost,
-} from "moost";
+import { Controller, createProvideRegistry, getMoostInfact, Inherit, Moost } from "moost";
 import { Wooks } from "wooks";
 
 import { AuthController } from "../auth.controller";
@@ -57,7 +50,6 @@ async function buildAuthApp(): Promise<AuthAppHandle> {
   const users = new UserService(new UserStoreMemory());
 
   @Inherit()
-  @Injectable("FOR_EVENT")
   @Controller()
   class DemoLoginWorkflow extends LoginWorkflow {
     constructor(u: UserService, a: AuthCredential) {

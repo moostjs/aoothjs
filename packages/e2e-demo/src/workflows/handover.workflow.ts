@@ -12,7 +12,7 @@ import {
   WorkflowParam,
   WorkflowSchema,
 } from "@moostjs/event-wf";
-import { Controller, Injectable } from "moost";
+import { Controller } from "moost";
 
 import type { AuditEntry } from "../models/audit.as";
 import type { Project } from "../models/project.as";
@@ -64,7 +64,6 @@ export function parseHandoverRoles(roles: string[]): {
 export function makeHandoverWorkflow(tables: HandoverWfTables): HandoverWorkflowCtor {
   const { projectsTable, usersTable, auditTable } = tables;
 
-  @Injectable("FOR_EVENT")
   @Controller()
   @Public()
   class HandoverWorkflow {

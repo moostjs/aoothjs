@@ -14,7 +14,7 @@ import type { WfFinished } from "@atscript/moost-wf";
 import { AuthCredential } from "@aooth/auth";
 import { generateTotpCode, UserService } from "@aooth/user";
 import { Step, WorkflowParam } from "@moostjs/event-wf";
-import { clearGlobalWooks, Controller, getMoostInfact, Inherit, Injectable } from "moost";
+import { clearGlobalWooks, Controller, getMoostInfact, Inherit } from "moost";
 import { expect } from "vite-plus/test";
 
 import { type AppHandle, buildApp } from "../src/app";
@@ -610,7 +610,6 @@ export function withLoginMfaCtx<W extends typeof LoginWorkflow>(
   ctx: WithLoginMfaCtxOverrides,
 ): W {
   @Inherit()
-  @Injectable("FOR_EVENT")
   @Controller()
   class WithLoginCtx extends (Base as unknown as new (
     users: UserService,
@@ -622,7 +621,7 @@ export function withLoginMfaCtx<W extends typeof LoginWorkflow>(
       super(users, auth);
     }
 
-    @Step("prepareMfaSetup")
+    @Step("prepare-mfa-setup")
     @Public()
     override prepareMfaSetup(
       @WorkflowParam("context") c: LoginWfCtx,
@@ -661,7 +660,6 @@ export function withInviteMfaCtx<W extends typeof InviteWorkflow>(
   ctx: WithInviteMfaCtxOverrides,
 ): W {
   @Inherit()
-  @Injectable("FOR_EVENT")
   @Controller()
   class WithInviteCtx extends (Base as unknown as new (
     users: UserService,

@@ -18,8 +18,11 @@
  *
  * **Consumer subclass pattern (Phase 3 reshape).** Consumers subclass
  * `RecoveryWorkflow` to override `protected` hook methods. The subclass MUST
- * re-apply `@Inherit() @Injectable('FOR_EVENT') @Controller()` and re-declare
- * the constructor signature (TS emits fresh design-paramtypes per class).
+ * re-apply `@Inherit() @Controller()` and re-declare the constructor
+ * signature (TS emits fresh design-paramtypes per class). `@Controller()`
+ * implicitly applies SINGLETON DI scope — workflow controllers hold no
+ * per-event mutable state on `this` (per-event state lives on ctx + wooks
+ * composables), so one instance per app lifetime is correct.
  *
  * **Side-effect deps as protected methods.** The optional sender/emitter DI
  * providers have been DROPPED from the constructor. The hooks live as
@@ -48,7 +51,7 @@ import {
 } from "@moostjs/event-wf";
 import { current } from "@wooksjs/event-core";
 import { useUrlParams } from "@wooksjs/event-http";
-import { Controller, Injectable } from "moost";
+import { Controller } from "moost";
 
 import type { AuditEvent } from "../audit/index";
 import { useAuth } from "../auth.composables";
@@ -135,7 +138,6 @@ function validateOpts(opts: ResolvedRecoveryWorkflowOpts): void {
 // rationale on why the marker has to live on the workflow class itself, not
 // just the `/auth/trigger` HTTP route.
 @Public()
-@Injectable("FOR_EVENT")
 @Controller()
 export class RecoveryWorkflow extends AuthWorkflowBase {
   protected readonly opts: ResolvedRecoveryWorkflowOpts;

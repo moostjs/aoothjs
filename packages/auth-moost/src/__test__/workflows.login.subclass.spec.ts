@@ -17,7 +17,7 @@
 import { AuthCredential } from "@aooth/auth";
 import { generateTotpCode, generateTotpSecret, UserService } from "@aooth/user";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
-import { Controller, Inherit, Injectable } from "moost";
+import { Controller, Inherit } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import { ProfileCompleteForm } from "../atscript/models/forms.as";
@@ -26,14 +26,13 @@ import { prepareWfApp, seedActiveUser, withLoginMfaCtx } from "./workflow-utils"
 
 // ── Subclass end-to-end smoke ────────────────────────────────────────────────
 describe("LoginWorkflow subclass — end-to-end registration shape", () => {
-  it("consumer subclass with @Inherit + @Injectable('FOR_EVENT') + @Controller + re-declared ctor → workflow registers and dispatches", async () => {
+  it("consumer subclass with @Inherit + @Controller + re-declared ctor → workflow registers and dispatches", async () => {
     // This is the literal subclass shape consumers paste into their app per
     // WF_LOGIN.md §"Consumer subclass pattern". A test that asserts the
     // workflow dispatches (no class-identity errors, no DI miss) under that
     // exact shape catches regressions in moost's @Inherit metadata handling.
     let credentialsRan = 0;
     @Inherit()
-    @Injectable("FOR_EVENT")
     @Controller()
     class MyLogin extends LoginWorkflow {
       constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
@@ -82,7 +81,6 @@ describe("LoginWorkflow subclass — applyProfile override", () => {
     // with the submitted payload + the workflow's known username.
     const calls: Array<{ username: string; payload: Record<string, unknown> }> = [];
     @Inherit()
-    @Injectable("FOR_EVENT")
     @Controller()
     class ProfileLogin extends LoginWorkflow {
       constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
@@ -139,7 +137,6 @@ describe("LoginWorkflow subclass — applyConsentMarketing override", () => {
   it("override fires when acceptance.consentMarketing is true with the submitted opt-in value", async () => {
     const captured: Array<{ username: string; optIn: boolean }> = [];
     @Inherit()
-    @Injectable("FOR_EVENT")
     @Controller()
     class ConsentLogin extends LoginWorkflow {
       constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
@@ -187,7 +184,6 @@ describe("LoginWorkflow subclass — applyConsentMarketing override", () => {
 describe("LoginWorkflow subclass — loadTenants override", () => {
   it("multiContext.tenantSelect: tenants from override drive form validation (valid id → tokens)", async () => {
     @Inherit()
-    @Injectable("FOR_EVENT")
     @Controller()
     class TenantLogin extends LoginWorkflow {
       constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
@@ -232,7 +228,6 @@ describe("LoginWorkflow subclass — loadTenants override", () => {
 
   it("multiContext.tenantSelect + bogus tenantId submission → form error 'Unknown tenant' (override's set IS authoritative)", async () => {
     @Inherit()
-    @Injectable("FOR_EVENT")
     @Controller()
     class TenantLogin extends LoginWorkflow {
       constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
@@ -275,7 +270,6 @@ describe("LoginWorkflow subclass — loadTenants override", () => {
 describe("LoginWorkflow subclass — loadPersonas override", () => {
   it("multiContext.personaSelect: personas from override drive form validation", async () => {
     @Inherit()
-    @Injectable("FOR_EVENT")
     @Controller()
     class PersonaLogin extends LoginWorkflow {
       constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
@@ -324,7 +318,6 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
     // (and exactly one call) pins the wire-up.
     const calls: string[] = [];
     @Inherit()
-    @Injectable("FOR_EVENT")
     @Controller()
     class KickLogin extends LoginWorkflow {
       protected override async loadActiveSessions(_username: string): Promise<number> {
@@ -359,7 +352,6 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
   it("sessionPolicy.concurrencyLimit kickPrompt + 'cancel' alt → workflow aborts, override NOT called", async () => {
     const calls: string[] = [];
     @Inherit()
-    @Injectable("FOR_EVENT")
     @Controller()
     class KickLogin extends LoginWorkflow {
       protected override async loadActiveSessions(_username: string): Promise<number> {
@@ -399,7 +391,6 @@ describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
     // Pins the WfFinished migration for the session-limit cancel path — the
     // structured `message` envelope is the new UI banner contract.
     @Inherit()
-    @Injectable("FOR_EVENT")
     @Controller()
     class KickLogin extends LoginWorkflow {
       protected override async loadActiveSessions(_username: string): Promise<number> {

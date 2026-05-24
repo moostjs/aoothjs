@@ -24,8 +24,11 @@
  *
  * **Consumer subclass pattern (Phase 4 reshape).** Consumers subclass
  * `InviteWorkflow` to override `protected` hook methods. The subclass MUST
- * re-apply `@Inherit() @Injectable('FOR_EVENT') @Controller()` and re-declare
- * the constructor signature (TS emits fresh design-paramtypes per class).
+ * re-apply `@Inherit() @Controller()` and re-declare the constructor
+ * signature (TS emits fresh design-paramtypes per class). `@Controller()`
+ * implicitly applies SINGLETON DI scope — workflow controllers hold no
+ * per-event mutable state on `this` (per-event state lives on ctx + wooks
+ * composables), so one instance per app lifetime is correct.
  *
  * **Side-effect deps as protected methods.** Sender/store/emitter DI
  * providers have been DROPPED from the constructor. Hooks live as `protected`
@@ -75,7 +78,7 @@ import {
   WorkflowParam,
   WorkflowSchema,
 } from "@moostjs/event-wf";
-import { Controller, Injectable } from "moost";
+import { Controller } from "moost";
 
 import type { AuditEvent } from "../audit/index";
 import { useAuth } from "../auth.composables";
@@ -274,7 +277,6 @@ export function buildInviteAlreadyAcceptedEnvelope(opts: {
  */
 @ArbacResource("auth.invite")
 @ArbacAction("start")
-@Injectable("FOR_EVENT")
 @Controller()
 export class InviteWorkflow extends AuthWorkflowBase {
   protected readonly opts: ResolvedInviteWorkflowOpts;

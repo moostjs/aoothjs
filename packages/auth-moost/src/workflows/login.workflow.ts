@@ -27,8 +27,11 @@
  *
  * **Consumer subclass pattern (Phase 2 reshape).** Consumers subclass
  * `LoginWorkflow` to override `protected` hook methods. The subclass MUST
- * re-apply `@Inherit() @Injectable('FOR_EVENT') @Controller()` and re-declare
- * the constructor signature (TS emits fresh design-paramtypes per class).
+ * re-apply `@Inherit() @Controller()` and re-declare the constructor
+ * signature (TS emits fresh design-paramtypes per class). `@Controller()`
+ * implicitly applies SINGLETON DI scope — workflow controllers hold no
+ * per-event mutable state on `this` (per-event state lives on ctx + wooks
+ * composables), so one instance per app lifetime is correct.
  *
  * **Side-effect deps as protected methods (this reshape).** The four
  * optional sender/store/emitter DI providers (EmailSender, SmsSender,
@@ -69,8 +72,8 @@ import {
   WorkflowSchema,
 } from "@moostjs/event-wf";
 import { current } from "@wooksjs/event-core";
-import { useCookies, useRequest, useResponse } from "@wooksjs/event-http";
-import { Controller, Injectable } from "moost";
+import { useCookies, useHeaders, useResponse } from "@wooksjs/event-http";
+import { Controller } from "moost";
 
 import type { AuditEvent } from "../audit/index";
 import { useAuth } from "../auth.composables";
@@ -303,7 +306,6 @@ export type DeliverPayload = DeliverEmail | DeliverSms;
 // name on workflow events and either deny (no matching role) or require a
 // configured grant.
 @Public()
-@Injectable("FOR_EVENT")
 @Controller()
 export class LoginWorkflow extends AuthWorkflowBase {
   protected readonly opts: ResolvedLoginWorkflowOpts;
@@ -392,246 +394,196 @@ export class LoginWorkflow extends AuthWorkflowBase {
   @WorkflowSchema<LoginWfCtx>([
     { id: "init" },
     { id: "credentials" },
-    // Phase 1 alternate paths (stubs — never reachable via condition).
-    { id: "magicLinkRequest", condition: () => false },
-    { id: "magicLinkSend", condition: () => false },
-    { id: "magicLinkVerified", condition: () => false },
-    { id: "passkey", condition: () => false },
-    { id: "ssoCallback", condition: () => false },
-    // Phase 3 enrollment loops (single-pass):
+    // Alt-action gate — credentials' forgotPassword/signup/sso alt-actions
+    // emit a finishWf envelope without setting ctx.username. Halt the schema
+    // before downstream steps' `requireUsername` defense throws 500.
+    { break: (ctx) => !ctx.username },
+
+    // Phase 1 alt-cred paths — stubs registered for override; never executed.
     {
-      id: "ensureEmail",
+      condition: () => false,
+      steps: [
+        { id: "magic-link-request" },
+        { id: "magic-link-send" },
+        { id: "magic-link-verified" },
+        { id: "passkey" },
+        { id: "sso-callback" },
+      ],
+    },
+
+    // Phase 3 enrollment loops (single-pass per brief):
+    {
+      id: "ensure-email",
       condition: (ctx) =>
-        !!ctx.username &&
         (ctx.opts!.enrollment.ensureEmail || ctx.opts!.guards.emailVerifiedRequired) &&
-        !ctx.emailConfirmed &&
-        !ctx.aborted,
+        !ctx.emailConfirmed,
     },
     {
-      id: "ensurePhone",
-      condition: (ctx) =>
-        !!ctx.username && ctx.opts!.enrollment.ensurePhone && !ctx.phoneConfirmed && !ctx.aborted,
+      id: "ensure-phone",
+      condition: (ctx) => ctx.opts!.enrollment.ensurePhone && !ctx.phoneConfirmed,
     },
-    // MFA setup — single atomic step writing ctx.mfaMode +
-    // ctx.availableMfaTransports + ctx.currentMfa. Fires once before the MFA
-    // loop; consumer overrides can compute all three from request context in
-    // one override.
-    { id: "prepareMfaSetup" },
-    // Phase 4 MFA + Phase 8 risk-step-up wrapped in a while-loop so:
-    //   - `select2fa.useDifferentMethod` (BUG-LOGIN-3/4) can clear `mfaMethod`
-    //     and loop back to method picking + re-verification,
-    //   - `risk-step-up` can clear `mfaChecked` to force an additional factor.
-    // The loop exits the moment `mfaChecked` flips true with no pending risk
-    // step-up — at which point linear execution resumes.
+
+    // Phase 4 MFA setup + verification loop:
+    { id: "prepare-mfa-setup" },
     {
-      while: (ctx) =>
-        !!(ctx.username && ctx.mfaMode !== "disabled" && !ctx.mfaChecked && !ctx.aborted),
+      while: (ctx) => ctx.mfaMode !== "disabled" && !ctx.mfaChecked,
       steps: [
         {
           id: "check-trusted-device",
           condition: (ctx) =>
-            ctx.opts!.deviceTrust.enabled && ctx.opts!.deviceTrust.skipsMfa && !ctx.mfaChecked,
+            !ctx.mfaChecked && ctx.opts!.deviceTrust.enabled && ctx.opts!.deviceTrust.skipsMfa,
         },
+        { id: "load-enrolled-mfa-methods", condition: (ctx) => !ctx.mfaChecked },
+        { id: "select-mfa-method", condition: (ctx) => !ctx.mfaChecked },
         {
-          id: "loadEnrolledMfaMethods",
-          condition: (ctx) => !ctx.mfaChecked,
-        },
-        {
-          id: "selectMfaMethod",
-          condition: (ctx) => !ctx.mfaChecked,
-        },
-        {
-          id: "select2fa",
+          id: "select-2fa",
           condition: (ctx) =>
             !ctx.mfaChecked && !ctx.mfaMethod && (ctx.mfaEnrolledMethods?.length ?? 0) > 1,
         },
+        // Pincode pair (sms/email):
         {
-          id: "pincode-send-login",
-          condition: (ctx) =>
-            !ctx.mfaChecked && (ctx.mfaMethod === "sms" || ctx.mfaMethod === "email") && !ctx.pin,
-        },
-        {
-          id: "pincode-check-login",
           condition: (ctx) =>
             !ctx.mfaChecked && (ctx.mfaMethod === "sms" || ctx.mfaMethod === "email"),
+          steps: [
+            { id: "pincode-send-login", condition: (ctx) => !ctx.pin },
+            { id: "pincode-check-login" },
+          ],
         },
+        // TOTP branch:
+        { id: "mfa-totp", condition: (ctx) => !ctx.mfaChecked && ctx.mfaMethod === "totp" },
+        // Forced enrollment trio — `mfaMode !== "disabled"` already enforced by the while-guard.
         {
-          id: "mfa-totp",
-          condition: (ctx) => !ctx.mfaChecked && ctx.mfaMethod === "totp",
+          condition: (ctx) => !ctx.mfaChecked && (ctx.mfaEnrolledMethods?.length ?? 0) === 0,
+          steps: [
+            {
+              id: "login-enroll-pick-method",
+              condition: (ctx) => !ctx.enrollMethod,
+            },
+            {
+              id: "login-enroll-address",
+              condition: (ctx) =>
+                !!ctx.enrollMethod &&
+                (ctx.enrollMethod === "sms" || ctx.enrollMethod === "email") &&
+                !ctx.enrollAddress,
+            },
+            {
+              id: "login-enroll-confirm",
+              condition: (ctx) =>
+                !!ctx.enrollMethod &&
+                (ctx.enrollMethod === "totp" || !!ctx.enrollAddress) &&
+                !ctx.enrollDone,
+            },
+          ],
         },
-        // ── Forced MFA enrollment (3 entries — pick / address / confirm).
-        // Mirrors the invite workflow's 3-entry layout: each step does ONE
-        // phase, the schema's per-phase conditions ensure only one fires per
-        // workflow tick, and `enrollDone` flips `mfaChecked` (via the
-        // `onComplete` bridge in `buildLoginEnrollDeps`) to exit the outer
-        // MFA while-loop. Defense-in-depth: the while-guard above already
-        // filters `disabled`; the explicit `mfaMode !== "disabled"` gate on
-        // each entry keeps the step catalog self-documenting.
-        {
-          id: "loginEnrollPickMethod",
-          condition: (ctx) =>
-            ctx.mfaMode !== "disabled" &&
-            !ctx.mfaChecked &&
-            (ctx.mfaEnrolledMethods?.length ?? 0) === 0 &&
-            !ctx.enrollMethod,
-        },
-        {
-          id: "loginEnrollAddress",
-          condition: (ctx) =>
-            ctx.mfaMode !== "disabled" &&
-            !ctx.mfaChecked &&
-            !!ctx.enrollMethod &&
-            (ctx.enrollMethod === "sms" || ctx.enrollMethod === "email") &&
-            !ctx.enrollAddress,
-        },
-        {
-          id: "loginEnrollConfirm",
-          condition: (ctx) =>
-            ctx.mfaMode !== "disabled" &&
-            !ctx.mfaChecked &&
-            !!ctx.enrollMethod &&
-            (ctx.enrollMethod === "totp" || !!ctx.enrollAddress) &&
-            !ctx.enrollDone,
-        },
-        {
-          // Inside the loop so a `require: true` result can clear `mfaChecked`
-          // and force another MFA round. `riskStepUpEvaluated` is the one-shot
-          // guard: it flips true on each call and is only reset when the loop
-          // re-enters MFA, so a `require: false` outcome lets the loop exit.
-          id: "risk-step-up",
-          condition: (ctx) => !!(ctx.mfaChecked && !ctx.riskStepUpEvaluated),
-        },
+        // Risk step-up — may clear mfaChecked to rearm MFA for another iteration.
+        { id: "risk-step-up", condition: (ctx) => !!ctx.mfaChecked && !ctx.riskStepUpEvaluated },
       ],
     },
+
+    // Phase 4 tail — device-trust issuance after a successful MFA:
     {
       id: "device-trust",
       condition: (ctx) =>
-        !!ctx.username &&
         ctx.opts!.deviceTrust.enabled &&
         !!ctx.mfaChecked &&
         !!ctx.newDevice &&
-        (!ctx.opts!.deviceTrust.optIn || !!ctx.rememberDevice) &&
-        !ctx.aborted,
+        (!ctx.opts!.deviceTrust.optIn || !!ctx.rememberDevice),
     },
+
     // Phase 5 forced password change:
     {
-      id: "prepare-password-rules",
-      condition: (ctx) => !!ctx.isPasswordInitial && !ctx.passwordChanged && !ctx.aborted,
+      condition: (ctx) => !!ctx.isPasswordInitial && !ctx.passwordChanged,
+      steps: [{ id: "prepare-password-rules" }, { id: "create-password-form" }],
     },
-    {
-      id: "create-password-form",
-      condition: (ctx) => !!ctx.isPasswordInitial && !ctx.passwordChanged && !ctx.aborted,
-    },
+    // Abort gate — create-password-form 'logout' alt-action sets ctx.aborted = true.
+    { break: (ctx) => !!ctx.aborted },
+
     // Phase 6 acceptance / onboarding:
     {
       id: "terms-accept",
       condition: (ctx) =>
-        !!ctx.username &&
         !!ctx.opts!.acceptance.termsVersion &&
         ctx.termsAcceptedVersion !== ctx.opts!.acceptance.termsVersion &&
-        !ctx.termsAcceptedDone &&
-        !ctx.aborted,
+        !ctx.termsAcceptedDone,
     },
+    // Abort gate — terms-accept 'decline' alt-action sets ctx.aborted = true.
+    { break: (ctx) => !!ctx.aborted },
     {
       id: "profile-complete",
       condition: (ctx) =>
-        !!ctx.username &&
         ctx.opts!.acceptance.profileCompleteRequired &&
         !ctx.profileApplied &&
-        (ctx.profileMissingFields?.length ?? 0) > 0 &&
-        !ctx.aborted,
+        (ctx.profileMissingFields?.length ?? 0) > 0,
     },
     {
       id: "consent-marketing",
-      condition: (ctx) =>
-        !!ctx.username &&
-        ctx.opts!.acceptance.consentMarketing &&
-        !ctx.consentApplied &&
-        !ctx.aborted,
+      condition: (ctx) => ctx.opts!.acceptance.consentMarketing && !ctx.consentApplied,
     },
-    // Phase 7 tenant / persona:
+
+    // Phase 7 tenant / persona selection:
     {
       id: "tenant-select",
       condition: (ctx) =>
-        !!ctx.username &&
         ctx.opts!.multiContext.tenantSelect &&
         !ctx.selectedTenantId &&
-        (ctx.availableTenants?.length ?? 0) > 1 &&
-        !ctx.aborted,
+        (ctx.availableTenants?.length ?? 0) > 1,
     },
     {
       id: "persona-select",
       condition: (ctx) =>
-        !!ctx.username &&
         ctx.opts!.multiContext.personaSelect &&
         !ctx.selectedPersonaId &&
-        (ctx.availablePersonas?.length ?? 0) > 1 &&
-        !ctx.aborted,
+        (ctx.availablePersonas?.length ?? 0) > 1,
     },
+
     // Phase 8 session policy:
     {
-      id: "load-active-sessions",
-      condition: (ctx) =>
-        !!ctx.username && !!ctx.opts!.sessionPolicy.concurrencyLimit && !ctx.aborted,
+      condition: (ctx) => !!ctx.opts!.sessionPolicy.concurrencyLimit,
+      steps: [
+        { id: "load-active-sessions" },
+        {
+          id: "concurrency-limit",
+          condition: (ctx) =>
+            (ctx.activeSessions ?? 0) >= ctx.opts!.sessionPolicy.concurrencyLimit!.max,
+        },
+      ],
     },
+    // Abort gate — concurrency-limit 'cancel' alt-action sets ctx.aborted = true.
+    { break: (ctx) => !!ctx.aborted },
+
+    // Phase 9 finalize:
+    { id: "issue", condition: (ctx) => !ctx.tokensIssued },
     {
-      id: "concurrency-limit",
-      condition: (ctx) =>
-        !!ctx.username &&
-        !!ctx.opts!.sessionPolicy.concurrencyLimit &&
-        (ctx.activeSessions ?? 0) >= ctx.opts!.sessionPolicy.concurrencyLimit.max &&
-        !ctx.aborted,
-    },
-    // Phase 9 finalize. All gate on `!ctx.aborted` so the abort response set
-    // via `useWfFinished()` by an abort alt-action (BUG-LOGIN-5) is not
-    // overwritten by token issuance further down.
-    {
-      id: "issue",
-      condition: (ctx) => !!ctx.username && !ctx.tokensIssued && !ctx.aborted,
-    },
-    {
-      id: "audit-login",
-      condition: (ctx) =>
-        !!ctx.username && ctx.opts!.finalize.auditLogin && !!ctx.tokensIssued && !ctx.aborted,
-    },
-    {
-      id: "notify-new-device",
-      condition: (ctx) =>
-        !!ctx.username &&
-        ctx.opts!.finalize.notifyNewDevice &&
-        !!ctx.newDevice &&
-        !!ctx.tokensIssued &&
-        !ctx.aborted,
-    },
-    {
-      id: "redirect",
-      condition: (ctx) => !!ctx.username && !!ctx.tokensIssued && !ctx.aborted,
+      condition: (ctx) => !!ctx.tokensIssued,
+      steps: [
+        { id: "audit-login", condition: (ctx) => ctx.opts!.finalize.auditLogin },
+        {
+          id: "notify-new-device",
+          condition: (ctx) => ctx.opts!.finalize.notifyNewDevice && !!ctx.newDevice,
+        },
+        { id: "redirect" },
+      ],
     },
   ])
   flow(): void {}
 
   // ── Phase 0 ───────────────────────────────────────────────────────────
-  @Step("init")
-  init(@WorkflowParam("context") ctx: LoginWfCtx): undefined {
-    // `snapshotOpts` returns a JSON-safe projection (drops the `forms` group of
-    // atscript classes) so it persists into `AsWfStore`. Step bodies still
-    // consult `this.opts.forms.*` via `this.opts`, not `ctx.opts`.
-    ctx.opts = this.snapshotOpts(this.opts);
-    return undefined;
-  }
-
   /**
-   * Returns the JSON-safe projection of `opts` stashed onto `ctx` for schema
-   * conditions to read. Default: drop the `forms` group (atscript form classes
-   * are not plain JSON) so `AsWfStore`'s plain-JSON persistence doesn't choke.
-   * Step bodies still consult the form classes via `this.opts.forms.*`.
+   * Stashes a JSON-safe projection of `opts` onto `ctx` so schema conditions
+   * can read `ctx.opts.<group>.<flag>` without optional chaining. Drops the
+   * `forms` group (atscript form classes are not plain JSON) so `AsWfStore`'s
+   * plain-JSON persistence doesn't choke. Step bodies still consult the form
+   * classes via `this.opts.forms.*`.
    *
-   * Consumers who put non-JSON values on `opts` (e.g. by extending the type)
-   * can override this to strip them.
+   * Return type is `undefined | Promise<undefined>` so consumers can override
+   * with `async init(...)` without the default fast-path paying a Promise
+   * allocation (the wf engine awaits only when the return value is a Promise).
    */
-  protected snapshotOpts(opts: ResolvedLoginWorkflowOpts): ResolvedLoginWorkflowOpts {
-    const { forms: _forms, ...rest } = opts;
-    return rest as ResolvedLoginWorkflowOpts;
+  @Step("init")
+  init(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
+    const { forms: _forms, ...rest } = this.opts;
+    ctx.opts = rest as ResolvedLoginWorkflowOpts;
+    return undefined;
   }
 
   /**
@@ -643,8 +595,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
    * round-trip) when no async work is needed — the default body is async only
    * because of the `users.getUser` lookup for `currentMfa`.
    */
-  @Step("prepareMfaSetup")
-  @Public()
+  @Step("prepare-mfa-setup")
   prepareMfaSetup(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
     ctx.mfaMode = "optional";
     ctx.availableMfaTransports = ["sms", "email", "totp"];
@@ -787,39 +738,42 @@ export class LoginWorkflow extends AuthWorkflowBase {
    * Receives whatever the user typed into the username field so the recovery
    * page can pre-fill it. Default:
    * `${alternateCredentials.recoveryUrl}?username=${encodeURIComponent(username ?? '')}`.
+   * Sync return type only — the caller (`credentials` step's alt-action
+   * handler) uses the URL inline; consumers needing async URL construction
+   * should override the `credentials` @Step instead.
    */
   protected buildRecoveryUrl(username?: string): string {
     const base = this.opts.alternateCredentials.recoveryUrl;
     return `${base}?username=${encodeURIComponent(username ?? "")}`;
   }
 
-  @Step("magicLinkRequest")
-  magicLinkRequest(): never {
-    throw new HttpError(501, "magicLinkRequest step not implemented");
+  @Step("magic-link-request")
+  magicLinkRequest(): void | Promise<void> {
+    throw new HttpError(501, "magic-link-request step not implemented");
   }
 
-  @Step("magicLinkSend")
-  magicLinkSend(): never {
-    throw new HttpError(501, "magicLinkSend step not implemented");
+  @Step("magic-link-send")
+  magicLinkSend(): void | Promise<void> {
+    throw new HttpError(501, "magic-link-send step not implemented");
   }
 
-  @Step("magicLinkVerified")
-  magicLinkVerified(): never {
-    throw new HttpError(501, "magicLinkVerified step not implemented");
+  @Step("magic-link-verified")
+  magicLinkVerified(): void | Promise<void> {
+    throw new HttpError(501, "magic-link-verified step not implemented");
   }
 
   @Step("passkey")
-  passkey(): never {
+  passkey(): void | Promise<void> {
     throw new HttpError(501, "passkey step not implemented");
   }
 
-  @Step("ssoCallback")
-  ssoCallback(): never {
-    throw new HttpError(501, "ssoCallback step not implemented");
+  @Step("sso-callback")
+  ssoCallback(): void | Promise<void> {
+    throw new HttpError(501, "sso-callback step not implemented");
   }
 
   // ── Phase 3: enrollment loops (single-pass per brief) ─────────────────
-  @Step("ensureEmail")
+  @Step("ensure-email")
   async ensureEmail(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
     this.requireUsername(ctx);
     const pincodeWf = useAtscriptWf(this.opts.forms.pincode);
@@ -858,7 +812,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
     return undefined;
   }
 
-  @Step("ensurePhone")
+  @Step("ensure-phone")
   async ensurePhone(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
     this.requireUsername(ctx);
     const pincodeWf = useAtscriptWf(this.opts.forms.pincode);
@@ -924,7 +878,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
    * shape (custom MFA inventory source) without copying the selection
    * heuristics in `selectMfaMethod`.
    */
-  @Step("loadEnrolledMfaMethods")
+  @Step("load-enrolled-mfa-methods")
   async loadEnrolledMfaMethods(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
     if (!ctx.username) return undefined;
     const user = await this.users.getUser(ctx.username);
@@ -967,8 +921,8 @@ export class LoginWorkflow extends AuthWorkflowBase {
    * heuristics (e.g. risk-based per-tenant defaults) without re-implementing
    * the load/summary.
    */
-  @Step("selectMfaMethod")
-  selectMfaMethod(@WorkflowParam("context") ctx: LoginWfCtx): undefined {
+  @Step("select-mfa-method")
+  selectMfaMethod(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
     const summary = ctx.mfaEnrolledMethods ?? [];
     // `prepareMfaSetup` setter may have pre-selected a transport (existing-user
     // defaultMethod / single-transport auto-pick / consumer override). Honor
@@ -996,7 +950,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
     return undefined;
   }
 
-  @Step("select2fa")
+  @Step("select-2fa")
   async select2fa(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
     const wf = useAtscriptWf(this.opts.forms.select2fa);
     const action = wf.resolveAction();
@@ -1203,8 +1157,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
    * Sync-friendly return: the auto-pick branch and the picker-form branch are
    * both synchronous; only the TOTP-provisioning tail is async.
    */
-  @Step("loginEnrollPickMethod")
-  @Public()
+  @Step("login-enroll-pick-method")
   loginEnrollPickMethod(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
     return this.enrollPickPhase(this.buildLoginEnrollDeps(ctx));
   }
@@ -1213,8 +1166,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
    * Forced MFA enrollment — Phase 2 (collect sms/email address + send
    * pincode). Gated out for totp by the schema condition.
    */
-  @Step("loginEnrollAddress")
-  @Public()
+  @Step("login-enroll-address")
   loginEnrollAddress(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
     return this.enrollAddressPhase(this.buildLoginEnrollDeps(ctx));
   }
@@ -1224,8 +1176,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
    * `onComplete` to bridge `enrollDone` → `mfaChecked` so login's outer MFA
    * while-loop (gated on `!mfaChecked`) exits.
    */
-  @Step("loginEnrollConfirm")
-  @Public()
+  @Step("login-enroll-confirm")
   loginEnrollConfirm(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
     return this.enrollConfirmPhase(this.buildLoginEnrollDeps(ctx));
   }
@@ -1281,7 +1232,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
 
   // ── Phase 5: forced password change ───────────────────────────────────
   @Step("prepare-password-rules")
-  preparePasswordRules(@WorkflowParam("context") ctx: LoginWfCtx): undefined {
+  preparePasswordRules(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
     // Stash transferable policies onto ctx so the front-end can render rule
     // hints next to the form. Pure read; no behavior change.
     (ctx as Record<string, unknown>).passwordPolicies = this.users.getTransferablePolicies();
@@ -1572,7 +1523,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
   }
 
   @Step("redirect")
-  redirect(@WorkflowParam("context") ctx: LoginWfCtx): undefined {
+  redirect(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
     // Compute the target URL — when set, overrides the issue step's data
     // envelope with an immediate-redirect envelope; otherwise keep the data
     // response from `issue`.
@@ -1604,24 +1555,19 @@ export class LoginWorkflow extends AuthWorkflowBase {
    * `'home'` → `/`; `'referer'` → request `Referer` header (undefined when
    * absent, falling back to the data response).
    *
-   * Consumers who want a computed redirect override this method.
+   * Sync return type only — the caller (`redirect` @Step's default body)
+   * uses the URL inline; consumers needing async redirect resolution should
+   * override the `redirect` @Step instead.
    */
   protected resolveRedirect(_ctx: LoginWfCtx): string | undefined {
     const r = this.opts.finalize.redirect;
     if (r === false || r === null) return undefined;
     if (r === "home") return "/";
     if (r === "referer") {
-      try {
-        const req = useRequest(current());
-        const headers = (
-          req as unknown as { headers?: Record<string, string | string[] | undefined> }
-        ).headers;
-        const ref = headers?.referer ?? headers?.referrer;
-        const first = Array.isArray(ref) ? ref[0] : ref;
-        return typeof first === "string" && first.length > 0 ? first : undefined;
-      } catch {
-        return undefined;
-      }
+      const { referer, referrer } = useHeaders(current());
+      const ref = referer ?? referrer;
+      const first = Array.isArray(ref) ? ref[0] : ref;
+      return typeof first === "string" && first.length > 0 ? first : undefined;
     }
     return undefined;
   }

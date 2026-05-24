@@ -32,7 +32,7 @@
 import { AuthCredential } from "@aooth/auth";
 import { generateTotpSecret, UserService } from "@aooth/user";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
-import { Controller, Inherit, Injectable } from "moost";
+import { Controller, Inherit } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import { ProfileWithRolesForm } from "./fixtures/profile-with-roles.as";
@@ -59,7 +59,6 @@ describe("LoginWorkflow security — profile-complete payload escalation (audit 
     const seenAtHook: Array<Record<string, unknown>> = [];
 
     @Inherit()
-    @Injectable("FOR_EVENT")
     @Controller()
     class ProfileLogin extends LoginWorkflow {
       constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {

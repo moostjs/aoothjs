@@ -9,7 +9,7 @@
  *
  * This file proves the override path ALSO works when a consumer pastes the
  * literal subclass shape documented in the class doc + WF_INVITE.md — i.e.
- * `@Inherit() @Injectable('FOR_EVENT') @Controller()` plus the re-declared
+ * `@Inherit() @Controller()` plus the re-declared
  * ctor. The harness still wraps the consumer subclass (so it can pin captures
  * for emails / audit), but the harness's overrides delegate to `super.X()`
  * when no `inviteHooks` entry is set — which routes back into the consumer's
@@ -21,7 +21,7 @@ import { UserService, type UserCredentials } from "@aooth/user";
 import { useAtscriptWf } from "@atscript/moost-wf";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { Step, useWfState } from "@moostjs/event-wf";
-import { Controller, Inherit, Injectable } from "moost";
+import { Controller, Inherit } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import { ProfileCompleteForm } from "../atscript/models/forms.as";
@@ -39,7 +39,7 @@ const PASSWORD = "NewPassword123";
 
 // ── End-to-end smoke: consumer subclass dispatches auth.invite ───────────────
 describe("InviteWorkflow subclass — end-to-end registration shape", () => {
-  it("@Inherit + @Injectable('FOR_EVENT') + @Controller + re-declared ctor → auth.invite dispatches through consumer subclass", async () => {
+  it("@Inherit + @Controller + re-declared ctor → auth.invite dispatches through consumer subclass", async () => {
     // This is the literal subclass shape consumers paste into their app per
     // WF_INVITE.md §"Consumer subclass pattern". The test confirms that
     // dispatch reaches the consumer's `prepareUser` override (no class-
@@ -48,7 +48,6 @@ describe("InviteWorkflow subclass — end-to-end registration shape", () => {
     // to our subclass's body.
     let prepareUserCalls = 0;
     @Inherit()
-    @Injectable("FOR_EVENT")
     @Controller()
     class MyInvite extends InviteWorkflow {
       constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
@@ -92,7 +91,6 @@ describe("InviteWorkflow subclass — end-to-end registration shape", () => {
     // implementation if the subclass weren't actually registered.
     let duplicateCheckCalls = 0;
     @Inherit()
-    @Injectable("FOR_EVENT")
     @Controller()
     class MyInvite extends InviteWorkflow {
       constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
@@ -153,7 +151,6 @@ describe("InviteWorkflow subclass — end-to-end registration shape", () => {
 describe("InviteWorkflow subclass — protected method overrides", () => {
   it("getAvailableRoles override populates the admin form's ctx.availableRoles", async () => {
     @Inherit()
-    @Injectable("FOR_EVENT")
     @Controller()
     class MyInvite extends InviteWorkflow {
       constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
@@ -178,7 +175,6 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
   it("inferRoles override merges with admin-supplied roles (set-union persisted)", async () => {
     let calls = 0;
     @Inherit()
-    @Injectable("FOR_EVENT")
     @Controller()
     class MyInvite extends InviteWorkflow {
       constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
@@ -210,7 +206,6 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
   it("applyProfile override receives username + profile after collectProfile pause", async () => {
     const seen: Array<{ username: string; profile: Record<string, unknown> }> = [];
     @Inherit()
-    @Injectable("FOR_EVENT")
     @Controller()
     class MyInvite extends InviteWorkflow {
       constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
@@ -259,7 +254,6 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
     // ran for an existing user.
     let calls = 0;
     @Inherit()
-    @Injectable("FOR_EVENT")
     @Controller()
     class MyInvite extends InviteWorkflow {
       constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
@@ -319,7 +313,6 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
 
     // Second app: consumer subclass DEFINES the profile form.
     @Inherit()
-    @Injectable("FOR_EVENT")
     @Controller()
     class MyInvite extends InviteWorkflow {
       constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {
@@ -376,7 +369,6 @@ describe("InviteWorkflow subclass — inviteExtraStep override", () => {
     let calls = 0;
 
     @Inherit()
-    @Injectable("FOR_EVENT")
     @Controller()
     class OverrideInvite extends InviteWorkflow {
       constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential) {

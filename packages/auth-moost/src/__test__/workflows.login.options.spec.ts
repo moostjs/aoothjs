@@ -20,7 +20,7 @@ import {
   UserService,
   UserStoreMemory,
 } from "@aooth/user";
-import { Controller, Inherit, Injectable } from "moost";
+import { Controller, Inherit } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
@@ -45,7 +45,6 @@ function makeLoginSubclass(
   }>,
 ): typeof LoginWorkflow {
   @Inherit()
-  @Injectable("FOR_EVENT")
   @Controller()
   class SubclassedLogin extends LoginWorkflow {
     constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
