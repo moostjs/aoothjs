@@ -84,7 +84,12 @@ import type { AuditEvent } from "../audit/index";
 import { AuthOpts } from "../auth.opts";
 import { useAuth } from "../auth.composables";
 import { Public } from "../auth.decorator";
-import { AuthWorkflowBase, type MfaEnrollDeps, stripReservedUserKeys } from "./auth-workflow.base";
+import {
+  AuthWorkflowBase,
+  type InlineConsentInput,
+  type MfaEnrollDeps,
+  stripReservedUserKeys,
+} from "./auth-workflow.base";
 import {
   type ConcurrencyLimitOptions,
   type LoginRedirect,
@@ -257,6 +262,15 @@ export interface LoginWfCtx {
   termsAcceptedDone?: boolean;
   profileApplied?: boolean;
   consentApplied?: boolean;
+  /**
+   * Marketing opt-in value captured inline (via `WithInlineConsentForm` on a
+   * carrier form's payload). Stashed here by `processInlineConsent` so the
+   * later `apply-consent` step can persist it once `ctx.username` is set —
+   * the inline capture commonly happens BEFORE the credentials step finishes
+   * (e.g. `LoginCredentialsForm` itself), where the user-store write would
+   * have nothing to bind to.
+   */
+  pendingMarketingOptIn?: boolean;
   tokensIssued?: boolean;
   redirectUrl?: string;
   /**
@@ -841,16 +855,12 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // Abort gate — create-password-form 'logout' alt-action sets ctx.aborted = true.
     { break: (ctx) => !!ctx.aborted },
 
-    // Phase 6 acceptance / onboarding:
-    {
-      id: "terms-accept",
-      condition: (ctx) =>
-        !!ctx.acceptance?.termsVersion &&
-        ctx.termsAcceptedVersion !== ctx.acceptance?.termsVersion &&
-        !ctx.termsAcceptedDone,
-    },
-    // Abort gate — terms-accept 'decline' alt-action sets ctx.aborted = true.
-    { break: (ctx) => !!ctx.aborted },
+    // Phase 6 acceptance / onboarding — terms acceptance + marketing consent
+    // are now captured inline via `WithInlineConsentForm` on whichever carrier
+    // form fires first (LoginCredentialsForm / AskEmailForm / AskPhoneForm /
+    // SetPasswordForm / ProfileCompleteForm). `apply-consent` fans the
+    // stashed `pendingMarketingOptIn` out to the user store once `ctx.username`
+    // is bound.
     {
       id: "profile-complete",
       condition: (ctx) =>
@@ -859,8 +869,16 @@ export class LoginWorkflow extends AuthWorkflowBase {
         (ctx.profileMissingFields?.length ?? 0) > 0,
     },
     {
-      id: "consent-marketing",
-      condition: (ctx) => !!ctx.acceptance?.consentMarketing && !ctx.consentApplied,
+      // Defense-in-depth: schema gate AND-s `acceptance.consentMarketing` even
+      // though `processInlineConsent` already refuses to write
+      // `pendingMarketingOptIn` when the acceptance policy is off — a future
+      // refactor that moves the helper's gate shouldn't silently re-open this
+      // step.
+      id: "apply-consent",
+      condition: (ctx) =>
+        !!ctx.acceptance?.consentMarketing &&
+        ctx.pendingMarketingOptIn !== undefined &&
+        !ctx.consentApplied,
     },
 
     // Phase 7 tenant / persona selection:
@@ -962,16 +980,22 @@ export class LoginWorkflow extends AuthWorkflowBase {
   @Step("credentials")
   async credentials(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
     // `credentials` runs BEFORE the `!ctx.username` gate and the prepare-*
-    // steps, but it needs `alternateCredentials` (for alt-action routing) and
-    // `guards` (for the passwordInitial flag) in scope. Call the resolvers
-    // inline and stash the result on ctx — the prepare-* steps that run later
-    // will overwrite with the same value (idempotent) once username is set.
+    // steps, but it needs `alternateCredentials` (for alt-action routing),
+    // `guards` (for the passwordInitial flag), and `acceptance` (so
+    // `WithInlineConsentForm` rendering on this carrier form sees the
+    // terms/marketing flags) in scope. Call the resolvers inline and stash
+    // the result on ctx — the prepare-* steps that run later will overwrite
+    // with the same value (idempotent) once username is set.
     const altResult = this.resolveAlternateCredentials(ctx);
     const alt = altResult instanceof Promise ? await altResult : altResult;
     ctx.alternateCredentials = alt;
     const guardsResult = this.resolveGuards(ctx);
     const guards = guardsResult instanceof Promise ? await guardsResult : guardsResult;
     ctx.guards = guards;
+    const acceptanceResult = this.resolveAcceptance(ctx);
+    const acceptance =
+      acceptanceResult instanceof Promise ? await acceptanceResult : acceptanceResult;
+    ctx.acceptance = acceptance;
     // Mirror alt-credentials config into ctx so the form can hide each alt-action
     // button when its corresponding feature is disabled (`@ui.form.fn.hidden`).
     ctx.altForgotPassword = !!alt.forgotPassword;
@@ -1004,7 +1028,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
       if (handled === ALT_HANDLED) return undefined;
     }
 
-    const input = wf.resolveInput() as { username: string; password: string };
+    const input = wf.resolveInput() as { username: string; password: string } & InlineConsentInput;
 
     try {
       const result = await this.users.login(input.username, input.password);
@@ -1013,6 +1037,11 @@ export class LoginWorkflow extends AuthWorkflowBase {
       // step catalog decides MFA inclusion via `ctx.mfaMode` + enrolled
       // methods, not this flag.
       ctx.mfaRequired = result.mfaRequired;
+      // Inline consent — validate terms + stash marketing opt-in. Runs only
+      // after authentication succeeds so unauthenticated submits can't
+      // probe consent state. The helper silently ignores fields whose gate
+      // is closed (e.g. termsAcceptedDone already true).
+      this.processInlineConsent(ctx, input, wf);
       // Phase 2 inline guards:
       if (ctx.guards?.passwordInitial && result.user.password.isInitial) {
         ctx.isPasswordInitial = true;
@@ -1133,7 +1162,8 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // Step 1: collect the email if we don't have one.
     if (!ctx.email) {
       const askEmailWf = useAtscriptWf(this.opts.forms.askEmail);
-      const input = askEmailWf.resolveInput() as { email: string };
+      const input = askEmailWf.resolveInput() as { email: string } & InlineConsentInput;
+      this.processInlineConsent(ctx, input, askEmailWf);
       const username = ctx.username;
       await this.withStoreErrorTranslation(() =>
         this.users.addMfaMethod(username, {
@@ -1175,7 +1205,8 @@ export class LoginWorkflow extends AuthWorkflowBase {
     const pincodeWf = useAtscriptWf(this.opts.forms.pincode);
     if (!ctx.phone) {
       const askPhoneWf = useAtscriptWf(this.opts.forms.askPhone);
-      const input = askPhoneWf.resolveInput() as { phone: string };
+      const input = askPhoneWf.resolveInput() as { phone: string } & InlineConsentInput;
+      this.processInlineConsent(ctx, input, askPhoneWf);
       const username = ctx.username;
       await this.withStoreErrorTranslation(() =>
         this.users.addMfaMethod(username, {
@@ -1612,7 +1643,10 @@ export class LoginWorkflow extends AuthWorkflowBase {
       ctx.aborted = true;
       return undefined;
     }
-    const input = wf.resolveInput() as { newPassword: string; confirmPassword: string };
+    const input = wf.resolveInput() as {
+      newPassword: string;
+      confirmPassword: string;
+    } & InlineConsentInput;
     if (input.newPassword !== input.confirmPassword) {
       throw wf.requireInput({ errors: { confirmPassword: "Passwords do not match" } });
     }
@@ -1622,41 +1656,20 @@ export class LoginWorkflow extends AuthWorkflowBase {
     } catch (err) {
       this.translatePasswordSetError(err);
     }
+    this.processInlineConsent(ctx, input, wf);
     ctx.passwordChanged = true;
     ctx.isPasswordInitial = false;
     return undefined;
   }
 
   // ── Phase 6: acceptance / onboarding ──────────────────────────────────
-  @Step("terms-accept")
-  async termsAccept(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
-    const wf = useAtscriptWf(this.opts.forms.termsAccept);
-    const action = wf.resolveAction();
-    if (action === "decline") {
-      abortWf("termsDeclined", {
-        message: { level: "info", text: "You must accept to continue" },
-      });
-      // BUG-LOGIN-5: stop the schema progressing into `issue` etc.
-      ctx.aborted = true;
-      return undefined;
-    }
-    const input = wf.resolveInput() as { acceptedVersion: string; accepted: boolean };
-    if (!input.accepted) {
-      throw wf.requireInput({ errors: { accepted: "You must accept the terms" } });
-    }
-    if (input.acceptedVersion !== ctx.acceptance?.termsVersion) {
-      throw wf.requireInput({ errors: { acceptedVersion: "Version mismatch — please retry" } });
-    }
-    ctx.termsAcceptedVersion = input.acceptedVersion;
-    ctx.termsAcceptedDone = true;
-    return undefined;
-  }
-
   @Step("profile-complete")
   async profileComplete(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
     const wf = useAtscriptWf(this.opts.forms.profileComplete);
-    const input = wf.resolveInput({ partial: "deep" }) as Record<string, unknown>;
+    const input = wf.resolveInput({ partial: "deep" }) as Record<string, unknown> &
+      InlineConsentInput;
     this.requireUsername(ctx);
+    this.processInlineConsent(ctx, input, wf);
     // Defense (audit hole #15 Sink A): strip privileged top-level
     // `UserCredentials` keys before handing off to `applyProfile`. The
     // form parser preserves unknown extras (`partial: "deep"`), and a
@@ -1685,12 +1698,17 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // No-op default.
   }
 
-  @Step("consent-marketing")
-  async consentMarketing(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
-    const wf = useAtscriptWf(this.opts.forms.consentMarketing);
-    const input = wf.resolveInput() as { optIn?: boolean };
+  /**
+   * Persist the inline-collected marketing consent decision. Fires after
+   * `ctx.username` is bound — `processInlineConsent` stashes
+   * `pendingMarketingOptIn` on the carrier form's payload, this step
+   * commits it via `applyConsentMarketing`. Idempotent via `consentApplied`.
+   */
+  @Step("apply-consent")
+  async applyConsent(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
     this.requireUsername(ctx);
-    await this.applyConsentMarketing(ctx.username, Boolean(input.optIn));
+    if (ctx.pendingMarketingOptIn === undefined) return undefined;
+    await this.applyConsentMarketing(ctx.username, ctx.pendingMarketingOptIn);
     ctx.consentApplied = true;
     return undefined;
   }

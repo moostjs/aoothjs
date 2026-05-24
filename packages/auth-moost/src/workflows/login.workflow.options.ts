@@ -16,7 +16,6 @@ import {
   AskPhoneForm,
   BackupCodeForm,
   ConcurrencyLimitForm,
-  ConsentMarketingForm,
   EnrollAddressForm,
   EnrollConfirmForm,
   EnrollPickMethodForm,
@@ -28,7 +27,6 @@ import {
   Select2faForm,
   SetPasswordForm,
   TenantSelectForm,
-  TermsAcceptForm,
 } from "../atscript/models/forms.as";
 
 export type LoginRedirect = "referer" | "home" | false | null;
@@ -62,7 +60,6 @@ export interface LoginWorkflowOpts {
     askPhone?: TAtscriptAnnotatedType;
     backupCode?: TAtscriptAnnotatedType;
     concurrencyLimit?: TAtscriptAnnotatedType;
-    consentMarketing?: TAtscriptAnnotatedType;
     enrollAddress?: TAtscriptAnnotatedType;
     enrollConfirm?: TAtscriptAnnotatedType;
     enrollPickMethod?: TAtscriptAnnotatedType;
@@ -74,7 +71,6 @@ export interface LoginWorkflowOpts {
     select2fa?: TAtscriptAnnotatedType;
     setPassword?: TAtscriptAnnotatedType;
     tenantSelect?: TAtscriptAnnotatedType;
-    termsAccept?: TAtscriptAnnotatedType;
   };
 }
 
@@ -94,7 +90,6 @@ export interface ResolvedLoginWorkflowOpts {
     askPhone: TAtscriptAnnotatedType;
     backupCode: TAtscriptAnnotatedType;
     concurrencyLimit: TAtscriptAnnotatedType;
-    consentMarketing: TAtscriptAnnotatedType;
     enrollAddress: TAtscriptAnnotatedType;
     enrollConfirm: TAtscriptAnnotatedType;
     enrollPickMethod: TAtscriptAnnotatedType;
@@ -106,7 +101,6 @@ export interface ResolvedLoginWorkflowOpts {
     select2fa: TAtscriptAnnotatedType;
     setPassword: TAtscriptAnnotatedType;
     tenantSelect: TAtscriptAnnotatedType;
-    termsAccept: TAtscriptAnnotatedType;
   };
 }
 
@@ -128,7 +122,6 @@ export function mergeLoginOpts(opts: LoginWorkflowOpts = {}): ResolvedLoginWorkf
       askPhone: AskPhoneForm as unknown as TAtscriptAnnotatedType,
       backupCode: BackupCodeForm as unknown as TAtscriptAnnotatedType,
       concurrencyLimit: ConcurrencyLimitForm as unknown as TAtscriptAnnotatedType,
-      consentMarketing: ConsentMarketingForm as unknown as TAtscriptAnnotatedType,
       enrollAddress: EnrollAddressForm as unknown as TAtscriptAnnotatedType,
       enrollConfirm: EnrollConfirmForm as unknown as TAtscriptAnnotatedType,
       enrollPickMethod: EnrollPickMethodForm as unknown as TAtscriptAnnotatedType,
@@ -140,7 +133,6 @@ export function mergeLoginOpts(opts: LoginWorkflowOpts = {}): ResolvedLoginWorkf
       select2fa: Select2faForm as unknown as TAtscriptAnnotatedType,
       setPassword: SetPasswordForm as unknown as TAtscriptAnnotatedType,
       tenantSelect: TenantSelectForm as unknown as TAtscriptAnnotatedType,
-      termsAccept: TermsAcceptForm as unknown as TAtscriptAnnotatedType,
       ...opts.forms,
     },
   };

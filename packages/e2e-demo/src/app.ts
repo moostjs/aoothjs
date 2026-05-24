@@ -779,6 +779,17 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
             ...(v.enrollMethod !== undefined && { enrollMethod: v.enrollMethod }),
           };
         }
+        // Mirror the mfaCtx stash for the variant's accept policy. `resolveAccept`
+        // runs both on the admin side (variant header present) AND on the
+        // anonymous invitee resume (variant header NOT present — magic-link
+        // click is plain HTTP with no `?variant=`). The ctx field bridges the
+        // gap so e.g. `choice-freshlogin` + `confirmation-message` reach the
+        // resume tail. The stash is on a non-typed slot per the comment above.
+        if (variant?.policy?.accept) {
+          (
+            ctx as unknown as { __demoAcceptPolicy?: NonNullable<InviteWfCtx["accept"]> }
+          ).__demoAcceptPolicy = variant.policy.accept;
+        }
         return undefined;
       };
       return baseResult instanceof Promise ? baseResult.then(apply) : apply();
@@ -839,6 +850,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       if (opts.invitePolicy?.accept) return opts.invitePolicy.accept;
       const variant = pickVariant(INVITE_VARIANTS, readVariantHeader());
       if (variant?.policy?.accept) return variant.policy.accept;
+      // Fallback: variant-stashed accept policy from `invite-init` (survives
+      // the admin→invitee resume where the variant header is absent).
+      const stashed = (
+        ctx as unknown as { __demoAcceptPolicy?: NonNullable<InviteWfCtx["accept"]> }
+      ).__demoAcceptPolicy;
+      if (stashed) return stashed;
       // Demo default: existing tests assert the auto-login response payload —
       // pre-dating the BIG 3.3 confirmation pause. Off here so the demo
       // matches today's behaviour; production should keep the default ON.

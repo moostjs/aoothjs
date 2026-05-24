@@ -143,13 +143,30 @@ describe("LoginWorkflow subclass — applyProfile override", () => {
   });
 });
 
-// ── applyConsentMarketing override ──────────────────────────────────────────
-describe("LoginWorkflow subclass — applyConsentMarketing override", () => {
-  it("override fires when acceptance.consentMarketing is true with the submitted opt-in value", async () => {
-    const captured: Array<{ username: string; optIn: boolean }> = [];
+// ── applyConsentMarketing override (replaces deleted standalone-step test) ─
+//
+// REPLACES: the pre-refactor `applyConsentMarketing override` test against
+// the now-deleted standalone `consent-marketing` step. The customer-override
+// seam survived the refactor — the inline-staged `pendingMarketingOptIn` is
+// applied by the new `apply-consent` @Step which delegates to
+// `applyConsentMarketing(username, optIn)` (login.workflow.ts:1719). This
+// test pins that the override hook still fires through the new pipeline and
+// receives the inline-staged value verbatim.
+describe("LoginWorkflow subclass — applyConsentMarketing override (CONSENT-OVERRIDE)", () => {
+  it("CONSENT-OVERRIDE-01: inline marketingOptIn:true on credentials → applyConsentMarketing override receives (username, true)", async () => {
+    // WHY (Rule 9): asserts the consumer-override seam survives the refactor.
+    // A regression that wired `apply-consent` to call a different hook
+    // (e.g. an internal store method instead of the override) would silently
+    // break the customer extension contract — consumers wouldn't notice
+    // until production data integrity diverged. The captured-array assertion
+    // is load-bearing: it pins (a) the override IS the dispatch target,
+    // (b) the inline-staged value (NOT a fabricated default) is what's
+    // passed, and (c) the username binding from credentials is in scope by
+    // the time apply-consent fires.
+    const calls: Array<{ username: string; optIn: boolean }> = [];
     @Inherit()
     @Controller("auth/login")
-    class ConsentLogin extends LoginWorkflow {
+    class ConsentMarketingLogin extends LoginWorkflow {
       constructor(
         opts: LoginWorkflowOpts,
         users: UserService,
@@ -162,31 +179,23 @@ describe("LoginWorkflow subclass — applyConsentMarketing override", () => {
         username: string,
         optIn: boolean,
       ): Promise<void> {
-        captured.push({ username, optIn });
+        calls.push({ username, optIn });
       }
     }
     const app = await prepareWfApp({
       loginPolicy: {
-        acceptance: {
-          consentMarketing: true,
-          profileCompleteRequired: false,
-        },
+        acceptance: { profileCompleteRequired: false, consentMarketing: true },
       },
-      loginWorkflowClass: withLoginMfaCtx(ConsentLogin, { mfaMode: "disabled" }),
+      loginWorkflowClass: withLoginMfaCtx(ConsentMarketingLogin, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r1 = await app.trigger({ wfid: "auth/login/flow" });
-    const cred = await app.trigger({
+    const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
-      input: { username: "alice", password: "Password123" },
+      input: { username: "alice", password: "Password123", marketingOptIn: true },
     });
-    expect(cred.body?.wfs).toBeTruthy();
-    const r3 = await app.trigger({
-      wfs: cred.body?.wfs as string,
-      input: { optIn: true },
-    });
-    expect((r3.body?.data as Record<string, unknown>)?.userId).toBe("alice");
-    expect(captured).toEqual([{ username: "alice", optIn: true }]);
+    expect((r2.body?.data as Record<string, unknown>)?.userId).toBe("alice");
+    expect(calls).toEqual([{ username: "alice", optIn: true }]);
   });
 });
 

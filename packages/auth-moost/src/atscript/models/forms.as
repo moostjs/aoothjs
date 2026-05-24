@@ -1,4 +1,50 @@
 /**
+ * Inline consent collection — `acceptedTerms` + `marketingOptIn` attached
+ * to whichever data-collection form the user is already filling out.
+ * Carrier forms `extends WithInlineConsentForm` to inherit these fields
+ * without duplication. Visibility is gated by the already-resolved
+ * acceptance policy on ctx + the already-captured flags
+ * (`termsAcceptedDone` / `consentApplied`).
+ *
+ * SECURITY: the form payload always carries the 2 fields (hidden or not).
+ * The server-side `AuthWorkflowBase.processInlineConsent()` helper enforces
+ * the same gates as `@ui.form.fn.hidden` — when the gate says "should be
+ * hidden", the server IGNORES the incoming values entirely. Protects
+ * against an attacker submitting `acceptedTerms: false` to withdraw consent
+ * after the fact, or `marketingOptIn: false` to flip an opt-in.
+ *
+ * The accepted terms VERSION is NOT collected from the client. The server
+ * is the authoritative source of truth for which version is currently in
+ * force — when `acceptedTerms: true` arrives and the gate is open, the
+ * helper records `ctx.termsAcceptedVersion = ctx.acceptance.termsVersion`
+ * directly. Removing the client round-trip closes one attack surface
+ * (an attacker cannot lie about which version they accepted) and unblocks
+ * the SPA — `@atscript/vue-form`'s `createDefaultTypes()` ships no
+ * `hidden` renderer, so a hidden field would break every carrier form
+ * extending this interface.
+ *
+ * The 2 inherited fields carry no `@ui.form.order`, so atscript's
+ * stable-sort lands them AFTER any carrier-form field with an explicit
+ * `@ui.form.order`. Carrier forms therefore set explicit low-numbered
+ * orders on their own fields, pushing the inherited consent block to the end.
+ */
+@wf.context.pass 'acceptance'
+@wf.context.pass 'termsAcceptedDone'
+@wf.context.pass 'consentApplied'
+export interface WithInlineConsentForm {
+    @ui.form.type 'checkbox'
+    @meta.label 'I accept the Terms & Conditions'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.acceptance?.termsVersion || !!ctx.termsAcceptedDone'
+    acceptedTerms?: boolean
+
+    @ui.form.type 'checkbox'
+    @meta.label 'I would like to receive marketing emails'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.acceptance?.consentMarketing || !!ctx.consentApplied'
+    @meta.default 'false'
+    marketingOptIn?: boolean
+}
+
+/**
  * Default login credentials form.
  *
  * Override via `setupAuthWorkflows({ forms: { loginCredentials: MyForm } })`.
@@ -12,8 +58,12 @@
 @wf.context.pass 'altForgotPassword'
 @wf.context.pass 'altSignup'
 @wf.context.pass 'altMagicLink'
+@wf.context.pass 'acceptance'
+@wf.context.pass 'termsAcceptedDone'
+@wf.context.pass 'consentApplied'
 @ui.form.submit.text 'Sign in'
-export interface LoginCredentialsForm {
+export interface LoginCredentialsForm extends WithInlineConsentForm {
+    @ui.form.order 10
     @ui.form.type 'text'
     @meta.label 'Username'
     @ui.form.autocomplete 'username'
@@ -21,6 +71,7 @@ export interface LoginCredentialsForm {
     @expect.minLength 1
     username: string
 
+    @ui.form.order 20
     @ui.form.type 'password'
     @meta.label 'Password'
     @ui.form.autocomplete 'current-password'
@@ -32,10 +83,12 @@ export interface LoginCredentialsForm {
     @wf.action.withData 'forgotPassword'
     password: string
 
+    @ui.form.order 30
     @ui.form.action 'signup', 'Sign up'
     @ui.form.fn.hidden '(_, _d, ctx) => !ctx.altSignup'
     signup?: ui.action
 
+    @ui.form.order 40
     @ui.form.action 'magicLink', 'Sign in with a magic link'
     @ui.form.fn.hidden '(_, _d, ctx) => !ctx.altMagicLink'
     magicLink?: ui.action
@@ -129,7 +182,11 @@ export interface EmailIdentifierForm {
  * the key is stripped by `extractPassContext` before reaching the client.
  */
 @wf.context.pass 'passwordPolicies'
-export interface SetPasswordForm {
+@wf.context.pass 'acceptance'
+@wf.context.pass 'termsAcceptedDone'
+@wf.context.pass 'consentApplied'
+export interface SetPasswordForm extends WithInlineConsentForm {
+    @ui.form.order 10
     @ui.form.type 'password'
     @meta.label 'New password'
     @ui.form.autocomplete 'new-password'
@@ -138,6 +195,7 @@ export interface SetPasswordForm {
     @expect.minLength 8
     newPassword: string
 
+    @ui.form.order 20
     @ui.form.type 'password'
     @meta.label 'Confirm password'
     @ui.form.autocomplete 'new-password'
@@ -146,12 +204,15 @@ export interface SetPasswordForm {
     @expect.minLength 8
     confirmPassword: string
 
+    @ui.form.order 30
     @ui.form.action 'logout', 'Logout'
     logout?: ui.action
 
+    @ui.form.order 40
     @ui.form.action 'cancel', 'Cancel'
     cancel?: ui.action
 
+    @ui.form.order 50
     @ui.form.action 'backToLogin', 'Back to sign-in'
     backToLogin?: ui.action
 }
@@ -311,7 +372,11 @@ export interface PincodeForm {
 /**
  * Email-only form for the `ensureEmail` enrollment loop.
  */
-export interface AskEmailForm {
+@wf.context.pass 'acceptance'
+@wf.context.pass 'termsAcceptedDone'
+@wf.context.pass 'consentApplied'
+export interface AskEmailForm extends WithInlineConsentForm {
+    @ui.form.order 10
     @ui.form.type 'text'
     @meta.label 'Email'
     @ui.form.autocomplete 'email'
@@ -323,7 +388,11 @@ export interface AskEmailForm {
  * Phone-only form for the `ensurePhone` enrollment loop. Free-form text —
  * E.164 normalization happens server-side.
  */
-export interface AskPhoneForm {
+@wf.context.pass 'acceptance'
+@wf.context.pass 'termsAcceptedDone'
+@wf.context.pass 'consentApplied'
+export interface AskPhoneForm extends WithInlineConsentForm {
+    @ui.form.order 10
     @ui.form.type 'text'
     @meta.label 'Phone (E.164)'
     @ui.form.autocomplete 'tel'
@@ -416,45 +485,22 @@ export interface EnrollConfirmForm {
 }
 
 /**
- * Terms & conditions acceptance form.
- */
-export interface TermsAcceptForm {
-    @ui.form.type 'text'
-    @meta.label 'Accepted version'
-    @meta.required
-    acceptedVersion: string
-
-    @ui.form.type 'checkbox'
-    @meta.label 'I accept the Terms & Conditions'
-    @meta.required
-    accepted: boolean
-
-    @ui.form.action 'decline', 'Decline'
-    decline?: ui.action
-}
-
-/**
  * Default minimal profile completion form. Consumers replace via
  * `LoginWorkflowOptions.profileCompleteForm` for richer shapes.
  */
-export interface ProfileCompleteForm {
+@wf.context.pass 'acceptance'
+@wf.context.pass 'termsAcceptedDone'
+@wf.context.pass 'consentApplied'
+export interface ProfileCompleteForm extends WithInlineConsentForm {
+    @ui.form.order 10
     @ui.form.type 'text'
     @meta.label 'First name'
     firstName?: string
 
+    @ui.form.order 20
     @ui.form.type 'text'
     @meta.label 'Last name'
     lastName?: string
-}
-
-/**
- * Marketing consent opt-in.
- */
-export interface ConsentMarketingForm {
-    @ui.form.type 'checkbox'
-    @meta.label 'I would like to receive marketing emails'
-    @meta.default 'false'
-    optIn: boolean
 }
 
 /**

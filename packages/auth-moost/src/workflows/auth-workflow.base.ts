@@ -152,6 +152,44 @@ interface PinCtx {
   pinExpire?: number;
 }
 
+/**
+ * Structural ctx shape consumed by `processInlineConsent`. Mirrors the
+ * relevant subset of `LoginWfCtx` so the helper stays workflow-agnostic —
+ * `InviteWfCtx` / `RecoveryWfCtx` can pass through compatibly (or, when they
+ * don't carry `acceptance`, the gates skip every check).
+ */
+export interface InlineConsentCtx {
+  acceptance?: {
+    termsVersion?: string;
+    consentMarketing: boolean;
+  };
+  termsAcceptedVersion?: string;
+  termsAcceptedDone?: boolean;
+  consentApplied?: boolean;
+  pendingMarketingOptIn?: boolean;
+}
+
+/**
+ * Subset of the input payload that `processInlineConsent` reads. The
+ * accepted terms VERSION is NOT collected from the client — the server
+ * reads its own `ctx.acceptance.termsVersion` instead. See the helper's
+ * security comment for rationale.
+ */
+export interface InlineConsentInput {
+  acceptedTerms?: boolean;
+  marketingOptIn?: boolean;
+}
+
+/**
+ * Structural alias for `ReturnType<typeof useAtscriptWf>` — only the
+ * `requireInput` method is consumed by `processInlineConsent`, kept narrow
+ * so callers can pass any form's wf handle without TS choking on the form-
+ * specific `resolveInput` return type.
+ */
+type WfRequireInputOnly = {
+  requireInput(opts?: { errors?: Record<string, string>; formMessage?: string }): unknown;
+};
+
 export class AuthWorkflowBase {
   /**
    * Asserts `ctx.username` is populated. Workflow steps reach for `ctx.username`
@@ -229,6 +267,58 @@ export class AuthWorkflowBase {
     if (!ctx.pin || !ctx.pinExpire || Date.now() > ctx.pinExpire) return { code: "Code expired" };
     if (submitted !== ctx.pin) return { code: "Invalid code" };
     return null;
+  }
+
+  /**
+   * Validate + stash inline-consent fields submitted on a carrier form.
+   *
+   * SECURITY GATE: only processes the consent fields when the matching
+   * `acceptance` policy is active AND the value hasn't already been captured
+   * for this workflow run. If `ctx.termsAcceptedDone === true` OR
+   * `ctx.acceptance?.termsVersion` is unset, the server SILENTLY IGNORES
+   * `input.acceptedTerms` even when the payload contains it. Same gate for
+   * `marketingOptIn` — once `ctx.consentApplied === true`, subsequent
+   * payloads cannot flip the value. This is the load-bearing defense
+   * against an attacker submitting falsified hidden-field values to withdraw
+   * consent or flip a marketing opt-in.
+   *
+   * The accepted-terms VERSION is NOT collected from the client. The server
+   * is the authoritative source of truth — when `acceptedTerms: true`
+   * arrives and the gate is open, `ctx.termsAcceptedVersion` is set
+   * directly from `ctx.acceptance.termsVersion`. Rationale:
+   *   (a) No client round-trip means no surface for a tampered version
+   *       (an attacker cannot record acceptance of a stale or fabricated
+   *       version — the server writes its own current version regardless).
+   *   (b) `@atscript/vue-form` ships no `hidden` component renderer, so a
+   *       `@ui.form.type 'hidden'` field would break every SPA-rendered
+   *       carrier form extending `WithInlineConsentForm`.
+   *
+   * Terms are validated + stashed inline (workflow proceeds only when the
+   * checkbox is ticked). Marketing is stashed only — the async user-store
+   * write defers to the `apply-consent` step which fires once `ctx.username`
+   * is set.
+   */
+  protected processInlineConsent(
+    ctx: InlineConsentCtx,
+    input: InlineConsentInput,
+    wf: WfRequireInputOnly,
+  ): void {
+    if (ctx.acceptance?.termsVersion && !ctx.termsAcceptedDone) {
+      if (!input.acceptedTerms) {
+        throw wf.requireInput({ errors: { acceptedTerms: "You must accept the terms" } });
+      }
+      // Server is authoritative — record OUR current version, not anything
+      // submitted by the client.
+      ctx.termsAcceptedVersion = ctx.acceptance.termsVersion;
+      ctx.termsAcceptedDone = true;
+    }
+    if (
+      ctx.acceptance?.consentMarketing &&
+      !ctx.consentApplied &&
+      input.marketingOptIn !== undefined
+    ) {
+      ctx.pendingMarketingOptIn = Boolean(input.marketingOptIn);
+    }
   }
 
   /**
