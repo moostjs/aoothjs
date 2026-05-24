@@ -1077,7 +1077,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
    */
   @Step("inviteEnrollAddress")
   @Public()
-  async inviteEnrollAddress(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
+  inviteEnrollAddress(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
     return this.enrollAddressPhase(this.buildInviteEnrollDeps(ctx));
   }
 
@@ -1088,7 +1088,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
    */
   @Step("inviteEnrollConfirm")
   @Public()
-  async inviteEnrollConfirm(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
+  inviteEnrollConfirm(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
     return this.enrollConfirmPhase(this.buildInviteEnrollDeps(ctx));
   }
 
@@ -1139,7 +1139,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
    */
   @Step("inviteExtraStep")
   @Public()
-  async inviteExtraStep(): Promise<unknown> {
+  inviteExtraStep(): unknown {
     return undefined;
   }
 

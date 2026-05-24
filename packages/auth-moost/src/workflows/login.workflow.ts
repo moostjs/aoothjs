@@ -1215,7 +1215,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
    */
   @Step("loginEnrollAddress")
   @Public()
-  async loginEnrollAddress(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
+  loginEnrollAddress(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
     return this.enrollAddressPhase(this.buildLoginEnrollDeps(ctx));
   }
 
@@ -1226,7 +1226,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
    */
   @Step("loginEnrollConfirm")
   @Public()
-  async loginEnrollConfirm(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
+  loginEnrollConfirm(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
     return this.enrollConfirmPhase(this.buildLoginEnrollDeps(ctx));
   }
 
