@@ -19,9 +19,13 @@ describe("ConsentStore — no-op defaults (Phase 1 plumbing only)", () => {
   });
 
   it("save resolves without throwing on no-op default", async () => {
+    // WHY: the new `ConsentEvent` shape is `{ id, accepted, version?, at }`.
+    // A regression that mistyped any field (kind/optIn left over from
+    // pre-Phase-5) would surface as a TS error here — load-bearing
+    // structural pin alongside the runtime no-op assertion.
     const store = new ConsentStore();
     await expect(
-      store.save("alice", [{ kind: "terms", version: "v1", at: Date.now() }]),
+      store.save("alice", [{ id: "terms", accepted: true, version: "v1", at: Date.now() }]),
     ).resolves.toBeUndefined();
   });
 
@@ -29,7 +33,8 @@ describe("ConsentStore — no-op defaults (Phase 1 plumbing only)", () => {
     const store = new ConsentStore();
     const result = await store.read("alice");
     expect(result).toEqual([]);
-    const filtered = await store.read("alice", { name: "terms" });
+    // Filter param is `{ id?: string }` post-Phase-5 (was `{ name?: string }`).
+    const filtered = await store.read("alice", { id: "terms" });
     expect(filtered).toEqual([]);
   });
 

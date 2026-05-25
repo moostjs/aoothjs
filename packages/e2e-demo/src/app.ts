@@ -17,6 +17,7 @@ import {
   AuthController,
   authGuardInterceptor,
   AuthOpts,
+  type ConsentDescriptor,
   type ConsentEvent,
   ConsentStore,
   createAuthEmailOutlet,
@@ -298,15 +299,106 @@ export interface AppHandle {
 }
 
 /**
+ * Per-variant `pendingConsents` map for the playwright SPA — read by
+ * `DemoConsentStore.getPendingConsents` via the `x-wf-variant` header. Keeps
+ * the consent-universe choice colocated with the rest of the per-variant
+ * config (mirrors how `policy.acceptance` rides on `LOGIN_VARIANTS`). Used
+ * by WF-CONSENT-ARRAY-01.
+ */
+const VARIANT_PENDING_CONSENTS: Record<string, ConsentDescriptor[]> = {
+  "consent-array": [
+    {
+      id: "terms",
+      text: "I accept the Terms of Service",
+      required: "Terms are mandatory",
+      version: "v2",
+    },
+    { id: "marketing", text: "Send me product updates" },
+  ],
+  // Phase-5 reshape of the prior `recovery-terms-bump` / `invite-terms`
+  // variants — the static `acceptance.termsVersion` driver retired; the
+  // customer ConsentStore now declares the pending universe per variant.
+  // Mirrors the prior test scenarios: a single required terms descriptor
+  // captured on `SetPasswordForm` during recovery / invite accept-tail.
+  "recovery-terms-bump": [
+    {
+      id: "terms",
+      text: "I accept the updated Terms",
+      required: "Terms are mandatory",
+      version: "v2",
+    },
+  ],
+  "invite-terms": [
+    {
+      id: "terms",
+      text: "I accept the Terms",
+      required: "Terms are mandatory",
+      version: "v1",
+    },
+  ],
+  // The prior `acceptance` login variant relied on `acceptance.termsVersion`
+  // driving the standalone bump-prompt; Phase 5 moves that driver to the
+  // customer ConsentStore. Keep the variant exercising the same scenario
+  // (required-terms bump + optional marketing) so WF-LOGIN-024/025/HACK-01
+  // still pin the standalone-bump path under the new shape.
+  acceptance: [
+    {
+      id: "terms",
+      text: "I accept the Terms and Conditions",
+      required: "You must accept the terms",
+      version: "v1",
+    },
+    { id: "marketing", text: "I would like to receive marketing emails" },
+  ],
+  // Same shape for the `terms-bump` variant — drives the WF-LOGIN-BUMP-01
+  // standalone-bump scenario with the bumped `v3` version. Terms-only here
+  // (matches the pre-Phase-5 `consentMarketing: false` variant intent).
+  "terms-bump": [
+    {
+      id: "terms",
+      text: "I accept the updated Terms",
+      required: "You must accept the terms",
+      version: "v3",
+    },
+  ],
+  // The `full` variant exercises every optional step in one login (WF-LOGIN-032).
+  // Required terms + optional marketing — mirrors the prior
+  // `acceptance: { termsVersion: 'v1', consentMarketing: true }` intent now
+  // that those static fields don't drive consent anymore.
+  full: [
+    {
+      id: "terms",
+      text: "I accept the Terms",
+      required: "You must accept the terms",
+      version: "v1",
+    },
+    { id: "marketing", text: "I would like to receive marketing emails" },
+  ],
+};
+
+/**
  * Demo `ConsentStore` — appends every persisted batch into the
  * globalThis-anchored buffer the `/__test/consent-log/:username` endpoint
  * reads from. One writer shared across all three Demo workflows.
+ *
+ * `getPendingConsents` keys off the per-request `x-wf-variant` header so
+ * playwright specs can opt a single workflow run into a non-empty consent
+ * universe without rebooting the dev server.
  *
  * `recordOtpChannelConsent` writes to a sibling buffer
  * (`sharedOtpConsentLogBuffer`) read by `/__test/otp-consent-log/:username`.
  */
 @Injectable() // SINGLETON
 class DemoConsentStore extends ConsentStore {
+  override async getPendingConsents(
+    _username: string | undefined,
+    _ctx: { workflow: string; channel?: "email" | "sms" },
+  ): Promise<ConsentDescriptor[]> {
+    const variant = readVariantHeader();
+    if (!variant) return [];
+    const pending = VARIANT_PENDING_CONSENTS[variant];
+    return pending ? [...pending] : [];
+  }
   override async save(username: string, events: ConsentEvent[]): Promise<void> {
     const prior = sharedConsentLogBuffer.get(username) ?? [];
     sharedConsentLogBuffer.set(username, [...prior, ...events]);

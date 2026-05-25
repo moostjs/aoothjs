@@ -286,7 +286,7 @@ describe("WF-FORM — workflow form behavior (covered via recovery + handover)",
     const mismatch = await app.triggerWf("public", {
       wfid: "auth/recovery/flow",
       wfs: resumedBody.wfs,
-      input: { newPassword: STRONG_PASSWORD, confirmPassword: "Different1Pw!" },
+      input: { newPassword: STRONG_PASSWORD, confirmPassword: "Different1Pw!", consents: [] },
     });
     const mismatchBody = await readWfPause(mismatch);
     expect(wfErrors(mismatchBody)).toMatchObject({

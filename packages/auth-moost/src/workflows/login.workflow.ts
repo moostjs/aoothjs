@@ -88,7 +88,6 @@ import { useAuth } from "../auth.composables";
 import { Public } from "../auth.decorator";
 import {
   AuthWorkflowBase,
-  type ConsentEvent,
   type InlineConsentInput,
   type MfaEnrollDeps,
   stripReservedUserKeys,
@@ -266,21 +265,21 @@ export interface LoginWfCtx {
   pendingConsents?: ConsentDescriptor[];
 
   // Terms / profile:
-  termsAcceptedVersion?: string;
   /**
-   * Wall-clock ms at the moment `processInlineConsent` accepted the terms
-   * gate (NOT the moment the batched `persist-consents` step ran). Captured
-   * here so the consent event emitted to consumers reflects user-action
-   * time, not write-time — surviving a paused workflow's resume gap.
+   * Subset of `pendingConsents[].id` the user ticked on the carrier form —
+   * set by `processInlineConsent` after silent-dropping unknown ids.
+   * Consumed by `persist-consents` to compute `accepted: boolean` per
+   * pending descriptor.
    */
-  termsAcceptedAt?: number;
+  acceptedConsentIds?: string[];
   /**
-   * Wall-clock ms at the moment `processInlineConsent` staged the marketing
-   * opt-in/out. Same rationale as `termsAcceptedAt` — preserves user-action
-   * time across the gap between carrier-form submit and the batched
-   * `persist-consents` write.
+   * Wall-clock ms at the moment `processInlineConsent` resolved the
+   * `consents` carrier-form submission (NOT at write-time — captured BEFORE
+   * the batched `persist-consents` step so a paused-workflow resume gap
+   * doesn't drift the timestamp). Also the schema-gate for the
+   * `persist-consents` step — set ⇒ a carrier form has collected consents.
    */
-  marketingDecidedAt?: number;
+  consentsDecidedAt?: number;
   profileMissingFields?: string[];
 
   // Tenant / persona:
@@ -295,26 +294,15 @@ export interface LoginWfCtx {
 
   // Internal flags (resume-from-pause idempotency):
   passwordChanged?: boolean;
-  termsAcceptedDone?: boolean;
   profileApplied?: boolean;
   /**
    * Set true by `persist-consents` after the batched `consentStore.save`
-   * call fires (or after the step short-circuits with no events to persist).
-   * Gates `processInlineConsent` from staging further marketing opt-ins, and
-   * the `persist-consents` schema condition from re-firing. Replaces the
-   * pre-refactor singular `consentApplied` (which gated only marketing —
-   * the new flag is batch-write-completion).
+   * call fires (or after the step short-circuits with no pending consents).
+   * Gates `processInlineConsent` from re-staging on subsequent carrier
+   * forms in the same workflow run, and the `persist-consents` schema
+   * condition from re-firing.
    */
   consentsPersisted?: boolean;
-  /**
-   * Marketing opt-in value captured inline (via `WithInlineConsentForm` on a
-   * carrier form's payload). Stashed here by `processInlineConsent` so the
-   * later `persist-consents` step can persist it once `ctx.username` is set —
-   * the inline capture commonly happens BEFORE the credentials step finishes
-   * (e.g. `AskEmailForm`), where the user-store write would have nothing
-   * to bind to.
-   */
-  pendingMarketingOptIn?: boolean;
   tokensIssued?: boolean;
   redirectUrl?: string;
   /**
@@ -973,14 +961,16 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // Abort gate — create-password-form 'logout' alt-action sets ctx.aborted = true.
     { break: (ctx) => !!ctx.aborted },
 
-    // Phase 6 acceptance / onboarding — terms acceptance + marketing consent
-    // are now captured inline via `WithInlineConsentForm` on whichever carrier
+    // Phase 6 acceptance / onboarding — dynamic consents (customer-defined
+    // via `ConsentStore.getPendingConsents`, transported on
+    // `ctx.pendingConsents`) are captured via the inherited `consents:
+    // string[]` field from `WithInlineConsentForm` on whichever carrier
     // onboarding form fires first (AskEmailForm / AskPhoneForm /
-    // SetPasswordForm / ProfileCompleteForm). When no such carrier form runs
-    // and `acceptance.termsVersion` is set (returning user, terms-bump-only
-    // login), the standalone `terms-bump-prompt` step fires to collect terms
-    // re-acceptance. `persist-consents` then fans every collected consent
-    // event (terms + marketing) out via `ConsentStore.save` in one batched
+    // SetPasswordForm / ProfileCompleteForm). When no such carrier form
+    // runs but pending consents exist, the standalone `terms-bump-prompt`
+    // step fires to render the `AsConsentArray` on `TermsBumpForm`.
+    // `persist-consents` then fans one event per pending descriptor
+    // (accepted=true|false) out via `ConsentStore.save` in one batched
     // call once `ctx.username` is bound.
     {
       id: "profile-complete",
@@ -989,25 +979,26 @@ export class LoginWorkflow extends AuthWorkflowBase {
         !ctx.profileApplied &&
         (ctx.profileMissingFields?.length ?? 0) > 0,
     },
-    // Returning user with a stale terms version + no onboarding carrier form
-    // ran to capture acceptance inline. Standalone prompt to re-accept the
-    // current terms. Skips when an earlier carrier form already collected.
-    // `!ctx.aborted` is handled by the upstream `{ break }` gate.
+    // Returning user with pending consents but no onboarding carrier form
+    // ran to collect them. Standalone prompt rendering the dynamic
+    // `AsConsentArray` on `TermsBumpForm`. Skips when an earlier carrier
+    // form already collected (consentsDecidedAt set) or when there are no
+    // pending consents. `!ctx.aborted` is handled by the upstream
+    // `{ break }` gate.
     {
       id: "terms-bump-prompt",
-      condition: (ctx) => !!ctx.acceptance?.termsVersion && !ctx.termsAcceptedDone,
+      condition: (ctx) =>
+        (ctx.pendingConsents?.length ?? 0) > 0 && !ctx.consentsDecidedAt && !ctx.consentsPersisted,
     },
     {
       // Batched consent persistence. Fires once per workflow run after any
-      // consent capture (terms acceptance via `processInlineConsent` or the
-      // `terms-bump-prompt` step; marketing opt-in stashed by
-      // `processInlineConsent`). Condition AND-s `!consentsPersisted` to
-      // guarantee single fire, and OR-s the two capture sources so a
-      // terms-only or marketing-only run still hits the step.
+      // carrier form collected `consents` via `processInlineConsent` (which
+      // sets `ctx.consentsDecidedAt`). The `consentsDecidedAt` timestamp is
+      // the single capture-source gate (replaces the prior terms-vs-marketing
+      // OR-condition); `!ctx.consentsPersisted` AND-s for single-fire
+      // idempotency.
       id: "persist-consents",
-      condition: (ctx) =>
-        !ctx.consentsPersisted &&
-        (ctx.termsAcceptedDone === true || ctx.pendingMarketingOptIn !== undefined),
+      condition: (ctx) => !!ctx.consentsDecidedAt && !ctx.consentsPersisted,
     },
 
     // Phase 7 tenant / persona selection:
@@ -1840,39 +1831,13 @@ export class LoginWorkflow extends AuthWorkflowBase {
   }
 
   /**
-   * Batched consent persistence — fans every consent event captured during
-   * this workflow run (terms acceptance + marketing opt-in/out) out to the
-   * `ConsentStore.save(username, events)` DI provider in one call.
-   * Idempotent via `ctx.consentsPersisted`; short-circuits with no events
-   * when neither gate fired but the schema still routed here (defensive —
-   * the schema condition normally filters this case).
+   * Batched consent persistence — delegates to
+   * `AuthWorkflowBase.runPersistConsents`. See that helper for the full
+   * audit-friendly-default / idempotency / silent-drop contract.
    */
   @Step("persist-consents")
-  async persistConsentsStep(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
-    this.requireUsername(ctx);
-    if (ctx.consentsPersisted) return undefined;
-    const events: ConsentEvent[] = [];
-    if (ctx.termsAcceptedDone && ctx.termsAcceptedVersion && ctx.termsAcceptedAt) {
-      events.push({
-        kind: "terms",
-        version: ctx.termsAcceptedVersion,
-        at: ctx.termsAcceptedAt,
-      });
-    }
-    if (ctx.pendingMarketingOptIn !== undefined && ctx.marketingDecidedAt) {
-      events.push({
-        kind: "marketing",
-        optIn: ctx.pendingMarketingOptIn,
-        at: ctx.marketingDecidedAt,
-      });
-    }
-    if (events.length === 0) {
-      ctx.consentsPersisted = true;
-      return undefined;
-    }
-    await this.consentStore.save(ctx.username, events);
-    ctx.consentsPersisted = true;
-    return undefined;
+  persistConsentsStep(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
+    return this.runPersistConsents(ctx, this.consentStore);
   }
 
   // ── Phase 7: tenant / persona ─────────────────────────────────────────

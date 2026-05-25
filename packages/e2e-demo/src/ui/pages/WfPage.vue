@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import { AsWfFinish, AsWfForm, type WfFinished } from "@atscript/vue-wf";
 import { createDefaultTypes } from "@atscript/vue-form";
+import { AsConsentArray } from "@atscript/vue-aooth";
 import { useHydrated } from "../composables/useHydrated";
 import { WORKFLOWS } from "../workflows";
 
@@ -36,6 +37,11 @@ const fetchOptions = computed(() =>
 
 const hydrated = useHydrated();
 const types = createDefaultTypes();
+// Custom carrier-form components registered via `<AsWfForm :components>` →
+// `<AsForm :components>`. `AsConsentArray` (from `@atscript/vue-aooth`) is
+// the renderer for the `WithInlineConsentForm.consents: string[]` field —
+// it self-hides when `ctx.pendingConsents` is empty.
+const components = { AsConsentArray };
 
 const finished = ref<unknown>(null);
 const error = ref<string | null>(null);
@@ -162,6 +168,7 @@ async function navigate(url: string): Promise<void> {
           path="/auth/trigger"
           :name="wfId"
           :types="types"
+          :components="components"
           :navigate="navigate"
           :fetch-options="fetchOptions"
           :initial-token="initialToken"

@@ -6,6 +6,7 @@ import { type AuthUserTable, UsersStoreAtscriptDb } from "@aooth/user/atscript-d
 import type { AppDb } from "./db";
 import type { AppEnv } from "./env";
 import type { DemoUser } from "./models/user.as";
+import { readVariantHeader } from "./variants-server";
 
 /**
  * Default `roles` (inherited array) and mirror `username` → `email` so the
@@ -129,7 +130,18 @@ export function createAooth({ tables, env }: AppAuthOptions): AppAuth {
     // doesn't surface userId for `recovery.magicLink` either). See
     // WF-INVITE-010 in `test-e2e/invite.spec.ts`.
     const uidParam = ctx?.userId ? `&uid=${encodeURIComponent(ctx.userId)}` : "";
-    return `${env.FRONTEND_URL}/${segment}?wfs=${token}${uidParam}`;
+    // Propagate the `x-wf-variant` request header (admin leg of an invite,
+    // or the user's recovery trigger) onto the magic-link URL so the
+    // invitee / recoverer's resume request lands on the SAME variant the
+    // originator selected. The SPA's WfPage reads `?variant=…` and forwards
+    // it as the `x-wf-variant` header on every resume request, which is
+    // what DemoConsentStore.getPendingConsents keys off. Without this,
+    // `prepare-consents` on the resume leg sees no variant header and
+    // returns an empty pending-consents list — even when the originator's
+    // variant declared a non-empty consent universe.
+    const variant = readVariantHeader();
+    const variantParam = variant ? `&variant=${encodeURIComponent(variant)}` : "";
+    return `${env.FRONTEND_URL}/${segment}?wfs=${token}${uidParam}${variantParam}`;
   };
 
   return {

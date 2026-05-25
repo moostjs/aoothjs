@@ -42,7 +42,7 @@ describe("InviteWorkflow", () => {
 
     const r4 = await app.trigger({
       wfs: wfs3,
-      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
+      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123", consents: [] },
     });
     const data4 = r4.body?.data as Record<string, unknown> | undefined;
     expect(data4?.userId).toBe("bob@test.com");
@@ -80,7 +80,7 @@ describe("InviteWorkflow", () => {
 
     const r4 = await app.trigger({
       wfs: wfs3,
-      input: { newPassword: "NewPassword123", confirmPassword: "Different1" },
+      input: { newPassword: "NewPassword123", confirmPassword: "Different1", consents: [] },
     });
     const errors = r4.body?.errors as Record<string, string> | undefined;
     expect(errors).toMatchObject({ confirmPassword: "Passwords do not match" });
@@ -142,7 +142,7 @@ describe("InviteWorkflow", () => {
     const r3 = await app.resumeViaQuery(token);
     await app.trigger({
       wfs: r3.body?.wfs as string,
-      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
+      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123", consents: [] },
     });
 
     // Hook ran with the parsed input shape we promised.
@@ -208,7 +208,7 @@ describe("InviteWorkflow", () => {
     const r3 = await app.resumeViaQuery(token);
     const r4 = await app.trigger({
       wfs: r3.body?.wfs as string,
-      input: { newPassword: "RealPassword123", confirmPassword: "RealPassword123" },
+      input: { newPassword: "RealPassword123", confirmPassword: "RealPassword123", consents: [] },
     });
 
     // Profile pause — submit declared legitimate fields PLUS the attacker
@@ -284,7 +284,7 @@ describe("InviteWorkflow", () => {
     const r3 = await app.resumeViaQuery(token);
     const r4 = await app.trigger({
       wfs: r3.body?.wfs as string,
-      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
+      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123", consents: [] },
     });
     expect((r4.body?.data as Record<string, unknown>)?.userId).toBe("henry@test.com");
     const user = await app.users.getUser("henry@test.com");
@@ -303,7 +303,7 @@ async function driveToPostPassword(app: Awaited<ReturnType<typeof prepareWfApp>>
   const r3 = await app.resumeViaQuery(token);
   return app.trigger({
     wfs: r3.body?.wfs as string,
-    input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
+    input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123", consents: [] },
   });
 }
 

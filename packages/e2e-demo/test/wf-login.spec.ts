@@ -108,7 +108,7 @@ describe("WF-LOGIN — auth.login workflow", () => {
     const setResp = await app.triggerWf("public", {
       wfid: "auth/login/flow",
       wfs: credBody.wfs,
-      input: { newPassword: "FreshPass99!", confirmPassword: "FreshPass99!" },
+      input: { newPassword: "FreshPass99!", confirmPassword: "FreshPass99!", consents: [] },
     });
     expectOk(setResp);
     const issued = await expectFinished<{ userId?: string; accessToken?: string }>(setResp);

@@ -4,17 +4,32 @@ import type { ConsentEvent } from "./workflows/auth-workflow.base";
 
 /**
  * Descriptor for a single consent prompt. Customers' ConsentStore.getPendingConsents
- * returns an array of these — the workflow transports them via @wf.context.pass
- * to the SPA carrier form, which renders one checkbox per descriptor.
+ * returns an array of these — the workflow transports them via `@wf.context.pass`
+ * to the SPA carrier form, which renders one row per descriptor through the
+ * `AsConsentArray` component (`@atscript/vue-aooth`). The user-submitted
+ * `consents: string[]` field on the carrier form posts back the SUBSET of
+ * `id`s the user accepted; the server-side `processInlineConsent` helper
+ * silently drops any ids that don't match a current descriptor (audit-grade
+ * "what user saw is what server records" invariant — preventing an attacker
+ * from forging audit rows for consents the user was never shown).
  */
 export interface ConsentDescriptor {
-  /** Logical kind, customer-defined ('terms', 'marketing', 'jurisdiction-gdpr', ...). */
-  name: string;
+  /** Stable identifier — committed to the user-submitted `consents: string[]`
+   *  array and stamped on the persisted `ConsentEvent` (customer-defined:
+   *  `'terms'`, `'marketing'`, `'jurisdiction-gdpr'`, …). */
+  id: string;
   /** User-facing label / disclosure text. Markdown links are allowed; the
    *  SPA component will sanitize-render. */
   text: string;
-  /** When true, server throws form-error if the response lacks accepted:true. */
-  required: boolean;
+  /**
+   * When present and non-empty, the consent is MANDATORY and this string IS
+   * the per-row error message surfaced by `AsConsentArray` (and the
+   * server-side `processInlineConsent` form-level error) when the user
+   * submits without ticking it. Absent or empty string ⇒ optional consent —
+   * a `ConsentEvent` with `accepted: false` is still persisted so the audit
+   * record proves the user was asked.
+   */
+  required?: string;
   /** Stamped onto persisted ConsentEvent for versioned policies (terms, ...). */
   version?: string;
 }
@@ -50,11 +65,11 @@ export class ConsentStore {
   }
 
   /**
-   * Read consent history for a user, optionally filtered by event name.
+   * Read consent history for a user, optionally filtered by event id.
    * Used by getPendingConsents impls that want to compute "has the user
    * already accepted version vN" without maintaining a separate index.
    */
-  async read(_username: string, _filter?: { name?: string }): Promise<ConsentEvent[]> {
+  async read(_username: string, _filter?: { id?: string }): Promise<ConsentEvent[]> {
     return [];
   }
 

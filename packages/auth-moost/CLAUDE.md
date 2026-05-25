@@ -54,8 +54,8 @@ no-op defaults — customers extend the class to wire their own behaviour:
 - `getPendingConsents(username, { workflow, channel? })` — descriptors for
   consents the user still needs to accept on the next prompt boundary.
 - `save(username, events)` — persist a batch of captured `ConsentEvent`s.
-- `read(username, { name? })` — read consent history, optionally filtered
-  by event name.
+- `read(username, { id? })` — read consent history, optionally filtered
+  by descriptor id.
 - `recordOtpChannelConsent(username, channel, target, disclosure)` — fired
   by login's `verify/:channel` step AFTER pincode validation, pinning the
   exact disclosure copy the user saw.
@@ -71,10 +71,17 @@ class MyConsentStore extends ConsentStore {
   }
   override async getPendingConsents(username: string | undefined, ctx: { workflow: string }) {
     if (!username) return [];
-    const accepted = await db.consents.find({ username, name: "terms" });
+    const accepted = await db.consents.find({ username, id: "terms" });
     return accepted.some((e) => e.version === "v2")
       ? []
-      : [{ name: "terms", text: "...", required: true, version: "v2" }];
+      : [
+          {
+            id: "terms",
+            text: "I accept the updated [Terms](/terms) and [Privacy](/privacy)",
+            required: "You must accept the updated terms to continue",
+            version: "v2",
+          },
+        ];
   }
 }
 

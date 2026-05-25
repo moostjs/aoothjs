@@ -60,7 +60,7 @@ describe("RecoveryWorkflow", () => {
     // Step 4: submit new password
     const r4 = await app.trigger({
       wfs: wfs3,
-      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
+      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123", consents: [] },
     });
     const env4 = expectFinished<{ userId: string; accessToken: string }>(r4);
     expect(env4.data?.userId).toBe("alice@test.com");
@@ -100,7 +100,7 @@ describe("RecoveryWorkflow", () => {
 
     const r4 = await app.trigger({
       wfs: wfs3,
-      input: { newPassword: "NewPassword123", confirmPassword: "Different1" },
+      input: { newPassword: "NewPassword123", confirmPassword: "Different1", consents: [] },
     });
     const errors = r4.body?.errors as Record<string, string> | undefined;
     expect(errors).toMatchObject({ confirmPassword: "Passwords do not match" });

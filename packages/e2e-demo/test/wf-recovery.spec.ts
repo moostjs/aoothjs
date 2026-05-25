@@ -37,7 +37,7 @@ describe("WF-RECOVERY — auth.recovery happy path + enumeration + single-use", 
     const finalRes = await app.triggerWf("public", {
       wfid: "auth/recovery/flow",
       wfs: resumedBody.wfs,
-      input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
+      input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD, consents: [] },
     });
     const finalBody = await expectFinished<{ userId?: string; accessToken?: string }>(finalRes);
     expect(finalBody.data?.userId).toBe(bob.username);
@@ -97,7 +97,7 @@ describe("WF-RECOVERY — single-use + session-survival", () => {
     const finalize = await app.triggerWf("public", {
       wfid: "auth/recovery/flow",
       wfs: resumedBody.wfs,
-      input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
+      input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD, consents: [] },
     });
     const finalized = await expectFinished<{ userId?: string }>(finalize);
     expect(finalized.data?.userId).toBe(carol.username);
@@ -115,7 +115,7 @@ describe("WF-RECOVERY — single-use + session-survival", () => {
     const finalize = await app.triggerWf("public", {
       wfid: "auth/recovery/flow",
       wfs: resumedBody.wfs,
-      input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
+      input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD, consents: [] },
     });
     expectOk(finalize);
 
@@ -143,7 +143,7 @@ describe("WF-RECOVERY — postReset options", () => {
       const finalize = await app.triggerWf("public", {
         wfid: "auth/recovery/flow",
         wfs: resumedBody.wfs,
-        input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
+        input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD, consents: [] },
       });
       expectOk(finalize);
 
@@ -168,7 +168,7 @@ describe("WF-RECOVERY — postReset options", () => {
       const finalize = await app.triggerWf("public", {
         wfid: "auth/recovery/flow",
         wfs: resumedBody.wfs,
-        input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
+        input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD, consents: [] },
       });
       expectOk(finalize);
       const body = await expectFinished<{ accessToken?: unknown; refreshToken?: unknown }>(

@@ -19,6 +19,8 @@ import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { HttpError } from "@moostjs/event-http";
 import { useRequest } from "@wooksjs/event-http";
 
+import type { ConsentStore } from "../consent.store";
+
 /**
  * Method names for the MFA enrollment helper. Re-exported from
  * `login.workflow.options` as `MfaTransport` (kept as the public alias) so
@@ -154,32 +156,66 @@ interface PinCtx {
 
 /**
  * Structural ctx shape consumed by `processInlineConsent`. Mirrors the
- * relevant subset of `LoginWfCtx` so the helper stays workflow-agnostic —
- * `InviteWfCtx` / `RecoveryWfCtx` can pass through compatibly (or, when they
- * don't carry `acceptance`, the gates skip every check).
+ * relevant subset of the workflow ctx types so the helper stays
+ * workflow-agnostic. After Phase 5 the helper consumes only the dynamic
+ * `pendingConsents` descriptor array (populated by `prepare-consents` from
+ * `ConsentStore.getPendingConsents()`) and the per-run booking fields it
+ * writes itself — the prior static `acceptance`/`termsVersion` branches are
+ * retired. The workflow ctx types (`LoginWfCtx` / `InviteWfCtx` /
+ * `RecoveryWfCtx`) keep their full `acceptance` policy field until Phase 6
+ * retires it; this slim shape is consumed ONLY here.
  */
 export interface InlineConsentCtx {
-  acceptance?: {
-    termsVersion?: string;
-    consentMarketing: boolean;
-  };
-  termsAcceptedVersion?: string;
-  termsAcceptedDone?: boolean;
-  termsAcceptedAt?: number;
-  marketingDecidedAt?: number;
+  /**
+   * Descriptors the user still needs to be prompted for — set once by
+   * `prepare-consents` after username-bind. Empty / unset ⇒ no consents to
+   * collect (helper short-circuits).
+   */
+  pendingConsents?: ConsentDescriptorLike[];
+  /**
+   * Subset of descriptor ids the user ticked on the carrier form. Set by
+   * `processInlineConsent` after silent-dropping unknown ids — `pendingConsents`
+   * is the server's whitelist, NOT what the client posts.
+   */
+  acceptedConsentIds?: string[];
+  /**
+   * Wall-clock ms at the moment `processInlineConsent` resolved the
+   * `consents` array. Captured here so the persisted `ConsentEvent.at`
+   * reflects user-action time, not write-time — surviving a paused
+   * workflow's resume gap.
+   */
+  consentsDecidedAt?: number;
+  /**
+   * Set true by `persist-consents` after the batched `consentStore.save`
+   * call fires (or after the step short-circuits with no pending consents).
+   * Gates the helper from re-staging on a subsequent carrier-form submission.
+   */
   consentsPersisted?: boolean;
-  pendingMarketingOptIn?: boolean;
 }
 
 /**
- * Subset of the input payload that `processInlineConsent` reads. The
- * accepted terms VERSION is NOT collected from the client — the server
- * reads its own `ctx.acceptance.termsVersion` instead. See the helper's
- * security comment for rationale.
+ * Structural alias of `ConsentDescriptor` — kept inline so this module
+ * doesn't import from `../consent.store.ts` (which would create a cycle:
+ * consent.store.ts already imports `ConsentEvent` from here).
+ */
+interface ConsentDescriptorLike {
+  id: string;
+  text: string;
+  required?: string;
+  version?: string;
+}
+
+/**
+ * Subset of the carrier-form payload that `processInlineConsent` reads.
+ * Phase 5 replaces the pre-existing static `{ acceptedTerms?, marketingOptIn? }`
+ * pair with a single dynamic `consents: string[]` — the SUBSET of descriptor
+ * ids the user ticked in the `AsConsentArray` (`@atscript/vue-aooth`)
+ * component. The server reads `pendingConsents` from its own ctx (NOT from
+ * this input) to decide which ids are valid; unknown ids are silently
+ * dropped (audit-grade defense — see helper rationale).
  */
 export interface InlineConsentInput {
-  acceptedTerms?: boolean;
-  marketingOptIn?: boolean;
+  consents?: string[];
 }
 
 /**
@@ -187,12 +223,26 @@ export interface InlineConsentInput {
  * provider. Storage shape is intentionally the consumer's call — Mongo users
  * typically push the events onto an embedded array, SQL users insert into an
  * audit table, event-bus users publish to a topic. The library batches all
- * collected events from a single workflow run into one call.
+ * collected events from a single workflow run into one call: ONE event per
+ * pending descriptor (audit-friendly default — declined-optional consents
+ * are persisted too, so customers can prove the user was asked; customers
+ * who want only accepted events filter in their `save()` override). The
+ * `accepted` boolean is explicit per row — `true` when the user ticked the
+ * matching descriptor, `false` when an optional descriptor went un-ticked.
  */
 export interface ConsentEvent {
-  kind: "terms" | "marketing" | (string & {});
+  /** Identifier from the matching `ConsentDescriptor.id`. */
+  id: string;
+  /** Whether the user ticked this descriptor (`false` for un-ticked optionals). */
+  accepted: boolean;
+  /** Stamped from the matching `ConsentDescriptor.version` (when set). */
   version?: string;
-  optIn?: boolean;
+  /**
+   * Wall-clock ms at the moment `processInlineConsent` resolved the user's
+   * carrier-form submission (NOT at write-time — captured BEFORE the batched
+   * `consentStore.save` call so a paused-workflow resume gap doesn't drift
+   * the timestamp).
+   */
   at: number;
 }
 
@@ -288,55 +338,106 @@ export class AuthWorkflowBase {
   /**
    * Validate + stash inline-consent fields submitted on a carrier form.
    *
-   * SECURITY GATE: only processes the consent fields when the matching
-   * `acceptance` policy is active AND the value hasn't already been captured
-   * for this workflow run. If `ctx.termsAcceptedDone === true` OR
-   * `ctx.acceptance?.termsVersion` is unset, the server SILENTLY IGNORES
-   * `input.acceptedTerms` even when the payload contains it. Same gate for
-   * `marketingOptIn` — once `ctx.consentsPersisted === true`, subsequent
-   * payloads cannot flip the value. This is the load-bearing defense
-   * against an attacker submitting falsified hidden-field values to withdraw
-   * consent or flip a marketing opt-in.
+   * SECURITY (silent-drop): the server reads its OWN `ctx.pendingConsents`
+   * (set once by `prepare-consents` from `ConsentStore.getPendingConsents()`)
+   * as the authoritative whitelist of valid descriptor ids. Any id in the
+   * user-submitted `input.consents` array that does NOT match a current
+   * pending descriptor is SILENTLY DROPPED — no error, no log, no signal
+   * back to the client. This preserves the audit-grade
+   * "what user saw is what server records" invariant: an attacker
+   * submitting `consents: ['terms', 'gdpr-forged-id']` against a descriptor
+   * list of only `['terms']` cannot forge an audit record for the
+   * never-displayed `'gdpr-forged-id'` consent. Surfacing the drop would
+   * leak the consent universe (probing surface), so the defense is silent.
    *
-   * The accepted-terms VERSION is NOT collected from the client. The server
-   * is the authoritative source of truth — when `acceptedTerms: true`
-   * arrives and the gate is open, `ctx.termsAcceptedVersion` is set
-   * directly from `ctx.acceptance.termsVersion`. Rationale:
-   *   (a) No client round-trip means no surface for a tampered version
-   *       (an attacker cannot record acceptance of a stale or fabricated
-   *       version — the server writes its own current version regardless).
-   *   (b) `@atscript/vue-form` ships no `hidden` component renderer, so a
-   *       `@ui.form.type 'hidden'` field would break every SPA-rendered
-   *       carrier form extending `WithInlineConsentForm`.
+   * SECURITY (mandatory-by-message): each descriptor's `required` field is
+   * the load-bearing mandatory flag. A non-empty string means the consent
+   * is MANDATORY and that string IS the per-row error message — the
+   * `AsConsentArray` component surfaces it inline per descriptor; the
+   * server throws the SAME copy as a form-level error on the bound
+   * `consents` field when the first required descriptor is missing from
+   * the submitted set. Absent / empty `required` ⇒ optional consent — the
+   * un-ticked descriptor is still persisted as `{accepted: false}` (audit
+   * default — proves the user was asked).
    *
-   * Terms are validated + stashed inline (workflow proceeds only when the
-   * checkbox is ticked). Marketing is stashed only — the async user-store
-   * write defers to the `persist-consents` step which fires once
-   * `ctx.username` is set.
+   * Idempotency: once `ctx.consentsPersisted` is true, the helper is a
+   * no-op. Same for `ctx.pendingConsents` being empty / unset — no
+   * pending = nothing to validate (the carrier-form's `AsConsentArray`
+   * also self-hides on empty `pendingConsents`).
    */
   protected processInlineConsent(
     ctx: InlineConsentCtx,
     input: InlineConsentInput,
     wf: WfRequireInputOnly,
   ): void {
-    if (ctx.acceptance?.termsVersion && !ctx.termsAcceptedDone) {
-      if (!input.acceptedTerms) {
-        throw wf.requireInput({ errors: { acceptedTerms: "You must accept the terms" } });
+    if (ctx.consentsPersisted) return;
+    // Already-collected guard: a later carrier form on the same workflow
+    // run MUST NOT re-validate consents (the user already ticked them on
+    // the FIRST carrier form). Without this, ProfileCompleteForm's
+    // inherited `consents` field would re-run required-checks against the
+    // empty form payload and throw, breaking multi-carrier-form flows.
+    if (ctx.consentsDecidedAt !== undefined) return;
+    const pending = ctx.pendingConsents ?? [];
+    if (pending.length === 0) return;
+    // Server-side whitelist of valid ids. Any client-submitted id outside
+    // this set is silently dropped (see SECURITY block above).
+    const validIds = new Set(pending.map((p) => p.id));
+    const submitted = new Set<string>();
+    for (const id of input.consents ?? []) {
+      if (validIds.has(id)) submitted.add(id);
+    }
+    // First missing-required descriptor wins the form-level error. The
+    // string IS the error copy — customer-defined per descriptor (the
+    // `AsConsentArray` UI component surfaces the same string per row via
+    // `errorFor`; the server form-level error here is belt-and-brace for
+    // hand-rolled HTTP clients that bypass the SPA).
+    for (const p of pending) {
+      if (p.required && !submitted.has(p.id)) {
+        throw wf.requireInput({ errors: { consents: p.required } });
       }
-      // Server is authoritative — record OUR current version, not anything
-      // submitted by the client.
-      ctx.termsAcceptedVersion = ctx.acceptance.termsVersion;
-      ctx.termsAcceptedDone = true;
-      ctx.termsAcceptedAt = Date.now();
     }
-    if (
-      ctx.acceptance?.consentMarketing &&
-      !ctx.consentsPersisted &&
-      input.marketingOptIn !== undefined
-    ) {
-      ctx.pendingMarketingOptIn = Boolean(input.marketingOptIn);
-      ctx.marketingDecidedAt = Date.now();
+    ctx.acceptedConsentIds = [...submitted];
+    ctx.consentsDecidedAt = Date.now();
+  }
+
+  /**
+   * Batched consent persistence — shared `persist-consents` step body for
+   * `LoginWorkflow` / `InviteWorkflow` / `RecoveryWorkflow`. Fans one
+   * `ConsentEvent` per pending descriptor out to the `ConsentStore.save`
+   * DI provider in a single call. Audit-friendly default: declined-optional
+   * consents are persisted with `accepted: false` (customers who want only
+   * accepted events filter in their `save()` override). `accepted` is
+   * derived per descriptor by `acceptedConsentIds.has(id)`. Idempotent via
+   * `ctx.consentsPersisted`; short-circuits with no events when
+   * `pendingConsents` is empty (defensive — the schema condition gates on
+   * `consentsDecidedAt` which is only set when pending was non-empty).
+   *
+   * Each workflow's `@Step("persist-consents")` method is a one-liner
+   * delegate to this helper — the @Step decorator must stay on the
+   * subclass so the wf engine registers the step id under the correct
+   * controller, but the body lives here once.
+   */
+  protected async runPersistConsents(
+    ctx: InlineConsentCtx & { username?: string },
+    consentStore: ConsentStore,
+  ): Promise<undefined> {
+    this.requireUsername(ctx);
+    if (ctx.consentsPersisted) return undefined;
+    const pending = ctx.pendingConsents ?? [];
+    if (pending.length === 0) {
+      ctx.consentsPersisted = true;
+      return undefined;
     }
+    const accepted = new Set(ctx.acceptedConsentIds ?? []);
+    const at = ctx.consentsDecidedAt ?? Date.now();
+    const events: ConsentEvent[] = pending.map((p) => {
+      const evt: ConsentEvent = { id: p.id, accepted: accepted.has(p.id), at };
+      if (p.version !== undefined) evt.version = p.version;
+      return evt;
+    });
+    await consentStore.save(ctx.username, events);
+    ctx.consentsPersisted = true;
+    return undefined;
   }
 
   /**

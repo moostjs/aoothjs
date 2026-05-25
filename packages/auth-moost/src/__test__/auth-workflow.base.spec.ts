@@ -98,252 +98,230 @@ describe("AuthWorkflowBase.withStoreErrorTranslation", () => {
 
 // ── HACK-CONSENT — `processInlineConsent` security gates ───────────────────
 //
-// SECURITY: inline consent fields ride alongside legitimate carrier-form
-// data (`acceptedTerms`, `marketingOptIn` on `LoginCredentialsForm` /
-// `SetPasswordForm` / `AskEmailForm` / `AskPhoneForm` /
-// `ProfileCompleteForm`). The `@ui.form.fn.hidden` expression only governs
-// CLIENT visibility — a malicious client can always POST whatever values it
-// wants. The server-side guarantee lives in
-// `AuthWorkflowBase.processInlineConsent`: gates close (a) once consent has
-// already been captured this run, AND (b) when the acceptance policy says
-// the field is not collected for this user. Each test below pins one of
-// those gates by asserting that the SAME submitted payload either takes
-// effect (gate open) or is silently dropped (gate closed) depending on the
-// surrounding ctx state. A regression that flips a gate's polarity would
-// either over-collect (consent fabricated when policy is off) or
-// under-collect (legitimate updates silently dropped); both fail loudly here.
+// Phase 5 reshape: the helper consumes the dynamic `consents: string[]`
+// field on the carrier form against the SERVER-OWNED `ctx.pendingConsents`
+// whitelist (populated once by the `prepare-consents` @Step from
+// `ConsentStore.getPendingConsents`). Key invariants pinned by the tests
+// below:
 //
-// Terms version is NOT a client-submitted field — the server writes
-// `ctx.termsAcceptedVersion` from its own `ctx.acceptance.termsVersion`.
-// HACK-CONSENT-03 pins THAT contract: even if a malicious client smuggles
-// an `acceptedTermsVersion` field into the payload, the helper ignores it
-// and records the server's version.
+//   1. SILENT-DROP — ids in `input.consents` that don't match a pending
+//      descriptor are silently discarded. No error, no log, no signal back
+//      to the client. Preserves the audit-grade
+//      "what user saw is what server records" guarantee — an attacker
+//      forging extra ids cannot pollute the audit trail.
+//   2. MANDATORY-BY-MESSAGE — a descriptor with a non-empty `required`
+//      string IS the per-row error copy. Submitting without that id in the
+//      `consents` array trips a `requireInput({ errors: { consents:
+//      <required-string> } })`.
+//   3. IDEMPOTENT-ONCE — once `consentsPersisted` is true, the helper is a
+//      no-op (a subsequent carrier-form submission cannot re-stage).
+//   4. EMPTY-PENDING-NOOP — when there are no pending consents (default
+//      `ConsentStore.getPendingConsents` returns `[]`), the helper short-
+//      circuits before reading the input. The carrier form's
+//      `AsConsentArray` self-hides on the same condition; the helper
+//      mirrors that on the server.
 describe("AuthWorkflowBase.processInlineConsent — security gates (HACK-CONSENT)", () => {
-  it("HACK-CONSENT-01: termsAcceptedDone=true → submitted acceptedTerms:false is SILENTLY IGNORED (cannot withdraw)", () => {
-    // WHY: load-bearing anti-tamper guarantee. Once a user has accepted the
-    // current terms version, no subsequent payload — legitimate or crafted —
-    // can flip `termsAcceptedDone` back to false or rewrite
-    // `termsAcceptedVersion`. The `if (… && !ctx.termsAcceptedDone)` guard at
-    // auth-workflow.base.ts:291 is what closes this loop; removing that
-    // condition lets an attacker post `{ acceptedTerms: false }` on any
-    // later carrier form (e.g. a `ProfileCompleteForm` rendered AFTER terms
-    // were captured on `LoginCredentialsForm`) and roll the user's
-    // acceptance back. Server records would diverge from legal reality.
+  it("HACK-CONSENT-01: consentsPersisted=true → submitted consents are SILENTLY IGNORED (no second stage)", () => {
+    // WHY: idempotency invariant. Once a workflow run has persisted its
+    // consent batch, a subsequent carrier-form submission cannot re-trigger
+    // staging — that would fan a second `consentStore.save` call with the
+    // same descriptors, polluting audit logs. The `if (ctx.consentsPersisted)
+    // return` guard at the top of the helper closes this loop.
     const base = new ExposedBase();
     const ctx: InlineConsentCtx = {
-      acceptance: { termsVersion: "v1", consentMarketing: false },
-      termsAcceptedDone: true,
-      termsAcceptedVersion: "v1",
-    };
-    const wf = makeWf();
-    // Attacker resubmits the carrier-form payload with falsified consent.
-    base.consent(ctx, { acceptedTerms: false }, wf);
-    // Helper must NOT throw (no requireInput call) AND must NOT mutate the
-    // already-captured state. The defense is silent — the falsified value
-    // is dropped on the floor, not flagged. (Flagging would let probers
-    // detect the user's acceptance state.)
-    expect(wf.lastCall).toBeUndefined();
-    expect(ctx.termsAcceptedDone).toBe(true);
-    expect(ctx.termsAcceptedVersion).toBe("v1");
-  });
-
-  it("HACK-CONSENT-02: consentsPersisted=true → submitted marketingOptIn:false is SILENTLY IGNORED (no second write)", () => {
-    // WHY: mirror anti-tamper guarantee for marketing opt-in. Once the
-    // `persist-consents` step has persisted the user's choice
-    // (consentsPersisted = true), no subsequent payload can re-stage
-    // `pendingMarketingOptIn` and trigger a second write. The
-    // `if (… && !ctx.consentsPersisted …)` guard closes the loop.
-    // Without it, an attacker who flips a user's opt-in by posting a new
-    // `marketingOptIn:false` on any later carrier form would trigger a
-    // second `consentStore.save` call — silently toggling the user's
-    // preference against their wishes. Distinct from HACK-CONSENT-01
-    // because marketing has a separate persist-step gate.
-    // No `termsVersion` here — isolates the marketing gate from the terms
-    // gate so the test focuses on the consentsPersisted branch alone.
-    const base = new ExposedBase();
-    const ctx: InlineConsentCtx = {
-      acceptance: { consentMarketing: true },
+      pendingConsents: [{ id: "terms", text: "Accept the Terms", required: "must accept" }],
       consentsPersisted: true,
     };
     const wf = makeWf();
-    base.consent(ctx, { marketingOptIn: false }, wf);
+    base.consent(ctx, { consents: ["terms"] }, wf);
+    // Helper must NOT throw — defense is silent. State must NOT mutate (no
+    // acceptedConsentIds, no consentsDecidedAt). The persisted flag must
+    // stay true.
     expect(wf.lastCall).toBeUndefined();
-    // The key load-bearing assertion — `pendingMarketingOptIn` MUST stay
-    // undefined so the `persist-consents` step (gated on
-    // `pendingMarketingOptIn !== undefined`) doesn't fire a second time.
-    expect(ctx.pendingMarketingOptIn).toBeUndefined();
+    expect(ctx.acceptedConsentIds).toBeUndefined();
+    expect(ctx.consentsDecidedAt).toBeUndefined();
     expect(ctx.consentsPersisted).toBe(true);
   });
 
-  it("HACK-CONSENT-03: server is authoritative for terms version — client cannot smuggle a fabricated version into ctx", () => {
-    // WHY: the accepted version is NOT a client-submitted field — the
-    // server writes `ctx.termsAcceptedVersion = ctx.acceptance.termsVersion`
-    // directly. An attacker who smuggles `acceptedTermsVersion: "v999"`
-    // into the payload (a non-typed extra field — `InlineConsentInput`
-    // doesn't declare one, but the wire is JSON) MUST NOT cause the helper
-    // to record the smuggled version. Asserting that ctx ends up with the
-    // server's `acceptance.termsVersion` value pins the
-    // `ctx.termsAcceptedVersion = ctx.acceptance.termsVersion` write at
-    // auth-workflow.base.ts (the line that REPLACED the prior client-echo
-    // assignment). A refactor that re-introduced `ctx.termsAcceptedVersion
-    // = input.acceptedTermsVersion` would silently let attackers backdate
-    // acceptance to a stale version that may have looser terms.
+  it("HACK-CONSENT-DECIDED-01: consentsDecidedAt already set → helper short-circuits (multi-carrier-form runs don't re-validate)", () => {
+    // WHY: workflows with multiple carrier forms (e.g. login's AskEmailForm
+    // → ProfileCompleteForm) each `extends WithInlineConsentForm` and pass
+    // their input through `processInlineConsent`. Once the FIRST carrier
+    // form captures the user's ticks (consentsDecidedAt set), subsequent
+    // carrier forms MUST NOT re-run required-checks against their (empty,
+    // because the user already ticked once) payload. The
+    // `if (ctx.consentsDecidedAt !== undefined) return` guard closes this
+    // loop. Without it, ProfileCompleteForm submission would throw the
+    // descriptor's `required` string and the user would be stuck even
+    // though they accepted on AskEmailForm earlier.
     const base = new ExposedBase();
     const ctx: InlineConsentCtx = {
-      acceptance: { termsVersion: "v2", consentMarketing: false },
-      termsAcceptedDone: false,
+      pendingConsents: [{ id: "terms", text: "Terms", required: "must accept" }],
+      acceptedConsentIds: ["terms"],
+      consentsDecidedAt: Date.now() - 1000, // captured a second ago on a prior form
     };
     const wf = makeWf();
-    // Cast through `unknown` because `InlineConsentInput` no longer
-    // declares `acceptedTermsVersion` — this matches the wire reality
-    // (untyped JSON body) and exercises the "extra fields are ignored"
-    // contract.
-    base.consent(
-      ctx,
-      { acceptedTerms: true, acceptedTermsVersion: "v999" } as unknown as InlineConsentInput,
-      wf,
-    );
+    // Empty `consents` on the LATER carrier form — must NOT throw, must
+    // NOT mutate state.
+    base.consent(ctx, { consents: [] }, wf);
     expect(wf.lastCall).toBeUndefined();
-    expect(ctx.termsAcceptedDone).toBe(true);
-    // Load-bearing: ctx records the SERVER'S version, NOT the smuggled value.
-    expect(ctx.termsAcceptedVersion).toBe("v2");
+    expect(ctx.acceptedConsentIds).toEqual(["terms"]);
   });
 
-  it("HACK-CONSENT-04: acceptedTerms missing/false when policy active → requireInput with 'You must accept' error", () => {
-    // WHY: the first-line gate. Without it, an attacker posting
-    // `acceptedTerms: undefined` (or omitting the field entirely) on a
-    // carrier form would slip past the inline check and reach the user
-    // store with no acceptance recorded — defeating the entire purpose of
-    // `acceptance.termsVersion`. The `if (!input.acceptedTerms)` guard at
-    // auth-workflow.base.ts:292 is what catches both `false` and absent.
+  it("HACK-CONSENT-02: empty pendingConsents → submitted consents IGNORED (cannot force-collect)", () => {
+    // WHY: parallel anti-fabrication guarantee. With the dynamic-consent
+    // shape, `pendingConsents` is the server's authoritative whitelist of
+    // expected ids. An attacker submitting `consents: ['terms']` when the
+    // server's pending list is empty MUST NOT cause the helper to stage
+    // those ids — that would fake an acceptance record the policy never
+    // asked for (GDPR / CASL liability surface). The `if (pending.length
+    // === 0) return` short-circuit closes this loop.
     const base = new ExposedBase();
-    const ctx: InlineConsentCtx = {
-      acceptance: { termsVersion: "v1", consentMarketing: false },
-      termsAcceptedDone: false,
-    };
-    const wf = makeWf();
-    // Absent acceptedTerms — same path as `acceptedTerms: false`.
-    expect(() => base.consent(ctx, {}, wf)).toThrow();
-    expect(wf.lastCall?.errors).toMatchObject({
-      acceptedTerms: "You must accept the terms",
-    });
-    expect(ctx.termsAcceptedDone).toBeFalsy();
-  });
-
-  it("HACK-CONSENT-05: marketing field IGNORED when consentMarketing policy is off (cannot force-collect)", () => {
-    // WHY: closes the inverse of HACK-CONSENT-02. If a consumer's policy
-    // says `consentMarketing: false` (no marketing collection), a malicious
-    // client posting `marketingOptIn: true` MUST NOT cause the workflow to
-    // stage a `pendingMarketingOptIn` — that would then fire the
-    // `persist-consents` step and write a marketing record the server's
-    // policy never asked for (potential GDPR / CASL liability). The
-    // `if (ctx.acceptance?.consentMarketing && …)` guard at
-    // auth-workflow.base.ts:303 closes this loop.
-    const base = new ExposedBase();
-    const ctx: InlineConsentCtx = {
-      acceptance: { consentMarketing: false }, // policy OFF — server doesn't collect marketing
-    };
-    const wf = makeWf();
-    base.consent(ctx, { marketingOptIn: true }, wf);
-    expect(wf.lastCall).toBeUndefined();
-    // Critical: `pendingMarketingOptIn` MUST stay undefined so the
-    // `persist-consents` step (gated on its presence) never fires.
-    expect(ctx.pendingMarketingOptIn).toBeUndefined();
-  });
-
-  it("HACK-CONSENT-06: terms fields IGNORED when termsVersion policy is unset (cannot force-collect)", () => {
-    // WHY: parallel anti-fabrication guarantee for terms. If `acceptance`
-    // is undefined OR `termsVersion` is unset, an attacker submitting
-    // `acceptedTerms: true` MUST NOT cause the helper to record an
-    // acceptance — that would create a fake acceptance record the
-    // server's policy doesn't actually require. The
-    // `if (ctx.acceptance?.termsVersion && …)` guard at
-    // auth-workflow.base.ts:291 closes this loop. Tested with `acceptance`
-    // explicitly undefined to also exercise the optional-chaining short-
-    // circuit (both branches collapse to "no acceptance, no write").
-    const base = new ExposedBase();
-    // Case A: acceptance entirely undefined.
+    // Case A: pendingConsents entirely undefined.
     const ctxA: InlineConsentCtx = {};
     const wfA = makeWf();
-    base.consent(ctxA, { acceptedTerms: true }, wfA);
+    base.consent(ctxA, { consents: ["terms"] }, wfA);
     expect(wfA.lastCall).toBeUndefined();
-    expect(ctxA.termsAcceptedDone).toBeUndefined();
-    expect(ctxA.termsAcceptedVersion).toBeUndefined();
-    // Case B: acceptance present but termsVersion unset.
-    const ctxB: InlineConsentCtx = { acceptance: { consentMarketing: false } };
+    expect(ctxA.acceptedConsentIds).toBeUndefined();
+    expect(ctxA.consentsDecidedAt).toBeUndefined();
+    // Case B: pendingConsents explicit empty array.
+    const ctxB: InlineConsentCtx = { pendingConsents: [] };
     const wfB = makeWf();
-    base.consent(ctxB, { acceptedTerms: true }, wfB);
+    base.consent(ctxB, { consents: ["terms"] }, wfB);
     expect(wfB.lastCall).toBeUndefined();
-    expect(ctxB.termsAcceptedDone).toBeUndefined();
-    expect(ctxB.termsAcceptedVersion).toBeUndefined();
+    expect(ctxB.acceptedConsentIds).toBeUndefined();
+    expect(ctxB.consentsDecidedAt).toBeUndefined();
   });
 
-  it("happy path: opens both gates → terms captured + marketing staged for persist-consents", () => {
-    // WHY: positive control alongside the HACK-CONSENT-* negatives. Pins
-    // that when the gates are OPEN — policy on, not yet captured — the
-    // helper writes both `termsAcceptedDone/Version` and stages
-    // `pendingMarketingOptIn`. Without this positive control a refactor
-    // that closes the gates unconditionally (over-defending) would pass
-    // every HACK-CONSENT test while breaking the legitimate path.
+  it("HACK-CONSENT-03: silent-drop unknown ids — attacker cannot forge audit rows for never-displayed consents", () => {
+    // WHY: load-bearing audit invariant. The server reads its own
+    // `pendingConsents` as the whitelist; any id in `input.consents`
+    // outside that set is silently dropped (NO error surfaced — surfacing
+    // would leak the consent universe to a probing attacker). A regression
+    // that propagated client-supplied ids straight through to
+    // `acceptedConsentIds` would let an attacker submit
+    // `consents: ['terms', 'gdpr-forged', 'phishy-extra']` and forge audit
+    // records for consents they were never shown — breaking the
+    // "what user saw is what server records" guarantee.
     const base = new ExposedBase();
     const ctx: InlineConsentCtx = {
-      acceptance: { termsVersion: "v1", consentMarketing: true },
+      pendingConsents: [{ id: "terms", text: "Accept the Terms" }],
     };
     const wf = makeWf();
-    base.consent(ctx, { acceptedTerms: true, marketingOptIn: true }, wf);
+    base.consent(ctx, { consents: ["terms", "gdpr-forged", "phishy-extra"] }, wf);
+    // No error surfaced — defense is silent (no signal back to the client).
     expect(wf.lastCall).toBeUndefined();
-    expect(ctx.termsAcceptedDone).toBe(true);
-    // Version is written by the server from `ctx.acceptance.termsVersion`,
-    // not echoed from the client.
-    expect(ctx.termsAcceptedVersion).toBe("v1");
-    expect(ctx.pendingMarketingOptIn).toBe(true);
+    // Only the valid id rides through; forged ids dropped on the floor.
+    expect(ctx.acceptedConsentIds).toEqual(["terms"]);
   });
 
-  it("marketing opt-OUT (false) is a distinct, recordable value — NOT collapsed to undefined", () => {
-    // WHY: pins the `input.marketingOptIn !== undefined` guard at
-    // auth-workflow.base.ts:306. Without it, `marketingOptIn: false`
-    // would either: (a) NOT stage (if the code used truthiness), or
-    // (b) be re-applied identically to `marketingOptIn: undefined`.
-    // Both are wrong — opting OUT is a valid recordable choice, distinct
-    // from "field never submitted". The downstream `apply-consent` step
-    // emits a `{kind:'marketing',optIn:false,…}` event in the batched
-    // `consentStore.save` call; an off-by-one would silently swallow opt-outs.
+  it("HACK-CONSENT-04: missing required descriptor → requireInput throws with the descriptor's `required` STRING as error copy", () => {
+    // WHY: the mandatory-by-message contract. A `required` non-empty
+    // string IS the per-row error message (NOT just a boolean flag). A
+    // regression that surfaced a generic "field required" string would
+    // break the customer's per-consent UX contract — the whole point of
+    // making `required` a string is to let customers define localized
+    // copy. The first missing required descriptor wins the form-level
+    // error.
     const base = new ExposedBase();
     const ctx: InlineConsentCtx = {
-      acceptance: { consentMarketing: true },
+      pendingConsents: [
+        {
+          id: "terms",
+          text: "Accept the Terms",
+          required: "Privacy Policy acceptance is mandatory",
+        },
+      ],
     };
     const wf = makeWf();
-    base.consent(ctx, { marketingOptIn: false }, wf);
-    expect(wf.lastCall).toBeUndefined();
-    expect(ctx.pendingMarketingOptIn).toBe(false);
-    // Distinct: field absent → no stage.
-    const ctx2: InlineConsentCtx = { acceptance: { consentMarketing: true } };
-    base.consent(ctx2, {}, wf);
-    expect(ctx2.pendingMarketingOptIn).toBeUndefined();
+    expect(() => base.consent(ctx, { consents: [] }, wf)).toThrow();
+    expect(wf.lastCall?.errors).toMatchObject({
+      consents: "Privacy Policy acceptance is mandatory",
+    });
+    // State must NOT mutate on the throw path.
+    expect(ctx.acceptedConsentIds).toBeUndefined();
+    expect(ctx.consentsDecidedAt).toBeUndefined();
   });
 
-  it("both gates open → timestamps captured at acceptance moment (not at persist time)", () => {
-    // WHY (Rule 9): the batched `consentStore.save(username, events)` call
-    // receives `at` for each event — the WHY of that field is "when the
-    // user actually clicked accept", which must survive a paused-workflow
-    // resume gap. If the helper deferred the timestamp to the persist step
-    // (or didn't capture it at all), the recorded `at` could drift hours
-    // away from the user-action moment for a paused workflow that resumes
-    // later. This pins that both timestamps are written by
-    // `processInlineConsent` at the moment the gate accepts the input —
-    // bound to wall-clock ms around `Date.now()` (not exact equality —
-    // we're verifying the INTENT, not the WHAT).
+  it("HACK-CONSENT-05: required with empty input.consents undefined → same throw as empty array (treats missing as empty)", () => {
+    // WHY: an attacker omitting the `consents` field entirely on a hand-
+    // rolled POST MUST behave identically to submitting `[]` — the
+    // mandatory check fires either way. The `input.consents ?? []` fall-
+    // back at the top of the helper closes this loop. Without it, an
+    // omitted field would slip past the iteration over `pending` and
+    // silently accept the workflow with no recorded acceptance.
     const base = new ExposedBase();
     const ctx: InlineConsentCtx = {
-      acceptance: { termsVersion: "v1", consentMarketing: true },
+      pendingConsents: [{ id: "terms", text: "Accept Terms", required: "must accept" }],
+    };
+    const wf = makeWf();
+    expect(() => base.consent(ctx, {}, wf)).toThrow();
+    expect(wf.lastCall?.errors?.consents).toBe("must accept");
+  });
+
+  it("HACK-CONSENT-06: optional descriptor with empty `required` ⇒ unsubmitted is OK (no throw, no stage of that id)", () => {
+    // WHY: explicit-empty-string `required` MUST be treated as optional
+    // (NOT as "mandatory with empty error copy"). The helper's truthy
+    // check `if (p.required && !submitted.has(p.id))` uses string
+    // truthiness so `''` and `undefined` both collapse to "optional".
+    // A regression that flipped to `p.required !== undefined` would
+    // silently make every empty-string descriptor mandatory.
+    const base = new ExposedBase();
+    const ctx: InlineConsentCtx = {
+      pendingConsents: [
+        { id: "marketing", text: "Marketing", required: "" },
+        { id: "research", text: "Research", required: undefined },
+      ],
+    };
+    const wf = makeWf();
+    // Submit nothing — both descriptors are optional.
+    base.consent(ctx, { consents: [] }, wf);
+    expect(wf.lastCall).toBeUndefined();
+    expect(ctx.acceptedConsentIds).toEqual([]);
+    expect(typeof ctx.consentsDecidedAt).toBe("number");
+  });
+
+  it("happy path: all required satisfied, optional ticked → acceptedConsentIds reflects the validated subset; consentsDecidedAt stamped", () => {
+    // WHY: positive control alongside the HACK-CONSENT-* negatives.
+    // Without this, a refactor that closes the gates unconditionally
+    // (over-defending) would pass every HACK-CONSENT test while breaking
+    // the legitimate path. The accepted subset MUST match what the user
+    // ticked, intersected with the server-owned whitelist.
+    const base = new ExposedBase();
+    const ctx: InlineConsentCtx = {
+      pendingConsents: [
+        { id: "terms", text: "Terms", required: "Required" },
+        { id: "marketing", text: "Marketing" },
+        { id: "research", text: "Research" },
+      ],
+    };
+    const wf = makeWf();
+    base.consent(ctx, { consents: ["terms", "research"] }, wf);
+    expect(wf.lastCall).toBeUndefined();
+    expect(ctx.acceptedConsentIds).toEqual(["terms", "research"]);
+    // Timestamp captured at acceptance moment (the load-bearing "user-
+    // action time" semantic — survives paused-workflow resume gaps).
+    expect(typeof ctx.consentsDecidedAt).toBe("number");
+  });
+
+  it("consentsDecidedAt captured at helper-run time (not at persist-step time)", () => {
+    // WHY (Rule 9): the batched `consentStore.save(username, events)`
+    // receives `at` per event — the WHY of that field is "when the user
+    // actually clicked submit", which must survive a paused-workflow
+    // resume gap. If the helper deferred the timestamp to the persist
+    // step (or didn't capture it at all), the recorded `at` could drift
+    // hours away from the user-action moment for a paused workflow that
+    // resumes later. Bound to wall-clock ms around `Date.now()` (not
+    // exact equality — we're verifying the INTENT, not the WHAT).
+    const base = new ExposedBase();
+    const ctx: InlineConsentCtx = {
+      pendingConsents: [{ id: "terms", text: "Terms" }],
     };
     const wf = makeWf();
     const before = Date.now();
-    base.consent(ctx, { acceptedTerms: true, marketingOptIn: true }, wf);
+    base.consent(ctx, { consents: ["terms"] }, wf);
     const after = Date.now();
-    expect(ctx.termsAcceptedAt).toBeGreaterThanOrEqual(before);
-    expect(ctx.termsAcceptedAt).toBeLessThanOrEqual(after);
-    expect(ctx.marketingDecidedAt).toBeGreaterThanOrEqual(before);
-    expect(ctx.marketingDecidedAt).toBeLessThanOrEqual(after);
+    expect(ctx.consentsDecidedAt).toBeGreaterThanOrEqual(before);
+    expect(ctx.consentsDecidedAt).toBeLessThanOrEqual(after);
   });
 });

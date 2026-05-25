@@ -739,31 +739,32 @@ test.describe("recovery — default-magiclink (R-A) P2 audit", () => {
   });
 });
 
-// ── Phase-2 inline-consent on recovery ───────────────────────────────────────
+// ── Phase-5 dynamic inline-consent on recovery ──────────────────────────────
 //
-// Mirrors WF-LOGIN-BUMP-01 + WF-INVITE-CONSENT-01. The `recovery-terms-bump`
-// variant flips `acceptance.termsVersion: 'v2'` so `SetPasswordForm` renders
-// the `acceptedTerms` checkbox on the recovery completion form. The post-form
-// `persist-consents` step batches the captured terms event into one
-// `DemoConsentStore.save` call, which appends to the SAME globalThis consent
-// log fed by login + invite. The `/__test/consent-log/:username` endpoint
-// returns the event for assertion here. Without the new `processInlineConsent`
-// call in `setPassword` (Phase-2 production change), the submitted
-// `acceptedTerms` would be a stripped form-extra and the log would stay empty.
-test.describe("recovery — inline-consent (Phase 2)", () => {
+// Mirrors WF-CONSENT-ARRAY-01 + WF-INVITE-CONSENT-01. The `recovery-terms-bump`
+// variant keys the customer `DemoConsentStore.getPendingConsents` to return a
+// single required-terms descriptor → `SetPasswordForm` renders the
+// `AsConsentArray` row for the dynamic `consents: string[]` field. The
+// post-form `persist-consents` step batches one event per pending descriptor
+// into one `DemoConsentStore.save` call, which appends to the SAME globalThis
+// consent log fed by login + invite. The `/__test/consent-log/:username`
+// endpoint returns the event for assertion here. Without the new
+// `processInlineConsent` call in `setPassword` (Phase-2 production change),
+// the submitted `consents` array would be a stripped form-extra and the log
+// would stay empty.
+test.describe("recovery — inline-consent (Phase 5)", () => {
   test.beforeEach(async ({ request }) => {
     await resetApp(request);
   });
 
-  test("WF-RECOVERY-CONSENT-01: recovery-terms-bump variant → SetPasswordForm shows acceptedTerms; tick + submit → consent-log carries kind:'terms' v2", async ({
+  test("WF-RECOVERY-CONSENT-01: recovery-terms-bump variant → SetPasswordForm shows AsConsentArray; tick + submit → consent-log carries {id:'terms', accepted:true, version:'v2'}", async ({
     page,
     request,
     baseURL,
   }) => {
     // The consent log keys by the resolved username, which is what
     // `emailToUserId(ALICE_EMAIL)` returns — for alice in this demo that's
-    // `t1_alice`, not the email. Mirrors how WF-LOGIN-BUMP-01 reads the log
-    // by `t1_frank` (not an email).
+    // `t1_alice`, not the email.
     const username = USERS.alice.username;
 
     // Sanity: consent log starts empty for alice.
@@ -783,18 +784,19 @@ test.describe("recovery — inline-consent (Phase 2)", () => {
     expect(email.recipient).toBe(ALICE_EMAIL);
     await page.goto(rewriteToBaseUrl(email.url as string, baseURL ?? ""));
 
-    // SetPasswordForm — `acceptedTerms` checkbox visible because the variant
-    // set `acceptance.termsVersion: 'v2'`.
+    // SetPasswordForm — `AsConsentArray` row visible because the variant's
+    // ConsentStore returned a required terms descriptor.
     await waitForFormInput(page, "newPassword", 15_000);
-    const termsBox = page.locator('input[type="checkbox"][name="acceptedTerms"]').first();
-    await expect(termsBox).toBeVisible();
+    await expect(page.getByText("I accept the updated Terms")).toBeVisible();
     await fillField(page, "newPassword", NEW_PASSWORD);
     await fillField(page, "confirmPassword", NEW_PASSWORD);
-    await termsBox.check();
+    // The consent checkbox is the first checkbox rendered by AsConsentArray
+    // on this form.
+    await page.locator('input[type="checkbox"]').first().check();
     await submitForm(page);
 
     // Workflow finishes with tokens — proof recovery completed through the
-    // new `persist-consents` step.
+    // `persist-consents` step.
     await expect(page.getByText("Workflow finished.")).toBeVisible();
     const envelope = (await readFinishEnvelope(page)) as {
       finished?: boolean;
@@ -803,16 +805,18 @@ test.describe("recovery — inline-consent (Phase 2)", () => {
     expect(envelope.finished).toBe(true);
     expect(envelope.data?.accessToken, "auto-login issues tokens after reset").toBeTruthy();
 
-    // Unified consent log carries the captured event.
+    // Unified consent log carries the captured event in the new shape.
     const after = await request.get(`/__test/consent-log/${encodeURIComponent(username)}`);
     expect(after.status()).toBe(200);
     const events = (await after.json()) as Array<{
-      kind: string;
+      id: string;
+      accepted: boolean;
       version?: string;
       at: number;
     }>;
     expect(events.length).toBe(1);
-    expect(events[0].kind).toBe("terms");
+    expect(events[0].id).toBe("terms");
+    expect(events[0].accepted).toBe(true);
     expect(events[0].version).toBe("v2");
     expect(typeof events[0].at).toBe("number");
   });

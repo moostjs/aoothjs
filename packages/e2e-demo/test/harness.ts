@@ -581,7 +581,7 @@ export function submitRecoveryPassword(
     {
       wfid: "auth/recovery/flow",
       wfs,
-      input: { newPassword, confirmPassword: opts.confirmPassword ?? newPassword },
+      input: { newPassword, confirmPassword: opts.confirmPassword ?? newPassword, consents: [] },
     },
     { token: opts.token },
   );

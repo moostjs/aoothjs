@@ -78,6 +78,7 @@ describe("default form .as models", () => {
       SetPasswordForm.validator().validate({
         newPassword: "longenough1",
         confirmPassword: "longenough1",
+        consents: [],
       }),
     ).not.toThrow();
     expect(() => InviteForm.validator().validate({ email: "bob@example.com" })).not.toThrow();

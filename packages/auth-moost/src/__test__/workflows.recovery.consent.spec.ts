@@ -1,18 +1,17 @@
 /**
- * Phase-2 inline-consent coverage for `RecoveryWorkflow`.
+ * Phase-5 inline-consent coverage for `RecoveryWorkflow`.
  *
- * Same shape as the sibling `workflows.invite.consent.spec.ts` — Phase 2
- * wires the `persist-consents` step body to `consentStore.save(username,
- * events)` across all three workflows. The canonical recovery scenario for
- * inline consent is a terms-version bump during password reset ("since you
- * last set your password we updated our terms"). Marketing re-prompt at
- * recovery time is unusual UX, so defaults are off; consumers override
- * `resolveAcceptance(ctx)` to enable collection.
+ * Same shape as the sibling `workflows.invite.consent.spec.ts` — Phase 5
+ * replaces the static `acceptedTerms`/`marketingOptIn` carrier-form pair
+ * with a single dynamic `consents: string[]` field. The canonical recovery
+ * scenario for inline consent is a customer-defined consent set (terms
+ * version bump, jurisdiction prompt, ...) captured at password reset time.
  *
  * `SetPasswordForm` is the guaranteed carrier form on every recovery
  * completion path — magicLink, OTP, and choice all converge there before
  * tokens are issued. The new `processInlineConsent` call inside
- * `setPassword` is the load-bearing wiring.
+ * `setPassword` validates `consents` against the server-owned
+ * `ctx.pendingConsents` whitelist.
  *
  * Anti-test guard (Rule 9): each test asserts an observable outcome the
  * production branch under test is required to produce.
@@ -35,7 +34,8 @@ import { prepareWfApp, seedActiveUser } from "./workflow-utils";
 const NEW_PASSWORD = "NewPassword2!";
 
 /**
- * `ConsentStore` subclass that captures every `save(username, events)` call.
+ * `ConsentStore` subclass that captures every `save(username, events)` call
+ * AND lets a test seed pending descriptors via `pendingResponse`.
  * `persistDelayMs` sleeps BEFORE pushing so the `at` timestamp captured by
  * `processInlineConsent` (form-submit time) is provably earlier than
  * `Date.now()` at write-time.
@@ -44,58 +44,40 @@ const NEW_PASSWORD = "NewPassword2!";
 class CapturingConsentStore extends ConsentStore {
   readonly calls: Array<{ username: string; events: ConsentEvent[] }> = [];
   persistDelayMs = 0;
+  pendingResponse: ConsentDescriptor[] = [];
   override async save(username: string, events: ConsentEvent[]): Promise<void> {
     if (this.persistDelayMs > 0) {
       await new Promise<void>((r) => setTimeout(r, this.persistDelayMs));
     }
     this.calls.push({ username, events: [...events] });
   }
-}
-
-/**
- * Build a `RecoveryWorkflow` subclass with `resolveAcceptance` overridden to
- * return the supplied policy.
- */
-function makeCapturingRecovery(
-  policy: NonNullable<RecoveryWfCtx["acceptance"]>,
-): typeof RecoveryWorkflow {
-  @Inherit()
-  @Controller("auth/recovery")
-  class CapturingRecovery extends RecoveryWorkflow {
-    constructor(
-      opts: RecoveryWorkflowOpts,
-      users: UserService,
-      auth: AuthCredential,
-      authOpts: AuthOpts,
-      consentStore: ConsentStore,
-    ) {
-      super(opts, users, auth, authOpts, consentStore);
-    }
-    protected override resolveAcceptance(
-      _ctx: RecoveryWfCtx,
-    ): NonNullable<RecoveryWfCtx["acceptance"]> {
-      return policy;
-    }
+  override async getPendingConsents(
+    _username: string | undefined,
+    _ctx: { workflow: string; channel?: "email" | "sms" },
+  ): Promise<ConsentDescriptor[]> {
+    return this.pendingResponse;
   }
-  return CapturingRecovery;
 }
 
-describe("RecoveryWorkflow — inline-consent persist seam (Phase 2)", () => {
-  it("RECOVERY-PERSIST-CONSENT-01: terms-bump scenario → consentStore.save receives [{kind:'terms',version:'v2',at}]", async () => {
-    // WHY: pins the headline recovery scenario — terms-version bump capture.
-    // The consumer flips `acceptance.termsVersion: 'v2'` on `resolveAcceptance`,
-    // the user goes through the default magic-link recovery, ticks
-    // `acceptedTerms` on `SetPasswordForm`, and the consumer's
-    // `ConsentStore.save` override receives a single `kind:'terms'` event
-    // with the new version.
+describe("RecoveryWorkflow — inline-consent persist seam (Phase 5)", () => {
+  it("RECOVERY-PERSIST-CONSENT-01: terms-bump scenario → consentStore.save receives [{id:'terms',accepted:true,version:'v2',at}]", async () => {
+    // WHY: pins the headline recovery scenario — terms-version bump capture
+    // via the dynamic-consent shape. The customer seeds
+    // `getPendingConsents` to return a required terms descriptor with the
+    // new version, the user goes through the default magic-link recovery,
+    // submits `consents: ['terms']` on `SetPasswordForm`, and the consumer's
+    // `ConsentStore.save` override receives a single event with the
+    // server-authoritative version stamped from the descriptor.
     //
     // Also pins the "`at` captured at acceptance moment, not at write time"
     // semantic — the store sleeps 50ms before pushing, then we assert
     // `at <= afterSubmit`.
     const consentStore = new CapturingConsentStore();
     consentStore.persistDelayMs = 50;
-    const Capturing = makeCapturingRecovery({ termsVersion: "v2", consentMarketing: false });
-    const app = await prepareWfApp({ consentStore, recoveryWorkflowClass: Capturing });
+    consentStore.pendingResponse = [
+      { id: "terms", text: "Accept Terms", required: "must accept", version: "v2" },
+    ];
+    const app = await prepareWfApp({ consentStore });
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
 
     const before = Date.now();
@@ -112,7 +94,7 @@ describe("RecoveryWorkflow — inline-consent persist seam (Phase 2)", () => {
         input: {
           newPassword: NEW_PASSWORD,
           confirmPassword: NEW_PASSWORD,
-          acceptedTerms: true,
+          consents: ["terms"],
         },
       })
       .then(() => Date.now());
@@ -120,7 +102,8 @@ describe("RecoveryWorkflow — inline-consent persist seam (Phase 2)", () => {
     expect(consentStore.calls.length).toBe(1);
     expect(consentStore.calls[0].username).toBe("alice@test.com");
     expect(consentStore.calls[0].events.length).toBe(1);
-    expect(consentStore.calls[0].events[0].kind).toBe("terms");
+    expect(consentStore.calls[0].events[0].id).toBe("terms");
+    expect(consentStore.calls[0].events[0].accepted).toBe(true);
     expect(consentStore.calls[0].events[0].version).toBe("v2");
     expect(consentStore.calls[0].events[0].at).toBeGreaterThanOrEqual(before);
     // `at` stamped at processInlineConsent time (before the 50ms persist
@@ -130,16 +113,16 @@ describe("RecoveryWorkflow — inline-consent persist seam (Phase 2)", () => {
     expect(consentStore.calls[0].events[0].at).toBeLessThanOrEqual(afterSubmit);
   });
 
-  it("RECOVERY-PERSIST-SKIP-01: no acceptance policy + no consent fields → consentStore.save never called", async () => {
-    // WHY: pins the schema-condition short-circuit. When neither terms-done
-    // nor marketing-decided is set, the `persist-consents` step is SKIPPED
-    // entirely (condition false) and the save hook stays at zero calls.
-    // A regression that flipped the condition would silently fire a no-op
-    // event-less `consentStore.save(_, [])` call, polluting consumer audit
-    // logs.
+  it("RECOVERY-PERSIST-SKIP-01: empty pendingConsents → consentStore.save NEVER called", async () => {
+    // WHY: pins the "no pending consents, no audit row" invariant.
+    // When `getPendingConsents` returns `[]`, the schema's
+    // `consentsDecidedAt` gate stays false and the persist step is
+    // SKIPPED entirely. A regression that flipped the condition would
+    // silently fire a no-op event-less `consentStore.save(_, [])` call,
+    // polluting consumer audit logs.
     const consentStore = new CapturingConsentStore();
-    const Capturing = makeCapturingRecovery({ consentMarketing: false });
-    const app = await prepareWfApp({ consentStore, recoveryWorkflowClass: Capturing });
+    consentStore.pendingResponse = [];
+    const app = await prepareWfApp({ consentStore });
     await seedActiveUser(app.users, "bob@test.com", "OldPassword1");
 
     const r1 = await app.trigger({ wfid: "auth/recovery/flow" });

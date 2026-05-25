@@ -81,7 +81,7 @@ describe("InviteWorkflow subclass — end-to-end registration shape", () => {
     const r3 = await app.resumeViaQuery(token);
     const r4 = await app.trigger({
       wfs: r3.body?.wfs as string,
-      input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
+      input: { newPassword: PASSWORD, confirmPassword: PASSWORD, consents: [] },
     });
     expect((r4.body?.data as Record<string, unknown>)?.userId).toBe("sub@test.com");
     // Subclass body ran (not just the base default).
@@ -261,11 +261,11 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
     const r3 = await app.resumeViaQuery(token);
     const r4 = await app.trigger({
       wfs: r3.body?.wfs as string,
-      input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
+      input: { newPassword: PASSWORD, confirmPassword: PASSWORD, consents: [] },
     });
     const r5 = await app.trigger({
       wfs: r4.body?.wfs as string,
-      input: { firstName: "Sub", lastName: "Class" },
+      input: { firstName: "Sub", lastName: "Class", consents: [] },
     });
     expect((r5.body?.data as Record<string, unknown>)?.userId).toBe("ap@test.com");
     expect(seen).toHaveLength(1);
@@ -333,7 +333,7 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
       const r3 = await appNoForm.resumeViaQuery(token);
       const r4 = await appNoForm.trigger({
         wfs: r3.body?.wfs as string,
-        input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
+        input: { newPassword: PASSWORD, confirmPassword: PASSWORD, consents: [] },
       });
       // No profile pause: auto-login finished in one shot.
       const data4 = r4.body?.data as Record<string, unknown> | undefined;
@@ -371,7 +371,7 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
       const r3 = await appWithForm.resumeViaQuery(token);
       const r4 = await appWithForm.trigger({
         wfs: r3.body?.wfs as string,
-        input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
+        input: { newPassword: PASSWORD, confirmPassword: PASSWORD, consents: [] },
       });
       // Profile pause required: response is a pause payload (no userId yet).
       expect(r4.body?.userId).toBeUndefined();
@@ -446,7 +446,7 @@ describe("InviteWorkflow subclass — inviteExtraStep override", () => {
     const r3 = await app.resumeViaQuery(token);
     const r4 = await app.trigger({
       wfs: r3.body?.wfs as string,
-      input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
+      input: { newPassword: PASSWORD, confirmPassword: PASSWORD, consents: [] },
     });
     // Pause site, NOT terminal — override fired requireInput, schema sits
     // here waiting for the consumer's form payload.
@@ -456,7 +456,7 @@ describe("InviteWorkflow subclass — inviteExtraStep override", () => {
 
     const r5 = await app.trigger({
       wfs: r4.body?.wfs as string,
-      input: { firstName: "Extra", lastName: "Override" },
+      input: { firstName: "Extra", lastName: "Override", consents: [] },
     });
     const data = r5.body?.data as Record<string, unknown> | undefined;
     expect(data?.userId).toBe("extra@test.com");

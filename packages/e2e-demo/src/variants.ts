@@ -181,6 +181,15 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
       },
     },
   },
+  // Phase 5 dynamic consent — the customer ConsentStore (DemoConsentStore)
+  // keys its `getPendingConsents` off the `x-wf-variant` header to return a
+  // 2-descriptor set for this variant (required terms + optional marketing).
+  // No enrollment / no profile-complete on this profile so the workflow
+  // lands on TermsBumpForm after credentials with the `AsConsentArray`
+  // rendered for the `consents: string[]` field. Drives WF-CONSENT-ARRAY-01.
+  "consent-array": {
+    mfaCtx: { mfaMode: "disabled" },
+  },
   // Standalone terms re-acceptance prompt — `termsVersion: 'v3'` with NO
   // other carrier form (no enrollment / no profileComplete) so the workflow
   // lands on `TermsBumpForm` after credentials. Drives WF-LOGIN-BUMP-01.
@@ -361,15 +370,15 @@ export const RECOVERY_VARIANTS: Record<string, RecoveryVariant> = {
     authOpts: { mfa: { pincodeResendTimeoutMs: 1000 } },
     policy: { delivery: { mode: "otp", otpTransports: ["email"] } },
   },
-  // Phase-2 inline-consent on recovery — `acceptance.termsVersion: 'v2'`
-  // drives a terms-bump prompt on `SetPasswordForm`. Drives
-  // WF-RECOVERY-CONSENT-01. Terms-bump is the headline recovery scenario for
-  // inline consent ("since you last set your password we updated our terms");
-  // marketing re-prompt during a password reset is unusual UX and stays off.
+  // Phase-5 dynamic inline-consent on recovery — `DemoConsentStore` keys its
+  // per-variant pending universe so this variant returns a required-terms
+  // `v2` descriptor. `AsConsentArray` renders the row on `SetPasswordForm`.
+  // Drives WF-RECOVERY-CONSENT-01. Terms-bump is the headline recovery
+  // scenario for inline consent ("since you last set your password we
+  // updated our terms").
   "recovery-terms-bump": {
     policy: {
       delivery: { mode: "magicLink", otpTransports: ["email"] },
-      acceptance: { termsVersion: "v2", consentMarketing: false },
     },
   },
 };
@@ -459,16 +468,15 @@ export const INVITE_VARIANTS: Record<string, InviteVariant> = {
     },
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["sms", "email", "totp"] },
   },
-  // Phase-2 inline-consent on invite — `acceptance.termsVersion: 'v1'` drives
-  // the `acceptedTerms` checkbox on `SetPasswordForm` during the accept tail.
-  // Drives WF-INVITE-CONSENT-01. Invite is the headline-value scenario for
-  // consent collection after login (new user onboarding). `mfaMode: 'disabled'`
+  // Phase-5 dynamic inline-consent on invite — `DemoConsentStore` keys its
+  // per-variant pending universe so the `invite-terms` variant returns a
+  // required-terms `v1` descriptor. `AsConsentArray` renders the row on
+  // `SetPasswordForm`. Drives WF-INVITE-CONSENT-01. `mfaMode: 'disabled'`
   // so the test stays focused on the consent path without an MFA pause.
   "invite-terms": {
     policy: {
       adminForm: { collectRoles: false },
       send: { mode: "email" },
-      acceptance: { termsVersion: "v1", consentMarketing: false },
     },
     mfaCtx: { mfaMode: "disabled" },
   },

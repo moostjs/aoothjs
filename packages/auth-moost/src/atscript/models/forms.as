@@ -1,47 +1,42 @@
 /**
- * Inline consent collection — `acceptedTerms` + `marketingOptIn` attached
- * to whichever data-collection form the user is already filling out.
- * Carrier forms `extends WithInlineConsentForm` to inherit these fields
- * without duplication. Visibility is gated by the already-resolved
- * acceptance policy on ctx + the already-captured flags
- * (`termsAcceptedDone` / `consentApplied`).
+ * Inline consent collection — a single dynamic `consents: string[]` field
+ * attached to whichever carrier form the user is already filling out.
+ * Carrier forms `extends WithInlineConsentForm` to inherit it without
+ * duplication.
  *
- * SECURITY: the form payload always carries the 2 fields (hidden or not).
- * The server-side `AuthWorkflowBase.processInlineConsent()` helper enforces
- * the same gates as `@ui.form.fn.hidden` — when the gate says "should be
- * hidden", the server IGNORES the incoming values entirely. Protects
- * against an attacker submitting `acceptedTerms: false` to withdraw consent
- * after the fact, or `marketingOptIn: false` to flip an opt-in.
+ * Backend transport: `@wf.context.pass 'pendingConsents'` ships the
+ * descriptor array (set by the `prepare-consents` @Step from
+ * `ConsentStore.getPendingConsents()`) to the client. The
+ * `@ui.form.fn.attr 'pendingConsents'` expression below binds it onto the
+ * `AsConsentArray` component (`@atscript/vue-aooth`) which renders one
+ * checkbox per descriptor; the user-submitted `string[]` carries back the
+ * SUBSET of `descriptor.id`s the user ticked.
  *
- * The accepted terms VERSION is NOT collected from the client. The server
- * is the authoritative source of truth for which version is currently in
- * force — when `acceptedTerms: true` arrives and the gate is open, the
- * helper records `ctx.termsAcceptedVersion = ctx.acceptance.termsVersion`
- * directly. Removing the client round-trip closes one attack surface
- * (an attacker cannot lie about which version they accepted) and unblocks
- * the SPA — `@atscript/vue-form`'s `createDefaultTypes()` ships no
- * `hidden` renderer, so a hidden field would break every carrier form
- * extending this interface.
+ * SPA-side hide-when-empty: `AsConsentArray` self-hides when
+ * `pendingConsents` is empty / unset — no `@ui.form.fn.hidden` is needed
+ * on the field. A carrier form whose customer hasn't configured any
+ * pending consents renders WITHOUT this block.
  *
- * The 2 inherited fields carry no `@ui.form.order`, so atscript's
- * stable-sort lands them AFTER any carrier-form field with an explicit
- * `@ui.form.order`. Carrier forms therefore set explicit low-numbered
- * orders on their own fields, pushing the inherited consent block to the end.
+ * SECURITY (silent-drop): the server-side `processInlineConsent` helper
+ * uses its OWN `ctx.pendingConsents` as the authoritative whitelist; any
+ * id submitted by the client outside that set is silently dropped (audit
+ * invariant — see helper rationale). The client cannot forge audit rows
+ * by submitting ids it was never shown.
+ *
+ * SECURITY (mandatory-by-message): each `ConsentDescriptor.required`
+ * non-empty string IS the per-row error copy AND the form-level error the
+ * server throws when a required consent is missing from the submitted set.
+ * Absent / empty ⇒ optional (the `ConsentEvent.accepted` boolean lets
+ * customers persist the un-ticked-optional decision for audit).
  */
-@wf.context.pass 'acceptance'
-@wf.context.pass 'termsAcceptedDone'
+@wf.context.pass 'pendingConsents'
 @wf.context.pass 'consentsPersisted'
 export interface WithInlineConsentForm {
-    @ui.form.type 'checkbox'
-    @meta.label 'I accept the Terms & Conditions'
-    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.acceptance?.termsVersion || !!ctx.termsAcceptedDone'
-    acceptedTerms?: boolean
-
-    @ui.form.type 'checkbox'
-    @meta.label 'I would like to receive marketing emails'
-    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.acceptance?.consentMarketing || !!ctx.consentsPersisted'
-    @meta.default 'false'
-    marketingOptIn?: boolean
+    @meta.label 'Pending consents'
+    @ui.form.component 'AsConsentArray'
+    @ui.form.fn.attr 'pendingConsents', '(_, _d, ctx) => ctx.pendingConsents'
+    @ui.form.grid.colSpan '12'
+    consents: string[]
 }
 
 /**
@@ -179,8 +174,7 @@ export interface EmailIdentifierForm {
  * the key is stripped by `extractPassContext` before reaching the client.
  */
 @wf.context.pass 'passwordPolicies'
-@wf.context.pass 'acceptance'
-@wf.context.pass 'termsAcceptedDone'
+@wf.context.pass 'pendingConsents'
 @wf.context.pass 'consentsPersisted'
 export interface SetPasswordForm extends WithInlineConsentForm {
     @ui.form.order 10
@@ -369,8 +363,7 @@ export interface PincodeForm {
 /**
  * Email-only form for the `ask/email` enrollment step.
  */
-@wf.context.pass 'acceptance'
-@wf.context.pass 'termsAcceptedDone'
+@wf.context.pass 'pendingConsents'
 @wf.context.pass 'consentsPersisted'
 @wf.context.pass 'otpDisclosure'
 export interface AskEmailForm extends WithInlineConsentForm {
@@ -386,8 +379,7 @@ export interface AskEmailForm extends WithInlineConsentForm {
  * Phone-only form for the `ask/phone` enrollment step. Free-form text —
  * E.164 normalization happens server-side.
  */
-@wf.context.pass 'acceptance'
-@wf.context.pass 'termsAcceptedDone'
+@wf.context.pass 'pendingConsents'
 @wf.context.pass 'consentsPersisted'
 @wf.context.pass 'otpDisclosure'
 export interface AskPhoneForm extends WithInlineConsentForm {
@@ -487,8 +479,7 @@ export interface EnrollConfirmForm {
  * Default minimal profile completion form. Consumers replace via
  * `LoginWorkflowOptions.profileCompleteForm` for richer shapes.
  */
-@wf.context.pass 'acceptance'
-@wf.context.pass 'termsAcceptedDone'
+@wf.context.pass 'pendingConsents'
 @wf.context.pass 'consentsPersisted'
 export interface ProfileCompleteForm extends WithInlineConsentForm {
     @ui.form.order 10
@@ -503,21 +494,15 @@ export interface ProfileCompleteForm extends WithInlineConsentForm {
 }
 
 /**
- * Standalone terms re-acceptance prompt. Fires for returning users whose
- * accepted terms version is stale and who did NOT pass through any
- * onboarding carrier form (`AskEmailForm` / `AskPhoneForm` / `SetPasswordForm` /
- * `ProfileCompleteForm`) on this login — those forms collect terms inline via
- * `WithInlineConsentForm`. The bump-prompt only renders the consent block
- * (no additional fields).
- *
- * Inherits `acceptedTerms` (required when `ctx.acceptance.termsVersion` is set
- * AND `ctx.termsAcceptedDone` is false — the bump prompt's whole reason for
- * firing). `marketingOptIn` hides via `WithInlineConsentForm`'s predicate when
- * `ctx.acceptance.consentMarketing` is false, which is the expected state on
- * a routine-login terms re-prompt (marketing decision was captured earlier).
+ * Standalone consent-bump prompt. Fires for returning users with pending
+ * consents (set by `prepare-consents` from `ConsentStore.getPendingConsents`)
+ * who did NOT pass through any onboarding carrier form (`AskEmailForm` /
+ * `AskPhoneForm` / `SetPasswordForm` / `ProfileCompleteForm`) on this login —
+ * those carrier forms collect consents inline via `WithInlineConsentForm`'s
+ * inherited `AsConsentArray` field. The bump-prompt only renders the same
+ * inherited consent block (no additional fields).
  */
-@wf.context.pass 'acceptance'
-@wf.context.pass 'termsAcceptedDone'
+@wf.context.pass 'pendingConsents'
 @wf.context.pass 'consentsPersisted'
 export interface TermsBumpForm extends WithInlineConsentForm {
 }

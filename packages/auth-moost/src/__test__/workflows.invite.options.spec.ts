@@ -97,7 +97,7 @@ async function driveDefaultInviteAccept(
   const r3 = await app.resumeViaQuery(token);
   const r4 = await app.trigger({
     wfs: r3.body?.wfs as string,
-    input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
+    input: { newPassword: PASSWORD, confirmPassword: PASSWORD, consents: [] },
   });
   return { status: r4.status, body: r4.body };
 }
@@ -122,7 +122,7 @@ describe("InviteWorkflow — default flow end-to-end", () => {
     const r3 = await app.resumeViaQuery(token);
     const r4 = await app.trigger({
       wfs: r3.body?.wfs as string,
-      input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
+      input: { newPassword: PASSWORD, confirmPassword: PASSWORD, consents: [] },
     });
 
     const data4 = r4.body?.data as Record<string, unknown> | undefined;
@@ -242,13 +242,13 @@ describe("InviteWorkflow — getProfileForm + applyProfile", () => {
     const r3 = await app.resumeViaQuery(token);
     const r4 = await app.trigger({
       wfs: r3.body?.wfs as string,
-      input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
+      input: { newPassword: PASSWORD, confirmPassword: PASSWORD, consents: [] },
     });
     // After password set, workflow pauses at collectProfile form.
     expect(JSON.stringify(r4.body)).toMatch(/firstName|lastName|ProfileCompleteForm/);
     const r5 = await app.trigger({
       wfs: r4.body?.wfs as string,
-      input: { firstName: "Pat", lastName: "Patel" },
+      input: { firstName: "Pat", lastName: "Patel", consents: [] },
     });
     // Now finished with auto-login.
     expect((r5.body?.data as Record<string, unknown>)?.userId).toBe("pp@test.com");
@@ -272,11 +272,11 @@ describe("InviteWorkflow — getProfileForm + applyProfile", () => {
     const r3 = await app.resumeViaQuery(token);
     const r4 = await app.trigger({
       wfs: r3.body?.wfs as string,
-      input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
+      input: { newPassword: PASSWORD, confirmPassword: PASSWORD, consents: [] },
     });
     await app.trigger({
       wfs: r4.body?.wfs as string,
-      input: { firstName: "Default", lastName: "Merge" },
+      input: { firstName: "Default", lastName: "Merge", consents: [] },
     });
 
     const user = (await app.users.getUser("dm@test.com")) as unknown as Record<string, unknown>;
@@ -371,7 +371,7 @@ describe("InviteWorkflow — re-invite", () => {
     const r3 = await app.resumeViaQuery(token);
     const r4 = await app.trigger({
       wfs: r3.body?.wfs as string,
-      input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
+      input: { newPassword: PASSWORD, confirmPassword: PASSWORD, consents: [] },
     });
     expect((r4.body?.data as Record<string, unknown>)?.userId).toBe("redo@test.com");
   });
@@ -484,7 +484,7 @@ describe("InviteWorkflow — idempotent magic-link click", () => {
     const r3 = await app.resumeViaQuery(token);
     const r4 = await app.trigger({
       wfs: r3.body?.wfs as string,
-      input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
+      input: { newPassword: PASSWORD, confirmPassword: PASSWORD, consents: [] },
     });
     expect((r4.body?.data as Record<string, unknown>)?.userId).toBe("idem@test.com");
 
@@ -515,7 +515,7 @@ describe("InviteWorkflow — idempotent magic-link click", () => {
     const r3 = await app.resumeViaQuery(tokenA);
     await app.trigger({
       wfs: r3.body?.wfs as string,
-      input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
+      input: { newPassword: PASSWORD, confirmPassword: PASSWORD, consents: [] },
     });
     // Sanity: user is fully accepted.
     expect((await app.users.getUser("twice@test.com")).account?.pendingInvitation).toBe(false);
@@ -832,7 +832,7 @@ describe("InviteWorkflow — WfFinished envelope shape", () => {
     const a1 = await app.resumeViaQuery(tokenA);
     await app.trigger({
       wfs: a1.body?.wfs as string,
-      input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
+      input: { newPassword: PASSWORD, confirmPassword: PASSWORD, consents: [] },
     });
 
     // tokenB now resumes into the already-accepted branch → finishWf({ next: manual }).
@@ -913,7 +913,7 @@ describe("InviteWorkflow — WfFinished envelope shape", () => {
     const r3 = await app.resumeViaQuery(token);
     const r4 = await app.trigger({
       wfs: r3.body?.wfs as string,
-      input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
+      input: { newPassword: PASSWORD, confirmPassword: PASSWORD, consents: [] },
     });
     const body = r4.body as Record<string, unknown>;
     expect(body.finished).toBe(true);

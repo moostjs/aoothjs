@@ -114,7 +114,7 @@ describe("WF-INVITE — admin-gated invite", () => {
     const passwordRes = await app.triggerWf("public", {
       wfid: "auth/invite/start",
       wfs: resumedBody.wfs,
-      input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
+      input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD, consents: [] },
     });
     // Demo wires `acceptProfileForm: InviteAcceptProfileForm` — workflow
     // pauses for profile collection after password-set.
@@ -195,7 +195,7 @@ describe("WF-INVITE — admin-gated invite", () => {
     const afterPw = await app.triggerWf("public", {
       wfid: "auth/invite/start",
       wfs: resumedBody.wfs,
-      input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
+      input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD, consents: [] },
     });
     const profileBody = await readWfPause(afterPw);
     // Workflow must pause again — this time for the consumer-supplied profile form.
@@ -256,7 +256,7 @@ describe("WF-INVITE — admin-gated invite", () => {
     const passwordRes = await app.triggerWf("public", {
       wfid: "auth/invite/start",
       wfs: firstBody.wfs,
-      input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
+      input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD, consents: [] },
     });
     // Demo wires `acceptProfileForm` — submit the profile to fully consume.
     const profileBody = await readWfPause(passwordRes);
@@ -318,7 +318,7 @@ describe("WF-INVITE — accept options", () => {
       const afterPw = await app.triggerWf("public", {
         wfid: "auth/invite/start",
         wfs: resumedBody.wfs,
-        input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
+        input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD, consents: [] },
       });
       const profileBody = await readWfPause(afterPw);
       const finalize = await app.triggerWf("public", {
@@ -422,7 +422,7 @@ async function startInviteAcceptTail(
   const pwRes = await app.triggerWf("public", {
     wfid: "auth/invite/start",
     wfs: resumedBody.wfs,
-    input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
+    input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD, consents: [] },
   });
   return { resp: pwRes, pwBody: await readWfPause(pwRes) };
 }
@@ -734,7 +734,7 @@ async function startReInviteAcceptTail(
   const pwRes = await app.triggerWf("public", {
     wfid: "auth/invite/resend",
     wfs: resumedBody.wfs,
-    input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
+    input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD, consents: [] },
   });
   return { pwBody: await readWfPause(pwRes) };
 }
@@ -930,7 +930,7 @@ describe("WF-INVITE — consumer subclass via inviteWorkflowClass", () => {
       const finalRes = await app.triggerWf("public", {
         wfid: "auth/invite/start",
         wfs: resumedBody.wfs,
-        input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD },
+        input: { newPassword: STRONG_PASSWORD, confirmPassword: STRONG_PASSWORD, consents: [] },
       });
       const finalBody = await expectFinished<{ userId?: string; accessToken?: string }>(finalRes);
       expect(finalBody.data?.userId).toBe(inviteEmail);

@@ -101,7 +101,6 @@ import {
 } from "./invite.workflow.options";
 import {
   AuthWorkflowBase,
-  type ConsentEvent,
   type InlineConsentInput,
   type MfaEnrollDeps,
   stripReservedUserKeys,
@@ -212,25 +211,26 @@ export interface InviteWfCtx {
   tokensIssued?: boolean;
 
   // Inline-consent state (mirrors LoginWfCtx — populated by
-  // `processInlineConsent` when the carrier `SetPasswordForm` is submitted and
-  // consumed by the `persist-consents` step at the end of the accept tail):
-  /** Server-authoritative version captured at acceptance moment. */
-  termsAcceptedVersion?: string;
-  /** Wall-clock ms when `processInlineConsent` accepted the terms gate. */
-  termsAcceptedAt?: number;
-  /** Wall-clock ms when `processInlineConsent` staged the marketing opt-in/out. */
-  marketingDecidedAt?: number;
-  /** Set true once `processInlineConsent` has consumed the acceptedTerms field. */
-  termsAcceptedDone?: boolean;
-  /** Marketing opt-in value captured inline; persisted by `persist-consents`. */
-  pendingMarketingOptIn?: boolean;
+  // `processInlineConsent` when the carrier `SetPasswordForm` is submitted
+  // and consumed by the `persist-consents` step at the end of the accept
+  // tail):
+  /**
+   * Subset of `pendingConsents[].id` the user ticked — set by
+   * `processInlineConsent` after silent-dropping unknown ids.
+   */
+  acceptedConsentIds?: string[];
+  /**
+   * Wall-clock ms when `processInlineConsent` resolved the carrier-form
+   * submission. Also the schema-gate for `persist-consents`.
+   */
+  consentsDecidedAt?: number;
   /** Set true by `persist-consents` after the batched `consentStore.save` call fires. */
   consentsPersisted?: boolean;
   /**
-   * Descriptors for the customer-defined general consents (terms, marketing,
+   * Descriptors for the customer-defined consents (terms, marketing,
    * jurisdiction, ...) the user still needs to accept. Populated once by
-   * `prepare-consents` after username-bind. Phase 5 will migrate carrier
-   * forms to consume this array; Phase 4 populates transport only.
+   * `prepare-consents` after username-bind; consumed by `WithInlineConsentForm`'s
+   * dynamic `AsConsentArray` field on the carrier form (Phase 5).
    */
   pendingConsents?: ConsentDescriptor[];
 
@@ -829,16 +829,15 @@ export class InviteWorkflow extends AuthWorkflowBase {
         // Consumer extension point — see `inviteExtraStep()` method.
         { id: "extra-step" },
         // Batched consent persistence. Fires once per workflow run after any
-        // inline consent capture (terms / marketing via `processInlineConsent`
-        // on `SetPasswordForm`). Mirrors login's `persist-consents` placement
-        // — before the tail that issues tokens. No invite-specific
-        // terms-bump-prompt: invite always has `SetPasswordForm` as a
-        // guaranteed carrier form, so the inline path covers terms-bump too.
+        // inline consent capture (dynamic `consents: string[]` via
+        // `processInlineConsent` on `SetPasswordForm`). Mirrors login's
+        // `persist-consents` placement — before the tail that issues tokens.
+        // No invite-specific terms-bump-prompt: invite always has
+        // `SetPasswordForm` as a guaranteed carrier form, so the inline
+        // `AsConsentArray` path is sufficient.
         {
           id: "persist-consents",
-          condition: (ctx) =>
-            !ctx.consentsPersisted &&
-            (ctx.termsAcceptedDone === true || ctx.pendingMarketingOptIn !== undefined),
+          condition: (ctx) => !!ctx.consentsDecidedAt && !ctx.consentsPersisted,
         },
         {
           id: "unset-pending-invitation",
@@ -1322,10 +1321,11 @@ export class InviteWorkflow extends AuthWorkflowBase {
     } catch (err) {
       this.translatePasswordSetError(err);
     }
-    // SetPasswordForm `extends WithInlineConsentForm` — capture acceptedTerms
-    // + marketingOptIn inline. `processInlineConsent` silently ignores both
-    // when the matching `acceptance` policy is off (see its security gate),
-    // so the call is safe to make on every accept-tail invite run.
+    // SetPasswordForm `extends WithInlineConsentForm` — capture the dynamic
+    // `consents: string[]` array inline. `processInlineConsent` is a no-op
+    // when `ctx.pendingConsents` is empty (default), so the call is safe to
+    // make on every accept-tail invite run; unknown ids are silently dropped
+    // per its SECURITY contract.
     this.processInlineConsent(ctx, input, wf);
     ctx.passwordSet = true;
     return undefined;
@@ -1475,40 +1475,14 @@ export class InviteWorkflow extends AuthWorkflowBase {
 
   // ── Phase B: persist-consents ─────────────────────────────────────────
   /**
-   * Batched consent persistence — fans every consent event captured during
-   * this invite run (terms acceptance + marketing opt-in/out) out to the
-   * `ConsentStore.save(username, events)` DI provider in one call.
-   * Idempotent via `ctx.consentsPersisted`; short-circuits with no events
-   * when neither gate fired but the schema still routed here (defensive —
-   * the schema condition normally filters this case).
+   * Batched consent persistence — delegates to
+   * `AuthWorkflowBase.runPersistConsents`. See that helper for the full
+   * audit-friendly-default / idempotency / silent-drop contract.
    */
   @Step("persist-consents")
   @Public()
-  async persistConsentsStep(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
-    this.requireUsername(ctx);
-    if (ctx.consentsPersisted) return undefined;
-    const events: ConsentEvent[] = [];
-    if (ctx.termsAcceptedDone && ctx.termsAcceptedVersion && ctx.termsAcceptedAt) {
-      events.push({
-        kind: "terms",
-        version: ctx.termsAcceptedVersion,
-        at: ctx.termsAcceptedAt,
-      });
-    }
-    if (ctx.pendingMarketingOptIn !== undefined && ctx.marketingDecidedAt) {
-      events.push({
-        kind: "marketing",
-        optIn: ctx.pendingMarketingOptIn,
-        at: ctx.marketingDecidedAt,
-      });
-    }
-    if (events.length === 0) {
-      ctx.consentsPersisted = true;
-      return undefined;
-    }
-    await this.consentStore.save(ctx.username, events);
-    ctx.consentsPersisted = true;
-    return undefined;
+  persistConsentsStep(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
+    return this.runPersistConsents(ctx, this.consentStore);
   }
 
   // ── Phase B: unsetPendingInvitation ───────────────────────────────────

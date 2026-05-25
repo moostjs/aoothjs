@@ -1257,25 +1257,21 @@ test.describe("WF-INVITE — auth.invite family (MFA enrollment, PW MFA coverage
   });
 });
 
-// ── Phase-2 inline-consent on invite ─────────────────────────────────────────
+// ── Phase-5 dynamic inline-consent on invite ─────────────────────────────────
 //
-// Mirrors WF-LOGIN-BUMP-01 in login.spec.ts. The `invite-terms` variant flips
-// `acceptance.termsVersion: 'v1'` so `SetPasswordForm` renders the
-// `acceptedTerms` checkbox during the accept tail. The post-form
-// `persist-consents` step batches the captured terms event into a single
+// Mirrors WF-CONSENT-ARRAY-01 in consent.spec.ts. The `invite-terms` variant
+// keys the customer `DemoConsentStore.getPendingConsents` to return a single
+// required-terms descriptor → `SetPasswordForm` renders the `AsConsentArray`
+// row for the dynamic `consents: string[]` field. The post-form
+// `persist-consents` step batches one event per pending descriptor into one
 // `DemoConsentStore.save` call, which appends to the SAME globalThis-anchored
-// consent log the recovery + login flows write to. The
-// `/__test/consent-log/:username` endpoint then returns the event for
-// assertion here. Without the new `processInlineConsent` call in
-// `createPasswordForm` (Phase-2 production change), the submitted
-// `acceptedTerms` would be stripped as a form-extra and the log would stay
-// empty.
-test.describe("WF-INVITE — inline-consent on accept (Phase 2)", () => {
+// consent log the recovery + login flows write to.
+test.describe("WF-INVITE — inline-consent on accept (Phase 5)", () => {
   test.beforeEach(async ({ request }) => {
     await resetAppResilient(request);
   });
 
-  test("WF-INVITE-CONSENT-01: invite-terms variant → SetPasswordForm shows acceptedTerms; tick + submit → consent-log carries kind:'terms' v1", async ({
+  test("WF-INVITE-CONSENT-01: invite-terms variant → SetPasswordForm shows AsConsentArray; tick + submit → consent-log carries {id:'terms', accepted:true, version:'v1'}", async ({
     page,
     request,
     baseURL,
@@ -1299,15 +1295,15 @@ test.describe("WF-INVITE — inline-consent on accept (Phase 2)", () => {
     const inviteePage = await ctx.newPage();
     await inviteePage.goto(resumeUrl);
 
-    // SetPasswordForm pause — `acceptedTerms` checkbox is visible BECAUSE
-    // the variant set `acceptance.termsVersion: 'v1'` (the inline-consent
-    // surface on `WithInlineConsentForm` hides when the policy is off).
+    // SetPasswordForm pause — `AsConsentArray` row visible BECAUSE the
+    // variant's ConsentStore returned a required terms descriptor (component
+    // self-hides on empty pendingConsents).
     await expect(inviteePage.locator('[name="newPassword"]')).toBeVisible({ timeout: 15_000 });
-    const termsBox = inviteePage.locator('input[type="checkbox"][name="acceptedTerms"]').first();
-    await expect(termsBox).toBeVisible();
+    await expect(inviteePage.getByText("I accept the Terms")).toBeVisible();
     await inviteePage.locator('[name="newPassword"]').fill("InviteePass-1!");
     await inviteePage.locator('[name="confirmPassword"]').fill("InviteePass-1!");
-    await termsBox.check();
+    // First checkbox on the form is the AsConsentArray row for `terms`.
+    await inviteePage.locator('input[type="checkbox"]').first().check();
     await submitForm(inviteePage);
 
     // Profile pause — submit empty to advance.
@@ -1315,21 +1311,22 @@ test.describe("WF-INVITE — inline-consent on accept (Phase 2)", () => {
     await submitForm(inviteePage);
 
     // Auto-login finish issues tokens — proof the workflow completed
-    // through the new `persist-consents` step.
+    // through the `persist-consents` step.
     await expect(inviteePage.locator("text=Workflow finished")).toBeVisible({ timeout: 15_000 });
     await expect(inviteePage.locator("pre").first()).toContainText("accessToken");
 
-    // The unified consent log (fed by login + invite + recovery) carries the
-    // captured event. The username on the invite path is the email.
+    // The unified consent log carries the captured event in the new shape.
     const after = await request.get(`/__test/consent-log/${encodeURIComponent(inviteeEmail)}`);
     expect(after.status()).toBe(200);
     const events = (await after.json()) as Array<{
-      kind: string;
+      id: string;
+      accepted: boolean;
       version?: string;
       at: number;
     }>;
     expect(events.length).toBe(1);
-    expect(events[0].kind).toBe("terms");
+    expect(events[0].id).toBe("terms");
+    expect(events[0].accepted).toBe(true);
     expect(events[0].version).toBe("v1");
     expect(typeof events[0].at).toBe("number");
     await ctx.close();

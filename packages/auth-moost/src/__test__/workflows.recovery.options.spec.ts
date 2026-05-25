@@ -172,7 +172,7 @@ describe("RecoveryWorkflowOpts — deliveryMode otp end-to-end", () => {
 
     const r4 = await app.trigger({
       wfs: r3.body?.wfs as string,
-      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
+      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123", consents: [] },
     });
     // Auto-login terminal returns the buildLoginResponse payload wrapped in the envelope.
     const env4 = expectFinished<{ userId: string; accessToken: string }>(r4);
@@ -328,7 +328,7 @@ describe("RecoveryWorkflowOpts — requireKnownFactor", () => {
 
     const r2 = await app.trigger({
       wfs: r.body?.wfs as string,
-      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
+      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123", consents: [] },
     });
     const env2 = expectFinished<{ userId: string }>(r2);
     expect(env2.data?.userId).toBe("alice@test.com");
@@ -391,7 +391,7 @@ describe("RecoveryWorkflowOpts — revokeAllSessions", () => {
     const { wfs } = await driveMagicLinkToSetPassword(app, "alice@test.com");
     const fin = await app.trigger({
       wfs,
-      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
+      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123", consents: [] },
     });
     const envFin = expectFinished<{ userId: string }>(fin);
     expect(envFin.data?.userId).toBe("alice@test.com");
@@ -413,7 +413,7 @@ describe("RecoveryWorkflowOpts — revokeAllSessions", () => {
     const { wfs } = await driveMagicLinkToSetPassword(app, "alice@test.com");
     await app.trigger({
       wfs,
-      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
+      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123", consents: [] },
     });
     // Pre-existing token still works — opt-out preserved.
     expect(await app.auth.validate(pre.accessToken)).not.toBeNull();
@@ -431,7 +431,7 @@ describe("RecoveryWorkflowOpts — freshLoginRequired terminal", () => {
     const { wfs } = await driveMagicLinkToSetPassword(app, "alice@test.com");
     const r = await app.trigger({
       wfs,
-      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
+      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123", consents: [] },
     });
     expect(r.status).not.toBe(302);
     const env = expectFinished<{ accessToken?: string; userId?: string }>(r);
@@ -453,7 +453,7 @@ describe("RecoveryWorkflowOpts — freshLoginRequired terminal", () => {
     const { wfs } = await driveMagicLinkToSetPassword(app, "alice@test.com");
     const r = await app.trigger({
       wfs,
-      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
+      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123", consents: [] },
     });
     const env = expectFinished(r);
     const next = env.next as Extract<NonNullable<typeof env.next>, { trigger: "auto" }>;
@@ -477,7 +477,7 @@ describe("RecoveryWorkflowOpts — freshLoginRequired terminal", () => {
     const { wfs } = await driveMagicLinkToSetPassword(app, "alice@test.com");
     const r = await app.trigger({
       wfs,
-      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
+      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123", consents: [] },
     });
     const env = expectFinished<{ userId: string; accessToken: string }>(r);
     expect(env.data?.userId).toBe("alice@test.com");
@@ -498,7 +498,7 @@ describe("RecoveryWorkflowOpts — freshLoginRequired terminal", () => {
     const { wfs } = await driveMagicLinkToSetPassword(app, "alice@test.com");
     const r = await app.trigger({
       wfs,
-      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
+      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123", consents: [] },
     });
     // Default auto-login emits the buildLoginResponse payload under .data, no 302.
     expect(r.status).not.toBe(302);
@@ -576,7 +576,7 @@ describe("RecoveryWorkflowOpts — audit", () => {
     const { wfs } = await driveMagicLinkToSetPassword(app, "alice@test.com");
     await app.trigger({
       wfs,
-      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
+      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123", consents: [] },
     });
 
     const kinds = captured.map((e) => e.kind);
@@ -607,7 +607,7 @@ describe("RecoveryWorkflowOpts — audit", () => {
     const { wfs } = await driveMagicLinkToSetPassword(app, "alice@test.com");
     await app.trigger({
       wfs,
-      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123" },
+      input: { newPassword: "NewPassword123", confirmPassword: "NewPassword123", consents: [] },
     });
     expect(captured.find((e) => e.kind === "recovery.requested")).toBeUndefined();
     expect(captured.find((e) => e.kind === "recovery.completed")).toBeUndefined();

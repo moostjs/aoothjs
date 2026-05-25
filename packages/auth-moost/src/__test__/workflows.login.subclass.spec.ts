@@ -151,36 +151,41 @@ describe("LoginWorkflow subclass — applyProfile override", () => {
 //
 // The customer-override seam is `ConsentStore.save(username, events)` — the
 // `persist-consents` @Step body calls `this.consentStore.save(...)` after
-// the inline-consent carrier form fires. Marketing consent arrives on an
-// onboarding carrier form (`LoginCredentialsForm` has no consent mixin);
-// the test routes the opt-in through `AskEmailForm` to exercise that path.
+// the inline-consent carrier form fires. The carrier-form payload is the
+// dynamic `consents: string[]` field on the inherited `WithInlineConsentForm`
+// (Phase 5); the test routes the submission through `AskEmailForm` (the
+// first carrier form post-credentials in this enrollment-driven flow).
 describe("LoginWorkflow — ConsentStore.save override (CONSENT-OVERRIDE)", () => {
-  it("CONSENT-OVERRIDE-01: inline marketingOptIn:true on a carrier form → consentStore.save receives a marketing event", async () => {
+  it("CONSENT-OVERRIDE-01: inline consents:['marketing'] on a carrier form → consentStore.save receives a marketing event", async () => {
     // WHY (Rule 9): asserts the new batched consumer-override seam fires
     // with the right shape. A regression that wired `persist-consents` to
-    // call a different hook, or skipped capturing `at`, or sent
-    // `applyConsentMarketing`-style positional args instead of an events
-    // array, would silently break the customer extension contract. The
-    // captured-array assertion is load-bearing — it pins (a) the override
-    // IS the dispatch target, (b) the inline-staged value is what's
-    // passed, (c) the username binding from credentials is in scope by
-    // the time persist-consents fires, and (d) the `at` timestamp is
-    // populated at acceptance moment.
+    // call a different hook, or skipped capturing `at`, or sent positional
+    // args instead of an events array, would silently break the customer
+    // extension contract. The captured-array assertion is load-bearing —
+    // it pins (a) the override IS the dispatch target, (b) the validated
+    // subset of `consents` ids drives the event accepted booleans,
+    // (c) the username binding from credentials is in scope by the time
+    // persist-consents fires, and (d) the `at` timestamp is populated at
+    // acceptance moment.
     const calls: Array<{ username: string; events: ConsentEvent[] }> = [];
     @Injectable()
     class CapturingConsentStore extends ConsentStore {
       override async save(username: string, events: ConsentEvent[]): Promise<void> {
         calls.push({ username, events: [...events] });
       }
+      override async getPendingConsents(): Promise<
+        Array<{ id: string; text: string; required?: string }>
+      > {
+        return [{ id: "marketing", text: "Marketing emails" }];
+      }
     }
     const app = await prepareWfApp({
       consentStore: new CapturingConsentStore(),
       loginPolicy: {
-        acceptance: { profileCompleteRequired: false, consentMarketing: true },
         // Force ensureEmail to route the workflow through `AskEmailForm`
         // (a carrier form for `WithInlineConsentForm`) so the inline
-        // marketing opt-in is collectable after `LoginCredentialsForm`
-        // dropped the consent mixin.
+        // `consents` array is collectable after `LoginCredentialsForm`
+        // (which doesn't extend the consent mixin).
         enrollment: { ensureEmail: true, ensurePhone: false },
       },
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
@@ -191,12 +196,12 @@ describe("LoginWorkflow — ConsentStore.save override (CONSENT-OVERRIDE)", () =
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
     });
-    // Paused at AskEmailForm — submit email + inline marketing opt-in.
+    // Paused at AskEmailForm — submit email + inline `consents`.
     expect(r2.body?.wfs).toBeTruthy();
     const before = Date.now();
     const r3 = await app.trigger({
       wfs: r2.body?.wfs as string,
-      input: { email: "alice@example.com", marketingOptIn: true },
+      input: { email: "alice@example.com", consents: ["marketing"] },
     });
     // Paused at PincodeForm — supply the captured OTP from the sent email.
     expect(r3.body?.wfs).toBeTruthy();
@@ -209,13 +214,13 @@ describe("LoginWorkflow — ConsentStore.save override (CONSENT-OVERRIDE)", () =
       input: { code: sent!.code as string, rememberDevice: false },
     });
     expect((r4.body?.data as Record<string, unknown>)?.userId).toBe("alice");
-    // Override fired exactly once with the staged marketing event.
+    // Override fired exactly once with the validated event.
     expect(calls.length).toBe(1);
     expect(calls[0].username).toBe("alice");
     expect(calls[0].events).toHaveLength(1);
     const ev = calls[0].events[0];
-    expect(ev.kind).toBe("marketing");
-    expect(ev.optIn).toBe(true);
+    expect(ev.id).toBe("marketing");
+    expect(ev.accepted).toBe(true);
     expect(ev.at).toBeGreaterThanOrEqual(before);
     expect(ev.at).toBeLessThanOrEqual(Date.now());
   });

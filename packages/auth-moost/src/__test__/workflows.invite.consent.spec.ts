@@ -1,28 +1,25 @@
 /**
- * Phase-2 inline-consent coverage for `InviteWorkflow`.
+ * Phase-5 inline-consent coverage for `InviteWorkflow`.
  *
- * Phase 1 landed the `ConsentStore` DI seam; Phase 2 wires the
- * `persist-consents` step body to `consentStore.save(username, events)` and
- * fans the same pattern out across all three workflows. Consumers writing
- * apps with these workflows shouldn't have to choose between consent-tracking
- * on login but not on invite — invite is the headline-value scenario after
- * login (new user accepting an invitation → consent collection is part of
- * onboarding).
+ * Phase 1 landed the `ConsentStore` DI seam; Phase 2 wired the
+ * `persist-consents` step body to `consentStore.save(username, events)`.
+ * Phase 4 added the `prepare-consents` @Step that populates
+ * `ctx.pendingConsents` from `ConsentStore.getPendingConsents`. Phase 5
+ * replaces the static `acceptedTerms`/`marketingOptIn` carrier-form pair
+ * with a single dynamic `consents: string[]` field rendered by
+ * `AsConsentArray` (`@atscript/vue-aooth`).
  *
  * The inline-consent surface is `SetPasswordForm` (the guaranteed carrier
- * form on invite's accept tail). It already `extends WithInlineConsentForm`,
- * so the same `acceptedTerms` / `marketingOptIn` fields ride through with no
- * form changes. The new `processInlineConsent` call inside
- * `createPasswordForm` is the load-bearing wiring — without it, an admin who
- * sets `acceptance.termsVersion` would never see the consumer
- * `ConsentStore.save` override fire.
+ * form on invite's accept tail) which `extends WithInlineConsentForm`. The
+ * new `processInlineConsent` call inside `createPasswordForm` validates the
+ * submitted ids against the server-owned `ctx.pendingConsents` whitelist
+ * (silent-drop unknown, throw on missing-required), and the
+ * `persist-consents` step persists ONE event per pending descriptor
+ * (audit-friendly default — declined-optional consents persisted with
+ * `accepted: false`).
  *
- * Anti-test guard (Rule 9): each test asserts an observable outcome
- * (consumer override receives event with the right shape; idempotency
- * counter stays at the expected value). Removing the production branch
- * under test (the `processInlineConsent` call, the schema's
- * `persist-consents` condition, the step's `if (consentsPersisted)`
- * idempotency guard) would make the matching test fail.
+ * Anti-test guard (Rule 9): each test asserts an observable outcome the
+ * production branch under test is required to produce.
  */
 import { AuthCredential } from "@aooth/auth";
 import { UserService } from "@aooth/user";
@@ -42,7 +39,8 @@ import { prepareWfApp, withInviteMfaCtx } from "./workflow-utils";
 const PASSWORD = "NewPassword123";
 
 /**
- * `ConsentStore` subclass that captures every `save(username, events)` call.
+ * `ConsentStore` subclass that captures every `save(username, events)` call
+ * AND lets a test seed the pending descriptors via `pendingResponse`.
  * `persistDelayMs` sleeps BEFORE pushing so the `at` timestamp captured by
  * `processInlineConsent` (form-submit time) is provably earlier than
  * `Date.now()` at write-time — pins the "captured at acceptance, not at
@@ -52,27 +50,30 @@ const PASSWORD = "NewPassword123";
 class CapturingConsentStore extends ConsentStore {
   readonly calls: Array<{ username: string; events: ConsentEvent[] }> = [];
   persistDelayMs = 0;
+  pendingResponse: ConsentDescriptor[] = [];
   override async save(username: string, events: ConsentEvent[]): Promise<void> {
     if (this.persistDelayMs > 0) {
       await new Promise<void>((r) => setTimeout(r, this.persistDelayMs));
     }
     this.calls.push({ username, events: [...events] });
   }
+  override async getPendingConsents(
+    _username: string | undefined,
+    _ctx: { workflow: string; channel?: "email" | "sms" },
+  ): Promise<ConsentDescriptor[]> {
+    return this.pendingResponse;
+  }
 }
 
 /**
- * Build an `InviteWorkflow` subclass with `resolveAcceptance` overridden to
- * return the supplied policy. Optional `doubleStep` re-invokes
- * `persistConsentsStep` after the engine's first pass so the idempotency
- * guard is exercised.
+ * Build an `InviteWorkflow` subclass with the constructor declared so DI
+ * metadata regenerates. `doubleStep` re-invokes `persistConsentsStep` after
+ * the engine's first pass so the idempotency guard is exercised.
  */
-function makeCapturingInvite(
-  policy: NonNullable<InviteWfCtx["acceptance"]>,
-  options: { doubleStep?: boolean } = {},
-): typeof InviteWorkflow {
+function makeInviteSubclass(options: { doubleStep?: boolean } = {}): typeof InviteWorkflow {
   @Inherit()
   @Controller("auth/invite")
-  class CapturingInvite extends InviteWorkflow {
+  class InviteSubclass extends InviteWorkflow {
     constructor(
       opts: InviteWorkflowOpts,
       users: UserService,
@@ -81,11 +82,6 @@ function makeCapturingInvite(
       consentStore: ConsentStore,
     ) {
       super(opts, users, auth, authOpts, consentStore);
-    }
-    protected override resolveAcceptance(
-      _ctx: InviteWfCtx,
-    ): NonNullable<InviteWfCtx["acceptance"]> {
-      return policy;
     }
     override async persistConsentsStep(ctx: InviteWfCtx): Promise<undefined> {
       await super.persistConsentsStep(ctx);
@@ -96,7 +92,7 @@ function makeCapturingInvite(
       return undefined;
     }
   }
-  return CapturingInvite;
+  return InviteSubclass;
 }
 
 /**
@@ -116,15 +112,16 @@ async function inviteUntilSetPassword(
   return { wfs: r3.body?.wfs as string };
 }
 
-describe("InviteWorkflow — inline-consent persist seam (Phase 2)", () => {
-  it("INVITE-PERSIST-CONSENT-01: terms-only flow → consentStore.save receives [{kind:'terms',version,at}]", async () => {
-    // WHY: pins the headline guarantee — `acceptance.termsVersion` set + the
-    // invitee submitting `acceptedTerms: true` on `SetPasswordForm` results in
-    // the consumer override receiving exactly one terms event with the
-    // server-authoritative version + a captured timestamp. Without the
-    // `processInlineConsent` call in `createPasswordForm` (production branch
-    // under test), the submitted `acceptedTerms` would be a stripped form-
-    // extra and the workflow would never record acceptance.
+describe("InviteWorkflow — inline-consent persist seam (Phase 5)", () => {
+  it("INVITE-PERSIST-CONSENT-01: required terms descriptor + consents:['terms'] → consentStore.save receives [{id:'terms',accepted:true,version,at}]", async () => {
+    // WHY: pins the headline guarantee — `pendingConsents` containing a
+    // required terms descriptor + the invitee submitting `consents: ['terms']`
+    // on `SetPasswordForm` results in the consumer override receiving exactly
+    // one event with the server-authoritative `descriptor.version` + a
+    // captured timestamp. Without the `processInlineConsent` call in
+    // `createPasswordForm` (production branch under test), the submitted
+    // `consents` field would be a stripped form-extra and the workflow would
+    // never record acceptance.
     //
     // Also covers the "`at` captured at acceptance moment, not at write
     // time" semantic — the store sleeps 50ms before pushing, then we assert
@@ -133,7 +130,10 @@ describe("InviteWorkflow — inline-consent persist seam (Phase 2)", () => {
     // would push the value past `afterSubmit`, failing this assertion.
     const consentStore = new CapturingConsentStore();
     consentStore.persistDelayMs = 50;
-    const Capturing = makeCapturingInvite({ termsVersion: "v1", consentMarketing: false });
+    consentStore.pendingResponse = [
+      { id: "terms", text: "Accept the Terms", required: "must accept", version: "v1" },
+    ];
+    const Capturing = makeInviteSubclass();
     const app = await prepareWfApp({
       consentStore,
       inviteWorkflowClass: withInviteMfaCtx(Capturing, { mfaMode: "disabled" }),
@@ -146,7 +146,7 @@ describe("InviteWorkflow — inline-consent persist seam (Phase 2)", () => {
         input: {
           newPassword: PASSWORD,
           confirmPassword: PASSWORD,
-          acceptedTerms: true,
+          consents: ["terms"],
         },
       })
       .then(() => Date.now());
@@ -154,22 +154,24 @@ describe("InviteWorkflow — inline-consent persist seam (Phase 2)", () => {
     expect(consentStore.calls.length).toBe(1);
     expect(consentStore.calls[0].username).toBe("alice@test.com");
     expect(consentStore.calls[0].events.length).toBe(1);
-    expect(consentStore.calls[0].events[0].kind).toBe("terms");
+    expect(consentStore.calls[0].events[0].id).toBe("terms");
+    expect(consentStore.calls[0].events[0].accepted).toBe(true);
     expect(consentStore.calls[0].events[0].version).toBe("v1");
     expect(consentStore.calls[0].events[0].at).toBeGreaterThanOrEqual(before);
-    // `at` was stamped at processInlineConsent time (before the 50ms persist
-    // delay). It must therefore be <= the moment SetPasswordForm completed
+    // `at` stamped at processInlineConsent time (before the 50ms persist
+    // delay). Must therefore be <= the moment SetPasswordForm completed
     // its trigger response — strictly NOT past the post-delay `Date.now()`
     // that the consentStore.save call sees.
     expect(consentStore.calls[0].events[0].at).toBeLessThanOrEqual(afterSubmit);
   });
 
-  it("INVITE-PERSIST-CONSENT-02: marketing-only flow → consentStore.save receives [{kind:'marketing',optIn,at}]", async () => {
-    // WHY: pins the marketing-only event shape. No terms event should be
-    // added when terms policy is off; the optIn boolean rides through to the
-    // event payload unchanged.
+  it("INVITE-PERSIST-CONSENT-02: optional marketing ticked → consentStore.save receives [{id:'marketing',accepted:true,at}] (no version)", async () => {
+    // WHY: pins the optional-descriptor event shape with no version. A
+    // regression that always stamped `version` (e.g. forced default) would
+    // break customers who keep versioning on the FK side only.
     const consentStore = new CapturingConsentStore();
-    const Capturing = makeCapturingInvite({ consentMarketing: true });
+    consentStore.pendingResponse = [{ id: "marketing", text: "Marketing emails" }];
+    const Capturing = makeInviteSubclass();
     const app = await prepareWfApp({
       consentStore,
       inviteWorkflowClass: withInviteMfaCtx(Capturing, { mfaMode: "disabled" }),
@@ -180,13 +182,40 @@ describe("InviteWorkflow — inline-consent persist seam (Phase 2)", () => {
       input: {
         newPassword: PASSWORD,
         confirmPassword: PASSWORD,
-        marketingOptIn: true,
+        consents: ["marketing"],
       },
     });
     expect(consentStore.calls.length).toBe(1);
     expect(consentStore.calls[0].events.length).toBe(1);
-    expect(consentStore.calls[0].events[0].kind).toBe("marketing");
-    expect(consentStore.calls[0].events[0].optIn).toBe(true);
+    expect(consentStore.calls[0].events[0].id).toBe("marketing");
+    expect(consentStore.calls[0].events[0].accepted).toBe(true);
+    expect(consentStore.calls[0].events[0].version).toBeUndefined();
+  });
+
+  it("INVITE-PERSIST-CONSENT-DECLINED-01: optional marketing un-ticked → consentStore.save receives [{id:'marketing',accepted:false,at}] (audit default)", async () => {
+    // WHY: pins the audit-friendly default — an un-ticked OPTIONAL
+    // descriptor is still persisted with `accepted: false`. The whole
+    // event-per-pending invariant is what lets customers prove the user
+    // was asked. A regression that filtered to only-accepted (saving
+    // bytes) would break compliance audits. Submit `consents: []` against
+    // an optional marketing descriptor — workflow MUST advance AND persist
+    // the declined-optional event.
+    const consentStore = new CapturingConsentStore();
+    consentStore.pendingResponse = [{ id: "marketing", text: "Marketing emails" }];
+    const Capturing = makeInviteSubclass();
+    const app = await prepareWfApp({
+      consentStore,
+      inviteWorkflowClass: withInviteMfaCtx(Capturing, { mfaMode: "disabled" }),
+    });
+    const { wfs } = await inviteUntilSetPassword(app, "carol@test.com");
+    await app.trigger({
+      wfs,
+      input: { newPassword: PASSWORD, confirmPassword: PASSWORD, consents: [] },
+    });
+    expect(consentStore.calls.length).toBe(1);
+    expect(consentStore.calls[0].events.length).toBe(1);
+    expect(consentStore.calls[0].events[0].id).toBe("marketing");
+    expect(consentStore.calls[0].events[0].accepted).toBe(false);
   });
 
   it("INVITE-PERSIST-IDEMPOTENT-01: re-entering persist-consents → no second consentStore.save call (idempotency)", async () => {
@@ -198,35 +227,8 @@ describe("InviteWorkflow — inline-consent persist seam (Phase 2)", () => {
     // calls `super.persistConsentsStep` TWICE inside its override — the
     // second call must short-circuit on the guard.
     const consentStore = new CapturingConsentStore();
-    const Capturing = makeCapturingInvite({ consentMarketing: true }, { doubleStep: true });
-    const app = await prepareWfApp({
-      consentStore,
-      inviteWorkflowClass: withInviteMfaCtx(Capturing, { mfaMode: "disabled" }),
-    });
-    const { wfs } = await inviteUntilSetPassword(app, "carol@test.com");
-    await app.trigger({
-      wfs,
-      input: {
-        newPassword: PASSWORD,
-        confirmPassword: PASSWORD,
-        marketingOptIn: true,
-      },
-    });
-    expect(consentStore.calls.length).toBe(1);
-  });
-
-  it("INVITE-PERSIST-SKIP-01: no acceptance policy + no consent fields → consentStore.save never called", async () => {
-    // WHY: pins the schema-condition short-circuit. The `persist-consents`
-    // step's condition is
-    //   `!consentsPersisted && (termsAcceptedDone || pendingMarketingOptIn !== undefined)`
-    // — when neither has fired the step is SKIPPED entirely and the save
-    // hook stays at 0 calls. A regression that always invoked the step body
-    // would emit a `consentStore.save(username, [])` call here (the body's
-    // `events.length === 0` branch sets `consentsPersisted = true` but does
-    // NOT call save — but skipping the step entirely is what we want to
-    // prove via the call counter).
-    const consentStore = new CapturingConsentStore();
-    const Capturing = makeCapturingInvite({ consentMarketing: false });
+    consentStore.pendingResponse = [{ id: "marketing", text: "Marketing emails" }];
+    const Capturing = makeInviteSubclass({ doubleStep: true });
     const app = await prepareWfApp({
       consentStore,
       inviteWorkflowClass: withInviteMfaCtx(Capturing, { mfaMode: "disabled" }),
@@ -234,7 +236,34 @@ describe("InviteWorkflow — inline-consent persist seam (Phase 2)", () => {
     const { wfs } = await inviteUntilSetPassword(app, "dan@test.com");
     await app.trigger({
       wfs,
-      input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
+      input: {
+        newPassword: PASSWORD,
+        confirmPassword: PASSWORD,
+        consents: ["marketing"],
+      },
+    });
+    expect(consentStore.calls.length).toBe(1);
+  });
+
+  it("INVITE-PERSIST-SKIP-01: empty pendingConsents → consentStore.save NEVER called even if client posts ids", async () => {
+    // WHY: pins the "no pending consents, no audit row" invariant.
+    // The `persist-consents` schema condition gates on
+    // `consentsDecidedAt` (which is only set when pending was non-empty);
+    // a regression that always invoked `save()` (even with an empty
+    // events array) would generate empty-event audit rows polluting
+    // consumer logs.
+    const consentStore = new CapturingConsentStore();
+    consentStore.pendingResponse = []; // No pending — silent-drop on any submission.
+    const Capturing = makeInviteSubclass();
+    const app = await prepareWfApp({
+      consentStore,
+      inviteWorkflowClass: withInviteMfaCtx(Capturing, { mfaMode: "disabled" }),
+    });
+    const { wfs } = await inviteUntilSetPassword(app, "evan@test.com");
+    await app.trigger({
+      wfs,
+      // Client tries to smuggle ids — silent-drop says they go nowhere.
+      input: { newPassword: PASSWORD, confirmPassword: PASSWORD, consents: ["ignored"] },
     });
     expect(consentStore.calls.length).toBe(0);
   });
@@ -305,7 +334,7 @@ describe("InviteWorkflow — prepare-consents @Step + ctx.pendingConsents transp
     const app = await prepareWfApp({
       inviteWorkflowClass: withInviteMfaCtx(Capturing, { mfaMode: "disabled" }),
     });
-    await inviteUntilSetPassword(app, "evan@test.com");
+    await inviteUntilSetPassword(app, "fred@test.com");
     expect(captured.ctx).toBeTruthy();
     expect(captured.ctx!.pendingConsents).toEqual([]);
     expect(Array.isArray(captured.ctx!.pendingConsents)).toBe(true);
@@ -318,11 +347,11 @@ describe("InviteWorkflow — prepare-consents @Step + ctx.pendingConsents transp
     // customers can't disambiguate.
     const consentStore = new RecordingConsentStore();
     const app = await prepareWfApp({ consentStore });
-    await inviteUntilSetPassword(app, "fred@test.com");
+    await inviteUntilSetPassword(app, "greg@test.com");
     expect(consentStore.pendingCalls.length).toBeGreaterThanOrEqual(1);
     const lastCall = consentStore.pendingCalls.at(-1)!;
     expect(lastCall.ctx.workflow).toBe("auth/invite/start");
     expect(lastCall.ctx.channel).toBeUndefined();
-    expect(lastCall.username).toBe("fred@test.com");
+    expect(lastCall.username).toBe("greg@test.com");
   });
 });
