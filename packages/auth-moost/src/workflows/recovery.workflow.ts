@@ -61,7 +61,7 @@ import { Controller } from "moost";
 
 import type { AuditEvent } from "../audit/index";
 import { AuthOpts } from "../auth.opts";
-import { ConsentStore } from "../consent.store";
+import { type ConsentDescriptor, ConsentStore } from "../consent.store";
 import { useAuth } from "../auth.composables";
 import { Public } from "../auth.decorator";
 import { AuthWorkflowBase, type ConsentEvent, type InlineConsentInput } from "./auth-workflow.base";
@@ -161,6 +161,13 @@ export interface RecoveryWfCtx {
   pendingMarketingOptIn?: boolean;
   /** Set true by `persist-consents` after the batched `consentStore.save` call fires. */
   consentsPersisted?: boolean;
+  /**
+   * Descriptors for the customer-defined general consents (terms, marketing,
+   * jurisdiction, ...) the user still needs to accept. Populated once by
+   * `prepare-consents` after username-bind. Phase 5 will migrate carrier
+   * forms to consume this array; Phase 4 populates transport only.
+   */
+  pendingConsents?: ConsentDescriptor[];
 
   /** Set by abort alt-actions (`backToLogin`). Gates all terminal steps. */
   aborted?: boolean;
@@ -444,6 +451,34 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     return undefined;
   }
 
+  /**
+   * Populate `ctx.pendingConsents` with the customer-defined general-consent
+   * descriptors (terms, marketing, jurisdiction, ...) the user still needs to
+   * accept. Phase 4 transport only — nothing reads `ctx.pendingConsents` yet;
+   * Phase 5 will migrate the carrier `SetPasswordForm` from the
+   * `WithInlineConsentForm` static-checkbox mixin onto this dynamic array.
+   *
+   * Username MUST be bound before we fetch consents — the schema places this
+   * step AFTER the `!ctx.username` break gate, so the `if (!ctx.username)`
+   * guard is belt-and-brace for future refactors that might re-order the
+   * schema.
+   */
+  @Step("prepare-consents")
+  prepareConsents(@WorkflowParam("context") ctx: RecoveryWfCtx): undefined | Promise<undefined> {
+    if (!ctx.username) return undefined;
+    const result = this.consentStore.getPendingConsents(ctx.username, {
+      workflow: "auth/recovery/flow",
+    });
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.pendingConsents = resolved;
+        return undefined;
+      });
+    }
+    ctx.pendingConsents = result;
+    return undefined;
+  }
+
   @Workflow("flow")
   @WorkflowSchema<RecoveryWfCtx>([
     // Step IDs are bare; the class-level `@Controller("auth/recovery")` prefix
@@ -472,6 +507,7 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     // on the form. Headline use-case: terms-version bump re-acceptance during
     // password reset.
     { id: "prepare-acceptance" },
+    { id: "prepare-consents" },
 
     // Mode picker — only when delivery.mode === 'choice' AND not already chosen.
     {

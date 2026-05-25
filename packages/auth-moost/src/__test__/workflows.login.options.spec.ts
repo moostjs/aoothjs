@@ -26,7 +26,7 @@ import { describe, expect, it } from "vite-plus/test";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 
 import { AuthOpts } from "../auth.opts";
-import { ConsentStore } from "../consent.store";
+import { type ConsentDescriptor, ConsentStore } from "../consent.store";
 import type { ConsentEvent } from "../workflows/auth-workflow.base";
 import { type LoginWfCtx, LoginWorkflow, type LoginWorkflowOpts } from "../workflows/index";
 import { SsoLoginCredentialsForm } from "./fixtures/sso-login.as";
@@ -2181,8 +2181,10 @@ describe("LoginWorkflow — Phase 3 ask/verify channel routing", () => {
   });
 });
 
-// Capturing ConsentStore for the OTP-* tests. `save` capture is idle here —
-// only the OTP-HOOK-FIRES-* tests assert on `otpCalls`.
+// Capturing ConsentStore for the OTP-* + PENDING-CONSENTS-* tests. Each
+// override only pushes — none of the call lists are asserted by tests that
+// don't explicitly opt in to that surface, so the lists stay backwards-compat
+// across describe blocks.
 @Injectable()
 class RecordingConsentStore extends ConsentStore {
   readonly saveCalls: Array<{ username: string; events: ConsentEvent[] }> = [];
@@ -2192,6 +2194,12 @@ class RecordingConsentStore extends ConsentStore {
     target: string;
     disclosure: string;
   }> = [];
+  readonly pendingCalls: Array<{
+    username: string | undefined;
+    ctx: { workflow: string; channel?: "email" | "sms" };
+  }> = [];
+  /** Pre-canned descriptors returned by `getPendingConsents`; default is empty (no-op). */
+  pendingResponse: ConsentDescriptor[] | Promise<ConsentDescriptor[]> = [];
   override async save(username: string, events: ConsentEvent[]): Promise<void> {
     this.saveCalls.push({ username, events: [...events] });
   }
@@ -2202,6 +2210,14 @@ class RecordingConsentStore extends ConsentStore {
     disclosure: string,
   ): Promise<void> {
     this.otpCalls.push({ username, channel, target, disclosure });
+  }
+  override getPendingConsents(
+    username: string | undefined,
+    ctx: { workflow: string; channel?: "email" | "sms" },
+  ): Promise<ConsentDescriptor[]> {
+    this.pendingCalls.push({ username, ctx });
+    // Match the base class's `async` signature by always returning a Promise.
+    return Promise.resolve(this.pendingResponse);
   }
 }
 
@@ -2511,5 +2527,205 @@ describe("LoginWorkflow — OTP disclosure + recordOtpChannelConsent hook", () =
     expect((r4.body?.data as Record<string, unknown>)?.userId).toBe("alice");
     expect(consentStore.otpCalls.length).toBe(1);
     expect(consentStore.otpCalls[0].disclosure).toBe("CUSTOM[email]: i18n.fetched");
+  });
+});
+
+/**
+ * Build a `LoginWorkflow` subclass that calls `super.prepareConsents(ctx)` and
+ * stashes the post-call ctx onto the supplied `captured` slot. Lets Phase-4
+ * tests inspect `ctx.pendingConsents` directly — the wf engine's persisted
+ * state store is internal (no `dump()`), and finished responses don't echo
+ * full ctx, so a subclass-stash is the cleanest read surface.
+ */
+function makeCtxCapturingLogin(captured: { ctx?: LoginWfCtx }): typeof LoginWorkflow {
+  @Inherit()
+  @Controller("auth/login")
+  class CtxCapturingLogin extends LoginWorkflow {
+    constructor(
+      opts: LoginWorkflowOpts,
+      users: UserService,
+      auth: AuthCredential,
+      authOpts: AuthOpts,
+      consentStore: ConsentStore,
+    ) {
+      super(opts, users, auth, authOpts, consentStore);
+    }
+    override prepareConsents(ctx: LoginWfCtx): undefined | Promise<undefined> {
+      const result = super.prepareConsents(ctx);
+      if (result instanceof Promise) {
+        return result.then((r) => {
+          captured.ctx = ctx;
+          return r;
+        });
+      }
+      captured.ctx = ctx;
+      return result;
+    }
+  }
+  return CtxCapturingLogin;
+}
+
+describe("LoginWorkflow — prepare-consents @Step → ctx.pendingConsents transport (Phase 4)", () => {
+  it("PENDING-CONSENTS-01: default no-op ConsentStore → ctx.pendingConsents is [] (always array, never undefined)", async () => {
+    // WHY (Rule 9): the "always populated, even when empty" contract enables
+    // Phase 5 carrier forms to read `ctx.pendingConsents.length > 0` without
+    // the type-system fork between `undefined` (step skipped / errored) and
+    // `[]` (step ran, no consents needed). A regression that left ctx
+    // un-touched on the empty-array path would force every Phase-5 form
+    // condition to add a defensive `?? []`, multiplying the conditional
+    // surface. Pin: default ConsentStore returns [] and the step copies that
+    // through to ctx.
+    const captured: { ctx?: LoginWfCtx } = {};
+    const Capturing = makeCtxCapturingLogin(captured);
+    const app = await prepareWfApp({
+      loginWorkflowClass: withLoginMfaCtx(Capturing, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    expect((r2.body?.data as Record<string, unknown>)?.userId).toBe("alice");
+    expect(captured.ctx).toBeTruthy();
+    expect(captured.ctx!.pendingConsents).toEqual([]);
+    // Belt-and-brace: `[]` is the empty-array literal, NOT `undefined`. A
+    // regression that left the field unset would fail this strict check.
+    expect(Array.isArray(captured.ctx!.pendingConsents)).toBe(true);
+  });
+
+  it("PENDING-CONSENTS-02: customer override returns 2 descriptors → ctx.pendingConsents is the exact array (transport contract)", async () => {
+    // WHY: pins the round-trip from customer override → ctx without mutation.
+    // Phase 5 carrier forms will project these descriptors onto form fields;
+    // any regression that filtered, re-shaped, or mutated the array between
+    // store + ctx would break the Phase-5 wire contract. Each descriptor
+    // field (name, text, required, version) is asserted directly.
+    const descriptors: ConsentDescriptor[] = [
+      { name: "terms", text: "Accept the terms", required: true, version: "v3" },
+      { name: "marketing", text: "Receive marketing emails", required: false },
+    ];
+    const consentStore = new RecordingConsentStore();
+    consentStore.pendingResponse = descriptors;
+    const captured: { ctx?: LoginWfCtx } = {};
+    const Capturing = makeCtxCapturingLogin(captured);
+    const app = await prepareWfApp({
+      consentStore,
+      loginWorkflowClass: withLoginMfaCtx(Capturing, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    await startAndCredentials(app, "alice", "Password123");
+    expect(captured.ctx!.pendingConsents).toHaveLength(2);
+    expect(captured.ctx!.pendingConsents![0]).toEqual({
+      name: "terms",
+      text: "Accept the terms",
+      required: true,
+      version: "v3",
+    });
+    expect(captured.ctx!.pendingConsents![1]).toEqual({
+      name: "marketing",
+      text: "Receive marketing emails",
+      required: false,
+    });
+  });
+
+  it("PENDING-CONSENTS-03: async customer override → prepare-consents awaits the Promise before writing ctx (pins the Promise<ConsentDescriptor[]> union)", async () => {
+    // WHY (Rule 9): the `T | Promise<T>` engine semantic on resolveXxx getters
+    // is paralleled here at the store-call boundary — the step body branches
+    // on `result instanceof Promise`. A regression that dropped the Promise
+    // branch (or narrowed the store's return type) would silently coerce the
+    // Promise to a stringified ctx field, surfacing as `[object Promise]` in
+    // Phase-5 form renderers. This test forces the async path via an
+    // override that delays 10ms before resolving, then asserts ctx is the
+    // unwrapped array (not the Promise object).
+    @Injectable()
+    class DelayedStore extends ConsentStore {
+      override async getPendingConsents(
+        _username: string | undefined,
+        _ctx: { workflow: string; channel?: "email" | "sms" },
+      ): Promise<ConsentDescriptor[]> {
+        await new Promise<void>((r) => setTimeout(r, 10));
+        return [{ name: "jurisdiction-gdpr", text: "GDPR consent", required: true }];
+      }
+    }
+    const captured: { ctx?: LoginWfCtx } = {};
+    const Capturing = makeCtxCapturingLogin(captured);
+    const app = await prepareWfApp({
+      consentStore: new DelayedStore(),
+      loginWorkflowClass: withLoginMfaCtx(Capturing, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    await startAndCredentials(app, "alice", "Password123");
+    // The async override's value is unwrapped onto ctx — not a Promise.
+    expect(captured.ctx!.pendingConsents).toHaveLength(1);
+    expect(captured.ctx!.pendingConsents![0].name).toBe("jurisdiction-gdpr");
+  });
+
+  it("PENDING-CONSENTS-WORKFLOW-ARG-01: customer override receives {workflow: 'auth/login/flow'} as the ctx arg (no channel — workflow-only in Phase 4)", async () => {
+    // WHY: the `{workflow}` arg lets customer overrides return different
+    // consent sets per workflow (e.g. GDPR cookie consent on first-login, not
+    // on recovery). Pin: (a) the literal workflow string matches the
+    // `@Workflow` registration so customer string-equality checks work;
+    // (b) NO `channel` field is passed in Phase 4 — channel-scoped consent
+    // goes through the separate `recordOtpChannelConsent` path (Phase 3),
+    // NOT `getPendingConsents`. A regression that added `channel` to this
+    // call would silently route OTP-channel-consent through both paths.
+    const consentStore = new RecordingConsentStore();
+    const app = await prepareWfApp({
+      consentStore,
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    await startAndCredentials(app, "alice", "Password123");
+    // Exactly one call — the step fires once per workflow run.
+    expect(consentStore.pendingCalls).toHaveLength(1);
+    expect(consentStore.pendingCalls[0].username).toBe("alice");
+    expect(consentStore.pendingCalls[0].ctx.workflow).toBe("auth/login/flow");
+    // No channel arg in Phase 4 — separate path for OTP-channel consent.
+    expect(consentStore.pendingCalls[0].ctx.channel).toBeUndefined();
+  });
+
+  it("PENDING-CONSENTS-PRE-USERNAME-01: prepareConsents short-circuits synchronously when ctx.username is unset (defensive guard)", async () => {
+    // WHY: the schema places `prepare-consents` after the `!ctx.username`
+    // break gate, so this guard is belt-and-brace for future refactors that
+    // might re-order the schema (e.g. moving the prepare-* block earlier).
+    // Customer ConsentStore impls key their dedup by username — a call with
+    // `username=undefined` would either crash their code or silently fetch
+    // an empty / global consent set the user can't satisfy. The guard
+    // prevents both. Pinned via direct-invocation: a subclass captures its
+    // instance so the test calls `prepareConsents` with a synthetic ctx
+    // that lacks `username`.
+    const consentStore = new RecordingConsentStore();
+    const captured: { instance?: LoginWorkflow } = {};
+    @Inherit()
+    @Controller("auth/login")
+    class CapturingInstance extends LoginWorkflow {
+      constructor(
+        opts: LoginWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+        consentStoreDep: ConsentStore,
+      ) {
+        super(opts, users, auth, authOpts, consentStoreDep);
+        captured.instance = this;
+      }
+    }
+    const app = await prepareWfApp({
+      consentStore,
+      loginWorkflowClass: CapturingInstance,
+    });
+    // Force-instantiate the workflow controller via a trivial trigger so the
+    // SINGLETON ctor runs and stashes `this`.
+    await app.trigger({ wfid: "auth/login/flow" });
+    expect(captured.instance).toBeTruthy();
+    // Reset the recorder to isolate the pre-username invocation.
+    consentStore.pendingCalls.length = 0;
+    // Synthetic ctx with NO username — direct-invoke the step body. The
+    // guard MUST return undefined synchronously without touching the store.
+    const ctx: LoginWfCtx = {};
+    const result = captured.instance!.prepareConsents(ctx);
+    // Sync short-circuit — the guard returns `undefined` directly, NOT a
+    // Promise. A regression that always entered the Promise branch (e.g.
+    // unconditional `await this.consentStore.getPendingConsents(...)`)
+    // would return a Promise here.
+    expect(result).toBeUndefined();
+    expect(consentStore.pendingCalls).toHaveLength(0);
+    expect(ctx.pendingConsents).toBeUndefined();
   });
 });

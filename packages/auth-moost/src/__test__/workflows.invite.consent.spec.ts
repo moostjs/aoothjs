@@ -30,7 +30,7 @@ import { Controller, Inherit, Injectable } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import { AuthOpts } from "../auth.opts";
-import { ConsentStore } from "../consent.store";
+import { type ConsentDescriptor, ConsentStore } from "../consent.store";
 import {
   type ConsentEvent,
   InviteWorkflow,
@@ -237,5 +237,92 @@ describe("InviteWorkflow — inline-consent persist seam (Phase 2)", () => {
       input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
     });
     expect(consentStore.calls.length).toBe(0);
+  });
+});
+
+/**
+ * `ConsentStore` subclass that captures every `getPendingConsents` invocation
+ * AND lets a test seed the return value. Used by the Phase-4 ctx.pendingConsents
+ * transport tests.
+ */
+@Injectable()
+class RecordingConsentStore extends ConsentStore {
+  readonly pendingCalls: Array<{
+    username: string | undefined;
+    ctx: { workflow: string; channel?: "email" | "sms" };
+  }> = [];
+  pendingReturn: ConsentDescriptor[] = [];
+  override async getPendingConsents(
+    username: string | undefined,
+    ctx: { workflow: string; channel?: "email" | "sms" },
+  ): Promise<ConsentDescriptor[]> {
+    this.pendingCalls.push({ username, ctx });
+    return this.pendingReturn;
+  }
+}
+
+/**
+ * Build an `InviteWorkflow` subclass that stashes post-prepareConsents ctx onto
+ * the supplied slot so tests can read `ctx.pendingConsents` directly (the wf
+ * engine's finished-response envelopes don't echo full ctx).
+ */
+function makeCtxCapturingInvite(captured: { ctx?: InviteWfCtx }): typeof InviteWorkflow {
+  @Inherit()
+  @Controller("auth/invite")
+  class CtxCapturingInvite extends InviteWorkflow {
+    constructor(
+      opts: InviteWorkflowOpts,
+      users: UserService,
+      auth: AuthCredential,
+      authOpts: AuthOpts,
+      consentStore: ConsentStore,
+    ) {
+      super(opts, users, auth, authOpts, consentStore);
+    }
+    override prepareConsents(ctx: InviteWfCtx): undefined | Promise<undefined> {
+      const result = super.prepareConsents(ctx);
+      if (result instanceof Promise) {
+        return result.then((r) => {
+          captured.ctx = ctx;
+          return r;
+        });
+      }
+      captured.ctx = ctx;
+      return result;
+    }
+  }
+  return CtxCapturingInvite;
+}
+
+describe("InviteWorkflow — prepare-consents @Step + ctx.pendingConsents transport (Phase 4)", () => {
+  it("INVITE-PENDING-CONSENTS-01: default no-op ConsentStore → ctx.pendingConsents is [] (always array, never undefined)", async () => {
+    // WHY: pins the "always array, never undefined" contract for Phase 5
+    // carrier-form gates on invite's SetPasswordForm. Without the default
+    // empty-array invariant, every Phase-5 form condition would need a
+    // defensive `?? []`.
+    const captured: { ctx?: InviteWfCtx } = {};
+    const Capturing = makeCtxCapturingInvite(captured);
+    const app = await prepareWfApp({
+      inviteWorkflowClass: withInviteMfaCtx(Capturing, { mfaMode: "disabled" }),
+    });
+    await inviteUntilSetPassword(app, "evan@test.com");
+    expect(captured.ctx).toBeTruthy();
+    expect(captured.ctx!.pendingConsents).toEqual([]);
+    expect(Array.isArray(captured.ctx!.pendingConsents)).toBe(true);
+  });
+
+  it("INVITE-PENDING-CONSENTS-WORKFLOW-ARG-01: prepare-consents calls getPendingConsents with {workflow: 'auth/invite/start'}", async () => {
+    // WHY: pins the workflow-string contract so customer overrides can branch
+    // on which workflow is asking — e.g., "show GDPR cookie consent only on
+    // first invite acceptance, not on every login." Without the workflow arg,
+    // customers can't disambiguate.
+    const consentStore = new RecordingConsentStore();
+    const app = await prepareWfApp({ consentStore });
+    await inviteUntilSetPassword(app, "fred@test.com");
+    expect(consentStore.pendingCalls.length).toBeGreaterThanOrEqual(1);
+    const lastCall = consentStore.pendingCalls.at(-1)!;
+    expect(lastCall.ctx.workflow).toBe("auth/invite/start");
+    expect(lastCall.ctx.channel).toBeUndefined();
+    expect(lastCall.username).toBe("fred@test.com");
   });
 });

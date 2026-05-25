@@ -88,7 +88,7 @@ import { Controller } from "moost";
 
 import type { AuditEvent } from "../audit/index";
 import { AuthOpts } from "../auth.opts";
-import { ConsentStore } from "../consent.store";
+import { type ConsentDescriptor, ConsentStore } from "../consent.store";
 import { useAuth } from "../auth.composables";
 import { Public } from "../auth.decorator";
 import {
@@ -226,6 +226,13 @@ export interface InviteWfCtx {
   pendingMarketingOptIn?: boolean;
   /** Set true by `persist-consents` after the batched `consentStore.save` call fires. */
   consentsPersisted?: boolean;
+  /**
+   * Descriptors for the customer-defined general consents (terms, marketing,
+   * jurisdiction, ...) the user still needs to accept. Populated once by
+   * `prepare-consents` after username-bind. Phase 5 will migrate carrier
+   * forms to consume this array; Phase 4 populates transport only.
+   */
+  pendingConsents?: ConsentDescriptor[];
 
   /** Set true by abort alt-actions (`cancel`). Gates all terminal steps. */
   aborted?: boolean;
@@ -656,6 +663,37 @@ export class InviteWorkflow extends AuthWorkflowBase {
     return undefined;
   }
 
+  /**
+   * Populate `ctx.pendingConsents` with the customer-defined general-consent
+   * descriptors (terms, marketing, jurisdiction, ...) the invitee still needs
+   * to accept. Phase 4 transport only — nothing reads `ctx.pendingConsents`
+   * yet; Phase 5 will migrate the carrier `SetPasswordForm` from the
+   * `WithInlineConsentForm` static-checkbox mixin onto this dynamic array.
+   *
+   * Username MUST be bound before we fetch consents — schema places this step
+   * AFTER `check-pending-invitation` (which sets `ctx.username` from the
+   * pending-invite row) inside the `linkSent` accept-tail subflow, so the
+   * `if (!ctx.username)` guard is belt-and-brace. `@Public()` mirrors
+   * `prepare-acceptance` since this step fires on the anonymous magic-link
+   * resume side of the workflow.
+   */
+  @Step("prepare-consents")
+  @Public()
+  prepareConsents(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
+    if (!ctx.username) return undefined;
+    const result = this.consentStore.getPendingConsents(ctx.username, {
+      workflow: "auth/invite/start",
+    });
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.pendingConsents = resolved;
+        return undefined;
+      });
+    }
+    ctx.pendingConsents = result;
+    return undefined;
+  }
+
   // ╔═══════════════════════════════════════════════════════════════════════╗
   // ║ Workflow definitions                                                  ║
   // ╚═══════════════════════════════════════════════════════════════════════╝
@@ -726,6 +764,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
         // can read `ctx.acceptance.termsVersion` / `consentMarketing` to decide
         // whether to record consent fields submitted on the form.
         { id: "prepare-acceptance" },
+        { id: "prepare-consents" },
         {
           id: "create-password-form",
           condition: (ctx) => !ctx.passwordSet,

@@ -110,10 +110,22 @@ user-facing `'phone'` route param is mapped to `'sms'` before the hook
 call, so customer impls key on the wire protocol they actually use.
 
 > **Wire-up status.** `save()` (all three workflows' `persist-consents`
-> step) and `resolveOtpDisclosure` + `recordOtpChannelConsent` (login's
-> `ask/:channel` + `verify/:channel` steps) are wired today.
-> `getPendingConsents()` and `read()` are no-op defaults with no callers
-> yet, so customer overrides on those two methods are silently inert.
+> step), `resolveOtpDisclosure` + `recordOtpChannelConsent` (login's
+> `ask/:channel` + `verify/:channel` steps), and `getPendingConsents()`
+> (all three workflows' new `prepare-consents` step — writes the customer
+> universe to `ctx.pendingConsents` for downstream consumption) are wired
+> today. `read()` remains a no-op default with no callers, so customer
+> overrides on that method are silently inert.
+
+The `prepare-consents` @Step fires once per workflow run, after the
+`!ctx.username` break and adjacent to `prepare-acceptance`. It invokes
+`consentStore.getPendingConsents(username, { workflow })` (workflow is the
+literal `@Workflow` path — `auth/login/flow`, `auth/invite/start`,
+`auth/recovery/flow`) and writes the returned array to `ctx.pendingConsents`.
+The "always array, never undefined" invariant is load-bearing — downstream
+carrier-form gates read `pendingConsents.length > 0` without an
+`?? []` defensive fallback. The base method's no-op default returns `[]`,
+preserving the invariant for customers who don't override.
 
 ## `resolveXxx(ctx)` — policy getter convention
 
