@@ -4,7 +4,7 @@
 // compile time, leaving the metadata `undefined` and moost throwing
 // "Class is not Injectable and not Optional" on first request.
 import { AuthCredential } from "@aooth/auth";
-import { AuthOpts, type InviteWfCtx, InviteWorkflow } from "@aooth/auth-moost";
+import { AuthOpts, ConsentStore, type InviteWfCtx, InviteWorkflow } from "@aooth/auth-moost";
 import { generateTotpCode, UserService } from "@aooth/user";
 import { Controller, Inherit } from "moost";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
@@ -845,14 +845,19 @@ let extraStepCapture: { fired: boolean; runs: number } = { fired: false, runs: 0
 @Inherit()
 @Controller("auth/invite")
 class OverrideInviteWorkflow extends InviteWorkflow {
-  constructor(users: UserService, authCred: AuthCredential, authOpts: AuthOpts) {
+  constructor(
+    users: UserService,
+    authCred: AuthCredential,
+    authOpts: AuthOpts,
+    consentStore: ConsentStore,
+  ) {
     // Profile form left undefined (base default) so the accept tail goes
     // password → extraStep → activate directly. MFA is disabled via the
     // `inviteMfaCtx: { mfaMode: 'disabled' }` knob on `buildTestApp` (PR9
     // stripped `mfa.mode` from `InviteWorkflowOpts`; the value now lives on
     // ctx via the `inviteSetupMfa` setter step — `buildApp` wraps this
     // class with `withInviteMfaCtx` when `inviteMfaCtx` is supplied).
-    super({}, users, authCred, authOpts);
+    super({}, users, authCred, authOpts, consentStore);
   }
   // Post-resolver reshape: `accept.showConfirmation` moved off opts to the
   // `resolveAccept` getter. Existing tests assert the auto-login response

@@ -8,6 +8,7 @@ import { UserService } from "@aooth/user";
 import { Controller, Inherit } from "moost";
 
 import { AuthOpts } from "../auth.opts";
+import { ConsentStore } from "../consent.store";
 import { InviteWorkflow } from "./invite.workflow";
 import { LoginWorkflow } from "./login.workflow";
 import { RecoveryWorkflow } from "./recovery.workflow";
@@ -15,23 +16,38 @@ import { RecoveryWorkflow } from "./recovery.workflow";
 @Inherit()
 @Controller("auth/login")
 export class DefaultLoginWorkflow extends LoginWorkflow {
-  constructor(users: UserService, auth: AuthCredential, authOpts: AuthOpts) {
-    super({}, users, auth, authOpts);
+  constructor(
+    users: UserService,
+    auth: AuthCredential,
+    authOpts: AuthOpts,
+    consentStore: ConsentStore,
+  ) {
+    super({}, users, auth, authOpts, consentStore);
   }
 }
 
 @Inherit()
 @Controller("auth/invite")
 export class DefaultInviteWorkflow extends InviteWorkflow {
-  constructor(users: UserService, auth: AuthCredential, authOpts: AuthOpts) {
-    super({}, users, auth, authOpts);
+  constructor(
+    users: UserService,
+    auth: AuthCredential,
+    authOpts: AuthOpts,
+    consentStore: ConsentStore,
+  ) {
+    super({}, users, auth, authOpts, consentStore);
   }
 }
 
 @Inherit()
 @Controller("auth/recovery")
 export class DefaultRecoveryWorkflow extends RecoveryWorkflow {
-  constructor(users: UserService, auth: AuthCredential, authOpts: AuthOpts) {
-    super({}, users, auth, authOpts);
+  constructor(
+    users: UserService,
+    auth: AuthCredential,
+    authOpts: AuthOpts,
+    consentStore: ConsentStore,
+  ) {
+    super({}, users, auth, authOpts, consentStore);
   }
 }

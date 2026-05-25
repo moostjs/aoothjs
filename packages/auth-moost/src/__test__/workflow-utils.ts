@@ -18,6 +18,7 @@ for (const key of [
 import { AuthCredential, type AuthCredentialOptions, CredentialStoreMemory } from "@aooth/auth";
 import { UserService, type UserServiceConfig, UserStoreMemory } from "@aooth/user";
 import { AuthOpts } from "../auth.opts";
+import { ConsentStore } from "../consent.store";
 import { handleAsOutletRequest, type WfFinished } from "@atscript/moost-wf";
 import { Body, MoostHttp, Post } from "@moostjs/event-http";
 import {
@@ -146,6 +147,13 @@ export interface PrepareWfOpts {
    * replaced wholesale. Pass an `AuthOpts` instance to use it verbatim.
    */
   authOpts?: AuthOpts | AuthOptsOverrides;
+  /**
+   * Override the singleton `ConsentStore` provider. Defaults to a no-op
+   * `new ConsentStore()`. Tests that exercise customer overrides supply a
+   * subclass instance here; the harness registers it as the moost DI
+   * provider for `ConsentStore` so workflow ctors resolve it.
+   */
+  consentStore?: ConsentStore;
   /**
    * Override the in-memory user store. Used by regression tests that simulate
    * strict-schema persistence (e.g. atscript-db rejecting unknown columns) to
@@ -397,6 +405,8 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     }
   }
 
+  const consentStore = opts.consentStore ?? new ConsentStore();
+
   const loginOpts: LoginWorkflowOpts = opts.loginOpts ?? {};
   const registerSms = opts.registerSmsSender !== false;
   const registerEmail = opts.registerEmailSender !== false;
@@ -436,6 +446,7 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     users: UserService,
     auth: AuthCredential,
     authOpts: AuthOpts,
+    consentStore: ConsentStore,
   ) => LoginWorkflow;
 
   // `recoveryOpts` is now forms-only after the AuthOpts reshape (magic-link
@@ -459,6 +470,7 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     users: UserService,
     auth: AuthCredential,
     authOpts: AuthOpts,
+    consentStore: ConsentStore,
   ) => RecoveryWorkflow;
 
   // Test-harness defaults:
@@ -504,6 +516,7 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     users: UserService,
     auth: AuthCredential,
     authOpts: AuthOpts,
+    consentStore: ConsentStore,
   ) => InviteWorkflow;
 
   type ProvideEntry = Parameters<typeof createProvideRegistry>[number];
@@ -511,9 +524,10 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     [AuthCredential, () => auth],
     [UserService, () => users],
     [AuthOpts, () => authOpts],
-    [LoginCtor, () => new LoginCtor(users, auth, authOpts)],
-    [RecoveryCtor, () => new RecoveryCtor(users, auth, authOpts)],
-    [InviteCtor, () => new InviteCtor(users, auth, authOpts)],
+    [ConsentStore, () => consentStore],
+    [LoginCtor, () => new LoginCtor(users, auth, authOpts, consentStore)],
+    [RecoveryCtor, () => new RecoveryCtor(users, auth, authOpts, consentStore)],
+    [InviteCtor, () => new InviteCtor(users, auth, authOpts, consentStore)],
   ];
   // The three workflows now all use `protected` method overrides for
   // sender/store/audit hooks — no DI registrations needed for them. The
@@ -747,8 +761,13 @@ function buildHarnessLoginClass(deps: HarnessLoginDeps): new (...args: never[]) 
   @Inherit()
   @Controller("auth/login")
   class HarnessLogin extends Base {
-    constructor(usersDep: UserService, authDep: AuthCredential, authOptsDep: AuthOpts) {
-      super(loginOpts, usersDep, authDep, authOptsDep);
+    constructor(
+      usersDep: UserService,
+      authDep: AuthCredential,
+      authOptsDep: AuthOpts,
+      consentStoreDep: ConsentStore,
+    ) {
+      super(loginOpts, usersDep, authDep, authOptsDep, consentStoreDep);
     }
 
     protected override async deliver(payload: DeliverPayload): Promise<void> {
@@ -915,8 +934,13 @@ function buildHarnessRecoveryClass(
   @Inherit()
   @Controller("auth/recovery")
   class HarnessRecovery extends Base {
-    constructor(usersDep: UserService, authDep: AuthCredential, authOptsDep: AuthOpts) {
-      super(recoveryOpts, usersDep, authDep, authOptsDep);
+    constructor(
+      usersDep: UserService,
+      authDep: AuthCredential,
+      authOptsDep: AuthOpts,
+      consentStoreDep: ConsentStore,
+    ) {
+      super(recoveryOpts, usersDep, authDep, authOptsDep, consentStoreDep);
     }
 
     protected override async deliver(payload: DeliverPayload): Promise<void> {
@@ -1017,8 +1041,13 @@ function buildHarnessInviteClass(
   @Inherit()
   @Controller("auth/invite")
   class HarnessInvite extends Base {
-    constructor(usersDep: UserService, authDep: AuthCredential, authOptsDep: AuthOpts) {
-      super(inviteOpts, usersDep, authDep, authOptsDep);
+    constructor(
+      usersDep: UserService,
+      authDep: AuthCredential,
+      authOptsDep: AuthOpts,
+      consentStoreDep: ConsentStore,
+    ) {
+      super(inviteOpts, usersDep, authDep, authOptsDep, consentStoreDep);
     }
 
     protected override async deliver(payload: DeliverPayload): Promise<void> {
@@ -1176,14 +1205,16 @@ export function withLoginMfaCtx<W extends typeof LoginWorkflow>(
     users: UserService,
     auth: AuthCredential,
     authOpts: AuthOpts,
+    consentStore: ConsentStore,
   ) => LoginWorkflow) {
     constructor(
       opts: LoginWorkflowOpts,
       users: UserService,
       auth: AuthCredential,
       authOpts: AuthOpts,
+      consentStore: ConsentStore,
     ) {
-      super(opts, users, auth, authOpts);
+      super(opts, users, auth, authOpts, consentStore);
     }
 
     @Step("prepare-mfa-setup")
@@ -1235,14 +1266,16 @@ export function withInviteMfaCtx<W extends typeof InviteWorkflow>(
     users: UserService,
     auth: AuthCredential,
     authOpts: AuthOpts,
+    consentStore: ConsentStore,
   ) => InviteWorkflow) {
     constructor(
       opts: InviteWorkflowOpts,
       users: UserService,
       auth: AuthCredential,
       authOpts: AuthOpts,
+      consentStore: ConsentStore,
     ) {
-      super(opts, users, auth, authOpts);
+      super(opts, users, auth, authOpts, consentStore);
     }
 
     @Step("setup-mfa")

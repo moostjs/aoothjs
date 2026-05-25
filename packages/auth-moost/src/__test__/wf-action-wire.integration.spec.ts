@@ -25,6 +25,7 @@ import { Wooks } from "wooks";
 import { AuthController } from "../auth.controller";
 import { authGuardInterceptor } from "../auth.guard";
 import { AuthOpts } from "../auth.opts";
+import { ConsentStore } from "../consent.store";
 import { LoginWorkflow } from "../workflows/index";
 
 interface AuthAppHandle {
@@ -50,12 +51,13 @@ async function buildAuthApp(): Promise<AuthAppHandle> {
   });
   const users = new UserService(new UserStoreMemory());
   const authOpts = new AuthOpts();
+  const consentStore = new ConsentStore();
 
   @Inherit()
   @Controller("auth/login")
   class DemoLoginWorkflow extends LoginWorkflow {
-    constructor(u: UserService, a: AuthCredential, ao: AuthOpts) {
-      super({}, u, a, ao);
+    constructor(u: UserService, a: AuthCredential, ao: AuthOpts, cs: ConsentStore) {
+      super({}, u, a, ao, cs);
     }
     // Post-resolver reshape: alt-cred policy now flows through
     // `resolveAlternateCredentials(ctx)` rather than the ctor opts.
@@ -78,6 +80,7 @@ async function buildAuthApp(): Promise<AuthAppHandle> {
       [AuthCredential, () => auth],
       [UserService, () => users],
       [AuthOpts, () => authOpts],
+      [ConsentStore, () => consentStore],
     ),
   );
   moost.applyGlobalInterceptors(authGuardInterceptor({ cookie: { secure: false } }));

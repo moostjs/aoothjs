@@ -8,6 +8,7 @@ export {
   type ResolvedAuthOptions,
 } from "./auth.config";
 export { AuthOpts } from "./auth.opts";
+export { ConsentStore, type ConsentDescriptor } from "./consent.store";
 export { authGuardInterceptor, AuthGuarded } from "./auth.guard";
 export { useAuth, type AuthBindings } from "./auth.composables";
 export { Public, UserId } from "./auth.decorator";

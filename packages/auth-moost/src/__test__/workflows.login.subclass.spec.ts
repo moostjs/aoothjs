@@ -22,6 +22,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { ProfileCompleteForm } from "../atscript/models/forms.as";
 import { AuthOpts } from "../auth.opts";
+import { ConsentStore } from "../consent.store";
 import type { ConsentEvent } from "../workflows/auth-workflow.base";
 import { type LoginWfCtx, LoginWorkflow, type LoginWorkflowOpts } from "../workflows/index";
 import { prepareWfApp, seedActiveUser, withLoginMfaCtx } from "./workflow-utils";
@@ -42,8 +43,9 @@ describe("LoginWorkflow subclass — end-to-end registration shape", () => {
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
       // Override an arbitrary protected method to prove the subclass body
       // actually runs on the dispatch path (i.e. the registered class is
@@ -95,8 +97,9 @@ describe("LoginWorkflow subclass — applyProfile override", () => {
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
       override async credentials(ctx: LoginWfCtx): Promise<unknown> {
         const out = await super.credentials(ctx);
@@ -174,8 +177,9 @@ describe("LoginWorkflow subclass — persistConsents override (CONSENT-OVERRIDE)
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
       protected override async persistConsents(
         username: string,
@@ -251,8 +255,9 @@ describe("LoginWorkflow subclass — loadTenants override", () => {
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
       override async credentials(ctx: LoginWfCtx): Promise<unknown> {
         const out = await super.credentials(ctx);
@@ -300,8 +305,9 @@ describe("LoginWorkflow subclass — loadTenants override", () => {
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
       override async credentials(ctx: LoginWfCtx): Promise<unknown> {
         const out = await super.credentials(ctx);
@@ -347,8 +353,9 @@ describe("LoginWorkflow subclass — loadPersonas override", () => {
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
       override async credentials(ctx: LoginWfCtx): Promise<unknown> {
         const out = await super.credentials(ctx);
@@ -596,8 +603,9 @@ describe("LoginWorkflow subclass — async resolveXxx override is awaited by pre
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
       override async credentials(ctx: LoginWfCtx): Promise<unknown> {
         const out = await super.credentials(ctx);

@@ -37,6 +37,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { ProfileWithRolesForm } from "./fixtures/profile-with-roles.as";
 import { AuthOpts } from "../auth.opts";
+import { ConsentStore } from "../consent.store";
 import { RESERVED_USER_KEYS } from "../workflows/auth-workflow.base";
 import { type LoginWfCtx, LoginWorkflow, type LoginWorkflowOpts } from "../workflows/index";
 import { prepareWfApp, seedActiveUser, withLoginMfaCtx } from "./workflow-utils";
@@ -67,8 +68,9 @@ describe("LoginWorkflow security — profile-complete payload escalation (audit 
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
       override async credentials(ctx: LoginWfCtx): Promise<unknown> {
         const out = await super.credentials(ctx);

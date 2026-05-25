@@ -44,6 +44,53 @@ injected into SINGLETON consumers. For per-request overrides, the e2e-demo
 clones the singleton inside its FOR_EVENT workflow ctors — see
 `cloneAuthOptsWithVariant` in `packages/e2e-demo/src/app.ts`.
 
+## Consent persistence — `ConsentStore`
+
+`ConsentStore` is the singleton DI provider holding the customer-defined
+consent universe and persistence sink. The three workflows take
+`consentStore: ConsentStore` as the 5th ctor param. All four methods are
+no-op defaults — customers extend the class to wire their own behaviour:
+
+- `getPendingConsents(username, { workflow, channel? })` — descriptors for
+  consents the user still needs to accept on the next prompt boundary.
+- `save(username, events)` — persist a batch of captured `ConsentEvent`s.
+- `read(username, { name? })` — read consent history, optionally filtered
+  by event name.
+- `recordOtpChannelConsent(username, channel, target, disclosure)` — fired
+  by login's `verify/:channel` step AFTER pincode validation, pinning the
+  exact disclosure copy the user saw.
+
+**Customer override.** Extend the class and register the replacement via
+moost's `createReplaceRegistry()`:
+
+```ts
+@Injectable() // SINGLETON
+class MyConsentStore extends ConsentStore {
+  override async save(username: string, events: ConsentEvent[]): Promise<void> {
+    await db.consents.insertMany(events.map((e) => ({ ...e, username })));
+  }
+  override async getPendingConsents(username: string | undefined, ctx: { workflow: string }) {
+    if (!username) return [];
+    const accepted = await db.consents.find({ username, name: "terms" });
+    return accepted.some((e) => e.version === "v2")
+      ? []
+      : [{ name: "terms", text: "...", required: true, version: "v2" }];
+  }
+}
+
+app.setReplaceRegistry(createReplaceRegistry([ConsentStore, MyConsentStore]));
+```
+
+Singleton scope (same rule as `AuthOpts`).
+
+> **Phase 1 status.** The DI plumbing is in place but no workflow step
+> currently calls these methods — subsequent orchestrator phases wire the
+> call sites (Phase 2 migrates the `persist-consents` step body to
+> `consentStore.save()`; Phases 3-6 add the rest). Customer overrides
+> declared today are silently inert until the matching phase lands. (Rule 9 —
+> this comment exists so anyone wiring an override knows the wire-up is
+> half-done.)
+
 ## `resolveXxx(ctx)` — policy getter convention
 
 The customer override surface for context-varying policy. **One resolver per option group.** Group all resolveXxx methods under a single labeled block (`// ── Resolved policy surface ──`) for discoverability.
@@ -193,8 +240,9 @@ class MyLogin extends LoginWorkflow {
     users: UserService,
     auth: AuthCredential,
     authOpts: AuthOpts, // 4th param — cross-workflow infra (pincode timers, magic-link TTL, ...)
+    consentStore: ConsentStore, // 5th param — consent universe + persistence sink
   ) {
-    super(opts, users, auth, authOpts); // re-declared so TS emits design:paramtypes
+    super(opts, users, auth, authOpts, consentStore); // re-declared so TS emits design:paramtypes
   }
 
   protected resolveAcceptance(ctx: LoginWfCtx) {

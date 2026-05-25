@@ -26,6 +26,7 @@ import { describe, expect, it } from "vite-plus/test";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 
 import { AuthOpts } from "../auth.opts";
+import { ConsentStore } from "../consent.store";
 import type { ConsentEvent } from "../workflows/auth-workflow.base";
 import { type LoginWfCtx, LoginWorkflow, type LoginWorkflowOpts } from "../workflows/index";
 import { SsoLoginCredentialsForm } from "./fixtures/sso-login.as";
@@ -66,8 +67,9 @@ function makeLoginSubclass(
       users: UserService,
       auth: AuthCredential,
       authOpts: AuthOpts,
+      consentStore: ConsentStore,
     ) {
-      super(opts, users, auth, authOpts);
+      super(opts, users, auth, authOpts, consentStore);
     }
     protected override resolveAlternateCredentials(
       ctx: LoginWfCtx,
@@ -834,8 +836,9 @@ describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / PERSIST-C
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
       override async issue(ctx: LoginWfCtx): Promise<void> {
         captured.push({
@@ -898,8 +901,9 @@ describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / PERSIST-C
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
       protected override async persistConsents(
         username: string,
@@ -955,8 +959,9 @@ describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / PERSIST-C
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
       protected override async persistConsents(
         username: string,
@@ -1009,8 +1014,9 @@ describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / PERSIST-C
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
       protected override async persistConsents(
         username: string,
@@ -1070,8 +1076,9 @@ describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / PERSIST-C
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
       protected override async persistConsents(
         _username: string,
@@ -1128,8 +1135,9 @@ describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / PERSIST-C
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
       protected override async persistConsents(
         username: string,
@@ -1185,8 +1193,9 @@ describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / PERSIST-C
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
       override termsBumpPrompt(ctx: LoginWfCtx): undefined {
         bumpEntered++;
@@ -2086,8 +2095,9 @@ describe("LoginWorkflow — Phase 3 ask/verify channel routing", () => {
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
       override async ask(ctx: LoginWfCtx, channel: "email" | "phone"): Promise<unknown> {
         askCalls.push(channel);
@@ -2167,8 +2177,9 @@ describe("LoginWorkflow — Phase 3 ask/verify channel routing", () => {
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
       override async ask(ctx: LoginWfCtx, channel: "email" | "phone"): Promise<unknown> {
         askCalls.push(channel);

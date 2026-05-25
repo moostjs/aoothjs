@@ -83,6 +83,7 @@ import { Controller, Param } from "moost";
 
 import type { AuditEvent } from "../audit/index";
 import { AuthOpts } from "../auth.opts";
+import { ConsentStore } from "../consent.store";
 import { useAuth } from "../auth.composables";
 import { Public } from "../auth.decorator";
 import {
@@ -422,18 +423,21 @@ export class LoginWorkflow extends AuthWorkflowBase {
   protected readonly users: UserService;
   protected readonly auth: AuthCredential;
   protected readonly authOpts: AuthOpts;
+  protected readonly consentStore: ConsentStore;
 
   constructor(
     opts: LoginWorkflowOpts,
     users: UserService,
     auth: AuthCredential,
     authOpts: AuthOpts,
+    consentStore: ConsentStore,
   ) {
     super();
     this.opts = mergeLoginOpts(opts);
     this.users = users;
     this.auth = auth;
     this.authOpts = authOpts;
+    this.consentStore = consentStore;
     validateOpts(this.opts);
   }
 

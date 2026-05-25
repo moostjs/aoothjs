@@ -18,6 +18,7 @@ import {
   authGuardInterceptor,
   AuthOpts,
   type ConsentEvent,
+  ConsentStore,
   createAuthEmailOutlet,
   createAuthShareableLinkOutlet,
   DEFAULT_AUTH_WORKFLOWS,
@@ -123,6 +124,12 @@ export interface BuildAppOptions {
     loginUrl?: string;
     totpIssuer?: string;
   };
+  /**
+   * Override the singleton `ConsentStore` provider. Defaults to a no-op
+   * `new ConsentStore()`. Customer / test subclasses go here and the demo
+   * registers the result via moost's DI so each workflow ctor resolves it.
+   */
+  consentStore?: ConsentStore;
   loginOpts?: LoginWorkflowOpts;
   /**
    * Per-test login policy overrides applied via the `resolveXxx(ctx)` getters
@@ -339,6 +346,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     if (userAuthOpts.totpIssuer !== undefined) authOpts.totpIssuer = userAuthOpts.totpIssuer;
   }
 
+  const consentStore = opts.consentStore ?? new ConsentStore();
+
   /**
    * Per-event `AuthOpts` override applied inside each demo workflow subclass
    * ctor (FOR_EVENT scope). The cross-workflow `AuthOpts` instance is a moost
@@ -424,7 +433,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   @Injectable("FOR_EVENT")
   @Controller("auth/login")
   class DemoLoginWorkflow extends LoginWorkflow {
-    constructor(users: UserService, authCred: AuthCredential, demoAuthOpts: AuthOpts) {
+    constructor(
+      users: UserService,
+      authCred: AuthCredential,
+      demoAuthOpts: AuthOpts,
+      demoConsentStore: ConsentStore,
+    ) {
       const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
       super(
         variant?.opts
@@ -438,6 +452,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
         // `demoAuthOpts` is captured but unused — the closure already has
         // `authOpts`; the param exists so moost can resolve `AuthOpts` DI.
         cloneAuthOptsWithVariant(variant?.authOpts),
+        demoConsentStore,
       );
       void demoAuthOpts;
     }
@@ -638,13 +653,19 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   @Injectable("FOR_EVENT")
   @Controller("auth/recovery")
   class DemoRecoveryWorkflow extends RecoveryWorkflow {
-    constructor(users: UserService, authCred: AuthCredential, demoAuthOpts: AuthOpts) {
+    constructor(
+      users: UserService,
+      authCred: AuthCredential,
+      demoAuthOpts: AuthOpts,
+      demoConsentStore: ConsentStore,
+    ) {
       const variant = pickVariant(RECOVERY_VARIANTS, readVariantHeader());
       super(
         variant?.opts ? mergeWfOpts(demoRecoveryOpts, variant.opts) : demoRecoveryOpts,
         users,
         authCred,
         cloneAuthOptsWithVariant(variant?.authOpts),
+        demoConsentStore,
       );
       void demoAuthOpts;
     }
@@ -803,7 +824,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   @Injectable("FOR_EVENT")
   @Controller("auth/invite")
   class DemoInviteWorkflow extends InviteWorkflow {
-    constructor(users: UserService, authCred: AuthCredential, demoAuthOpts: AuthOpts) {
+    constructor(
+      users: UserService,
+      authCred: AuthCredential,
+      demoAuthOpts: AuthOpts,
+      demoConsentStore: ConsentStore,
+    ) {
       const variant = pickVariant(INVITE_VARIANTS, readVariantHeader());
       super(
         variant?.opts
@@ -812,6 +838,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
         users,
         authCred,
         cloneAuthOptsWithVariant(variant?.authOpts),
+        demoConsentStore,
       );
       void demoAuthOpts;
     }
@@ -1041,6 +1068,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     [AuthCredential, () => aooth.authCredential],
     [UserService, () => aooth.userService],
     [AuthOpts, () => authOpts],
+    [ConsentStore, () => consentStore],
     // `EmailSender` is still consumed by `createAuthEmailOutlet` (the
     // trigger-side mailer for magic-link outlets). The three auth workflows
     // themselves no longer consume DI for senders/audit/trust/rate-limit —
@@ -1319,14 +1347,20 @@ function wrapWithLoginMfaCtx<W extends new (...args: never[]) => LoginWorkflow>(
     users: UserService,
     auth: AuthCredential,
     authOpts: AuthOpts,
+    consentStore: ConsentStore,
   ) => LoginWorkflow) {
     // The forwarding ctor is required: moost reads `design:paramtypes`
     // metadata off the subclass to resolve DI, and TS only emits the
     // metadata when the ctor is explicit. Without it moost can't construct
     // the wrapper.
     // eslint-disable-next-line no-useless-constructor
-    constructor(users: UserService, auth: AuthCredential, authOpts: AuthOpts) {
-      super(users, auth, authOpts);
+    constructor(
+      users: UserService,
+      auth: AuthCredential,
+      authOpts: AuthOpts,
+      consentStore: ConsentStore,
+    ) {
+      super(users, auth, authOpts, consentStore);
     }
     @Step("prepare-mfa-setup")
     @Public()
@@ -1364,10 +1398,16 @@ function wrapWithInviteMfaCtx<W extends new (...args: never[]) => InviteWorkflow
     users: UserService,
     auth: AuthCredential,
     authOpts: AuthOpts,
+    consentStore: ConsentStore,
   ) => InviteWorkflow) {
     // eslint-disable-next-line no-useless-constructor -- see wrapWithLoginMfaCtx for why
-    constructor(users: UserService, auth: AuthCredential, authOpts: AuthOpts) {
-      super(users, auth, authOpts);
+    constructor(
+      users: UserService,
+      auth: AuthCredential,
+      authOpts: AuthOpts,
+      consentStore: ConsentStore,
+    ) {
+      super(users, auth, authOpts, consentStore);
     }
     @Step("setup-mfa")
     @Public()

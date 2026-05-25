@@ -30,6 +30,7 @@ import { Controller, Inherit } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import { AuthOpts } from "../auth.opts";
+import { ConsentStore } from "../consent.store";
 import {
   type ConsentEvent,
   InviteWorkflow,
@@ -59,8 +60,9 @@ function makeCapturingInvite(
       users: UserService,
       auth: AuthCredential,
       authOpts: AuthOpts,
+      consentStore: ConsentStore,
     ) {
-      super(opts, users, auth, authOpts);
+      super(opts, users, auth, authOpts, consentStore);
     }
     protected override resolveAcceptance(
       _ctx: InviteWfCtx,

@@ -27,6 +27,7 @@ import { Controller, Inherit } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import { AuthOpts } from "../auth.opts";
+import { ConsentStore } from "../consent.store";
 import {
   RecoveryWorkflow,
   type RecoveryWfCtx,
@@ -56,8 +57,9 @@ function makeRecoverySubclass(
       users: UserService,
       auth: AuthCredential,
       authOpts: AuthOpts,
+      consentStore: ConsentStore,
     ) {
-      super(opts, users, auth, authOpts);
+      super(opts, users, auth, authOpts, consentStore);
     }
     protected override async emailToUserId(email: string): Promise<string | null> {
       return overrides.emailToUserId

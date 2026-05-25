@@ -28,6 +28,7 @@ export default defineConfig({
       "no-unsafe-type-assertion": "off",
       "no-shadow": "off",
       "no-await-in-loop": "off",
+      "no-useless-constructor": "off",
     },
   },
 });

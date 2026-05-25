@@ -27,6 +27,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { ProfileCompleteForm } from "../atscript/models/forms.as";
 import { Public } from "../auth.decorator";
 import { AuthOpts } from "../auth.opts";
+import { ConsentStore } from "../consent.store";
 import {
   type DuplicateAction,
   InviteWorkflow,
@@ -56,8 +57,9 @@ describe("InviteWorkflow subclass — end-to-end registration shape", () => {
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
       protected override async prepareUser(
         _input: PreparedUserInput,
@@ -103,8 +105,9 @@ describe("InviteWorkflow subclass — end-to-end registration shape", () => {
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
       protected override async duplicateCheck(input: {
         email: string;
@@ -167,8 +170,9 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
       protected override async getAvailableRoles(): Promise<string[] | undefined> {
         return ["tenant-admin", "tenant-member"];
@@ -195,8 +199,9 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
       protected override async inferRoles(_input: {
         email: string;
@@ -230,8 +235,9 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
       protected override getProfileForm(): TAtscriptAnnotatedType {
         return ProfileCompleteForm as unknown as TAtscriptAnnotatedType;
@@ -282,8 +288,9 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
       protected override async duplicateCheck(input: {
         email: string;
@@ -343,8 +350,9 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
       protected override getProfileForm(): TAtscriptAnnotatedType {
         return ProfileCompleteForm as unknown as TAtscriptAnnotatedType;
@@ -403,8 +411,9 @@ describe("InviteWorkflow subclass — inviteExtraStep override", () => {
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
+        consentStore: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts);
+        super(opts, users, auth, authOpts, consentStore);
       }
 
       @Step("extra-step")
