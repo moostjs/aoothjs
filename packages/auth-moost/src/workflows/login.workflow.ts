@@ -104,11 +104,13 @@ import {
 
 export interface LoginWfCtx {
   // Resolved policy (populated by prepare-* steps; reads via resolveXxx() getters):
-  acceptance?: {
-    termsVersion?: string;
-    profileCompleteRequired: boolean;
-    consentMarketing: boolean;
-  };
+  /**
+   * Whether the user must complete profile fields BEFORE token issuance.
+   * Populated by `prepare-profile` from `resolveProfile(ctx).required`.
+   * Default-false matches the prior behavior (most consumers don't gate logins
+   * on profile completion). Read by the `profile-complete` schema condition.
+   */
+  profileCompleteRequired?: boolean;
   alternateCredentials?: {
     forgotPassword: boolean;
     signup: boolean;
@@ -324,7 +326,12 @@ export interface LoginWfCtx {
  * back to `super.resolveXxx(ctx)` for unset groups).
  */
 export interface LoginPolicyOverrides {
-  acceptance?: NonNullable<LoginWfCtx["acceptance"]>;
+  /**
+   * Override the profile-completion policy (`{ required: boolean }`) — the
+   * boolean is mirrored onto `ctx.profileCompleteRequired` by `prepare-profile`
+   * and read by the `profile-complete` schema condition.
+   */
+  profile?: { required: boolean };
   alternateCredentials?: NonNullable<LoginWfCtx["alternateCredentials"]>;
   deviceTrust?: NonNullable<LoginWfCtx["deviceTrust"]>;
   enrollment?: NonNullable<LoginWfCtx["enrollment"]>;
@@ -520,17 +527,25 @@ export class LoginWorkflow extends AuthWorkflowBase {
 
   // ── Resolved policy surface (override these to customize per-tenant/per-request behavior) ──
   /**
-   * Resolve the acceptance / onboarding policy (terms version, profile-complete
-   * gating, marketing consent). Override per-tenant or per-user. Async-friendly
-   * via the union return type — sync defaults stay sync (engine fast path).
+   * Resolve the profile-completion policy. Returns `{ required: boolean }` —
+   * whether the user must complete profile fields (e.g. `firstName` /
+   * `lastName`) BEFORE token issuance. Override per-tenant or per-user to
+   * gate logins on missing profile fields; the boolean is mirrored onto
+   * `ctx.profileCompleteRequired` by `prepare-profile` and read by the
+   * `profile-complete` schema condition (which AND-s the gate with
+   * `ctx.profileMissingFields.length > 0` so the step only fires when the
+   * consumer has surfaced fields to collect — typically populated by a
+   * `credentials` override that hydrates `ctx.profileMissingFields` from
+   * the user row).
+   *
+   * Default-false matches the prior behavior — most consumers don't gate
+   * logins on profile completion. Async-friendly via the union return type —
+   * sync defaults stay sync (engine fast path).
    */
-  protected resolveAcceptance(
+  protected resolveProfile(
     _ctx: LoginWfCtx,
-  ): NonNullable<LoginWfCtx["acceptance"]> | Promise<NonNullable<LoginWfCtx["acceptance"]>> {
-    return {
-      profileCompleteRequired: false,
-      consentMarketing: false,
-    };
+  ): { required: boolean } | Promise<{ required: boolean }> {
+    return { required: false };
   }
 
   /**
@@ -679,16 +694,25 @@ export class LoginWorkflow extends AuthWorkflowBase {
   }
 
   // ── Prepare steps (call resolveXxx getters; populate ctx for schema conditions) ──
-  @Step("prepare-acceptance")
-  prepareAcceptance(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
-    const result = this.resolveAcceptance(ctx);
+  /**
+   * Call `resolveProfile(ctx)` and mirror `result.required` onto
+   * `ctx.profileCompleteRequired`. Promise-branched body preserves the engine's
+   * sync fast path: a sync `resolveProfile` override skips the microtask
+   * allocation, while an `async` override is awaited via `.then` before the
+   * `profile-complete` schema condition reads the boolean. The resolved POJO
+   * is intentionally NOT stashed on ctx as a group — `profileCompleteRequired`
+   * is the only field, so a top-level boolean keeps the ctx shape flat.
+   */
+  @Step("prepare-profile")
+  prepareProfile(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
+    const result = this.resolveProfile(ctx);
     if (result instanceof Promise) {
       return result.then((resolved) => {
-        ctx.acceptance = resolved;
+        ctx.profileCompleteRequired = resolved.required;
         return undefined;
       });
     }
-    ctx.acceptance = result;
+    ctx.profileCompleteRequired = result.required;
     return undefined;
   }
 
@@ -838,7 +862,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
     { break: (ctx) => !ctx.username },
 
     // Resolve all policy groups before any step reads them.
-    { id: "prepare-acceptance" },
+    { id: "prepare-profile" },
     { id: "prepare-consents" },
     { id: "prepare-alternate-credentials" },
     { id: "prepare-device-trust" },
@@ -975,7 +999,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
     {
       id: "profile-complete",
       condition: (ctx) =>
-        !!ctx.acceptance?.profileCompleteRequired &&
+        !!ctx.profileCompleteRequired &&
         !ctx.profileApplied &&
         (ctx.profileMissingFields?.length ?? 0) > 0,
     },
@@ -1815,12 +1839,12 @@ export class LoginWorkflow extends AuthWorkflowBase {
 
   /**
    * Standalone terms re-acceptance prompt for returning users whose accepted
-   * terms version is stale (consumer's `resolveAcceptance` returned a newer
-   * `termsVersion` than what's recorded in their consent history). Fires only
-   * when no onboarding carrier form (ask-email/ask-phone/set-password/
-   * profile-complete) has already captured terms acceptance via
-   * `WithInlineConsentForm`. The body delegates to `processInlineConsent`,
-   * which handles validation + ctx writes identically to the inline path.
+   * terms version is stale — the consumer's `ConsentStore.getPendingConsents`
+   * returned a non-empty descriptor list (typically a bumped terms version)
+   * and no onboarding carrier form (ask-email/ask-phone/set-password/
+   * profile-complete) ran to capture them via the dynamic `consents: string[]`
+   * carrier field. The body delegates to `processInlineConsent`, which
+   * handles validation + ctx writes identically to the inline path.
    */
   @Step("terms-bump-prompt")
   termsBumpPrompt(@WorkflowParam("context") ctx: LoginWfCtx): undefined {

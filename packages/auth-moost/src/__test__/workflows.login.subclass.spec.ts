@@ -80,7 +80,7 @@ describe("LoginWorkflow subclass — end-to-end registration shape", () => {
 
 // ── applyProfile override ────────────────────────────────────────────────────
 describe("LoginWorkflow subclass — applyProfile override", () => {
-  it("override fires for profile-complete step (acceptance.profileCompleteRequired + ctx.profileMissingFields populated)", async () => {
+  it("override fires for profile-complete step (profile.required + ctx.profileMissingFields populated)", async () => {
     // The schema gates on `(ctx.profileMissingFields?.length ?? 0) > 0`.
     // Nothing in the base workflow populates that flag — by design, the
     // consumer either subclasses to populate it from their store, or wires
@@ -115,7 +115,7 @@ describe("LoginWorkflow subclass — applyProfile override", () => {
     }
     const app = await prepareWfApp({
       loginPolicy: {
-        acceptance: { profileCompleteRequired: true, consentMarketing: false },
+        profile: { required: true },
       },
       loginOpts: {
         forms: {
@@ -574,21 +574,21 @@ describe("LoginWorkflow runtime fail-loud — deliver() not configured", () => {
 
 // ── resolveXxx async override (regression) ──────────────────────────────────
 describe("LoginWorkflow subclass — async resolveXxx override is awaited by prepare-* step", () => {
-  it("async resolveAcceptance returning profileCompleteRequired:true → workflow pauses on ProfileCompleteForm", async () => {
-    // WHY (Rule 9): pins the Promise-branch in `prepareAcceptance`. The default
-    // body of `prepareAcceptance` (and every other prepare-* step) checks
+  it("async resolveProfile returning required:true → workflow pauses on ProfileCompleteForm", async () => {
+    // WHY (Rule 9): pins the Promise-branch in `prepareProfile`. The default
+    // body of `prepareProfile` (and every other prepare-* step) checks
     // `result instanceof Promise` and routes to a `.then()` continuation so an
     // async override gets awaited before the schema condition reads
-    // `ctx.acceptance?.profileCompleteRequired`. A regression that drops the
-    // Promise branch (or returns the unresolved Promise as the ctx field) would
-    // make the condition see `undefined` and silently skip the profile pause —
+    // `ctx.profileCompleteRequired`. A regression that drops the Promise
+    // branch (or returns the unresolved Promise as the ctx field) would make
+    // the condition see `undefined` and silently skip the profile pause —
     // tokens would issue immediately. This test forces the async path by
-    // overriding `resolveAcceptance` with an `async` function that resolves
-    // `profileCompleteRequired: true` AFTER a microtask, and asserts the
-    // workflow paused on the ProfileCompleteForm rather than issuing tokens.
+    // overriding `resolveProfile` with an `async` function that resolves
+    // `{ required: true }` AFTER a microtask, and asserts the workflow paused
+    // on the ProfileCompleteForm rather than issuing tokens.
     @Inherit()
     @Controller("auth/login")
-    class AsyncAcceptanceLogin extends LoginWorkflow {
+    class AsyncProfileLogin extends LoginWorkflow {
       constructor(
         opts: LoginWorkflowOpts,
         users: UserService,
@@ -605,14 +605,9 @@ describe("LoginWorkflow subclass — async resolveXxx override is awaited by pre
       }
       // Async override — return type matches the sync/async union. The base
       // default returns sync, so this is the path under test.
-      protected override async resolveAcceptance(
-        _ctx: LoginWfCtx,
-      ): Promise<NonNullable<LoginWfCtx["acceptance"]>> {
+      protected override async resolveProfile(_ctx: LoginWfCtx): Promise<{ required: boolean }> {
         await Promise.resolve();
-        return {
-          profileCompleteRequired: true,
-          consentMarketing: false,
-        };
+        return { required: true };
       }
     }
     const app = await prepareWfApp({
@@ -621,7 +616,7 @@ describe("LoginWorkflow subclass — async resolveXxx override is awaited by pre
           profileComplete: ProfileCompleteForm as unknown as TAtscriptAnnotatedType,
         },
       },
-      loginWorkflowClass: withLoginMfaCtx(AsyncAcceptanceLogin, { mfaMode: "disabled" }),
+      loginWorkflowClass: withLoginMfaCtx(AsyncProfileLogin, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r1 = await app.trigger({ wfid: "auth/login/flow" });
@@ -631,8 +626,8 @@ describe("LoginWorkflow subclass — async resolveXxx override is awaited by pre
     });
     // Pause on ProfileCompleteForm proves the async resolver was awaited and
     // its returned value reached the schema condition. If the Promise branch
-    // regressed, ctx.acceptance would be a pending Promise (or undefined) and
-    // the condition would fall through to issue.
+    // regressed, ctx.profileCompleteRequired would be undefined and the
+    // condition would fall through to issue.
     expect(r2.body?.wfs).toBeTruthy();
     expect(r2.body?.data).toBeUndefined();
     expect(JSON.stringify(r2.body)).toMatch(/firstName/);

@@ -157,13 +157,12 @@ interface PinCtx {
 /**
  * Structural ctx shape consumed by `processInlineConsent`. Mirrors the
  * relevant subset of the workflow ctx types so the helper stays
- * workflow-agnostic. After Phase 5 the helper consumes only the dynamic
- * `pendingConsents` descriptor array (populated by `prepare-consents` from
+ * workflow-agnostic. The helper consumes only the dynamic `pendingConsents`
+ * descriptor array (populated by `prepare-consents` from
  * `ConsentStore.getPendingConsents()`) and the per-run booking fields it
- * writes itself — the prior static `acceptance`/`termsVersion` branches are
- * retired. The workflow ctx types (`LoginWfCtx` / `InviteWfCtx` /
- * `RecoveryWfCtx`) keep their full `acceptance` policy field until Phase 6
- * retires it; this slim shape is consumed ONLY here.
+ * writes itself — the prior static `acceptance` / `termsVersion` branches
+ * were retired in Phase 6 along with the matching `ctx.acceptance` field
+ * on each workflow ctx type.
  */
 export interface InlineConsentCtx {
   /**

@@ -138,7 +138,7 @@ export interface BuildAppOptions {
    * demo's per-resolver defaults and the active variant's `policy.<group>`
    * — same precedence pattern as `loginMfaCtx` for the MFA setter. Use this
    * for tests that previously did `loginOpts: { guards: { ... } }` /
-   * `loginOpts: { acceptance: { ... } }` etc.; those keys moved off opts.
+   * `loginOpts: { profile: { ... } }` etc.; those keys moved off opts.
    */
   loginPolicy?: LoginPolicyOverrides;
   recoveryOpts?: RecoveryWorkflowOpts;
@@ -302,8 +302,7 @@ export interface AppHandle {
  * Per-variant `pendingConsents` map for the playwright SPA — read by
  * `DemoConsentStore.getPendingConsents` via the `x-wf-variant` header. Keeps
  * the consent-universe choice colocated with the rest of the per-variant
- * config (mirrors how `policy.acceptance` rides on `LOGIN_VARIANTS`). Used
- * by WF-CONSENT-ARRAY-01.
+ * config. Used by WF-CONSENT-ARRAY-01.
  */
 const VARIANT_PENDING_CONSENTS: Record<string, ConsentDescriptor[]> = {
   "consent-array": [
@@ -599,11 +598,11 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     //   2. variant `policy.<group>` (via `x-wf-variant` header)
     //   3. demo per-group default (tweaks on top of base)
     //   4. library default (`super.resolveXxx(ctx)`)
-    protected override resolveAcceptance(ctx: LoginWfCtx): NonNullable<LoginWfCtx["acceptance"]> {
-      if (opts.loginPolicy?.acceptance) return opts.loginPolicy.acceptance;
+    protected override resolveProfile(ctx: LoginWfCtx): { required: boolean } {
+      if (opts.loginPolicy?.profile) return opts.loginPolicy.profile;
       const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
-      if (variant?.policy?.acceptance) return variant.policy.acceptance;
-      return super.resolveAcceptance(ctx) as NonNullable<LoginWfCtx["acceptance"]>;
+      if (variant?.policy?.profile) return variant.policy.profile;
+      return super.resolveProfile(ctx) as { required: boolean };
     }
     protected override resolveAlternateCredentials(
       ctx: LoginWfCtx,
@@ -800,44 +799,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     protected override async audit(event: AuditEvent): Promise<void> {
       sharedAuditEventsBuffer.push(event);
     }
-    // Stash the variant's acceptance policy on `init` (when the variant
-    // header IS present). The magic-link click that resumes the workflow has
-    // NO variant header — without this stash `resolveAcceptance` falls back
-    // to the library default on resume and the terms-bump checkbox stays
-    // hidden. Mirrors `DemoInviteWorkflow.init`'s `__demoAcceptPolicy` stash.
-    @Step("init")
-    @Public()
-    override init(@WorkflowParam("context") ctx: RecoveryWfCtx): undefined | Promise<undefined> {
-      const baseResult = super.init(ctx);
-      const apply = (): undefined => {
-        const variant = pickVariant(RECOVERY_VARIANTS, readVariantHeader());
-        if (variant?.policy?.acceptance) {
-          (
-            ctx as unknown as { __demoAcceptancePolicy?: NonNullable<RecoveryWfCtx["acceptance"]> }
-          ).__demoAcceptancePolicy = variant.policy.acceptance;
-        }
-        return undefined;
-      };
-      return baseResult instanceof Promise ? baseResult.then(apply) : apply();
-    }
-    // Variant-driven `acceptance` resolver. Same precedence chain as the
-    // other recovery resolvers (test opts > variant header > init stash >
-    // library default). The stash bridges the resume gap when the magic-link
-    // click hits this resolver without a variant header.
-    protected override resolveAcceptance(
-      ctx: RecoveryWfCtx,
-    ):
-      | NonNullable<RecoveryWfCtx["acceptance"]>
-      | Promise<NonNullable<RecoveryWfCtx["acceptance"]>> {
-      if (opts.recoveryPolicy?.acceptance) return opts.recoveryPolicy.acceptance;
-      const variant = pickVariant(RECOVERY_VARIANTS, readVariantHeader());
-      if (variant?.policy?.acceptance) return variant.policy.acceptance;
-      const stashed = (
-        ctx as unknown as { __demoAcceptancePolicy?: NonNullable<RecoveryWfCtx["acceptance"]> }
-      ).__demoAcceptancePolicy;
-      if (stashed) return stashed;
-      return super.resolveAcceptance(ctx);
-    }
     // ── Variant-driven resolveXxx policy overrides ──
     //
     // Precedence (high → low):
@@ -988,15 +949,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
             ctx as unknown as { __demoAcceptPolicy?: NonNullable<InviteWfCtx["accept"]> }
           ).__demoAcceptPolicy = variant.policy.accept;
         }
-        // Same admin→invitee resume bridge for the inline-consent `acceptance`
-        // policy (terms-bump / marketing-optin on `SetPasswordForm`). Without
-        // this stash, the `invite-terms` variant's `termsVersion` would never
-        // reach `resolveAcceptance` on the anonymous magic-link click side.
-        if (variant?.policy?.acceptance) {
-          (
-            ctx as unknown as { __demoAcceptancePolicy?: NonNullable<InviteWfCtx["acceptance"]> }
-          ).__demoAcceptancePolicy = variant.policy.acceptance;
-        }
         return undefined;
       };
       return baseResult instanceof Promise ? baseResult.then(apply) : apply();
@@ -1097,22 +1049,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       const variant = pickVariant(INVITE_VARIANTS, readVariantHeader());
       if (variant?.policy?.mfa) return variant.policy.mfa;
       return super.resolveMfa(ctx);
-    }
-    // Variant-driven `acceptance` resolver. Same precedence chain as
-    // `resolveAccept` (test opts > variant header > stashed-from-admin-init >
-    // library default). The stash bridges the admin→invitee resume gap when
-    // the magic-link click hits this resolver without a variant header.
-    protected override resolveAcceptance(
-      ctx: InviteWfCtx,
-    ): NonNullable<InviteWfCtx["acceptance"]> | Promise<NonNullable<InviteWfCtx["acceptance"]>> {
-      if (opts.invitePolicy?.acceptance) return opts.invitePolicy.acceptance;
-      const variant = pickVariant(INVITE_VARIANTS, readVariantHeader());
-      if (variant?.policy?.acceptance) return variant.policy.acceptance;
-      const stashed = (
-        ctx as unknown as { __demoAcceptancePolicy?: NonNullable<InviteWfCtx["acceptance"]> }
-      ).__demoAcceptancePolicy;
-      if (stashed) return stashed;
-      return super.resolveAcceptance(ctx);
     }
     // Demonstrates the `prepareUser` hook: populate the consumer-required
     // `tenantId` field before `userService.createUser` runs.

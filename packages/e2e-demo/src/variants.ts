@@ -87,7 +87,7 @@ export interface AuthOptsVariantOverrides {
  * `authOpts` carries per-request overlay onto the singleton `AuthOpts`
  * (pincode cooldown, magic-link TTL).
  * `policy` carries per-request policy groups (alternateCredentials, guards,
- * acceptance, …) applied by `DemoLoginWorkflow`'s `resolveXxx(ctx)` overrides.
+ * profile, …) applied by `DemoLoginWorkflow`'s `resolveXxx(ctx)` overrides.
  * `mfaCtx` carries the static MFA-ctx overrides written by the
  * `prepare-mfa-setup` step.
  */
@@ -172,13 +172,14 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
     },
     mfaCtx: { mfaMode: "disabled" },
   },
+  // The prior `acceptance` variant relied on `policy.acceptance.termsVersion`
+  // driving the standalone bump-prompt; Phase 5 moved the consent half to the
+  // customer `ConsentStore` (`VARIANT_PENDING_CONSENTS['acceptance']` in
+  // `app.ts`) and Phase 6 moved the `profileCompleteRequired` half to a
+  // dedicated `profile.required` knob exercised here.
   acceptance: {
     policy: {
-      acceptance: {
-        termsVersion: "v1",
-        profileCompleteRequired: true,
-        consentMarketing: true,
-      },
+      profile: { required: true },
     },
   },
   // Phase 5 dynamic consent — the customer ConsentStore (DemoConsentStore)
@@ -190,17 +191,12 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
   "consent-array": {
     mfaCtx: { mfaMode: "disabled" },
   },
-  // Standalone terms re-acceptance prompt — `termsVersion: 'v3'` with NO
-  // other carrier form (no enrollment / no profileComplete) so the workflow
-  // lands on `TermsBumpForm` after credentials. Drives WF-LOGIN-BUMP-01.
+  // Standalone terms re-acceptance prompt — `termsVersion: 'v3'` (declared by
+  // `DemoConsentStore.getPendingConsents` via `VARIANT_PENDING_CONSENTS` in
+  // `app.ts`) with NO other carrier form (no enrollment / no profileComplete)
+  // so the workflow lands on `TermsBumpForm` after credentials. Drives
+  // WF-LOGIN-BUMP-01.
   "terms-bump": {
-    policy: {
-      acceptance: {
-        termsVersion: "v3",
-        profileCompleteRequired: false,
-        consentMarketing: false,
-      },
-    },
     mfaCtx: { mfaMode: "disabled" },
   },
   "multi-context": {
@@ -221,11 +217,10 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
       enrollment: { ensureEmail: true, ensurePhone: true },
       mfaConfig: { backupCodes: true },
       deviceTrust: { enabled: true, optIn: true, skipsMfa: true },
-      acceptance: {
-        termsVersion: "v1",
-        profileCompleteRequired: true,
-        consentMarketing: true,
-      },
+      // Phase 5/6 reshape — the consent half moved to `DemoConsentStore.getPendingConsents`
+      // (see `VARIANT_PENDING_CONSENTS['full']` in `app.ts`); `profileCompleteRequired`
+      // moved onto the dedicated `profile.required` knob.
+      profile: { required: true },
       multiContext: { tenantSelect: true, personaSelect: true },
       sessionPolicy: { concurrencyLimit: { max: 1, onLimit: "kickPrompt" } },
     },

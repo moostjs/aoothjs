@@ -95,17 +95,6 @@ export interface RecoveryWfCtx {
   audit?: {
     enabled: boolean;
   };
-  /**
-   * Acceptance / onboarding policy (terms version + marketing consent). For
-   * recovery the headline use-case is terms-version bump re-acceptance
-   * ("since you last set your password we updated our terms"). Marketing
-   * re-prompt at recovery time is unusual UX — defaults are off; consumers
-   * override `resolveAcceptance(ctx)` to enable. Populated by `prepare-acceptance`.
-   */
-  acceptance?: {
-    termsVersion?: string;
-    consentMarketing: boolean;
-  };
 
   // Phase 1 — request:
   email?: string;
@@ -187,7 +176,6 @@ export interface RecoveryPolicyOverrides {
   postReset?: NonNullable<RecoveryWfCtx["postReset"]>;
   altActions?: NonNullable<RecoveryWfCtx["altActions"]>;
   audit?: NonNullable<RecoveryWfCtx["audit"]>;
-  acceptance?: NonNullable<RecoveryWfCtx["acceptance"]>;
 }
 
 /**
@@ -325,22 +313,6 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     return { enabled: true };
   }
 
-  /**
-   * Resolve the acceptance / onboarding policy (terms version + marketing
-   * consent). For recovery the canonical scenario is terms-version bump
-   * re-acceptance during password reset. Override per-tenant to drive
-   * collection. Sync/async friendly.
-   *
-   * Default: `{ consentMarketing: false }` — no terms collected, no marketing
-   * collected. Inline-consent is opt-in for recovery (marketing prompt during
-   * a password reset is unusual UX; terms bump is the headline scenario).
-   */
-  protected resolveAcceptance(
-    _ctx: RecoveryWfCtx,
-  ): NonNullable<RecoveryWfCtx["acceptance"]> | Promise<NonNullable<RecoveryWfCtx["acceptance"]>> {
-    return { consentMarketing: false };
-  }
-
   // ── Prepare steps (call resolveXxx getters; populate ctx for schema conditions) ──
   //
   // Step IDs are bare (`prepare-delivery`, `prepare-audit`, …) because the
@@ -438,19 +410,6 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     return undefined;
   }
 
-  @Step("prepare-acceptance")
-  prepareAcceptance(@WorkflowParam("context") ctx: RecoveryWfCtx): undefined | Promise<undefined> {
-    const result = this.resolveAcceptance(ctx);
-    if (result instanceof Promise) {
-      return result.then((resolved) => {
-        ctx.acceptance = resolved;
-        return undefined;
-      });
-    }
-    ctx.acceptance = result;
-    return undefined;
-  }
-
   /**
    * Populate `ctx.pendingConsents` with the customer-defined general-consent
    * descriptors (terms, marketing, jurisdiction, ...) the user still needs to
@@ -501,12 +460,6 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     { id: "prepare-post-reset" },
     { id: "prepare-alt-actions" },
     { id: "prepare-audit" },
-    // Resolve acceptance policy BEFORE `set-password` so `processInlineConsent`
-    // (called from inside `set-password`) can read `ctx.acceptance.termsVersion`
-    // / `consentMarketing` to decide whether to record consent fields submitted
-    // on the form. Headline use-case: terms-version bump re-acceptance during
-    // password reset.
-    { id: "prepare-acceptance" },
     { id: "prepare-consents" },
 
     // Mode picker — only when delivery.mode === 'choice' AND not already chosen.

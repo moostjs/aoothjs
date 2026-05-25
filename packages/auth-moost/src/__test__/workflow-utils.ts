@@ -791,11 +791,11 @@ function buildHarnessLoginClass(deps: HarnessLoginDeps): new (...args: never[]) 
     // When the test supplied `loginPolicy.<group>`, return it; otherwise fall
     // through to `super.resolveXxx(ctx)` (library defaults). Lets specs pin
     // policy from the outside without forking a subclass per case.
-    protected override resolveAcceptance(
+    protected override resolveProfile(
       ctx: LoginWfCtx,
-    ): NonNullable<LoginWfCtx["acceptance"]> | Promise<NonNullable<LoginWfCtx["acceptance"]>> {
-      if (policy?.acceptance) return policy.acceptance;
-      return super.resolveAcceptance(ctx);
+    ): { required: boolean } | Promise<{ required: boolean }> {
+      if (policy?.profile) return policy.profile;
+      return super.resolveProfile(ctx);
     }
     protected override resolveAlternateCredentials(
       ctx: LoginWfCtx,

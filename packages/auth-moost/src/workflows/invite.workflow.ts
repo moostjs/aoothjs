@@ -118,18 +118,6 @@ export interface InviteWfCtx {
     showConfirmation: boolean;
     confirmationMessage: string;
   };
-  /**
-   * Acceptance / onboarding policy (terms version + marketing consent).
-   * Mirrors `LoginWfCtx["acceptance"]` — the inline-consent surface is shared
-   * via `WithInlineConsentForm` on the carrier form (`SetPasswordForm`) the
-   * invitee submits during the accept tail. Populated by `prepare-acceptance`.
-   * Defaults are no-terms + no-marketing; consumers override
-   * `resolveAcceptance(ctx)` to drive collection.
-   */
-  acceptance?: {
-    termsVersion?: string;
-    consentMarketing: boolean;
-  };
   cancellation?: { allowed: boolean };
   audit?: { enabled: boolean };
   mfa?: { issuer: string };
@@ -253,7 +241,6 @@ export interface InvitePolicyOverrides {
   cancellation?: NonNullable<InviteWfCtx["cancellation"]>;
   audit?: NonNullable<InviteWfCtx["audit"]>;
   mfa?: NonNullable<InviteWfCtx["mfa"]>;
-  acceptance?: NonNullable<InviteWfCtx["acceptance"]>;
 }
 
 /**
@@ -548,21 +535,6 @@ export class InviteWorkflow extends AuthWorkflowBase {
     return { issuer: this.authOpts.totpIssuer };
   }
 
-  /**
-   * Resolve the acceptance / onboarding policy (terms version + marketing
-   * consent). Override per-tenant or per-user to drive inline-consent collection
-   * on `SetPasswordForm` during invite acceptance. Sync/async friendly.
-   *
-   * Default: `{ consentMarketing: false }` — no terms collected, no marketing
-   * collected. Inline-consent is opt-in for invite (the headline consumer
-   * scenario after login).
-   */
-  protected resolveAcceptance(
-    _ctx: InviteWfCtx,
-  ): NonNullable<InviteWfCtx["acceptance"]> | Promise<NonNullable<InviteWfCtx["acceptance"]>> {
-    return { consentMarketing: false };
-  }
-
   // ── Prepare steps (call resolveXxx getters; populate ctx for schema conditions) ──
   @Step("prepare-admin-form")
   prepareAdminForm(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
@@ -649,20 +621,6 @@ export class InviteWorkflow extends AuthWorkflowBase {
     return undefined;
   }
 
-  @Step("prepare-acceptance")
-  @Public()
-  prepareAcceptance(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
-    const result = this.resolveAcceptance(ctx);
-    if (result instanceof Promise) {
-      return result.then((resolved) => {
-        ctx.acceptance = resolved;
-        return undefined;
-      });
-    }
-    ctx.acceptance = result;
-    return undefined;
-  }
-
   /**
    * Populate `ctx.pendingConsents` with the customer-defined general-consent
    * descriptors (terms, marketing, jurisdiction, ...) the invitee still needs
@@ -673,9 +631,9 @@ export class InviteWorkflow extends AuthWorkflowBase {
    * Username MUST be bound before we fetch consents — schema places this step
    * AFTER `check-pending-invitation` (which sets `ctx.username` from the
    * pending-invite row) inside the `linkSent` accept-tail subflow, so the
-   * `if (!ctx.username)` guard is belt-and-brace. `@Public()` mirrors
-   * `prepare-acceptance` since this step fires on the anonymous magic-link
-   * resume side of the workflow.
+   * `if (!ctx.username)` guard is belt-and-brace. `@Public()` is required
+   * because this step fires on the anonymous magic-link resume side of the
+   * workflow.
    */
   @Step("prepare-consents")
   @Public()
@@ -759,11 +717,6 @@ export class InviteWorkflow extends AuthWorkflowBase {
         // short-circuit the accept tail when the invite was already accepted.
         { break: (ctx) => !!ctx.aborted },
         { id: "prepare-password-rules" },
-        // Resolve acceptance policy BEFORE the carrier `SetPasswordForm` so
-        // `processInlineConsent` (called from inside `create-password-form`)
-        // can read `ctx.acceptance.termsVersion` / `consentMarketing` to decide
-        // whether to record consent fields submitted on the form.
-        { id: "prepare-acceptance" },
         { id: "prepare-consents" },
         {
           id: "create-password-form",

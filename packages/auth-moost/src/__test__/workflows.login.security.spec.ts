@@ -94,10 +94,7 @@ describe("LoginWorkflow security — profile-complete payload escalation (audit 
 
     const app = await prepareWfApp({
       loginPolicy: {
-        acceptance: {
-          profileCompleteRequired: true,
-          consentMarketing: false,
-        },
+        profile: { required: true },
       },
       loginOpts: {
         forms: {

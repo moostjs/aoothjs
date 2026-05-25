@@ -112,7 +112,7 @@ export interface BuildTestAppOptions {
   /**
    * Per-test login policy override — applied by `DemoLoginWorkflow`'s
    * `resolveXxx(ctx)` overrides. Use for tests that previously poked
-   * `loginOpts: { guards: { ... } }` / `loginOpts: { acceptance: { ... } }`
+   * `loginOpts: { guards: { ... } }` / `loginOpts: { profile: { ... } }`
    * / `loginOpts: { finalize: { redirect: ... } }` — those keys moved off
    * `LoginWorkflowOpts` and onto the resolver surface.
    */
