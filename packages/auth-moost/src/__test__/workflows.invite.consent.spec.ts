@@ -1,11 +1,11 @@
 /**
  * Phase-2 inline-consent coverage for `InviteWorkflow`.
  *
- * Phase 1 (commit c36a95c) landed the `persistConsents(username, events)` seam
- * on `LoginWorkflow`; Phase 2 fans the same pattern out to `InviteWorkflow`
- * (this file) and `RecoveryWorkflow` (sibling spec). Consumers writing apps
- * with these workflows shouldn't have to choose between consent-tracking on
- * login but not on invite — invite is the headline-value scenario after
+ * Phase 1 landed the `ConsentStore` DI seam; Phase 2 wires the
+ * `persist-consents` step body to `consentStore.save(username, events)` and
+ * fans the same pattern out across all three workflows. Consumers writing
+ * apps with these workflows shouldn't have to choose between consent-tracking
+ * on login but not on invite — invite is the headline-value scenario after
  * login (new user accepting an invitation → consent collection is part of
  * onboarding).
  *
@@ -15,7 +15,7 @@
  * form changes. The new `processInlineConsent` call inside
  * `createPasswordForm` is the load-bearing wiring — without it, an admin who
  * sets `acceptance.termsVersion` would never see the consumer
- * `persistConsents` hook fire.
+ * `ConsentStore.save` override fire.
  *
  * Anti-test guard (Rule 9): each test asserts an observable outcome
  * (consumer override receives event with the right shape; idempotency
@@ -26,7 +26,7 @@
  */
 import { AuthCredential } from "@aooth/auth";
 import { UserService } from "@aooth/user";
-import { Controller, Inherit } from "moost";
+import { Controller, Inherit, Injectable } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import { AuthOpts } from "../auth.opts";
@@ -42,15 +42,33 @@ import { prepareWfApp, withInviteMfaCtx } from "./workflow-utils";
 const PASSWORD = "NewPassword123";
 
 /**
+ * `ConsentStore` subclass that captures every `save(username, events)` call.
+ * `persistDelayMs` sleeps BEFORE pushing so the `at` timestamp captured by
+ * `processInlineConsent` (form-submit time) is provably earlier than
+ * `Date.now()` at write-time — pins the "captured at acceptance, not at
+ * write" semantic.
+ */
+@Injectable()
+class CapturingConsentStore extends ConsentStore {
+  readonly calls: Array<{ username: string; events: ConsentEvent[] }> = [];
+  persistDelayMs = 0;
+  override async save(username: string, events: ConsentEvent[]): Promise<void> {
+    if (this.persistDelayMs > 0) {
+      await new Promise<void>((r) => setTimeout(r, this.persistDelayMs));
+    }
+    this.calls.push({ username, events: [...events] });
+  }
+}
+
+/**
  * Build an `InviteWorkflow` subclass with `resolveAcceptance` overridden to
- * return the supplied policy and a captured-events buffer wired onto
- * `persistConsents`. Mirrors the canonical consumer override shape (see
- * Phase-1 PERSIST-CONSENT-01..04 in workflows.login.options.spec.ts).
+ * return the supplied policy. Optional `doubleStep` re-invokes
+ * `persistConsentsStep` after the engine's first pass so the idempotency
+ * guard is exercised.
  */
 function makeCapturingInvite(
   policy: NonNullable<InviteWfCtx["acceptance"]>,
-  calls: Array<{ username: string; events: ConsentEvent[] }>,
-  options: { persistDelayMs?: number; doubleStep?: boolean } = {},
+  options: { doubleStep?: boolean } = {},
 ): typeof InviteWorkflow {
   @Inherit()
   @Controller("auth/invite")
@@ -69,23 +87,10 @@ function makeCapturingInvite(
     ): NonNullable<InviteWfCtx["acceptance"]> {
       return policy;
     }
-    protected override async persistConsents(
-      username: string,
-      events: ConsentEvent[],
-    ): Promise<void> {
-      calls.push({ username, events: [...events] });
-    }
     override async persistConsentsStep(ctx: InviteWfCtx): Promise<undefined> {
-      // Sleep BEFORE the underlying super call so the `at` timestamp captured
-      // by `processInlineConsent` (at form-submit time) is provably earlier
-      // than `Date.now()` at write-time — pins the "captured at acceptance,
-      // not at write" semantic.
-      if (options.persistDelayMs && options.persistDelayMs > 0) {
-        await new Promise<void>((r) => setTimeout(r, options.persistDelayMs));
-      }
       await super.persistConsentsStep(ctx);
       // Idempotency cover: a second call must NOT trigger another
-      // `persistConsents` invocation (the `if (consentsPersisted) return`
+      // `consentStore.save` invocation (the `if (consentsPersisted) return`
       // guard at the top of the step body is the load-bearing defense).
       if (options.doubleStep) await super.persistConsentsStep(ctx);
       return undefined;
@@ -112,7 +117,7 @@ async function inviteUntilSetPassword(
 }
 
 describe("InviteWorkflow — inline-consent persist seam (Phase 2)", () => {
-  it("INVITE-PERSIST-CONSENT-01: terms-only flow → persistConsents receives [{kind:'terms',version,at}]", async () => {
+  it("INVITE-PERSIST-CONSENT-01: terms-only flow → consentStore.save receives [{kind:'terms',version,at}]", async () => {
     // WHY: pins the headline guarantee — `acceptance.termsVersion` set + the
     // invitee submitting `acceptedTerms: true` on `SetPasswordForm` results in
     // the consumer override receiving exactly one terms event with the
@@ -122,16 +127,15 @@ describe("InviteWorkflow — inline-consent persist seam (Phase 2)", () => {
     // extra and the workflow would never record acceptance.
     //
     // Also covers the "`at` captured at acceptance moment, not at write
-    // time" semantic — we sleep 50ms between SetPasswordForm submit and the
-    // persist-consents step firing, then assert `at <= afterSubmit` (i.e.
-    // strictly less than `Date.now()` after the sleep). A regression that
-    // stamped `at` inside `persistConsentsStep` would push the value past
-    // `afterSubmit`, failing this assertion.
-    const calls: Array<{ username: string; events: ConsentEvent[] }> = [];
-    const Capturing = makeCapturingInvite({ termsVersion: "v1", consentMarketing: false }, calls, {
-      persistDelayMs: 50,
-    });
+    // time" semantic — the store sleeps 50ms before pushing, then we assert
+    // `at <= afterSubmit` (i.e. strictly less than `Date.now()` after the
+    // sleep). A regression that stamped `at` inside `persistConsentsStep`
+    // would push the value past `afterSubmit`, failing this assertion.
+    const consentStore = new CapturingConsentStore();
+    consentStore.persistDelayMs = 50;
+    const Capturing = makeCapturingInvite({ termsVersion: "v1", consentMarketing: false });
     const app = await prepareWfApp({
+      consentStore,
       inviteWorkflowClass: withInviteMfaCtx(Capturing, { mfaMode: "disabled" }),
     });
     const before = Date.now();
@@ -147,26 +151,27 @@ describe("InviteWorkflow — inline-consent persist seam (Phase 2)", () => {
       })
       .then(() => Date.now());
 
-    expect(calls.length).toBe(1);
-    expect(calls[0].username).toBe("alice@test.com");
-    expect(calls[0].events.length).toBe(1);
-    expect(calls[0].events[0].kind).toBe("terms");
-    expect(calls[0].events[0].version).toBe("v1");
-    expect(calls[0].events[0].at).toBeGreaterThanOrEqual(before);
+    expect(consentStore.calls.length).toBe(1);
+    expect(consentStore.calls[0].username).toBe("alice@test.com");
+    expect(consentStore.calls[0].events.length).toBe(1);
+    expect(consentStore.calls[0].events[0].kind).toBe("terms");
+    expect(consentStore.calls[0].events[0].version).toBe("v1");
+    expect(consentStore.calls[0].events[0].at).toBeGreaterThanOrEqual(before);
     // `at` was stamped at processInlineConsent time (before the 50ms persist
     // delay). It must therefore be <= the moment SetPasswordForm completed
     // its trigger response — strictly NOT past the post-delay `Date.now()`
-    // that the persistConsentsStep call sees.
-    expect(calls[0].events[0].at).toBeLessThanOrEqual(afterSubmit);
+    // that the consentStore.save call sees.
+    expect(consentStore.calls[0].events[0].at).toBeLessThanOrEqual(afterSubmit);
   });
 
-  it("INVITE-PERSIST-CONSENT-02: marketing-only flow → persistConsents receives [{kind:'marketing',optIn,at}]", async () => {
+  it("INVITE-PERSIST-CONSENT-02: marketing-only flow → consentStore.save receives [{kind:'marketing',optIn,at}]", async () => {
     // WHY: pins the marketing-only event shape. No terms event should be
     // added when terms policy is off; the optIn boolean rides through to the
     // event payload unchanged.
-    const calls: Array<{ username: string; events: ConsentEvent[] }> = [];
-    const Capturing = makeCapturingInvite({ consentMarketing: true }, calls);
+    const consentStore = new CapturingConsentStore();
+    const Capturing = makeCapturingInvite({ consentMarketing: true });
     const app = await prepareWfApp({
+      consentStore,
       inviteWorkflowClass: withInviteMfaCtx(Capturing, { mfaMode: "disabled" }),
     });
     const { wfs } = await inviteUntilSetPassword(app, "bob@test.com");
@@ -178,13 +183,13 @@ describe("InviteWorkflow — inline-consent persist seam (Phase 2)", () => {
         marketingOptIn: true,
       },
     });
-    expect(calls.length).toBe(1);
-    expect(calls[0].events.length).toBe(1);
-    expect(calls[0].events[0].kind).toBe("marketing");
-    expect(calls[0].events[0].optIn).toBe(true);
+    expect(consentStore.calls.length).toBe(1);
+    expect(consentStore.calls[0].events.length).toBe(1);
+    expect(consentStore.calls[0].events[0].kind).toBe("marketing");
+    expect(consentStore.calls[0].events[0].optIn).toBe(true);
   });
 
-  it("INVITE-PERSIST-IDEMPOTENT-01: re-entering persist-consents → no second persistConsents call (idempotency)", async () => {
+  it("INVITE-PERSIST-IDEMPOTENT-01: re-entering persist-consents → no second consentStore.save call (idempotency)", async () => {
     // WHY (Rule 9): the step MUST be idempotent — a paused-workflow that
     // resumes through `persist-consents` a second time (or schema
     // re-iteration) must not double-write consents. The
@@ -192,9 +197,10 @@ describe("InviteWorkflow — inline-consent persist seam (Phase 2)", () => {
     // step body is the load-bearing defense. Pinned via a subclass that
     // calls `super.persistConsentsStep` TWICE inside its override — the
     // second call must short-circuit on the guard.
-    const calls: Array<{ username: string; events: ConsentEvent[] }> = [];
-    const Capturing = makeCapturingInvite({ consentMarketing: true }, calls, { doubleStep: true });
+    const consentStore = new CapturingConsentStore();
+    const Capturing = makeCapturingInvite({ consentMarketing: true }, { doubleStep: true });
     const app = await prepareWfApp({
+      consentStore,
       inviteWorkflowClass: withInviteMfaCtx(Capturing, { mfaMode: "disabled" }),
     });
     const { wfs } = await inviteUntilSetPassword(app, "carol@test.com");
@@ -206,22 +212,23 @@ describe("InviteWorkflow — inline-consent persist seam (Phase 2)", () => {
         marketingOptIn: true,
       },
     });
-    expect(calls.length).toBe(1);
+    expect(consentStore.calls.length).toBe(1);
   });
 
-  it("INVITE-PERSIST-SKIP-01: no acceptance policy + no consent fields → persist hook never called", async () => {
+  it("INVITE-PERSIST-SKIP-01: no acceptance policy + no consent fields → consentStore.save never called", async () => {
     // WHY: pins the schema-condition short-circuit. The `persist-consents`
     // step's condition is
     //   `!consentsPersisted && (termsAcceptedDone || pendingMarketingOptIn !== undefined)`
-    // — when neither has fired the step is SKIPPED entirely and the hook
-    // stays at 0 calls. A regression that always invoked the step body would
-    // emit a `persistConsents(username, [])` call here (the body's
+    // — when neither has fired the step is SKIPPED entirely and the save
+    // hook stays at 0 calls. A regression that always invoked the step body
+    // would emit a `consentStore.save(username, [])` call here (the body's
     // `events.length === 0` branch sets `consentsPersisted = true` but does
-    // NOT call the hook — but skipping the step entirely is what we want to
+    // NOT call save — but skipping the step entirely is what we want to
     // prove via the call counter).
-    const calls: Array<{ username: string; events: ConsentEvent[] }> = [];
-    const Capturing = makeCapturingInvite({ consentMarketing: false }, calls);
+    const consentStore = new CapturingConsentStore();
+    const Capturing = makeCapturingInvite({ consentMarketing: false });
     const app = await prepareWfApp({
+      consentStore,
       inviteWorkflowClass: withInviteMfaCtx(Capturing, { mfaMode: "disabled" }),
     });
     const { wfs } = await inviteUntilSetPassword(app, "dan@test.com");
@@ -229,6 +236,6 @@ describe("InviteWorkflow — inline-consent persist seam (Phase 2)", () => {
       wfs,
       input: { newPassword: PASSWORD, confirmPassword: PASSWORD },
     });
-    expect(calls.length).toBe(0);
+    expect(consentStore.calls.length).toBe(0);
   });
 });

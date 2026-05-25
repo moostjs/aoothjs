@@ -183,8 +183,8 @@ export interface InlineConsentInput {
 }
 
 /**
- * Consent event emitted to the consumer's `persistConsents(username, events)`
- * hook. Storage shape is intentionally the consumer's call — Mongo users
+ * Consent event emitted to the `ConsentStore.save(username, events)` DI
+ * provider. Storage shape is intentionally the consumer's call — Mongo users
  * typically push the events onto an embedded array, SQL users insert into an
  * audit table, event-bus users publish to a topic. The library batches all
  * collected events from a single workflow run into one call.

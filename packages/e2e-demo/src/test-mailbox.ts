@@ -36,10 +36,10 @@ export interface TestMailboxDeps {
    */
   auditEvents: AuditEvent[];
   /**
-   * Consent events captured by `DemoLoginWorkflow.persistConsents`, keyed by
-   * username. `/__test/consent-log/:username` returns the array for a user;
-   * Playwright specs assert end-to-end that a stale-terms-bump login appends
-   * a `kind:'terms'` event with the new `version`. Cleared on
+   * Consent events captured by `DemoConsentStore.save`, keyed by username.
+   * `/__test/consent-log/:username` returns the array for a user; Playwright
+   * specs assert end-to-end that a stale-terms-bump login appends a
+   * `kind:'terms'` event with the new `version`. Cleared on
    * `POST /__test/reset` via `reseed()` so a prior run doesn't bleed across
    * tests.
    */
@@ -214,8 +214,8 @@ export function createTestMailboxController(
 
     /**
      * Return consent events captured for `:username` by
-     * `DemoLoginWorkflow.persistConsents`. Returns `[]` when the user has
-     * never been through a persist-consents step on this app instance.
+     * `DemoConsentStore.save`. Returns `[]` when the user has never been
+     * through a persist-consents step on this app instance.
      */
     @Get("consent-log/:username")
     consentLogFor(@Param("username") username: string): ConsentEvent[] {

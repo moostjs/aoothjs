@@ -223,7 +223,7 @@ const g = globalThis as {
   // and reset to `false` by `reseed()` / `__test/reset`.
   __aoothE2eAllowDuplicateInvites?: boolean;
   // username → ordered list of consent events captured by
-  // `DemoLoginWorkflow.persistConsents`. Drives WF-LOGIN-BUMP-01 etc.
+  // `DemoConsentStore.save`. Drives WF-LOGIN-BUMP-01 etc.
   __aoothE2eConsentLog?: Map<string, ConsentEvent[]>;
 };
 g.__aoothE2eEmails ??= [];
@@ -290,6 +290,19 @@ export interface AppHandle {
   close: () => Promise<void>;
 }
 
+/**
+ * Demo `ConsentStore` — appends every persisted batch into the
+ * globalThis-anchored buffer the `/__test/consent-log/:username` endpoint
+ * reads from. One writer shared across all three Demo workflows.
+ */
+@Injectable() // SINGLETON
+class DemoConsentStore extends ConsentStore {
+  override async save(username: string, events: ConsentEvent[]): Promise<void> {
+    const prior = sharedConsentLogBuffer.get(username) ?? [];
+    sharedConsentLogBuffer.set(username, [...prior, ...events]);
+  }
+}
+
 export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   const env: AppEnv = { ...ENV, ...opts.envOverrides };
   const dbPath = opts.dbPath ?? env.DB_PATH;
@@ -346,7 +359,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     if (userAuthOpts.totpIssuer !== undefined) authOpts.totpIssuer = userAuthOpts.totpIssuer;
   }
 
-  const consentStore = opts.consentStore ?? new ConsentStore();
+  const consentStore = opts.consentStore ?? new DemoConsentStore();
 
   /**
    * Per-event `AuthOpts` override applied inside each demo workflow subclass
@@ -458,19 +471,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     }
     protected override deliver(payload: DeliverPayload) {
       return forwardDeliver(payload);
-    }
-    // Captured consent events — batched per-run via the new
-    // `persistConsents(username, events)` hook (Phase 1 of the consent-
-    // storage refactor). Appends to the globalThis-anchored buffer so the
-    // `__test/consent-log/:username` controller can read them and the
-    // WF-LOGIN-BUMP-01 playwright test can assert end-to-end that a stale-
-    // terms login produces a `kind:'terms'` event with the new version.
-    protected override async persistConsents(
-      username: string,
-      events: ConsentEvent[],
-    ): Promise<void> {
-      const prior = sharedConsentLogBuffer.get(username) ?? [];
-      sharedConsentLogBuffer.set(username, [...prior, ...events]);
     }
     // ── Variant-driven resolveXxx policy overrides ──
     //
@@ -685,20 +685,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     // assertions). Default base impl is a no-op.
     protected override async audit(event: AuditEvent): Promise<void> {
       sharedAuditEventsBuffer.push(event);
-    }
-    // Phase-2 consent-storage refactor. Recovery captures consent events on
-    // `SetPasswordForm` inline (terms-bump scenario — "since you last reset
-    // we updated our terms"). Appends to the SAME globalThis buffer
-    // `DemoLoginWorkflow.persistConsents` writes to, so the
-    // `/__test/consent-log/:username` endpoint returns one unified log fed by
-    // all three workflows — Playwright specs assert end-to-end through that
-    // single read path.
-    protected override async persistConsents(
-      username: string,
-      events: ConsentEvent[],
-    ): Promise<void> {
-      const prior = sharedConsentLogBuffer.get(username) ?? [];
-      sharedConsentLogBuffer.set(username, [...prior, ...events]);
     }
     // Stash the variant's acceptance policy on `init` (when the variant
     // header IS present). The magic-link click that resumes the workflow has
@@ -1013,17 +999,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       ).__demoAcceptancePolicy;
       if (stashed) return stashed;
       return super.resolveAcceptance(ctx);
-    }
-    // Phase-2 consent-storage refactor — invite-side. Appends to the SAME
-    // globalThis buffer `DemoLoginWorkflow.persistConsents` + the demo's
-    // recovery override write to, so `/__test/consent-log/:username` returns
-    // one unified log fed by all three workflows.
-    protected override async persistConsents(
-      username: string,
-      events: ConsentEvent[],
-    ): Promise<void> {
-      const prior = sharedConsentLogBuffer.get(username) ?? [];
-      sharedConsentLogBuffer.set(username, [...prior, ...events]);
     }
     // Demonstrates the `prepareUser` hook: populate the consumer-required
     // `tenantId` field before `userService.createUser` runs.

@@ -807,7 +807,7 @@ test.describe("LoginWorkflow / variant=terms-bump (Phase 1 standalone terms re-p
   // after credentials.
   //
   // The post-form `persist-consents` step batches the captured terms event
-  // and hands it to `DemoLoginWorkflow.persistConsents`, which appends to a
+  // and hands it to `DemoConsentStore.save`, which appends to a
   // globalThis-anchored in-memory log; the `/__test/consent-log/:username`
   // controller reads it back so this test can assert the wire effect.
   test("WF-LOGIN-BUMP-01: terms-bump variant lands on TermsBumpForm; submit completes the workflow + records a terms event", async ({

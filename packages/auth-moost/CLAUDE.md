@@ -83,13 +83,11 @@ app.setReplaceRegistry(createReplaceRegistry([ConsentStore, MyConsentStore]));
 
 Singleton scope (same rule as `AuthOpts`).
 
-> **Phase 1 status.** The DI plumbing is in place but no workflow step
-> currently calls these methods — subsequent orchestrator phases wire the
-> call sites (Phase 2 migrates the `persist-consents` step body to
-> `consentStore.save()`; Phases 3-6 add the rest). Customer overrides
-> declared today are silently inert until the matching phase lands. (Rule 9 —
-> this comment exists so anyone wiring an override knows the wire-up is
-> half-done.)
+> **Wire-up status.** Only `save()` is wired today — the `persist-consents`
+> step body calls `consentStore.save(...)` on all three workflows.
+> `getPendingConsents()`, `read()`, and `recordOtpChannelConsent()` are
+> no-op defaults with no callers yet, so customer overrides on those three
+> methods are silently inert.
 
 ## `resolveXxx(ctx)` — policy getter convention
 

@@ -224,7 +224,7 @@ export interface InviteWfCtx {
   termsAcceptedDone?: boolean;
   /** Marketing opt-in value captured inline; persisted by `persist-consents`. */
   pendingMarketingOptIn?: boolean;
-  /** Set true by `persist-consents` after the batched `persistConsents` hook fires. */
+  /** Set true by `persist-consents` after the batched `consentStore.save` call fires. */
   consentsPersisted?: boolean;
 
   /** Set true by abort alt-actions (`cancel`). Gates all terminal steps. */
@@ -1434,11 +1434,11 @@ export class InviteWorkflow extends AuthWorkflowBase {
     return undefined;
   }
 
-  // ── Phase B: persistConsents ──────────────────────────────────────────
+  // ── Phase B: persist-consents ─────────────────────────────────────────
   /**
    * Batched consent persistence — fans every consent event captured during
    * this invite run (terms acceptance + marketing opt-in/out) out to the
-   * consumer's `persistConsents(username, events)` hook in one call.
+   * `ConsentStore.save(username, events)` DI provider in one call.
    * Idempotent via `ctx.consentsPersisted`; short-circuits with no events
    * when neither gate fired but the schema still routed here (defensive —
    * the schema condition normally filters this case).
@@ -1467,18 +1467,9 @@ export class InviteWorkflow extends AuthWorkflowBase {
       ctx.consentsPersisted = true;
       return undefined;
     }
-    await this.persistConsents(ctx.username, events);
+    await this.consentStore.save(ctx.username, events);
     ctx.consentsPersisted = true;
     return undefined;
-  }
-
-  /**
-   * Persist consent events collected during this invite run. Default: no-op.
-   * Override to write to your DB of choice — storage shape is intentionally
-   * the consumer's call.
-   */
-  protected async persistConsents(_username: string, _events: ConsentEvent[]): Promise<void> {
-    // No-op default.
   }
 
   // ── Phase B: unsetPendingInvitation ───────────────────────────────────

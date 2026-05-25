@@ -155,7 +155,7 @@ describe("AuthWorkflowBase.processInlineConsent — security gates (HACK-CONSENT
     // `if (… && !ctx.consentsPersisted …)` guard closes the loop.
     // Without it, an attacker who flips a user's opt-in by posting a new
     // `marketingOptIn:false` on any later carrier form would trigger a
-    // second `persistConsents` call — silently toggling the user's
+    // second `consentStore.save` call — silently toggling the user's
     // preference against their wishes. Distinct from HACK-CONSENT-01
     // because marketing has a separate persist-step gate.
     // No `termsVersion` here — isolates the marketing gate from the terms
@@ -307,7 +307,7 @@ describe("AuthWorkflowBase.processInlineConsent — security gates (HACK-CONSENT
     // Both are wrong — opting OUT is a valid recordable choice, distinct
     // from "field never submitted". The downstream `apply-consent` step
     // emits a `{kind:'marketing',optIn:false,…}` event in the batched
-    // `persistConsents` call; an off-by-one would silently swallow opt-outs.
+    // `consentStore.save` call; an off-by-one would silently swallow opt-outs.
     const base = new ExposedBase();
     const ctx: InlineConsentCtx = {
       acceptance: { consentMarketing: true },
@@ -323,7 +323,7 @@ describe("AuthWorkflowBase.processInlineConsent — security gates (HACK-CONSENT
   });
 
   it("both gates open → timestamps captured at acceptance moment (not at persist time)", () => {
-    // WHY (Rule 9): the batched `persistConsents(username, events)` hook
+    // WHY (Rule 9): the batched `consentStore.save(username, events)` call
     // receives `at` for each event — the WHY of that field is "when the
     // user actually clicked accept", which must survive a paused-workflow
     // resume gap. If the helper deferred the timestamp to the persist step

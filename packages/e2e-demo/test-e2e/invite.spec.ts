@@ -1263,8 +1263,8 @@ test.describe("WF-INVITE — auth.invite family (MFA enrollment, PW MFA coverage
 // `acceptance.termsVersion: 'v1'` so `SetPasswordForm` renders the
 // `acceptedTerms` checkbox during the accept tail. The post-form
 // `persist-consents` step batches the captured terms event into a single
-// `DemoInviteWorkflow.persistConsents` call, which appends to the SAME
-// globalThis-anchored consent log the login override writes to. The
+// `DemoConsentStore.save` call, which appends to the SAME globalThis-anchored
+// consent log the recovery + login flows write to. The
 // `/__test/consent-log/:username` endpoint then returns the event for
 // assertion here. Without the new `processInlineConsent` call in
 // `createPasswordForm` (Phase-2 production change), the submitted

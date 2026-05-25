@@ -17,7 +17,7 @@
 import { AuthCredential } from "@aooth/auth";
 import { generateTotpCode, generateTotpSecret, UserService } from "@aooth/user";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
-import { Controller, Inherit } from "moost";
+import { Controller, Inherit, Injectable } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import { ProfileCompleteForm } from "../atscript/models/forms.as";
@@ -147,17 +147,15 @@ describe("LoginWorkflow subclass — applyProfile override", () => {
   });
 });
 
-// ── persistConsents override (replaces deleted standalone-step test) ─
+// ── ConsentStore.save override ────────────────────────────────────────
 //
-// REPLACES: the pre-refactor `applyConsentMarketing override` test. The
-// customer-override seam is now the batched `persistConsents(username,
-// events)` hook called by the new `persist-consents` @Step — replacing the
-// pre-Phase-1 singular `applyConsentMarketing(username, optIn)` write hook.
-// Marketing consent now arrives on an onboarding carrier form (no longer on
-// `LoginCredentialsForm` which dropped the consent mixin); the test routes
-// the opt-in through `AskEmailForm` to exercise the new path.
-describe("LoginWorkflow subclass — persistConsents override (CONSENT-OVERRIDE)", () => {
-  it("CONSENT-OVERRIDE-01: inline marketingOptIn:true on a carrier form → persistConsents override receives a marketing event", async () => {
+// The customer-override seam is `ConsentStore.save(username, events)` — the
+// `persist-consents` @Step body calls `this.consentStore.save(...)` after
+// the inline-consent carrier form fires. Marketing consent arrives on an
+// onboarding carrier form (`LoginCredentialsForm` has no consent mixin);
+// the test routes the opt-in through `AskEmailForm` to exercise that path.
+describe("LoginWorkflow — ConsentStore.save override (CONSENT-OVERRIDE)", () => {
+  it("CONSENT-OVERRIDE-01: inline marketingOptIn:true on a carrier form → consentStore.save receives a marketing event", async () => {
     // WHY (Rule 9): asserts the new batched consumer-override seam fires
     // with the right shape. A regression that wired `persist-consents` to
     // call a different hook, or skipped capturing `at`, or sent
@@ -169,26 +167,14 @@ describe("LoginWorkflow subclass — persistConsents override (CONSENT-OVERRIDE)
     // the time persist-consents fires, and (d) the `at` timestamp is
     // populated at acceptance moment.
     const calls: Array<{ username: string; events: ConsentEvent[] }> = [];
-    @Inherit()
-    @Controller("auth/login")
-    class ConsentMarketingLogin extends LoginWorkflow {
-      constructor(
-        opts: LoginWorkflowOpts,
-        users: UserService,
-        auth: AuthCredential,
-        authOpts: AuthOpts,
-        consentStore: ConsentStore,
-      ) {
-        super(opts, users, auth, authOpts, consentStore);
-      }
-      protected override async persistConsents(
-        username: string,
-        events: ConsentEvent[],
-      ): Promise<void> {
+    @Injectable()
+    class CapturingConsentStore extends ConsentStore {
+      override async save(username: string, events: ConsentEvent[]): Promise<void> {
         calls.push({ username, events: [...events] });
       }
     }
     const app = await prepareWfApp({
+      consentStore: new CapturingConsentStore(),
       loginPolicy: {
         acceptance: { profileCompleteRequired: false, consentMarketing: true },
         // Force ensureEmail to route the workflow through `AskEmailForm`
@@ -197,7 +183,7 @@ describe("LoginWorkflow subclass — persistConsents override (CONSENT-OVERRIDE)
         // dropped the consent mixin.
         enrollment: { ensureEmail: true, ensurePhone: false },
       },
-      loginWorkflowClass: withLoginMfaCtx(ConsentMarketingLogin, { mfaMode: "disabled" }),
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r1 = await app.trigger({ wfid: "auth/login/flow" });

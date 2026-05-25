@@ -745,12 +745,11 @@ test.describe("recovery — default-magiclink (R-A) P2 audit", () => {
 // variant flips `acceptance.termsVersion: 'v2'` so `SetPasswordForm` renders
 // the `acceptedTerms` checkbox on the recovery completion form. The post-form
 // `persist-consents` step batches the captured terms event into one
-// `DemoRecoveryWorkflow.persistConsents` call, which appends to the SAME
-// globalThis consent log fed by login + invite. The `/__test/consent-log/:username`
-// endpoint returns the event for assertion here. Without the new
-// `processInlineConsent` call in `setPassword` (Phase-2 production change),
-// the submitted `acceptedTerms` would be a stripped form-extra and the log
-// would stay empty.
+// `DemoConsentStore.save` call, which appends to the SAME globalThis consent
+// log fed by login + invite. The `/__test/consent-log/:username` endpoint
+// returns the event for assertion here. Without the new `processInlineConsent`
+// call in `setPassword` (Phase-2 production change), the submitted
+// `acceptedTerms` would be a stripped form-extra and the log would stay empty.
 test.describe("recovery — inline-consent (Phase 2)", () => {
   test.beforeEach(async ({ request }) => {
     await resetApp(request);

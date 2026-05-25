@@ -279,12 +279,12 @@ export interface LoginWfCtx {
   termsAcceptedDone?: boolean;
   profileApplied?: boolean;
   /**
-   * Set true by `persist-consents` after the batched `persistConsents`
-   * consumer hook fires (or after the step short-circuits with no events to
-   * persist). Gates `processInlineConsent` from staging further marketing
-   * opt-ins, and the `persist-consents` schema condition from re-firing.
-   * Replaces the pre-refactor singular `consentApplied` (which gated only
-   * marketing — the new flag is batch-write-completion).
+   * Set true by `persist-consents` after the batched `consentStore.save`
+   * call fires (or after the step short-circuits with no events to persist).
+   * Gates `processInlineConsent` from staging further marketing opt-ins, and
+   * the `persist-consents` schema condition from re-firing. Replaces the
+   * pre-refactor singular `consentApplied` (which gated only marketing —
+   * the new flag is batch-write-completion).
    */
   consentsPersisted?: boolean;
   /**
@@ -903,8 +903,8 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // and `acceptance.termsVersion` is set (returning user, terms-bump-only
     // login), the standalone `terms-bump-prompt` step fires to collect terms
     // re-acceptance. `persist-consents` then fans every collected consent
-    // event (terms + marketing) out via the consumer's `persistConsents`
-    // batched hook once `ctx.username` is bound.
+    // event (terms + marketing) out via `ConsentStore.save` in one batched
+    // call once `ctx.username` is bound.
     {
       id: "profile-complete",
       condition: (ctx) =>
@@ -1741,7 +1741,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
   /**
    * Batched consent persistence — fans every consent event captured during
    * this workflow run (terms acceptance + marketing opt-in/out) out to the
-   * consumer's `persistConsents(username, events)` hook in one call.
+   * `ConsentStore.save(username, events)` DI provider in one call.
    * Idempotent via `ctx.consentsPersisted`; short-circuits with no events
    * when neither gate fired but the schema still routed here (defensive —
    * the schema condition normally filters this case).
@@ -1769,19 +1769,9 @@ export class LoginWorkflow extends AuthWorkflowBase {
       ctx.consentsPersisted = true;
       return undefined;
     }
-    await this.persistConsents(ctx.username, events);
+    await this.consentStore.save(ctx.username, events);
     ctx.consentsPersisted = true;
     return undefined;
-  }
-
-  /**
-   * Persist consent events collected during this workflow run. Default: no-op.
-   * Override to write to your DB of choice — MongoDB users typically push the
-   * events onto an embedded array on the user document, SQL users insert into
-   * an audit table. Storage shape is intentionally the consumer's call.
-   */
-  protected async persistConsents(_username: string, _events: ConsentEvent[]): Promise<void> {
-    // No-op default.
   }
 
   // ── Phase 7: tenant / persona ─────────────────────────────────────────

@@ -20,7 +20,7 @@ import {
   UserService,
   UserStoreMemory,
 } from "@aooth/user";
-import { Controller, Inherit } from "moost";
+import { Controller, Inherit, Injectable } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
@@ -808,14 +808,25 @@ describe("LoginWorkflowOpts — Phase 9 finalize (auditLogin, notifyNewDevice, r
 // inline `WithInlineConsentForm` block OFF `LoginCredentialsForm` (so consent
 // is captured AFTER `ctx.username` is bound, enabling per-user override
 // logic) and replaced the singular `apply-consent` step / `applyConsentMarketing`
-// hook with a batched `persist-consents` step / `persistConsents(username,
-// events)` hook. Validation lives in `AuthWorkflowBase.processInlineConsent`
+// hook with a batched `persist-consents` step / `ConsentStore.save(username,
+// events)` DI seam. Validation lives in `AuthWorkflowBase.processInlineConsent`
 // (HACK-CONSENT-* unit coverage in `auth-workflow.base.spec.ts`); the
 // integration tests below pin the END-TO-END effect through the login
 // workflow — that inline fields ride on the FIRST onboarding carrier form
 // to fire (AskEmailForm / AskPhoneForm / SetPasswordForm /
 // ProfileCompleteForm), and the `persist-consents` step batches the events
 // into one consumer-override call.
+//
+// Shared capturing store for PERSIST-CONSENT-01..04 + BUMP-PROMPT-01 — these
+// tests only differ in the policy / inputs they drive; the consumer-override
+// shape is identical, so one CapturingConsentStore class serves all variants.
+@Injectable()
+class CapturingConsentStore extends ConsentStore {
+  readonly calls: Array<{ username: string; events: ConsentEvent[] }> = [];
+  override async save(username: string, events: ConsentEvent[]): Promise<void> {
+    this.calls.push({ username, events: [...events] });
+  }
+}
 describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / PERSIST-CONSENT)", () => {
   it("TERMS-INLINE-01: acceptance.termsVersion + acceptedTerms:true on AskEmailForm → ctx flips done + version captured", async () => {
     // WHY: the headline guarantee — terms ride on the FIRST onboarding
@@ -888,31 +899,13 @@ describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / PERSIST-C
     expect(captured).toEqual([{ termsAcceptedDone: true, termsAcceptedVersion: "v1" }]);
   });
 
-  it("PERSIST-CONSENT-01: terms-only flow → persistConsents receives [{kind:'terms',version,at}]", async () => {
-    // WHY: pins the terms-only event shape. The batched hook MUST receive a
+  it("PERSIST-CONSENT-01: terms-only flow → consentStore.save receives [{kind:'terms',version,at}]", async () => {
+    // WHY: pins the terms-only event shape. The batched call MUST receive a
     // single `kind:'terms'` event when marketing policy is off (no marketing
     // event should be added speculatively).
-    const calls: Array<{ username: string; events: ConsentEvent[] }> = [];
-    @Inherit()
-    @Controller("auth/login")
-    class TermsOnly extends LoginWorkflow {
-      constructor(
-        opts: LoginWorkflowOpts,
-        users: UserService,
-        auth: AuthCredential,
-        authOpts: AuthOpts,
-        consentStore: ConsentStore,
-      ) {
-        super(opts, users, auth, authOpts, consentStore);
-      }
-      protected override async persistConsents(
-        username: string,
-        events: ConsentEvent[],
-      ): Promise<void> {
-        calls.push({ username, events: [...events] });
-      }
-    }
+    const consentStore = new CapturingConsentStore();
     const app = await prepareWfApp({
+      consentStore,
       loginPolicy: {
         acceptance: {
           termsVersion: "v2",
@@ -921,7 +914,7 @@ describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / PERSIST-C
         },
         enrollment: { ensureEmail: true, ensurePhone: false },
       },
-      loginWorkflowClass: withLoginMfaCtx(TermsOnly, { mfaMode: "disabled" }),
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const before = Date.now();
@@ -938,44 +931,26 @@ describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / PERSIST-C
       wfs: r3.body?.wfs as string,
       input: { code: sent!.code as string, rememberDevice: false },
     });
-    expect(calls.length).toBe(1);
-    expect(calls[0].username).toBe("alice");
-    expect(calls[0].events.length).toBe(1);
-    expect(calls[0].events[0].kind).toBe("terms");
-    expect(calls[0].events[0].version).toBe("v2");
-    expect(calls[0].events[0].at).toBeGreaterThanOrEqual(before);
-    expect(calls[0].events[0].at).toBeLessThanOrEqual(Date.now());
+    expect(consentStore.calls.length).toBe(1);
+    expect(consentStore.calls[0].username).toBe("alice");
+    expect(consentStore.calls[0].events.length).toBe(1);
+    expect(consentStore.calls[0].events[0].kind).toBe("terms");
+    expect(consentStore.calls[0].events[0].version).toBe("v2");
+    expect(consentStore.calls[0].events[0].at).toBeGreaterThanOrEqual(before);
+    expect(consentStore.calls[0].events[0].at).toBeLessThanOrEqual(Date.now());
   });
 
-  it("PERSIST-CONSENT-02: marketing-only flow → persistConsents receives [{kind:'marketing',optIn,at}]", async () => {
+  it("PERSIST-CONSENT-02: marketing-only flow → consentStore.save receives [{kind:'marketing',optIn,at}]", async () => {
     // WHY: pins the marketing-only event shape. No terms event should be
     // added when terms policy is off.
-    const calls: Array<{ username: string; events: ConsentEvent[] }> = [];
-    @Inherit()
-    @Controller("auth/login")
-    class MarketingOnly extends LoginWorkflow {
-      constructor(
-        opts: LoginWorkflowOpts,
-        users: UserService,
-        auth: AuthCredential,
-        authOpts: AuthOpts,
-        consentStore: ConsentStore,
-      ) {
-        super(opts, users, auth, authOpts, consentStore);
-      }
-      protected override async persistConsents(
-        username: string,
-        events: ConsentEvent[],
-      ): Promise<void> {
-        calls.push({ username, events: [...events] });
-      }
-    }
+    const consentStore = new CapturingConsentStore();
     const app = await prepareWfApp({
+      consentStore,
       loginPolicy: {
         acceptance: { profileCompleteRequired: false, consentMarketing: true },
         enrollment: { ensureEmail: true, ensurePhone: false },
       },
-      loginWorkflowClass: withLoginMfaCtx(MarketingOnly, { mfaMode: "disabled" }),
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const before = Date.now();
@@ -992,40 +967,22 @@ describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / PERSIST-C
       wfs: r3.body?.wfs as string,
       input: { code: sent!.code as string, rememberDevice: false },
     });
-    expect(calls.length).toBe(1);
-    expect(calls[0].events.length).toBe(1);
-    expect(calls[0].events[0].kind).toBe("marketing");
-    expect(calls[0].events[0].optIn).toBe(true);
-    expect(calls[0].events[0].at).toBeGreaterThanOrEqual(before);
-    expect(calls[0].events[0].at).toBeLessThanOrEqual(Date.now());
+    expect(consentStore.calls.length).toBe(1);
+    expect(consentStore.calls[0].events.length).toBe(1);
+    expect(consentStore.calls[0].events[0].kind).toBe("marketing");
+    expect(consentStore.calls[0].events[0].optIn).toBe(true);
+    expect(consentStore.calls[0].events[0].at).toBeGreaterThanOrEqual(before);
+    expect(consentStore.calls[0].events[0].at).toBeLessThanOrEqual(Date.now());
   });
 
   it("PERSIST-CONSENT-03: both kinds → events array contains terms THEN marketing (insertion order pins the batched shape)", async () => {
-    // WHY: pins the batched-events contract. The `persistConsentsStep`
+    // WHY: pins the batched-events contract. The `persist-consents` step
     // pushes terms first then marketing — a regression that reversed the
     // order or split into two separate calls would silently break
     // consumers that index events by position.
-    const calls: Array<{ username: string; events: ConsentEvent[] }> = [];
-    @Inherit()
-    @Controller("auth/login")
-    class BothKinds extends LoginWorkflow {
-      constructor(
-        opts: LoginWorkflowOpts,
-        users: UserService,
-        auth: AuthCredential,
-        authOpts: AuthOpts,
-        consentStore: ConsentStore,
-      ) {
-        super(opts, users, auth, authOpts, consentStore);
-      }
-      protected override async persistConsents(
-        username: string,
-        events: ConsentEvent[],
-      ): Promise<void> {
-        calls.push({ username, events: [...events] });
-      }
-    }
+    const consentStore = new CapturingConsentStore();
     const app = await prepareWfApp({
+      consentStore,
       loginPolicy: {
         acceptance: {
           termsVersion: "v3",
@@ -1034,7 +991,7 @@ describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / PERSIST-C
         },
         enrollment: { ensureEmail: true, ensurePhone: false },
       },
-      loginWorkflowClass: withLoginMfaCtx(BothKinds, { mfaMode: "disabled" }),
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
@@ -1050,24 +1007,24 @@ describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / PERSIST-C
       wfs: r3.body?.wfs as string,
       input: { code: sent!.code as string, rememberDevice: false },
     });
-    expect(calls.length).toBe(1);
-    expect(calls[0].events.length).toBe(2);
-    expect(calls[0].events[0].kind).toBe("terms");
-    expect(calls[0].events[0].version).toBe("v3");
-    expect(calls[0].events[1].kind).toBe("marketing");
-    expect(calls[0].events[1].optIn).toBe(true);
+    expect(consentStore.calls.length).toBe(1);
+    expect(consentStore.calls[0].events.length).toBe(2);
+    expect(consentStore.calls[0].events[0].kind).toBe("terms");
+    expect(consentStore.calls[0].events[0].version).toBe("v3");
+    expect(consentStore.calls[0].events[1].kind).toBe("marketing");
+    expect(consentStore.calls[0].events[1].optIn).toBe(true);
   });
 
-  it("PERSIST-CONSENT-04: consentsPersisted=true after step → no second persistConsents call (idempotency)", async () => {
+  it("PERSIST-CONSENT-04: consentsPersisted=true after step → no second consentStore.save call (idempotency)", async () => {
     // WHY (Rule 9): the step MUST be idempotent — a paused-workflow that
     // resumes through the `persist-consents` step a second time (or
     // schema re-iteration) must not double-write consents. The
     // `if (ctx.consentsPersisted) return undefined` guard at the top of
     // the step body is the load-bearing defense. A regression that drops
     // the guard would silently double-write consent records, polluting
-    // audit logs. Pinned via a call counter on the override + manually
-    // invoking the step twice via a subclass that wraps it.
-    let persistCalls = 0;
+    // audit logs. Pinned via a call counter on the store + a subclass that
+    // re-invokes `persistConsentsStep` after the engine's first pass.
+    const consentStore = new CapturingConsentStore();
     @Inherit()
     @Controller("auth/login")
     class IdempotentLogin extends LoginWorkflow {
@@ -1076,15 +1033,9 @@ describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / PERSIST-C
         users: UserService,
         auth: AuthCredential,
         authOpts: AuthOpts,
-        consentStore: ConsentStore,
+        consentStoreDep: ConsentStore,
       ) {
-        super(opts, users, auth, authOpts, consentStore);
-      }
-      protected override async persistConsents(
-        _username: string,
-        _events: ConsentEvent[],
-      ): Promise<void> {
-        persistCalls++;
+        super(opts, users, auth, authOpts, consentStoreDep);
       }
       override async persistConsentsStep(ctx: LoginWfCtx): Promise<undefined> {
         // First call runs the real step (writes consentsPersisted=true).
@@ -1095,6 +1046,7 @@ describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / PERSIST-C
       }
     }
     const app = await prepareWfApp({
+      consentStore,
       loginPolicy: {
         acceptance: { profileCompleteRequired: false, consentMarketing: true },
         enrollment: { ensureEmail: true, ensurePhone: false },
@@ -1116,7 +1068,7 @@ describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / PERSIST-C
       input: { code: sent!.code as string, rememberDevice: false },
     });
     // Exactly one persist regardless of step re-invocation.
-    expect(persistCalls).toBe(1);
+    expect(consentStore.calls.length).toBe(1);
   });
 
   it("BUMP-PROMPT-01: returning user with stale terms + no carrier form → terms-bump-prompt pauses on TermsBumpForm, submit resumes + persists", async () => {
@@ -1126,27 +1078,9 @@ describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / PERSIST-C
     // be prompted for re-acceptance even when no onboarding carrier form
     // fires. Without the new `terms-bump-prompt` step the workflow would
     // silently issue tokens without recording the bump acceptance.
-    const calls: Array<{ username: string; events: ConsentEvent[] }> = [];
-    @Inherit()
-    @Controller("auth/login")
-    class BumpLogin extends LoginWorkflow {
-      constructor(
-        opts: LoginWorkflowOpts,
-        users: UserService,
-        auth: AuthCredential,
-        authOpts: AuthOpts,
-        consentStore: ConsentStore,
-      ) {
-        super(opts, users, auth, authOpts, consentStore);
-      }
-      protected override async persistConsents(
-        username: string,
-        events: ConsentEvent[],
-      ): Promise<void> {
-        calls.push({ username, events: [...events] });
-      }
-    }
+    const consentStore = new CapturingConsentStore();
     const app = await prepareWfApp({
+      consentStore,
       loginPolicy: {
         acceptance: {
           termsVersion: "v3",
@@ -1157,7 +1091,7 @@ describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / PERSIST-C
         // the standalone terms-bump-prompt.
         enrollment: { ensureEmail: false, ensurePhone: false },
       },
-      loginWorkflowClass: withLoginMfaCtx(BumpLogin, { mfaMode: "disabled" }),
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
@@ -1170,10 +1104,10 @@ describe("LoginWorkflowOpts — Phase 6 inline consent (TERMS-INLINE / PERSIST-C
     });
     const data = r3.body?.data as Record<string, unknown> | undefined;
     expect(data?.userId).toBe("alice");
-    expect(calls.length).toBe(1);
-    expect(calls[0].events.length).toBe(1);
-    expect(calls[0].events[0].kind).toBe("terms");
-    expect(calls[0].events[0].version).toBe("v3");
+    expect(consentStore.calls.length).toBe(1);
+    expect(consentStore.calls[0].events.length).toBe(1);
+    expect(consentStore.calls[0].events[0].kind).toBe("terms");
+    expect(consentStore.calls[0].events[0].version).toBe("v3");
   });
 
   it("BUMP-PROMPT-02: carrier form already captured terms → terms-bump-prompt SKIPPED (condition short-circuit)", async () => {
