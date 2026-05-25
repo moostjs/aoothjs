@@ -3,7 +3,7 @@ import { computed, ref } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import { AsWfFinish, AsWfForm, type WfFinished } from "@atscript/vue-wf";
 import { createDefaultTypes } from "@atscript/vue-form";
-import { AsConsentArray } from "@atscript/vue-aooth";
+import { AsConsentArray, AsPasswordRules } from "@atscript/vue-aooth";
 import { useHydrated } from "../composables/useHydrated";
 import { WORKFLOWS } from "../workflows";
 
@@ -40,8 +40,13 @@ const types = createDefaultTypes();
 // Custom carrier-form components registered via `<AsWfForm :components>` →
 // `<AsForm :components>`. `AsConsentArray` (from `@atscript/vue-aooth`) is
 // the renderer for the `WithInlineConsentForm.consents: string[]` field —
-// it self-hides when `ctx.pendingConsents` is empty.
-const components = { AsConsentArray };
+// it self-hides when `ctx.pendingConsents` is empty. `AsPasswordRules`
+// renders the live password-policy fulfillment readout on
+// `SetPasswordForm.passwordRules` — its `policies` attr binds to
+// `ctx.passwordPolicies` (Phase 7) and its `password` attr re-reads
+// `data.newPassword` on every keystroke so each row's `data-passed` flag
+// reflects the current input value.
+const components = { AsConsentArray, AsPasswordRules };
 
 const finished = ref<unknown>(null);
 const error = ref<string | null>(null);

@@ -172,6 +172,15 @@ export interface EmailIdentifierForm {
  * password-policy rules (`UserService.getTransferablePolicies()`) to the
  * client for rendering rule hints next to the inputs. Without this annotation
  * the key is stripped by `extractPassContext` before reaching the client.
+ *
+ * Phase 7 — `passwordRules: ui.paragraph` is a phantom display field bound to
+ * the `AsPasswordRules` component (`@atscript/vue-aooth`); the
+ * `@ui.form.fn.attr 'policies'` expression reads `ctx.passwordPolicies` (the
+ * transferable list seeded by the workflow's `prepare-password-rules` @Step)
+ * and the `@ui.form.fn.attr 'password'` expression reads
+ * `data.newPassword` so the rule-fulfillment readout updates live on every
+ * keystroke. `WithInlineConsentForm` continues to supply the inline-consent
+ * `consents: string[]` block via `AsConsentArray` (Phase 5).
  */
 @wf.context.pass 'passwordPolicies'
 @wf.context.pass 'pendingConsents'
@@ -194,6 +203,29 @@ export interface SetPasswordForm extends WithInlineConsentForm {
     @meta.required
     @expect.minLength 8
     confirmPassword: string
+
+    /**
+     * Phantom display field — `ui.paragraph` carries no submission value;
+     * it exists purely so `AsPasswordRules` (registered on the SPA via
+     * `<AsWfForm :components>`) renders one row per `ctx.passwordPolicies`
+     * descriptor between the confirm-password input and the action buttons.
+     *
+     * The `policies` attr reads from workflow context (seeded by the
+     * `prepare-password-rules` @Step via
+     * `UserService.getTransferablePolicies()`); the `password` attr reads
+     * from the live form-data so each row's `data-passed` flag re-evaluates
+     * on every keystroke. The `(_, data) => data.newPassword` shape is
+     * load-bearing — a regression that froze the `password` attr at first
+     * render (e.g. `() => data.newPassword`) would silently lie about
+     * policy fulfillment after the user starts typing.
+     */
+    @ui.form.order 25
+    @meta.label 'Password requirements'
+    @ui.form.component 'AsPasswordRules'
+    @ui.form.fn.attr 'policies', '(_, _d, ctx) => ctx.passwordPolicies'
+    @ui.form.fn.attr 'password', '(_, data) => data.newPassword'
+    @ui.form.grid.colSpan '12'
+    passwordRules: ui.paragraph
 
     @ui.form.order 30
     @ui.form.action 'logout', 'Logout'
