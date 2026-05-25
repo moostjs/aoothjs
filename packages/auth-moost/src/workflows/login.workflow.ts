@@ -9,9 +9,10 @@
  * **Step routing model.** Phase 1's `credentials` step is the main happy
  * path. Alternate credential paths (`magicLink*`, `passkey`, `ssoCallback`)
  * are stubs that throw `HttpError(501)` — the brief allows ships-as-stub for
- * these. Channel-enrollment loops (`ensureEmail` / `ensurePhone`) are a
- * single-pass ask-and-verify per the brief, since moost-wf does not provide
- * a clean "loop while" primitive at the @WorkflowSchema level.
+ * these. Channel-enrollment loops are split into paired `ask/<channel>` +
+ * `verify/<channel>` schema entries backed by two parameterized @Step
+ * handlers (`ask`, `verify`) that route both email + phone through the same
+ * code path via the `:channel(email|phone)` route param.
  *
  * **Alt-action delivery.** The wire shape `<AsWfForm>` emits when an action
  * button is clicked nests the action inside the workflow input envelope:
@@ -78,7 +79,7 @@ import {
 } from "@moostjs/event-wf";
 import { current } from "@wooksjs/event-core";
 import { useCookies, useHeaders, useResponse } from "@wooksjs/event-http";
-import { Controller } from "moost";
+import { Controller, Param } from "moost";
 
 import type { AuditEvent } from "../audit/index";
 import { AuthOpts } from "../auth.opts";
@@ -791,16 +792,29 @@ export class LoginWorkflow extends AuthWorkflowBase {
       ],
     },
 
-    // Phase 3 enrollment loops (single-pass per brief):
+    // Phase 3 enrollment loops — paired ask/verify per channel. The `ask`
+    // half collects the address + mints+sends the OTP (pauses on PincodeForm);
+    // the `verify` half consumes the pincode submission. Both halves share a
+    // single parameterized @Step handler keyed by `:channel(email|phone)`.
     {
-      id: "ensure-email",
+      id: "ask/email",
+      condition: (ctx) =>
+        (!!ctx.enrollment?.ensureEmail || !!ctx.guards?.emailVerifiedRequired) && !ctx.email,
+    },
+    {
+      id: "verify/email",
       condition: (ctx) =>
         (!!ctx.enrollment?.ensureEmail || !!ctx.guards?.emailVerifiedRequired) &&
+        !!ctx.email &&
         !ctx.emailConfirmed,
     },
     {
-      id: "ensure-phone",
-      condition: (ctx) => !!ctx.enrollment?.ensurePhone && !ctx.phoneConfirmed,
+      id: "ask/phone",
+      condition: (ctx) => !!ctx.enrollment?.ensurePhone && !ctx.phone,
+    },
+    {
+      id: "verify/phone",
+      condition: (ctx) => !!ctx.enrollment?.ensurePhone && !!ctx.phone && !ctx.phoneConfirmed,
     },
 
     // Phase 4 MFA setup + verification loop:
@@ -1178,88 +1192,69 @@ export class LoginWorkflow extends AuthWorkflowBase {
     throw new HttpError(501, "sso-callback step not implemented");
   }
 
-  // ── Phase 3: enrollment loops (single-pass per brief) ─────────────────
-  @Step("ensure-email")
-  async ensureEmail(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
+  // ── Phase 3: enrollment loops (ask/verify pair per channel) ───────────
+  // Split into two parameterized @Step handlers so each schema entry pauses
+  // at exactly one form: `ask/<ch>` collects the address + mints the OTP,
+  // `verify/<ch>` validates the pincode submission. Both channels (email,
+  // phone) route through the SAME handler — the route-param picks the form
+  // slot, MFA method name ("email" | "sms"), and deliver-payload shape.
+  @Step("ask/:channel(email|phone)")
+  async ask(
+    @WorkflowParam("context") ctx: LoginWfCtx,
+    @Param("channel") channel: "email" | "phone",
+  ): Promise<unknown> {
     this.requireUsername(ctx);
-    const pincodeWf = useAtscriptWf(this.opts.forms.pincode);
-    // Step 1: collect the email if we don't have one.
-    if (!ctx.email) {
-      const askEmailWf = useAtscriptWf(this.opts.forms.askEmail);
-      const input = askEmailWf.resolveInput() as { email: string } & InlineConsentInput;
-      this.processInlineConsent(ctx, input, askEmailWf);
-      const username = ctx.username;
-      await this.withStoreErrorTranslation(() =>
-        this.users.addMfaMethod(username, {
-          name: "email",
-          value: input.email,
-          confirmed: false,
-        }),
-      );
-      ctx.email = input.email;
-      // Generate + send the OTP, then ask for it next round.
-      const code = this.mintPin(
-        ctx,
-        this.authOpts.mfa.pincodeLength,
-        this.authOpts.mfa.pincodeTtlMs,
-      );
+    const isEmail = channel === "email";
+    const askWf = useAtscriptWf(isEmail ? this.opts.forms.askEmail : this.opts.forms.askPhone);
+    const input = askWf.resolveInput() as { email?: string; phone?: string } & InlineConsentInput;
+    this.processInlineConsent(ctx, input, askWf);
+    const value = (isEmail ? input.email : input.phone) as string;
+    const methodName = isEmail ? "email" : "sms";
+    const username = ctx.username;
+    await this.withStoreErrorTranslation(() =>
+      this.users.addMfaMethod(username, { name: methodName, value, confirmed: false }),
+    );
+    if (isEmail) ctx.email = value;
+    else ctx.phone = value;
+    const code = this.mintPin(ctx, this.authOpts.mfa.pincodeLength, this.authOpts.mfa.pincodeTtlMs);
+    if (isEmail) {
       await this.deliver({
         channel: "email",
         kind: "login.pincode",
-        recipient: input.email,
+        recipient: value,
         code,
         expiresAt: ctx.pinExpire as number,
       });
-      throw pincodeWf.requireInput();
-    }
-    // Step 2: verify the OTP.
-    const input = pincodeWf.resolveInput() as { code: string };
-    const pinErr = this.verifyPin(ctx, input.code);
-    if (pinErr) throw pincodeWf.requireInput({ errors: pinErr });
-    await this.withStoreErrorTranslation(() => this.users.confirmMfaMethod(ctx.username, "email"));
-    ctx.emailConfirmed = true;
-    delete ctx.pin;
-    delete ctx.pinExpire;
-    return undefined;
-  }
-
-  @Step("ensure-phone")
-  async ensurePhone(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
-    this.requireUsername(ctx);
-    const pincodeWf = useAtscriptWf(this.opts.forms.pincode);
-    if (!ctx.phone) {
-      const askPhoneWf = useAtscriptWf(this.opts.forms.askPhone);
-      const input = askPhoneWf.resolveInput() as { phone: string } & InlineConsentInput;
-      this.processInlineConsent(ctx, input, askPhoneWf);
-      const username = ctx.username;
-      await this.withStoreErrorTranslation(() =>
-        this.users.addMfaMethod(username, {
-          name: "sms",
-          value: input.phone,
-          confirmed: false,
-        }),
-      );
-      ctx.phone = input.phone;
-      const code = this.mintPin(
-        ctx,
-        this.authOpts.mfa.pincodeLength,
-        this.authOpts.mfa.pincodeTtlMs,
-      );
+    } else {
       await this.deliver({
         channel: "sms",
         kind: "login.pincode",
-        recipient: input.phone,
+        recipient: value,
         code,
         ttlMs: this.authOpts.mfa.pincodeTtlMs,
         userId: ctx.username,
       });
-      throw pincodeWf.requireInput();
     }
+    const pincodeWf = useAtscriptWf(this.opts.forms.pincode);
+    throw pincodeWf.requireInput();
+  }
+
+  @Step("verify/:channel(email|phone)")
+  async verify(
+    @WorkflowParam("context") ctx: LoginWfCtx,
+    @Param("channel") channel: "email" | "phone",
+  ): Promise<unknown> {
+    this.requireUsername(ctx);
+    const pincodeWf = useAtscriptWf(this.opts.forms.pincode);
     const input = pincodeWf.resolveInput() as { code: string };
     const pinErr = this.verifyPin(ctx, input.code);
     if (pinErr) throw pincodeWf.requireInput({ errors: pinErr });
-    await this.withStoreErrorTranslation(() => this.users.confirmMfaMethod(ctx.username, "sms"));
-    ctx.phoneConfirmed = true;
+    const isEmail = channel === "email";
+    await this.withStoreErrorTranslation(() =>
+      this.users.confirmMfaMethod(ctx.username, isEmail ? "email" : "sms"),
+    );
+    if (isEmail) ctx.emailConfirmed = true;
+    else ctx.phoneConfirmed = true;
     delete ctx.pin;
     delete ctx.pinExpire;
     return undefined;

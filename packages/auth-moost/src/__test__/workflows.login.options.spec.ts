@@ -2065,3 +2065,173 @@ describe("LoginWorkflowOpts — mfa enrollment ergonomics (PR7-1)", () => {
     expect(user.mfa.methods).toHaveLength(0);
   });
 });
+
+describe("LoginWorkflow — Phase 3 ask/verify channel routing", () => {
+  it("ATOMIC-CHANNEL-01: both email + phone route through the SAME @Step('ask/:channel(email|phone)') handler — counter keyed by channel proves the parameterized route param actually delivers a single shared body for both", async () => {
+    // WHY: pins that splitting `ensure-email` + `ensure-phone` into the
+    // parameterized `ask/:channel(email|phone)` schema entries (and the
+    // matching @Step path) preserves the contract that both channels share a
+    // single handler. A regression that statically routed `ask/email` →
+    // emailHandler and `ask/phone` → phoneHandler (defeating the
+    // parameterization) would still pass the per-channel functional tests
+    // above, but would fail this one — the counter would only see one
+    // channel's invocations and the other channel's OTP would NEVER be
+    // delivered.
+    const askCalls: Array<"email" | "phone"> = [];
+    @Inherit()
+    @Controller("auth/login")
+    class CountingAskLogin extends LoginWorkflow {
+      constructor(
+        opts: LoginWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+      ) {
+        super(opts, users, auth, authOpts);
+      }
+      override async ask(ctx: LoginWfCtx, channel: "email" | "phone"): Promise<unknown> {
+        askCalls.push(channel);
+        return super.ask(ctx, channel);
+      }
+    }
+    const app = await prepareWfApp({
+      loginPolicy: {
+        enrollment: { ensureEmail: true, ensurePhone: true },
+      },
+      loginWorkflowClass: withLoginMfaCtx(CountingAskLogin, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    // 1. credentials → pauses on AskEmailForm.
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    expect(r2.body?.wfs).toBeTruthy();
+    // 2. submit email → ask/email fires, OTP minted, pauses on PincodeForm.
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { email: "alice@example.com" },
+    });
+    expect(r3.body?.wfs).toBeTruthy();
+    const emailOtp = app.emails.find(
+      (e) => e.kind === "login.pincode" && e.recipient === "alice@example.com",
+    );
+    expect(emailOtp).toBeTruthy();
+    // 3. submit pincode → verify/email confirms email, pauses on AskPhoneForm.
+    const r4 = await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { code: emailOtp!.code, rememberDevice: false },
+    });
+    expect(r4.body?.wfs).toBeTruthy();
+    // 4. submit phone → ask/phone fires (SAME handler), SMS OTP minted,
+    //    pauses on PincodeForm.
+    const r5 = await app.trigger({
+      wfs: r4.body?.wfs as string,
+      input: { phone: "+15550001111" },
+    });
+    expect(r5.body?.wfs).toBeTruthy();
+    const smsOtp = app.sms.find(
+      (s) => s.kind === "login.pincode" && s.recipient === "+15550001111",
+    );
+    expect(smsOtp).toBeTruthy();
+    // 5. submit sms pincode → verify/phone, workflow finishes.
+    const r6 = await app.trigger({
+      wfs: r5.body?.wfs as string,
+      input: { code: smsOtp!.code, rememberDevice: false },
+    });
+    expect((r6.body?.data as Record<string, unknown>)?.userId).toBe("alice");
+    // Each channel routed through the SAME `ask` method on the controller
+    // (no static email/phone handler split). The body is entered TWICE per
+    // channel — once to surface the carrier form (resolveInput throws), once
+    // to actually collect+deliver — so the counter shows the parameterized
+    // route param dispatched to a single shared method for BOTH channels.
+    expect(askCalls).toEqual(["email", "email", "phone", "phone"]);
+    // Both channels' OTPs were minted+delivered through that single handler.
+    expect(emailOtp).toBeTruthy();
+    expect(smsOtp).toBeTruthy();
+  });
+
+  it("ATOMIC-VERIFY-01: ask/email + verify/email are independently gated — a wrong pincode keeps verify/email looping on PincodeForm without re-entering ask/email; correct pincode flips emailConfirmed=true", async () => {
+    // WHY: pins that the schema's separate `ask/email` + `verify/email`
+    // entries correctly split the workflow at the PincodeForm pause. A
+    // regression that re-fused ask + verify into a single step would re-run
+    // the ask body (re-minting an OTP, re-sending an email) on every
+    // pincode-rejection retry — observable as ask getting invoked more than
+    // once. This test pins the failure-retry loop: bad code re-pauses on
+    // PincodeForm via verify/email's `requireInput({errors})` WITHOUT
+    // re-entering ask/email.
+    const askCalls: Array<"email" | "phone"> = [];
+    const verifyCalls: Array<"email" | "phone"> = [];
+    @Inherit()
+    @Controller("auth/login")
+    class CountingVerifyLogin extends LoginWorkflow {
+      constructor(
+        opts: LoginWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+      ) {
+        super(opts, users, auth, authOpts);
+      }
+      override async ask(ctx: LoginWfCtx, channel: "email" | "phone"): Promise<unknown> {
+        askCalls.push(channel);
+        return super.ask(ctx, channel);
+      }
+      override async verify(ctx: LoginWfCtx, channel: "email" | "phone"): Promise<unknown> {
+        verifyCalls.push(channel);
+        return super.verify(ctx, channel);
+      }
+    }
+    const app = await prepareWfApp({
+      loginPolicy: {
+        enrollment: { ensureEmail: true, ensurePhone: false },
+      },
+      loginWorkflowClass: withLoginMfaCtx(CountingVerifyLogin, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    // ask/email fires → pauses on PincodeForm.
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { email: "alice@example.com" },
+    });
+    expect(r3.body?.wfs).toBeTruthy();
+    // ask/email is entered TWICE before pincode pause: once to surface the
+    // AskEmailForm (resolveInput throws when input is undefined → pause),
+    // then again after the email is submitted (this time the body runs
+    // through to addMfaMethod + mintPin + deliver + pincode-requireInput).
+    expect(askCalls).toEqual(["email", "email"]);
+    expect(verifyCalls).toEqual([]);
+    const sent = app.emails.find(
+      (e) => e.kind === "login.pincode" && e.recipient === "alice@example.com",
+    );
+    expect(sent).toBeTruthy();
+    // Submit a WRONG pincode → engine resumes at ask/email, schema
+    // condition `!ctx.email` is now FALSE (email set), engine `continue`s
+    // past ask/email and runs verify/email. verifyPin returns errors →
+    // verify/email throws requireInput({errors}) → re-pauses on PincodeForm.
+    // emailConfirmed stays unset; ask/email is NOT re-entered.
+    const askCountBeforeRetry = askCalls.length;
+    const r4 = await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { code: "000000", rememberDevice: false },
+    });
+    expect(r4.body?.wfs).toBeTruthy();
+    expect(r4.body?.data).toBeUndefined();
+    expect(verifyCalls).toEqual(["email"]);
+    // Critical: ask/email was NOT re-invoked. If ask + verify were re-fused
+    // (single-step body) this would show a third "email" entry because the
+    // PincodeForm pause would resume in ask/email's body, which would
+    // re-mint+re-deliver before reaching the verify branch.
+    expect(askCalls.length).toBe(askCountBeforeRetry);
+    // Submit the correct pincode → verify/email passes, workflow finishes.
+    const r5 = await app.trigger({
+      wfs: r4.body?.wfs as string,
+      input: { code: sent!.code, rememberDevice: false },
+    });
+    expect((r5.body?.data as Record<string, unknown>)?.userId).toBe("alice");
+    expect(verifyCalls).toEqual(["email", "email"]);
+    expect(askCalls.length).toBe(askCountBeforeRetry);
+    // Final post-state: email method is confirmed on the user record.
+    const user = await app.users.getUser("alice");
+    const emailMethod = user.mfa.methods.find((m) => m.name === "email");
+    expect(emailMethod?.confirmed).toBe(true);
+  });
+});
