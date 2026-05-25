@@ -83,11 +83,37 @@ app.setReplaceRegistry(createReplaceRegistry([ConsentStore, MyConsentStore]));
 
 Singleton scope (same rule as `AuthOpts`).
 
-> **Wire-up status.** Only `save()` is wired today — the `persist-consents`
-> step body calls `consentStore.save(...)` on all three workflows.
-> `getPendingConsents()`, `read()`, and `recordOtpChannelConsent()` are
-> no-op defaults with no callers yet, so customer overrides on those three
-> methods are silently inert.
+### OTP-channel disclosure (`resolveOtpDisclosure` + `recordOtpChannelConsent`)
+
+For each OTP-via-email / OTP-via-sms channel the user enrols, `LoginWorkflow`
+stages a disclosure paragraph onto `ctx.otpDisclosure` (via the
+`resolveOtpDisclosure(ctx, channel)` resolver) BEFORE the
+`AskEmailForm` / `AskPhoneForm` carrier-form pause — the SPA reads it via
+`@wf.context.pass 'otpDisclosure'` and renders it adjacent to the email /
+phone input so the user reads it BEFORE submitting (the act of typing +
+submitting their address constitutes implied consent). The disclosure text
+is GENERIC per channel — no target value templated in, since the user
+hasn't submitted it yet at ask-time. After the pincode validates AND
+`confirmMfaMethod` flips the row to `confirmed: true`, `verify/:channel`
+forwards the disclosure string PLUS the verified target to
+`consentStore.recordOtpChannelConsent(username, channel, target, disclosure)`
+— so the persisted audit record pins BOTH the literal copy shown AND the
+address verified.
+
+Default behaviour is **disclosure-only** — legally sufficient for
+transactional security codes under TCPA / PECR / CASL / GDPR (legitimate
+interest). The default `recordOtpChannelConsent` is a no-op; customers who
+need affirmative consent capture (audit-grade record-keeping for legal
+disputes or carrier-aggregator requirements) override it to persist.
+The `channel` arg is the **protocol** (`'email'` | `'sms'`) — the
+user-facing `'phone'` route param is mapped to `'sms'` before the hook
+call, so customer impls key on the wire protocol they actually use.
+
+> **Wire-up status.** `save()` (all three workflows' `persist-consents`
+> step) and `resolveOtpDisclosure` + `recordOtpChannelConsent` (login's
+> `ask/:channel` + `verify/:channel` steps) are wired today.
+> `getPendingConsents()` and `read()` are no-op defaults with no callers
+> yet, so customer overrides on those two methods are silently inert.
 
 ## `resolveXxx(ctx)` — policy getter convention
 
@@ -99,6 +125,13 @@ protected resolveAcceptance(_ctx: LoginWfCtx):
   return { profileCompleteRequired: false, consentMarketing: false };
 }
 ```
+
+Most resolvers take a single `ctx` argument. A small number accept extra
+positional args alongside `ctx` when the resolved value depends on per-step
+input the @Step body knows but ctx doesn't yet carry — e.g.
+`resolveOtpDisclosure(ctx, channel)` where the disclosure copy varies by
+the route-param channel (`'email'` vs `'phone'`). The argument order stays
+**ctx-first** by convention.
 
 Rules:
 

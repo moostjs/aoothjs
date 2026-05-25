@@ -4,6 +4,18 @@ import type { UserService } from "@aooth/user";
 import { Delete, Get, Post } from "@moostjs/event-http";
 import { Controller, Param } from "moost";
 
+/**
+ * Shape captured by `DemoConsentStore.recordOtpChannelConsent` (a sibling
+ * audit-record to `ConsentEvent` — `channel`/`target`/`disclosure` are
+ * OTP-specific fields that don't belong on the published `ConsentEvent`).
+ */
+export type OtpConsentRecord = {
+  channel: "email" | "sms";
+  target: string;
+  disclosure: string;
+  at: number;
+};
+
 export interface TestMailboxDeps {
   /** Live reference to the captured-email buffer (mutated in place). */
   emails: AuthEmailEvent[];
@@ -44,6 +56,14 @@ export interface TestMailboxDeps {
    * tests.
    */
   consentLog: Map<string, ConsentEvent[]>;
+  /**
+   * OTP-channel disclosure records captured by
+   * `DemoConsentStore.recordOtpChannelConsent`, keyed by username. Separate
+   * from `consentLog` because the record shape carries the literal
+   * `target`/`disclosure` the user saw — fields that don't belong on
+   * `ConsentEvent`. Drives WF-LOGIN-OTP-DISCLOSURE-01.
+   */
+  otpConsentLog: Map<string, OtpConsentRecord[]>;
 }
 
 /**
@@ -57,7 +77,8 @@ export interface TestMailboxDeps {
 export function createTestMailboxController(
   deps: TestMailboxDeps,
 ): new (...args: never[]) => unknown {
-  const { emails, sms, reseed, userService, backupCodes, auditEvents, consentLog } = deps;
+  const { emails, sms, reseed, userService, backupCodes, auditEvents, consentLog, otpConsentLog } =
+    deps;
 
   // `@Public()` bypasses the global auth guard — these endpoints are the
   // entry point used BY tests, before any login has happened.
@@ -220,6 +241,17 @@ export function createTestMailboxController(
     @Get("consent-log/:username")
     consentLogFor(@Param("username") username: string): ConsentEvent[] {
       return consentLog.get(username) ?? [];
+    }
+
+    /**
+     * Return OTP-channel disclosure records captured for `:username` by
+     * `DemoConsentStore.recordOtpChannelConsent`. Returns `[]` when the user
+     * has never been through a verify/:channel step on this app instance.
+     * Drives WF-LOGIN-OTP-DISCLOSURE-01.
+     */
+    @Get("otp-consent-log/:username")
+    otpConsentLogFor(@Param("username") username: string): OtpConsentRecord[] {
+      return otpConsentLog.get(username) ?? [];
     }
   }
 

@@ -615,6 +615,88 @@ test.describe("LoginWorkflow / variant=enrollment (P1)", () => {
     );
     expect(sms.code).toBeTruthy();
   });
+
+  // WHY (Rule 9): wire-level pin that the Phase 3 OTP-disclosure + record
+  // hook fires through the real HTTP boundary. The vitest suite covers the
+  // server-side contract (resolver→ctx→consentStore.recordOtpChannelConsent);
+  // this test pins that the DemoConsentStore subclass actually persists to
+  // the test-visible buffer through a full Playwright login round-trip — so
+  // a regression that broke ANY of (a) the AskPhoneForm transport, (b) the
+  // verify/:channel hook call, (c) the DemoConsentStore.recordOtpChannelConsent
+  // override surfaces here. The phone variant is load-bearing — the 'sms'
+  // protocol arg is the most commonly-needed customer integration point
+  // (carrier-aggregator SMS persistence).
+  test("WF-LOGIN-OTP-DISCLOSURE-01: t1_alice phone enrollment → /__test/otp-consent-log/t1_alice records {channel:'sms',target,disclosure}", async ({
+    page,
+    request,
+  }) => {
+    const before = Date.now();
+    // Sanity: log starts empty for this user after reset.
+    const initial = await request.get(`/__test/otp-consent-log/t1_alice`);
+    expect(initial.status()).toBe(200);
+    expect((await initial.json()) as unknown[]).toEqual([]);
+
+    await page.goto(wfUrl(LOGIN_WF, "enrollment"));
+    await fillField(page, "username", USERS.alice.username);
+    await fillField(page, "password", USERS.alice.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    // Walk through email enrollment first (the variant gates ensurePhone
+    // after ensureEmail).
+    await waitForFormInput(page, "email");
+    await fillField(page, "email", "alice@acme.test");
+    await submitForm(page);
+    await waitForFormInput(page, "code");
+    const emailOtp = await waitForEmail(
+      request,
+      (e) => e.kind === "login.pincode" && e.recipient === "alice@acme.test",
+    );
+    await fillField(page, "code", emailOtp.code as string);
+    await submitForm(page);
+
+    // Phone enrollment branch — submit the literal phone, then the SMS OTP.
+    await waitForFormInput(page, "phone");
+    await fillField(page, "phone", "+15555550999");
+    await submitForm(page);
+    await waitForFormInput(page, "code");
+    const sms = await waitForSms(
+      request,
+      (e) => e.kind === "login.pincode" && e.recipient === "+15555550999",
+    );
+    await fillField(page, "code", sms.code);
+    await submitForm(page);
+
+    // After verify/phone fires, the DemoConsentStore.recordOtpChannelConsent
+    // override has appended one entry per confirmed channel — email + sms.
+    const after = await request.get(`/__test/otp-consent-log/t1_alice`);
+    expect(after.status()).toBe(200);
+    const records = (await after.json()) as Array<{
+      channel: "email" | "sms";
+      target: string;
+      disclosure: string;
+      at: number;
+    }>;
+    expect(records.length).toBe(2);
+    // Order pinned by enrollment sequence — email first (ensureEmail gates
+    // BEFORE ensurePhone in the schema), then sms.
+    expect(records[0].channel).toBe("email");
+    expect(records[0].target).toBe("alice@acme.test");
+    // The disclosure copy is GENERIC per-channel (shown adjacent to the
+    // email input at ask-time BEFORE the user submits — no target templated
+    // in). The verified target is captured as a separate audit-record field.
+    expect(records[0].disclosure).toContain("one-time security codes");
+    expect(records[0].disclosure).toContain("email");
+    expect(records[0].disclosure).not.toContain("alice@acme.test");
+    expect(records[0].at).toBeGreaterThanOrEqual(before);
+    // SMS entry is the load-bearing 'phone-route-param → sms-protocol-arg'
+    // pin — a regression that passed 'phone' through to the hook would show
+    // up here as `channel: 'phone'`.
+    expect(records[1].channel).toBe("sms");
+    expect(records[1].target).toBe("+15555550999");
+    expect(records[1].disclosure).toContain("SMS");
+    expect(records[1].disclosure).not.toContain("+15555550999");
+    expect(records[1].at).toBeGreaterThanOrEqual(records[0].at);
+  });
 });
 
 test.describe("LoginWorkflow / variant=device-trust-no-optin (P1)", () => {

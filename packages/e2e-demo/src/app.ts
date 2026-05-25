@@ -74,7 +74,7 @@ import {
 import { DemoUser, InviteAcceptProfileForm } from "./models/user.as";
 import { allRoles, type UserAttrs } from "./roles";
 import { seedAll } from "./seed";
-import { createTestMailboxController } from "./test-mailbox";
+import { createTestMailboxController, type OtpConsentRecord } from "./test-mailbox";
 import {
   INVITE_VARIANTS,
   type InviteMfaCtxOverrides,
@@ -225,6 +225,11 @@ const g = globalThis as {
   // username → ordered list of consent events captured by
   // `DemoConsentStore.save`. Drives WF-LOGIN-BUMP-01 etc.
   __aoothE2eConsentLog?: Map<string, ConsentEvent[]>;
+  // username → ordered list of OTP-channel disclosure records captured by
+  // `DemoConsentStore.recordOtpChannelConsent`. Separate buffer from
+  // `__aoothE2eConsentLog` because the record shape doesn't fit
+  // `ConsentEvent`. Drives WF-LOGIN-OTP-DISCLOSURE-01.
+  __aoothE2eOtpConsentLog?: Map<string, OtpConsentRecord[]>;
 };
 g.__aoothE2eEmails ??= [];
 g.__aoothE2eSms ??= [];
@@ -236,6 +241,7 @@ g.__aoothE2eProfileMissingFields ??= new Map();
 g.__aoothE2eAuditEvents ??= [];
 g.__aoothE2eAllowDuplicateInvites ??= false;
 g.__aoothE2eConsentLog ??= new Map();
+g.__aoothE2eOtpConsentLog ??= new Map();
 const sharedEmailsBuffer: AuthEmailEvent[] = g.__aoothE2eEmails;
 const sharedSmsBuffer: AuthSmsEvent[] = g.__aoothE2eSms;
 const sharedBackupCodesBuffer: Map<string, string[]> = g.__aoothE2eBackupCodes;
@@ -248,6 +254,7 @@ const sharedPersonasBuffer: Map<
 const sharedProfileMissingFieldsBuffer: Map<string, string[]> = g.__aoothE2eProfileMissingFields;
 const sharedAuditEventsBuffer: AuditEvent[] = g.__aoothE2eAuditEvents;
 const sharedConsentLogBuffer: Map<string, ConsentEvent[]> = g.__aoothE2eConsentLog;
+const sharedOtpConsentLogBuffer: Map<string, OtpConsentRecord[]> = g.__aoothE2eOtpConsentLog;
 /* eslint-enable no-underscore-dangle */
 
 /** Two-level deep merge — sufficient for the nested-pojo workflow opts. */
@@ -294,12 +301,27 @@ export interface AppHandle {
  * Demo `ConsentStore` — appends every persisted batch into the
  * globalThis-anchored buffer the `/__test/consent-log/:username` endpoint
  * reads from. One writer shared across all three Demo workflows.
+ *
+ * `recordOtpChannelConsent` writes to a sibling buffer
+ * (`sharedOtpConsentLogBuffer`) read by `/__test/otp-consent-log/:username`.
  */
 @Injectable() // SINGLETON
 class DemoConsentStore extends ConsentStore {
   override async save(username: string, events: ConsentEvent[]): Promise<void> {
     const prior = sharedConsentLogBuffer.get(username) ?? [];
     sharedConsentLogBuffer.set(username, [...prior, ...events]);
+  }
+  override async recordOtpChannelConsent(
+    username: string,
+    channel: "email" | "sms",
+    target: string,
+    disclosure: string,
+  ): Promise<void> {
+    const prior = sharedOtpConsentLogBuffer.get(username) ?? [];
+    sharedOtpConsentLogBuffer.set(username, [
+      ...prior,
+      { channel, target, disclosure, at: Date.now() },
+    ]);
   }
 }
 
@@ -1197,6 +1219,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     // Captured consent events — cleared so a prior login's events don't bleed
     // into the next test's assertions.
     sharedConsentLogBuffer.clear();
+    // Captured OTP-channel disclosure records — same lifecycle as
+    // `sharedConsentLogBuffer`.
+    sharedOtpConsentLogBuffer.clear();
     // WF-INVITE-018 toggle — reset between tests so a flipped flag in one
     // spec doesn't leak into the next.
     g.__aoothE2eAllowDuplicateInvites = false;
@@ -1243,6 +1268,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       backupCodes: sharedBackupCodesBuffer,
       auditEvents: sharedAuditEventsBuffer,
       consentLog: sharedConsentLogBuffer,
+      otpConsentLog: sharedOtpConsentLogBuffer,
     });
     app.registerControllers(TestMailboxController);
   }

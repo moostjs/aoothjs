@@ -175,6 +175,17 @@ export interface LoginWfCtx {
   emailConfirmed?: boolean;
   phone?: string;
   phoneConfirmed?: boolean;
+  /**
+   * Disclosure text rendered beneath the channel input field on
+   * `AskEmailForm` / `AskPhoneForm` at ask-time (BEFORE the user submits
+   * their email/phone — typing + submitting constitutes implied consent).
+   * Forwarded to `consentStore.recordOtpChannelConsent` at `verify/:channel`
+   * AFTER the channel is confirmed as an MFA method, so the persisted record
+   * pins the literal copy the user actually saw. The disclosure text itself
+   * is GENERIC per-channel (no target templated in) — the verified target
+   * is captured as a separate audit-record field.
+   */
+  otpDisclosure?: string;
 
   // MFA state:
   mfaEnrolledMethods?: MfaSummary[];
@@ -631,6 +642,33 @@ export class LoginWorkflow extends AuthWorkflowBase {
       tenantSelect: false,
       personaSelect: false,
     };
+  }
+
+  /**
+   * Resolve the disclosure text rendered beneath the channel input field on
+   * `AskEmailForm` / `AskPhoneForm` at ask-time — BEFORE the user submits
+   * their email/phone. Default returns a TCPA / PECR / CASL / GDPR-safe
+   * English paragraph that is GENERIC per channel (no target templated in,
+   * since the user hasn't submitted it yet). Override per-tenant or per-
+   * locale to swap copy (e.g. i18n catalog lookup). The resolved string is
+   * mirrored onto `ctx.otpDisclosure`, transported to the SPA via
+   * `@wf.context.pass`, and forwarded to
+   * `consentStore.recordOtpChannelConsent` at `verify/:channel` AFTER the
+   * pincode validates AND the channel is confirmed as an MFA method — the
+   * persisted audit record pins BOTH the literal disclosure copy the user
+   * saw AND the verified target as a separate field.
+   *
+   * Disclosure-only is sufficient for transactional security codes by default;
+   * customers wanting affirmative consent capture override
+   * `ConsentStore.recordOtpChannelConsent` instead. Sync/async friendly.
+   */
+  protected resolveOtpDisclosure(
+    _ctx: LoginWfCtx,
+    channel: "email" | "phone",
+  ): string | Promise<string> {
+    return channel === "phone"
+      ? "By providing your phone number, you consent to receive one-time security codes from us via SMS. Message and data rates may apply."
+      : "By providing your email address, you consent to receive one-time security codes from us via email. Standard email delivery may apply.";
   }
 
   /**
@@ -1209,6 +1247,13 @@ export class LoginWorkflow extends AuthWorkflowBase {
   ): Promise<unknown> {
     this.requireUsername(ctx);
     const isEmail = channel === "email";
+    // Stash the disclosure BEFORE `useAtscriptWf` / `resolveInput` throws
+    // `requireInput` for the AskEmail/AskPhone pause — the wf engine snapshots
+    // ctx at the throw site, so setting `otpDisclosure` here is what makes
+    // `@wf.context.pass 'otpDisclosure'` ride on the carrier-form pause
+    // descriptor (rendered adjacent to the email/phone input → submission =
+    // implied consent). Forwarded to `recordOtpChannelConsent` at verify-time.
+    ctx.otpDisclosure = await this.resolveOtpDisclosure(ctx, channel);
     const askWf = useAtscriptWf(isEmail ? this.opts.forms.askEmail : this.opts.forms.askPhone);
     const input = askWf.resolveInput() as { email?: string; phone?: string } & InlineConsentInput;
     this.processInlineConsent(ctx, input, askWf);
@@ -1259,6 +1304,23 @@ export class LoginWorkflow extends AuthWorkflowBase {
     );
     if (isEmail) ctx.emailConfirmed = true;
     else ctx.phoneConfirmed = true;
+    // Record the OTP-channel disclosure AFTER channel ownership is confirmed
+    // (pincode validated + MFA method flipped to `confirmed: true`). Default
+    // ConsentStore.recordOtpChannelConsent is a no-op — customers override
+    // to persist an audit-grade record. The `if (ctx.otpDisclosure)` guard is
+    // defensive: any path that lands here without having traversed
+    // ask/:channel (cleanup retry, manual harness invocation) skips the hook
+    // rather than recording an empty-target consent.
+    if (ctx.otpDisclosure) {
+      const channelArg: "email" | "sms" = isEmail ? "email" : "sms";
+      const target = (isEmail ? ctx.email : ctx.phone) as string;
+      await this.consentStore.recordOtpChannelConsent(
+        ctx.username,
+        channelArg,
+        target,
+        ctx.otpDisclosure,
+      );
+    }
     delete ctx.pin;
     delete ctx.pinExpire;
     return undefined;

@@ -372,6 +372,7 @@ export interface PincodeForm {
 @wf.context.pass 'acceptance'
 @wf.context.pass 'termsAcceptedDone'
 @wf.context.pass 'consentsPersisted'
+@wf.context.pass 'otpDisclosure'
 export interface AskEmailForm extends WithInlineConsentForm {
     @ui.form.order 10
     @ui.form.type 'text'
@@ -388,6 +389,7 @@ export interface AskEmailForm extends WithInlineConsentForm {
 @wf.context.pass 'acceptance'
 @wf.context.pass 'termsAcceptedDone'
 @wf.context.pass 'consentsPersisted'
+@wf.context.pass 'otpDisclosure'
 export interface AskPhoneForm extends WithInlineConsentForm {
     @ui.form.order 10
     @ui.form.type 'text'

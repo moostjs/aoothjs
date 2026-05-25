@@ -2180,3 +2180,336 @@ describe("LoginWorkflow — Phase 3 ask/verify channel routing", () => {
     expect(emailMethod?.confirmed).toBe(true);
   });
 });
+
+// Capturing ConsentStore for the OTP-* tests. `save` capture is idle here —
+// only the OTP-HOOK-FIRES-* tests assert on `otpCalls`.
+@Injectable()
+class RecordingConsentStore extends ConsentStore {
+  readonly saveCalls: Array<{ username: string; events: ConsentEvent[] }> = [];
+  readonly otpCalls: Array<{
+    username: string;
+    channel: "email" | "sms";
+    target: string;
+    disclosure: string;
+  }> = [];
+  override async save(username: string, events: ConsentEvent[]): Promise<void> {
+    this.saveCalls.push({ username, events: [...events] });
+  }
+  override async recordOtpChannelConsent(
+    username: string,
+    channel: "email" | "sms",
+    target: string,
+    disclosure: string,
+  ): Promise<void> {
+    this.otpCalls.push({ username, channel, target, disclosure });
+  }
+}
+
+describe("LoginWorkflow — OTP disclosure + recordOtpChannelConsent hook", () => {
+  it("OTP-DISCLOSURE-01: ask/email → ctx.otpDisclosure populated BEFORE the AskEmailForm pause + transported via @wf.context.pass; default English copy is generic per-channel (no target templated in)", async () => {
+    // WHY: customers building i18n / CMS-driven disclosure copy depend on
+    // BOTH halves of this contract — the resolver runs (so they can override
+    // for per-tenant copy) AND the result rides the AskEmailForm pause
+    // descriptor via `@wf.context.pass 'otpDisclosure'` so the SPA can render
+    // the literal text beneath the email input BEFORE the user submits (the
+    // act of typing + submitting their email constitutes implied consent).
+    // A regression that staged the disclosure AFTER `askWf.resolveInput()`
+    // would push the value to the PincodeForm pause (one step too late —
+    // user already submitted their email by then). A regression that dropped
+    // the `@wf.context.pass 'otpDisclosure'` annotation on AskEmailForm
+    // would pass the unit-level resolver-call test but break the wire
+    // transport; this test pins both halves at the load-bearing pause.
+    const app = await prepareWfApp({
+      loginPolicy: { enrollment: { ensureEmail: true, ensurePhone: false } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    // Paused at AskEmailForm — the ask/:channel body resolves the disclosure
+    // BEFORE useAtscriptWf can throw requireInput, so the AskEmailForm pause
+    // descriptor carries ctx.otpDisclosure via @wf.context.pass.
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    expect(r2.body?.wfs).toBeTruthy();
+    // Wire-transport assertion: `@wf.context.pass 'otpDisclosure'` echoes the
+    // ctx field at top level of the wf-state response body at the AskEmailForm
+    // pause (NOT at the PincodeForm pause one step later).
+    const transported = (r2.body as { otpDisclosure?: string }).otpDisclosure;
+    expect(typeof transported).toBe("string");
+    // Default English copy is GENERIC per-channel — no target value templated
+    // in (the user hasn't submitted their email yet at the ask-time pause).
+    // The verified target is captured separately at verify-time by
+    // recordOtpChannelConsent (target arg), so the audit record contains BOTH
+    // the disclosure shown AND the address verified.
+    expect(transported).toContain("one-time security codes");
+    expect(transported).toContain("email");
+    expect(transported).not.toContain("alice@example.com");
+  });
+
+  it("OTP-DISCLOSURE-02: ask/phone → ctx.otpDisclosure carries the phone-specific default copy at the AskPhoneForm pause (generic per-channel — no literal phone target templated in)", async () => {
+    // WHY: the default copy is channel-specific — phone uses an SMS-flavoured
+    // template (carrier fees disclosure) that diverges from the email
+    // version. Pins that resolveOtpDisclosure branches on `channel === "phone"`
+    // and that the phone branch emits SMS / carrier-rate copy. The disclosure
+    // rides on the AskPhoneForm pause (BEFORE the user submits a phone number)
+    // so the user reads it adjacent to the phone input and decides whether
+    // to type their number. The verified phone target is captured separately
+    // at verify-time.
+    const app = await prepareWfApp({
+      loginPolicy: { enrollment: { ensureEmail: false, ensurePhone: true } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    // Paused at AskPhoneForm — ask body stages ctx.otpDisclosure BEFORE the
+    // carrier-form pause, so r2 (not r3 after phone-submit) carries it.
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    expect(r2.body?.wfs).toBeTruthy();
+    const transported = (r2.body as { otpDisclosure?: string }).otpDisclosure;
+    expect(typeof transported).toBe("string");
+    // Phone-channel template mentions SMS + carrier-rate disclosure — the
+    // load-bearing differentiator vs the email default (TCPA / PECR copy
+    // distinction matters for legal review).
+    expect(transported).toContain("SMS");
+    expect(transported).toContain("Message and data rates");
+    expect(transported).toContain("phone");
+    // No phone target templated in — the user hasn't typed it yet at ask-time.
+    expect(transported).not.toContain("+15550001111");
+  });
+
+  it("OTP-HOOK-FIRES-01: ask → verify on email channel → consentStore.recordOtpChannelConsent fires exactly once with the verified target + the disclosure ctx carried", async () => {
+    // WHY (Rule 9): hook timing is load-bearing. The hook fires AFTER
+    // `confirmMfaMethod` flips the row to `confirmed: true` — so a customer
+    // implementing the override can rely on the recorded consent being bound
+    // to a verified channel. A refactor that hoisted the hook BEFORE
+    // confirmMfaMethod would silently record consent for unverified
+    // recipients (an attacker submitting a typo-squatted email could
+    // accumulate disclosure records). This test pins (a) the hook fires (b)
+    // exactly once (c) with the channel = 'email' arg (d) with the verified
+    // target (e) with the literal disclosure ctx carried.
+    const consentStore = new RecordingConsentStore();
+    const app = await prepareWfApp({
+      consentStore,
+      loginPolicy: { enrollment: { ensureEmail: true, ensurePhone: false } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    // Paused at AskEmailForm — disclosure is staged BEFORE this pause, so r2
+    // carries it (not r3 after email-submit). The hook MUST NOT fire here.
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    expect(r2.body?.wfs).toBeTruthy();
+    expect(consentStore.otpCalls.length).toBe(0);
+    const transported = (r2.body as { otpDisclosure?: string }).otpDisclosure;
+    expect(typeof transported).toBe("string");
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { email: "alice@example.com" },
+    });
+    expect(r3.body?.wfs).toBeTruthy();
+    // Still no hook call after email-submit — the channel hasn't been
+    // verified yet. If a regression moved the call into the ask body, this
+    // assert would catch it.
+    expect(consentStore.otpCalls.length).toBe(0);
+    const sent = app.emails.find(
+      (e) => e.kind === "login.pincode" && e.recipient === "alice@example.com",
+    );
+    expect(sent).toBeTruthy();
+    const r4 = await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { code: sent!.code as string, rememberDevice: false },
+    });
+    expect((r4.body?.data as Record<string, unknown>)?.userId).toBe("alice");
+    // Hook fired exactly once at verify-time with the verified target and
+    // the same disclosure copy the SPA was shown at ask-time. The disclosure
+    // text itself is GENERIC per-channel (no target templated in); the
+    // verified target is captured as a separate hook arg so the audit record
+    // pins BOTH the copy shown AND the address verified.
+    expect(consentStore.otpCalls.length).toBe(1);
+    expect(consentStore.otpCalls[0].username).toBe("alice");
+    expect(consentStore.otpCalls[0].channel).toBe("email");
+    expect(consentStore.otpCalls[0].target).toBe("alice@example.com");
+    expect(consentStore.otpCalls[0].disclosure).toBe(transported);
+    // Belt-and-brace: the disclosure copy is generic — the target is
+    // captured as a separate arg, NOT templated into the disclosure text.
+    expect(consentStore.otpCalls[0].disclosure).not.toContain("alice@example.com");
+    // Post-state: the email method row is confirmed — proving the hook DID
+    // see a verified channel (any logic order regression that called the
+    // hook before confirmMfaMethod would still pass the "fires once" check,
+    // so we belt-and-brace by asserting the row is now confirmed).
+    const user = await app.users.getUser("alice");
+    const emailMethod = user.mfa.methods.find((m) => m.name === "email");
+    expect(emailMethod?.confirmed).toBe(true);
+  });
+
+  it("OTP-HOOK-FIRES-02: ask → verify on phone channel → channel arg is 'sms' (NOT 'phone'), target is the literal submitted phone", async () => {
+    // WHY: the 'phone' route param is user-facing; the persisted channel
+    // value is the protocol ('sms'). Customers using carrier-aggregator
+    // APIs (Twilio Verify, MessageBird) key persistence by protocol — if the
+    // workflow passed 'phone' through to the hook, customer impls that
+    // switch on `channel === 'sms'` would silently drop the record. Pins the
+    // load-bearing `channel === 'phone' ? 'sms' : 'email'` mapping in the
+    // verify body.
+    const consentStore = new RecordingConsentStore();
+    const app = await prepareWfApp({
+      consentStore,
+      loginPolicy: { enrollment: { ensureEmail: false, ensurePhone: true } },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    // Disclosure rides on the AskPhoneForm pause (r2), not on r3.
+    const transported = (r2.body as { otpDisclosure?: string }).otpDisclosure;
+    expect(typeof transported).toBe("string");
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { phone: "+15550009999" },
+    });
+    expect(r3.body?.wfs).toBeTruthy();
+    const smsOtp = app.sms.find(
+      (s) => s.kind === "login.pincode" && s.recipient === "+15550009999",
+    );
+    expect(smsOtp).toBeTruthy();
+    const r4 = await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { code: smsOtp!.code, rememberDevice: false },
+    });
+    expect((r4.body?.data as Record<string, unknown>)?.userId).toBe("alice");
+    expect(consentStore.otpCalls.length).toBe(1);
+    // Protocol-not-channel mapping: 'phone' (user-facing) → 'sms' (protocol).
+    expect(consentStore.otpCalls[0].channel).toBe("sms");
+    // Target is the literal phone string the user typed — not a masked
+    // version (customer impls need the raw target to match against carrier-
+    // aggregator records). Captured as a separate hook arg, NOT templated
+    // into the disclosure copy.
+    expect(consentStore.otpCalls[0].target).toBe("+15550009999");
+    expect(consentStore.otpCalls[0].disclosure).toBe(transported);
+    expect(consentStore.otpCalls[0].disclosure).not.toContain("+15550009999");
+  });
+
+  it("OTP-HOOK-SKIPS-VERIFY-WITHOUT-ASK-01: if ctx.otpDisclosure is undefined at verify-time, recordOtpChannelConsent is NOT called (defensive guard)", async () => {
+    // WHY: a future schema path that lands on verify/:channel without
+    // ctx.otpDisclosure staged (manual harness invocation, cleanup retry,
+    // resumed paused workflow with cleared ctx, consumer subclass that
+    // resets transient ctx before verify) MUST NOT record a consent for a
+    // target/disclosure pair the system never staged. The guard
+    // `if (ctx.otpDisclosure)` in the verify body is the load-bearing
+    // defense; this test fakes the condition by overriding `verify` to
+    // strip the staged disclosure BEFORE super.verify runs, and asserts
+    // the hook stays silent despite the channel confirming successfully.
+    const consentStore = new RecordingConsentStore();
+    @Inherit()
+    @Controller("auth/login")
+    class NoStashLogin extends LoginWorkflow {
+      constructor(
+        opts: LoginWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+        consentStoreDep: ConsentStore,
+      ) {
+        super(opts, users, auth, authOpts, consentStoreDep);
+      }
+      override async verify(ctx: LoginWfCtx, channel: "email" | "phone"): Promise<unknown> {
+        // Strip the staged disclosure BEFORE super.verify runs — simulates
+        // a paused-flow whose ctx was cleared between the ask and verify
+        // halves (a future cleanup-retry path, or a consumer subclass that
+        // resets transient ctx in a custom prepare-* step before verify).
+        delete ctx.otpDisclosure;
+        return super.verify(ctx, channel);
+      }
+    }
+    const app = await prepareWfApp({
+      consentStore,
+      loginPolicy: { enrollment: { ensureEmail: true, ensurePhone: false } },
+      loginWorkflowClass: withLoginMfaCtx(NoStashLogin, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { email: "alice@example.com" },
+    });
+    expect(r3.body?.wfs).toBeTruthy();
+    const sent = app.emails.find(
+      (e) => e.kind === "login.pincode" && e.recipient === "alice@example.com",
+    );
+    expect(sent).toBeTruthy();
+    const r4 = await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { code: sent!.code as string, rememberDevice: false },
+    });
+    expect((r4.body?.data as Record<string, unknown>)?.userId).toBe("alice");
+    // The defensive guard short-circuits — no record despite the channel
+    // being confirmed (post-state pins that the rest of verify ran fine).
+    expect(consentStore.otpCalls.length).toBe(0);
+    const user = await app.users.getUser("alice");
+    const emailMethod = user.mfa.methods.find((m) => m.name === "email");
+    expect(emailMethod?.confirmed).toBe(true);
+  });
+
+  it("OTP-DISCLOSURE-ASYNC-01: async resolveOtpDisclosure override → custom disclosure flows to ctx + to recordOtpChannelConsent (pins the string | Promise<string> union)", async () => {
+    // WHY (Rule 9): the union return type exists so customers can fetch copy
+    // from i18n/CMS without forcing every default call site to allocate a
+    // Promise. A refactor that narrowed the return type to plain `string`
+    // would silently drop async overrides (TS would forbid `async ` on the
+    // override). This test pins the contract by supplying an async override
+    // that returns a custom disclosure and asserting it round-trips through
+    // BOTH ctx.otpDisclosure AND the recordOtpChannelConsent call —
+    // confirming `await this.resolveOtpDisclosure(...)` in the ask body
+    // correctly awaits the Promise.
+    const consentStore = new RecordingConsentStore();
+    @Inherit()
+    @Controller("auth/login")
+    class AsyncDisclosureLogin extends LoginWorkflow {
+      constructor(
+        opts: LoginWorkflowOpts,
+        users: UserService,
+        auth: AuthCredential,
+        authOpts: AuthOpts,
+        consentStoreDep: ConsentStore,
+      ) {
+        super(opts, users, auth, authOpts, consentStoreDep);
+      }
+      protected override async resolveOtpDisclosure(
+        _ctx: LoginWfCtx,
+        channel: "email" | "phone",
+      ): Promise<string> {
+        // Simulate an async i18n catalog lookup — a real impl would
+        // `await catalog.get('otp.disclosure.' + channel)`. Target is NOT
+        // passed in; the disclosure is generic per-channel (the user hasn't
+        // submitted their address yet at the ask-time pause). The verified
+        // target is captured separately at verify-time.
+        await Promise.resolve();
+        return `CUSTOM[${channel}]: i18n.fetched`;
+      }
+    }
+    const app = await prepareWfApp({
+      consentStore,
+      loginPolicy: { enrollment: { ensureEmail: true, ensurePhone: false } },
+      loginWorkflowClass: withLoginMfaCtx(AsyncDisclosureLogin, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    // Paused at AskEmailForm — async override resolves BEFORE the carrier-
+    // form pause, so r2 (not r3) carries the unwrapped Promise value.
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    expect(r2.body?.wfs).toBeTruthy();
+    const transported = (r2.body as { otpDisclosure?: string }).otpDisclosure;
+    // The async override's return value flows through to ctx (proving the
+    // `await` in the ask body unwraps the Promise — no `[object Promise]`
+    // stringification regressing into ctx).
+    expect(transported).toBe("CUSTOM[email]: i18n.fetched");
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { email: "alice@example.com" },
+    });
+    expect(r3.body?.wfs).toBeTruthy();
+    const sent = app.emails.find(
+      (e) => e.kind === "login.pincode" && e.recipient === "alice@example.com",
+    );
+    expect(sent).toBeTruthy();
+    const r4 = await app.trigger({
+      wfs: r3.body?.wfs as string,
+      input: { code: sent!.code as string, rememberDevice: false },
+    });
+    expect((r4.body?.data as Record<string, unknown>)?.userId).toBe("alice");
+    expect(consentStore.otpCalls.length).toBe(1);
+    expect(consentStore.otpCalls[0].disclosure).toBe("CUSTOM[email]: i18n.fetched");
+  });
+});
