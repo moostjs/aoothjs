@@ -440,7 +440,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
   // ── Protected extension surface ───────────────────────────────────────
   /**
    * Dispatch an email or SMS event. Default throws — consumers MUST override
-   * if any feature that emits is enabled (MFA pincode, ensureEmail/Phone OTP,
+   * if any feature that emits is enabled (MFA pincode, ask/verify channel OTP,
    * notifyNewDevice). The throw surfaces at the HTTP layer as 500 on the
    * first event that triggers a send, which is the fail-loud signal.
    */

@@ -367,7 +367,7 @@ export interface PincodeForm {
 }
 
 /**
- * Email-only form for the `ensureEmail` enrollment loop.
+ * Email-only form for the `ask/email` enrollment step.
  */
 @wf.context.pass 'acceptance'
 @wf.context.pass 'termsAcceptedDone'
@@ -382,7 +382,7 @@ export interface AskEmailForm extends WithInlineConsentForm {
 }
 
 /**
- * Phone-only form for the `ensurePhone` enrollment loop. Free-form text —
+ * Phone-only form for the `ask/phone` enrollment step. Free-form text —
  * E.164 normalization happens server-side.
  */
 @wf.context.pass 'acceptance'
