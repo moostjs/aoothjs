@@ -21,7 +21,6 @@ import {
   type ConsentEvent,
   ConsentStore,
   createAuthEmailOutlet,
-  createAuthShareableLinkOutlet,
   DEFAULT_AUTH_WORKFLOWS,
   type DeliverPayload,
   type DuplicateAction,
@@ -995,14 +994,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       if (variant?.policy?.adminForm) return variant.policy.adminForm;
       return super.resolveAdminForm(ctx);
     }
-    protected override resolveSend(
-      ctx: InviteWfCtx,
-    ): NonNullable<InviteWfCtx["send"]> | Promise<NonNullable<InviteWfCtx["send"]>> {
-      if (opts.invitePolicy?.send) return opts.invitePolicy.send;
-      const variant = pickVariant(INVITE_VARIANTS, readVariantHeader());
-      if (variant?.policy?.send) return variant.policy.send;
-      return super.resolveSend(ctx);
-    }
     protected override resolveAccept(
       ctx: InviteWfCtx,
     ): NonNullable<InviteWfCtx["accept"]> | Promise<NonNullable<InviteWfCtx["accept"]>> {
@@ -1023,24 +1014,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
         r: NonNullable<InviteWfCtx["accept"]>,
       ): NonNullable<InviteWfCtx["accept"]> => ({ ...r, showConfirmation: false });
       return baseResult instanceof Promise ? baseResult.then(patch) : patch(baseResult);
-    }
-    protected override resolveCancellation(
-      ctx: InviteWfCtx,
-    ):
-      | NonNullable<InviteWfCtx["cancellation"]>
-      | Promise<NonNullable<InviteWfCtx["cancellation"]>> {
-      if (opts.invitePolicy?.cancellation) return opts.invitePolicy.cancellation;
-      const variant = pickVariant(INVITE_VARIANTS, readVariantHeader());
-      if (variant?.policy?.cancellation) return variant.policy.cancellation;
-      return super.resolveCancellation(ctx);
-    }
-    protected override resolveAudit(
-      ctx: InviteWfCtx,
-    ): NonNullable<InviteWfCtx["audit"]> | Promise<NonNullable<InviteWfCtx["audit"]>> {
-      if (opts.invitePolicy?.audit) return opts.invitePolicy.audit;
-      const variant = pickVariant(INVITE_VARIANTS, readVariantHeader());
-      if (variant?.policy?.audit) return variant.policy.audit;
-      return super.resolveAudit(ctx);
     }
     protected override resolveMfa(
       ctx: InviteWfCtx,
@@ -1119,14 +1092,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     constructor(wf: MoostWf) {
       super(wf);
       this.state = new HandleStateStrategy({ store: wfStateStore });
-      this.outlets = [
-        ...this.outlets,
-        createAuthEmailOutlet(demoEmailOutletDeps),
-        createAuthShareableLinkOutlet({
-          buildMagicLinkUrl: aooth.buildMagicLinkUrl,
-          magicLinkTtlMs: demoEmailOutletDeps.magicLinkTtlMs,
-        }),
-      ];
+      this.outlets = [...this.outlets, createAuthEmailOutlet(demoEmailOutletDeps)];
     }
   }
 
@@ -1145,12 +1111,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     @Post("trigger")
     @Public()
     @WfTrigger({
-      allow: [
-        ...DEFAULT_AUTH_WORKFLOWS,
-        "auth/invite/resend",
-        "auth/invite/cancel",
-        "project.handover",
-      ],
+      allow: [...DEFAULT_AUTH_WORKFLOWS, "project.handover"],
     })
     override triggerWf(): void {
       // see AuthController.triggerWf — body intentionally empty.

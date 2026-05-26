@@ -869,10 +869,7 @@ class OverrideInviteWorkflow extends InviteWorkflow {
   ) {
     // Profile form left undefined (base default) so the accept tail goes
     // password → extraStep → activate directly. MFA is disabled via the
-    // `inviteMfaCtx: { mfaMode: 'disabled' }` knob on `buildTestApp` (PR9
-    // stripped `mfa.mode` from `InviteWorkflowOpts`; the value now lives on
-    // ctx via the `inviteSetupMfa` setter step — `buildApp` wraps this
-    // class with `withInviteMfaCtx` when `inviteMfaCtx` is supplied).
+    // `inviteMfaCtx: { mfaMode: 'disabled' }` knob on `buildTestApp`.
     super({}, users, authCred, authOpts, consentStore);
   }
   // Post-resolver reshape: `accept.showConfirmation` moved off opts to the

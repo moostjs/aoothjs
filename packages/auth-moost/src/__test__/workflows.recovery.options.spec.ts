@@ -538,24 +538,10 @@ describe("RecoveryWorkflowOpts — backToLogin alt-action", () => {
     expect(app.emails).toHaveLength(0);
   });
 
-  it("setPassword step: backToLogin alt → envelope redirect, password NOT changed", async () => {
-    const app = await prepareWfApp({
-      recoveryPolicy: {
-        altActions: { backToLogin: true },
-        postReset: { revokeAllSessions: true, freshLoginRequired: false, loginUrl: "/login" },
-      },
-    });
-    await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
-    const { wfs } = await driveMagicLinkToSetPassword(app, "alice@test.com");
-    const r = await app.trigger({ wfs, input: { action: "backToLogin" } });
-    expect(r.status).not.toBe(302);
-    const env = expectFinished(r);
-    const next = env.next as Extract<NonNullable<typeof env.next>, { trigger: "immediate" }>;
-    expect(next?.action?.type === "redirect" && next.action.target).toBe("/login");
-    // Old password still works.
-    const ok = await app.users.verifyPassword("alice@test.com", "OldPassword1");
-    expect(ok).toBe(true);
-  });
+  // The previous `setPassword step: backToLogin alt` test was removed
+  // alongside SetPasswordForm losing all alt-actions. The request /
+  // select-mode / verify-factor `backToLogin` paths still exist on their
+  // own forms — see the sibling `request step: backToLogin alt` test above.
 });
 
 describe("RecoveryWorkflowOpts — audit", () => {
@@ -730,5 +716,33 @@ describe("RecoveryWorkflow — passwordPolicies surfaces on SetPasswordForm paus
     expect(String((body.passwordPolicies as Array<{ rule: string }>)[0].rule)).toContain(
       "v.length",
     );
+  });
+
+  it("recovery set-password pause: SetPasswordForm wire envelope carries 'Reset your password' heading + intro", async () => {
+    // WHY: pins the recovery-specific copy on SetPasswordForm. Without
+    // `set-password` writing `ctx.passwordFormHeading` / `passwordFormIntro`
+    // BEFORE the pause, the bundled phantom `heading` / `intro` paragraphs
+    // would fall through to their generic defaults ("Set your password" /
+    // "") — confusing UX for users mid-recovery. Also bundles a regression
+    // surface for the `@wf.context.pass` annotations on the form: missing
+    // them strips the keys via `extractPassContext` before the client
+    // sees them.
+    const app = await prepareWfApp();
+    await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
+    const r1 = await app.trigger({ wfid: "auth/recovery/flow" });
+    await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { email: "alice@test.com" },
+    });
+    const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
+    const r3 = await app.resumeViaQuery(token);
+    const body = r3.body as {
+      id?: string;
+      passwordFormHeading?: unknown;
+      passwordFormIntro?: unknown;
+    };
+    expect(body.id).toBe("SetPasswordForm");
+    expect(body.passwordFormHeading).toBe("Reset your password");
+    expect(body.passwordFormIntro).toMatch(/Choose a new password/i);
   });
 });

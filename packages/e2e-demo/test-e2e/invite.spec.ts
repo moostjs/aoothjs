@@ -161,6 +161,11 @@ test.describe("WF-INVITE — auth.invite family (P0)", () => {
 
     // Invitee SetPasswordForm pause.
     await expect(inviteePage.locator('[name="newPassword"]')).toBeVisible({ timeout: 15_000 });
+    // Pin the invite-specific welcome heading + intro copy. The bundled
+    // phantom paragraphs read `ctx.passwordFormHeading` /
+    // `passwordFormIntro` set by `create-password-form` before the pause.
+    await expect(inviteePage.getByText("Welcome — set your password")).toBeVisible();
+    await expect(inviteePage.getByText(/activate your account/i)).toBeVisible();
     await inviteePage.locator('[name="newPassword"]').fill("InviteePass-1!");
     await inviteePage.locator('[name="confirmPassword"]').fill("InviteePass-1!");
     await inviteePage.locator("button.as-submit-btn, button[type=submit]").first().click();
@@ -236,68 +241,13 @@ test.describe("WF-INVITE — auth.invite family (P0)", () => {
     await ctx.close();
   });
 
-  // ── WF-INVITE-011 ────────────────────────────────────────────────────────
-  test("WF-INVITE-011 choice variant renders InviteSendModeForm; admin picks email", async ({
-    page,
-  }) => {
-    await loginViaUi(page, USERS.admin_inviter);
-
-    await page.goto(wfUrl("auth/invite/start", "choice-freshlogin"));
-    // First pause is `InviteSendModeForm` (because `send.mode === 'choice'`
-    // defers to `inviteSelectSendMode`). The `mode` field is rendered as a
-    // radio group (one input per option — 'email' + 'shareableLink'), so a
-    // bare `[name="mode"]` locator strict-mode-violates on 2 elements. Use
-    // `waitForFormInput` (which `.first()`s the locator) + assert on the
-    // radiogroup role with its label — mirrors the Select2faForm pattern at
-    // login.spec.ts:425-428.
-    await waitForFormInput(page, "mode");
-    await expect(page.getByRole("radiogroup", { name: /Delivery mode/ })).toBeVisible();
-
-    await fillField(page, "mode", "email");
-    await submitForm(page);
-
-    // Next pause is the InviteForm (email field) — proves the choice → email
-    // branch advanced the workflow past `inviteSelectSendMode`.
-    await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
-    await fillField(page, "email", uniqueEmail("choice-011"));
-
-    // Submitting the invite produces the outlet envelope.
-    const sendPromise = nextTriggerResponse(page, (b) => b.sent === true);
-    await submitForm(page);
-    const envelope = await sendPromise;
-    expect(envelope.sent).toBe(true);
-    expect(envelope.outlet).toBe("email");
-  });
-
-  // ── WF-INVITE-013 ────────────────────────────────────────────────────────
-  // NOTE on target user: the brief asks for `t1_pending` from the seed, but
-  // that seeded row has `username='t1_pending'` ≠ `email='t1_pending@example.com'`.
-  // `reInvite` / `cancelInvite` both call `users.getUser(email)` →
-  // `findByUsername(email)` which only matches on the `username` column, so
-  // the seed user is structurally unreachable through the form. We instead
-  // create a fresh pending row via `auth.invite` (which sets username = email
-  // in `inviteAdminInviteForm`) and target THAT — same workflow path, same
-  // assertions, sidesteps the demo-seed mismatch.
-  test("WF-INVITE-013 reInvite on a freshly-created pending invitee → outlet fires", async ({
-    page,
-  }) => {
-    await loginViaUi(page, USERS.admin_inviter);
-    // Per-run unique email so re-runs against the same server don't trip the
-    // demo's `Invite already pending, use reInvite` 409 (the `__test/reset`
-    // currently fails to delete rows from a previous run — see file header).
-    const inviteeEmail = uniqueEmail("reinvite-013");
-    await seedPendingInviteeByEmail(page, inviteeEmail);
-
-    await page.goto(wfUrl("auth/invite/resend", "email-no-roles"));
-    // `auth.reInvite` opens on `InviteEmailForm` — single `email` field.
-    await expect(page.locator('[name="email"]')).toBeVisible();
-    await fillField(page, "email", inviteeEmail);
-    const sendPromise = nextTriggerResponse(page, (b) => b.sent === true);
-    await submitForm(page);
-    const envelope = await sendPromise;
-    expect(envelope.sent).toBe(true);
-    expect(envelope.outlet).toBe("email");
-  });
+  // WF-INVITE-011 (InviteSendModeForm choice variant) was removed alongside
+  // the SMS-mode pruning and `select-send-mode` step deletion — the
+  // shareableLink mode is now an inline checkbox on `InviteForm`.
+  //
+  // WF-INVITE-013 (auth.reInvite) was removed alongside the
+  // `@Workflow("resend")` deletion — resending an invite is now an atomic
+  // public method `InviteWorkflow.resendInvite()` rather than a workflow.
 
   // ── WF-INVITE-015 ────────────────────────────────────────────────────────
   // Same seed-mismatch caveat as WF-INVITE-013 (see comment there).
@@ -409,47 +359,15 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
   // `account.pendingInvitation === true` via a DB-probe endpoint — none
   // exists today. Test asserts the abort half end-to-end; DB-verify is a
   // P0-style retro fix (add `GET /__test/user/:username`).
-  test("WF-INVITE-003 invitee cancels at SetPasswordForm → aborted envelope", async ({
-    page,
-    request,
-    baseURL,
-  }) => {
-    await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth/invite/start", "email-no-roles"));
-    await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
-    const inviteeEmail = uniqueEmail("invite-003");
-    await fillField(page, "email", inviteeEmail);
-    const sentPromise = nextTriggerResponse(page, (b) => b.sent === true);
-    await submitForm(page);
-    await sentPromise;
-
-    const magic = await waitForEmail(
-      request,
-      (e) => e.kind === "invite.magicLink" && e.recipient === inviteeEmail,
-    );
-    const resumeUrl = rewriteToBaseUrl(magic.url as string, baseURL ?? "");
-    const ctx = await page.context().browser()!.newContext();
-    const inviteePage = await ctx.newPage();
-    await inviteePage.goto(resumeUrl);
-    await expect(inviteePage.locator('[name="newPassword"]')).toBeVisible({ timeout: 15_000 });
-
-    // SetPasswordForm declares `@ui.form.action 'cancel', 'Cancel'` (see
-    // forms.as). The action handler runs BEFORE form validation, so we don't
-    // need to fill the password fields first. `abortWf()` writes the envelope
-    // `{ finished: true, aborted: true, reason: 'cancel', message: { … } }`
-    // at the top level (not nested under `data`).
-    const abortPromise = nextTriggerResponse(
-      inviteePage,
-      (b) => b.finished === true && b.aborted === true,
-      10_000,
-    );
-    await clickAction(inviteePage, "Cancel");
-    const envelope = await abortPromise;
-    expect(envelope.finished).toBe(true);
-    expect(envelope.aborted).toBe(true);
-    expect(envelope.reason).toBe("cancel");
-    await ctx.close();
-  });
+  // The previous WF-INVITE-003 (`invitee cancels at SetPasswordForm`) test
+  // was removed alongside SetPasswordForm losing all alt-actions. The invitee
+  // escape mechanism is now closing the magic-link tab (the wf state token
+  // expires per the engine's TTL). See SetPasswordForm jsdoc in forms.as.
+  //
+  // The new welcome heading on the invitee's SetPasswordForm pause is pinned
+  // in `packages/auth-moost/src/__test__/workflows.invite.options.spec.ts`
+  // and in WF-INVITE-002 below (whose happy-path now lands on the heading
+  // before submitting).
 
   // ── WF-INVITE-006 ────────────────────────────────────────────────────────
   // BRANCH: `inviteAdminInviteForm` → role validation — `validateAdminInput`
@@ -669,39 +587,9 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
     await ctx.close();
   });
 
-  // ── WF-INVITE-014 ────────────────────────────────────────────────────────
-  // BRANCH: `auth.reInvite` opens on `InviteEmailForm` → `loadPendingUser`
-  // step → `findByUsername(email)` returns the already-redeemed seed user.
-  // `existing.account?.pendingInvitation === false` ⇒ step calls
-  // `wf.requireInput({ errors: { email: 'User has already accepted; cannot
-  // resend' } })`. The wf engine re-pauses on the same step under the same
-  // wfs token; AsWfForm re-renders with the per-field error attached.
-  test("WF-INVITE-014 reInvite on already-accepted user → inline email error, form re-renders", async ({
-    page,
-  }) => {
-    await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth/invite/resend", "email-no-roles"));
-    await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
-
-    await fillField(page, "email", "t1_redeemed@example.com");
-    const errorPromise = nextTriggerResponse(
-      page,
-      (b) => {
-        const ir = b.inputRequired as Record<string, unknown> | undefined;
-        const ctxObj = (ir?.context ?? {}) as Record<string, unknown>;
-        const errs = (ctxObj.errors ?? {}) as Record<string, unknown>;
-        return typeof errs.email === "string" && /already accepted|cannot resend/i.test(errs.email);
-      },
-      10_000,
-    );
-    await submitForm(page);
-    const body = await errorPromise;
-    const ir = body.inputRequired as Record<string, unknown>;
-    const ctxObj = ir.context as Record<string, unknown>;
-    const errs = ctxObj.errors as Record<string, string>;
-    expect(errs.email).toMatch(/already accepted; cannot resend/i);
-    await expect(page.locator('[name="email"]')).toBeVisible();
-  });
+  // WF-INVITE-014 removed alongside the `@Workflow("resend")` deletion —
+  // the `resendInvite()` public method's already-accepted branch is
+  // covered server-side in workflows.invite.options.spec.ts.
 
   // ── WF-INVITE-016 ────────────────────────────────────────────────────────
   // BRANCH: `auth.cancelInvite` → `cancel-invite` step → existing user found

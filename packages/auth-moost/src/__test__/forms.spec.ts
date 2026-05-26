@@ -57,13 +57,13 @@ describe("default form .as models", () => {
     expect(confirm.metadata.get("ui.form.autocomplete")).toBe("new-password");
   });
 
-  it("InviteForm has required email and optional roles", () => {
+  it("InviteForm has required email and roles", () => {
     const email = getProp(InviteForm, "email");
     const roles = getProp(InviteForm, "roles");
     expect(email.metadata.get("meta.required")).toBeTruthy();
     expect(email.type?.tags as string[] | undefined).toContain("email");
     expect(roles).toBeDefined();
-    expect(roles.optional).toBe(true);
+    expect(roles.optional).toBeFalsy();
   });
 
   it("each form validator accepts well-formed input", () => {
@@ -81,7 +81,9 @@ describe("default form .as models", () => {
         consents: [],
       }),
     ).not.toThrow();
-    expect(() => InviteForm.validator().validate({ email: "bob@example.com" })).not.toThrow();
+    expect(() =>
+      InviteForm.validator().validate({ email: "bob@example.com", roles: [] }),
+    ).not.toThrow();
   });
 
   it("each form validator rejects ill-formed input", () => {

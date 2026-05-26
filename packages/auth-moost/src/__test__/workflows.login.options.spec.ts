@@ -540,6 +540,99 @@ describe("LoginWorkflowOpts — passwordExpiry (rotation) guard", () => {
     expect(data?.userId).toBe("alice");
     expect(typeof data?.accessToken).toBe("string");
   });
+
+  it("passwordChangeReason='initial' → SetPasswordForm wire envelope carries 'Set your initial password' heading + initial-flow intro", async () => {
+    // WHY: pins the context-aware copy keyed off `passwordChangeReason`.
+    // SetPasswordForm's bundled phantom `heading` / `intro` paragraphs read
+    // `ctx.passwordFormHeading` / `ctx.passwordFormIntro` via
+    // `@ui.form.fn.value`. The `create-password-form` step body sets those
+    // values before the pause; a regression that dropped the assignment
+    // (or routed the 'initial' branch to the 'expired' copy) would silently
+    // mislead users about why they're being asked to set a password.
+    const app = await prepareWfApp({
+      loginPolicy: { guards: guardsPolicy({ passwordInitial: true }) },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    const store = (app.users as unknown as { store: { update: Function } }).store;
+    await store.update("alice", { set: { password: { isInitial: true } } });
+
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    expect(r2.body?.wfs).toBeTruthy();
+    const body = r2.body as {
+      id?: string;
+      passwordChangeReason?: unknown;
+      passwordFormHeading?: unknown;
+      passwordFormIntro?: unknown;
+    };
+    expect(body.id).toBe("SetPasswordForm");
+    expect(body.passwordChangeReason).toBe("initial");
+    expect(body.passwordFormHeading).toBe("Set your initial password");
+    expect(body.passwordFormIntro).toMatch(/account was created without a password/i);
+  });
+
+  it("passwordChangeReason='expired' → SetPasswordForm wire envelope carries 'Your password has expired' heading + expired-flow intro", async () => {
+    // WHY: symmetric pin for the 'expired' branch. Bundles two regression
+    // surfaces: the `@wf.context.pass 'passwordFormHeading'` /
+    // `passwordFormIntro` annotations (without them the keys are stripped
+    // by `extractPassContext` before reaching the client), and the
+    // `create-password-form` step body's reason→copy mapping.
+    let now = 1_000_000_000;
+    const app = await prepareWfApp({
+      userConfig: { clock: () => now, password: { maxAgeMs: YEAR_MS } },
+      loginPolicy: { guards: guardsPolicy({ passwordExpiry: true }) },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    now += 2 * YEAR_MS;
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    const body = r2.body as {
+      passwordChangeReason?: unknown;
+      passwordFormHeading?: unknown;
+      passwordFormIntro?: unknown;
+    };
+    expect(body.passwordChangeReason).toBe("expired");
+    expect(body.passwordFormHeading).toBe("Your password has expired");
+    expect(body.passwordFormIntro).toMatch(/Choose a new password to continue/i);
+  });
+
+  it("SetPasswordForm: confirmPassword !== newPassword → inline error on confirmPassword (server-side belt-and-braces guard)", async () => {
+    // WHY: pins the equality guard for `confirmPassword === newPassword`.
+    // The bundled `SetPasswordForm` declares the cross-field rule via
+    // `@ui.form.validate '(v, data) => v === data.newPassword || "Passwords
+    // must match"'` — that string runs on the CLIENT (where the SPA wires
+    // `installDynamicResolver()` from `@atscript/ui-fns`) and short-circuits
+    // submit before the network call. The server side keeps the existing
+    // step-body equality check ("Passwords do not match") as a
+    // belt-and-braces guard for clients that bypass / don't install the
+    // dynamic resolver. A regression that dropped BOTH would let mismatched
+    // submissions through. We accept either error string here — what
+    // matters is the field key (`confirmPassword`) and that we never
+    // advance past the pause with a mismatched pair.
+    const app = await prepareWfApp({
+      loginPolicy: { guards: guardsPolicy({ passwordInitial: true }) },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    const store = (app.users as unknown as { store: { update: Function } }).store;
+    await store.update("alice", { set: { password: { isInitial: true } } });
+
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    expect(r2.body?.wfs).toBeTruthy();
+
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: {
+        newPassword: "AAAA1234",
+        confirmPassword: "BBBB1234",
+        consents: [],
+      },
+    });
+    const errors = r3.body?.errors as Record<string, string> | undefined;
+    expect(errors?.confirmPassword).toMatch(/Passwords (do not match|must match)/);
+    // The pause holds — no tokens issued, no schema advance.
+    expect(r3.body?.data).toBeUndefined();
+  });
 });
 
 describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {

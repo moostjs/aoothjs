@@ -106,7 +106,7 @@ async function inviteUntilSetPassword(
   email: string,
 ): Promise<{ wfs: string }> {
   const r1 = await app.trigger({ wfid: "auth/invite/start" });
-  await app.trigger({ wfs: r1.body?.wfs as string, input: { email } });
+  await app.trigger({ wfs: r1.body?.wfs as string, input: { email, roles: [] } });
   const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
   const r3 = await app.resumeViaQuery(token);
   return { wfs: r3.body?.wfs as string };

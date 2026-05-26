@@ -299,12 +299,21 @@ test.describe("LoginWorkflow / variant=guards (passwordInitial)", () => {
     await waitForFormInput(page, "newPassword");
     await waitForFormInput(page, "confirmPassword");
 
-    // First try: mismatch — workflow throws `requireInput({ errors: {
-    // confirmPassword: 'Passwords do not match' } })`.
+    // Pin the initial-flow heading + intro copy on the wire envelope. The
+    // bundled phantom `heading` / `intro` paragraphs read
+    // `ctx.passwordFormHeading` / `passwordFormIntro` (set by
+    // `create-password-form` before the pause). A regression that dropped
+    // the `@wf.context.pass` annotations OR swapped the initial/expired
+    // branches in the step body would silently mislead users.
+    await expect(page.getByText("Set your initial password")).toBeVisible();
+    await expect(page.getByText(/account was created without a password/i)).toBeVisible();
+
+    // First try: mismatch — the `@ui.form.validate` cross-field rule on
+    // `confirmPassword` rejects with "Passwords must match".
     await fillField(page, "newPassword", "NewPass-123!");
     await fillField(page, "confirmPassword", "Different-456!");
     await page.locator("button.as-submit-btn").first().click();
-    await expect(page.getByText("Passwords do not match")).toBeVisible();
+    await expect(page.getByText(/Passwords must match|Passwords do not match/)).toBeVisible();
 
     // Second try: matching → workflow proceeds and `issue` step mints tokens.
     await fillField(page, "newPassword", "NewPass-123!");
@@ -359,6 +368,13 @@ test.describe("LoginWorkflow / variant=password-expired (rotation)", () => {
     // forced-change branch.
     await waitForFormInput(page, "newPassword");
     await waitForFormInput(page, "confirmPassword");
+    // Pin the expired-flow heading + intro copy. The bundled phantom
+    // paragraphs read `ctx.passwordFormHeading` / `passwordFormIntro` set
+    // by `create-password-form`. A regression that fell through to the
+    // 'initial' branch would silently rename the screen and confuse the
+    // user.
+    await expect(page.getByText("Your password has expired")).toBeVisible();
+    await expect(page.getByText(/Choose a new password to continue/i)).toBeVisible();
     await fillField(page, "newPassword", "NewerPass1!");
     await fillField(page, "confirmPassword", "NewerPass1!");
     await page.locator("button.as-submit-btn").first().click();
@@ -767,54 +783,12 @@ test.describe("LoginWorkflow / variant=device-trust-no-optin (P1)", () => {
   });
 });
 
-test.describe("LoginWorkflow / variant=guards (P1)", () => {
-  // BRANCH: SetPasswordForm `logout` alt-action → workflow calls
-  // `abortWf('logout')` and sets `ctx.aborted=true`. The schema gates `issue`
-  // on `!ctx.aborted` so no tokens are minted; the envelope carries
-  // `aborted: true, reason: 'logout'`.
-  test("WF-LOGIN-022: t1_jack clicks Logout on SetPasswordForm → aborted, no tokens", async ({
-    page,
-    request,
-  }) => {
-    // Walk through the same `ensureEmail` pre-step as WF-LOGIN-021 so we
-    // reach SetPasswordForm with t1_jack.
-    await page.goto(wfUrl(LOGIN_WF, "guards"));
-    await fillField(page, "username", USERS.jack.username);
-    await fillField(page, "password", USERS.jack.password);
-    await page.getByRole("button", { name: "Sign in", exact: true }).click();
-
-    await waitForFormInput(page, "email");
-    await fillField(page, "email", "jack@acme.test");
-    await page
-      .getByRole("button", { name: /Submit|Continue/i })
-      .first()
-      .click();
-
-    await waitForFormInput(page, "code");
-    const otpEmail = await waitForEmail(
-      request,
-      (e) => e.kind === "login.pincode" && e.recipient === "jack@acme.test",
-    );
-    await fillField(page, "code", otpEmail.code as string);
-    await page.getByRole("button", { name: "Verify", exact: true }).click();
-
-    // SetPasswordForm — click the Logout action (form action button label
-    // exactly "Logout" per forms.as).
-    await waitForFormInput(page, "newPassword");
-    await page.getByRole("button", { name: "Logout", exact: true }).click();
-
-    // Aborted envelope: `aborted: true`, `reason: 'logout'`, no tokens.
-    const envelope = (await readFinishEnvelope(page)) as {
-      finished: boolean;
-      aborted?: boolean;
-      reason?: string;
-      data?: { accessToken?: string };
-    };
-    expect(envelope.aborted).toBe(true);
-    expect(envelope.reason).toBe("logout");
-    expect(envelope.data?.accessToken).toBeUndefined();
-  });
-});
+// The previous WF-LOGIN-022 test (`t1_jack clicks Logout on SetPasswordForm
+// → aborted`) was removed alongside SetPasswordForm losing all alt-actions
+// (`logout` / `cancel` / `backToLogin`). The user-facing escape mechanism is
+// now closing / refreshing the page (the wf state token expires per the
+// engine's TTL). See `packages/auth-moost/src/atscript/models/forms.as`
+// jsdoc on `SetPasswordForm`.
 
 test.describe("LoginWorkflow / variant=acceptance (P1)", () => {
   // BRANCH: post-Phase-5 the inline consent block is the dynamic
@@ -1013,30 +987,11 @@ test.describe("LoginWorkflow / variant=concurrency (P1)", () => {
 
     await waitForFormInput(page, "action");
     await expect(page.getByRole("button", { name: "Log out other sessions" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
   });
 
-  // BRANCH: ConcurrencyLimitForm `cancel` alt-action → `abortWf('sessionLimit')`.
-  // FIXME: same blocker as WF-LOGIN-028 — workflow never reaches this step
-  // until DemoLoginWorkflow populates `ctx.activeSessions`.
-  test("WF-LOGIN-029: t1_active_sessions cancels kickPrompt → aborted", async ({ page }) => {
-    await page.goto(wfUrl(LOGIN_WF, "concurrency"));
-    await fillField(page, "username", "t1_active_sessions");
-    await fillField(page, "password", "Password1!");
-    await page.getByRole("button", { name: "Sign in", exact: true }).click();
-
-    await waitForFormInput(page, "action");
-    await page.getByRole("button", { name: "Cancel", exact: true }).click();
-
-    const envelope = (await readFinishEnvelope(page)) as {
-      aborted?: boolean;
-      reason?: string;
-      data?: { accessToken?: string };
-    };
-    expect(envelope.aborted).toBe(true);
-    expect(envelope.reason).toBe("sessionLimit");
-    expect(envelope.data?.accessToken).toBeUndefined();
-  });
+  // WF-LOGIN-029 (ConcurrencyLimitForm `cancel` alt-action) removed alongside
+  // the form's `cancel` field deletion — users abort by navigating away (wf
+  // state token expires per the engine's TTL).
 });
 
 test.describe("LoginWorkflow / variant=redirect-home (P1)", () => {

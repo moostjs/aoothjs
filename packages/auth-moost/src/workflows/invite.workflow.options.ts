@@ -19,9 +19,7 @@ import {
   EnrollAddressForm,
   EnrollConfirmForm,
   EnrollPickMethodForm,
-  InviteEmailForm,
   InviteForm,
-  InviteSendModeForm,
   SetPasswordForm,
 } from "../atscript/models/forms.as";
 export type { MfaTransport } from "./login.workflow.options";
@@ -35,8 +33,6 @@ export const DEFAULT_INVITE_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
  */
 export interface PreparedUserInput {
   email: string;
-  firstName?: string;
-  lastName?: string;
   roles: string[];
   /** Admin's `username` (`useAuth().getAuthContext()?.userId` at invite time). */
   invitedBy?: string;
@@ -44,8 +40,6 @@ export interface PreparedUserInput {
 
 /** Return value of {@link InviteWorkflow.duplicateCheck}. */
 export type DuplicateAction = "allow" | "reject" | "reuseAsReInvite";
-
-export type InviteSendMode = "email" | "shareableLink" | "choice";
 
 export interface InviteWorkflowOpts {
   /**
@@ -57,8 +51,6 @@ export interface InviteWorkflowOpts {
     enrollConfirm?: TAtscriptAnnotatedType;
     enrollPickMethod?: TAtscriptAnnotatedType;
     invite?: TAtscriptAnnotatedType;
-    inviteEmail?: TAtscriptAnnotatedType;
-    inviteSendMode?: TAtscriptAnnotatedType;
     setPassword?: TAtscriptAnnotatedType;
   };
 }
@@ -74,8 +66,6 @@ export interface ResolvedInviteWorkflowOpts {
     enrollConfirm: TAtscriptAnnotatedType;
     enrollPickMethod: TAtscriptAnnotatedType;
     invite: TAtscriptAnnotatedType;
-    inviteEmail: TAtscriptAnnotatedType;
-    inviteSendMode: TAtscriptAnnotatedType;
     setPassword: TAtscriptAnnotatedType;
   };
 }
@@ -92,8 +82,6 @@ export function mergeInviteOpts(opts: InviteWorkflowOpts = {}): ResolvedInviteWo
       enrollConfirm: EnrollConfirmForm as unknown as TAtscriptAnnotatedType,
       enrollPickMethod: EnrollPickMethodForm as unknown as TAtscriptAnnotatedType,
       invite: InviteForm as unknown as TAtscriptAnnotatedType,
-      inviteEmail: InviteEmailForm as unknown as TAtscriptAnnotatedType,
-      inviteSendMode: InviteSendModeForm as unknown as TAtscriptAnnotatedType,
       setPassword: SetPasswordForm as unknown as TAtscriptAnnotatedType,
       ...opts.forms,
     },

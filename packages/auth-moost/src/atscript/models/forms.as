@@ -50,6 +50,7 @@ export interface WithInlineConsentForm {
  * matching phantom `ui.action` field per provider so
  * `useAtscriptWf(form).resolveAction()` accepts the dynamic ids.
  */
+@meta.label 'Sign in'
 @wf.context.pass 'altForgotPassword'
 @wf.context.pass 'altSignup'
 @wf.context.pass 'altMagicLink'
@@ -94,6 +95,7 @@ export interface LoginCredentialsForm {
  * from `@atscript/ui-fns` on the consumer side; without it `@ui.form.fn.value`
  * stays inert and the paragraph renders empty.
  */
+@meta.label 'Verify your identity'
 @wf.context.pass 'mfaMethod'
 @wf.context.pass 'pinSentTo'
 @wf.context.pass 'mfaMethodCount'
@@ -129,6 +131,8 @@ export interface MfaCodeForm {
  * of 4 — the regex below mirrors that shape. Kept separate from
  * `MfaCodeForm` so TOTP entry stays strict-digits.
  */
+@meta.label 'Enter a backup code'
+@meta.description 'Type one of the single-use backup codes you saved when MFA was set up.'
 export interface BackupCodeForm {
     @ui.form.type 'text'
     @meta.label 'Backup code'
@@ -149,14 +153,18 @@ export interface BackupCodeForm {
  * `forgotPassword` alt-action). Without this annotation the field is
  * stripped by `extractPassContext` before reaching the client.
  */
+@meta.label 'Forgot your password?'
+@meta.description 'Enter your account email and we will send you a recovery link.'
 @wf.context.pass 'defaults'
 export interface EmailIdentifierForm {
+    @ui.form.order 10
     @ui.form.type 'text'
     @meta.label 'Email'
     @ui.form.autocomplete 'email'
     @meta.required
     email: string.email
 
+    @ui.form.order 20
     @ui.form.action 'backToLogin', 'Back to sign-in'
     backToLogin?: ui.action
 }
@@ -164,8 +172,10 @@ export interface EmailIdentifierForm {
 /**
  * Set new password form.
  *
- * `confirmPassword` equality is enforced in the workflow step (cross-field
- * checks are not expressible via atscript annotations).
+ * Cross-field equality — `confirmPassword === newPassword` — is enforced by
+ * the `@ui.form.validate` rule below (client + server validators key on the
+ * same expression). The workflow step retains a defensive equality check as
+ * a belt-and-braces guard.
  *
  * `@wf.context.pass 'passwordPolicies'` whitelists the workflow ctx key so the
  * prior preparePasswordRules / setPassword steps can ship the transferable
@@ -182,18 +192,41 @@ export interface EmailIdentifierForm {
  * keystroke. `WithInlineConsentForm` continues to supply the inline-consent
  * `consents: string[]` block via `AsConsentArray` (Phase 5).
  *
- * `@wf.context.pass 'passwordChangeReason'` whitelists the workflow ctx key
- * carrying `'initial' | 'expired'` — set by `LoginWorkflow.credentials` when
- * the forced-change branch fires. Default form labels stay reason-agnostic;
- * downstream SPAs can read the value and override banner copy via a
- * sibling `ui.paragraph` with an `@ui.form.fn.value` expression (mirroring
- * the Phase-3 `EnrollConfirmForm.transportHint` pattern).
+ * `@wf.context.pass 'passwordChangeReason'` whitelists the structured
+ * discriminator (`'initial' | 'expired'`) set by `LoginWorkflow.credentials`
+ * when the forced-change branch fires. Downstream consumers consume it for
+ * analytics or per-tenant copy overrides; the bundled UX defaults come from
+ * `passwordFormHeading` + `passwordFormIntro` (set by each workflow's
+ * `create-password-form` / `set-password` step before the pause). The form's
+ * `@ui.form.fn.title` / `@ui.form.fn.description` annotations below render
+ * those ctx values directly, so the SPA gets context-aware copy out of the box.
+ *
+ * No alt-actions — the SetPasswordForm submit is mandatory; a user who
+ * wants to abandon the flow closes / refreshes the page (the wf state token
+ * expires per the engine's TTL).
  */
+@ui.form.fn.title '(_, _d, ctx) => ctx.passwordFormHeading || "Set your password"'
 @wf.context.pass 'passwordPolicies'
 @wf.context.pass 'passwordChangeReason'
+@wf.context.pass 'passwordFormHeading'
+@wf.context.pass 'passwordFormIntro'
 @wf.context.pass 'pendingConsents'
 @wf.context.pass 'consentsPersisted'
 export interface SetPasswordForm extends WithInlineConsentForm {
+    /**
+     * Phantom intro paragraph — pairs with the form's dynamic
+     * `@ui.form.fn.title` to render context-aware copy. There is no
+     * top-level `@ui.form.fn.description` annotation in atscript-ui
+     * (`fn.description` is a per-field annotation), so the intro stays as
+     * a phantom field while the heading uses the proper type-level dynamic
+     * title. The field is hidden when `ctx.passwordFormIntro` is unset so
+     * a default "Set your password" pause renders without an empty paragraph.
+     */
+    @ui.form.order 5
+    @ui.form.fn.value '(_, _d, ctx) => ctx.passwordFormIntro || ""'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.passwordFormIntro'
+    intro: ui.paragraph
+
     @ui.form.order 10
     @ui.form.type 'password'
     @meta.label 'New password'
@@ -210,6 +243,7 @@ export interface SetPasswordForm extends WithInlineConsentForm {
     @meta.sensitive
     @meta.required
     @expect.minLength 8
+    @ui.form.validate '(v, data) => v === data.newPassword || "Passwords must match"'
     confirmPassword: string
 
     /**
@@ -234,85 +268,42 @@ export interface SetPasswordForm extends WithInlineConsentForm {
     @ui.form.fn.attr 'password', '(_, data) => data.newPassword'
     @ui.form.grid.colSpan '12'
     passwordRules: ui.paragraph
-
-    @ui.form.order 30
-    @ui.form.action 'logout', 'Logout'
-    logout?: ui.action
-
-    @ui.form.order 40
-    @ui.form.action 'cancel', 'Cancel'
-    cancel?: ui.action
-
-    @ui.form.order 50
-    @ui.form.action 'backToLogin', 'Back to sign-in'
-    backToLogin?: ui.action
 }
 
 /**
  * Invite form — used by an admin to send an invite magic link.
  *
+ * Bundled shape is intentionally minimal: email + roles. Admins who want to
+ * collect richer profile data per invitee replace this form via
+ * `setupAuthWorkflows({ forms: { invite: MyInviteForm } })` and map the
+ * extra fields into their user schema via the `prepareUser({...})` hook
+ * (see `InviteWorkflow.prepareUser` jsdoc).
+ *
  * `@wf.context.pass 'availableRoles'` whitelists the workflow ctx key so the
  * `inviteAdminInviteForm` step can pass the role-picker options into the
  * client form when `opts.getAvailableRoles` is wired.
+ *
+ * No cancel alt-action: an admin who wants to back out navigates away from
+ * the page (the wf state token expires per the engine's TTL).
  */
+@meta.label 'Send an invitation'
+@meta.description 'Enter the recipient email address and pick the roles to grant on acceptance. They will receive a magic link to set their password.'
 @wf.context.pass 'availableRoles'
 export interface InviteForm {
+    @ui.form.order 10
     @ui.form.type 'text'
     @meta.label 'Email'
     @ui.form.autocomplete 'email'
     @meta.required
     email: string.email
-
-    @ui.form.type 'text'
-    @meta.label 'First name'
-    firstName?: string
-
-    @ui.form.type 'text'
-    @meta.label 'Last name'
-    lastName?: string
 
     // UX: select-on-array currently renders single-text-per-item via AsArray;
     // dedicated multi-select widget tracked as atscript-ui follow-up.
+    @ui.form.order 20
     @ui.form.type 'select'
     @ui.form.fn.options '(_, _data, context) => Array.isArray(context.availableRoles) ? context.availableRoles.map(r => ({ key: r, label: r })) : []'
     @meta.label 'Roles'
-    roles?: string[]
-
-    @ui.form.action 'cancel', 'Cancel'
-    cancel?: ui.action
-}
-
-/**
- * Email-only form — used by `auth.reInvite` (loadPendingUser step) and
- * `auth.cancelInvite` (cancelInvite step). Separate from `EmailIdentifierForm`
- * so future invite-side tweaks don't ripple into the recovery form.
- */
-export interface InviteEmailForm {
-    @ui.form.type 'text'
-    @meta.label 'Email'
-    @ui.form.autocomplete 'email'
-    @meta.required
-    email: string.email
-
-    @ui.form.action 'cancel', 'Cancel'
-    cancel?: ui.action
-}
-
-/**
- * Send-mode picker — rendered only when
- * `InviteWorkflowOptions.sendMode === 'choice'`. `mode` matches one of
- * `'email'` or `'shareableLink'`.
- */
-export interface InviteSendModeForm {
-    @ui.form.type 'radio'
-    @ui.form.options 'Email', 'email'
-    @ui.form.options 'Shareable link', 'shareableLink'
-    @meta.label 'Delivery mode'
-    @meta.required
-    mode: string
-
-    @ui.form.action 'cancel', 'Cancel'
-    cancel?: ui.action
+    roles: string[]
 }
 
 /**
@@ -325,9 +316,12 @@ export interface InviteSendModeForm {
  * built from `ctx.mfaEnrolledMethods` (a `MfaSummary[]` populated by
  * `prepareMfaOptions`) so the user only sees factors they actually have.
  */
+@meta.label 'Choose a verification method'
+@meta.description 'Pick how you would like to verify your identity.'
 @wf.context.pass 'mfaBackupCodes'
 @wf.context.pass 'mfaEnrolledMethods'
 export interface Select2faForm {
+    @ui.form.order 10
     @ui.form.type 'radio'
     @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.mfaEnrolledMethods) ? ctx.mfaEnrolledMethods.map(m => ({ key: m.methodName, label: m.kind === "totp" ? "TOTP (Authenticator app)" : m.kind === "email" ? "Email" : m.kind === "sms" ? "SMS" : m.kind })) : []'
     @meta.label 'MFA method'
@@ -355,6 +349,7 @@ export interface Select2faForm {
  * Requires `installDynamicResolver()` from `@atscript/ui-fns` on the consumer
  * side; without it `@ui.form.fn.value` stays inert and the paragraph renders empty.
  */
+@meta.label 'Enter the verification code'
 @wf.context.pass 'mfaMethod'
 @wf.context.pass 'pinSentTo'
 @wf.context.pass 'mfaMethodCount'
@@ -403,6 +398,8 @@ export interface PincodeForm {
 /**
  * Email-only form for the `ask/email` enrollment step.
  */
+@meta.label 'Add your email address'
+@meta.description 'We need a verified email to send security notifications and verification codes.'
 @wf.context.pass 'pendingConsents'
 @wf.context.pass 'consentsPersisted'
 @wf.context.pass 'otpDisclosure'
@@ -419,6 +416,8 @@ export interface AskEmailForm extends WithInlineConsentForm {
  * Phone-only form for the `ask/phone` enrollment step. Free-form text —
  * E.164 normalization happens server-side.
  */
+@meta.label 'Add your phone number'
+@meta.description 'We need a verified phone to send security notifications and verification codes.'
 @wf.context.pass 'pendingConsents'
 @wf.context.pass 'consentsPersisted'
 @wf.context.pass 'otpDisclosure'
@@ -436,9 +435,12 @@ export interface AskPhoneForm extends WithInlineConsentForm {
  * come from `ctx.enrollAvailableTransports` so only consumer-enabled
  * transports appear.
  */
+@meta.label 'Set up two-factor authentication'
+@meta.description 'Pick a method to receive your verification codes.'
 @wf.context.pass 'enrollAvailableTransports'
 @wf.context.pass 'enrollMode'
 export interface EnrollPickMethodForm {
+    @ui.form.order 10
     @ui.form.type 'radio'
     @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.enrollAvailableTransports) ? ctx.enrollAvailableTransports.map(t => ({ key: t, label: t === "totp" ? "Authenticator app (TOTP)" : t === "sms" ? "SMS" : t === "email" ? "Email" : t })) : []'
     @meta.label 'Choose a verification method'
@@ -458,10 +460,13 @@ export interface EnrollPickMethodForm {
  * forbids backing out mid-flow). `useDifferentMethod` is hidden when the
  * consumer has only one transport configured (nothing to switch to).
  */
+@ui.form.fn.title '(_, _d, ctx) => ctx.enrollMethod === "sms" ? "Add your phone number" : "Add your email"'
+@meta.description 'We will send you a one-time code to confirm.'
 @wf.context.pass 'enrollMethod'
 @wf.context.pass 'enrollMode'
 @wf.context.pass 'enrollAvailableTransports'
 export interface EnrollAddressForm {
+    @ui.form.order 10
     @ui.form.type 'text'
     @meta.label 'Address'
     @meta.required
@@ -482,6 +487,7 @@ export interface EnrollAddressForm {
  * (sms/email) based on `enrollMethod`; `enrollSecret` / `enrollUri` are passed
  * for the totp QR + manual-entry fallback.
  */
+@meta.label 'Confirm your verification code'
 @wf.context.pass 'enrollMethod'
 @wf.context.pass 'enrollMode'
 @wf.context.pass 'enrollSecret'
@@ -519,6 +525,8 @@ export interface EnrollConfirmForm {
  * Default minimal profile completion form. Consumers replace via
  * `LoginWorkflowOptions.profileCompleteForm` for richer shapes.
  */
+@meta.label 'Complete your profile'
+@meta.description 'Add a few details before you continue.'
 @wf.context.pass 'pendingConsents'
 @wf.context.pass 'consentsPersisted'
 export interface ProfileCompleteForm extends WithInlineConsentForm {
@@ -542,6 +550,8 @@ export interface ProfileCompleteForm extends WithInlineConsentForm {
  * inherited `AsConsentArray` field. The bump-prompt only renders the same
  * inherited consent block (no additional fields).
  */
+@meta.label 'Updated terms and policies'
+@meta.description 'Please review and accept the updated terms to continue.'
 @wf.context.pass 'pendingConsents'
 @wf.context.pass 'consentsPersisted'
 export interface TermsBumpForm extends WithInlineConsentForm {
@@ -553,8 +563,11 @@ export interface TermsBumpForm extends WithInlineConsentForm {
  * `tenant-select` step / `loadTenants` hook); `@wf.context.pass` whitelists
  * the key so it survives `extractPassContext`.
  */
+@meta.label 'Choose a tenant'
+@meta.description 'Pick which tenant to sign in to.'
 @wf.context.pass 'availableTenants'
 export interface TenantSelectForm {
+    @ui.form.order 10
     @ui.form.type 'radio'
     @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.availableTenants) ? ctx.availableTenants.map(t => ({ key: t.id, label: t.name })) : []'
     @meta.label 'Tenant'
@@ -568,8 +581,11 @@ export interface TenantSelectForm {
  * `persona-select` step / `loadPersonas` hook); `@wf.context.pass` whitelists
  * the key so it survives `extractPassContext`.
  */
+@meta.label 'Choose a persona'
+@meta.description 'Pick which persona to use for this session.'
 @wf.context.pass 'availablePersonas'
 export interface PersonaSelectForm {
+    @ui.form.order 10
     @ui.form.type 'radio'
     @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.availablePersonas) ? ctx.availablePersonas.map(p => ({ key: p.id, label: p.label })) : []'
     @meta.label 'Persona'
@@ -578,18 +594,20 @@ export interface PersonaSelectForm {
 }
 
 /**
- * Concurrency-limit kick prompt — user picks between logging out other
- * sessions or cancelling the login.
+ * Concurrency-limit kick prompt — user picks whether to log out other
+ * sessions and continue. The user backs out of the prompt by navigating
+ * away (the wf state token expires per the engine's TTL); no in-form
+ * cancel alt-action.
  */
+@meta.label 'Session limit reached'
+@meta.description 'You are already signed in elsewhere. Choose what to do.'
 export interface ConcurrencyLimitForm {
+    @ui.form.order 10
     @ui.form.type 'text'
     @meta.label 'Action'
     @meta.required
-    @expect.pattern '^(logoutOthers|cancel)$'
+    @expect.pattern '^logoutOthers$'
     action: string
-
-    @ui.form.action 'cancel', 'Cancel'
-    cancel?: ui.action
 
     @ui.form.action 'logoutOthers', 'Log out other sessions'
     logoutOthers?: ui.action
@@ -600,7 +618,10 @@ export interface ConcurrencyLimitForm {
  * {@link EmailIdentifierForm} but kept separate because future iterations may
  * accept either email or username.
  */
+@meta.label 'Sign in with a magic link'
+@meta.description 'Enter your account email or username and we will send you a one-time sign-in link.'
 export interface MagicLinkRequestForm {
+    @ui.form.order 10
     @ui.form.type 'text'
     @meta.label 'Email or username'
     @ui.form.autocomplete 'username'
@@ -612,7 +633,10 @@ export interface MagicLinkRequestForm {
  * Recovery delivery-mode picker — rendered only when
  * `RecoveryWorkflowOptions.deliveryMode === 'choice'`.
  */
+@meta.label 'Choose how to verify'
+@meta.description 'Pick how you would like to recover access.'
 export interface RecoveryModeSelectForm {
+    @ui.form.order 10
     @ui.form.type 'radio'
     @ui.form.options 'Magic link', 'magicLink'
     @ui.form.options 'One-time code', 'otp'
@@ -620,6 +644,7 @@ export interface RecoveryModeSelectForm {
     @meta.required
     mode: string
 
+    @ui.form.order 20
     @ui.form.action 'backToLogin', 'Back to sign-in'
     backToLogin?: ui.action
 }
@@ -633,14 +658,18 @@ export interface RecoveryModeSelectForm {
  * enrolled factors), so users only see factors they can actually verify
  * AND that the admin hasn't disabled via `opts.preReset.allowedFactors`.
  */
+@meta.label 'Verify your identity'
+@meta.description 'Confirm a detail we have on file before resetting your password.'
 @wf.context.pass 'availableRecoveryFactors'
 export interface RecoveryFactorForm {
+    @ui.form.order 10
     @ui.form.type 'radio'
     @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.availableRecoveryFactors) ? ctx.availableRecoveryFactors : []'
     @meta.label 'Factor'
     @meta.required
     factor: string
 
+    @ui.form.order 20
     @ui.form.type 'text'
     @meta.label 'Value'
     @meta.required
@@ -648,6 +677,7 @@ export interface RecoveryFactorForm {
     @expect.maxLength 12
     value: string
 
+    @ui.form.order 30
     @ui.form.action 'backToLogin', 'Back to sign-in'
     backToLogin?: ui.action
 }

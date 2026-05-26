@@ -174,6 +174,20 @@ export interface LoginWfCtx {
    * can swap banner copy; default form labels stay reason-agnostic.
    */
   passwordChangeReason?: "initial" | "expired";
+  /**
+   * Heading copy rendered as the leading `ui.paragraph` on
+   * `SetPasswordForm`. Written by `create-password-form` before the pause
+   * so the wire envelope carries reason-appropriate copy (initial vs
+   * expired). Reset alongside `passwordChangeReason` after the change
+   * commits.
+   */
+  passwordFormHeading?: string;
+  /**
+   * Intro copy rendered beneath {@link passwordFormHeading} on
+   * `SetPasswordForm`. Written / cleared on the same boundaries as
+   * `passwordFormHeading`.
+   */
+  passwordFormIntro?: string;
   usedMagicLink?: boolean;
 
   // MFA policy (populated by the single `prepareMfaSetup` setter — overridable per consumer):
@@ -1017,7 +1031,11 @@ export class LoginWorkflow extends AuthWorkflowBase {
         (!!ctx.isPasswordInitial || !!ctx.isPasswordExpired) && !ctx.passwordChanged,
       steps: [{ id: "prepare-password-rules" }, { id: "create-password-form" }],
     },
-    // Abort gate — create-password-form 'logout' alt-action sets ctx.aborted = true.
+    // No abort path from create-password-form anymore — the SetPasswordForm
+    // has no alt-actions. The `{ break }` gate is retained for the wrapping
+    // schema's `ctx.aborted` propagation contract: any prior step that flips
+    // `ctx.aborted` (e.g. concurrency-limit `cancel`) still short-circuits
+    // the post-Phase-5 tail without re-checking on each downstream step.
     { break: (ctx) => !!ctx.aborted },
 
     // Phase 6 acceptance / onboarding — dynamic consents (customer-defined
@@ -1829,16 +1847,23 @@ export class LoginWorkflow extends AuthWorkflowBase {
 
   @Step("create-password-form")
   async createPasswordForm(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
-    const wf = useAtscriptWf(this.opts.forms.setPassword);
-    const action = wf.resolveAction();
-    if (action === "logout") {
-      abortWf("logout", { message: { level: "info", text: "Signed out." } });
-      // Gate downstream steps (issue/audit/notify/redirect) — without this
-      // the schema continues and the `issue` step overwrites the abort
-      // response with tokens. See BUG-LOGIN-5.
-      ctx.aborted = true;
-      return undefined;
+    // Stage context-aware copy BEFORE the pause so the inputRequired envelope
+    // carries the rendered heading/intro alongside the form schema. The
+    // SetPasswordForm declares matching `@wf.context.pass` annotations; the
+    // form's phantom `heading` / `intro` paragraphs read these values via
+    // `@ui.form.fn.value`. Defaults to the 'initial' copy when the
+    // credentials step somehow didn't write a reason — neutral safe copy
+    // beats no copy.
+    if (ctx.passwordChangeReason === "expired") {
+      ctx.passwordFormHeading = "Your password has expired";
+      ctx.passwordFormIntro =
+        "Choose a new password to continue. The previous one is no longer valid.";
+    } else {
+      ctx.passwordFormHeading = "Set your initial password";
+      ctx.passwordFormIntro =
+        "Your account was created without a password. Choose one to continue.";
     }
+    const wf = useAtscriptWf(this.opts.forms.setPassword);
     const input = wf.resolveInput() as {
       newPassword: string;
       confirmPassword: string;
@@ -1864,6 +1889,8 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // types are string/number/boolean/null/array/object). Deleting the
     // key drops it from the serialized payload cleanly.
     delete ctx.passwordChangeReason;
+    delete ctx.passwordFormHeading;
+    delete ctx.passwordFormIntro;
     return undefined;
   }
 

@@ -44,7 +44,6 @@ import { AuthController } from "../auth.controller";
 import { authGuardInterceptor } from "../auth.guard";
 import { Public } from "../auth.decorator";
 import { createAuthEmailOutlet } from "../workflows/auth-email-outlet";
-import { createAuthShareableLinkOutlet } from "../workflows/auth-shareable-link-outlet";
 import { DEFAULT_INVITE_TOKEN_TTL_MS } from "../workflows/invite.workflow.options";
 import type { DeliverPayload } from "../workflows/login.workflow";
 import { DEFAULT_RECOVERY_TOKEN_TTL_MS } from "../workflows/recovery.workflow.options";
@@ -510,7 +509,6 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
     smsSender,
     registerEmail,
     registerSms,
-    auditEmitter,
     hooks: inviteHooks,
   }) as unknown as new (
     users: UserService,
@@ -581,22 +579,9 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
       };
       return handleAsOutletRequest(
         {
-          allow: [
-            "auth/login/flow",
-            "auth/recovery/flow",
-            "auth/invite/start",
-            "auth/invite/resend",
-            "auth/invite/cancel",
-          ],
+          allow: ["auth/login/flow", "auth/recovery/flow", "auth/invite/start"],
           state: strategy,
-          outlets: [
-            createHttpOutlet(),
-            createAuthEmailOutlet(emailOutletDeps),
-            createAuthShareableLinkOutlet({
-              buildMagicLinkUrl: emailOutletDeps.buildMagicLinkUrl,
-              magicLinkTtlMs: emailOutletDeps.magicLinkTtlMs,
-            }),
-          ],
+          outlets: [createHttpOutlet(), createAuthEmailOutlet(emailOutletDeps)],
           token: { read: ["body", "query"], write: "body", name: "wfs" },
         },
         deps,
@@ -1017,7 +1002,6 @@ interface HarnessInviteDeps {
   smsSender: SmsSender;
   registerEmail: boolean;
   registerSms: boolean;
-  auditEmitter: AuditEmitter | undefined;
   hooks: NonNullable<PrepareWfOpts["inviteHooks"]>;
 }
 
@@ -1034,7 +1018,6 @@ function buildHarnessInviteClass(
     smsSender,
     registerEmail,
     registerSms,
-    auditEmitter,
     hooks,
   } = deps;
 
@@ -1062,10 +1045,6 @@ function buildHarnessInviteClass(
       });
     }
 
-    protected override async audit(event: AuditEvent): Promise<void> {
-      if (auditEmitter) await auditEmitter.emit(event);
-    }
-
     protected override async prepareUser(
       input: PreparedUserInput,
     ): Promise<Record<string, unknown>> {
@@ -1078,11 +1057,7 @@ function buildHarnessInviteClass(
       return super.getAvailableRoles();
     }
 
-    protected override async inferRoles(input: {
-      email: string;
-      firstName?: string;
-      lastName?: string;
-    }): Promise<string[]> {
+    protected override async inferRoles(input: { email: string }): Promise<string[]> {
       if (hooks.inferRoles) return await hooks.inferRoles(input);
       return super.inferRoles(input);
     }
@@ -1124,12 +1099,6 @@ function buildHarnessInviteClass(
       if (policy?.adminForm) return policy.adminForm;
       return super.resolveAdminForm(ctx);
     }
-    protected override resolveSend(
-      ctx: InviteWfCtx,
-    ): NonNullable<InviteWfCtx["send"]> | Promise<NonNullable<InviteWfCtx["send"]>> {
-      if (policy?.send) return policy.send;
-      return super.resolveSend(ctx);
-    }
     protected override resolveAccept(
       ctx: InviteWfCtx,
     ): NonNullable<InviteWfCtx["accept"]> | Promise<NonNullable<InviteWfCtx["accept"]>> {
@@ -1139,20 +1108,6 @@ function buildHarnessInviteClass(
         r: NonNullable<InviteWfCtx["accept"]>,
       ): NonNullable<InviteWfCtx["accept"]> => ({ ...r, showConfirmation: false });
       return baseResult instanceof Promise ? baseResult.then(patch) : patch(baseResult);
-    }
-    protected override resolveCancellation(
-      ctx: InviteWfCtx,
-    ):
-      | NonNullable<InviteWfCtx["cancellation"]>
-      | Promise<NonNullable<InviteWfCtx["cancellation"]>> {
-      if (policy?.cancellation) return policy.cancellation;
-      return super.resolveCancellation(ctx);
-    }
-    protected override resolveAudit(
-      ctx: InviteWfCtx,
-    ): NonNullable<InviteWfCtx["audit"]> | Promise<NonNullable<InviteWfCtx["audit"]>> {
-      if (policy?.audit) return policy.audit;
-      return super.resolveAudit(ctx);
     }
     protected override resolveMfa(
       ctx: InviteWfCtx,

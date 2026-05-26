@@ -44,7 +44,6 @@ export {
   type InviteWfCtx,
   type InvitePolicyOverrides,
   type InvitePrepareUserInput,
-  type InviteSendMode,
   type InviteWorkflowOpts,
   mergeInviteOpts,
   type PreparedUserInput,
@@ -75,10 +74,6 @@ export {
   mergeRecoveryOpts,
 } from "./workflows/index";
 export { type AuthEmailOutletDeps, createAuthEmailOutlet } from "./workflows/auth-email-outlet";
-export {
-  type AuthShareableLinkOutletDeps,
-  createAuthShareableLinkOutlet,
-} from "./workflows/auth-shareable-link-outlet";
 export { type AuditEmitter, type AuditEvent } from "./audit/index";
 
 // Note: the DI-token exports (`SMS_SENDER_TOKEN`, `AUDIT_EMITTER_TOKEN`,

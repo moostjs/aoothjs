@@ -75,7 +75,7 @@ describe("InviteWorkflow subclass — end-to-end registration shape", () => {
     const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
-      input: { email: "sub@test.com" },
+      input: { email: "sub@test.com", roles: [] },
     });
     const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
     const r3 = await app.resumeViaQuery(token);
@@ -89,73 +89,6 @@ describe("InviteWorkflow subclass — end-to-end registration shape", () => {
     // Extras returned by the subclass landed on the persisted user row.
     const user = (await app.users.getUser("sub@test.com")) as unknown as Record<string, unknown>;
     expect(user.tenantId).toBe("subclass-tenant");
-  });
-
-  it("consumer subclass also dispatches auth.reInvite and auth.cancelInvite", async () => {
-    // The same subclass binds three workflow ids — re-invite + cancel must
-    // resolve to the consumer's class too. Use `duplicateCheck` as the
-    // dispatch witness: it runs on every invite + would land in the BASE
-    // implementation if the subclass weren't actually registered.
-    let duplicateCheckCalls = 0;
-    @Inherit()
-    @Controller("auth/invite")
-    class MyInvite extends InviteWorkflow {
-      constructor(
-        opts: InviteWorkflowOpts,
-        users: UserService,
-        auth: AuthCredential,
-        authOpts: AuthOpts,
-        consentStore: ConsentStore,
-      ) {
-        super(opts, users, auth, authOpts, consentStore);
-      }
-      protected override async duplicateCheck(input: {
-        email: string;
-        existingUser: UserCredentials | null;
-      }): Promise<DuplicateAction> {
-        duplicateCheckCalls++;
-        return input.existingUser ? "reject" : "allow";
-      }
-    }
-    const app = await prepareWfApp({
-      inviteWorkflowClass: withInviteMfaCtx(MyInvite, { mfaMode: "disabled" }),
-    });
-
-    // 1) auth.invite — first hit; duplicateCheck runs.
-    const r1 = await app.trigger({ wfid: "auth/invite/start" });
-    await app.trigger({
-      wfs: r1.body?.wfs as string,
-      input: { email: "tri@test.com" },
-    });
-    expect(duplicateCheckCalls).toBe(1);
-    expect(app.emails).toHaveLength(1);
-
-    // 2) auth.reInvite — pre-existing pendingInvitation user; emits a second magic link.
-    const ri1 = await app.trigger({ wfid: "auth/invite/resend" });
-    const ri2 = await app.trigger({
-      wfs: ri1.body?.wfs as string,
-      input: { email: "tri@test.com" },
-    });
-    expect([200, 201]).toContain(ri2.status);
-    expect(app.emails).toHaveLength(2);
-
-    // 3) auth.cancelInvite — wipes the pending user row.
-    const c1 = await app.trigger({ wfid: "auth/invite/cancel" });
-    const c2 = await app.trigger({
-      wfs: c1.body?.wfs as string,
-      input: { email: "tri@test.com" },
-    });
-    expect((c2.body?.data as Record<string, unknown>)?.cancelled).toBe(true);
-
-    // Confirmed the user row went away (cancellation actually fired on the
-    // consumer-subclass class, not on an orphaned default registration).
-    let notFound = false;
-    try {
-      await app.users.getUser("tri@test.com");
-    } catch {
-      notFound = true;
-    }
-    expect(notFound).toBe(true);
   });
 });
 
@@ -255,7 +188,7 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
     const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
-      input: { email: "ap@test.com" },
+      input: { email: "ap@test.com", roles: [] },
     });
     const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
     const r3 = await app.resumeViaQuery(token);
@@ -308,7 +241,7 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
     const r1 = await app.trigger({ wfid: "auth/invite/start" });
     const r2 = await app.trigger({
       wfs: r1.body?.wfs as string,
-      input: { email: "existing@test.com" },
+      input: { email: "existing@test.com", roles: [] },
     });
     // Override ran (1 call) for the existing user.
     expect(calls).toBe(1);
@@ -327,7 +260,7 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
       const r1 = await appNoForm.trigger({ wfid: "auth/invite/start" });
       await appNoForm.trigger({
         wfs: r1.body?.wfs as string,
-        input: { email: "no-prof-sub@test.com" },
+        input: { email: "no-prof-sub@test.com", roles: [] },
       });
       const token = new URL(appNoForm.emails[0].url as string).searchParams.get("wfs") as string;
       const r3 = await appNoForm.resumeViaQuery(token);
@@ -365,7 +298,7 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
       const r1 = await appWithForm.trigger({ wfid: "auth/invite/start" });
       await appWithForm.trigger({
         wfs: r1.body?.wfs as string,
-        input: { email: "yes-prof-sub@test.com" },
+        input: { email: "yes-prof-sub@test.com", roles: [] },
       });
       const token = new URL(appWithForm.emails[0].url as string).searchParams.get("wfs") as string;
       const r3 = await appWithForm.resumeViaQuery(token);
@@ -378,16 +311,6 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
       expect(r4.body?.wfs).toBeTruthy();
     }
   });
-
-  // NOTE: the consumer's own `audit()` override cannot be exercised through
-  // `prepareWfApp` because the harness `audit()` override does not delegate
-  // to `super.audit()` (it conditionally forwards to the injected
-  // `auditEmitter`). The four audit-event kinds (invite.created /
-  // invite.resent / invite.accepted / invite.cancelled) are already covered
-  // via the auditEmitter capture path in `workflows.invite.options.spec.ts`
-  // §"audit events", which proves the workflow EMITS the events with the
-  // correct workflow + payload — independent of which subclass body actually
-  // forwards them.
 });
 
 describe("InviteWorkflow subclass — inviteExtraStep override", () => {
@@ -440,7 +363,7 @@ describe("InviteWorkflow subclass — inviteExtraStep override", () => {
     const r1 = await app.trigger({ wfid: "auth/invite/start" });
     await app.trigger({
       wfs: r1.body?.wfs as string,
-      input: { email: "extra@test.com" },
+      input: { email: "extra@test.com", roles: [] },
     });
     const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
     const r3 = await app.resumeViaQuery(token);

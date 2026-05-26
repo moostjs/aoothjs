@@ -10,8 +10,6 @@ const VARIANTS_BY_WF: Record<string, string[]> = {
   "auth/login/flow": Object.keys(LOGIN_VARIANTS),
   "auth/recovery/flow": Object.keys(RECOVERY_VARIANTS),
   "auth/invite/start": Object.keys(INVITE_VARIANTS),
-  "auth/invite/resend": Object.keys(INVITE_VARIANTS),
-  "auth/invite/cancel": Object.keys(INVITE_VARIANTS),
 };
 
 // Per-row selection — keyed by wf id so each row remembers its own pick.

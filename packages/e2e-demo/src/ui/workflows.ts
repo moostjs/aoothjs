@@ -117,22 +117,6 @@ const INVITE_ADMIN_USERS: ReadonlyArray<TestCred> = [
   },
 ];
 
-// Adds the pending / redeemed target users as non-login hints for the operator.
-const REINVITE_ADMIN_USERS: ReadonlyArray<TestCred> = [
-  ...INVITE_ADMIN_USERS,
-  {
-    username: "t1_pending@example.com",
-    password: "n/a — target user",
-    notes: "Target email for reInvite happy path (record is `pendingInvitation = true`).",
-  },
-  {
-    username: "t1_redeemed@example.com",
-    password: "n/a — target user",
-    notes:
-      "Target email for the 409 path — user already accepted, reInvite/cancelInvite should refuse.",
-  },
-];
-
 export const WORKFLOWS: ReadonlyArray<WfDescriptor> = [
   {
     id: "auth/login/flow",
@@ -156,20 +140,6 @@ export const WORKFLOWS: ReadonlyArray<WfDescriptor> = [
     description: "Admin creates a pending invitation; resume via emailed magic link.",
     requiresAuth: true,
     testCreds: INVITE_ADMIN_USERS,
-  },
-  {
-    id: "auth/invite/resend",
-    label: "Re-invite user (admin)",
-    description: "Resend invitation to a pending user.",
-    requiresAuth: true,
-    testCreds: REINVITE_ADMIN_USERS,
-  },
-  {
-    id: "auth/invite/cancel",
-    label: "Cancel pending invite (admin)",
-    description: "Delete a pending invitation before acceptance.",
-    requiresAuth: true,
-    testCreds: REINVITE_ADMIN_USERS,
   },
   {
     id: "project.handover",

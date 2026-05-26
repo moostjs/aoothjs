@@ -414,34 +414,16 @@ export const INVITE_VARIANTS: Record<string, InviteVariant> = {
   "email-no-roles": {
     policy: {
       adminForm: { collectRoles: false },
-      send: { mode: "email" },
     },
   },
   "roles-profile": {
     policy: {
       adminForm: { collectRoles: true },
-      send: { mode: "email" },
     },
-  },
-  "shareable-link": {
-    policy: { send: { mode: "shareableLink" } },
-  },
-  "choice-freshlogin": {
-    policy: {
-      send: { mode: "choice" },
-      accept: { ...ACCEPT_DEMO_DEFAULTS, freshLoginRequired: true },
-    },
-  },
-  "audit-enabled": {
-    policy: { audit: { enabled: true } },
-  },
-  "cancellation-disabled": {
-    policy: { cancellation: { allowed: false } },
   },
   "short-ttl-confirmation": {
-    // Invite magic-link TTL moved off `InviteWorkflowOpts.send` onto
-    // `AuthOpts.magicLinkTtlMs` post-AuthOpts reshape — declared on the
-    // variant's `authOpts` overlay (cloned per-event by `DemoInviteWorkflow`'s ctor).
+    // Invite magic-link TTL is declared on the `authOpts` overlay
+    // (`AuthOpts.magicLinkTtlMs`) — the workflow no longer owns send-mode.
     authOpts: { magicLinkTtlMs: 1000 },
     policy: { accept: { ...ACCEPT_DEMO_DEFAULTS, showConfirmation: true } },
   },
@@ -470,7 +452,6 @@ export const INVITE_VARIANTS: Record<string, InviteVariant> = {
   "invite-mfa-optional-full": {
     policy: {
       adminForm: { collectRoles: false },
-      send: { mode: "email" },
     },
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["sms", "email", "totp"] },
   },
@@ -482,7 +463,6 @@ export const INVITE_VARIANTS: Record<string, InviteVariant> = {
   "invite-terms": {
     policy: {
       adminForm: { collectRoles: false },
-      send: { mode: "email" },
     },
     mfaCtx: { mfaMode: "disabled" },
   },

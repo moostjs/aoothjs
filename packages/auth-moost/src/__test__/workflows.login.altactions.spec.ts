@@ -295,70 +295,12 @@ describe("LoginWorkflow alt-actions — mfa-totp", () => {
   });
 });
 
-describe("LoginWorkflow alt-actions — create-password-form", () => {
-  // Abort alt-actions set `ctx.aborted = true`; all terminal steps gate on
-  // `!ctx.aborted` so the abort response set via `useWfFinished()` survives.
-  it("'logout' alt → aborts workflow with { aborted: true, reason: 'logout' }", async () => {
-    const app = await prepareWfApp({
-      loginPolicy: {
-        guards: {
-          passwordInitial: true,
-          passwordExpiry: true,
-          emailVerifiedRequired: false,
-        },
-      },
-      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
-    });
-    await seedActiveUser(app.users, "alice", "Password123");
-    const store = (app.users as unknown as { store: { update: Function } }).store;
-    await store.update("alice", { set: { password: { isInitial: true } } });
-    const r1 = await app.trigger({ wfid: "auth/login/flow" });
-    const cred = await app.trigger({
-      wfs: r1.body?.wfs as string,
-      input: { username: "alice", password: "Password123" },
-    });
-    const r = await app.trigger({
-      wfs: cred.body?.wfs as string,
-      input: { action: "logout" },
-    });
-    expect(r.body).toMatchObject({ finished: true, aborted: true, reason: "logout" });
-  });
-
-  it("logout abort emits WfFinished envelope with aborted+reason:logout + info message", async () => {
-    // Pins the WfFinished migration: abort callsites must carry the structured
-    // `message` envelope (level + text) so the UI can render a banner instead
-    // of stalling silently.
-    const app = await prepareWfApp({
-      loginPolicy: {
-        guards: {
-          passwordInitial: true,
-          passwordExpiry: true,
-          emailVerifiedRequired: false,
-        },
-      },
-      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
-    });
-    await seedActiveUser(app.users, "alice", "Password123");
-    const store = (app.users as unknown as { store: { update: Function } }).store;
-    await store.update("alice", { set: { password: { isInitial: true } } });
-    const r1 = await app.trigger({ wfid: "auth/login/flow" });
-    const cred = await app.trigger({
-      wfs: r1.body?.wfs as string,
-      input: { username: "alice", password: "Password123" },
-    });
-    const r = await app.trigger({
-      wfs: cred.body?.wfs as string,
-      input: { action: "logout" },
-    });
-    expect(r.body).toMatchObject({
-      finished: true,
-      aborted: true,
-      reason: "logout",
-      message: { level: "info", text: "Signed out." },
-    });
-  });
-});
-
+// `create-password-form` no longer has any alt-actions. The bundled
+// `SetPasswordForm` dropped `logout` / `cancel` / `backToLogin` because the
+// user-facing escape mechanism is just closing the page (the wf state token
+// expires per the engine's TTL). The previous two `'logout' alt` tests in
+// this block were removed alongside the action.
+//
 // Terms-accept standalone step + `decline` alt-action were dropped — inline
 // consent on `WithInlineConsentForm` replaces them (see Phase 1 of the
 // terms/consent inlining refactor). Comprehensive coverage moves to Phase 2.

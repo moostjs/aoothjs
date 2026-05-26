@@ -135,6 +135,16 @@ export interface RecoveryWfCtx {
   sessionsRevoked?: boolean;
   tokensIssued?: boolean;
 
+  /**
+   * Heading copy rendered as the leading `ui.paragraph` on
+   * `SetPasswordForm`. Written by `set-password` before the pause so the
+   * wire envelope carries reason-appropriate copy. Recovery always means
+   * "Reset your password" — no discriminator branching like login.
+   */
+  passwordFormHeading?: string;
+  /** Intro paragraph paired with {@link passwordFormHeading}. */
+  passwordFormIntro?: string;
+
   // Inline-consent state (mirrors LoginWfCtx / InviteWfCtx — populated by
   // `processInlineConsent` when `SetPasswordForm` is submitted and consumed
   // by the `persist-consents` step before tokens are issued):
@@ -510,7 +520,10 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
         (!!ctx.linkSent || !!ctx.pinVerified) &&
         (!ctx.preReset?.requireKnownFactor || !!ctx.factorVerified),
     },
-    // Abort gate — set-password 'backToLogin' alt-action sets ctx.aborted.
+    // No abort path from set-password anymore — SetPasswordForm has no
+    // alt-actions. The `{ break }` gate is retained so any prior step that
+    // flipped `ctx.aborted` (e.g. `request` / `select-mode` / `verify-factor`
+    // backToLogin) still short-circuits the post-reset tail.
     { break: (ctx) => !!ctx.aborted },
 
     // Post-password subflow — `passwordChanged` flips ONCE in
@@ -855,12 +868,13 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
   // ── setPassword ──────────────────────────────────────────────────────
   @Step("set-password")
   async setPassword(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<unknown> {
+    // Stage context-aware copy BEFORE any pause so the inputRequired wire
+    // envelope carries the heading/intro alongside the form schema.
+    // Recovery's set-password is always "Reset your password" — no
+    // discriminator branching (cf. login's initial-vs-expired split).
+    ctx.passwordFormHeading = "Reset your password";
+    ctx.passwordFormIntro = "Choose a new password for your account.";
     const wf = useAtscriptWf(this.opts.forms.setPassword);
-    const action = wf.resolveAction();
-    if (action === "backToLogin" && ctx.altActions!.backToLogin) {
-      this.abortToLogin(ctx);
-      return undefined;
-    }
 
     const rawFormData = useWfState().input<{ formData?: unknown }>()?.formData;
     if (rawFormData === undefined) {

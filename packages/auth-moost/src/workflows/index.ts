@@ -44,7 +44,6 @@ export {
   DEFAULT_INVITE_TOKEN_TTL_MS,
   type DuplicateAction,
   type InvitePrepareUserInput,
-  type InviteSendMode,
   type InviteWorkflowOpts,
   mergeInviteOpts,
   type PreparedUserInput,

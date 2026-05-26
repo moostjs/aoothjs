@@ -83,6 +83,12 @@ test.describe("recovery — default-magiclink (R-A)", () => {
     await expect(page.locator('[name="newPassword"]').first()).toBeVisible();
     await expect(page.locator('[name="confirmPassword"]').first()).toBeVisible();
 
+    // Pin the recovery-specific heading + intro copy. Bundled phantom
+    // paragraphs read `ctx.passwordFormHeading` / `passwordFormIntro` set
+    // by `set-password` before the pause.
+    await expect(page.getByText("Reset your password")).toBeVisible();
+    await expect(page.getByText(/Choose a new password/i)).toBeVisible();
+
     await fillField(page, "newPassword", NEW_PASSWORD);
     await fillField(page, "confirmPassword", NEW_PASSWORD);
     await submitForm(page);
