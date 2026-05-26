@@ -43,6 +43,7 @@ function resolveConfig(config?: UserServiceConfig): ResolvedConfig {
       scryptP: config?.password?.scryptP ?? 1,
       keyLength: config?.password?.keyLength ?? 64,
       policies: normalizePolicies(config?.password?.policies),
+      maxAgeMs: config?.password?.maxAgeMs ?? 0,
     },
     lockout: {
       threshold: config?.lockout?.threshold ?? 0,
@@ -275,6 +276,25 @@ export class UserService<T extends object = object> {
       reason: account.lockReason,
       lockEnds: account.lockEnds,
     };
+  }
+
+  /**
+   * Returns `true` when the user's password is older than
+   * `config.password.maxAgeMs`. Returns `false` when:
+   * - `maxAgeMs` is unset or `0` (expiry disabled)
+   * - `password.lastChanged` is `0` / falsy (no recorded change — never
+   *   expire a user whose timestamp wasn't captured, since that would
+   *   force-loop on every login)
+   *
+   * Consulted by `@aooth/auth-moost` `LoginWorkflow`'s `credentials`
+   * step to set `ctx.isPasswordExpired` when `guards.passwordExpiry`
+   * is true (the default).
+   */
+  isPasswordExpired(user: UserCredentials & T, now: number = this.config.clock()): boolean {
+    const maxAgeMs = this.config.password.maxAgeMs;
+    const lastChanged = user.password.lastChanged;
+    if (!maxAgeMs || !lastChanged) return false;
+    return now - lastChanged > maxAgeMs;
   }
 
   async checkPolicies(password: string, passwordData?: PasswordData): Promise<PolicyCheckResult> {

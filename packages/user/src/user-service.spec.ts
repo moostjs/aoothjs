@@ -450,6 +450,81 @@ describe("UserService", () => {
     });
   });
 
+  describe("isPasswordExpired", () => {
+    // WHY: missing config must NEVER force-expire. Consumers who never opt
+    // in to expiry would otherwise get force-locked-out after long
+    // deployments — a silent footgun where simply running a long-lived
+    // service would start failing logins. Pins "no config => no expiry".
+    it("returns false when maxAgeMs is unset", async () => {
+      const user = await svc.createUser("alice");
+      // Advance the clock 100 years past the user's lastChanged.
+      now += 100 * 365 * 24 * 60 * 60 * 1000;
+      expect(svc.isPasswordExpired(user)).toBe(false);
+    });
+
+    // WHY: an unrecorded `lastChanged` (0 / falsy) must not trigger expiry.
+    // Otherwise legacy or imported users whose timestamp was never captured
+    // would force-loop the forced-change flow on every login — they'd
+    // change their password, the store-side import didn't stamp
+    // `lastChanged`, and the next login would expire it again.
+    it("returns false when lastChanged is 0", () => {
+      const svcExpiry = new UserService(store, {
+        password: { ...FAST_SCRYPT, maxAgeMs: 1000 },
+        clock: () => now,
+      });
+      // Construct a literal directly — avoid `createUser` which stamps the
+      // current clock onto `lastChanged`.
+      const user = {
+        id: "x",
+        username: "alice",
+        password: { hash: "", history: [], lastChanged: 0, isInitial: false },
+        account: {
+          active: true,
+          locked: false,
+          lockReason: "",
+          lockEnds: 0,
+          failedLoginAttempts: 0,
+          lastLogin: 0,
+        },
+        mfa: { methods: [], defaultMethod: "", autoSend: false },
+      };
+      // Far past any plausible window — proves it's the `lastChanged` guard
+      // and not a window check that gives `false`.
+      expect(svcExpiry.isPasswordExpired(user, 1_000_000_000)).toBe(false);
+    });
+
+    // WHY: pins the inequality direction. A regression flipping `>` to `<`
+    // or to `>=` would either expire prematurely (every fresh login fails)
+    // or never expire (4s elapsed under a 10s window is the boundary that
+    // catches both). Uses the default `now` arg to also cover the
+    // implicit `this.config.clock()` binding.
+    it("returns false when within window", async () => {
+      const svcExpiry = new UserService(store, {
+        password: { ...FAST_SCRYPT, maxAgeMs: 10_000 },
+        clock: () => now,
+      });
+      now = 1000;
+      const user = await svcExpiry.createUser("alice");
+      now = 5000; // 4s elapsed, well under 10s window
+      expect(svcExpiry.isPasswordExpired(user)).toBe(false);
+    });
+
+    // WHY: positive-case proof the predicate fires at all. Without this
+    // the three negative tests above could all pass against a hardcoded
+    // `return false`. Passes `now` explicitly to cover the override path
+    // (the symmetric case to test 3's default-binding coverage).
+    it("returns true when beyond window", async () => {
+      const svcExpiry = new UserService(store, {
+        password: { ...FAST_SCRYPT, maxAgeMs: 10_000 },
+        clock: () => now,
+      });
+      now = 1000;
+      const user = await svcExpiry.createUser("alice");
+      // 11s elapsed, past 10s window — explicit `now` arg.
+      expect(svcExpiry.isPasswordExpired(user, 12_000)).toBe(true);
+    });
+  });
+
   describe("setPassword", () => {
     it("should set password without current password verification", async () => {
       await svc.createUser("alice", "oldpass");

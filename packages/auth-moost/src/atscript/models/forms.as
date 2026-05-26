@@ -181,8 +181,16 @@ export interface EmailIdentifierForm {
  * `data.newPassword` so the rule-fulfillment readout updates live on every
  * keystroke. `WithInlineConsentForm` continues to supply the inline-consent
  * `consents: string[]` block via `AsConsentArray` (Phase 5).
+ *
+ * `@wf.context.pass 'passwordChangeReason'` whitelists the workflow ctx key
+ * carrying `'initial' | 'expired'` — set by `LoginWorkflow.credentials` when
+ * the forced-change branch fires. Default form labels stay reason-agnostic;
+ * downstream SPAs can read the value and override banner copy via a
+ * sibling `ui.paragraph` with an `@ui.form.fn.value` expression (mirroring
+ * the Phase-3 `EnrollConfirmForm.transportHint` pattern).
  */
 @wf.context.pass 'passwordPolicies'
+@wf.context.pass 'passwordChangeReason'
 @wf.context.pass 'pendingConsents'
 @wf.context.pass 'consentsPersisted'
 export interface SetPasswordForm extends WithInlineConsentForm {

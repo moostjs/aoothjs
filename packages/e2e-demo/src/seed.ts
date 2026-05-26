@@ -45,6 +45,7 @@ export interface SeedFixtures {
     t1_ivy: SeededUser;
     t1_iris: SeededUser;
     t1_jack: SeededUser;
+    t1_stale: SeededUser;
     t1_kate: SeededUser;
     t1_locked: SeededUser;
     t1_multi_mfa: SeededUser;
@@ -100,6 +101,8 @@ interface UserSpec {
   backupCodes?: boolean;
   /** Insert with `password.isInitial = true` to exercise the forced-password-change guard. */
   passwordInitial?: boolean;
+  /** Override `password.lastChanged` (ms epoch) at seed time. Defaults to `Date.now()`. */
+  passwordLastChanged?: number;
   /** Insert with `account.locked = true`. */
   locked?: boolean;
   /** Insert with `account.active = false, pendingInvitation = true`. */
@@ -256,6 +259,22 @@ export async function seedAll(handle: AppHandle): Promise<SeedFixtures> {
       departmentId: deptA.sales,
       roles: ["member"],
       passwordInitial: true,
+    },
+    {
+      // Drives WF-LOGIN-EXPIRED-01. `passwordLastChanged: 1` is the
+      // deterministic rotation hit — non-zero (so the falsy short-circuit in
+      // `UserService.isPasswordExpired` does NOT skip the comparison) but
+      // ~Jan 1 1970, well past any reasonable `maxAgeMs`. The `aooth.ts`
+      // config currently sets `maxAgeMs = 365d`, so this user always lands
+      // on the rotation forced-change branch under the `password-expired`
+      // variant.
+      handle: "t1_stale",
+      username: "t1_stale",
+      email: "stale@acme.test",
+      tenantId: tenantAId,
+      departmentId: deptA.sales,
+      roles: ["member"],
+      passwordLastChanged: 1,
     },
     {
       // WF-LOGIN-032: the single user that triggers every optional pausing
@@ -523,7 +542,12 @@ async function seedUser(handle: AppHandle, spec: UserSpec): Promise<SeededUser> 
     tenantId: spec.tenantId,
     departmentId: spec.departmentId,
     roles: spec.roles,
-    password: { hash, history: [], lastChanged: now, isInitial: spec.passwordInitial ?? false },
+    password: {
+      hash,
+      history: [],
+      lastChanged: spec.passwordLastChanged ?? now,
+      isInitial: spec.passwordInitial ?? false,
+    },
     account: {
       active: !spec.pendingInvitation,
       locked: spec.locked ?? false,

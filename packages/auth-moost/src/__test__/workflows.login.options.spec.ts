@@ -387,6 +387,161 @@ describe("LoginWorkflowOpts — Phase 2 password guards", () => {
   });
 });
 
+describe("LoginWorkflowOpts — passwordExpiry (rotation) guard", () => {
+  // Pattern notes (apply to every test in this block):
+  // - Inject an explicit clock via `userConfig.clock` so test 2/3/4/6 can
+  //   advance time deterministically without sleeping.
+  // - Use `seedActiveUser` then mutate `password.lastChanged` via the same
+  //   `store.update` escape hatch the Phase-2-guards tests use — going
+  //   through `createUser` / `setPassword` would stamp the current clock
+  //   and defeat the "lastChanged in the past" setup.
+  // - Skip MFA via `withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" })`
+  //   so the assertions land on the SetPasswordForm pause, not an MFA pause.
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const YEAR_MS = 365 * DAY_MS;
+
+  it("maxAgeMs unset → no forced change even after a long time", async () => {
+    // WHY: pins the "expiry disabled by default" contract. A regression that
+    // defaulted maxAgeMs to a non-zero number would force-change every user
+    // on every long-running deployment — silent compliance footgun.
+    let now = 1_000_000_000;
+    const app = await prepareWfApp({
+      userConfig: { clock: () => now },
+      loginPolicy: { guards: guardsPolicy({ passwordExpiry: true }) },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    // Advance 10 years — but maxAgeMs is unset, so isPasswordExpired stays false.
+    now += 10 * YEAR_MS;
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    // No SetPasswordForm pause → tokens issued directly.
+    const data = r2.body?.data as Record<string, unknown> | undefined;
+    expect(data?.userId).toBe("alice");
+    expect(typeof data?.accessToken).toBe("string");
+  });
+
+  it("maxAgeMs set + lastChanged within window → no forced change", async () => {
+    // WHY: pins the inequality direction in `isPasswordExpired` from the
+    // workflow side. A regression flipping `>` to `>=` would expire users
+    // exactly at maxAgeMs (boundary case); flipping to `<` would never
+    // expire. The within-window assertion catches both.
+    let now = 1_000_000_000;
+    const app = await prepareWfApp({
+      userConfig: { clock: () => now, password: { maxAgeMs: YEAR_MS } },
+      loginPolicy: { guards: guardsPolicy({ passwordExpiry: true }) },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    // Move 30 days forward — well within the 1-year window.
+    now += 30 * DAY_MS;
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    const data = r2.body?.data as Record<string, unknown> | undefined;
+    expect(data?.userId).toBe("alice");
+    expect(typeof data?.accessToken).toBe("string");
+  });
+
+  it("maxAgeMs set + lastChanged beyond window → SetPasswordForm pause + passwordChangeReason='expired'", async () => {
+    // WHY: positive-case proof the new arc fires end-to-end (resolver →
+    // credentials → schema condition → pause). Also pins
+    // passwordChangeReason='expired' on the wire envelope — without
+    // `@wf.context.pass 'passwordChangeReason'` on SetPasswordForm, the
+    // key would be stripped by `extractPassContext` before the client
+    // receives it. Same regression class as WF-LOGIN-PWPOLICY.
+    let now = 1_000_000_000;
+    const app = await prepareWfApp({
+      userConfig: { clock: () => now, password: { maxAgeMs: YEAR_MS } },
+      loginPolicy: { guards: guardsPolicy({ passwordExpiry: true }) },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    // Advance 2 years — well past the 1-year window.
+    now += 2 * YEAR_MS;
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    expect(r2.body?.wfs).toBeTruthy();
+    const body = r2.body as { id?: string; passwordChangeReason?: unknown };
+    expect(body.id).toBe("SetPasswordForm");
+    expect(body.passwordChangeReason).toBe("expired");
+  });
+
+  it("passwordInitial=true AND expired=true → passwordChangeReason='initial' wins", async () => {
+    // WHY: pins the precedence rule. A user with a generated initial
+    // password whose `lastChanged` (stamped on `createUser`) crossed
+    // `maxAgeMs` before first login is a real (if narrow) case. Reporting
+    // them as `'expired'` would tell the SPA to render a "your password
+    // expired" banner for someone who never set one — confusing UX.
+    let now = 1_000_000_000;
+    const app = await prepareWfApp({
+      userConfig: { clock: () => now, password: { maxAgeMs: YEAR_MS } },
+      loginPolicy: {
+        guards: guardsPolicy({ passwordInitial: true, passwordExpiry: true }),
+      },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    const store = (app.users as unknown as { store: { update: Function } }).store;
+    // Force isInitial=true (setPassword inside seedActiveUser cleared it).
+    await store.update("alice", { set: { password: { isInitial: true } } });
+    // Advance 2 years so isPasswordExpired ALSO returns true.
+    now += 2 * YEAR_MS;
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    expect(r2.body?.wfs).toBeTruthy();
+    const body = r2.body as { id?: string; passwordChangeReason?: unknown };
+    expect(body.id).toBe("SetPasswordForm");
+    expect(body.passwordChangeReason).toBe("initial");
+  });
+
+  it("resolveGuards override returning passwordExpiry: false → no forced change even when expired", async () => {
+    // WHY: pins the per-tenant escape hatch. A regression that read
+    // `config.password.maxAgeMs` directly instead of going through
+    // `ctx.guards?.passwordExpiry` would bypass the override surface and
+    // force-change users in SSO-only tenants where the IdP owns rotation.
+    let now = 1_000_000_000;
+    const app = await prepareWfApp({
+      userConfig: { clock: () => now, password: { maxAgeMs: YEAR_MS } },
+      loginPolicy: { guards: guardsPolicy({ passwordExpiry: false }) },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    now += 2 * YEAR_MS;
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    const data = r2.body?.data as Record<string, unknown> | undefined;
+    expect(data?.userId).toBe("alice");
+    expect(typeof data?.accessToken).toBe("string");
+  });
+
+  it("after successful password change → both flags reset, login completes", async () => {
+    // WHY: pins the reset contract. A regression that forgot to clear
+    // `isPasswordExpired` or `passwordChangeReason` on the post-change
+    // path would either loop the user back to SetPasswordForm
+    // indefinitely or leak stale reason copy into a subsequent step's
+    // form (if a future step ever surfaces the field).
+    let now = 1_000_000_000;
+    const app = await prepareWfApp({
+      userConfig: { clock: () => now, password: { maxAgeMs: YEAR_MS } },
+      loginPolicy: { guards: guardsPolicy({ passwordExpiry: true }) },
+      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
+    });
+    await seedActiveUser(app.users, "alice", "Password123");
+    now += 2 * YEAR_MS;
+    const r2 = await startAndCredentials(app, "alice", "Password123");
+    expect(r2.body?.wfs).toBeTruthy();
+    const body = r2.body as { id?: string; passwordChangeReason?: unknown };
+    expect(body.id).toBe("SetPasswordForm");
+    expect(body.passwordChangeReason).toBe("expired");
+
+    // Submit the new password — consents: [] required per workflow form
+    // contract (the inline-consent string[] is non-optional on raw HTTP).
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { newPassword: "NewPass1!", confirmPassword: "NewPass1!", consents: [] },
+    });
+    // Flow completes — tokens issued, no loop back to SetPasswordForm.
+    const data = r3.body?.data as Record<string, unknown> | undefined;
+    expect(data?.userId).toBe("alice");
+    expect(typeof data?.accessToken).toBe("string");
+  });
+});
+
 describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
   it("mfa.mode='disabled' → Phase 4 skipped entirely (credentials → issue) even with enrolled TOTP", async () => {
     const app = await prepareWfApp({

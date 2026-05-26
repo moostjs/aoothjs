@@ -172,6 +172,17 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
     },
     mfaCtx: { mfaMode: "disabled" },
   },
+  // Drives WF-LOGIN-EXPIRED-01. The `guards.passwordExpiry: true` default
+  // (declared by `LoginWorkflow.resolveGuards`) combined with the app-wide
+  // `password.maxAgeMs: 365 days` configured in `aooth.ts` causes the
+  // `credentials` step to set `ctx.isPasswordExpired = true` for any user
+  // whose stored `password.lastChanged` is older than the window. The
+  // demo's `t1_stale` seed user is the deterministic hit (lastChanged=1,
+  // i.e. epoch+1ms). MFA is disabled so the workflow lands on
+  // `SetPasswordForm` immediately after credentials.
+  "password-expired": {
+    mfaCtx: { mfaMode: "disabled" },
+  },
   // The prior `acceptance` variant relied on `policy.acceptance.termsVersion`
   // driving the standalone bump-prompt; Phase 5 moved the consent half to the
   // customer `ConsentStore` (`VARIANT_PENDING_CONSENTS['acceptance']` in

@@ -150,6 +150,7 @@ Per the infra audit:
 | L-J | Redirect           | `finalize.redirect: 'home'`                                                                                                                                |
 | L-K | Consent capture    | `consent-array` / `terms-bump` variants drive `VARIANT_PENDING_CONSENTS` → `AsConsentArray` checkboxes on `TermsBumpForm` (Phase 5)                        |
 | L-L | OTP disclosure     | `enrollment` variant — `AskEmailForm` / `AskPhoneForm` carry a generic disclosure paragraph; `recordOtpChannelConsent` fires post-pincode-verify (Phase 3) |
+| L-M | Password rotation  | `passwordExpiry: true` (default), `password.maxAgeMs: 365d`, no MFA                                                                                        |
 
 ### Stories (priority tagged)
 
@@ -176,6 +177,7 @@ Per the infra audit:
 | WF-LOGIN-019               | P1   | L-D           | `deviceTrust.optIn: false` → no `rememberDevice` checkbox shown                                                                                                                          | checkbox absent in PincodeForm DOM                                                                                                                                         |
 | WF-LOGIN-020               | P2   | L-D           | trusted cookie expires → MFA required again                                                                                                                                              | wait past `ttlMs`; expect MFA loop                                                                                                                                         |
 | WF-LOGIN-021               | P0   | L-E           | jack (`isInitial=true`) → `SetPasswordForm` pause → mismatch error → tokens on match                                                                                                     | `AsPasswordRules` rows visible (Phase 7), mismatch error inline; live-keystroke evaluation pinned by WF-PASSWORD-RULES-LIVE-01                                             |
+| WF-LOGIN-EXPIRED-01        | P0   | L-M           | t1_stale (`lastChanged=1`, deep past) → `SetPasswordForm` pause (`passwordChangeReason='expired'`) → tokens on new password                                                              | Pins `@wf.context.pass 'passwordChangeReason'` reaches client; pins schema-OR `(isPasswordInitial \|\| isPasswordExpired)`; pins post-change reset                         |
 | WF-LOGIN-022               | P1   | L-E           | jack clicks `logout` on SetPassword → aborts                                                                                                                                             | finish envelope has `aborted: true`, no tokens                                                                                                                             |
 | WF-LOGIN-024               | P1   | L-F+K         | frank submits `TermsBumpForm` without ticking required terms row → form-level error, no tokens                                                                                           | `errors.consents` carries descriptor's `required` string verbatim; mandatory-by-message defense                                                                            |
 | WF-LOGIN-025               | P1   | L-F+K         | optional marketing row renders unchecked + tickable; tick terms only + submit completes workflow                                                                                         | `AsConsentArray` renders 2 checkboxes (terms required + marketing optional); marketing event saved with `accepted:false`                                                   |
@@ -405,6 +407,8 @@ To exercise live:
    - `longenough1A!` → all green.
 6. Each row carries `data-passed="true|false"` for e2e assertion (`WF-PASSWORD-RULES-LIVE-01` pins exactly this).
 7. Fill confirm password identically + Submit → tokens issued.
+
+**Password rotation (`password-expired` variant):** browse to `http://localhost:3001/wf?id=auth/login/flow&variant=password-expired`, sign in as `t1_stale` / `Password1!`. The seed user's `password.lastChanged = 1` (epoch+1ms) is older than the configured `password.maxAgeMs` (365d) so the workflow lands on **`SetPasswordForm`** directly (MFA disabled on this variant). The wire envelope carries `passwordChangeReason: 'expired'` — surface it in the SPA to render a "Your password has expired" banner instead of the initial-password copy. Submit `NewerPass1!` in both fields → tokens issued.
 
 **Customizing the policies:** edit `definePasswordPolicy` calls in [`packages/e2e-demo/src/aooth.ts`](src/aooth.ts) (around lines 76-95). Add e.g.:
 

@@ -156,6 +156,24 @@ export interface LoginWfCtx {
   /** Legacy alias for `pwReset`; kept until tests migrate. */
   mfaRequired?: boolean;
   isPasswordInitial?: boolean;
+  /**
+   * Set in `credentials` when `guards.passwordExpiry` is true AND
+   * `UserService.isPasswordExpired(user)` returns true. Combined with
+   * `isPasswordInitial` in the forced-change schema condition — either
+   * being truthy routes the user through `prepare-password-rules` +
+   * `create-password-form`. Reset after `create-password-form` commits.
+   */
+  isPasswordExpired?: boolean;
+  /**
+   * Discriminator for `SetPasswordForm` UX. `'initial'` when the
+   * password has never been used (first-set flow); `'expired'` when the
+   * password aged past `config.password.maxAgeMs` (rotation flow). When
+   * both conditions are true, `'initial'` wins — a never-used password
+   * being "expired" is semantically still its initial set. Shipped to
+   * the client via `@wf.context.pass` on `SetPasswordForm` so the SPA
+   * can swap banner copy; default form labels stay reason-agnostic.
+   */
+  passwordChangeReason?: "initial" | "expired";
   usedMagicLink?: boolean;
 
   // MFA policy (populated by the single `prepareMfaSetup` setter — overridable per consumer):
@@ -617,6 +635,14 @@ export class LoginWorkflow extends AuthWorkflowBase {
    * Resolve the guards policy (passwordInitial / passwordExpiry /
    * emailVerifiedRequired). Override per-tenant to tighten or loosen the
    * post-credentials gates. Sync/async friendly.
+   *
+   * The `passwordExpiry` flag (default `true`) is the per-tenant escape
+   * hatch for rotation policy: flip to `false` for SSO-only tenants
+   * where the IdP owns rotation, or for service accounts where forced
+   * change would break automation. When `true`, the `credentials` step
+   * consults `UserService.isPasswordExpired(user)` — which is itself
+   * gated on `config.password.maxAgeMs`, so an unset `maxAgeMs` already
+   * disables expiry independent of this flag.
    */
   protected resolveGuards(
     _ctx: LoginWfCtx,
@@ -987,7 +1013,8 @@ export class LoginWorkflow extends AuthWorkflowBase {
 
     // Phase 5 forced password change:
     {
-      condition: (ctx) => !!ctx.isPasswordInitial && !ctx.passwordChanged,
+      condition: (ctx) =>
+        (!!ctx.isPasswordInitial || !!ctx.isPasswordExpired) && !ctx.passwordChanged,
       steps: [{ id: "prepare-password-rules" }, { id: "create-password-form" }],
     },
     // Abort gate — create-password-form 'logout' alt-action sets ctx.aborted = true.
@@ -1187,6 +1214,20 @@ export class LoginWorkflow extends AuthWorkflowBase {
       // Phase 2 inline guards:
       if (ctx.guards?.passwordInitial && result.user.password.isInitial) {
         ctx.isPasswordInitial = true;
+      }
+      // `isPasswordExpired` is independent of `isPasswordInitial` — the user
+      // store can carry both flags on a fresh account whose generated
+      // password also crossed `maxAgeMs` between createUser and first login.
+      // `passwordChangeReason` picks `'initial'` over `'expired'` because a
+      // never-used password being "expired" is semantically still its
+      // initial set; downstream SPA banner copy keys on this discriminator.
+      if (ctx.guards?.passwordExpiry && this.users.isPasswordExpired(result.user)) {
+        ctx.isPasswordExpired = true;
+      }
+      if (ctx.isPasswordInitial) {
+        ctx.passwordChangeReason = "initial";
+      } else if (ctx.isPasswordExpired) {
+        ctx.passwordChangeReason = "expired";
       }
       // Sync existing channel state so `ensureEmail`/`ensurePhone` skip
       // when the user already has a confirmed channel.
@@ -1817,6 +1858,12 @@ export class LoginWorkflow extends AuthWorkflowBase {
     this.processInlineConsent(ctx, input, wf);
     ctx.passwordChanged = true;
     ctx.isPasswordInitial = false;
+    ctx.isPasswordExpired = false;
+    // `delete` rather than `= undefined`: the wf state-token persistence
+    // layer JSON-schema-validates the ctx and rejects `undefined` (allowed
+    // types are string/number/boolean/null/array/object). Deleting the
+    // key drops it from the serialized payload cleanly.
+    delete ctx.passwordChangeReason;
     return undefined;
   }
 

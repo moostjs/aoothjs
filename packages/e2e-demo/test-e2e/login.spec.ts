@@ -329,6 +329,47 @@ test.describe("LoginWorkflow / variant=guards (passwordInitial)", () => {
   // writes into.
 });
 
+test.describe("LoginWorkflow / variant=password-expired (rotation)", () => {
+  // WHY (Rule 9): end-to-end proof that the rotation arc fires under a real
+  // HTTP + SQLite + SPA stack. Pins:
+  //   - `password.maxAgeMs` config travels from `aooth.ts` into UserService
+  //   - `isPasswordExpired(user)` predicate returns true for an aged user
+  //   - `LoginWorkflow.credentials` sets `ctx.isPasswordExpired = true` when
+  //     `guards.passwordExpiry` is true (the default)
+  //   - the schema OR (`isPasswordInitial || isPasswordExpired`) routes to
+  //     `prepare-password-rules` + `create-password-form`
+  //   - `@wf.context.pass 'passwordChangeReason'` ships `'expired'` to the
+  //     wire envelope (without it `extractPassContext` would strip the key —
+  //     same regression class as WF-LOGIN-PWPOLICY)
+  //   - the post-change reset clears `isPasswordExpired` /
+  //     `passwordChangeReason` so the workflow can finish (a regression
+  //     forgetting the reset would loop the user back to SetPasswordForm
+  //     indefinitely).
+  test("WF-LOGIN-EXPIRED-01: t1_stale → SetPasswordForm pause (passwordChangeReason='expired') → tokens on new password", async ({
+    page,
+  }) => {
+    await page.goto(wfUrl(LOGIN_WF, "password-expired"));
+    await fillField(page, "username", "t1_stale");
+    await fillField(page, "password", "Password1!");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    // SetPasswordForm pause — same locator pattern as WF-LOGIN-021. MFA is
+    // disabled on this variant so there is no AskEmailForm / PincodeForm
+    // intermezzo: the workflow goes straight from `credentials` to the
+    // forced-change branch.
+    await waitForFormInput(page, "newPassword");
+    await waitForFormInput(page, "confirmPassword");
+    await fillField(page, "newPassword", "NewerPass1!");
+    await fillField(page, "confirmPassword", "NewerPass1!");
+    await page.locator("button.as-submit-btn").first().click();
+
+    // Tokens issued — same wfFinished signature as the rest of the suite.
+    const envelope = (await readFinishEnvelope(page)) as { data?: { accessToken?: string } };
+    expect(typeof envelope.data?.accessToken).toBe("string");
+    expect((envelope.data?.accessToken ?? "").length).toBeGreaterThan(0);
+  });
+});
+
 test.describe("LoginWorkflow / variant=device-trust", () => {
   test("WF-LOGIN-018: device-trust new-device → MFA → rememberDevice → 2nd login skips MFA", async ({
     page,

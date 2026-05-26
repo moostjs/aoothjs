@@ -50,6 +50,12 @@ const LOGIN_USERS: ReadonlyArray<TestCred> = [
       "`password.isInitial = true` — login pauses on the set-password step before issuing tokens.",
   },
   {
+    username: "t1_stale",
+    password: PWD,
+    notes:
+      "`password.lastChanged = 1` (epoch+1ms) — exceeds `password.maxAgeMs` (365d). Use with the `password-expired` variant to exercise the rotation-driven forced password change.",
+  },
+  {
     username: "t1_locked",
     password: PWD,
     notes: "`account.locked = true` — login is expected to surface a 423 friendly error.",

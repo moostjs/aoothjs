@@ -122,6 +122,14 @@ export interface PasswordConfig {
   keyLength?: number;
   /** Password policy rules */
   policies?: (PasswordPolicyDef | PasswordPolicyInstance)[];
+  /**
+   * Force re-set of an existing password after this many ms since
+   * `password.lastChanged`. `0` / undefined disables expiry. Read by
+   * `UserService.isPasswordExpired()`; consulted by `@aooth/auth-moost`
+   * `LoginWorkflow`'s forced-change branch when `guards.passwordExpiry`
+   * is true (the default).
+   */
+  maxAgeMs?: number;
 }
 
 export interface LockoutConfig {
