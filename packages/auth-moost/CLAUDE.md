@@ -341,3 +341,4 @@ Subclass MUST:
 - ❌ Renaming `loadTenants` / `loadPersonas` / `loadActiveSessions` to `resolveXxx` (data fetchers, not policy resolvers).
 - ❌ Using `resolveXxx` as a `@Step` id or `@Step` handler method name.
 - ❌ Widening helper return types (`resolveRecoveryUrl`, `resolveRedirect`) to `T | Promise<T>` — stay strictly sync; consumers needing async override the calling @Step.
+- ❌ `ctx.foo = undefined` to clear an optional ctx field at the end of a @Step body. The wf state-token persistence layer JSON-schema-validates the serialized ctx and rejects `undefined` (allowed types: string / number / boolean / null / array / object). Use `delete ctx.foo` instead — drops the key from the payload cleanly. Bare-boolean / nullable-string fields can also assign `false` / `null` if a forward step relies on presence rather than reads the field directly.
