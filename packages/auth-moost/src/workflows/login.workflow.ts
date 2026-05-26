@@ -939,8 +939,16 @@ export class LoginWorkflow extends AuthWorkflowBase {
         // TOTP branch:
         { id: "mfa-totp", condition: (ctx) => !ctx.mfaChecked && ctx.mfaMethod === "totp" },
         // Forced enrollment trio — `mfaMode !== "disabled"` already enforced by the while-guard.
+        // Also gated on `availableMfaTransports.length > 0`: with zero transports
+        // there's nothing to enrol into, so optional mode should be treated like
+        // disabled (skip the trio entirely). `enrollPickPhase` still defends
+        // against the 0-transport case in optional mode (auto-skip) and throws
+        // in required mode if a consumer reaches it via a different path.
         {
-          condition: (ctx) => !ctx.mfaChecked && (ctx.mfaEnrolledMethods?.length ?? 0) === 0,
+          condition: (ctx) =>
+            !ctx.mfaChecked &&
+            (ctx.mfaEnrolledMethods?.length ?? 0) === 0 &&
+            (ctx.availableMfaTransports?.length ?? 0) > 0,
           steps: [
             {
               id: "enroll-pick-method",

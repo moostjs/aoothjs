@@ -450,6 +450,23 @@ export class AuthWorkflowBase {
       ctx.enrollAvailableTransports = [...transports];
     }
 
+    // 0-transport guard — no method can be picked. Optional mode auto-skips
+    // (mirrors a user `skip` click); required mode is a misconfiguration —
+    // forced enrolment can't be satisfied with nothing to enrol into, and
+    // rendering an empty picker would dead-end the user.
+    if (transports.length === 0) {
+      if (deps.mode === "optional") {
+        ctx.enrollDone = true;
+        deps.onComplete?.(ctx);
+        return undefined;
+      }
+      throw new HttpError(
+        500,
+        "MFA enrollment is required but no transports are configured. " +
+          "Override `prepareMfaSetup` to provide at least one transport, or set `mfaMode` to 'disabled'.",
+      );
+    }
+
     // Pick: auto-pick when only one transport; otherwise pause for the picker
     // form. The picker branch may short-circuit via `skip` in `'optional'` mode.
     if (transports.length === 1) {
