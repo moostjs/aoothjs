@@ -695,19 +695,27 @@ describe("SEC — lockout / brute-force", () => {
     await app.close();
   });
 
-  it("SEC-13 — login lockout after threshold (see also AUTH-05)", async () => {
+  it("SEC-13 — login lockout after threshold surfaces as requireInput form-message (see also AUTH-05)", async () => {
+    // WHY: lockout used to throw `HttpError(423, "Account locked")` which deleted
+    // the wf-state token (HandleStateStrategy.consume) without re-persisting →
+    // SPA's next refresh got 410 Gone, user could never see the friendly
+    // "try again later" message. The fix swapped to
+    // `wf.requireInput({ formMessage: "Account locked, please try again later" })`
+    // so the engine re-renders the credentials form with `__form` set and a
+    // fresh wfs token (retry still works once the lockout window expires). Pin
+    // the new contract: status 201, `__form` carries the lockout message.
     const alice = app.fixtures.users.t1_alice;
-    // Workflow `auth.login` re-prompts on bad credentials (no 401). The
-    // lockout fires inside the credentials step (UserService throws
-    // UserAuthError.LOCKED → step throws HttpError(423) → trigger surfaces
-    // 423). Assert on the eventual 423 to pin the lockout contract.
     for (let i = 0; i < 3; i++) {
       const r = await app.loginRequest(alice.username, "wrong");
       const body = (await r.json()) as { userId?: string; errors?: object };
       expect(body.userId).toBeUndefined();
     }
     const locked = await app.loginRequest(alice.username, alice.password);
-    expect(locked.status).toBe(423);
+    expect(locked.status).toBe(201);
+    const lockedBody = (await locked.json()) as {
+      inputRequired?: { context?: { errors?: Record<string, string> } };
+    };
+    expect(lockedBody.inputRequired?.context?.errors?.__form).toMatch(/locked/i);
   });
 
   it("SEC-19 — TOTP brute force trips the shared lockout after threshold failures", async () => {
@@ -732,9 +740,15 @@ describe("SEC — lockout / brute-force", () => {
     });
     let body = await readWfPause(credResp);
 
-    // Lockout threshold is 3 (envOverrides above). Three wrong codes must
-    // produce a lockout response (423); subsequent login also returns 423.
-    let lockedStatus = 0;
+    // WHY: TOTP-side lockout used to throw `HttpError(423, "Account locked")`
+    // which deleted the wf-state token without re-persisting → user got 410
+    // Gone on retry. The fix swapped to
+    // `wf.requireInput({ formMessage: "Account locked, please try again later" })`
+    // so the engine re-renders the MFA code form with `__form` set and a fresh
+    // wfs token. Pin the new contract: status 201 with `__form` containing the
+    // lockout message; subsequent password-side login still surfaces lockout
+    // the same retriable way.
+    let lockedForm: string | undefined;
     for (let i = 0; i < 5; i++) {
       const guess = String(i % 1_000_000).padStart(6, "0");
       const att = await app.triggerWf("public", {
@@ -742,18 +756,30 @@ describe("SEC — lockout / brute-force", () => {
         wfs: body.wfs,
         input: { code: guess },
       });
-      if (att.status === 423) {
-        lockedStatus = 423;
+      const attBody = (await att.json()) as {
+        wfs?: string;
+        inputRequired?: { context?: { errors?: Record<string, string> } };
+      };
+      const formErr = attBody.inputRequired?.context?.errors?.__form;
+      if (formErr && /locked/i.test(formErr)) {
+        lockedForm = formErr;
+        expect(att.status).toBe(201);
+        expect(attBody.wfs).toBeTruthy();
         break;
       }
-      body = await readWfPause(att);
+      body = attBody as typeof body;
       if (!body.wfs) break;
     }
-    expect(lockedStatus).toBe(423);
+    expect(lockedForm).toMatch(/locked/i);
 
-    // A fresh login attempt now hits the password-side lockout check too.
+    // Password-side lockout surfaces the same retriable way (form-message,
+    // not status code) — pin parity with the MFA branch.
     const relogin = await app.loginRequest(grace.username, grace.password);
-    expect(relogin.status).toBe(423);
+    expect(relogin.status).toBe(201);
+    const reloginBody = (await relogin.json()) as {
+      inputRequired?: { context?: { errors?: Record<string, string> } };
+    };
+    expect(reloginBody.inputRequired?.context?.errors?.__form).toMatch(/locked/i);
   });
 });
 

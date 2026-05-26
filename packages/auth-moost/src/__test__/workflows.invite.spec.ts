@@ -53,7 +53,10 @@ describe("InviteWorkflow", () => {
     expect(user.account.active).toBe(true);
   });
 
-  it("duplicate email at invite: 409", async () => {
+  it("duplicate email at invite: re-renders InviteForm with email error", async () => {
+    // WHY: previously a hard HttpError(409). That deleted the wf state token
+    // before the step ran, so any retry got 410 Gone. Fix routes the conflict
+    // through wf.requireInput so the admin can correct the email inline.
     const app = await prepareWfApp();
     // Pre-seed an existing user with the same email
     await seedActiveUser(app.users, "bob@test.com", "Password123");
@@ -63,7 +66,10 @@ describe("InviteWorkflow", () => {
       wfs: r1.body?.wfs as string,
       input: { email: "bob@test.com" },
     });
-    expect(r2.status).toBe(409);
+    expect(r2.status).toBe(201);
+    const errors = r2.body?.errors as Record<string, string> | undefined;
+    expect(errors?.email).toMatch(/already exists/i);
+    expect(r2.body?.wfs).toBeTruthy();
   });
 
   it("confirm-password mismatch on accept", async () => {
@@ -702,5 +708,126 @@ describe("InviteWorkflowOpts — mfa enrollment ergonomics (PR7-1)", () => {
     expect(final.mfa.methods[0].confirmed).toBe(true);
     expect(final.mfa.defaultMethod).toBe("sms");
     expect(final.account.active).toBe(true);
+  });
+
+  // ── Regression: token survives retriable @Step errors ────────────────
+  // Both tests in this block pin the fix for the original bug class:
+  // `HandleStateStrategy.consume(token)` deletes the resume token BEFORE
+  // the @Step body runs. If the step throws a non-retriable error (plain
+  // `HttpError`), the engine never re-persists state under a new token —
+  // the SPA's NEXT form submission lands on 410 Gone. Routing through
+  // `wf.requireInput()` (which throws `StepRetriableError` carrying the
+  // form schema) makes the engine persist state under a NEW token AND
+  // re-render the form with per-field errors, letting the user retry.
+  it("ReInvite with unknown email re-renders form (no 410 on retry, then proceeds with valid email)", async () => {
+    // WHY: was HttpError(404) — token-eating throw. The first retry MUST
+    // surface a per-field error AND a fresh wfs token (NOT 410 Gone) so
+    // the admin can correct the email inline on the same wf run.
+    const app = await prepareWfApp();
+    // Pre-seed a pending invite so a corrected email actually has a target
+    // for the retry's valid path.
+    const r1a = await app.trigger({ wfid: "auth/invite/start" });
+    await app.trigger({
+      wfs: r1a.body?.wfs as string,
+      input: { email: "pending@test.com" },
+    });
+
+    // Start a re-invite workflow run.
+    const ri1 = await app.trigger({ wfid: "auth/invite/resend" });
+    const wfs1 = ri1.body?.wfs as string;
+
+    // First submission: bogus email → form re-render with per-field error
+    // AND a new wfs token (proves the token was NOT deleted by the throw).
+    const ri2 = await app.trigger({
+      wfs: wfs1,
+      input: { email: "ghost@nowhere.test" },
+    });
+    expect(ri2.status).not.toBe(410);
+    expect(ri2.status).toBe(201);
+    const errors = ri2.body?.errors as Record<string, string> | undefined;
+    expect(errors?.email).toMatch(/no pending invite/i);
+    const wfs2 = ri2.body?.wfs as string;
+    expect(wfs2).toBeTruthy();
+    // WHY token-reuse: with `@wooksjs/event-wf@0.7.14+` and the
+    // `@prostojs/wf@0.2.x` `{ handle }` override, idempotent re-resume
+    // re-persists state under THE SAME handle. The URL `wfs=…` therefore
+    // remains live across retriable errors — browser refresh / bookmark /
+    // multi-tab all keep working. Token rotation would defeat that. Pin
+    // the reuse explicitly so a regression to the old "mint-on-every-call"
+    // behavior is caught immediately.
+    expect(wfs2).toBe(wfs1);
+
+    // Retry with a valid pending email on the (still-live) token — flow
+    // proceeds and an invite magic-link email is dispatched (no 410).
+    const emailsBefore = app.emails.length;
+    const ri3 = await app.trigger({
+      wfs: wfs2,
+      input: { email: "pending@test.com" },
+    });
+    expect(ri3.status).not.toBe(410);
+    expect(app.emails.length).toBeGreaterThan(emailsBefore);
+    expect(app.emails[app.emails.length - 1].recipient).toBe("pending@test.com");
+  });
+
+  it("createPasswordForm with reused password re-renders form (no 410 on retry, then accepts fresh password)", async () => {
+    // WHY: `users.setPassword` throws `UserAuthError` for policy / history /
+    // mismatch. Previously routed through the now-deleted
+    // `translatePasswordSetError` helper which threw plain HttpError(400) →
+    // token deleted → 410 on next submit. Fix surfaces UserAuthError as a
+    // `wf.requireInput({ errors: { newPassword } })`. Triggered here via a
+    // strict password policy (the same shape that would fire from a
+    // PASSWORD_IN_HISTORY hit on a real store config).
+    const app = await prepareWfApp({
+      userConfig: {
+        password: {
+          policies: [
+            {
+              rule: (v: string) => v.length >= 16,
+              serialized: "(v) => v.length >= 16",
+              errorMessage: "Password must be at least 16 characters",
+            },
+          ],
+        },
+      },
+    });
+
+    const r1 = await app.trigger({ wfid: "auth/invite/start" });
+    await app.trigger({
+      wfs: r1.body?.wfs as string,
+      input: { email: "reuse@test.com" },
+    });
+    const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
+    const r3 = await app.resumeViaQuery(token);
+    const wfs3 = r3.body?.wfs as string;
+
+    // First submission: password fails the length policy.
+    const tooShort = "Short123";
+    const r4 = await app.trigger({
+      wfs: wfs3,
+      input: { newPassword: tooShort, confirmPassword: tooShort, consents: [] },
+    });
+    expect(r4.status).not.toBe(410);
+    expect(r4.status).toBe(201);
+    const errors = r4.body?.errors as Record<string, string> | undefined;
+    expect(errors?.newPassword).toMatch(/at least 16/i);
+    const wfs4 = r4.body?.wfs as string;
+    expect(wfs4).toBeTruthy();
+    // WHY token-reuse: see the matching `wfs2 === wfs1` assertion in the
+    // reInvite-unknown-email test above — the engine re-persists state
+    // under the SAME handle on retriable errors so the URL token stays
+    // live across refresh/bookmark/multi-tab.
+    expect(wfs4).toBe(wfs3);
+
+    // Retry with a valid password on the (still-live) token — flow
+    // proceeds and tokens are issued (no 410).
+    const goodPassword = "A-much-longer-pass-1";
+    const r5 = await app.trigger({
+      wfs: wfs4,
+      input: { newPassword: goodPassword, confirmPassword: goodPassword, consents: [] },
+    });
+    expect(r5.status).not.toBe(410);
+    const data = r5.body?.data as Record<string, unknown> | undefined;
+    expect(data?.userId).toBe("reuse@test.com");
+    expect(typeof data?.accessToken).toBe("string");
   });
 });

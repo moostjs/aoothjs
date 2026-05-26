@@ -84,7 +84,15 @@ describe("LoginWorkflow", () => {
     expect(errors).toMatchObject({ __form: "Invalid credentials" });
   });
 
-  it("returns 423 on locked account", async () => {
+  it("re-renders credentials form with lock message on locked account", async () => {
+    // WHY: locked account used to be HttpError(423) — that deleted the wf
+    // state token (HandleStateStrategy.consume runs BEFORE the @Step body) and
+    // the SPA's next submission got 410 Gone. The fix routes LOCKED through
+    // `wf.requireInput({formMessage})` so the engine re-persists state under
+    // a NEW token and the user can retry (e.g. after the lockout elapses)
+    // without the SPA having to start over. The lock copy must surface on the
+    // form-level `__form` slot so the SPA can render it adjacent to the
+    // credentials inputs.
     const app = await prepareWfApp();
     await seedActiveUser(app.users, "alice", "Password123");
     await app.users.lockAccount("alice", "manual");
@@ -94,7 +102,16 @@ describe("LoginWorkflow", () => {
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
     });
-    expect(r2.status).toBe(423);
+    expect(r2.status).toBe(201);
+    const errors = r2.body?.errors as Record<string, string> | undefined;
+    expect(errors?.__form).toMatch(/locked/i);
+    // WHY token-reuse: the engine re-persists state under THE SAME handle
+    // on retriable errors (idempotent re-resume — see ../wooksjs WF_STRATEGY).
+    // The URL token stays live across the lockout message so the user can
+    // refresh/bookmark and retry once the lockout window expires without
+    // restarting the flow.
+    expect(r2.body?.wfs).toBeTruthy();
+    expect(r2.body?.wfs).toBe(r1.body?.wfs);
   });
 
   it("re-renders form (no leak) on inactive account", async () => {
@@ -134,7 +151,18 @@ describe("LoginWorkflow", () => {
     expect(typeof data?.accessToken).toBe("string");
   });
 
-  it("MFA branch: invalid code re-prompts", async () => {
+  it("MFA branch: invalid code re-prompts, then retry with correct code succeeds (no 410 on retry)", async () => {
+    // WHY: classic instance of the wf-state token bug — wrong MFA code used to
+    // leak through paths that threw plain HttpError (e.g. INACTIVE → 401,
+    // LOCKED → 423), eating the wf token on the throw and forcing the next
+    // submission to 410 Gone. The fix routes invalid-code through
+    // `wf.requireInput({errors:{code}})` so the engine re-persists state
+    // under THE SAME handle AND re-renders the MFA form. This test pins
+    // BOTH halves: the re-render carries `errors.code='Invalid code'` AND
+    // the SAME wfs token (idempotent re-resume — keeps the URL token live
+    // so the user can refresh / multi-tab without losing progress);
+    // submitting the correct TOTP code on the same token finishes the
+    // login (proves the workflow isn't terminally stuck).
     const app = await prepareWfApp();
     await seedActiveUser(app.users, "alice", "Password123");
     const secret = generateTotpSecret();
@@ -145,12 +173,26 @@ describe("LoginWorkflow", () => {
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
     });
+    const wfs2 = r2.body?.wfs as string;
     const r3 = await app.trigger({
-      wfs: r2.body?.wfs as string,
+      wfs: wfs2,
       input: { code: "000000" },
     });
+    expect(r3.status).not.toBe(410);
     const errors = r3.body?.errors as Record<string, string> | undefined;
     expect(errors).toMatchObject({ code: "Invalid code" });
+    // Token reused (idempotent re-resume) — same wfs.
+    const wfs3 = r3.body?.wfs as string;
+    expect(wfs3).toBeTruthy();
+    expect(wfs3).toBe(wfs2);
+
+    // Retry with a correct TOTP on the (still-live) token — login finishes.
+    const code = generateTotpCode(secret);
+    const r4 = await app.trigger({ wfs: wfs3, input: { code } });
+    expect(r4.status).not.toBe(410);
+    const data = r4.body?.data as Record<string, unknown> | undefined;
+    expect(data?.userId).toBe("alice");
+    expect(typeof data?.accessToken).toBe("string");
   });
 
   it("validates form input on missing fields", async () => {

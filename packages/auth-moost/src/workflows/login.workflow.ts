@@ -1194,7 +1194,9 @@ export class LoginWorkflow extends AuthWorkflowBase {
       }
     } catch (err) {
       if (err instanceof UserAuthError) {
-        if (err.type === "LOCKED") throw new HttpError(423, "Account locked");
+        if (err.type === "LOCKED") {
+          throw wf.requireInput({ formMessage: "Account locked, please try again later" });
+        }
         throw wf.requireInput({ formMessage: "Invalid credentials" });
       }
       throw err;
@@ -1638,11 +1640,17 @@ export class LoginWorkflow extends AuthWorkflowBase {
       }
     } catch (err) {
       if (err instanceof UserAuthError) {
-        if (err.type === "LOCKED") throw new HttpError(423, "Account locked");
-        if (err.type === "INACTIVE") throw new HttpError(401, "Invalid credentials");
+        if (err.type === "LOCKED") {
+          throw wf.requireInput({ formMessage: "Account locked, please try again later" });
+        }
+        if (err.type === "INACTIVE") {
+          throw wf.requireInput({ errors: { code: "Invalid code" } });
+        }
         if (err.type === "MFA_NOT_CONFIGURED") throw new HttpError(400, "No TOTP MFA configured");
         if (err.type === "MFA_INVALID") {
-          if (err.details?.lockEnds !== undefined) throw new HttpError(423, "Account locked");
+          if (err.details?.lockEnds !== undefined) {
+            throw wf.requireInput({ formMessage: "Account locked, please try again later" });
+          }
           throw wf.requireInput({ errors: { code: "Invalid code" } });
         }
         // `verifyMfa` writes `lastUsedWindow` via `withCas` for replay defense
@@ -1793,7 +1801,10 @@ export class LoginWorkflow extends AuthWorkflowBase {
     try {
       await this.users.setPassword(ctx.username, input.newPassword);
     } catch (err) {
-      this.translatePasswordSetError(err);
+      if (err instanceof UserAuthError) {
+        throw wf.requireInput({ errors: { newPassword: err.message } });
+      }
+      throw err;
     }
     this.processInlineConsent(ctx, input, wf);
     ctx.passwordChanged = true;
@@ -1934,10 +1945,10 @@ export class LoginWorkflow extends AuthWorkflowBase {
   async concurrencyLimit(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
     const cfg = ctx.sessionPolicy?.concurrencyLimit;
     if (!cfg) return undefined;
-    if (cfg.onLimit === "reject") {
-      throw new HttpError(429, "Session limit reached");
-    }
     const wf = useAtscriptWf(this.opts.forms.concurrencyLimit);
+    if (cfg.onLimit === "reject") {
+      throw wf.requireInput({ formMessage: "Session limit reached" });
+    }
     const action = wf.resolveAction();
     if (action === "cancel") {
       abortWf("sessionLimit", {

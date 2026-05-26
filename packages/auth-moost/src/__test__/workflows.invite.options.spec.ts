@@ -149,8 +149,12 @@ describe("InviteWorkflow — default flow end-to-end", () => {
       wfs: r2.body?.wfs as string,
       input: { email: "twice2@test.com" },
     });
-    expect(r2b.status).toBe(409);
-    expect(JSON.stringify(r2b.body)).toMatch(/reInvite|pending/i);
+    // WHY: structural duplicate now routes through `wf.requireInput` so the
+    // admin can correct the email inline without losing the wf token; the
+    // "pending invitation" wording must surface on the per-field `email` error.
+    expect(r2b.status).toBe(201);
+    const errors = r2b.body?.errors as Record<string, string> | undefined;
+    expect(errors?.email).toMatch(/reInvite|pending/i);
   });
 });
 
@@ -386,17 +390,27 @@ describe("InviteWorkflow — re-invite", () => {
       wfs: ri1.body?.wfs as string,
       input: { email: "done@test.com" },
     });
-    expect(ri2.status).toBe(409);
+    // WHY: previously HttpError(409) — token-eating throw made retry impossible.
+    // Fix surfaces the "already accepted" message as a per-field `email` error
+    // so the admin can correct the address in the same workflow run.
+    expect(ri2.status).toBe(201);
+    const errors = ri2.body?.errors as Record<string, string> | undefined;
+    expect(errors?.email).toMatch(/already accepted/i);
   });
 
-  it("re-invite on never-invited user → 404", async () => {
+  it("re-invite on never-invited user → re-renders email form with not-found error", async () => {
+    // WHY: see above — was HttpError(404) which deleted the wf token. Fix
+    // routes through `wf.requireInput` so the admin retries with a different
+    // email on the same wf token.
     const app = await prepareWfApp();
     const ri1 = await app.trigger({ wfid: "auth/invite/resend" });
     const ri2 = await app.trigger({
       wfs: ri1.body?.wfs as string,
       input: { email: "ghost@nowhere.test" },
     });
-    expect(ri2.status).toBe(404);
+    expect(ri2.status).toBe(201);
+    const errors = ri2.body?.errors as Record<string, string> | undefined;
+    expect(errors?.email).toMatch(/no pending invite/i);
   });
 });
 
@@ -435,7 +449,10 @@ describe("InviteWorkflow — cancel-invite", () => {
     expect(replay.status).toBe(410);
   });
 
-  it("cancel on already-accepted user → 409", async () => {
+  it("cancel on already-accepted user → re-renders email form with conflict error", async () => {
+    // WHY: was HttpError(409) — token deletion broke retry. Fix surfaces
+    // the "already accepted" branch via `wf.requireInput` so the admin can
+    // re-target a different email on the same wf token.
     const app = await prepareWfApp();
     await driveDefaultInviteAccept(app, "live@test.com");
     const c1 = await app.trigger({ wfid: "auth/invite/cancel" });
@@ -443,17 +460,23 @@ describe("InviteWorkflow — cancel-invite", () => {
       wfs: c1.body?.wfs as string,
       input: { email: "live@test.com" },
     });
-    expect(c2.status).toBe(409);
+    expect(c2.status).toBe(201);
+    const errors = c2.body?.errors as Record<string, string> | undefined;
+    expect(errors?.email).toMatch(/already accepted/i);
   });
 
-  it("cancel on no-such-user → 404", async () => {
+  it("cancel on no-such-user → re-renders email form with not-found error", async () => {
+    // WHY: was HttpError(404) — same token-deletion regression. Fix surfaces
+    // the not-found branch as a `wf.requireInput` so the admin can retry.
     const app = await prepareWfApp();
     const c1 = await app.trigger({ wfid: "auth/invite/cancel" });
     const c2 = await app.trigger({
       wfs: c1.body?.wfs as string,
       input: { email: "nobody@test.com" },
     });
-    expect(c2.status).toBe(404);
+    expect(c2.status).toBe(201);
+    const errors = c2.body?.errors as Record<string, string> | undefined;
+    expect(errors?.email).toMatch(/no invite to cancel/i);
   });
 
   it("cancellation.allowed=false → 403 from cancel step", async () => {
@@ -525,7 +548,12 @@ describe("InviteWorkflow — idempotent magic-link click", () => {
       wfs: ri1.body?.wfs as string,
       input: { email: "twice@test.com" },
     });
-    expect(ri2.status).toBe(409);
+    // WHY: token-eating HttpError(409) replaced with `wf.requireInput` —
+    // proves a once-accepted user can't be silently re-invited and the admin
+    // gets a retryable per-field error.
+    expect(ri2.status).toBe(201);
+    const errors = ri2.body?.errors as Record<string, string> | undefined;
+    expect(errors?.email).toMatch(/already accepted/i);
   });
 });
 
@@ -550,7 +578,11 @@ describe("InviteWorkflow — accept.freshLoginRequired", () => {
 });
 
 describe("InviteWorkflow — duplicate-invite structural rule", () => {
-  it("invite for an email that already has pendingInvitation=true → 409 'Invite already pending, use reInvite'", async () => {
+  it("invite for an email that already has pendingInvitation=true → re-renders InviteForm with reInvite hint", async () => {
+    // WHY: structural duplicate previously threw HttpError(409) — token-eating
+    // throw broke retry. Fix routes through `wf.requireInput` so the admin can
+    // correct the email inline; the "reInvite" hint must surface on the
+    // per-field `email` error.
     const app = await prepareWfApp();
     // First invite: pre-creates the user with pendingInvitation: true.
     const r1 = await app.trigger({ wfid: "auth/invite/start" });
@@ -558,17 +590,20 @@ describe("InviteWorkflow — duplicate-invite structural rule", () => {
       wfs: r1.body?.wfs as string,
       input: { email: "dup@test.com" },
     });
-    // Second invite for same email → 409 with the reInvite hint.
+    // Second invite for same email → form re-render with the reInvite hint.
     const r2 = await app.trigger({ wfid: "auth/invite/start" });
     const r2b = await app.trigger({
       wfs: r2.body?.wfs as string,
       input: { email: "dup@test.com" },
     });
-    expect(r2b.status).toBe(409);
-    expect(JSON.stringify(r2b.body)).toMatch(/reInvite/i);
+    expect(r2b.status).toBe(201);
+    const errors = r2b.body?.errors as Record<string, string> | undefined;
+    expect(errors?.email).toMatch(/reInvite/i);
   });
 
-  it("invite for an email that exists with pendingInvitation=false → 409 'User already exists'", async () => {
+  it("invite for an email that exists with pendingInvitation=false → re-renders InviteForm with 'already exists'", async () => {
+    // WHY: same regression class. Surfaces on per-field `email` error so the
+    // admin retries without losing the wf token.
     const app = await prepareWfApp();
     await seedActiveUser(app.users, "live@test.com", "ExistingPass1");
     const r1 = await app.trigger({ wfid: "auth/invite/start" });
@@ -576,8 +611,9 @@ describe("InviteWorkflow — duplicate-invite structural rule", () => {
       wfs: r1.body?.wfs as string,
       input: { email: "live@test.com" },
     });
-    expect(r2.status).toBe(409);
-    expect(JSON.stringify(r2.body)).toMatch(/already exists/i);
+    expect(r2.status).toBe(201);
+    const errors = r2.body?.errors as Record<string, string> | undefined;
+    expect(errors?.email).toMatch(/already exists/i);
   });
 
   it("duplicateCheck override returning 'allow' bypasses the structural rule (multi-tenant escape hatch)", async () => {

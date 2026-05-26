@@ -1,7 +1,7 @@
 /**
  * Shared helpers for the three bundled auth workflows
  * (`LoginWorkflow` / `InviteWorkflow` / `RecoveryWorkflow`). Holds the
- * auth-specific glue (`requireUsername`, `translatePasswordSetError`),
+ * auth-specific glue (`requireUsername`, `withStoreErrorTranslation`),
  * the pincode primitives (`mintPin`, `verifyPin`), and the HTTP-context
  * `resolveClientIp()` reader. Workflows extend this class and call helpers
  * via `this.<name>(...)`.
@@ -266,17 +266,6 @@ export class AuthWorkflowBase {
     ctx: T,
   ): asserts ctx is T & { username: string } {
     if (!ctx.username) throw new HttpError(500, "Workflow state corrupted: missing username");
-  }
-
-  /**
-   * Translate password-mutation errors from `UserService.setPassword` /
-   * `createUser` into the matching HTTP status. All `UserAuthError` shapes from
-   * a set-password call are client-side (policy / history / mismatch), so they
-   * collapse to 400.
-   */
-  protected translatePasswordSetError(err: unknown): never {
-    if (err instanceof UserAuthError) throw new HttpError(400, err.message);
-    throw err;
   }
 
   /**

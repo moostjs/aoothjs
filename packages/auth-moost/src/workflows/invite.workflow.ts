@@ -1026,10 +1026,10 @@ export class InviteWorkflow extends AuthWorkflowBase {
     const action: DuplicateAction = await this.duplicateCheck({ email, existingUser: existing });
     if (action === "reject") {
       if (existing?.account?.pendingInvitation) {
-        throw new HttpError(409, "Invite already pending, use reInvite");
+        throw wf.requireInput({ errors: { email: "Invite already pending, use reInvite" } });
       }
-      if (existing) throw new HttpError(409, "User already exists");
-      throw new HttpError(409, "Duplicate invite rejected");
+      if (existing) throw wf.requireInput({ errors: { email: "User already exists" } });
+      throw wf.requireInput({ errors: { email: "Duplicate invite rejected" } });
     }
 
     ctx.email = email;
@@ -1187,9 +1187,11 @@ export class InviteWorkflow extends AuthWorkflowBase {
 
     const email = input.email;
     const existing = await this.loadUserOrNull(email);
-    if (!existing) throw new HttpError(404, "No pending invite for this email");
+    if (!existing) throw wf.requireInput({ errors: { email: "No pending invite for this email" } });
     if (!existing.account?.pendingInvitation) {
-      throw new HttpError(409, "User has already accepted; cannot resend");
+      throw wf.requireInput({
+        errors: { email: "User has already accepted; cannot resend" },
+      });
     }
     ctx.email = email;
     ctx.username = existing.username;
@@ -1272,7 +1274,10 @@ export class InviteWorkflow extends AuthWorkflowBase {
     try {
       await this.users.setPassword(ctx.username, input.newPassword);
     } catch (err) {
-      this.translatePasswordSetError(err);
+      if (err instanceof UserAuthError) {
+        throw wf.requireInput({ errors: { newPassword: err.message } });
+      }
+      throw err;
     }
     // SetPasswordForm `extends WithInlineConsentForm` — capture the dynamic
     // `consents: string[]` array inline. `processInlineConsent` is a no-op
@@ -1534,9 +1539,12 @@ export class InviteWorkflow extends AuthWorkflowBase {
     const input = wf.resolveInput() as { email: string };
     const email = input.email;
     const existing = await this.loadUserOrNull(email);
-    if (!existing) throw new HttpError(404, "No invite to cancel for this email");
+    if (!existing)
+      throw wf.requireInput({ errors: { email: "No invite to cancel for this email" } });
     if (!existing.account?.pendingInvitation) {
-      throw new HttpError(409, "Cannot cancel: user has already accepted the invite");
+      throw wf.requireInput({
+        errors: { email: "Cannot cancel: user has already accepted the invite" },
+      });
     }
     await this.users.deleteUser(existing.username);
     await this.emitAudit("invite.cancelled", {

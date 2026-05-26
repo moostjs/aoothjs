@@ -49,11 +49,16 @@ describe("LoginWorkflow edge cases — credentials guards", () => {
 });
 
 describe("LoginWorkflow edge cases — MFA", () => {
-  it("wrong MFA code repeatedly → eventually 423 (account locked) once UserService's lockout fires", async () => {
-    // Tight lockout threshold so the test isn't slow. UserService's
+  it("wrong MFA code repeatedly → eventually re-renders form with lock message once UserService's lockout fires", async () => {
+    // WHY: lockout used to translate to HttpError(423), which deleted the
+    // wf state token and forced the SPA into 410 Gone on the next attempt.
+    // The fix routes both the per-attempt invalid-code AND the lockout-fired
+    // case through `wf.requireInput` so the user (or admin) can recover
+    // the same workflow run after the lockout elapses. UserService's
     // `lockout.threshold` counts failed credential+MFA attempts together;
-    // once `failedLoginAttempts >= threshold` the next miss locks the account
-    // and the workflow translates `MFA_INVALID(lockEnds: …)` to 423.
+    // once `failedLoginAttempts >= threshold` the next miss surfaces
+    // MFA_INVALID(lockEnds: …) — pinned here as a form-level "locked"
+    // message rather than a terminal 423.
     const app = await prepareWfApp({
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { availableMfaTransports: ["totp"] }),
       userConfig: { lockout: { threshold: 2, duration: 60_000 } },
@@ -67,18 +72,24 @@ describe("LoginWorkflow edge cases — MFA", () => {
       wfs: r1.body?.wfs as string,
       input: { username: "alice", password: "Password123" },
     });
-    // Submit wrong codes until the workflow throws 423.
-    let lastStatus = 0;
+    // Submit wrong codes until the workflow surfaces the locked message.
+    let lastErrors: Record<string, string> | undefined;
     for (let attempt = 0; attempt < 5; attempt++) {
       const r = await app.trigger({
         wfs: last.body?.wfs as string,
         input: { code: "000000" },
       });
-      lastStatus = r.status;
-      if (r.status === 423) return; // success path
+      lastErrors = r.body?.errors as Record<string, string> | undefined;
+      if (lastErrors?.__form && /locked/i.test(lastErrors.__form)) {
+        // Token is re-minted (NOT eaten) so the SPA can retry post-lockout.
+        expect(r.body?.wfs).toBeTruthy();
+        return;
+      }
       last = r;
     }
-    throw new Error(`expected 423 within 5 wrong attempts; last status=${lastStatus}`);
+    throw new Error(
+      `expected locked __form message within 5 wrong attempts; last errors=${JSON.stringify(lastErrors)}`,
+    );
   });
 
   // Backup codes validate against `BackupCodeForm` (alphanumeric + hyphens) —

@@ -1,3 +1,4 @@
+import llmstxtPlugin from "vitepress-plugin-llmstxt";
 import { defineConfig } from "vitepress";
 
 const guideSidebar = [
@@ -101,6 +102,14 @@ export default defineConfig({
   lang: "en-US",
   lastUpdated: true,
   cleanUrls: true,
+
+  vite: {
+    plugins: [
+      llmstxtPlugin({
+        hostname: "aooth.moost.org",
+      }),
+    ],
+  },
 
   head: [
     ["link", { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" }],

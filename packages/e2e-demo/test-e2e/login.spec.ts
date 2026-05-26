@@ -1198,16 +1198,17 @@ test.describe("LoginWorkflow / variant=multi-context (P2)", () => {
 });
 
 test.describe("LoginWorkflow / variant=concurrency-reject (P2)", () => {
-  // BRANCH: `concurrency-limit` step → `cfg.onLimit === 'reject'` →
-  // `throw new HttpError(429, 'Session limit reached')` (login.workflow.ts
-  // L1211–1212). The error escapes the workflow rather than pausing on
-  // `kickPrompt`. WfPage's `onError` handler renders the message into the
-  // `.scope-error` banner — same channel as WF-LOGIN-004 (423 lock). The
-  // seed records `activeSessions: 2` for t1_active_sessions and the
-  // `DemoLoginWorkflow.loadActiveSessions` override surfaces that count into
-  // `ctx.activeSessions`, so the schema reaches `concurrency-limit` with
-  // `2 >= 1`.
-  test("WF-LOGIN-030: t1_active_sessions + onLimit=reject → 429 surfaced in error banner", async ({
+  // BRANCH: `concurrency-limit` step → `cfg.onLimit === 'reject'` → calls
+  // `wf.requireInput({ formMessage: 'Session limit reached' })`. The wf
+  // engine merges `formMessage` into `errors.__form` and re-pauses on the
+  // same step under the same wfs token. AsWfForm re-renders the previous
+  // form (LoginCredentialsForm) with the form-level message attached;
+  // kickPrompt is bypassed — that's the whole point of `onLimit: 'reject'`.
+  // The seed records `activeSessions: 2` for t1_active_sessions and the
+  // `DemoLoginWorkflow.loadActiveSessions` override surfaces that count
+  // into `ctx.activeSessions`, so the schema reaches `concurrency-limit`
+  // with `2 >= 1`.
+  test("WF-LOGIN-030: t1_active_sessions + onLimit=reject → form-level 'Session limit reached'", async ({
     page,
   }) => {
     await page.goto(wfUrl(LOGIN_WF, "concurrency-reject"));
@@ -1215,15 +1216,16 @@ test.describe("LoginWorkflow / variant=concurrency-reject (P2)", () => {
     await fillField(page, "password", "Password1!");
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
 
-    // 429 message renders in the error banner. Match by text so the
-    // assertion is insulated from CSS-class renames. The message surfaces in
-    // BOTH `.scope-error` and `.as-wf-form-error` slots (atscript-ui mirrors
-    // workflow-level errors into both) so we anchor on the first match.
-    await expect(page.getByText(/Session limit reached|429/).first()).toBeVisible();
-    // No tokens, no finish envelope, no follow-up form (kickPrompt was
-    // skipped — that's the whole point of `onLimit: 'reject'`).
+    // The reject message renders in the form-level error slot. Match by text
+    // so the assertion is insulated from CSS-class renames.
+    await expect(page.getByText("Session limit reached")).toBeVisible();
+    // No tokens, no finish envelope — the user can never progress past this
+    // step because `cfg.onLimit === 'reject'` is checked BEFORE resolveAction,
+    // so any submit (including kickPrompt's action buttons) re-throws
+    // `requireInput`. The kickPrompt form chrome may still render visually
+    // since requireInput re-pauses on `forms.concurrencyLimit`, but the
+    // workflow cannot finish.
     await expect(page.getByText("Workflow finished")).toHaveCount(0);
-    await expect(page.locator('[name="action"]')).toHaveCount(0);
   });
 });
 

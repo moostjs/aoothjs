@@ -34,7 +34,7 @@
     "@atscript/ui": "catalog:",
     "@atscript/ui-fns": "catalog:",
     "@atscript/ui-styles": "catalog:",
-    "@atscript/vue-aooth": "workspace:*",
+    "@atscript/vue-aooth": "catalog:",
     "@atscript/vue-form": "catalog:",
     "@atscript/vue-wf": "catalog:",
     "@moostjs/event-http": "catalog:",

@@ -58,7 +58,11 @@ class LoginWorkflow {
 }
 ```
 
-Workflow class with steps spanning credentials → enrollment → MFA → device trust → forced password change → terms/profile/consent → tenant/persona select → concurrency limit → finalize. Critical invariant: every terminal step gates on `!ctx.aborted`. Override `protected` methods to wire delivery, audit, redirect, trusted-device storage. See [Workflows](/moost/).
+Workflow class with steps spanning credentials → enrollment → MFA → device trust → forced password change → terms/profile/consent → tenant/persona select → concurrency limit → finalize. Critical invariant: every terminal step gates on `!ctx.aborted`. Override `protected` methods to wire delivery, audit, redirect, trusted-device storage. For per-tenant / per-user / per-request policy that the per-app `LoginWorkflowOpts` cannot express, override additional `protected` hooks on the class — see [Extension hooks](/moost/workflows#extension-hooks).
+
+**Error patterns** — `@Step` bodies throw exactly two shapes: `throw wf.requireInput({ errors, formMessage? })` for retriable input errors (engine re-renders the form under the SAME `wfs` handle; token survives), and `throw new HttpError(<status>, <msg>)` for terminal failures (token consumed; SPA renders final error). See [Error patterns](/moost/workflows#error-patterns-retriable-vs-terminal).
+
+See [Workflows](/moost/).
 
 ### `RecoveryWorkflow`
 
@@ -87,6 +91,35 @@ class InviteWorkflow {
 ```
 
 Registers three wfids: `auth.invite`, `auth.reInvite`, `auth.cancelInvite`. Phase A (admin) is ARBAC-gated by the class-level `@ArbacResource("auth.invite")` + `@ArbacAction("start")` grant. Phase B (anonymous magic-link resume) is per-step `@Public()` — there is no class-level `@Public()`. Server-side role-whitelist enforcement on admin-submitted roles. See [Workflows](/moost/).
+
+### `ConsentStore`
+
+```ts
+@Injectable() // SINGLETON
+class ConsentStore {
+  getPendingConsents(
+    username: string | undefined,
+    ctx: { workflow: string; channel?: "email" | "sms" },
+  ): Promise<ConsentDescriptor[]>;
+  save(username: string, events: ConsentEvent[]): Promise<void>;
+  read(username: string, filter?: { id?: string }): Promise<ConsentEvent[]>;
+  recordOtpChannelConsent(
+    username: string,
+    channel: "email" | "sms",
+    target: string,
+    disclosure: string,
+  ): Promise<void>;
+}
+
+interface ConsentDescriptor {
+  id: string;
+  text: string;
+  required?: string;
+  version?: string;
+}
+```
+
+Customer-overridable DI seam for the consent universe + persistence. All four methods are no-op defaults — extend the class and register the replacement via `setReplaceRegistry([ConsentStore, MyConsentStore])`. `getPendingConsents` drives `ctx.pendingConsents` on every workflow run (login, recovery, invite); the bundled forms surface them inline as a `consents: string[]` field on whichever form the user is currently filling out. See [Workflows — ConsentStore](/moost/workflows#consentstore-pending-consents-persistence).
 
 ## Functions
 
@@ -251,100 +284,67 @@ Used by `/auth/logout`. See [REST Controllers](/moost/controllers).
 
 ```ts
 interface LoginWorkflowOpts {
-  alternateCredentials?: {
-    forgotPassword?: boolean;
-    signup?: boolean;
-    magicLink?: boolean;
-    ssoProviders?: Array<{ id: string; label: string; url: string }>;
-    recoveryUrl?: string;
-    signupUrl?: string;
-    embedRecovery?: boolean;
-  };
-  guards?: { emailVerifiedRequired?: boolean; passwordExpiry?: boolean; passwordInitial?: boolean };
-  enrollment?: { ensureEmail?: boolean; ensurePhone?: boolean };
-  mfa?: {
-    enabled?: boolean;
-    transports?: Array<"sms" | "email" | "totp">;
-    backupCodes?: boolean;
-    enrollRequired?: boolean;
-    pincodeTtlMs?: number; // default 5 * 60_000
-    pincodeResendTimeoutMs?: number;
-    pincodeLength?: number;
-  };
   deviceTrust?: {
-    enabled?: boolean;
-    optIn?: boolean;
     cookieName?: string; // default 'aooth_trusted_device'
     ttlMs?: number; // default 24h
-    skipsMfa?: boolean;
-    bindsTo?: "cookie" | "cookie+ip";
+    bindsTo?: "cookie" | "cookie+ip"; // default 'cookie'
   };
-  acceptance?: {
-    termsVersion?: string;
-    profileCompleteRequired?: boolean;
-    consentMarketing?: boolean;
+  forms?: {
+    askEmail?: TAtscriptAnnotatedType;
+    askPhone?: TAtscriptAnnotatedType;
+    backupCode?: TAtscriptAnnotatedType;
+    concurrencyLimit?: TAtscriptAnnotatedType;
+    enrollAddress?: TAtscriptAnnotatedType;
+    enrollConfirm?: TAtscriptAnnotatedType;
+    enrollPickMethod?: TAtscriptAnnotatedType;
+    loginCredentials?: TAtscriptAnnotatedType;
+    mfaCode?: TAtscriptAnnotatedType;
+    personaSelect?: TAtscriptAnnotatedType;
+    pincode?: TAtscriptAnnotatedType;
+    profileComplete?: TAtscriptAnnotatedType;
+    select2fa?: TAtscriptAnnotatedType;
+    setPassword?: TAtscriptAnnotatedType;
+    tenantSelect?: TAtscriptAnnotatedType;
+    termsBump?: TAtscriptAnnotatedType;
   };
-  multiContext?: { tenantSelect?: boolean; personaSelect?: boolean };
-  sessionPolicy?: { concurrencyLimit?: { max: number; onLimit: "reject" | "kickPrompt" } };
-  finalize?: {
-    auditLogin?: boolean;
-    notifyNewDevice?: boolean;
-    redirect?: "referer" | "home" | false | null;
-  };
-  forms?: Record<string, TAtscriptAnnotatedType>;
 }
 ```
 
-See [Workflows](/moost/).
+Infrastructure-only — cross-workflow defaults (pincode timers, magic-link TTL, login URL, TOTP issuer) live on the `AuthOpts` DI provider; per-request / per-tenant / per-user policy lives on `protected resolveXxx(ctx)` methods on the `LoginWorkflow` subclass. See [Workflows — Extension hooks](/moost/workflows#extension-hooks).
 
 ### `RecoveryWorkflowOpts`
 
 ```ts
 interface RecoveryWorkflowOpts {
-  delivery?: {
-    mode?: "magicLink" | "otp" | "choice";
-    magicLinkTtlMs?: number; // default 60 * 60_000
-    otp?: {
-      transports?: Array<"sms" | "email">;
-      codeLength?: number; // default 6
-      ttlMs?: number; // default 5 * 60_000
-      resendCooldownMs?: number; // default 60_000
-    };
+  forms?: {
+    emailIdentifier?: TAtscriptAnnotatedType;
+    pincode?: TAtscriptAnnotatedType;
+    recoveryFactor?: TAtscriptAnnotatedType;
+    recoveryModeSelect?: TAtscriptAnnotatedType;
+    setPassword?: TAtscriptAnnotatedType;
   };
-  preReset?: { requireKnownFactor?: boolean };
-  postReset?: {
-    revokeAllSessions?: boolean; // default true
-    freshLoginRequired?: boolean; // default false
-    loginUrl?: string; // default '/login'
-  };
-  altActions?: { backToLogin?: boolean };
-  audit?: { enabled?: boolean };
-  forms?: Record<string, TAtscriptAnnotatedType>;
 }
 ```
 
-See [Workflows](/moost/).
+Infrastructure-only — cross-workflow defaults (magic-link TTL, OTP pincode timers/length) live on the `AuthOpts` DI provider; per-request / per-tenant / per-user policy lives on `protected resolveXxx(ctx)` methods on the `RecoveryWorkflow` subclass. See [Workflows — Extension hooks](/moost/workflows#extension-hooks).
 
 ### `InviteWorkflowOpts`
 
 ```ts
 interface InviteWorkflowOpts {
-  adminForm?: { collectRoles?: boolean };
-  send?: { mode?: "email" | "shareableLink" | "choice"; tokenTtlMs?: number /* 7d */ };
-  accept?: {
-    alreadyAcceptedRedirectUrl?: string;
-    freshLoginRequired?: boolean;
-    loginUrl?: string;
-    showConfirmation?: boolean;
-    confirmationMessage?: string;
+  forms?: {
+    enrollAddress?: TAtscriptAnnotatedType;
+    enrollConfirm?: TAtscriptAnnotatedType;
+    enrollPickMethod?: TAtscriptAnnotatedType;
+    invite?: TAtscriptAnnotatedType;
+    inviteEmail?: TAtscriptAnnotatedType;
+    inviteSendMode?: TAtscriptAnnotatedType;
+    setPassword?: TAtscriptAnnotatedType;
   };
-  cancellation?: { allowed?: boolean };
-  audit?: { enabled?: boolean };
-  forms?: Record<string, TAtscriptAnnotatedType>;
 }
 ```
 
-See [Workflows](/moost/).
+Infrastructure-only — cross-workflow defaults (magic-link TTL, pincode timers/length, TOTP issuer) live on the `AuthOpts` DI provider; per-request / per-tenant / per-user policy lives on `protected resolveXxx(ctx)` methods on the `InviteWorkflow` subclass. See [Workflows — Extension hooks](/moost/workflows#extension-hooks).
 
 ## Re-exports from `@aooth/auth`
 

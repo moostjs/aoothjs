@@ -887,7 +887,10 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     try {
       await this.users.setPassword(ctx.username, input.newPassword);
     } catch (err) {
-      this.translatePasswordSetError(err);
+      if (err instanceof UserAuthError) {
+        throw wf.requireInput({ errors: { newPassword: err.message } });
+      }
+      throw err;
     }
     // SetPasswordForm `extends WithInlineConsentForm` — capture the dynamic
     // `consents: string[]` array inline. `processInlineConsent` is a no-op

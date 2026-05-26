@@ -28,8 +28,8 @@ class LoginWorkflow {
 }
 ```
 
-::: warning Step IDs are workflow-scoped, but @Step('id') is registered globally
-`@moostjs/event-wf` registers `@Step('id')` globally across the moost app — identical IDs across two workflows would silently collide. The bundled workflows prefix step IDs with the workflow's domain (`recoveryInit`, `inviteInit`, etc.) to stay out of each other's way. Follow the same convention when adding your own steps to a workflow subclass.
+::: warning Step IDs are workflow-scoped, but `@Step('id')` is registered globally
+`@moostjs/event-wf` registers every `@Step('id')` into a single global registry across the moost app — identical IDs declared on two different workflow classes silently collide. Prefix your step IDs with the workflow's domain (e.g. `myFlowInit`, `myFlowVerify`) when adding steps to a workflow subclass.
 :::
 
 ::: warning Workflow class `@Public()` is critical
@@ -44,24 +44,23 @@ TypeScript emits fresh `design:paramtypes` per class — a subclass that doesn't
 
 The main happy-path workflow: credentials → enrollment → MFA → device trust → password change → terms/profile/consent → tenant/persona → concurrency → finalize.
 
-### Step phases
+### What the user sees
 
-| Phase | Steps                                                                                                                                                                                | Purpose                                                                                                                                                                                                                                                                    |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0     | `init`                                                                                                                                                                               | Snapshots `opts` onto `ctx`.                                                                                                                                                                                                                                               |
-| 1     | `credentials`                                                                                                                                                                        | Main happy path. Alt-actions (`forgotPassword`, `signup`, `magicLink`, per-SSO `sso-${id}`) are inspected on `input.action` **before** form validation; each triggers `finishWfWithRedirect(url, { reason })`. SSO emits per-provider `reason: 'sso-${id}'` discriminator. |
-| 3     | `ensureEmail` / `ensurePhone`                                                                                                                                                        | Enrollment loops. Force-prompt missing contact fields.                                                                                                                                                                                                                     |
-| 4     | `check-trusted-device` → `prepare-mfa-options` → `select2fa` → `pincode-send-login` / `pincode-check-login` (sms/email) → `mfa-totp` (totp) → `mfa-enroll-required` → `risk-step-up` | MFA `while`-loop. Loop exits when `mfaChecked` flips true. Backup codes handled by `handleBackupCode` via `BackupCodeForm`.                                                                                                                                                |
-| 4b    | `device-trust`                                                                                                                                                                       | Issues an HMAC-signed trust cookie (only when `deviceTrust.enabled && deviceTrust.optIn` and the user opted in via `PincodeForm.rememberDevice`).                                                                                                                          |
-| 5     | `prepare-password-rules` + `create-password-form`                                                                                                                                    | Forced password change for initial passwords. `logout` alt-action calls `finishWfAborted("logout", { message })` and sets `ctx.aborted = true`.                                                                                                                            |
-| 6     | `terms-accept` / `profile-complete` / `consent-marketing`                                                                                                                            | `decline` alt-action on terms aborts.                                                                                                                                                                                                                                      |
-| 7     | `tenant-select` / `persona-select`                                                                                                                                                   | Multi-context selection when configured.                                                                                                                                                                                                                                   |
-| 8     | `concurrency-limit`                                                                                                                                                                  | `reject` → 429, `kickPrompt` → `ConcurrencyLimitForm` with `logoutOthers`/`cancel` alt-actions.                                                                                                                                                                            |
-| 9     | `issue` → `audit-login` → `notify-new-device` → `redirect`                                                                                                                           | Finalize. `issue` mints tokens and sets `useWfFinished().set({ type: "data", value: envelope, cookies })`. `redirect` overrides the data envelope with an immediate-redirect envelope when `resolveRedirect(ctx)` returns a URL.                                           |
+A login run pauses on one or more of these forms before issuing tokens. Skipped pauses are determined by the user's account state and your subclass overrides.
 
-::: warning `ctx.aborted` gating
-Every terminal step gates on `!ctx.aborted`. Without this, abort alt-actions set via `finishWfAborted(...)` would be overwritten by token issuance.
-:::
+1. **Credentials** — username + password. Always shown. Alt-actions (`forgotPassword`, `signup`, `magicLink`, per-SSO `sso-${id}`) finish the run early via `finishWfWithRedirect(url, { reason })`.
+2. **Email / phone enrollment** — when your subclass requires it and the account is missing a confirmed address.
+3. **MFA challenge** — when the user has a confirmed MFA method. A picker is shown when there are multiple methods; backup codes are available as a fallback.
+4. **MFA enrollment** — when your subclass requires enrollment and the user has no methods yet.
+5. **Forced password change** — when the user's password is flagged initial or expired.
+6. **Terms acceptance / profile completion / consent prompts** — when [`resolveProfile`](#extension-hooks) returns `{ required: true }` and there are fields to collect.
+7. **Pending consents** — appears inline on whichever form is open when [`ConsentStore.getPendingConsents`](#consentstore-pending-consents-persistence) returns descriptors.
+8. **Tenant / persona selection** — when your subclass returns multiple options.
+9. **Concurrency-limit prompt** — when your subclass sets a max-sessions policy and it's exceeded.
+
+The run finishes by issuing access tokens (or redirecting to a fresh-login page, depending on your subclass).
+
+Any user-initiated abort (`Cancel`, `Logout`, decline-terms) aborts the run and the engine emits a structured `aborted` envelope.
 
 ### Protected extension surface
 
@@ -83,82 +82,59 @@ Every terminal step gates on `!ctx.aborted`. Without this, abort alt-actions set
 | `buildRecoveryUrl(opts)`                        | returns `'/recover?...'`                                       | Where the `forgotPassword` alt-action redirects.                  |
 | `snapshotOpts(opts)`                            | strips form classes                                            | Custom serialization (rare).                                      |
 
+### Extension hooks
+
+Beyond the `protected` overrides above, `LoginWorkflow` exposes additional `protected` hooks for per-tenant / per-user / per-request decisions that the per-app `LoginWorkflowOpts` cannot express. The headline one is **`resolveProfile(ctx)`**, which controls whether Phase 6's `profile-complete` step fires:
+
+```ts
+class MyLoginWorkflow extends LoginWorkflow {
+  // Require profile-complete only for users missing a firstName.
+  protected override async resolveProfile(ctx: LoginWfCtx): Promise<{ required: boolean }> {
+    if (!ctx.username) return { required: false };
+    const user = await this.users.findByUsername(ctx.username);
+    return { required: !user?.firstName };
+  }
+}
+```
+
+Other `protected` override points exist on the class (device-trust policy, enrollment policy, MFA config, multi-context picker source, session-concurrency policy, OTP disclosure copy, …). Check IDE autocomplete on your `extends LoginWorkflow` subclass or the type definitions for the full list — every public extension point is a `protected` method you can `override`.
+
 ### `LoginWorkflowOpts` — key fields
 
-| Field                                 | Default                    | Notes                                                                                                       |
-| ------------------------------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | ------ | ----- | ------ |
-| `alternateCredentials.forgotPassword` | `false`                    | Renders the `forgotPassword` alt-action on the credentials form.                                            |
-| `alternateCredentials.signup`         | `false`                    | Renders `signup`.                                                                                           |
-| `alternateCredentials.magicLink`      | `false`                    | Renders `magicLink`.                                                                                        |
-| `alternateCredentials.ssoProviders[]` | `[]`                       | SSO buttons. Each has `{ id, label, iconUrl?, redirectUrl }`.                                               |
-| `alternateCredentials.recoveryUrl`    | `'/recover'`               | Where forgot-password redirects.                                                                            |
-| `alternateCredentials.embedRecovery`  | `false`                    | If true, runs the recovery flow inline instead of redirecting.                                              |
-| `guards.emailVerifiedRequired`        | `false`                    | Force a confirmation pause when `account.emailVerified !== true`.                                           |
-| `guards.passwordExpiry`               | `false`                    | Force a password-change pause when `password.expired === true`.                                             |
-| `guards.passwordInitial`              | `true`                     | Force a password-change pause when `password.initial === true`.                                             |
-| `enrollment.ensureEmail`              | `false`                    | Force email enrollment loop when missing.                                                                   |
-| `enrollment.ensurePhone`              | `false`                    | Same for phone.                                                                                             |
-| `mfa.enabled`                         | `true`                     | Master switch for the whole MFA loop.                                                                       |
-| `mfa.transports[]`                    | `["sms", "email", "totp"]` | Restrict acceptable factor types.                                                                           |
-| `mfa.backupCodes`                     | `true`                     | Allow `BackupCodeForm` fallback.                                                                            |
-| `mfa.enrollRequired`                  | `false`                    | Force enrollment if the user has zero factors.                                                              |
-| `mfa.pincodeTtlMs`                    | `5 * 60_000`               | OTP code lifetime.                                                                                          |
-| `mfa.pincodeResendTimeoutMs`          | `30_000`                   | Cooldown between resends.                                                                                   |
-| `mfa.pincodeLength`                   | `6`                        | OTP digit count.                                                                                            |
-| `deviceTrust.enabled`                 | `false`                    | Master switch.                                                                                              |
-| `deviceTrust.optIn`                   | `true`                     | Render the `rememberDevice` checkbox on `PincodeForm`.                                                      |
-| `deviceTrust.cookieName`              | `'aooth_trusted_device'`   | Cookie name.                                                                                                |
-| `deviceTrust.ttlMs`                   | `24 * 60 * 60_000`         | Cookie + record TTL.                                                                                        |
-| `deviceTrust.skipsMfa`                | `true`                     | A trusted device skips the MFA loop.                                                                        |
-| `deviceTrust.bindsTo`                 | `'cookie'`                 | `'cookie'                                                                                                   | 'cookie+ip'`. `cookie+ip` is stricter — see [Config Reference](./config). |
-| `acceptance.termsVersion`             | `null`                     | Current terms version. If non-null and `user.account.termsAcceptedVersion !== this`, forces `terms-accept`. |
-| `acceptance.profileCompleteRequired`  | `false`                    | Force the `profile-complete` step.                                                                          |
-| `acceptance.consentMarketing`         | `false`                    | Force the `consent-marketing` step.                                                                         |
-| `multiContext.tenantSelect`           | `false`                    | Force the `tenant-select` step.                                                                             |
-| `multiContext.personaSelect`          | `false`                    | Force the `persona-select` step.                                                                            |
-| `sessionPolicy.concurrencyLimit`      | `null`                     | `{ max, onLimit: 'reject'                                                                                   | 'kickPrompt' }`.                                                          |
-| `finalize.auditLogin`                 | `true`                     | Whether to emit `login.success` audit event.                                                                |
-| `finalize.notifyNewDevice`            | `false`                    | Whether to fire a "new device" notification.                                                                |
-| `finalize.redirect`                   | `'referer'`                | `'referer'                                                                                                  | 'home'                                                                    | string | false | null`. |
-| `forms.*`                             | bundled `.as` defaults     | Every form is replaceable per-workflow.                                                                     |
+| Field                    | Default                  | Notes                                                                          |
+| ------------------------ | ------------------------ | ------------------------------------------------------------------------------ |
+| `deviceTrust.cookieName` | `'aooth_trusted_device'` | Cookie name for the trusted-device token.                                      |
+| `deviceTrust.ttlMs`      | `24 * 60 * 60_000`       | Trusted-device cookie + record TTL.                                            |
+| `deviceTrust.bindsTo`    | `'cookie'`               | `'cookie'` or `'cookie+ip'`. `cookie+ip` is stricter — see [Config](./config). |
+| `forms.<formName>`       | bundled `.as` defaults   | Replace any of the 16 bundled form schemas with your own atscript type.        |
+
+::: tip Per-request / per-tenant / per-user behaviour
+Anything that varies by request (which alternate-credentials options to show, whether to force MFA enrollment, whether to require profile completion, the session concurrency policy, etc.) is NOT on this opts shape. Override the matching `protected` method on your `LoginWorkflow` subclass — see [Extension hooks](#extension-hooks).
+:::
 
 ## `RecoveryWorkflow` — wfid `auth.recovery`
 
 Password reset via magic link or OTP, with optional second-factor verification, post-reset session revocation, and either a fresh-login redirect or an auto-login finish.
 
-### Step phases
+### What the user sees
 
-| Step                                   | Purpose                                                                                                                                                                                        |
-| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `recoveryInit`                         | Snapshots opts onto ctx.                                                                                                                                                                       |
-| `recoveryRequest`                      | Collects email via `EmailIdentifierForm`. **Anti-enumeration**: unknown email still emits a generic `finishWfWithData({ sent: true })` — the response is indistinguishable from a known email. |
-| `recoverySelectMode`                   | Rendered only when `delivery.mode === 'choice'`. Picks between `'magicLink'` and `'otp'`.                                                                                                      |
-| `recoverySendMagicLink`                | Sends a magic link via `outletEmail` (the trigger-side mailer).                                                                                                                                |
-| `recoverySendOtp` / `recoveryCheckOtp` | OTP `while`-loop. Alt-actions `resend`, `useDifferentTransport`, `backToLogin`.                                                                                                                |
-| `recoveryVerifyFactor`                 | Rendered only when `preReset.requireKnownFactor`. Validates a known second factor (phone last-4 or current TOTP).                                                                              |
-| `recoverySetPassword`                  | Collects the new password via `SetPasswordForm`, validates policy, persists via `users.changePassword`.                                                                                        |
-| `recoveryRevokeSessions`               | Calls `auth.revokeAllForUser(userId)` when `postReset.revokeAllSessions`.                                                                                                                      |
-| `recoveryAudit`                        | Emits `recovery.completed`.                                                                                                                                                                    |
-| `recoveryFreshLoginFinish`             | `finishWfWithRedirect(loginUrl, { autoMs: 5000, skipLabel: 'Go now', message, reason: 'reset-success' })`. Rendered when `postReset.freshLoginRequired`.                                       |
-| `recoveryAutoLoginFinish`              | Mints tokens via the raw `useWfFinished().set({ ... })` path to attach cookies. Rendered when `!postReset.freshLoginRequired`.                                                                 |
+1. **Identifier** — email or username. Anti-enumeration: unknown identifiers produce the same response as known ones.
+2. **Delivery mode** — when both magic-link and OTP are configured, the user picks.
+3. **OTP entry** — when OTP mode is active. Supports `resend`, `useDifferentTransport`, `backToLogin`.
+4. **Magic-link sent** — when magic-link mode is active. The run continues when the user clicks the link.
+5. **Known-factor verification** — when configured, the user proves a second factor (phone last-4 or current TOTP) before reset.
+6. **New password** — sets the password and revokes existing sessions (configurable).
+7. **Finish** — either a redirect to fresh-login or an auto-login envelope, depending on your subclass.
 
 ### `RecoveryWorkflowOpts` — key fields
 
-| Field                           | Default                | Notes                                                 |
-| ------------------------------- | ---------------------- | ----------------------------------------------------- | ----- | ---------- |
-| `delivery.mode`                 | `'magicLink'`          | `'magicLink'                                          | 'otp' | 'choice'`. |
-| `delivery.magicLinkTtlMs`       | `60 * 60_000`          | Magic link lifetime.                                  |
-| `delivery.otp.transports`       | `['email']`            | OTP transports.                                       |
-| `delivery.otp.codeLength`       | `6`                    | OTP digit count.                                      |
-| `delivery.otp.ttlMs`            | `5 * 60_000`           | OTP lifetime.                                         |
-| `delivery.otp.resendCooldownMs` | `60_000`               | Resend cooldown.                                      |
-| `preReset.requireKnownFactor`   | `false`                | Require a known second factor before allowing reset.  |
-| `postReset.revokeAllSessions`   | `true`                 | Kick every active session after reset.                |
-| `postReset.freshLoginRequired`  | `false`                | Force the user to log in fresh instead of auto-login. |
-| `postReset.loginUrl`            | `'/login'`             | Where the fresh-login redirect points.                |
-| `altActions.backToLogin`        | `true`                 | Render the back-to-login alt-action.                  |
-| `audit.enabled`                 | `true`                 | Whether to emit recovery audit events.                |
-| `forms.*`                       | bundled `.as` defaults | Replaceable.                                          |
+| Field              | Default                | Notes                                                                  |
+| ------------------ | ---------------------- | ---------------------------------------------------------------------- |
+| `forms.<formName>` | bundled `.as` defaults | Replace any of the 5 bundled form schemas with your own atscript type. |
+
+::: tip Per-request / per-tenant / per-user behaviour
+Anything that varies by request (delivery mode, OTP transports, whether to require a known factor before reset, whether to revoke sessions, whether to force fresh-login afterwards, etc.) is NOT on this opts shape. Override the matching `protected` method on your `RecoveryWorkflow` subclass — see [Extension hooks](#extension-hooks).
+:::
 
 ### Protected extension surface
 
@@ -173,56 +149,34 @@ Password reset via magic link or OTP, with optional second-factor verification, 
 
 Registers `auth.invite`, `auth.reInvite`, `auth.cancelInvite`.
 
-### Phase A — admin (gated by `@ArbacResource('auth.invite') @ArbacAction('start')`)
+### What the admin sees (Phase A — gated by `@ArbacResource('auth.invite') @ArbacAction('start')`)
 
-| Step                          | Purpose                                                                                                                                                     |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `inviteInit`                  | Snapshots opts onto ctx.                                                                                                                                    |
-| `invitePrepareAvailableRoles` | Calls `getAvailableRoles()` protected method. Stashes onto `ctx.availableRoles`.                                                                            |
-| `inviteSelectSendMode`        | Rendered when `send.mode === 'choice'`. Picks `'email'` or `'shareableLink'`.                                                                               |
-| `inviteAdminInviteForm`       | Collects email/firstName/lastName/roles via `InviteForm`. **Server-side whitelist enforcement** rejects admin-submitted roles outside `ctx.availableRoles`. |
-| `inviteInferRolesStep`        | Calls `inferRoles()` protected method to fill in implicit roles.                                                                                            |
-| `invitePreCreateUser`         | Calls `users.createUser`, then `users.update(email, { account: { pendingInvitation: true } })`.                                                             |
+1. **Send mode** — when both `email` and `shareableLink` are configured, the admin picks.
+2. **Invite form** — email, optional name, optional roles. Roles are server-side-validated against your `getAvailableRoles()` allow-list.
+3. **Magic link emitted** — either an email is sent (idempotent — re-entry never double-sends), or a shareable link is returned to the admin.
 
-### Boundary — `inviteSendInviteEmail` / `inviteReturnShareableLink` (`@Public()`)
+### What the invitee sees (Phase B — anonymous magic-link resume)
 
-Emits `outletEmail(ctx.email, "invite.magicLink", { username, roles?, expiresAtMs })`. Idempotent on `ctx.linkSent` — re-running the step is a no-op once the email has been queued.
-
-### Phase B — anonymous magic-link resume (all `@Public()`)
-
-| Step                           | Purpose                                                                                                                                     |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `inviteCheckPendingInvitation` | Returns 410 when an admin cancelled the invite between send and click.                                                                      |
-| `inviteIdempotentRedirect`     | Emits `finishWfWithChoice({ message, primary: 'Go to sign-in', options?: ['Request a new invite'] })` when the invite was already accepted. |
-| `invitePreparePasswordRules`   | Snapshots the password policy onto ctx.                                                                                                     |
-| `inviteCreatePasswordForm`     | Cancel alt-action keeps user + `pendingInvitation` flag for re-invite.                                                                      |
-| `inviteCollectProfile`         | Rendered only when `getProfileForm()` returns a non-null type.                                                                              |
-| `inviteApplyProfile`           | Calls `applyProfile()` protected method.                                                                                                    |
-| `inviteUnsetPendingInvitation` | Clears the `pendingInvitation` flag.                                                                                                        |
-| `inviteActivateUser`           | Marks the user active.                                                                                                                      |
-| `inviteConfirmation`           | Rendered when `accept.showConfirmation`. Pauses on a confirmation banner.                                                                   |
-| `inviteFreshLoginFinish`       | Same shape as recovery's fresh-login finish.                                                                                                |
-| `inviteAutoLoginFinish`        | Same shape as recovery's auto-login finish.                                                                                                 |
+1. **Already-accepted notice** — if the invite was already redeemed, the invitee gets a choice (`Go to sign-in` / `Request a new invite`).
+2. **Cancelled-invite notice** — if an admin cancelled the invite between send and click, the run ends with a clear message.
+3. **Set password** — initial password for the new account.
+4. **Profile** — when your subclass returns a custom profile form.
+5. **Confirmation banner** — optional welcome message before tokens issue.
+6. **Finish** — either a redirect to fresh-login or an auto-login envelope, depending on your subclass.
 
 ### `auth.cancelInvite`
 
-One-step flow. Requires `cancellation.allowed`. Looks up the user, asserts `pendingInvitation`, hard-deletes via `users.deleteUser`, emits `finishWfWithData({ cancelled: true, email }, ...)`.
+One-step admin operation. Looks up the user by email, verifies the invite is still pending (not yet accepted), deletes the pending user record, and emits a `{ cancelled: true, email }` envelope. Disable by returning early from your subclass's cancel hook if you don't want admins to be able to cancel sent invites.
 
 ### `InviteWorkflowOpts` — key fields
 
-| Field                               | Default                | Notes                                      |
-| ----------------------------------- | ---------------------- | ------------------------------------------ | --------------- | ---------- |
-| `adminForm.collectRoles`            | `true`                 | Render the roles picker on `InviteForm`.   |
-| `send.mode`                         | `'email'`              | `'email'                                   | 'shareableLink' | 'choice'`. |
-| `send.tokenTtlMs`                   | `7 * 24 * 60 * 60_000` | Magic link lifetime (7 days).              |
-| `accept.alreadyAcceptedRedirectUrl` | `'/login'`             | Where the idempotent redirect points.      |
-| `accept.freshLoginRequired`         | `false`                | Force fresh-login instead of auto-login.   |
-| `accept.loginUrl`                   | `'/login'`             | Where the fresh-login redirect points.     |
-| `accept.showConfirmation`           | `true`                 | Whether to pause on a confirmation banner. |
-| `accept.confirmationMessage`        | `'Welcome!'`           | Banner text.                               |
-| `cancellation.allowed`              | `true`                 | Whether `auth.cancelInvite` is enabled.    |
-| `audit.enabled`                     | `true`                 | Whether to emit invite audit events.       |
-| `forms.*`                           | bundled `.as` defaults | Replaceable.                               |
+| Field              | Default                | Notes                                                                  |
+| ------------------ | ---------------------- | ---------------------------------------------------------------------- |
+| `forms.<formName>` | bundled `.as` defaults | Replace any of the 7 bundled form schemas with your own atscript type. |
+
+::: tip Per-request / per-tenant / per-user behaviour
+Anything that varies by request (send mode, magic-link TTL, whether to force fresh-login, the post-accept confirmation banner, whether `auth.cancelInvite` is enabled, etc.) is NOT on this opts shape. Override the matching `protected` method on your `InviteWorkflow` subclass — see [Extension hooks](#extension-hooks).
+:::
 
 ### Protected extension surface
 
@@ -238,17 +192,70 @@ One-step flow. Requires `cancellation.allowed`. Looks up the user, asserts `pend
 | `getProfileForm()`      | returns `null`                          | Return your own `.as` type to enable the profile-collection step.                                                        |
 | `snapshotOpts(opts)`    | strips form classes                     | Custom serialization (rare).                                                                                             |
 
+## `ConsentStore` — pending consents + persistence
+
+All three workflows resolve a `ConsentStore` from the DI container as the seam for the customer-defined consent universe and persistence sink. On every workflow run the store's `getPendingConsents(username, { workflow })` decides which consents are still outstanding for the user; the bundled forms surface them inline as a `consents: string[]` field on whichever form the user is currently filling out — the field self-hides when there are no pending consents.
+
+```ts
+interface ConsentDescriptor {
+  id: string; // 'terms', 'marketing', 'jurisdiction-gdpr', …
+  text: string; // user-facing label / disclosure text (markdown links allowed)
+  required?: string; // when set, the consent is mandatory; the string IS the error message
+  version?: string; // stamped onto persisted ConsentEvent for versioned policies
+}
+```
+
+The default `ConsentStore` is no-op — extend it and register the replacement via `createReplaceRegistry`:
+
+```ts
+import { ConsentStore, type ConsentDescriptor, type ConsentEvent } from "@aooth/auth-moost";
+import { Injectable } from "moost";
+
+@Injectable() // SINGLETON
+class MyConsentStore extends ConsentStore {
+  override async getPendingConsents(
+    username: string | undefined,
+    _ctx: { workflow: string },
+  ): Promise<ConsentDescriptor[]> {
+    if (!username) return [];
+    const accepted = await db.consents.find({ username, id: "terms" });
+    if (accepted.some((e) => e.version === "v2")) return [];
+    return [
+      {
+        id: "terms",
+        text: "I accept the updated [Terms](/terms) and [Privacy](/privacy)",
+        required: "You must accept the updated terms to continue",
+        version: "v2",
+      },
+    ];
+  }
+
+  override async save(username: string, events: ConsentEvent[]): Promise<void> {
+    await db.consents.insertMany(events.map((e) => ({ ...e, username })));
+  }
+}
+
+app.setReplaceRegistry(createReplaceRegistry([ConsentStore, MyConsentStore]));
+```
+
+| Method                                                           | Default      | Override for                                                                                  |
+| ---------------------------------------------------------------- | ------------ | --------------------------------------------------------------------------------------------- |
+| `getPendingConsents(username, { workflow, channel? })`           | returns `[]` | Drive `ctx.pendingConsents` per workflow / channel / user history.                            |
+| `save(username, events)`                                         | no-op        | Persist captured `ConsentEvent[]` to your audit table / event store.                          |
+| `read(username, { id? })`                                        | returns `[]` | Read consent history (used by `getPendingConsents` impls that compute "accepted version vN"). |
+| `recordOtpChannelConsent(username, channel, target, disclosure)` | no-op        | Persist OTP-channel disclosure-with-target (transactional OTPs only; default is sufficient).  |
+
 ## The `WfFinished` envelope contract
 
 All three workflows go through one of these envelope helpers from `@atscript/moost-wf`. Every helper produces the unified `WfFinished` wire envelope `{ finished: true, data?, message?, end?, aborted?, reason? }`:
 
-| Helper                                                                     | Wire envelope produced                                                                                                   | Used by                                                                           |
-| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
-| `finishWfWithData(data, message?)`                                         | `{ finished: true, data, message? }`                                                                                     | Recovery `recoveryRequest` (sent: true), invite `cancelInvite` (cancelled: true). |
-| `finishWfWithMessage(level, text)`                                         | `{ finished: true, message: { level, text } }`                                                                           | Display-only finish; no data payload.                                             |
-| `finishWfWithRedirect(target, { autoMs?, skipLabel?, message?, reason? })` | `{ finished: true, message?, end: { mode: 'immediate' \| 'auto', action: { type: 'redirect', target, reason? }, ... } }` | Login `forgotPassword`, recovery `freshLoginFinish`, invite `freshLoginFinish`.   |
-| `finishWfWithChoice({ message?, primary?, options? })`                     | `{ finished: true, data?, message?, end: { mode: 'manual', primary?, options? } }`                                       | Invite `idempotentRedirect`.                                                      |
-| `finishWfAborted(reason, { message?, end? })`                              | `{ finished: true, aborted: true, reason, message?, end? }`                                                              | Login `logout`, terms `decline`, concurrency `cancel`.                            |
+| Helper                                                                     | Wire envelope produced                                                                                                   | Use when                                                                                      |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------- |
+| `finishWfWithData(data, message?)`                                         | `{ finished: true, data, message? }`                                                                                     | Returning a structured payload to the SPA (e.g. `{ sent: true }` after dispatching an email). |
+| `finishWfWithMessage(level, text)`                                         | `{ finished: true, message: { level, text } }`                                                                           | Display-only finish — informational notice without any data payload.                          |
+| `finishWfWithRedirect(target, { autoMs?, skipLabel?, message?, reason? })` | `{ finished: true, message?, end: { mode: 'immediate' \| 'auto', action: { type: 'redirect', target, reason? }, ... } }` | Sending the user somewhere else after the run finishes (sign-in page, dashboard, etc.).       |
+| `finishWfWithChoice({ message?, primary?, options? })`                     | `{ finished: true, data?, message?, end: { mode: 'manual', primary?, options? } }`                                       | Asking the user to pick a next action (e.g. "Go to sign-in" / "Request a new invite").        |
+| `finishWfAborted(reason, { message?, end? })`                              | `{ finished: true, aborted: true, reason, message?, end? }`                                                              | User-initiated abort (`Cancel`, `Logout`, decline-terms). SPA renders an `aborted` envelope.  |
 
 ### Raw envelope path for cookies
 
@@ -341,6 +348,88 @@ interface AuthEmailEvent {
 Forms are class references (not POJOs), so they cannot be serialized into the wf state store. `snapshotOpts()` runs once at `init` and strips the `forms.*` keys before `ctx.opts` is persisted. If you override `snapshotOpts`, preserve the form-stripping logic — otherwise the wf state store will fail to serialize.
 :::
 
+## Error patterns — retriable vs terminal
+
+Workflow `@Step` bodies throw exactly two error shapes. Pick by asking: **can the user fix this from the form they are looking at?** If yes → `wf.requireInput`. If no → `HttpError`.
+
+| Shape                                                             | Behaviour                                                                                                                                                                                | Use for                                                                                                                                                |
+| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `throw wf.requireInput({ errors, formMessage? })` — **retriable** | Engine re-persists state under the SAME `wfs` handle and re-renders the form payload with per-field errors. The user can fix the input and resubmit. The `wfs` token survives the throw. | Bad password, wrong OTP code, mismatched confirm-password, duplicate email, missing required consent, account lockout, "session limit reached".        |
+| `throw new HttpError(<status>, <msg>)` — **terminal**             | The token IS consumed; the SPA renders a final error. The workflow run is over.                                                                                                          | `500` state corruption, `501` not implemented (magic-link / passkey / SSO stubs), `410` cancelled invite, `403` feature disabled, `409` CAS exhausted. |
+
+`wf` is the handle returned by `useAtscriptWf(FormSchema)`. The form payload + `@wf.context.pass` keys are auto-included in the re-render response, so the SPA's next render of the form sees the fresh ctx without an additional round-trip.
+
+### Side-by-side
+
+```ts
+// ✅ Retriable — user can correct the input on the same form.
+try {
+  await this.users.login(ctx.username, input.password);
+} catch (err) {
+  if (err instanceof UserAuthError) {
+    if (err.type === "LOCKED") {
+      throw wf.requireInput({ formMessage: "Account locked, please try again later" });
+    }
+    throw wf.requireInput({ formMessage: "Invalid credentials" });
+  }
+  throw err;
+}
+
+// ✅ Retriable — per-field error binds to LoginCredentialsForm.password.
+throw wf.requireInput({ errors: { confirmPassword: "Passwords do not match" } });
+
+// ❌ Terminal — workflow state lost a required field; not a client error.
+if (!ctx.username) throw new HttpError(500, "Workflow state corrupted: missing username");
+
+// ❌ Terminal — feature was disabled by your subclass; user has no way to fix from the form.
+if (!this.isCancellationEnabled()) {
+  throw new HttpError(403, "Invite cancellation is disabled");
+}
+
+// ❌ Terminal — admin cancelled the invite between send and click; the user's
+//    magic link is now dead. No form to retry from.
+if (!existing) throw new HttpError(410, "This invite has been cancelled");
+```
+
+::: warning Don't throw `HttpError(4xx)` for user-fixable input errors
+`HttpError(<4xx>)` is terminal — the workflow run is over and the form cannot be retried. Use `wf.requireInput` for any error a user can correct from the form they are looking at (wrong password, duplicate email, password policy violation, missing required consent). See [Workflow state tokens (`wfs`)](#workflow-state-tokens-wfs) for the persistence invariant.
+:::
+
+## Workflow state tokens (`wfs`)
+
+The `wfs` URL / body / cookie token is the single resume handle for a paused workflow run. The token wire is configured per workflow trigger — by default `{ read: ['body', 'query', 'cookie'], write: 'body', name: 'wfs' }` (see [`WfTriggerProvider`](#wftriggerprovider)).
+
+### Stable across retries, refresh, bookmark, multi-tab
+
+The token stays alive across:
+
+- **Form submissions that throw `wf.requireInput`** (wrong password, invalid OTP, duplicate email, missing required consent). The URL `wfs=…` remains live; the user fixes input and resubmits without a fresh round-trip to mint a new token.
+- **Browser refresh.** The URL's `wfs=…` is still valid; the workflow resumes at the current pause.
+- **Bookmarking and revisiting.** Same as refresh.
+- **Multi-tab.** Concurrent submissions on the same token are serialised — the winner advances the workflow; the loser receives the form re-render under the same handle, and its NEXT refresh succeeds.
+
+### When tokens rotate
+
+The token mints fresh only at three boundaries:
+
+1. **Workflow start.** No incoming `wfs` token → the engine mints one when the first step pauses.
+2. **Workflow finish.** No token is persisted — the workflow is gone. Any subsequent `POST /auth/trigger` with the now-dead token returns 410 Gone (terminal — no recovery from this state).
+3. **Workflow id change.** Replaying a token from `auth.login` against `auth.recovery` mints a fresh one.
+
+### HTTP outlets vs. out-of-band outlets
+
+The stable-token semantics above apply to HTTP outlets — the SPA submitting against `/auth/trigger`. Out-of-band outlets (`createAuthEmailOutlet` — magic links delivered by email) keep their own delivery semantics: the email is sent ONCE per invocation; the workflow ctx tracks `linkSent` so a step re-entry doesn't double-send. The recipient-clicked URL carries the `wfs` token that the recipient's browser then drives through the HTTP outlet as usual.
+
+```ts
+// Refresh / bookmark / retry-on-retriable-error all reuse this exact URL.
+GET /wf?id=auth.login&wfs=8b34cef0-…
+
+// SPA POSTs to /auth/trigger with the same token until the workflow finishes
+// or fails terminally.
+POST /auth/trigger    { wfs: '8b34cef0-…', input: { username, password } }
+//                      ↑ same token across `wf.requireInput` re-renders
+```
+
 ## Subclassing pattern — full template
 
 ```ts
@@ -389,6 +478,46 @@ app.registerControllers(MyLoginWorkflow);
 ```
 
 The same template applies to `RecoveryWorkflow` and `InviteWorkflow`. See [`packages/e2e-demo/src/app.ts`](https://github.com/moostjs/aoothjs/blob/main/packages/e2e-demo/src/app.ts) for all three side-by-side.
+
+## SPA UI components — `AsConsentArray` + `AsPasswordRules`
+
+Two Vue components from `@atscript/vue-aooth` are pre-wired into the bundled workflow forms. The forms reference them by name via `@ui.form.component '<ComponentName>'`; the SPA registers them on `<AsWfForm :components>` so `<AsForm>` resolves the name string to the actual Vue component at render time. **The string in `@ui.form.component` MUST match a key in the `:components` map** — otherwise the field renders as the default text input fallback.
+
+| Form field                      | `@ui.form.component` | Component         | What it renders                                                                                                                                                                                                     |
+| ------------------------------- | -------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `consents` (on the active form) | `'AsConsentArray'`   | `AsConsentArray`  | One checkbox per `ctx.pendingConsents[]` descriptor. Bound to `consents: string[]` (ids of accepted descriptors). **Self-hides when `pendingConsents` is empty / unset** — no `@ui.form.fn.hidden` is needed.       |
+| `SetPasswordForm.passwordRules` | `'AsPasswordRules'`  | `AsPasswordRules` | A phantom `ui.paragraph` display field that renders fulfillment dots against the live `data.newPassword`, re-evaluating on every keystroke. Backed by the same transferable policy expressions the server enforces. |
+
+The `consents: string[]` field appears on whichever form the user is currently filling out (`LoginCredentialsForm`, `SetPasswordForm`, `ProfileCompleteForm`, `AskEmailForm`, `AskPhoneForm`, `TermsBumpForm`). Submitted ids are validated server-side against `ctx.pendingConsents` as the authoritative whitelist — see [`ConsentStore`](#consentstore-pending-consents-persistence).
+
+### Wiring example
+
+```vue
+<!-- WfPage.vue (e2e-demo) -->
+<script setup lang="ts">
+import { AsWfForm } from "@atscript/vue-wf";
+import { AsConsentArray, AsPasswordRules } from "@atscript/vue-aooth";
+
+// Component-name strings here MUST match `@ui.form.component '<Name>'` in the `.as` schema.
+const components = { AsConsentArray, AsPasswordRules };
+</script>
+
+<template>
+  <AsWfForm
+    path="/auth/trigger"
+    name="auth.login"
+    :components="components"
+    @finished="onFinished"
+    @error="onError"
+  />
+</template>
+```
+
+See [`packages/e2e-demo/src/ui/pages/WfPage.vue`](https://github.com/moostjs/aoothjs/blob/main/packages/e2e-demo/src/ui/pages/WfPage.vue) for the full SPA wiring including magic-link resume via `initialToken` + the variant-header pattern.
+
+::: tip Component names are stable across form replacements
+If you replace a bundled form via `opts.forms.setPassword = MySetPasswordForm`, keep the `@ui.form.component 'AsPasswordRules'` annotation on the `passwordRules` field if you want the live-fulfillment readout. The SPA's `:components` registration is keyed on the string, not on the form class.
+:::
 
 ## See also
 

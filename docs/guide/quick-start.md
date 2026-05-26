@@ -392,13 +392,17 @@ curl -X POST http://localhost:3000/auth/trigger \
   -d '{"wfs":"auth.login"}'
 ```
 
-The first call returns a paused-form envelope (`type: "wait"`) containing `LoginCredentialsForm`. Submit credentials:
+The first call returns a paused-form envelope (`type: "wait"`) containing `LoginCredentialsForm`. The envelope's `wfs` is the workflow-session handle — **the same value is reused on every subsequent step until the workflow finishes**. Submit credentials:
 
 ```bash
 curl -X POST http://localhost:3000/auth/trigger \
   -H 'content-type: application/json' \
-  -d '{"wfs":"<token-from-previous>","input":{"username":"alice","password":"CorrectHorse123"}}'
+  -d '{"wfs":"<wfs-from-initial-response>","input":{"username":"alice","password":"CorrectHorse123"}}'
 ```
+
+::: tip The `wfs` is the session, not a per-step token
+The `wfs` URL token stays the same across every step of a workflow run. Refresh / bookmark / multi-tab on a paused workflow all resume from the current step. The token only changes when a new workflow starts.
+:::
 
 On success the envelope's `type` is `"data"` and the response carries `aooth_session` + `aooth_refresh` cookies plus an `accessToken` in the body (because `enableBearer` defaults to `true`).
 
@@ -468,7 +472,7 @@ A request from a user whose `@arbac.attribute tenantId` is `'t1'` will see `scop
 
 ### Password reset (recovery flow)
 
-`RecoveryWorkflow` is a multi-step workflow that pauses on each user interaction. The envelope's `wfs` is the resume token.
+`RecoveryWorkflow` is a multi-step workflow that pauses on each user interaction. The envelope's `wfs` is the **workflow-session handle** — the same value is reused across every step until the flow finishes. The magic-link email carries a distinct token because it crosses an out-of-band boundary; once clicked, the FE posts that token back as the new `wfs`.
 
 ```bash
 # 1. Start: server returns wfs + RecoveryRequestForm
@@ -476,12 +480,14 @@ curl -X POST http://localhost:3000/auth/trigger \
   -H 'content-type: application/json' \
   -d '{"wfs":"auth.recovery"}'
 
-# 2. Submit identifier (username or email) — server emits the magic-link email
+# 2. Submit identifier (username or email) — server emits the magic-link email.
+#    Same wfs from step 1 — the handle stays live across the pause.
 curl -X POST http://localhost:3000/auth/trigger \
   -H 'content-type: application/json' \
-  -d '{"wfs":"<token-from-step-1>","input":{"identifier":"alice"}}'
+  -d '{"wfs":"<wfs-from-step-1>","input":{"identifier":"alice"}}'
 
-# 3. User clicks the magic-link URL from email; FE posts it back as the new wfs
+# 3. User clicks the magic-link URL from email; FE posts that token back as wfs
+#    (this one IS a fresh token — it crossed the email outlet)
 curl -X POST http://localhost:3000/auth/trigger \
   -H 'content-type: application/json' \
   -d '{"wfs":"<token-from-magic-link>","input":{"newPassword":"NewCorrectHorse42!"}}'

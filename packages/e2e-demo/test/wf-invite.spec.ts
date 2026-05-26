@@ -132,7 +132,15 @@ describe("WF-INVITE — admin-gated invite", () => {
     expectOk(login);
   });
 
-  it("WF-INVITE-03 — invite for an existing user email returns 409", async () => {
+  it("WF-INVITE-03 — invite for an existing user email re-renders form with errors.email (retriable, not 409)", async () => {
+    // WHY: duplicate-email rejection used to be `throw new HttpError(409, ...)`
+    // which deleted the wf-state token (HandleStateStrategy.consume) without
+    // re-persisting → next admin attempt returned 410 Gone. The fix swapped
+    // the throw to `wf.requireInput({ errors: { email: ... } })` so the engine
+    // re-persists state under a fresh token AND ships the form back with a
+    // per-field error. Pin the new contract: status 201, errors.email is set,
+    // the response carries a NEW wfs handle so the admin can correct the
+    // email and resubmit without restarting the workflow.
     const dave = app.fixtures.users.t1_dave;
     const daveTokens = await app.loginAs(dave);
     const bob = app.fixtures.users.t1_bob;
@@ -154,7 +162,15 @@ describe("WF-INVITE — admin-gated invite", () => {
       },
       { token: daveTokens.accessToken },
     );
-    expect(conflict.status).toBe(409);
+    expect(conflict.status).toBe(201);
+    const conflictBody = (await conflict.json()) as {
+      wfs?: string;
+      inputRequired?: { context?: { errors?: Record<string, string> } };
+    };
+    expect(conflictBody.inputRequired?.context?.errors?.email).toMatch(
+      /already exists|already pending|duplicate/i,
+    );
+    expect(conflictBody.wfs).toBeTruthy();
   });
 
   it("WF-INVITE-06 — acceptProfileForm + applyProfile end-to-end (displayName/phone persisted)", async () => {

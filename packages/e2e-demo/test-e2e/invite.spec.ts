@@ -362,27 +362,39 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
   // BRANCH: `inviteAdminInviteForm` → `loadUserOrNull(email)` finds the
   // already-accepted seed user (`t1_redeemed@example.com` — username equals
   // email, so the `findByUsername` lookup resolves) → default
-  // `duplicateCheck` returns 'reject' → server throws `HttpError(409, "User
-  // already exists")`. AsWfForm surfaces the 409 to `@error`, WfPage paints
-  // it under `.scope-error`.
-  test("WF-INVITE-002 admin invites already-redeemed user → 409 inline error", async ({ page }) => {
+  // `duplicateCheck` returns 'reject' → step calls
+  // `wf.requireInput({ errors: { email: 'User already exists' } })`. The wf
+  // engine re-pauses the same step under the same wfs token; the response is
+  // a 201 `inputRequired` envelope with `context.errors.email` populated.
+  // AsWfForm re-renders the same form with the per-field error attached.
+  test("WF-INVITE-002 admin invites already-redeemed user → inline email error, form re-renders", async ({
+    page,
+  }) => {
     await loginViaUi(page, USERS.admin_inviter);
     await page.goto(wfUrl("auth/invite/start", "email-no-roles"));
     await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
 
     await fillField(page, "email", "t1_redeemed@example.com");
+    // requireInput envelope: `{ inputRequired: { payload, context: { errors:
+    // { email: 'User already exists' }, ... } }, wfs }`.
     const errorPromise = nextTriggerResponse(
       page,
-      (b) => typeof b.message === "string" && /already exists|409/i.test(b.message),
+      (b) => {
+        const ir = b.inputRequired as Record<string, unknown> | undefined;
+        const ctxObj = (ir?.context ?? {}) as Record<string, unknown>;
+        const errs = (ctxObj.errors ?? {}) as Record<string, unknown>;
+        return typeof errs.email === "string" && /already exists/i.test(errs.email);
+      },
       10_000,
     );
     await submitForm(page);
     const body = await errorPromise;
-    // 409 envelope carries the HttpError message verbatim.
-    expect(body.message).toMatch(/User already exists/i);
-    // Form must re-render — the `email` field is still in the DOM. WfPage
-    // paints the message under `.scope-error`.
-    await expect(page.locator(".scope-error")).toContainText(/User already exists/i);
+    const ir = body.inputRequired as Record<string, unknown>;
+    const ctxObj = ir.context as Record<string, unknown>;
+    const errs = ctxObj.errors as Record<string, string>;
+    expect(errs.email).toMatch(/User already exists/i);
+    // Form re-renders — same step paused under the same wfs token, email
+    // field still mounted so the user can correct and retry.
     await expect(page.locator('[name="email"]')).toBeVisible();
   });
 
@@ -660,10 +672,13 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
   // ── WF-INVITE-014 ────────────────────────────────────────────────────────
   // BRANCH: `auth.reInvite` opens on `InviteEmailForm` → `loadPendingUser`
   // step → `findByUsername(email)` returns the already-redeemed seed user.
-  // `existing.account?.pendingInvitation === false` ⇒ workflow throws
-  // `HttpError(409, "User has already accepted; cannot resend")`. AsWfForm
-  // surfaces 409 via `@error` → WfPage paints under `.scope-error`.
-  test("WF-INVITE-014 reInvite on already-accepted user → 409 inline error", async ({ page }) => {
+  // `existing.account?.pendingInvitation === false` ⇒ step calls
+  // `wf.requireInput({ errors: { email: 'User has already accepted; cannot
+  // resend' } })`. The wf engine re-pauses on the same step under the same
+  // wfs token; AsWfForm re-renders with the per-field error attached.
+  test("WF-INVITE-014 reInvite on already-accepted user → inline email error, form re-renders", async ({
+    page,
+  }) => {
     await loginViaUi(page, USERS.admin_inviter);
     await page.goto(wfUrl("auth/invite/resend", "email-no-roles"));
     await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
@@ -671,21 +686,30 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
     await fillField(page, "email", "t1_redeemed@example.com");
     const errorPromise = nextTriggerResponse(
       page,
-      (b) => typeof b.message === "string" && /already accepted|cannot resend/i.test(b.message),
+      (b) => {
+        const ir = b.inputRequired as Record<string, unknown> | undefined;
+        const ctxObj = (ir?.context ?? {}) as Record<string, unknown>;
+        const errs = (ctxObj.errors ?? {}) as Record<string, unknown>;
+        return typeof errs.email === "string" && /already accepted|cannot resend/i.test(errs.email);
+      },
       10_000,
     );
     await submitForm(page);
     const body = await errorPromise;
-    expect(body.message).toMatch(/already accepted; cannot resend/i);
-    await expect(page.locator(".scope-error")).toContainText(/already accepted/i);
+    const ir = body.inputRequired as Record<string, unknown>;
+    const ctxObj = ir.context as Record<string, unknown>;
+    const errs = ctxObj.errors as Record<string, string>;
+    expect(errs.email).toMatch(/already accepted; cannot resend/i);
     await expect(page.locator('[name="email"]')).toBeVisible();
   });
 
   // ── WF-INVITE-016 ────────────────────────────────────────────────────────
-  // BRANCH: `auth.cancelInvite` → `inviteCancelInvite` step → existing user
-  // found but `account.pendingInvitation === false` ⇒
-  // `HttpError(409, "Cannot cancel: user has already accepted the invite")`.
-  test("WF-INVITE-016 cancelInvite on already-accepted user → 409 inline error", async ({
+  // BRANCH: `auth.cancelInvite` → `cancel-invite` step → existing user found
+  // but `account.pendingInvitation === false` ⇒ step calls
+  // `wf.requireInput({ errors: { email: 'Cannot cancel: user has already
+  // accepted the invite' } })`. The wf engine re-pauses the same step under
+  // the same wfs token; AsWfForm re-renders with the per-field error.
+  test("WF-INVITE-016 cancelInvite on already-accepted user → inline email error, form re-renders", async ({
     page,
   }) => {
     await loginViaUi(page, USERS.admin_inviter);
@@ -695,22 +719,31 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
     await fillField(page, "email", "t1_redeemed@example.com");
     const errorPromise = nextTriggerResponse(
       page,
-      (b) => typeof b.message === "string" && /has already accepted|cannot cancel/i.test(b.message),
+      (b) => {
+        const ir = b.inputRequired as Record<string, unknown> | undefined;
+        const ctxObj = (ir?.context ?? {}) as Record<string, unknown>;
+        const errs = (ctxObj.errors ?? {}) as Record<string, unknown>;
+        return typeof errs.email === "string" && /already accepted|cannot cancel/i.test(errs.email);
+      },
       10_000,
     );
     await submitForm(page);
     const body = await errorPromise;
-    expect(body.message).toMatch(/Cannot cancel: user has already accepted/i);
-    await expect(page.locator(".scope-error")).toContainText(/already accepted/i);
+    const ir = body.inputRequired as Record<string, unknown>;
+    const ctxObj = ir.context as Record<string, unknown>;
+    const errs = ctxObj.errors as Record<string, string>;
+    expect(errs.email).toMatch(/Cannot cancel: user has already accepted/i);
     await expect(page.locator('[name="email"]')).toBeVisible();
   });
 
   // ── WF-INVITE-017 ────────────────────────────────────────────────────────
   // BRANCH: `cancellation-disabled` variant sets `cancellation.allowed: false`.
-  // `inviteCancelInvite` step's first check throws
+  // `cancel-invite` step's first check throws
   // `HttpError(403, "Invite cancellation is disabled")` — fires even when a
   // valid pending email is submitted (we use a fresh pending row to prove the
-  // 403 isn't a 404 in disguise).
+  // 403 isn't a 404 in disguise). `@atscript/vue-wf@0.1.76` reads
+  // `errData?.message` ahead of `errData?.error`, so the SPA renders the
+  // backend's human-readable message rather than the HTTP reason phrase.
   test("WF-INVITE-017 cancelInvite when cancellation.allowed=false → 403, no form", async ({
     page,
   }) => {
@@ -904,15 +937,13 @@ test.describe("WF-INVITE — auth.invite family (P2)", () => {
   // uniqueness still rejects with 409 'User already exists'". The demo's
   // `DemoInviteWorkflow.duplicateCheck()` consults a globalThis flag flipped
   // by `POST /__test/allow-duplicate-invites`; when set, it returns `'allow'`
-  // so the workflow-level reject branch (line ~631 of invite.workflow.ts) is
-  // skipped. The admin then drives `auth.invite` against an existing seed
-  // user (`t1_redeemed@example.com`) — `invitePreCreateUser` calls
-  // `users.createUser(email, …)`, the store throws
-  // `UserAuthError.ALREADY_EXISTS`, and the catch-block at line ~691
-  // translates it to `HttpError(409, "User already exists")`. WfPage paints
-  // the message inside `.scope-error`, the same surface as WF-INVITE-002 —
-  // but the path through the workflow differs (store-level 409, not
-  // workflow-level reject).
+  // so the workflow-level reject branch is skipped. The admin then drives
+  // `auth.invite` against an existing seed user (`t1_redeemed@example.com`)
+  // — `create-user` step calls `users.createUser(email, …)`, the store
+  // throws `UserAuthError.ALREADY_EXISTS`, and the catch-block translates it
+  // to a terminal `HttpError(409, "User already exists")` (not retriable —
+  // the consumer explicitly opted out of the workflow-level dedupe). The
+  // SPA renders the message verbatim under `.scope-error`.
   test("WF-INVITE-018 duplicateCheck='allow' override → store-level constraint still 409s", async ({
     page,
     request,

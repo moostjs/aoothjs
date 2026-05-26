@@ -84,6 +84,12 @@ const LOGIN_USERS: ReadonlyArray<TestCred> = [
     notes:
       "Shares an email with `t2_two_tenants` — the tenant-select variant should offer both as picker options.",
   },
+  {
+    username: "_admin_inviter",
+    password: PWD,
+    notes:
+      "Dedicated `admin`-role user for invite-side stories — sign in here, then visit `/wf?id=auth/invite/start` to send invitations.",
+  },
 ];
 
 const ADMIN_USERS: ReadonlyArray<TestCred> = [
