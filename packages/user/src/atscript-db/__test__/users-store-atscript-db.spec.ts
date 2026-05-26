@@ -236,6 +236,56 @@ describe("UsersStoreAtscriptDb", () => {
       expect(await svc.verifyPassword("carol", "Secret1!")).toBe(true);
       expect(await svc.verifyPassword("carol", "wrong")).toBe(false);
     });
+
+    it("setPassword preserves password.hash through the @db.patch.strategy 'merge' subdoc and re-login succeeds", async () => {
+      // Locks the aoothjs side against the symptom BUG.md (2026-05-26) reported
+      // downstream against `@atscript/db-mongo`: after the forced-change-password
+      // branch submits, `password.hash` was missing from the stored row and the
+      // next login threw `Cannot read properties of undefined (reading 'startsWith')`
+      // in the password hasher. The reporter could not reproduce under SQL
+      // adapters; this test pins that asymmetry — if the SQL path ever starts
+      // exhibiting the same loss, OR if `applyPasswordChange` ever stops
+      // emitting all four `password` leaves in its `{ set: { password: {...} } }`
+      // patch, this test fails fast with the same TypeError the reporter saw.
+      //
+      // The bug is a `@db.patch.strategy 'merge'` subdoc behavior where a patch
+      // carrying all leaves of the subdoc somehow drops one. Mirrors the
+      // shape `LoginWorkflow.createPasswordForm` produces: createUser stamps
+      // the initial hash, then setPassword rewrites the subdoc with all four
+      // leaves (hash + history + lastChanged + isInitial).
+      const svc = new UserService(store, {
+        password: { scryptN: 1024, scryptR: 1, scryptP: 1, keyLength: 32 },
+      });
+      await svc.createUser("bob", "OldSecret1!");
+      await svc.activateAccount("bob");
+      expect((await store.findByUsername("bob"))!.password.hash).toMatch(/\$scrypt\$/);
+
+      await svc.setPassword("bob", "NewSecret1!");
+
+      // 1. Raw row preserves `password.hash` — the leaf-survival assertion.
+      //    A merge-strategy adapter that drops this leaf would null/undefined it.
+      const after = await store.findByUsername("bob");
+      expect(after!.password.hash).toMatch(/\$scrypt\$/);
+      expect(after!.password.isInitial).toBe(false);
+      // 2. The OLD hash got rotated into history (historyLength defaults to 0
+      //    which disables history retention, so history must be empty — pins
+      //    the default policy). When BUG.md fires, hash is gone but history
+      //    is intact, so an over-eager history assertion would mask the leaf
+      //    loss; we only assert what the policy says.
+      expect(after!.password.history).toEqual([]);
+
+      // 3. verify against the new password — this is the load-bearing assertion.
+      //    The BUG.md error fires HERE under Mongo: hasher.verify reads the
+      //    stored hash (undefined) and `encoded.startsWith(PREFIX)` throws.
+      expect(await svc.verifyPassword("bob", "NewSecret1!")).toBe(true);
+      expect(await svc.verifyPassword("bob", "OldSecret1!")).toBe(false);
+
+      // 4. Full login round-trip — same call surface that the workflow's
+      //    `credentials` step uses on subsequent attempts. Throws under the
+      //    BUG.md repro; succeeds when hash survives.
+      const result = await svc.login("bob", "NewSecret1!");
+      expect(result.user.username).toBe("bob");
+    });
   });
 
   describe("OCC / withCas", () => {
