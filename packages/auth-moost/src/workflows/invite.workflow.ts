@@ -67,7 +67,7 @@ import {
 import { Controller, Inherit } from "moost";
 
 import { AuthOpts } from "../auth.opts";
-import { type ConsentDescriptor, ConsentStore } from "../consent.store";
+import { ConsentStore } from "../consent.store";
 import { useAuth } from "../auth.composables";
 import { Public } from "../auth.decorator";
 import {
@@ -165,14 +165,6 @@ export interface InviteWfCtx extends AuthWfCtxBase {
   enrollPincodeCooldown?: number;
   /** Flat alias for `ctx.pincode.sentTo`. */
   pinSentTo?: string;
-  /** Flat alias for `ctx.consents.pending`. */
-  pendingConsents?: ConsentDescriptor[];
-  /** Flat alias for `ctx.consents.accepted`. */
-  acceptedConsentIds?: string[];
-  /** Flat alias for `ctx.consents.decidedAt`. */
-  consentsDecidedAt?: number;
-  /** Flat alias for `ctx.consents.persisted`. */
-  consentsPersisted?: boolean;
   /** Flat alias for `ctx.completion.tokensIssued`. */
   tokensIssued?: boolean;
 }
@@ -833,17 +825,10 @@ export class InviteWorkflow extends AuthWorkflowBase {
     }
     // SetPasswordForm `extends WithInlineConsentForm` — capture the dynamic
     // `consents: string[]` array inline. `processInlineConsent` is a no-op
-    // when `ctx.pendingConsents` is empty (default), so the call is safe to
-    // make on every accept-tail invite run; unknown ids are silently dropped
-    // per its SECURITY contract.
+    // when `ctx.consents.pending` is empty (default), so the call is safe
+    // to make on every accept-tail invite run; unknown ids are silently
+    // dropped per its SECURITY contract.
     this.processInlineConsent(ctx, input, wf);
-    // dual-write — flat alias removed in B1.4
-    if (ctx.acceptedConsentIds !== undefined) {
-      (ctx.consents ??= {}).accepted = ctx.acceptedConsentIds;
-    }
-    if (ctx.consentsDecidedAt !== undefined) {
-      (ctx.consents ??= {}).decidedAt = ctx.consentsDecidedAt;
-    }
     ctx.passwordSet = true;
     return undefined;
   }

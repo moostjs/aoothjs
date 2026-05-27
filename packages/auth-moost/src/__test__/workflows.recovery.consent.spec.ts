@@ -11,7 +11,7 @@
  * completion path — magicLink, OTP, and choice all converge there before
  * tokens are issued. The new `processInlineConsent` call inside
  * `setPassword` validates `consents` against the server-owned
- * `ctx.pendingConsents` whitelist.
+ * `ctx.consents?.pending` whitelist.
  *
  * Anti-test guard (Rule 9): each test asserts an observable outcome the
  * production branch under test is required to produce.
@@ -142,7 +142,7 @@ describe("RecoveryWorkflow — inline-consent persist seam (Phase 5)", () => {
 
 /**
  * `ConsentStore` subclass that captures every `getPendingConsents` invocation
- * AND lets a test seed the return value. Used by the Phase-4 ctx.pendingConsents
+ * AND lets a test seed the return value. Used by the Phase-4 ctx.consents?.pending
  * transport tests.
  */
 @Injectable()
@@ -163,7 +163,7 @@ class RecordingConsentStore extends ConsentStore {
 
 /**
  * Build a `RecoveryWorkflow` subclass that stashes post-prepareConsents ctx
- * onto the supplied slot so tests can read `ctx.pendingConsents` directly
+ * onto the supplied slot so tests can read `ctx.consents?.pending` directly
  * (the wf engine's finished-response envelopes don't echo full ctx).
  */
 function makeCtxCapturingRecovery(captured: { ctx?: RecoveryWfCtx }): typeof RecoveryWorkflow {
@@ -194,8 +194,8 @@ function makeCtxCapturingRecovery(captured: { ctx?: RecoveryWfCtx }): typeof Rec
   return CtxCapturingRecovery;
 }
 
-describe("RecoveryWorkflow — prepare-consents @Step + ctx.pendingConsents transport (Phase 4)", () => {
-  it("RECOVERY-PENDING-CONSENTS-01: default no-op ConsentStore → ctx.pendingConsents is [] (always array, never undefined)", async () => {
+describe("RecoveryWorkflow — prepare-consents @Step + ctx.consents.pending transport (Phase 4)", () => {
+  it("RECOVERY-PENDING-CONSENTS-01: default no-op ConsentStore → ctx.consents.pending is [] (always array, never undefined)", async () => {
     // WHY: pins the "always array, never undefined" contract for Phase 5
     // carrier-form gates on recovery's SetPasswordForm.
     const captured: { ctx?: RecoveryWfCtx } = {};
@@ -210,8 +210,8 @@ describe("RecoveryWorkflow — prepare-consents @Step + ctx.pendingConsents tran
     const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
     await app.resumeViaQuery(token);
     expect(captured.ctx).toBeTruthy();
-    expect(captured.ctx!.pendingConsents).toEqual([]);
-    expect(Array.isArray(captured.ctx!.pendingConsents)).toBe(true);
+    expect(captured.ctx!.consents?.pending).toEqual([]);
+    expect(Array.isArray(captured.ctx!.consents?.pending)).toBe(true);
   });
 
   it("RECOVERY-PENDING-CONSENTS-WORKFLOW-ARG-01: prepare-consents calls getPendingConsents with {workflow: 'auth/recovery/flow'}", async () => {

@@ -110,7 +110,7 @@ describe("AuthWorkflowBase.withStoreErrorTranslation", () => {
 // ── HACK-CONSENT — `processInlineConsent` security gates ───────────────────
 //
 // Phase 5 reshape: the helper consumes the dynamic `consents: string[]`
-// field on the carrier form against the SERVER-OWNED `ctx.pendingConsents`
+// field on the carrier form against the SERVER-OWNED `ctx.consents.pending`
 // whitelist (populated once by the `prepare-consents` @Step from
 // `ConsentStore.getPendingConsents`). Key invariants pinned by the tests
 // below:
@@ -124,106 +124,109 @@ describe("AuthWorkflowBase.withStoreErrorTranslation", () => {
 //      string IS the per-row error copy. Submitting without that id in the
 //      `consents` array trips a `requireInput({ errors: { consents:
 //      <required-string> } })`.
-//   3. IDEMPOTENT-ONCE — once `consentsPersisted` is true, the helper is a
-//      no-op (a subsequent carrier-form submission cannot re-stage).
+//   3. IDEMPOTENT-ONCE — once `ctx.consents.persisted` is true, the helper
+//      is a no-op (a subsequent carrier-form submission cannot re-stage).
 //   4. EMPTY-PENDING-NOOP — when there are no pending consents (default
 //      `ConsentStore.getPendingConsents` returns `[]`), the helper short-
 //      circuits before reading the input. The carrier form's
 //      `AsConsentArray` self-hides on the same condition; the helper
 //      mirrors that on the server.
 describe("AuthWorkflowBase.processInlineConsent — security gates (HACK-CONSENT)", () => {
-  it("HACK-CONSENT-01: consentsPersisted=true → submitted consents are SILENTLY IGNORED (no second stage)", () => {
+  it("HACK-CONSENT-01: consents.persisted=true → submitted consents are SILENTLY IGNORED (no second stage)", () => {
     // WHY: idempotency invariant. Once a workflow run has persisted its
     // consent batch, a subsequent carrier-form submission cannot re-trigger
     // staging — that would fan a second `consentStore.save` call with the
-    // same descriptors, polluting audit logs. The `if (ctx.consentsPersisted)
+    // same descriptors, polluting audit logs. The `if (ctx.consents?.persisted)
     // return` guard at the top of the helper closes this loop.
     const base = new ExposedBase();
     const ctx: InlineConsentCtx = {
-      pendingConsents: [{ id: "terms", text: "Accept the Terms", required: "must accept" }],
-      consentsPersisted: true,
+      consents: {
+        pending: [{ id: "terms", text: "Accept the Terms", required: "must accept" }],
+        persisted: true,
+      },
     };
     const wf = makeWf();
     base.consent(ctx, { consents: ["terms"] }, wf);
     // Helper must NOT throw — defense is silent. State must NOT mutate (no
-    // acceptedConsentIds, no consentsDecidedAt). The persisted flag must
-    // stay true.
+    // accepted, no decidedAt). The persisted flag must stay true.
     expect(wf.lastCall).toBeUndefined();
-    expect(ctx.acceptedConsentIds).toBeUndefined();
-    expect(ctx.consentsDecidedAt).toBeUndefined();
-    expect(ctx.consentsPersisted).toBe(true);
+    expect(ctx.consents?.accepted).toBeUndefined();
+    expect(ctx.consents?.decidedAt).toBeUndefined();
+    expect(ctx.consents?.persisted).toBe(true);
   });
 
-  it("HACK-CONSENT-DECIDED-01: consentsDecidedAt already set → helper short-circuits (multi-carrier-form runs don't re-validate)", () => {
+  it("HACK-CONSENT-DECIDED-01: consents.decidedAt already set → helper short-circuits (multi-carrier-form runs don't re-validate)", () => {
     // WHY: workflows with multiple carrier forms (e.g. login's AskEmailForm
     // → ProfileCompleteForm) each `extends WithInlineConsentForm` and pass
     // their input through `processInlineConsent`. Once the FIRST carrier
-    // form captures the user's ticks (consentsDecidedAt set), subsequent
+    // form captures the user's ticks (consents.decidedAt set), subsequent
     // carrier forms MUST NOT re-run required-checks against their (empty,
     // because the user already ticked once) payload. The
-    // `if (ctx.consentsDecidedAt !== undefined) return` guard closes this
+    // `if (ctx.consents?.decidedAt !== undefined) return` guard closes this
     // loop. Without it, ProfileCompleteForm submission would throw the
     // descriptor's `required` string and the user would be stuck even
     // though they accepted on AskEmailForm earlier.
     const base = new ExposedBase();
     const ctx: InlineConsentCtx = {
-      pendingConsents: [{ id: "terms", text: "Terms", required: "must accept" }],
-      acceptedConsentIds: ["terms"],
-      consentsDecidedAt: Date.now() - 1000, // captured a second ago on a prior form
+      consents: {
+        pending: [{ id: "terms", text: "Terms", required: "must accept" }],
+        accepted: ["terms"],
+        decidedAt: Date.now() - 1000, // captured a second ago on a prior form
+      },
     };
     const wf = makeWf();
     // Empty `consents` on the LATER carrier form — must NOT throw, must
     // NOT mutate state.
     base.consent(ctx, { consents: [] }, wf);
     expect(wf.lastCall).toBeUndefined();
-    expect(ctx.acceptedConsentIds).toEqual(["terms"]);
+    expect(ctx.consents?.accepted).toEqual(["terms"]);
   });
 
-  it("HACK-CONSENT-02: empty pendingConsents → submitted consents IGNORED (cannot force-collect)", () => {
+  it("HACK-CONSENT-02: empty consents.pending → submitted consents IGNORED (cannot force-collect)", () => {
     // WHY: parallel anti-fabrication guarantee. With the dynamic-consent
-    // shape, `pendingConsents` is the server's authoritative whitelist of
+    // shape, `consents.pending` is the server's authoritative whitelist of
     // expected ids. An attacker submitting `consents: ['terms']` when the
     // server's pending list is empty MUST NOT cause the helper to stage
     // those ids — that would fake an acceptance record the policy never
     // asked for (GDPR / CASL liability surface). The `if (pending.length
     // === 0) return` short-circuit closes this loop.
     const base = new ExposedBase();
-    // Case A: pendingConsents entirely undefined.
+    // Case A: consents group entirely undefined.
     const ctxA: InlineConsentCtx = {};
     const wfA = makeWf();
     base.consent(ctxA, { consents: ["terms"] }, wfA);
     expect(wfA.lastCall).toBeUndefined();
-    expect(ctxA.acceptedConsentIds).toBeUndefined();
-    expect(ctxA.consentsDecidedAt).toBeUndefined();
-    // Case B: pendingConsents explicit empty array.
-    const ctxB: InlineConsentCtx = { pendingConsents: [] };
+    expect(ctxA.consents?.accepted).toBeUndefined();
+    expect(ctxA.consents?.decidedAt).toBeUndefined();
+    // Case B: consents.pending explicit empty array.
+    const ctxB: InlineConsentCtx = { consents: { pending: [] } };
     const wfB = makeWf();
     base.consent(ctxB, { consents: ["terms"] }, wfB);
     expect(wfB.lastCall).toBeUndefined();
-    expect(ctxB.acceptedConsentIds).toBeUndefined();
-    expect(ctxB.consentsDecidedAt).toBeUndefined();
+    expect(ctxB.consents?.accepted).toBeUndefined();
+    expect(ctxB.consents?.decidedAt).toBeUndefined();
   });
 
   it("HACK-CONSENT-03: silent-drop unknown ids — attacker cannot forge audit rows for never-displayed consents", () => {
     // WHY: load-bearing audit invariant. The server reads its own
-    // `pendingConsents` as the whitelist; any id in `input.consents`
+    // `consents.pending` as the whitelist; any id in `input.consents`
     // outside that set is silently dropped (NO error surfaced — surfacing
     // would leak the consent universe to a probing attacker). A regression
     // that propagated client-supplied ids straight through to
-    // `acceptedConsentIds` would let an attacker submit
+    // `consents.accepted` would let an attacker submit
     // `consents: ['terms', 'gdpr-forged', 'phishy-extra']` and forge audit
     // records for consents they were never shown — breaking the
     // "what user saw is what server records" guarantee.
     const base = new ExposedBase();
     const ctx: InlineConsentCtx = {
-      pendingConsents: [{ id: "terms", text: "Accept the Terms" }],
+      consents: { pending: [{ id: "terms", text: "Accept the Terms" }] },
     };
     const wf = makeWf();
     base.consent(ctx, { consents: ["terms", "gdpr-forged", "phishy-extra"] }, wf);
     // No error surfaced — defense is silent (no signal back to the client).
     expect(wf.lastCall).toBeUndefined();
     // Only the valid id rides through; forged ids dropped on the floor.
-    expect(ctx.acceptedConsentIds).toEqual(["terms"]);
+    expect(ctx.consents?.accepted).toEqual(["terms"]);
   });
 
   it("HACK-CONSENT-04: missing required descriptor → requireInput throws with the descriptor's `required` STRING as error copy", () => {
@@ -236,13 +239,15 @@ describe("AuthWorkflowBase.processInlineConsent — security gates (HACK-CONSENT
     // error.
     const base = new ExposedBase();
     const ctx: InlineConsentCtx = {
-      pendingConsents: [
-        {
-          id: "terms",
-          text: "Accept the Terms",
-          required: "Privacy Policy acceptance is mandatory",
-        },
-      ],
+      consents: {
+        pending: [
+          {
+            id: "terms",
+            text: "Accept the Terms",
+            required: "Privacy Policy acceptance is mandatory",
+          },
+        ],
+      },
     };
     const wf = makeWf();
     expect(() => base.consent(ctx, { consents: [] }, wf)).toThrow();
@@ -250,8 +255,8 @@ describe("AuthWorkflowBase.processInlineConsent — security gates (HACK-CONSENT
       consents: "Privacy Policy acceptance is mandatory",
     });
     // State must NOT mutate on the throw path.
-    expect(ctx.acceptedConsentIds).toBeUndefined();
-    expect(ctx.consentsDecidedAt).toBeUndefined();
+    expect(ctx.consents?.accepted).toBeUndefined();
+    expect(ctx.consents?.decidedAt).toBeUndefined();
   });
 
   it("HACK-CONSENT-05: required with empty input.consents undefined → same throw as empty array (treats missing as empty)", () => {
@@ -263,7 +268,9 @@ describe("AuthWorkflowBase.processInlineConsent — security gates (HACK-CONSENT
     // silently accept the workflow with no recorded acceptance.
     const base = new ExposedBase();
     const ctx: InlineConsentCtx = {
-      pendingConsents: [{ id: "terms", text: "Accept Terms", required: "must accept" }],
+      consents: {
+        pending: [{ id: "terms", text: "Accept Terms", required: "must accept" }],
+      },
     };
     const wf = makeWf();
     expect(() => base.consent(ctx, {}, wf)).toThrow();
@@ -279,20 +286,22 @@ describe("AuthWorkflowBase.processInlineConsent — security gates (HACK-CONSENT
     // silently make every empty-string descriptor mandatory.
     const base = new ExposedBase();
     const ctx: InlineConsentCtx = {
-      pendingConsents: [
-        { id: "marketing", text: "Marketing", required: "" },
-        { id: "research", text: "Research", required: undefined },
-      ],
+      consents: {
+        pending: [
+          { id: "marketing", text: "Marketing", required: "" },
+          { id: "research", text: "Research", required: undefined },
+        ],
+      },
     };
     const wf = makeWf();
     // Submit nothing — both descriptors are optional.
     base.consent(ctx, { consents: [] }, wf);
     expect(wf.lastCall).toBeUndefined();
-    expect(ctx.acceptedConsentIds).toEqual([]);
-    expect(typeof ctx.consentsDecidedAt).toBe("number");
+    expect(ctx.consents?.accepted).toEqual([]);
+    expect(typeof ctx.consents?.decidedAt).toBe("number");
   });
 
-  it("happy path: all required satisfied, optional ticked → acceptedConsentIds reflects the validated subset; consentsDecidedAt stamped", () => {
+  it("happy path: all required satisfied, optional ticked → consents.accepted reflects the validated subset; consents.decidedAt stamped", () => {
     // WHY: positive control alongside the HACK-CONSENT-* negatives.
     // Without this, a refactor that closes the gates unconditionally
     // (over-defending) would pass every HACK-CONSENT test while breaking
@@ -300,22 +309,24 @@ describe("AuthWorkflowBase.processInlineConsent — security gates (HACK-CONSENT
     // ticked, intersected with the server-owned whitelist.
     const base = new ExposedBase();
     const ctx: InlineConsentCtx = {
-      pendingConsents: [
-        { id: "terms", text: "Terms", required: "Required" },
-        { id: "marketing", text: "Marketing" },
-        { id: "research", text: "Research" },
-      ],
+      consents: {
+        pending: [
+          { id: "terms", text: "Terms", required: "Required" },
+          { id: "marketing", text: "Marketing" },
+          { id: "research", text: "Research" },
+        ],
+      },
     };
     const wf = makeWf();
     base.consent(ctx, { consents: ["terms", "research"] }, wf);
     expect(wf.lastCall).toBeUndefined();
-    expect(ctx.acceptedConsentIds).toEqual(["terms", "research"]);
+    expect(ctx.consents?.accepted).toEqual(["terms", "research"]);
     // Timestamp captured at acceptance moment (the load-bearing "user-
     // action time" semantic — survives paused-workflow resume gaps).
-    expect(typeof ctx.consentsDecidedAt).toBe("number");
+    expect(typeof ctx.consents?.decidedAt).toBe("number");
   });
 
-  it("consentsDecidedAt captured at helper-run time (not at persist-step time)", () => {
+  it("consents.decidedAt captured at helper-run time (not at persist-step time)", () => {
     // WHY (Rule 9): the batched `consentStore.save(username, events)`
     // receives `at` per event — the WHY of that field is "when the user
     // actually clicked submit", which must survive a paused-workflow
@@ -326,13 +337,13 @@ describe("AuthWorkflowBase.processInlineConsent — security gates (HACK-CONSENT
     // exact equality — we're verifying the INTENT, not the WHAT).
     const base = new ExposedBase();
     const ctx: InlineConsentCtx = {
-      pendingConsents: [{ id: "terms", text: "Terms" }],
+      consents: { pending: [{ id: "terms", text: "Terms" }] },
     };
     const wf = makeWf();
     const before = Date.now();
     base.consent(ctx, { consents: ["terms"] }, wf);
     const after = Date.now();
-    expect(ctx.consentsDecidedAt).toBeGreaterThanOrEqual(before);
-    expect(ctx.consentsDecidedAt).toBeLessThanOrEqual(after);
+    expect(ctx.consents?.decidedAt).toBeGreaterThanOrEqual(before);
+    expect(ctx.consents?.decidedAt).toBeLessThanOrEqual(after);
   });
 });

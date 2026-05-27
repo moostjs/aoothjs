@@ -27,7 +27,7 @@ test.beforeEach(async ({ request }) => {
 
 test.describe("LoginWorkflow / variant=consent-array (Phase 5 dynamic consent)", () => {
   // WHY (Rule 9): pins the full Phase-5 round-trip: ConsentStore.getPendingConsents
-  // → ctx.pendingConsents → AsConsentArray renders one row per descriptor →
+  // → ctx.consents.pending → AsConsentArray renders one row per descriptor →
   // user submits the validated subset via the dynamic `consents: string[]`
   // field → server-side processInlineConsent silent-drops unknown ids +
   // throws form-error on missing-required → persist-consents writes one

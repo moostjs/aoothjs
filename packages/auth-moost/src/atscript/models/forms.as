@@ -4,21 +4,22 @@
  * Carrier forms `extends WithInlineConsentForm` to inherit it without
  * duplication.
  *
- * Backend transport: `@wf.context.pass 'pendingConsents'` ships the
- * descriptor array (set by the `prepare-consents` @Step from
+ * Backend transport: `@wf.context.pass 'consents'` ships the
+ * `AuthWfConsentsState` group (set by the `prepare-consents` @Step from
  * `ConsentStore.getPendingConsents()`) to the client. The
- * `@ui.form.fn.attr 'pendingConsents'` expression below binds it onto the
- * `AsConsentArray` component (`@atscript/vue-aooth`) which renders one
- * checkbox per descriptor; the user-submitted `string[]` carries back the
- * SUBSET of `descriptor.id`s the user ticked.
+ * `@ui.form.fn.attr 'pendingConsents'` expression below binds
+ * `ctx.consents?.pending` onto the `AsConsentArray` component
+ * (`@atscript/vue-aooth`) which renders one checkbox per descriptor; the
+ * user-submitted `string[]` carries back the SUBSET of `descriptor.id`s the
+ * user ticked.
  *
- * SPA-side hide-when-empty: `AsConsentArray` self-hides when
- * `pendingConsents` is empty / unset — no `@ui.form.fn.hidden` is needed
- * on the field. A carrier form whose customer hasn't configured any
+ * SPA-side hide-when-empty: `AsConsentArray` self-hides when its
+ * `pendingConsents` prop is empty / unset — no `@ui.form.fn.hidden` is
+ * needed on the field. A carrier form whose customer hasn't configured any
  * pending consents renders WITHOUT this block.
  *
  * SECURITY (silent-drop): the server-side `processInlineConsent` helper
- * uses its OWN `ctx.pendingConsents` as the authoritative whitelist; any
+ * uses its OWN `ctx.consents.pending` as the authoritative whitelist; any
  * id submitted by the client outside that set is silently dropped (audit
  * invariant — see helper rationale). The client cannot forge audit rows
  * by submitting ids it was never shown.
@@ -29,12 +30,11 @@
  * Absent / empty ⇒ optional (the `ConsentEvent.accepted` boolean lets
  * customers persist the un-ticked-optional decision for audit).
  */
-@wf.context.pass 'pendingConsents'
-@wf.context.pass 'consentsPersisted'
+@wf.context.pass 'consents'
 export interface WithInlineConsentForm {
     @meta.label 'Pending consents'
     @ui.form.component 'AsConsentArray'
-    @ui.form.fn.attr 'pendingConsents', '(_, _d, ctx) => ctx.pendingConsents'
+    @ui.form.fn.attr 'pendingConsents', '(_, _d, ctx) => ctx.consents?.pending'
     @ui.form.grid.colSpan '12'
     consents: string[]
 }
@@ -184,8 +184,7 @@ export interface EmailIdentifierForm {
 @wf.context.pass 'passwordChangeReason'
 @wf.context.pass 'passwordFormHeading'
 @wf.context.pass 'passwordFormIntro'
-@wf.context.pass 'pendingConsents'
-@wf.context.pass 'consentsPersisted'
+@wf.context.pass 'consents'
 export interface SetPasswordForm extends WithInlineConsentForm {
     /**
      * Phantom intro paragraph — pairs with the form's dynamic
@@ -364,8 +363,7 @@ export interface PincodeForm {
  */
 @meta.label 'Add your email address'
 @meta.description 'We need a verified email to send security notifications and verification codes.'
-@wf.context.pass 'pendingConsents'
-@wf.context.pass 'consentsPersisted'
+@wf.context.pass 'consents'
 @wf.context.pass 'otpDisclosure'
 export interface AskEmailForm extends WithInlineConsentForm {
     @ui.form.order 10
@@ -382,8 +380,7 @@ export interface AskEmailForm extends WithInlineConsentForm {
  */
 @meta.label 'Add your phone number'
 @meta.description 'We need a verified phone to send security notifications and verification codes.'
-@wf.context.pass 'pendingConsents'
-@wf.context.pass 'consentsPersisted'
+@wf.context.pass 'consents'
 @wf.context.pass 'otpDisclosure'
 export interface AskPhoneForm extends WithInlineConsentForm {
     @ui.form.order 10
@@ -491,8 +488,7 @@ export interface EnrollConfirmForm {
  */
 @meta.label 'Complete your profile'
 @meta.description 'Add a few details before you continue.'
-@wf.context.pass 'pendingConsents'
-@wf.context.pass 'consentsPersisted'
+@wf.context.pass 'consents'
 export interface ProfileCompleteForm extends WithInlineConsentForm {
     @ui.form.order 10
     @ui.form.type 'text'
@@ -516,8 +512,7 @@ export interface ProfileCompleteForm extends WithInlineConsentForm {
  */
 @meta.label 'Updated terms and policies'
 @meta.description 'Please review and accept the updated terms to continue.'
-@wf.context.pass 'pendingConsents'
-@wf.context.pass 'consentsPersisted'
+@wf.context.pass 'consents'
 export interface TermsBumpForm extends WithInlineConsentForm {
 }
 

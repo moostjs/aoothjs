@@ -4,7 +4,7 @@
  * Phase 1 landed the `ConsentStore` DI seam; Phase 2 wired the
  * `persist-consents` step body to `consentStore.save(username, events)`.
  * Phase 4 added the `prepare-consents` @Step that populates
- * `ctx.pendingConsents` from `ConsentStore.getPendingConsents`. Phase 5
+ * `ctx.consents?.pending` from `ConsentStore.getPendingConsents`. Phase 5
  * replaces the static `acceptedTerms`/`marketingOptIn` carrier-form pair
  * with a single dynamic `consents: string[]` field rendered by
  * `AsConsentArray` (`@atscript/vue-aooth`).
@@ -12,7 +12,7 @@
  * The inline-consent surface is `SetPasswordForm` (the guaranteed carrier
  * form on invite's accept tail) which `extends WithInlineConsentForm`. The
  * new `processInlineConsent` call inside `createPasswordForm` validates the
- * submitted ids against the server-owned `ctx.pendingConsents` whitelist
+ * submitted ids against the server-owned `ctx.consents?.pending` whitelist
  * (silent-drop unknown, throw on missing-required), and the
  * `persist-consents` step persists ONE event per pending descriptor
  * (audit-friendly default — declined-optional consents persisted with
@@ -222,7 +222,7 @@ describe("InviteWorkflow — inline-consent persist seam (Phase 5)", () => {
     // WHY (Rule 9): the step MUST be idempotent — a paused-workflow that
     // resumes through `persist-consents` a second time (or schema
     // re-iteration) must not double-write consents. The
-    // `if (ctx.consentsPersisted) return undefined` guard at the top of the
+    // `if (ctx.consents?.persisted) return undefined` guard at the top of the
     // step body is the load-bearing defense. Pinned via a subclass that
     // calls `super.persistConsentsStep` TWICE inside its override — the
     // second call must short-circuit on the guard.
@@ -271,7 +271,7 @@ describe("InviteWorkflow — inline-consent persist seam (Phase 5)", () => {
 
 /**
  * `ConsentStore` subclass that captures every `getPendingConsents` invocation
- * AND lets a test seed the return value. Used by the Phase-4 ctx.pendingConsents
+ * AND lets a test seed the return value. Used by the Phase-4 ctx.consents?.pending
  * transport tests.
  */
 @Injectable()
@@ -292,7 +292,7 @@ class RecordingConsentStore extends ConsentStore {
 
 /**
  * Build an `InviteWorkflow` subclass that stashes post-prepareConsents ctx onto
- * the supplied slot so tests can read `ctx.pendingConsents` directly (the wf
+ * the supplied slot so tests can read `ctx.consents?.pending` directly (the wf
  * engine's finished-response envelopes don't echo full ctx).
  */
 function makeCtxCapturingInvite(captured: { ctx?: InviteWfCtx }): typeof InviteWorkflow {
@@ -323,8 +323,8 @@ function makeCtxCapturingInvite(captured: { ctx?: InviteWfCtx }): typeof InviteW
   return CtxCapturingInvite;
 }
 
-describe("InviteWorkflow — prepare-consents @Step + ctx.pendingConsents transport (Phase 4)", () => {
-  it("INVITE-PENDING-CONSENTS-01: default no-op ConsentStore → ctx.pendingConsents is [] (always array, never undefined)", async () => {
+describe("InviteWorkflow — prepare-consents @Step + ctx.consents.pending transport (Phase 4)", () => {
+  it("INVITE-PENDING-CONSENTS-01: default no-op ConsentStore → ctx.consents.pending is [] (always array, never undefined)", async () => {
     // WHY: pins the "always array, never undefined" contract for Phase 5
     // carrier-form gates on invite's SetPasswordForm. Without the default
     // empty-array invariant, every Phase-5 form condition would need a
@@ -336,8 +336,8 @@ describe("InviteWorkflow — prepare-consents @Step + ctx.pendingConsents transp
     });
     await inviteUntilSetPassword(app, "fred@test.com");
     expect(captured.ctx).toBeTruthy();
-    expect(captured.ctx!.pendingConsents).toEqual([]);
-    expect(Array.isArray(captured.ctx!.pendingConsents)).toBe(true);
+    expect(captured.ctx!.consents?.pending).toEqual([]);
+    expect(Array.isArray(captured.ctx!.consents?.pending)).toBe(true);
   });
 
   it("INVITE-PENDING-CONSENTS-WORKFLOW-ARG-01: prepare-consents calls getPendingConsents with {workflow: 'auth/invite/start'}", async () => {

@@ -280,39 +280,23 @@ interface PinCtx {
 /**
  * Structural ctx shape consumed by `processInlineConsent`. Mirrors the
  * relevant subset of the workflow ctx types so the helper stays
- * workflow-agnostic. The helper consumes only the dynamic `pendingConsents`
- * descriptor array (populated by `prepare-consents` from
- * `ConsentStore.getPendingConsents()`) and the per-run booking fields it
- * writes itself — the prior static `acceptance` / `termsVersion` branches
- * were retired in Phase 6 along with the matching `ctx.acceptance` field
- * on each workflow ctx type.
+ * workflow-agnostic. The helper consumes only the dynamic
+ * `consents.pending` descriptor array (populated by `prepare-consents`
+ * from `ConsentStore.getPendingConsents()`) and the per-run booking
+ * fields it writes back onto `ctx.consents` — the prior static
+ * `acceptance` / `termsVersion` branches were retired in Phase 6
+ * along with the matching `ctx.acceptance` field on each workflow
+ * ctx type.
  */
 export interface InlineConsentCtx {
   /**
-   * Descriptors the user still needs to be prompted for — set once by
-   * `prepare-consents` after username-bind. Empty / unset ⇒ no consents to
-   * collect (helper short-circuits).
+   * Group state for the inline consent block. `pending` is the
+   * server-owned whitelist seeded by `prepare-consents`; `accepted`
+   * and `decidedAt` are set by `processInlineConsent` after silent-
+   * dropping unknown ids; `persisted` is flipped by `persist-consents`
+   * after the batched `consentStore.save` call.
    */
-  pendingConsents?: ConsentDescriptorLike[];
-  /**
-   * Subset of descriptor ids the user ticked on the carrier form. Set by
-   * `processInlineConsent` after silent-dropping unknown ids — `pendingConsents`
-   * is the server's whitelist, NOT what the client posts.
-   */
-  acceptedConsentIds?: string[];
-  /**
-   * Wall-clock ms at the moment `processInlineConsent` resolved the
-   * `consents` array. Captured here so the persisted `ConsentEvent.at`
-   * reflects user-action time, not write-time — surviving a paused
-   * workflow's resume gap.
-   */
-  consentsDecidedAt?: number;
-  /**
-   * Set true by `persist-consents` after the batched `consentStore.save`
-   * call fires (or after the step short-circuits with no pending consents).
-   * Gates the helper from re-staging on a subsequent carrier-form submission.
-   */
-  consentsPersisted?: boolean;
+  consents?: AuthWfConsentsState;
 }
 
 /**
@@ -333,8 +317,8 @@ export interface ConsentDescriptorLike {
  * Phase 5 replaces the pre-existing static `{ acceptedTerms?, marketingOptIn? }`
  * pair with a single dynamic `consents: string[]` — the SUBSET of descriptor
  * ids the user ticked in the `AsConsentArray` (`@atscript/vue-aooth`)
- * component. The server reads `pendingConsents` from its own ctx (NOT from
- * this input) to decide which ids are valid; unknown ids are silently
+ * component. The server reads `ctx.consents.pending` from its own ctx (NOT
+ * from this input) to decide which ids are valid; unknown ids are silently
  * dropped (audit-grade defense — see helper rationale).
  */
 export interface InlineConsentInput {
@@ -473,7 +457,7 @@ export abstract class AuthWorkflowBase {
   /**
    * Validate + stash inline-consent fields submitted on a carrier form.
    *
-   * SECURITY (silent-drop): the server reads its OWN `ctx.pendingConsents`
+   * SECURITY (silent-drop): the server reads its OWN `ctx.consents.pending`
    * (set once by `prepare-consents` from `ConsentStore.getPendingConsents()`)
    * as the authoritative whitelist of valid descriptor ids. Any id in the
    * user-submitted `input.consents` array that does NOT match a current
@@ -495,24 +479,24 @@ export abstract class AuthWorkflowBase {
    * un-ticked descriptor is still persisted as `{accepted: false}` (audit
    * default — proves the user was asked).
    *
-   * Idempotency: once `ctx.consentsPersisted` is true, the helper is a
-   * no-op. Same for `ctx.pendingConsents` being empty / unset — no
+   * Idempotency: once `ctx.consents.persisted` is true, the helper is a
+   * no-op. Same for `ctx.consents.pending` being empty / unset — no
    * pending = nothing to validate (the carrier-form's `AsConsentArray`
-   * also self-hides on empty `pendingConsents`).
+   * also self-hides on empty `pending`).
    */
   protected processInlineConsent(
     ctx: InlineConsentCtx,
     input: InlineConsentInput,
     wf: WfRequireInputOnly,
   ): void {
-    if (ctx.consentsPersisted) return;
+    if (ctx.consents?.persisted) return;
     // Already-collected guard: a later carrier form on the same workflow
     // run MUST NOT re-validate consents (the user already ticked them on
     // the FIRST carrier form). Without this, ProfileCompleteForm's
     // inherited `consents` field would re-run required-checks against the
     // empty form payload and throw, breaking multi-carrier-form flows.
-    if (ctx.consentsDecidedAt !== undefined) return;
-    const pending = ctx.pendingConsents ?? [];
+    if (ctx.consents?.decidedAt !== undefined) return;
+    const pending = ctx.consents?.pending ?? [];
     if (pending.length === 0) return;
     // Server-side whitelist of valid ids. Any client-submitted id outside
     // this set is silently dropped (see SECURITY block above).
@@ -531,8 +515,9 @@ export abstract class AuthWorkflowBase {
         throw wf.requireInput({ errors: { consents: p.required } });
       }
     }
-    ctx.acceptedConsentIds = [...submitted];
-    ctx.consentsDecidedAt = Date.now();
+    const group = (ctx.consents ??= {});
+    group.accepted = [...submitted];
+    group.decidedAt = Date.now();
   }
 
   /**
@@ -542,10 +527,10 @@ export abstract class AuthWorkflowBase {
    * DI provider in a single call. Audit-friendly default: declined-optional
    * consents are persisted with `accepted: false` (customers who want only
    * accepted events filter in their `save()` override). `accepted` is
-   * derived per descriptor by `acceptedConsentIds.has(id)`. Idempotent via
-   * `ctx.consentsPersisted`; short-circuits with no events when
-   * `pendingConsents` is empty (defensive — the schema condition gates on
-   * `consentsDecidedAt` which is only set when pending was non-empty).
+   * derived per descriptor by `consents.accepted.has(id)`. Idempotent via
+   * `ctx.consents.persisted`; short-circuits with no events when
+   * `ctx.consents.pending` is empty (defensive — the schema condition gates on
+   * `ctx.consents.decidedAt` which is only set when pending was non-empty).
    *
    * Invoked by the inherited `@Step("persist-consents")` `persistConsentsStep`
    * method below — kept as a separate helper so subclass tests that override
@@ -556,26 +541,22 @@ export abstract class AuthWorkflowBase {
     consentStore: ConsentStore,
   ): Promise<undefined> {
     this.requireUsername(ctx);
-    if (ctx.consentsPersisted) {
-      (ctx.consents ??= {}).persisted = true;
-      return undefined;
-    }
-    const pending = ctx.pendingConsents ?? [];
+    const group = (ctx.consents ??= {});
+    if (group.persisted) return undefined;
+    const pending = group.pending ?? [];
     if (pending.length === 0) {
-      ctx.consentsPersisted = true;
-      (ctx.consents ??= {}).persisted = true;
+      group.persisted = true;
       return undefined;
     }
-    const accepted = new Set(ctx.acceptedConsentIds ?? []);
-    const at = ctx.consentsDecidedAt ?? Date.now();
+    const accepted = new Set(group.accepted ?? []);
+    const at = group.decidedAt ?? Date.now();
     const events: ConsentEvent[] = pending.map((p) => {
       const evt: ConsentEvent = { id: p.id, accepted: accepted.has(p.id), at };
       if (p.version !== undefined) evt.version = p.version;
       return evt;
     });
     await consentStore.save(ctx.username, events);
-    ctx.consentsPersisted = true;
-    (ctx.consents ??= {}).persisted = true;
+    group.persisted = true;
     return undefined;
   }
 
@@ -626,15 +607,12 @@ export abstract class AuthWorkflowBase {
     const result = this.consentStore.getPendingConsents(ctx.username, {
       workflow: this.consentsWorkflowId,
     });
-    // dual-write — flat alias removed in B1.4
     if (result instanceof Promise) {
       return result.then((resolved) => {
-        ctx.pendingConsents = resolved;
         (ctx.consents ??= {}).pending = resolved;
         return undefined;
       });
     }
-    ctx.pendingConsents = result;
     (ctx.consents ??= {}).pending = result;
     return undefined;
   }

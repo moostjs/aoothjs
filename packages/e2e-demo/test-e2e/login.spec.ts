@@ -759,7 +759,7 @@ test.describe("LoginWorkflow / variant=device-trust-no-optin (P1)", () => {
 
 test.describe("LoginWorkflow / variant=acceptance (P1)", () => {
   // BRANCH: post-Phase-5 the inline consent block is the dynamic
-  // `AsConsentArray` rendered against `ctx.pendingConsents` — for the
+  // `AsConsentArray` rendered against `ctx.consents?.pending` — for the
   // `acceptance` variant the customer ConsentStore returns a required-terms
   // descriptor so the workflow lands on `TermsBumpForm` after credentials
   // (no enrollment / no profile-complete on t1_frank). The user must tick
@@ -873,7 +873,7 @@ test.describe("LoginWorkflow / variant=acceptance (P1)", () => {
 
 test.describe("LoginWorkflow / variant=terms-bump (Phase 5 standalone consent re-prompt)", () => {
   // BRANCH: Phase 5 retains the standalone `terms-bump-prompt` @Step +
-  // `TermsBumpForm`. Fires when `ctx.pendingConsents.length > 0` AND no
+  // `TermsBumpForm`. Fires when `ctx.consents?.pending.length > 0` AND no
   // onboarding carrier form (askEmail / askPhone / setPassword /
   // profileComplete) collected consents during this login. The `terms-bump`
   // variant keys the customer ConsentStore to return a `v3` terms
@@ -1235,7 +1235,7 @@ test.describe("LoginWorkflow / variant=full (P2)", () => {
     // ProfileCompleteForm fields are `firstName?` / `lastName?` (optional) so
     // the AsForm renderer starts each as a "Not set" placeholder button — the
     // user clicks to enable, then types. NOTE: consents were captured on
-    // AskEmailForm earlier (`ctx.consentsDecidedAt` set), so even though the
+    // AskEmailForm earlier (`ctx.consents?.decidedAt` set), so even though the
     // inherited `AsConsentArray` field still rides on this form the helper's
     // idempotency gate is closed and the user doesn't have to re-tick.
     await expect(page.getByText("First name").first()).toBeVisible();

@@ -83,7 +83,7 @@ import { Controller, Inherit, Param } from "moost";
 
 import type { AuditEvent } from "../audit/index";
 import { AuthOpts } from "../auth.opts";
-import { type ConsentDescriptor, ConsentStore } from "../consent.store";
+import { ConsentStore } from "../consent.store";
 import { useAuth } from "../auth.composables";
 import { Public } from "../auth.decorator";
 import {
@@ -364,16 +364,6 @@ export interface LoginWfCtx extends AuthWfCtxBase {
   pinSentTo?: string;
   /** Flat alias for `ctx.pincode.timeout` — resend cooldown deadline. */
   pinTimeout?: number;
-
-  // Consents (mirrors `ctx.consents.*`):
-  /** Flat alias for `ctx.consents.pending`. */
-  pendingConsents?: ConsentDescriptor[];
-  /** Flat alias for `ctx.consents.accepted`. */
-  acceptedConsentIds?: string[];
-  /** Flat alias for `ctx.consents.decidedAt`. */
-  consentsDecidedAt?: number;
-  /** Flat alias for `ctx.consents.persisted`. */
-  consentsPersisted?: boolean;
 
   // Password-change UI (mirrors `ctx.password.*`):
   /** Flat alias for `ctx.password.changeReason`. */
@@ -1001,7 +991,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
 
     // Phase 6 acceptance / onboarding — dynamic consents (customer-defined
     // via `ConsentStore.getPendingConsents`, transported on
-    // `ctx.pendingConsents`) are captured via the inherited `consents:
+    // `ctx.consents.pending`) are captured via the inherited `consents:
     // string[]` field from `WithInlineConsentForm` on whichever carrier
     // onboarding form fires first (AskEmailForm / AskPhoneForm /
     // SetPasswordForm / ProfileCompleteForm). When no such carrier form
@@ -1020,13 +1010,15 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // Returning user with pending consents but no onboarding carrier form
     // ran to collect them. Standalone prompt rendering the dynamic
     // `AsConsentArray` on `TermsBumpForm`. Skips when an earlier carrier
-    // form already collected (consentsDecidedAt set) or when there are no
+    // form already collected (consents.decidedAt set) or when there are no
     // pending consents. `!ctx.aborted` is handled by the upstream
     // `{ break }` gate.
     {
       id: "terms-bump-prompt",
       condition: (ctx) =>
-        (ctx.pendingConsents?.length ?? 0) > 0 && !ctx.consentsDecidedAt && !ctx.consentsPersisted,
+        (ctx.consents?.pending?.length ?? 0) > 0 &&
+        !ctx.consents?.decidedAt &&
+        !ctx.consents?.persisted,
     },
     // Batched consent persistence — see `consentsPersistTailSchema` for rationale.
     ...consentsPersistTailSchema,
@@ -1339,13 +1331,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
     const askWf = useAtscriptWf(isEmail ? this.opts.forms.askEmail : this.opts.forms.askPhone);
     const input = askWf.resolveInput() as { email?: string; phone?: string } & InlineConsentInput;
     this.processInlineConsent(ctx, input, askWf);
-    // dual-write — flat alias removed in B1.4
-    if (ctx.acceptedConsentIds !== undefined) {
-      (ctx.consents ??= {}).accepted = ctx.acceptedConsentIds;
-    }
-    if (ctx.consentsDecidedAt !== undefined) {
-      (ctx.consents ??= {}).decidedAt = ctx.consentsDecidedAt;
-    }
     const value = (isEmail ? input.email : input.phone) as string;
     const methodName = isEmail ? "email" : "sms";
     const username = ctx.username;
@@ -1894,13 +1879,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
       throw err;
     }
     this.processInlineConsent(ctx, input, wf);
-    // dual-write — flat alias removed in B1.4
-    if (ctx.acceptedConsentIds !== undefined) {
-      (ctx.consents ??= {}).accepted = ctx.acceptedConsentIds;
-    }
-    if (ctx.consentsDecidedAt !== undefined) {
-      (ctx.consents ??= {}).decidedAt = ctx.consentsDecidedAt;
-    }
     ctx.passwordChanged = true;
     (ctx.completion ??= {}).passwordChanged = true;
     ctx.isPasswordInitial = false;
@@ -1928,13 +1906,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
       InlineConsentInput;
     this.requireUsername(ctx);
     this.processInlineConsent(ctx, input, wf);
-    // dual-write — flat alias removed in B1.4
-    if (ctx.acceptedConsentIds !== undefined) {
-      (ctx.consents ??= {}).accepted = ctx.acceptedConsentIds;
-    }
-    if (ctx.consentsDecidedAt !== undefined) {
-      (ctx.consents ??= {}).decidedAt = ctx.consentsDecidedAt;
-    }
     // Defense (audit hole #15 Sink A): strip privileged top-level
     // `UserCredentials` keys before handing off to `applyProfile`. The
     // form parser preserves unknown extras (`partial: "deep"`), and a
@@ -1977,13 +1948,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
     const wf = useAtscriptWf(this.opts.forms.termsBump);
     const input = wf.resolveInput() as InlineConsentInput;
     this.processInlineConsent(ctx, input, wf);
-    // dual-write — flat alias removed in B1.4
-    if (ctx.acceptedConsentIds !== undefined) {
-      (ctx.consents ??= {}).accepted = ctx.acceptedConsentIds;
-    }
-    if (ctx.consentsDecidedAt !== undefined) {
-      (ctx.consents ??= {}).decidedAt = ctx.consentsDecidedAt;
-    }
     return undefined;
   }
 

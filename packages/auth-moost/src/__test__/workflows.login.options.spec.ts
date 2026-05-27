@@ -1085,14 +1085,14 @@ class CapturingConsentStore extends ConsentStore {
   }
 }
 describe("LoginWorkflowOpts — Phase 5 dynamic inline consent (TERMS-INLINE / PERSIST-CONSENT)", () => {
-  it("TERMS-INLINE-01: pendingConsents[terms] + consents:['terms'] on AskEmailForm → ctx.acceptedConsentIds reflects the validated subset", async () => {
+  it("TERMS-INLINE-01: consents.pending[terms] + consents:['terms'] on AskEmailForm → ctx.consents.accepted reflects the validated subset", async () => {
     // WHY: the headline guarantee — the dynamic `consents: string[]` field
     // rides on the FIRST onboarding carrier form to fire. Without the
     // `processInlineConsent` call on AskEmailForm the submitted `consents`
     // array would be a stripped form-extra and the workflow would never
     // record acceptance. Asserts via a subclass override of `issue` that
     // captures ctx before workflow-finish state cleanup. The captured
-    // `acceptedConsentIds` is the load-bearing post-state — `consents`
+    // `consents.accepted` is the load-bearing post-state — `consents`
     // intersected with the server's pending whitelist.
     const captured: Array<{
       acceptedConsentIds?: string[];
@@ -1112,10 +1112,12 @@ describe("LoginWorkflowOpts — Phase 5 dynamic inline consent (TERMS-INLINE / P
       }
       override async issue(ctx: LoginWfCtx): Promise<void> {
         captured.push({
-          ...(ctx.acceptedConsentIds !== undefined && {
-            acceptedConsentIds: [...ctx.acceptedConsentIds],
+          ...(ctx.consents?.accepted !== undefined && {
+            acceptedConsentIds: [...ctx.consents.accepted],
           }),
-          ...(ctx.consentsDecidedAt !== undefined && { consentsDecidedAt: ctx.consentsDecidedAt }),
+          ...(ctx.consents?.decidedAt !== undefined && {
+            consentsDecidedAt: ctx.consents.decidedAt,
+          }),
         });
         return super.issue(ctx);
       }
@@ -1286,7 +1288,7 @@ describe("LoginWorkflowOpts — Phase 5 dynamic inline consent (TERMS-INLINE / P
     // WHY (Rule 9): the step MUST be idempotent — a paused-workflow that
     // resumes through the `persist-consents` step a second time (or
     // schema re-iteration) must not double-write consents. The
-    // `if (ctx.consentsPersisted) return undefined` guard at the top of
+    // `if (ctx.consents?.persisted) return undefined` guard at the top of
     // the step body is the load-bearing defense. A regression that drops
     // the guard would silently double-write consent records, polluting
     // audit logs. Pinned via a call counter on the store + a subclass that
@@ -1539,8 +1541,8 @@ describe("LoginWorkflowOpts — Phase 5 dynamic inline consent (TERMS-INLINE / P
   it("BUMP-PROMPT-02: carrier form already captured consents → terms-bump-prompt SKIPPED (condition short-circuit)", async () => {
     // WHY: pins the schema-condition short-circuit. When an onboarding
     // carrier form already captured consents via `WithInlineConsentForm`
-    // (`ctx.consentsDecidedAt` set), the standalone bump-prompt condition
-    // `!ctx.consentsDecidedAt` is false and the step is SKIPPED — the
+    // (`ctx.consents?.decidedAt` set), the standalone bump-prompt condition
+    // `!ctx.consents?.decidedAt` is false and the step is SKIPPED — the
     // user must not see a second consent prompt for the same acceptance.
     // Asserted via a step-body call counter that stays at zero (distinct
     // from "entered then early-returned").
@@ -2949,7 +2951,7 @@ describe("LoginWorkflow — OTP disclosure + recordOtpChannelConsent hook", () =
 /**
  * Build a `LoginWorkflow` subclass that calls `super.prepareConsents(ctx)` and
  * stashes the post-call ctx onto the supplied `captured` slot. Lets Phase-4
- * tests inspect `ctx.pendingConsents` directly — the wf engine's persisted
+ * tests inspect `ctx.consents?.pending` directly — the wf engine's persisted
  * state store is internal (no `dump()`), and finished responses don't echo
  * full ctx, so a subclass-stash is the cleanest read surface.
  */
@@ -2981,10 +2983,10 @@ function makeCtxCapturingLogin(captured: { ctx?: LoginWfCtx }): typeof LoginWork
   return CtxCapturingLogin;
 }
 
-describe("LoginWorkflow — prepare-consents @Step → ctx.pendingConsents transport (Phase 4)", () => {
-  it("PENDING-CONSENTS-01: default no-op ConsentStore → ctx.pendingConsents is [] (always array, never undefined)", async () => {
+describe("LoginWorkflow — prepare-consents @Step → ctx.consents.pending transport (Phase 4)", () => {
+  it("PENDING-CONSENTS-01: default no-op ConsentStore → ctx.consents.pending is [] (always array, never undefined)", async () => {
     // WHY (Rule 9): the "always populated, even when empty" contract enables
-    // Phase 5 carrier forms to read `ctx.pendingConsents.length > 0` without
+    // Phase 5 carrier forms to read `ctx.consents.pending.length > 0` without
     // the type-system fork between `undefined` (step skipped / errored) and
     // `[]` (step ran, no consents needed). A regression that left ctx
     // un-touched on the empty-array path would force every Phase-5 form
@@ -3000,13 +3002,13 @@ describe("LoginWorkflow — prepare-consents @Step → ctx.pendingConsents trans
     const r2 = await startAndCredentials(app, "alice", "Password123");
     expect((r2.body?.data as Record<string, unknown>)?.userId).toBe("alice");
     expect(captured.ctx).toBeTruthy();
-    expect(captured.ctx!.pendingConsents).toEqual([]);
+    expect(captured.ctx!.consents?.pending).toEqual([]);
     // Belt-and-brace: `[]` is the empty-array literal, NOT `undefined`. A
     // regression that left the field unset would fail this strict check.
-    expect(Array.isArray(captured.ctx!.pendingConsents)).toBe(true);
+    expect(Array.isArray(captured.ctx!.consents?.pending)).toBe(true);
   });
 
-  it("PENDING-CONSENTS-02: customer override returns 2 descriptors → ctx.pendingConsents is the exact array (transport contract)", async () => {
+  it("PENDING-CONSENTS-02: customer override returns 2 descriptors → ctx.consents.pending is the exact array (transport contract)", async () => {
     // WHY: pins the round-trip from customer override → ctx without mutation.
     // Phase 5 carrier forms will project these descriptors onto form fields;
     // any regression that filtered, re-shaped, or mutated the array between
@@ -3026,14 +3028,14 @@ describe("LoginWorkflow — prepare-consents @Step → ctx.pendingConsents trans
     });
     await seedActiveUser(app.users, "alice", "Password123");
     await startAndCredentials(app, "alice", "Password123");
-    expect(captured.ctx!.pendingConsents).toHaveLength(2);
-    expect(captured.ctx!.pendingConsents![0]).toEqual({
+    expect(captured.ctx!.consents?.pending).toHaveLength(2);
+    expect(captured.ctx!.consents?.pending![0]).toEqual({
       id: "terms",
       text: "Accept the terms",
       required: "Terms required",
       version: "v3",
     });
-    expect(captured.ctx!.pendingConsents![1]).toEqual({
+    expect(captured.ctx!.consents?.pending![1]).toEqual({
       id: "marketing",
       text: "Receive marketing emails",
     });
@@ -3067,8 +3069,8 @@ describe("LoginWorkflow — prepare-consents @Step → ctx.pendingConsents trans
     await seedActiveUser(app.users, "alice", "Password123");
     await startAndCredentials(app, "alice", "Password123");
     // The async override's value is unwrapped onto ctx — not a Promise.
-    expect(captured.ctx!.pendingConsents).toHaveLength(1);
-    expect(captured.ctx!.pendingConsents![0].id).toBe("jurisdiction-gdpr");
+    expect(captured.ctx!.consents?.pending).toHaveLength(1);
+    expect(captured.ctx!.consents?.pending![0].id).toBe("jurisdiction-gdpr");
   });
 
   it("PENDING-CONSENTS-WORKFLOW-ARG-01: customer override receives {workflow: 'auth/login/flow'} as the ctx arg (no channel — workflow-only in Phase 4)", async () => {
@@ -3141,6 +3143,6 @@ describe("LoginWorkflow — prepare-consents @Step → ctx.pendingConsents trans
     // would return a Promise here.
     expect(result).toBeUndefined();
     expect(consentStore.pendingCalls).toHaveLength(0);
-    expect(ctx.pendingConsents).toBeUndefined();
+    expect(ctx.consents?.pending).toBeUndefined();
   });
 });

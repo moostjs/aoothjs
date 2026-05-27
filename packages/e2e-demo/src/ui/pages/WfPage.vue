@@ -40,7 +40,7 @@ const types = createDefaultTypes();
 // Custom carrier-form components registered via `<AsWfForm :components>` →
 // `<AsForm :components>`. `AsConsentArray` (from `@atscript/vue-aooth`) is
 // the renderer for the `WithInlineConsentForm.consents: string[]` field —
-// it self-hides when `ctx.pendingConsents` is empty. `AsPasswordRules`
+// it self-hides when `ctx.consents.pending` is empty. `AsPasswordRules`
 // renders the live password-policy fulfillment readout on
 // `SetPasswordForm.passwordRules` — its `policies` attr binds to
 // `ctx.passwordPolicies` (Phase 7) and its `password` attr re-reads
