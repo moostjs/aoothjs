@@ -474,12 +474,15 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     // Abort gate — verify-factor 'backToLogin' alt-action sets ctx.aborted.
     { break: (ctx) => !!ctx.aborted },
 
-    // Set password — gated on the chosen branch having completed.
+    // Set password — gated on the chosen branch having completed. The
+    // gate condition is stable for the duration (linkSent / otp.verified /
+    // factorVerified are one-way flips), so it's hoisted onto a subflow
+    // wrapping the `prepare-password-rules` → `set-password` pair.
     {
-      id: "set-password",
       condition: (ctx) =>
         (!!ctx.delivery?.linkSent || !!ctx.otp?.verified) &&
         (!ctx.preReset?.requireKnownFactor || !!ctx.preReset?.factorVerified),
+      steps: [{ id: "prepare-password-rules" }, { id: "set-password" }],
     },
     // No abort path from set-password anymore — SetPasswordForm has no
     // alt-actions. The `{ break }` gate is retained so any prior step that
@@ -824,14 +827,11 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
 
     const rawFormData = useWfState().input<{ formData?: unknown }>()?.formData;
     if (rawFormData === undefined) {
-      // First entry: seed policy rules onto ctx BEFORE building requireInput
-      // so the wfState.ctx() snapshot the engine sends with the
-      // inputRequired envelope includes them. SetPasswordForm declares
-      // `@wf.context.pass 'password'` so the engine surfaces the
-      // group to the client. Mirrors the peek-then-throw-fresh pattern used
-      // in `request` — the previous catch-and-rethrow snapshotted
-      // ctx PRE-mutation, so the policies never reached the client.
-      password.policies = this.users.getTransferablePolicies();
+      // First entry: pause for the user to submit the form. Policy rules
+      // are already on `ctx.password.policies` (written by the preceding
+      // `prepare-password-rules` @Step inherited from `AuthWorkflowBase`),
+      // so the inputRequired envelope's `wfState.ctx()` snapshot carries
+      // them via `@wf.context.pass 'password'`.
       throw wf.requireInput();
     }
     const input = wf.resolveInput() as {
