@@ -78,6 +78,7 @@ import {
   type ResolvedInviteWorkflowOpts,
 } from "./invite.workflow.options";
 import {
+  type AuthWfCtxBase,
   AuthWorkflowBase,
   type InlineConsentInput,
   type MfaEnrollDeps,
@@ -85,7 +86,7 @@ import {
 } from "./auth-workflow.base";
 import type { DeliverPayload } from "./login.workflow";
 
-export interface InviteWfCtx {
+export interface InviteWfCtx extends AuthWfCtxBase {
   // Resolved policy (populated by prepare-* steps; reads via resolveXxx() getters):
   adminForm?: { collectRoles: boolean };
   accept?: {
@@ -108,9 +109,6 @@ export interface InviteWfCtx {
    * `admin-form` to reject admin-submitted roles outside the list.
    */
   availableRoles?: string[];
-  email?: string;
-  /** Typically same as `email`; consumers can override the mapping. */
-  username?: string;
   roles?: string[];
   /**
    * Extras dict prepared by `build-user-extras` (calls `prepareUser`) and
@@ -127,14 +125,6 @@ export interface InviteWfCtx {
   /** Detected at `check-pending-invitation`; triggers `idempotent-redirect`. */
   alreadyAccepted?: boolean;
   passwordSet?: boolean;
-  // MFA enrollment state (mirrors LoginWfCtx fields used by the shared
-  // `enrollPickPhase` / `enrollAddressPhase` / `enrollConfirmPhase` helpers
-  // on `AuthWorkflowBase`).
-  enrollMethod?: "sms" | "email" | "totp";
-  enrollAddress?: string;
-  enrollSecret?: string;
-  enrollUri?: string;
-  enrollAvailableTransports?: Array<"sms" | "email" | "totp">;
   /**
    * MFA policy (set by `inviteSetupMfa` setter — overridable per consumer).
    *   - `'required'` — invitee MUST enroll a second factor BEFORE activation.
@@ -144,50 +134,45 @@ export interface InviteWfCtx {
   mfaMode?: "required" | "optional" | "disabled";
   /** Available MFA transports (set by `inviteSetupMfa` setter — overridable per consumer). */
   availableMfaTransports?: Array<"sms" | "email" | "totp">;
-  /**
-   * Mirror of `ctx.mfaMode` (only set when not `'disabled'`). Surfaced to
-   * `EnrollPickMethodForm` via `@wf.context.pass` so the `skip` action can
-   * hide unless mode is `'optional'`.
-   */
-  enrollMode?: "required" | "optional";
-  enrollDone?: boolean;
-  /** Phase 3 confirm-pincode resend cooldown (sms/email). See `MfaEnrollCtx.enrollPincodeCooldown`. */
-  enrollPincodeCooldown?: number;
-  /** Pincode scratch shared with the enrollment helper. */
-  pin?: string;
-  pinExpire?: number;
-  pinSentTo?: string;
   /** Raw input from `collect-profile`. */
   profile?: Record<string, unknown>;
   profileApplied?: boolean;
   pendingInvitationCleared?: boolean;
   activated?: boolean;
   confirmationShown?: boolean;
-  tokensIssued?: boolean;
 
-  // Inline-consent state (mirrors LoginWfCtx — populated by
-  // `processInlineConsent` when the carrier `SetPasswordForm` is submitted
-  // and consumed by the `persist-consents` step at the end of the accept
-  // tail):
-  /**
-   * Subset of `pendingConsents[].id` the user ticked — set by
-   * `processInlineConsent` after silent-dropping unknown ids.
-   */
-  acceptedConsentIds?: string[];
-  /**
-   * Wall-clock ms when `processInlineConsent` resolved the carrier-form
-   * submission. Also the schema-gate for `persist-consents`.
-   */
-  consentsDecidedAt?: number;
-  /** Set true by `persist-consents` after the batched `consentStore.save` call fires. */
-  consentsPersisted?: boolean;
-  /**
-   * Descriptors for the customer-defined consents (terms, marketing,
-   * jurisdiction, ...) the user still needs to accept. Populated once by
-   * `prepare-consents` after username-bind; consumed by `WithInlineConsentForm`'s
-   * dynamic `AsConsentArray` field on the carrier form (Phase 5).
-   */
+  // ── Flat aliases (compat) — removed in B1.4 once forms.as migrates to nested ──
+  // Each one mirrors a `ctx.<group>.<field>` on `AuthWfCtxBase` via dual-write
+  // in the step bodies below; kept here for forms.as `@wf.context.pass 'flatKey'`
+  // compat. Type-safe consumers should read the nested form.
+  /** Flat alias for `ctx.mfaEnroll.method`. */
+  enrollMethod?: "sms" | "email" | "totp";
+  /** Flat alias for `ctx.mfaEnroll.address`. */
+  enrollAddress?: string;
+  /** Flat alias for `ctx.mfaEnroll.secret`. */
+  enrollSecret?: string;
+  /** Flat alias for `ctx.mfaEnroll.uri`. */
+  enrollUri?: string;
+  /** Flat alias for `ctx.mfaEnroll.availableTransports`. */
+  enrollAvailableTransports?: Array<"sms" | "email" | "totp">;
+  /** Flat alias for `ctx.mfaEnroll.mode`. */
+  enrollMode?: "required" | "optional";
+  /** Flat alias for `ctx.mfaEnroll.done`. */
+  enrollDone?: boolean;
+  /** Flat alias for `ctx.mfaEnroll.pincodeCooldown`. */
+  enrollPincodeCooldown?: number;
+  /** Flat alias for `ctx.pincode.sentTo`. */
+  pinSentTo?: string;
+  /** Flat alias for `ctx.consents.pending`. */
   pendingConsents?: ConsentDescriptor[];
+  /** Flat alias for `ctx.consents.accepted`. */
+  acceptedConsentIds?: string[];
+  /** Flat alias for `ctx.consents.decidedAt`. */
+  consentsDecidedAt?: number;
+  /** Flat alias for `ctx.consents.persisted`. */
+  consentsPersisted?: boolean;
+  /** Flat alias for `ctx.completion.tokensIssued`. */
+  tokensIssued?: boolean;
 }
 
 /**
@@ -487,13 +472,16 @@ export class InviteWorkflow extends AuthWorkflowBase {
     const result = this.consentStore.getPendingConsents(ctx.username, {
       workflow: "auth/invite/start",
     });
+    // dual-write — flat alias removed in B1.4
     if (result instanceof Promise) {
       return result.then((resolved) => {
         ctx.pendingConsents = resolved;
+        (ctx.consents ??= {}).pending = resolved;
         return undefined;
       });
     }
     ctx.pendingConsents = result;
+    (ctx.consents ??= {}).pending = result;
     return undefined;
   }
 
@@ -847,7 +835,10 @@ export class InviteWorkflow extends AuthWorkflowBase {
   @Step("prepare-password-rules")
   @Public()
   preparePasswordRules(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
-    (ctx as Record<string, unknown>).passwordPolicies = this.users.getTransferablePolicies();
+    const policies = this.users.getTransferablePolicies();
+    // dual-write — flat alias removed in B1.4
+    (ctx as Record<string, unknown>).passwordPolicies = policies;
+    (ctx.password ??= {}).policies = policies;
     return undefined;
   }
 
@@ -878,6 +869,13 @@ export class InviteWorkflow extends AuthWorkflowBase {
     // make on every accept-tail invite run; unknown ids are silently dropped
     // per its SECURITY contract.
     this.processInlineConsent(ctx, input, wf);
+    // dual-write — flat alias removed in B1.4
+    if (ctx.acceptedConsentIds !== undefined) {
+      (ctx.consents ??= {}).accepted = ctx.acceptedConsentIds;
+    }
+    if (ctx.consentsDecidedAt !== undefined) {
+      (ctx.consents ??= {}).decidedAt = ctx.consentsDecidedAt;
+    }
     ctx.passwordSet = true;
     return undefined;
   }
@@ -900,7 +898,9 @@ export class InviteWorkflow extends AuthWorkflowBase {
     this.requireUsername(ctx);
     // `'disabled'` is filtered at each step's schema condition, so the cast is safe.
     const mode = (ctx.mfaMode ?? "optional") as "required" | "optional";
+    // dual-write — flat alias removed in B1.4
     ctx.enrollMode = mode;
+    (ctx.mfaEnroll ??= {}).mode = mode;
     return {
       ctx,
       username: ctx.username,
@@ -934,9 +934,39 @@ export class InviteWorkflow extends AuthWorkflowBase {
     ctx.mfaMode = "optional";
     ctx.availableMfaTransports = ["sms", "email", "totp"];
     if (!ctx.enrollMethod && ctx.availableMfaTransports.length === 1) {
+      // dual-write — flat alias removed in B1.4
       ctx.enrollMethod = ctx.availableMfaTransports[0];
+      (ctx.mfaEnroll ??= {}).method = ctx.enrollMethod;
     }
     return undefined;
+  }
+
+  /**
+   * Mirror flat `enroll*` / `pinSentTo` fields written by the
+   * `enrollPickPhase` / `enrollAddressPhase` / `enrollConfirmPhase` helpers
+   * (which still write the OLD flat shape) into the nested
+   * `ctx.mfaEnroll` / `ctx.pincode` groups so `@wf.context.pass 'mfaEnroll'`
+   * / `'pincode'` consumers can read the same data nested.
+   *
+   * dual-write — flat alias removed in B1.4
+   */
+  private mirrorEnrollFlatToNested(ctx: InviteWfCtx): void {
+    const m = (ctx.mfaEnroll ??= {});
+    if (ctx.enrollMethod !== undefined) m.method = ctx.enrollMethod;
+    else delete m.method;
+    if (ctx.enrollAddress !== undefined) m.address = ctx.enrollAddress;
+    else delete m.address;
+    if (ctx.enrollSecret !== undefined) m.secret = ctx.enrollSecret;
+    else delete m.secret;
+    if (ctx.enrollUri !== undefined) m.uri = ctx.enrollUri;
+    else delete m.uri;
+    if (ctx.enrollAvailableTransports !== undefined)
+      m.availableTransports = ctx.enrollAvailableTransports;
+    if (ctx.enrollDone !== undefined) m.done = ctx.enrollDone;
+    if (ctx.enrollPincodeCooldown !== undefined) m.pincodeCooldown = ctx.enrollPincodeCooldown;
+    else delete m.pincodeCooldown;
+    if (ctx.pinSentTo !== undefined) (ctx.pincode ??= {}).sentTo = ctx.pinSentTo;
+    else if (ctx.pincode) delete ctx.pincode.sentTo;
   }
 
   /**
@@ -949,7 +979,15 @@ export class InviteWorkflow extends AuthWorkflowBase {
   inviteEnrollPickMethod(
     @WorkflowParam("context") ctx: InviteWfCtx,
   ): undefined | Promise<undefined> {
-    return this.enrollPickPhase(this.buildInviteEnrollDeps(ctx));
+    const result = this.enrollPickPhase(this.buildInviteEnrollDeps(ctx));
+    if (result instanceof Promise) {
+      return result.then(() => {
+        this.mirrorEnrollFlatToNested(ctx);
+        return undefined;
+      });
+    }
+    this.mirrorEnrollFlatToNested(ctx);
+    return undefined;
   }
 
   /**
@@ -959,7 +997,10 @@ export class InviteWorkflow extends AuthWorkflowBase {
   @Step("enroll-address")
   @Public()
   inviteEnrollAddress(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
-    return this.enrollAddressPhase(this.buildInviteEnrollDeps(ctx));
+    return this.enrollAddressPhase(this.buildInviteEnrollDeps(ctx)).then(() => {
+      this.mirrorEnrollFlatToNested(ctx);
+      return undefined;
+    });
   }
 
   /**
@@ -970,7 +1011,10 @@ export class InviteWorkflow extends AuthWorkflowBase {
   @Step("enroll-confirm")
   @Public()
   inviteEnrollConfirm(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
-    return this.enrollConfirmPhase(this.buildInviteEnrollDeps(ctx));
+    return this.enrollConfirmPhase(this.buildInviteEnrollDeps(ctx)).then(() => {
+      this.mirrorEnrollFlatToNested(ctx);
+      return undefined;
+    });
   }
 
   // ── Phase B: collectProfile ───────────────────────────────────────────
@@ -1033,7 +1077,13 @@ export class InviteWorkflow extends AuthWorkflowBase {
   @Step("persist-consents")
   @Public()
   persistConsentsStep(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
-    return this.runPersistConsents(ctx, this.consentStore);
+    return this.runPersistConsents(ctx, this.consentStore).then(() => {
+      // dual-write — flat alias removed in B1.4
+      if (ctx.consentsPersisted !== undefined) {
+        (ctx.consents ??= {}).persisted = ctx.consentsPersisted;
+      }
+      return undefined;
+    });
   }
 
   // ── Phase B: unsetPendingInvitation ───────────────────────────────────
@@ -1099,7 +1149,9 @@ export class InviteWorkflow extends AuthWorkflowBase {
   async autoLoginFinish(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     this.requireUsername(ctx);
     const issue = await this.auth.issue(ctx.username);
+    // dual-write — flat alias removed in B1.4
     ctx.tokensIssued = true;
+    (ctx.completion ??= {}).tokensIssued = true;
     const auth = useAuth();
     // Preserve a `message` set by an earlier terminal (typically
     // `confirmation` when `accept.showConfirmation` is on) so the SPA
