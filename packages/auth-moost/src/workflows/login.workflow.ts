@@ -87,6 +87,7 @@ import { type ConsentDescriptor, ConsentStore } from "../consent.store";
 import { useAuth } from "../auth.composables";
 import { Public } from "../auth.decorator";
 import {
+  type AuthWfCtxBase,
   AuthWorkflowBase,
   type InlineConsentInput,
   type MfaEnrollDeps,
@@ -102,7 +103,7 @@ import {
   mergeLoginOpts,
 } from "./login.workflow.options";
 
-export interface LoginWfCtx {
+export interface LoginWfCtx extends AuthWfCtxBase {
   // Resolved policy (populated by prepare-* steps; reads via resolveXxx() getters):
   /**
    * Whether the user must complete profile fields BEFORE token issuance.
@@ -152,7 +153,7 @@ export interface LoginWfCtx {
   };
 
   // Populated by `credentials`:
-  username?: string;
+  // `username` lives on `AuthWfCtxBase`.
   /** Legacy alias for `pwReset`; kept until tests migrate. */
   mfaRequired?: boolean;
   isPasswordInitial?: boolean;
@@ -164,30 +165,9 @@ export interface LoginWfCtx {
    * `create-password-form`. Reset after `create-password-form` commits.
    */
   isPasswordExpired?: boolean;
-  /**
-   * Discriminator for `SetPasswordForm` UX. `'initial'` when the
-   * password has never been used (first-set flow); `'expired'` when the
-   * password aged past `config.password.maxAgeMs` (rotation flow). When
-   * both conditions are true, `'initial'` wins — a never-used password
-   * being "expired" is semantically still its initial set. Shipped to
-   * the client via `@wf.context.pass` on `SetPasswordForm` so the SPA
-   * can swap banner copy; default form labels stay reason-agnostic.
-   */
-  passwordChangeReason?: "initial" | "expired";
-  /**
-   * Heading copy rendered as the leading `ui.paragraph` on
-   * `SetPasswordForm`. Written by `create-password-form` before the pause
-   * so the wire envelope carries reason-appropriate copy (initial vs
-   * expired). Reset alongside `passwordChangeReason` after the change
-   * commits.
-   */
-  passwordFormHeading?: string;
-  /**
-   * Intro copy rendered beneath {@link passwordFormHeading} on
-   * `SetPasswordForm`. Written / cleared on the same boundaries as
-   * `passwordFormHeading`.
-   */
-  passwordFormIntro?: string;
+  // `passwordChangeReason` / `passwordFormHeading` / `passwordFormIntro`
+  // moved to the flat-aliases block at the bottom (mirrored onto
+  // `ctx.password` on `AuthWfCtxBase`).
   usedMagicLink?: boolean;
 
   // MFA policy (populated by the single `prepareMfaSetup` setter — overridable per consumer):
@@ -203,8 +183,7 @@ export interface LoginWfCtx {
   /** Pre-selected MFA transport (e.g. existing-user default, single-transport auto-pick). */
   currentMfa?: MfaTransport;
 
-  // Channel state:
-  email?: string;
+  // Channel state (`email` lives on `AuthWfCtxBase`):
   emailConfirmed?: boolean;
   phone?: string;
   phoneConfirmed?: boolean;
@@ -245,31 +224,15 @@ export interface LoginWfCtx {
   altSignup?: boolean;
   altMagicLink?: boolean;
 
-  // MFA forced-enrollment state (Phase 4 `mfa-enroll-required` sub-flow):
-  enrollMethod?: MfaTransport;
-  enrollAddress?: string;
-  /** TOTP secret in flight (passed to UI via `@wf.context.pass` for QR rendering). */
-  enrollSecret?: string;
-  /** Provisioning URI for TOTP QR rendering. */
-  enrollUri?: string;
-  /** Mirror of `ctx.availableMfaTransports`, surfaced to `EnrollPickMethodForm` via `@wf.context.pass`. */
-  enrollAvailableTransports?: MfaTransport[];
-  /**
-   * Mirror of `ctx.mfaMode` (only set when not `'disabled'`). Surfaced to
-   * `EnrollPickMethodForm` via `@wf.context.pass` so the `skip` action can
-   * hide unless mode is `'optional'`.
-   */
-  enrollMode?: "required" | "optional";
-  /** Set true by `enrollConfirmPhase` (or `enrollPickPhase`/`enrollAddressPhase` on `skip` in `'optional'` mode); mirrored to `mfaChecked` via `buildLoginEnrollDeps` `onComplete`. */
-  enrollDone?: boolean;
-  /** Phase 3 confirm-pincode resend cooldown (sms/email). See `MfaEnrollCtx.enrollPincodeCooldown`. */
-  enrollPincodeCooldown?: number;
+  // MFA forced-enrollment state (Phase 4 `mfa-enroll-required` sub-flow) —
+  // flat-alias fields (`enrollMethod` / `enrollAddress` / `enrollSecret` /
+  // `enrollUri` / `enrollAvailableTransports` / `enrollMode` / `enrollDone`
+  // / `enrollPincodeCooldown`) moved to the flat-aliases block at the
+  // bottom (mirrored onto `ctx.mfaEnroll` on `AuthWfCtxBase`).
 
-  // Pincode state:
-  pin?: string;
-  pinExpire?: number;
-  pinTimeout?: number;
-  pinSentTo?: string;
+  // Pincode state — `pin` / `pinExpire` live on `AuthWfCtxBase`;
+  // `pinTimeout` / `pinSentTo` moved to the flat-aliases block at the
+  // bottom (mirrored onto `ctx.pincode`).
   /**
    * Per-method "next-allowed-send-at" timestamp. Written by
    * `pincode-send-login` after each send and consulted by `select2fa` to
@@ -290,30 +253,9 @@ export interface LoginWfCtx {
   /** Mirror of `opts.deviceTrust.optIn`. Passed to `PincodeForm` so the `rememberDevice` checkbox can hide when the consumer's device-trust is off-by-default (no user choice to make). */
   deviceTrustOptIn?: boolean;
 
-  /**
-   * Descriptors for the customer-defined general consents (terms, marketing,
-   * jurisdiction, ...) the user still needs to accept. Populated once by
-   * `prepare-consents` after username-bind. Phase 5 will migrate carrier
-   * forms to consume this array; Phase 4 populates transport only.
-   */
-  pendingConsents?: ConsentDescriptor[];
-
-  // Terms / profile:
-  /**
-   * Subset of `pendingConsents[].id` the user ticked on the carrier form —
-   * set by `processInlineConsent` after silent-dropping unknown ids.
-   * Consumed by `persist-consents` to compute `accepted: boolean` per
-   * pending descriptor.
-   */
-  acceptedConsentIds?: string[];
-  /**
-   * Wall-clock ms at the moment `processInlineConsent` resolved the
-   * `consents` carrier-form submission (NOT at write-time — captured BEFORE
-   * the batched `persist-consents` step so a paused-workflow resume gap
-   * doesn't drift the timestamp). Also the schema-gate for the
-   * `persist-consents` step — set ⇒ a carrier form has collected consents.
-   */
-  consentsDecidedAt?: number;
+  // Terms / profile — `pendingConsents` / `acceptedConsentIds` /
+  // `consentsDecidedAt` moved to the flat-aliases block at the bottom
+  // (mirrored onto `ctx.consents` on `AuthWfCtxBase`).
   profileMissingFields?: string[];
 
   // Tenant / persona:
@@ -326,27 +268,68 @@ export interface LoginWfCtx {
   riskStepUpReason?: string;
   activeSessions?: number;
 
-  // Internal flags (resume-from-pause idempotency):
-  passwordChanged?: boolean;
+  // Internal flags (resume-from-pause idempotency) — `passwordChanged` /
+  // `consentsPersisted` / `tokensIssued` / `redirectUrl` moved to the
+  // flat-aliases block at the bottom (mirrored onto `ctx.completion` /
+  // `ctx.consents` on `AuthWfCtxBase`). `aborted` lives on the base.
   profileApplied?: boolean;
-  /**
-   * Set true by `persist-consents` after the batched `consentStore.save`
-   * call fires (or after the step short-circuits with no pending consents).
-   * Gates `processInlineConsent` from re-staging on subsequent carrier
-   * forms in the same workflow run, and the `persist-consents` schema
-   * condition from re-firing.
-   */
-  consentsPersisted?: boolean;
-  tokensIssued?: boolean;
-  redirectUrl?: string;
-  /**
-   * Set true by abort alt-actions (`logout`, `decline`, `cancel`). All terminal
-   * steps (`issue`, `audit-login`, `notify-new-device`, `redirect`) gate on
-   * `!ctx.aborted` so the abort response set via `useWfFinished()` stays.
-   */
-  aborted?: boolean;
   /** Tracks whether `risk-step-up` has already been evaluated this iteration. */
   riskStepUpEvaluated?: boolean;
+
+  // ── Flat aliases (compat) — removed in B1.4 once forms.as migrates to nested ──
+  // Each one mirrors a `ctx.<group>.<field>` on `AuthWfCtxBase` via dual-write
+  // in the step bodies below; kept here for forms.as `@wf.context.pass 'flatKey'`
+  // compat. Type-safe consumers should read the nested form.
+
+  // MFA forced-enrollment (mirrors `ctx.mfaEnroll.*`):
+  /** Flat alias for `ctx.mfaEnroll.method`. */
+  enrollMethod?: MfaTransport;
+  /** Flat alias for `ctx.mfaEnroll.address`. */
+  enrollAddress?: string;
+  /** Flat alias for `ctx.mfaEnroll.secret` — TOTP secret in flight (QR rendering). */
+  enrollSecret?: string;
+  /** Flat alias for `ctx.mfaEnroll.uri` — TOTP provisioning URI. */
+  enrollUri?: string;
+  /** Flat alias for `ctx.mfaEnroll.availableTransports`. */
+  enrollAvailableTransports?: MfaTransport[];
+  /** Flat alias for `ctx.mfaEnroll.mode`. */
+  enrollMode?: "required" | "optional";
+  /** Flat alias for `ctx.mfaEnroll.done`. */
+  enrollDone?: boolean;
+  /** Flat alias for `ctx.mfaEnroll.pincodeCooldown` — Phase 3 confirm-pincode resend cooldown. */
+  enrollPincodeCooldown?: number;
+
+  // Pincode UI hint (mirrors `ctx.pincode.*`):
+  /** Flat alias for `ctx.pincode.sentTo` — masked recipient. */
+  pinSentTo?: string;
+  /** Flat alias for `ctx.pincode.timeout` — resend cooldown deadline. */
+  pinTimeout?: number;
+
+  // Consents (mirrors `ctx.consents.*`):
+  /** Flat alias for `ctx.consents.pending`. */
+  pendingConsents?: ConsentDescriptor[];
+  /** Flat alias for `ctx.consents.accepted`. */
+  acceptedConsentIds?: string[];
+  /** Flat alias for `ctx.consents.decidedAt`. */
+  consentsDecidedAt?: number;
+  /** Flat alias for `ctx.consents.persisted`. */
+  consentsPersisted?: boolean;
+
+  // Password-change UI (mirrors `ctx.password.*`):
+  /** Flat alias for `ctx.password.changeReason`. */
+  passwordChangeReason?: "initial" | "expired";
+  /** Flat alias for `ctx.password.heading`. */
+  passwordFormHeading?: string;
+  /** Flat alias for `ctx.password.intro`. */
+  passwordFormIntro?: string;
+
+  // Completion (mirrors `ctx.completion.*`):
+  /** Flat alias for `ctx.completion.passwordChanged`. */
+  passwordChanged?: boolean;
+  /** Flat alias for `ctx.completion.tokensIssued`. */
+  tokensIssued?: boolean;
+  /** Flat alias for `ctx.completion.redirectUrl`. */
+  redirectUrl?: string;
 }
 
 /**
@@ -882,13 +865,16 @@ export class LoginWorkflow extends AuthWorkflowBase {
     const result = this.consentStore.getPendingConsents(ctx.username, {
       workflow: "auth/login/flow",
     });
+    // dual-write — flat alias removed in B1.4
     if (result instanceof Promise) {
       return result.then((resolved) => {
         ctx.pendingConsents = resolved;
+        (ctx.consents ??= {}).pending = resolved;
         return undefined;
       });
     }
     ctx.pendingConsents = result;
+    (ctx.consents ??= {}).pending = result;
     return undefined;
   }
 
@@ -1242,10 +1228,13 @@ export class LoginWorkflow extends AuthWorkflowBase {
       if (ctx.guards?.passwordExpiry && this.users.isPasswordExpired(result.user)) {
         ctx.isPasswordExpired = true;
       }
+      // dual-write — flat alias removed in B1.4
       if (ctx.isPasswordInitial) {
         ctx.passwordChangeReason = "initial";
+        (ctx.password ??= {}).changeReason = "initial";
       } else if (ctx.isPasswordExpired) {
         ctx.passwordChangeReason = "expired";
+        (ctx.password ??= {}).changeReason = "expired";
       }
       // Sync existing channel state so `ensureEmail`/`ensurePhone` skip
       // when the user already has a confirmed channel.
@@ -1380,6 +1369,13 @@ export class LoginWorkflow extends AuthWorkflowBase {
     const askWf = useAtscriptWf(isEmail ? this.opts.forms.askEmail : this.opts.forms.askPhone);
     const input = askWf.resolveInput() as { email?: string; phone?: string } & InlineConsentInput;
     this.processInlineConsent(ctx, input, askWf);
+    // dual-write — flat alias removed in B1.4
+    if (ctx.acceptedConsentIds !== undefined) {
+      (ctx.consents ??= {}).accepted = ctx.acceptedConsentIds;
+    }
+    if (ctx.consentsDecidedAt !== undefined) {
+      (ctx.consents ??= {}).decidedAt = ctx.consentsDecidedAt;
+    }
     const value = (isEmail ? input.email : input.phone) as string;
     const methodName = isEmail ? "email" : "sms";
     const username = ctx.username;
@@ -1599,9 +1595,12 @@ export class LoginWorkflow extends AuthWorkflowBase {
     const method = user.mfa.methods.find((m) => m.name === summary.methodName && m.confirmed);
     if (!method) throw new HttpError(500, "MFA method no longer present");
     const code = this.mintPin(ctx, this.authOpts.mfa.pincodeLength, this.authOpts.mfa.pincodeTtlMs);
+    // dual-write — flat alias removed in B1.4
     ctx.pinTimeout = Date.now() + this.authOpts.mfa.pincodeResendTimeoutMs;
+    (ctx.pincode ??= {}).timeout = ctx.pinTimeout;
     if (ctx.mfaMethod === "email") {
       ctx.pinSentTo = maskEmail(method.value);
+      (ctx.pincode ??= {}).sentTo = ctx.pinSentTo;
       await this.deliver({
         channel: "email",
         kind: "login.pincode",
@@ -1612,6 +1611,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
       });
     } else if (ctx.mfaMethod === "sms") {
       ctx.pinSentTo = maskPhone(method.value);
+      (ctx.pincode ??= {}).sentTo = ctx.pinSentTo;
       await this.deliver({
         channel: "sms",
         kind: "login.pincode",
@@ -1765,7 +1765,15 @@ export class LoginWorkflow extends AuthWorkflowBase {
    */
   @Step("enroll-pick-method")
   loginEnrollPickMethod(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
-    return this.enrollPickPhase(this.buildLoginEnrollDeps(ctx));
+    const result = this.enrollPickPhase(this.buildLoginEnrollDeps(ctx));
+    if (result instanceof Promise) {
+      return result.then(() => {
+        this.mirrorEnrollFlatToNested(ctx);
+        return undefined;
+      });
+    }
+    this.mirrorEnrollFlatToNested(ctx);
+    return undefined;
   }
 
   /**
@@ -1774,7 +1782,10 @@ export class LoginWorkflow extends AuthWorkflowBase {
    */
   @Step("enroll-address")
   loginEnrollAddress(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
-    return this.enrollAddressPhase(this.buildLoginEnrollDeps(ctx));
+    return this.enrollAddressPhase(this.buildLoginEnrollDeps(ctx)).then(() => {
+      this.mirrorEnrollFlatToNested(ctx);
+      return undefined;
+    });
   }
 
   /**
@@ -1784,7 +1795,10 @@ export class LoginWorkflow extends AuthWorkflowBase {
    */
   @Step("enroll-confirm")
   loginEnrollConfirm(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
-    return this.enrollConfirmPhase(this.buildLoginEnrollDeps(ctx));
+    return this.enrollConfirmPhase(this.buildLoginEnrollDeps(ctx)).then(() => {
+      this.mirrorEnrollFlatToNested(ctx);
+      return undefined;
+    });
   }
 
   /**
@@ -1798,7 +1812,9 @@ export class LoginWorkflow extends AuthWorkflowBase {
     this.requireUsername(ctx);
     // `'disabled'` is filtered at each step's schema condition, so the cast is safe.
     const mode = (ctx.mfaMode ?? "optional") as "required" | "optional";
+    // dual-write — flat alias removed in B1.4
     ctx.enrollMode = mode;
+    (ctx.mfaEnroll ??= {}).mode = mode;
     return {
       ctx,
       username: ctx.username,
@@ -1821,6 +1837,34 @@ export class LoginWorkflow extends AuthWorkflowBase {
     };
   }
 
+  /**
+   * Mirror flat `enroll*` / `pinSentTo` fields written by the
+   * `enrollPickPhase` / `enrollAddressPhase` / `enrollConfirmPhase` helpers
+   * (which still write the OLD flat shape) into the nested
+   * `ctx.mfaEnroll` / `ctx.pincode` groups so `@wf.context.pass 'mfaEnroll'`
+   * / `'pincode'` consumers can read the same data nested.
+   *
+   * dual-write — flat alias removed in B1.4
+   */
+  private mirrorEnrollFlatToNested(ctx: LoginWfCtx): void {
+    const m = (ctx.mfaEnroll ??= {});
+    if (ctx.enrollMethod !== undefined) m.method = ctx.enrollMethod;
+    else delete m.method;
+    if (ctx.enrollAddress !== undefined) m.address = ctx.enrollAddress;
+    else delete m.address;
+    if (ctx.enrollSecret !== undefined) m.secret = ctx.enrollSecret;
+    else delete m.secret;
+    if (ctx.enrollUri !== undefined) m.uri = ctx.enrollUri;
+    else delete m.uri;
+    if (ctx.enrollAvailableTransports !== undefined)
+      m.availableTransports = ctx.enrollAvailableTransports;
+    if (ctx.enrollDone !== undefined) m.done = ctx.enrollDone;
+    if (ctx.enrollPincodeCooldown !== undefined) m.pincodeCooldown = ctx.enrollPincodeCooldown;
+    else delete m.pincodeCooldown;
+    if (ctx.pinSentTo !== undefined) (ctx.pincode ??= {}).sentTo = ctx.pinSentTo;
+    else if (ctx.pincode) delete ctx.pincode.sentTo;
+  }
+
   @Step("device-trust")
   async deviceTrust(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
     if (!ctx.username) return undefined;
@@ -1841,7 +1885,10 @@ export class LoginWorkflow extends AuthWorkflowBase {
   preparePasswordRules(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
     // Stash transferable policies onto ctx so the front-end can render rule
     // hints next to the form. Pure read; no behavior change.
-    (ctx as Record<string, unknown>).passwordPolicies = this.users.getTransferablePolicies();
+    const policies = this.users.getTransferablePolicies();
+    // dual-write — flat alias removed in B1.4
+    (ctx as Record<string, unknown>).passwordPolicies = policies;
+    (ctx.password ??= {}).policies = policies;
     return undefined;
   }
 
@@ -1854,6 +1901,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // `@ui.form.fn.value`. Defaults to the 'initial' copy when the
     // credentials step somehow didn't write a reason — neutral safe copy
     // beats no copy.
+    // dual-write — flat alias removed in B1.4
     if (ctx.passwordChangeReason === "expired") {
       ctx.passwordFormHeading = "Your password has expired";
       ctx.passwordFormIntro =
@@ -1863,6 +1911,8 @@ export class LoginWorkflow extends AuthWorkflowBase {
       ctx.passwordFormIntro =
         "Your account was created without a password. Choose one to continue.";
     }
+    (ctx.password ??= {}).heading = ctx.passwordFormHeading;
+    (ctx.password ??= {}).intro = ctx.passwordFormIntro;
     const wf = useAtscriptWf(this.opts.forms.setPassword);
     const input = wf.resolveInput() as {
       newPassword: string;
@@ -1881,7 +1931,15 @@ export class LoginWorkflow extends AuthWorkflowBase {
       throw err;
     }
     this.processInlineConsent(ctx, input, wf);
+    // dual-write — flat alias removed in B1.4
+    if (ctx.acceptedConsentIds !== undefined) {
+      (ctx.consents ??= {}).accepted = ctx.acceptedConsentIds;
+    }
+    if (ctx.consentsDecidedAt !== undefined) {
+      (ctx.consents ??= {}).decidedAt = ctx.consentsDecidedAt;
+    }
     ctx.passwordChanged = true;
+    (ctx.completion ??= {}).passwordChanged = true;
     ctx.isPasswordInitial = false;
     ctx.isPasswordExpired = false;
     // `delete` rather than `= undefined`: the wf state-token persistence
@@ -1891,6 +1949,11 @@ export class LoginWorkflow extends AuthWorkflowBase {
     delete ctx.passwordChangeReason;
     delete ctx.passwordFormHeading;
     delete ctx.passwordFormIntro;
+    if (ctx.password) {
+      delete ctx.password.changeReason;
+      delete ctx.password.heading;
+      delete ctx.password.intro;
+    }
     return undefined;
   }
 
@@ -1902,6 +1965,13 @@ export class LoginWorkflow extends AuthWorkflowBase {
       InlineConsentInput;
     this.requireUsername(ctx);
     this.processInlineConsent(ctx, input, wf);
+    // dual-write — flat alias removed in B1.4
+    if (ctx.acceptedConsentIds !== undefined) {
+      (ctx.consents ??= {}).accepted = ctx.acceptedConsentIds;
+    }
+    if (ctx.consentsDecidedAt !== undefined) {
+      (ctx.consents ??= {}).decidedAt = ctx.consentsDecidedAt;
+    }
     // Defense (audit hole #15 Sink A): strip privileged top-level
     // `UserCredentials` keys before handing off to `applyProfile`. The
     // form parser preserves unknown extras (`partial: "deep"`), and a
@@ -1944,6 +2014,13 @@ export class LoginWorkflow extends AuthWorkflowBase {
     const wf = useAtscriptWf(this.opts.forms.termsBump);
     const input = wf.resolveInput() as InlineConsentInput;
     this.processInlineConsent(ctx, input, wf);
+    // dual-write — flat alias removed in B1.4
+    if (ctx.acceptedConsentIds !== undefined) {
+      (ctx.consents ??= {}).accepted = ctx.acceptedConsentIds;
+    }
+    if (ctx.consentsDecidedAt !== undefined) {
+      (ctx.consents ??= {}).decidedAt = ctx.consentsDecidedAt;
+    }
     return undefined;
   }
 
@@ -1954,7 +2031,13 @@ export class LoginWorkflow extends AuthWorkflowBase {
    */
   @Step("persist-consents")
   persistConsentsStep(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
-    return this.runPersistConsents(ctx, this.consentStore);
+    return this.runPersistConsents(ctx, this.consentStore).then(() => {
+      // dual-write — flat alias removed in B1.4
+      if (ctx.consentsPersisted !== undefined) {
+        (ctx.consents ??= {}).persisted = ctx.consentsPersisted;
+      }
+      return undefined;
+    });
   }
 
   // ── Phase 7: tenant / persona ─────────────────────────────────────────
@@ -2095,7 +2178,9 @@ export class LoginWorkflow extends AuthWorkflowBase {
   async issue(@WorkflowParam("context") ctx: LoginWfCtx): Promise<void> {
     this.requireUsername(ctx);
     const issue = await this.auth.issue(ctx.username);
+    // dual-write — flat alias removed in B1.4
     ctx.tokensIssued = true;
+    (ctx.completion ??= {}).tokensIssued = true;
     // Build response payload + cookies and stash on the finished response.
     // The `redirect` step (terminal) overrides with a redirect envelope when
     // `resolveRedirect` returns a URL; otherwise the data envelope sticks.
@@ -2161,7 +2246,9 @@ export class LoginWorkflow extends AuthWorkflowBase {
       value: envelope,
       ...(existing?.cookies && { cookies: existing.cookies }),
     });
+    // dual-write — flat alias removed in B1.4
     ctx.redirectUrl = url;
+    (ctx.completion ??= {}).redirectUrl = url;
     return undefined;
   }
 
