@@ -64,7 +64,11 @@ import { AuthOpts } from "../auth.opts";
 import { type ConsentDescriptor, ConsentStore } from "../consent.store";
 import { useAuth } from "../auth.composables";
 import { Public } from "../auth.decorator";
-import { AuthWorkflowBase, type InlineConsentInput } from "./auth-workflow.base";
+import {
+  type AuthWfCtxBase,
+  AuthWorkflowBase,
+  type InlineConsentInput,
+} from "./auth-workflow.base";
 import type { DeliverPayload } from "./login.workflow";
 import {
   mergeRecoveryOpts,
@@ -74,7 +78,7 @@ import {
   type ResolvedRecoveryWorkflowOpts,
 } from "./recovery.workflow.options";
 
-export interface RecoveryWfCtx {
+export interface RecoveryWfCtx extends AuthWfCtxBase {
   // Resolved policy (populated by prepare-* steps; reads via resolveXxx() getters):
   delivery?: {
     mode: RecoveryDeliveryMode;
@@ -96,10 +100,6 @@ export interface RecoveryWfCtx {
     enabled: boolean;
   };
 
-  // Phase 1 — request:
-  email?: string;
-  username?: string;
-
   // Mode (when delivery.mode === 'choice'):
   selectedMode?: "magicLink" | "otp";
   /** Resolved delivery mode the workflow committed to (set by `prepare-delivery` for fixed modes, by `select-mode` for `'choice'`). */
@@ -108,8 +108,6 @@ export interface RecoveryWfCtx {
   // OTP-mode state:
   otpTransport?: "sms" | "email";
   otpCodeLength?: number;
-  pin?: string;
-  pinExpire?: number;
   pinResendAllowedAt?: number;
   pinVerified?: boolean;
   /** Mirror of `delivery.otpTransports.length`. Passed to `PincodeForm` so the `useDifferentTransport` action hides when only one transport is configured. */
@@ -131,45 +129,28 @@ export interface RecoveryWfCtx {
   availableRecoveryFactors?: Array<{ key: string; label: string }>;
 
   // Post-reset:
-  passwordChanged?: boolean;
   sessionsRevoked?: boolean;
-  tokensIssued?: boolean;
 
-  /**
-   * Heading copy rendered as the leading `ui.paragraph` on
-   * `SetPasswordForm`. Written by `set-password` before the pause so the
-   * wire envelope carries reason-appropriate copy. Recovery always means
-   * "Reset your password" — no discriminator branching like login.
-   */
+  // ── Flat aliases (compat) — removed in B1.4 once forms.as migrates to nested ──
+  // Each one mirrors a `ctx.<group>.<field>` on `AuthWfCtxBase` via dual-write
+  // in the step bodies below; kept here for forms.as `@wf.context.pass 'flatKey'`
+  // compat. Type-safe consumers should read the nested form.
+  /** Flat alias for `ctx.password.heading`. */
   passwordFormHeading?: string;
-  /** Intro paragraph paired with {@link passwordFormHeading}. */
+  /** Flat alias for `ctx.password.intro`. */
   passwordFormIntro?: string;
-
-  // Inline-consent state (mirrors LoginWfCtx / InviteWfCtx — populated by
-  // `processInlineConsent` when `SetPasswordForm` is submitted and consumed
-  // by the `persist-consents` step before tokens are issued):
-  /**
-   * Subset of `pendingConsents[].id` the user ticked — set by
-   * `processInlineConsent` after silent-dropping unknown ids.
-   */
-  acceptedConsentIds?: string[];
-  /**
-   * Wall-clock ms when `processInlineConsent` resolved the carrier-form
-   * submission. Also the schema-gate for `persist-consents`.
-   */
-  consentsDecidedAt?: number;
-  /** Set true by `persist-consents` after the batched `consentStore.save` call fires. */
-  consentsPersisted?: boolean;
-  /**
-   * Descriptors for the customer-defined consents (terms, marketing,
-   * jurisdiction, ...) the user still needs to accept. Populated once by
-   * `prepare-consents` after username-bind; consumed by `WithInlineConsentForm`'s
-   * dynamic `AsConsentArray` field on the carrier form (Phase 5).
-   */
+  /** Flat alias for `ctx.completion.passwordChanged`. */
+  passwordChanged?: boolean;
+  /** Flat alias for `ctx.completion.tokensIssued`. */
+  tokensIssued?: boolean;
+  /** Flat alias for `ctx.consents.pending`. */
   pendingConsents?: ConsentDescriptor[];
-
-  /** Set by abort alt-actions (`backToLogin`). Gates all terminal steps. */
-  aborted?: boolean;
+  /** Flat alias for `ctx.consents.accepted`. */
+  acceptedConsentIds?: string[];
+  /** Flat alias for `ctx.consents.decidedAt`. */
+  consentsDecidedAt?: number;
+  /** Flat alias for `ctx.consents.persisted`. */
+  consentsPersisted?: boolean;
 }
 
 /**
@@ -438,13 +419,16 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     const result = this.consentStore.getPendingConsents(ctx.username, {
       workflow: "auth/recovery/flow",
     });
+    // dual-write — flat alias removed in B1.4
     if (result instanceof Promise) {
       return result.then((resolved) => {
         ctx.pendingConsents = resolved;
+        (ctx.consents ??= {}).pending = resolved;
         return undefined;
       });
     }
     ctx.pendingConsents = result;
+    (ctx.consents ??= {}).pending = result;
     return undefined;
   }
 
@@ -872,8 +856,11 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     // envelope carries the heading/intro alongside the form schema.
     // Recovery's set-password is always "Reset your password" — no
     // discriminator branching (cf. login's initial-vs-expired split).
+    // dual-write — flat alias removed in B1.4
     ctx.passwordFormHeading = "Reset your password";
     ctx.passwordFormIntro = "Choose a new password for your account.";
+    (ctx.password ??= {}).heading = ctx.passwordFormHeading;
+    ctx.password.intro = ctx.passwordFormIntro;
     const wf = useAtscriptWf(this.opts.forms.setPassword);
 
     const rawFormData = useWfState().input<{ formData?: unknown }>()?.formData;
@@ -885,7 +872,10 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
       // key to the client. Mirrors the peek-then-throw-fresh pattern used
       // in `request` — the previous catch-and-rethrow snapshotted
       // ctx PRE-mutation, so the policies never reached the client.
-      (ctx as Record<string, unknown>).passwordPolicies = this.users.getTransferablePolicies();
+      const policies = this.users.getTransferablePolicies();
+      // dual-write — flat alias removed in B1.4
+      (ctx as Record<string, unknown>).passwordPolicies = policies;
+      (ctx.password ??= {}).policies = policies;
       throw wf.requireInput();
     }
     const input = wf.resolveInput() as {
@@ -912,7 +902,15 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     // make on every recovery run; unknown ids are silently dropped per its
     // SECURITY contract.
     this.processInlineConsent(ctx, input, wf);
+    // dual-write — flat alias removed in B1.4
+    if (ctx.acceptedConsentIds !== undefined) {
+      (ctx.consents ??= {}).accepted = ctx.acceptedConsentIds;
+    }
+    if (ctx.consentsDecidedAt !== undefined) {
+      (ctx.consents ??= {}).decidedAt = ctx.consentsDecidedAt;
+    }
     ctx.passwordChanged = true;
+    (ctx.completion ??= {}).passwordChanged = true;
     return undefined;
   }
 
@@ -947,7 +945,13 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
    */
   @Step("persist-consents")
   persistConsentsStep(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<undefined> {
-    return this.runPersistConsents(ctx, this.consentStore);
+    return this.runPersistConsents(ctx, this.consentStore).then(() => {
+      // dual-write — flat alias removed in B1.4
+      if (ctx.consentsPersisted !== undefined) {
+        (ctx.consents ??= {}).persisted = ctx.consentsPersisted;
+      }
+      return undefined;
+    });
   }
 
   // ── freshLoginFinish ─────────────────────────────────────────────────
@@ -978,7 +982,9 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
   async autoLoginFinish(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<undefined> {
     this.requireUsername(ctx);
     const issue = await this.auth.issue(ctx.username);
+    // dual-write — flat alias removed in B1.4
     ctx.tokensIssued = true;
+    (ctx.completion ??= {}).tokensIssued = true;
     const auth = useAuth();
     // Raw envelope path — helpers don't expose cookies; wooks-level Set-Cookie.
     const envelope: WfFinished = {
