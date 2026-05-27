@@ -648,7 +648,7 @@ export abstract class AuthWorkflowBase {
       throw new HttpError(
         500,
         "MFA enrollment is required but no transports are configured. " +
-          "Override `prepareMfaSetup` to provide at least one transport, or set `mfaMode` to 'disabled'.",
+          "Override `prepareMfaSetup` to provide at least one transport, or set `mfa.mode` to 'disabled'.",
       );
     }
 

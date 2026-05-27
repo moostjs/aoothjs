@@ -910,9 +910,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
         const stashed = (ctx as unknown as { __demoMfaCtx?: InviteMfaCtxOverrides }).__demoMfaCtx;
         const variant = pickVariant(INVITE_VARIANTS, readVariantHeader());
         const v = stashed ?? variant?.mfaCtx;
-        ctx.mfaMode = v?.mfaMode ?? "disabled";
+        const mfa = ctx.mfa!;
+        mfa.mode = v?.mfaMode ?? "disabled";
         if (v?.availableMfaTransports !== undefined) {
-          ctx.availableMfaTransports = [...v.availableMfaTransports];
+          mfa.availableTransports = [...v.availableMfaTransports];
         }
         if (v?.enrollMethod !== undefined) (ctx.mfaEnroll ??= {}).method = v.enrollMethod;
         return undefined;
@@ -1338,14 +1339,15 @@ function wrapWithInviteMfaCtx<W extends new (...args: never[]) => InviteWorkflow
     ): undefined | Promise<undefined> {
       const baseResult = super.inviteSetupMfa(c);
       const apply = (): undefined => {
-        if (ctx.mfaMode !== undefined) c.mfaMode = ctx.mfaMode;
+        const mfa = c.mfa!;
+        if (ctx.mfaMode !== undefined) mfa.mode = ctx.mfaMode;
         if (ctx.availableMfaTransports !== undefined) {
-          c.availableMfaTransports = [...ctx.availableMfaTransports];
+          mfa.availableTransports = [...ctx.availableMfaTransports];
         }
         const m = (c.mfaEnroll ??= {});
         if (ctx.enrollMethod !== undefined) m.method = ctx.enrollMethod;
-        if (!m.method && c.availableMfaTransports?.length === 1) {
-          m.method = c.availableMfaTransports[0];
+        if (!m.method && mfa.availableTransports?.length === 1) {
+          m.method = mfa.availableTransports[0];
         }
         return undefined;
       };

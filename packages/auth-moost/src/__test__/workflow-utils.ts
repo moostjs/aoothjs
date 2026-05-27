@@ -480,8 +480,8 @@ export async function prepareWfApp(opts: PrepareWfOpts = {}): Promise<PreparedWf
   //   - `mfaMode: 'disabled'` via `withInviteMfaCtx` — preserves the prior
   //     "no MFA prompt unless test opts in" behaviour. PR9 moved this from
   //     `opts.mfa.mode` (deleted) to a `@Step('inviteSetupMfa')` setter
-  //     populating `ctx.mfaMode`; the helper builds a tiny override
-  //     subclass that statically sets `ctx.mfaMode = 'disabled'` after the
+  //     populating `ctx.mfa.mode`; the helper builds a tiny override
+  //     subclass that statically sets `ctx.mfa.mode = 'disabled'` after the
   //     base setter runs. When a consumer supplies their own
   //     `inviteWorkflowClass` we trust them and skip the wrap (the
   //     consumer's class is the source of truth).
@@ -1229,18 +1229,19 @@ export function withInviteMfaCtx<W extends typeof InviteWorkflow>(
     ): undefined | Promise<undefined> {
       const baseResult = super.inviteSetupMfa(c);
       const apply = (): undefined => {
-        if (ctx.mfaMode !== undefined) c.mfaMode = ctx.mfaMode;
+        const mfa = c.mfa!;
+        if (ctx.mfaMode !== undefined) mfa.mode = ctx.mfaMode;
         if (ctx.availableMfaTransports !== undefined) {
-          c.availableMfaTransports = [...ctx.availableMfaTransports];
+          mfa.availableTransports = [...ctx.availableMfaTransports];
         }
         const m = (c.mfaEnroll ??= {});
         if (ctx.enrollMethod !== undefined) m.method = ctx.enrollMethod;
         // Re-run the single-transport auto-pick AFTER overrides so a test
-        // that shrinks availableMfaTransports to `['totp']` still gets
+        // that shrinks availableTransports to `['totp']` still gets
         // mfaEnroll.method auto-set (mirrors the base setter's logic).
         // Without this, the schema while-loop has nothing to fire and hangs.
-        if (!m.method && c.availableMfaTransports?.length === 1) {
-          m.method = c.availableMfaTransports[0];
+        if (!m.method && mfa.availableTransports?.length === 1) {
+          m.method = mfa.availableTransports[0];
         }
         return undefined;
       };

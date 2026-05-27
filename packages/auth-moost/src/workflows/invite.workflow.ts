@@ -98,7 +98,18 @@ export interface InviteWfCtx extends AuthWfCtxBase {
     showConfirmation: boolean;
     confirmationMessage: string;
   };
-  mfa?: { issuer: string };
+  mfa?: {
+    issuer: string;
+    /**
+     * 3-state MFA policy:
+     *   - `'required'` — invitee MUST enroll a second factor BEFORE activation.
+     *   - `'optional'` — invitee is prompted but may `skip` the enrollment form.
+     *   - `'disabled'` — enrollment loop is skipped entirely.
+     */
+    mode?: "required" | "optional" | "disabled";
+    /** Available MFA transports (set by `inviteSetupMfa` setter — overridable per consumer). */
+    availableTransports?: Array<"sms" | "email" | "totp">;
+  };
 
   /** Boolean projection of `this.getProfileForm() !== undefined` — schema gates on it. */
   acceptProfileFormPresent?: boolean;
@@ -127,15 +138,6 @@ export interface InviteWfCtx extends AuthWfCtxBase {
   /** Detected at `check-pending-invitation`; triggers `idempotent-redirect`. */
   alreadyAccepted?: boolean;
   passwordSet?: boolean;
-  /**
-   * MFA policy (set by `inviteSetupMfa` setter — overridable per consumer).
-   *   - `'required'` — invitee MUST enroll a second factor BEFORE activation.
-   *   - `'optional'` — invitee is prompted but may `skip` the enrollment form.
-   *   - `'disabled'` — enrollment loop is skipped entirely.
-   */
-  mfaMode?: "required" | "optional" | "disabled";
-  /** Available MFA transports (set by `inviteSetupMfa` setter — overridable per consumer). */
-  availableMfaTransports?: Array<"sms" | "email" | "totp">;
   /** Raw input from `collect-profile`. */
   profile?: Record<string, unknown>;
   profileApplied?: boolean;
@@ -495,12 +497,13 @@ export class InviteWorkflow extends AuthWorkflowBase {
           // skip in optional mode). `passwordSet` + `mode !== 'disabled'` live on
           // the while-gate so each inner step condition only checks the ctx
           // fields that distinguish ITS phase.
-          while: (ctx) => !!(ctx.passwordSet && ctx.mfaMode !== "disabled" && !ctx.mfaEnroll?.done),
+          while: (ctx) =>
+            !!(ctx.passwordSet && ctx.mfa?.mode !== "disabled" && !ctx.mfaEnroll?.done),
           steps: [
             {
               id: "enroll-pick-method",
               condition: (ctx) =>
-                !!((ctx.availableMfaTransports?.length ?? 0) > 1 && !ctx.mfaEnroll?.method),
+                !!((ctx.mfa?.availableTransports?.length ?? 0) > 1 && !ctx.mfaEnroll?.method),
             },
             {
               id: "enroll-address",
@@ -826,7 +829,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
   private buildInviteEnrollDeps(ctx: InviteWfCtx): MfaEnrollDeps {
     this.requireUsername(ctx);
     // `'disabled'` is filtered at each step's schema condition, so the cast is safe.
-    const mode = (ctx.mfaMode ?? "optional") as "required" | "optional";
+    const mode = (ctx.mfa?.mode ?? "optional") as "required" | "optional";
     (ctx.mfaEnroll ??= {}).mode = mode;
     return {
       ctx,
@@ -838,7 +841,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
         address: this.opts.forms.enrollAddress,
         confirm: this.opts.forms.enrollConfirm,
       },
-      transports: ctx.availableMfaTransports ?? [],
+      transports: ctx.mfa?.availableTransports ?? [],
       pincodeLength: this.authOpts.mfa.pincodeLength,
       pincodeTtlMs: this.authOpts.mfa.pincodeTtlMs,
       pincodeResendTimeoutMs: this.authOpts.mfa.pincodeResendTimeoutMs,
@@ -848,20 +851,24 @@ export class InviteWorkflow extends AuthWorkflowBase {
   }
 
   /**
-   * Prepare MFA enrolment setup: writes `ctx.mfaMode`,
-   * `ctx.availableMfaTransports`, and pre-picks `ctx.mfaEnroll.method` when
+   * Prepare MFA enrolment setup: writes `ctx.mfa.mode`,
+   * `ctx.mfa.availableTransports`, and pre-picks `ctx.mfaEnroll.method` when
    * only one transport is available. Override to compute any of the three
    * from tenant policy / invitee role / request context in a single hook.
    * Return type allows a sync override (skip the promise round-trip) when no
    * async work is needed.
+   *
+   * `ctx.mfa` is guaranteed populated here — the `prepare-mfa` @Step runs
+   * BEFORE `setup-mfa` in the schema and seeds `ctx.mfa = { issuer }`.
    */
   @Step("setup-mfa")
   @Public()
   inviteSetupMfa(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
-    ctx.mfaMode = "optional";
-    ctx.availableMfaTransports = ["sms", "email", "totp"];
-    if (!ctx.mfaEnroll?.method && ctx.availableMfaTransports.length === 1) {
-      (ctx.mfaEnroll ??= {}).method = ctx.availableMfaTransports[0];
+    const mfa = ctx.mfa!;
+    mfa.mode = "optional";
+    mfa.availableTransports = ["sms", "email", "totp"];
+    if (!ctx.mfaEnroll?.method && mfa.availableTransports.length === 1) {
+      (ctx.mfaEnroll ??= {}).method = mfa.availableTransports[0];
     }
     return undefined;
   }
