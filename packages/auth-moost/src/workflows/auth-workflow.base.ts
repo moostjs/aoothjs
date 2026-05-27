@@ -18,6 +18,7 @@ import {
 import { useAtscriptWf } from "@atscript/moost-wf";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { HttpError } from "@moostjs/event-http";
+import type { TWorkflowSchema } from "@moostjs/event-wf";
 import { useRequest } from "@wooksjs/event-http";
 
 import type { ConsentStore } from "../consent.store";
@@ -831,3 +832,38 @@ export class AuthWorkflowBase {
     delete ctx.enrollPincodeCooldown;
   }
 }
+
+// ── Shared @Workflow schema fragments ──
+//
+// Composable schema arrays shared across the bundled auth workflows. Each
+// fragment is typed against `AuthWfCtxBase` so condition functions inside
+// only read canonical group fields (e.g. `ctx.consents?.persisted`), not
+// per-workflow flat aliases — keeps fragments portable across the three
+// WF ctx interfaces and ready for the B1.4 flat-alias drop.
+//
+// Each WF's `@WorkflowSchema<<WfCtx>>([...])` spreads these in place; the
+// `TWorkflowItem<T>` type is contravariant in `T` (condition fns take `T`
+// as a parameter), so under `strictFunctionTypes` a `TWorkflowItem<AuthWfCtxBase>`
+// IS assignable to `TWorkflowItem<LoginWfCtx>` etc.
+
+/**
+ * `prepare-consents` schema entry — fires once per workflow run, after the
+ * `!ctx.username` break, to populate `ctx.consents.pending` from
+ * `ConsentStore.getPendingConsents()`. Shared by `LoginWorkflow`,
+ * `InviteWorkflow`, and `RecoveryWorkflow`.
+ */
+export const consentsPreludeSchema: TWorkflowSchema<AuthWfCtxBase> = [{ id: "prepare-consents" }];
+
+/**
+ * `persist-consents` schema entry — batched consent persistence. Fires once
+ * per workflow run after any carrier form collected `consents` via
+ * `processInlineConsent` (which sets `ctx.consents.decidedAt`). The
+ * `decidedAt` timestamp is the single capture-source gate;
+ * `!persisted` AND-s for single-fire idempotency.
+ */
+export const consentsPersistTailSchema: TWorkflowSchema<AuthWfCtxBase> = [
+  {
+    id: "persist-consents",
+    condition: (ctx) => !!ctx.consents?.decidedAt && !ctx.consents?.persisted,
+  },
+];

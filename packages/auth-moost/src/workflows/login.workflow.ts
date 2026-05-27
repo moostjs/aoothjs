@@ -89,6 +89,8 @@ import { Public } from "../auth.decorator";
 import {
   type AuthWfCtxBase,
   AuthWorkflowBase,
+  consentsPersistTailSchema,
+  consentsPreludeSchema,
   type InlineConsentInput,
   type MfaEnrollDeps,
   stripReservedUserKeys,
@@ -891,7 +893,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
 
     // Resolve all policy groups before any step reads them.
     { id: "prepare-profile" },
-    { id: "prepare-consents" },
+    ...consentsPreludeSchema,
     { id: "prepare-alternate-credentials" },
     { id: "prepare-device-trust" },
     { id: "prepare-enrollment" },
@@ -1053,16 +1055,8 @@ export class LoginWorkflow extends AuthWorkflowBase {
       condition: (ctx) =>
         (ctx.pendingConsents?.length ?? 0) > 0 && !ctx.consentsDecidedAt && !ctx.consentsPersisted,
     },
-    {
-      // Batched consent persistence. Fires once per workflow run after any
-      // carrier form collected `consents` via `processInlineConsent` (which
-      // sets `ctx.consentsDecidedAt`). The `consentsDecidedAt` timestamp is
-      // the single capture-source gate (replaces the prior terms-vs-marketing
-      // OR-condition); `!ctx.consentsPersisted` AND-s for single-fire
-      // idempotency.
-      id: "persist-consents",
-      condition: (ctx) => !!ctx.consentsDecidedAt && !ctx.consentsPersisted,
-    },
+    // Batched consent persistence — see `consentsPersistTailSchema` for rationale.
+    ...consentsPersistTailSchema,
 
     // Phase 8 session policy:
     {

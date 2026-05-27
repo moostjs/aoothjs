@@ -67,6 +67,8 @@ import { Public } from "../auth.decorator";
 import {
   type AuthWfCtxBase,
   AuthWorkflowBase,
+  consentsPersistTailSchema,
+  consentsPreludeSchema,
   type InlineConsentInput,
 } from "./auth-workflow.base";
 import type { DeliverPayload } from "./login.workflow";
@@ -454,7 +456,7 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     { id: "prepare-post-reset" },
     { id: "prepare-alt-actions" },
     { id: "prepare-audit" },
-    { id: "prepare-consents" },
+    ...consentsPreludeSchema,
 
     // Mode picker — only when delivery.mode === 'choice' AND not already chosen.
     {
@@ -520,16 +522,11 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
           id: "revoke-sessions",
           condition: (ctx) => !!ctx.postReset?.revokeAllSessions,
         },
-        // Batched consent persistence. Fires once per workflow run after any
-        // inline consent capture (dynamic `consents: string[]` via
-        // `processInlineConsent` on `SetPasswordForm`). No recovery-specific
-        // terms-bump-prompt: recovery always reaches `SetPasswordForm` as a
-        // guaranteed carrier form, so the inline `AsConsentArray` path is
-        // sufficient.
-        {
-          id: "persist-consents",
-          condition: (ctx) => !!ctx.consentsDecidedAt && !ctx.consentsPersisted,
-        },
+        // Batched consent persistence — see `consentsPersistTailSchema`.
+        // No recovery-specific terms-bump-prompt: recovery always reaches
+        // `SetPasswordForm` as a guaranteed carrier form, so the inline
+        // `AsConsentArray` path is sufficient.
+        ...consentsPersistTailSchema,
         {
           id: "audit",
           condition: (ctx) => !!ctx.audit?.enabled,

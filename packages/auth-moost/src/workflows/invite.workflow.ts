@@ -80,6 +80,8 @@ import {
 import {
   type AuthWfCtxBase,
   AuthWorkflowBase,
+  consentsPersistTailSchema,
+  consentsPreludeSchema,
   type InlineConsentInput,
   type MfaEnrollDeps,
   stripReservedUserKeys,
@@ -532,7 +534,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
           condition: (ctx) => !!ctx.alreadyAccepted,
         },
         { id: "prepare-password-rules" },
-        { id: "prepare-consents" },
+        ...consentsPreludeSchema,
         {
           id: "create-password-form",
           condition: (ctx) => !ctx.passwordSet,
@@ -594,17 +596,12 @@ export class InviteWorkflow extends AuthWorkflowBase {
         },
         // Consumer extension point — see `inviteExtraStep()` method.
         { id: "extra-step" },
-        // Batched consent persistence. Fires once per workflow run after any
-        // inline consent capture (dynamic `consents: string[]` via
-        // `processInlineConsent` on `SetPasswordForm`). Mirrors login's
-        // `persist-consents` placement — before the tail that issues tokens.
-        // No invite-specific terms-bump-prompt: invite always has
-        // `SetPasswordForm` as a guaranteed carrier form, so the inline
-        // `AsConsentArray` path is sufficient.
-        {
-          id: "persist-consents",
-          condition: (ctx) => !!ctx.consentsDecidedAt && !ctx.consentsPersisted,
-        },
+        // Batched consent persistence — see `consentsPersistTailSchema`.
+        // Placed before the tail that issues tokens. No invite-specific
+        // terms-bump-prompt: invite always has `SetPasswordForm` as a
+        // guaranteed carrier form, so the inline `AsConsentArray` path is
+        // sufficient.
+        ...consentsPersistTailSchema,
         {
           id: "unset-pending-invitation",
           condition: (ctx) => !!(ctx.passwordSet && !ctx.pendingInvitationCleared),
