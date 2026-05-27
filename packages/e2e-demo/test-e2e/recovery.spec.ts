@@ -382,9 +382,9 @@ test.describe("recovery — otp-email P1 branches", () => {
     page,
   }) => {
     // BRANCH: `PincodeForm.useDifferentTransport` is gated by
-    // `@ui.form.fn.hidden '(_, _d, ctx) => (ctx.recoveryTransportCount ?? 0) < 2'`.
+    // `@ui.form.fn.hidden '(_, _d, ctx) => (ctx.otp?.transportCount ?? 0) < 2'`.
     // `recoveryInit` mirrors `opts.delivery.otp.transports.length` into
-    // `ctx.recoveryTransportCount`, so a single-transport variant hides the
+    // `ctx.otp?.transportCount`, so a single-transport variant hides the
     // alt-action button entirely.
     await page.goto(wfUrl("auth/recovery/flow", "otp-email"));
     await waitForFormInput(page, "email", 15_000);
@@ -433,7 +433,7 @@ test.describe("recovery — fast-resend P1 branches", () => {
     page,
     request,
   }) => {
-    // BRANCH: `recoveryCheckOtp` `resend` action checks `ctx.pinResendAllowedAt`
+    // BRANCH: `recoveryCheckOtp` `resend` action checks `ctx.otp?.resendAllowedAt`
     // and throws `requireInput({ formMessage: 'Please wait Ns' })` when still
     // inside the cooldown. The mailbox must NOT gain a second pincode email.
     await page.goto(wfUrl("auth/recovery/flow", "recovery-fast-resend"));
@@ -501,7 +501,7 @@ test.describe("recovery — otp-both (R-D) P1 branches", () => {
     request,
   }) => {
     // BRANCH: `recoveryCheckOtp` `useDifferentTransport` rotates
-    // `ctx.otpTransport` from the first element of `delivery.otp.transports`
+    // `ctx.otp?.transport` from the first element of `delivery.otp.transports`
     // (`email`) to the next (`sms`), clears the pin, and the while-loop
     // re-runs `recoverySendOtp` on the new channel. Mailbox: 1 email
     // pincode + 1 sms pincode. Uses t1_ivy because she has a confirmed phone

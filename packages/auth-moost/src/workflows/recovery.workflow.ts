@@ -80,6 +80,24 @@ import {
   type ResolvedRecoveryWorkflowOpts,
 } from "./recovery.workflow.options";
 
+/**
+ * OTP-delivery state — populated across `prepare-delivery` / `select-mode` /
+ * `send-otp` / `check-otp`. Step bodies write here and `PincodeForm` reads it
+ * nested via `@wf.context.pass 'otp'` (mirrors login's `'mfa'` group).
+ */
+export interface RecoveryOtpState {
+  /** Active transport for the current OTP attempt (set by `select-mode` for fixed-otp; flipped by `useDifferentTransport` action). */
+  transport?: RecoveryOtpTransport;
+  /** Pincode digit count mirrored from `authOpts.mfa.pincodeLength` for the form to render the input width. */
+  codeLength?: number;
+  /** Epoch-ms timestamp; `check-otp` rejects `resend` action before this. */
+  resendAllowedAt?: number;
+  /** Latches true after `check-otp` validates the submitted code — exits the otp while-loop. */
+  verified?: boolean;
+  /** Mirror of `delivery.otpTransports.length`; passed to `PincodeForm` so the `useDifferentTransport` action hides when only one transport is configured. */
+  transportCount?: number;
+}
+
 export interface RecoveryWfCtx extends AuthWfCtxBase {
   // Resolved policy (populated by prepare-* steps; reads via resolveXxx() getters):
   delivery?: {
@@ -107,13 +125,8 @@ export interface RecoveryWfCtx extends AuthWfCtxBase {
   /** Resolved delivery mode the workflow committed to (set by `prepare-delivery` for fixed modes, by `select-mode` for `'choice'`). */
   resolvedMode?: "magicLink" | "otp";
 
-  // OTP-mode state:
-  otpTransport?: "sms" | "email";
-  otpCodeLength?: number;
-  pinResendAllowedAt?: number;
-  pinVerified?: boolean;
-  /** Mirror of `delivery.otpTransports.length`. Passed to `PincodeForm` so the `useDifferentTransport` action hides when only one transport is configured. */
-  recoveryTransportCount?: number;
+  // OTP-mode state (grouped — passed to PincodeForm via `@wf.context.pass 'otp'`):
+  otp?: RecoveryOtpState;
 
   // Magic-link state:
   linkSent?: boolean;
@@ -313,7 +326,7 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
   /**
    * Apply resolved delivery to ctx — also auto-resolves derived ctx fields:
    *   - `resolvedMode` (when mode !== 'choice' — `'choice'` defers to `select-mode`)
-   *   - `recoveryTransportCount` (mirrored to ctx for the `useDifferentTransport` form gate)
+   *   - `otp.transportCount` (mirrored to ctx for the `useDifferentTransport` form gate)
    *
    * Validates the otpTransports-not-empty invariant at step time (replacing
    * the old construction-time `validateOpts` check; the value is now
@@ -332,7 +345,7 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     if (resolved.mode !== "choice" && !ctx.resolvedMode) {
       ctx.resolvedMode = resolved.mode;
     }
-    ctx.recoveryTransportCount = resolved.otpTransports.length;
+    (ctx.otp ??= {}).transportCount = resolved.otpTransports.length;
   }
 
   @Step("prepare-pre-reset")
@@ -426,10 +439,10 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     },
     // OTP branch — sendOtp + checkOtp wrapped in a while-loop so the
     // `useDifferentTransport` and `resend` alt-actions can reset
-    // `pin` + `otpTransport` and loop back through `sendOtp` on the new
-    // channel. The loop exits when `pinVerified` flips true.
+    // `pin` + `otp.transport` and loop back through `sendOtp` on the new
+    // channel. The loop exits when `otp.verified` flips true.
     {
-      while: (ctx) => ctx.resolvedMode === "otp" && !ctx.pinVerified && !ctx.aborted,
+      while: (ctx) => ctx.resolvedMode === "otp" && !ctx.otp?.verified && !ctx.aborted,
       steps: [
         {
           id: "send-otp",
@@ -447,7 +460,7 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
       condition: (ctx) =>
         !!ctx.preReset?.requireKnownFactor &&
         !ctx.factorVerified &&
-        (!!ctx.linkSent || !!ctx.pinVerified),
+        (!!ctx.linkSent || !!ctx.otp?.verified),
     },
     // Abort gate — verify-factor 'backToLogin' alt-action sets ctx.aborted.
     { break: (ctx) => !!ctx.aborted },
@@ -456,7 +469,7 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     {
       id: "set-password",
       condition: (ctx) =>
-        (!!ctx.linkSent || !!ctx.pinVerified) &&
+        (!!ctx.linkSent || !!ctx.otp?.verified) &&
         (!ctx.preReset?.requireKnownFactor || !!ctx.factorVerified),
     },
     // No abort path from set-password anymore — SetPasswordForm has no
@@ -607,8 +620,8 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     const mode = input.mode as "magicLink" | "otp";
     ctx.selectedMode = mode;
     ctx.resolvedMode = mode;
-    if (mode === "otp" && !ctx.otpTransport) {
-      ctx.otpTransport = ctx.delivery!.otpTransports[0];
+    if (mode === "otp" && !ctx.otp?.transport) {
+      (ctx.otp ??= {}).transport = ctx.delivery!.otpTransports[0];
     }
     return undefined;
   }
@@ -635,11 +648,12 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
   async sendOtp(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<undefined> {
     this.requireUsername(ctx);
     const transports = ctx.delivery!.otpTransports;
-    const transport: "sms" | "email" = ctx.otpTransport ?? transports[0] ?? "email";
-    ctx.otpTransport = transport;
-    ctx.otpCodeLength = this.authOpts.mfa.pincodeLength;
+    const transport: RecoveryOtpTransport = ctx.otp?.transport ?? transports[0] ?? "email";
+    const otp = (ctx.otp ??= {});
+    otp.transport = transport;
+    otp.codeLength = this.authOpts.mfa.pincodeLength;
     const code = this.mintPin(ctx, this.authOpts.mfa.pincodeLength, this.authOpts.mfa.pincodeTtlMs);
-    ctx.pinResendAllowedAt = Date.now() + this.authOpts.mfa.pincodeResendTimeoutMs;
+    otp.resendAllowedAt = Date.now() + this.authOpts.mfa.pincodeResendTimeoutMs;
 
     if (transport === "email") {
       await this.deliver({
@@ -678,8 +692,8 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
       return undefined;
     }
     if (action === "resend") {
-      if (ctx.pinResendAllowedAt && Date.now() < ctx.pinResendAllowedAt) {
-        const waitSec = Math.ceil((ctx.pinResendAllowedAt - Date.now()) / 1000);
+      if (ctx.otp?.resendAllowedAt && Date.now() < ctx.otp.resendAllowedAt) {
+        const waitSec = Math.ceil((ctx.otp.resendAllowedAt - Date.now()) / 1000);
         throw wf.requireInput({ formMessage: `Please wait ${waitSec}s` });
       }
       // Clear pin so the while-loop's `send-otp` condition re-fires.
@@ -695,9 +709,9 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
       if (transports.length < 2) {
         throw wf.requireInput({ formMessage: "Only one transport configured" });
       }
-      const current = ctx.otpTransport ?? transports[0];
+      const current = ctx.otp?.transport ?? transports[0];
       const next = transports.find((t) => t !== current) ?? transports[0];
-      ctx.otpTransport = next;
+      (ctx.otp ??= {}).transport = next;
       delete ctx.pin;
       delete ctx.pinExpire;
       return undefined;
@@ -705,7 +719,7 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     const input = wf.resolveInput() as { code: string };
     const pinErr = this.verifyPin(ctx, input.code);
     if (pinErr) throw wf.requireInput({ errors: pinErr });
-    ctx.pinVerified = true;
+    (ctx.otp ??= {}).verified = true;
     delete ctx.pin;
     delete ctx.pinExpire;
     return undefined;

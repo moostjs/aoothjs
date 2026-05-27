@@ -319,7 +319,7 @@ export interface Select2faForm {
 @wf.context.pass 'mfa'
 @wf.context.pass 'pincode'
 @wf.context.pass 'trust'
-@wf.context.pass 'recoveryTransportCount'
+@wf.context.pass 'otp'
 @ui.form.submit.text 'Verify'
 export interface PincodeForm {
     @ui.form.fn.value '(_, _d, ctx) => ctx.mfa?.method === "totp" ? "Enter the current 6-digit code from your authenticator app." : ctx.mfa?.method ? "Code sent to " + (ctx.pincode?.sentTo || "your " + ctx.mfa.method) + " — check the dev server console for the code." : "Enter your verification code."'
@@ -351,7 +351,7 @@ export interface PincodeForm {
     backToLogin?: ui.action
 
     @ui.form.action 'useDifferentTransport', 'Use a different transport'
-    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.recoveryTransportCount ?? 0) < 2'
+    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.otp?.transportCount ?? 0) < 2'
     useDifferentTransport?: ui.action
 }
 
