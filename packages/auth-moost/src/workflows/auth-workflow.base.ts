@@ -11,6 +11,7 @@ import {
   generateTotpUri,
   maskEmail,
   maskPhone,
+  type TransferablePolicy,
   UserAuthError,
   type UserService,
 } from "@aooth/user";
@@ -27,6 +28,127 @@ import type { ConsentStore } from "../consent.store";
  * existing consumers don't need to switch import paths.
  */
 export type MfaTransport = "sms" | "email" | "totp";
+
+// ── Shared WF context base ──
+//
+// Each bundled auth workflow ctx (`LoginWfCtx`, `InviteWfCtx`,
+// `RecoveryWfCtx`) extends `AuthWfCtxBase`. The thematic groups below
+// (`consents`, `pincode`, `mfaEnroll`, `password`, `completion`, `public`)
+// give the three workflows a near-identical top-level shape; WF-specific
+// fields are added by each subclass's interface. Each group key here is
+// either `@wf.context.pass`-able individually (when forms.as needs to ship
+// that group to the UI) OR strictly server-only (`pin`, `aborted`).
+//
+// Helper consumption: helpers on `AuthWorkflowBase` take narrower
+// structural subsets (e.g. `MfaEnrollCtx`, `PinCtx`, `InlineConsentCtx`)
+// so they stay workflow-agnostic and don't depend on the full ctx union.
+
+/**
+ * Consents — both server state (`accepted` / `decidedAt`) and the UI-visible
+ * descriptor list (`pending` / `persisted`). The whole group is shipped to
+ * forms via `@wf.context.pass 'consents'`; client cannot forge audit rows
+ * because `processInlineConsent` reads `pending` server-side as the
+ * authoritative whitelist.
+ */
+export interface AuthWfConsentsState {
+  pending?: ConsentDescriptorLike[];
+  accepted?: string[];
+  decidedAt?: number;
+  persisted?: boolean;
+}
+
+/**
+ * Pincode UI hint — masked recipient + UI cooldown timer, shipped via
+ * `@wf.context.pass 'pincode'`. The pincode VALUE itself stays out of this
+ * group (server-only `ctx.pin` / `ctx.pinExpire`) so it never reaches the
+ * client.
+ */
+export interface AuthWfPincodeUiState {
+  sentTo?: string;
+  timeout?: number;
+}
+
+/**
+ * MFA enrollment running state. Shared by `LoginWorkflow` and
+ * `InviteWorkflow`; recovery doesn't enrol new factors but the field stays
+ * optional on the base for shape symmetry. Shipped via
+ * `@wf.context.pass 'mfaEnroll'` (TOTP secret + URI are surfaced so the
+ * UI can render the QR code).
+ */
+export interface AuthWfMfaEnrollState {
+  method?: MfaTransport;
+  address?: string;
+  secret?: string;
+  uri?: string;
+  availableTransports?: MfaTransport[];
+  /**
+   * Policy mode for the picker form — `'required'` hides the skip action,
+   * `'optional'` shows it. Mirrors the helper's `deps.mode` so the form
+   * can reach the same decision via `ctx.mfaEnroll.mode`.
+   */
+  mode?: "required" | "optional";
+  done?: boolean;
+  pincodeCooldown?: number;
+}
+
+/**
+ * Password-change UI hints. `policies` is the wire-shape returned by
+ * `UserService.getTransferablePolicies()` — `string`-expression rules
+ * evaluatable client-side via `@prostojs/ftring`. Shipped via
+ * `@wf.context.pass 'password'`.
+ */
+export interface AuthWfPasswordUiState {
+  policies?: TransferablePolicy[];
+  changeReason?: "initial" | "expired";
+  heading?: string;
+  intro?: string;
+}
+
+/**
+ * Completion outcome — set by post-pause finishing steps; shipped via
+ * `@wf.context.pass 'completion'` if a final-confirm form needs to read
+ * `tokensIssued` / `redirectUrl`.
+ */
+export interface AuthWfCompletionState {
+  passwordChanged?: boolean;
+  tokensIssued?: boolean;
+  redirectUrl?: string;
+}
+
+/**
+ * Miscellaneous UI-shared bag for fields that don't fit a thematic group.
+ * Each WF extends this with its own fields (e.g. `LoginPublic` adds
+ * `altForgotPassword` etc.). Shipped via `@wf.context.pass 'public'`.
+ */
+export interface AuthWfPublicBase {}
+
+/**
+ * Base shape shared by all three auth workflow ctx interfaces. Concrete
+ * `LoginWfCtx` / `InviteWfCtx` / `RecoveryWfCtx` extend this and add
+ * WF-specific top-level fields (policy groups, per-WF flags) alongside the
+ * shared groups below.
+ */
+export interface AuthWfCtxBase {
+  /** Bound by `credentials` / `init` once the user is identified. */
+  username?: string;
+  /** Optional secondary identifier — login + recovery use it for routing. */
+  email?: string;
+
+  /** Server-only pincode secret (NEVER `@wf.context.pass`-ed). */
+  pin?: string;
+  /** Server-only pincode expiry (NEVER `@wf.context.pass`-ed). */
+  pinExpire?: number;
+
+  /** Server-only abort flag — schema gates short-circuit when set. */
+  aborted?: boolean;
+
+  consents?: AuthWfConsentsState;
+  pincode?: AuthWfPincodeUiState;
+  mfaEnroll?: AuthWfMfaEnrollState;
+  password?: AuthWfPasswordUiState;
+  completion?: AuthWfCompletionState;
+  public?: AuthWfPublicBase;
+}
 
 /**
  * Context shape consumed by the `enrollPickPhase` / `enrollAddressPhase` /
@@ -195,9 +317,10 @@ export interface InlineConsentCtx {
 /**
  * Structural alias of `ConsentDescriptor` — kept inline so this module
  * doesn't import from `../consent.store.ts` (which would create a cycle:
- * consent.store.ts already imports `ConsentEvent` from here).
+ * consent.store.ts already imports `ConsentEvent` from here). Exported
+ * because `AuthWfConsentsState` (above) is part of the public surface.
  */
-interface ConsentDescriptorLike {
+export interface ConsentDescriptorLike {
   id: string;
   text: string;
   required?: string;

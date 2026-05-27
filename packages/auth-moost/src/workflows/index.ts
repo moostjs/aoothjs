@@ -49,4 +49,14 @@ export {
   type PreparedUserInput,
   type ResolvedInviteWorkflowOpts,
 } from "./invite.workflow.options";
-export { type ConsentEvent } from "./auth-workflow.base";
+export {
+  type AuthWfCompletionState,
+  type AuthWfConsentsState,
+  type AuthWfCtxBase,
+  type AuthWfMfaEnrollState,
+  type AuthWfPasswordUiState,
+  type AuthWfPincodeUiState,
+  type AuthWfPublicBase,
+  type ConsentDescriptorLike,
+  type ConsentEvent,
+} from "./auth-workflow.base";
