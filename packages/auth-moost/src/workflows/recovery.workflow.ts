@@ -57,7 +57,7 @@ import {
 } from "@moostjs/event-wf";
 import { current } from "@wooksjs/event-core";
 import { useUrlParams } from "@wooksjs/event-http";
-import { Controller } from "moost";
+import { Controller, Inherit } from "moost";
 
 import type { AuditEvent } from "../audit/index";
 import { AuthOpts } from "../auth.opts";
@@ -196,6 +196,7 @@ function validateOpts(_opts: ResolvedRecoveryWorkflowOpts): void {
 // workflow events bypasses this controller. See `LoginWorkflow` for the
 // rationale on why the marker has to live on the workflow class itself, not
 // just the `/auth/trigger` HTTP route.
+@Inherit()
 @Public()
 @Controller("auth/recovery")
 export class RecoveryWorkflow extends AuthWorkflowBase {
@@ -932,23 +933,6 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
       ...(ctx.sessionsRevoked && { sessionsRevoked: true }),
     });
     return undefined;
-  }
-
-  // ── persist-consents ─────────────────────────────────────────────────
-  /**
-   * Batched consent persistence — delegates to
-   * `AuthWorkflowBase.runPersistConsents`. See that helper for the full
-   * audit-friendly-default / idempotency / silent-drop contract.
-   */
-  @Step("persist-consents")
-  persistConsentsStep(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<undefined> {
-    return this.runPersistConsents(ctx, this.consentStore).then(() => {
-      // dual-write — flat alias removed in B1.4
-      if (ctx.consentsPersisted !== undefined) {
-        (ctx.consents ??= {}).persisted = ctx.consentsPersisted;
-      }
-      return undefined;
-    });
   }
 
   // ── freshLoginFinish ─────────────────────────────────────────────────

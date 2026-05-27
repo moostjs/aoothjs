@@ -1,6 +1,7 @@
 import { UserAuthError } from "@aooth/user";
 import { HttpError } from "@moostjs/event-http";
 import { describe, expect, it } from "vite-plus/test";
+import { ConsentStore } from "../consent.store";
 import {
   AuthWorkflowBase,
   type InlineConsentCtx,
@@ -13,7 +14,12 @@ import {
 // security gates can be pinned without dragging in the full LoginWorkflow
 // dispatch — these gates are workflow-agnostic by design (the helper takes a
 // structural `InlineConsentCtx` and a `WfRequireInputOnly` interface).
+//
+// `consentStore` satisfies `AuthWorkflowBase`'s abstract getter (used by the
+// inherited `persistConsentsStep` @Step). These tests don't exercise consent
+// persistence, so a default no-op `ConsentStore` instance is sufficient.
 class ExposedBase extends AuthWorkflowBase {
+  protected readonly consentStore: ConsentStore = new ConsentStore();
   public run<T>(op: () => Promise<T>): Promise<T> {
     return this.withStoreErrorTranslation(op);
   }

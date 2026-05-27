@@ -64,7 +64,7 @@ import {
   WorkflowParam,
   WorkflowSchema,
 } from "@moostjs/event-wf";
-import { Controller } from "moost";
+import { Controller, Inherit } from "moost";
 
 import { AuthOpts } from "../auth.opts";
 import { type ConsentDescriptor, ConsentStore } from "../consent.store";
@@ -268,6 +268,7 @@ export function buildInviteAlreadyAcceptedEnvelope(opts: {
  * `indexes[level]`, not after it). Its body is idempotent via
  * `if (ctx.linkSent) return`.
  */
+@Inherit()
 @ArbacResource("auth.invite")
 @ArbacAction("start")
 @Controller("auth/invite")
@@ -1063,24 +1064,6 @@ export class InviteWorkflow extends AuthWorkflowBase {
   @Public()
   inviteExtraStep(): unknown {
     return undefined;
-  }
-
-  // ── Phase B: persist-consents ─────────────────────────────────────────
-  /**
-   * Batched consent persistence — delegates to
-   * `AuthWorkflowBase.runPersistConsents`. See that helper for the full
-   * audit-friendly-default / idempotency / silent-drop contract.
-   */
-  @Step("persist-consents")
-  @Public()
-  persistConsentsStep(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
-    return this.runPersistConsents(ctx, this.consentStore).then(() => {
-      // dual-write — flat alias removed in B1.4
-      if (ctx.consentsPersisted !== undefined) {
-        (ctx.consents ??= {}).persisted = ctx.consentsPersisted;
-      }
-      return undefined;
-    });
   }
 
   // ── Phase B: unsetPendingInvitation ───────────────────────────────────

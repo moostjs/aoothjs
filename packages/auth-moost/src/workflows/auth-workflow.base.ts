@@ -18,9 +18,10 @@ import {
 import { useAtscriptWf } from "@atscript/moost-wf";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { HttpError } from "@moostjs/event-http";
-import type { TWorkflowSchema } from "@moostjs/event-wf";
+import { Step, type TWorkflowSchema, WorkflowParam } from "@moostjs/event-wf";
 import { useRequest } from "@wooksjs/event-http";
 
+import { Public } from "../auth.decorator";
 import type { ConsentStore } from "../consent.store";
 
 /**
@@ -378,7 +379,22 @@ type WfRequireInputOnly = {
   requireInput(opts?: { errors?: Record<string, string>; formMessage?: string }): unknown;
 };
 
-export class AuthWorkflowBase {
+/**
+ * Shared base for the three bundled auth workflows. `abstract` because
+ * `consentStore` is consumed by the inherited `persistConsentsStep` @Step
+ * but is supplied by each subclass's constructor (DI-injected). Concrete
+ * subclasses already declare `protected readonly consentStore: ConsentStore`,
+ * which structurally satisfies the abstract getter.
+ */
+export abstract class AuthWorkflowBase {
+  /**
+   * `ConsentStore` access for inherited `persistConsentsStep`. Subclasses
+   * supply this via their constructor-initialized `protected readonly
+   * consentStore: ConsentStore` field — TypeScript treats the field as
+   * satisfying this abstract getter.
+   */
+  protected abstract get consentStore(): ConsentStore;
+
   /**
    * Asserts `ctx.username` is populated. Workflow steps reach for `ctx.username`
    * after `credentials`/`init` has set it; losing it indicates a workflow-state
@@ -523,20 +539,23 @@ export class AuthWorkflowBase {
    * `pendingConsents` is empty (defensive — the schema condition gates on
    * `consentsDecidedAt` which is only set when pending was non-empty).
    *
-   * Each workflow's `@Step("persist-consents")` method is a one-liner
-   * delegate to this helper — the @Step decorator must stay on the
-   * subclass so the wf engine registers the step id under the correct
-   * controller, but the body lives here once.
+   * Invoked by the inherited `@Step("persist-consents")` `persistConsentsStep`
+   * method below — kept as a separate helper so subclass tests that override
+   * `persistConsentsStep` can still call this body via `super`.
    */
   protected async runPersistConsents(
-    ctx: InlineConsentCtx & { username?: string },
+    ctx: InlineConsentCtx & AuthWfCtxBase,
     consentStore: ConsentStore,
   ): Promise<undefined> {
     this.requireUsername(ctx);
-    if (ctx.consentsPersisted) return undefined;
+    if (ctx.consentsPersisted) {
+      (ctx.consents ??= {}).persisted = true;
+      return undefined;
+    }
     const pending = ctx.pendingConsents ?? [];
     if (pending.length === 0) {
       ctx.consentsPersisted = true;
+      (ctx.consents ??= {}).persisted = true;
       return undefined;
     }
     const accepted = new Set(ctx.acceptedConsentIds ?? []);
@@ -548,7 +567,32 @@ export class AuthWorkflowBase {
     });
     await consentStore.save(ctx.username, events);
     ctx.consentsPersisted = true;
+    (ctx.consents ??= {}).persisted = true;
     return undefined;
+  }
+
+  /**
+   * Batched consent persistence — inherited by `LoginWorkflow` /
+   * `InviteWorkflow` / `RecoveryWorkflow` via their class-level `@Inherit()`.
+   * Per Mate's PROP inheritance rule, this decoration flows down only when
+   * the subclass has no own metadata on `persistConsentsStep` AND its
+   * `classMeta.inherit` is set. Both conditions are load-bearing for the
+   * wf engine to register `persist-consents` under each subclass's
+   * controller prefix.
+   *
+   * `@Public()` is applied here so the step bypasses arbac on all three
+   * subclasses uniformly — login + recovery are class-level `@Public()`
+   * already (the per-method decoration is redundant but harmless),
+   * invite is NOT class-level `@Public()` and relies on this method-level
+   * decoration to opt the step out of arbac (consent persistence runs on
+   * the anonymous magic-link resume tail).
+   */
+  @Step("persist-consents")
+  @Public()
+  persistConsentsStep(
+    @WorkflowParam("context") ctx: InlineConsentCtx & AuthWfCtxBase,
+  ): Promise<undefined> {
+    return this.runPersistConsents(ctx, this.consentStore);
   }
 
   /**

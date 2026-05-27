@@ -79,7 +79,7 @@ import {
 } from "@moostjs/event-wf";
 import { current } from "@wooksjs/event-core";
 import { useCookies, useHeaders, useResponse } from "@wooksjs/event-http";
-import { Controller, Param } from "moost";
+import { Controller, Inherit, Param } from "moost";
 
 import type { AuditEvent } from "../audit/index";
 import { AuthOpts } from "../auth.opts";
@@ -503,6 +503,7 @@ export type DeliverPayload = DeliverEmail | DeliverSms;
 // arbac interceptor would resolve resource→`LoginWorkflow` / action→step
 // name on workflow events and either deny (no matching role) or require a
 // configured grant.
+@Inherit()
 @Public()
 @Controller("auth/login")
 export class LoginWorkflow extends AuthWorkflowBase {
@@ -2013,22 +2014,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
       (ctx.consents ??= {}).decidedAt = ctx.consentsDecidedAt;
     }
     return undefined;
-  }
-
-  /**
-   * Batched consent persistence — delegates to
-   * `AuthWorkflowBase.runPersistConsents`. See that helper for the full
-   * audit-friendly-default / idempotency / silent-drop contract.
-   */
-  @Step("persist-consents")
-  persistConsentsStep(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
-    return this.runPersistConsents(ctx, this.consentStore).then(() => {
-      // dual-write — flat alias removed in B1.4
-      if (ctx.consentsPersisted !== undefined) {
-        (ctx.consents ??= {}).persisted = ctx.consentsPersisted;
-      }
-      return undefined;
-    });
   }
 
   // ── Phase 8: session policy ───────────────────────────────────────────
