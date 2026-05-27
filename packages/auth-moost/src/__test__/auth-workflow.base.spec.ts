@@ -18,8 +18,13 @@ import {
 // `consentStore` satisfies `AuthWorkflowBase`'s abstract getter (used by the
 // inherited `persistConsentsStep` @Step). These tests don't exercise consent
 // persistence, so a default no-op `ConsentStore` instance is sufficient.
+// `consentsWorkflowId` satisfies the paired abstract getter used by the
+// inherited `prepareConsents` @Step. These tests don't fire that step.
 class ExposedBase extends AuthWorkflowBase {
   protected readonly consentStore: ConsentStore = new ConsentStore();
+  protected get consentsWorkflowId(): string {
+    return "auth/test/flow";
+  }
   public run<T>(op: () => Promise<T>): Promise<T> {
     return this.withStoreErrorTranslation(op);
   }

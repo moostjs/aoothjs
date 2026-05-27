@@ -396,6 +396,14 @@ export abstract class AuthWorkflowBase {
   protected abstract get consentStore(): ConsentStore;
 
   /**
+   * Workflow ID tag passed to `ConsentStore.getPendingConsents(...)` by the
+   * inherited `prepareConsents` @Step. Customer impls key consent history by
+   * (user, workflow) so each WF must declare its own canonical id. Subclasses
+   * override this as a one-line getter, e.g. `protected get consentsWorkflowId() { return "auth/login/flow"; }`.
+   */
+  protected abstract get consentsWorkflowId(): string;
+
+  /**
    * Asserts `ctx.username` is populated. Workflow steps reach for `ctx.username`
    * after `credentials`/`init` has set it; losing it indicates a workflow-state
    * bug, not a client error. Throws `HttpError(500)` on miss; otherwise narrows
@@ -593,6 +601,42 @@ export abstract class AuthWorkflowBase {
     @WorkflowParam("context") ctx: InlineConsentCtx & AuthWfCtxBase,
   ): Promise<undefined> {
     return this.runPersistConsents(ctx, this.consentStore);
+  }
+
+  /**
+   * Loads pending consents for the bound user — inherited by the three
+   * bundled WFs via class-level `@Inherit()` (same mechanics as
+   * `persistConsentsStep` above). The WF-ID tag passed to the consent store
+   * is declared per-subclass via the `consentsWorkflowId` abstract getter
+   * (login: "auth/login/flow", invite: "auth/invite/start", recovery:
+   * "auth/recovery/flow"). `@Public()` here for the same reason as on
+   * `persistConsentsStep`.
+   *
+   * `if (!ctx.username)` is belt-and-brace — the schema places this step
+   * AFTER the `!ctx.username` break gate, but future schema refactors that
+   * re-order steps would otherwise hit the consent store with an unbound
+   * username.
+   */
+  @Step("prepare-consents")
+  @Public()
+  prepareConsents(
+    @WorkflowParam("context") ctx: InlineConsentCtx & AuthWfCtxBase,
+  ): undefined | Promise<undefined> {
+    if (!ctx.username) return undefined;
+    const result = this.consentStore.getPendingConsents(ctx.username, {
+      workflow: this.consentsWorkflowId,
+    });
+    // dual-write — flat alias removed in B1.4
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.pendingConsents = resolved;
+        (ctx.consents ??= {}).pending = resolved;
+        return undefined;
+      });
+    }
+    ctx.pendingConsents = result;
+    (ctx.consents ??= {}).pending = result;
+    return undefined;
   }
 
   /**

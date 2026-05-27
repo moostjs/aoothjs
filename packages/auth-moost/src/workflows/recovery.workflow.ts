@@ -222,6 +222,10 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     validateOpts(this.opts);
   }
 
+  protected get consentsWorkflowId(): string {
+    return "auth/recovery/flow";
+  }
+
   // ── Protected extension surface ───────────────────────────────────────
   /**
    * Dispatch an email or SMS event. Default throws — consumers MUST override
@@ -401,37 +405,6 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
       });
     }
     ctx.audit = result;
-    return undefined;
-  }
-
-  /**
-   * Populate `ctx.pendingConsents` with the customer-defined general-consent
-   * descriptors (terms, marketing, jurisdiction, ...) the user still needs to
-   * accept. Phase 4 transport only — nothing reads `ctx.pendingConsents` yet;
-   * Phase 5 will migrate the carrier `SetPasswordForm` from the
-   * `WithInlineConsentForm` static-checkbox mixin onto this dynamic array.
-   *
-   * Username MUST be bound before we fetch consents — the schema places this
-   * step AFTER the `!ctx.username` break gate, so the `if (!ctx.username)`
-   * guard is belt-and-brace for future refactors that might re-order the
-   * schema.
-   */
-  @Step("prepare-consents")
-  prepareConsents(@WorkflowParam("context") ctx: RecoveryWfCtx): undefined | Promise<undefined> {
-    if (!ctx.username) return undefined;
-    const result = this.consentStore.getPendingConsents(ctx.username, {
-      workflow: "auth/recovery/flow",
-    });
-    // dual-write — flat alias removed in B1.4
-    if (result instanceof Promise) {
-      return result.then((resolved) => {
-        ctx.pendingConsents = resolved;
-        (ctx.consents ??= {}).pending = resolved;
-        return undefined;
-      });
-    }
-    ctx.pendingConsents = result;
-    (ctx.consents ??= {}).pending = result;
     return undefined;
   }
 

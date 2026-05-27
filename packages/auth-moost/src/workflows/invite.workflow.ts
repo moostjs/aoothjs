@@ -295,6 +295,10 @@ export class InviteWorkflow extends AuthWorkflowBase {
     validateOpts(this.opts);
   }
 
+  protected get consentsWorkflowId(): string {
+    return "auth/invite/start";
+  }
+
   // ── Protected extension surface ───────────────────────────────────────
   /**
    * Dispatch the invite email. Default throws — the default invite send
@@ -451,40 +455,6 @@ export class InviteWorkflow extends AuthWorkflowBase {
       });
     }
     ctx.mfa = result;
-    return undefined;
-  }
-
-  /**
-   * Populate `ctx.pendingConsents` with the customer-defined general-consent
-   * descriptors (terms, marketing, jurisdiction, ...) the invitee still needs
-   * to accept. Phase 4 transport only — nothing reads `ctx.pendingConsents`
-   * yet; Phase 5 will migrate the carrier `SetPasswordForm` from the
-   * `WithInlineConsentForm` static-checkbox mixin onto this dynamic array.
-   *
-   * Username MUST be bound before we fetch consents — schema places this step
-   * AFTER `check-pending-invitation` (which sets `ctx.username` from the
-   * pending-invite row) inside the `linkSent` accept-tail subflow, so the
-   * `if (!ctx.username)` guard is belt-and-brace. `@Public()` is required
-   * because this step fires on the anonymous magic-link resume side of the
-   * workflow.
-   */
-  @Step("prepare-consents")
-  @Public()
-  prepareConsents(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
-    if (!ctx.username) return undefined;
-    const result = this.consentStore.getPendingConsents(ctx.username, {
-      workflow: "auth/invite/start",
-    });
-    // dual-write — flat alias removed in B1.4
-    if (result instanceof Promise) {
-      return result.then((resolved) => {
-        ctx.pendingConsents = resolved;
-        (ctx.consents ??= {}).pending = resolved;
-        return undefined;
-      });
-    }
-    ctx.pendingConsents = result;
-    (ctx.consents ??= {}).pending = result;
     return undefined;
   }
 
