@@ -160,16 +160,16 @@ export interface AuthWfCtxBase {
  * here — base stays workflow-agnostic.
  *
  * The helper consumes the canonical `ctx.mfaEnroll` group (set by
- * `enrollPickPhase` / `enrollAddressPhase` / `enrollConfirmPhase`) plus the
- * pincode-related fields (`pin` / `pinExpire` / `pinSentTo`) it reads during
- * the SMS/email confirm path — the pincode group is a separate flat-alias
- * cluster scheduled for its own B1.4 follow-up commit.
+ * `enrollPickPhase` / `enrollAddressPhase` / `enrollConfirmPhase`) plus
+ * the pincode-related fields (`pin` / `pinExpire` — server-only secrets)
+ * and the `ctx.pincode` UI hint group (`sentTo` — masked recipient) it
+ * writes during the SMS/email confirm path.
  */
 export interface MfaEnrollCtx {
   mfaEnroll?: AuthWfMfaEnrollState;
   pin?: string;
   pinExpire?: number;
-  pinSentTo?: string;
+  pincode?: AuthWfPincodeUiState;
 }
 
 /**
@@ -835,10 +835,10 @@ export abstract class AuthWorkflowBase {
 
   /**
    * Send a pincode for the active sms/email enrollment method and stamp
-   * `ctx.pinSentTo` with the masked recipient. Shared by Phase 2 initial
-   * dispatch and Phase 3 `resend`. Caller is responsible for `mintPin` +
-   * stamping `ctx.mfaEnroll.pincodeCooldown` BEFORE calling — this just
-   * dispatches. Not called for TOTP (no pincode to send).
+   * `ctx.pincode.sentTo` with the masked recipient. Shared by Phase 2
+   * initial dispatch and Phase 3 `resend`. Caller is responsible for
+   * `mintPin` + stamping `ctx.mfaEnroll.pincodeCooldown` BEFORE calling
+   * — this just dispatches. Not called for TOTP (no pincode to send).
    */
   protected async sendEnrollPincode(
     ctx: MfaEnrollCtx,
@@ -846,8 +846,9 @@ export abstract class AuthWorkflowBase {
     address: string,
     code: string,
   ): Promise<void> {
+    const pincode = (ctx.pincode ??= {});
     if (ctx.mfaEnroll?.method === "email") {
-      ctx.pinSentTo = maskEmail(address);
+      pincode.sentTo = maskEmail(address);
       await deps.deliver({
         channel: "email",
         kind: "login.pincode",
@@ -857,7 +858,7 @@ export abstract class AuthWorkflowBase {
         userId: deps.username,
       });
     } else {
-      ctx.pinSentTo = maskPhone(address);
+      pincode.sentTo = maskPhone(address);
       await deps.deliver({
         channel: "sms",
         kind: "login.pincode",
@@ -895,7 +896,7 @@ export abstract class AuthWorkflowBase {
     }
     delete ctx.pin;
     delete ctx.pinExpire;
-    delete ctx.pinSentTo;
+    if (ctx.pincode) delete ctx.pincode.sentTo;
   }
 }
 

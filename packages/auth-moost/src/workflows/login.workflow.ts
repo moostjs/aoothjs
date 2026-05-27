@@ -341,12 +341,6 @@ export interface LoginWfCtx extends AuthWfCtxBase {
   // in the step bodies below; kept here for forms.as `@wf.context.pass 'flatKey'`
   // compat. Type-safe consumers should read the nested form.
 
-  // Pincode UI hint (mirrors `ctx.pincode.*`):
-  /** Flat alias for `ctx.pincode.sentTo` — masked recipient. */
-  pinSentTo?: string;
-  /** Flat alias for `ctx.pincode.timeout` — resend cooldown deadline. */
-  pinTimeout?: number;
-
   // Password-change UI (mirrors `ctx.password.*`):
   /** Flat alias for `ctx.password.changeReason`. */
   passwordChangeReason?: "initial" | "expired";
@@ -354,14 +348,6 @@ export interface LoginWfCtx extends AuthWfCtxBase {
   passwordFormHeading?: string;
   /** Flat alias for `ctx.password.intro`. */
   passwordFormIntro?: string;
-
-  // Completion (mirrors `ctx.completion.*`):
-  /** Flat alias for `ctx.completion.passwordChanged`. */
-  passwordChanged?: boolean;
-  /** Flat alias for `ctx.completion.tokensIssued`. */
-  tokensIssued?: boolean;
-  /** Flat alias for `ctx.completion.redirectUrl`. */
-  redirectUrl?: string;
 }
 
 /**
@@ -961,7 +947,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // Phase 5 forced password change:
     {
       condition: (ctx) =>
-        (!!ctx.isPasswordInitial || !!ctx.isPasswordExpired) && !ctx.passwordChanged,
+        (!!ctx.isPasswordInitial || !!ctx.isPasswordExpired) && !ctx.completion?.passwordChanged,
       steps: [...passwordChangeSchema],
     },
     // No abort path from create-password-form anymore — the SetPasswordForm
@@ -1020,9 +1006,9 @@ export class LoginWorkflow extends AuthWorkflowBase {
     { break: (ctx) => !!ctx.aborted },
 
     // Phase 9 finalize:
-    { id: "issue", condition: (ctx) => !ctx.tokensIssued },
+    { id: "issue", condition: (ctx) => !ctx.completion?.tokensIssued },
     {
-      condition: (ctx) => !!ctx.tokensIssued,
+      condition: (ctx) => !!ctx.completion?.tokensIssued,
       steps: [
         { id: "audit-login", condition: (ctx) => !!ctx.finalize?.auditLogin },
         {
@@ -1550,12 +1536,10 @@ export class LoginWorkflow extends AuthWorkflowBase {
     const method = user.mfa.methods.find((m) => m.name === summary.methodName && m.confirmed);
     if (!method) throw new HttpError(500, "MFA method no longer present");
     const code = this.mintPin(ctx, this.authOpts.mfa.pincodeLength, this.authOpts.mfa.pincodeTtlMs);
-    // dual-write — flat alias removed in B1.4
-    ctx.pinTimeout = Date.now() + this.authOpts.mfa.pincodeResendTimeoutMs;
-    (ctx.pincode ??= {}).timeout = ctx.pinTimeout;
+    const pincode = (ctx.pincode ??= {});
+    pincode.timeout = Date.now() + this.authOpts.mfa.pincodeResendTimeoutMs;
     if (ctx.mfaMethod === "email") {
-      ctx.pinSentTo = maskEmail(method.value);
-      (ctx.pincode ??= {}).sentTo = ctx.pinSentTo;
+      pincode.sentTo = maskEmail(method.value);
       await this.deliver({
         channel: "email",
         kind: "login.pincode",
@@ -1565,8 +1549,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
         userId: ctx.username,
       });
     } else if (ctx.mfaMethod === "sms") {
-      ctx.pinSentTo = maskPhone(method.value);
-      (ctx.pincode ??= {}).sentTo = ctx.pinSentTo;
+      pincode.sentTo = maskPhone(method.value);
       await this.deliver({
         channel: "sms",
         kind: "login.pincode",
@@ -1592,8 +1575,9 @@ export class LoginWorkflow extends AuthWorkflowBase {
     const wf = useAtscriptWf(this.opts.forms.pincode);
     const action = wf.resolveAction();
     if (action === "resend") {
-      if (ctx.pinTimeout && Date.now() < ctx.pinTimeout) {
-        const waitSec = Math.ceil((ctx.pinTimeout - Date.now()) / 1000);
+      const timeout = ctx.pincode?.timeout;
+      if (timeout && Date.now() < timeout) {
+        const waitSec = Math.ceil((timeout - Date.now()) / 1000);
         throw wf.requireInput({ formMessage: `Please wait ${waitSec}s` });
       }
       delete ctx.pin;
@@ -1817,7 +1801,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
       throw err;
     }
     this.processInlineConsent(ctx, input, wf);
-    ctx.passwordChanged = true;
     (ctx.completion ??= {}).passwordChanged = true;
     ctx.isPasswordInitial = false;
     ctx.isPasswordExpired = false;
@@ -1988,8 +1971,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
   async issue(@WorkflowParam("context") ctx: LoginWfCtx): Promise<void> {
     this.requireUsername(ctx);
     const issue = await this.auth.issue(ctx.username);
-    // dual-write — flat alias removed in B1.4
-    ctx.tokensIssued = true;
     (ctx.completion ??= {}).tokensIssued = true;
     // Build response payload + cookies and stash on the finished response.
     // The `redirect` step (terminal) overrides with a redirect envelope when
@@ -2055,8 +2036,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
       value: envelope,
       ...(existing?.cookies && { cookies: existing.cookies }),
     });
-    // dual-write — flat alias removed in B1.4
-    ctx.redirectUrl = url;
     (ctx.completion ??= {}).redirectUrl = url;
     return undefined;
   }

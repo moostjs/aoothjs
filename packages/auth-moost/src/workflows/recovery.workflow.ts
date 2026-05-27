@@ -141,10 +141,6 @@ export interface RecoveryWfCtx extends AuthWfCtxBase {
   passwordFormHeading?: string;
   /** Flat alias for `ctx.password.intro`. */
   passwordFormIntro?: string;
-  /** Flat alias for `ctx.completion.passwordChanged`. */
-  passwordChanged?: boolean;
-  /** Flat alias for `ctx.completion.tokensIssued`. */
-  tokensIssued?: boolean;
 }
 
 /**
@@ -478,11 +474,11 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     // backToLogin) still short-circuits the post-reset tail.
     { break: (ctx) => !!ctx.aborted },
 
-    // Post-password subflow — `passwordChanged` flips ONCE in
+    // Post-password subflow — `completion.passwordChanged` flips ONCE in
     // `set-password` and stays true; safe to hoist as a subflow
     // condition (evaluated once when the engine reaches it).
     {
-      condition: (ctx) => !!ctx.passwordChanged,
+      condition: (ctx) => !!ctx.completion?.passwordChanged,
       steps: [
         {
           id: "revoke-sessions",
@@ -504,7 +500,7 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
         },
         {
           id: "auto-login-finish",
-          condition: (ctx) => !ctx.postReset?.freshLoginRequired && !ctx.tokensIssued,
+          condition: (ctx) => !ctx.postReset?.freshLoginRequired && !ctx.completion?.tokensIssued,
         },
       ],
     },
@@ -865,7 +861,6 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     // to make on every recovery run; unknown ids are silently dropped per
     // its SECURITY contract.
     this.processInlineConsent(ctx, input, wf);
-    ctx.passwordChanged = true;
     (ctx.completion ??= {}).passwordChanged = true;
     return undefined;
   }
@@ -921,8 +916,6 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
   async autoLoginFinish(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<undefined> {
     this.requireUsername(ctx);
     const issue = await this.auth.issue(ctx.username);
-    // dual-write — flat alias removed in B1.4
-    ctx.tokensIssued = true;
     (ctx.completion ??= {}).tokensIssued = true;
     const auth = useAuth();
     // Raw envelope path — helpers don't expose cookies; wooks-level Set-Cookie.

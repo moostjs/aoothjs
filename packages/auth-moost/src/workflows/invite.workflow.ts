@@ -142,15 +142,6 @@ export interface InviteWfCtx extends AuthWfCtxBase {
   pendingInvitationCleared?: boolean;
   activated?: boolean;
   confirmationShown?: boolean;
-
-  // ── Flat aliases (compat) — removed in B1.4 once forms.as migrates to nested ──
-  // Each one mirrors a `ctx.<group>.<field>` on `AuthWfCtxBase` via dual-write
-  // in the step bodies below; kept here for forms.as `@wf.context.pass 'flatKey'`
-  // compat. Type-safe consumers should read the nested form.
-  /** Flat alias for `ctx.pincode.sentTo`. */
-  pinSentTo?: string;
-  /** Flat alias for `ctx.completion.tokensIssued`. */
-  tokensIssued?: boolean;
 }
 
 /**
@@ -572,7 +563,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
         {
           id: "auto-login-finish",
           condition: (ctx) =>
-            !!(ctx.activated && !ctx.accept?.freshLoginRequired && !ctx.tokensIssued),
+            !!(ctx.activated && !ctx.accept?.freshLoginRequired && !ctx.completion?.tokensIssued),
         },
       ],
     },
@@ -1025,8 +1016,6 @@ export class InviteWorkflow extends AuthWorkflowBase {
   async autoLoginFinish(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     this.requireUsername(ctx);
     const issue = await this.auth.issue(ctx.username);
-    // dual-write — flat alias removed in B1.4
-    ctx.tokensIssued = true;
     (ctx.completion ??= {}).tokensIssued = true;
     const auth = useAuth();
     // Preserve a `message` set by an earlier terminal (typically
