@@ -358,12 +358,12 @@ describe("LoginWorkflowOpts — Phase 2 password guards", () => {
     expect(typeof data?.accessToken).toBe("string");
   });
 
-  it("WF-LOGIN-PWPOLICY — passwordPolicies reaches client on SetPasswordForm pause (forced password change)", async () => {
+  it("WF-LOGIN-PWPOLICY — password.policies reaches client on SetPasswordForm pause (forced password change)", async () => {
     // Guards two regressions at once:
-    //   1. `@wf.context.pass 'passwordPolicies'` on SetPasswordForm — without
+    //   1. `@wf.context.pass 'password'` on SetPasswordForm — without
     //      it `extractPassContext` strips the key before the inputRequired
     //      envelope leaves the engine.
-    //   2. `prepare-password-rules` step seeding `ctx.passwordPolicies` so the
+    //   2. `prepare-password-rules` step seeding `ctx.password.policies` so the
     //      next step's `createPasswordForm` ships the rules to the client.
     const app = await prepareWfApp({
       loginPolicy: { guards: guardsPolicy({ passwordInitial: true }) },
@@ -377,13 +377,14 @@ describe("LoginWorkflowOpts — Phase 2 password guards", () => {
     await store.update("alice", { set: { password: { isInitial: true } } });
 
     const r2 = await startAndCredentials(app, "alice", "Knowable1!");
-    // Same flat-object wire shape as recovery — whitelisted ctx keys merged
-    // alongside the form schema.
-    const body = r2.body as { id?: string; passwordPolicies?: unknown };
+    // The `password` group is shipped as a nested object — whitelisted ctx
+    // keys merged alongside the form schema.
+    const body = r2.body as { id?: string; password?: { policies?: unknown } };
     expect(body.id).toBe("SetPasswordForm");
-    expect(body.passwordPolicies).toEqual(app.users.getTransferablePolicies());
-    expect(Array.isArray(body.passwordPolicies)).toBe(true);
-    expect((body.passwordPolicies as unknown[]).length).toBeGreaterThan(0);
+    const policies = body.password?.policies as unknown[] | undefined;
+    expect(policies).toEqual(app.users.getTransferablePolicies());
+    expect(Array.isArray(policies)).toBe(true);
+    expect(policies?.length ?? 0).toBeGreaterThan(0);
   });
 });
 
@@ -440,11 +441,11 @@ describe("LoginWorkflowOpts — passwordExpiry (rotation) guard", () => {
     expect(typeof data?.accessToken).toBe("string");
   });
 
-  it("maxAgeMs set + lastChanged beyond window → SetPasswordForm pause + passwordChangeReason='expired'", async () => {
+  it("maxAgeMs set + lastChanged beyond window → SetPasswordForm pause + password.changeReason='expired'", async () => {
     // WHY: positive-case proof the new arc fires end-to-end (resolver →
     // credentials → schema condition → pause). Also pins
-    // passwordChangeReason='expired' on the wire envelope — without
-    // `@wf.context.pass 'passwordChangeReason'` on SetPasswordForm, the
+    // password.changeReason='expired' on the wire envelope — without
+    // `@wf.context.pass 'password'` on SetPasswordForm, the
     // key would be stripped by `extractPassContext` before the client
     // receives it. Same regression class as WF-LOGIN-PWPOLICY.
     let now = 1_000_000_000;
@@ -458,12 +459,12 @@ describe("LoginWorkflowOpts — passwordExpiry (rotation) guard", () => {
     now += 2 * YEAR_MS;
     const r2 = await startAndCredentials(app, "alice", "Password123");
     expect(r2.body?.wfs).toBeTruthy();
-    const body = r2.body as { id?: string; passwordChangeReason?: unknown };
+    const body = r2.body as { id?: string; password?: { changeReason?: unknown } };
     expect(body.id).toBe("SetPasswordForm");
-    expect(body.passwordChangeReason).toBe("expired");
+    expect(body.password?.changeReason).toBe("expired");
   });
 
-  it("passwordInitial=true AND expired=true → passwordChangeReason='initial' wins", async () => {
+  it("passwordInitial=true AND expired=true → password.changeReason='initial' wins", async () => {
     // WHY: pins the precedence rule. A user with a generated initial
     // password whose `lastChanged` (stamped on `createUser`) crossed
     // `maxAgeMs` before first login is a real (if narrow) case. Reporting
@@ -485,9 +486,9 @@ describe("LoginWorkflowOpts — passwordExpiry (rotation) guard", () => {
     now += 2 * YEAR_MS;
     const r2 = await startAndCredentials(app, "alice", "Password123");
     expect(r2.body?.wfs).toBeTruthy();
-    const body = r2.body as { id?: string; passwordChangeReason?: unknown };
+    const body = r2.body as { id?: string; password?: { changeReason?: unknown } };
     expect(body.id).toBe("SetPasswordForm");
-    expect(body.passwordChangeReason).toBe("initial");
+    expect(body.password?.changeReason).toBe("initial");
   });
 
   it("resolveGuards override returning passwordExpiry: false → no forced change even when expired", async () => {
@@ -511,7 +512,7 @@ describe("LoginWorkflowOpts — passwordExpiry (rotation) guard", () => {
 
   it("after successful password change → both flags reset, login completes", async () => {
     // WHY: pins the reset contract. A regression that forgot to clear
-    // `isPasswordExpired` or `passwordChangeReason` on the post-change
+    // `isPasswordExpired` or `password.changeReason` on the post-change
     // path would either loop the user back to SetPasswordForm
     // indefinitely or leak stale reason copy into a subsequent step's
     // form (if a future step ever surfaces the field).
@@ -525,9 +526,9 @@ describe("LoginWorkflowOpts — passwordExpiry (rotation) guard", () => {
     now += 2 * YEAR_MS;
     const r2 = await startAndCredentials(app, "alice", "Password123");
     expect(r2.body?.wfs).toBeTruthy();
-    const body = r2.body as { id?: string; passwordChangeReason?: unknown };
+    const body = r2.body as { id?: string; password?: { changeReason?: unknown } };
     expect(body.id).toBe("SetPasswordForm");
-    expect(body.passwordChangeReason).toBe("expired");
+    expect(body.password?.changeReason).toBe("expired");
 
     // Submit the new password — consents: [] required per workflow form
     // contract (the inline-consent string[] is non-optional on raw HTTP).
@@ -541,10 +542,10 @@ describe("LoginWorkflowOpts — passwordExpiry (rotation) guard", () => {
     expect(typeof data?.accessToken).toBe("string");
   });
 
-  it("passwordChangeReason='initial' → SetPasswordForm wire envelope carries 'Set your initial password' heading + initial-flow intro", async () => {
-    // WHY: pins the context-aware copy keyed off `passwordChangeReason`.
+  it("password.changeReason='initial' → SetPasswordForm wire envelope carries 'Set your initial password' heading + initial-flow intro", async () => {
+    // WHY: pins the context-aware copy keyed off `password.changeReason`.
     // SetPasswordForm's bundled phantom `heading` / `intro` paragraphs read
-    // `ctx.passwordFormHeading` / `ctx.passwordFormIntro` via
+    // `ctx.password.heading` / `ctx.password.intro` via
     // `@ui.form.fn.value`. The `create-password-form` step body sets those
     // values before the pause; a regression that dropped the assignment
     // (or routed the 'initial' branch to the 'expired' copy) would silently
@@ -561,22 +562,20 @@ describe("LoginWorkflowOpts — passwordExpiry (rotation) guard", () => {
     expect(r2.body?.wfs).toBeTruthy();
     const body = r2.body as {
       id?: string;
-      passwordChangeReason?: unknown;
-      passwordFormHeading?: unknown;
-      passwordFormIntro?: unknown;
+      password?: { changeReason?: unknown; heading?: unknown; intro?: unknown };
     };
     expect(body.id).toBe("SetPasswordForm");
-    expect(body.passwordChangeReason).toBe("initial");
-    expect(body.passwordFormHeading).toBe("Set your initial password");
-    expect(body.passwordFormIntro).toMatch(/account was created without a password/i);
+    expect(body.password?.changeReason).toBe("initial");
+    expect(body.password?.heading).toBe("Set your initial password");
+    expect(body.password?.intro).toMatch(/account was created without a password/i);
   });
 
-  it("passwordChangeReason='expired' → SetPasswordForm wire envelope carries 'Your password has expired' heading + expired-flow intro", async () => {
+  it("password.changeReason='expired' → SetPasswordForm wire envelope carries 'Your password has expired' heading + expired-flow intro", async () => {
     // WHY: symmetric pin for the 'expired' branch. Bundles two regression
-    // surfaces: the `@wf.context.pass 'passwordFormHeading'` /
-    // `passwordFormIntro` annotations (without them the keys are stripped
-    // by `extractPassContext` before reaching the client), and the
-    // `create-password-form` step body's reason→copy mapping.
+    // surfaces: the `@wf.context.pass 'password'` annotation (without it
+    // the keys are stripped by `extractPassContext` before reaching the
+    // client), and the `create-password-form` step body's reason→copy
+    // mapping.
     let now = 1_000_000_000;
     const app = await prepareWfApp({
       userConfig: { clock: () => now, password: { maxAgeMs: YEAR_MS } },
@@ -587,13 +586,11 @@ describe("LoginWorkflowOpts — passwordExpiry (rotation) guard", () => {
     now += 2 * YEAR_MS;
     const r2 = await startAndCredentials(app, "alice", "Password123");
     const body = r2.body as {
-      passwordChangeReason?: unknown;
-      passwordFormHeading?: unknown;
-      passwordFormIntro?: unknown;
+      password?: { changeReason?: unknown; heading?: unknown; intro?: unknown };
     };
-    expect(body.passwordChangeReason).toBe("expired");
-    expect(body.passwordFormHeading).toBe("Your password has expired");
-    expect(body.passwordFormIntro).toMatch(/Choose a new password to continue/i);
+    expect(body.password?.changeReason).toBe("expired");
+    expect(body.password?.heading).toBe("Your password has expired");
+    expect(body.password?.intro).toMatch(/Choose a new password to continue/i);
   });
 
   it("SetPasswordForm: confirmPassword !== newPassword → inline error on confirmPassword (server-side belt-and-braces guard)", async () => {

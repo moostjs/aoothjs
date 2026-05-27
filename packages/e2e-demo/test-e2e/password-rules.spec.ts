@@ -1,13 +1,13 @@
 /**
  * Playwright coverage for the Phase-7 password-rules surface — the
  * `AsPasswordRules` component rendered from `SetPasswordForm.passwordRules`
- * against the customer-defined `ctx.passwordPolicies` array (seeded by the
+ * against the customer-defined `ctx.password.policies` array (seeded by the
  * workflow's `prepare-password-rules` @Step from
  * `UserService.getTransferablePolicies()`).
  *
  * The vitest suite (auth-moost `workflows.login.options.spec.ts` →
- * `WF-LOGIN-PWPOLICY`) covers the wire shape (`@wf.context.pass` keeps
- * `passwordPolicies` alive across `extractPassContext`; the array's
+ * `WF-LOGIN-PWPOLICY`) covers the wire shape (`@wf.context.pass 'password'`
+ * keeps the group alive across `extractPassContext`; the array's
  * `{rule, description?, errorMessage?}` round-trips). Playwright pins the
  * end-to-end SPA → component → keystroke-evaluation path: each rule row's
  * `data-passed` flag MUST reflect the current `newPassword` value.
@@ -34,10 +34,11 @@ test.beforeEach(async ({ request }) => {
 test.describe("LoginWorkflow / variant=guards (Phase 7 AsPasswordRules)", () => {
   // WHY (Rule 9): pins the full Phase-7 round-trip:
   //   UserService.getTransferablePolicies() → prepare-password-rules seeds
-  //   ctx.passwordPolicies → @wf.context.pass survives extractPassContext →
-  //   AsPasswordRules renders one row per descriptor → @ui.form.fn.attr
-  //   'password', '(_, data) => data.newPassword' re-evaluates on every
-  //   keystroke → each row's data-passed flag reflects the current value.
+  //   ctx.password.policies → @wf.context.pass 'password' survives
+  //   extractPassContext → AsPasswordRules renders one row per descriptor →
+  //   @ui.form.fn.attr 'password', '(_, data) => data.newPassword'
+  //   re-evaluates on every keystroke → each row's data-passed flag reflects
+  //   the current value.
   //
   // The keystroke-by-keystroke reactivity is load-bearing — a regression
   // that froze the `password` attr at first render (e.g. via a stale

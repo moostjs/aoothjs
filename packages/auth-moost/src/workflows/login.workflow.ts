@@ -335,19 +335,6 @@ export interface LoginWfCtx extends AuthWfCtxBase {
   altMagicLink?: boolean;
   /** Flat alias for `ctx.altActions.usedMagicLink`. */
   usedMagicLink?: boolean;
-
-  // ── Flat aliases (compat) for AuthWfCtxBase groups — removed in B1.4 ──
-  // Each one mirrors a `ctx.<group>.<field>` on `AuthWfCtxBase` via dual-write
-  // in the step bodies below; kept here for forms.as `@wf.context.pass 'flatKey'`
-  // compat. Type-safe consumers should read the nested form.
-
-  // Password-change UI (mirrors `ctx.password.*`):
-  /** Flat alias for `ctx.password.changeReason`. */
-  passwordChangeReason?: "initial" | "expired";
-  /** Flat alias for `ctx.password.heading`. */
-  passwordFormHeading?: string;
-  /** Flat alias for `ctx.password.intro`. */
-  passwordFormIntro?: string;
 }
 
 /**
@@ -1144,18 +1131,15 @@ export class LoginWorkflow extends AuthWorkflowBase {
       // `isPasswordExpired` is independent of `isPasswordInitial` — the user
       // store can carry both flags on a fresh account whose generated
       // password also crossed `maxAgeMs` between createUser and first login.
-      // `passwordChangeReason` picks `'initial'` over `'expired'` because a
+      // `password.changeReason` picks `'initial'` over `'expired'` because a
       // never-used password being "expired" is semantically still its
       // initial set; downstream SPA banner copy keys on this discriminator.
       if (ctx.guards?.passwordExpiry && this.users.isPasswordExpired(result.user)) {
         ctx.isPasswordExpired = true;
       }
-      // dual-write — flat alias removed in B1.4
       if (ctx.isPasswordInitial) {
-        ctx.passwordChangeReason = "initial";
         (ctx.password ??= {}).changeReason = "initial";
       } else if (ctx.isPasswordExpired) {
-        ctx.passwordChangeReason = "expired";
         (ctx.password ??= {}).changeReason = "expired";
       }
       // Sync existing channel state so `ensureEmail`/`ensurePhone` skip
@@ -1756,8 +1740,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // Stash transferable policies onto ctx so the front-end can render rule
     // hints next to the form. Pure read; no behavior change.
     const policies = this.users.getTransferablePolicies();
-    // dual-write — flat alias removed in B1.4
-    (ctx as Record<string, unknown>).passwordPolicies = policies;
     (ctx.password ??= {}).policies = policies;
     return undefined;
   }
@@ -1766,23 +1748,19 @@ export class LoginWorkflow extends AuthWorkflowBase {
   async createPasswordForm(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
     // Stage context-aware copy BEFORE the pause so the inputRequired envelope
     // carries the rendered heading/intro alongside the form schema. The
-    // SetPasswordForm declares matching `@wf.context.pass` annotations; the
-    // form's phantom `heading` / `intro` paragraphs read these values via
+    // SetPasswordForm declares `@wf.context.pass 'password'`; the form's
+    // phantom `heading` / `intro` paragraphs read these values via
     // `@ui.form.fn.value`. Defaults to the 'initial' copy when the
     // credentials step somehow didn't write a reason — neutral safe copy
     // beats no copy.
-    // dual-write — flat alias removed in B1.4
-    if (ctx.passwordChangeReason === "expired") {
-      ctx.passwordFormHeading = "Your password has expired";
-      ctx.passwordFormIntro =
-        "Choose a new password to continue. The previous one is no longer valid.";
+    const password = (ctx.password ??= {});
+    if (password.changeReason === "expired") {
+      password.heading = "Your password has expired";
+      password.intro = "Choose a new password to continue. The previous one is no longer valid.";
     } else {
-      ctx.passwordFormHeading = "Set your initial password";
-      ctx.passwordFormIntro =
-        "Your account was created without a password. Choose one to continue.";
+      password.heading = "Set your initial password";
+      password.intro = "Your account was created without a password. Choose one to continue.";
     }
-    (ctx.password ??= {}).heading = ctx.passwordFormHeading;
-    (ctx.password ??= {}).intro = ctx.passwordFormIntro;
     const wf = useAtscriptWf(this.opts.forms.setPassword);
     const input = wf.resolveInput() as {
       newPassword: string;
@@ -1807,15 +1785,10 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // `delete` rather than `= undefined`: the wf state-token persistence
     // layer JSON-schema-validates the ctx and rejects `undefined` (allowed
     // types are string/number/boolean/null/array/object). Deleting the
-    // key drops it from the serialized payload cleanly.
-    delete ctx.passwordChangeReason;
-    delete ctx.passwordFormHeading;
-    delete ctx.passwordFormIntro;
-    if (ctx.password) {
-      delete ctx.password.changeReason;
-      delete ctx.password.heading;
-      delete ctx.password.intro;
-    }
+    // keys drops them from the serialized payload cleanly.
+    delete password.changeReason;
+    delete password.heading;
+    delete password.intro;
     return undefined;
   }
 

@@ -132,15 +132,6 @@ export interface RecoveryWfCtx extends AuthWfCtxBase {
 
   // Post-reset:
   sessionsRevoked?: boolean;
-
-  // ── Flat aliases (compat) — removed in B1.4 once forms.as migrates to nested ──
-  // Each one mirrors a `ctx.<group>.<field>` on `AuthWfCtxBase` via dual-write
-  // in the step bodies below; kept here for forms.as `@wf.context.pass 'flatKey'`
-  // compat. Type-safe consumers should read the nested form.
-  /** Flat alias for `ctx.password.heading`. */
-  passwordFormHeading?: string;
-  /** Flat alias for `ctx.password.intro`. */
-  passwordFormIntro?: string;
 }
 
 /**
@@ -815,11 +806,9 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     // envelope carries the heading/intro alongside the form schema.
     // Recovery's set-password is always "Reset your password" — no
     // discriminator branching (cf. login's initial-vs-expired split).
-    // dual-write — flat alias removed in B1.4
-    ctx.passwordFormHeading = "Reset your password";
-    ctx.passwordFormIntro = "Choose a new password for your account.";
-    (ctx.password ??= {}).heading = ctx.passwordFormHeading;
-    ctx.password.intro = ctx.passwordFormIntro;
+    const password = (ctx.password ??= {});
+    password.heading = "Reset your password";
+    password.intro = "Choose a new password for your account.";
     const wf = useAtscriptWf(this.opts.forms.setPassword);
 
     const rawFormData = useWfState().input<{ formData?: unknown }>()?.formData;
@@ -827,14 +816,11 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
       // First entry: seed policy rules onto ctx BEFORE building requireInput
       // so the wfState.ctx() snapshot the engine sends with the
       // inputRequired envelope includes them. SetPasswordForm declares
-      // `@wf.context.pass 'passwordPolicies'` so the engine surfaces the
-      // key to the client. Mirrors the peek-then-throw-fresh pattern used
+      // `@wf.context.pass 'password'` so the engine surfaces the
+      // group to the client. Mirrors the peek-then-throw-fresh pattern used
       // in `request` — the previous catch-and-rethrow snapshotted
       // ctx PRE-mutation, so the policies never reached the client.
-      const policies = this.users.getTransferablePolicies();
-      // dual-write — flat alias removed in B1.4
-      (ctx as Record<string, unknown>).passwordPolicies = policies;
-      (ctx.password ??= {}).policies = policies;
+      password.policies = this.users.getTransferablePolicies();
       throw wf.requireInput();
     }
     const input = wf.resolveInput() as {

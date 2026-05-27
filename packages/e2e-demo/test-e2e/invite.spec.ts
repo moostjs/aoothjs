@@ -162,8 +162,8 @@ test.describe("WF-INVITE — auth.invite family (P0)", () => {
     // Invitee SetPasswordForm pause.
     await expect(inviteePage.locator('[name="newPassword"]')).toBeVisible({ timeout: 15_000 });
     // Pin the invite-specific welcome heading + intro copy. The bundled
-    // phantom paragraphs read `ctx.passwordFormHeading` /
-    // `passwordFormIntro` set by `create-password-form` before the pause.
+    // phantom paragraphs read `ctx.password.heading` / `ctx.password.intro`
+    // set by `create-password-form` before the pause.
     await expect(inviteePage.getByText("Welcome — set your password")).toBeVisible();
     await expect(inviteePage.getByText(/activate your account/i)).toBeVisible();
     await inviteePage.locator('[name="newPassword"]').fill("InviteePass-1!");

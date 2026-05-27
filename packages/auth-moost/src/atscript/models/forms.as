@@ -152,26 +152,28 @@ export interface EmailIdentifierForm {
  * same expression). The workflow step retains a defensive equality check as
  * a belt-and-braces guard.
  *
- * `@wf.context.pass 'passwordPolicies'` whitelists the workflow ctx key so the
- * prior preparePasswordRules / setPassword steps can ship the transferable
- * password-policy rules (`UserService.getTransferablePolicies()`) to the
- * client for rendering rule hints next to the inputs. Without this annotation
- * the key is stripped by `extractPassContext` before reaching the client.
+ * `@wf.context.pass 'password'` whitelists the `AuthWfPasswordUiState`
+ * group on `ctx.password` so the prior preparePasswordRules /
+ * createPasswordForm / setPassword steps can ship the transferable
+ * password-policy rules (`UserService.getTransferablePolicies()`), the
+ * structured `changeReason` discriminator, and the `heading` / `intro`
+ * copy to the client. Without this annotation the key is stripped by
+ * `extractPassContext` before reaching the client.
  *
  * Phase 7 — `passwordRules: ui.paragraph` is a phantom display field bound to
  * the `AsPasswordRules` component (`@atscript/vue-aooth`); the
- * `@ui.form.fn.attr 'policies'` expression reads `ctx.passwordPolicies` (the
- * transferable list seeded by the workflow's `prepare-password-rules` @Step)
- * and the `@ui.form.fn.attr 'password'` expression reads
+ * `@ui.form.fn.attr 'policies'` expression reads `ctx.password?.policies`
+ * (the transferable list seeded by the workflow's `prepare-password-rules`
+ * @Step) and the `@ui.form.fn.attr 'password'` expression reads
  * `data.newPassword` so the rule-fulfillment readout updates live on every
  * keystroke. `WithInlineConsentForm` continues to supply the inline-consent
  * `consents: string[]` block via `AsConsentArray` (Phase 5).
  *
- * `@wf.context.pass 'passwordChangeReason'` whitelists the structured
- * discriminator (`'initial' | 'expired'`) set by `LoginWorkflow.credentials`
- * when the forced-change branch fires. Downstream consumers consume it for
+ * `ctx.password.changeReason` is the structured discriminator
+ * (`'initial' | 'expired'`) set by `LoginWorkflow.credentials` when the
+ * forced-change branch fires. Downstream consumers consume it for
  * analytics or per-tenant copy overrides; the bundled UX defaults come from
- * `passwordFormHeading` + `passwordFormIntro` (set by each workflow's
+ * `ctx.password.heading` + `ctx.password.intro` (set by each workflow's
  * `create-password-form` / `set-password` step before the pause). The form's
  * `@ui.form.fn.title` / `@ui.form.fn.description` annotations below render
  * those ctx values directly, so the SPA gets context-aware copy out of the box.
@@ -180,11 +182,8 @@ export interface EmailIdentifierForm {
  * wants to abandon the flow closes / refreshes the page (the wf state token
  * expires per the engine's TTL).
  */
-@ui.form.fn.title '(_, _d, ctx) => ctx.passwordFormHeading || "Set your password"'
-@wf.context.pass 'passwordPolicies'
-@wf.context.pass 'passwordChangeReason'
-@wf.context.pass 'passwordFormHeading'
-@wf.context.pass 'passwordFormIntro'
+@ui.form.fn.title '(_, _d, ctx) => ctx.password?.heading || "Set your password"'
+@wf.context.pass 'password'
 @wf.context.pass 'consents'
 export interface SetPasswordForm extends WithInlineConsentForm {
     /**
@@ -193,12 +192,12 @@ export interface SetPasswordForm extends WithInlineConsentForm {
      * top-level `@ui.form.fn.description` annotation in atscript-ui
      * (`fn.description` is a per-field annotation), so the intro stays as
      * a phantom field while the heading uses the proper type-level dynamic
-     * title. The field is hidden when `ctx.passwordFormIntro` is unset so
+     * title. The field is hidden when `ctx.password.intro` is unset so
      * a default "Set your password" pause renders without an empty paragraph.
      */
     @ui.form.order 5
-    @ui.form.fn.value '(_, _d, ctx) => ctx.passwordFormIntro || ""'
-    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.passwordFormIntro'
+    @ui.form.fn.value '(_, _d, ctx) => ctx.password?.intro || ""'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.password?.intro'
     intro: ui.paragraph
 
     @ui.form.order 10
@@ -223,7 +222,7 @@ export interface SetPasswordForm extends WithInlineConsentForm {
     /**
      * Phantom display field — `ui.paragraph` carries no submission value;
      * it exists purely so `AsPasswordRules` (registered on the SPA via
-     * `<AsWfForm :components>`) renders one row per `ctx.passwordPolicies`
+     * `<AsWfForm :components>`) renders one row per `ctx.password.policies`
      * descriptor between the confirm-password input and the action buttons.
      *
      * The `policies` attr reads from workflow context (seeded by the
@@ -238,7 +237,7 @@ export interface SetPasswordForm extends WithInlineConsentForm {
     @ui.form.order 25
     @meta.label 'Password requirements'
     @ui.form.component 'AsPasswordRules'
-    @ui.form.fn.attr 'policies', '(_, _d, ctx) => ctx.passwordPolicies'
+    @ui.form.fn.attr 'policies', '(_, _d, ctx) => ctx.password?.policies'
     @ui.form.fn.attr 'password', '(_, data) => data.newPassword'
     @ui.form.grid.colSpan '12'
     passwordRules: ui.paragraph

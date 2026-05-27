@@ -298,10 +298,11 @@ test.describe("LoginWorkflow / variant=guards (passwordInitial)", () => {
 
     // Pin the initial-flow heading + intro copy on the wire envelope. The
     // bundled phantom `heading` / `intro` paragraphs read
-    // `ctx.passwordFormHeading` / `passwordFormIntro` (set by
+    // `ctx.password.heading` / `ctx.password.intro` (set by
     // `create-password-form` before the pause). A regression that dropped
-    // the `@wf.context.pass` annotations OR swapped the initial/expired
-    // branches in the step body would silently mislead users.
+    // the `@wf.context.pass 'password'` annotation OR swapped the
+    // initial/expired branches in the step body would silently mislead
+    // users.
     await expect(page.getByText("Set your initial password")).toBeVisible();
     await expect(page.getByText(/account was created without a password/i)).toBeVisible();
 
@@ -344,14 +345,14 @@ test.describe("LoginWorkflow / variant=password-expired (rotation)", () => {
   //     `guards.passwordExpiry` is true (the default)
   //   - the schema OR (`isPasswordInitial || isPasswordExpired`) routes to
   //     `prepare-password-rules` + `create-password-form`
-  //   - `@wf.context.pass 'passwordChangeReason'` ships `'expired'` to the
-  //     wire envelope (without it `extractPassContext` would strip the key —
-  //     same regression class as WF-LOGIN-PWPOLICY)
+  //   - `@wf.context.pass 'password'` ships `password.changeReason='expired'`
+  //     to the wire envelope (without it `extractPassContext` would strip
+  //     the key — same regression class as WF-LOGIN-PWPOLICY)
   //   - the post-change reset clears `isPasswordExpired` /
-  //     `passwordChangeReason` so the workflow can finish (a regression
+  //     `password.changeReason` so the workflow can finish (a regression
   //     forgetting the reset would loop the user back to SetPasswordForm
   //     indefinitely).
-  test("WF-LOGIN-EXPIRED-01: t1_stale → SetPasswordForm pause (passwordChangeReason='expired') → tokens on new password", async ({
+  test("WF-LOGIN-EXPIRED-01: t1_stale → SetPasswordForm pause (password.changeReason='expired') → tokens on new password", async ({
     page,
   }) => {
     await page.goto(wfUrl(LOGIN_WF, "password-expired"));
@@ -366,7 +367,7 @@ test.describe("LoginWorkflow / variant=password-expired (rotation)", () => {
     await waitForFormInput(page, "newPassword");
     await waitForFormInput(page, "confirmPassword");
     // Pin the expired-flow heading + intro copy. The bundled phantom
-    // paragraphs read `ctx.passwordFormHeading` / `passwordFormIntro` set
+    // paragraphs read `ctx.password.heading` / `ctx.password.intro` set
     // by `create-password-form`. A regression that fell through to the
     // 'initial' branch would silently rename the screen and confuse the
     // user.

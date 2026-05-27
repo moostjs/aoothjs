@@ -75,16 +75,16 @@ test.describe("recovery — default-magiclink (R-A)", () => {
     const resumeUrl = rewriteToBaseUrl(email.url as string, baseURL ?? "");
     await page.goto(resumeUrl);
 
-    // SetPasswordForm renders the two password fields. `passwordPolicies` is
-    // shipped via `@wf.context.pass` but the default form has no visible
-    // "policy hint" paragraph — only the input fields with their `@expect.*`
-    // metadata. Assert what is actually rendered.
+    // SetPasswordForm renders the two password fields. `password.policies` is
+    // shipped via `@wf.context.pass 'password'` but the default form has no
+    // visible "policy hint" paragraph — only the input fields with their
+    // `@expect.*` metadata. Assert what is actually rendered.
     await waitForFormInput(page, "newPassword", 15_000);
     await expect(page.locator('[name="newPassword"]').first()).toBeVisible();
     await expect(page.locator('[name="confirmPassword"]').first()).toBeVisible();
 
     // Pin the recovery-specific heading + intro copy. Bundled phantom
-    // paragraphs read `ctx.passwordFormHeading` / `passwordFormIntro` set
+    // paragraphs read `ctx.password.heading` / `ctx.password.intro` set
     // by `set-password` before the pause.
     await expect(page.getByText("Reset your password")).toBeVisible();
     await expect(page.getByText(/Choose a new password/i)).toBeVisible();

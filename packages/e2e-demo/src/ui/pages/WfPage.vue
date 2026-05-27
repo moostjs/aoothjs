@@ -43,7 +43,7 @@ const types = createDefaultTypes();
 // it self-hides when `ctx.consents.pending` is empty. `AsPasswordRules`
 // renders the live password-policy fulfillment readout on
 // `SetPasswordForm.passwordRules` — its `policies` attr binds to
-// `ctx.passwordPolicies` (Phase 7) and its `password` attr re-reads
+// `ctx.password.policies` (Phase 7) and its `password` attr re-reads
 // `data.newPassword` on every keystroke so each row's `data-passed` flag
 // reflects the current input value.
 const components = { AsConsentArray, AsPasswordRules };

@@ -520,13 +520,13 @@ describe("InviteForm.roles multiselect metadata", () => {
   });
 });
 
-describe("InviteWorkflow — passwordPolicies surfaces on SetPasswordForm pause", () => {
-  it("WF-INVITE-PWPOLICY — passwordPolicies reaches client on SetPasswordForm pause", async () => {
+describe("InviteWorkflow — password.policies surfaces on SetPasswordForm pause", () => {
+  it("WF-INVITE-PWPOLICY — password.policies reaches client on SetPasswordForm pause", async () => {
     // Guards two regressions at once:
-    //   1. `@wf.context.pass 'passwordPolicies'` on SetPasswordForm — without
+    //   1. `@wf.context.pass 'password'` on SetPasswordForm — without
     //      it `extractPassContext` strips the key before the inputRequired
     //      envelope leaves the engine.
-    //   2. `invitePreparePasswordRules` seeding `ctx.passwordPolicies` so the
+    //   2. `invitePreparePasswordRules` seeding `ctx.password.policies` so the
     //      next step's `inviteCreatePasswordForm` ships the rules to the client.
     const app = await prepareWfApp({
       userConfig: { password: { policies: [ppHasMinLength(8)] } },
@@ -539,12 +539,13 @@ describe("InviteWorkflow — passwordPolicies surfaces on SetPasswordForm pause"
     const token = new URL(app.emails[0].url as string).searchParams.get("wfs") as string;
     const r3 = await app.resumeViaQuery(token);
 
-    // Same flat-object wire shape as recovery — whitelisted ctx keys merged
-    // alongside the form schema.
-    const body = r3.body as { id?: string; passwordPolicies?: unknown };
+    // The `password` group is shipped as a nested object — whitelisted ctx
+    // keys merged alongside the form schema.
+    const body = r3.body as { id?: string; password?: { policies?: unknown } };
     expect(body.id).toBe("SetPasswordForm");
-    expect(body.passwordPolicies).toEqual(app.users.getTransferablePolicies());
-    expect(Array.isArray(body.passwordPolicies)).toBe(true);
-    expect((body.passwordPolicies as unknown[]).length).toBeGreaterThan(0);
+    const policies = body.password?.policies as unknown[] | undefined;
+    expect(policies).toEqual(app.users.getTransferablePolicies());
+    expect(Array.isArray(policies)).toBe(true);
+    expect(policies?.length ?? 0).toBeGreaterThan(0);
   });
 });

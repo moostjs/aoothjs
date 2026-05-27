@@ -774,8 +774,6 @@ export class InviteWorkflow extends AuthWorkflowBase {
   @Public()
   preparePasswordRules(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
     const policies = this.users.getTransferablePolicies();
-    // dual-write — flat alias removed in B1.4
-    (ctx as Record<string, unknown>).passwordPolicies = policies;
     (ctx.password ??= {}).policies = policies;
     return undefined;
   }

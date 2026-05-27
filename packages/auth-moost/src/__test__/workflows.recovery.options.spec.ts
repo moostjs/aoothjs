@@ -680,13 +680,13 @@ describe("RecoveryWorkflow subclass — protected method overrides", () => {
   });
 });
 
-describe("RecoveryWorkflow — passwordPolicies surfaces on SetPasswordForm pause", () => {
-  it("WF-RECOVERY-PWPOLICY — passwordPolicies reaches client on SetPasswordForm pause", async () => {
+describe("RecoveryWorkflow — password.policies surfaces on SetPasswordForm pause", () => {
+  it("WF-RECOVERY-PWPOLICY — password.policies reaches client on SetPasswordForm pause", async () => {
     // Guards two regressions at once:
-    //   1. `@wf.context.pass 'passwordPolicies'` on SetPasswordForm — without
+    //   1. `@wf.context.pass 'password'` on SetPasswordForm — without
     //      it `extractPassContext` strips the key before the inputRequired
     //      envelope leaves the engine.
-    //   2. `recovery-set-password` seeding `ctx.passwordPolicies` BEFORE
+    //   2. `recovery-set-password` seeding `ctx.password.policies` BEFORE
     //      `requireInput()` — `requireInput()` snapshots `wfState.ctx()` at
     //      throw time, so the previous catch-then-rethrow pattern shipped a
     //      pre-mutation ctx and the field never reached the client.
@@ -705,28 +705,27 @@ describe("RecoveryWorkflow — passwordPolicies surfaces on SetPasswordForm paus
     const r3 = await app.resumeViaQuery(token);
 
     // The inputRequired wire envelope from `createHttpOutlet` is a flat object
-    // (`{ id, type, ..., passwordPolicies, wfs }`) — whitelisted ctx keys are
+    // (`{ id, type, ..., password, wfs }`) — whitelisted ctx keys are
     // merged in alongside the form schema. See the existing
     // "WF-RECOVERY pre-fill" test for the same shape via `defaults`.
-    const body = r3.body as { id?: string; passwordPolicies?: unknown };
+    const body = r3.body as { id?: string; password?: { policies?: unknown } };
     expect(body.id).toBe("SetPasswordForm");
-    expect(body.passwordPolicies).toEqual(app.users.getTransferablePolicies());
-    expect(Array.isArray(body.passwordPolicies)).toBe(true);
-    expect((body.passwordPolicies as unknown[]).length).toBeGreaterThan(0);
-    expect(String((body.passwordPolicies as Array<{ rule: string }>)[0].rule)).toContain(
-      "v.length",
-    );
+    const policies = body.password?.policies as Array<{ rule: string }> | undefined;
+    expect(policies).toEqual(app.users.getTransferablePolicies());
+    expect(Array.isArray(policies)).toBe(true);
+    expect(policies?.length ?? 0).toBeGreaterThan(0);
+    expect(policies?.[0]?.rule ?? "").toContain("v.length");
   });
 
   it("recovery set-password pause: SetPasswordForm wire envelope carries 'Reset your password' heading + intro", async () => {
     // WHY: pins the recovery-specific copy on SetPasswordForm. Without
-    // `set-password` writing `ctx.passwordFormHeading` / `passwordFormIntro`
+    // `set-password` writing `ctx.password.heading` / `ctx.password.intro`
     // BEFORE the pause, the bundled phantom `heading` / `intro` paragraphs
     // would fall through to their generic defaults ("Set your password" /
     // "") — confusing UX for users mid-recovery. Also bundles a regression
-    // surface for the `@wf.context.pass` annotations on the form: missing
-    // them strips the keys via `extractPassContext` before the client
-    // sees them.
+    // surface for the `@wf.context.pass` annotation on the form: missing
+    // it strips the key via `extractPassContext` before the client
+    // sees it.
     const app = await prepareWfApp();
     await seedActiveUser(app.users, "alice@test.com", "OldPassword1");
     const r1 = await app.trigger({ wfid: "auth/recovery/flow" });
@@ -738,11 +737,10 @@ describe("RecoveryWorkflow — passwordPolicies surfaces on SetPasswordForm paus
     const r3 = await app.resumeViaQuery(token);
     const body = r3.body as {
       id?: string;
-      passwordFormHeading?: unknown;
-      passwordFormIntro?: unknown;
+      password?: { heading?: unknown; intro?: unknown };
     };
     expect(body.id).toBe("SetPasswordForm");
-    expect(body.passwordFormHeading).toBe("Reset your password");
-    expect(body.passwordFormIntro).toMatch(/Choose a new password/i);
+    expect(body.password?.heading).toBe("Reset your password");
+    expect(body.password?.intro).toMatch(/Choose a new password/i);
   });
 });
