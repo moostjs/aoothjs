@@ -51,9 +51,7 @@ export interface WithInlineConsentForm {
  * `useAtscriptWf(form).resolveAction()` accepts the dynamic ids.
  */
 @meta.label 'Sign in'
-@wf.context.pass 'altForgotPassword'
-@wf.context.pass 'altSignup'
-@wf.context.pass 'altMagicLink'
+@wf.context.pass 'altActions'
 @ui.form.submit.text 'Sign in'
 export interface LoginCredentialsForm {
     @ui.form.order 10
@@ -72,18 +70,18 @@ export interface LoginCredentialsForm {
     @meta.required
     @expect.minLength 1
     @ui.form.action 'forgotPassword', 'Forgot password?'
-    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.altForgotPassword'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.altActions?.forgotPassword'
     @wf.action.withData 'forgotPassword'
     password: string
 
     @ui.form.order 30
     @ui.form.action 'signup', 'Sign up'
-    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.altSignup'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.altActions?.signup'
     signup?: ui.action
 
     @ui.form.order 40
     @ui.form.action 'magicLink', 'Sign in with a magic link'
-    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.altMagicLink'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.altActions?.magicLink'
     magicLink?: ui.action
 }
 
@@ -320,7 +318,7 @@ export interface Select2faForm {
 @meta.label 'Enter the verification code'
 @wf.context.pass 'mfa'
 @wf.context.pass 'pincode'
-@wf.context.pass 'deviceTrustOptIn'
+@wf.context.pass 'trust'
 @wf.context.pass 'recoveryTransportCount'
 @ui.form.submit.text 'Verify'
 export interface PincodeForm {
@@ -339,7 +337,7 @@ export interface PincodeForm {
     @ui.form.type 'checkbox'
     @meta.label 'Remember this device'
     @meta.default 'false'
-    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.deviceTrustOptIn'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.trust?.optIn'
     rememberDevice: boolean
 
     @ui.form.action 'resend', 'Resend code'
@@ -363,7 +361,7 @@ export interface PincodeForm {
 @meta.label 'Add your email address'
 @meta.description 'We need a verified email to send security notifications and verification codes.'
 @wf.context.pass 'consents'
-@wf.context.pass 'otpDisclosure'
+@wf.context.pass 'channel'
 export interface AskEmailForm extends WithInlineConsentForm {
     @ui.form.order 10
     @ui.form.type 'text'
@@ -380,7 +378,7 @@ export interface AskEmailForm extends WithInlineConsentForm {
 @meta.label 'Add your phone number'
 @meta.description 'We need a verified phone to send security notifications and verification codes.'
 @wf.context.pass 'consents'
-@wf.context.pass 'otpDisclosure'
+@wf.context.pass 'channel'
 export interface AskPhoneForm extends WithInlineConsentForm {
     @ui.form.order 10
     @ui.form.type 'text'

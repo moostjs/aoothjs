@@ -240,7 +240,7 @@ test.describe("LoginWorkflow / variant=enrollment", () => {
   // WF-LOGIN-015 calls for "t1_eve (or any user with no confirmed email)".
   // The seed creates `t1_eve` with `email: 'eve@acme.test'` on the user row
   // but DOES NOT enroll it as a confirmed MFA method. The login workflow
-  // syncs `ctx.email` / `ctx.emailConfirmed` from `mfa.methods` where
+  // syncs `ctx.email` / `ctx.channel.emailConfirmed` from `mfa.methods` where
   // `name === 'email' && confirmed === true`, so t1_eve hits the
   // `ensureEmail` step and pauses on `AskEmailForm`. Good fit for this story.
   test("WF-LOGIN-015: t1_eve (no confirmed email) → AskEmailForm pause", async ({ page }) => {
@@ -576,7 +576,7 @@ test.describe("LoginWorkflow / variant=mfa-full (P1)", () => {
 });
 
 test.describe("LoginWorkflow / variant=enrollment (P1)", () => {
-  // BRANCH: `ensureEmail` step short-circuits when `ctx.emailConfirmed=true`
+  // BRANCH: `ensureEmail` step short-circuits when `ctx.channel?.emailConfirmed=true`
   // (synced from `mfa.methods` in `verify-credentials`). t1_henry has
   // `mfaEmail: true` seeded → confirmed → AskEmailForm must NOT render. Under
   // the `enrollment` variant `ensurePhone` is ALSO on, and henry has no
@@ -726,9 +726,9 @@ test.describe("LoginWorkflow / variant=enrollment (P1)", () => {
 
 test.describe("LoginWorkflow / variant=device-trust-no-optin (P1)", () => {
   // BRANCH: `PincodeForm.rememberDevice` is gated by
-  // `@ui.form.fn.hidden '(_, _d, ctx) => !ctx.deviceTrustOptIn'`. The workflow
-  // mirrors `opts.deviceTrust.optIn` onto `ctx.deviceTrustOptIn` in
-  // `prepareMfaOptions`, so when the variant sets `optIn: false` the form
+  // `@ui.form.fn.hidden '(_, _d, ctx) => !ctx.trust?.optIn'`. The workflow
+  // mirrors `opts.deviceTrust.optIn` onto `ctx.trust.optIn` in
+  // `loadEnrolledMfaMethods`, so when the variant sets `optIn: false` the form
   // renderer hides the checkbox (the input element stays in the DOM but is
   // not visible — atscript-ui keeps the form-state slot for the hidden field).
   test("WF-LOGIN-019: deviceTrust.optIn=false → rememberDevice checkbox not visible", async ({
@@ -938,13 +938,13 @@ test.describe("LoginWorkflow / variant=terms-bump (Phase 5 standalone consent re
 
 test.describe("LoginWorkflow / variant=concurrency (P1)", () => {
   // BRANCH: `concurrency-limit` step condition fires when
-  // `(activeSessions ?? 0) >= max`. The seed issues 2 access tokens for
-  // t1_active_sessions but `ctx.activeSessions` is never populated by the
-  // LoginWorkflow itself — the library leaves session-counting to the
+  // `(session.activeSessions ?? 0) >= max`. The seed issues 2 access tokens for
+  // t1_active_sessions but `ctx.session.activeSessions` is never populated by
+  // the LoginWorkflow itself — the library leaves session-counting to the
   // consumer subclass. DemoLoginWorkflow doesn't override that hook today, so
   // the condition is `0 >= 1 = false` and concurrency-limit never pauses.
   // Needs a DemoLoginWorkflow hook to read `authCredential.list(username)`
-  // and seed `ctx.activeSessions` before the schema reaches this step.
+  // and seed `ctx.session.activeSessions` before the schema reaches this step.
   test("WF-LOGIN-028: t1_active_sessions with max=1 → kickPrompt form visible", async ({
     page,
   }) => {
@@ -1062,7 +1062,7 @@ test.describe("LoginWorkflow / variant=device-trust-short-ttl (P2)", () => {
   // jar but its embedded `exp` is already in the past by the time the
   // workflow returns. Second login: `check-trusted-device` reads the cookie,
   // calls `loadTrustedDevice` → HMAC verify passes but expiry check fails →
-  // returns falsy → `ctx.newDevice = true` → MFA runs again. Inverse of
+  // returns falsy → `ctx.trust.newDevice = true` → MFA runs again. Inverse of
   // WF-LOGIN-018 (which proves the skip-MFA branch when the cookie is fresh).
   test("WF-LOGIN-020: ttlMs=1 trusted-device cookie expires → MFA required on 2nd login", async ({
     page,
@@ -1119,7 +1119,7 @@ test.describe("LoginWorkflow / variant=concurrency-reject (P2)", () => {
   // kickPrompt is bypassed — that's the whole point of `onLimit: 'reject'`.
   // The seed records `activeSessions: 2` for t1_active_sessions and the
   // `DemoLoginWorkflow.loadActiveSessions` override surfaces that count
-  // into `ctx.activeSessions`, so the schema reaches `concurrency-limit`
+  // into `ctx.session.activeSessions`, so the schema reaches `concurrency-limit`
   // with `2 >= 1`.
   test("WF-LOGIN-030: t1_active_sessions + onLimit=reject → form-level 'Session limit reached'", async ({
     page,

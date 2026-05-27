@@ -665,7 +665,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     // The credential store is JWT-based (stateless) so the demo can't query
     // "how many sessions for user X" from `authCredential`. The seed counts
     // its own `issue()` calls into a globalThis map; reading it here wires
-    // `ctx.activeSessions` for the `concurrency-limit` step.
+    // `ctx.session.activeSessions` for the `concurrency-limit` step.
     protected override async loadActiveSessions(username: string): Promise<number> {
       return sharedActiveSessionsBuffer.get(username) ?? 0;
     }

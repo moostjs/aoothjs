@@ -1634,9 +1634,9 @@ describe("LoginWorkflowOpts — Phase 5 dynamic inline consent (TERMS-INLINE / P
 });
 
 describe("LoginWorkflowOpts — Phase 8 session policy", () => {
-  it("sessionPolicy.concurrencyLimit reject + ctx.activeSessions over max → 429", async () => {
+  it("sessionPolicy.concurrencyLimit reject + ctx.session.activeSessions over max → 429", async () => {
     // Force activeSessions by directly setting on ctx — the workflow defers to
-    // ctx.activeSessions which isn't auto-populated. To prove the rejection
+    // ctx.session.activeSessions which isn't auto-populated. To prove the rejection
     // path, we exercise it via the condition that DOES trip — by pre-populating
     // activeSessions via a custom 'init' on the workflow is not exposed.
     // Instead, we test the negative path here and the alt-action 'cancel'
@@ -2636,18 +2636,23 @@ class RecordingConsentStore extends ConsentStore {
   }
 }
 
+// Wire-body shape for the channel group transported via `@wf.context.pass 'channel'`
+// on the AskEmail/AskPhone form pause descriptors — used by the OTP-disclosure
+// transport assertions below.
+type ChannelTransport = { channel?: { otpDisclosure?: string } };
+
 describe("LoginWorkflow — OTP disclosure + recordOtpChannelConsent hook", () => {
-  it("OTP-DISCLOSURE-01: ask/email → ctx.otpDisclosure populated BEFORE the AskEmailForm pause + transported via @wf.context.pass; default English copy is generic per-channel (no target templated in)", async () => {
+  it("OTP-DISCLOSURE-01: ask/email → ctx.channel.otpDisclosure populated BEFORE the AskEmailForm pause + transported via @wf.context.pass; default English copy is generic per-channel (no target templated in)", async () => {
     // WHY: customers building i18n / CMS-driven disclosure copy depend on
     // BOTH halves of this contract — the resolver runs (so they can override
     // for per-tenant copy) AND the result rides the AskEmailForm pause
-    // descriptor via `@wf.context.pass 'otpDisclosure'` so the SPA can render
+    // descriptor via `@wf.context.pass 'channel'` so the SPA can render
     // the literal text beneath the email input BEFORE the user submits (the
     // act of typing + submitting their email constitutes implied consent).
     // A regression that staged the disclosure AFTER `askWf.resolveInput()`
     // would push the value to the PincodeForm pause (one step too late —
     // user already submitted their email by then). A regression that dropped
-    // the `@wf.context.pass 'otpDisclosure'` annotation on AskEmailForm
+    // the `@wf.context.pass 'channel'` annotation on AskEmailForm
     // would pass the unit-level resolver-call test but break the wire
     // transport; this test pins both halves at the load-bearing pause.
     const app = await prepareWfApp({
@@ -2657,13 +2662,13 @@ describe("LoginWorkflow — OTP disclosure + recordOtpChannelConsent hook", () =
     await seedActiveUser(app.users, "alice", "Password123");
     // Paused at AskEmailForm — the ask/:channel body resolves the disclosure
     // BEFORE useAtscriptWf can throw requireInput, so the AskEmailForm pause
-    // descriptor carries ctx.otpDisclosure via @wf.context.pass.
+    // descriptor carries ctx.channel via @wf.context.pass.
     const r2 = await startAndCredentials(app, "alice", "Password123");
     expect(r2.body?.wfs).toBeTruthy();
-    // Wire-transport assertion: `@wf.context.pass 'otpDisclosure'` echoes the
-    // ctx field at top level of the wf-state response body at the AskEmailForm
-    // pause (NOT at the PincodeForm pause one step later).
-    const transported = (r2.body as { otpDisclosure?: string }).otpDisclosure;
+    // Wire-transport assertion: `@wf.context.pass 'channel'` echoes the ctx
+    // group at the AskEmailForm pause (NOT at the PincodeForm pause one step
+    // later), and the `otpDisclosure` field lives under `ctx.channel`.
+    const transported = (r2.body as ChannelTransport).channel?.otpDisclosure;
     expect(typeof transported).toBe("string");
     // Default English copy is GENERIC per-channel — no target value templated
     // in (the user hasn't submitted their email yet at the ask-time pause).
@@ -2675,7 +2680,7 @@ describe("LoginWorkflow — OTP disclosure + recordOtpChannelConsent hook", () =
     expect(transported).not.toContain("alice@example.com");
   });
 
-  it("OTP-DISCLOSURE-02: ask/phone → ctx.otpDisclosure carries the phone-specific default copy at the AskPhoneForm pause (generic per-channel — no literal phone target templated in)", async () => {
+  it("OTP-DISCLOSURE-02: ask/phone → ctx.channel.otpDisclosure carries the phone-specific default copy at the AskPhoneForm pause (generic per-channel — no literal phone target templated in)", async () => {
     // WHY: the default copy is channel-specific — phone uses an SMS-flavoured
     // template (carrier fees disclosure) that diverges from the email
     // version. Pins that resolveOtpDisclosure branches on `channel === "phone"`
@@ -2689,11 +2694,11 @@ describe("LoginWorkflow — OTP disclosure + recordOtpChannelConsent hook", () =
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { mfaMode: "disabled" }),
     });
     await seedActiveUser(app.users, "alice", "Password123");
-    // Paused at AskPhoneForm — ask body stages ctx.otpDisclosure BEFORE the
-    // carrier-form pause, so r2 (not r3 after phone-submit) carries it.
+    // Paused at AskPhoneForm — ask body stages ctx.channel.otpDisclosure BEFORE
+    // the carrier-form pause, so r2 (not r3 after phone-submit) carries it.
     const r2 = await startAndCredentials(app, "alice", "Password123");
     expect(r2.body?.wfs).toBeTruthy();
-    const transported = (r2.body as { otpDisclosure?: string }).otpDisclosure;
+    const transported = (r2.body as ChannelTransport).channel?.otpDisclosure;
     expect(typeof transported).toBe("string");
     // Phone-channel template mentions SMS + carrier-rate disclosure — the
     // load-bearing differentiator vs the email default (TCPA / PECR copy
@@ -2727,7 +2732,7 @@ describe("LoginWorkflow — OTP disclosure + recordOtpChannelConsent hook", () =
     const r2 = await startAndCredentials(app, "alice", "Password123");
     expect(r2.body?.wfs).toBeTruthy();
     expect(consentStore.otpCalls.length).toBe(0);
-    const transported = (r2.body as { otpDisclosure?: string }).otpDisclosure;
+    const transported = (r2.body as ChannelTransport).channel?.otpDisclosure;
     expect(typeof transported).toBe("string");
     const r3 = await app.trigger({
       wfs: r2.body?.wfs as string,
@@ -2786,7 +2791,7 @@ describe("LoginWorkflow — OTP disclosure + recordOtpChannelConsent hook", () =
     await seedActiveUser(app.users, "alice", "Password123");
     const r2 = await startAndCredentials(app, "alice", "Password123");
     // Disclosure rides on the AskPhoneForm pause (r2), not on r3.
-    const transported = (r2.body as { otpDisclosure?: string }).otpDisclosure;
+    const transported = (r2.body as ChannelTransport).channel?.otpDisclosure;
     expect(typeof transported).toBe("string");
     const r3 = await app.trigger({
       wfs: r2.body?.wfs as string,
@@ -2814,13 +2819,13 @@ describe("LoginWorkflow — OTP disclosure + recordOtpChannelConsent hook", () =
     expect(consentStore.otpCalls[0].disclosure).not.toContain("+15550009999");
   });
 
-  it("OTP-HOOK-SKIPS-VERIFY-WITHOUT-ASK-01: if ctx.otpDisclosure is undefined at verify-time, recordOtpChannelConsent is NOT called (defensive guard)", async () => {
+  it("OTP-HOOK-SKIPS-VERIFY-WITHOUT-ASK-01: if ctx.channel.otpDisclosure is undefined at verify-time, recordOtpChannelConsent is NOT called (defensive guard)", async () => {
     // WHY: a future schema path that lands on verify/:channel without
-    // ctx.otpDisclosure staged (manual harness invocation, cleanup retry,
+    // ctx.channel.otpDisclosure staged (manual harness invocation, cleanup retry,
     // resumed paused workflow with cleared ctx, consumer subclass that
     // resets transient ctx before verify) MUST NOT record a consent for a
     // target/disclosure pair the system never staged. The guard
-    // `if (ctx.otpDisclosure)` in the verify body is the load-bearing
+    // `if (channelState.otpDisclosure)` in the verify body is the load-bearing
     // defense; this test fakes the condition by overriding `verify` to
     // strip the staged disclosure BEFORE super.verify runs, and asserts
     // the hook stays silent despite the channel confirming successfully.
@@ -2842,7 +2847,7 @@ describe("LoginWorkflow — OTP disclosure + recordOtpChannelConsent hook", () =
         // a paused-flow whose ctx was cleared between the ask and verify
         // halves (a future cleanup-retry path, or a consumer subclass that
         // resets transient ctx in a custom prepare-* step before verify).
-        delete ctx.otpDisclosure;
+        if (ctx.channel) delete ctx.channel.otpDisclosure;
         return super.verify(ctx, channel);
       }
     }
@@ -2882,7 +2887,7 @@ describe("LoginWorkflow — OTP disclosure + recordOtpChannelConsent hook", () =
     // would silently drop async overrides (TS would forbid `async ` on the
     // override). This test pins the contract by supplying an async override
     // that returns a custom disclosure and asserting it round-trips through
-    // BOTH ctx.otpDisclosure AND the recordOtpChannelConsent call —
+    // BOTH ctx.channel.otpDisclosure AND the recordOtpChannelConsent call —
     // confirming `await this.resolveOtpDisclosure(...)` in the ask body
     // correctly awaits the Promise.
     const consentStore = new RecordingConsentStore();
@@ -2921,7 +2926,7 @@ describe("LoginWorkflow — OTP disclosure + recordOtpChannelConsent hook", () =
     // form pause, so r2 (not r3) carries the unwrapped Promise value.
     const r2 = await startAndCredentials(app, "alice", "Password123");
     expect(r2.body?.wfs).toBeTruthy();
-    const transported = (r2.body as { otpDisclosure?: string }).otpDisclosure;
+    const transported = (r2.body as ChannelTransport).channel?.otpDisclosure;
     // The async override's return value flows through to ctx (proving the
     // `await` in the ask body unwraps the Promise — no `[object Promise]`
     // stringification regressing into ctx).

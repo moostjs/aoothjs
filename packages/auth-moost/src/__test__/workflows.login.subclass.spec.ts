@@ -229,7 +229,7 @@ describe("LoginWorkflow — ConsentStore.save override (CONSENT-OVERRIDE)", () =
 // ── logoutOtherSessions override ────────────────────────────────────────────
 describe("LoginWorkflow subclass — logoutOtherSessions override", () => {
   it("sessionPolicy.concurrencyLimit kickPrompt + 'logoutOthers' alt → override fires with username", async () => {
-    // Nothing in the base workflow populates `ctx.activeSessions`, so we
+    // Nothing in the base workflow populates `ctx.session.activeSessions`, so we
     // subclass `credentials` to seed it past the threshold. The chain then
     // proceeds: pause at concurrency-limit form → consumer submits
     // `logoutOthers` → `logoutOtherSessions(username)` runs → flow completes

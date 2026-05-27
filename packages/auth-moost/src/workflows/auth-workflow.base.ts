@@ -904,9 +904,8 @@ export abstract class AuthWorkflowBase {
 //
 // Composable schema arrays shared across the bundled auth workflows. Each
 // fragment is typed against `AuthWfCtxBase` so condition functions inside
-// only read canonical group fields (e.g. `ctx.consents?.persisted`), not
-// per-workflow flat aliases — keeps fragments portable across the three
-// WF ctx interfaces and ready for the B1.4 flat-alias drop.
+// only read canonical group fields (e.g. `ctx.consents?.persisted`), keeping
+// fragments portable across the three WF ctx interfaces.
 //
 // Each WF's `@WorkflowSchema<<WfCtx>>([...])` spreads these in place; the
 // `TWorkflowItem<T>` type is contravariant in `T` (condition fns take `T`

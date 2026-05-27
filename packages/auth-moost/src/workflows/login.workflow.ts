@@ -109,10 +109,8 @@ import {
 /**
  * MFA verification state — populated across `prepareMfaSetup` /
  * `loadEnrolledMfaMethods` / `selectMfaMethod` / `select2fa` /
- * `pincodeSendLogin` / `pincodeCheckLogin` / `mfaTotp`. Each field is
- * mirrored as a flat-alias on `LoginWfCtx` via dual-write in the matching
- * @Step body; the flat aliases are removed in B1.4 once forms.as migrates
- * to read this group nested.
+ * `pincodeSendLogin` / `pincodeCheckLogin` / `mfaTotp`. Step bodies write
+ * here and forms.as reads it nested via `@wf.context.pass 'mfa'`.
  */
 export interface LoginMfaState {
   enrolledMethods?: MfaSummary[];
@@ -266,51 +264,6 @@ export interface LoginWfCtx extends AuthWfCtxBase {
   profileApplied?: boolean;
   /** Injected by consumer subclass / credentials override to surface missing profile fields. */
   profileMissingFields?: string[];
-
-  // ── Flat aliases (compat) — removed in B1.4 once forms.as migrates to nested ──
-  //
-  // Each one mirrors a `ctx.<group>.<field>` on `LoginWfCtx` (login-local
-  // groups above) or on `AuthWfCtxBase` (shared groups) via dual-write in
-  // the step bodies below; kept here for forms.as `@wf.context.pass 'flatKey'`
-  // compat. Type-safe consumers should read the nested form.
-
-  // Channel (mirrors `ctx.channel.*`; `ctx.email` stays on AuthWfCtxBase):
-  /** Flat alias for `ctx.channel.emailConfirmed`. */
-  emailConfirmed?: boolean;
-  /** Flat alias for `ctx.channel.phone`. */
-  phone?: string;
-  /** Flat alias for `ctx.channel.phoneConfirmed`. */
-  phoneConfirmed?: boolean;
-  /** Flat alias for `ctx.channel.otpDisclosure`. */
-  otpDisclosure?: string;
-
-  // Device trust (mirrors `ctx.trust.*`):
-  /** Flat alias for `ctx.trust.deviceTrustToken`. */
-  deviceTrustToken?: string;
-  /** Flat alias for `ctx.trust.newDevice`. */
-  newDevice?: boolean;
-  /** Flat alias for `ctx.trust.rememberDevice`. */
-  rememberDevice?: boolean;
-  /** Flat alias for `ctx.trust.optIn`. */
-  deviceTrustOptIn?: boolean;
-
-  // Session (mirrors `ctx.session.*`):
-  /** Flat alias for `ctx.session.riskStepUpReason`. */
-  riskStepUpReason?: string;
-  /** Flat alias for `ctx.session.activeSessions`. */
-  activeSessions?: number;
-  /** Flat alias for `ctx.session.riskStepUpEvaluated`. */
-  riskStepUpEvaluated?: boolean;
-
-  // Alt-credential mirrors (mirrors `ctx.altActions.*`):
-  /** Flat alias for `ctx.altActions.forgotPassword`. */
-  altForgotPassword?: boolean;
-  /** Flat alias for `ctx.altActions.signup`. */
-  altSignup?: boolean;
-  /** Flat alias for `ctx.altActions.magicLink`. */
-  altMagicLink?: boolean;
-  /** Flat alias for `ctx.altActions.usedMagicLink`. */
-  usedMagicLink?: boolean;
 }
 
 /**
@@ -642,7 +595,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
    * English paragraph that is GENERIC per channel (no target templated in,
    * since the user hasn't submitted it yet). Override per-tenant or per-
    * locale to swap copy (e.g. i18n catalog lookup). The resolved string is
-   * mirrored onto `ctx.otpDisclosure`, transported to the SPA via
+   * mirrored onto `ctx.channel.otpDisclosure`, transported to the SPA via
    * `@wf.context.pass`, and forwarded to
    * `consentStore.recordOtpChannelConsent` at `verify/:channel` AFTER the
    * pincode validates AND the channel is confirmed as an MFA method — the
@@ -821,15 +774,16 @@ export class LoginWorkflow extends AuthWorkflowBase {
       condition: (ctx) =>
         (!!ctx.enrollment?.ensureEmail || !!ctx.guards?.emailVerifiedRequired) &&
         !!ctx.email &&
-        !ctx.emailConfirmed,
+        !ctx.channel?.emailConfirmed,
     },
     {
       id: "ask/phone",
-      condition: (ctx) => !!ctx.enrollment?.ensurePhone && !ctx.phone,
+      condition: (ctx) => !!ctx.enrollment?.ensurePhone && !ctx.channel?.phone,
     },
     {
       id: "verify/phone",
-      condition: (ctx) => !!ctx.enrollment?.ensurePhone && !!ctx.phone && !ctx.phoneConfirmed,
+      condition: (ctx) =>
+        !!ctx.enrollment?.ensurePhone && !!ctx.channel?.phone && !ctx.channel?.phoneConfirmed,
     },
 
     // Phase 4 MFA setup + verification loop:
@@ -895,7 +849,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
         // Risk step-up — may clear mfa.checked to rearm MFA for another iteration.
         {
           id: "risk-step-up",
-          condition: (ctx) => !!ctx.mfa?.checked && !ctx.riskStepUpEvaluated,
+          condition: (ctx) => !!ctx.mfa?.checked && !ctx.session?.riskStepUpEvaluated,
         },
       ],
     },
@@ -906,8 +860,8 @@ export class LoginWorkflow extends AuthWorkflowBase {
       condition: (ctx) =>
         !!ctx.deviceTrust?.enabled &&
         !!ctx.mfa?.checked &&
-        !!ctx.newDevice &&
-        (!ctx.deviceTrust?.optIn || !!ctx.rememberDevice),
+        !!ctx.trust?.newDevice &&
+        (!ctx.deviceTrust?.optIn || !!ctx.trust?.rememberDevice),
     },
 
     // Phase 5 forced password change:
@@ -964,7 +918,8 @@ export class LoginWorkflow extends AuthWorkflowBase {
         { id: "load-active-sessions" },
         {
           id: "concurrency-limit",
-          condition: (ctx) => (ctx.activeSessions ?? 0) >= ctx.sessionPolicy!.concurrencyLimit!.max,
+          condition: (ctx) =>
+            (ctx.session?.activeSessions ?? 0) >= ctx.sessionPolicy!.concurrencyLimit!.max,
         },
       ],
     },
@@ -979,7 +934,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
         { id: "audit-login", condition: (ctx) => !!ctx.finalize?.auditLogin },
         {
           id: "notify-new-device",
-          condition: (ctx) => !!ctx.finalize?.notifyNewDevice && !!ctx.newDevice,
+          condition: (ctx) => !!ctx.finalize?.notifyNewDevice && !!ctx.trust?.newDevice,
         },
         { id: "redirect" },
       ],
@@ -1054,14 +1009,10 @@ export class LoginWorkflow extends AuthWorkflowBase {
     ctx.guards = guards;
     // Mirror alt-credentials config into ctx so the form can hide each alt-action
     // button when its corresponding feature is disabled (`@ui.form.fn.hidden`).
-    // dual-write — flat alias removed in B1.4
     const altActions = (ctx.altActions ??= {});
     altActions.forgotPassword = alt.forgotPassword;
     altActions.signup = alt.signup;
     altActions.magicLink = alt.magicLink;
-    ctx.altForgotPassword = alt.forgotPassword;
-    ctx.altSignup = alt.signup;
-    ctx.altMagicLink = alt.magicLink;
     const wf = useAtscriptWf(this.opts.forms.loginCredentials);
 
     // Alt-action routing — handled BEFORE the form-input pause so the user
@@ -1118,20 +1069,16 @@ export class LoginWorkflow extends AuthWorkflowBase {
       }
       // Sync existing channel state so `ensureEmail`/`ensurePhone` skip
       // when the user already has a confirmed channel.
-      // dual-write — flat alias removed in B1.4
       const email = result.user.mfa.methods.find((m) => m.name === "email" && m.confirmed);
       if (email) {
         ctx.email = email.value;
         (ctx.channel ??= {}).emailConfirmed = true;
-        ctx.emailConfirmed = true;
       }
       const phone = result.user.mfa.methods.find((m) => m.name === "sms" && m.confirmed);
       if (phone) {
         const channel = (ctx.channel ??= {});
         channel.phone = phone.value;
         channel.phoneConfirmed = true;
-        ctx.phone = phone.value;
-        ctx.phoneConfirmed = true;
       }
     } catch (err) {
       if (err instanceof UserAuthError) {
@@ -1246,14 +1193,12 @@ export class LoginWorkflow extends AuthWorkflowBase {
     const isEmail = channel === "email";
     // Stash the disclosure BEFORE `useAtscriptWf` / `resolveInput` throws
     // `requireInput` for the AskEmail/AskPhone pause — the wf engine snapshots
-    // ctx at the throw site, so setting `otpDisclosure` here is what makes
-    // `@wf.context.pass 'otpDisclosure'` ride on the carrier-form pause
+    // ctx at the throw site, so setting `channel.otpDisclosure` here is what
+    // makes `@wf.context.pass 'channel'` ride on the carrier-form pause
     // descriptor (rendered adjacent to the email/phone input → submission =
     // implied consent). Forwarded to `recordOtpChannelConsent` at verify-time.
     const disclosure = await this.resolveOtpDisclosure(ctx, channel);
-    // dual-write — flat alias removed in B1.4
     (ctx.channel ??= {}).otpDisclosure = disclosure;
-    ctx.otpDisclosure = disclosure;
     const askWf = useAtscriptWf(isEmail ? this.opts.forms.askEmail : this.opts.forms.askPhone);
     const input = askWf.resolveInput() as { email?: string; phone?: string } & InlineConsentInput;
     this.processInlineConsent(ctx, input, askWf);
@@ -1263,11 +1208,9 @@ export class LoginWorkflow extends AuthWorkflowBase {
     await this.withStoreErrorTranslation(() =>
       this.users.addMfaMethod(username, { name: methodName, value, confirmed: false }),
     );
-    // dual-write — flat alias removed in B1.4
     if (isEmail) ctx.email = value;
     else {
       (ctx.channel ??= {}).phone = value;
-      ctx.phone = value;
     }
     const code = this.mintPin(ctx, this.authOpts.mfa.pincodeLength, this.authOpts.mfa.pincodeTtlMs);
     if (isEmail) {
@@ -1306,29 +1249,27 @@ export class LoginWorkflow extends AuthWorkflowBase {
     await this.withStoreErrorTranslation(() =>
       this.users.confirmMfaMethod(ctx.username, isEmail ? "email" : "sms"),
     );
-    // dual-write — flat alias removed in B1.4
+    const channelState = (ctx.channel ??= {});
     if (isEmail) {
-      (ctx.channel ??= {}).emailConfirmed = true;
-      ctx.emailConfirmed = true;
+      channelState.emailConfirmed = true;
     } else {
-      (ctx.channel ??= {}).phoneConfirmed = true;
-      ctx.phoneConfirmed = true;
+      channelState.phoneConfirmed = true;
     }
     // Record the OTP-channel disclosure AFTER channel ownership is confirmed
     // (pincode validated + MFA method flipped to `confirmed: true`). Default
     // ConsentStore.recordOtpChannelConsent is a no-op — customers override
-    // to persist an audit-grade record. The `if (ctx.otpDisclosure)` guard is
-    // defensive: any path that lands here without having traversed
+    // to persist an audit-grade record. The `if (ctx.channel?.otpDisclosure)`
+    // guard is defensive: any path that lands here without having traversed
     // ask/:channel (cleanup retry, manual harness invocation) skips the hook
     // rather than recording an empty-target consent.
-    if (ctx.otpDisclosure) {
+    if (channelState.otpDisclosure) {
       const channelArg: "email" | "sms" = isEmail ? "email" : "sms";
-      const target = (isEmail ? ctx.email : ctx.phone) as string;
+      const target = (isEmail ? ctx.email : channelState.phone) as string;
       await this.consentStore.recordOtpChannelConsent(
         ctx.username,
         channelArg,
         target,
-        ctx.otpDisclosure,
+        channelState.otpDisclosure,
       );
     }
     delete ctx.pin;
@@ -1341,22 +1282,18 @@ export class LoginWorkflow extends AuthWorkflowBase {
   async checkTrustedDevice(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
     if (!ctx.username) return undefined;
     const cookieValue = useCookies(current()).getCookie(this.opts.deviceTrust.cookieName);
+    const trust = (ctx.trust ??= {});
     if (!cookieValue) {
-      // dual-write — flat alias removed in B1.4
-      (ctx.trust ??= {}).newDevice = true;
-      ctx.newDevice = true;
+      trust.newDevice = true;
       return undefined;
     }
     const ip = this.opts.deviceTrust.bindsTo === "cookie+ip" ? this.resolveClientIp() : undefined;
     const ok = await this.loadTrustedDevice(ctx.username, cookieValue, ip);
-    // dual-write — flat alias removed in B1.4
     if (ok) {
       (ctx.mfa ??= {}).checked = true;
-      (ctx.trust ??= {}).deviceTrustToken = cookieValue;
-      ctx.deviceTrustToken = cookieValue;
+      trust.deviceTrustToken = cookieValue;
     } else {
-      (ctx.trust ??= {}).newDevice = true;
-      ctx.newDevice = true;
+      trust.newDevice = true;
     }
     return undefined;
   }
@@ -1364,7 +1301,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
   /**
    * Load + summarise the user's enrolled MFA methods (filtered against
    * `ctx.mfa.availableTransports`) and mirror the form-gating flags
-   * (`mfa.methodCount`, `deviceTrustOptIn`) onto ctx. Pure data-load — no
+   * (`mfa.methodCount`, `trust.optIn`) onto ctx. Pure data-load — no
    * selection decision. Split out of the old `prepare-mfa-options` step so
    * consumers can override the load/summary shape (custom MFA inventory
    * source) without copying the selection heuristics in `selectMfaMethod`.
@@ -1398,7 +1335,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // doesn't ask the user to opt in (skipsMfa auto-trusts the device).
     const trustOptIn = !!(ctx.deviceTrust?.enabled && ctx.deviceTrust?.optIn);
     (ctx.trust ??= {}).optIn = trustOptIn;
-    ctx.deviceTrustOptIn = trustOptIn;
     return undefined;
   }
 
@@ -1550,10 +1486,8 @@ export class LoginWorkflow extends AuthWorkflowBase {
     (ctx.mfa ??= {}).checked = true;
     // Allow the risk-step-up gate to re-evaluate after this re-verification.
     (ctx.session ??= {}).riskStepUpEvaluated = false;
-    ctx.riskStepUpEvaluated = false;
     if (ctx.deviceTrust?.enabled && ctx.deviceTrust?.optIn) {
       (ctx.trust ??= {}).rememberDevice = Boolean(input.rememberDevice);
-      ctx.rememberDevice = Boolean(input.rememberDevice);
     }
     return undefined;
   }
@@ -1574,10 +1508,8 @@ export class LoginWorkflow extends AuthWorkflowBase {
       await this.users.verifyMfa(ctx.username, input.code);
       (ctx.mfa ??= {}).checked = true;
       (ctx.session ??= {}).riskStepUpEvaluated = false;
-      ctx.riskStepUpEvaluated = false;
       if (ctx.deviceTrust?.enabled && ctx.deviceTrust?.optIn) {
         (ctx.trust ??= {}).rememberDevice = Boolean(input.rememberDevice);
-        ctx.rememberDevice = Boolean(input.rememberDevice);
       }
     } catch (err) {
       if (err instanceof UserAuthError) {
@@ -1675,9 +1607,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
     const ip = this.opts.deviceTrust.bindsTo === "cookie+ip" ? this.resolveClientIp() : undefined;
     const record = await this.issueTrustedDevice(ctx.username, ip, this.opts.deviceTrust.ttlMs);
     await this.storeTrustedDevice(ctx.username, record);
-    // dual-write — flat alias removed in B1.4
     (ctx.trust ??= {}).deviceTrustToken = record.token;
-    ctx.deviceTrustToken = record.token;
     useResponse(current()).setCookie(
       this.opts.deviceTrust.cookieName,
       record.token,
@@ -1802,9 +1732,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
   async loadActiveSessionsStep(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
     if (!ctx.username) return undefined;
     const n = await this.loadActiveSessions(ctx.username);
-    // dual-write — flat alias removed in B1.4
     (ctx.session ??= {}).activeSessions = n;
-    ctx.activeSessions = n;
     return undefined;
   }
 
@@ -1857,23 +1785,20 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // clearing `mfa.checked`. `riskStepUpEvaluated` is flipped true so this
     // step does not fire twice within one MFA round — the MFA steps reset it
     // on next successful verification.
-    // dual-write — flat alias removed in B1.4
-    (ctx.session ??= {}).riskStepUpEvaluated = true;
-    ctx.riskStepUpEvaluated = true;
+    const session = (ctx.session ??= {});
+    session.riskStepUpEvaluated = true;
     const res = await this.resolveRiskStepUp(ctx);
     if (res.require) {
       const reason = res.reason ?? "additional verification required";
-      (ctx.session ??= {}).riskStepUpReason = reason;
+      session.riskStepUpReason = reason;
       (ctx.mfa ??= {}).checked = false;
-      ctx.riskStepUpReason = reason;
       // delete (not `= undefined`) so the persisted ctx remains JSON-clean
       // — AsWfStore validates state.context against a JSON-anyOf schema and
       // chokes on explicit `undefined` entries.
       delete ctx.pin;
       delete ctx.pinExpire;
     } else {
-      if (ctx.session) delete ctx.session.riskStepUpReason;
-      delete ctx.riskStepUpReason;
+      delete session.riskStepUpReason;
     }
     return undefined;
   }
