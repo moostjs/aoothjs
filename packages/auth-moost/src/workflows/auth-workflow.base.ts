@@ -113,8 +113,18 @@ export interface AuthWfPasswordUiState {
  */
 export interface AuthWfCompletionState {
   passwordChanged?: boolean;
+  /** Invite Phase B: invitee accepted + set their initial password (distinct from `passwordChanged` which marks an EXISTING password being changed). */
+  passwordSet?: boolean;
   tokensIssued?: boolean;
   redirectUrl?: string;
+  /** Login Phase 6 + Invite accept-tail: profile-complete step ran (login) / collect-profile + apply-profile ran (invite). Resume-from-pause idempotency flag for the profile-complete step. */
+  profileApplied?: boolean;
+  /** Invite accept-tail: pending-invitation row cleared from the customer-side staging table. */
+  pendingInvitationCleared?: boolean;
+  /** Invite accept-tail: user account flipped from staged → active. */
+  activated?: boolean;
+  /** Invite accept-tail: confirmation copy rendered to the invitee (gated by `accept.showConfirmation`). */
+  confirmationShown?: boolean;
 }
 
 /**
@@ -943,7 +953,7 @@ export const consentsPersistTailSchema: TWorkflowSchema<AuthWfCtxBase> = [
  * shape (`set-password` step, no `create-password-form`) and does not
  * consume this fragment. `InviteWorkflow` splits the pair with
  * `consentsPreludeSchema` between the two entries and gates
- * `create-password-form` on its own `ctx.passwordSet` flat alias, so
+ * `create-password-form` on its own `ctx.completion.passwordSet` flag, so
  * it cannot adopt this fragment without reordering — left inline there.
  */
 export const passwordChangeSchema: TWorkflowSchema<AuthWfCtxBase> = [

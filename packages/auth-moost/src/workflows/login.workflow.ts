@@ -260,8 +260,6 @@ export interface LoginWfCtx extends AuthWfCtxBase {
    * `create-password-form`. Reset after `create-password-form` commits.
    */
   isPasswordExpired?: boolean;
-  /** Resume-from-pause idempotency flag for the profile-complete step. */
-  profileApplied?: boolean;
   /** Injected by consumer subclass / credentials override to surface missing profile fields. */
   profileMissingFields?: string[];
 }
@@ -892,7 +890,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
       id: "profile-complete",
       condition: (ctx) =>
         !!ctx.profileCompleteRequired &&
-        !ctx.profileApplied &&
+        !ctx.completion?.profileApplied &&
         (ctx.profileMissingFields?.length ?? 0) > 0,
     },
     // Returning user with pending consents but no onboarding carrier form
@@ -1694,7 +1692,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // receive a sanitized payload — see `auth-workflow.base.ts`.
     const sanitized = stripReservedUserKeys(input);
     await this.applyProfile(ctx.username, sanitized);
-    ctx.profileApplied = true;
+    (ctx.completion ??= {}).profileApplied = true;
     return undefined;
   }
 

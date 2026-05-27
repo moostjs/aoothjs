@@ -137,13 +137,8 @@ export interface InviteWfCtx extends AuthWfCtxBase {
   // ── User-side (Phase B) ─────────────────────────────────────────────────
   /** Detected at `check-pending-invitation`; triggers `idempotent-redirect`. */
   alreadyAccepted?: boolean;
-  passwordSet?: boolean;
   /** Raw input from `collect-profile`. */
   profile?: Record<string, unknown>;
-  profileApplied?: boolean;
-  pendingInvitationCleared?: boolean;
-  activated?: boolean;
-  confirmationShown?: boolean;
 }
 
 /**
@@ -477,7 +472,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
         ...consentsPreludeSchema,
         {
           id: "create-password-form",
-          condition: (ctx) => !ctx.passwordSet,
+          condition: (ctx) => !ctx.completion?.passwordSet,
         },
         // MFA policy setters — fire once before the enrolment loop so consumer
         // overrides can compute mode/transports/enrollMethod from request context.
@@ -498,7 +493,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
           // the while-gate so each inner step condition only checks the ctx
           // fields that distinguish ITS phase.
           while: (ctx) =>
-            !!(ctx.passwordSet && ctx.mfa?.mode !== "disabled" && !ctx.mfaEnroll?.done),
+            !!(ctx.completion?.passwordSet && ctx.mfa?.mode !== "disabled" && !ctx.mfaEnroll?.done),
           steps: [
             {
               id: "enroll-pick-method",
@@ -526,16 +521,17 @@ export class InviteWorkflow extends AuthWorkflowBase {
         },
         {
           id: "collect-profile",
-          condition: (ctx) => !!(ctx.passwordSet && ctx.acceptProfileFormPresent && !ctx.profile),
+          condition: (ctx) =>
+            !!(ctx.completion?.passwordSet && ctx.acceptProfileFormPresent && !ctx.profile),
         },
         {
           id: "apply-profile",
           condition: (ctx) =>
             !!(
-              ctx.passwordSet &&
+              ctx.completion?.passwordSet &&
               ctx.acceptProfileFormPresent &&
               ctx.profile &&
-              !ctx.profileApplied
+              !ctx.completion?.profileApplied
             ),
         },
         // Consumer extension point — see `inviteExtraStep()` method.
@@ -548,25 +544,35 @@ export class InviteWorkflow extends AuthWorkflowBase {
         ...consentsPersistTailSchema,
         {
           id: "unset-pending-invitation",
-          condition: (ctx) => !!(ctx.passwordSet && !ctx.pendingInvitationCleared),
+          condition: (ctx) =>
+            !!(ctx.completion?.passwordSet && !ctx.completion?.pendingInvitationCleared),
         },
         {
           id: "activate-user",
-          condition: (ctx) => !!(ctx.pendingInvitationCleared && !ctx.activated),
+          condition: (ctx) =>
+            !!(ctx.completion?.pendingInvitationCleared && !ctx.completion?.activated),
         },
         {
           id: "confirmation",
           condition: (ctx) =>
-            !!(ctx.activated && ctx.accept?.showConfirmation && !ctx.confirmationShown),
+            !!(
+              ctx.completion?.activated &&
+              ctx.accept?.showConfirmation &&
+              !ctx.completion?.confirmationShown
+            ),
         },
         {
           id: "fresh-login-finish",
-          condition: (ctx) => !!(ctx.activated && ctx.accept?.freshLoginRequired),
+          condition: (ctx) => !!(ctx.completion?.activated && ctx.accept?.freshLoginRequired),
         },
         {
           id: "auto-login-finish",
           condition: (ctx) =>
-            !!(ctx.activated && !ctx.accept?.freshLoginRequired && !ctx.completion?.tokensIssued),
+            !!(
+              ctx.completion?.activated &&
+              !ctx.accept?.freshLoginRequired &&
+              !ctx.completion?.tokensIssued
+            ),
         },
       ],
     },
@@ -808,7 +814,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
     // to make on every accept-tail invite run; unknown ids are silently
     // dropped per its SECURITY contract.
     this.processInlineConsent(ctx, input, wf);
-    ctx.passwordSet = true;
+    (ctx.completion ??= {}).passwordSet = true;
     return undefined;
   }
 
@@ -934,13 +940,14 @@ export class InviteWorkflow extends AuthWorkflowBase {
   @Public()
   async applyProfileStep(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     this.requireUsername(ctx);
+    const c = (ctx.completion ??= {});
     const sanitized = stripReservedUserKeys(ctx.profile ?? {});
     if (Object.keys(sanitized).length === 0) {
-      ctx.profileApplied = true;
+      c.profileApplied = true;
       return undefined;
     }
     await this.applyProfile({ username: ctx.username, profile: sanitized });
-    ctx.profileApplied = true;
+    c.profileApplied = true;
     return undefined;
   }
 
@@ -966,7 +973,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
     await this.users.update(ctx.username, {
       account: { pendingInvitation: false },
     } as Partial<UserCredentials>);
-    ctx.pendingInvitationCleared = true;
+    (ctx.completion ??= {}).pendingInvitationCleared = true;
     return undefined;
   }
 
@@ -976,7 +983,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
   async activateUser(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     this.requireUsername(ctx);
     await this.users.activateAccount(ctx.username);
-    ctx.activated = true;
+    (ctx.completion ??= {}).activated = true;
     return undefined;
   }
 
@@ -984,7 +991,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
   @Step("confirmation")
   @Public()
   confirmation(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
-    ctx.confirmationShown = true;
+    (ctx.completion ??= {}).confirmationShown = true;
     // The auto-login terminal (`auto-login-finish`) merges this envelope's
     // `message` into its own data response so the SPA still surfaces the
     // configured confirmation text alongside the tokens (WF-INVITE-020). The
