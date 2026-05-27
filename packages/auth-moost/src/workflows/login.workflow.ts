@@ -341,24 +341,6 @@ export interface LoginWfCtx extends AuthWfCtxBase {
   // in the step bodies below; kept here for forms.as `@wf.context.pass 'flatKey'`
   // compat. Type-safe consumers should read the nested form.
 
-  // MFA forced-enrollment (mirrors `ctx.mfaEnroll.*`):
-  /** Flat alias for `ctx.mfaEnroll.method`. */
-  enrollMethod?: MfaTransport;
-  /** Flat alias for `ctx.mfaEnroll.address`. */
-  enrollAddress?: string;
-  /** Flat alias for `ctx.mfaEnroll.secret` — TOTP secret in flight (QR rendering). */
-  enrollSecret?: string;
-  /** Flat alias for `ctx.mfaEnroll.uri` — TOTP provisioning URI. */
-  enrollUri?: string;
-  /** Flat alias for `ctx.mfaEnroll.availableTransports`. */
-  enrollAvailableTransports?: MfaTransport[];
-  /** Flat alias for `ctx.mfaEnroll.mode`. */
-  enrollMode?: "required" | "optional";
-  /** Flat alias for `ctx.mfaEnroll.done`. */
-  enrollDone?: boolean;
-  /** Flat alias for `ctx.mfaEnroll.pincodeCooldown` — Phase 3 confirm-pincode resend cooldown. */
-  enrollPincodeCooldown?: number;
-
   // Pincode UI hint (mirrors `ctx.pincode.*`):
   /** Flat alias for `ctx.pincode.sentTo` — masked recipient. */
   pinSentTo?: string;
@@ -943,21 +925,21 @@ export class LoginWorkflow extends AuthWorkflowBase {
           steps: [
             {
               id: "enroll-pick-method",
-              condition: (ctx) => !ctx.enrollMethod,
+              condition: (ctx) => !ctx.mfaEnroll?.method,
             },
             {
               id: "enroll-address",
               condition: (ctx) =>
-                !!ctx.enrollMethod &&
-                (ctx.enrollMethod === "sms" || ctx.enrollMethod === "email") &&
-                !ctx.enrollAddress,
+                !!ctx.mfaEnroll?.method &&
+                (ctx.mfaEnroll.method === "sms" || ctx.mfaEnroll.method === "email") &&
+                !ctx.mfaEnroll.address,
             },
             {
               id: "enroll-confirm",
               condition: (ctx) =>
-                !!ctx.enrollMethod &&
-                (ctx.enrollMethod === "totp" || !!ctx.enrollAddress) &&
-                !ctx.enrollDone,
+                !!ctx.mfaEnroll?.method &&
+                (ctx.mfaEnroll.method === "totp" || !!ctx.mfaEnroll.address) &&
+                !ctx.mfaEnroll.done,
             },
           ],
         },
@@ -1711,15 +1693,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
    */
   @Step("enroll-pick-method")
   loginEnrollPickMethod(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
-    const result = this.enrollPickPhase(this.buildLoginEnrollDeps(ctx));
-    if (result instanceof Promise) {
-      return result.then(() => {
-        this.mirrorEnrollFlatToNested(ctx);
-        return undefined;
-      });
-    }
-    this.mirrorEnrollFlatToNested(ctx);
-    return undefined;
+    return this.enrollPickPhase(this.buildLoginEnrollDeps(ctx));
   }
 
   /**
@@ -1728,38 +1702,30 @@ export class LoginWorkflow extends AuthWorkflowBase {
    */
   @Step("enroll-address")
   loginEnrollAddress(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
-    return this.enrollAddressPhase(this.buildLoginEnrollDeps(ctx)).then(() => {
-      this.mirrorEnrollFlatToNested(ctx);
-      return undefined;
-    });
+    return this.enrollAddressPhase(this.buildLoginEnrollDeps(ctx));
   }
 
   /**
    * Forced MFA enrollment — Phase 3 (verify code + activate method). Fires
-   * `onComplete` to bridge `enrollDone` → `mfaChecked` so login's outer MFA
-   * while-loop (gated on `!mfaChecked`) exits.
+   * `onComplete` to bridge `ctx.mfaEnroll.done` → `mfaChecked` so login's
+   * outer MFA while-loop (gated on `!mfaChecked`) exits.
    */
   @Step("enroll-confirm")
   loginEnrollConfirm(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
-    return this.enrollConfirmPhase(this.buildLoginEnrollDeps(ctx)).then(() => {
-      this.mirrorEnrollFlatToNested(ctx);
-      return undefined;
-    });
+    return this.enrollConfirmPhase(this.buildLoginEnrollDeps(ctx));
   }
 
   /**
    * Build the `MfaEnrollDeps` payload shared by all three login enrollment
-   * step bodies. Sets `ctx.enrollMode` (mirrored onto ctx so
-   * `EnrollPickMethodForm` can hide the `skip` action unless mode is
-   * `'optional'`) and supplies `onComplete` to mirror `enrollDone` →
-   * `mfaChecked` for login's loop-exit signal.
+   * step bodies. Sets `ctx.mfaEnroll.mode` so `EnrollPickMethodForm` can hide
+   * the `skip` action unless mode is `'optional'`, and supplies `onComplete`
+   * to mirror `ctx.mfaEnroll.done` → `mfaChecked` for login's loop-exit
+   * signal.
    */
   private buildLoginEnrollDeps(ctx: LoginWfCtx): MfaEnrollDeps {
     this.requireUsername(ctx);
     // `'disabled'` is filtered at each step's schema condition, so the cast is safe.
     const mode = (ctx.mfaMode ?? "optional") as "required" | "optional";
-    // dual-write — flat alias removed in B1.4
-    ctx.enrollMode = mode;
     (ctx.mfaEnroll ??= {}).mode = mode;
     return {
       ctx,
@@ -1781,34 +1747,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
         (c as LoginWfCtx).mfaChecked = true;
       },
     };
-  }
-
-  /**
-   * Mirror flat `enroll*` / `pinSentTo` fields written by the
-   * `enrollPickPhase` / `enrollAddressPhase` / `enrollConfirmPhase` helpers
-   * (which still write the OLD flat shape) into the nested
-   * `ctx.mfaEnroll` / `ctx.pincode` groups so `@wf.context.pass 'mfaEnroll'`
-   * / `'pincode'` consumers can read the same data nested.
-   *
-   * dual-write — flat alias removed in B1.4
-   */
-  private mirrorEnrollFlatToNested(ctx: LoginWfCtx): void {
-    const m = (ctx.mfaEnroll ??= {});
-    if (ctx.enrollMethod !== undefined) m.method = ctx.enrollMethod;
-    else delete m.method;
-    if (ctx.enrollAddress !== undefined) m.address = ctx.enrollAddress;
-    else delete m.address;
-    if (ctx.enrollSecret !== undefined) m.secret = ctx.enrollSecret;
-    else delete m.secret;
-    if (ctx.enrollUri !== undefined) m.uri = ctx.enrollUri;
-    else delete m.uri;
-    if (ctx.enrollAvailableTransports !== undefined)
-      m.availableTransports = ctx.enrollAvailableTransports;
-    if (ctx.enrollDone !== undefined) m.done = ctx.enrollDone;
-    if (ctx.enrollPincodeCooldown !== undefined) m.pincodeCooldown = ctx.enrollPincodeCooldown;
-    else delete m.pincodeCooldown;
-    if (ctx.pinSentTo !== undefined) (ctx.pincode ??= {}).sentTo = ctx.pinSentTo;
-    else if (ctx.pincode) delete ctx.pincode.sentTo;
   }
 
   @Step("device-trust")

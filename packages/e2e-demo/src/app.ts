@@ -913,7 +913,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
         if (v?.availableMfaTransports !== undefined) {
           ctx.availableMfaTransports = [...v.availableMfaTransports];
         }
-        if (v?.enrollMethod !== undefined) ctx.enrollMethod = v.enrollMethod;
+        if (v?.enrollMethod !== undefined) (ctx.mfaEnroll ??= {}).method = v.enrollMethod;
         return undefined;
       };
       return baseResult instanceof Promise ? baseResult.then(apply) : apply();
@@ -1340,9 +1340,10 @@ function wrapWithInviteMfaCtx<W extends new (...args: never[]) => InviteWorkflow
         if (ctx.availableMfaTransports !== undefined) {
           c.availableMfaTransports = [...ctx.availableMfaTransports];
         }
-        if (ctx.enrollMethod !== undefined) c.enrollMethod = ctx.enrollMethod;
-        if (!c.enrollMethod && c.availableMfaTransports?.length === 1) {
-          c.enrollMethod = c.availableMfaTransports[0];
+        const m = (c.mfaEnroll ??= {});
+        if (ctx.enrollMethod !== undefined) m.method = ctx.enrollMethod;
+        if (!m.method && c.availableMfaTransports?.length === 1) {
+          m.method = c.availableMfaTransports[0];
         }
         return undefined;
       };

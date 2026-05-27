@@ -393,23 +393,22 @@ export interface AskPhoneForm extends WithInlineConsentForm {
 
 /**
  * Forced MFA enrollment — method picker for `mfa-enroll-required`. Options
- * come from `ctx.enrollAvailableTransports` so only consumer-enabled
+ * come from `ctx.mfaEnroll?.availableTransports` so only consumer-enabled
  * transports appear.
  */
 @meta.label 'Set up two-factor authentication'
 @meta.description 'Pick a method to receive your verification codes.'
-@wf.context.pass 'enrollAvailableTransports'
-@wf.context.pass 'enrollMode'
+@wf.context.pass 'mfaEnroll'
 export interface EnrollPickMethodForm {
     @ui.form.order 10
     @ui.form.type 'radio'
-    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.enrollAvailableTransports) ? ctx.enrollAvailableTransports.map(t => ({ key: t, label: t === "totp" ? "Authenticator app (TOTP)" : t === "sms" ? "SMS" : t === "email" ? "Email" : t })) : []'
+    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.mfaEnroll?.availableTransports) ? ctx.mfaEnroll.availableTransports.map(t => ({ key: t, label: t === "totp" ? "Authenticator app (TOTP)" : t === "sms" ? "SMS" : t === "email" ? "Email" : t })) : []'
     @meta.label 'Choose a verification method'
     @meta.required
     method: string
 
     @ui.form.action 'skip', 'Skip for now'
-    @ui.form.fn.hidden '(_, _d, ctx) => ctx.enrollMode !== "optional"'
+    @ui.form.fn.hidden '(_, _d, ctx) => ctx.mfaEnroll?.mode !== "optional"'
     skip?: ui.action
 }
 
@@ -417,15 +416,13 @@ export interface EnrollPickMethodForm {
  * Forced MFA enrollment — address collection for sms/email. TOTP skips this
  * form (secret is provisioned server-side).
  *
- * `skip` is hidden unless `enrollMode === 'optional'` (`'required'` mode
+ * `skip` is hidden unless `mfaEnroll.mode === 'optional'` (`'required'` mode
  * forbids backing out mid-flow). `useDifferentMethod` is hidden when the
  * consumer has only one transport configured (nothing to switch to).
  */
-@ui.form.fn.title '(_, _d, ctx) => ctx.enrollMethod === "sms" ? "Add your phone number" : "Add your email"'
+@ui.form.fn.title '(_, _d, ctx) => ctx.mfaEnroll?.method === "sms" ? "Add your phone number" : "Add your email"'
 @meta.description 'We will send you a one-time code to confirm.'
-@wf.context.pass 'enrollMethod'
-@wf.context.pass 'enrollMode'
-@wf.context.pass 'enrollAvailableTransports'
+@wf.context.pass 'mfaEnroll'
 export interface EnrollAddressForm {
     @ui.form.order 10
     @ui.form.type 'text'
@@ -434,30 +431,26 @@ export interface EnrollAddressForm {
     address: string
 
     @ui.form.action 'skip', 'Skip for now'
-    @ui.form.fn.hidden '(_, _d, ctx) => ctx.enrollMode !== "optional"'
+    @ui.form.fn.hidden '(_, _d, ctx) => ctx.mfaEnroll?.mode !== "optional"'
     skip?: ui.action
 
     @ui.form.action 'useDifferentMethod', 'Use a different method'
-    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.enrollAvailableTransports?.length ?? 0) < 2'
+    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.mfaEnroll?.availableTransports?.length ?? 0) < 2'
     useDifferentMethod?: ui.action
 }
 
 /**
  * Forced MFA enrollment — confirm code, shared by all three transports. The
  * leading paragraph swaps between "scan this QR" (totp) and "code sent to …"
- * (sms/email) based on `enrollMethod`; `enrollSecret` / `enrollUri` are passed
- * for the totp QR + manual-entry fallback.
+ * (sms/email) based on `mfaEnroll.method`; `mfaEnroll.secret` / `mfaEnroll.uri`
+ * are passed for the totp QR + manual-entry fallback.
  */
 @meta.label 'Confirm your verification code'
-@wf.context.pass 'enrollMethod'
-@wf.context.pass 'enrollMode'
-@wf.context.pass 'enrollSecret'
-@wf.context.pass 'enrollUri'
-@wf.context.pass 'enrollAvailableTransports'
+@wf.context.pass 'mfaEnroll'
 @wf.context.pass 'pinSentTo'
 @ui.form.submit.text 'Confirm'
 export interface EnrollConfirmForm {
-    @ui.form.fn.value '(_, _d, ctx) => ctx.enrollMethod === "totp" ? "Scan the QR with your authenticator app, or enter the secret manually. Then type the 6-digit code it generates." : ctx.enrollMethod ? "Code sent to " + (ctx.pinSentTo || "your " + ctx.enrollMethod) + ". Enter it below to confirm." : "Enter the code to confirm enrollment."'
+    @ui.form.fn.value '(_, _d, ctx) => ctx.mfaEnroll?.method === "totp" ? "Scan the QR with your authenticator app, or enter the secret manually. Then type the 6-digit code it generates." : ctx.mfaEnroll?.method ? "Code sent to " + (ctx.pinSentTo || "your " + ctx.mfaEnroll.method) + ". Enter it below to confirm." : "Enter the code to confirm enrollment."'
     transportHint?: ui.paragraph
 
     @ui.form.type 'text'
@@ -470,15 +463,15 @@ export interface EnrollConfirmForm {
     code: string
 
     @ui.form.action 'resend', 'Resend code'
-    @ui.form.fn.hidden '(_, _d, ctx) => ctx.enrollMethod === "totp"'
+    @ui.form.fn.hidden '(_, _d, ctx) => ctx.mfaEnroll?.method === "totp"'
     resend?: ui.action
 
     @ui.form.action 'useDifferentMethod', 'Use a different method'
-    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.enrollAvailableTransports?.length ?? 0) < 2'
+    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.mfaEnroll?.availableTransports?.length ?? 0) < 2'
     useDifferentMethod?: ui.action
 
     @ui.form.action 'skip', 'Skip for now'
-    @ui.form.fn.hidden '(_, _d, ctx) => ctx.enrollMode !== "optional"'
+    @ui.form.fn.hidden '(_, _d, ctx) => ctx.mfaEnroll?.mode !== "optional"'
     skip?: ui.action
 }
 

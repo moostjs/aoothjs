@@ -1232,13 +1232,14 @@ export function withInviteMfaCtx<W extends typeof InviteWorkflow>(
         if (ctx.availableMfaTransports !== undefined) {
           c.availableMfaTransports = [...ctx.availableMfaTransports];
         }
-        if (ctx.enrollMethod !== undefined) c.enrollMethod = ctx.enrollMethod;
+        const m = (c.mfaEnroll ??= {});
+        if (ctx.enrollMethod !== undefined) m.method = ctx.enrollMethod;
         // Re-run the single-transport auto-pick AFTER overrides so a test
         // that shrinks availableMfaTransports to `['totp']` still gets
-        // enrollMethod auto-set (mirrors the base setter's logic). Without
-        // this, the schema while-loop has nothing to fire and hangs.
-        if (!c.enrollMethod && c.availableMfaTransports?.length === 1) {
-          c.enrollMethod = c.availableMfaTransports[0];
+        // mfaEnroll.method auto-set (mirrors the base setter's logic).
+        // Without this, the schema while-loop has nothing to fire and hangs.
+        if (!m.method && c.availableMfaTransports?.length === 1) {
+          m.method = c.availableMfaTransports[0];
         }
         return undefined;
       };

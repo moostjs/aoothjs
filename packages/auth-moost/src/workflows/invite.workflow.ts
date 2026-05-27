@@ -147,22 +147,6 @@ export interface InviteWfCtx extends AuthWfCtxBase {
   // Each one mirrors a `ctx.<group>.<field>` on `AuthWfCtxBase` via dual-write
   // in the step bodies below; kept here for forms.as `@wf.context.pass 'flatKey'`
   // compat. Type-safe consumers should read the nested form.
-  /** Flat alias for `ctx.mfaEnroll.method`. */
-  enrollMethod?: "sms" | "email" | "totp";
-  /** Flat alias for `ctx.mfaEnroll.address`. */
-  enrollAddress?: string;
-  /** Flat alias for `ctx.mfaEnroll.secret`. */
-  enrollSecret?: string;
-  /** Flat alias for `ctx.mfaEnroll.uri`. */
-  enrollUri?: string;
-  /** Flat alias for `ctx.mfaEnroll.availableTransports`. */
-  enrollAvailableTransports?: Array<"sms" | "email" | "totp">;
-  /** Flat alias for `ctx.mfaEnroll.mode`. */
-  enrollMode?: "required" | "optional";
-  /** Flat alias for `ctx.mfaEnroll.done`. */
-  enrollDone?: boolean;
-  /** Flat alias for `ctx.mfaEnroll.pincodeCooldown`. */
-  enrollPincodeCooldown?: number;
   /** Flat alias for `ctx.pincode.sentTo`. */
   pinSentTo?: string;
   /** Flat alias for `ctx.completion.tokensIssued`. */
@@ -513,33 +497,36 @@ export class InviteWorkflow extends AuthWorkflowBase {
         // on `AuthWorkflowBase` directly — no internal routing-by-ctx-state.
         {
           // Wrap the 3 enrolment entries in a while-loop so `useDifferentMethod`
-          // (which clears `enrollMethod` via `cleanupEnrollment`) causes the schema
-          // to re-evaluate from the picker instead of falling through to
-          // activation with no method enrolled. Mirrors login's MFA loop. Loop
-          // exits when `enrollDone` flips true (Phase-3 confirm OR user-skip in
-          // optional mode). `passwordSet` + `mode !== 'disabled'` live on the
-          // while-gate so each inner step condition only checks the ctx fields
-          // that distinguish ITS phase.
-          while: (ctx) => !!(ctx.passwordSet && ctx.mfaMode !== "disabled" && !ctx.enrollDone),
+          // (which clears `ctx.mfaEnroll.method` via `cleanupEnrollment`) causes
+          // the schema to re-evaluate from the picker instead of falling through
+          // to activation with no method enrolled. Mirrors login's MFA loop. Loop
+          // exits when `ctx.mfaEnroll.done` flips true (Phase-3 confirm OR user-
+          // skip in optional mode). `passwordSet` + `mode !== 'disabled'` live on
+          // the while-gate so each inner step condition only checks the ctx
+          // fields that distinguish ITS phase.
+          while: (ctx) => !!(ctx.passwordSet && ctx.mfaMode !== "disabled" && !ctx.mfaEnroll?.done),
           steps: [
             {
               id: "enroll-pick-method",
               condition: (ctx) =>
-                !!((ctx.availableMfaTransports?.length ?? 0) > 1 && !ctx.enrollMethod),
+                !!((ctx.availableMfaTransports?.length ?? 0) > 1 && !ctx.mfaEnroll?.method),
             },
             {
               id: "enroll-address",
               condition: (ctx) =>
                 !!(
-                  ctx.enrollMethod &&
-                  (ctx.enrollMethod === "sms" || ctx.enrollMethod === "email") &&
-                  !ctx.enrollAddress
+                  ctx.mfaEnroll?.method &&
+                  (ctx.mfaEnroll.method === "sms" || ctx.mfaEnroll.method === "email") &&
+                  !ctx.mfaEnroll.address
                 ),
             },
             {
               id: "enroll-confirm",
               condition: (ctx) =>
-                !!(ctx.enrollMethod && (ctx.enrollMethod === "totp" || !!ctx.enrollAddress)),
+                !!(
+                  ctx.mfaEnroll?.method &&
+                  (ctx.mfaEnroll.method === "totp" || !!ctx.mfaEnroll.address)
+                ),
             },
           ],
         },
@@ -842,17 +829,15 @@ export class InviteWorkflow extends AuthWorkflowBase {
   // phases.
   /**
    * Build the `MfaEnrollDeps` payload shared by all three invite enrollment
-   * step bodies. Sets `ctx.enrollMode` (mirrored onto ctx so
-   * `EnrollPickMethodForm` can hide the `skip` action unless mode is
-   * `'optional'`). Omits `onComplete` because invite's enrollment while-loop
-   * is gated on `!enrollDone` directly — no mirror needed.
+   * step bodies. Sets `ctx.mfaEnroll.mode` so `EnrollPickMethodForm` can hide
+   * the `skip` action unless mode is `'optional'`. Omits `onComplete` because
+   * invite's enrollment while-loop is gated on `!ctx.mfaEnroll?.done`
+   * directly.
    */
   private buildInviteEnrollDeps(ctx: InviteWfCtx): MfaEnrollDeps {
     this.requireUsername(ctx);
     // `'disabled'` is filtered at each step's schema condition, so the cast is safe.
     const mode = (ctx.mfaMode ?? "optional") as "required" | "optional";
-    // dual-write — flat alias removed in B1.4
-    ctx.enrollMode = mode;
     (ctx.mfaEnroll ??= {}).mode = mode;
     return {
       ctx,
@@ -875,51 +860,21 @@ export class InviteWorkflow extends AuthWorkflowBase {
 
   /**
    * Prepare MFA enrolment setup: writes `ctx.mfaMode`,
-   * `ctx.availableMfaTransports`, and pre-picks `ctx.enrollMethod` when only
-   * one transport is available. Override to compute any of the three from
-   * tenant policy / invitee role / request context in a single hook. Return
-   * type allows a sync override (skip the promise round-trip) when no async
-   * work is needed.
+   * `ctx.availableMfaTransports`, and pre-picks `ctx.mfaEnroll.method` when
+   * only one transport is available. Override to compute any of the three
+   * from tenant policy / invitee role / request context in a single hook.
+   * Return type allows a sync override (skip the promise round-trip) when no
+   * async work is needed.
    */
   @Step("setup-mfa")
   @Public()
   inviteSetupMfa(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
     ctx.mfaMode = "optional";
     ctx.availableMfaTransports = ["sms", "email", "totp"];
-    if (!ctx.enrollMethod && ctx.availableMfaTransports.length === 1) {
-      // dual-write — flat alias removed in B1.4
-      ctx.enrollMethod = ctx.availableMfaTransports[0];
-      (ctx.mfaEnroll ??= {}).method = ctx.enrollMethod;
+    if (!ctx.mfaEnroll?.method && ctx.availableMfaTransports.length === 1) {
+      (ctx.mfaEnroll ??= {}).method = ctx.availableMfaTransports[0];
     }
     return undefined;
-  }
-
-  /**
-   * Mirror flat `enroll*` / `pinSentTo` fields written by the
-   * `enrollPickPhase` / `enrollAddressPhase` / `enrollConfirmPhase` helpers
-   * (which still write the OLD flat shape) into the nested
-   * `ctx.mfaEnroll` / `ctx.pincode` groups so `@wf.context.pass 'mfaEnroll'`
-   * / `'pincode'` consumers can read the same data nested.
-   *
-   * dual-write — flat alias removed in B1.4
-   */
-  private mirrorEnrollFlatToNested(ctx: InviteWfCtx): void {
-    const m = (ctx.mfaEnroll ??= {});
-    if (ctx.enrollMethod !== undefined) m.method = ctx.enrollMethod;
-    else delete m.method;
-    if (ctx.enrollAddress !== undefined) m.address = ctx.enrollAddress;
-    else delete m.address;
-    if (ctx.enrollSecret !== undefined) m.secret = ctx.enrollSecret;
-    else delete m.secret;
-    if (ctx.enrollUri !== undefined) m.uri = ctx.enrollUri;
-    else delete m.uri;
-    if (ctx.enrollAvailableTransports !== undefined)
-      m.availableTransports = ctx.enrollAvailableTransports;
-    if (ctx.enrollDone !== undefined) m.done = ctx.enrollDone;
-    if (ctx.enrollPincodeCooldown !== undefined) m.pincodeCooldown = ctx.enrollPincodeCooldown;
-    else delete m.pincodeCooldown;
-    if (ctx.pinSentTo !== undefined) (ctx.pincode ??= {}).sentTo = ctx.pinSentTo;
-    else if (ctx.pincode) delete ctx.pincode.sentTo;
   }
 
   /**
@@ -932,15 +887,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
   inviteEnrollPickMethod(
     @WorkflowParam("context") ctx: InviteWfCtx,
   ): undefined | Promise<undefined> {
-    const result = this.enrollPickPhase(this.buildInviteEnrollDeps(ctx));
-    if (result instanceof Promise) {
-      return result.then(() => {
-        this.mirrorEnrollFlatToNested(ctx);
-        return undefined;
-      });
-    }
-    this.mirrorEnrollFlatToNested(ctx);
-    return undefined;
+    return this.enrollPickPhase(this.buildInviteEnrollDeps(ctx));
   }
 
   /**
@@ -950,24 +897,18 @@ export class InviteWorkflow extends AuthWorkflowBase {
   @Step("enroll-address")
   @Public()
   inviteEnrollAddress(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
-    return this.enrollAddressPhase(this.buildInviteEnrollDeps(ctx)).then(() => {
-      this.mirrorEnrollFlatToNested(ctx);
-      return undefined;
-    });
+    return this.enrollAddressPhase(this.buildInviteEnrollDeps(ctx));
   }
 
   /**
    * Forced MFA enrollment — Phase 3 (verify code + activate method). Sets
-   * `enrollDone` on success, which the schema's enrollment while-loop reads
-   * as the exit signal directly.
+   * `ctx.mfaEnroll.done` on success, which the schema's enrollment while-loop
+   * reads as the exit signal directly.
    */
   @Step("enroll-confirm")
   @Public()
   inviteEnrollConfirm(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
-    return this.enrollConfirmPhase(this.buildInviteEnrollDeps(ctx)).then(() => {
-      this.mirrorEnrollFlatToNested(ctx);
-      return undefined;
-    });
+    return this.enrollConfirmPhase(this.buildInviteEnrollDeps(ctx));
   }
 
   // ── Phase B: collectProfile ───────────────────────────────────────────

@@ -723,9 +723,10 @@ export function withInviteMfaCtx<W extends typeof InviteWorkflow>(
         if (ctx.availableMfaTransports !== undefined) {
           c.availableMfaTransports = [...ctx.availableMfaTransports];
         }
-        if (ctx.enrollMethod !== undefined) c.enrollMethod = ctx.enrollMethod;
-        if (!c.enrollMethod && c.availableMfaTransports?.length === 1) {
-          c.enrollMethod = c.availableMfaTransports[0];
+        const m = (c.mfaEnroll ??= {});
+        if (ctx.enrollMethod !== undefined) m.method = ctx.enrollMethod;
+        if (!m.method && c.availableMfaTransports?.length === 1) {
+          m.method = c.availableMfaTransports[0];
         }
         return undefined;
       };
