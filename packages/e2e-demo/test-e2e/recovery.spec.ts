@@ -534,7 +534,7 @@ test.describe("recovery — choice (R-E) P1 branches", () => {
     page,
     request,
   }) => {
-    // BRANCH: `recoverySelectMode` sets `ctx.resolvedMode = 'otp'` and
+    // BRANCH: `recoverySelectMode` sets `ctx.delivery?.resolvedMode = 'otp'` and
     // selects the default OTP transport (`email` per merge defaults). The
     // schema's while-loop then runs sendOtp + checkOtp, so the next form is
     // PincodeForm rather than SetPasswordForm.

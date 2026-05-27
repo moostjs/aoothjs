@@ -568,17 +568,17 @@ export interface RecoveryModeSelectForm {
  * `RecoveryWorkflowOptions.requireKnownRecoveryFactor` is true. The user
  * picks a factor type and supplies its value; the server validates against
  * the enrolled factor (phone last-4 or current TOTP code). Options are
- * built from `ctx.availableRecoveryFactors` (workflow whitelist ∩ user's
- * enrolled factors), so users only see factors they can actually verify
- * AND that the admin hasn't disabled via `opts.preReset.allowedFactors`.
+ * built from `ctx.preReset.availableRecoveryFactors` (workflow whitelist ∩
+ * user's enrolled factors), so users only see factors they can actually
+ * verify AND that the admin hasn't disabled via `opts.preReset.allowedFactors`.
  */
 @meta.label 'Verify your identity'
 @meta.description 'Confirm a detail we have on file before resetting your password.'
-@wf.context.pass 'availableRecoveryFactors'
+@wf.context.pass 'preReset'
 export interface RecoveryFactorForm {
     @ui.form.order 10
     @ui.form.type 'radio'
-    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.availableRecoveryFactors) ? ctx.availableRecoveryFactors : []'
+    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.preReset?.availableRecoveryFactors) ? ctx.preReset.availableRecoveryFactors : []'
     @meta.label 'Factor'
     @meta.required
     factor: string
