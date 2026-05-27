@@ -106,8 +106,9 @@ export interface BuildAppOptions {
   authEndpointsEnabled?: boolean;
   /**
    * E2E coverage hook — per-workflow option overrides deep-merged into the
-   * demo defaults (one nested group at a time, e.g. `{ mfa: { backupCodes: false } }`
-   * replaces only `mfa.backupCodes` and preserves the other `mfa.*` keys).
+   * demo defaults (one nested group at a time, e.g.
+   * `{ deviceTrust: { ttlMs: 1 } }` replaces only `deviceTrust.ttlMs` and
+   * preserves the other `deviceTrust.*` keys).
    * Used by the workflow-options e2e specs to flip a single flag without
    * forking the whole demo wiring. For MFA mode/transports (stripped from
    * opts in PR9) use `loginMfaCtx` below.
@@ -196,7 +197,6 @@ export interface BuildAppOptions {
 const g = globalThis as {
   __aoothE2eEmails?: AuthEmailEvent[];
   __aoothE2eSms?: AuthSmsEvent[];
-  __aoothE2eBackupCodes?: Map<string, string[]>;
   __aoothE2eActiveSessions?: Map<string, number>;
   // username → profile fields that must be collected before issue. Populated
   // by `seed.ts` for users that have no real DB column carrying this state
@@ -224,7 +224,6 @@ const g = globalThis as {
 };
 g.__aoothE2eEmails ??= [];
 g.__aoothE2eSms ??= [];
-g.__aoothE2eBackupCodes ??= new Map();
 g.__aoothE2eActiveSessions ??= new Map();
 g.__aoothE2eProfileMissingFields ??= new Map();
 g.__aoothE2eAuditEvents ??= [];
@@ -233,7 +232,6 @@ g.__aoothE2eConsentLog ??= new Map();
 g.__aoothE2eOtpConsentLog ??= new Map();
 const sharedEmailsBuffer: AuthEmailEvent[] = g.__aoothE2eEmails;
 const sharedSmsBuffer: AuthSmsEvent[] = g.__aoothE2eSms;
-const sharedBackupCodesBuffer: Map<string, string[]> = g.__aoothE2eBackupCodes;
 const sharedActiveSessionsBuffer: Map<string, number> = g.__aoothE2eActiveSessions;
 const sharedProfileMissingFieldsBuffer: Map<string, string[]> = g.__aoothE2eProfileMissingFields;
 const sharedAuditEventsBuffer: AuditEvent[] = g.__aoothE2eAuditEvents;
@@ -529,9 +527,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // `mfaCtx` payloads consumed by the same override.
   //
   // Post-resolver reshape: `LoginWorkflowOpts` is infrastructure-only — policy
-  // (alt-cred flags, guards, mfa.backupCodes, …) lives on `resolveXxx(ctx)`
-  // overrides below. Variants supply `policy.<group>` payloads that those
-  // resolvers merge with the demo's per-group defaults.
+  // (alt-cred flags, guards, …) lives on `resolveXxx(ctx)` overrides below.
+  // Variants supply `policy.<group>` payloads that those resolvers merge with
+  // the demo's per-group defaults.
   const demoLoginOpts: LoginWorkflowOpts = mergeWfOpts({}, opts.loginOpts);
   // FOR_EVENT scope is REQUIRED here: the ctor reads per-request HTTP headers
   // via `readVariantHeader()` to pick a variant config; SINGLETON would freeze
@@ -625,12 +623,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       // create-password-form on first login).
       const base = super.resolveGuards(ctx) as NonNullable<LoginWfCtx["guards"]>;
       return { ...base, passwordInitial: true };
-    }
-    protected override resolveMfaConfig(ctx: LoginWfCtx): NonNullable<LoginWfCtx["mfaConfig"]> {
-      if (opts.loginPolicy?.mfaConfig) return opts.loginPolicy.mfaConfig;
-      const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
-      if (variant?.policy?.mfaConfig) return variant.policy.mfaConfig;
-      return super.resolveMfaConfig(ctx) as NonNullable<LoginWfCtx["mfaConfig"]>;
     }
     protected override resolveSessionPolicy(
       ctx: LoginWfCtx,
@@ -1137,10 +1129,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // endpoint go through ONE implementation — there is no other way to drop
   // back to a known-good fixture set.
   const reseed = async (): Promise<number> => {
-    // Plaintext backup-code list is only known at generation time — seed
-    // populates the map, callers must clear it here so stale codes don't
-    // outlive the user records they refer to.
-    sharedBackupCodesBuffer.clear();
     // Same lifecycle for active-session counts (used by `loadActiveSessions`
     // override below to drive the `concurrency-limit` step).
     sharedActiveSessionsBuffer.clear();
@@ -1197,7 +1185,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       sms: sharedSmsBuffer,
       reseed,
       userService: aooth.userService,
-      backupCodes: sharedBackupCodesBuffer,
       auditEvents: sharedAuditEventsBuffer,
       consentLog: sharedConsentLogBuffer,
       otpConsentLog: sharedOtpConsentLogBuffer,

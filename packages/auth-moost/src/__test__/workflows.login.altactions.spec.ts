@@ -47,37 +47,6 @@ async function driveToPincodeCheck(
   return { wfs: sel.body?.wfs as string, pin: last.code };
 }
 
-describe("LoginWorkflow alt-actions — select2fa", () => {
-  it("useBackupCode → pauses for MfaCodeForm (backup code entry)", async () => {
-    const app = await prepareWfApp({
-      loginPolicy: { mfaConfig: { backupCodes: true } },
-    });
-    await seedActiveUser(app.users, "alice", "Password123");
-    await app.users.addMfaMethod("alice", {
-      name: "email",
-      value: "alice@example.com",
-      confirmed: true,
-    });
-    const secret = generateTotpSecret();
-    await app.users.addMfaMethod("alice", { name: "totp", value: secret, confirmed: true });
-
-    const r1 = await app.trigger({ wfid: "auth/login/flow" });
-    const cred = await app.trigger({
-      wfs: r1.body?.wfs as string,
-      input: { username: "alice", password: "Password123" },
-    });
-    // 2 methods → select2fa.
-    const sel = await app.trigger({
-      wfs: cred.body?.wfs as string,
-      input: { action: "useBackupCode" },
-    });
-    // Pauses for backup-code entry (MfaCodeForm).
-    expect(sel.body?.wfs).toBeTruthy();
-    // Body is the MfaCodeForm schema — has `code` field.
-    expect(JSON.stringify(sel.body)).toMatch(/"code"/);
-  });
-});
-
 describe("LoginWorkflow alt-actions — pincode-check-login", () => {
   it("resend within pinTimeout → form error 'Please wait Ns'", async () => {
     const app = await prepareWfApp({
@@ -87,17 +56,6 @@ describe("LoginWorkflow alt-actions — pincode-check-login", () => {
     const r = await app.trigger({ wfs, input: { action: "resend" } });
     const errors = r.body?.errors as Record<string, string> | undefined;
     expect(errors?.__form).toMatch(/wait \d+s/i);
-  });
-
-  it("useBackupCode → branches to backup-code entry (MfaCodeForm)", async () => {
-    const app = await prepareWfApp({
-      loginPolicy: { mfaConfig: { backupCodes: true } },
-    });
-    const { wfs } = await driveToPincodeCheck(app);
-    const r = await app.trigger({ wfs, input: { action: "useBackupCode" } });
-    // Pauses for backup-code entry.
-    expect(r.body?.wfs).toBeTruthy();
-    expect(JSON.stringify(r.body)).toMatch(/"code"/);
   });
 
   // Phase 4 MFA steps are wrapped in a `while: !mfaChecked` loop so
@@ -223,29 +181,6 @@ describe("LoginWorkflow alt-actions — pincode-check-login", () => {
 });
 
 describe("LoginWorkflow alt-actions — mfa-totp", () => {
-  it("useBackupCode → branches to backup-code entry", async () => {
-    const app = await prepareWfApp({
-      loginPolicy: { mfaConfig: { backupCodes: true } },
-      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { availableMfaTransports: ["totp"] }),
-    });
-    await seedActiveUser(app.users, "alice", "Password123");
-    const secret = generateTotpSecret();
-    await app.users.addMfaMethod("alice", { name: "totp", value: secret, confirmed: true });
-
-    const r1 = await app.trigger({ wfid: "auth/login/flow" });
-    const cred = await app.trigger({
-      wfs: r1.body?.wfs as string,
-      input: { username: "alice", password: "Password123" },
-    });
-    // 1 method → no select2fa → paused at mfa-totp.
-    const r = await app.trigger({
-      wfs: cred.body?.wfs as string,
-      input: { action: "useBackupCode" },
-    });
-    expect(r.body?.wfs).toBeTruthy();
-    expect(JSON.stringify(r.body)).toMatch(/"code"/);
-  });
-
   // Same loop wrapping as BUG-LOGIN-3 — `useDifferentMethod` re-enters select2fa.
   it("useDifferentMethod → loops back to select2fa", async () => {
     const app = await prepareWfApp({

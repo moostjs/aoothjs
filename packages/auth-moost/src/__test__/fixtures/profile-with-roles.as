@@ -49,9 +49,6 @@ export interface ProfileWithRolesForm {
     @ui.form.type 'text'
     trustedDevices?: string[]
 
-    @ui.form.type 'text'
-    backupCodes?: string[]
-
     @ui.form.type 'number'
     version?: number
 

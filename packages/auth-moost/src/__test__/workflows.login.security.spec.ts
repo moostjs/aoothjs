@@ -131,7 +131,6 @@ describe("LoginWorkflow security — profile-complete payload escalation (audit 
         account: { active: true, locked: true, pendingInvitation: true },
         mfa: { mode: "optional" },
         trustedDevices: ["attacker-device"],
-        backupCodes: ["attacker-code"],
         version: 9999,
         id: "spoofed-id",
         username: "spoofed",
@@ -159,10 +158,9 @@ describe("LoginWorkflow security — profile-complete payload escalation (audit 
     expect((user.account as { active?: boolean }).active).toBe(true);
     expect((user.account as { locked?: boolean }).locked).toBeFalsy();
     expect((user.account as { pendingInvitation?: boolean }).pendingInvitation).toBeFalsy();
-    // 4) MFA + trustedDevices + backupCodes NOT shadowed.
+    // 4) MFA + trustedDevices NOT shadowed.
     expect((user.mfa as { enabled?: boolean })?.enabled).toBeFalsy();
     expect(user.trustedDevices ?? []).toEqual([]);
-    expect(user.backupCodes ?? []).toEqual([]);
     // 5) Legitimate profile fields still flowed through.
     expect(user.firstName).toBe("Pat");
     expect(user.lastName).toBe("Patel");

@@ -92,65 +92,6 @@ describe("LoginWorkflow edge cases — MFA", () => {
     );
   });
 
-  // Backup codes validate against `BackupCodeForm` (alphanumeric + hyphens) —
-  // separate from `MfaCodeForm` (digits-only for TOTP). See BUG-LOGIN-6 fix.
-  it("backup code consumed twice → second use fails (one-time semantics)", async () => {
-    const app = await prepareWfApp({
-      loginPolicy: { mfaConfig: { backupCodes: true } },
-      loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { availableMfaTransports: ["totp"] }),
-    });
-    await seedActiveUser(app.users, "alice", "Password123");
-    const secret = generateTotpSecret();
-    await app.users.addMfaMethod("alice", { name: "totp", value: secret, confirmed: true });
-    const codes = await app.users.generateBackupCodes("alice", 2);
-    const [first, second] = codes;
-
-    const r1 = await app.trigger({ wfid: "auth/login/flow" });
-    const cred1 = await app.trigger({
-      wfs: r1.body?.wfs as string,
-      input: { username: "alice", password: "Password123" },
-    });
-    const bc1 = await app.trigger({
-      wfs: cred1.body?.wfs as string,
-      input: { action: "useBackupCode" },
-    });
-    const consume1 = await app.trigger({
-      wfs: bc1.body?.wfs as string,
-      input: { action: "useBackupCode", code: first },
-    });
-    expect((consume1.body?.data as Record<string, unknown>)?.userId).toBe("alice");
-
-    const r2 = await app.trigger({ wfid: "auth/login/flow" });
-    const cred2 = await app.trigger({
-      wfs: r2.body?.wfs as string,
-      input: { username: "alice", password: "Password123" },
-    });
-    const bc2 = await app.trigger({
-      wfs: cred2.body?.wfs as string,
-      input: { action: "useBackupCode" },
-    });
-    const consume2 = await app.trigger({
-      wfs: bc2.body?.wfs as string,
-      input: { action: "useBackupCode", code: first },
-    });
-    expect((consume2.body?.errors as Record<string, string>)?.code).toMatch(/Invalid backup code/);
-
-    const r3 = await app.trigger({ wfid: "auth/login/flow" });
-    const cred3 = await app.trigger({
-      wfs: r3.body?.wfs as string,
-      input: { username: "alice", password: "Password123" },
-    });
-    const bc3 = await app.trigger({
-      wfs: cred3.body?.wfs as string,
-      input: { action: "useBackupCode" },
-    });
-    const consume3 = await app.trigger({
-      wfs: bc3.body?.wfs as string,
-      input: { action: "useBackupCode", code: second },
-    });
-    expect((consume3.body?.data as Record<string, unknown>)?.userId).toBe("alice");
-  });
-
   it("SMS transport: enrolled-via-sms user receives pin via SmsSender, can verify and finish", async () => {
     const app = await prepareWfApp({
       loginWorkflowClass: withLoginMfaCtx(LoginWorkflow, { availableMfaTransports: ["sms"] }),

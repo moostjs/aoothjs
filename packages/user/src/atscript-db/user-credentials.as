@@ -42,6 +42,4 @@ export interface AoothUserCredentials {
         expiresAt: number.timestamp
         name?: string
     }[]
-
-    backupCodes?: string[]
 }

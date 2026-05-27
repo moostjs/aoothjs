@@ -17,8 +17,6 @@ export interface SeededUser {
   roles: string[];
   /** Only present for users seeded with TOTP MFA. */
   totpSecret?: string;
-  /** Plaintext backup codes returned by `generateBackupCodes` — only present when seeded. */
-  backupCodes?: string[];
   passwordInitial?: boolean;
   /** Access tokens minted at seed time. */
   activeSessionTokens?: string[];
@@ -46,7 +44,6 @@ export interface SeedFixtures {
     t1_iris: SeededUser;
     t1_jack: SeededUser;
     t1_stale: SeededUser;
-    t1_kate: SeededUser;
     t1_locked: SeededUser;
     t1_multi_mfa: SeededUser;
     t1_pending: SeededUser;
@@ -90,8 +87,6 @@ interface UserSpec {
   mfaEmail?: boolean;
   /** Enroll + confirm `sms` MFA on the provided phone; persisted on `users.phone`. */
   mfaSms?: { phone: string };
-  /** Generate 10 backup codes — requires `totp` so the `useBackupCode` MFA action is reachable. */
-  backupCodes?: boolean;
   /** Insert with `password.isInitial = true` to exercise the forced-password-change guard. */
   passwordInitial?: boolean;
   /** Override `password.lastChanged` (ms epoch) at seed time. Defaults to `Date.now()`. */
@@ -260,16 +255,6 @@ export async function seedAll(handle: AppHandle): Promise<SeedFixtures> {
       roles: ["member"],
       passwordInitial: true,
       activeSessions: 1,
-    },
-    {
-      handle: "t1_kate",
-      username: "t1_kate",
-      email: "kate@acme.test",
-      tenantId: tenantAId,
-      departmentId: deptA.eng,
-      roles: ["member"],
-      totp: true,
-      backupCodes: true,
     },
     {
       handle: "t1_locked",
@@ -549,22 +534,6 @@ async function seedUser(handle: AppHandle, spec: UserSpec): Promise<SeededUser> 
     await aooth.userService.confirmMfaMethod(spec.username, "sms");
   }
 
-  // Backup codes must go in AFTER TOTP enrolment — the `useBackupCode` MFA
-  // action only surfaces from inside an MFA step, which requires at least
-  // one confirmed factor.
-  let backupCodes: string[] | undefined;
-  if (spec.backupCodes) {
-    backupCodes = await aooth.userService.generateBackupCodes(spec.username, 10);
-    console.log(`[seed] ${spec.username} backup codes (plaintext): ${backupCodes.join(" ")}`);
-    // Surface to /__test/backup-codes/:username so Playwright specs can
-    // submit a known-good code (stored form is hashed; the seed is the only
-    // place plaintext exists).
-    /* eslint-disable no-underscore-dangle -- intentional globalThis slot */
-    const g = globalThis as { __aoothE2eBackupCodes?: Map<string, string[]> };
-    g.__aoothE2eBackupCodes?.set(spec.username, [...backupCodes]);
-    /* eslint-enable no-underscore-dangle */
-  }
-
   if (spec.defaultMfaMethod) {
     await aooth.userService.setDefaultMfaMethod(spec.username, spec.defaultMfaMethod);
   }
@@ -595,7 +564,6 @@ async function seedUser(handle: AppHandle, spec: UserSpec): Promise<SeededUser> 
     departmentId: spec.departmentId,
     roles: spec.roles,
     totpSecret,
-    backupCodes,
     passwordInitial: spec.passwordInitial,
     activeSessionTokens,
   };

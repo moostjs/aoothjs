@@ -231,7 +231,6 @@ describe("InviteWorkflow", () => {
         account: { active: true, locked: false, pendingInvitation: false },
         mfa: { enabled: true },
         trustedDevices: ["attacker-device"],
-        backupCodes: ["attacker-code"],
         version: 9999,
         id: "spoofed-id",
         username: "spoofed",
@@ -250,7 +249,6 @@ describe("InviteWorkflow", () => {
       "account",
       "mfa",
       "trustedDevices",
-      "backupCodes",
       "version",
       "id",
       "username",
@@ -268,10 +266,9 @@ describe("InviteWorkflow", () => {
     // 3) Account flags reflect post-accept workflow state, NOT the bag.
     expect((user.account as { active?: boolean }).active).toBe(true);
     expect((user.account as { pendingInvitation?: boolean }).pendingInvitation).toBe(false);
-    // 4) MFA + trustedDevices + backupCodes NOT enrolled via the strip-list.
+    // 4) MFA + trustedDevices NOT enrolled via the strip-list.
     expect((user.mfa as { enabled?: boolean })?.enabled).toBeFalsy();
     expect(user.trustedDevices ?? []).toEqual([]);
-    expect(user.backupCodes ?? []).toEqual([]);
     // 5) Legitimate profile fields still flowed through — the strip is
     //    targeted, not a blanket drop.
     expect(user.firstName).toBe("Pat");

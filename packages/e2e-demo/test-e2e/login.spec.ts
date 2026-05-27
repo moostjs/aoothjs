@@ -16,7 +16,6 @@ import { expect, test } from "@playwright/test";
 import {
   clickAction,
   fillField,
-  getBackupCodes,
   getEmails,
   getSms,
   readFinishEnvelope,
@@ -135,7 +134,7 @@ test.describe("LoginWorkflow / variant=mfa-full (multi-method)", () => {
   // returns `[]` even after a workflow step forwards a code through
   // `forwardDeliver`, so we can't retrieve the OTP to submit. The
   // `useDifferentMethod` round-trip itself works (resumes Select2faForm).
-  test("WF-LOGIN-007: t1_multi_mfa → MfaCodeForm (default TOTP) with all alt-actions visible", async ({
+  test("WF-LOGIN-007: t1_multi_mfa → MfaCodeForm (default TOTP) with useDifferentMethod visible", async ({
     page,
   }) => {
     await page.goto(wfUrl(LOGIN_WF, "mfa-full"));
@@ -147,11 +146,9 @@ test.describe("LoginWorkflow / variant=mfa-full (multi-method)", () => {
     await waitForFormInput(page, "code");
     await expect(page.getByText(/Enter the current 6-digit code/i)).toBeVisible();
 
-    // count=3 → `useDifferentMethod` visible, `useBackupCode` visible
-    // (mfa.backupCodes: true on the variant). These two render-checks are the
+    // count=3 → `useDifferentMethod` visible. This render-check is the
     // P0 contract for this variant.
     await expect(page.getByRole("button", { name: "Use a different method" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Use backup code" })).toBeVisible();
   });
 
   test("WF-LOGIN-007b: useDifferentMethod → Select2faForm → SMS → PincodeForm → tokens", async ({
@@ -574,36 +571,6 @@ test.describe("LoginWorkflow / variant=mfa-full (P1)", () => {
     const last = afterEmails[afterEmails.length - 1];
     expect(last?.code).toBeTruthy();
     expect(last?.code).not.toBe(first.code);
-  });
-});
-
-test.describe("LoginWorkflow / variant=mfa-totp (P1)", () => {
-  // BRANCH: MfaCodeForm `useBackupCode` action → workflow sets
-  // `ctx.usingBackupCode=true`, pauses on BackupCodeForm. The follow-up
-  // submission carries no action label, but the ctx flag persists across
-  // the pause so the mfa-totp step routes to `handleBackupCode` which
-  // validates against the alphanumeric+hyphen pattern + consumes the code.
-  test("WF-LOGIN-010: t1_kate uses backup code → tokens", async ({ page, request }) => {
-    const codes = await getBackupCodes(request, USERS.kate.username);
-    expect(codes.length).toBeGreaterThan(0);
-    const code = codes[0];
-
-    await page.goto(wfUrl(LOGIN_WF, "mfa-totp"));
-    await fillField(page, "username", USERS.kate.username);
-    await fillField(page, "password", USERS.kate.password);
-    await page.getByRole("button", { name: "Sign in", exact: true }).click();
-
-    await waitForFormInput(page, "code");
-    await page.getByRole("button", { name: "Use backup code" }).click();
-    // Wait specifically for `BackupCodeForm` — its label is "Backup code"
-    // (MfaCodeForm uses "Verification code"). Without this the test races
-    // between MfaCodeForm dismount and BackupCodeForm mount.
-    await expect(page.locator(".as-field-label", { hasText: "Backup code" })).toBeVisible();
-    await fillField(page, "code", code);
-    await submitForm(page);
-
-    const envelope = (await readFinishEnvelope(page)) as { data?: { accessToken?: string } };
-    expect(typeof envelope.data?.accessToken).toBe("string");
   });
 });
 
@@ -1085,30 +1052,6 @@ test.describe("LoginWorkflow / variant=mfa-totp (P2)", () => {
     // Form re-rendered, not finished — code field is still present.
     await expect(page.locator('[name="code"]').first()).toBeVisible();
     await expect(page.getByText("Workflow finished")).toHaveCount(0);
-  });
-});
-
-test.describe("LoginWorkflow / variant=mfa-no-backup (P2)", () => {
-  // BRANCH: MfaCodeForm `useBackupCode` action is gated by
-  // `@ui.form.fn.hidden '(_, _d, ctx) => !ctx.mfaBackupCodes'`. The login
-  // workflow mirrors `opts.mfa.backupCodes` onto `ctx.mfaBackupCodes` in
-  // `prepareMfaOptions` (login.workflow.ts L821) and `mfaBackupCodes` is
-  // declared `@wf.context.pass` on the form — so the SPA renderer sees
-  // `false` and hides the button. Same DOM-slot-but-not-visible contract as
-  // WF-LOGIN-019.
-  test("WF-LOGIN-014: mfa.backupCodes=false → 'Use backup code' not visible", async ({ page }) => {
-    await page.goto(wfUrl(LOGIN_WF, "mfa-no-backup"));
-    await fillField(page, "username", USERS.grace.username);
-    await fillField(page, "password", USERS.grace.password);
-    await page.getByRole("button", { name: "Sign in", exact: true }).click();
-
-    await waitForFormInput(page, "code");
-    // Sanity: TOTP form was reached (the `Verify` submit button is here).
-    await expect(page.getByRole("button", { name: "Verify", exact: true })).toBeVisible();
-    // The contract: the alt-action button MUST NOT be visible to the user.
-    // atscript-ui may keep the slot in the DOM, but the visible state must
-    // be off — same not-visible pattern as WF-LOGIN-019.
-    await expect(page.getByRole("button", { name: "Use backup code" })).not.toBeVisible();
   });
 });
 

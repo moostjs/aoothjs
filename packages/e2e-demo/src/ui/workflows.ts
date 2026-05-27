@@ -38,12 +38,6 @@ const LOGIN_USERS: ReadonlyArray<TestCred> = [
       "SMS-OTP MFA. Pincode goes to the demo SMS sender — watch the server log for `[demo SMS] login.pincode +15555550101 …`.",
   },
   {
-    username: "t1_kate",
-    password: PWD,
-    notes:
-      "TOTP MFA + 10 backup codes. Plaintext codes are logged to the dev console at seed time; pick action `useBackupCode` on the MFA step.",
-  },
-  {
     username: "t1_jack",
     password: PWD,
     notes:

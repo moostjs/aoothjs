@@ -814,12 +814,6 @@ function buildHarnessLoginClass(deps: HarnessLoginDeps): new (...args: never[]) 
       if (policy?.guards) return policy.guards;
       return super.resolveGuards(ctx);
     }
-    protected override resolveMfaConfig(
-      ctx: LoginWfCtx,
-    ): NonNullable<LoginWfCtx["mfaConfig"]> | Promise<NonNullable<LoginWfCtx["mfaConfig"]>> {
-      if (policy?.mfaConfig) return policy.mfaConfig;
-      return super.resolveMfaConfig(ctx);
-    }
     protected override resolveSessionPolicy(
       ctx: LoginWfCtx,
     ):

@@ -55,7 +55,6 @@ export {
   generateMfaCode,
 } from "./mfa/totp";
 export { hashMfaCode, verifyMfaCode } from "./mfa/codes";
-export { generateBackupCodePlaintext } from "./mfa/backup-codes";
 
 // Utilities
 export { maskEmail, maskPhone, maskMfaValue, setAtPath } from "./utils";

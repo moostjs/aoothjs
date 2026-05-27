@@ -141,9 +141,6 @@ export interface LoginWfCtx extends AuthWfCtxBase {
     passwordExpiry: boolean;
     emailVerifiedRequired: boolean;
   };
-  mfaConfig?: {
-    backupCodes: boolean;
-  };
   sessionPolicy?: {
     concurrencyLimit?: ConcurrencyLimitOptions;
   };
@@ -201,19 +198,10 @@ export interface LoginWfCtx extends AuthWfCtxBase {
   mfaSaveAsDefault?: boolean;
   ignoreMfaDefault?: boolean;
   mfaChecked?: boolean;
-  /**
-   * Set true the first time the user picks `useBackupCode` on the MFA step,
-   * so the workflow remembers to route the subsequent `BackupCodeForm`
-   * submission (which carries no `action`) through `handleBackupCode` instead
-   * of falling through to `verifyMfa` / pincode-verify.
-   */
-  usingBackupCode?: boolean;
   /** Counter incremented by the `risk-step-up` step so MFA reruns for the extra factor. */
   mfaRunsRemaining?: number;
   /** Mirror of `mfaEnrolledMethods.length`. Passed to client forms via `@wf.context.pass` so action buttons (`useDifferentMethod`) can hide when only one method exists. */
   mfaMethodCount?: number;
-  /** Mirror of `opts.mfa.backupCodes`. Passed to client forms so `useBackupCode` can hide when backup codes are disabled. */
-  mfaBackupCodes?: boolean;
 
   // Alternate-credentials flags mirrored from `opts.alternateCredentials` for `@ui.form.fn.hidden`:
   altForgotPassword?: boolean;
@@ -342,7 +330,6 @@ export interface LoginPolicyOverrides {
   enrollment?: NonNullable<LoginWfCtx["enrollment"]>;
   finalize?: NonNullable<LoginWfCtx["finalize"]>;
   guards?: NonNullable<LoginWfCtx["guards"]>;
-  mfaConfig?: NonNullable<LoginWfCtx["mfaConfig"]>;
   sessionPolicy?: NonNullable<LoginWfCtx["sessionPolicy"]>;
 }
 
@@ -372,9 +359,9 @@ type AltHandled = typeof ALT_HANDLED;
 /**
  * Read a single field from the raw wf input envelope (`wfState.input().formData`)
  * without validating against any form schema. Used by alt-action handlers that
- * carry a payload field outside the current step's form (e.g. a backup `code`
- * posted alongside `select2fa`, or the typed `username` read on a
- * `forgotPassword` click before the password is filled in).
+ * carry a payload field outside the current step's form (e.g. the typed
+ * `username` read on a `forgotPassword` click before the password is filled
+ * in).
  */
 function getInputField<T = string>(name: string): T | undefined {
   return useWfState().input<{ formData?: Record<string, T> }>()?.formData?.[name];
@@ -641,19 +628,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
   }
 
   /**
-   * Resolve the MFA config (currently only backup-codes availability — pincode
-   * timings stay on `this.opts.mfa` as infrastructure). Override to enable or
-   * disable backup-code redemption per tenant. Sync/async friendly.
-   */
-  protected resolveMfaConfig(
-    _ctx: LoginWfCtx,
-  ): NonNullable<LoginWfCtx["mfaConfig"]> | Promise<NonNullable<LoginWfCtx["mfaConfig"]>> {
-    return {
-      backupCodes: true,
-    };
-  }
-
-  /**
    * Resolve the disclosure text rendered beneath the channel input field on
    * `AskEmailForm` / `AskPhoneForm` at ask-time — BEFORE the user submits
    * their email/phone. Default returns a TCPA / PECR / CASL / GDPR-safe
@@ -781,19 +755,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
     return undefined;
   }
 
-  @Step("prepare-mfa-config")
-  prepareMfaConfig(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
-    const result = this.resolveMfaConfig(ctx);
-    if (result instanceof Promise) {
-      return result.then((resolved) => {
-        ctx.mfaConfig = resolved;
-        return undefined;
-      });
-    }
-    ctx.mfaConfig = result;
-    return undefined;
-  }
-
   @Step("prepare-session-policy")
   prepareSessionPolicy(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
     const result = this.resolveSessionPolicy(ctx);
@@ -857,7 +818,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
     { id: "prepare-enrollment" },
     { id: "prepare-finalize" },
     { id: "prepare-guards" },
-    { id: "prepare-mfa-config" },
     { id: "prepare-session-policy" },
 
     // Phase 1 alt-cred paths — stubs registered for override; never executed.
@@ -1413,11 +1373,10 @@ export class LoginWorkflow extends AuthWorkflowBase {
   /**
    * Load + summarise the user's enrolled MFA methods (filtered against
    * `ctx.availableMfaTransports`) and mirror the form-gating flags
-   * (`mfaMethodCount`, `mfaBackupCodes`, `deviceTrustOptIn`) onto ctx. Pure
-   * data-load — no selection decision. Split out of the old
-   * `prepare-mfa-options` step so consumers can override the load/summary
-   * shape (custom MFA inventory source) without copying the selection
-   * heuristics in `selectMfaMethod`.
+   * (`mfaMethodCount`, `deviceTrustOptIn`) onto ctx. Pure data-load — no
+   * selection decision. Split out of the old `prepare-mfa-options` step so
+   * consumers can override the load/summary shape (custom MFA inventory
+   * source) without copying the selection heuristics in `selectMfaMethod`.
    */
   @Step("load-enrolled-mfa-methods")
   async loadEnrolledMfaMethods(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
@@ -1440,10 +1399,9 @@ export class LoginWorkflow extends AuthWorkflowBase {
         };
       });
     ctx.mfaEnrolledMethods = summary;
-    // Mirror count + backup-code flag into ctx so MFA forms can hide
-    // `useDifferentMethod` / `useBackupCode` buttons when not applicable.
+    // Mirror count into ctx so MFA forms can hide `useDifferentMethod` when
+    // only one method exists.
     ctx.mfaMethodCount = summary.length;
-    ctx.mfaBackupCodes = !!ctx.mfaConfig?.backupCodes;
     // Mirror so `PincodeForm` can hide `rememberDevice` when the consumer
     // doesn't ask the user to opt in (skipsMfa auto-trusts the device).
     ctx.deviceTrustOptIn = !!(ctx.deviceTrust?.enabled && ctx.deviceTrust?.optIn);
@@ -1494,18 +1452,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
   @Step("select-2fa")
   async select2fa(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
     const wf = useAtscriptWf(this.opts.forms.select2fa);
-    const action = wf.resolveAction();
-    if (ctx.usingBackupCode && ctx.mfaConfig?.backupCodes) {
-      const code = getInputField("code");
-      return this.handleBackupCode(code ? { code } : undefined, ctx);
-    }
-    if (action === "useBackupCode" && ctx.mfaConfig?.backupCodes) {
-      // Peek raw input for the backup `code` field — it lives outside the
-      // select2fa form schema, so we read the envelope directly.
-      ctx.usingBackupCode = true;
-      const code = getInputField("code");
-      return this.handleBackupCode(code ? { code } : undefined, ctx);
-    }
     const input = wf.resolveInput() as { methodName: string; saveAsDefault?: boolean };
     const picked = (ctx.mfaEnrolledMethods ?? []).find((m) => m.methodName === input.methodName);
     if (!picked) {
@@ -1599,18 +1545,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
       delete ctx.pinExpire;
       return undefined;
     }
-    if (ctx.usingBackupCode && ctx.mfaConfig?.backupCodes) {
-      const code = getInputField("code");
-      return this.handleBackupCode(code ? { code } : undefined, ctx);
-    }
-    if (action === "useBackupCode" && ctx.mfaConfig?.backupCodes) {
-      // First click → no `code` field → handleBackupCode pauses for the form.
-      // Resume with the backup code populated → handleBackupCode validates and
-      // consumes. The presence of `code` is the toggle.
-      ctx.usingBackupCode = true;
-      const code = getInputField("code");
-      return this.handleBackupCode(code ? { code } : undefined, ctx);
-    }
     const input = wf.resolveInput() as { code: string; rememberDevice?: boolean };
     const pinErr = this.verifyPin(ctx, input.code);
     if (pinErr) throw wf.requireInput({ errors: pinErr });
@@ -1631,15 +1565,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
       ctx.ignoreMfaDefault = true;
       delete ctx.mfaMethod;
       return undefined;
-    }
-    if (ctx.usingBackupCode && ctx.mfaConfig?.backupCodes) {
-      const code = getInputField("code");
-      return this.handleBackupCode(code ? { code } : undefined, ctx);
-    }
-    if (action === "useBackupCode" && ctx.mfaConfig?.backupCodes) {
-      ctx.usingBackupCode = true;
-      const code = getInputField("code");
-      return this.handleBackupCode(code ? { code } : undefined, ctx);
     }
     const input = wf.resolveInput() as { code: string; rememberDevice?: boolean };
     this.requireUsername(ctx);
@@ -1671,33 +1596,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
       }
       throw err;
     }
-    return undefined;
-  }
-
-  /**
-   * Backup-code alt-action handler shared by `select2fa`, `pincode-check-login`,
-   * and `mfa-totp`. Validates against `BackupCodeForm` (alphanumeric +
-   * hyphen-grouped — `MfaCodeForm` is digits-only and rejects backup codes
-   * produced by `UserService.generateBackupCodes`).
-   */
-  private async handleBackupCode(
-    input: { code?: string } | undefined,
-    ctx: LoginWfCtx,
-  ): Promise<unknown> {
-    const wf = useAtscriptWf(this.opts.forms.backupCode);
-    // First click → caller passes `undefined` → pause for the form.
-    if (!input) throw wf.requireInput();
-    // Resume click — re-validate against BackupCodeForm's pattern. The caller
-    // already extracted `code` from the raw envelope; resolveInput re-reads
-    // it from the same envelope and enforces the alphanumeric+hyphen rule.
-    const validated = wf.resolveInput() as { code: string };
-    this.requireUsername(ctx);
-    const ok = await this.withStoreErrorTranslation(() =>
-      this.users.consumeBackupCode(ctx.username, validated.code),
-    );
-    if (!ok) throw wf.requireInput({ errors: { code: "Invalid backup code" } });
-    ctx.mfaChecked = true;
-    ctx.riskStepUpEvaluated = false;
     return undefined;
   }
 

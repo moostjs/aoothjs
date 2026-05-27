@@ -14,7 +14,6 @@ import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import {
   AskEmailForm,
   AskPhoneForm,
-  BackupCodeForm,
   ConcurrencyLimitForm,
   EnrollAddressForm,
   EnrollConfirmForm,
@@ -57,7 +56,6 @@ export interface LoginWorkflowOpts {
   forms?: {
     askEmail?: TAtscriptAnnotatedType;
     askPhone?: TAtscriptAnnotatedType;
-    backupCode?: TAtscriptAnnotatedType;
     concurrencyLimit?: TAtscriptAnnotatedType;
     enrollAddress?: TAtscriptAnnotatedType;
     enrollConfirm?: TAtscriptAnnotatedType;
@@ -86,7 +84,6 @@ export interface ResolvedLoginWorkflowOpts {
   forms: {
     askEmail: TAtscriptAnnotatedType;
     askPhone: TAtscriptAnnotatedType;
-    backupCode: TAtscriptAnnotatedType;
     concurrencyLimit: TAtscriptAnnotatedType;
     enrollAddress: TAtscriptAnnotatedType;
     enrollConfirm: TAtscriptAnnotatedType;
@@ -117,7 +114,6 @@ export function mergeLoginOpts(opts: LoginWorkflowOpts = {}): ResolvedLoginWorkf
     forms: {
       askEmail: AskEmailForm as unknown as TAtscriptAnnotatedType,
       askPhone: AskPhoneForm as unknown as TAtscriptAnnotatedType,
-      backupCode: BackupCodeForm as unknown as TAtscriptAnnotatedType,
       concurrencyLimit: ConcurrencyLimitForm as unknown as TAtscriptAnnotatedType,
       enrollAddress: EnrollAddressForm as unknown as TAtscriptAnnotatedType,
       enrollConfirm: EnrollConfirmForm as unknown as TAtscriptAnnotatedType,

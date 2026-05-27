@@ -35,13 +35,6 @@ export interface TestMailboxDeps {
    */
   userService: UserService;
   /**
-   * Plaintext backup-code buffer keyed by username — backup codes are
-   * randomized per seed and only known at generation time (the stored form is
-   * hashed), so the seed pushes the plaintext into this map and the
-   * `/__test/backup-codes/:username` endpoint reads it.
-   */
-  backupCodes: Map<string, string[]>;
-  /**
    * Captured `RecoveryWorkflow.audit(event)` payloads. The demo's recovery
    * subclass pushes here; `/__test/audit` returns the array; `__test/reset`
    * clears it via `length = 0`.
@@ -77,8 +70,7 @@ export interface TestMailboxDeps {
 export function createTestMailboxController(
   deps: TestMailboxDeps,
 ): new (...args: never[]) => unknown {
-  const { emails, sms, reseed, userService, backupCodes, auditEvents, consentLog, otpConsentLog } =
-    deps;
+  const { emails, sms, reseed, userService, auditEvents, consentLog, otpConsentLog } = deps;
 
   // `@Public()` bypasses the global auth guard — these endpoints are the
   // entry point used BY tests, before any login has happened.
@@ -147,16 +139,6 @@ export function createTestMailboxController(
       const method = user.mfa.methods.find((m) => m.name === "totp" && m.confirmed);
       if (!method) throw new Error(`No confirmed TOTP method for ${username}`);
       return { secret: method.value };
-    }
-
-    /**
-     * Returns the plaintext backup codes generated for `:username` at seed
-     * time. Stored codes are hashed (one-way), so the seed pushes the
-     * plaintext list into a globalThis-anchored map; this endpoint reads it.
-     */
-    @Get("backup-codes/:username")
-    backupCodesFor(@Param("username") username: string): { codes: string[] } {
-      return { codes: backupCodes.get(username) ?? [] };
     }
 
     /**

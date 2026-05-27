@@ -99,7 +99,6 @@ export interface LoginCredentialsForm {
 @wf.context.pass 'mfaMethod'
 @wf.context.pass 'pinSentTo'
 @wf.context.pass 'mfaMethodCount'
-@wf.context.pass 'mfaBackupCodes'
 @ui.form.submit.text 'Verify'
 export interface MfaCodeForm {
     @ui.form.fn.value '(_, _d, ctx) => ctx.mfaMethod === "totp" ? "Enter the current 6-digit code from your authenticator app." : ctx.mfaMethod ? "Code sent to " + (ctx.pinSentTo || "your " + ctx.mfaMethod) + " — check the dev server console for the code." : "Enter your verification code."'
@@ -117,31 +116,6 @@ export interface MfaCodeForm {
     @ui.form.action 'useDifferentMethod', 'Use a different method'
     @ui.form.fn.hidden '(_, _d, ctx) => (ctx.mfaMethodCount ?? 0) < 2'
     useDifferentMethod?: ui.action
-
-    @ui.form.action 'useBackupCode', 'Use backup code'
-    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.mfaBackupCodes'
-    useBackupCode?: ui.action
-}
-
-/**
- * Backup-code form (alphanumeric, hyphen-grouped — e.g. `XXXX-XXXX-XX`).
- *
- * `UserService.generateBackupCodes` uses a 31-character alphabet (uppercase
- * letters minus I/O/L, digits minus 0/1) formatted with hyphens between groups
- * of 4 — the regex below mirrors that shape. Kept separate from
- * `MfaCodeForm` so TOTP entry stays strict-digits.
- */
-@meta.label 'Enter a backup code'
-@meta.description 'Type one of the single-use backup codes you saved when MFA was set up.'
-export interface BackupCodeForm {
-    @ui.form.type 'text'
-    @meta.label 'Backup code'
-    @ui.form.autocomplete 'one-time-code'
-    @meta.required
-    @expect.minLength 4
-    @expect.maxLength 32
-    @expect.pattern '^[A-Z2-9-]+$'
-    code: string
 }
 
 /**
@@ -318,7 +292,6 @@ export interface InviteForm {
  */
 @meta.label 'Choose a verification method'
 @meta.description 'Pick how you would like to verify your identity.'
-@wf.context.pass 'mfaBackupCodes'
 @wf.context.pass 'mfaEnrolledMethods'
 export interface Select2faForm {
     @ui.form.order 10
@@ -332,10 +305,6 @@ export interface Select2faForm {
     @meta.label 'Save as default'
     @meta.default 'false'
     saveAsDefault: boolean
-
-    @ui.form.action 'useBackupCode', 'Use backup code'
-    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.mfaBackupCodes'
-    useBackupCode?: ui.action
 }
 
 /**
@@ -353,7 +322,6 @@ export interface Select2faForm {
 @wf.context.pass 'mfaMethod'
 @wf.context.pass 'pinSentTo'
 @wf.context.pass 'mfaMethodCount'
-@wf.context.pass 'mfaBackupCodes'
 @wf.context.pass 'deviceTrustOptIn'
 @wf.context.pass 'recoveryTransportCount'
 @ui.form.submit.text 'Verify'
@@ -382,10 +350,6 @@ export interface PincodeForm {
     @ui.form.action 'useDifferentMethod', 'Use a different method'
     @ui.form.fn.hidden '(_, _d, ctx) => (ctx.mfaMethodCount ?? 0) < 2'
     useDifferentMethod?: ui.action
-
-    @ui.form.action 'useBackupCode', 'Use backup code'
-    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.mfaBackupCodes'
-    useBackupCode?: ui.action
 
     @ui.form.action 'backToLogin', 'Back to sign-in'
     backToLogin?: ui.action

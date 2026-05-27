@@ -254,7 +254,6 @@ export const RESERVED_USER_KEYS: ReadonlySet<string> = new Set<string>([
   "passwordHistory",
   "mfa",
   "trustedDevices",
-  "backupCodes",
   "pendingInvitation",
 ]);
 
@@ -393,9 +392,9 @@ export class AuthWorkflowBase {
 
   /**
    * Wrap an `UserStore` mutation that can race (`withCas`-backed paths:
-   * `consumeBackupCode`, `addMfaMethod`, `confirmMfaMethod`, `addTrustedDevice`)
-   * so a CAS retry-budget exhaustion surfaces as 409 Conflict — the canonical
-   * OCC status — rather than bubbling to the moost default 500. Client SHOULD
+   * `addMfaMethod`, `confirmMfaMethod`, `addTrustedDevice`) so a CAS
+   * retry-budget exhaustion surfaces as 409 Conflict — the canonical OCC
+   * status — rather than bubbling to the moost default 500. Client SHOULD
    * retry; a 500 falsely implies the server is broken. Other `UserAuthError`
    * shapes pass through unchanged so step-local catch blocks (e.g. ALREADY_EXISTS
    * → 409 with a different reason) still see them.

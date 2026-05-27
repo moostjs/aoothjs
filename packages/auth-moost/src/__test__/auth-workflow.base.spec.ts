@@ -50,9 +50,9 @@ function makeWf(): {
 
 describe("AuthWorkflowBase.withStoreErrorTranslation", () => {
   it("maps UserAuthError('CAS_EXHAUSTED') → HttpError(409) so OCC retry budget exhaustion surfaces as Conflict, not 500", async () => {
-    // WHY: the four wire-facing withCas-backed paths (consumeBackupCode,
-    // addMfaMethod, confirmMfaMethod, addTrustedDevice — plus verifyMfa for
-    // TOTP-replay defense) can race under concurrent legitimate use.
+    // WHY: the wire-facing withCas-backed paths (addMfaMethod,
+    // confirmMfaMethod, addTrustedDevice — plus verifyMfa for TOTP-replay
+    // defense) can race under concurrent legitimate use.
     // Without this translation a CAS-exhausted retry would bubble to moost's
     // default 500, falsely signalling a broken server — clients SHOULD retry
     // on 409.

@@ -83,26 +83,10 @@ export function totp(secret: string): string {
 }
 
 /**
- * Fetch the plaintext backup codes seeded for `username` (only `t1_kate` has
- * them in the current seed). Returns the codes in seed order — pick `[0]` for
- * a first-use submission, later indices to exercise re-use rejection.
- */
-export async function getBackupCodes(
-  request: APIRequestContext,
-  username: string,
-): Promise<string[]> {
-  const res = await request.get(`/__test/backup-codes/${username}`);
-  expect(res.status()).toBe(200);
-  const { codes } = (await res.json()) as { codes: string[] };
-  return codes;
-}
-
-/**
  * Per-test seed metadata. The `__test/reset` log surfaces the TOTP secrets
- * for t1_grace, t1_kate, t1_multi_mfa each time the demo seeds; these
- * change on every boot. Tests that need TOTP read the secret from the seed
- * log (the dev terminal) OR — preferred — call the workflow's "use backup
- * code" alt-action which doesn't need TOTP arithmetic.
+ * for t1_grace, t1_multi_mfa each time the demo seeds; these change on every
+ * boot. Tests that need TOTP read the secret from the seed log (the dev
+ * terminal).
  *
  * For now we hard-code well-known TEST usernames and passwords; secrets are
  * fetched ad-hoc per spec.
@@ -115,7 +99,6 @@ export const USERS = {
   iris: { username: "t1_iris", password: "Password1!" }, // full-variant walkthrough (WF-LOGIN-032)
   ivy: { username: "t1_ivy", password: "Password1!" }, // single SMS-OTP
   jack: { username: "t1_jack", password: "Password1!" }, // passwordInitial
-  kate: { username: "t1_kate", password: "Password1!" }, // TOTP + backup codes
   multi_mfa: { username: "t1_multi_mfa", password: "Password1!" }, // email + sms + totp
   locked: { username: "t1_locked", password: "Password1!" },
   pending: { username: "t1_pending", password: "Password1!" }, // pendingInvitation=true

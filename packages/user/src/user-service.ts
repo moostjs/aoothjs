@@ -1,8 +1,6 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 import { UserAuthError } from "./errors";
-import { generateBackupCodePlaintext } from "./mfa/backup-codes";
-import { hashMfaCode, verifyMfaCode } from "./mfa/codes";
 import { verifyTotpCode } from "./mfa/totp";
 import { PasswordHasher } from "./password/hasher";
 import { normalizePolicies, PasswordPolicy } from "./password/policy";
@@ -381,53 +379,6 @@ export class UserService<T extends object = object> {
         isDefault: mfa.defaultMethod === m.name,
         masked: maskMfaValue(m),
       }));
-  }
-
-  /**
-   * Generate `count` plaintext backup codes (default 10), persist their
-   * hashes (replacing any existing batch), and return the plaintext codes
-   * once for the caller to deliver to the user. Plaintext is never
-   * recoverable after this call returns.
-   *
-   * Throws `UserAuthError("NOT_FOUND")` if the user does not exist.
-   */
-  async generateBackupCodes(username: string, count = 10): Promise<string[]> {
-    const codes = generateBackupCodePlaintext(count);
-    const hashes = codes.map(hashMfaCode);
-    const found = await this.store.update(username, {
-      set: { backupCodes: hashes } as DeepPartial<UserCredentials>,
-    });
-    if (!found) throw new UserAuthError("NOT_FOUND");
-    return codes;
-  }
-
-  /**
-   * Consume a backup code: returns `true` and removes the matching hash
-   * from storage if `code` matches a stored backup code; returns `false`
-   * if no match (without modifying storage). Single-use is enforced by
-   * optimistic-concurrency CAS on the version column — concurrent consumes
-   * of the same code race fairly and only one wins; the loser re-reads,
-   * finds the hash already removed, and returns `false`.
-   *
-   * Throws `UserAuthError("NOT_FOUND")` if the user does not exist.
-   * Throws `UserAuthError("CAS_EXHAUSTED")` if retries are saturated.
-   */
-  async consumeBackupCode(username: string, code: string): Promise<boolean> {
-    let consumed = false;
-    await this.store.withCas(username, (user) => {
-      const hashes = user.backupCodes ?? [];
-      const idx = hashes.findIndex((h) => verifyMfaCode(code, h));
-      if (idx < 0) {
-        // Reset across retries: previous attempt may have set true before CAS miss;
-        // if the competing writer consumed this code, we now correctly report false.
-        consumed = false;
-        return null;
-      }
-      consumed = true;
-      const remaining = hashes.filter((_, i) => i !== idx);
-      return { set: { backupCodes: remaining } as DeepPartial<UserCredentials> };
-    });
-    return consumed;
   }
 
   /**

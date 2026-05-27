@@ -119,10 +119,11 @@ export class UsersStoreAtscriptDb<
    * Inline retry loop rather than delegating to @atscript/db's
    * `withOptimisticRetry`: that helper expects the mutator to always return a
    * patch object, but our contract lets the mutator return `null` (the
-   * race-loser detects nothing to do — see `UserService.consumeBackupCode`).
-   * Bridging would need a sentinel exception. The version-bump + $cas
-   * atomicity still happen at the atscript-db table layer via the
-   * `expectedVersion` we thread through `update()`.
+   * race-loser detects nothing to do — used by callers whose mutator opts
+   * out of a write after re-reading state). Bridging would need a sentinel
+   * exception. The version-bump + $cas atomicity still happen at the
+   * atscript-db table layer via the `expectedVersion` we thread through
+   * `update()`.
    */
   async withCas(
     username: string,

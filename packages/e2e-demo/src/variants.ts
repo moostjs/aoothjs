@@ -14,8 +14,8 @@
  * `InviteWorkflowOpts`. Those values now live on ctx (populated by atomic
  * `@Step` setters) — variants that previously poked `mfa.mode` /
  * `mfa.transports` via opts now declare them under `mfaCtx`, applied by the
- * setter overrides on `DemoLoginWorkflow`. Other `mfa.*` keys
- * (`backupCodes`, `pincodeResendTimeoutMs`, …) remain on `opts.mfa`.
+ * setter overrides on `DemoLoginWorkflow`. The shared `AuthOpts` provider
+ * holds cross-workflow MFA infrastructure (`pincodeResendTimeoutMs`, …).
  */
 import type {
   InvitePolicyOverrides,
@@ -149,11 +149,9 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
     mfaCtx: { mfaMode: "disabled" },
   },
   "mfa-totp": {
-    policy: { mfaConfig: { backupCodes: true } },
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["totp"] },
   },
   "mfa-full": {
-    policy: { mfaConfig: { backupCodes: true } },
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["sms", "email", "totp"] },
   },
   enrollment: {
@@ -223,7 +221,6 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
       },
       guards: { passwordInitial: true, emailVerifiedRequired: true, passwordExpiry: true },
       enrollment: { ensureEmail: true, ensurePhone: true },
-      mfaConfig: { backupCodes: true },
       deviceTrust: { enabled: true, optIn: true, skipsMfa: true },
       // Phase 5/6 reshape — the consent half moved to `DemoConsentStore.getPendingConsents`
       // (see `VARIANT_PENDING_CONSENTS['full']` in `app.ts`); `profileCompleteRequired`
@@ -244,7 +241,6 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
   // `DemoLoginWorkflow`'s ctor; the workflow then reads `this.authOpts.mfa.pincodeResendTimeoutMs`).
   "mfa-fast-resend": {
     authOpts: { mfa: { pincodeResendTimeoutMs: 1000 } },
-    policy: { mfaConfig: { backupCodes: true } },
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["sms", "email", "totp"] },
   },
   // Like `device-trust` but with `optIn: false` so the workflow does NOT render
@@ -252,12 +248,6 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
   "device-trust-no-optin": {
     policy: { deviceTrust: { enabled: true, optIn: false, skipsMfa: true } },
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["email"] },
-  },
-  // Like `mfa-totp` but `backupCodes: false` so the `useBackupCode` alt-action
-  // MUST be hidden on the MFA forms (WF-LOGIN-014).
-  "mfa-no-backup": {
-    policy: { mfaConfig: { backupCodes: false } },
-    mfaCtx: { mfaMode: "optional", availableMfaTransports: ["totp"] },
   },
   // 1ms TTL so the cookie minted on the first login is already past `exp`
   // by the time the second login resumes (WF-LOGIN-020). MFA email forces the

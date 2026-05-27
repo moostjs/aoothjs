@@ -13,12 +13,6 @@ export interface UserCredentials {
   account: AccountData;
   mfa: MfaData;
   /**
-   * Hashed backup codes (SHA-256, hex-encoded). Generated via
-   * `UserService.generateBackupCodes`. Undefined when the user has not
-   * enrolled backup codes; an empty array means all codes were consumed.
-   */
-  backupCodes?: string[];
-  /**
    * Persisted device-trust records ("remember this device, skip MFA next
    * time"). Managed by `UserService.{issue,add,verify,revoke,list}TrustedDevice`.
    * Absent when the user has never opted in.
