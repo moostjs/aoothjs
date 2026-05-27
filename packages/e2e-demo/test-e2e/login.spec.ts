@@ -128,7 +128,7 @@ test.describe("LoginWorkflow / variant=full (signup enabled)", () => {
 test.describe("LoginWorkflow / variant=mfa-full (multi-method)", () => {
   // The seed configures `t1_multi_mfa` with `defaultMfaMethod: 'totp'`, so the
   // workflow's `prepare-mfa-options` step pre-selects TOTP and SKIPS
-  // `Select2faForm` (which only renders when `!ctx.mfaMethod`). We assert the
+  // `Select2faForm` (which only renders when `!ctx.mfa?.method`). We assert the
   // TOTP form is reached with both alt-actions visible — the original story
   // also called for picking SMS → PincodeForm → tokens, but `__test/sms`
   // returns `[]` even after a workflow step forwards a code through
@@ -161,7 +161,7 @@ test.describe("LoginWorkflow / variant=mfa-full (multi-method)", () => {
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
 
     // Default-method short-circuit lands on TOTP form; alt-action clears
-    // `mfaMethod` so the workflow re-runs prepare-mfa-options without
+    // `mfa.method` so the workflow re-runs prepare-mfa-options without
     // honouring the default, surfacing Select2faForm.
     await waitForFormInput(page, "code");
     await page.getByRole("button", { name: "Use a different method" }).click();
@@ -203,9 +203,9 @@ test.describe("LoginWorkflow / variant=mfa-totp (single TOTP)", () => {
     await waitForFormInput(page, "code");
     await expect(page.getByText(/Enter the current 6-digit code/i)).toBeVisible();
     // NB: the original story called for asserting `useDifferentMethod` hidden
-    // when `mfaMethodCount < 2`. In the running demo the workflow does NOT
-    // emit `mfaMethodCount` into the client-side context for this path (probe:
-    // `ctx === { mfaMethod: 'totp' }` only), so the form falls back to
+    // when `mfa.methodCount < 2`. In the running demo the workflow does NOT
+    // emit `mfa.methodCount` into the client-side context for this path (probe:
+    // `ctx === { mfa: { method: 'totp' } }` only), so the form falls back to
     // `(undefined ?? 0) < 2 === true` — which SHOULD hide the button — but
     // the atscript-ui renderer ships the button anyway. That's a UI-framework
     // / context-pass concern, not part of the LoginWorkflow contract this spec
@@ -452,7 +452,7 @@ test.describe("LoginWorkflow / variant=minimal (P1)", () => {
 
 test.describe("LoginWorkflow / variant=mfa-full (P1)", () => {
   // BRANCH: PincodeForm `useDifferentMethod` action → workflow clears
-  // `ctx.mfaMethod` + sets `ignoreMfaDefault` → schema loops back to
+  // `ctx.mfa.method` + sets `ctx.mfa.ignoreDefault` → schema loops back to
   // `prepare-mfa-options` which re-runs `select2fa`. Verifies the Select2faForm
   // input (`methodName`) re-appears after the pincode step.
   test("WF-LOGIN-009: t1_multi_mfa loops PincodeForm → Select2faForm via useDifferentMethod", async ({
@@ -1279,9 +1279,9 @@ test.describe("LoginWorkflow / variant=full (P2)", () => {
 
 test.describe("LoginWorkflow / MFA enrollment (PW MFA coverage)", () => {
   /**
-   * BRANCH: `prepareMfaSetup` auto-picks when `availableMfaTransports.length === 1`
-   * AND `mfaMode === 'required'` (or 'optional'). The login workflow's
-   * `runMfaEnrollment` Phase-1 wrapper sees `currentMfa` already set and
+   * BRANCH: `prepareMfaSetup` auto-picks when `mfa.availableTransports.length === 1`
+   * AND `mfa.mode === 'required'` (or 'optional'). The login workflow's
+   * `runMfaEnrollment` Phase-1 wrapper sees `mfa.current` already set and
    * skips the picker pause, provisions the TOTP secret server-side, and
    * pauses on `EnrollConfirmForm` directly. A regression that drops the
    * 1-transport gate (auto-pick branch removed) would surface a redundant

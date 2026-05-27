@@ -670,13 +670,14 @@ export function withLoginMfaCtx<W extends typeof LoginWorkflow>(
     ): undefined | Promise<undefined> {
       const baseResult = super.prepareMfaSetup(c);
       const apply = (): undefined => {
-        if (ctx.mfaMode !== undefined) c.mfaMode = ctx.mfaMode;
+        const m = (c.mfa ??= {});
+        if (ctx.mfaMode !== undefined) m.mode = ctx.mfaMode;
         if (ctx.availableMfaTransports !== undefined) {
-          c.availableMfaTransports = [...ctx.availableMfaTransports];
+          m.availableTransports = [...ctx.availableMfaTransports];
         }
-        if (ctx.currentMfa !== undefined) c.currentMfa = ctx.currentMfa;
-        if (!c.currentMfa && c.availableMfaTransports?.length === 1) {
-          c.currentMfa = c.availableMfaTransports[0];
+        if (ctx.currentMfa !== undefined) m.current = ctx.currentMfa;
+        if (!m.current && m.availableTransports?.length === 1) {
+          m.current = m.availableTransports[0];
         }
         return undefined;
       };

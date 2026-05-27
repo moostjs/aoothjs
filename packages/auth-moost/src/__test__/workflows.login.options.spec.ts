@@ -663,7 +663,7 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
     await app.users.addMfaMethod("alice", { name: "totp", value: secret, confirmed: true });
 
     const r2 = await startAndCredentials(app, "alice", "Password123");
-    // After prepare-mfa-options filters → 0 methods → ctx.mfaChecked = true → issue.
+    // After prepare-mfa-options filters → 0 methods → ctx.mfa.checked = true → issue.
     const data = r2.body?.data as Record<string, unknown> | undefined;
     expect(data?.userId).toBe("alice");
     expect(typeof data?.accessToken).toBe("string");
@@ -715,9 +715,9 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
   // boot-time validator was removed when `mfa.mode` / `mfa.transports` moved
   // off `LoginWorkflowOpts` onto `@Step` setter methods populating ctx.
   // There is no longer an opts-shape to validate at boot — consumers control
-  // `ctx.availableMfaTransports` per-event via overriding `prepareMfaSetup`,
+  // `ctx.mfa.availableTransports` per-event via overriding `prepareMfaSetup`,
   // and the runtime steps that read it tolerate empty/undefined transports
-  // by short-circuiting through the `mfaChecked = true` no-prompt branch.
+  // by short-circuiting through the `ctx.mfa.checked = true` no-prompt branch.
 
   it("deviceTrust.enabled true with NO cookie → check-trusted-device flags newDevice and flow completes", async () => {
     // No cookie ⇒ `check-trusted-device` short-circuits to `newDevice = true`
@@ -753,7 +753,7 @@ describe("LoginWorkflowOpts — Phase 4 MFA enable/transports", () => {
 });
 
 describe("LoginWorkflowOpts — Phase 4 device trust", () => {
-  it("deviceTrust true + valid cookie → MFA skipped (mfaChecked set in check-trusted-device)", async () => {
+  it("deviceTrust true + valid cookie → MFA skipped (mfa.checked set in check-trusted-device)", async () => {
     const app = await prepareWfApp({
       loginPolicy: {
         deviceTrust: deviceTrustPolicy({ enabled: true, skipsMfa: true, optIn: false }),
@@ -1653,11 +1653,11 @@ describe("LoginWorkflowOpts — Phase 8 session policy", () => {
     expect((r2.body?.data as Record<string, unknown>)?.userId).toBe("alice");
   });
 
-  // Phase 8 `risk-step-up` runs inside the Phase 4 `while: !mfaChecked` loop;
-  // a `require: true` outcome clears `mfaChecked` so MFA re-runs for the
+  // Phase 8 `risk-step-up` runs inside the Phase 4 `while: !mfa.checked` loop;
+  // a `require: true` outcome clears `mfa.checked` so MFA re-runs for the
   // extra factor. The subclass overrides `assessRiskStepUp` — the schema
   // condition no longer gates on a presence-projection (always runs when
-  // mfaChecked and not yet evaluated), and a `require:false` outcome lets
+  // mfa.checked and not yet evaluated), and a `require:false` outcome lets
   // the loop exit.
   it("resolveRiskStepUp override returning require:true forces additional MFA re-run", async () => {
     let calls = 0;
@@ -1695,7 +1695,7 @@ describe("LoginWorkflowOpts — Phase 8 session policy", () => {
 describe("LoginWorkflowOpts — mfa.mode='required' forced enrollment", () => {
   // WHY: a policy tightening from "no MFA" to "MFA required" must NOT let
   // existing un-enrolled users in unchallenged. The enroll step must run
-  // BECAUSE `mfaEnrolledMethods.length === 0` (the gate at line 433-436) —
+  // BECAUSE `mfa.enrolledMethods.length === 0` (the gate at line 433-436) —
   // remove that branch and an attacker who phished a password walks in
   // forever without ever enrolling a second factor.
   it("sms path: pick → address → pincode confirm; method stored confirmed + becomes default + sms is sent", async () => {

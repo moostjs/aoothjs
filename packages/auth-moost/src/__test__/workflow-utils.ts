@@ -1167,17 +1167,18 @@ export function withLoginMfaCtx<W extends typeof LoginWorkflow>(
     ): undefined | Promise<undefined> {
       const baseResult = super.prepareMfaSetup(c);
       const apply = (): undefined => {
-        if (ctx.mfaMode !== undefined) c.mfaMode = ctx.mfaMode;
+        const m = (c.mfa ??= {});
+        if (ctx.mfaMode !== undefined) m.mode = ctx.mfaMode;
         if (ctx.availableMfaTransports !== undefined) {
-          c.availableMfaTransports = [...ctx.availableMfaTransports];
+          m.availableTransports = [...ctx.availableMfaTransports];
         }
-        if (ctx.currentMfa !== undefined) c.currentMfa = ctx.currentMfa;
+        if (ctx.currentMfa !== undefined) m.current = ctx.currentMfa;
         // Re-run single-transport auto-pick AFTER overrides so a test that
-        // shrinks availableMfaTransports to one transport still gets
-        // currentMfa auto-set (the base setter's auto-pick ran with the
+        // shrinks availableTransports to one transport still gets
+        // mfa.current auto-set (the base setter's auto-pick ran with the
         // pre-override default 3-transport list).
-        if (!c.currentMfa && c.availableMfaTransports?.length === 1) {
-          c.currentMfa = c.availableMfaTransports[0];
+        if (!m.current && m.availableTransports?.length === 1) {
+          m.current = m.availableTransports[0];
         }
         return undefined;
       };

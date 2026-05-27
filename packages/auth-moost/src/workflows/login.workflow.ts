@@ -274,30 +274,6 @@ export interface LoginWfCtx extends AuthWfCtxBase {
   // the step bodies below; kept here for forms.as `@wf.context.pass 'flatKey'`
   // compat. Type-safe consumers should read the nested form.
 
-  // MFA verification (mirrors `ctx.mfa.*`):
-  /** Flat alias for `ctx.mfa.enrolledMethods`. */
-  mfaEnrolledMethods?: MfaSummary[];
-  /** Flat alias for `ctx.mfa.current`. */
-  currentMfa?: MfaTransport;
-  /** Flat alias for `ctx.mfa.method`. */
-  mfaMethod?: "sms" | "email" | "totp";
-  /** Flat alias for `ctx.mfa.saveAsDefault`. */
-  mfaSaveAsDefault?: boolean;
-  /** Flat alias for `ctx.mfa.ignoreDefault`. */
-  ignoreMfaDefault?: boolean;
-  /** Flat alias for `ctx.mfa.checked`. */
-  mfaChecked?: boolean;
-  /** Flat alias for `ctx.mfa.runsRemaining`. */
-  mfaRunsRemaining?: number;
-  /** Flat alias for `ctx.mfa.methodCount`. */
-  mfaMethodCount?: number;
-  /** Flat alias for `ctx.mfa.mode`. */
-  mfaMode?: "required" | "optional" | "disabled";
-  /** Flat alias for `ctx.mfa.availableTransports`. */
-  availableMfaTransports?: MfaTransport[];
-  /** Flat alias for `ctx.mfa.pincodeCooldowns`. */
-  pincodeCooldowns?: { sms?: number; email?: number };
-
   // Channel (mirrors `ctx.channel.*`; `ctx.email` stays on AuthWfCtxBase):
   /** Flat alias for `ctx.channel.emailConfirmed`. */
   emailConfirmed?: boolean;
@@ -859,42 +835,42 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // Phase 4 MFA setup + verification loop:
     { id: "prepare-mfa-setup" },
     {
-      while: (ctx) => ctx.mfaMode !== "disabled" && !ctx.mfaChecked,
+      while: (ctx) => ctx.mfa?.mode !== "disabled" && !ctx.mfa?.checked,
       steps: [
         {
           id: "check-trusted-device",
           condition: (ctx) =>
-            !ctx.mfaChecked && !!ctx.deviceTrust?.enabled && !!ctx.deviceTrust?.skipsMfa,
+            !ctx.mfa?.checked && !!ctx.deviceTrust?.enabled && !!ctx.deviceTrust?.skipsMfa,
         },
-        { id: "load-enrolled-mfa-methods", condition: (ctx) => !ctx.mfaChecked },
-        { id: "select-mfa-method", condition: (ctx) => !ctx.mfaChecked },
+        { id: "load-enrolled-mfa-methods", condition: (ctx) => !ctx.mfa?.checked },
+        { id: "select-mfa-method", condition: (ctx) => !ctx.mfa?.checked },
         {
           id: "select-2fa",
           condition: (ctx) =>
-            !ctx.mfaChecked && !ctx.mfaMethod && (ctx.mfaEnrolledMethods?.length ?? 0) > 1,
+            !ctx.mfa?.checked && !ctx.mfa?.method && (ctx.mfa?.enrolledMethods?.length ?? 0) > 1,
         },
         // Pincode pair (sms/email):
         {
           condition: (ctx) =>
-            !ctx.mfaChecked && (ctx.mfaMethod === "sms" || ctx.mfaMethod === "email"),
+            !ctx.mfa?.checked && (ctx.mfa?.method === "sms" || ctx.mfa?.method === "email"),
           steps: [
             { id: "pincode-send-login", condition: (ctx) => !ctx.pin },
             { id: "pincode-check-login" },
           ],
         },
         // TOTP branch:
-        { id: "mfa-totp", condition: (ctx) => !ctx.mfaChecked && ctx.mfaMethod === "totp" },
-        // Forced enrollment trio — `mfaMode !== "disabled"` already enforced by the while-guard.
-        // Also gated on `availableMfaTransports.length > 0`: with zero transports
+        { id: "mfa-totp", condition: (ctx) => !ctx.mfa?.checked && ctx.mfa?.method === "totp" },
+        // Forced enrollment trio — `mfa.mode !== "disabled"` already enforced by the while-guard.
+        // Also gated on `mfa.availableTransports.length > 0`: with zero transports
         // there's nothing to enrol into, so optional mode should be treated like
         // disabled (skip the trio entirely). `enrollPickPhase` still defends
         // against the 0-transport case in optional mode (auto-skip) and throws
         // in required mode if a consumer reaches it via a different path.
         {
           condition: (ctx) =>
-            !ctx.mfaChecked &&
-            (ctx.mfaEnrolledMethods?.length ?? 0) === 0 &&
-            (ctx.availableMfaTransports?.length ?? 0) > 0,
+            !ctx.mfa?.checked &&
+            (ctx.mfa?.enrolledMethods?.length ?? 0) === 0 &&
+            (ctx.mfa?.availableTransports?.length ?? 0) > 0,
           steps: [
             {
               id: "enroll-pick-method",
@@ -916,8 +892,11 @@ export class LoginWorkflow extends AuthWorkflowBase {
             },
           ],
         },
-        // Risk step-up — may clear mfaChecked to rearm MFA for another iteration.
-        { id: "risk-step-up", condition: (ctx) => !!ctx.mfaChecked && !ctx.riskStepUpEvaluated },
+        // Risk step-up — may clear mfa.checked to rearm MFA for another iteration.
+        {
+          id: "risk-step-up",
+          condition: (ctx) => !!ctx.mfa?.checked && !ctx.riskStepUpEvaluated,
+        },
       ],
     },
 
@@ -926,7 +905,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
       id: "device-trust",
       condition: (ctx) =>
         !!ctx.deviceTrust?.enabled &&
-        !!ctx.mfaChecked &&
+        !!ctx.mfa?.checked &&
         !!ctx.newDevice &&
         (!ctx.deviceTrust?.optIn || !!ctx.rememberDevice),
     },
@@ -1025,34 +1004,29 @@ export class LoginWorkflow extends AuthWorkflowBase {
   }
 
   /**
-   * Prepare MFA setup: writes `ctx.mfaMode`, `ctx.availableMfaTransports`, and
-   * (when the user is resolvable) pre-selects `ctx.currentMfa` from the
+   * Prepare MFA setup: writes `ctx.mfa.mode`, `ctx.mfa.availableTransports`,
+   * and (when the user is resolvable) pre-selects `ctx.mfa.current` from the
    * existing-user `defaultMethod` or the single-available-transport auto-pick.
    * Override to compute any of the three from tenant policy / user attrs /
    * request context. Return type allows a sync override (skip the promise
    * round-trip) when no async work is needed — the default body is async only
-   * because of the `users.getUser` lookup for `currentMfa`.
+   * because of the `users.getUser` lookup for `mfa.current`.
    */
   @Step("prepare-mfa-setup")
   prepareMfaSetup(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
-    // dual-write — flat alias removed in B1.4
     const mfa = (ctx.mfa ??= {});
     mfa.mode = "optional";
     mfa.availableTransports = ["sms", "email", "totp"];
-    ctx.mfaMode = "optional";
-    ctx.availableMfaTransports = ["sms", "email", "totp"];
     if (!ctx.username) return undefined;
     return this.users.getUser(ctx.username).then(
       (user) => {
         const confirmed = (user?.mfa?.methods ?? []).filter((m) => m.confirmed);
         if (confirmed.length > 0 && user?.mfa?.defaultMethod) {
           mfa.current = user.mfa.defaultMethod as MfaTransport;
-          ctx.currentMfa = user.mfa.defaultMethod as MfaTransport;
           return undefined;
         }
-        if ((ctx.availableMfaTransports?.length ?? 0) === 1) {
-          mfa.current = ctx.availableMfaTransports![0];
-          ctx.currentMfa = ctx.availableMfaTransports![0];
+        if ((mfa.availableTransports?.length ?? 0) === 1) {
+          mfa.current = mfa.availableTransports![0];
         }
         return undefined;
       },
@@ -1121,7 +1095,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
       const result = await this.users.login(input.username, input.password);
       ctx.username = result.user.username;
       // Preserve legacy `mfaRequired` for tests / consumer subclasses; the
-      // step catalog decides MFA inclusion via `ctx.mfaMode` + enrolled
+      // step catalog decides MFA inclusion via `ctx.mfa.mode` + enrolled
       // methods, not this flag.
       ctx.mfaRequired = result.mfaRequired;
       // Phase 2 inline guards:
@@ -1379,7 +1353,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
     if (ok) {
       (ctx.mfa ??= {}).checked = true;
       (ctx.trust ??= {}).deviceTrustToken = cookieValue;
-      ctx.mfaChecked = true;
       ctx.deviceTrustToken = cookieValue;
     } else {
       (ctx.trust ??= {}).newDevice = true;
@@ -1390,8 +1363,8 @@ export class LoginWorkflow extends AuthWorkflowBase {
 
   /**
    * Load + summarise the user's enrolled MFA methods (filtered against
-   * `ctx.availableMfaTransports`) and mirror the form-gating flags
-   * (`mfaMethodCount`, `deviceTrustOptIn`) onto ctx. Pure data-load — no
+   * `ctx.mfa.availableTransports`) and mirror the form-gating flags
+   * (`mfa.methodCount`, `deviceTrustOptIn`) onto ctx. Pure data-load — no
    * selection decision. Split out of the old `prepare-mfa-options` step so
    * consumers can override the load/summary shape (custom MFA inventory
    * source) without copying the selection heuristics in `selectMfaMethod`.
@@ -1400,7 +1373,8 @@ export class LoginWorkflow extends AuthWorkflowBase {
   async loadEnrolledMfaMethods(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
     if (!ctx.username) return undefined;
     const user = await this.users.getUser(ctx.username);
-    const allowed = new Set(ctx.availableMfaTransports ?? []);
+    const mfa = (ctx.mfa ??= {});
+    const allowed = new Set(mfa.availableTransports ?? []);
     const methods = this.users.getAvailableMfaMethods(user.mfa);
     const summary: MfaSummary[] = methods
       .filter((m: MfaMethodInfo) => {
@@ -1416,14 +1390,10 @@ export class LoginWorkflow extends AuthWorkflowBase {
           isDefault: m.isDefault,
         };
       });
-    // dual-write — flat alias removed in B1.4
-    const mfa = (ctx.mfa ??= {});
     mfa.enrolledMethods = summary;
     // Mirror count into ctx so MFA forms can hide `useDifferentMethod` when
     // only one method exists.
     mfa.methodCount = summary.length;
-    ctx.mfaEnrolledMethods = summary;
-    ctx.mfaMethodCount = summary.length;
     // Mirror so `PincodeForm` can hide `rememberDevice` when the consumer
     // doesn't ask the user to opt in (skipsMfa auto-trusts the device).
     const trustOptIn = !!(ctx.deviceTrust?.enabled && ctx.deviceTrust?.optIn);
@@ -1434,29 +1404,28 @@ export class LoginWorkflow extends AuthWorkflowBase {
 
   /**
    * Pick which MFA method to use from the already-loaded
-   * `ctx.mfaEnrolledMethods` summary. Decision-only — no IO. Honors
-   * `ctx.currentMfa` (pre-selected by `prepareMfaSetup` from the user's
+   * `ctx.mfa.enrolledMethods` summary. Decision-only — no IO. Honors
+   * `ctx.mfa.current` (pre-selected by `prepareMfaSetup` from the user's
    * `defaultMethod` or single-transport auto-pick), auto-picks when only one
    * method is enrolled, falls back to the `isDefault` method. All paths are
-   * gated on `!ctx.ignoreMfaDefault` so the `useDifferentMethod` re-pick flow
-   * (which sets the flag) skips straight to the `select2fa` picker. Split out
-   * of the old `prepare-mfa-options` step so consumers can override selection
-   * heuristics (e.g. risk-based per-tenant defaults) without re-implementing
-   * the load/summary.
+   * gated on `!ctx.mfa.ignoreDefault` so the `useDifferentMethod` re-pick
+   * flow (which sets the flag) skips straight to the `select2fa` picker.
+   * Split out of the old `prepare-mfa-options` step so consumers can override
+   * selection heuristics (e.g. risk-based per-tenant defaults) without
+   * re-implementing the load/summary.
    */
   @Step("select-mfa-method")
   selectMfaMethod(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
-    const summary = ctx.mfaEnrolledMethods ?? [];
+    const mfa = (ctx.mfa ??= {});
+    const summary = mfa.enrolledMethods ?? [];
     // `prepareMfaSetup` setter may have pre-selected a transport (existing-user
     // defaultMethod / single-transport auto-pick / consumer override). Honor
-    // it if it matches an enrolled method. Gated on `!ctx.ignoreMfaDefault` so
+    // it if it matches an enrolled method. Gated on `!mfa.ignoreDefault` so
     // the `useDifferentMethod` re-pick flow can clear the auto-selection and
     // route the user back to the picker instead of looping straight back to
     // the same method.
-    // dual-write — flat alias removed in B1.4
-    if (!ctx.ignoreMfaDefault && ctx.currentMfa && summary.some((m) => m.kind === ctx.currentMfa)) {
-      (ctx.mfa ??= {}).method = ctx.currentMfa;
-      ctx.mfaMethod = ctx.currentMfa;
+    if (!mfa.ignoreDefault && mfa.current && summary.some((m) => m.kind === mfa.current)) {
+      mfa.method = mfa.current;
       return undefined;
     }
     // Short-circuit: no methods → let `mfa-enroll-required` handle it.
@@ -1465,15 +1434,13 @@ export class LoginWorkflow extends AuthWorkflowBase {
     // while-loop guard filters it out).
     if (summary.length === 0) return undefined;
     if (summary.length === 1) {
-      (ctx.mfa ??= {}).method = summary[0].kind;
-      ctx.mfaMethod = summary[0].kind;
+      mfa.method = summary[0].kind;
       return undefined;
     }
-    if (!ctx.ignoreMfaDefault) {
+    if (!mfa.ignoreDefault) {
       const def = summary.find((m) => m.isDefault);
       if (def) {
-        (ctx.mfa ??= {}).method = def.kind;
-        ctx.mfaMethod = def.kind;
+        mfa.method = def.kind;
       }
     }
     return undefined;
@@ -1483,12 +1450,13 @@ export class LoginWorkflow extends AuthWorkflowBase {
   async select2fa(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
     const wf = useAtscriptWf(this.opts.forms.select2fa);
     const input = wf.resolveInput() as { methodName: string; saveAsDefault?: boolean };
-    const picked = (ctx.mfaEnrolledMethods ?? []).find((m) => m.methodName === input.methodName);
+    const mfa = (ctx.mfa ??= {});
+    const picked = (mfa.enrolledMethods ?? []).find((m) => m.methodName === input.methodName);
     if (!picked) {
       throw wf.requireInput({ errors: { methodName: "Unknown MFA method" } });
     }
     if (picked.kind === "sms" || picked.kind === "email") {
-      const cooldownUntil = ctx.pincodeCooldowns?.[picked.kind];
+      const cooldownUntil = mfa.pincodeCooldowns?.[picked.kind];
       if (cooldownUntil && Date.now() < cooldownUntil) {
         const waitSec = Math.ceil((cooldownUntil - Date.now()) / 1000);
         const channel = picked.kind === "sms" ? "SMS" : "email";
@@ -1499,13 +1467,9 @@ export class LoginWorkflow extends AuthWorkflowBase {
         });
       }
     }
-    // dual-write — flat alias removed in B1.4
-    const mfa = (ctx.mfa ??= {});
     mfa.method = picked.kind;
     mfa.saveAsDefault = Boolean(input.saveAsDefault);
-    ctx.mfaMethod = picked.kind;
-    ctx.mfaSaveAsDefault = Boolean(input.saveAsDefault);
-    if (ctx.mfaSaveAsDefault && ctx.username) {
+    if (mfa.saveAsDefault && ctx.username) {
       await this.users.setDefaultMfaMethod(ctx.username, picked.methodName);
     }
     return undefined;
@@ -1513,8 +1477,9 @@ export class LoginWorkflow extends AuthWorkflowBase {
 
   @Step("pincode-send-login")
   async pincodeSendLogin(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
-    if (!ctx.username || !ctx.mfaMethod) return undefined;
-    const summary = (ctx.mfaEnrolledMethods ?? []).find((m) => m.kind === ctx.mfaMethod);
+    const mfa = (ctx.mfa ??= {});
+    if (!ctx.username || !mfa.method) return undefined;
+    const summary = (mfa.enrolledMethods ?? []).find((m) => m.kind === mfa.method);
     if (!summary) throw new HttpError(500, "Workflow state corrupted: missing mfa method");
     const user = await this.users.getUser(ctx.username);
     const method = user.mfa.methods.find((m) => m.name === summary.methodName && m.confirmed);
@@ -1522,7 +1487,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
     const code = this.mintPin(ctx, this.authOpts.mfa.pincodeLength, this.authOpts.mfa.pincodeTtlMs);
     const pincode = (ctx.pincode ??= {});
     pincode.timeout = Date.now() + this.authOpts.mfa.pincodeResendTimeoutMs;
-    if (ctx.mfaMethod === "email") {
+    if (mfa.method === "email") {
       pincode.sentTo = maskEmail(method.value);
       await this.deliver({
         channel: "email",
@@ -1532,7 +1497,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
         expiresAt: ctx.pinExpire as number,
         userId: ctx.username,
       });
-    } else if (ctx.mfaMethod === "sms") {
+    } else if (mfa.method === "sms") {
       pincode.sentTo = maskPhone(method.value);
       await this.deliver({
         channel: "sms",
@@ -1543,13 +1508,10 @@ export class LoginWorkflow extends AuthWorkflowBase {
         userId: ctx.username,
       });
     }
-    if (ctx.mfaMethod === "sms" || ctx.mfaMethod === "email") {
-      // dual-write — flat alias removed in B1.4
+    if (mfa.method === "sms" || mfa.method === "email") {
       const cooldownAt = Date.now() + this.authOpts.mfa.pincodeResendTimeoutMs;
-      (ctx.mfa ??= {}).pincodeCooldowns ??= {};
-      ctx.mfa.pincodeCooldowns[ctx.mfaMethod] = cooldownAt;
-      ctx.pincodeCooldowns ??= {};
-      ctx.pincodeCooldowns[ctx.mfaMethod] = cooldownAt;
+      mfa.pincodeCooldowns ??= {};
+      mfa.pincodeCooldowns[mfa.method] = cooldownAt;
     }
     return undefined;
   }
@@ -1575,12 +1537,9 @@ export class LoginWorkflow extends AuthWorkflowBase {
       return undefined;
     }
     if (action === "useDifferentMethod") {
-      // dual-write — flat alias removed in B1.4
       const mfa = (ctx.mfa ??= {});
       mfa.ignoreDefault = true;
       delete mfa.method;
-      ctx.ignoreMfaDefault = true;
-      delete ctx.mfaMethod;
       delete ctx.pin;
       delete ctx.pinExpire;
       return undefined;
@@ -1588,10 +1547,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
     const input = wf.resolveInput() as { code: string; rememberDevice?: boolean };
     const pinErr = this.verifyPin(ctx, input.code);
     if (pinErr) throw wf.requireInput({ errors: pinErr });
-    // dual-write — flat alias removed in B1.4
-    const mfa = (ctx.mfa ??= {});
-    mfa.checked = true;
-    ctx.mfaChecked = true;
+    (ctx.mfa ??= {}).checked = true;
     // Allow the risk-step-up gate to re-evaluate after this re-verification.
     (ctx.session ??= {}).riskStepUpEvaluated = false;
     ctx.riskStepUpEvaluated = false;
@@ -1607,21 +1563,16 @@ export class LoginWorkflow extends AuthWorkflowBase {
     const wf = useAtscriptWf(this.opts.forms.mfaCode);
     const action = wf.resolveAction();
     if (action === "useDifferentMethod") {
-      // dual-write — flat alias removed in B1.4
       const mfa = (ctx.mfa ??= {});
       mfa.ignoreDefault = true;
       delete mfa.method;
-      ctx.ignoreMfaDefault = true;
-      delete ctx.mfaMethod;
       return undefined;
     }
     const input = wf.resolveInput() as { code: string; rememberDevice?: boolean };
     this.requireUsername(ctx);
     try {
       await this.users.verifyMfa(ctx.username, input.code);
-      // dual-write — flat alias removed in B1.4
       (ctx.mfa ??= {}).checked = true;
-      ctx.mfaChecked = true;
       (ctx.session ??= {}).riskStepUpEvaluated = false;
       ctx.riskStepUpEvaluated = false;
       if (ctx.deviceTrust?.enabled && ctx.deviceTrust?.optIn) {
@@ -1675,8 +1626,8 @@ export class LoginWorkflow extends AuthWorkflowBase {
 
   /**
    * Forced MFA enrollment — Phase 3 (verify code + activate method). Fires
-   * `onComplete` to bridge `ctx.mfaEnroll.done` → `mfaChecked` so login's
-   * outer MFA while-loop (gated on `!mfaChecked`) exits.
+   * `onComplete` to bridge `ctx.mfaEnroll.done` → `ctx.mfa.checked` so login's
+   * outer MFA while-loop (gated on `!ctx.mfa.checked`) exits.
    */
   @Step("enroll-confirm")
   loginEnrollConfirm(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
@@ -1687,13 +1638,14 @@ export class LoginWorkflow extends AuthWorkflowBase {
    * Build the `MfaEnrollDeps` payload shared by all three login enrollment
    * step bodies. Sets `ctx.mfaEnroll.mode` so `EnrollPickMethodForm` can hide
    * the `skip` action unless mode is `'optional'`, and supplies `onComplete`
-   * to mirror `ctx.mfaEnroll.done` → `mfaChecked` for login's loop-exit
+   * to mirror `ctx.mfaEnroll.done` → `ctx.mfa.checked` for login's loop-exit
    * signal.
    */
   private buildLoginEnrollDeps(ctx: LoginWfCtx): MfaEnrollDeps {
     this.requireUsername(ctx);
+    const mfa = (ctx.mfa ??= {});
     // `'disabled'` is filtered at each step's schema condition, so the cast is safe.
-    const mode = (ctx.mfaMode ?? "optional") as "required" | "optional";
+    const mode = (mfa.mode ?? "optional") as "required" | "optional";
     (ctx.mfaEnroll ??= {}).mode = mode;
     return {
       ctx,
@@ -1705,14 +1657,14 @@ export class LoginWorkflow extends AuthWorkflowBase {
         address: this.opts.forms.enrollAddress,
         confirm: this.opts.forms.enrollConfirm,
       },
-      transports: ctx.availableMfaTransports ?? [],
+      transports: mfa.availableTransports ?? [],
       pincodeLength: this.authOpts.mfa.pincodeLength,
       pincodeTtlMs: this.authOpts.mfa.pincodeTtlMs,
       pincodeResendTimeoutMs: this.authOpts.mfa.pincodeResendTimeoutMs,
       issuer: this.authOpts.totpIssuer,
       mode,
       onComplete: (c) => {
-        (c as LoginWfCtx).mfaChecked = true;
+        ((c as LoginWfCtx).mfa ??= {}).checked = true;
       },
     };
   }
@@ -1900,9 +1852,9 @@ export class LoginWorkflow extends AuthWorkflowBase {
 
   @Step("risk-step-up")
   async riskStepUp(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
-    // Runs INSIDE the Phase 4 `while: !mfaChecked` loop (see schema above).
+    // Runs INSIDE the Phase 4 `while: !mfa.checked` loop (see schema above).
     // `assessRiskStepUp({require: true})` re-arms MFA for another round by
-    // clearing `mfaChecked`. `riskStepUpEvaluated` is flipped true so this
+    // clearing `mfa.checked`. `riskStepUpEvaluated` is flipped true so this
     // step does not fire twice within one MFA round — the MFA steps reset it
     // on next successful verification.
     // dual-write — flat alias removed in B1.4
@@ -1914,7 +1866,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
       (ctx.session ??= {}).riskStepUpReason = reason;
       (ctx.mfa ??= {}).checked = false;
       ctx.riskStepUpReason = reason;
-      ctx.mfaChecked = false;
       // delete (not `= undefined`) so the persisted ctx remains JSON-clean
       // — AsWfStore validates state.context against a JSON-anyOf schema and
       // chokes on explicit `undefined` entries.
@@ -1967,7 +1918,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
       kind: "login.success",
       userId: ctx.username,
       workflow: "auth/login/flow",
-      method: ctx.mfaMethod ?? (ctx.mfaChecked ? "mfa.skipped" : "password"),
+      method: ctx.mfa?.method ?? (ctx.mfa?.checked ? "mfa.skipped" : "password"),
       ip: this.resolveClientIp(),
     });
     return undefined;

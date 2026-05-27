@@ -18,16 +18,16 @@
  *
  * **Sink B (`@wf.context.pass` shadowing).** Forms in `forms.as` declare
  * `@wf.context.pass` for ctx keys that drive server-side decisions
- * (e.g. `Select2faForm` whitelists `mfaEnrolledMethods`, which the step
- * uses to validate the user's `methodName` pick). If a submitted form
- * payload could shadow those ctx keys, an attacker could spoof their
- * enrolled MFA methods. The defense lives at the form-parsing boundary —
- * `useAtscriptWf(form).resolveInput()` strips unknown extras when the form
- * schema does not declare them. Sink B's test pins that behavior as a
- * regression: a crafted Select2faForm payload containing a spoofed
- * `mfaEnrolledMethods` must NOT shadow the server-derived ctx value, and
- * therefore the `methodName` validation must still reject methods the
- * user has not actually enrolled.
+ * (e.g. `Select2faForm` whitelists `mfa`, which carries the
+ * `enrolledMethods` array the step uses to validate the user's
+ * `methodName` pick). If a submitted form payload could shadow those ctx
+ * keys, an attacker could spoof their enrolled MFA methods. The defense
+ * lives at the form-parsing boundary — `useAtscriptWf(form).resolveInput()`
+ * strips unknown extras when the form schema does not declare them. Sink
+ * B's test pins that behavior as a regression: a crafted Select2faForm
+ * payload containing a spoofed `mfa.enrolledMethods` must NOT shadow the
+ * server-derived ctx value, and therefore the `methodName` validation
+ * must still reject methods the user has not actually enrolled.
  */
 import { AuthCredential } from "@aooth/auth";
 import { generateTotpSecret, UserService } from "@aooth/user";
@@ -169,22 +169,22 @@ describe("LoginWorkflow security — profile-complete payload escalation (audit 
 
 // ── Sink B — @wf.context.pass shadowing ────────────────────────────────────
 describe("LoginWorkflow security — @wf.context.pass key shadowing (audit #15 Sink B)", () => {
-  it("Select2faForm: spoofed `mfaEnrolledMethods` in payload does NOT shadow server-derived ctx", async () => {
-    // WHY: `Select2faForm` declares `@wf.context.pass 'mfaEnrolledMethods'`
-    // so the client `@ui.form.fn.options` render fn can read the user's
-    // enrolled methods from ctx. The matching server step
-    // (`select2fa`) ALSO reads `ctx.mfaEnrolledMethods` — populated by
-    // `prepareMfaOptions` from the user's real `users.mfa.methods` — to
-    // validate the submitted `methodName`. If form payload keys could
-    // promote into ctx, an attacker could:
+  it("Select2faForm: spoofed `mfa.enrolledMethods` in payload does NOT shadow server-derived ctx", async () => {
+    // WHY: `Select2faForm` declares `@wf.context.pass 'mfa'` so the client
+    // `@ui.form.fn.options` render fn can read the user's enrolled methods
+    // from `ctx.mfa.enrolledMethods`. The matching server step (`select2fa`)
+    // ALSO reads `ctx.mfa.enrolledMethods` — populated by `prepareMfaOptions`
+    // from the user's real `users.mfa.methods` — to validate the submitted
+    // `methodName`. If form payload keys could promote into ctx, an attacker
+    // could:
     //
-    //   POST { methodName: "spoofed", mfaEnrolledMethods: [{ methodName: "spoofed", kind: "weak" }] }
+    //   POST { methodName: "spoofed", mfa: { enrolledMethods: [{ methodName: "spoofed", kind: "weak" }] } }
     //
-    // and the step's `(ctx.mfaEnrolledMethods ?? []).find(...)` would
+    // and the step's `(mfa.enrolledMethods ?? []).find(...)` would
     // accept "spoofed" — defeating the MFA gate entirely. The defense
     // lives at the form-parsing boundary: `useAtscriptWf(form).resolveInput()`
     // strips unknown extras because `Select2faForm` does not declare
-    // `mfaEnrolledMethods` as an INPUT field (only as a `@wf.context.pass`).
+    // `mfa` as an INPUT field (only as a `@wf.context.pass`).
     //
     // This test pins that behaviour: when the spoofed key is submitted,
     // the step rejects "spoofed" with a `methodName` error AND the
@@ -194,7 +194,7 @@ describe("LoginWorkflow security — @wf.context.pass key shadowing (audit #15 S
     const app = await prepareWfApp();
     await seedActiveUser(app.users, "alice", "Password123");
     // Enrol two methods so `select2fa` actually fires (the schema gates on
-    // `mfaEnrolledMethods.length > 1`).
+    // `mfa.enrolledMethods.length > 1`).
     await app.users.addMfaMethod("alice", {
       name: "email",
       value: "alice@example.com",
@@ -213,17 +213,17 @@ describe("LoginWorkflow security — @wf.context.pass key shadowing (audit #15 S
     expect(JSON.stringify(cred.body)).toMatch(/methodName/);
 
     // Submit the attack payload: legitimate-looking `methodName` plus a
-    // spoofed `mfaEnrolledMethods` array that would whitelist it.
+    // spoofed `mfa.enrolledMethods` array that would whitelist it.
     const sel = await app.trigger({
       wfs: cred.body?.wfs as string,
       input: {
         methodName: "spoofed",
         saveAsDefault: false,
-        mfaEnrolledMethods: [{ methodName: "spoofed", kind: "weak" }],
+        mfa: { enrolledMethods: [{ methodName: "spoofed", kind: "weak" }] },
       },
     });
 
-    // The step rejected "spoofed" — proves ctx.mfaEnrolledMethods still
+    // The step rejected "spoofed" — proves ctx.mfa.enrolledMethods still
     // reflects ONLY the user's real enrollments (email + totp), not the
     // spoofed value the form payload tried to shadow it with.
     const errors = sel.body?.errors as Record<string, string> | undefined;
@@ -231,13 +231,13 @@ describe("LoginWorkflow security — @wf.context.pass key shadowing (audit #15 S
     expect(errors?.methodName).toMatch(/unknown mfa method/i);
     // And the workflow did NOT finish — no auth tokens issued.
     expect((sel.body?.data as Record<string, unknown> | undefined)?.userId).toBeUndefined();
-    // Belt-and-braces: the form parser re-echoes `mfaEnrolledMethods` from
-    // ctx into the response (via `@wf.context.pass`). It MUST contain the
-    // user's real methods (email + totp), NOT the attacker's spoofed
+    // Belt-and-braces: the form parser re-echoes `mfa` from ctx into the
+    // response (via `@wf.context.pass`). It MUST contain the user's real
+    // methods (email + totp), NOT the attacker's spoofed
     // `[{ methodName: "spoofed", kind: "weak" }]` — proving the spoofed
     // payload key never reached ctx.
-    const echoed = (sel.body as { mfaEnrolledMethods?: Array<{ methodName: string }> })
-      ?.mfaEnrolledMethods;
+    const echoed = (sel.body as { mfa?: { enrolledMethods?: Array<{ methodName: string }> } })?.mfa
+      ?.enrolledMethods;
     expect(echoed).toBeTruthy();
     expect(echoed?.map((m) => m.methodName).toSorted()).toEqual(["email", "totp"]);
   });

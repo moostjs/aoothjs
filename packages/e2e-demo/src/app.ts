@@ -652,11 +652,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       const apply = (): undefined => {
         const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
         const v = variant?.mfaCtx;
-        ctx.mfaMode = v?.mfaMode ?? "disabled";
+        const m = (ctx.mfa ??= {});
+        m.mode = v?.mfaMode ?? "disabled";
         if (v?.availableMfaTransports !== undefined) {
-          ctx.availableMfaTransports = [...v.availableMfaTransports];
+          m.availableTransports = [...v.availableMfaTransports];
         }
-        if (v?.currentMfa !== undefined) ctx.currentMfa = v.currentMfa;
+        if (v?.currentMfa !== undefined) m.current = v.currentMfa;
         return undefined;
       };
       return baseResult instanceof Promise ? baseResult.then(apply) : apply();
@@ -1289,13 +1290,14 @@ function wrapWithLoginMfaCtx<W extends new (...args: never[]) => LoginWorkflow>(
     ): undefined | Promise<undefined> {
       const baseResult = super.prepareMfaSetup(c);
       const apply = (): undefined => {
-        if (ctx.mfaMode !== undefined) c.mfaMode = ctx.mfaMode;
+        const m = (c.mfa ??= {});
+        if (ctx.mfaMode !== undefined) m.mode = ctx.mfaMode;
         if (ctx.availableMfaTransports !== undefined) {
-          c.availableMfaTransports = [...ctx.availableMfaTransports];
+          m.availableTransports = [...ctx.availableMfaTransports];
         }
-        if (ctx.currentMfa !== undefined) c.currentMfa = ctx.currentMfa;
-        if (!c.currentMfa && c.availableMfaTransports?.length === 1) {
-          c.currentMfa = c.availableMfaTransports[0];
+        if (ctx.currentMfa !== undefined) m.current = ctx.currentMfa;
+        if (!m.current && m.availableTransports?.length === 1) {
+          m.current = m.availableTransports[0];
         }
         return undefined;
       };

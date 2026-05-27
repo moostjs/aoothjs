@@ -89,7 +89,7 @@ export interface LoginCredentialsForm {
 
 /**
  * MFA code form. Shared by TOTP, email-OTP, and SMS-OTP branches — the
- * leading `transportHint` paragraph reads `mfaMethod` + `pincode.sentTo`
+ * leading `transportHint` paragraph reads `mfa.method` + `pincode.sentTo`
  * (masked recipient) out of the workflow context so the operator knows
  * which factor the workflow is currently verifying. The hint requires
  * `installDynamicResolver()` from `@atscript/ui-fns` on the consumer
@@ -97,12 +97,11 @@ export interface LoginCredentialsForm {
  * renders empty.
  */
 @meta.label 'Verify your identity'
-@wf.context.pass 'mfaMethod'
+@wf.context.pass 'mfa'
 @wf.context.pass 'pincode'
-@wf.context.pass 'mfaMethodCount'
 @ui.form.submit.text 'Verify'
 export interface MfaCodeForm {
-    @ui.form.fn.value '(_, _d, ctx) => ctx.mfaMethod === "totp" ? "Enter the current 6-digit code from your authenticator app." : ctx.mfaMethod ? "Code sent to " + (ctx.pincode?.sentTo || "your " + ctx.mfaMethod) + " — check the dev server console for the code." : "Enter your verification code."'
+    @ui.form.fn.value '(_, _d, ctx) => ctx.mfa?.method === "totp" ? "Enter the current 6-digit code from your authenticator app." : ctx.mfa?.method ? "Code sent to " + (ctx.pincode?.sentTo || "your " + ctx.mfa.method) + " — check the dev server console for the code." : "Enter your verification code."'
     transportHint?: ui.paragraph
 
     @ui.form.type 'text'
@@ -115,7 +114,7 @@ export interface MfaCodeForm {
     code: string
 
     @ui.form.action 'useDifferentMethod', 'Use a different method'
-    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.mfaMethodCount ?? 0) < 2'
+    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.mfa?.methodCount ?? 0) < 2'
     useDifferentMethod?: ui.action
 }
 
@@ -286,16 +285,16 @@ export interface InviteForm {
  * `opts.mfaTransports` filtering. `methodName` is the `MfaMethod.name`
  * (e.g. `"totp"`, `"email"`, `"sms"`); the workflow itself validates that the
  * supplied value is in the user's enrolled set. The dropdown options are
- * built from `ctx.mfaEnrolledMethods` (a `MfaSummary[]` populated by
+ * built from `ctx.mfa.enrolledMethods` (a `MfaSummary[]` populated by
  * `prepareMfaOptions`) so the user only sees factors they actually have.
  */
 @meta.label 'Choose a verification method'
 @meta.description 'Pick how you would like to verify your identity.'
-@wf.context.pass 'mfaEnrolledMethods'
+@wf.context.pass 'mfa'
 export interface Select2faForm {
     @ui.form.order 10
     @ui.form.type 'radio'
-    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.mfaEnrolledMethods) ? ctx.mfaEnrolledMethods.map(m => ({ key: m.methodName, label: m.kind === "totp" ? "TOTP (Authenticator app)" : m.kind === "email" ? "Email" : m.kind === "sms" ? "SMS" : m.kind })) : []'
+    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.mfa?.enrolledMethods) ? ctx.mfa.enrolledMethods.map(m => ({ key: m.methodName, label: m.kind === "totp" ? "TOTP (Authenticator app)" : m.kind === "email" ? "Email" : m.kind === "sms" ? "SMS" : m.kind })) : []'
     @meta.label 'MFA method'
     @meta.required
     methodName: string
@@ -311,7 +310,7 @@ export interface Select2faForm {
  *
  * `rememberDevice` is rendered only when `opts.deviceTrust && opts.deviceTrustOptIn`.
  *
- * The leading `transportHint` paragraph reads `mfaMethod` + `pincode.sentTo`
+ * The leading `transportHint` paragraph reads `mfa.method` + `pincode.sentTo`
  * (the masked recipient set by the pincode-send step) out of the workflow
  * context so the operator can see which factor the workflow is currently
  * verifying. Requires `installDynamicResolver()` from `@atscript/ui-fns`
@@ -319,14 +318,13 @@ export interface Select2faForm {
  * the paragraph renders empty.
  */
 @meta.label 'Enter the verification code'
-@wf.context.pass 'mfaMethod'
+@wf.context.pass 'mfa'
 @wf.context.pass 'pincode'
-@wf.context.pass 'mfaMethodCount'
 @wf.context.pass 'deviceTrustOptIn'
 @wf.context.pass 'recoveryTransportCount'
 @ui.form.submit.text 'Verify'
 export interface PincodeForm {
-    @ui.form.fn.value '(_, _d, ctx) => ctx.mfaMethod === "totp" ? "Enter the current 6-digit code from your authenticator app." : ctx.mfaMethod ? "Code sent to " + (ctx.pincode?.sentTo || "your " + ctx.mfaMethod) + " — check the dev server console for the code." : "Enter your verification code."'
+    @ui.form.fn.value '(_, _d, ctx) => ctx.mfa?.method === "totp" ? "Enter the current 6-digit code from your authenticator app." : ctx.mfa?.method ? "Code sent to " + (ctx.pincode?.sentTo || "your " + ctx.mfa.method) + " — check the dev server console for the code." : "Enter your verification code."'
     transportHint?: ui.paragraph
 
     @ui.form.type 'text'
@@ -348,7 +346,7 @@ export interface PincodeForm {
     resend?: ui.action
 
     @ui.form.action 'useDifferentMethod', 'Use a different method'
-    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.mfaMethodCount ?? 0) < 2'
+    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.mfa?.methodCount ?? 0) < 2'
     useDifferentMethod?: ui.action
 
     @ui.form.action 'backToLogin', 'Back to sign-in'
