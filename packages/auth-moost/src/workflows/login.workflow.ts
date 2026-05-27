@@ -93,6 +93,7 @@ import {
   consentsPreludeSchema,
   type InlineConsentInput,
   type MfaEnrollDeps,
+  passwordChangeSchema,
   stripReservedUserKeys,
 } from "./auth-workflow.base";
 import {
@@ -1017,7 +1018,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
     {
       condition: (ctx) =>
         (!!ctx.isPasswordInitial || !!ctx.isPasswordExpired) && !ctx.passwordChanged,
-      steps: [{ id: "prepare-password-rules" }, { id: "create-password-form" }],
+      steps: [...passwordChangeSchema],
     },
     // No abort path from create-password-form anymore — the SetPasswordForm
     // has no alt-actions. The `{ break }` gate is retained for the wrapping
