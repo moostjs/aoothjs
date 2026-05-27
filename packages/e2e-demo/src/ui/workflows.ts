@@ -85,12 +85,6 @@ const LOGIN_USERS: ReadonlyArray<TestCred> = [
       "Variant config flags `profileMissingFields = ['firstName','lastName']` so the profile-complete step fires.",
   },
   {
-    username: "t1_two_tenants",
-    password: PWD,
-    notes:
-      "Shares an email with `t2_two_tenants` — the tenant-select variant should offer both as picker options.",
-  },
-  {
     username: "_admin_inviter",
     password: PWD,
     notes:

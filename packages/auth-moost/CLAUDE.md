@@ -233,7 +233,7 @@ protected resolveRedirect(ctx): string | undefined { ... }
 
 If a customer needs async logic in a helper, they override the **calling @Step**, not the helper. Widening helper return types would force `await` at default call sites and defeat the sync fast path.
 
-`load*` methods (`loadTenants`, `loadPersonas`, `loadActiveSessions`) stay async because they hit external stores — but they're **data fetchers**, not policy resolvers. Do NOT rename them to `resolveXxx`.
+`load*` methods (e.g. `loadActiveSessions`) stay async because they hit external stores — but they're **data fetchers**, not policy resolvers. Do NOT rename them to `resolveXxx`.
 
 ## DI scope — SINGLETON by default
 
@@ -299,11 +299,8 @@ class MyLogin extends LoginWorkflow {
     return { profileCompleteRequired: this.tenantRequiresProfile(), consentMarketing: false };
   }
 
-  protected async resolveMultiContext(ctx: LoginWfCtx) {
-    return {
-      tenantSelect: await this.tenantsDb.userHasMultiple(ctx.username!),
-      personaSelect: false,
-    };
+  protected async resolveSessionPolicy(ctx: LoginWfCtx) {
+    return { concurrencyLimit: await this.tenantsDb.concurrencyLimitFor(ctx.username!) };
   }
 }
 ```
@@ -338,7 +335,7 @@ Subclass MUST:
 - ❌ Per-method `@Public()` when the class is already `@Public()`.
 - ❌ Duck-typed casts on wooks event-context objects.
 - ❌ Repeating `!ctx.aborted` / `!!ctx.username` on every downstream step — use `{ break: ... }` gates.
-- ❌ Renaming `loadTenants` / `loadPersonas` / `loadActiveSessions` to `resolveXxx` (data fetchers, not policy resolvers).
+- ❌ Renaming `loadActiveSessions`-style data fetchers to `resolveXxx` (data fetchers, not policy resolvers).
 - ❌ Using `resolveXxx` as a `@Step` id or `@Step` handler method name.
 - ❌ Widening helper return types (`resolveRecoveryUrl`, `resolveRedirect`) to `T | Promise<T>` — stay strictly sync; consumers needing async override the calling @Step.
 - ❌ `ctx.foo = undefined` to clear an optional ctx field at the end of a @Step body. The wf state-token persistence layer JSON-schema-validates the serialized ctx and rejects `undefined` (allowed types: string / number / boolean / null / array / object). Use `delete ctx.foo` instead — drops the key from the payload cleanly. Bare-boolean / nullable-string fields can also assign `false` / `null` if a forward step relies on presence rather than reads the field directly.

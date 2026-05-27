@@ -210,9 +210,6 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
   "terms-bump": {
     mfaCtx: { mfaMode: "disabled" },
   },
-  "multi-context": {
-    policy: { multiContext: { tenantSelect: true, personaSelect: true } },
-  },
   concurrency: {
     policy: { sessionPolicy: { concurrencyLimit: { max: 1, onLimit: "kickPrompt" } } },
   },
@@ -232,7 +229,6 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
       // (see `VARIANT_PENDING_CONSENTS['full']` in `app.ts`); `profileCompleteRequired`
       // moved onto the dedicated `profile.required` knob.
       profile: { required: true },
-      multiContext: { tenantSelect: true, personaSelect: true },
       sessionPolicy: { concurrencyLimit: { max: 1, onLimit: "kickPrompt" } },
     },
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["sms", "email", "totp"] },

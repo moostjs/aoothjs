@@ -144,10 +144,6 @@ export interface LoginWfCtx extends AuthWfCtxBase {
   mfaConfig?: {
     backupCodes: boolean;
   };
-  multiContext?: {
-    tenantSelect: boolean;
-    personaSelect: boolean;
-  };
   sessionPolicy?: {
     concurrencyLimit?: ConcurrencyLimitOptions;
   };
@@ -258,12 +254,6 @@ export interface LoginWfCtx extends AuthWfCtxBase {
   // (mirrored onto `ctx.consents` on `AuthWfCtxBase`).
   profileMissingFields?: string[];
 
-  // Tenant / persona:
-  availableTenants?: Array<{ id: string; name: string }>;
-  selectedTenantId?: string;
-  availablePersonas?: Array<{ id: string; label: string }>;
-  selectedPersonaId?: string;
-
   // Session policy:
   riskStepUpReason?: string;
   activeSessions?: number;
@@ -353,7 +343,6 @@ export interface LoginPolicyOverrides {
   finalize?: NonNullable<LoginWfCtx["finalize"]>;
   guards?: NonNullable<LoginWfCtx["guards"]>;
   mfaConfig?: NonNullable<LoginWfCtx["mfaConfig"]>;
-  multiContext?: NonNullable<LoginWfCtx["multiContext"]>;
   sessionPolicy?: NonNullable<LoginWfCtx["sessionPolicy"]>;
 }
 
@@ -665,20 +654,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
   }
 
   /**
-   * Resolve the multi-context policy (tenantSelect / personaSelect prompts).
-   * Override to require a tenant/persona pick when the user has more than one.
-   * Sync/async friendly.
-   */
-  protected resolveMultiContext(
-    _ctx: LoginWfCtx,
-  ): NonNullable<LoginWfCtx["multiContext"]> | Promise<NonNullable<LoginWfCtx["multiContext"]>> {
-    return {
-      tenantSelect: false,
-      personaSelect: false,
-    };
-  }
-
-  /**
    * Resolve the disclosure text rendered beneath the channel input field on
    * `AskEmailForm` / `AskPhoneForm` at ask-time — BEFORE the user submits
    * their email/phone. Default returns a TCPA / PECR / CASL / GDPR-safe
@@ -819,19 +794,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
     return undefined;
   }
 
-  @Step("prepare-multi-context")
-  prepareMultiContext(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
-    const result = this.resolveMultiContext(ctx);
-    if (result instanceof Promise) {
-      return result.then((resolved) => {
-        ctx.multiContext = resolved;
-        return undefined;
-      });
-    }
-    ctx.multiContext = result;
-    return undefined;
-  }
-
   @Step("prepare-session-policy")
   prepareSessionPolicy(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
     const result = this.resolveSessionPolicy(ctx);
@@ -896,7 +858,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
     { id: "prepare-finalize" },
     { id: "prepare-guards" },
     { id: "prepare-mfa-config" },
-    { id: "prepare-multi-context" },
     { id: "prepare-session-policy" },
 
     // Phase 1 alt-cred paths — stubs registered for override; never executed.
@@ -1062,22 +1023,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
       // idempotency.
       id: "persist-consents",
       condition: (ctx) => !!ctx.consentsDecidedAt && !ctx.consentsPersisted,
-    },
-
-    // Phase 7 tenant / persona selection:
-    {
-      id: "tenant-select",
-      condition: (ctx) =>
-        !!ctx.multiContext?.tenantSelect &&
-        !ctx.selectedTenantId &&
-        (ctx.availableTenants?.length ?? 0) > 1,
-    },
-    {
-      id: "persona-select",
-      condition: (ctx) =>
-        !!ctx.multiContext?.personaSelect &&
-        !ctx.selectedPersonaId &&
-        (ctx.availablePersonas?.length ?? 0) > 1,
     },
 
     // Phase 8 session policy:
@@ -2040,54 +1985,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
     });
   }
 
-  // ── Phase 7: tenant / persona ─────────────────────────────────────────
-  @Step("tenant-select")
-  async tenantSelect(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
-    if (!ctx.availableTenants && ctx.username) {
-      ctx.availableTenants = await this.loadTenants(ctx.username);
-    }
-    const wf = useAtscriptWf(this.opts.forms.tenantSelect);
-    const input = wf.resolveInput() as { tenantId: string };
-    const ok = (ctx.availableTenants ?? []).some((t) => t.id === input.tenantId);
-    if (!ok) {
-      throw wf.requireInput({ errors: { tenantId: "Unknown tenant" } });
-    }
-    ctx.selectedTenantId = input.tenantId;
-    return undefined;
-  }
-
-  /**
-   * Resolves the user's available tenants. Default: empty array. Consumers
-   * who enable `multiContext.tenantSelect` must override this to return the
-   * tenants the user belongs to.
-   */
-  protected async loadTenants(_username: string): Promise<Array<{ id: string; name: string }>> {
-    return [];
-  }
-
-  @Step("persona-select")
-  async personaSelect(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
-    if (!ctx.availablePersonas && ctx.username) {
-      ctx.availablePersonas = await this.loadPersonas(ctx.username);
-    }
-    const wf = useAtscriptWf(this.opts.forms.personaSelect);
-    const input = wf.resolveInput() as { personaId: string };
-    const ok = (ctx.availablePersonas ?? []).some((p) => p.id === input.personaId);
-    if (!ok) {
-      throw wf.requireInput({ errors: { personaId: "Unknown persona" } });
-    }
-    ctx.selectedPersonaId = input.personaId;
-    return undefined;
-  }
-
-  /**
-   * Resolves the user's available personas. Default: empty array. Consumers
-   * who enable `multiContext.personaSelect` must override this.
-   */
-  protected async loadPersonas(_username: string): Promise<Array<{ id: string; label: string }>> {
-    return [];
-  }
-
   // ── Phase 8: session policy ───────────────────────────────────────────
   @Step("load-active-sessions")
   async loadActiveSessionsStep(@WorkflowParam("context") ctx: LoginWfCtx): Promise<undefined> {
@@ -2205,7 +2102,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
       workflow: "auth/login/flow",
       method: ctx.mfaMethod ?? (ctx.mfaChecked ? "mfa.skipped" : "password"),
       ip: this.resolveClientIp(),
-      ...(ctx.selectedTenantId && { tenantId: ctx.selectedTenantId }),
     });
     return undefined;
   }

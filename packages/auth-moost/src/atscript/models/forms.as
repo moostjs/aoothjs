@@ -558,42 +558,6 @@ export interface TermsBumpForm extends WithInlineConsentForm {
 }
 
 /**
- * Tenant picker — `tenantId` matches one of `ctx.availableTenants[].id`.
- * Options are built from `ctx.availableTenants` (set by the workflow's
- * `tenant-select` step / `loadTenants` hook); `@wf.context.pass` whitelists
- * the key so it survives `extractPassContext`.
- */
-@meta.label 'Choose a tenant'
-@meta.description 'Pick which tenant to sign in to.'
-@wf.context.pass 'availableTenants'
-export interface TenantSelectForm {
-    @ui.form.order 10
-    @ui.form.type 'radio'
-    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.availableTenants) ? ctx.availableTenants.map(t => ({ key: t.id, label: t.name })) : []'
-    @meta.label 'Tenant'
-    @meta.required
-    tenantId: string
-}
-
-/**
- * Persona picker — `personaId` matches one of `ctx.availablePersonas[].id`.
- * Options are built from `ctx.availablePersonas` (set by the workflow's
- * `persona-select` step / `loadPersonas` hook); `@wf.context.pass` whitelists
- * the key so it survives `extractPassContext`.
- */
-@meta.label 'Choose a persona'
-@meta.description 'Pick which persona to use for this session.'
-@wf.context.pass 'availablePersonas'
-export interface PersonaSelectForm {
-    @ui.form.order 10
-    @ui.form.type 'radio'
-    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.availablePersonas) ? ctx.availablePersonas.map(p => ({ key: p.id, label: p.label })) : []'
-    @meta.label 'Persona'
-    @meta.required
-    personaId: string
-}
-
-/**
  * Concurrency-limit kick prompt — user picks whether to log out other
  * sessions and continue. The user backs out of the prompt by navigating
  * away (the wf state token expires per the engine's TTL); no in-form

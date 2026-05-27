@@ -145,10 +145,10 @@ export interface BuildTestAppOptions {
   inviteWorkflowClass?: new (...args: never[]) => unknown;
   /**
    * Replace the default `DemoLoginWorkflow` with a consumer-supplied class.
-   * Mirrors `inviteWorkflowClass`. Most tests want the demo's `loadTenants` /
-   * `loadPersonas` / `credentials`-injection overrides preserved — prefer
-   * `loginMfaCtx` (below) for the common "just set mfa values" case, and
-   * use this knob only when you also need a full subclass override.
+   * Mirrors `inviteWorkflowClass`. Most tests want the demo's
+   * `credentials`-injection override preserved — prefer `loginMfaCtx` (below)
+   * for the common "just set mfa values" case, and use this knob only when
+   * you also need a full subclass override.
    */
   loginWorkflowClass?: new (...args: never[]) => unknown;
   /**

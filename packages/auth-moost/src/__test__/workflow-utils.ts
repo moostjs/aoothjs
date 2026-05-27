@@ -820,12 +820,6 @@ function buildHarnessLoginClass(deps: HarnessLoginDeps): new (...args: never[]) 
       if (policy?.mfaConfig) return policy.mfaConfig;
       return super.resolveMfaConfig(ctx);
     }
-    protected override resolveMultiContext(
-      ctx: LoginWfCtx,
-    ): NonNullable<LoginWfCtx["multiContext"]> | Promise<NonNullable<LoginWfCtx["multiContext"]>> {
-      if (policy?.multiContext) return policy.multiContext;
-      return super.resolveMultiContext(ctx);
-    }
     protected override resolveSessionPolicy(
       ctx: LoginWfCtx,
     ):

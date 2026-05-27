@@ -54,9 +54,6 @@ export interface SeedFixtures {
     t1_active_sessions: SeededUser;
     t1_terms_old: SeededUser;
     t1_profile_incomplete: SeededUser;
-    t1_two_tenants: SeededUser;
-    /** Parallel `tenant-b` row sharing email with `t1_two_tenants`. */
-    t2_two_tenants: SeededUser;
     _admin_inviter: SeededUser;
     t2_olivia: SeededUser;
     t2_oscar: SeededUser;
@@ -80,10 +77,6 @@ export interface SeedFixtures {
 }
 
 const PASSWORD = "Password1!";
-
-/** Two seeded users (`t1_two_tenants` + `t2_two_tenants`) share this email
- * so the tenant-select variant can resolve it to both rows. */
-export const TWO_TENANTS_SHARED_EMAIL = "two_tenants@shared.test";
 
 interface UserSpec {
   handle: keyof SeedFixtures["users"];
@@ -133,34 +126,10 @@ export async function seedAll(handle: AppHandle): Promise<SeedFixtures> {
     tables.tenants.insertOne({ name: "Globex", plan: "enterprise" }),
   );
 
-  // Populate the per-username tenants buffer consulted by
-  // `DemoLoginWorkflow.loadTenants()`. `t1_alice` gets a single tenant (so the
-  // `tenant-select` step is skipped — WF-LOGIN tenant-skip story); the shared
-  // `two_tenants@shared.test` username gets both so the multi-context variant
-  // renders the picker.
-  /* eslint-disable no-underscore-dangle -- intentional globalThis slot */
-  const tenantsBuf = (globalThis as { __aoothE2eTenants?: Map<string, string[]> })
-    .__aoothE2eTenants;
-  tenantsBuf?.set("t1_alice", [tenantAId]);
-  tenantsBuf?.set("t1_two_tenants", [tenantAId, tenantBId]);
-  tenantsBuf?.set("t2_two_tenants", [tenantAId, tenantBId]);
-  // `t1_iris` belongs to BOTH tenants so the multi-context picker fires under
-  // the `full` variant. Symbolic ids (not the DB tenant uuids) — the
-  // `tenant-select` step validates against this buffer, not the tenants table,
-  // so e2e tests can submit a predictable string. See WF-LOGIN-032.
-  tenantsBuf?.set("t1_iris", ["tenant-a", "tenant-b"]);
-  // Personas buffer — only `t1_iris` carries multiple personas (length > 1 is
-  // the schema condition for the `persona-select` step). Mirrors tenants.
-  const personasBuf = (
-    globalThis as { __aoothE2ePersonas?: Map<string, Array<{ id: string; label: string }>> }
-  ).__aoothE2ePersonas;
-  personasBuf?.set("t1_iris", [
-    { id: "persona-employee", label: "Employee" },
-    { id: "persona-contractor", label: "Contractor" },
-  ]);
   // Profile-missing-fields buffer — drives the `profile-complete` step for
   // users that have no real DB column for this state. `DemoLoginWorkflow.credentials`
   // reads this map after a successful login and injects the fields onto ctx.
+  /* eslint-disable no-underscore-dangle -- intentional globalThis slot */
   const profileMissingBuf = (
     globalThis as { __aoothE2eProfileMissingFields?: Map<string, string[]> }
   ).__aoothE2eProfileMissingFields;
@@ -371,14 +340,6 @@ export async function seedAll(handle: AppHandle): Promise<SeedFixtures> {
       roles: ["member"],
     },
     {
-      handle: "t1_two_tenants",
-      username: "t1_two_tenants",
-      email: TWO_TENANTS_SHARED_EMAIL,
-      tenantId: tenantAId,
-      departmentId: deptA.eng,
-      roles: ["member"],
-    },
-    {
       // `_super` lacks `auth.invite/start` (scope is `none` but its allow-list
       // omits the resource), so invite stories need a real `admin` user.
       handle: "_admin_inviter",
@@ -395,14 +356,6 @@ export async function seedAll(handle: AppHandle): Promise<SeedFixtures> {
       tenantId: tenantBId,
       departmentId: deptB.eng,
       roles: ["admin"],
-    },
-    {
-      handle: "t2_two_tenants",
-      username: "t2_two_tenants",
-      email: TWO_TENANTS_SHARED_EMAIL,
-      tenantId: tenantBId,
-      departmentId: deptB.eng,
-      roles: ["member"],
     },
     {
       handle: "t2_oscar",

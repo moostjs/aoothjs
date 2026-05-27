@@ -47,7 +47,6 @@ export const LOGIN_VARIANTS = {
   'consent-array': { mfaCtx: { mfaMode: 'disabled' } /* consent universe in VARIANT_PENDING_CONSENTS */ },
   'terms-bump':    { mfaCtx: { mfaMode: 'disabled' } /* + VARIANT_PENDING_CONSENTS['terms-bump'] */ },
   'acceptance':    { profile: { required: true } /* + VARIANT_PENDING_CONSENTS['acceptance'] */ },
-  'multi-context': { multiContext: { tenantSelect: true, personaSelect: true } },
   'concurrency':   { sessionPolicy: { concurrencyLimit: { max: 1, onLimit: 'kickPrompt' } } },
   'full':          { profile: { required: true }, /* + every flag + VARIANT_PENDING_CONSENTS['full'] */ },
 };
@@ -83,7 +82,6 @@ Existing 14 users cover the basics. We need to add:
 | `t1_active_sessions`    | 2 issued sessions (concurrency test)                       | Profile H                      |
 | `t1_frank`              | Plain user used to exercise consent prompts (no MFA/trust) | L-F + consent-array variants   |
 | `t1_profile_incomplete` | `profileMissingFields=['firstName','lastName']`            | L-F profile-completion         |
-| `t1_two_tenants`        | Member of tenant A + tenant B                              | Profile G                      |
 | `_admin_inviter`        | Has `@ArbacAction('start')` on `auth.invite`               | All invite admin-side stories  |
 
 ### 2.3 Email/SMS capture HTTP endpoint
@@ -144,7 +142,6 @@ Per the infra audit:
 | L-D | Device trust       | `deviceTrust.enabled+skipsMfa: true`                                                                                                                       |
 | L-E | Password guards    | `passwordInitial+emailVerifiedRequired: true`, no MFA                                                                                                      |
 | L-F | Profile completion | `policy.profile.required: true` → `ProfileCompleteForm`                                                                                                    |
-| L-G | Multi-context      | tenant + persona pickers                                                                                                                                   |
 | L-H | Concurrency        | `kickPrompt` policy                                                                                                                                        |
 | L-I | Full               | every flag on                                                                                                                                              |
 | L-J | Redirect           | `finalize.redirect: 'home'`                                                                                                                                |
@@ -181,8 +178,6 @@ Per the infra audit:
 | WF-LOGIN-022               | P1   | L-E           | jack clicks `logout` on SetPassword → aborts                                                                                                                                             | finish envelope has `aborted: true`, no tokens                                                                                                                             |
 | WF-LOGIN-024               | P1   | L-F+K         | frank submits `TermsBumpForm` without ticking required terms row → form-level error, no tokens                                                                                           | `errors.consents` carries descriptor's `required` string verbatim; mandatory-by-message defense                                                                            |
 | WF-LOGIN-025               | P1   | L-F+K         | optional marketing row renders unchecked + tickable; tick terms only + submit completes workflow                                                                                         | `AsConsentArray` renders 2 checkboxes (terms required + marketing optional); marketing event saved with `accepted:false`                                                   |
-| WF-LOGIN-026               | P0   | L-G           | grace → tenant-select → persona-select → tokens                                                                                                                                          | both forms rendered, options populated                                                                                                                                     |
-| WF-LOGIN-027               | P2   | L-G           | only 1 tenant → tenant-select skipped                                                                                                                                                    | form never paused                                                                                                                                                          |
 | WF-LOGIN-028               | P1   | L-H           | henry with 1 active session, `max=1` → kickPrompt                                                                                                                                        | "Log out others" form visible                                                                                                                                              |
 | WF-LOGIN-029               | P1   | L-H           | clicks "Cancel" on kickPrompt → aborted                                                                                                                                                  | no tokens issued                                                                                                                                                           |
 | WF-LOGIN-030               | P2   | L-H           | `onLimit: 'reject'` → HTTP 429 immediately                                                                                                                                               | no form, error banner                                                                                                                                                      |

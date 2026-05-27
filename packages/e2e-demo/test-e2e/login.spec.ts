@@ -1166,33 +1166,6 @@ test.describe("LoginWorkflow / variant=device-trust-short-ttl (P2)", () => {
   });
 });
 
-test.describe("LoginWorkflow / variant=multi-context (P2)", () => {
-  // BRANCH: `tenant-select` step condition includes `availableTenants.length
-  // > 1` (login.workflow.ts L478). Alice is seeded with exactly one tenant
-  // (`__aoothE2eTenants → ['tenant_a']` in `seed.ts` L140), so even with
-  // `tenantSelect: true` the step is skipped. `persona-select` uses the
-  // same `> 1` gate AND the default `loadPersonas` returns `[]`, so it also
-  // skips → workflow proceeds straight to `issue` and finishes with tokens.
-  // No `[name=tenantId]` / `[name=personaId]` form input EVER appears.
-  test("WF-LOGIN-027: alice has 1 tenant → tenant-select skipped, tokens issued", async ({
-    page,
-  }) => {
-    await page.goto(wfUrl(LOGIN_WF, "multi-context"));
-    await fillField(page, "username", USERS.alice.username);
-    await fillField(page, "password", USERS.alice.password);
-    await page.getByRole("button", { name: "Sign in", exact: true }).click();
-
-    const envelope = (await readFinishEnvelope(page)) as { data?: { accessToken?: string } };
-    expect(typeof envelope.data?.accessToken).toBe("string");
-    expect((envelope.data?.accessToken ?? "").length).toBeGreaterThan(0);
-
-    // Hard negative: neither form was ever rendered. Asserted AFTER the
-    // finish envelope lands so we know the workflow ran to completion.
-    await expect(page.locator('[name="tenantId"]')).toHaveCount(0);
-    await expect(page.locator('[name="personaId"]')).toHaveCount(0);
-  });
-});
-
 test.describe("LoginWorkflow / variant=concurrency-reject (P2)", () => {
   // BRANCH: `concurrency-limit` step → `cfg.onLimit === 'reject'` → calls
   // `wf.requireInput({ formMessage: 'Session limit reached' })`. The wf
@@ -1329,28 +1302,14 @@ test.describe("LoginWorkflow / variant=full (P2)", () => {
     await fillField(page, "lastName", "Tester");
     await submitForm(page);
 
-    // 10. TenantSelectForm — iris's buffer holds symbolic ids ("tenant-a",
-    // "tenant-b") so the test can type a deterministic value. The form is a
-    // free-text input (no select/options annotations on TenantSelectForm); the
-    // workflow validates against `ctx.availableTenants[].id` server-side.
-    await waitForFormInput(page, "tenantId");
-    await fillField(page, "tenantId", "tenant-a");
-    await submitForm(page);
-
-    // 11. PersonaSelectForm — same pattern, free-text input validated against
-    // the buffer-populated personas list.
-    await waitForFormInput(page, "personaId");
-    await fillField(page, "personaId", "persona-employee");
-    await submitForm(page);
-
-    // 12. ConcurrencyLimitForm (kickPrompt) — iris has 1 active session
+    // 10. ConcurrencyLimitForm (kickPrompt) — iris has 1 active session
     // seeded, `full` variant has `concurrencyLimit: { max: 1, onLimit:
     // 'kickPrompt' }`, so `1 >= 1` → the kick form pauses. Click
     // "Log out other sessions" so the schema resumes through `issue`.
     await waitForFormInput(page, "action");
     await page.getByRole("button", { name: "Log out other sessions" }).click();
 
-    // 13. Finish envelope — `full` variant does NOT set `finalize.redirect`,
+    // 11. Finish envelope — `full` variant does NOT set `finalize.redirect`,
     // so the `issue` step's data envelope stands.
     const envelope = (await readFinishEnvelope(page)) as {
       finished: boolean;

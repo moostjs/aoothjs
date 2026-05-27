@@ -21,12 +21,10 @@ import {
   EnrollPickMethodForm,
   LoginCredentialsForm,
   MfaCodeForm,
-  PersonaSelectForm,
   PincodeForm,
   ProfileCompleteForm,
   Select2faForm,
   SetPasswordForm,
-  TenantSelectForm,
   TermsBumpForm,
 } from "../atscript/models/forms.as";
 
@@ -66,12 +64,10 @@ export interface LoginWorkflowOpts {
     enrollPickMethod?: TAtscriptAnnotatedType;
     loginCredentials?: TAtscriptAnnotatedType;
     mfaCode?: TAtscriptAnnotatedType;
-    personaSelect?: TAtscriptAnnotatedType;
     pincode?: TAtscriptAnnotatedType;
     profileComplete?: TAtscriptAnnotatedType;
     select2fa?: TAtscriptAnnotatedType;
     setPassword?: TAtscriptAnnotatedType;
-    tenantSelect?: TAtscriptAnnotatedType;
     termsBump?: TAtscriptAnnotatedType;
   };
 }
@@ -97,12 +93,10 @@ export interface ResolvedLoginWorkflowOpts {
     enrollPickMethod: TAtscriptAnnotatedType;
     loginCredentials: TAtscriptAnnotatedType;
     mfaCode: TAtscriptAnnotatedType;
-    personaSelect: TAtscriptAnnotatedType;
     pincode: TAtscriptAnnotatedType;
     profileComplete: TAtscriptAnnotatedType;
     select2fa: TAtscriptAnnotatedType;
     setPassword: TAtscriptAnnotatedType;
-    tenantSelect: TAtscriptAnnotatedType;
     termsBump: TAtscriptAnnotatedType;
   };
 }
@@ -130,12 +124,10 @@ export function mergeLoginOpts(opts: LoginWorkflowOpts = {}): ResolvedLoginWorkf
       enrollPickMethod: EnrollPickMethodForm as unknown as TAtscriptAnnotatedType,
       loginCredentials: LoginCredentialsForm as unknown as TAtscriptAnnotatedType,
       mfaCode: MfaCodeForm as unknown as TAtscriptAnnotatedType,
-      personaSelect: PersonaSelectForm as unknown as TAtscriptAnnotatedType,
       pincode: PincodeForm as unknown as TAtscriptAnnotatedType,
       profileComplete: ProfileCompleteForm as unknown as TAtscriptAnnotatedType,
       select2fa: Select2faForm as unknown as TAtscriptAnnotatedType,
       setPassword: SetPasswordForm as unknown as TAtscriptAnnotatedType,
-      tenantSelect: TenantSelectForm as unknown as TAtscriptAnnotatedType,
       termsBump: TermsBumpForm as unknown as TAtscriptAnnotatedType,
       ...opts.forms,
     },

@@ -198,15 +198,6 @@ const g = globalThis as {
   __aoothE2eSms?: AuthSmsEvent[];
   __aoothE2eBackupCodes?: Map<string, string[]>;
   __aoothE2eActiveSessions?: Map<string, number>;
-  // username → list of tenant ids the user belongs to. Populated by `seed.ts`
-  // and consulted by `DemoLoginWorkflow.loadTenants()` to drive the
-  // tenant-select step (skipped when length ≤ 1).
-  __aoothE2eTenants?: Map<string, string[]>;
-  // username → list of persona options the user can pick from. Populated by
-  // `seed.ts` and consulted by `DemoLoginWorkflow.loadPersonas()` to drive
-  // the `persona-select` step (skipped when length ≤ 1). Mirrors the tenants
-  // buffer pattern. See WF-LOGIN-032.
-  __aoothE2ePersonas?: Map<string, Array<{ id: string; label: string }>>;
   // username → profile fields that must be collected before issue. Populated
   // by `seed.ts` for users that have no real DB column carrying this state
   // and consulted by `DemoLoginWorkflow.credentials()` to inject
@@ -235,8 +226,6 @@ g.__aoothE2eEmails ??= [];
 g.__aoothE2eSms ??= [];
 g.__aoothE2eBackupCodes ??= new Map();
 g.__aoothE2eActiveSessions ??= new Map();
-g.__aoothE2eTenants ??= new Map();
-g.__aoothE2ePersonas ??= new Map();
 g.__aoothE2eProfileMissingFields ??= new Map();
 g.__aoothE2eAuditEvents ??= [];
 g.__aoothE2eAllowDuplicateInvites ??= false;
@@ -246,11 +235,6 @@ const sharedEmailsBuffer: AuthEmailEvent[] = g.__aoothE2eEmails;
 const sharedSmsBuffer: AuthSmsEvent[] = g.__aoothE2eSms;
 const sharedBackupCodesBuffer: Map<string, string[]> = g.__aoothE2eBackupCodes;
 const sharedActiveSessionsBuffer: Map<string, number> = g.__aoothE2eActiveSessions;
-const sharedTenantsBuffer: Map<string, string[]> = g.__aoothE2eTenants;
-const sharedPersonasBuffer: Map<
-  string,
-  Array<{ id: string; label: string }>
-> = g.__aoothE2ePersonas;
 const sharedProfileMissingFieldsBuffer: Map<string, string[]> = g.__aoothE2eProfileMissingFields;
 const sharedAuditEventsBuffer: AuditEvent[] = g.__aoothE2eAuditEvents;
 const sharedConsentLogBuffer: Map<string, ConsentEvent[]> = g.__aoothE2eConsentLog;
@@ -648,14 +632,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       if (variant?.policy?.mfaConfig) return variant.policy.mfaConfig;
       return super.resolveMfaConfig(ctx) as NonNullable<LoginWfCtx["mfaConfig"]>;
     }
-    protected override resolveMultiContext(
-      ctx: LoginWfCtx,
-    ): NonNullable<LoginWfCtx["multiContext"]> {
-      if (opts.loginPolicy?.multiContext) return opts.loginPolicy.multiContext;
-      const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
-      if (variant?.policy?.multiContext) return variant.policy.multiContext;
-      return super.resolveMultiContext(ctx) as NonNullable<LoginWfCtx["multiContext"]>;
-    }
     protected override resolveSessionPolicy(
       ctx: LoginWfCtx,
     ): NonNullable<LoginWfCtx["sessionPolicy"]> {
@@ -671,10 +647,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     // (most seeded users have no MFA enrolled and the e2e harness's `loginAs`
     // helper expects to finish login without a prompt). This default fires
     // BOTH when no variant is active (UI tests) AND when an active variant
-    // omits `mfaCtx` (e.g. `acceptance` / `concurrency` / `multi-context` /
-    // `redirect-home` / `choice` — variants exercising non-MFA concerns that
-    // need MFA out of the flow so the test step reaches the form under test
-    // without an MFA prompt blocking it).
+    // omits `mfaCtx` (e.g. `acceptance` / `concurrency` / `redirect-home` /
+    // `choice` — variants exercising non-MFA concerns that need MFA out of
+    // the flow so the test step reaches the form under test without an MFA
+    // prompt blocking it).
     @Step("prepare-mfa-setup")
     @Public()
     override prepareMfaSetup(
@@ -700,24 +676,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     protected override async loadActiveSessions(username: string): Promise<number> {
       return sharedActiveSessionsBuffer.get(username) ?? 0;
     }
-    // Drives the `tenant-select` step: returns the user's tenants from the
-    // globalThis-anchored buffer populated by `seed.ts`. Single-tenant users
-    // (length ≤ 1) cause the schema to skip the step entirely.
-    protected override async loadTenants(
-      username: string,
-    ): Promise<Array<{ id: string; name: string }>> {
-      const ids = sharedTenantsBuffer.get(username) ?? [];
-      return ids.map((id) => ({ id, name: id }));
-    }
-    // Drives the `persona-select` step: returns the user's personas from the
-    // globalThis-anchored buffer populated by `seed.ts`. Mirrors `loadTenants`
-    // — single-persona users (length ≤ 1) skip the step entirely. Needed by
-    // WF-LOGIN-032 so iris exercises the persona pause.
-    protected override async loadPersonas(
-      username: string,
-    ): Promise<Array<{ id: string; label: string }>> {
-      return sharedPersonasBuffer.get(username) ?? [];
-    }
     // After the bundled `credentials` step authenticates the user, inject
     // `ctx.profileMissingFields` from the demo's per-user buffer. There is no
     // DB column carrying this state, so this override is the bridge between
@@ -729,17 +687,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
         const missing = sharedProfileMissingFieldsBuffer.get(ctx.username);
         if (missing && missing.length > 0) {
           ctx.profileMissingFields = [...missing];
-        }
-        // Pre-populate tenant + persona arrays so the `tenant-select` and
-        // `persona-select` schema conditions (gated on `length > 1`) can
-        // evaluate BEFORE the step bodies run. The library's bundled step
-        // bodies load these on first entry, but the schema gate is evaluated
-        // first — so without this pre-fetch the steps are skipped.
-        if (!ctx.availableTenants) {
-          ctx.availableTenants = await this.loadTenants(ctx.username);
-        }
-        if (!ctx.availablePersonas) {
-          ctx.availablePersonas = await this.loadPersonas(ctx.username);
         }
       }
       return result;
@@ -1197,10 +1144,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     // Same lifecycle for active-session counts (used by `loadActiveSessions`
     // override below to drive the `concurrency-limit` step).
     sharedActiveSessionsBuffer.clear();
-    // Tenants list keyed by username — repopulated per-seed by `seed.ts`.
-    sharedTenantsBuffer.clear();
-    // Personas list keyed by username — mirrors tenants. Re-populated per-seed.
-    sharedPersonasBuffer.clear();
     // Profile-missing-fields list keyed by username — same lifecycle.
     sharedProfileMissingFieldsBuffer.clear();
     // Captured `audit(event)` events — cleared so the next test starts clean.
