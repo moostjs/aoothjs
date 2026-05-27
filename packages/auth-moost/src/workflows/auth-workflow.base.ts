@@ -385,6 +385,14 @@ export abstract class AuthWorkflowBase {
   protected abstract get consentStore(): ConsentStore;
 
   /**
+   * `UserService` access for inherited `preparePasswordRules`. Same satisfy-
+   * via-field pattern as `consentStore` above — each subclass's
+   * `protected readonly users: UserService` constructor-initialized field
+   * fulfils this abstract getter.
+   */
+  protected abstract get users(): UserService;
+
+  /**
    * Workflow ID tag passed to `ConsentStore.getPendingConsents(...)` by the
    * inherited `prepareConsents` @Step. Customer impls key consent history by
    * (user, workflow) so each WF must declare its own canonical id. Subclasses
@@ -619,6 +627,38 @@ export abstract class AuthWorkflowBase {
       });
     }
     (ctx.consents ??= {}).pending = result;
+    return undefined;
+  }
+
+  /**
+   * Stash transferable password-policy rules onto `ctx.password.policies` so
+   * the front-end can render rule hints next to the SetPasswordForm. Pure
+   * read of the user-service policy registry — no behavior change per call.
+   * Hoisted from `LoginWorkflow` + `InviteWorkflow` (identical body); same
+   * `@Inherit()`-based subclass-registration mechanics as `prepareConsents`
+   * above. `@Public()` for the invite case (class is NOT class-`@Public`);
+   * redundant-but-harmless on login/recovery.
+   */
+  @Step("prepare-password-rules")
+  @Public()
+  preparePasswordRules(
+    @WorkflowParam("context") ctx: AuthWfCtxBase,
+  ): undefined | Promise<undefined> {
+    const policies = this.users.getTransferablePolicies();
+    (ctx.password ??= {}).policies = policies;
+    return undefined;
+  }
+
+  /**
+   * Workflow entry step. Default is a pure no-op — concrete workflows
+   * override only when they have init-time setup (e.g. `InviteWorkflow`
+   * writes `ctx.accept.profileFormPresent` from a runtime feature check).
+   * Same `@Inherit()`-based registration mechanics as the sibling steps
+   * above; `@Public()` for the invite case.
+   */
+  @Step("init")
+  @Public()
+  init(@WorkflowParam("context") _ctx: AuthWfCtxBase): undefined | Promise<undefined> {
     return undefined;
   }
 

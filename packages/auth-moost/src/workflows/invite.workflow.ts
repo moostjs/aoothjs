@@ -814,15 +814,6 @@ export class InviteWorkflow extends AuthWorkflowBase {
     return undefined;
   }
 
-  // ── Phase B: preparePasswordRules ─────────────────────────────────────
-  @Step("prepare-password-rules")
-  @Public()
-  preparePasswordRules(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
-    const policies = this.users.getTransferablePolicies();
-    (ctx.password ??= {}).policies = policies;
-    return undefined;
-  }
-
   // ── Phase B: createPasswordForm ───────────────────────────────────────
   @Step("create-password-form")
   @Public()

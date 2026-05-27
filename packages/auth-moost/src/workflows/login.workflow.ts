@@ -942,21 +942,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
 
   // ── Phase 0 ───────────────────────────────────────────────────────────
   /**
-   * First step of the workflow; remains as a no-op override hook for
-   * consumers (e.g. seeding pre-flight ctx fields, capturing request metadata).
-   * The pre-PR policy-pojo-on-ctx stash was dropped — policy now lives on
-   * `ctx.<group>` populated by the dedicated `prepare-<group>` steps.
-   *
-   * Return type is `undefined | Promise<undefined>` so consumers can override
-   * with `async init(...)` without the default fast-path paying a Promise
-   * allocation (the wf engine awaits only when the return value is a Promise).
-   */
-  @Step("init")
-  init(@WorkflowParam("context") _ctx: LoginWfCtx): undefined | Promise<undefined> {
-    return undefined;
-  }
-
-  /**
    * Prepare MFA setup: writes `ctx.mfa.mode`, `ctx.mfa.availableTransports`,
    * and (when the user is resolvable) pre-selects `ctx.mfa.current` from the
    * existing-user `defaultMethod` or the single-available-transport auto-pick.
@@ -1615,15 +1600,6 @@ export class LoginWorkflow extends AuthWorkflowBase {
   }
 
   // ── Phase 5: forced password change ───────────────────────────────────
-  @Step("prepare-password-rules")
-  preparePasswordRules(@WorkflowParam("context") ctx: LoginWfCtx): undefined | Promise<undefined> {
-    // Stash transferable policies onto ctx so the front-end can render rule
-    // hints next to the form. Pure read; no behavior change.
-    const policies = this.users.getTransferablePolicies();
-    (ctx.password ??= {}).policies = policies;
-    return undefined;
-  }
-
   @Step("create-password-form")
   async createPasswordForm(@WorkflowParam("context") ctx: LoginWfCtx): Promise<unknown> {
     // Stage context-aware copy BEFORE the pause so the inputRequired envelope

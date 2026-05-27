@@ -1,4 +1,4 @@
-import { UserAuthError } from "@aooth/user";
+import { UserAuthError, type UserService } from "@aooth/user";
 import { HttpError } from "@moostjs/event-http";
 import { describe, expect, it } from "vite-plus/test";
 import { ConsentStore } from "../consent.store";
@@ -20,8 +20,11 @@ import {
 // persistence, so a default no-op `ConsentStore` instance is sufficient.
 // `consentsWorkflowId` satisfies the paired abstract getter used by the
 // inherited `prepareConsents` @Step. These tests don't fire that step.
+// `users` satisfies the abstract getter used by the inherited
+// `preparePasswordRules` @Step — cast-only stub, these tests don't fire it.
 class ExposedBase extends AuthWorkflowBase {
   protected readonly consentStore: ConsentStore = new ConsentStore();
+  protected readonly users: UserService = {} as UserService;
   protected get consentsWorkflowId(): string {
     return "auth/test/flow";
   }

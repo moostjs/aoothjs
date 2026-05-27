@@ -520,20 +520,6 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
   ])
   flow(): void {}
 
-  // ── Phase 0 ───────────────────────────────────────────────────────────
-  /**
-   * First step of the workflow; remains as a no-op override hook for
-   * consumers. Policy populated by the dedicated `prepare-<group>` steps.
-   *
-   * Return type is `undefined | Promise<undefined>` so consumers can override
-   * with `async init(...)` without the default fast-path paying a Promise
-   * allocation (the wf engine awaits only when the return value is a Promise).
-   */
-  @Step("init")
-  init(@WorkflowParam("context") _ctx: RecoveryWfCtx): undefined | Promise<undefined> {
-    return undefined;
-  }
-
   // ── request ──────────────────────────────────────────────────────────
   @Step("request")
   async request(@WorkflowParam("context") ctx: RecoveryWfCtx): Promise<unknown> {
