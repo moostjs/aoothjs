@@ -371,7 +371,7 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
 
   // ── WF-INVITE-006 ────────────────────────────────────────────────────────
   // BRANCH: `inviteAdminInviteForm` → role validation — `validateAdminInput`
-  // intersects submitted roles against `ctx.availableRoles` (sourced from
+  // intersects submitted roles against `ctx.admin.availableRoles` (sourced from
   // `getAvailableRoles()` which returns `['admin','editor','viewer','member']`
   // in the demo). Submitting `'superuser'` triggers
   // `wf.requireInput({ errors: { roles: 'Invalid role' } })`.

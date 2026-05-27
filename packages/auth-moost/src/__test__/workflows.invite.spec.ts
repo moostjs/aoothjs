@@ -166,7 +166,7 @@ describe("InviteWorkflow", () => {
 
   it("accept-time profile payload CANNOT escalate roles or shadow server-managed fields", async () => {
     // SECURITY REGRESSION (audit hole #6): the admin invite flow sets
-    // `ctx.roles` server-side from the admin's whitelisted picks. If the
+    // `ctx.admin.roles` server-side from the admin's whitelisted picks. If the
     // accept-time profile payload could carry top-level keys like `roles` /
     // `password` / `account` / `mfa` / `version` …, the default
     // `applyProfile` would deep-merge them onto the user row via

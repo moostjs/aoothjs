@@ -232,15 +232,19 @@ describe("InviteWorkflow — getProfileForm + applyProfile", () => {
 });
 
 describe("InviteWorkflow — getAvailableRoles + inferRoles", () => {
-  it("getAvailableRoles populates ctx.availableRoles on the InviteForm pause", async () => {
+  it("getAvailableRoles populates ctx.admin.availableRoles on the InviteForm pause", async () => {
     const app = await prepareWfApp({
       inviteHooks: {
         getAvailableRoles: async () => ["admin", "viewer"],
       },
     });
     const r1 = await app.trigger({ wfid: "auth/invite/start" });
-    // Admin form returned; availableRoles whitelisted via `@wf.context.pass`.
-    expect(r1.body?.availableRoles).toEqual(["admin", "viewer"]);
+    // Admin form returned; the whole `admin` ctx group rides the envelope via
+    // `@wf.context.pass 'admin'`, with `availableRoles` nested inside.
+    expect((r1.body?.admin as { availableRoles?: string[] } | undefined)?.availableRoles).toEqual([
+      "admin",
+      "viewer",
+    ]);
   });
 
   it("getAvailableRoles whitelist rejects admin-submitted role outside the list", async () => {
@@ -515,7 +519,7 @@ describe("InviteForm.roles multiselect metadata", () => {
     const optionsAnnotation = roles.metadata.get("ui.form.fn.options");
     expect(optionsAnnotation).toBeDefined();
     // Annotation is a callback string referring to the role-options resolver
-    // (consumes ctx.availableRoles populated by `invitePrepareAvailableRoles`).
+    // (consumes ctx.admin.availableRoles populated by `invitePrepareAvailableRoles`).
     expect(String(optionsAnnotation)).toMatch(/availableRoles/);
   });
 });

@@ -94,7 +94,7 @@ describe("InviteWorkflow subclass — end-to-end registration shape", () => {
 
 // ── Per-method consumer-subclass overrides ──────────────────────────────────
 describe("InviteWorkflow subclass — protected method overrides", () => {
-  it("getAvailableRoles override populates the admin form's ctx.availableRoles", async () => {
+  it("getAvailableRoles override populates the admin form's ctx.admin.availableRoles", async () => {
     @Inherit()
     @Controller("auth/invite")
     class MyInvite extends InviteWorkflow {
@@ -115,11 +115,14 @@ describe("InviteWorkflow subclass — protected method overrides", () => {
       inviteWorkflowClass: withInviteMfaCtx(MyInvite, { mfaMode: "disabled" }),
     });
     const r1 = await app.trigger({ wfid: "auth/invite/start" });
-    // Workflow paused on the admin form WITH availableRoles whitelisted via
-    // `@wf.context.pass` — UI uses this to render the multi-select. The
-    // override could not be detected without this projection being attached
-    // to the pause payload.
-    expect(r1.body?.availableRoles).toEqual(["tenant-admin", "tenant-member"]);
+    // Workflow paused on the admin form WITH the `admin` ctx group whitelisted
+    // via `@wf.context.pass 'admin'` — UI uses `availableRoles` from inside it
+    // to render the multi-select. The override could not be detected without
+    // this projection being attached to the pause payload.
+    expect((r1.body?.admin as { availableRoles?: string[] } | undefined)?.availableRoles).toEqual([
+      "tenant-admin",
+      "tenant-member",
+    ]);
   });
 
   it("inferRoles override merges with admin-supplied roles (set-union persisted)", async () => {

@@ -239,7 +239,7 @@ export interface MfaEnrollDeps {
 /**
  * Top-level `UserCredentials` keys that workflow-collected profile payloads
  * MUST NEVER carry through to persistence. The server sets these out-of-band
- * (admin-supplied `ctx.roles`, password-set step, account activation, MFA
+ * (admin-supplied `ctx.admin?.roles`, password-set step, account activation, MFA
  * enrolment elsewhere). If the consumer's `.as` profile form mistakenly
  * declares one — or an attacker submits one as an extra field — the
  * strip applied at the workflow step (NOT at the `applyProfile` override

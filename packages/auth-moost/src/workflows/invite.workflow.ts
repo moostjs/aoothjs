@@ -88,15 +88,65 @@ import {
 } from "./auth-workflow.base";
 import type { DeliverPayload } from "./login.workflow";
 
+/**
+ * Admin-side (Phase A) state — populated across `prepare-available-roles` /
+ * `admin-form` / `infer-roles` / `build-user-extras` / `send-email`. Step
+ * bodies write here and forms.as reads it nested via `@wf.context.pass 'admin'`.
+ */
+export interface InviteAdminState {
+  /**
+   * Admin policy — whitelist of role keys the admin may pick. Populated by
+   * `prepare-available-roles` when the `getAvailableRoles()` override returns
+   * a list. Surfaced into the `InviteForm` via `@wf.context.pass 'admin'` so
+   * the role multi-select renders the whitelisted choices; also used by
+   * `admin-form` to reject admin-submitted roles outside the list.
+   */
+  availableRoles?: string[];
+  /**
+   * Admin form input — role keys the admin actually picked (or set-unioned by
+   * `infer-roles`). Validated against `availableRoles` when that whitelist is
+   * set; persisted onto the user row by `create-user` / `send-email`.
+   */
+  roles?: string[];
+  /**
+   * Extras dict built by `build-user-extras` (calls `prepareUser`) and
+   * consumed by `create-user` to populate the user-row fields beyond the
+   * base credential shape. Split apart so consumers can inject e.g. a
+   * tenant-validation step between extras-build and create-user without
+   * copying either body.
+   */
+  userExtras?: Record<string, unknown>;
+  /**
+   * `send-email` idempotency — marks that the invite outlet already emitted,
+   * so re-entry into the step on resume short-circuits. The @prostojs/wf
+   * runtime re-enters the saved step on resume (the loop restarts at
+   * `indexes[level]`, not after it), so the step body guards on this flag.
+   */
+  linkSent?: boolean;
+}
+
 export interface InviteWfCtx extends AuthWfCtxBase {
   // Resolved policy (populated by prepare-* steps; reads via resolveXxx() getters):
   adminForm?: { collectRoles: boolean };
+  /**
+   * Accept-tail policy AND state. The 5 leading fields are the policy
+   * resolved by `resolveAccept`/`prepare-accept`; the 3 trailing fields are
+   * Phase-B state filled in by `init` / `check-pending-invitation` /
+   * `collect-profile`. All fields are optional because `init` writes
+   * `profileFormPresent` BEFORE `prepare-accept` runs.
+   */
   accept?: {
-    alreadyAcceptedRedirectUrl: string;
-    freshLoginRequired: boolean;
-    loginUrl: string;
-    showConfirmation: boolean;
-    confirmationMessage: string;
+    alreadyAcceptedRedirectUrl?: string;
+    freshLoginRequired?: boolean;
+    loginUrl?: string;
+    showConfirmation?: boolean;
+    confirmationMessage?: string;
+    /** Derived projection from `init`: `this.getProfileForm() !== undefined`. Read by accept-tail schema gates. */
+    profileFormPresent?: boolean;
+    /** Set by `check-pending-invitation` when the invite was already accepted; triggers `idempotent-redirect`. */
+    alreadyAccepted?: boolean;
+    /** Set by `collect-profile` — raw profile-form input awaiting `apply-profile`. */
+    profile?: Record<string, unknown>;
   };
   mfa?: {
     issuer: string;
@@ -111,34 +161,8 @@ export interface InviteWfCtx extends AuthWfCtxBase {
     availableTransports?: Array<"sms" | "email" | "totp">;
   };
 
-  /** Boolean projection of `this.getProfileForm() !== undefined` — schema gates on it. */
-  acceptProfileFormPresent?: boolean;
-
   // ── Admin-side (Phase A) ────────────────────────────────────────────────
-  /**
-   * Populated by `prepare-available-roles` when the override returns a list.
-   * Surfaced into the `InviteForm` via `@wf.context.pass 'availableRoles'` so
-   * the role multi-select renders the whitelisted choices; also used by
-   * `admin-form` to reject admin-submitted roles outside the list.
-   */
-  availableRoles?: string[];
-  roles?: string[];
-  /**
-   * Extras dict prepared by `build-user-extras` (calls `prepareUser`) and
-   * consumed by `create-user` to populate the user-row fields beyond the
-   * base credential shape. Split apart so consumers can inject e.g. a
-   * tenant-validation step between extras-build and create-user without
-   * copying either body.
-   */
-  userExtras?: Record<string, unknown>;
-  /** Marks that `send-email` already emitted the outlet — resume → advance. */
-  linkSent?: boolean;
-
-  // ── User-side (Phase B) ─────────────────────────────────────────────────
-  /** Detected at `check-pending-invitation`; triggers `idempotent-redirect`. */
-  alreadyAccepted?: boolean;
-  /** Raw input from `collect-profile`. */
-  profile?: Record<string, unknown>;
+  admin?: InviteAdminState;
 }
 
 /**
@@ -225,12 +249,12 @@ export function buildInviteAlreadyAcceptedEnvelope(opts: {
  * real gate is the step methods themselves, which the wf runtime invokes
  * through the same interceptor chain.
  *
- * Phase-B steps (post `ctx.linkSent`, accept tail) are method-level
+ * Phase-B steps (post `ctx.admin.linkSent`, accept tail) are method-level
  * `@Public()` because they fire on the anonymous magic-link resume.
  * `send-email` is the boundary: also `@Public()` because the @prostojs/wf
  * runtime re-enters the saved step on resume (the loop restarts at
  * `indexes[level]`, not after it). Its body is idempotent via
- * `if (ctx.linkSent) return`.
+ * `if (admin.linkSent) return`.
  */
 @Inherit()
 @ArbacResource("auth.invite")
@@ -286,7 +310,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
   /**
    * Return the list of selectable role identifiers for the admin invite form.
    * When defined AND `adminForm.collectRoles` is true → form ships
-   * `ctx.availableRoles` so the UI renders a multi-select AND the
+   * `ctx.admin.availableRoles` so the UI renders a multi-select AND the
    * `admin-form` step rejects admin-submitted roles outside the
    * list. When `undefined` (default) → no whitelist is enforced and any role
    * value the admin form supplies is accepted.
@@ -398,13 +422,16 @@ export class InviteWorkflow extends AuthWorkflowBase {
   @Public()
   prepareAccept(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
     const result = this.resolveAccept(ctx);
+    // Merge into `ctx.accept` rather than overwrite — `init` may have already
+    // stamped `profileFormPresent` (and `check-pending-invitation` /
+    // `collect-profile` may add `alreadyAccepted` / `profile` on resume).
     if (result instanceof Promise) {
       return result.then((resolved) => {
-        ctx.accept = resolved;
+        Object.assign((ctx.accept ??= {}), resolved);
         return undefined;
       });
     }
-    ctx.accept = result;
+    Object.assign((ctx.accept ??= {}), result);
     return undefined;
   }
 
@@ -441,22 +468,22 @@ export class InviteWorkflow extends AuthWorkflowBase {
     },
     {
       id: "build-user-extras",
-      condition: (ctx) => !!(ctx.email && !ctx.username && !ctx.userExtras),
+      condition: (ctx) => !!(ctx.email && !ctx.username && !ctx.admin?.userExtras),
     },
     {
       id: "create-user",
-      condition: (ctx) => !!(ctx.email && !ctx.username && !!ctx.userExtras),
+      condition: (ctx) => !!(ctx.email && !ctx.username && !!ctx.admin?.userExtras),
     },
     {
       id: "send-email",
       condition: (ctx) => !!ctx.username,
     },
     // ── Phase B (accept tail): runs only after the magic link resumes here.
-    // `ctx.linkSent` flips ONCE in `send-email` and stays true — safe to
-    // hoist as a subflow condition (evaluated once when the engine reaches
+    // `ctx.admin.linkSent` flips ONCE in `send-email` and stays true — safe
+    // to hoist as a subflow condition (evaluated once when the engine reaches
     // the subflow).
     {
-      condition: (ctx) => !!ctx.linkSent,
+      condition: (ctx) => !!ctx.admin?.linkSent,
       steps: [
         // Resolve accept + mfa policies on the anonymous resume side — the
         // admin-side `prepare-*` runs (above) don't survive across the
@@ -466,7 +493,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
         { id: "check-pending-invitation" },
         {
           id: "idempotent-redirect",
-          condition: (ctx) => !!ctx.alreadyAccepted,
+          condition: (ctx) => !!ctx.accept?.alreadyAccepted,
         },
         { id: "prepare-password-rules" },
         ...consentsPreludeSchema,
@@ -522,15 +549,19 @@ export class InviteWorkflow extends AuthWorkflowBase {
         {
           id: "collect-profile",
           condition: (ctx) =>
-            !!(ctx.completion?.passwordSet && ctx.acceptProfileFormPresent && !ctx.profile),
+            !!(
+              ctx.completion?.passwordSet &&
+              ctx.accept?.profileFormPresent &&
+              !ctx.accept?.profile
+            ),
         },
         {
           id: "apply-profile",
           condition: (ctx) =>
             !!(
               ctx.completion?.passwordSet &&
-              ctx.acceptProfileFormPresent &&
-              ctx.profile &&
+              ctx.accept?.profileFormPresent &&
+              ctx.accept?.profile &&
               !ctx.completion?.profileApplied
             ),
         },
@@ -587,7 +618,9 @@ export class InviteWorkflow extends AuthWorkflowBase {
   // ── Phase 0 ────────────────────────────────────────────────────────────
   @Step("init")
   init(@WorkflowParam("context") ctx: InviteWfCtx): undefined | Promise<undefined> {
-    ctx.acceptProfileFormPresent = this.getProfileForm() !== undefined;
+    // `init` writes BEFORE `prepare-accept` runs, so `ctx.accept` is partially
+    // populated here — `prepare-accept` later spreads the resolved policy in.
+    (ctx.accept ??= {}).profileFormPresent = this.getProfileForm() !== undefined;
     return undefined;
   }
 
@@ -595,7 +628,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
   @Step("prepare-available-roles")
   async prepareAvailableRoles(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     const roles = await this.getAvailableRoles();
-    if (roles) ctx.availableRoles = roles;
+    if (roles) (ctx.admin ??= {}).availableRoles = roles;
     return undefined;
   }
 
@@ -612,11 +645,11 @@ export class InviteWorkflow extends AuthWorkflowBase {
     const parsed = parseInviteRoles(input.roles);
 
     // Server-side whitelist enforcement: when `getAvailableRoles()` returned a
-    // list (surfaced as `ctx.availableRoles` by `prepare-available-roles`),
+    // list (surfaced as `ctx.admin.availableRoles` by `prepare-available-roles`),
     // reject any admin-submitted role outside the whitelist. Skipped when no
     // whitelist is configured — see `getAvailableRoles` doc.
-    if (Array.isArray(ctx.availableRoles)) {
-      const allowed = new Set(ctx.availableRoles);
+    if (Array.isArray(ctx.admin?.availableRoles)) {
+      const allowed = new Set(ctx.admin.availableRoles);
       const bad = parsed.find((r) => !allowed.has(r));
       if (bad !== undefined) {
         throw wf.requireInput({ errors: { roles: "Invalid role" } });
@@ -638,7 +671,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
     }
 
     ctx.email = email;
-    if (parsed.length > 0) ctx.roles = parsed;
+    if (parsed.length > 0) (ctx.admin ??= {}).roles = parsed;
     return undefined;
   }
 
@@ -648,8 +681,9 @@ export class InviteWorkflow extends AuthWorkflowBase {
     if (!ctx.email) return undefined;
     const inferred = await this.inferRoles({ email: ctx.email });
     if (inferred.length === 0) return undefined;
-    const merged = new Set<string>([...(ctx.roles ?? []), ...inferred]);
-    ctx.roles = Array.from(merged);
+    const admin = (ctx.admin ??= {});
+    const merged = new Set<string>([...(admin.roles ?? []), ...inferred]);
+    admin.roles = Array.from(merged);
     return undefined;
   }
 
@@ -657,7 +691,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
   /**
    * Build the extras dict that `create-user` merges into the new user
    * row. Calls `prepareUser({email, roles, invitedBy})` and writes the
-   * result onto `ctx.userExtras`.
+   * result onto `ctx.admin.userExtras`.
    */
   @Step("build-user-extras")
   async buildUserExtras(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
@@ -666,18 +700,18 @@ export class InviteWorkflow extends AuthWorkflowBase {
     const invitedBy = useAuth().getAuthContext()?.userId;
     const preparedInput: PreparedUserInput = {
       email: ctx.email,
-      roles: ctx.roles ?? [],
+      roles: ctx.admin?.roles ?? [],
       ...(invitedBy && { invitedBy }),
     };
 
-    ctx.userExtras = await this.prepareUser(preparedInput);
+    (ctx.admin ??= {}).userExtras = await this.prepareUser(preparedInput);
     return undefined;
   }
 
   // ── Phase A: createUser ───────────────────────────────────────────────
   /**
-   * Create the user row from `ctx.userExtras` (plus the admin-supplied
-   * `ctx.roles`), translate store-level CONFLICT into HTTP 409, then stamp
+   * Create the user row from `ctx.admin.userExtras` (plus the admin-supplied
+   * `ctx.admin.roles`), translate store-level CONFLICT into HTTP 409, then stamp
    * `pendingInvitation = true` via a deep-merge update so the
    * `createUser`-applied account defaults (`active: false`, `locked: false`)
    * survive. Split out of the old `invitePreCreateUser` step so consumers can
@@ -698,9 +732,10 @@ export class InviteWorkflow extends AuthWorkflowBase {
     // `firstName` / `lastName` are intentionally NOT injected here — they're
     // not in the base credential shape, and a strict-schema store would 500
     // on unknown columns. They reach the consumer only via `prepareUser`.
+    const adminRoles = ctx.admin?.roles;
     const fields: Record<string, unknown> = {
-      ...ctx.userExtras,
-      ...(ctx.roles && ctx.roles.length > 0 && { roles: ctx.roles }),
+      ...ctx.admin?.userExtras,
+      ...(adminRoles && adminRoles.length > 0 && { roles: adminRoles }),
     };
 
     try {
@@ -726,8 +761,9 @@ export class InviteWorkflow extends AuthWorkflowBase {
   @Step("send-email")
   @Public()
   sendInviteEmail(@WorkflowParam("context") ctx: InviteWfCtx): unknown {
-    if (ctx.linkSent) return undefined;
-    ctx.linkSent = true;
+    const admin = (ctx.admin ??= {});
+    if (admin.linkSent) return undefined;
+    admin.linkSent = true;
     return {
       ...outletEmail(ctx.email as string, "invite.magicLink", {
         username: ctx.username,
@@ -736,7 +772,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
         // post-redemption side route when a second click hits a 410. In this
         // workflow `username` IS the user-id (see `autoLoginFinish` → `auth.issue(ctx.username)`).
         ...(ctx.username && { userId: ctx.username }),
-        ...(ctx.roles && { roles: ctx.roles }),
+        ...(admin.roles && { roles: admin.roles }),
         expiresAtMs: this.authOpts.magicLinkTtlMs,
       }),
       expires: Date.now() + this.authOpts.magicLinkTtlMs,
@@ -758,7 +794,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
       throw new HttpError(410, "This invite has been cancelled");
     }
     if (!existing.account?.pendingInvitation) {
-      ctx.alreadyAccepted = true;
+      (ctx.accept ??= {}).alreadyAccepted = true;
     }
     return undefined;
   }
@@ -771,8 +807,8 @@ export class InviteWorkflow extends AuthWorkflowBase {
     // localization is a cross-workflow concern not yet wired.
     finishWf(
       buildInviteAlreadyAcceptedEnvelope({
-        loginUrl: ctx.accept!.loginUrl,
-        alreadyAcceptedRedirectUrl: ctx.accept!.alreadyAcceptedRedirectUrl,
+        loginUrl: ctx.accept!.loginUrl!,
+        alreadyAcceptedRedirectUrl: ctx.accept!.alreadyAcceptedRedirectUrl!,
       }),
     );
     return undefined;
@@ -927,11 +963,11 @@ export class InviteWorkflow extends AuthWorkflowBase {
     // throws `StepRetriableError` — that is correct and fail-loud.
     if (wf.resolveAction() === "skip") {
       // 'skip' alt-action — record an empty profile and let `applyProfile` no-op.
-      ctx.profile = {};
+      (ctx.accept ??= {}).profile = {};
       return undefined;
     }
     const input = wf.resolveInput({ partial: "deep" });
-    ctx.profile = input as Record<string, unknown>;
+    (ctx.accept ??= {}).profile = input as Record<string, unknown>;
     return undefined;
   }
 
@@ -941,7 +977,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
   async applyProfileStep(@WorkflowParam("context") ctx: InviteWfCtx): Promise<undefined> {
     this.requireUsername(ctx);
     const c = (ctx.completion ??= {});
-    const sanitized = stripReservedUserKeys(ctx.profile ?? {});
+    const sanitized = stripReservedUserKeys(ctx.accept?.profile ?? {});
     if (Object.keys(sanitized).length === 0) {
       c.profileApplied = true;
       return undefined;
@@ -1000,7 +1036,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
     // fires, so that branch intentionally drops it.
     finishWf({
       data: { confirmed: true },
-      message: { level: "success", text: ctx.accept!.confirmationMessage },
+      message: { level: "success", text: ctx.accept!.confirmationMessage! },
     });
     return undefined;
   }
@@ -1014,7 +1050,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
         trigger: "immediate",
         action: {
           type: "redirect",
-          target: ctx.accept!.loginUrl,
+          target: ctx.accept!.loginUrl!,
           reason: "fresh-login-required",
         },
       },

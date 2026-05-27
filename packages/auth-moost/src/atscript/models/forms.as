@@ -249,16 +249,17 @@ export interface SetPasswordForm extends WithInlineConsentForm {
  * extra fields into their user schema via the `prepareUser({...})` hook
  * (see `InviteWorkflow.prepareUser` jsdoc).
  *
- * `@wf.context.pass 'availableRoles'` whitelists the workflow ctx key so the
- * `inviteAdminInviteForm` step can pass the role-picker options into the
- * client form when `opts.getAvailableRoles` is wired.
+ * `@wf.context.pass 'admin'` whitelists the workflow `ctx.admin` group so the
+ * `inviteAdminInviteForm` step can pass the role-picker options (via
+ * `ctx.admin.availableRoles`) into the client form when `opts.getAvailableRoles`
+ * is wired.
  *
  * No cancel alt-action: an admin who wants to back out navigates away from
  * the page (the wf state token expires per the engine's TTL).
  */
 @meta.label 'Send an invitation'
 @meta.description 'Enter the recipient email address and pick the roles to grant on acceptance. They will receive a magic link to set their password.'
-@wf.context.pass 'availableRoles'
+@wf.context.pass 'admin'
 export interface InviteForm {
     @ui.form.order 10
     @ui.form.type 'text'
@@ -271,7 +272,7 @@ export interface InviteForm {
     // dedicated multi-select widget tracked as atscript-ui follow-up.
     @ui.form.order 20
     @ui.form.type 'select'
-    @ui.form.fn.options '(_, _data, context) => Array.isArray(context.availableRoles) ? context.availableRoles.map(r => ({ key: r, label: r })) : []'
+    @ui.form.fn.options '(_, _data, context) => Array.isArray(context.admin?.availableRoles) ? context.admin.availableRoles.map(r => ({ key: r, label: r })) : []'
     @meta.label 'Roles'
     roles: string[]
 }
