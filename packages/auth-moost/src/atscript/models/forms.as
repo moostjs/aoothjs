@@ -100,7 +100,7 @@ export interface LoginCredentialsForm {
 @wf.context.pass 'pincode'
 @ui.form.submit.text 'Verify'
 export interface MfaCodeForm {
-    @ui.form.fn.value '(_, _d, ctx) => ctx.mfa?.method === "totp" ? "Enter the current 6-digit code from your authenticator app." : ctx.mfa?.method ? "Code sent to " + (ctx.pincode?.sentTo || "your " + ctx.mfa.method) + " — check the dev server console for the code." : "Enter your verification code."'
+    @ui.form.fn.value '(_, _d, ctx) => ctx.mfa?.method === "totp" ? "Enter the current 6-digit code from your authenticator app." : ctx.pincode?.sentTo ? "Code sent to " + ctx.pincode.sentTo + "." : "Enter your verification code."'
     transportHint?: ui.paragraph
 
     @ui.form.type 'text'
@@ -328,6 +328,16 @@ export interface Select2faForm {
  * verifying. Requires `installDynamicResolver()` from `@atscript/ui-fns`
  * on the consumer side; without it `@ui.form.fn.value` stays inert and
  * the paragraph renders empty.
+ *
+ * **Resend cooldown contract.** `ctx.pincode.resendAllowedAt` is a wall-clock
+ * timestamp (`Date.now() + pincodeResendTimeoutMs`) after which the server
+ * will accept a `resend` action click. Customers who want a progress bar /
+ * countdown / disabled state on the resend button can subscribe a custom
+ * action component via `<AsWfForm :components>` and read the timestamp from
+ * the form's `ctx.pincode.resendAllowedAt` (kept on the `@wf.context.pass
+ * 'pincode'` whitelist). Server-side cooldown violations surface as a
+ * `formMessage` banner — never an inline `code` field error — so the user
+ * isn't told their (unsubmitted) code is wrong.
  */
 @meta.label 'Enter the verification code'
 @wf.context.pass 'mfa'
@@ -336,7 +346,7 @@ export interface Select2faForm {
 @wf.context.pass 'otp'
 @ui.form.submit.text 'Verify'
 export interface PincodeForm {
-    @ui.form.fn.value '(_, _d, ctx) => ctx.mfa?.method === "totp" ? "Enter the current 6-digit code from your authenticator app." : ctx.mfa?.method ? "Code sent to " + (ctx.pincode?.sentTo || "your " + ctx.mfa.method) + " — check the dev server console for the code." : "Enter your verification code."'
+    @ui.form.fn.value '(_, _d, ctx) => ctx.mfa?.method === "totp" ? "Enter the current 6-digit code from your authenticator app." : ctx.pincode?.sentTo ? "Code sent to " + ctx.pincode.sentTo + "." : "Enter your verification code."'
     transportHint?: ui.paragraph
 
     @ui.form.type 'text'
@@ -468,19 +478,51 @@ export interface EnrollAddressForm {
 }
 
 /**
- * Forced MFA enrollment — confirm code, shared by all three transports. The
- * leading paragraph swaps between "scan this QR" (totp) and "code sent to …"
- * (sms/email) based on `mfaEnroll.method`; `mfaEnroll.secret` / `mfaEnroll.uri`
- * are passed for the totp QR + manual-entry fallback.
+ * Forced MFA enrollment — confirm code, shared by all three transports.
+ *
+ * **TOTP branch.** `ctx.mfaEnroll.secret` holds the base32 secret and
+ * `ctx.mfaEnroll.uri` the `otpauth://` URI — both are produced server-side by
+ * `setup-mfa-method` and ride the `@wf.context.pass 'mfaEnroll'` whitelist.
+ * The default rendering shows the secret as plain text so users can paste it
+ * into their authenticator app even without a QR scanner. Customers who want
+ * a scannable QR code can subscribe a custom renderer for the `qrCode` field
+ * via `<AsWfForm :components>` (the field's `@ui.form.fn.value` exposes the
+ * `otpauth://` URI string for the QR generator to consume).
+ *
+ * **SMS / email branch.** Single `transportHint` paragraph shows the masked
+ * recipient.
  */
 @meta.label 'Confirm your verification code'
 @wf.context.pass 'mfaEnroll'
 @wf.context.pass 'pincode'
 @ui.form.submit.text 'Confirm'
 export interface EnrollConfirmForm {
-    @ui.form.fn.value '(_, _d, ctx) => ctx.mfaEnroll?.method === "totp" ? "Scan the QR with your authenticator app, or enter the secret manually. Then type the 6-digit code it generates." : ctx.mfaEnroll?.method ? "Code sent to " + (ctx.pincode?.sentTo || "your " + ctx.mfaEnroll.method) + ". Enter it below to confirm." : "Enter the code to confirm enrollment."'
+    @ui.form.order 1
+    @ui.form.fn.value '(_, _d, ctx) => ctx.mfaEnroll?.method === "totp" ? "Add the account to your authenticator app, then enter the 6-digit code it generates." : ctx.pincode?.sentTo ? "Code sent to " + ctx.pincode.sentTo + ". Enter it below to confirm." : "Enter the code to confirm enrollment."'
     transportHint?: ui.paragraph
 
+    /**
+     * Phantom paragraph — `otpauth://` URI for the customer-side QR renderer.
+     * Default rendering shows the raw URI string (ugly but functional); the
+     * customer-supplied component path (see class docstring) is the intended
+     * production UX.
+     */
+    @ui.form.order 5
+    @ui.form.fn.value '(_, _d, ctx) => ctx.mfaEnroll?.uri || ""'
+    @ui.form.fn.hidden '(_, _d, ctx) => ctx.mfaEnroll?.method !== "totp" || !ctx.mfaEnroll?.uri'
+    qrCode: ui.paragraph
+
+    /**
+     * Phantom paragraph — base32 secret formatted for manual entry. Shown
+     * alongside `qrCode` so authenticator apps without QR scanners (and users
+     * paranoid about scanning) can still set up.
+     */
+    @ui.form.order 6
+    @ui.form.fn.value '(_, _d, ctx) => ctx.mfaEnroll?.method === "totp" && ctx.mfaEnroll?.secret ? "Manual entry secret: " + ctx.mfaEnroll.secret : ""'
+    @ui.form.fn.hidden '(_, _d, ctx) => ctx.mfaEnroll?.method !== "totp" || !ctx.mfaEnroll?.secret'
+    manualSecret: ui.paragraph
+
+    @ui.form.order 10
     @ui.form.type 'text'
     @meta.label 'Code'
     @ui.form.autocomplete 'one-time-code'

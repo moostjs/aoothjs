@@ -1712,10 +1712,15 @@ export class AuthWorkflow {
     const action = pincodeWf.resolveAction();
     if (action && this.resolvePincodeAltAction(ctx, action) === "resend") {
       // SERVER-SIDE cooldown enforcement (defence in depth — UI also gates).
+      // Banner (`formMessage`) rather than per-field error: the user clicked
+      // the resend action, not the code input, so an inline error on `code`
+      // would be misattributed. `ctx.pincode.resendAllowedAt` rides the
+      // `@wf.context.pass 'pincode'` whitelist so custom action components
+      // can render a progress bar / countdown without re-deriving the value.
       if (ctx.pincode?.resendAllowedAt && ctx.pincode.resendAllowedAt > Date.now()) {
         const remainingSec = Math.ceil((ctx.pincode.resendAllowedAt - Date.now()) / 1000);
         throw pincodeWf.requireInput({
-          errors: { code: `Please wait ${remainingSec}s before requesting a new code.` },
+          formMessage: `Please wait ${remainingSec}s before requesting a new code.`,
         });
       }
       const recipient = (isEmail ? ctx.email : ctx.channel?.phone) as string;
@@ -1878,10 +1883,10 @@ export class AuthWorkflow {
       if (cooldownUntil && Date.now() < cooldownUntil) {
         const waitSec = Math.ceil((cooldownUntil - Date.now()) / 1000);
         const channel = picked.kind === "sms" ? "SMS" : "email";
+        // Banner — the user clicked a method radio + Submit, not a `methodName`
+        // input. Inline errors on a radio group are misattributed UX.
         throw wf.requireInput({
-          errors: {
-            methodName: `Please wait ${waitSec}s before requesting another ${channel} code`,
-          },
+          formMessage: `Please wait ${waitSec}s before requesting another ${channel} code`,
         });
       }
     }
@@ -1944,11 +1949,13 @@ export class AuthWorkflow {
     if (action) {
       const outcome = this.resolvePincodeAltAction(ctx, action);
       if (outcome === "resend") {
-        // SERVER-SIDE cooldown enforcement (defence in depth — UI also gates).
+        // SERVER-SIDE cooldown enforcement — banner-form, see the matching
+        // raise in `verify-channel` for the rationale (resend is an action
+        // click, not a `code` input error).
         if (ctx.pincode?.resendAllowedAt && ctx.pincode.resendAllowedAt > Date.now()) {
           const remainingSec = Math.ceil((ctx.pincode.resendAllowedAt - Date.now()) / 1000);
           throw wf.requireInput({
-            errors: { code: `Please wait ${remainingSec}s before requesting a new code.` },
+            formMessage: `Please wait ${remainingSec}s before requesting a new code.`,
           });
         }
         delete ctx.pin;
@@ -1966,6 +1973,12 @@ export class AuthWorkflow {
         }
         delete ctx.pin;
         delete ctx.pinExpire;
+        // Method-switching MUST clear the resend cooldown — the next channel
+        // is a fresh send, not a re-send. Without this delete the user gets
+        // "Please wait Ns before requesting another <new-channel> code" on
+        // their first attempt at the new method (see select-2fa cooldown
+        // gate). Mirrors `verifyChannel`'s post-success cleanup.
+        if (ctx.pincode) delete ctx.pincode.resendAllowedAt;
         return undefined;
       }
     }
