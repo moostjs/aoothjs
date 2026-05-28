@@ -21,7 +21,7 @@
  * schemas would no-op every step.
  */
 import { AuthCredential } from "@aooth/auth";
-import { UserService } from "@aooth/user";
+import { UserAuthError, UserService } from "@aooth/user";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { Step, Workflow, WorkflowParam, WorkflowSchema } from "@moostjs/event-wf";
 import { Controller, Inherit, Param } from "moost";
@@ -29,7 +29,7 @@ import { Controller, Inherit, Param } from "moost";
 import { AuthOpts } from "../auth.opts";
 import { ConsentStore } from "../consent.store";
 import { Public } from "../auth.decorator";
-import type { AuthWfCtx, AuthWfAltCredsPolicy } from "./auth-workflow.ctx";
+import type { AuthWfCtx, AuthWfAltCredsPolicy, MfaTransport } from "./auth-workflow.ctx";
 import type { AuthWorkflowOpts, ResolvedAuthWorkflowOpts } from "./auth-workflow.opts";
 import {
   consentsPersistTailSchema,
@@ -103,6 +103,12 @@ function mergeAuthWorkflowOpts(opts: AuthWorkflowOpts): ResolvedAuthWorkflowOpts
   };
 }
 
+const CONSENTS_WORKFLOW_ID: Record<NonNullable<AuthWfCtx["flow"]>, string> = {
+  login: "auth/login/flow",
+  invite: "auth/invite/start",
+  recovery: "auth/recovery/flow",
+};
+
 @Inherit()
 @Controller()
 export class AuthWorkflow {
@@ -136,6 +142,26 @@ export class AuthWorkflow {
    * the union return type.
    */
   protected deliver(_payload: AuthDeliveryPayload): void | Promise<void> {
+    return undefined;
+  }
+
+  /**
+   * Return the list of selectable role identifiers for the admin invite form.
+   * Mirrors the prior `InviteWorkflow.getAvailableRoles()` consumer hook —
+   * `undefined` (default) means no whitelist is enforced. Read by
+   * `prepareAvailableRoles`.
+   */
+  protected getAvailableRoles(): Promise<string[] | undefined> | string[] | undefined {
+    return undefined;
+  }
+
+  /**
+   * Return the consumer-supplied `.as` profile form schema rendered in the
+   * invite accept-tail `collect-profile` step. Mirrors the prior
+   * `InviteWorkflow.getProfileForm()` consumer hook — `undefined` (default)
+   * skips the profile collection step entirely.
+   */
+  protected getProfileForm(): TAtscriptAnnotatedType | undefined {
     return undefined;
   }
 
@@ -398,24 +424,36 @@ export class AuthWorkflow {
 
   @Step("init-login")
   @Public()
-  initLogin(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  initLogin(@WorkflowParam("context") ctx: AuthWfCtx): void {
+    ctx.flow = "login";
     return undefined;
   }
 
   @Step("init-invite-admin")
-  initInviteAdmin(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  initInviteAdmin(@WorkflowParam("context") ctx: AuthWfCtx): void {
+    ctx.flow = "invite";
+    ctx.autoLogin = this.opts.autoLoginOnInvite;
     return undefined;
   }
 
   @Step("init-invite-accept")
   @Public()
-  initInviteAccept(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  initInviteAccept(@WorkflowParam("context") ctx: AuthWfCtx): void {
+    // Invite-accept is always first-login with a forced initial password.
+    ctx.flow = "invite";
+    ctx.isFirstLogin = true;
+    ctx.newPasswordRequired = true;
+    ctx.autoLogin = this.opts.autoLoginOnInvite;
+    (ctx.accept ??= {}).profileFormPresent = this.getProfileForm() !== undefined;
+    (ctx.password ??= {}).changeReason = "initial";
     return undefined;
   }
 
   @Step("init-recovery")
   @Public()
-  initRecovery(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  initRecovery(@WorkflowParam("context") ctx: AuthWfCtx): void {
+    ctx.flow = "recovery";
+    ctx.autoLogin = this.opts.autoLoginOnRecover;
     return undefined;
   }
 
@@ -435,97 +473,294 @@ export class AuthWorkflow {
 
   // ── Prepare-* policy steps (16) ──
 
+  /**
+   * Canonical writer of `ctx.password.changeReason` + `isFirstLogin` /
+   * `newPasswordRequired`. Discriminates by ctx-slot presence (§10):
+   * `ctx.accept` → invite-accept; `ctx.postReset` → recovery; otherwise login.
+   * Idempotent on re-entry.
+   */
   @Step("prepare-semantic-flags")
   @Public()
-  prepareSemanticFlags(@WorkflowParam("context") _ctx: AuthWfCtx): void {
-    return undefined;
+  prepareSemanticFlags(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
+    if (ctx.accept) {
+      ctx.isFirstLogin = true;
+      ctx.newPasswordRequired = true;
+      (ctx.password ??= {}).changeReason = "initial";
+      return undefined;
+    }
+    if (ctx.postReset) {
+      (ctx.password ??= {}).changeReason = "reset";
+      return undefined;
+    }
+    ctx.newPasswordRequired = !!ctx.guards?.passwordInitial || !!ctx.guards?.passwordExpiry;
+    const reason = (ctx.password ??= {});
+    if (ctx.isPasswordInitial) reason.changeReason = "initial";
+    else if (ctx.isPasswordExpired) reason.changeReason = "expired";
+    else delete reason.changeReason;
+    if (!ctx.username) {
+      ctx.isFirstLogin = false;
+      return undefined;
+    }
+    return this.users.getUser(ctx.username).then(
+      (user) => {
+        ctx.isFirstLogin = !user?.account?.lastLogin;
+        return undefined;
+      },
+      (err) => {
+        if (err instanceof UserAuthError && err.type === "NOT_FOUND") {
+          ctx.isFirstLogin = false;
+          return undefined;
+        }
+        throw err;
+      },
+    );
   }
 
   @Step("prepare-profile")
   @Public()
-  prepareProfile(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  prepareProfile(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
+    const result = this.resolveProfile(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.profileCompleteRequired = resolved.required;
+        return undefined;
+      });
+    }
+    ctx.profileCompleteRequired = result.required;
     return undefined;
   }
 
   @Step("prepare-consents")
   @Public()
-  prepareConsents(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  prepareConsents(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
+    if (!ctx.username) return undefined;
+    const result = this.consentStore.getPendingConsents(ctx.username, {
+      workflow: CONSENTS_WORKFLOW_ID[ctx.flow ?? "login"],
+    });
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        (ctx.consents ??= {}).pending = resolved;
+        return undefined;
+      });
+    }
+    (ctx.consents ??= {}).pending = result;
     return undefined;
   }
 
   @Step("prepare-alternate-credentials")
   @Public()
-  prepareAlternateCredentials(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  prepareAlternateCredentials(
+    @WorkflowParam("context") ctx: AuthWfCtx,
+  ): undefined | Promise<undefined> {
+    const result = this.resolveAlternateCredentials(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.alternateCredentials = resolved;
+        return undefined;
+      });
+    }
+    ctx.alternateCredentials = result;
     return undefined;
   }
 
   @Step("prepare-device-trust")
   @Public()
-  prepareDeviceTrust(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  prepareDeviceTrust(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
+    const result = this.resolveDeviceTrust(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.deviceTrust = resolved;
+        return undefined;
+      });
+    }
+    ctx.deviceTrust = result;
     return undefined;
   }
 
   @Step("prepare-enrollment")
   @Public()
-  prepareEnrollment(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  prepareEnrollment(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
+    const result = this.resolveEnrollment(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.enrollment = resolved;
+        return undefined;
+      });
+    }
+    ctx.enrollment = result;
     return undefined;
   }
 
   @Step("prepare-finalize")
   @Public()
-  prepareFinalize(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  prepareFinalize(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
+    const result = this.resolveFinalize(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.finalize = resolved;
+        return undefined;
+      });
+    }
+    ctx.finalize = result;
     return undefined;
   }
 
   @Step("prepare-guards")
   @Public()
-  prepareGuards(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  prepareGuards(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
+    const result = this.resolveGuards(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.guards = resolved;
+        return undefined;
+      });
+    }
+    ctx.guards = result;
     return undefined;
   }
 
   @Step("prepare-session-policy")
   @Public()
-  prepareSessionPolicy(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  prepareSessionPolicy(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
+    const result = this.resolveSessionPolicy(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.sessionPolicy = resolved;
+        return undefined;
+      });
+    }
+    ctx.sessionPolicy = result;
     return undefined;
   }
 
+  /**
+   * Merges login's `prepare-mfa-setup` + invite's `prepare-mfa` + `setup-mfa`.
+   * Writes `ctx.mfaPolicy`; with `ctx.username` bound, pre-picks
+   * `ctx.mfa.current` from the user's `defaultMethod` (challenge branch);
+   * with zero confirmed methods and a single available transport, pre-picks
+   * `ctx.mfaEnroll.method` (enrol branch). `enrolledMethods` is NOT written
+   * here — `load-enrolled-mfa-methods` owns that masking. Idempotent.
+   */
   @Step("prepare-mfa")
   @Public()
-  prepareMfa(@WorkflowParam("context") _ctx: AuthWfCtx): void {
-    return undefined;
+  prepareMfa(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
+    const policyResult = this.resolveMfaPolicy(ctx);
+    const applyPolicy = (
+      policy: NonNullable<AuthWfCtx["mfaPolicy"]>,
+    ): undefined | Promise<undefined> => {
+      ctx.mfaPolicy = policy;
+      const transports = policy.availableTransports;
+      const autoPickEnroll = (): void => {
+        if (transports.length === 1 && !ctx.mfaEnroll?.method) {
+          (ctx.mfaEnroll ??= {}).method = transports[0];
+        }
+      };
+      if (!ctx.username) {
+        autoPickEnroll();
+        return undefined;
+      }
+      return this.users.getUser(ctx.username).then(
+        (user) => {
+          const allowed = new Set(transports);
+          const confirmed = (user?.mfa?.methods ?? []).filter(
+            (m) => m.confirmed && allowed.has(m.name as MfaTransport),
+          );
+          if (confirmed.length > 0 && user?.mfa?.defaultMethod) {
+            const def = user.mfa.defaultMethod as MfaTransport;
+            if (allowed.has(def) && confirmed.some((m) => m.name === def)) {
+              (ctx.mfa ??= {}).current = def;
+            }
+          }
+          if (confirmed.length === 0) autoPickEnroll();
+          return undefined;
+        },
+        (err) => {
+          if (err instanceof UserAuthError && err.type === "NOT_FOUND") return undefined;
+          throw err;
+        },
+      );
+    };
+    if (policyResult instanceof Promise) {
+      return policyResult.then(applyPolicy);
+    }
+    return applyPolicy(policyResult);
   }
 
   @Step("prepare-admin-form")
-  prepareAdminForm(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  prepareAdminForm(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
+    const result = this.resolveAdminForm(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.adminForm = resolved;
+        return undefined;
+      });
+    }
+    ctx.adminForm = result;
     return undefined;
   }
 
   @Step("prepare-available-roles")
-  prepareAvailableRoles(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  async prepareAvailableRoles(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    const roles = await this.getAvailableRoles();
+    if (roles) (ctx.admin ??= {}).availableRoles = roles;
     return undefined;
   }
 
+  /**
+   * Merges policy from `resolveAccept` into `ctx.accept` (rather than
+   * overwriting) so any state stamped by `init-invite-accept`
+   * (`profileFormPresent`) or later steps (`alreadyAccepted` / `profile`)
+   * survives.
+   */
   @Step("prepare-accept")
   @Public()
-  prepareAccept(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  prepareAccept(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
+    const result = this.resolveAccept(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        Object.assign((ctx.accept ??= {}), resolved);
+        return undefined;
+      });
+    }
+    Object.assign((ctx.accept ??= {}), result);
     return undefined;
   }
 
   @Step("prepare-password-rules")
   @Public()
-  preparePasswordRules(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  preparePasswordRules(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
+    const policies = this.users.getTransferablePolicies();
+    (ctx.password ??= {}).policies = policies;
     return undefined;
   }
 
   @Step("prepare-post-reset")
   @Public()
-  preparePostReset(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  preparePostReset(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
+    const result = this.resolvePostReset(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.postReset = resolved;
+        return undefined;
+      });
+    }
+    ctx.postReset = result;
     return undefined;
   }
 
   @Step("prepare-recovery-alt-actions")
   @Public()
-  prepareRecoveryAltActions(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  prepareRecoveryAltActions(
+    @WorkflowParam("context") ctx: AuthWfCtx,
+  ): undefined | Promise<undefined> {
+    const result = this.resolveRecoveryAltActions(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.recoveryAltActions = resolved;
+        return undefined;
+      });
+    }
+    ctx.recoveryAltActions = result;
     return undefined;
   }
 
