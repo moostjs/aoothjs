@@ -67,13 +67,10 @@ import { createTestMailboxController, type OtpConsentRecord } from "./test-mailb
 import {
   INVITE_VARIANTS,
   type InviteMfaCtxOverrides,
-  type InvitePolicyOverrides,
   LOGIN_VARIANTS,
   type LoginMfaCtxOverrides,
-  type LoginPolicyOverrides,
   pickVariant,
   RECOVERY_VARIANTS,
-  type RecoveryPolicyOverrides,
 } from "./variants";
 import { readVariantHeader } from "./variants-server";
 import { createWfStore } from "./wf-store";
@@ -84,72 +81,6 @@ export interface BuildAppOptions {
   dbPath?: string;
   port?: number;
   envOverrides?: Partial<AppEnv>;
-  /**
-   * When `false`, the bundled `AuthController` (login/logout/refresh/status/
-   * password) is NOT registered; the auth GUARD is still installed globally.
-   * Used by DX-08.
-   */
-  authEndpointsEnabled?: boolean;
-  /**
-   * Override the singleton `ConsentStore` provider. Defaults to a no-op
-   * `new ConsentStore()`. Customer / test subclasses go here and the demo
-   * registers the result via moost's DI so the workflow ctor resolves it.
-   */
-  consentStore?: ConsentStore;
-  /**
-   * Override the unified `AuthWorkflowOpts` defaults (forms, device-trust
-   * cookie config, magic-link TTL, pincode timers, autoLogin booleans,
-   * loginUrl, totpIssuer). The demo two-level deep-merges this partial onto
-   * its base before variant overlays apply at ctor time.
-   *
-   * Replaces the prior `loginOpts` / `inviteOpts` / `recoveryOpts` /
-   * `authOpts` cluster — the three-workflow split + the cross-workflow
-   * `AuthOpts` provider collapsed onto a single `AuthWorkflowOpts` surface
-   * when `AuthWorkflow` unified.
-   */
-  authWorkflowOpts?: Partial<AuthWorkflowOpts>;
-  /**
-   * Per-test login policy overrides applied via the `resolveXxx(ctx)` getters
-   * on `DemoAuthWorkflow` (when the active flow is login — i.e. ctx has
-   * neither `admin`, `accept`, nor `postReset` set). Wins over variant
-   * `policy.<group>` and the resolver default. Use this for tests that
-   * previously did `loginOpts: { guards: { ... } }` etc.
-   */
-  loginPolicy?: LoginPolicyOverrides;
-  /**
-   * Per-test recovery policy overrides applied via the `resolveXxx(ctx)`
-   * getters on `DemoAuthWorkflow` (when `ctx.postReset` is set). Same
-   * precedence as `loginPolicy`.
-   */
-  recoveryPolicy?: RecoveryPolicyOverrides;
-  /**
-   * Per-test invite policy overrides applied via the `resolveXxx(ctx)` getters
-   * on `DemoAuthWorkflow` (when `ctx.admin` or `ctx.accept` is set). Same
-   * precedence as `loginPolicy`.
-   */
-  invitePolicy?: InvitePolicyOverrides;
-  /**
-   * Replace the default `DemoAuthWorkflow` controller with a consumer-
-   * supplied class. Used by override-pattern e2e tests that need their own
-   * `AuthWorkflow` subclass wired through the full HTTP+DI stack —
-   * `authWorkflowOpts` is opts-only, this knob swaps the whole class.
-   *
-   * Replaces the prior `loginWorkflowClass` / `inviteWorkflowClass` pair —
-   * the three workflows unified onto one class, so one swap knob covers
-   * both legs.
-   */
-  authWorkflowClass?: new (...args: never[]) => unknown;
-  /**
-   * Static MFA ctx overrides injected via the unified `prepare-mfa` step
-   * setter for login flows. `buildApp` wraps the demo (or
-   * `authWorkflowClass` if supplied) with a tiny subclass that forces these
-   * values into ctx and falls through to the base setter for any field not
-   * supplied. Variant-driven mfa overrides (see `LOGIN_VARIANTS`) are applied
-   * by `DemoAuthWorkflow` itself; this knob is the test-time escape hatch.
-   */
-  loginMfaCtx?: LoginMfaCtxOverrides;
-  /** Invite-side counterpart of `loginMfaCtx`. */
-  inviteMfaCtx?: InviteMfaCtxOverrides;
 }
 
 // Test-mode mailbox buffers anchored on `globalThis` so they survive vite's
@@ -432,14 +363,11 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // gets the short window on the shared knob. Variants that need to flip the
   // TTL per-request go through `authOpts` overlay (merged into opts in the
   // ctor).
-  const demoBaseOpts: Partial<AuthWorkflowOpts> = mergeWfOpts(
-    {
-      magicLinkTtlMs: Math.min(env.RECOVERY_TTL_MS, env.INVITE_TTL_MS),
-    } as Partial<AuthWorkflowOpts>,
-    opts.authWorkflowOpts,
-  );
+  const demoBaseOpts: Partial<AuthWorkflowOpts> = {
+    magicLinkTtlMs: Math.min(env.RECOVERY_TTL_MS, env.INVITE_TTL_MS),
+  };
 
-  const consentStore = opts.consentStore ?? new DemoConsentStore();
+  const consentStore = new DemoConsentStore();
 
   // Shared `deliver()` body for `DemoAuthWorkflow`. The discriminated
   // `AuthDeliveryPayload` narrows `kind` to the matching transport type, so
@@ -516,21 +444,18 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     // ── Variant-driven resolveXxx policy overrides ──
     //
     // Precedence (high → low):
-    //   1. test-time `opts.<flow>Policy.<group>` (set by `buildTestApp`).
-    //   2. variant `policy.<group>` (via `x-wf-variant` header).
-    //   3. demo per-group default (tweaks on top of base).
-    //   4. library default (`super.resolveXxx(ctx)`).
+    //   1. variant `policy.<group>` (via `x-wf-variant` header).
+    //   2. demo per-group default (tweaks on top of base).
+    //   3. library default (`super.resolveXxx(ctx)`).
     //
     // The unified ctx means each resolver can fire on multiple flows. We
-    // dispatch by `detectFlow(ctx)` to pick the right variant map +
-    // test-time policy slot.
+    // dispatch by `detectFlow(ctx)` to pick the right variant map.
 
     protected override resolveAlternateCredentials(
       ctx: AuthWfCtx,
     ):
       | NonNullable<AuthWfCtx["alternateCredentials"]>
       | Promise<NonNullable<AuthWfCtx["alternateCredentials"]>> {
-      if (opts.loginPolicy?.alternateCredentials) return opts.loginPolicy.alternateCredentials;
       const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
       if (variant?.policy?.alternateCredentials) return variant.policy.alternateCredentials;
       // Demo default: forgotPassword + signup ON (dev UI dropdown surfaces them).
@@ -544,7 +469,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     protected override resolveDeviceTrust(
       ctx: AuthWfCtx,
     ): NonNullable<AuthWfCtx["deviceTrust"]> | Promise<NonNullable<AuthWfCtx["deviceTrust"]>> {
-      if (opts.loginPolicy?.deviceTrust) return opts.loginPolicy.deviceTrust;
       const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
       if (variant?.policy?.deviceTrust) return variant.policy.deviceTrust;
       return super.resolveDeviceTrust(ctx);
@@ -553,7 +477,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     protected override resolveEnrollment(
       ctx: AuthWfCtx,
     ): NonNullable<AuthWfCtx["enrollment"]> | Promise<NonNullable<AuthWfCtx["enrollment"]>> {
-      if (opts.loginPolicy?.enrollment) return opts.loginPolicy.enrollment;
       const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
       if (variant?.policy?.enrollment) return variant.policy.enrollment;
       return super.resolveEnrollment(ctx);
@@ -562,7 +485,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     protected override resolveFinalize(
       ctx: AuthWfCtx,
     ): NonNullable<AuthWfCtx["finalize"]> | Promise<NonNullable<AuthWfCtx["finalize"]>> {
-      if (opts.loginPolicy?.finalize) return opts.loginPolicy.finalize;
       const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
       if (variant?.policy?.finalize) return variant.policy.finalize;
       return super.resolveFinalize(ctx);
@@ -571,7 +493,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     protected override resolveGuards(
       ctx: AuthWfCtx,
     ): NonNullable<AuthWfCtx["guards"]> | Promise<NonNullable<AuthWfCtx["guards"]>> {
-      if (opts.loginPolicy?.guards) return opts.loginPolicy.guards;
       const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
       if (variant?.policy?.guards) return variant.policy.guards;
       // Demo default: passwordInitial ON (seed users land on the
@@ -584,7 +505,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     protected override resolveSessionPolicy(
       ctx: AuthWfCtx,
     ): NonNullable<AuthWfCtx["sessionPolicy"]> | Promise<NonNullable<AuthWfCtx["sessionPolicy"]>> {
-      if (opts.loginPolicy?.sessionPolicy) return opts.loginPolicy.sessionPolicy;
       const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
       if (variant?.policy?.sessionPolicy) return variant.policy.sessionPolicy;
       return super.resolveSessionPolicy(ctx);
@@ -595,12 +515,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     ): NonNullable<AuthWfCtx["mfaPolicy"]> | Promise<NonNullable<AuthWfCtx["mfaPolicy"]>> {
       const flow = detectFlow(ctx);
       const isInvite = flow === "invite-admin" || flow === "invite-accept";
-      const testOverride = isInvite
-        ? opts.invitePolicy?.mfaPolicy
-        : flow === "recovery"
-          ? opts.recoveryPolicy?.mfaPolicy
-          : opts.loginPolicy?.mfaPolicy;
-      if (testOverride) return testOverride;
       const variantMap = isInvite
         ? INVITE_VARIANTS
         : flow === "recovery"
@@ -613,7 +527,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     protected override resolveAdminForm(
       ctx: AuthWfCtx,
     ): NonNullable<AuthWfCtx["adminForm"]> | Promise<NonNullable<AuthWfCtx["adminForm"]>> {
-      if (opts.invitePolicy?.adminForm) return opts.invitePolicy.adminForm;
       const variant = pickVariant(INVITE_VARIANTS, readVariantHeader());
       if (variant?.policy?.adminForm) return variant.policy.adminForm;
       return super.resolveAdminForm(ctx);
@@ -622,7 +535,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     protected override resolveAccept(
       ctx: AuthWfCtx,
     ): NonNullable<AuthWfCtx["accept"]> | Promise<NonNullable<AuthWfCtx["accept"]>> {
-      if (opts.invitePolicy?.accept) return opts.invitePolicy.accept;
       const variant = pickVariant(INVITE_VARIANTS, readVariantHeader());
       if (variant?.policy?.accept) return variant.policy.accept;
       // Demo default: existing tests assert the auto-login response payload —
@@ -636,7 +548,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     protected override resolvePostReset(
       ctx: AuthWfCtx,
     ): NonNullable<AuthWfCtx["postReset"]> | Promise<NonNullable<AuthWfCtx["postReset"]>> {
-      if (opts.recoveryPolicy?.postReset) return opts.recoveryPolicy.postReset;
       const variant = pickVariant(RECOVERY_VARIANTS, readVariantHeader());
       if (variant?.policy?.postReset) return variant.policy.postReset;
       // Demo default: opt out of revokeAllSessions so WF-RECOVERY-05 can keep
@@ -652,7 +563,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     ):
       | NonNullable<AuthWfCtx["recoveryAltActions"]>
       | Promise<NonNullable<AuthWfCtx["recoveryAltActions"]>> {
-      if (opts.recoveryPolicy?.recoveryAltActions) return opts.recoveryPolicy.recoveryAltActions;
       const variant = pickVariant(RECOVERY_VARIANTS, readVariantHeader());
       if (variant?.policy?.recoveryAltActions) return variant.policy.recoveryAltActions;
       return super.resolveRecoveryAltActions(ctx);
@@ -738,8 +648,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   }
 
   // Canonical REST + guard wiring + per-workflow providers registered via DI.
-  // `UserService` is only consumed by `AuthController`; skipping the controller
-  // leaves the guard active for the rest of the app (used by DX-08).
   const authProviders: Parameters<typeof createProvideRegistry> = [
     [AuthCredential, () => aooth.authCredential],
     [UserService, () => aooth.userService],
@@ -796,21 +704,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   }
   app.setReplaceRegistry(createReplaceRegistry([WfTriggerProvider, DemoWfTriggerProvider]));
 
-  if (opts.authEndpointsEnabled !== false) {
-    app.registerControllers(DemoAuthController);
-  }
-
-  const authBase = (opts.authWorkflowClass ?? DemoAuthWorkflow) as unknown as new (
-    ...args: never[]
-  ) => AuthWorkflow;
-  // Static-ctx setters wrap the active class when either MFA-ctx escape
-  // hatch is supplied. The wrapper writes ONLY the test-supplied fields,
-  // so the per-variant defaults still hold for unspecified fields.
-  const Ctor =
-    opts.loginMfaCtx || opts.inviteMfaCtx
-      ? wrapWithMfaCtx(authBase, opts.loginMfaCtx, opts.inviteMfaCtx)
-      : authBase;
-  app.registerControllers(Ctor as unknown as new (...args: never[]) => unknown);
+  app.registerControllers(DemoAuthController, DemoAuthWorkflow);
 
   // Bind the atscript-driven user provider to the JWT subject for ARBAC.
   // `DemoUser.@meta.id` is a UUID but the JWT subject is `username`;
@@ -954,66 +848,4 @@ function buildAppControllers(appDb: AppDb): ReadonlyArray<new (...args: never[])
 function resolveListeningPort(moostHttp: MoostHttp, fallback: number): number {
   const addr = moostHttp.getHttpApp().getServer()?.address() as AddressInfo | string | null;
   return addr && typeof addr === "object" && "port" in addr ? addr.port : fallback;
-}
-
-// ── Static-ctx setter override wrapper ──────────────────────────────────────
-//
-// The unified `prepare-mfa` step writes `ctx.mfaPolicy` from `resolveMfaPolicy`
-// and pre-picks `ctx.mfa.current` / `ctx.mfaEnroll.method`. Consumers that
-// need to inject static values without declaring a full subclass wrap their
-// target class with the helper below; `buildApp` calls it when
-// `opts.loginMfaCtx` / `opts.inviteMfaCtx` is supplied. The wrapper calls
-// `super.prepareMfa(ctx)` first and then writes ONLY the fields the caller
-// supplied — so test-supplied values win over the base setter's defaults
-// and unsupplied fields keep the wrapped base class's behaviour.
-
-function wrapWithMfaCtx<W extends new (...args: never[]) => AuthWorkflow>(
-  Base: W,
-  loginCtx: LoginMfaCtxOverrides | undefined,
-  inviteCtx: InviteMfaCtxOverrides | undefined,
-): W {
-  // FOR_EVENT — wrapper's super(users, auth, consentStore) reaches into
-  // DemoAuthWorkflow's composable-using ctor; the scope must propagate.
-  @Inherit()
-  @Injectable("FOR_EVENT")
-  @Controller()
-  class WithMfaCtx extends (Base as unknown as new (
-    users: UserService,
-    auth: AuthCredential,
-    consentStore: ConsentStore,
-  ) => AuthWorkflow) {
-    // The forwarding ctor is required: moost reads `design:paramtypes`
-    // metadata off the subclass to resolve DI, and TS only emits the
-    // metadata when the ctor is explicit. Without it moost can't construct
-    // the wrapper.
-    // eslint-disable-next-line no-useless-constructor
-    constructor(users: UserService, auth: AuthCredential, consentStore: ConsentStore) {
-      super(users, auth, consentStore);
-    }
-    @Step("prepare-mfa")
-    @Public()
-    override prepareMfa(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
-      const baseResult = super.prepareMfa(ctx);
-      const apply = (): undefined => {
-        const v = ctx.admin || ctx.accept ? inviteCtx : loginCtx;
-        if (!v) return undefined;
-        // `super.prepareMfa` always assigned `ctx.mfaPolicy` from `resolveMfaPolicy`.
-        const mfaPolicy = ctx.mfaPolicy!;
-        if (v.mfaMode !== undefined) mfaPolicy.mode = v.mfaMode;
-        if (v.availableMfaTransports !== undefined) {
-          mfaPolicy.availableTransports = [...v.availableMfaTransports];
-        }
-        const mfa = (ctx.mfa ??= {});
-        const m = v as LoginMfaCtxOverrides & InviteMfaCtxOverrides;
-        if (m.currentMfa !== undefined) mfa.current = m.currentMfa;
-        if (m.enrollMethod !== undefined) (ctx.mfaEnroll ??= {}).method = m.enrollMethod;
-        if (!mfa.current && mfaPolicy.availableTransports.length === 1) {
-          mfa.current = mfaPolicy.availableTransports[0];
-        }
-        return undefined;
-      };
-      return baseResult instanceof Promise ? baseResult.then(apply) : apply();
-    }
-  }
-  return WithMfaCtx as unknown as W;
 }
