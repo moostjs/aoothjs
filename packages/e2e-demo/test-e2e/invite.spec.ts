@@ -1,12 +1,10 @@
 /**
- * P0 Playwright coverage for the invite family (auth.invite + auth.reInvite
- * + auth.cancelInvite). Maps to USER_STORIES.md §5 rows tagged Tier=P0:
+ * P0 Playwright coverage for the invite family (auth.invite +
+ * auth.cancelInvite). Maps to USER_STORIES.md §5 rows tagged Tier=P0:
  *
  *   WF-INVITE-001  variant `email-no-roles` — happy path
  *   WF-INVITE-005  variant `roles-profile`  — role picker rendered
  *   WF-INVITE-007  variant `roles-profile`  — profile collection at accept
- *   WF-INVITE-011  variant `choice-freshlogin` — admin picks 'email'
- *   WF-INVITE-013  variant `email-no-roles` — reInvite on pending user
  *   WF-INVITE-015  variant `email-no-roles` — cancelInvite on pending user
  *
  * Driving model. Admin pre-auth + the rendered admin-side forms run through
@@ -29,7 +27,7 @@
  *      magic-link URL out of the mailbox (WF-INVITE-001, -007) cannot
  *      finish the invitee redemption leg; they are `test.fixme`'d below.
  *      Stories that only need "the admin send fired" still pass via the
- *      `sent:true` envelope on the network response (WF-INVITE-011, -013).
+ *      `sent:true` envelope on the network response.
  *
  *   2) `__test/reset` does not actually clear rows from a previous run
  *      (200/201 is returned and 24 fixtures are re-seeded, but
@@ -41,8 +39,8 @@
  *      `email='t1_pending@example.com'`. The invite-family workflows
  *      look up by `findByUsername(email)`, so the seed user is
  *      structurally unreachable through the email-typed form fields.
- *      WF-INVITE-013 / -015 seed a fresh pending invitee via
- *      `auth.invite` (where `username = email`) instead.
+ *      WF-INVITE-015 seeds a fresh pending invitee via `auth.invite`
+ *      (where `username = email`) instead.
  */
 import { expect, test } from "@playwright/test";
 import type { Page, Response } from "@playwright/test";
@@ -52,7 +50,6 @@ import type { APIRequestContext } from "@playwright/test";
 import {
   clickAction,
   fillField,
-  getEmails,
   loginViaUi,
   rewriteToBaseUrl,
   submitForm,
@@ -241,16 +238,10 @@ test.describe("WF-INVITE — auth.invite family (P0)", () => {
     await ctx.close();
   });
 
-  // WF-INVITE-011 (InviteSendModeForm choice variant) was removed alongside
-  // the SMS-mode pruning and `select-send-mode` step deletion — the
-  // shareableLink mode is now an inline checkbox on `InviteForm`.
-  //
-  // WF-INVITE-013 (auth.reInvite) was removed alongside the
-  // `@Workflow("resend")` deletion — resending an invite is now an atomic
-  // public method `InviteWorkflow.resendInvite()` rather than a workflow.
-
   // ── WF-INVITE-015 ────────────────────────────────────────────────────────
-  // Same seed-mismatch caveat as WF-INVITE-013 (see comment there).
+  // Seed-mismatch caveat: `t1_pending`'s `username='t1_pending' ≠
+  // 'email'` would defeat the cancelInvite lookup, so this story seeds a
+  // fresh pending invitee via `seedPendingInviteeByEmail`.
   test("WF-INVITE-015 cancelInvite on a freshly-created pending invitee → cancelled:true", async ({
     page,
   }) => {
@@ -288,8 +279,6 @@ test.describe("WF-INVITE — auth.invite family (P0)", () => {
  *   WF-INVITE-003  variant `email-no-roles`     — invitee cancels at password form
  *   WF-INVITE-006  variant `roles-profile`      — role not in whitelist → form error
  *   WF-INVITE-008  variant `roles-profile`      — invitee skips profile form
- *   WF-INVITE-009  variant `shareable-link`     — admin form completes, link mode
- *   WF-INVITE-012  variant `choice-freshlogin`  — redemption finish has no tokens
  *   WF-INVITE-014  variant `email-no-roles`     — reInvite on already-accepted → 409
  *   WF-INVITE-016  variant `email-no-roles`     — cancelInvite on already-accepted → 409
  *   WF-INVITE-017  variant `cancellation-disabled` — cancelInvite blocked → 403
@@ -347,27 +336,6 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
     // field still mounted so the user can correct and retry.
     await expect(page.locator('[name="email"]')).toBeVisible();
   });
-
-  // ── WF-INVITE-003 ────────────────────────────────────────────────────────
-  // BRANCH: admin sends invite → invitee resumes via magic link → on
-  // SetPasswordForm, click `cancel` action → workflow `abort()` runs
-  // `abortWf("cancel", …)` and sets `ctx.aborted = true` → all terminal steps
-  // gate on `!ctx.aborted` so the redemption never completes.
-  // The aborted finish envelope carries `aborted: true` in the wire payload
-  // (per `@atscript/moost-wf` `abortWf` contract).
-  // FIXME(infra): "pending preserved" should ALSO assert
-  // `account.pendingInvitation === true` via a DB-probe endpoint — none
-  // exists today. Test asserts the abort half end-to-end; DB-verify is a
-  // P0-style retro fix (add `GET /__test/user/:username`).
-  // The previous WF-INVITE-003 (`invitee cancels at SetPasswordForm`) test
-  // was removed alongside SetPasswordForm losing all alt-actions. The invitee
-  // escape mechanism is now closing the magic-link tab (the wf state token
-  // expires per the engine's TTL). See SetPasswordForm jsdoc in forms.as.
-  //
-  // The new welcome heading on the invitee's SetPasswordForm pause is pinned
-  // in `packages/auth-moost/src/__test__/workflows.invite.options.spec.ts`
-  // and in WF-INVITE-002 below (whose happy-path now lands on the heading
-  // before submitting).
 
   // ── WF-INVITE-006 ────────────────────────────────────────────────────────
   // BRANCH: `inviteAdminInviteForm` → role validation — `validateAdminInput`
@@ -483,113 +451,6 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
     await expect(inviteePage.locator("pre").first()).toContainText("accessToken");
     await ctx.close();
   });
-
-  // ── WF-INVITE-009 ────────────────────────────────────────────────────────
-  // BRANCH: `shareable-link` variant sets `send.mode: 'shareableLink'` →
-  // workflow routes through `inviteReturnShareableLink` instead of
-  // `inviteSendInviteEmail`.
-  //
-  // FIXME(impl-punt): per impl-side TODO at
-  // packages/auth-moost/src/workflows/invite.workflow.ts:687-690, the
-  // shareableLink branch CURRENTLY piggy-backs on the email outlet — it
-  // still emits an `outletEmail` event with `metadata.shareableLink: true`.
-  // A dedicated `shareableLinkSink` outlet that finishes admin-side with
-  // the URL (no email) is future work. The §5.3 render assertions ("no
-  // email sent", "link URL captured on admin page") presume the dedicated
-  // outlet exists — so the test asserts what's actually wired today:
-  // the `shareableLink: true` flag on the captured email, and the
-  // workflow's `sent:true` envelope. The "no email + URL on page" branch
-  // turns into a real assertion once the dedicated outlet lands.
-  test("WF-INVITE-009 shareable-link mode admin completion → URL returned, no email", async ({
-    page,
-    request,
-  }) => {
-    await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth/invite/start", "shareable-link"));
-    await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
-
-    const inviteeEmail = uniqueEmail("invite-009");
-    await fillField(page, "email", inviteeEmail);
-    // The dedicated `shareableLink` outlet returns the URL in the trigger
-    // body — grab it before triggering submit so we can assert the shape
-    // came back as expected.
-    const sentPromise = nextTriggerResponse(
-      page,
-      (b) => b.sent === true && b.outlet === "shareableLink",
-    );
-    await submitForm(page);
-    const sent = await sentPromise;
-    expect(typeof sent.url).toBe("string");
-    expect(sent.url as string).toMatch(/wfs=/);
-
-    const emails = await getEmails(request);
-    expect(
-      emails.filter((e) => e.recipient === inviteeEmail),
-      "shareableLink mode must NOT send email",
-    ).toHaveLength(0);
-  });
-
-  // ── WF-INVITE-012 ────────────────────────────────────────────────────────
-  // BRANCH: `choice-freshlogin` variant sets `accept.freshLoginRequired: true`.
-  // After admin picks "email", invitee redeems, sets password, fills profile,
-  // the activation step runs but the terminal selector picks
-  // `inviteFreshLoginFinish` (NOT `inviteAutoLoginFinish`) because
-  // `freshLoginRequired === true`. `freshLoginFinish` calls `finishWf({ next:
-  // { trigger: 'immediate', action: { type: 'redirect', target: loginUrl,
-  // reason: 'fresh-login-required' } } })` — no `data` block ⇒ no tokens.
-  test("WF-INVITE-012 freshLoginRequired → redemption finish carries no tokens, reason=fresh-login-required", async ({
-    page,
-    request,
-    baseURL,
-  }) => {
-    await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth/invite/start", "choice-freshlogin"));
-    // See WF-INVITE-011 for the radio-group locator pattern rationale.
-    await waitForFormInput(page, "mode");
-    await expect(page.getByRole("radiogroup", { name: /Delivery mode/ })).toBeVisible();
-    await fillField(page, "mode", "email");
-    await submitForm(page);
-
-    await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
-    const inviteeEmail = uniqueEmail("invite-012");
-    await fillField(page, "email", inviteeEmail);
-    const sentPromise = nextTriggerResponse(page, (b) => b.sent === true);
-    await submitForm(page);
-    await sentPromise;
-
-    const magic = await waitForEmail(
-      request,
-      (e) => e.kind === "invite.magicLink" && e.recipient === inviteeEmail,
-    );
-    const resumeUrl = rewriteToBaseUrl(magic.url as string, baseURL ?? "");
-    const ctx = await page.context().browser()!.newContext();
-    const inviteePage = await ctx.newPage();
-    await inviteePage.goto(resumeUrl);
-
-    // SetPasswordForm pause.
-    await expect(inviteePage.locator('[name="newPassword"]')).toBeVisible({ timeout: 15_000 });
-    await inviteePage.locator('[name="newPassword"]').fill("InviteePass-1!");
-    await inviteePage.locator('[name="confirmPassword"]').fill("InviteePass-1!");
-    await submitForm(inviteePage);
-
-    // InviteAcceptProfileForm pause — submit empty (both fields optional).
-    await expect(inviteePage.getByText("Display name")).toBeVisible({ timeout: 15_000 });
-    await submitForm(inviteePage);
-
-    await expect(inviteePage.locator("text=Workflow finished")).toBeVisible({ timeout: 15_000 });
-    const raw = (await inviteePage.locator("pre").first().textContent()) ?? "";
-    // Auto-login finish would render `{ data: { accessToken, refreshToken,
-    // … } }`; freshLogin finish renders `{ next: { trigger: 'immediate',
-    // action: { type:'redirect', target, reason:'fresh-login-required' } } }`.
-    expect(raw).not.toContain("accessToken");
-    expect(raw).toContain("fresh-login-required");
-    expect(raw).toContain('"type": "redirect"');
-    await ctx.close();
-  });
-
-  // WF-INVITE-014 removed alongside the `@Workflow("resend")` deletion —
-  // the `resendInvite()` public method's already-accepted branch is
-  // covered server-side in workflows.invite.options.spec.ts.
 
   // ── WF-INVITE-016 ────────────────────────────────────────────────────────
   // BRANCH: `auth.cancelInvite` → `cancel-invite` step → existing user found

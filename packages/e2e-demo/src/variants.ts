@@ -80,9 +80,9 @@ export interface InvitePolicyOverrides {
 }
 
 /**
- * Recovery-flow resolver overrides. `delivery` / `preReset` / `audit` are
- * gone — the unified workflow no longer supports per-flow delivery-mode
- * choice or pre-reset factor gating, and audit moved to interceptors.
+ * Recovery-flow resolver overrides. The unified `AuthWorkflow` exposes
+ * `postReset`, `mfaPolicy`, and `recoveryAltActions` as the recovery-side
+ * resolved-policy surface.
  */
 export interface RecoveryPolicyOverrides {
   postReset?: NonNullable<AuthWfCtx["postReset"]>;
@@ -292,9 +292,7 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
  * Recovery variant entry. `opts` overlays the demo's base `AuthWorkflowOpts`
  * (forms only). `authOpts` overlays the cross-workflow infrastructure subset
  * (pincode timers, magic-link TTL). `policy` carries per-request resolver
- * overrides — `delivery` / `preReset` / `audit` resolvers GONE when the
- * three workflows unified, so only `postReset` / `mfaPolicy` /
- * `recoveryAltActions` remain.
+ * overrides on `postReset` / `mfaPolicy` / `recoveryAltActions`.
  */
 export interface RecoveryVariant {
   opts?: Partial<AuthWorkflowOpts>;
@@ -303,41 +301,22 @@ export interface RecoveryVariant {
 }
 
 /**
- * Default-merged `postReset` policy — saves variants from spelling out the
- * full 2-field shape just to flip one flag. Mirrors `AuthWorkflow`'s
- * `resolvePostReset` defaults.
- */
-const POST_RESET_DEMO_DEFAULTS: NonNullable<RecoveryPolicyOverrides["postReset"]> = {
-  revokeAllSessions: true,
-  loginUrl: "/login",
-};
-
-/**
- * Recovery profiles — keys mirror `USER_STORIES.md` §4 variants R-A…R-G.
- *
- * Variants that exercised the legacy `delivery: { mode, otpTransports }`,
- * `preReset`, or `audit` resolvers were DROPPED when the three workflows
- * unified — those resolvers no longer exist. Remaining variants exercise
- * either `postReset` policy, infrastructure overlays (`magicLinkTtlMs`,
- * pincode cooldown), or the customer `ConsentStore` per-variant lookup.
+ * Recovery profiles — keys mirror `USER_STORIES.md` §5 unified recovery
+ * matrix. Variants exercise either `postReset` policy, infrastructure
+ * overlays (`magicLinkTtlMs`, pincode cooldown), or the customer
+ * `ConsentStore` per-variant lookup.
  */
 export const RECOVERY_VARIANTS: Record<string, RecoveryVariant> = {
-  "fresh-login": {
-    // `freshLoginRequired` was REMOVED from `AuthWfCtx["postReset"]` when
-    // the auto-login choice became the static `autoLoginOnRecover` opt;
-    // this variant's intent (force a fresh login after reset) is now
-    // expressed via that opt instead.
-    opts: { autoLoginOnRecover: false },
-    policy: {
-      postReset: { ...POST_RESET_DEMO_DEFAULTS },
-    },
+  // Flips the static opt so the finish envelope issues tokens instead of
+  // redirecting to login (WF-RECOVERY-016). The default (no variant) leaves
+  // `autoLoginOnRecover=false`, exercised by WF-RECOVERY-001.
+  "recovery-auto-login": {
+    opts: { autoLoginOnRecover: true },
   },
-  // Fast-expire magic-link variant — WF-RECOVERY-004. The persisted state
-  // strategy honours `output.expires` so 1ms guarantees the resumed `wfs`
-  // hits the "Invalid or expired workflow state" branch in @wooksjs/event-wf.
-  // Magic-link TTL lives on `AuthWorkflowOpts.magicLinkTtlMs` — declared on
-  // the variant's `authOpts` overlay (merged into the workflow opts at
-  // ctor time).
+  // Reserved for a future recovery-state TTL knob. `magicLinkTtlMs` is
+  // consumed only by the invite send-email step today; it has no effect on
+  // the recovery flow, so WF-RECOVERY-004 is `test.fixme`'d until a real
+  // recovery-side seam exists.
   "recovery-short-ttl": {
     authOpts: { magicLinkTtlMs: 1 },
   },

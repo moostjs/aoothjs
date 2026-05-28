@@ -1,430 +1,395 @@
-# E2E User Stories — Playwright Test Matrix
+# E2E User Stories — Unified AuthWorkflow Matrix
 
-**Status:** Live — 85 specs green under `pnpm test:e2e`. This document is the catalogue + walkthrough guide for the running Playwright suite at [`packages/e2e-demo/test-e2e/`](test-e2e/).
+**Status:** Updated for the unified `AuthWorkflow` shape. This document is the catalogue and walkthrough guide for `packages/e2e-demo/test-e2e/`.
 
-It enumerates every workflow variant × user state × branch path the suite covers (sections 3–5), describes the runtime infrastructure (section 2), the render-assertion vocabulary (section 6), and the manual-walkthrough guides for the headline UX surfaces (sections 9–11 — **consent collection**, **password creation with live rules**, **OTP disclosure**).
+The demo now uses one consumer subclass, `DemoAuthWorkflow extends AuthWorkflow`, for login, invite, and recovery. Variants are selected per request by `?variant=<name>` on `/wf`, forwarded as the `x-wf-variant` header, and resolved inside the unified workflow constructor/resolvers.
 
 ---
 
 ## 1. Scope Summary
 
-| Workflow                                              | Variant profiles    | P0 stories | P1 stories | P2 stories |
-| ----------------------------------------------------- | ------------------- | ---------- | ---------- | ---------- |
-| `auth.login`                                          | 11 (A–E, H–M)       | 13         | 19         | 9          |
-| `auth.recovery`                                       | 7 (A–G) + 1 consent | 7          | 8          | 5          |
-| `auth.invite` + `auth.reInvite` + `auth.cancelInvite` | 7 (A–G) + 1 consent | 7          | 9          | 5          |
-| **Totals**                                            | **27 variants**     | **27**     | **36**     | **19**     |
+| Area          | Workflow id          | Variant families                                                                                 | Coverage focus                                                                                                                               |
+| ------------- | -------------------- | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Login         | `auth/login/flow`    | credentials, MFA challenge, MFA enrolment, device trust, guards, consents, concurrency, redirect | The full login schema and the shared fragments (`mfaLoopSchema`, `passwordPhaseSchema`, `consentsPersistTailSchema`, `pincodeSendCheckPair`) |
+| Recovery      | `auth/recovery/flow` | OTP-via-email, fresh-login, short state TTL, resend cooldown, consent                            | Reduced recovery scope: no magic-link delivery, no SMS recovery, no mode picker, no pre-reset factor, no workflow audit                      |
+| Invite        | `auth/invite/start`  | admin no-roles/roles, TTL, confirmation, idempotent redirect, invite MFA enrolment, consent      | One invite schema with admin phase plus anonymous accept tail                                                                                |
+| Unified class | all                  | constructor overlays, resolver dispatch, delivery union, shared forms/state                      | Proves one `DemoAuthWorkflow` subclass covers all three flows                                                                                |
 
-**Final shipped count: 85 Playwright specs** (smoke + 84 stories) under `pnpm test:e2e` — every commit lands green.
+**Out of scope for this unified pass:**
 
-**Priority tiering:**
+- Recovery magic-link delivery.
+- Recovery SMS delivery and transport switching.
+- Recovery choice mode.
+- Recovery pre-reset factor checks.
+- Workflow-level audit variants.
+- Invite shareable-link/send-mode choice.
+- Invite fresh-login policy via `accept.freshLoginRequired`.
+- Invite cancellation-policy variants in the workflow class.
 
-- **P0** — happy path + one alt-action + one validation error per workflow variant. Smoke-level coverage.
-- **P1** — secondary branches: transport switching, resend cooldowns, expired tokens, idempotency, multi-step alt-actions.
-- **P2** — exhaustive: every error path, anti-enumeration, locked-account 423, every option override, audit assertion.
-
-Phases 1–7 of the consent refactor added 7 new specs on top of the base matrix (BUMP-01, HACK-CONSENT-01, CONSENT-ARRAY-01, OTP-DISCLOSURE-01, PASSWORD-RULES-LIVE-01, INVITE-CONSENT-01, RECOVERY-CONSENT-01).
+Those behaviors belonged to the previous split workflow surface. The unified workflow intentionally removed or deferred them.
 
 ---
 
-## 2. Demo Infrastructure Requirements (must land before test writing)
+## 2. Unified Demo Infrastructure
 
-### 2.1 Variant-config switching
+### 2.1 Single Workflow Class
 
-The demo currently has **one** hardcoded login config (`demoLoginOpts` in [src/app.ts](src/app.ts)). To exercise the matrix, the demo must expose **named variant presets** that Playwright can target.
-
-**Recommended pattern:** add `?variant=<name>` query param on `/wf` route. The server reads it, looks up a registered preset config map, and constructs a fresh workflow controller with the selected opts. This avoids spinning 24 backend servers.
+The demo registers one replacement workflow class:
 
 ```ts
-// src/variants.ts (post-Phase-7)
-export const LOGIN_VARIANTS = {
-  'minimal':       { mfa: { enabled: false }, alternateCredentials: { forgotPassword: true } },
-  'mfa-totp':      { mfa: { transports: ['totp'] } },
-  'mfa-full':      { mfa: { transports: ['sms','email','totp'] } },
-  'enrollment':    { enrollment: { ensureEmail: true, ensurePhone: true } },
-  'device-trust':  { deviceTrust: { enabled: true, optIn: true, skipsMfa: true } },
-  'guards':        { guards: { passwordInitial: true, emailVerifiedRequired: true } },
-  'consent-array': { mfaCtx: { mfaMode: 'disabled' } /* consent universe in VARIANT_PENDING_CONSENTS */ },
-  'terms-bump':    { mfaCtx: { mfaMode: 'disabled' } /* + VARIANT_PENDING_CONSENTS['terms-bump'] */ },
-  'acceptance':    { profile: { required: true } /* + VARIANT_PENDING_CONSENTS['acceptance'] */ },
-  'concurrency':   { sessionPolicy: { concurrencyLimit: { max: 1, onLimit: 'kickPrompt' } } },
-  'full':          { profile: { required: true }, /* + every flag + VARIANT_PENDING_CONSENTS['full'] */ },
-};
-
-// Consent universe — Phase 5 split this off `policy.acceptance` so the customer
-// ConsentStore is the single source of truth. DemoConsentStore.getPendingConsents
-// keys off the `x-wf-variant` header into this map.
-export const VARIANT_PENDING_CONSENTS = {
-  'consent-array':       [{ id: 'terms', text: 'I accept the Terms of Service', required: 'Terms are mandatory', version: 'v2' }, { id: 'marketing', text: 'Send me product updates' }],
-  'terms-bump':          [{ id: 'terms', text: 'I accept the updated Terms', required: 'You must accept the terms', version: 'v3' }],
-  'invite-terms':        [{ id: 'terms', text: 'I accept the Terms', required: 'Terms are mandatory', version: 'v1' }],
-  'recovery-terms-bump': [{ id: 'terms', text: 'I accept the updated Terms', required: 'Terms are mandatory', version: 'v2' }],
-  'acceptance':          [{ id: 'terms', required: 'You must accept the terms', version: 'v1' }, { id: 'marketing' }],
-  'full':                [{ id: 'terms', required: 'You must accept the terms', version: 'v1' }, { id: 'marketing' }],
-};
-
-export const RECOVERY_VARIANTS = { ... }; // 7 entries + 'recovery-terms-bump'
-export const INVITE_VARIANTS = { ... };   // 7 entries + 'invite-terms'
-```
-
-The UI's `WfPage.vue` already reads `?id=<wfid>` from the route. Extend it to pass `?variant=<name>` to the trigger endpoint via a custom `fetchOptions.headers['x-wf-variant']` so the server picks the preset.
-
-### 2.2 Seed user expansion
-
-Existing 14 users cover the basics. We need to add:
-
-| New user             | Purpose                                                    | Stories                        |
-| -------------------- | ---------------------------------------------------------- | ------------------------------ |
-| `t1_locked`          | Account in `account.locked=true`                           | Login: 423 path                |
-| `t1_multi_mfa`       | Email + SMS + TOTP all confirmed (default=TOTP)            | Profile C + Profile I          |
-| `t1_pending`         | `pendingInvitation=true`, `account.active=false`           | reInvite + cancelInvite        |
-| `t1_redeemed`        | `pendingInvitation=false`, fully active (from past invite) | reInvite 409, cancelInvite 409 |
-| `t1_active_sessions` | 2 issued sessions (concurrency test)                       | Profile H                      |
-| `t1_frank`           | Plain user used to exercise consent prompts (no MFA/trust) | L-K consent-array variants     |
-| `_admin_inviter`     | Has `@ArbacAction('start')` on `auth.invite`               | All invite admin-side stories  |
-
-### 2.3 Email/SMS capture HTTP endpoint
-
-The demo's `app.emails[]` and `app.sms[]` arrays already buffer outgoing messages (for the in-process vitest harness). Playwright runs against a real HTTP server and needs a way to **read** those arrays.
-
-Add a test-only endpoint:
-
-```ts
-// src/test-mailbox.ts (new, only mounted when DEMO_MODE=test)
-@Controller("__test")
-class TestMailboxController {
-  @Get("emails") emails() {
-    return app.emails;
-  }
-  @Get("sms") sms() {
-    return app.sms;
-  }
-  @Delete("mailbox") reset() {
-    app.emails.length = 0;
-    app.sms.length = 0;
+@Inherit()
+@Injectable("FOR_EVENT")
+@Controller()
+class DemoAuthWorkflow extends AuthWorkflow {
+  constructor(users: UserService, authCred: AuthCredential, consentStore: ConsentStore) {
+    const header = readVariantHeader();
+    const loginV = pickVariant(LOGIN_VARIANTS, header);
+    const inviteV = pickVariant(INVITE_VARIANTS, header);
+    const recoveryV = pickVariant(RECOVERY_VARIANTS, header);
+    const merged = merge variant opts/authOpts onto base AuthWorkflowOpts;
+    super(merged, users, authCred, consentStore);
   }
 }
 ```
 
-Playwright tests await the mailbox endpoint to extract OTP codes / magic-link URLs from "sent" messages.
+The class carries the old demo login/invite/recovery customizations as resolver overrides:
 
-### 2.4 Per-test DB reset
+- Login policy: `resolveAlternateCredentials`, `resolveDeviceTrust`, `resolveEnrollment`, `resolveFinalize`, `resolveGuards`, `resolveSessionPolicy`.
+- Shared MFA policy: `resolveMfaPolicy`, plus the demo’s `@Step("prepare-mfa")` override that applies `mfaCtx`.
+- Invite policy: `resolveAdminForm`, `resolveAccept`, `prepareUser`, `getAvailableRoles`, `duplicateInviteCheck`.
+- Recovery policy: `resolvePostReset`, `resolveRecoveryAltActions`, `emailToUserId`.
+- Cross-flow delivery: `deliver(payload: AuthDeliveryPayload)`.
 
-Each Playwright spec must start with a known-good DB. Options:
+### 2.2 Variant Shape
 
-- **(A)** spin a fresh backend per spec (cleanest, slow — ~30s × 60 specs = 30 min)
-- **(B)** add `POST /__test/reset` that re-seeds + clears mailboxes (fast, 1 s per spec)
-- **(C)** in-memory SQLite + Playwright `workerStorageState` (medium)
-
-Recommend **(B)** with explicit `await reset()` in each spec's `beforeEach`. Matches the existing in-process harness pattern.
-
-### 2.5 Playwright tooling
-
-Per the infra audit:
-
-- `@playwright/test` not installed — add to `packages/e2e-demo/devDependencies`
-- Create `playwright.config.ts` with chromium-only, retries=0, single worker (until per-test reset is bulletproof)
-- Create `test-e2e/` directory (separate from `test/` which is vitest)
-- Add `test:e2e` and `test:e2e:ui` package.json scripts
-
----
-
-## 3. Login Workflow Stories
-
-### Variant profiles (from research agent)
-
-| ID  | Profile           | Key opts                                                                                                                                                   |
-| --- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| L-A | Minimal           | password-only, no MFA, `forgotPassword: true`                                                                                                              |
-| L-B | Enrollment        | `ensureEmail+ensurePhone: true`, `mfa.transports=[email,sms,totp]`                                                                                         |
-| L-C | MFA-full          | all 3 transports                                                                                                                                           |
-| L-D | Device trust      | `deviceTrust.enabled+skipsMfa: true`                                                                                                                       |
-| L-E | Password guards   | `passwordInitial+emailVerifiedRequired: true`, no MFA                                                                                                      |
-| L-H | Concurrency       | `kickPrompt` policy                                                                                                                                        |
-| L-I | Full              | every flag on                                                                                                                                              |
-| L-J | Redirect          | `finalize.redirect: 'home'`                                                                                                                                |
-| L-K | Consent capture   | `consent-array` / `terms-bump` variants drive `VARIANT_PENDING_CONSENTS` → `AsConsentArray` checkboxes on `TermsBumpForm` (Phase 5)                        |
-| L-L | OTP disclosure    | `enrollment` variant — `AskEmailForm` / `AskPhoneForm` carry a generic disclosure paragraph; `recordOtpChannelConsent` fires post-pincode-verify (Phase 3) |
-| L-M | Password rotation | `passwordExpiry: true` (default), `password.maxAgeMs: 365d`, no MFA                                                                                        |
-
-### Stories (priority tagged)
-
-| ID                         | Tier | Variant       | Story                                                                                                                                                                                    | Render assertions                                                                                                                                                          |
-| -------------------------- | ---- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| WF-LOGIN-001               | P0   | L-A           | alice signs in with correct password → tokens issued                                                                                                                                     | `LoginCredentialsForm` visible, `forgotPassword` button visible, `signup`/`magicLink` hidden, finish envelope carries `accessToken`                                        |
-| WF-LOGIN-002               | P0   | L-A           | wrong password → form re-renders with `__form: "Invalid credentials"`                                                                                                                    | error message present, form fields cleared appropriately                                                                                                                   |
-| WF-LOGIN-003               | P0   | L-A           | click "Forgot password?" → redirected to `/recover?username=<typed>`                                                                                                                     | URL contains typed username, recovery form loaded                                                                                                                          |
-| WF-LOGIN-004               | P1   | L-A           | locked account `t1_locked` → 423 / friendly error                                                                                                                                        | HTTP 423 surfaced as user-readable message                                                                                                                                 |
-| WF-LOGIN-005               | P2   | L-A           | brute-force lockout: 5 wrong passwords → account locks                                                                                                                                   | 5th attempt → 423; user notification                                                                                                                                       |
-| WF-LOGIN-006               | P0   | L-A+signup    | with `signup: true`, "Sign up" button visible and routes to `/signup`                                                                                                                    | button visible, redirect to invite workflow                                                                                                                                |
-| WF-LOGIN-007               | P0   | L-C           | charlie (3 MFA methods) → `Select2faForm` appears, pick SMS → `PincodeForm` → enter code → tokens                                                                                        | select2fa visible, pincode hint paragraph reads "Code sent to **\***0100"                                                                                                  |
-| WF-LOGIN-008               | P0   | L-C           | grace (1 TOTP only) → `MfaCodeForm` directly (no select2fa) → enter code → tokens                                                                                                        | `useDifferentMethod` hidden (count=1), hint reads "Enter the current 6-digit code…"                                                                                        |
-| WF-LOGIN-009               | P1   | L-C           | charlie clicks `useDifferentMethod` on pincode-check → loops back to select2fa                                                                                                           | form sequence: select2fa → pincode → select2fa                                                                                                                             |
-| WF-LOGIN-011               | P1   | L-C           | resend within timeout → "Please wait Ns" form error                                                                                                                                      | error message visible, no new email in mailbox                                                                                                                             |
-| WF-LOGIN-012               | P1   | L-C           | resend after timeout → new code sent                                                                                                                                                     | mailbox has 2 emails, codes differ                                                                                                                                         |
-| WF-LOGIN-013               | P2   | L-C           | wrong MFA code → `errors.code = "Invalid code"`                                                                                                                                          | error visible, form re-renders                                                                                                                                             |
-| WF-LOGIN-015               | P0   | L-B           | eve has no confirmed email → `AskEmailForm` pause → enter email → pincode → confirmed → tokens                                                                                           | `AskEmailForm` autocomplete='email', pincode hint visible, email captured                                                                                                  |
-| WF-LOGIN-016               | P1   | L-B           | eve has confirmed email already → `AskEmailForm` skipped                                                                                                                                 | step never paused; proceeds to MFA                                                                                                                                         |
-| WF-LOGIN-017               | P1   | L-B           | phone enrollment loop with `AskPhoneForm`                                                                                                                                                | similar to email                                                                                                                                                           |
-| WF-LOGIN-018               | P0   | L-D           | alice on new device → MFA → `rememberDevice` checked → 2nd login skips MFA                                                                                                               | first session sets cookie; 2nd session finds cookie, skips MFA loop                                                                                                        |
-| WF-LOGIN-019               | P1   | L-D           | `deviceTrust.optIn: false` → no `rememberDevice` checkbox shown                                                                                                                          | checkbox absent in PincodeForm DOM                                                                                                                                         |
-| WF-LOGIN-020               | P2   | L-D           | trusted cookie expires → MFA required again                                                                                                                                              | wait past `ttlMs`; expect MFA loop                                                                                                                                         |
-| WF-LOGIN-021               | P0   | L-E           | jack (`isInitial=true`) → `SetPasswordForm` pause → mismatch error → tokens on match                                                                                                     | `AsPasswordRules` rows visible (Phase 7), mismatch error inline; live-keystroke evaluation pinned by WF-PASSWORD-RULES-LIVE-01                                             |
-| WF-LOGIN-EXPIRED-01        | P0   | L-M           | t1_stale (`lastChanged=1`, deep past) → `SetPasswordForm` pause (`password.changeReason='expired'`) → tokens on new password                                                             | Pins `@wf.context.pass 'password'` reaches client; pins schema-OR `(isPasswordInitial \|\| isPasswordExpired)`; pins post-change reset                                     |
-| WF-LOGIN-022               | P1   | L-E           | jack clicks `logout` on SetPassword → aborts                                                                                                                                             | finish envelope has `aborted: true`, no tokens                                                                                                                             |
-| WF-LOGIN-024               | P1   | L-K           | frank submits `TermsBumpForm` without ticking required terms row → form-level error, no tokens                                                                                           | `errors.consents` carries descriptor's `required` string verbatim; mandatory-by-message defense                                                                            |
-| WF-LOGIN-025               | P1   | L-K           | optional marketing row renders unchecked + tickable; tick terms only + submit completes workflow                                                                                         | `AsConsentArray` renders 2 checkboxes (terms required + marketing optional); marketing event saved with `accepted:false`                                                   |
-| WF-LOGIN-028               | P1   | L-H           | henry with 1 active session, `max=1` → kickPrompt                                                                                                                                        | "Log out others" form visible                                                                                                                                              |
-| WF-LOGIN-029               | P1   | L-H           | clicks "Cancel" on kickPrompt → aborted                                                                                                                                                  | no tokens issued                                                                                                                                                           |
-| WF-LOGIN-030               | P2   | L-H           | `onLimit: 'reject'` → HTTP 429 immediately                                                                                                                                               | no form, error banner                                                                                                                                                      |
-| WF-LOGIN-031               | P1   | L-J           | login completes → immediate redirect to `/`                                                                                                                                              | URL after finish is `/`                                                                                                                                                    |
-| WF-LOGIN-032               | P2   | L-I           | iris through every step in order (inline consent on `AskEmailForm` via inherited consents field)                                                                                         | every step paused in correct sequence; final tokens + redirect; `ConsentEvent[]` persisted at completion                                                                   |
-| WF-LOGIN-033               | P1   | enrollment    | required + single transport totp → auto-pick lands on `EnrollConfirmForm`; code accepts → tokens                                                                                         | no `EnrollPickMethodForm` shown; `EnrollConfirmForm` carries TOTP secret + QR provisioning URI                                                                             |
-| WF-LOGIN-034               | P1   | enrollment    | optional + `skip` from `EnrollPickMethodForm` → tokens issued, no `mfa.methods` persisted                                                                                                | `enrollMode: 'optional'` only; skip alt-action visible; user-row mfa methods stays empty                                                                                   |
-| WF-LOGIN-035               | P1   | enrollment    | optional + `useDifferentMethod` from `EnrollAddressForm` → returns to picker, unconfirmed cleanup                                                                                        | EnrollAddressForm renders for `email`/`sms` only; unconfirmed row removed via `removeMfaMethod`                                                                            |
-| WF-LOGIN-036               | P1   | enrollment    | optional + `resend` on `EnrollConfirmForm` → cooldown gates; post-cooldown re-mints fresh code                                                                                           | `enrollPincodeCooldown` ctx field gates resend; mailbox shows 2 distinct codes                                                                                             |
-| WF-LOGIN-BUMP-01           | P1   | terms-bump    | standalone bump prompt fires when user has consents pending but no enrolment/profile carrier form on this login                                                                          | `TermsBumpForm` (extends WithInlineConsentForm) renders alone; `consent-log` records `{id:'terms', accepted:true, version:'v3'}`                                           |
-| WF-LOGIN-HACK-CONSENT-01   | P1   | acceptance    | hand-rolled POST submits empty `consents:[]` on `TermsBumpForm` → server's mandatory-by-message defense throws `errors.consents = descriptor.required`                                   | bypassing the SPA's AsConsentArray render still hits the server-side required check; no tokens issued                                                                      |
-| WF-CONSENT-ARRAY-01        | P0   | consent-array | t1_alice → `SetPasswordForm` (initial-password branch) renders 2 consents; first submit (no terms) errors; check both + submit → finish + `consent-log` carries both events              | `AsConsentArray` rows visible per descriptor; per-row error string matches descriptor's `required`; both `ConsentEvent`s persisted with `accepted` reflecting tick state   |
-| WF-LOGIN-OTP-DISCLOSURE-01 | P1   | enrollment    | t1_alice phone-enrolment → `AskPhoneForm` carries `ctx.otpDisclosure` paragraph; post-pincode-verify the `recordOtpChannelConsent` hook fires with `{channel:'sms', target, disclosure}` | `/__test/otp-consent-log/t1_alice` returns the expected SMS audit record; protocol mapping `'phone' → 'sms'` pinned                                                        |
-| WF-PASSWORD-RULES-LIVE-01  | P0   | guards        | t1_jack forced-password-change → `AsPasswordRules` renders 3 backend-supplied policies; `data-passed` per row updates live as user types                                                 | empty → all `false`; `"short"` → length:false, letter:true, digit:false; `"longenough1A!"` → all `true`; submit completes; pins `(_, data) => data.newPassword` reactivity |
-
-**Login total: 41 stories** (13 P0 + 19 P1 + 9 P2)
-
----
-
-## 4. Recovery Workflow Stories
-
-### Variant profiles
-
-| ID  | Profile          | Key opts                                |
-| --- | ---------------- | --------------------------------------- |
-| R-A | Default          | `mode='magicLink'`, auto-login on reset |
-| R-B | OTP email        | `mode='otp'`, `transports=['email']`    |
-| R-C | OTP sms          | `mode='otp'`, `transports=['sms']`      |
-| R-D | OTP both         | `transports=['email','sms']`            |
-| R-E | Choice mode      | `mode='choice'`                         |
-| R-F | Pre-reset factor | `preReset.requireKnownFactor: true`     |
-| R-G | Fresh-login      | `postReset.freshLoginRequired: true`    |
-
-### Stories
-
-| ID                     | Tier | Variant             | Story                                                                                                                                                     | Render assertions                                                                                                                                                                                                                       |
-| ---------------------- | ---- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| WF-RECOVERY-001        | P0   | R-A                 | alice → enter email → magic link → click → set password → tokens                                                                                          | email captured with `kind: 'recovery.magicLink'`, `SetPasswordForm` shows `password.policies` rules                                                                                                                                     |
-| WF-RECOVERY-002        | P0   | R-A                 | unknown email → identical "if account exists" finish                                                                                                      | finish envelope generic, no email sent                                                                                                                                                                                                  |
-| WF-RECOVERY-003        | P1   | R-A                 | password mismatch → `confirmPassword: "Passwords do not match"`                                                                                           | error visible inline                                                                                                                                                                                                                    |
-| WF-RECOVERY-004        | P1   | R-A                 | expired magic link → 410 on resume                                                                                                                        | error page or message                                                                                                                                                                                                                   |
-| WF-RECOVERY-005        | P0   | R-B                 | alice → email OTP → enter code → set password → tokens                                                                                                    | `PincodeForm` hint reads "Code sent to **\***"                                                                                                                                                                                          |
-| WF-RECOVERY-006        | P0   | R-C                 | alice (sms enrolled) → SMS OTP → tokens                                                                                                                   | SMS mailbox has code                                                                                                                                                                                                                    |
-| WF-RECOVERY-007        | P1   | R-D                 | switch transport email → sms via `useDifferentTransport`                                                                                                  | first email, then SMS in mailbox                                                                                                                                                                                                        |
-| WF-RECOVERY-008        | P1   | R-D                 | `useDifferentTransport` hidden when only 1 transport                                                                                                      | button absent                                                                                                                                                                                                                           |
-| WF-RECOVERY-009        | P1   | R-B                 | wrong OTP → `errors.code = "Invalid code"`                                                                                                                | error visible                                                                                                                                                                                                                           |
-| WF-RECOVERY-010        | P1   | R-B                 | resend within cooldown → "Please wait Ns"                                                                                                                 | no new email                                                                                                                                                                                                                            |
-| WF-RECOVERY-011        | P1   | R-B                 | resend after cooldown → new code                                                                                                                          | 2 emails, codes differ                                                                                                                                                                                                                  |
-| WF-RECOVERY-012        | P0   | R-E                 | choice mode → `RecoveryModeSelectForm` → pick magicLink → flow A                                                                                          | mode form visible                                                                                                                                                                                                                       |
-| WF-RECOVERY-013        | P1   | R-E                 | choice mode → pick otp → flow B                                                                                                                           | mode form visible, then PincodeForm                                                                                                                                                                                                     |
-| WF-RECOVERY-014        | P1   | R-F                 | pre-reset factor (phone last-4) → match → set password                                                                                                    | `RecoveryFactorForm` visible, opaque error on wrong                                                                                                                                                                                     |
-| WF-RECOVERY-015        | P2   | R-F                 | pre-reset factor wrong → "Invalid factor"                                                                                                                 | opaque error                                                                                                                                                                                                                            |
-| WF-RECOVERY-016        | P0   | R-G                 | freshLoginRequired → finish has 5s redirect, no tokens                                                                                                    | envelope has `next.trigger='auto'`, `data` absent                                                                                                                                                                                       |
-| WF-RECOVERY-017        | P1   | R-A                 | `backToLogin` from request step → redirect to `/login`                                                                                                    | finish envelope reason='user-cancelled'                                                                                                                                                                                                 |
-| WF-RECOVERY-018        | P2   | R-A                 | post-reset old token rejected (revokeAllSessions=true)                                                                                                    | old session HTTP 401                                                                                                                                                                                                                    |
-| WF-RECOVERY-019        | P2   | R-A                 | audit events emitted: `recovery.requested`, `recovery.completed`                                                                                          | mailbox endpoint or audit endpoint shows events                                                                                                                                                                                         |
-| WF-RECOVERY-CONSENT-01 | P0   | recovery-terms-bump | recovery-terms-bump variant → `SetPasswordForm` shows `AsConsentArray`; tick + submit → `consent-log` carries `{id:'terms', accepted:true, version:'v2'}` | terms-version bump scenario (re-acceptance during password reset); magic-link resume preserves variant via `&variant=…` query (load-bearing — invitee/recoverer's resume request inherits the originator's variant header through this) |
-
-**Recovery total: 20 stories** (7 P0 + 8 P1 + 5 P2)
-
----
-
-## 5. Invite Family Stories
-
-### Variant profiles
-
-| ID  | Profile                                    | Key opts                                                 |
-| --- | ------------------------------------------ | -------------------------------------------------------- |
-| I-A | Email, no roles, auto-login                | minimal default                                          |
-| I-B | Roles                                      | `getAvailableRoles` wired                                |
-| I-C | Shareable link mode                        | `send.mode='shareableLink'`                              |
-| I-D | Choice + fresh-login                       | `send.mode='choice'`, `freshLoginRequired: true`         |
-| I-E | Audit enabled                              | `audit.enabled: true`                                    |
-| I-F | Cancellation disabled / duplicate override | `cancellation.allowed: false`, `duplicateCheck` override |
-| I-G | Short TTL + confirmation                   | `tokenTtlMs=1s`, `showConfirmation: true`                |
-
-### Stories
-
-| ID                   | Tier | Variant      | Story                                                                                                                                              | Render assertions                                                                                                                                                                                                                                    |
-| -------------------- | ---- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| WF-INVITE-001        | P0   | I-A          | admin invites new email → mailbox has invite → invitee redeems → tokens                                                                            | `InviteForm` no `roles` field; redemption sets password; auto-login envelope                                                                                                                                                                         |
-| WF-INVITE-002        | P1   | I-A          | admin invites existing user → 409                                                                                                                  | form re-renders with error                                                                                                                                                                                                                           |
-| WF-INVITE-003        | P1   | I-A          | invitee cancels at password form → pending preserved                                                                                               | user record still `pendingInvitation=true`                                                                                                                                                                                                           |
-| WF-INVITE-004        | P2   | I-A          | expired link → 410                                                                                                                                 | error visible                                                                                                                                                                                                                                        |
-| WF-INVITE-005        | P0   | I-B          | role whitelist `['member','viewer','admin']` → admin picks valid → invitee redeems                                                                 | role picker shows 3 options; invalid role rejected                                                                                                                                                                                                   |
-| WF-INVITE-006        | P1   | I-B          | admin submits role not in whitelist → form error                                                                                                   | error visible inline                                                                                                                                                                                                                                 |
-| WF-INVITE-009        | P1   | I-C          | shareable link mode → admin form completes, link displayed, link reusable                                                                          | no email sent, link URL captured                                                                                                                                                                                                                     |
-| WF-INVITE-010        | P2   | I-C          | already-accepted link click → idempotent redirect with 2 options                                                                                   | "Go to sign-in" + "Request a new invite" buttons                                                                                                                                                                                                     |
-| WF-INVITE-011        | P0   | I-D          | choice → admin picks "email" → email sent                                                                                                          | `InviteSendModeForm` visible                                                                                                                                                                                                                         |
-| WF-INVITE-012        | P1   | I-D          | freshLoginRequired → redemption finish has no tokens, redirect to `/welcome`                                                                       | envelope reason='fresh-login-required'                                                                                                                                                                                                               |
-| WF-INVITE-013        | P0   | I-E          | reInvite on pending user → new email sent → audit `invite.resent`                                                                                  | `InviteEmailForm` accepts email, new mailbox entry                                                                                                                                                                                                   |
-| WF-INVITE-014        | P1   | I-E          | reInvite on already-accepted user → 409                                                                                                            | error visible                                                                                                                                                                                                                                        |
-| WF-INVITE-015        | P0   | I-E          | cancelInvite on pending → user deleted → audit `invite.cancelled`                                                                                  | record gone, mailbox endpoint shows audit                                                                                                                                                                                                            |
-| WF-INVITE-016        | P1   | I-E          | cancelInvite on already-accepted → 409                                                                                                             | error visible                                                                                                                                                                                                                                        |
-| WF-INVITE-017        | P1   | I-F          | cancelInvite when `cancellation.allowed: false` → 403                                                                                              | direct error, no form                                                                                                                                                                                                                                |
-| WF-INVITE-018        | P2   | I-F          | duplicate user with `duplicateCheck='allow'` override → still 409 from store-level constraint                                                      | error surfaces                                                                                                                                                                                                                                       |
-| WF-INVITE-019        | P2   | I-G          | TTL=1s, click after 2s → 410                                                                                                                       | error visible                                                                                                                                                                                                                                        |
-| WF-INVITE-020        | P2   | I-G          | `showConfirmation: true` → finish message "Your account has been created."                                                                         | text visible in DOM                                                                                                                                                                                                                                  |
-| WF-INVITE-021        | P1   | I-B          | invite-tail optional + `skip` from `EnrollPickMethodForm` → activated, no mfa enrolled                                                             | mirrors WF-LOGIN-034 but on the invite accept tail                                                                                                                                                                                                   |
-| WF-INVITE-022        | P1   | I-B          | invite-tail optional + `useDifferentMethod` from `EnrollConfirmForm` (totp→sms) → loops + cleanup                                                  | unconfirmed totp row removed; sms enrolment completes                                                                                                                                                                                                |
-| WF-INVITE-CONSENT-01 | P0   | invite-terms | invite-terms variant → `SetPasswordForm` shows `AsConsentArray`; tick + submit → `consent-log` carries `{id:'terms', accepted:true, version:'v1'}` | end-to-end invitee acceptance with consent capture; magic-link URL carries `&variant=invite-terms` so invitee's resume request inherits the admin's variant header (otherwise DemoConsentStore would see no header and return empty pendingConsents) |
-
-**Invite total: 21 stories** (7 P0 + 9 P1 + 5 P2)
-
----
-
-## 6. Render-Assertion Catalog (cross-cutting)
-
-The Playwright value-add over the existing in-process vitest suite is **rendered-DOM verification**. Every story above must include at least one of these classes of assertion:
-
-| Class                                 | Examples                                                                                                                                                   | Detection method                                                                             |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| **Conditional alt-action visibility** | `signup` hidden when `!altSignup`; `useDifferentMethod` hidden when `mfaMethodCount<2`                                                                     | `page.locator('button:has-text("Sign up")').isVisible()`                                     |
-| **Computed paragraph text**           | MFA hint reads "Enter the current 6-digit code…" for TOTP, "Code sent to **\***0100 — check console" for SMS                                               | `expect(page.locator('p[aria-live]')).toContainText(…)`                                      |
-| **Default values (no tristate)**      | `rememberDevice` unchecked on first render (not indeterminate); `optIn` unchecked                                                                          | `expect(checkbox).not.toBeChecked()`                                                         |
-| **Autocomplete hints**                | username field has `autocomplete="username"`; password has `current-password`                                                                              | `getAttribute('autocomplete')`                                                               |
-| **Validation errors inline**          | "Invalid code", "Passwords do not match" appear next to the right field                                                                                    | `page.locator('[data-field=code] .error').textContent()`                                     |
-| **Form sequence**                     | Variants force forms in known order (e.g. credentials → mfa → terms → tokens)                                                                              | snapshot test of visible form ID on each step                                                |
-| **Finish-envelope rendering**         | redirect vs. data vs. abort envelopes render distinct UI                                                                                                   | URL after finish; presence of success banner; absence of tokens                              |
-| **Field absence**                     | role picker absent when `collectRoles: false`; `rememberDevice` checkbox absent when `deviceTrust.optIn: false`                                            | `expect(locator).toHaveCount(0)`                                                             |
-| **Test-mailbox content**              | OTP code matches what server sent; magic-link URL matches                                                                                                  | GET `/__test/emails`                                                                         |
-| **Consent-log content**               | `ConsentEvent[]` shape `{id, accepted, version?, at}` per pending descriptor — one event per descriptor, accepted reflects tick state                      | GET `/__test/consent-log/<username>`                                                         |
-| **OTP-consent-log content**           | `recordOtpChannelConsent` audit records — `{channel, target, disclosure, at}` per verified channel; protocol mapping `phone→sms` pinned                    | GET `/__test/otp-consent-log/<username>`                                                     |
-| **AsConsentArray rendering**          | One checkbox row per `ctx.pendingConsents` descriptor; per-row error string matches descriptor's `required`; component self-hides on empty pendingConsents | `page.locator('.as-consent-array input[type=checkbox]')`                                     |
-| **AsPasswordRules live evaluation**   | Per-row `data-passed="true                                                                                                                                 | false"`reflects compiled ftring-rule evaluation against`data.newPassword` on every keystroke | `page.locator('.as-password-rules-row[data-passed="true"]')` |
-
----
-
-## 7. Decisions (resolved)
-
-1. **Tier scope.** Shipped P0 + P1 + foundational P2 in waves; the 7-phase consent refactor (commits `3491990` → `4d04417`) added 7 additional specs.
-2. **Variant routing.** `?variant=<name>` query param → `x-wf-variant` header → server picks the preset in the workflow controller constructor (FOR_EVENT scope).
-3. **Per-test reset.** `POST /__test/reset` re-seeds + clears mailboxes + clears `consent-log` + clears `otp-consent-log`. ~1s per spec.
-4. **Browser matrix.** Chromium-only (single project in `playwright.config.ts`).
-5. **CI.** Separate `pnpm test:e2e` script (workflows ≠ vitest scope). Boot order: `DEMO_MODE=test SEED=true pnpm dev` in one terminal, `pnpm test:e2e` in the other.
-6. **Variant config.** TypeScript map in `src/variants.ts` + `VARIANT_PENDING_CONSENTS` map in `src/app.ts` (consent universe is colocated with `DemoConsentStore` per Phase 5 design).
-
----
-
-## 8. Implementation Log
-
-Executed via `orchestrator-implement`. Each step a separate commit. Tests gate every step.
-
-| Step                              | Status | Commits / Notes                                                                      |
-| --------------------------------- | ------ | ------------------------------------------------------------------------------------ |
-| Infra                             | done   | Playwright + `__test/*` endpoints + variant routing + seed expansion (~14 users now) |
-| P0 + P1 Login / Recovery / Invite | done   | 41 + 20 + 23 specs                                                                   |
-| Phase 1                           | done   | `3491990` — ConsentStore DI plumbing                                                 |
-| Phase 2                           | done   | `7d4ad56` — `persist-consents` migrates to `ConsentStore.save`                       |
-| Phase 3                           | done   | `f3b85f1` — OTP disclosure + `recordOtpChannelConsent` hook                          |
-| Phase 4                           | done   | `89cc544` — `prepare-consents` @Step + `ctx.pendingConsents` transport               |
-| Phase 5                           | done   | `c397b37` — `consents:string[]` dynamic carrier + `AsConsentArray`                   |
-| Phase 6                           | done   | `be392b6` — retire `ctx.acceptance` / `resolveAcceptance`                            |
-| Phase 7                           | done   | `4d04417` — `AsPasswordRules` SPA wire-up + `WF-PASSWORD-RULES-LIVE-01`              |
-
----
-
-## 9. Manual walkthrough — Consent capture (Phase 5)
-
-**Boot:** `cd packages/e2e-demo && DEMO_MODE=test SEED=true pnpm dev` (serves SPA + API on `http://localhost:3001`).
-
-### 9.1 Single-form: required terms + optional marketing
-
-1. Browse to `http://localhost:3001/wf?id=auth/login/flow&variant=consent-array`.
-2. Sign in as `t1_alice` / `Password1!` (Fill button on the right autofills both).
-3. The workflow lands on `SetPasswordForm` (Phase 7 `AsPasswordRules` rows visible) + `AsConsentArray` (Phase 5 checkboxes) inherited via `WithInlineConsentForm`.
-4. Try clicking **Submit** without ticking anything → form-level error "Terms are mandatory" (the `required` string from the `terms` descriptor). The marketing row stays unchecked but doesn't block.
-5. Tick the **"I accept the Terms of Service"** checkbox + leave **"Send me product updates"** unchecked + Submit.
-6. Workflow finishes → JSON envelope at the top shows `accessToken`.
-7. Inspect the audit record: `curl http://localhost:3001/__test/consent-log/t1_alice` → two events: `{id:'terms', accepted:true, version:'v2', at:…}` + `{id:'marketing', accepted:false, at:…}` (audit-friendly default — declined-optional events still persist).
-
-### 9.2 Standalone re-prompt (terms-version bump)
-
-1. Browse to `http://localhost:3001/wf?id=auth/login/flow&variant=terms-bump`.
-2. Sign in as `t1_frank` / `Password1!`.
-3. Workflow lands on **`TermsBumpForm`** — empty form except the single `AsConsentArray` row "I accept the updated Terms" (variant `terms-bump` returns ONE required descriptor `version:v3`).
-4. Tick + Submit → finish envelope + `accessToken`.
-5. `curl http://localhost:3001/__test/consent-log/t1_frank` → `[{id:'terms', accepted:true, version:'v3', at:…}]`.
-
-### 9.3 Hack-attempt simulation (silent-drop defense)
-
-1. Reset state: `curl -X POST -H "Content-Type: application/json" -d '{}' http://localhost:3001/__test/reset`.
-2. Kick off the workflow programmatically:
-   ```bash
-   curl -X POST -H "Content-Type: application/json" -H "x-wf-variant: terms-bump" \
-        -d '{"wfid":"auth/login/flow"}' http://localhost:3001/auth/trigger
-   ```
-3. Capture the returned `wfs` token, then submit credentials. Then on the TermsBumpForm submission, post a tampered payload:
-   ```bash
-   curl -X POST -H "Content-Type: application/json" -H "x-wf-variant: terms-bump" \
-        -d '{"wfs":"<token>","input":{"formData":{"consents":["terms","forged-gdpr"]}}}' \
-        http://localhost:3001/auth/trigger
-   ```
-4. Workflow completes — but `consent-log` records `[{id:'terms', accepted:true, version:'v3', at:…}]` only. The forged `'forged-gdpr'` id is **silently dropped** (server's `processInlineConsent` uses its own `ctx.pendingConsents` as the whitelist; out-of-set ids never reach `save()`).
-
-### 9.4 Cross-leg consent (invite + recovery)
-
-Invite and recovery workflows split across a magic-link boundary. The invitee/recoverer arrives in a fresh browser context — no header. The demo's [`buildMagicLinkUrl`](src/aooth.ts) reads the originator's `x-wf-variant` and rides it on the URL (`?wfs=<token>&variant=<name>`), so the SPA's WfPage forwards it on resume. This is what makes `WF-INVITE-CONSENT-01` and `WF-RECOVERY-CONSENT-01` work.
-
-To exercise live:
-
-1. Login as `admin@acme.test` / `Password1!` on `/wf?id=auth/login/flow&variant=minimal`.
-2. Navigate to `/wf?id=auth/invite/start&variant=invite-terms`, invite `new-user@example.com`.
-3. Open the [dev console](http://localhost:3001) running `pnpm dev` — find the `[email] invite.magicLink → new-user@example.com` line. The URL carries `&variant=invite-terms`.
-4. Open that URL in an Incognito window. SetPasswordForm pauses with the `AsConsentArray` row for terms. Tick + fill password + Submit.
-
----
-
-## 10. Manual walkthrough — Password creation with live rules (Phase 7)
-
-**Boot:** same as section 9.
-
-1. Browse to `http://localhost:3001/wf?id=auth/login/flow&variant=guards`.
-2. Sign in as `t1_jack` / `Password1!`.
-3. Walk through `AskEmailForm` (`jack@acme.test` is auto-pre-filled by the variant) → email-OTP `PincodeForm` (read code from dev console, e.g. `[email] login.pincode → jack@acme.test code=123456`).
-4. Workflow lands on **`SetPasswordForm`**. Below the New password / Confirm password inputs there are 3 live-evaluated rule rows (the new `AsPasswordRules` Phase 7 component): "At least 8 characters", "Contains a letter", "Contains a digit".
-5. **Type into New password and watch the rows toggle live:**
-   - Empty → all 3 rows red/false.
-   - `short` → length:red, letter:green, digit:red.
-   - `longenough1A!` → all green.
-6. Each row carries `data-passed="true|false"` for e2e assertion (`WF-PASSWORD-RULES-LIVE-01` pins exactly this).
-7. Fill confirm password identically + Submit → tokens issued.
-
-**Password rotation (`password-expired` variant):** browse to `http://localhost:3001/wf?id=auth/login/flow&variant=password-expired`, sign in as `t1_stale` / `Password1!`. The seed user's `password.lastChanged = 1` (epoch+1ms) is older than the configured `password.maxAgeMs` (365d) so the workflow lands on **`SetPasswordForm`** directly (MFA disabled on this variant). The wire envelope carries `password.changeReason: 'expired'` — surface it in the SPA to render a "Your password has expired" banner instead of the initial-password copy. Submit `NewerPass1!` in both fields → tokens issued.
-
-**Customizing the policies:** edit `definePasswordPolicy` calls in [`packages/e2e-demo/src/aooth.ts`](src/aooth.ts) (around lines 76-95). Add e.g.:
+Variant entries are not old per-workflow option objects. They use the unified shape:
 
 ```ts
-definePasswordPolicy({
-  rule: (p, [chars]) => /[!@#$%^&*]/.test(p),
-  args: [['!@#$%^&*']],
-  description: 'Contains a special character',
-  errorMessage: 'Password must include a special character',
-}),
+type Variant = {
+  opts?: Partial<AuthWorkflowOpts>;
+  authOpts?: Partial<Pick<AuthWorkflowOpts, "mfa" | "magicLinkTtlMs">>;
+  policy?: Record<string, /* AuthWfCtx policy slot */ unknown>;
+  mfaCtx?: {
+    mfaMode?: "required" | "optional" | "disabled";
+    availableMfaTransports?: MfaTransport[];
+    currentMfa?: MfaTransport;
+    enrollMethod?: MfaTransport;
+  };
+};
 ```
 
-The transferable form (`rule.toString()` + `description` + `errorMessage`) flows through `getTransferablePolicies()` → `ctx.password.policies` → `AsPasswordRules.policies` → `compileFieldFn(rule)` at runtime.
+`policy` feeds `resolveXxx(ctx)` overrides. `mfaCtx` feeds the unified `prepare-mfa` step. `authOpts` exists only for cross-flow infrastructure overlays such as pincode resend timeout and workflow-state TTL.
+
+### 2.3 Variant Presets Covered
+
+Login variants:
+
+| Variant                           | Purpose                                                    |
+| --------------------------------- | ---------------------------------------------------------- |
+| `minimal`                         | Password-only login, forgot-password enabled, MFA disabled |
+| `mfa-totp`                        | Single TOTP challenge                                      |
+| `mfa-full`                        | SMS/email/TOTP challenge coverage                          |
+| `mfa-fast-resend`                 | MFA pincode resend cooldown coverage                       |
+| `enrollment`                      | Email/phone channel enrolment plus MFA enrolment policy    |
+| `device-trust`                    | Opt-in trusted-device cookie                               |
+| `device-trust-no-optin`           | Device-trust enabled without checkbox                      |
+| `device-trust-short-ttl`          | Trusted cookie expiry                                      |
+| `guards`                          | Initial-password and email-required guards                 |
+| `password-expired`                | Password rotation via `passwordExpiry`                     |
+| `acceptance`                      | Mandatory consent defense path                             |
+| `consent-array`                   | Inline required + optional consent                         |
+| `terms-bump`                      | Standalone terms re-prompt                                 |
+| `concurrency`                     | Kick-prompt session policy                                 |
+| `concurrency-reject`              | Reject session policy                                      |
+| `redirect-home`                   | Finalize redirect                                          |
+| `full`                            | Every major login phase in one walkthrough                 |
+| `mfa-enroll-required-totp`        | Required MFA enrolment with single TOTP transport          |
+| `mfa-enroll-optional-full`        | Optional enrolment skip and method-switch coverage         |
+| `mfa-enroll-optional-fast-resend` | Enrol-confirm resend cooldown coverage                     |
+
+Recovery variants:
+
+| Variant                        | Purpose                                                                                                                                     |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| default/no variant             | OTP-via-email recovery with default fresh-login post-reset behavior                                                                         |
+| `recovery-auto-login` (target) | `autoLoginOnRecover=true`; reset finishes with tokens; add or rename this preset when migrating `src/variants.ts` from legacy `fresh-login` |
+| `recovery-short-ttl`           | Expired workflow-state resume                                                                                                               |
+| `recovery-fast-resend`         | Recovery pincode resend cooldown                                                                                                            |
+| `recovery-terms-bump`          | Inline consent on recovery `SetPasswordForm`                                                                                                |
+
+Invite variants:
+
+| Variant                    | Purpose                                        |
+| -------------------------- | ---------------------------------------------- |
+| `email-no-roles`           | Admin invite form with no role picker          |
+| `roles-profile`            | Role picker and accept-tail profile coverage   |
+| `short-ttl-confirmation`   | Expired invite state plus confirmation enabled |
+| `confirmation-message`     | Confirmation finish copy                       |
+| `idempotent-redirect`      | Already-accepted invite handling               |
+| `invite-mfa-optional-full` | Invite accept-tail MFA enrolment               |
+| `invite-terms`             | Inline consent on invite `SetPasswordForm`     |
+
+### 2.4 Test Infrastructure
+
+- `POST /__test/reset` reseeds the DB and clears mailbox, consent, OTP-consent, active-session, and audit buffers.
+- `GET /__test/emails` and `GET /__test/sms` expose captured delivery events.
+- `GET /__test/consent-log/:username` exposes `ConsentStore.save` output.
+- `GET /__test/otp-consent-log/:username` exposes OTP channel disclosure records.
+- `POST /__test/allow-duplicate-invites` flips the duplicate-invite test flag for the store-level duplicate branch.
+
+The SPA reads `?variant=<name>` on `/wf` and forwards it as `x-wf-variant` on every trigger/resume request. Invite links preserve `&variant=<name>` so the anonymous accept leg sees the same variant.
 
 ---
 
-## 11. Manual walkthrough — OTP disclosure + audit (Phase 3)
+## 3. Unified AuthWorkflow Stories
 
-**Boot:** same as section 9.
+These stories prove the e2e demo is testing the new class shape, not the retired split workflow surface.
 
-1. Browse to `http://localhost:3001/wf?id=auth/login/flow&variant=enrollment`.
+| ID                  | Tier | Story                                                                                     | Assertions                                                                                                                              |
+| ------------------- | ---- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| WF-AUTH-UNIFIED-001 | P0   | `DemoAuthWorkflow` is the single replacement class for login, invite, recovery            | One `createReplaceRegistry([AuthWorkflow, DemoAuthWorkflow])`; no per-flow workflow-class knobs                                         |
+| WF-AUTH-UNIFIED-002 | P0   | Constructor merges variant `opts` and `authOpts` before `super(...)`                      | `mfa-fast-resend`, `recovery-fast-resend`, `short-ttl-confirmation` affect their flows without separate workflow option providers       |
+| WF-AUTH-UNIFIED-003 | P0   | Resolver dispatch uses ctx/flow state, not class type                                     | Login policy overrides do not leak into invite/recovery; invite `adminForm` and recovery `postReset` resolve from the same class        |
+| WF-AUTH-UNIFIED-004 | P0   | `deliver(payload)` handles every auth delivery kind                                       | Mailbox receives `mfa-pincode`, `enroll-pincode`, `recovery-pincode`, `invite-link`, and `new-device-notice` as mapped email/SMS events |
+| WF-AUTH-UNIFIED-005 | P1   | Shared pincode pair works for login MFA and recovery OTP                                  | Both flows enforce `ctx.pincode.resendAllowedAt`, set `ctx.otp.verified`, and clear `ctx.pin/pinExpire` after success                   |
+| WF-AUTH-UNIFIED-006 | P1   | Shared password form handles login initial, login expired, invite initial, recovery reset | `ctx.password.changeReason` is `"initial"`, `"expired"`, or `"reset"` and copy/policies render through `SetPasswordForm`                |
+| WF-AUTH-UNIFIED-007 | P1   | Invite and login share the MFA enrolment loop                                             | Login and invite optional enrolment support skip, method switching, cleanup, and `ctx.otp.verified` loop exit                           |
+
+---
+
+## 4. Login Flow Stories
+
+### Login Process
+
+Default process:
+
+1. `init-login`.
+2. `credentials`.
+3. Prepare login policies.
+4. `prepare-semantic-flags` computes `isFirstLogin`, `newPasswordRequired`, and `password.changeReason`.
+5. Optional email/phone channel enrolment.
+6. Shared MFA loop: trusted-device check, existing-method challenge, or enrolment.
+7. Device-trust issuance, with server guard preventing trust when `newPasswordRequired`.
+8. Shared password phase if required.
+9. Profile/extra-step/terms bump.
+10. Consent persistence.
+11. Session policy.
+12. Issue tokens, optional new-device notification, redirect.
+
+### Login Matrix
+
+| ID                         | Tier | Variant                           | Story                                                                | Assertions                                                                             |
+| -------------------------- | ---- | --------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| WF-LOGIN-001               | P0   | `minimal`                         | Valid password issues tokens                                         | `LoginCredentialsForm` visible; forgot-password visible; finish data has `accessToken` |
+| WF-LOGIN-002               | P0   | `minimal`                         | Wrong password re-renders credentials form                           | User-readable invalid-credentials error; no tokens                                     |
+| WF-LOGIN-003               | P0   | `minimal`                         | Forgot-password action redirects to recovery URL with typed username | Finish/redirect target includes `/recover?username=<typed>`                            |
+| WF-LOGIN-004               | P1   | `minimal`                         | Locked account returns friendly lockout error                        | 423/locked message surfaced                                                            |
+| WF-LOGIN-005               | P2   | `minimal`                         | Repeated bad passwords trigger durable lockout                       | Threshold attempt locks user; following login is blocked                               |
+| WF-LOGIN-006               | P0   | `full`                            | Signup action is visible when enabled                                | Button/action routes to `/signup`                                                      |
+| WF-LOGIN-007               | P0   | `mfa-full`                        | Multi-MFA user reaches default TOTP then can choose SMS              | `MfaCodeForm`, `useDifferentMethod`, `Select2faForm`, `PincodeForm` sequence           |
+| WF-LOGIN-008               | P0   | `mfa-totp`                        | Single TOTP user enters authenticator code                           | `MfaCodeForm`; no method picker; tokens issued                                         |
+| WF-LOGIN-009               | P1   | `mfa-full`                        | `useDifferentMethod` loops from pincode challenge to picker          | Form sequence returns to `Select2faForm`                                               |
+| WF-LOGIN-011               | P1   | `mfa-fast-resend`                 | Resend inside cooldown is blocked server-side                        | “Please wait” error; no second email                                                   |
+| WF-LOGIN-012               | P1   | `mfa-fast-resend`                 | Resend after cooldown emits a new code                               | Two mailbox entries; codes differ                                                      |
+| WF-LOGIN-013               | P2   | `mfa-totp`                        | Wrong MFA code re-renders current form                               | `errors.code = "Invalid code"`                                                         |
+| WF-LOGIN-015               | P0   | `enrollment`                      | Missing confirmed email pauses on `AskEmailForm`                     | Email field/autocomplete visible; pincode verification follows                         |
+| WF-LOGIN-016               | P1   | `enrollment`                      | Already confirmed email skips `AskEmailForm`                         | Proceeds without email pause                                                           |
+| WF-LOGIN-017               | P1   | `enrollment`                      | Phone enrolment runs `AskPhoneForm` then pincode                     | SMS mailbox captures code; OTP disclosure logged                                       |
+| WF-LOGIN-018               | P0   | `device-trust`                    | Remembered device skips MFA on second login                          | First pass sets cookie; second pass reaches tokens without MFA                         |
+| WF-LOGIN-019               | P1   | `device-trust-no-optin`           | `rememberDevice` checkbox hidden when opt-in is disabled             | Checkbox absent                                                                        |
+| WF-LOGIN-020               | P2   | `device-trust-short-ttl`          | Expired trusted-device cookie does not skip MFA                      | Second login requires MFA                                                              |
+| WF-LOGIN-021               | P0   | `guards`                          | Initial password forces `SetPasswordForm`                            | `AsPasswordRules`; mismatch error; tokens after valid password                         |
+| WF-LOGIN-EXPIRED-01        | P0   | `password-expired`                | Expired password forces reset copy                                   | `password.changeReason="expired"`; tokens after valid password                         |
+| WF-LOGIN-024               | P1   | `terms-bump`                      | Missing required terms blocks submit                                 | `errors.consents` matches descriptor required text                                     |
+| WF-LOGIN-025               | P1   | `consent-array`                   | Required + optional consent rows persist accepted/declined decisions | Two consent events; optional unchecked persists `accepted:false`                       |
+| WF-LOGIN-028               | P1   | `concurrency`                     | Session limit pauses on kick prompt                                  | Kick form visible                                                                      |
+| WF-LOGIN-029               | P1   | `concurrency`                     | Cancel from kick prompt aborts                                       | No tokens issued                                                                       |
+| WF-LOGIN-030               | P2   | `concurrency-reject`              | Reject policy blocks immediately                                     | User-readable session limit error; no kick form                                        |
+| WF-LOGIN-031               | P1   | `redirect-home`                   | Finalize redirect targets `/`                                        | Finish envelope next action is redirect `/`                                            |
+| WF-LOGIN-032               | P2   | `full`                            | One user traverses every major login phase                           | Expected ordered form sequence; consent persisted; tokens/redirect at finish           |
+| WF-LOGIN-033               | P1   | `mfa-enroll-required-totp`        | Required single-transport TOTP enrolment auto-picks confirm          | No picker; TOTP secret/URI visible; tokens after code                                  |
+| WF-LOGIN-034               | P1   | `mfa-enroll-optional-full`        | Optional enrolment skip finishes without MFA method                  | Skip action visible; user MFA methods unchanged                                        |
+| WF-LOGIN-035               | P1   | `mfa-enroll-optional-full`        | Use different method cleans unconfirmed method and returns to picker | Unconfirmed row removed; picker re-renders                                             |
+| WF-LOGIN-036               | P1   | `mfa-enroll-optional-fast-resend` | Enrol-confirm resend cooldown gates and then remints                 | `ctx.pincode.resendAllowedAt` behavior; codes differ after cooldown                    |
+| WF-LOGIN-BUMP-01           | P1   | `terms-bump`                      | Standalone terms bump renders `TermsBumpForm`                        | Consent event `{id:"terms", version:"v3", accepted:true}`                              |
+| WF-LOGIN-HACK-CONSENT-01   | P1   | `acceptance`                      | Hand-rolled submit without required consent is rejected              | Required descriptor enforced server-side                                               |
+| WF-CONSENT-ARRAY-01        | P0   | `consent-array`                   | Initial-password carrier form renders two consents                   | `AsConsentArray` rows; consent log records both rows                                   |
+| WF-LOGIN-OTP-DISCLOSURE-01 | P1   | `enrollment`                      | Phone enrolment records OTP disclosure after verification            | `/__test/otp-consent-log/t1_alice` contains SMS disclosure                             |
+| WF-PASSWORD-RULES-LIVE-01  | P0   | `guards`                          | Password rules update live while typing                              | `.as-password-rules-row[data-passed]` toggles as expected                              |
+
+---
+
+## 5. Recovery Flow Stories
+
+### Recovery Process
+
+Reduced recovery process:
+
+1. `init-recovery`.
+2. `request` asks for email and resolves username without enumeration.
+3. Prepare post-reset policy, recovery alt-actions, consents, and semantic password copy (`changeReason="reset"`).
+4. OTP-via-email loop uses the shared `pincode-send` / `pincode-check` pair.
+5. `SetPasswordForm` runs after `ctx.otp.verified`.
+6. Optional session revocation.
+7. Consent persistence.
+8. `finalize-fresh-login` by default, or `finalize-auto-login` when `autoLoginOnRecover=true`.
+
+### Recovery Matrix
+
+| ID                     | Tier | Variant                    | Story                                                                                                           | Assertions                                                                                            |
+| ---------------------- | ---- | -------------------------- | --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| WF-RECOVERY-001        | P0   | default                    | Known email receives recovery pincode, enters OTP, resets password, fresh-login finish redirects without tokens | Email kind `recovery.pincode`; `SetPasswordForm` copy says reset; no `accessToken`; redirect to login |
+| WF-RECOVERY-002        | P0   | default                    | Unknown email finishes generically                                                                              | No enumeration; no token; no mailbox event for ghost address                                          |
+| WF-RECOVERY-003        | P1   | default                    | Password mismatch re-renders `SetPasswordForm`                                                                  | Inline `confirmPassword` error                                                                        |
+| WF-RECOVERY-004        | P1   | `recovery-short-ttl`       | Expired workflow state cannot resume                                                                            | 410/error block; no password form                                                                     |
+| WF-RECOVERY-005        | P0   | default                    | Email OTP happy path                                                                                            | `PincodeForm` hint visible; `ctx.otp.verified` permits password form                                  |
+| WF-RECOVERY-009        | P1   | default                    | Wrong OTP re-renders pincode form                                                                               | `errors.code = "Invalid code"`                                                                        |
+| WF-RECOVERY-010        | P1   | `recovery-fast-resend`     | Resend inside cooldown is blocked                                                                               | No new email; “Please wait” error                                                                     |
+| WF-RECOVERY-011        | P1   | `recovery-fast-resend`     | Resend after cooldown sends new code                                                                            | Two email codes, different values                                                                     |
+| WF-RECOVERY-016        | P0   | `recovery-auto-login`      | Auto-login variant finishes with tokens after reset                                                             | `autoLoginOnRecover=true`; `accessToken` present                                                      |
+| WF-RECOVERY-017        | P1   | default                    | `backToLogin` exits before email validation                                                                     | Finish reason `user-cancelled`; no token                                                              |
+| WF-RECOVERY-018        | P2   | default or policy override | `revokeAllSessions=true` rejects old token after reset                                                          | Old session returns 401                                                                               |
+| WF-RECOVERY-CONSENT-01 | P0   | `recovery-terms-bump`      | Recovery password form carries required terms consent                                                           | Consent log has `{id:"terms", version:"v2", accepted:true}`                                           |
+
+Removed legacy recovery rows:
+
+- Magic-link delivery.
+- SMS OTP and transport switching.
+- `RecoveryModeSelectForm`.
+- `RecoveryFactorForm`.
+- Workflow audit assertions.
+
+---
+
+## 6. Invite Flow Stories
+
+### Invite Process
+
+Default invite process:
+
+1. Admin phase runs protected steps: init, admin form, optional roles, infer roles, prepare user extras, create user, send invite link.
+2. Accept phase resumes publicly from the invite link.
+3. Pending invitation is checked; already-accepted links route through idempotent finish.
+4. Shared password phase sets invitee initial password.
+5. Shared MFA loop can enrol a factor when variant enables it.
+6. Optional profile and extra step.
+7. Consent persistence.
+8. Pending invitation is cleared, user is activated, optional confirmation rendered.
+9. Finalize uses `autoLoginOnInvite`.
+
+### Invite Matrix
+
+| ID                   | Tier | Variant                           | Story                                                                       | Assertions                                                  |
+| -------------------- | ---- | --------------------------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| WF-INVITE-001        | P0   | `email-no-roles`                  | Admin invites new email, invitee redeems, tokens issued                     | No roles field; invite email/link captured; activated user  |
+| WF-INVITE-002        | P1   | `email-no-roles`                  | Admin invites existing user                                                 | Inline duplicate error                                      |
+| WF-INVITE-003        | P1   | `email-no-roles`                  | Invitee abandons password form                                              | Pending invitation remains                                  |
+| WF-INVITE-004        | P2   | `short-ttl-confirmation`          | Expired invite state cannot resume                                          | 410/error block                                             |
+| WF-INVITE-005        | P0   | `roles-profile`                   | Role picker accepts whitelisted role                                        | Role field visible; selected role persisted                 |
+| WF-INVITE-006        | P1   | `roles-profile`                   | Invalid role is rejected                                                    | Inline role error                                           |
+| WF-INVITE-007        | P0   | `roles-profile`                   | Accept-tail profile form pauses and applies profile                         | Profile fields visible; profile applied                     |
+| WF-INVITE-008        | P1   | `roles-profile`                   | Invitee skips optional profile                                              | Tokens issued; profile not applied                          |
+| WF-INVITE-010        | P2   | `idempotent-redirect`             | Already-accepted link shows idempotent finish                               | Sign-in / request-new-invite actions visible                |
+| WF-INVITE-012        | P1   | `email-no-roles` or opts override | `autoLoginOnInvite=false` finishes without tokens                           | Fresh-login finish envelope; no `accessToken`               |
+| WF-INVITE-013        | P0   | `email-no-roles`                  | Re-invite pending user sends a new invite                                   | New mailbox invite entry                                    |
+| WF-INVITE-014        | P1   | `email-no-roles`                  | Re-invite already-accepted user returns 409                                 | User-readable error                                         |
+| WF-INVITE-015        | P0   | `email-no-roles`                  | Cancel pending invite deletes/stages cancellation                           | User no longer pending                                      |
+| WF-INVITE-016        | P1   | `email-no-roles`                  | Cancel already-accepted invite returns 409                                  | User-readable error                                         |
+| WF-INVITE-018        | P2   | `email-no-roles`                  | Duplicate override reaches store-level uniqueness failure                   | Store-level 409 surfaces                                    |
+| WF-INVITE-019        | P2   | `short-ttl-confirmation`          | TTL=1s link expires                                                         | 410/error block                                             |
+| WF-INVITE-020        | P2   | `confirmation-message`            | Confirmation message renders after activation                               | “Your account has been created.” visible                    |
+| WF-INVITE-021        | P1   | `invite-mfa-optional-full`        | Invite-tail optional MFA enrolment skip activates user                      | No MFA method persisted; account activated                  |
+| WF-INVITE-022        | P1   | `invite-mfa-optional-full`        | Invite-tail method switch cleans unconfirmed method and completes enrolment | TOTP cleanup; SMS enrolment succeeds                        |
+| WF-INVITE-CONSENT-01 | P0   | `invite-terms`                    | Invite password form carries required terms consent                         | Consent log has `{id:"terms", version:"v1", accepted:true}` |
+
+Removed legacy invite rows:
+
+- Shareable-link send mode.
+- Send-mode choice form.
+- Invite workflow audit variants.
+- Workflow-level cancellation policy variant.
+- `accept.freshLoginRequired`; use static `AuthWorkflowOpts.autoLoginOnInvite` instead.
+
+---
+
+## 7. Render Assertion Catalog
+
+| Class                         | Examples                                                    | Detection                                 |
+| ----------------------------- | ----------------------------------------------------------- | ----------------------------------------- |
+| Conditional action visibility | Forgot-password, signup, use-different-method, resend, skip | Role/button locators                      |
+| Form sequence                 | Credentials → MFA → password → consent → finish             | Visible form fields and headings per step |
+| Dynamic copy                  | MFA hint, reset password copy, expired password copy        | Text assertions                           |
+| Default values                | `rememberDevice` unchecked/hidden, consent rows unchecked   | Checkbox state                            |
+| Field absence                 | No roles field, no `rememberDevice`, no method picker       | `toHaveCount(0)`                          |
+| Inline validation             | Invalid password/code/role/consent                          | Field-level errors                        |
+| Finish envelope               | Tokens, redirect, abort/fresh-login                         | Parsed finish JSON                        |
+| Mailbox content               | Invite link, MFA pincode, recovery pincode, enrol pincode   | `GET /__test/emails`, `GET /__test/sms`   |
+| Consent log                   | Required and optional decisions                             | `GET /__test/consent-log/:username`       |
+| OTP disclosure log            | Phone/email channel disclosure records                      | `GET /__test/otp-consent-log/:username`   |
+| Password rules                | Live `data-passed` values                                   | `.as-password-rules-row[data-passed]`     |
+
+---
+
+## 8. Manual Walkthroughs
+
+### 8.1 Unified Variant Routing
+
+1. Start the demo: `cd packages/e2e-demo && DEMO_MODE=test SEED=true pnpm dev`.
+2. Open `http://localhost:3001/wf?id=auth/login/flow&variant=mfa-fast-resend`.
+3. Complete login until `PincodeForm`.
+4. Click **Resend code** immediately.
+5. Confirm the cooldown comes from the unified `AuthWorkflowOpts.mfa.pincodeResendTimeoutMs` overlay, not a login-only option object.
+
+### 8.2 Consent Capture
+
+1. Open `http://localhost:3001/wf?id=auth/login/flow&variant=consent-array`.
 2. Sign in as `t1_alice` / `Password1!`.
-3. Workflow enters phone-enrolment first: **`AskPhoneForm`** renders with the generic disclosure paragraph below the phone input:
-   > "By providing your phone number, you consent to receive one-time security codes from us via SMS. Message and data rates may apply."
-4. Submit a phone number (e.g. `+15555550199`). `PincodeForm` pauses — read SMS code from dev console (`[demo SMS] login.pincode +15555550199 code=…`).
-5. Submit the code → `recordOtpChannelConsent` hook fires server-side AFTER `confirmMfaMethod` flips the row to `confirmed:true`.
-6. Inspect: `curl http://localhost:3001/__test/otp-consent-log/t1_alice` → `[{channel:'sms', target:'+15555550199', disclosure:'By providing your phone number…', at:…}]`. **Protocol mapping pinned** — the SPA's `'phone'` route-param maps to the persisted `'sms'` channel (carrier-aggregator audit APIs key by protocol).
-7. Workflow continues to email enrolment with the email-channel disclosure variant.
+3. Complete the password step until `AsConsentArray` is visible.
+4. Submit without required terms and observe the descriptor error.
+5. Tick terms, leave marketing unchecked, submit.
+6. Inspect `curl http://localhost:3001/__test/consent-log/t1_alice`.
 
-**Customising the disclosure copy:** subclass `LoginWorkflow` and override `resolveOtpDisclosure(ctx, channel)` — see [`packages/auth-moost/CLAUDE.md`](../../packages/auth-moost/CLAUDE.md) §"OTP-channel disclosure".
+### 8.3 Recovery OTP
+
+1. Open `http://localhost:3001/wf?id=auth/recovery/flow`.
+2. Enter `alice@acme.test`.
+3. Read the `recovery.pincode` email from the dev console or `/__test/emails`.
+4. Submit the code.
+5. Set a new password.
+6. Confirm the default finish redirects to login without tokens. Repeat with `variant=recovery-auto-login` to verify token issuance.
+
+### 8.4 Invite Accept With Variant Preservation
+
+1. Sign in as admin on `auth/login/flow&variant=minimal`.
+2. Open `http://localhost:3001/wf?id=auth/invite/start&variant=invite-terms`.
+3. Invite `new-user@example.com`.
+4. Open the invite URL from the mailbox. It carries `&variant=invite-terms`.
+5. Set password and accept required terms.
+6. Inspect the invitee consent log.
+
+### 8.5 Password Rules
+
+1. Open `http://localhost:3001/wf?id=auth/login/flow&variant=guards`.
+2. Sign in as `t1_jack` / `Password1!`.
+3. Complete required email verification.
+4. On `SetPasswordForm`, type `short`, then `longenough1A!`.
+5. Confirm `AsPasswordRules` rows update their `data-passed` values live.
+
+### 8.6 OTP Disclosure
+
+1. Open `http://localhost:3001/wf?id=auth/login/flow&variant=enrollment`.
+2. Sign in as `t1_alice` / `Password1!`.
+3. Complete phone enrolment.
+4. Inspect `curl http://localhost:3001/__test/otp-consent-log/t1_alice`.
+5. Confirm the record uses channel `sms` and includes the disclosure copy.
+
+---
+
+## 9. Maintenance Notes
+
+- When adding a variant, update `src/variants.ts`, this document, and the home-page variant dropdown automatically sourced from the variant maps.
+- When adding a new `AuthWorkflow` resolver override, add a unified-class story if the override dispatches differently per flow.
+- Recovery stories must stay within the reduced OTP-email scope until recovery magic-link/SMS/choice/pre-factor support is intentionally reintroduced.
+- Invite stories must avoid legacy send-mode/fresh-login/audit knobs; use `AuthWorkflowOpts` and `resolveAccept` fields that still exist.
+- Replace the legacy recovery `fresh-login` preset with the target `recovery-auto-login` preset when `src/variants.ts` is migrated to unified recovery defaults.
+- Any ctx rename that crosses a form boundary requires updating `.as` annotations and regenerating atscript output.
