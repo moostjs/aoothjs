@@ -69,7 +69,10 @@ describe("LoginWorkflow subclass — end-to-end registration shape", () => {
       input: { username: "alice", password: "Password123" },
     });
     const code = generateTotpCode(secret);
-    const r3 = await app.trigger({ wfs: r2.body?.wfs as string, input: { code } });
+    const r3 = await app.trigger({
+      wfs: r2.body?.wfs as string,
+      input: { code, rememberDevice: false },
+    });
     expect((r3.body?.data as Record<string, unknown>)?.userId).toBe("alice");
     // The override ran — proves the subclass dispatched, not the base class
     // (whose body would still return require:false without bumping the

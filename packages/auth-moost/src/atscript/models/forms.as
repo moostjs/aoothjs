@@ -114,6 +114,12 @@ export interface MfaCodeForm {
     @ui.form.action 'useDifferentMethod', 'Use a different method'
     @ui.form.fn.hidden '(_, _d, ctx) => (ctx.mfa?.methodCount ?? 0) < 2'
     useDifferentMethod?: ui.action
+
+    @ui.form.type 'checkbox'
+    @meta.label 'Remember this device'
+    @meta.default 'false'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.trust?.optIn || !!ctx.newPasswordRequired'
+    rememberDevice: boolean
 }
 
 /**
@@ -302,6 +308,12 @@ export interface Select2faForm {
     @meta.label 'Save as default'
     @meta.default 'false'
     saveAsDefault: boolean
+
+    @ui.form.type 'checkbox'
+    @meta.label 'Remember this device'
+    @meta.default 'false'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.trust?.optIn || !!ctx.newPasswordRequired'
+    rememberDevice: boolean
 }
 
 /**
@@ -338,7 +350,7 @@ export interface PincodeForm {
     @ui.form.type 'checkbox'
     @meta.label 'Remember this device'
     @meta.default 'false'
-    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.trust?.optIn'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.trust?.optIn || !!ctx.newPasswordRequired'
     rememberDevice: boolean
 
     @ui.form.action 'resend', 'Resend code'

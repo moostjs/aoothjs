@@ -70,7 +70,9 @@ describe("default form .as models", () => {
     expect(() =>
       LoginCredentialsForm.validator().validate({ username: "alice", password: "secret" }),
     ).not.toThrow();
-    expect(() => MfaCodeForm.validator().validate({ code: "123456" })).not.toThrow();
+    expect(() =>
+      MfaCodeForm.validator().validate({ code: "123456", rememberDevice: false }),
+    ).not.toThrow();
     expect(() =>
       EmailIdentifierForm.validator().validate({ email: "alice@example.com" }),
     ).not.toThrow();

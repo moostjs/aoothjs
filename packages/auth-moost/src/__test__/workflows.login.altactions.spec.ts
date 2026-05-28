@@ -39,7 +39,7 @@ async function driveToPincodeCheck(
   // 2 methods → select2fa fires.
   const sel = await app.trigger({
     wfs: credResp.body?.wfs as string,
-    input: { methodName: "email", saveAsDefault: false },
+    input: { methodName: "email", saveAsDefault: false, rememberDevice: false },
   });
   // Now paused for pincode entry — pin was sent via email transport.
   const last = app.emails[app.emails.length - 1];
@@ -83,7 +83,7 @@ describe("LoginWorkflow alt-actions — pincode-check-login", () => {
     const sw = await app.trigger({ wfs, input: { action: "useDifferentMethod" } });
     const back = await app.trigger({
       wfs: sw.body?.wfs as string,
-      input: { methodName: "email", saveAsDefault: false },
+      input: { methodName: "email", saveAsDefault: false, rememberDevice: false },
     });
     const errors = back.body?.errors as Record<string, string> | undefined;
     expect(errors?.methodName).toMatch(/wait \d+s before requesting another email code/i);
@@ -128,7 +128,7 @@ describe("LoginWorkflow alt-actions — pincode-check-login", () => {
     // 2 methods → select2fa pauses. Pick sms first → captures first sms send.
     const pickSms = await app.trigger({
       wfs: cred.body?.wfs as string,
-      input: { methodName: "sms", saveAsDefault: false },
+      input: { methodName: "sms", saveAsDefault: false, rememberDevice: false },
     });
     expect(app.sms.length).toBe(1);
     const smsCountAfterFirstPick = app.sms.length;
@@ -144,7 +144,7 @@ describe("LoginWorkflow alt-actions — pincode-check-login", () => {
     const emailsBeforeEmailPick = app.emails.length;
     const pickEmail = await app.trigger({
       wfs: sw1.body?.wfs as string,
-      input: { methodName: "email", saveAsDefault: false },
+      input: { methodName: "email", saveAsDefault: false, rememberDevice: false },
     });
     expect(app.emails.length).toBe(emailsBeforeEmailPick + 1);
 
@@ -157,7 +157,7 @@ describe("LoginWorkflow alt-actions — pincode-check-login", () => {
     // the per-method cooldown error and the sms array length must NOT grow.
     const repickSms = await app.trigger({
       wfs: sw2.body?.wfs as string,
-      input: { methodName: "sms", saveAsDefault: false },
+      input: { methodName: "sms", saveAsDefault: false, rememberDevice: false },
     });
     const errors = repickSms.body?.errors as Record<string, string> | undefined;
     expect(errors?.methodName).toMatch(/wait \d+s before requesting another sms code/i);
