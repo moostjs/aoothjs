@@ -112,9 +112,6 @@ describe("AuthWorkflow construction (WF-AUTH-UNIFIED-002)", () => {
     expect(opts.mfa.pincodeTtlMs).toBe(5 * 60 * 1000);
     expect(opts.mfa.pincodeResendTimeoutMs).toBe(60_000);
 
-    // Magic-link TTL — read by invite outletEmail + recovery alt paths.
-    expect(opts.magicLinkTtlMs).toBe(60 * 60 * 1000);
-
     // Recovery-state TTL — stamped on every recovery-side pause via
     // `stampRecoveryExpiry`. Dropping it makes recovery sessions immortal,
     // which is a security regression (stale OTP states become resumable
@@ -153,7 +150,6 @@ describe("AuthWorkflow construction (WF-AUTH-UNIFIED-002)", () => {
     const wf = makeWorkflow({
       autoLoginOnInvite: false,
       autoLoginOnRecover: true,
-      magicLinkTtlMs: 5_000,
       recoveryStateTtlMs: 1,
       loginUrl: "/signin",
       totpIssuer: "Acme",
@@ -165,7 +161,6 @@ describe("AuthWorkflow construction (WF-AUTH-UNIFIED-002)", () => {
     // wholesale-replacing on the first override.
     expect(opts.autoLoginOnInvite).toBe(false);
     expect(opts.autoLoginOnRecover).toBe(true);
-    expect(opts.magicLinkTtlMs).toBe(5_000);
     expect(opts.recoveryStateTtlMs).toBe(1);
     expect(opts.loginUrl).toBe("/signin");
     expect(opts.totpIssuer).toBe("Acme");

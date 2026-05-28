@@ -45,6 +45,7 @@ import {
   outletEmail,
   Step,
   StepRetriableError,
+  StepTTL,
   useWfFinished,
   useWfState,
   Workflow,
@@ -169,7 +170,6 @@ function mergeAuthWorkflowOpts(opts: Partial<AuthWorkflowOpts>): ResolvedAuthWor
       pincodeTtlMs: opts.mfa?.pincodeTtlMs ?? 5 * 60 * 1000,
       pincodeResendTimeoutMs: opts.mfa?.pincodeResendTimeoutMs ?? 60_000,
     },
-    magicLinkTtlMs: opts.magicLinkTtlMs ?? 60 * 60 * 1000,
     recoveryStateTtlMs: opts.recoveryStateTtlMs ?? 60 * 60 * 1000,
     loginUrl: opts.loginUrl ?? "/login",
     totpIssuer: opts.totpIssuer ?? "aooth",
@@ -270,6 +270,14 @@ export function buildInviteAlreadyAcceptedEnvelope(opts: {
  */
 const ALT_HANDLED: unique symbol = Symbol("ALT_HANDLED");
 type AltHandled = typeof ALT_HANDLED;
+
+/**
+ * Workflow-state TTL for the invite `send-email` step — caps how long a
+ * pending invite remains resumable from the magic link. 7 days matches the
+ * industry-standard invite-link window (Slack/GitHub/Atlassian). Override by
+ * re-decorating the step in a subclass.
+ */
+const INVITE_LINK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * Read a single field from the raw wf input envelope without validating
@@ -1472,20 +1480,17 @@ export class AuthWorkflow {
    * Idempotent via `ctx.admin.linkSent`.
    */
   @Step("send-email")
+  @StepTTL(INVITE_LINK_TTL_MS)
   @Public()
   sendInviteEmail(@WorkflowParam("context") ctx: AuthWfCtx): unknown {
     const admin = (ctx.admin ??= {});
     if (admin.linkSent) return undefined;
     admin.linkSent = true;
-    return {
-      ...outletEmail(ctx.email as string, "invite.magicLink", {
-        username: ctx.username,
-        ...(ctx.username && { userId: ctx.username }),
-        ...(admin.roles && { roles: admin.roles }),
-        expiresAtMs: this.opts.magicLinkTtlMs,
-      }),
-      expires: Date.now() + this.opts.magicLinkTtlMs,
-    };
+    return outletEmail(ctx.email as string, "invite.magicLink", {
+      username: ctx.username,
+      ...(ctx.username && { userId: ctx.username }),
+      ...(admin.roles && { roles: admin.roles }),
+    });
   }
 
   // ── Invite accept-tail (5) ──

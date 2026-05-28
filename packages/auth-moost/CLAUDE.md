@@ -4,12 +4,12 @@ Canonical reference: [`AuthWorkflow`](src/workflow/auth-workflow.ts) — one con
 
 ## Layering — what lives where
 
-| Concern                                                                                                                | Lives on                            | Read/write surface               |
-| ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------- | -------------------------------- |
-| Cross-workflow infra (pincode timers, magic-link TTL, loginUrl, totpIssuer) + per-workflow infra (cookie names, forms) | `AuthWorkflowOpts`                  | `this.opts.<infra-group>.<flag>` |
-| Policy (per-tenant / per-request / per-user flags)                                                                     | `protected resolveXxx(ctx)` getters | Override seam                    |
-| Resolved policy (set by `prepare-<group>` @Step)                                                                       | `ctx.<group>?.<flag>`               | Schema conditions + step bodies  |
-| Per-event state (form input, step decisions)                                                                           | `ctx.<field>`                       | Step bodies                      |
+| Concern                                                                                                | Lives on                            | Read/write surface               |
+| ------------------------------------------------------------------------------------------------------ | ----------------------------------- | -------------------------------- |
+| Cross-workflow infra (pincode timers, loginUrl, totpIssuer) + per-workflow infra (cookie names, forms) | `AuthWorkflowOpts`                  | `this.opts.<infra-group>.<flag>` |
+| Policy (per-tenant / per-request / per-user flags)                                                     | `protected resolveXxx(ctx)` getters | Override seam                    |
+| Resolved policy (set by `prepare-<group>` @Step)                                                       | `ctx.<group>?.<flag>`               | Schema conditions + step bodies  |
+| Per-event state (form input, step decisions)                                                           | `ctx.<field>`                       | Step bodies                      |
 
 **`AuthWorkflowOpts` is infrastructure-only.** Policy NEVER lives on opts. If a knob varies by request/tenant/user, it goes on a `resolveXxx()` method.
 
@@ -24,7 +24,7 @@ without optional chaining.
 
 Cross-workflow infrastructure that the prior shape held in a separate
 singleton (`mfa.pincodeLength`, `mfa.pincodeTtlMs`, `mfa.pincodeResendTimeoutMs`,
-`magicLinkTtlMs`, `loginUrl`, `totpIssuer`) lives directly on the same opts
+`loginUrl`, `totpIssuer`) lives directly on the same opts
 object — same `this.opts.<field>` access pattern as login-specific infra
 (`deviceTrust.cookieName`, `forms.loginCredentials`, …).
 
