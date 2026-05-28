@@ -2,7 +2,7 @@
  * Unified `AuthWfCtx` — context shape for the consolidated `AuthWorkflow`
  * class. One ctx interface covers all three `@Workflow` schemas
  * (`login.flow`, `invite.start`, `recovery.flow`); per-flow slots are
- * optional and discriminated by ctx-slot presence (never by `ctx.flow`).
+ * optional and discriminated by ctx-slot presence.
  *
  * Replaces the prior `LoginWfCtx` / `InviteWfCtx` / `RecoveryWfCtx` trio.
  */
@@ -213,9 +213,7 @@ export interface AuthWfAcceptState {
   loginUrl?: string;
   showConfirmation?: boolean;
   confirmationMessage?: string;
-  profileFormPresent?: boolean;
   alreadyAccepted?: boolean;
-  profile?: Record<string, unknown>;
 }
 
 /**
@@ -270,7 +268,6 @@ export interface AuthWfCtx {
   aborted?: boolean;
 
   // ── Semantic flags ──
-  flow?: "login" | "invite" | "recovery";
   isFirstLogin?: boolean;
   newPasswordRequired?: boolean;
   // Mirrors `AuthWorkflowOpts.autoLoginOn{Invite|Recover}` onto ctx so the

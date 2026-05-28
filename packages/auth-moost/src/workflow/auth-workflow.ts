@@ -134,12 +134,6 @@ function mergeAuthWorkflowOpts(opts: AuthWorkflowOpts): ResolvedAuthWorkflowOpts
   };
 }
 
-const CONSENTS_WORKFLOW_ID: Record<NonNullable<AuthWfCtx["flow"]>, string> = {
-  login: "auth/login/flow",
-  invite: "auth/invite/start",
-  recovery: "auth/recovery/flow",
-};
-
 /**
  * Sentinel returned by alt-action handlers that have already short-circuited
  * the step (via `finishWf(...)`). The step body returns `undefined` after
@@ -224,16 +218,6 @@ export class AuthWorkflow {
   }
 
   /**
-   * Return the consumer-supplied `.as` profile form schema rendered in the
-   * invite accept-tail `collect-profile` step. Mirrors the prior
-   * `InviteWorkflow.getProfileForm()` consumer hook — `undefined` (default)
-   * skips the profile collection step entirely.
-   */
-  protected getProfileForm(): TAtscriptAnnotatedType | undefined {
-    return undefined;
-  }
-
-  /**
    * Build the extras dict merged into the freshly-created user row by the
    * `create-user` step. Default: `{}`. Override to populate e.g. a
    * required `tenantId` from request context.
@@ -253,18 +237,6 @@ export class AuthWorkflow {
    */
   protected inferAdminRoles(_input: { email: string }): Promise<string[]> | string[] {
     return [];
-  }
-
-  /**
-   * Persist the invite accept-time profile payload onto the user record.
-   * Default: deep-merge into the user record via `users.update`. Override to
-   * route into a separate profile table / external CRM.
-   */
-  protected async applyAcceptProfile(input: {
-    username: string;
-    profile: Record<string, unknown>;
-  }): Promise<void> {
-    await this.users.update(input.username, input.profile as Partial<UserCredentials>);
   }
 
   /**
@@ -744,14 +716,12 @@ export class AuthWorkflow {
 
   @Step("init-login")
   @Public()
-  initLogin(@WorkflowParam("context") ctx: AuthWfCtx): void {
-    ctx.flow = "login";
+  initLogin(@WorkflowParam("context") _ctx: AuthWfCtx): void {
     return undefined;
   }
 
   @Step("init-invite-admin")
   initInviteAdmin(@WorkflowParam("context") ctx: AuthWfCtx): void {
-    ctx.flow = "invite";
     ctx.autoLogin = this.opts.autoLoginOnInvite;
     return undefined;
   }
@@ -760,11 +730,9 @@ export class AuthWorkflow {
   @Public()
   initInviteAccept(@WorkflowParam("context") ctx: AuthWfCtx): void {
     // Invite-accept is always first-login with a forced initial password.
-    ctx.flow = "invite";
     ctx.isFirstLogin = true;
     ctx.newPasswordRequired = true;
     ctx.autoLogin = this.opts.autoLoginOnInvite;
-    (ctx.accept ??= {}).profileFormPresent = this.getProfileForm() !== undefined;
     (ctx.password ??= {}).changeReason = "initial";
     return undefined;
   }
@@ -772,7 +740,6 @@ export class AuthWorkflow {
   @Step("init-recovery")
   @Public()
   initRecovery(@WorkflowParam("context") ctx: AuthWfCtx): void {
-    ctx.flow = "recovery";
     ctx.autoLogin = this.opts.autoLoginOnRecover;
     return undefined;
   }
@@ -1044,9 +1011,7 @@ export class AuthWorkflow {
   @Public()
   prepareConsents(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
     if (!ctx.username) return undefined;
-    const result = this.consentStore.getPendingConsents(ctx.username, {
-      workflow: CONSENTS_WORKFLOW_ID[ctx.flow ?? "login"],
-    });
+    const result = this.consentStore.getPendingConsents(ctx.username);
     if (result instanceof Promise) {
       return result.then((resolved) => {
         (ctx.consents ??= {}).pending = resolved;
@@ -1218,8 +1183,7 @@ export class AuthWorkflow {
 
   /**
    * Merges policy from `resolveAccept` into `ctx.accept` (rather than
-   * overwriting) so any state stamped by `init-invite-accept`
-   * (`profileFormPresent`) or later steps (`alreadyAccepted` / `profile`)
+   * overwriting) so any state stamped by later steps (`alreadyAccepted`)
    * survives.
    */
   @Step("prepare-accept")
@@ -2223,47 +2187,6 @@ export class AuthWorkflow {
     throw wf.requireInput();
   }
 
-  // ── Invite accept-tail profile (2) ──
-
-  /**
-   * Pause for the consumer-supplied profile form. The form MUST declare a
-   * `'skip'` action so empty-profile clicks are accepted; otherwise
-   * `wf.resolveAction()` throws StepRetriableError.
-   */
-  @Step("collect-profile")
-  @Public()
-  async collectProfile(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
-    const form = this.getProfileForm();
-    if (!form) return undefined;
-    const wf = useAtscriptWf(form);
-    if (wf.resolveAction() === "skip") {
-      (ctx.accept ??= {}).profile = {};
-      return undefined;
-    }
-    const input = wf.resolveInput({ partial: "deep" });
-    (ctx.accept ??= {}).profile = input as Record<string, unknown>;
-    return undefined;
-  }
-
-  /**
-   * Persist the collected profile via `applyAcceptProfile`. Strips reserved
-   * user keys (`roles`/`account`/`password`) before applying.
-   */
-  @Step("apply-profile")
-  @Public()
-  async applyProfile(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
-    this.requireUsername(ctx);
-    const c = (ctx.completion ??= {});
-    const sanitized = stripReservedUserKeys(ctx.accept?.profile ?? {});
-    if (Object.keys(sanitized).length === 0) {
-      c.profileApplied = true;
-      return undefined;
-    }
-    await this.applyAcceptProfile({ username: ctx.username, profile: sanitized });
-    c.profileApplied = true;
-    return undefined;
-  }
-
   // ── Extra-step (1) — login + invite, gated on isFirstLogin ──
 
   /**
@@ -2658,23 +2581,6 @@ export class AuthWorkflow {
 
         // MFA loop (shared) — invite users have zero enrolled methods so the enrol trio fires
         ...mfaLoopSchema,
-
-        // Profile (invite-specific 2-step pattern)
-        {
-          id: "collect-profile",
-          condition: (ctx) =>
-            !!ctx.accept?.profileFormPresent &&
-            !ctx.accept?.profile &&
-            !!ctx.completion?.passwordCompleted,
-        },
-        {
-          id: "apply-profile",
-          condition: (ctx) =>
-            !!ctx.accept?.profileFormPresent &&
-            !!ctx.accept?.profile &&
-            !ctx.completion?.profileApplied &&
-            !!ctx.completion?.passwordCompleted,
-        },
 
         { id: "extra-step" }, // always fires for invite (isFirstLogin=true)
 

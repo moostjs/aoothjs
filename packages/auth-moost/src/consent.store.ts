@@ -45,12 +45,12 @@ export class ConsentStore {
   /**
    * Returns descriptors for consents this user still needs to accept on the
    * next prompt boundary. Empty array → no consent step renders. The workflow
-   * passes its identity + (optionally) the channel it's about to use so the
-   * customer's impl can prompt different consent sets per workflow/channel.
+   * passes (optionally) the channel it's about to use so the customer's impl
+   * can prompt channel-specific consent sets (e.g. carrier-form prompts).
    */
   async getPendingConsents(
     _username: string | undefined,
-    _ctx: { workflow: string; channel?: "email" | "sms" },
+    _ctx?: { workflow?: string; channel?: "email" | "sms" },
   ): Promise<ConsentDescriptor[]> {
     return [];
   }
