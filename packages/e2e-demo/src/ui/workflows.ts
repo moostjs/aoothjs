@@ -112,7 +112,7 @@ export const WORKFLOWS: ReadonlyArray<WfDescriptor> = [
     id: "auth/recovery/flow",
     label: "Password recovery",
     description:
-      "Forgot-password — magic link or OTP. Any seeded email works; SMS-recoverable via t1_ivy's phone.",
+      "Forgot-password — OTP-via-email. Any seeded email works; default finish redirects to login, recovery-auto-login variant issues tokens.",
     requiresAuth: false,
     testCreds: LOGIN_USERS,
   },

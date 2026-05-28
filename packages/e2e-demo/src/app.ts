@@ -85,11 +85,6 @@ export interface BuildAppOptions {
   port?: number;
   envOverrides?: Partial<AppEnv>;
   /**
-   * Per-workflow registration toggles. Defaults to all enabled. Used by
-   * DX-07 to assert that a disabled workflow (`auth.invite`) is unreachable.
-   */
-  workflowsEnabled?: { login?: boolean; recovery?: boolean; invite?: boolean };
-  /**
    * When `false`, the bundled `AuthController` (login/logout/refresh/status/
    * password) is NOT registered; the auth GUARD is still installed globally.
    * Used by DX-08.
@@ -805,29 +800,17 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     app.registerControllers(DemoAuthController);
   }
 
-  const wfEnabled = opts.workflowsEnabled ?? {};
-  // The unified workflow handles all three legs (login / invite / recovery)
-  // on the SAME controller class via three `@Workflow` decorators. The legacy
-  // per-leg disable knobs no longer map 1:1 — disabling ANY of them would
-  // require dropping the matching `@Workflow` method from the registration,
-  // which the demo doesn't have a clean hook for. Today: register the
-  // unified class iff at least one of the legs is enabled (matches the prior
-  // behaviour where all three off skipped registration entirely).
-  const anyWfEnabled =
-    wfEnabled.login !== false || wfEnabled.recovery !== false || wfEnabled.invite !== false;
-  if (anyWfEnabled) {
-    const authBase = (opts.authWorkflowClass ?? DemoAuthWorkflow) as unknown as new (
-      ...args: never[]
-    ) => AuthWorkflow;
-    // Static-ctx setters wrap the active class when either MFA-ctx escape
-    // hatch is supplied. The wrapper writes ONLY the test-supplied fields,
-    // so the per-variant defaults still hold for unspecified fields.
-    const Ctor =
-      opts.loginMfaCtx || opts.inviteMfaCtx
-        ? wrapWithMfaCtx(authBase, opts.loginMfaCtx, opts.inviteMfaCtx)
-        : authBase;
-    app.registerControllers(Ctor as unknown as new (...args: never[]) => unknown);
-  }
+  const authBase = (opts.authWorkflowClass ?? DemoAuthWorkflow) as unknown as new (
+    ...args: never[]
+  ) => AuthWorkflow;
+  // Static-ctx setters wrap the active class when either MFA-ctx escape
+  // hatch is supplied. The wrapper writes ONLY the test-supplied fields,
+  // so the per-variant defaults still hold for unspecified fields.
+  const Ctor =
+    opts.loginMfaCtx || opts.inviteMfaCtx
+      ? wrapWithMfaCtx(authBase, opts.loginMfaCtx, opts.inviteMfaCtx)
+      : authBase;
+  app.registerControllers(Ctor as unknown as new (...args: never[]) => unknown);
 
   // Bind the atscript-driven user provider to the JWT subject for ARBAC.
   // `DemoUser.@meta.id` is a UUID but the JWT subject is `username`;
