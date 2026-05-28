@@ -721,8 +721,15 @@ export class AuthWorkflow {
 
   /**
    * Validate + stash inline-consent fields submitted on a carrier form.
-   * Ported from `AuthWorkflowBase.processInlineConsent`. SECURITY: silently
-   * drops unknown ids (audit-grade defense — see base class docstring).
+   * SECURITY: silently drops unknown ids (audit-grade defense — see base
+   * class docstring).
+   *
+   * Does NOT persist — persistence is deferred to `persist-consents` at the
+   * workflow tail, AFTER channel/identity verification. Staging the decision
+   * here (without persisting) lets downstream carrier forms hide the consent
+   * block via `decidedAt` while the wf engine still owns the rollback
+   * boundary: if the user abandons before the verification step succeeds,
+   * the consent record never lands in the durable store.
    */
   protected processInlineConsent(
     ctx: AuthWfCtx,
@@ -1678,6 +1685,11 @@ export class AuthWorkflow {
       code,
       expiresInMs: this.opts.mfa.pincodeTtlMs,
     });
+    // Arm the resend cooldown — `verifyChannel` reads `resendAllowedAt` to
+    // gate the user's "Resend code" click on the PincodeForm. Mirrors the
+    // `pincode-send` step's pattern so both pincode surfaces use the same
+    // cooldown contract.
+    (ctx.pincode ??= {}).resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
     const pincodeWf = useAtscriptWf(this.opts.forms.pincode);
     throw pincodeWf.requireInput();
   }
@@ -1689,11 +1701,38 @@ export class AuthWorkflow {
     @Param("channel") channel: "email" | "phone",
   ): Promise<unknown> {
     this.requireUsername(ctx);
+    const isEmail = channel === "email";
     const pincodeWf = useAtscriptWf(this.opts.forms.pincode);
+    // Handle alt-action clicks BEFORE input parsing — the user may click
+    // "Resend code" without ever filling in `code`, so a naive
+    // `resolveInput()` would fail validation on a missing required field.
+    // Resend is the only meaningful alt-action on the enrollment pincode
+    // surface (no method-switching here — one channel per enroll loop, and
+    // `backToLogin` is hidden in non-recovery contexts via @ui.form.fn.hidden).
+    const action = pincodeWf.resolveAction();
+    if (action && this.resolvePincodeAltAction(ctx, action) === "resend") {
+      // SERVER-SIDE cooldown enforcement (defence in depth — UI also gates).
+      if (ctx.pincode?.resendAllowedAt && ctx.pincode.resendAllowedAt > Date.now()) {
+        const remainingSec = Math.ceil((ctx.pincode.resendAllowedAt - Date.now()) / 1000);
+        throw pincodeWf.requireInput({
+          errors: { code: `Please wait ${remainingSec}s before requesting a new code.` },
+        });
+      }
+      const recipient = (isEmail ? ctx.email : ctx.channel?.phone) as string;
+      const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
+      await this.deliver({
+        kind: "enroll-pincode",
+        channel: isEmail ? "email" : "sms",
+        recipient,
+        code,
+        expiresInMs: this.opts.mfa.pincodeTtlMs,
+      });
+      (ctx.pincode ??= {}).resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
+      throw pincodeWf.requireInput();
+    }
     const input = pincodeWf.resolveInput() as { code: string };
     const pinErr = this.verifyPin(ctx, input.code);
     if (pinErr) throw pincodeWf.requireInput({ errors: pinErr });
-    const isEmail = channel === "email";
     await this.withStoreErrorTranslation(() =>
       this.users.confirmMfaMethod(ctx.username, isEmail ? "email" : "sms"),
     );
@@ -1713,6 +1752,11 @@ export class AuthWorkflow {
     }
     delete ctx.pin;
     delete ctx.pinExpire;
+    // Channel-enrollment cooldown is local to the ask/verify pair. Clearing
+    // here prevents the enrollment cooldown from leaking into the downstream
+    // MFA-challenge cooldown (`select-2fa` reads the same `resendAllowedAt`
+    // before dispatching MFA pincodes).
+    if (ctx.pincode) delete ctx.pincode.resendAllowedAt;
     return undefined;
   }
 
@@ -1902,7 +1946,10 @@ export class AuthWorkflow {
       if (outcome === "resend") {
         // SERVER-SIDE cooldown enforcement (defence in depth — UI also gates).
         if (ctx.pincode?.resendAllowedAt && ctx.pincode.resendAllowedAt > Date.now()) {
-          throw wf.requireInput({ errors: { code: "Please wait before requesting a new code." } });
+          const remainingSec = Math.ceil((ctx.pincode.resendAllowedAt - Date.now()) / 1000);
+          throw wf.requireInput({
+            errors: { code: `Please wait ${remainingSec}s before requesting a new code.` },
+          });
         }
         delete ctx.pin;
         delete ctx.pinExpire;
