@@ -24,6 +24,8 @@ export interface AuthWorkflowOpts {
   };
   /** Magic-link TTL shared by login (alt-credentials), invite, recovery. */
   magicLinkTtlMs?: number;
+  /** Persisted-state TTL for the recovery flow — caps the window between OTP request and password reset. Applied at every recovery-side `requireInput` pause via the wf engine's `output.expires`. */
+  recoveryStateTtlMs?: number;
   /** Canonical login URL — used by invite (post-accept redirect) and recovery (abort-to-login + post-reset redirect) as the resolver-default loginUrl. */
   loginUrl?: string;
   /** TOTP provisioning issuer — used by login MFA and invite MFA enrollment. */
@@ -86,6 +88,7 @@ export interface ResolvedAuthWorkflowOpts {
     pincodeResendTimeoutMs: number;
   };
   magicLinkTtlMs: number;
+  recoveryStateTtlMs: number;
   loginUrl: string;
   totpIssuer: string;
   deviceTrust: {

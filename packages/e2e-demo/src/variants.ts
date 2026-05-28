@@ -313,6 +313,13 @@ export const RECOVERY_VARIANTS: Record<string, RecoveryVariant> = {
   "recovery-auto-login": {
     opts: { autoLoginOnRecover: true },
   },
+  // Fast-expire recovery-state TTL — WF-RECOVERY-004. The wf engine's
+  // persisted-state strategy honours `output.expires` on each pause, so 1ms
+  // guarantees the next resume hits the "Invalid or expired workflow state"
+  // branch.
+  "recovery-short-ttl": {
+    opts: { recoveryStateTtlMs: 1 },
+  },
   // Short OTP resend cooldown — WF-RECOVERY-010/011. 1s cooldown lets the
   // first `Resend code` click trip the rate-limit branch, while a >1s wait
   // proves a second click after the cooldown sends a fresh code.

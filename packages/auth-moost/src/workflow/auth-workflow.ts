@@ -44,6 +44,7 @@ import { HttpError } from "@moostjs/event-http";
 import {
   outletEmail,
   Step,
+  StepRetriableError,
   useWfFinished,
   useWfState,
   Workflow,
@@ -133,6 +134,7 @@ function mergeAuthWorkflowOpts(opts: Partial<AuthWorkflowOpts>): ResolvedAuthWor
       pincodeResendTimeoutMs: opts.mfa?.pincodeResendTimeoutMs ?? 60_000,
     },
     magicLinkTtlMs: opts.magicLinkTtlMs ?? 60 * 60 * 1000,
+    recoveryStateTtlMs: opts.recoveryStateTtlMs ?? 60 * 60 * 1000,
     loginUrl: opts.loginUrl ?? "/login",
     totpIssuer: opts.totpIssuer ?? "aooth",
     deviceTrust: {
@@ -953,7 +955,7 @@ export class AuthWorkflow {
     if (rawFormData === undefined) {
       const prefilled = readUsernameQueryParam();
       if (prefilled) ctx.defaults = { email: prefilled };
-      throw emailWf.requireInput();
+      throw this.stampRecoveryExpiry(emailWf.requireInput());
     }
 
     const input = emailWf.resolveInput() as { email: string };
@@ -996,6 +998,17 @@ export class AuthWorkflow {
       data: { sent: true },
       message: { level: "info", text: "If an account exists, you will receive instructions." },
     });
+  }
+
+  /**
+   * Stamp `recoveryStateTtlMs` on a paused-state error so the wf engine's
+   * persisted-state strategy expires the state at that timestamp. Use at
+   * recovery-side `requireInput` throws (recovery-only steps) or wrap a
+   * shared-step `resolveInput()` throw inside a `ctx.postReset` guard.
+   */
+  protected stampRecoveryExpiry<E extends { expires?: number }>(err: E): E {
+    err.expires = Date.now() + this.opts.recoveryStateTtlMs;
+    return err;
   }
 
   /** Emit the recovery "backToLogin" abort envelope and stamp `ctx.aborted`. */
@@ -1521,11 +1534,13 @@ export class AuthWorkflow {
       password.intro = "Your account was created without a password. Choose one to continue.";
     }
     const wf = useAtscriptWf(this.opts.forms.setPassword);
-    const input = wf.resolveInput() as {
-      newPassword: string;
-      confirmPassword: string;
-      consents?: string[];
-    };
+    let input: { newPassword: string; confirmPassword: string; consents?: string[] };
+    try {
+      input = wf.resolveInput() as typeof input;
+    } catch (err) {
+      if (ctx.postReset && err instanceof StepRetriableError) throw this.stampRecoveryExpiry(err);
+      throw err;
+    }
     if (input.newPassword !== input.confirmPassword) {
       throw wf.requireInput({ errors: { confirmPassword: "Passwords do not match" } });
     }
@@ -1834,7 +1849,13 @@ export class AuthWorkflow {
         return undefined;
       }
     }
-    const input = wf.resolveInput() as { code: string; rememberDevice?: boolean };
+    let input: { code: string; rememberDevice?: boolean };
+    try {
+      input = wf.resolveInput() as typeof input;
+    } catch (err) {
+      if (ctx.postReset && err instanceof StepRetriableError) throw this.stampRecoveryExpiry(err);
+      throw err;
+    }
     const pinErr = this.verifyPin(ctx, input.code);
     if (pinErr) throw wf.requireInput({ errors: pinErr });
     (ctx.otp ??= {}).verified = true;

@@ -115,6 +115,12 @@ describe("AuthWorkflow construction (WF-AUTH-UNIFIED-002)", () => {
     // Magic-link TTL — read by invite outletEmail + recovery alt paths.
     expect(opts.magicLinkTtlMs).toBe(60 * 60 * 1000);
 
+    // Recovery-state TTL — stamped on every recovery-side pause via
+    // `stampRecoveryExpiry`. Dropping it makes recovery sessions immortal,
+    // which is a security regression (stale OTP states become resumable
+    // indefinitely).
+    expect(opts.recoveryStateTtlMs).toBe(60 * 60 * 1000);
+
     // Canonical login URL — referenced by invite accept + recovery post-reset
     // resolvers. The default MUST stay stable so consumers can opt out of
     // overriding `loginUrl` and still get a sane redirect.
@@ -142,6 +148,7 @@ describe("AuthWorkflow construction (WF-AUTH-UNIFIED-002)", () => {
       autoLoginOnInvite: false,
       autoLoginOnRecover: true,
       magicLinkTtlMs: 5_000,
+      recoveryStateTtlMs: 1,
       loginUrl: "/signin",
       totpIssuer: "Acme",
     });
@@ -153,6 +160,7 @@ describe("AuthWorkflow construction (WF-AUTH-UNIFIED-002)", () => {
     expect(opts.autoLoginOnInvite).toBe(false);
     expect(opts.autoLoginOnRecover).toBe(true);
     expect(opts.magicLinkTtlMs).toBe(5_000);
+    expect(opts.recoveryStateTtlMs).toBe(1);
     expect(opts.loginUrl).toBe("/signin");
     expect(opts.totpIssuer).toBe("Acme");
 

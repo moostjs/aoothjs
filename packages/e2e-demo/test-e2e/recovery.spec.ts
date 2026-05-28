@@ -265,6 +265,37 @@ test.describe("recovery — recovery-auto-login", () => {
   });
 });
 
+test.describe("recovery — recovery-short-ttl", () => {
+  test.beforeEach(async ({ request }) => {
+    await resetApp(request);
+  });
+
+  test("WF-RECOVERY-004: expired recovery state cannot resume → error block, no SetPasswordForm", async ({
+    page,
+    request,
+  }) => {
+    // `recoveryStateTtlMs: 1` stamps every recovery-side pause with an
+    // immediate expiry. Waiting 50ms between OTP-mint and OTP-submit makes
+    // the resume hit @prostojs/wf's "Invalid or expired workflow state"
+    // branch; the SPA renders the failure in `.scope-error` / `.as-wf-form-error`.
+    await page.goto(wfUrl("auth/recovery/flow", "recovery-short-ttl"));
+    await waitForFormInput(page, "email", 15_000);
+    await fillField(page, "email", ALICE_EMAIL);
+    await submitForm(page);
+
+    const email = await waitForEmail(request, (e) => e.kind === "recovery.pincode");
+    await waitForFormInput(page, "code", 15_000);
+
+    // Wait past the 1ms TTL — 50ms is generous against clock jitter.
+    await page.waitForTimeout(50);
+    await fillField(page, "code", email.code as string);
+    await submitForm(page);
+
+    await expect(page.locator(".as-wf-form-error, .scope-error")).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('[name="newPassword"]')).toHaveCount(0);
+  });
+});
+
 test.describe("recovery — recovery-fast-resend", () => {
   test.beforeEach(async ({ request }) => {
     await resetApp(request);

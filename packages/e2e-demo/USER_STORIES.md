@@ -8,12 +8,12 @@ The demo now uses one consumer subclass, `DemoAuthWorkflow extends AuthWorkflow`
 
 ## 1. Scope Summary
 
-| Area          | Workflow id          | Variant families                                                                                 | Coverage focus                                                                                                                                          |
-| ------------- | -------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Login         | `auth/login/flow`    | credentials, MFA challenge, MFA enrolment, device trust, guards, consents, concurrency, redirect | The full login schema and the shared fragments (`mfaLoopSchema`, `passwordPhaseSchema`, `consentsPersistTailSchema`, `pincodeSendCheckPair`)            |
-| Recovery      | `auth/recovery/flow` | OTP-via-email, fresh-login, auto-login, resend cooldown, consent                                 | Reduced recovery scope: no magic-link delivery, no SMS recovery, no mode picker, no pre-reset factor, no workflow audit, no recovery-state TTL seam yet |
-| Invite        | `auth/invite/start`  | admin no-roles/roles, TTL, confirmation, idempotent redirect, invite MFA enrolment, consent      | One invite schema with admin phase plus anonymous accept tail                                                                                           |
-| Unified class | all                  | constructor overlays, resolver dispatch, delivery union, shared forms/state                      | Proves one `DemoAuthWorkflow` subclass covers all three flows                                                                                           |
+| Area          | Workflow id          | Variant families                                                                                 | Coverage focus                                                                                                                               |
+| ------------- | -------------------- | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Login         | `auth/login/flow`    | credentials, MFA challenge, MFA enrolment, device trust, guards, consents, concurrency, redirect | The full login schema and the shared fragments (`mfaLoopSchema`, `passwordPhaseSchema`, `consentsPersistTailSchema`, `pincodeSendCheckPair`) |
+| Recovery      | `auth/recovery/flow` | OTP-via-email, fresh-login, auto-login, short state TTL, resend cooldown, consent                | Reduced recovery scope: no magic-link delivery, no SMS recovery, no mode picker, no pre-reset factor, no workflow audit                      |
+| Invite        | `auth/invite/start`  | admin no-roles/roles, TTL, confirmation, idempotent redirect, invite MFA enrolment, consent      | One invite schema with admin phase plus anonymous accept tail                                                                                |
+| Unified class | all                  | constructor overlays, resolver dispatch, delivery union, shared forms/state                      | Proves one `DemoAuthWorkflow` subclass covers all three flows                                                                                |
 
 **Out of scope for this unified pass:**
 
@@ -21,7 +21,6 @@ The demo now uses one consumer subclass, `DemoAuthWorkflow extends AuthWorkflow`
 - Recovery SMS delivery and transport switching.
 - Recovery choice mode.
 - Recovery pre-reset factor checks.
-- Recovery-state TTL (no `AuthWorkflowOpts.recoveryStateTtlMs` seam yet; "expired workflow state" branch is not exercised).
 - Workflow-level audit variants.
 - Invite shareable-link/send-mode choice.
 - Invite fresh-login policy via `accept.freshLoginRequired`.
@@ -114,6 +113,7 @@ Recovery variants:
 | ---------------------- | ---------------------------------------------------------------------------- |
 | default/no variant     | OTP-via-email recovery; fresh-login post-reset behaviour (redirect to login) |
 | `recovery-auto-login`  | `autoLoginOnRecover=true`; reset finishes with tokens                        |
+| `recovery-short-ttl`   | `recoveryStateTtlMs=1` — every recovery pause expires the persisted state    |
 | `recovery-fast-resend` | Recovery pincode resend cooldown                                             |
 | `recovery-terms-bump`  | Inline consent on recovery `SetPasswordForm`                                 |
 
@@ -241,6 +241,7 @@ Reduced recovery process:
 | WF-RECOVERY-001        | P0   | default                    | Known email receives recovery pincode, enters OTP, resets password, fresh-login finish redirects without tokens | Email kind `recovery.pincode`; `SetPasswordForm` copy says reset; no `accessToken`; redirect to login |
 | WF-RECOVERY-002        | P0   | default                    | Unknown email finishes generically                                                                              | No enumeration; no token; no mailbox event for ghost address                                          |
 | WF-RECOVERY-003        | P1   | default                    | Password mismatch re-renders `SetPasswordForm`                                                                  | Inline `confirmPassword` error                                                                        |
+| WF-RECOVERY-004        | P1   | `recovery-short-ttl`       | Expired recovery state cannot resume                                                                            | Error block visible; no `SetPasswordForm`                                                             |
 | WF-RECOVERY-005        | P0   | default                    | Email OTP happy path                                                                                            | `PincodeForm` hint visible; `ctx.otp.verified` permits password form                                  |
 | WF-RECOVERY-009        | P1   | default                    | Wrong OTP re-renders pincode form                                                                               | `errors.code = "Invalid code"`                                                                        |
 | WF-RECOVERY-010        | P1   | `recovery-fast-resend`     | Resend inside cooldown is blocked                                                                               | No new email; “Please wait” error                                                                     |
