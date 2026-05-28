@@ -119,14 +119,14 @@ Recovery variants:
 
 Invite variants:
 
-| Variant                    | Purpose                                      |
-| -------------------------- | -------------------------------------------- |
-| `email-no-roles`           | Admin invite form with no role picker        |
-| `roles-profile`            | Role picker and accept-tail profile coverage |
-| `confirmation-message`     | Confirmation finish copy                     |
-| `idempotent-redirect`      | Already-accepted invite handling             |
-| `invite-mfa-optional-full` | Invite accept-tail MFA enrolment             |
-| `invite-terms`             | Inline consent on invite `SetPasswordForm`   |
+| Variant                    | Purpose                                    |
+| -------------------------- | ------------------------------------------ |
+| `email-no-roles`           | Admin invite form with no role picker      |
+| `roles-profile`            | Role picker coverage                       |
+| `confirmation-message`     | Confirmation finish copy                   |
+| `idempotent-redirect`      | Already-accepted invite handling           |
+| `invite-mfa-optional-full` | Invite accept-tail MFA enrolment           |
+| `invite-terms`             | Inline consent on invite `SetPasswordForm` |
 
 ### 2.4 Test Infrastructure
 
@@ -282,12 +282,9 @@ Default invite process:
 | -------------------- | ---- | -------------------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | WF-INVITE-001        | P0   | `email-no-roles`           | Admin invites new email, invitee redeems, tokens issued                     | No roles field; invite email/link captured; activated user  |
 | WF-INVITE-002        | P1   | `email-no-roles`           | Admin invites existing user                                                 | Inline duplicate error                                      |
-| WF-INVITE-003        | P1   | `email-no-roles`           | Invitee abandons password form                                              | Pending invitation remains                                  |
 | WF-INVITE-005        | P0   | `roles-profile`            | Role picker accepts whitelisted role                                        | Role field visible; selected role persisted                 |
 | WF-INVITE-006        | P1   | `roles-profile`            | Invalid role is rejected                                                    | Inline role error                                           |
 | WF-INVITE-010        | P2   | `idempotent-redirect`      | Already-accepted link shows idempotent finish                               | Sign-in / request-new-invite actions visible                |
-| WF-INVITE-013        | P0   | `email-no-roles`           | Re-invite pending user sends a new invite                                   | New mailbox invite entry                                    |
-| WF-INVITE-014        | P1   | `email-no-roles`           | Re-invite already-accepted user returns 409                                 | User-readable error                                         |
 | WF-INVITE-018        | P2   | `email-no-roles`           | Duplicate override reaches store-level uniqueness failure                   | Store-level 409 surfaces                                    |
 | WF-INVITE-020        | P2   | `confirmation-message`     | Confirmation message renders after activation                               | “Your account has been created.” visible                    |
 | WF-INVITE-021        | P1   | `invite-mfa-optional-full` | Invite-tail optional MFA enrolment skip activates user                      | No MFA method persisted; account activated                  |
@@ -305,6 +302,7 @@ Removed legacy invite rows:
 - `@Workflow("auth/invite/cancel")` + `@Workflow("auth/invite/resend")` (WF-INVITE-015, -016, -017). Dropped in `6ff3efb` — invite is single-path email-only now.
 - `magicLinkTtlMs` opt + `short-ttl-confirmation` variant (WF-INVITE-004, -019). Magic-link TTL is now owned by `@StepTTL(...)` on the workflow's `send-email` @Step; customers override the step and re-decorate. Tests dropped because they were verifying engine TTL behavior, already covered upstream in `@prostojs/wf`.
 - `autoLoginOnInvite=false` finish-without-tokens (WF-INVITE-012). The opt still exists on `AuthWorkflowOpts`; no Playwright coverage planned (vitest covers the opts-merge contract).
+- Invitee-abandons-password-form (WF-INVITE-003) and re-invite paths (WF-INVITE-013, -014). No active spec; pending-invitation persistence is exercised structurally via WF-INVITE-001 + WF-INVITE-010 (idempotent redirect), and the re-invite flow shares the same `auth/invite/start` workflow as the happy path — WF-INVITE-002 already covers the duplicate-detection branch.
 
 ---
 

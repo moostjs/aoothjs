@@ -150,13 +150,11 @@ test.describe("WF-INVITE — auth.invite family (P0)", () => {
  * Tier=P1:
  *
  *   WF-INVITE-002  variant `email-no-roles`     — invite existing user → 409
- *   WF-INVITE-003  variant `email-no-roles`     — invitee cancels at password form
  *   WF-INVITE-006  variant `roles-profile`      — role not in whitelist → form error
- *   WF-INVITE-014  variant `email-no-roles`     — reInvite on already-accepted → 409
  *
  * The `t1_redeemed` seed has `username = email = t1_redeemed@example.com`,
  * which is the structural prerequisite for `loadUserOrNull(email)` to find
- * it via `findByUsername(email)`. -002/-014 hit it.
+ * it via `findByUsername(email)`. -002 hits it.
  *
  * Error surface: AsWfForm forwards trigger failures to the `@error` slot →
  * `WfPage.vue` paints `err.message` inside `div.scope-error` near the form.
