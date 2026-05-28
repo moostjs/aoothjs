@@ -623,10 +623,10 @@ export const pincodeSendCheckPair: TWorkflowSchema<AuthWfCtx> = [
 
 ## 9. The three `@Workflow` schemas (new shape)
 
-### login.flow
+### login
 
 ```typescript
-@Workflow("flow")
+@Workflow("login")
 @Public()
 @WorkflowSchema<AuthWfCtx>([
   { id: "init-login" },
@@ -703,10 +703,10 @@ export const pincodeSendCheckPair: TWorkflowSchema<AuthWfCtx> = [
 loginFlow(): void {}
 ```
 
-### invite.start
+### invite
 
 ```typescript
-@Workflow("start")
+@Workflow("invite")
 @Public()
 @WorkflowSchema<AuthWfCtx>([
   // ── Phase A: admin invites (arbac-protected) ──
@@ -764,10 +764,10 @@ inviteFlow(): void {}
 
 Note on `@Public()`: The `inviteFlow()` body itself is `@Public()` (so the wf adapter can dispatch start/resume on anonymous magic-link clicks). Admin-phase @Step methods are NOT `@Public()` — arbac evaluates them on first-pass when an admin starts the flow. Accept-tail @Step methods all are `@Public()` (anonymous resume).
 
-### recovery.flow
+### recover
 
 ```typescript
-@Workflow("flow")
+@Workflow("recover")
 @Public()
 @WorkflowSchema<AuthWfCtx>([
   { id: "init-recovery" },

@@ -1061,7 +1061,7 @@ export class AuthWorkflow {
    * `@Public()` on the body because the wf adapter dispatches the flow body
    * on every `start()` / `resume()` call (anonymous login).
    */
-  @Workflow("flow")
+  @Workflow("login")
   @Public()
   @WorkflowSchema<AuthWfCtx>([
     { id: "init-login" },
@@ -1189,7 +1189,7 @@ export class AuthWorkflow {
    * all `@Public()` (anonymous resume). The body itself is `@Public()` so the
    * wf adapter can dispatch start/resume on anonymous magic-link clicks.
    */
-  @Workflow("start")
+  @Workflow("invite")
   @Public()
   @WorkflowSchema<AuthWfCtx>([
     // ── Phase A: admin invites (arbac-protected) ──
@@ -1284,7 +1284,7 @@ export class AuthWorkflow {
    * recovery.flow — OTP-via-email reset. `@Public()` on the body because
    * anonymous users start recovery.
    */
-  @Workflow("flow")
+  @Workflow("recover")
   @Public()
   @WorkflowSchema<AuthWfCtx>([
     { id: "init-recovery" },
