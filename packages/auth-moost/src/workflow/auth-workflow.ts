@@ -1476,12 +1476,25 @@ export class AuthWorkflow {
    * `deliver()` hook because that hook is for direct dispatches where the
    * payload is fully known at call-time; the magic-link URL exists only after
    * the pause. Public so the engine can re-enter on the anonymous resume.
+   *
+   * Outlet-pause idempotency via `admin.emailDispatched`: on the invitee's
+   * magic-link resume, the engine re-executes this step body (a paused step's
+   * cursor stays AT the step until the body returns a non-`inputRequired`
+   * value). Returning the outletEmail envelope again would dispatch another
+   * email + re-pause; the flag short-circuits the resume so the cursor
+   * advances into the Phase B accept-tail. This is the engine-documented
+   * step-layer idempotency pattern for outlet pauses with side effects
+   * (`@wooksjs/event-wf` resume semantics — the cursor advances on a
+   * successful step but a re-invocation of the same step body must guard
+   * its own non-idempotent work).
    */
   @Step("send-email")
   @StepTTL(INVITE_LINK_TTL_MS)
   @Public()
   sendInviteEmail(@WorkflowParam("context") ctx: AuthWfCtx): unknown {
-    const admin = ctx.admin ?? {};
+    const admin = (ctx.admin ??= {});
+    if (admin.emailDispatched) return undefined;
+    admin.emailDispatched = true;
     return outletEmail(ctx.email as string, "invite.magicLink", {
       username: ctx.username,
       ...(ctx.username && { userId: ctx.username }),

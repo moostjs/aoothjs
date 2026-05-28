@@ -236,6 +236,13 @@ export interface AuthWfAdminState {
   availableRoles?: string[];
   roles?: string[];
   userExtras?: Record<string, unknown>;
+  /**
+   * Outlet-pause idempotency marker for `send-email`. Flipped to `true`
+   * after the first dispatch so the invitee's magic-link resume — which
+   * re-executes the step body — short-circuits instead of dispatching a
+   * second email and re-pausing. See `sendInviteEmail` for the why.
+   */
+  emailDispatched?: boolean;
 }
 
 /**
