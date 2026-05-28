@@ -731,7 +731,6 @@ export class AuthWorkflow {
       requireInput(opts?: { errors?: Record<string, string>; formMessage?: string }): unknown;
     },
   ): void {
-    if (ctx.consents?.persisted) return;
     if (ctx.consents?.decidedAt !== undefined) return;
     const pending: ConsentDescriptorLike[] = ctx.consents?.pending ?? [];
     if (pending.length === 0) return;
@@ -1477,15 +1476,12 @@ export class AuthWorkflow {
    * `deliver()` hook because that hook is for direct dispatches where the
    * payload is fully known at call-time; the magic-link URL exists only after
    * the pause. Public so the engine can re-enter on the anonymous resume.
-   * Idempotent via `ctx.admin.linkSent`.
    */
   @Step("send-email")
   @StepTTL(INVITE_LINK_TTL_MS)
   @Public()
   sendInviteEmail(@WorkflowParam("context") ctx: AuthWfCtx): unknown {
-    const admin = (ctx.admin ??= {});
-    if (admin.linkSent) return undefined;
-    admin.linkSent = true;
+    const admin = ctx.admin ?? {};
     return outletEmail(ctx.email as string, "invite.magicLink", {
       username: ctx.username,
       ...(ctx.username && { userId: ctx.username }),
@@ -1542,7 +1538,6 @@ export class AuthWorkflow {
     await this.users.update(ctx.username, {
       account: { pendingInvitation: false },
     } as Partial<UserCredentials>);
-    (ctx.completion ??= {}).pendingInvitationCleared = true;
     return undefined;
   }
 
@@ -1552,7 +1547,6 @@ export class AuthWorkflow {
   async activateUser(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     this.requireUsername(ctx);
     await this.users.activateAccount(ctx.username);
-    (ctx.completion ??= {}).activated = true;
     return undefined;
   }
 
@@ -1564,7 +1558,6 @@ export class AuthWorkflow {
   @Step("confirmation")
   @Public()
   confirmation(@WorkflowParam("context") ctx: AuthWfCtx): undefined {
-    (ctx.completion ??= {}).confirmationShown = true;
     finishWf({
       data: { confirmed: true },
       message: { level: "success", text: ctx.accept!.confirmationMessage! },
@@ -1578,8 +1571,8 @@ export class AuthWorkflow {
    * Unified password-set step body — merges login Phase 5 + invite accept-tail
    * + recovery set-password. Stages copy via `ctx.password.changeReason`
    * (`initial` / `expired` / `reset`), pauses for `SetPasswordForm`, validates
-   * match, calls `users.setPassword`, processes inline consents, and flips the
-   * unified `completion.passwordCompleted` flag.
+   * match, calls `users.setPassword`, processes inline consents, and clears
+   * the per-user `isPasswordInitial` / `isPasswordExpired` flags.
    */
   @Step("create-password-form")
   @Public()
@@ -1621,7 +1614,6 @@ export class AuthWorkflow {
       throw err;
     }
     this.processInlineConsent(ctx, input, wf);
-    (ctx.completion ??= {}).passwordCompleted = true;
     ctx.isPasswordInitial = false;
     ctx.isPasswordExpired = false;
     // `delete` (not `= undefined`) — wf state-token persistence rejects
@@ -2319,20 +2311,15 @@ export class AuthWorkflow {
 
   /**
    * Batched consent persistence — fans one `ConsentEvent` per pending
-   * descriptor out to the `ConsentStore.save` DI provider. Idempotent via
-   * `ctx.consents.persisted`.
+   * descriptor out to the `ConsentStore.save` DI provider.
    */
   @Step("persist-consents")
   @Public()
   async persistConsents(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     this.requireUsername(ctx);
-    const group = (ctx.consents ??= {});
-    if (group.persisted) return undefined;
+    const group = ctx.consents ?? {};
     const pending = group.pending ?? [];
-    if (pending.length === 0) {
-      group.persisted = true;
-      return undefined;
-    }
+    if (pending.length === 0) return undefined;
     const accepted = new Set(group.accepted ?? []);
     const at = group.decidedAt ?? Date.now();
     const events = pending.map((p) => {
@@ -2345,7 +2332,6 @@ export class AuthWorkflow {
       return evt;
     });
     await this.consentStore.save(ctx.username, events);
-    group.persisted = true;
     return undefined;
   }
 
@@ -2360,7 +2346,6 @@ export class AuthWorkflow {
   async revokeSessions(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     if (!ctx.username) return undefined;
     await this.auth.revokeAllForUser(ctx.username);
-    (ctx.completion ??= {}).sessionsRevoked = true;
     return undefined;
   }
 
@@ -2376,7 +2361,6 @@ export class AuthWorkflow {
   async issue(@WorkflowParam("context") ctx: AuthWfCtx): Promise<void> {
     this.requireUsername(ctx);
     const issue = await this.auth.issue(ctx.username);
-    (ctx.completion ??= {}).tokensIssued = true;
     const auth = useAuth();
     const envelope: WfFinished = {
       finished: true,
@@ -2478,7 +2462,6 @@ export class AuthWorkflow {
   async finalizeAutoLogin(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     this.requireUsername(ctx);
     const issue = await this.auth.issue(ctx.username);
-    (ctx.completion ??= {}).tokensIssued = true;
     const auth = useAuth();
     const previousMessage = (useWfFinished().get()?.value as WfFinished | undefined)?.message;
     const envelope: WfFinished = {
@@ -2609,10 +2592,7 @@ export class AuthWorkflow {
     { id: "extra-step", condition: (ctx) => !!ctx.isFirstLogin },
     {
       id: "terms-bump-prompt",
-      condition: (ctx) =>
-        (ctx.consents?.pending?.length ?? 0) > 0 &&
-        !ctx.consents?.decidedAt &&
-        !ctx.consents?.persisted,
+      condition: (ctx) => (ctx.consents?.pending?.length ?? 0) > 0 && !ctx.consents?.decidedAt,
     },
 
     ...consentsPersistTailSchema,
@@ -2632,18 +2612,13 @@ export class AuthWorkflow {
     { break: (ctx) => !!ctx.aborted },
 
     // Finalize (login-specific tail)
-    { id: "issue", condition: (ctx) => !ctx.completion?.tokensIssued },
+    { id: "issue" },
     {
-      condition: (ctx) => !!ctx.completion?.tokensIssued,
-      steps: [
-        {
-          id: "notify-new-device",
-          condition: (ctx) =>
-            !ctx.isFirstLogin && !!ctx.finalize?.notifyNewDevice && !!ctx.trust?.newDevice,
-        },
-        { id: "redirect" },
-      ],
+      id: "notify-new-device",
+      condition: (ctx) =>
+        !ctx.isFirstLogin && !!ctx.finalize?.notifyNewDevice && !!ctx.trust?.newDevice,
     },
+    { id: "redirect" },
   ])
   loginFlow(): void {}
 
@@ -2674,7 +2649,7 @@ export class AuthWorkflow {
 
     // ── Phase B: anonymous magic-link resume (all public) ──
     {
-      condition: (ctx) => !!ctx.admin?.linkSent,
+      condition: (ctx) => !!ctx.username,
       steps: [
         { id: "init-invite-accept" }, // sets isFirstLogin=true, newPasswordRequired=true
         { id: "prepare-accept" },
@@ -2693,35 +2668,14 @@ export class AuthWorkflow {
 
         ...consentsPersistTailSchema,
 
-        {
-          id: "unset-pending-invitation",
-          condition: (ctx) =>
-            !!ctx.completion?.passwordCompleted && !ctx.completion?.pendingInvitationCleared,
-        },
-        {
-          id: "activate-user",
-          condition: (ctx) =>
-            !!ctx.completion?.pendingInvitationCleared && !ctx.completion?.activated,
-        },
-        {
-          id: "confirmation",
-          condition: (ctx) =>
-            !!ctx.completion?.activated &&
-            !!ctx.accept?.showConfirmation &&
-            !ctx.completion?.confirmationShown,
-        },
+        { id: "unset-pending-invitation" },
+        { id: "activate-user" },
+        { id: "confirmation", condition: (ctx) => !!ctx.accept?.showConfirmation },
 
         // Finalize (invite tail — gated by ctx.autoLogin, mirrored from
         // `opts.autoLoginOnInvite` by init-invite-admin / init-invite-accept).
-        {
-          id: "finalize-fresh-login",
-          condition: (ctx) => !!ctx.completion?.activated && !ctx.autoLogin,
-        },
-        {
-          id: "finalize-auto-login",
-          condition: (ctx) =>
-            !!ctx.completion?.activated && !!ctx.autoLogin && !ctx.completion?.tokensIssued,
-        },
+        { id: "finalize-fresh-login", condition: (ctx) => !ctx.autoLogin },
+        { id: "finalize-auto-login", condition: (ctx) => !!ctx.autoLogin },
       ],
     },
   ])
@@ -2760,25 +2714,16 @@ export class AuthWorkflow {
     },
     { break: (ctx) => !!ctx.aborted },
 
-    // Post-reset tail (recovery-specific)
-    {
-      condition: (ctx) => !!ctx.completion?.passwordCompleted,
-      steps: [
-        { id: "revoke-sessions", condition: (ctx) => !!ctx.postReset?.revokeAllSessions },
-        ...consentsPersistTailSchema,
-        // Finalize (recovery tail — gated by ctx.autoLogin, mirrored from
-        // `opts.autoLoginOnRecover` by init-recovery).
-        {
-          id: "finalize-fresh-login",
-          condition: (ctx) => !ctx.autoLogin,
-        },
-        {
-          id: "finalize-auto-login",
-          condition: (ctx) => !!ctx.autoLogin && !ctx.completion?.tokensIssued,
-        },
-        // Note: notify-new-device is NOT fired here in this pass — see §13.
-      ],
-    },
+    // Post-reset tail (recovery-specific) — sequential after the password
+    // subflow above; cursor advancement past the `{ break: !!ctx.aborted }`
+    // gate already guarantees the password form completed.
+    { id: "revoke-sessions", condition: (ctx) => !!ctx.postReset?.revokeAllSessions },
+    ...consentsPersistTailSchema,
+    // Finalize (recovery tail — gated by ctx.autoLogin, mirrored from
+    // `opts.autoLoginOnRecover` by init-recovery).
+    { id: "finalize-fresh-login", condition: (ctx) => !ctx.autoLogin },
+    { id: "finalize-auto-login", condition: (ctx) => !!ctx.autoLogin },
+    // Note: notify-new-device is NOT fired here in this pass — see §13.
   ])
   recoveryFlow(): void {}
 }

@@ -90,7 +90,7 @@ export const mfaLoopSchema: TWorkflowSchema<AuthWfCtx> = [
  */
 export const passwordPhaseSchema: TWorkflowSchema<AuthWfCtx> = [
   {
-    condition: (ctx) => !!ctx.newPasswordRequired && !ctx.completion?.passwordCompleted,
+    condition: (ctx) => !!ctx.newPasswordRequired,
     steps: [{ id: "prepare-password-rules" }, { id: "create-password-form" }],
   },
 ];
@@ -101,9 +101,6 @@ export const passwordPhaseSchema: TWorkflowSchema<AuthWfCtx> = [
 export const consentsPersistTailSchema: TWorkflowSchema<AuthWfCtx> = [
   {
     id: "persist-consents",
-    condition: (ctx) =>
-      (ctx.consents?.pending?.length ?? 0) > 0 &&
-      !!ctx.consents?.decidedAt &&
-      !ctx.consents?.persisted,
+    condition: (ctx) => (ctx.consents?.pending?.length ?? 0) > 0 && !!ctx.consents?.decidedAt,
   },
 ];

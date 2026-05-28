@@ -44,14 +44,13 @@ export interface ConsentDescriptorLike {
 
 /**
  * Consents — both server state (`accepted` / `decidedAt`) and the
- * UI-visible descriptor list (`pending` / `persisted`). Shipped via
+ * UI-visible descriptor list (`pending`). Shipped via
  * `@wf.context.pass 'consents'`.
  */
 export interface AuthWfConsentsState {
   pending?: ConsentDescriptorLike[];
   accepted?: string[];
   decidedAt?: number;
-  persisted?: boolean;
 }
 
 /**
@@ -88,17 +87,12 @@ export interface AuthWfPasswordUiState {
 }
 
 /**
- * Completion outcome — collapses prior `passwordSet` + `passwordChanged`
- * into a single `passwordCompleted` flag.
+ * Completion outcome — carries data set by terminal steps. Step-completion
+ * is encoded by the wf engine's cursor, NOT by ctx flags; only fields that
+ * carry actual data (read downstream) live here.
  */
 export interface AuthWfCompletionState {
-  passwordCompleted?: boolean;
-  tokensIssued?: boolean;
   redirectUrl?: string;
-  pendingInvitationCleared?: boolean;
-  activated?: boolean;
-  confirmationShown?: boolean;
-  sessionsRevoked?: boolean;
 }
 
 /** Unified MFA policy — replaces login's hardcoded defaults + invite's `{issuer}` resolver. */
@@ -242,7 +236,6 @@ export interface AuthWfAdminState {
   availableRoles?: string[];
   roles?: string[];
   userExtras?: Record<string, unknown>;
-  linkSent?: boolean;
 }
 
 /**
