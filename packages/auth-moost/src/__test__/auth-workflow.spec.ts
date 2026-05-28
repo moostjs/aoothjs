@@ -420,13 +420,16 @@ describe("AuthWorkflow resolver defaults", () => {
     expect(withEmail).toEqual({ address: "bob@x.io", channel: "email" });
   });
 
-  it("resolvePincodeAltAction — undefined by default (customer override seam)", () => {
-    // WHY: pincode-check forwards `wf.resolveAction()` (the form's alt-
-    // action click) to this hook. Returning undefined means "no custom
-    // routing"; the @Step then falls through to its normal verify path.
-    // Asserting undefined locks in the override-only-when-needed contract.
-    expect(wf.exposePincodeAltAction({}, "resend")).toBeUndefined();
-    expect(wf.exposePincodeAltAction({}, "exit")).toBeUndefined();
+  it("resolvePincodeAltAction — maps canonical PincodeForm action ids; unknowns fall through", () => {
+    // WHY: the bundled `PincodeForm` declares three actions (`resend`,
+    // `useDifferentMethod`, `backToLogin`). The base maps each to the
+    // canonical outcome the `pincode-check` @Step expects so consumers
+    // don't have to override just to route the default form. Unknown
+    // action ids return undefined → the @Step falls through to the verify
+    // path (the override-when-adding-actions contract).
+    expect(wf.exposePincodeAltAction({}, "resend")).toBe("resend");
+    expect(wf.exposePincodeAltAction({}, "useDifferentMethod")).toBe("useDifferentMethod");
+    expect(wf.exposePincodeAltAction({}, "backToLogin")).toBe("exit");
     expect(wf.exposePincodeAltAction({}, "anything")).toBeUndefined();
   });
 

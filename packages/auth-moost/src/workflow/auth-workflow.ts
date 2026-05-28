@@ -53,6 +53,7 @@ import {
 } from "@moostjs/event-wf";
 import { current } from "@wooksjs/event-core";
 import { useCookies, useHeaders, useRequest, useResponse, useUrlParams } from "@wooksjs/event-http";
+import { ArbacAction, ArbacResource } from "@aooth/arbac-moost";
 import { Controller, Inherit, Param } from "moost";
 
 import { useAuth } from "../auth.composables";
@@ -648,13 +649,17 @@ export class AuthWorkflow {
   }
 
   /**
-   * Route a form alt-action click to a canonical outcome. Default returns
-   * `undefined` (customer overrides per form / per flow).
+   * Route a form alt-action click to a canonical outcome. Defaults match the
+   * action ids the bundled `PincodeForm` declares; customers override per
+   * form when adding new actions or remapping the canonical ones.
    */
   protected resolvePincodeAltAction(
     _ctx: AuthWfCtx,
-    _action: string,
+    action: string,
   ): "resend" | "exit" | "useDifferentMethod" | undefined {
+    if (action === "resend") return "resend";
+    if (action === "useDifferentMethod") return "useDifferentMethod";
+    if (action === "backToLogin") return "exit";
     return undefined;
   }
 
@@ -823,6 +828,8 @@ export class AuthWorkflow {
   }
 
   @Step("init-invite-admin")
+  @ArbacResource("auth.invite")
+  @ArbacAction("start")
   initInviteAdmin(@WorkflowParam("context") ctx: AuthWfCtx): void {
     ctx.autoLogin = this.opts.autoLoginOnInvite;
     return undefined;
@@ -990,7 +997,7 @@ export class AuthWorkflow {
     if (rawFormData === undefined) {
       const prefilled = readUsernameQueryParam();
       if (prefilled) ctx.defaults = { email: prefilled };
-      throw this.stampRecoveryExpiry(emailWf.requireInput());
+      throw emailWf.requireInput();
     }
 
     const input = emailWf.resolveInput() as { email: string };
@@ -1082,7 +1089,13 @@ export class AuthWorkflow {
       (ctx.password ??= {}).changeReason = "reset";
       return undefined;
     }
-    ctx.newPasswordRequired = !!ctx.guards?.passwordInitial || !!ctx.guards?.passwordExpiry;
+    // `guards.<flag>` is the feature gate ("the check is enabled"); the
+    // per-user determination lives in `ctx.isPasswordInitial` /
+    // `ctx.isPasswordExpired` (set by the `credentials` step from the
+    // user's stored `password.isInitial` / `lastChanged`). Read the
+    // computed flags here so users whose password is current skip the
+    // password form even when the guard is on.
+    ctx.newPasswordRequired = !!ctx.isPasswordInitial || !!ctx.isPasswordExpired;
     const reason = (ctx.password ??= {});
     if (ctx.isPasswordInitial) reason.changeReason = "initial";
     else if (ctx.isPasswordExpired) reason.changeReason = "expired";
@@ -1261,6 +1274,8 @@ export class AuthWorkflow {
   }
 
   @Step("prepare-admin-form")
+  @ArbacResource("auth.invite")
+  @ArbacAction("start")
   prepareAdminForm(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
     const result = this.resolveAdminForm(ctx);
     if (result instanceof Promise) {
@@ -1274,6 +1289,8 @@ export class AuthWorkflow {
   }
 
   @Step("prepare-available-roles")
+  @ArbacResource("auth.invite")
+  @ArbacAction("start")
   async prepareAvailableRoles(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     const roles = await this.getAvailableRoles();
     if (roles) (ctx.admin ??= {}).availableRoles = roles;
@@ -1346,6 +1363,8 @@ export class AuthWorkflow {
    * to decide whether to reject duplicates.
    */
   @Step("admin-form")
+  @ArbacResource("auth.invite")
+  @ArbacAction("start")
   async adminForm(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
     const wf = useAtscriptWf(this.opts.forms.invite);
     const input = wf.resolveInput() as {
@@ -1380,6 +1399,8 @@ export class AuthWorkflow {
    * hook, set-unioning with admin-supplied roles.
    */
   @Step("infer-roles")
+  @ArbacResource("auth.invite")
+  @ArbacAction("start")
   async inferRoles(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     if (!ctx.email) return undefined;
     const inferred = await this.inferAdminRoles({ email: ctx.email });
@@ -1396,6 +1417,8 @@ export class AuthWorkflow {
    * `ctx.admin.userExtras`.
    */
   @Step("build-user-extras")
+  @ArbacResource("auth.invite")
+  @ArbacAction("start")
   async buildUserExtras(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     if (!ctx.email) throw new HttpError(500, "Workflow state corrupted: missing email");
     const invitedBy = useAuth().getAuthContext()?.userId;
@@ -1415,6 +1438,8 @@ export class AuthWorkflow {
    * deep-merge update so `createUser`-applied account defaults survive.
    */
   @Step("create-user")
+  @ArbacResource("auth.invite")
+  @ArbacAction("start")
   async createUser(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     if (!ctx.email) throw new HttpError(500, "Workflow state corrupted: missing email");
     const adminRoles = ctx.admin?.roles;
@@ -1564,6 +1589,9 @@ export class AuthWorkflow {
     } else if (password.changeReason === "reset") {
       password.heading = "Reset your password";
       password.intro = "Choose a new password for your account.";
+    } else if (ctx.accept) {
+      password.heading = "Welcome — set your password";
+      password.intro = "Choose a password to activate your account.";
     } else {
       password.heading = "Set your initial password";
       password.intro = "Your account was created without a password. Choose one to continue.";
