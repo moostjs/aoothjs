@@ -1688,8 +1688,13 @@ export class AuthWorkflow {
     // Arm the resend cooldown — `verifyChannel` reads `resendAllowedAt` to
     // gate the user's "Resend code" click on the PincodeForm. Mirrors the
     // `pincode-send` step's pattern so both pincode surfaces use the same
-    // cooldown contract.
-    (ctx.pincode ??= {}).resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
+    // cooldown contract. `sentTo` rides alongside so the PincodeForm's
+    // transportHint can render "Code sent to <masked>" — without it the
+    // login-enrollment branch falls through to the generic
+    // "Enter your verification code." copy.
+    const pincode = (ctx.pincode ??= {});
+    pincode.resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
+    pincode.sentTo = this.maskAddress(value, isEmail ? "email" : "sms");
     const pincodeWf = useAtscriptWf(this.opts.forms.pincode);
     throw pincodeWf.requireInput();
   }
@@ -1732,7 +1737,9 @@ export class AuthWorkflow {
         code,
         expiresInMs: this.opts.mfa.pincodeTtlMs,
       });
-      (ctx.pincode ??= {}).resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
+      const pincode = (ctx.pincode ??= {});
+      pincode.resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
+      pincode.sentTo = this.maskAddress(recipient, isEmail ? "email" : "sms");
       throw pincodeWf.requireInput();
     }
     const input = pincodeWf.resolveInput() as { code: string };
@@ -1760,8 +1767,14 @@ export class AuthWorkflow {
     // Channel-enrollment cooldown is local to the ask/verify pair. Clearing
     // here prevents the enrollment cooldown from leaking into the downstream
     // MFA-challenge cooldown (`select-2fa` reads the same `resendAllowedAt`
-    // before dispatching MFA pincodes).
-    if (ctx.pincode) delete ctx.pincode.resendAllowedAt;
+    // before dispatching MFA pincodes). Clear `sentTo` for the same reason —
+    // the masked address from the enrolment step shouldn't render on the
+    // first MFA-challenge PincodeForm pause if `pincode-send` hasn't fired
+    // for it yet.
+    if (ctx.pincode) {
+      delete ctx.pincode.resendAllowedAt;
+      delete ctx.pincode.sentTo;
+    }
     return undefined;
   }
 
