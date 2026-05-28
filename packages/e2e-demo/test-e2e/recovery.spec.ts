@@ -56,6 +56,13 @@ test.describe("recovery — default (OTP-via-email)", () => {
 
     // Phase 3 — SetPasswordForm.
     await waitForFormInput(page, "newPassword", 15_000);
+    // Pin the reset-flow heading + intro copy. `create-password-form` stages
+    // these on `ctx.password.heading` / `ctx.password.intro` based on
+    // `changeReason='reset'` set by `init-recovery`. A regression that fell
+    // through to the 'initial' branch (the default fallback) would silently
+    // rename the screen to "Set your initial password".
+    await expect(page.getByText("Reset your password")).toBeVisible();
+    await expect(page.getByText(/Choose a new password for your account/i)).toBeVisible();
     await fillField(page, "newPassword", NEW_PASSWORD);
     await fillField(page, "confirmPassword", NEW_PASSWORD);
     await submitForm(page);

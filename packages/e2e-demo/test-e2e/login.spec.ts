@@ -613,6 +613,15 @@ test.describe("LoginWorkflow / variant=enrollment (P1)", () => {
 
     // Step 1 — ensureEmail collects the email.
     await waitForFormInput(page, "email");
+    // Pin the OTP disclosure paragraph staged on `ctx.channel.otpDisclosure`
+    // by `resolveOtpDisclosure(ctx, 'email')`. The text rendering adjacent
+    // to the address input is implied-consent — a regression that drops the
+    // `@wf.context.pass 'channel'` annotation, swaps the per-channel branch,
+    // or stops calling the resolver entirely would silently break the
+    // disclosure surface relied on by `recordOtpChannelConsent`.
+    await expect(
+      page.getByText(/consent to receive one-time security codes.*via email/i),
+    ).toBeVisible();
     await fillField(page, "email", "alice@acme.test");
     await submitForm(page);
 
@@ -629,6 +638,12 @@ test.describe("LoginWorkflow / variant=enrollment (P1)", () => {
     // `autocomplete="tel"`.
     await waitForFormInput(page, "phone");
     await expect(page.locator('[name="phone"]').first()).toHaveAttribute("autocomplete", "tel");
+    // Same disclosure pin as email above but for the SMS branch — the
+    // resolver's per-channel discrimination is the only thing routing
+    // between the two copies.
+    await expect(
+      page.getByText(/consent to receive one-time security codes.*via SMS/i),
+    ).toBeVisible();
     await fillField(page, "phone", "+15555550999");
     await submitForm(page);
 
