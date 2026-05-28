@@ -27,20 +27,33 @@ import {
   maskEmail,
   maskPhone,
   type MfaMethodInfo,
+  type TrustedDeviceRecord,
   UserAuthError,
+  type UserCredentials,
   UserService,
 } from "@aooth/user";
-import { finishWf, useAtscriptWf } from "@atscript/moost-wf";
+import { abortWf, finishWf, useAtscriptWf, type WfFinished } from "@atscript/moost-wf";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { HttpError } from "@moostjs/event-http";
-import { Step, useWfState, Workflow, WorkflowParam, WorkflowSchema } from "@moostjs/event-wf";
+import {
+  outletEmail,
+  Step,
+  useWfFinished,
+  useWfState,
+  Workflow,
+  WorkflowParam,
+  WorkflowSchema,
+} from "@moostjs/event-wf";
 import { current } from "@wooksjs/event-core";
-import { useCookies, useRequest, useUrlParams } from "@wooksjs/event-http";
+import { useCookies, useHeaders, useRequest, useResponse, useUrlParams } from "@wooksjs/event-http";
 import { Controller, Inherit, Param } from "moost";
 
+import { useAuth } from "../auth.composables";
 import { AuthOpts } from "../auth.opts";
 import { ConsentStore } from "../consent.store";
 import { Public } from "../auth.decorator";
+import { buildInviteAlreadyAcceptedEnvelope, parseInviteRoles } from "../workflows/invite.workflow";
+import { stripReservedUserKeys } from "../workflows/auth-workflow.base";
 import type {
   AuthWfCtx,
   AuthWfAltCredsPolicy,
@@ -188,11 +201,13 @@ export class AuthWorkflow {
   // ── Protected extension surface ─────────────────────────────────────────
 
   /**
-   * Unified outbound dispatch hook. Default is a no-op — customers override
-   * to wire email / SMS senders, magic-link emitters, new-device notices.
-   * Stays sync-friendly per CLAUDE.md: the default `void` return preserves
-   * the engine's sync fast path; async customer overrides are accepted via
-   * the union return type.
+   * Unified outbound dispatch hook for direct synchronous deliveries
+   * (MFA / recovery / enrollment pincodes, new-device notices). NOT used for
+   * resume-token flows — the invite magic link is emitted via the wf engine's
+   * `outletEmail()` primitive (pause-and-resume), since the resume URL is
+   * minted by the engine AFTER the step yields and is not knowable here.
+   * Default is a no-op — customer overrides wire concrete senders. Stays
+   * sync-friendly: the default `void` preserves the engine's sync fast path.
    */
   protected deliver(_payload: AuthDeliveryPayload): void | Promise<void> {
     return undefined;
@@ -215,6 +230,98 @@ export class AuthWorkflow {
    * skips the profile collection step entirely.
    */
   protected getProfileForm(): TAtscriptAnnotatedType | undefined {
+    return undefined;
+  }
+
+  /**
+   * Build the extras dict merged into the freshly-created user row by the
+   * `create-user` step. Default: `{}`. Override to populate e.g. a
+   * required `tenantId` from request context.
+   */
+  protected prepareUser(_input: {
+    email: string;
+    roles: string[];
+    invitedBy?: string;
+  }): Promise<Record<string, unknown>> | Record<string, unknown> {
+    return {};
+  }
+
+  /**
+   * Derive roles server-side from the admin-form payload (e.g. AD lookup).
+   * Result is set-unioned with admin-supplied roles by `infer-roles`.
+   * Default: `[]`.
+   */
+  protected inferAdminRoles(_input: { email: string }): Promise<string[]> | string[] {
+    return [];
+  }
+
+  /**
+   * Persist the invite accept-time profile payload onto the user record.
+   * Default: deep-merge into the user record via `users.update`. Override to
+   * route into a separate profile table / external CRM.
+   */
+  protected async applyAcceptProfile(input: {
+    username: string;
+    profile: Record<string, unknown>;
+  }): Promise<void> {
+    await this.users.update(input.username, input.profile as Partial<UserCredentials>);
+  }
+
+  /**
+   * Persist the login profile-complete payload onto the user record. Default:
+   * no-op (the workflow records the form was submitted but writes nothing).
+   * Consumers override to write into their user store.
+   */
+  protected async applyLoginProfile(
+    _username: string,
+    _payload: Record<string, unknown>,
+  ): Promise<void> {
+    // No-op default.
+  }
+
+  /**
+   * Override the structural duplicate rule for `admin-form`. Default: any
+   * existing row → `'reject'`; nothing → `'allow'`. Multi-tenant apps that
+   * allow re-inviting the same email into a different tenant override.
+   */
+  protected duplicateInviteCheck(input: {
+    email: string;
+    existingUser: UserCredentials | null;
+  }): Promise<"allow" | "reject"> | "allow" | "reject" {
+    return input.existingUser ? "reject" : "allow";
+  }
+
+  /**
+   * Implements the "log out other sessions" branch of `sessionPolicy.concurrencyLimit`.
+   * Default: no-op. Consumers override to revoke sessions in their auth store.
+   */
+  protected async logoutOtherSessions(_username: string): Promise<void> {
+    // No-op default.
+  }
+
+  /**
+   * Return the number of active (non-revoked, non-expired) sessions for the
+   * user. Default: returns `0` (no enforcement). Override with a real count.
+   */
+  protected async loadActiveSessionsCount(_username: string): Promise<number> {
+    return 0;
+  }
+
+  /**
+   * Resolves the post-login redirect URL. Default reads `finalize.redirect`:
+   * `false` / `null` → no redirect; `'home'` → `/`; `'referer'` → request
+   * `Referer` header (undefined when absent).
+   */
+  protected resolveRedirect(ctx: AuthWfCtx): string | undefined {
+    const r = ctx.finalize?.redirect;
+    if (!r) return undefined;
+    if (r === "home") return "/";
+    if (r === "referer") {
+      const { referer, referrer } = useHeaders(current());
+      const ref = referer ?? referrer;
+      const first = Array.isArray(ref) ? ref[0] : ref;
+      return typeof first === "string" && first.length > 0 ? first : undefined;
+    }
     return undefined;
   }
 
@@ -609,6 +716,20 @@ export class AuthWorkflow {
     delete ctx.pin;
     delete ctx.pinExpire;
     if (ctx.pincode) delete ctx.pincode.sentTo;
+  }
+
+  /**
+   * Load a user row by username, returning null on NOT_FOUND. Used by invite
+   * admin-phase steps (duplicate check) and accept-tail (pending-invitation
+   * gate).
+   */
+  private async loadUserOrNull(username: string): Promise<UserCredentials | null> {
+    try {
+      return await this.users.getUser(username);
+    } catch (err) {
+      if (err instanceof UserAuthError && err.type === "NOT_FOUND") return null;
+      throw err;
+    }
   }
 
   // ── @Step stubs (66 — bodies filled in steps 4-6) ───────────────────────
@@ -1155,61 +1276,206 @@ export class AuthWorkflow {
 
   // ── Invite admin phase (5; arbac-evaluated except `send-email`) ──
 
+  /**
+   * Admin-side invite form. Pauses for `InviteForm`; binds `ctx.email` +
+   * `ctx.admin.roles`. Server-side enforces the `availableRoles` whitelist
+   * (populated by `prepare-available-roles`). Calls `duplicateInviteCheck`
+   * to decide whether to reject duplicates.
+   */
   @Step("admin-form")
-  adminForm(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  async adminForm(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
+    const wf = useAtscriptWf(this.opts.forms.invite);
+    const input = wf.resolveInput() as {
+      email: string;
+      roles: string[];
+    };
+    const email = input.email;
+    const parsed = parseInviteRoles(input.roles);
+    if (Array.isArray(ctx.admin?.availableRoles)) {
+      const allowed = new Set(ctx.admin.availableRoles);
+      const bad = parsed.find((r) => !allowed.has(r));
+      if (bad !== undefined) {
+        throw wf.requireInput({ errors: { roles: "Invalid role" } });
+      }
+    }
+    const existing = await this.loadUserOrNull(email);
+    const action = await this.duplicateInviteCheck({ email, existingUser: existing });
+    if (action === "reject") {
+      if (existing?.account?.pendingInvitation) {
+        throw wf.requireInput({ errors: { email: "Invite already pending" } });
+      }
+      if (existing) throw wf.requireInput({ errors: { email: "User already exists" } });
+      throw wf.requireInput({ errors: { email: "Duplicate invite rejected" } });
+    }
+    ctx.email = email;
+    if (parsed.length > 0) (ctx.admin ??= {}).roles = parsed;
     return undefined;
   }
 
+  /**
+   * Map admin-provided role labels to canonical IDs via `inferAdminRoles`
+   * hook, set-unioning with admin-supplied roles.
+   */
   @Step("infer-roles")
-  inferRoles(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  async inferRoles(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    if (!ctx.email) return undefined;
+    const inferred = await this.inferAdminRoles({ email: ctx.email });
+    if (inferred.length === 0) return undefined;
+    const admin = (ctx.admin ??= {});
+    const merged = new Set<string>([...(admin.roles ?? []), ...inferred]);
+    admin.roles = Array.from(merged);
     return undefined;
   }
 
+  /**
+   * Build the extras dict that `create-user` merges into the new user row.
+   * Calls `prepareUser({email, roles, invitedBy})` and writes the result onto
+   * `ctx.admin.userExtras`.
+   */
   @Step("build-user-extras")
-  buildUserExtras(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  async buildUserExtras(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    if (!ctx.email) throw new HttpError(500, "Workflow state corrupted: missing email");
+    const invitedBy = useAuth().getAuthContext()?.userId;
+    const preparedInput = {
+      email: ctx.email,
+      roles: ctx.admin?.roles ?? [],
+      ...(invitedBy && { invitedBy }),
+    };
+    const extras = await this.prepareUser(preparedInput);
+    (ctx.admin ??= {}).userExtras = extras;
     return undefined;
   }
 
+  /**
+   * Create the user row from `ctx.admin.userExtras` (plus the admin-supplied
+   * `ctx.admin.roles`), then stamp `pendingInvitation = true` via a follow-up
+   * deep-merge update so `createUser`-applied account defaults survive.
+   */
   @Step("create-user")
-  createUser(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  async createUser(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    if (!ctx.email) throw new HttpError(500, "Workflow state corrupted: missing email");
+    const adminRoles = ctx.admin?.roles;
+    const fields: Record<string, unknown> = {
+      ...ctx.admin?.userExtras,
+      ...(adminRoles && adminRoles.length > 0 && { roles: adminRoles }),
+    };
+    try {
+      await this.users.createUser(ctx.email, undefined, fields);
+    } catch (err) {
+      if (err instanceof UserAuthError && err.type === "ALREADY_EXISTS") {
+        throw new HttpError(409, "User already exists");
+      }
+      throw err;
+    }
+    await this.users.update(ctx.email, {
+      account: { pendingInvitation: true },
+    } as Partial<UserCredentials>);
+    ctx.username = ctx.email;
     return undefined;
   }
 
+  /**
+   * Issue magic-link token and dispatch the invite email via `outletEmail` —
+   * the wf engine pauses, the email-outlet trigger mints the resume URL, and
+   * the click-through re-enters at this step's level. NOT routed through the
+   * `deliver()` hook because that hook is for direct dispatches where the
+   * payload is fully known at call-time; the magic-link URL exists only after
+   * the pause. Public so the engine can re-enter on the anonymous resume.
+   * Idempotent via `ctx.admin.linkSent`.
+   */
   @Step("send-email")
   @Public()
-  sendInviteEmail(@WorkflowParam("context") _ctx: AuthWfCtx): void {
-    return undefined;
+  sendInviteEmail(@WorkflowParam("context") ctx: AuthWfCtx): unknown {
+    const admin = (ctx.admin ??= {});
+    if (admin.linkSent) return undefined;
+    admin.linkSent = true;
+    return {
+      ...outletEmail(ctx.email as string, "invite.magicLink", {
+        username: ctx.username,
+        ...(ctx.username && { userId: ctx.username }),
+        ...(admin.roles && { roles: admin.roles }),
+        expiresAtMs: this.authOpts.magicLinkTtlMs,
+      }),
+      expires: Date.now() + this.authOpts.magicLinkTtlMs,
+    };
   }
 
   // ── Invite accept-tail (5) ──
 
+  /**
+   * Check whether the invite was already accepted. Sets
+   * `ctx.accept.alreadyAccepted` when the user's pending-invitation marker is
+   * cleared.
+   */
   @Step("check-pending-invitation")
   @Public()
-  checkPendingInvitation(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  async checkPendingInvitation(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    if (!ctx.username) {
+      throw new HttpError(500, "Workflow state corrupted: missing username at accept");
+    }
+    const existing = await this.loadUserOrNull(ctx.username);
+    if (!existing) {
+      throw new HttpError(410, "This invite has been cancelled");
+    }
+    if (!existing.account?.pendingInvitation) {
+      (ctx.accept ??= {}).alreadyAccepted = true;
+    }
     return undefined;
   }
 
+  /**
+   * Emit the "this invite was already accepted" finish envelope and short-
+   * circuit the rest of the accept tail.
+   */
   @Step("idempotent-redirect")
   @Public()
-  idempotentRedirect(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  idempotentRedirect(@WorkflowParam("context") ctx: AuthWfCtx): undefined {
+    finishWf(
+      buildInviteAlreadyAcceptedEnvelope({
+        loginUrl: ctx.accept!.loginUrl!,
+        alreadyAcceptedRedirectUrl: ctx.accept!.alreadyAcceptedRedirectUrl!,
+      }),
+    );
     return undefined;
   }
 
+  /**
+   * Clear the user's `pendingInvitation` marker after successful password set.
+   */
   @Step("unset-pending-invitation")
   @Public()
-  unsetPendingInvitation(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  async unsetPendingInvitation(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    this.requireUsername(ctx);
+    await this.users.update(ctx.username, {
+      account: { pendingInvitation: false },
+    } as Partial<UserCredentials>);
+    (ctx.completion ??= {}).pendingInvitationCleared = true;
     return undefined;
   }
 
+  /** Activate the invited user account (flips the account status flag). */
   @Step("activate-user")
   @Public()
-  activateUser(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  async activateUser(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    this.requireUsername(ctx);
+    await this.users.activateAccount(ctx.username);
+    (ctx.completion ??= {}).activated = true;
     return undefined;
   }
 
+  /**
+   * Emit the success-confirmation envelope. The downstream `finalize-auto-
+   * login` step preserves this `message` so the SPA paints the configured
+   * confirmation text alongside the tokens (WF-INVITE-020).
+   */
   @Step("confirmation")
   @Public()
-  confirmation(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  confirmation(@WorkflowParam("context") ctx: AuthWfCtx): undefined {
+    (ctx.completion ??= {}).confirmationShown = true;
+    finishWf({
+      data: { confirmed: true },
+      message: { level: "success", text: ctx.accept!.confirmationMessage! },
+    });
     return undefined;
   }
 
@@ -1832,103 +2098,361 @@ export class AuthWorkflow {
 
   // ── Login post-MFA tail (5) ──
 
+  /**
+   * Mint a device-trust record + cookie value. Default: delegates to
+   * `UserService.issueTrustedDevice` — produces an HMAC-signed token bound to
+   * `username` (+ `ip` when `bindsTo === 'cookie+ip'`).
+   */
+  protected async issueTrustedDevice(
+    username: string,
+    ip: string | undefined,
+    ttlMs: number,
+  ): Promise<TrustedDeviceRecord> {
+    return this.users.issueTrustedDevice(username, {
+      ttlMs,
+      ...(ip !== undefined && { ip }),
+    });
+  }
+
+  /**
+   * Persist the trusted-device record onto the user store. Default: appends
+   * onto the `trustedDevices` array.
+   */
+  protected async storeTrustedDevice(username: string, record: TrustedDeviceRecord): Promise<void> {
+    await this.withStoreErrorTranslation(() => this.users.addTrustedDevice(username, record));
+  }
+
+  /**
+   * Post-MFA device-trust issuance. SECURITY: must bail when
+   * `ctx.newPasswordRequired` is true — issuing a trusted-device token before
+   * the user has set their own password would let an admin-set temporary
+   * credential establish persistent device trust (defence-in-depth on top of
+   * the MFA-form `hidden` expression on `rememberDevice`).
+   */
   @Step("device-trust")
   @Public()
-  deviceTrust(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  async deviceTrust(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    if (ctx.newPasswordRequired) return undefined;
+    if (!ctx.username) return undefined;
+    const ip = this.opts.deviceTrust.bindsTo === "cookie+ip" ? this.resolveClientIp() : undefined;
+    const record = await this.issueTrustedDevice(ctx.username, ip, this.opts.deviceTrust.ttlMs);
+    await this.storeTrustedDevice(ctx.username, record);
+    (ctx.trust ??= {}).deviceTrustToken = record.token;
+    useResponse(current()).setCookie(
+      this.opts.deviceTrust.cookieName,
+      record.token,
+      useAuth().cookieAttrs({ maxAge: this.opts.deviceTrust.ttlMs / 1000 }),
+    );
     return undefined;
   }
 
+  /**
+   * Profile-complete prompt — pauses for `ProfileCompleteForm`; deep-merges
+   * the input onto the user record via `applyLoginProfile`. SECURITY: strips
+   * reserved keys (`roles` / `account` / `password`) before handing off so a
+   * default deep-merge `applyLoginProfile` can't be used for self-promotion.
+   */
   @Step("profile-complete")
   @Public()
-  profileComplete(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  async profileComplete(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    const wf = useAtscriptWf(this.opts.forms.profileComplete);
+    const input = wf.resolveInput({ partial: "deep" }) as Record<string, unknown> & {
+      consents?: string[];
+    };
+    this.requireUsername(ctx);
+    this.processInlineConsent(ctx, input, wf);
+    const sanitized = stripReservedUserKeys(input);
+    await this.applyLoginProfile(ctx.username, sanitized);
+    (ctx.completion ??= {}).profileApplied = true;
     return undefined;
   }
 
+  /**
+   * Standalone terms-bump prompt for returning users whose accepted terms
+   * version is stale and no carrier form ran. Delegates to
+   * `processInlineConsent` for validation + ctx writes.
+   */
   @Step("terms-bump-prompt")
   @Public()
-  termsBumpPrompt(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  termsBumpPrompt(@WorkflowParam("context") ctx: AuthWfCtx): undefined {
+    const wf = useAtscriptWf(this.opts.forms.termsBump);
+    const input = wf.resolveInput() as { consents?: string[] };
+    this.processInlineConsent(ctx, input, wf);
     return undefined;
   }
 
+  /**
+   * Load the user's active session count for the concurrency-limit gate.
+   * Pure data-load — calls the overridable `loadActiveSessionsCount` hook.
+   */
   @Step("load-active-sessions")
   @Public()
-  loadActiveSessions(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  async loadActiveSessions(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    if (!ctx.username) return undefined;
+    const n = await this.loadActiveSessionsCount(ctx.username);
+    (ctx.session ??= {}).activeSessions = n;
     return undefined;
   }
 
+  /**
+   * Concurrency-limit gate — pauses for `ConcurrencyLimitForm`. `reject` mode
+   * blocks the login outright; `kickPrompt` mode lets the user cancel (sets
+   * `ctx.aborted`) or kick all other sessions.
+   */
   @Step("concurrency-limit")
   @Public()
-  concurrencyLimit(@WorkflowParam("context") _ctx: AuthWfCtx): void {
-    return undefined;
+  async concurrencyLimit(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
+    const cfg = ctx.sessionPolicy?.concurrencyLimit;
+    if (!cfg) return undefined;
+    const wf = useAtscriptWf(this.opts.forms.concurrencyLimit);
+    if (cfg.onLimit === "reject") {
+      throw wf.requireInput({ formMessage: "Session limit reached" });
+    }
+    const action = wf.resolveAction();
+    if (action === "cancel") {
+      abortWf("sessionLimit", {
+        message: { level: "warn", text: "Concurrent session limit reached." },
+      });
+      ctx.aborted = true;
+      return undefined;
+    }
+    if (action === "logoutOthers" && ctx.username) {
+      await this.logoutOtherSessions(ctx.username);
+      return undefined;
+    }
+    throw wf.requireInput();
   }
 
   // ── Invite accept-tail profile (2) ──
 
+  /**
+   * Pause for the consumer-supplied profile form. The form MUST declare a
+   * `'skip'` action so empty-profile clicks are accepted; otherwise
+   * `wf.resolveAction()` throws StepRetriableError.
+   */
   @Step("collect-profile")
   @Public()
-  collectProfile(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  async collectProfile(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
+    const form = this.getProfileForm();
+    if (!form) return undefined;
+    const wf = useAtscriptWf(form);
+    if (wf.resolveAction() === "skip") {
+      (ctx.accept ??= {}).profile = {};
+      return undefined;
+    }
+    const input = wf.resolveInput({ partial: "deep" });
+    (ctx.accept ??= {}).profile = input as Record<string, unknown>;
     return undefined;
   }
 
+  /**
+   * Persist the collected profile via `applyAcceptProfile`. Strips reserved
+   * user keys (`roles`/`account`/`password`) before applying.
+   */
   @Step("apply-profile")
   @Public()
-  applyProfile(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  async applyProfile(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    this.requireUsername(ctx);
+    const c = (ctx.completion ??= {});
+    const sanitized = stripReservedUserKeys(ctx.accept?.profile ?? {});
+    if (Object.keys(sanitized).length === 0) {
+      c.profileApplied = true;
+      return undefined;
+    }
+    await this.applyAcceptProfile({ username: ctx.username, profile: sanitized });
+    c.profileApplied = true;
     return undefined;
   }
 
   // ── Extra-step (1) — login + invite, gated on isFirstLogin ──
 
+  /**
+   * Consumer extension point — override in your subclass to inject extra
+   * accept-tail logic (input pauses, alt actions, persistence). Default:
+   * no-op.
+   */
   @Step("extra-step")
   @Public()
-  extraStep(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  extraStep(@WorkflowParam("context") _ctx: AuthWfCtx): undefined {
     return undefined;
   }
 
   // ── Consents persistence (1) — all three ──
 
+  /**
+   * Batched consent persistence — fans one `ConsentEvent` per pending
+   * descriptor out to the `ConsentStore.save` DI provider. Idempotent via
+   * `ctx.consents.persisted`.
+   */
   @Step("persist-consents")
   @Public()
-  persistConsents(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  async persistConsents(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    this.requireUsername(ctx);
+    const group = (ctx.consents ??= {});
+    if (group.persisted) return undefined;
+    const pending = group.pending ?? [];
+    if (pending.length === 0) {
+      group.persisted = true;
+      return undefined;
+    }
+    const accepted = new Set(group.accepted ?? []);
+    const at = group.decidedAt ?? Date.now();
+    const events = pending.map((p) => {
+      const evt: { id: string; accepted: boolean; at: number; version?: string } = {
+        id: p.id,
+        accepted: accepted.has(p.id),
+        at,
+      };
+      if (p.version !== undefined) evt.version = p.version;
+      return evt;
+    });
+    await this.consentStore.save(ctx.username, events);
+    group.persisted = true;
     return undefined;
   }
 
   // ── Recovery (1) ──
 
+  /**
+   * Revoke all the user's existing sessions via `auth.revokeAllForUser`.
+   * Gated upstream by `ctx.postReset.revokeAllSessions`.
+   */
   @Step("revoke-sessions")
   @Public()
-  revokeSessions(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  async revokeSessions(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    if (!ctx.username) return undefined;
+    await this.auth.revokeAllForUser(ctx.username);
+    (ctx.completion ??= {}).sessionsRevoked = true;
     return undefined;
   }
 
   // ── Finalize (5) ──
 
+  /**
+   * Issue access + refresh tokens via `auth.issue`. Stashes the login
+   * response envelope on `useWfFinished` so downstream `redirect` can
+   * override with a redirect envelope while preserving the cookies.
+   */
   @Step("issue")
   @Public()
-  issue(@WorkflowParam("context") _ctx: AuthWfCtx): void {
-    return undefined;
+  async issue(@WorkflowParam("context") ctx: AuthWfCtx): Promise<void> {
+    this.requireUsername(ctx);
+    const issue = await this.auth.issue(ctx.username);
+    (ctx.completion ??= {}).tokensIssued = true;
+    const auth = useAuth();
+    const envelope: WfFinished = {
+      finished: true,
+      data: auth.buildLoginResponse(ctx.username, issue),
+    };
+    useWfFinished().set({
+      type: "data",
+      value: envelope,
+      cookies: auth.buildFinishedCookies(issue),
+    });
   }
 
+  /**
+   * Notify the user of a login from a new device via the unified `deliver`
+   * hook. Gated upstream by
+   * `!ctx.isFirstLogin && !!ctx.finalize.notifyNewDevice && !!ctx.trust.newDevice`.
+   */
   @Step("notify-new-device")
   @Public()
-  notifyNewDevice(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  async notifyNewDevice(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    if (!ctx.email) return undefined;
+    await this.deliver({
+      kind: "new-device-notice",
+      channel: "email",
+      recipient: ctx.email,
+      loginAt: Date.now(),
+    });
     return undefined;
   }
 
+  /**
+   * Set `ctx.completion.redirectUrl` from `resolveRedirect`. When set,
+   * overrides `issue`'s data envelope with an immediate-redirect envelope
+   * (cookies from `issue` are preserved).
+   */
   @Step("redirect")
   @Public()
-  redirect(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  redirect(@WorkflowParam("context") ctx: AuthWfCtx): undefined {
+    const url = this.resolveRedirect(ctx);
+    if (!url) return undefined;
+    const existing = useWfFinished().get();
+    const envelope: WfFinished = {
+      finished: true,
+      next: {
+        trigger: "immediate",
+        action: { type: "redirect", target: url, reason: "finalize-redirect" },
+      },
+    };
+    useWfFinished().set({
+      type: "data",
+      value: envelope,
+      ...(existing?.cookies && { cookies: existing.cookies }),
+    });
+    (ctx.completion ??= {}).redirectUrl = url;
     return undefined;
   }
 
+  /**
+   * Fresh-login finalize — invite + recovery. Emits a finish envelope that
+   * redirects the user to `loginUrl`. Invite uses an immediate redirect;
+   * recovery uses an auto countdown so the user reads the "Password updated"
+   * confirmation first. Discriminated by ctx-slot presence
+   * (`ctx.postReset` → recovery; otherwise invite).
+   */
   @Step("finalize-fresh-login")
   @Public()
-  finalizeFreshLogin(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  finalizeFreshLogin(@WorkflowParam("context") ctx: AuthWfCtx): undefined {
+    const target = ctx.postReset?.loginUrl ?? ctx.accept!.loginUrl!;
+    if (ctx.postReset) {
+      finishWf({
+        message: { level: "success", text: "Password updated. Redirecting to sign-in…" },
+        next: {
+          trigger: "auto",
+          timeoutMs: 5000,
+          action: { type: "redirect", target, reason: "reset-success" },
+          skipButton: { label: "Go now" },
+        },
+      });
+    } else {
+      finishWf({
+        next: {
+          trigger: "immediate",
+          action: { type: "redirect", target, reason: "fresh-login-required" },
+        },
+      });
+    }
+    (ctx.completion ??= {}).redirectUrl = target;
     return undefined;
   }
 
+  /**
+   * Auto-login finalize — invite + recovery. Issues access + refresh tokens
+   * and stashes the login response envelope on `useWfFinished`. Invite
+   * preserves any `message` set by an earlier terminal (`confirmation`) so
+   * the SPA paints the confirmation text alongside the tokens (WF-INVITE-020).
+   */
   @Step("finalize-auto-login")
   @Public()
-  finalizeAutoLogin(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  async finalizeAutoLogin(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    this.requireUsername(ctx);
+    const issue = await this.auth.issue(ctx.username);
+    (ctx.completion ??= {}).tokensIssued = true;
+    const auth = useAuth();
+    const previousMessage = (useWfFinished().get()?.value as WfFinished | undefined)?.message;
+    const envelope: WfFinished = {
+      finished: true,
+      data: auth.buildLoginResponse(ctx.username, issue),
+      ...(previousMessage && { message: previousMessage }),
+    };
+    useWfFinished().set({
+      type: "data",
+      value: envelope,
+      cookies: auth.buildFinishedCookies(issue),
+    });
     return undefined;
   }
 
