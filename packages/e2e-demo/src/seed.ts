@@ -50,7 +50,6 @@ export interface SeedFixtures {
     t1_redeemed: SeededUser;
     t1_active_sessions: SeededUser;
     t1_terms_old: SeededUser;
-    t1_profile_incomplete: SeededUser;
     _admin_inviter: SeededUser;
     t2_olivia: SeededUser;
     t2_oscar: SeededUser;
@@ -296,20 +295,12 @@ export async function seedAll(handle: AppHandle): Promise<SeedFixtures> {
       roles: ["member"],
       activeSessions: 2,
     },
-    // t1_terms_old / t1_profile_incomplete: no DB column carries the state
-    // today — the variant-config layer (PR-D) injects ctx values at runtime.
+    // t1_terms_old: no DB column carries the state today — the variant-config
+    // layer (PR-D) injects ctx values at runtime.
     {
       handle: "t1_terms_old",
       username: "t1_terms_old",
       email: "terms_old@acme.test",
-      tenantId: tenantAId,
-      departmentId: deptA.eng,
-      roles: ["member"],
-    },
-    {
-      handle: "t1_profile_incomplete",
-      username: "t1_profile_incomplete",
-      email: "profile_incomplete@acme.test",
       tenantId: tenantAId,
       departmentId: deptA.eng,
       roles: ["member"],

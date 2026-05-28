@@ -10,10 +10,10 @@ It enumerates every workflow variant × user state × branch path the suite cove
 
 | Workflow                                              | Variant profiles    | P0 stories | P1 stories | P2 stories |
 | ----------------------------------------------------- | ------------------- | ---------- | ---------- | ---------- |
-| `auth.login`                                          | 12 (A–L)            | 13         | 19         | 9          |
+| `auth.login`                                          | 11 (A–E, H–M)       | 13         | 19         | 9          |
 | `auth.recovery`                                       | 7 (A–G) + 1 consent | 7          | 8          | 5          |
-| `auth.invite` + `auth.reInvite` + `auth.cancelInvite` | 7 (A–G) + 1 consent | 8          | 10         | 5          |
-| **Totals**                                            | **28 variants**     | **28**     | **37**     | **19**     |
+| `auth.invite` + `auth.reInvite` + `auth.cancelInvite` | 7 (A–G) + 1 consent | 7          | 9          | 5          |
+| **Totals**                                            | **27 variants**     | **27**     | **36**     | **19**     |
 
 **Final shipped count: 85 Playwright specs** (smoke + 84 stories) under `pnpm test:e2e` — every commit lands green.
 
@@ -73,16 +73,15 @@ The UI's `WfPage.vue` already reads `?id=<wfid>` from the route. Extend it to pa
 
 Existing 14 users cover the basics. We need to add:
 
-| New user                | Purpose                                                    | Stories                        |
-| ----------------------- | ---------------------------------------------------------- | ------------------------------ |
-| `t1_locked`             | Account in `account.locked=true`                           | Login: 423 path                |
-| `t1_multi_mfa`          | Email + SMS + TOTP all confirmed (default=TOTP)            | Profile C + Profile I          |
-| `t1_pending`            | `pendingInvitation=true`, `account.active=false`           | reInvite + cancelInvite        |
-| `t1_redeemed`           | `pendingInvitation=false`, fully active (from past invite) | reInvite 409, cancelInvite 409 |
-| `t1_active_sessions`    | 2 issued sessions (concurrency test)                       | Profile H                      |
-| `t1_frank`              | Plain user used to exercise consent prompts (no MFA/trust) | L-F + consent-array variants   |
-| `t1_profile_incomplete` | `profileMissingFields=['firstName','lastName']`            | L-F profile-completion         |
-| `_admin_inviter`        | Has `@ArbacAction('start')` on `auth.invite`               | All invite admin-side stories  |
+| New user             | Purpose                                                    | Stories                        |
+| -------------------- | ---------------------------------------------------------- | ------------------------------ |
+| `t1_locked`          | Account in `account.locked=true`                           | Login: 423 path                |
+| `t1_multi_mfa`       | Email + SMS + TOTP all confirmed (default=TOTP)            | Profile C + Profile I          |
+| `t1_pending`         | `pendingInvitation=true`, `account.active=false`           | reInvite + cancelInvite        |
+| `t1_redeemed`        | `pendingInvitation=false`, fully active (from past invite) | reInvite 409, cancelInvite 409 |
+| `t1_active_sessions` | 2 issued sessions (concurrency test)                       | Profile H                      |
+| `t1_frank`           | Plain user used to exercise consent prompts (no MFA/trust) | L-K consent-array variants     |
+| `_admin_inviter`     | Has `@ArbacAction('start')` on `auth.invite`               | All invite admin-side stories  |
 
 ### 2.3 Email/SMS capture HTTP endpoint
 
@@ -134,20 +133,19 @@ Per the infra audit:
 
 ### Variant profiles (from research agent)
 
-| ID  | Profile            | Key opts                                                                                                                                                   |
-| --- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| L-A | Minimal            | password-only, no MFA, `forgotPassword: true`                                                                                                              |
-| L-B | Enrollment         | `ensureEmail+ensurePhone: true`, `mfa.transports=[email,sms,totp]`                                                                                         |
-| L-C | MFA-full           | all 3 transports                                                                                                                                           |
-| L-D | Device trust       | `deviceTrust.enabled+skipsMfa: true`                                                                                                                       |
-| L-E | Password guards    | `passwordInitial+emailVerifiedRequired: true`, no MFA                                                                                                      |
-| L-F | Profile completion | `policy.profile.required: true` → `ProfileCompleteForm`                                                                                                    |
-| L-H | Concurrency        | `kickPrompt` policy                                                                                                                                        |
-| L-I | Full               | every flag on                                                                                                                                              |
-| L-J | Redirect           | `finalize.redirect: 'home'`                                                                                                                                |
-| L-K | Consent capture    | `consent-array` / `terms-bump` variants drive `VARIANT_PENDING_CONSENTS` → `AsConsentArray` checkboxes on `TermsBumpForm` (Phase 5)                        |
-| L-L | OTP disclosure     | `enrollment` variant — `AskEmailForm` / `AskPhoneForm` carry a generic disclosure paragraph; `recordOtpChannelConsent` fires post-pincode-verify (Phase 3) |
-| L-M | Password rotation  | `passwordExpiry: true` (default), `password.maxAgeMs: 365d`, no MFA                                                                                        |
+| ID  | Profile           | Key opts                                                                                                                                                   |
+| --- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| L-A | Minimal           | password-only, no MFA, `forgotPassword: true`                                                                                                              |
+| L-B | Enrollment        | `ensureEmail+ensurePhone: true`, `mfa.transports=[email,sms,totp]`                                                                                         |
+| L-C | MFA-full          | all 3 transports                                                                                                                                           |
+| L-D | Device trust      | `deviceTrust.enabled+skipsMfa: true`                                                                                                                       |
+| L-E | Password guards   | `passwordInitial+emailVerifiedRequired: true`, no MFA                                                                                                      |
+| L-H | Concurrency       | `kickPrompt` policy                                                                                                                                        |
+| L-I | Full              | every flag on                                                                                                                                              |
+| L-J | Redirect          | `finalize.redirect: 'home'`                                                                                                                                |
+| L-K | Consent capture   | `consent-array` / `terms-bump` variants drive `VARIANT_PENDING_CONSENTS` → `AsConsentArray` checkboxes on `TermsBumpForm` (Phase 5)                        |
+| L-L | OTP disclosure    | `enrollment` variant — `AskEmailForm` / `AskPhoneForm` carry a generic disclosure paragraph; `recordOtpChannelConsent` fires post-pincode-verify (Phase 3) |
+| L-M | Password rotation | `passwordExpiry: true` (default), `password.maxAgeMs: 365d`, no MFA                                                                                        |
 
 ### Stories (priority tagged)
 
@@ -174,8 +172,8 @@ Per the infra audit:
 | WF-LOGIN-021               | P0   | L-E           | jack (`isInitial=true`) → `SetPasswordForm` pause → mismatch error → tokens on match                                                                                                     | `AsPasswordRules` rows visible (Phase 7), mismatch error inline; live-keystroke evaluation pinned by WF-PASSWORD-RULES-LIVE-01                                             |
 | WF-LOGIN-EXPIRED-01        | P0   | L-M           | t1_stale (`lastChanged=1`, deep past) → `SetPasswordForm` pause (`password.changeReason='expired'`) → tokens on new password                                                             | Pins `@wf.context.pass 'password'` reaches client; pins schema-OR `(isPasswordInitial \|\| isPasswordExpired)`; pins post-change reset                                     |
 | WF-LOGIN-022               | P1   | L-E           | jack clicks `logout` on SetPassword → aborts                                                                                                                                             | finish envelope has `aborted: true`, no tokens                                                                                                                             |
-| WF-LOGIN-024               | P1   | L-F+K         | frank submits `TermsBumpForm` without ticking required terms row → form-level error, no tokens                                                                                           | `errors.consents` carries descriptor's `required` string verbatim; mandatory-by-message defense                                                                            |
-| WF-LOGIN-025               | P1   | L-F+K         | optional marketing row renders unchecked + tickable; tick terms only + submit completes workflow                                                                                         | `AsConsentArray` renders 2 checkboxes (terms required + marketing optional); marketing event saved with `accepted:false`                                                   |
+| WF-LOGIN-024               | P1   | L-K           | frank submits `TermsBumpForm` without ticking required terms row → form-level error, no tokens                                                                                           | `errors.consents` carries descriptor's `required` string verbatim; mandatory-by-message defense                                                                            |
+| WF-LOGIN-025               | P1   | L-K           | optional marketing row renders unchecked + tickable; tick terms only + submit completes workflow                                                                                         | `AsConsentArray` renders 2 checkboxes (terms required + marketing optional); marketing event saved with `accepted:false`                                                   |
 | WF-LOGIN-028               | P1   | L-H           | henry with 1 active session, `max=1` → kickPrompt                                                                                                                                        | "Log out others" form visible                                                                                                                                              |
 | WF-LOGIN-029               | P1   | L-H           | clicks "Cancel" on kickPrompt → aborted                                                                                                                                                  | no tokens issued                                                                                                                                                           |
 | WF-LOGIN-030               | P2   | L-H           | `onLimit: 'reject'` → HTTP 429 immediately                                                                                                                                               | no form, error banner                                                                                                                                                      |
@@ -245,7 +243,7 @@ Per the infra audit:
 | ID  | Profile                                    | Key opts                                                 |
 | --- | ------------------------------------------ | -------------------------------------------------------- |
 | I-A | Email, no roles, auto-login                | minimal default                                          |
-| I-B | Roles + profile collection                 | `getAvailableRoles`, `getProfileForm` wired              |
+| I-B | Roles                                      | `getAvailableRoles` wired                                |
 | I-C | Shareable link mode                        | `send.mode='shareableLink'`                              |
 | I-D | Choice + fresh-login                       | `send.mode='choice'`, `freshLoginRequired: true`         |
 | I-E | Audit enabled                              | `audit.enabled: true`                                    |
@@ -262,8 +260,6 @@ Per the infra audit:
 | WF-INVITE-004        | P2   | I-A          | expired link → 410                                                                                                                                 | error visible                                                                                                                                                                                                                                        |
 | WF-INVITE-005        | P0   | I-B          | role whitelist `['member','viewer','admin']` → admin picks valid → invitee redeems                                                                 | role picker shows 3 options; invalid role rejected                                                                                                                                                                                                   |
 | WF-INVITE-006        | P1   | I-B          | admin submits role not in whitelist → form error                                                                                                   | error visible inline                                                                                                                                                                                                                                 |
-| WF-INVITE-007        | P0   | I-B          | profile form pause after password → invitee fills displayName                                                                                      | `InviteAcceptProfileForm` rendered with `skip` action                                                                                                                                                                                                |
-| WF-INVITE-008        | P1   | I-B          | invitee clicks `skip` on profile form → no profile persisted                                                                                       | applyProfile not called                                                                                                                                                                                                                              |
 | WF-INVITE-009        | P1   | I-C          | shareable link mode → admin form completes, link displayed, link reusable                                                                          | no email sent, link URL captured                                                                                                                                                                                                                     |
 | WF-INVITE-010        | P2   | I-C          | already-accepted link click → idempotent redirect with 2 options                                                                                   | "Go to sign-in" + "Request a new invite" buttons                                                                                                                                                                                                     |
 | WF-INVITE-011        | P0   | I-D          | choice → admin picks "email" → email sent                                                                                                          | `InviteSendModeForm` visible                                                                                                                                                                                                                         |
@@ -280,7 +276,7 @@ Per the infra audit:
 | WF-INVITE-022        | P1   | I-B          | invite-tail optional + `useDifferentMethod` from `EnrollConfirmForm` (totp→sms) → loops + cleanup                                                  | unconfirmed totp row removed; sms enrolment completes                                                                                                                                                                                                |
 | WF-INVITE-CONSENT-01 | P0   | invite-terms | invite-terms variant → `SetPasswordForm` shows `AsConsentArray`; tick + submit → `consent-log` carries `{id:'terms', accepted:true, version:'v1'}` | end-to-end invitee acceptance with consent capture; magic-link URL carries `&variant=invite-terms` so invitee's resume request inherits the admin's variant header (otherwise DemoConsentStore would see no header and return empty pendingConsents) |
 
-**Invite total: 23 stories** (8 P0 + 10 P1 + 5 P2)
+**Invite total: 21 stories** (7 P0 + 9 P1 + 5 P2)
 
 ---
 
@@ -321,17 +317,17 @@ The Playwright value-add over the existing in-process vitest suite is **rendered
 
 Executed via `orchestrator-implement`. Each step a separate commit. Tests gate every step.
 
-| Step                              | Status | Commits / Notes                                                                                           |
-| --------------------------------- | ------ | --------------------------------------------------------------------------------------------------------- |
-| Infra                             | done   | Playwright + `__test/*` endpoints + variant routing + seed expansion (~14 users now)                      |
-| P0 + P1 Login / Recovery / Invite | done   | 41 + 20 + 23 specs                                                                                        |
-| Phase 1                           | done   | `3491990` — ConsentStore DI plumbing                                                                      |
-| Phase 2                           | done   | `7d4ad56` — `persist-consents` migrates to `ConsentStore.save`                                            |
-| Phase 3                           | done   | `f3b85f1` — OTP disclosure + `recordOtpChannelConsent` hook                                               |
-| Phase 4                           | done   | `89cc544` — `prepare-consents` @Step + `ctx.pendingConsents` transport                                    |
-| Phase 5                           | done   | `c397b37` — `consents:string[]` dynamic carrier + `AsConsentArray`                                        |
-| Phase 6                           | done   | `be392b6` — retire `ctx.acceptance` / `resolveAcceptance`; new `resolveProfile` + `prepare-profile` @Step |
-| Phase 7                           | done   | `4d04417` — `AsPasswordRules` SPA wire-up + `WF-PASSWORD-RULES-LIVE-01`                                   |
+| Step                              | Status | Commits / Notes                                                                      |
+| --------------------------------- | ------ | ------------------------------------------------------------------------------------ |
+| Infra                             | done   | Playwright + `__test/*` endpoints + variant routing + seed expansion (~14 users now) |
+| P0 + P1 Login / Recovery / Invite | done   | 41 + 20 + 23 specs                                                                   |
+| Phase 1                           | done   | `3491990` — ConsentStore DI plumbing                                                 |
+| Phase 2                           | done   | `7d4ad56` — `persist-consents` migrates to `ConsentStore.save`                       |
+| Phase 3                           | done   | `f3b85f1` — OTP disclosure + `recordOtpChannelConsent` hook                          |
+| Phase 4                           | done   | `89cc544` — `prepare-consents` @Step + `ctx.pendingConsents` transport               |
+| Phase 5                           | done   | `c397b37` — `consents:string[]` dynamic carrier + `AsConsentArray`                   |
+| Phase 6                           | done   | `be392b6` — retire `ctx.acceptance` / `resolveAcceptance`                            |
+| Phase 7                           | done   | `4d04417` — `AsPasswordRules` SPA wire-up + `WF-PASSWORD-RULES-LIVE-01`              |
 
 ---
 

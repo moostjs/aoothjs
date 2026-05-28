@@ -13,7 +13,7 @@ Collapse `LoginWorkflow + InviteWorkflow + RecoveryWorkflow + AuthWorkflowBase` 
 - **Steps shared by reference** — one `@Step` method body, referenced from multiple `@Workflow` schemas.
 - **Schema fragments shared as plain consts** — only where the SAME ordered sequence appears in 2+ schemas (login + invite).
 - **Customer override surface** stays `protected resolveXxx(ctx)` getters on the unified class.
-- **Semantic flags drive behavior**, never `ctx.flow === 'invite'` branching. Each `@Workflow` schema's `init-*` step OR `prepare-semantic-flags` step writes the flags onto ctx (timing depends on what data is needed — invite-accept can set them in init since the values are static; login defers to `prepare-semantic-flags` because it needs the user record loaded first); downstream conditions and resolvers read them.
+- **Semantic flags drive behavior**, never flow-name branching. Each `@Workflow` schema's `init-*` step OR `prepare-semantic-flags` step writes the flags onto ctx (timing depends on what data is needed — invite-accept can set them in init since the values are static; login defers to `prepare-semantic-flags` because it needs the user record loaded first); downstream conditions and resolvers read them.
 
 Aligned with project goals #1 (LOC reduction), #2 (extract shared ctx shape), #3 (per-WF extensions), #4 (re-usable pluggable schema), #5 (deduplication — but achieved WITHOUT a base class, since the orchestrator inheritance was itself the over-engineering being eliminated).
 
@@ -71,7 +71,6 @@ export interface AuthWfCtx {
   aborted?: boolean;
 
   // ── Semantic flags (set by init step or post-credentials step) ──
-  flow?: "login" | "invite" | "recovery"; // Audit/UI hint ONLY — never used for control flow
   isFirstLogin?: boolean; // login: !user.lastLoginAt | invite: true | recovery: n/a
   newPasswordRequired?: boolean; // login: guards.passwordInitial||passwordExpiry | invite: true | recovery: derived at set-password gate
 
@@ -83,7 +82,6 @@ export interface AuthWfCtx {
   completion?: AuthWfCompletionState;
 
   // ── Resolved policy groups (set by prepare-* @Steps) ──
-  profileCompleteRequired?: boolean; // [login]
   alternateCredentials?: AuthWfAltCredsPolicy; // [login]
   deviceTrust?: AuthWfDeviceTrustPolicy; // [login]
   enrollment?: AuthWfEnrollmentPolicy; // [login]
@@ -109,7 +107,6 @@ export interface AuthWfCtx {
   // ── Low-cardinality top-level flags ──
   isPasswordInitial?: boolean; // [login] from guards
   isPasswordExpired?: boolean; // [login] from guards
-  profileMissingFields?: string[]; // [login] consumer-marked
 }
 ```
 
@@ -159,7 +156,6 @@ export interface AuthWfCompletionState {
   passwordCompleted?: boolean; // ← was passwordChanged (login/recovery) + passwordSet (invite)
   tokensIssued?: boolean;
   redirectUrl?: string;
-  profileApplied?: boolean;
   pendingInvitationCleared?: boolean; // invite-only — fine to keep flow-specific names here, completion is a write-many bag
   activated?: boolean; // invite-only
   confirmationShown?: boolean; // invite-only
@@ -186,7 +182,7 @@ export interface AuthWfMfaState {
 // Note: `mfa.checked` REMOVED — replaced by `ctx.otp.verified` (server-only, see AuthWfOtpState).
 // Note: `mfa.pincodeCooldowns` REMOVED — replaced by `ctx.pincode.resendAllowedAt` (UI hint, single slot, reset on method switch).
 
-// Invite accept policy + state — merged (state added: alreadyAccepted, profileFormPresent, profile)
+// Invite accept policy + state — merged (state added: alreadyAccepted)
 // Note: `freshLoginRequired` is NOT here — the auto-login-vs-fresh choice is the static
 // `AuthWorkflowOpts.autoLoginOnInvite` boolean (per §2 decision).
 export interface AuthWfAcceptState {
@@ -194,9 +190,7 @@ export interface AuthWfAcceptState {
   loginUrl?: string; // policy
   showConfirmation?: boolean; // policy
   confirmationMessage?: string; // policy
-  profileFormPresent?: boolean; // state (init-invite-accept)
   alreadyAccepted?: boolean; // state (check-pending-invitation)
-  profile?: Record<string, unknown>; // state (collect-profile)
 }
 
 // Recovery — simplified to OTP-via-email only
@@ -273,8 +267,7 @@ export interface AuthWorkflowOpts {
     // ── Password ──
     setPassword?: TAtscriptAnnotatedType; // [reached by: login + invite + recovery] Set/change/reset password — copy customized via `ctx.password.changeReason`
 
-    // ── Profile + consents ──
-    profileComplete?: TAtscriptAnnotatedType; // [reached by: login] Single-step profile form (invite uses a tenant-supplied form via `getProfileForm()` callback)
+    // ── Consents ──
     termsBump?: TAtscriptAnnotatedType; // [reached by: login] Standalone consent prompt when no carrier form ran in the flow (invite + recovery always have `SetPasswordForm` as carrier)
 
     // ── Session policy ──
@@ -292,28 +285,27 @@ Customer registration becomes one `createReplaceRegistry` entry instead of three
 
 ## 6. Step inventory (full table)
 
-66 step IDs total (after collapsing `pincode-send-login`/`send-otp` → `pincode-send`, `pincode-check-login`/`check-otp` → `pincode-check`, renaming `mfa-totp` → `totp-check`, and removing 3 audit steps). **All step methods live on the unified `AuthWorkflow` class** — one method per step ID, regardless of which `@Workflow` schemas reference it today. The Login/Invite/Recovery columns indicate which schemas currently traverse each step in the default configuration; a future schema (or a customer-defined override schema) can reference any step it needs.
+62 step IDs total (after collapsing `pincode-send-login`/`send-otp` → `pincode-send`, `pincode-check-login`/`check-otp` → `pincode-check`, renaming `mfa-totp` → `totp-check`, removing 3 audit steps, and removing the 4 invite-profile + login-profile-complete steps in favour of the generic `extra-step` slot). **All step methods live on the unified `AuthWorkflow` class** — one method per step ID, regardless of which `@Workflow` schemas reference it today. The Login/Invite/Recovery columns indicate which schemas currently traverse each step in the default configuration; a future schema (or a customer-defined override schema) can reference any step it needs.
 
 `@Public()` column: `Y` = step is `@Public()`, `N` = arbac evaluates. `Body` = which file's body is the canonical source for the merge (mostly straightforward porting).
 
 ### Init + entry (4 steps)
 
-| Step ID              | Method             | Public | Body source                      | Login | Invite   | Recovery |
-| -------------------- | ------------------ | ------ | -------------------------------- | ----- | -------- | -------- |
-| `init-login`         | `initLogin`        | Y      | new (sets `flow='login'`)        | ✓     |          |          |
-| `init-invite-admin`  | `initInviteAdmin`  | N      | new (sets `flow='invite'`)       |       | ✓ admin  |          |
-| `init-invite-accept` | `initInviteAccept` | Y      | merge: invite.init() + new flags |       | ✓ accept |          |
-| `init-recovery`      | `initRecovery`     | Y      | new (sets `flow='recovery'`)     |       |          | ✓        |
+| Step ID              | Method             | Public | Body source                                          | Login | Invite   | Recovery |
+| -------------------- | ------------------ | ------ | ---------------------------------------------------- | ----- | -------- | -------- |
+| `init-login`         | `initLogin`        | Y      | new (no-op stub)                                     | ✓     |          |          |
+| `init-invite-admin`  | `initInviteAdmin`  | N      | new (mirrors `autoLoginOnInvite` → `ctx.autoLogin`)  |       | ✓ admin  |          |
+| `init-invite-accept` | `initInviteAccept` | Y      | merge: invite.init() + new flags                     |       | ✓ accept |          |
+| `init-recovery`      | `initRecovery`     | Y      | new (mirrors `autoLoginOnRecover` → `ctx.autoLogin`) |       |          | ✓        |
 
 ### Authentication entry (2 steps)
 
 | `credentials` | `credentials` | Y | login.credentials | ✓ | | |
 | `request` | `request` | Y | recovery.request | | | ✓ |
 
-### Prepare-\* policy steps (16 steps — audit removed)
+### Prepare-\* policy steps (15 steps — audit removed)
 
 | `prepare-semantic-flags` | `prepareSemanticFlags` | Y | new (canonical writer of `password.changeReason`; also `isFirstLogin` + `newPasswordRequired` for login/invite) | ✓ | ✓ accept | ✓ |
-| `prepare-profile` | `prepareProfile` | Y | login | ✓ | | |
 | `prepare-consents` | `prepareConsents` | Y | base | ✓ | ✓ accept | ✓ |
 | `prepare-alternate-credentials` | `prepareAlternateCredentials` | Y | login | ✓ | | |
 | `prepare-device-trust` | `prepareDeviceTrust` | Y | login | ✓ | | |
@@ -371,15 +363,9 @@ Customer registration becomes one `createReplaceRegistry` entry instead of three
 ### Login post-MFA tail
 
 | `device-trust` | `deviceTrust` | Y | login | ✓ | | |
-| `profile-complete` | `profileComplete` | Y | login | ✓ | | |
 | `terms-bump-prompt` | `termsBumpPrompt` | Y | login | ✓ | | |
 | `load-active-sessions` | `loadActiveSessions` | Y | login | ✓ | | |
 | `concurrency-limit` | `concurrencyLimit` | Y | login | ✓ | | |
-
-### Invite accept-tail profile
-
-| `collect-profile` | `collectProfile` | Y | invite | | ✓ accept | |
-| `apply-profile` | `applyProfile` | Y | invite | | ✓ accept | |
 
 ### Extra-step (login + invite, gated on `isFirstLogin`)
 
@@ -409,7 +395,7 @@ Customer registration becomes one `createReplaceRegistry` entry instead of three
 
 | `magic-link-request` / `magic-link-send` / `magic-link-verified` / `passkey` / `sso-callback` | (stubs, 5 IDs) | Y | login | ✓ | | |
 
-**Total: 66 distinct step IDs.**
+**Total: 62 distinct step IDs.**
 
 ### Step ID rename map (today → unified)
 
@@ -431,15 +417,13 @@ Customer registration becomes one `createReplaceRegistry` entry instead of three
 
 ---
 
-## 7. Resolver inventory (17 resolvers)
+## 7. Resolver inventory (16 resolvers)
 
 All on `class AuthWorkflow`. Default bodies hardcoded (per CLAUDE.md "policy lives on resolvers, not opts"). Customers override on subclass.
 
 ```typescript
 class AuthWorkflow {
-  // ── Login-relevant (7) ──
-  protected resolveProfile(ctx: AuthWfCtx):
-    { required: boolean } | Promise<{ required: boolean }>
+  // ── Login-relevant (6) ──
   protected resolveAlternateCredentials(ctx: AuthWfCtx):
     NonNullable<AuthWfCtx['alternateCredentials']> | Promise<...>
   protected resolveDeviceTrust(ctx: AuthWfCtx):
@@ -456,7 +440,7 @@ class AuthWorkflow {
   // ── Shared login+invite (1) ──
   protected resolveMfaPolicy(ctx: AuthWfCtx):
     NonNullable<AuthWfCtx['mfaPolicy']> | Promise<...>
-  // Default: { mode: "optional", availableTransports: ["sms","email","totp"], issuer: authOpts.totpIssuer }
+  // Default: { mode: "optional", availableTransports: ["sms","email","totp"], issuer: this.opts.totpIssuer }
   // Replaces today's:
   //   - login.prepareMfaSetup body's hardcoded defaults
   //   - invite.resolveMfa (which only returned {issuer})
@@ -674,10 +658,7 @@ export const pincodeSendCheckPair: TWorkflowSchema<AuthWfCtx> = [
   ...passwordPhaseSchema,
   { break: (ctx) => !!ctx.aborted },
 
-  // Profile + extra-step
-  { id: "profile-complete", condition: (ctx) =>
-      !!ctx.profileCompleteRequired && !ctx.completion?.profileApplied &&
-      (ctx.profileMissingFields?.length ?? 0) > 0 },
+  // Extra-step (consumer's generic form-pause slot, gated to first-login)
   { id: "extra-step", condition: (ctx) => !!ctx.isFirstLogin },
   { id: "terms-bump-prompt", condition: (ctx) =>
       (ctx.consents?.pending?.length ?? 0) > 0 && !ctx.consents?.decidedAt && !ctx.consents?.persisted },
@@ -734,13 +715,6 @@ loginFlow(): void {}
     // MFA loop (shared) — invite users have zero enrolled methods so the enrol trio fires
     ...mfaLoopSchema,
 
-    // Profile (invite-specific 2-step pattern)
-    { id: "collect-profile", condition: (ctx) =>
-        !!ctx.accept?.profileFormPresent && !ctx.accept?.profile && !!ctx.completion?.passwordCompleted },
-    { id: "apply-profile", condition: (ctx) =>
-        !!ctx.accept?.profileFormPresent && !!ctx.accept?.profile &&
-        !ctx.completion?.profileApplied && !!ctx.completion?.passwordCompleted },
-
     { id: "extra-step" },             // always fires for invite (isFirstLogin=true)
 
     ...consentsPersistTailSchema,
@@ -752,11 +726,12 @@ loginFlow(): void {}
     { id: "confirmation", condition: (ctx) =>
         !!ctx.completion?.activated && !!ctx.accept?.showConfirmation && !ctx.completion?.confirmationShown },
 
-    // Finalize (invite tail — gated by opts.autoLoginOnInvite)
+    // Finalize (invite tail — gated by ctx.autoLogin, mirrored from
+    // `opts.autoLoginOnInvite` by `init-invite-admin` / `init-invite-accept`).
     { id: "finalize-fresh-login", condition: (ctx) =>
-        !!ctx.completion?.activated && !this.opts.autoLoginOnInvite },
+        !!ctx.completion?.activated && !ctx.autoLogin },
     { id: "finalize-auto-login", condition: (ctx) =>
-        !!ctx.completion?.activated && !!this.opts.autoLoginOnInvite && !ctx.completion?.tokensIssued },
+        !!ctx.completion?.activated && !!ctx.autoLogin && !ctx.completion?.tokensIssued },
   ]},
 ])
 inviteFlow(): void {}
@@ -798,8 +773,10 @@ Note on `@Public()`: The `inviteFlow()` body itself is `@Public()` (so the wf ad
   { condition: (ctx) => !!ctx.completion?.passwordCompleted, steps: [
     { id: "revoke-sessions", condition: (ctx) => !!ctx.postReset?.revokeAllSessions },
     ...consentsPersistTailSchema,
-    { id: "finalize-fresh-login", condition: (ctx) => !this.opts.autoLoginOnRecover },
-    { id: "finalize-auto-login", condition: (ctx) => !!this.opts.autoLoginOnRecover && !ctx.completion?.tokensIssued },
+    // Finalize (recovery tail — gated by ctx.autoLogin, mirrored from
+    // `opts.autoLoginOnRecover` by `init-recovery`).
+    { id: "finalize-fresh-login", condition: (ctx) => !ctx.autoLogin },
+    { id: "finalize-auto-login", condition: (ctx) => !!ctx.autoLogin && !ctx.completion?.tokensIssued },
     // Note: notify-new-device is NOT fired here in this pass — see §13. Recovery's auto-login path
     // would need device-trust checking infrastructure (prepare-device-trust + check-trusted-device
     // + ctx.trust state) to be extended to recovery. Out of scope for the unification pass.
@@ -856,17 +833,17 @@ Step body logic (sketch):
 @Step("pincode-send")
 async pincodeSend(@WorkflowParam("context") ctx: AuthWfCtx) {
   const target = await this.resolvePincodeTarget(ctx);
-  const code = await this.users.mintPincode(this.authOpts.mfa);
+  const code = await this.users.mintPincode(this.opts.mfa);
   const kind = ctx.mfa?.method ? "mfa-pincode" : "recovery-pincode";
   await this.deliver({
     kind, channel: target.channel, recipient: target.address,
-    code: code.plain, expiresInMs: this.authOpts.mfa.pincodeTtlMs,
+    code: code.plain, expiresInMs: this.opts.mfa.pincodeTtlMs,
   });
   (ctx.pincode ??= {}).sentTo = maskAddress(target.address);
-  ctx.pincode.codeLength = this.authOpts.mfa.pincodeLength;
-  ctx.pincode.resendAllowedAt = Date.now() + this.authOpts.mfa.pincodeResendTimeoutMs;
+  ctx.pincode.codeLength = this.opts.mfa.pincodeLength;
+  ctx.pincode.resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
   ctx.pin = code.digest;        // server-only — verified by pincode-check
-  ctx.pinExpire = Date.now() + this.authOpts.mfa.pincodeTtlMs;
+  ctx.pinExpire = Date.now() + this.opts.mfa.pincodeTtlMs;
   return useAtscriptWf(this.resolvePincodeForm(ctx)).requireInput({ /* form copy from ctx.pincode.* */ });
 }
 
@@ -930,7 +907,7 @@ After: one body:
 
 ### `init-*` and `prepare-semantic-flags` — split work
 
-`init-login`: BEFORE credentials. Sets `ctx.flow = 'login'`. No semantic flags (username not bound yet).
+`init-login`: BEFORE credentials. No-op stub today — login's flow is identified downstream by the absence of `ctx.admin` / `ctx.accept` / `ctx.postReset` slots.
 
 `prepare-semantic-flags`: AFTER all `prepare-*` policy steps complete, so it can read both `ctx.guards.*` (populated by `prepare-guards`) AND the top-level flags `ctx.isPasswordInitial / ctx.isPasswordExpired` (set inline by `credentials` — invariant: credentials remains responsible for these flags; `prepare-guards` is the canonical policy source). Reads `user.lastLoginAt` to compute `isFirstLogin`. Idempotent on re-entry.
 
@@ -948,11 +925,11 @@ Used in:
 - invite.start (accept tail): after `prepare-accept`. Sets `isFirstLogin=true, newPasswordRequired=true, password.changeReason="initial"` (idempotent re-write of what `init-invite-accept` already set on most fields).
 - recovery.flow: after `prepare-consents`. Sets `password.changeReason="reset"` (no other semantic flags — recovery doesn't use `isFirstLogin`; password gating uses `otp.verified` directly).
 
-`init-invite-admin`: BEFORE admin-form. Sets `ctx.flow = 'invite'`. No semantic flags (admin phase doesn't need them).
+`init-invite-admin`: BEFORE admin-form. Mirrors `opts.autoLoginOnInvite` onto `ctx.autoLogin` so the schema's finalize conditions can read it (wf engine evaluates schema closures as plain functions — `this.opts` is unreachable from inside the schema literal). No semantic flags (admin phase doesn't need them).
 
-`init-invite-accept`: ON magic-link resume. Sets `ctx.flow = 'invite'`, `isFirstLogin = true`, `newPasswordRequired = true`. Also stamps `ctx.accept.profileFormPresent` (today done by invite's init).
+`init-invite-accept`: ON magic-link resume. Sets `isFirstLogin = true`, `newPasswordRequired = true`. Also mirrors `opts.autoLoginOnInvite` onto `ctx.autoLogin` (idempotent re-write — admin-phase init already wrote it).
 
-`init-recovery`: BEFORE request. Sets `ctx.flow = 'recovery'`. No semantic flags.
+`init-recovery`: BEFORE request. Mirrors `opts.autoLoginOnRecover` onto `ctx.autoLogin`. No semantic flags.
 
 ---
 
@@ -963,8 +940,8 @@ Used in:
 ```typescript
 @Inherit() @Controller()
 class MyLogin extends LoginWorkflow {
-  protected resolveProfile(ctx: LoginWfCtx) {
-    return { required: this.tenantRequiresProfile() };
+  protected resolveDeviceTrust(ctx: LoginWfCtx) {
+    return { enabled: this.tenantWantsTrustedDevices(), optIn: true, skipsMfa: true };
   }
 }
 @Inherit() @Controller()
@@ -983,27 +960,33 @@ app.setReplaceRegistry(createReplaceRegistry([
 @Inherit()
 @Controller()
 class MyAuth extends AuthWorkflow {
-  protected resolveProfile(ctx: AuthWfCtx) {
+  protected resolveDeviceTrust(ctx: AuthWfCtx) {
     // Reached from login.flow ONLY (no other flow calls it).
     // Safe to assume login context.
-    return { required: this.tenantRequiresProfile() };
+    return { enabled: this.tenantWantsTrustedDevices(), optIn: true, skipsMfa: true };
   }
   protected resolveAccept(ctx: AuthWfCtx) {
     // Reached from invite.start ONLY (no other flow calls it).
     // Safe to assume invite-accept context.
-    return { confirmationMessage: "Welcome!", showConfirmation: true };
+    return {
+      alreadyAcceptedRedirectUrl: this.opts.loginUrl,
+      loginUrl: this.opts.loginUrl,
+      showConfirmation: true,
+      confirmationMessage: "Welcome!",
+    };
   }
 }
 app.setReplaceRegistry(createReplaceRegistry([AuthWorkflow, MyAuth]));
 ```
 
-Most resolvers are flow-specific by nature (only one schema calls them). The few that are theoretically cross-flow (e.g. `resolveProfile` could be called from any flow if we extended it) — customer discriminates via ctx-slot presence, never via `ctx.flow ===`:
+Most resolvers are flow-specific by nature (only one schema calls them). For the few that could be called from multiple schemas, customers discriminate via **ctx-slot presence** — never via a flow-name discriminator (none exists on `AuthWfCtx`):
 
 ```typescript
 protected resolveSomething(ctx: AuthWfCtx) {
-  if (ctx.admin) return { ...invite-flavored... };       // invite admin phase populates ctx.admin
-  if (ctx.postReset) return { ...recovery-flavored... }; // recovery's prepare-post-reset populates ctx.postReset
-  return { ...login-flavored... };                       // fallback
+  if (ctx.admin) return { ...invite-admin-flavored... };   // invite admin phase populates ctx.admin
+  if (ctx.accept) return { ...invite-accept-flavored... }; // invite accept phase populates ctx.accept
+  if (ctx.postReset) return { ...recovery-flavored... };   // recovery's prepare-post-reset populates ctx.postReset
+  return { ...login-flavored... };                         // fallback
 }
 ```
 
@@ -1018,7 +1001,7 @@ protected resolveSomething(ctx: AuthWfCtx) {
 - `packages/auth-moost/src/workflow/auth-workflow.ctx.ts` — all interfaces
 - `packages/auth-moost/src/workflow/auth-workflow.opts.ts` — `AuthWorkflowOpts` + resolved type
 - `packages/auth-moost/src/workflow/auth-workflow.schemas.ts` — 4 fragment consts (`mfaLoopSchema`, `passwordPhaseSchema`, `consentsPersistTailSchema`, `pincodeSendCheckPair`)
-- `packages/auth-moost/src/workflow/auth-workflow.ts` — the class with 3 `@Workflow` methods + 66 `@Step` methods + 17 `resolveXxx` methods
+- `packages/auth-moost/src/workflow/auth-workflow.ts` — the class with 3 `@Workflow` methods + 62 `@Step` methods + 16 `resolveXxx` methods
 - `packages/auth-moost/src/__test__/auth-workflow.smoke.spec.ts` — minimal smoke tests: one happy-path through `loginFlow`, one through `inviteFlow` (admin→accept→activate), one through `recoveryFlow` (OTP-via-email: enter email → enter OTP → set new password → finalize), one lockout-triggering case to pin the UserService-lockout contract (per §13 risk 5)
 - **Form-schema updates**: add `rememberDevice` field to `MfaCodeForm` and `Select2faForm` with `hidden = ctx.newPasswordRequired` `@ui.form.fn` expression, plus existing wiring on `PincodeForm`. Run `pnpm gen:atscript` to regenerate `.as.d.ts`. (Per §10 device-trust suppression rule.)
 
