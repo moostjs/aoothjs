@@ -115,7 +115,11 @@ test.describe("recovery — default (OTP-via-email)", () => {
     await fillField(page, "confirmPassword", "DifferentPass2!");
     await submitForm(page);
 
-    await expect(page.getByText("Passwords do not match")).toBeVisible();
+    // SPA's `SetPasswordForm` renders client-side password-rule rows; the
+    // "passwords must match" row trips before submit reaches the server,
+    // so the user sees the live rule rather than the server-side
+    // "Passwords do not match" message. Pin the live row's failure state.
+    await expect(page.getByText(/Passwords must match/i)).toBeVisible();
     await expect(page.getByText("Workflow finished.")).not.toBeVisible();
   });
 
@@ -291,7 +295,9 @@ test.describe("recovery — recovery-short-ttl", () => {
     await fillField(page, "code", email.code as string);
     await submitForm(page);
 
-    await expect(page.locator(".as-wf-form-error, .scope-error")).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator(".as-wf-form-error, .scope-error").first()).toBeVisible({
+      timeout: 5_000,
+    });
     await expect(page.locator('[name="newPassword"]')).toHaveCount(0);
   });
 });

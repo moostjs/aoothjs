@@ -1,46 +1,20 @@
 /**
- * P0 Playwright coverage for the invite family (auth.invite +
- * auth.cancelInvite). Maps to USER_STORIES.md §5 rows tagged Tier=P0:
+ * P0 Playwright coverage for the invite family (auth/invite/start only —
+ * the cancel + resend sub-workflows were dropped in 6ff3efb). Maps to
+ * USER_STORIES.md §5 rows tagged Tier=P0:
  *
  *   WF-INVITE-001  variant `email-no-roles` — happy path
  *   WF-INVITE-005  variant `roles-profile`  — role picker rendered
- *   WF-INVITE-007  variant `roles-profile`  — profile collection at accept
- *   WF-INVITE-015  variant `email-no-roles` — cancelInvite on pending user
  *
  * Driving model. Admin pre-auth + the rendered admin-side forms run through
  * the SPA (`/wf?id=…`) — that's where the variant-shaped DOM lives. We
  * assert the rendered fields, then assert on the server response the
- * outlet returns (`{sent:true,outlet:"email"}` envelope or the cancelled
- * finish envelope).
+ * outlet returns (`{sent:true,outlet:"email"}` envelope).
  *
- * Pre-auth: drive `auth.login` (variant `minimal`) via the SPA so
- * `inviteAutoLoginFinish` writes the `aooth_access` cookie into the
+ * Pre-auth: drive `auth/login/flow` (variant `minimal`) via the SPA so
+ * the auto-login finish writes the `aooth_access` cookie into the
  * browser context — subsequent same-origin `/auth/trigger` POSTs (whether
  * fired by `<AsWfForm>` or by `page.request`) carry the cookie.
- *
- * KNOWN DEMO-INFRA GAPS (flagged inline).
- *
- *   1) `__test/emails` returns `[]` even after `outlet:email` fires —
- *      meaning the email outlet on the wire path and the
- *      `CaptureEmailSender` exposed to the mailbox endpoint are not the
- *      same instance for this server boot. Stories that need to read the
- *      magic-link URL out of the mailbox (WF-INVITE-001, -007) cannot
- *      finish the invitee redemption leg; they are `test.fixme`'d below.
- *      Stories that only need "the admin send fired" still pass via the
- *      `sent:true` envelope on the network response.
- *
- *   2) `__test/reset` does not actually clear rows from a previous run
- *      (200/201 is returned and 24 fixtures are re-seeded, but
- *      previously-invited users persist). Tests that create new invitees
- *      use `Date.now()`-suffixed emails so successive runs don't collide
- *      with leftover pending rows.
- *
- *   3) Seed mismatch: `t1_pending` has `username='t1_pending'` ≠
- *      `email='t1_pending@example.com'`. The invite-family workflows
- *      look up by `findByUsername(email)`, so the seed user is
- *      structurally unreachable through the email-typed form fields.
- *      WF-INVITE-015 seeds a fresh pending invitee via `auth.invite`
- *      (where `username = email`) instead.
  */
 import { expect, test } from "@playwright/test";
 import type { Page, Response } from "@playwright/test";
@@ -99,24 +73,6 @@ async function nextTriggerResponse(
   return (await res.json()) as Record<string, unknown>;
 }
 
-/**
- * Drive `auth.invite` through the SPA against `inviteeEmail` so the demo
- * creates a fresh `pendingInvitation=true` row whose `username === email`.
- * Required because the seeded `t1_pending` row has `username='t1_pending'`
- * (≠ email), and `cancelInvite` / `reInvite` call `users.getUser(email)` →
- * `findByUsername(email)` which only matches on `username` — so they can't
- * find the seed user. Issuing the invite via the workflow itself yields a
- * row where `username = ctx.username = ctx.email`, which IS findable.
- */
-async function seedPendingInviteeByEmail(page: Page, email: string): Promise<void> {
-  await page.goto(wfUrl("auth/invite/start", "email-no-roles"));
-  await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
-  await fillField(page, "email", email);
-  const sentPromise = nextTriggerResponse(page, (b) => b.sent === true);
-  await submitForm(page);
-  await sentPromise;
-}
-
 test.describe("WF-INVITE — auth.invite family (P0)", () => {
   test.beforeEach(async ({ request }) => {
     await resetAppResilient(request);
@@ -167,13 +123,6 @@ test.describe("WF-INVITE — auth.invite family (P0)", () => {
     await inviteePage.locator('[name="confirmPassword"]').fill("InviteePass-1!");
     await inviteePage.locator("button.as-submit-btn, button[type=submit]").first().click();
 
-    // `DemoInviteWorkflow.getProfileForm()` always returns
-    // `InviteAcceptProfileForm`, so even the no-roles variant pauses on the
-    // profile-collect step. Both fields (`displayName`, `phone`) are optional
-    // → submit with empty input to advance to the issue step.
-    await expect(inviteePage.getByText("Display name")).toBeVisible({ timeout: 15_000 });
-    await inviteePage.locator("button.as-submit-btn, button[type=submit]").first().click();
-
     await expect(inviteePage.locator("text=Workflow finished")).toBeVisible({ timeout: 15_000 });
     await expect(inviteePage.locator("pre").first()).toContainText("accessToken");
     await ctx.close();
@@ -194,81 +143,6 @@ test.describe("WF-INVITE — auth.invite family (P0)", () => {
     await expect(page.locator(".as-field-label", { hasText: "Roles" })).toBeVisible();
     await expect(page.locator(".as-multi-select-field")).toHaveCount(1);
   });
-
-  // ── WF-INVITE-007 ────────────────────────────────────────────────────────
-  test("WF-INVITE-007 profile collection at accept pauses InviteAcceptProfileForm", async ({
-    page,
-    request,
-    baseURL,
-  }) => {
-    await loginViaUi(page, USERS.admin_inviter);
-    // The `roles-profile` variant flips `collectProfile: true` so after the
-    // invitee sets their password the workflow pauses on the profile form
-    // returned by `DemoInviteWorkflow.getProfileForm()` (`InviteAcceptProfileForm`).
-    await page.goto(wfUrl("auth/invite/start", "roles-profile"));
-    await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
-
-    const inviteeEmail = uniqueEmail("invite-007");
-    await fillField(page, "email", inviteeEmail);
-    const sentPromise = nextTriggerResponse(page, (b) => b.sent === true);
-    await submitForm(page);
-    await sentPromise;
-
-    const magic = await waitForEmail(
-      request,
-      (e) => e.kind === "invite.magicLink" && e.recipient === inviteeEmail,
-    );
-    const resumeUrl = rewriteToBaseUrl(magic.url as string, baseURL ?? "");
-    const ctx = await page.context().browser()!.newContext();
-    const inviteePage = await ctx.newPage();
-    await inviteePage.goto(resumeUrl);
-
-    // SetPasswordForm pause first.
-    await expect(inviteePage.locator('[name="newPassword"]')).toBeVisible({ timeout: 15_000 });
-    await inviteePage.locator('[name="newPassword"]').fill("InviteePass-1!");
-    await inviteePage.locator('[name="confirmPassword"]').fill("InviteePass-1!");
-    await inviteePage.locator("button.as-submit-btn, button[type=submit]").first().click();
-
-    // InviteAcceptProfileForm — declares `displayName` and `phone` (both
-    // optional, see packages/e2e-demo/src/models/user.as). The atscript-ui
-    // renderer paints optional empty fields as "Not set" buttons rather than
-    // bare inputs, so assert on the rendered labels.
-    await expect(inviteePage.getByText("Display name")).toBeVisible({ timeout: 15_000 });
-    await expect(inviteePage.getByText("Phone")).toBeVisible();
-    await ctx.close();
-  });
-
-  // ── WF-INVITE-015 ────────────────────────────────────────────────────────
-  // Seed-mismatch caveat: `t1_pending`'s `username='t1_pending' ≠
-  // 'email'` would defeat the cancelInvite lookup, so this story seeds a
-  // fresh pending invitee via `seedPendingInviteeByEmail`.
-  test("WF-INVITE-015 cancelInvite on a freshly-created pending invitee → cancelled:true", async ({
-    page,
-  }) => {
-    await loginViaUi(page, USERS.admin_inviter);
-    const inviteeEmail = uniqueEmail("cancel-015");
-    await seedPendingInviteeByEmail(page, inviteeEmail);
-
-    await page.goto(wfUrl("auth/invite/cancel", "email-no-roles"));
-    await expect(page.locator('[name="email"]')).toBeVisible();
-    await fillField(page, "email", inviteeEmail);
-
-    // cancelInvite finishes with `{ cancelled: true, email }` — no outlet,
-    // so we don't need the email-capture infra (this story is the one
-    // P0 row that's fully end-to-end runnable today).
-    const finishPromise = nextTriggerResponse(page, (b) => b.finished === true);
-    await submitForm(page);
-    const envelope = await finishPromise;
-    expect(envelope.finished).toBe(true);
-    const data = envelope.data as Record<string, unknown> | undefined;
-    expect(data?.cancelled).toBe(true);
-    expect(data?.email).toBe(inviteeEmail);
-
-    // Rendered DOM mirrors the envelope.
-    await expect(page.locator("text=Workflow finished")).toBeVisible({ timeout: 5000 });
-    await expect(page.locator("pre").first()).toContainText('"cancelled": true');
-    await expect(page.locator("pre").first()).toContainText(inviteeEmail);
-  });
 });
 
 /**
@@ -278,14 +152,11 @@ test.describe("WF-INVITE — auth.invite family (P0)", () => {
  *   WF-INVITE-002  variant `email-no-roles`     — invite existing user → 409
  *   WF-INVITE-003  variant `email-no-roles`     — invitee cancels at password form
  *   WF-INVITE-006  variant `roles-profile`      — role not in whitelist → form error
- *   WF-INVITE-008  variant `roles-profile`      — invitee skips profile form
  *   WF-INVITE-014  variant `email-no-roles`     — reInvite on already-accepted → 409
- *   WF-INVITE-016  variant `email-no-roles`     — cancelInvite on already-accepted → 409
- *   WF-INVITE-017  variant `cancellation-disabled` — cancelInvite blocked → 403
  *
  * The `t1_redeemed` seed has `username = email = t1_redeemed@example.com`,
  * which is the structural prerequisite for `loadUserOrNull(email)` to find
- * it via `findByUsername(email)`. -002/-014/-016 all hit it.
+ * it via `findByUsername(email)`. -002/-014 hit it.
  *
  * Error surface: AsWfForm forwards trigger failures to the `@error` slot →
  * `WfPage.vue` paints `err.message` inside `div.scope-error` near the form.
@@ -399,121 +270,6 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
     expect(errs.roles).toMatch(/Invalid role/i);
     // The `requireInput` envelope keeps the form mounted — re-prompt for input.
     await expect(page.locator('[name="email"]')).toBeVisible();
-  });
-
-  // ── WF-INVITE-008 ────────────────────────────────────────────────────────
-  // BRANCH: `roles-profile` variant flips `collectProfile: true` so post-
-  // password the workflow pauses on `InviteAcceptProfileForm`. That form
-  // declares `@ui.form.action 'skip', 'Skip'`. Clicking skip resolves the
-  // action to `'skip'` — the workflow advances WITHOUT calling
-  // `applyProfile()`, then the auto-login finish step issues tokens.
-  // FIXME(infra): "applyProfile not called" should be verified via a
-  // `__test/applyProfileCalls` counter or a `__test/user/:username` GET
-  // that reflects `displayName`. Neither exists today. Test asserts the
-  // workflow completes with tokens (proves the profile step advanced) —
-  // direct DB verification is a P0-style retro fix.
-  test("WF-INVITE-008 invitee clicks skip on profile form → workflow finishes with tokens", async ({
-    page,
-    request,
-    baseURL,
-  }) => {
-    await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth/invite/start", "roles-profile"));
-    await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
-
-    const inviteeEmail = uniqueEmail("invite-008");
-    await fillField(page, "email", inviteeEmail);
-    const sentPromise = nextTriggerResponse(page, (b) => b.sent === true);
-    await submitForm(page);
-    await sentPromise;
-
-    const magic = await waitForEmail(
-      request,
-      (e) => e.kind === "invite.magicLink" && e.recipient === inviteeEmail,
-    );
-    const resumeUrl = rewriteToBaseUrl(magic.url as string, baseURL ?? "");
-    const ctx = await page.context().browser()!.newContext();
-    const inviteePage = await ctx.newPage();
-    await inviteePage.goto(resumeUrl);
-
-    // Set the password first so the workflow advances to the profile pause.
-    await expect(inviteePage.locator('[name="newPassword"]')).toBeVisible({ timeout: 15_000 });
-    await inviteePage.locator('[name="newPassword"]').fill("InviteePass-1!");
-    await inviteePage.locator('[name="confirmPassword"]').fill("InviteePass-1!");
-    await submitForm(inviteePage);
-
-    // Profile pause — click `skip` instead of submitting the form.
-    await expect(inviteePage.getByText("Display name")).toBeVisible({ timeout: 15_000 });
-    await clickAction(inviteePage, "Skip");
-
-    // Auto-login finish step still runs (skip leaves `ctx.aborted` false).
-    await expect(inviteePage.locator("text=Workflow finished")).toBeVisible({ timeout: 15_000 });
-    await expect(inviteePage.locator("pre").first()).toContainText("accessToken");
-    await ctx.close();
-  });
-
-  // ── WF-INVITE-016 ────────────────────────────────────────────────────────
-  // BRANCH: `auth.cancelInvite` → `cancel-invite` step → existing user found
-  // but `account.pendingInvitation === false` ⇒ step calls
-  // `wf.requireInput({ errors: { email: 'Cannot cancel: user has already
-  // accepted the invite' } })`. The wf engine re-pauses the same step under
-  // the same wfs token; AsWfForm re-renders with the per-field error.
-  test("WF-INVITE-016 cancelInvite on already-accepted user → inline email error, form re-renders", async ({
-    page,
-  }) => {
-    await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth/invite/cancel", "email-no-roles"));
-    await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
-
-    await fillField(page, "email", "t1_redeemed@example.com");
-    const errorPromise = nextTriggerResponse(
-      page,
-      (b) => {
-        const ir = b.inputRequired as Record<string, unknown> | undefined;
-        const ctxObj = (ir?.context ?? {}) as Record<string, unknown>;
-        const errs = (ctxObj.errors ?? {}) as Record<string, unknown>;
-        return typeof errs.email === "string" && /already accepted|cannot cancel/i.test(errs.email);
-      },
-      10_000,
-    );
-    await submitForm(page);
-    const body = await errorPromise;
-    const ir = body.inputRequired as Record<string, unknown>;
-    const ctxObj = ir.context as Record<string, unknown>;
-    const errs = ctxObj.errors as Record<string, string>;
-    expect(errs.email).toMatch(/Cannot cancel: user has already accepted/i);
-    await expect(page.locator('[name="email"]')).toBeVisible();
-  });
-
-  // ── WF-INVITE-017 ────────────────────────────────────────────────────────
-  // BRANCH: `cancellation-disabled` variant sets `cancellation.allowed: false`.
-  // `cancel-invite` step's first check throws
-  // `HttpError(403, "Invite cancellation is disabled")` — fires even when a
-  // valid pending email is submitted (we use a fresh pending row to prove the
-  // 403 isn't a 404 in disguise). `@atscript/vue-wf@0.1.76` reads
-  // `errData?.message` ahead of `errData?.error`, so the SPA renders the
-  // backend's human-readable message rather than the HTTP reason phrase.
-  test("WF-INVITE-017 cancelInvite when cancellation.allowed=false → 403, no form", async ({
-    page,
-  }) => {
-    await loginViaUi(page, USERS.admin_inviter);
-    // §5.3 expectation: "direct error, no form". The 403 guard fires BEFORE
-    // `resolveInput()` in `inviteCancelInvite`, so the workflow init itself
-    // throws — no form is ever rendered, and there's no `/auth/trigger` POST
-    // from the SPA either. AsWfForm's bootstrap GET surfaces the 403 via the
-    // `@error` slot.
-    const errorPromise = page.waitForResponse(
-      (r) => r.url().includes("/auth/trigger") && r.status() >= 400,
-      { timeout: 10_000 },
-    );
-    await page.goto(wfUrl("auth/invite/cancel", "cancellation-disabled"));
-    const res = await errorPromise;
-    expect(res.status()).toBe(403);
-    const body = (await res.json()) as Record<string, unknown>;
-    expect(body.message ?? body.error).toMatch(/Invite cancellation is disabled/i);
-    // Form field never appears.
-    await expect(page.locator('[name="email"]')).toHaveCount(0);
-    await expect(page.locator(".scope-error")).toContainText(/cancellation is disabled/i);
   });
 });
 
@@ -653,10 +409,6 @@ test.describe("WF-INVITE — auth.invite family (P2)", () => {
     await inviteePage.locator('[name="confirmPassword"]').fill("InviteePass-1!");
     await inviteePage.locator("button.as-submit-btn, button[type=submit]").first().click();
 
-    // `DemoInviteWorkflow.getProfileForm()` always returns
-    // `InviteAcceptProfileForm` — submit empty to advance to the issue step.
-    await expect(inviteePage.getByText("Display name")).toBeVisible({ timeout: 15_000 });
-    await inviteePage.locator("button.as-submit-btn, button[type=submit]").first().click();
     await expect(inviteePage.locator("text=Workflow finished")).toBeVisible({ timeout: 15_000 });
 
     // Second click: SAME magic-link URL again. Drop the post-redemption
@@ -816,10 +568,6 @@ test.describe("WF-INVITE — auth.invite family (P2)", () => {
     await expect(inviteePage.locator('[name="newPassword"]')).toBeVisible({ timeout: 15_000 });
     await inviteePage.locator('[name="newPassword"]').fill("InviteePass-1!");
     await inviteePage.locator('[name="confirmPassword"]').fill("InviteePass-1!");
-    await inviteePage.locator("button.as-submit-btn, button[type=submit]").first().click();
-
-    // Profile form (demo always provides one) — submit empty to advance.
-    await expect(inviteePage.getByText("Display name")).toBeVisible({ timeout: 15_000 });
     // Capture the final auto-login envelope on the wire — must carry BOTH
     // the access token AND the preserved confirmation message.
     const finishPromise = nextTriggerResponse(
@@ -907,11 +655,6 @@ test.describe("WF-INVITE — auth.invite family (MFA enrollment, PW MFA coverage
     // visible because variant set mfaMode='optional'. Click skip.
     await waitForFormInput(inviteePage, "method");
     await clickAction(inviteePage, "Skip for now");
-
-    // Profile pause still runs (skip clears the MFA loop but leaves the
-    // profile-collect step in the schema). Submit empty to advance.
-    await expect(inviteePage.getByText("Display name")).toBeVisible({ timeout: 15_000 });
-    await submitForm(inviteePage);
 
     // Auto-login finish runs because skip leaves `ctx.aborted` false.
     await expect(inviteePage.locator("text=Workflow finished")).toBeVisible({ timeout: 15_000 });
@@ -1019,10 +762,6 @@ test.describe("WF-INVITE — auth.invite family (MFA enrollment, PW MFA coverage
     await fillField(inviteePage, "code", sms.code);
     await submitForm(inviteePage);
 
-    // Profile pause — submit empty.
-    await expect(inviteePage.getByText("Display name")).toBeVisible({ timeout: 15_000 });
-    await submitForm(inviteePage);
-
     await expect(inviteePage.locator("text=Workflow finished")).toBeVisible({ timeout: 15_000 });
     await expect(inviteePage.locator("pre").first()).toContainText("accessToken");
 
@@ -1084,10 +823,6 @@ test.describe("WF-INVITE — inline-consent on accept (Phase 5)", () => {
     await inviteePage.locator('[name="confirmPassword"]').fill("InviteePass-1!");
     // First checkbox on the form is the AsConsentArray row for `terms`.
     await inviteePage.locator('input[type="checkbox"]').first().check();
-    await submitForm(inviteePage);
-
-    // Profile pause — submit empty to advance.
-    await expect(inviteePage.getByText("Display name")).toBeVisible({ timeout: 15_000 });
     await submitForm(inviteePage);
 
     // Auto-login finish issues tokens — proof the workflow completed

@@ -206,7 +206,7 @@ Default process:
 | WF-LOGIN-029               | P1   | `concurrency`                     | Cancel from kick prompt aborts                                       | No tokens issued                                                                       |
 | WF-LOGIN-030               | P2   | `concurrency-reject`              | Reject policy blocks immediately                                     | User-readable session limit error; no kick form                                        |
 | WF-LOGIN-031               | P1   | `redirect-home`                   | Finalize redirect targets `/`                                        | Finish envelope next action is redirect `/`                                            |
-| WF-LOGIN-032               | P2   | `full`                            | One user traverses every major login phase                           | Expected ordered form sequence; consent persisted; tokens/redirect at finish           |
+| WF-LOGIN-032               | P2   | `full`                            | One user traverses every major login phase (no profile-complete)     | Expected ordered form sequence; consent persisted; tokens/redirect at finish           |
 | WF-LOGIN-033               | P1   | `mfa-enroll-required-totp`        | Required single-transport TOTP enrolment auto-picks confirm          | No picker; TOTP secret/URI visible; tokens after code                                  |
 | WF-LOGIN-034               | P1   | `mfa-enroll-optional-full`        | Optional enrolment skip finishes without MFA method                  | Skip action visible; user MFA methods unchanged                                        |
 | WF-LOGIN-035               | P1   | `mfa-enroll-optional-full`        | Use different method cleans unconfirmed method and returns to picker | Unconfirmed row removed; picker re-renders                                             |
@@ -287,14 +287,10 @@ Default invite process:
 | WF-INVITE-004        | P2   | `short-ttl-confirmation`          | Expired invite state cannot resume                                          | 410/error block                                             |
 | WF-INVITE-005        | P0   | `roles-profile`                   | Role picker accepts whitelisted role                                        | Role field visible; selected role persisted                 |
 | WF-INVITE-006        | P1   | `roles-profile`                   | Invalid role is rejected                                                    | Inline role error                                           |
-| WF-INVITE-007        | P0   | `roles-profile`                   | Accept-tail profile form pauses and applies profile                         | Profile fields visible; profile applied                     |
-| WF-INVITE-008        | P1   | `roles-profile`                   | Invitee skips optional profile                                              | Tokens issued; profile not applied                          |
 | WF-INVITE-010        | P2   | `idempotent-redirect`             | Already-accepted link shows idempotent finish                               | Sign-in / request-new-invite actions visible                |
 | WF-INVITE-012        | P1   | `email-no-roles` or opts override | `autoLoginOnInvite=false` finishes without tokens                           | Fresh-login finish envelope; no `accessToken`               |
 | WF-INVITE-013        | P0   | `email-no-roles`                  | Re-invite pending user sends a new invite                                   | New mailbox invite entry                                    |
 | WF-INVITE-014        | P1   | `email-no-roles`                  | Re-invite already-accepted user returns 409                                 | User-readable error                                         |
-| WF-INVITE-015        | P0   | `email-no-roles`                  | Cancel pending invite deletes/stages cancellation                           | User no longer pending                                      |
-| WF-INVITE-016        | P1   | `email-no-roles`                  | Cancel already-accepted invite returns 409                                  | User-readable error                                         |
 | WF-INVITE-018        | P2   | `email-no-roles`                  | Duplicate override reaches store-level uniqueness failure                   | Store-level 409 surfaces                                    |
 | WF-INVITE-019        | P2   | `short-ttl-confirmation`          | TTL=1s link expires                                                         | 410/error block                                             |
 | WF-INVITE-020        | P2   | `confirmation-message`            | Confirmation message renders after activation                               | “Your account has been created.” visible                    |
@@ -309,6 +305,8 @@ Removed legacy invite rows:
 - Invite workflow audit variants.
 - Workflow-level cancellation policy variant.
 - `accept.freshLoginRequired`; use static `AuthWorkflowOpts.autoLoginOnInvite` instead.
+- Accept-tail profile-collect form (WF-INVITE-007, -008). The unified workflow has no built-in profile step; consumers add their own override step if profile collection is needed.
+- `@Workflow("auth/invite/cancel")` + `@Workflow("auth/invite/resend")` (WF-INVITE-015, -016, -017). Dropped in `6ff3efb` — invite is single-path email-only now.
 
 ---
 

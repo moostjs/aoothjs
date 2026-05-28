@@ -514,10 +514,11 @@ test.describe("LoginWorkflow / variant=mfa-full (P1)", () => {
     ).length;
 
     // Resend click — within the 1s cooldown window the workflow throws
-    // formMessage "Please wait Ns".
+    // an inline `code` error: "Please wait before requesting a new code."
+    // (no seconds counter; static copy).
     await page.getByRole("button", { name: "Resend code" }).click();
 
-    await expect(page.getByText(/Please wait \d+s/)).toBeVisible();
+    await expect(page.getByText(/Please wait/i).first()).toBeVisible();
     // Mailbox count must NOT have grown — proves the outlet was NOT invoked
     // a second time.
     const afterResend = await getEmails(request);
@@ -1131,7 +1132,7 @@ test.describe("LoginWorkflow / variant=concurrency-reject (P2)", () => {
 
     // The reject message renders in the form-level error slot. Match by text
     // so the assertion is insulated from CSS-class renames.
-    await expect(page.getByText("Session limit reached")).toBeVisible();
+    await expect(page.getByText("Session limit reached").first()).toBeVisible();
     // No tokens, no finish envelope — the user can never progress past this
     // step because `cfg.onLimit === 'reject'` is checked BEFORE resolveAction,
     // so any submit (including kickPrompt's action buttons) re-throws
@@ -1231,29 +1232,14 @@ test.describe("LoginWorkflow / variant=full (P2)", () => {
     await fillField(page, "confirmPassword", "NewIrisPass-1!");
     await page.locator("button.as-submit-btn").first().click();
 
-    // 9. ProfileCompleteForm — injected by `DemoLoginWorkflow.credentials`
-    // override from the per-user buffer (no DB column carries this state).
-    // ProfileCompleteForm fields are `firstName?` / `lastName?` (optional) so
-    // the AsForm renderer starts each as a "Not set" placeholder button — the
-    // user clicks to enable, then types. NOTE: consents were captured on
-    // AskEmailForm earlier (`ctx.consents?.decidedAt` set), so even though the
-    // inherited `AsConsentArray` field still rides on this form the helper's
-    // idempotency gate is closed and the user doesn't have to re-tick.
-    await expect(page.getByText("First name").first()).toBeVisible();
-    await page.getByRole("button", { name: "Not set" }).first().click();
-    await fillField(page, "firstName", "Iris");
-    await page.getByRole("button", { name: "Not set" }).first().click();
-    await fillField(page, "lastName", "Tester");
-    await submitForm(page);
-
-    // 10. ConcurrencyLimitForm (kickPrompt) — iris has 1 active session
+    // 9. ConcurrencyLimitForm (kickPrompt) — iris has 1 active session
     // seeded, `full` variant has `concurrencyLimit: { max: 1, onLimit:
     // 'kickPrompt' }`, so `1 >= 1` → the kick form pauses. Click
     // "Log out other sessions" so the schema resumes through `issue`.
     await waitForFormInput(page, "action");
     await page.getByRole("button", { name: "Log out other sessions" }).click();
 
-    // 11. Finish envelope — `full` variant does NOT set `finalize.redirect`,
+    // 10. Finish envelope — `full` variant does NOT set `finalize.redirect`,
     // so the `issue` step's data envelope stands.
     const envelope = (await readFinishEnvelope(page)) as {
       finished: boolean;
