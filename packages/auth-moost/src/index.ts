@@ -7,8 +7,7 @@ export {
   type ResolvedAuthCookieConfig,
   type ResolvedAuthOptions,
 } from "./auth.config";
-export { AuthOpts } from "./auth.opts";
-export { ConsentStore, type ConsentDescriptor } from "./consent.store";
+export { ConsentStore, type ConsentDescriptor, type ConsentEvent } from "./consent.store";
 export { authGuardInterceptor, AuthGuarded } from "./auth.guard";
 export { useAuth, type AuthBindings } from "./auth.composables";
 export { Public, UserId } from "./auth.decorator";
@@ -35,67 +34,30 @@ export type {
   SmsSender,
 } from "@aooth/auth";
 export { generateMagicLinkToken } from "@aooth/auth";
+
+// ── Unified auth workflow ──────────────────────────────────────────────
 export {
-  type DeliverEmail,
-  type DeliverPayload,
-  type DeliverSms,
-  type DuplicateAction,
-  InviteWorkflow,
-  type InviteWfCtx,
-  type InvitePolicyOverrides,
-  type InvitePrepareUserInput,
-  type InviteWorkflowOpts,
-  mergeInviteOpts,
-  type PreparedUserInput,
-  type ResolvedInviteWorkflowOpts,
-  LoginWorkflow,
-  type LoginAltActionsState,
-  type LoginChannelState,
-  type LoginMfaState,
-  type LoginPolicyOverrides,
-  type LoginSessionState,
-  type LoginTrustState,
-  type LoginWfCtx,
-  type LoginRedirect,
-  type LoginWorkflowOpts,
-  type ResolvedLoginWorkflowOpts,
-  mergeLoginOpts,
-  type MfaSummary,
-  type MfaTransport,
-  type SsoProvider,
-  type ConcurrencyLimitOptions,
-  type AuthWfCompletionState,
-  type AuthWfConsentsState,
-  type AuthWfCtxBase,
-  type AuthWfMfaEnrollState,
-  type AuthWfPasswordUiState,
-  type AuthWfPincodeUiState,
-  type AuthWfPublicBase,
-  type ConsentDescriptorLike,
-  type ConsentEvent,
-  DefaultInviteWorkflow,
-  DefaultLoginWorkflow,
-  DefaultRecoveryWorkflow,
+  AuthWorkflow,
+  buildInviteAlreadyAcceptedEnvelope,
   parseInviteRoles,
-  RecoveryWorkflow,
-  type RecoveryPolicyOverrides,
-  type RecoveryWfCtx,
-  type RecoveryDeliveryMode,
-  type RecoveryOtpTransport,
-  type RecoveryWorkflowOpts,
-  type ResolvedRecoveryWorkflowOpts,
-  mergeRecoveryOpts,
-} from "./workflows/index";
+  RESERVED_USER_KEYS,
+  stripReservedUserKeys,
+} from "./workflow/auth-workflow";
+export type { AuthWorkflowOpts, ResolvedAuthWorkflowOpts } from "./workflow/auth-workflow.opts";
+export type {
+  AuthWfCtx,
+  AuthWfCompletionState,
+  AuthWfConsentsState,
+  AuthWfMfaEnrollState,
+  AuthWfPasswordUiState,
+  AuthWfPincodeUiState,
+  ConsentDescriptorLike,
+  MfaSummary,
+  MfaTransport,
+  LoginRedirect,
+  SsoProvider,
+  ConcurrencyLimitOptions,
+} from "./workflow/auth-workflow.ctx";
+
 export { type AuthEmailOutletDeps, createAuthEmailOutlet } from "./workflows/auth-email-outlet";
 export { type AuditEmitter, type AuditEvent } from "./audit/index";
-
-// Note: the DI-token exports (`SMS_SENDER_TOKEN`, `AUDIT_EMITTER_TOKEN`,
-// `DEVICE_TRUST_STORE_TOKEN`, `WORKFLOW_RATE_LIMIT_STORE_TOKEN`) were dropped
-// in Phase 4 of the workflow OOP-reshape. All three auth workflows now use
-// `protected` method overrides instead of constructor-injected side-effect
-// deps, so no consumer needs the tokens. The `EmailSender` / `SmsSender` /
-// `AuditEmitter` types still ship for consumer overrides. Device-trust
-// persistence moved into `UserService` (`@aooth/user`); consumers wire it
-// via `UserServiceConfig.deviceTrust.secret` and override
-// `LoginWorkflow`'s `loadTrustedDevice` / `storeTrustedDevice` etc. only
-// when they need a non-default backend.

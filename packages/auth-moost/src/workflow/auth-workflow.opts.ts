@@ -3,12 +3,10 @@
  * unified `AuthWorkflow` class. Replaces the prior trio
  * (`LoginWorkflowOpts` + `InviteWorkflowOpts` + `RecoveryWorkflowOpts`).
  *
- * Cross-workflow infrastructure defaults (pincode timers, magic-link TTL,
- * loginUrl, totpIssuer) continue to live on the `AuthOpts` DI singleton.
- * Policy continues to live on `protected resolveXxx(ctx)` methods on
- * `AuthWorkflow`. This shape carries only the few workflow-level static
- * knobs (auto-login defaults, device-trust cookie binding) plus the
- * form-schema replacement map.
+ * Cross-workflow infrastructure defaults that used to live on a separate
+ * `AuthOpts` DI singleton (pincode timers, magic-link TTL, loginUrl,
+ * totpIssuer) have been merged in. Policy continues to live on
+ * `protected resolveXxx(ctx)` methods on `AuthWorkflow`.
  */
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 
@@ -16,6 +14,20 @@ export interface AuthWorkflowOpts {
   // ── Finalize behavior (cross-flow) ──
   autoLoginOnInvite?: boolean;
   autoLoginOnRecover?: boolean;
+
+  // ── Cross-workflow infra ──
+  /** Pincode infrastructure shared by login MFA, invite MFA, and recovery OTP. */
+  mfa?: {
+    pincodeLength?: number;
+    pincodeTtlMs?: number;
+    pincodeResendTimeoutMs?: number;
+  };
+  /** Magic-link TTL shared by login (alt-credentials), invite, recovery. */
+  magicLinkTtlMs?: number;
+  /** Canonical login URL — used by invite (post-accept redirect) and recovery (abort-to-login + post-reset redirect) as the resolver-default loginUrl. */
+  loginUrl?: string;
+  /** TOTP provisioning issuer — used by login MFA and invite MFA enrollment. */
+  totpIssuer?: string;
 
   // ── Login-specific infra ──
   deviceTrust?: {
@@ -69,6 +81,14 @@ export interface AuthWorkflowOpts {
 export interface ResolvedAuthWorkflowOpts {
   autoLoginOnInvite: boolean;
   autoLoginOnRecover: boolean;
+  mfa: {
+    pincodeLength: number;
+    pincodeTtlMs: number;
+    pincodeResendTimeoutMs: number;
+  };
+  magicLinkTtlMs: number;
+  loginUrl: string;
+  totpIssuer: string;
   deviceTrust: {
     cookieName: string;
     ttlMs: number;

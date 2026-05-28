@@ -16,14 +16,10 @@ import type {
   AuthRefreshBody,
 } from "./auth.dto";
 import { WfTrigger } from "./wf-trigger/decorator";
-import { buildInviteAlreadyAcceptedEnvelope } from "./workflows/invite.workflow";
+import { buildInviteAlreadyAcceptedEnvelope } from "./workflow/auth-workflow";
 
 /** Workflows allowed by the bundled `/auth/trigger` endpoint. Subclasses override `triggerWf()` to extend. */
-export const DEFAULT_AUTH_WORKFLOWS = [
-  "auth/login/flow",
-  "auth/recovery/flow",
-  "auth/invite/start",
-] as const;
+export const DEFAULT_AUTH_WORKFLOWS = ["/login", "/invite", "/recover"] as const;
 
 /** Prefer an explicit body field, fall back to the refresh cookie when enabled. */
 function resolveRefreshToken(auth: AuthBindings, body: { refreshToken?: string } | undefined) {
@@ -38,12 +34,12 @@ function resolveRefreshToken(auth: AuthBindings, body: { refreshToken?: string }
  * - `POST /auth/logout` — best-effort token revocation + cookie clear.
  * - `POST /auth/refresh` — rotate access/refresh tokens.
  * - `GET /auth/status` — return the current `AuthContext`.
- * - `POST /auth/trigger` — single workflow trigger covering `auth/login/flow`,
- *   `auth/recovery/flow`, and `auth/invite/start`.
+ * - `POST /auth/trigger` — single workflow trigger covering the unified
+ *   `AuthWorkflow`'s three `@Workflow` schemas (`/login`, `/invite`, `/recover`).
  *
  * The historical `/auth/login` and `/auth/password` endpoints were dropped —
  * both flows go through the workflow trigger now (full MFA / SSO / etc.
- * surface lives in `LoginWorkflow` and `RecoveryWorkflow`).
+ * surface lives in `AuthWorkflow`).
  *
  * Exported so consumers can subclass to add app-specific workflow ids to the
  * allow-list (override `triggerWf()` with a different `@WfTrigger({ allow })`)
@@ -158,8 +154,8 @@ export class AuthController {
    *
    * `@Public()` — invitees aren't signed in at this point.
    *
-   * Defaults for `loginUrl` / `alreadyAcceptedRedirectUrl` mirror the bundled
-   * `InviteWorkflowOpts` defaults (`/login` / `/login`). Subclasses override
+   * Defaults for `loginUrl` / `alreadyAcceptedRedirectUrl` mirror the unified
+   * `AuthWorkflow` defaults (`/login` / `/login`). Subclasses override
    * `resolveInvitePostRedemption()` to read live workflow opts.
    */
   @Get("invite/post-redemption")
@@ -194,9 +190,9 @@ export class AuthController {
   }
 
   /**
-   * URLs used by `invitePostRedemption`. Defaults mirror
-   * `mergeInviteOpts({})` so subclasses that customize either of those
-   * options can override here to keep the side route in sync.
+   * URLs used by `invitePostRedemption`. Defaults mirror the unified
+   * `AuthWorkflow` resolved opts so subclasses that customize either of
+   * those options can override here to keep the side route in sync.
    */
   protected resolveInvitePostRedemption(): {
     loginUrl: string;

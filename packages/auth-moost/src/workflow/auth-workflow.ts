@@ -32,7 +32,13 @@ import {
   type UserCredentials,
   UserService,
 } from "@aooth/user";
-import { abortWf, finishWf, useAtscriptWf, type WfFinished } from "@atscript/moost-wf";
+import {
+  abortWf,
+  finishWf,
+  type FinishWfOpts,
+  useAtscriptWf,
+  type WfFinished,
+} from "@atscript/moost-wf";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { HttpError } from "@moostjs/event-http";
 import {
@@ -49,11 +55,8 @@ import { useCookies, useHeaders, useRequest, useResponse, useUrlParams } from "@
 import { Controller, Inherit, Param } from "moost";
 
 import { useAuth } from "../auth.composables";
-import { AuthOpts } from "../auth.opts";
 import { ConsentStore } from "../consent.store";
 import { Public } from "../auth.decorator";
-import { buildInviteAlreadyAcceptedEnvelope, parseInviteRoles } from "../workflows/invite.workflow";
-import { stripReservedUserKeys } from "../workflows/auth-workflow.base";
 import type {
   AuthWfCtx,
   AuthWfAltCredsPolicy,
@@ -120,10 +123,18 @@ export type AuthDeliveryPayload =
  * defaults are wired in step 4 alongside the step body merges. Stub @Step
  * bodies never traverse `this.opts.forms`, so the cast is safe for P1 step 3.
  */
-function mergeAuthWorkflowOpts(opts: AuthWorkflowOpts): ResolvedAuthWorkflowOpts {
+function mergeAuthWorkflowOpts(opts: Partial<AuthWorkflowOpts>): ResolvedAuthWorkflowOpts {
   return {
     autoLoginOnInvite: opts.autoLoginOnInvite ?? true,
     autoLoginOnRecover: opts.autoLoginOnRecover ?? false,
+    mfa: {
+      pincodeLength: opts.mfa?.pincodeLength ?? 6,
+      pincodeTtlMs: opts.mfa?.pincodeTtlMs ?? 5 * 60 * 1000,
+      pincodeResendTimeoutMs: opts.mfa?.pincodeResendTimeoutMs ?? 60_000,
+    },
+    magicLinkTtlMs: opts.magicLinkTtlMs ?? 60 * 60 * 1000,
+    loginUrl: opts.loginUrl ?? "/login",
+    totpIssuer: opts.totpIssuer ?? "aooth",
     deviceTrust: {
       cookieName: "aooth_trusted_device",
       ttlMs: 24 * 60 * 60_000,
@@ -131,6 +142,85 @@ function mergeAuthWorkflowOpts(opts: AuthWorkflowOpts): ResolvedAuthWorkflowOpts
       ...opts.deviceTrust,
     },
     forms: (opts.forms ?? {}) as ResolvedAuthWorkflowOpts["forms"],
+  };
+}
+
+/**
+ * Top-level `UserCredentials` keys that workflow-collected profile payloads
+ * MUST NEVER carry through to persistence. The server sets these out-of-band
+ * (admin-supplied `ctx.admin?.roles`, password-set step, account activation,
+ * MFA enrolment elsewhere). If the consumer's `.as` profile form mistakenly
+ * declares one — or an attacker submits one as an extra field — the strip
+ * applied at the workflow step blocks shadowing.
+ */
+export const RESERVED_USER_KEYS: ReadonlySet<string> = new Set<string>([
+  "roles",
+  "version",
+  "id",
+  "username",
+  "account",
+  "password",
+  "passwordHistory",
+  "mfa",
+  "trustedDevices",
+  "pendingInvitation",
+]);
+
+/**
+ * Return a shallow copy of `profile` with `RESERVED_USER_KEYS` removed.
+ * Does not mutate the input.
+ */
+export function stripReservedUserKeys(profile: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(profile)) {
+    if (!RESERVED_USER_KEYS.has(key)) out[key] = profile[key];
+  }
+  return out;
+}
+
+/** Trim + de-duplicate role identifiers submitted via the admin invite form. */
+export function parseInviteRoles(input?: string[]): string[] {
+  if (!Array.isArray(input)) return [];
+  const seen = new Set<string>();
+  for (const v of input) {
+    const trimmed = typeof v === "string" ? v.trim() : "";
+    if (trimmed) seen.add(trimmed);
+  }
+  return [...seen];
+}
+
+/**
+ * Single source of truth for the "this invite was already accepted" finish
+ * envelope. Used by both `idempotent-redirect` (in-workflow) and by
+ * `AuthController.invitePostRedemption` (side route reached when the wf
+ * state store has evicted the finished row and re-resume hits 410).
+ *
+ * Secondary "Request a new invite" option is gated on
+ * `alreadyAcceptedRedirectUrl` being non-empty — mirrors how the resolver
+ * defaults it, but lets consumers blank it to suppress the secondary button.
+ */
+export function buildInviteAlreadyAcceptedEnvelope(opts: {
+  loginUrl: string;
+  alreadyAcceptedRedirectUrl: string;
+}): FinishWfOpts {
+  const altUrl = opts.alreadyAcceptedRedirectUrl;
+  return {
+    message: { level: "info", text: "This invite was already accepted." },
+    next: {
+      trigger: "manual",
+      primary: {
+        label: "Go to sign-in",
+        action: { type: "redirect", target: opts.loginUrl, reason: "already-accepted" },
+      },
+      ...(altUrl && {
+        options: [
+          {
+            label: "Request a new invite",
+            action: { type: "redirect", target: altUrl, reason: "request-new-invite" },
+          },
+        ],
+      }),
+    },
   };
 }
 
@@ -175,20 +265,17 @@ export class AuthWorkflow {
   protected readonly opts: ResolvedAuthWorkflowOpts;
   protected readonly users: UserService;
   protected readonly auth: AuthCredential;
-  protected readonly authOpts: AuthOpts;
   protected readonly consentStore: ConsentStore;
 
   constructor(
-    opts: AuthWorkflowOpts,
+    opts: Partial<AuthWorkflowOpts>,
     users: UserService,
     auth: AuthCredential,
-    authOpts: AuthOpts,
     consentStore: ConsentStore,
   ) {
     this.opts = mergeAuthWorkflowOpts(opts);
     this.users = users;
     this.auth = auth;
-    this.authOpts = authOpts;
     this.consentStore = consentStore;
   }
 
@@ -396,7 +483,7 @@ export class AuthWorkflow {
   /**
    * Resolve the unified MFA policy. Replaces login's hardcoded defaults +
    * invite's `{ issuer }` resolver. Issuer is sourced from
-   * `this.authOpts.totpIssuer` so per-app TOTP labels remain a single knob.
+   * `this.opts.totpIssuer` so per-app TOTP labels remain a single knob.
    * Reached from login.flow + invite.start.
    */
   protected resolveMfaPolicy(
@@ -405,7 +492,7 @@ export class AuthWorkflow {
     return {
       mode: "optional",
       availableTransports: ["sms", "email", "totp"],
-      issuer: this.authOpts.totpIssuer,
+      issuer: this.opts.totpIssuer,
     };
   }
 
@@ -459,7 +546,7 @@ export class AuthWorkflow {
 
   /**
    * Resolve the invite accept-tail policy. Reached from invite.start accept
-   * phase. `loginUrl` defaults to `this.authOpts.loginUrl`. Note: today's
+   * phase. `loginUrl` defaults to `this.opts.loginUrl`. Note: today's
    * `freshLoginRequired` field is GONE — the auto-login choice is the static
    * `AuthWorkflowOpts.autoLoginOnInvite` boolean (per §2 decision).
    */
@@ -467,8 +554,8 @@ export class AuthWorkflow {
     _ctx: AuthWfCtx,
   ): NonNullable<AuthWfCtx["accept"]> | Promise<NonNullable<AuthWfCtx["accept"]>> {
     return {
-      alreadyAcceptedRedirectUrl: this.authOpts.loginUrl,
-      loginUrl: this.authOpts.loginUrl,
+      alreadyAcceptedRedirectUrl: this.opts.loginUrl,
+      loginUrl: this.opts.loginUrl,
       showConfirmation: true,
       confirmationMessage: "Your account has been created.",
     };
@@ -485,7 +572,7 @@ export class AuthWorkflow {
     return {
       // safe to default-on since CredentialStoreJwt.passesEpoch uses >=
       revokeAllSessions: true,
-      loginUrl: this.authOpts.loginUrl,
+      loginUrl: this.opts.loginUrl,
     };
   }
 
@@ -663,7 +750,7 @@ export class AuthWorkflow {
       channel,
       recipient: address,
       code,
-      expiresInMs: this.authOpts.mfa.pincodeTtlMs,
+      expiresInMs: this.opts.mfa.pincodeTtlMs,
     });
   }
 
@@ -1358,9 +1445,9 @@ export class AuthWorkflow {
         username: ctx.username,
         ...(ctx.username && { userId: ctx.username }),
         ...(admin.roles && { roles: admin.roles }),
-        expiresAtMs: this.authOpts.magicLinkTtlMs,
+        expiresAtMs: this.opts.magicLinkTtlMs,
       }),
-      expires: Date.now() + this.authOpts.magicLinkTtlMs,
+      expires: Date.now() + this.opts.magicLinkTtlMs,
     };
   }
 
@@ -1531,13 +1618,13 @@ export class AuthWorkflow {
     else {
       (ctx.channel ??= {}).phone = value;
     }
-    const code = this.mintPin(ctx, this.authOpts.mfa.pincodeLength, this.authOpts.mfa.pincodeTtlMs);
+    const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
     await this.deliver({
       kind: "enroll-pincode",
       channel: isEmail ? "email" : "sms",
       recipient: value,
       code,
-      expiresInMs: this.authOpts.mfa.pincodeTtlMs,
+      expiresInMs: this.opts.mfa.pincodeTtlMs,
     });
     const pincodeWf = useAtscriptWf(this.opts.forms.pincode);
     throw pincodeWf.requireInput();
@@ -1720,7 +1807,7 @@ export class AuthWorkflow {
   async pincodeSend(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
     const targetResult = this.resolvePincodeTarget(ctx);
     const target = targetResult instanceof Promise ? await targetResult : targetResult;
-    const code = this.mintPin(ctx, this.authOpts.mfa.pincodeLength, this.authOpts.mfa.pincodeTtlMs);
+    const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
     // Branched on `kind` discriminator: `AuthDeliveryPayload` pins
     // `recovery-pincode` to `channel: "email"` (a recovery target is always
     // email per `resolvePincodeTarget`'s recovery branch).
@@ -1730,7 +1817,7 @@ export class AuthWorkflow {
         channel: target.channel,
         recipient: target.address,
         code,
-        expiresInMs: this.authOpts.mfa.pincodeTtlMs,
+        expiresInMs: this.opts.mfa.pincodeTtlMs,
       });
     } else {
       await this.deliver({
@@ -1738,13 +1825,13 @@ export class AuthWorkflow {
         channel: "email",
         recipient: target.address,
         code,
-        expiresInMs: this.authOpts.mfa.pincodeTtlMs,
+        expiresInMs: this.opts.mfa.pincodeTtlMs,
       });
     }
     const pincode = (ctx.pincode ??= {});
     pincode.sentTo = this.maskAddress(target.address, target.channel);
-    pincode.codeLength = this.authOpts.mfa.pincodeLength;
-    pincode.resendAllowedAt = Date.now() + this.authOpts.mfa.pincodeResendTimeoutMs;
+    pincode.codeLength = this.opts.mfa.pincodeLength;
+    pincode.resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
     return undefined;
   }
 
@@ -1897,7 +1984,7 @@ export class AuthWorkflow {
 
     // Idempotent TOTP secret provisioning.
     if (m.method === "totp" && !m.secret) {
-      const issuer = ctx.mfaPolicy?.issuer ?? this.authOpts.totpIssuer;
+      const issuer = ctx.mfaPolicy?.issuer ?? this.opts.totpIssuer;
       const secret = generateTotpSecret();
       const uri = generateTotpUri(secret, issuer, username);
       return this.withStoreErrorTranslation(() =>
@@ -1948,8 +2035,8 @@ export class AuthWorkflow {
       }),
     );
     m.address = input.address;
-    const code = this.mintPin(ctx, this.authOpts.mfa.pincodeLength, this.authOpts.mfa.pincodeTtlMs);
-    (ctx.pincode ??= {}).resendAllowedAt = Date.now() + this.authOpts.mfa.pincodeResendTimeoutMs;
+    const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
+    (ctx.pincode ??= {}).resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
     await this.sendEnrollPincode(ctx, input.address, code);
     return undefined;
   }
@@ -1971,7 +2058,7 @@ export class AuthWorkflow {
     // single-transport auto-pick path (`prepare-mfa` may pre-pick totp
     // without going through `enrollPickMethod`).
     if (m.method === "totp" && !m.secret) {
-      const issuer = ctx.mfaPolicy?.issuer ?? this.authOpts.totpIssuer;
+      const issuer = ctx.mfaPolicy?.issuer ?? this.opts.totpIssuer;
       const secret = generateTotpSecret();
       const uri = generateTotpUri(secret, issuer, username);
       await this.withStoreErrorTranslation(() =>
@@ -2004,12 +2091,8 @@ export class AuthWorkflow {
           formMessage: `Please wait ${waitSec}s before requesting another code`,
         });
       }
-      const code = this.mintPin(
-        ctx,
-        this.authOpts.mfa.pincodeLength,
-        this.authOpts.mfa.pincodeTtlMs,
-      );
-      (ctx.pincode ??= {}).resendAllowedAt = Date.now() + this.authOpts.mfa.pincodeResendTimeoutMs;
+      const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
+      (ctx.pincode ??= {}).resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
       await this.sendEnrollPincode(ctx, m.address as string, code);
       return undefined;
     }

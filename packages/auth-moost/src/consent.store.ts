@@ -1,6 +1,32 @@
 import { Injectable } from "moost";
 
-import type { ConsentEvent } from "./workflows/auth-workflow.base";
+/**
+ * Consent event emitted to the `ConsentStore.save(username, events)` DI
+ * provider. Storage shape is intentionally the consumer's call — Mongo users
+ * typically push the events onto an embedded array, SQL users insert into an
+ * audit table, event-bus users publish to a topic. The library batches all
+ * collected events from a single workflow run into one call: ONE event per
+ * pending descriptor (audit-friendly default — declined-optional consents
+ * are persisted too, so customers can prove the user was asked; customers
+ * who want only accepted events filter in their `save()` override). The
+ * `accepted` boolean is explicit per row — `true` when the user ticked the
+ * matching descriptor, `false` when an optional descriptor went un-ticked.
+ */
+export interface ConsentEvent {
+  /** Identifier from the matching `ConsentDescriptor.id`. */
+  id: string;
+  /** Whether the user ticked this descriptor (`false` for un-ticked optionals). */
+  accepted: boolean;
+  /** Stamped from the matching `ConsentDescriptor.version` (when set). */
+  version?: string;
+  /**
+   * Wall-clock ms at the moment `processInlineConsent` resolved the user's
+   * carrier-form submission (NOT at write-time — captured BEFORE the batched
+   * `consentStore.save` call so a paused-workflow resume gap doesn't drift
+   * the timestamp).
+   */
+  at: number;
+}
 
 /**
  * Descriptor for a single consent prompt. Customers' ConsentStore.getPendingConsents
