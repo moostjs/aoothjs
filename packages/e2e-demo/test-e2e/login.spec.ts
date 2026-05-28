@@ -969,7 +969,6 @@ test.describe("LoginWorkflow / variant=concurrency (P1)", () => {
     await fillField(page, "password", "Password1!");
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
 
-    await waitForFormInput(page, "action");
     await expect(page.getByRole("button", { name: "Log out other sessions" })).toBeVisible();
   });
 
@@ -1251,7 +1250,7 @@ test.describe("LoginWorkflow / variant=full (P2)", () => {
     // seeded, `full` variant has `concurrencyLimit: { max: 1, onLimit:
     // 'kickPrompt' }`, so `1 >= 1` → the kick form pauses. Click
     // "Log out other sessions" so the schema resumes through `issue`.
-    await waitForFormInput(page, "action");
+    await expect(page.getByRole("button", { name: "Log out other sessions" })).toBeVisible();
     await page.getByRole("button", { name: "Log out other sessions" }).click();
 
     // 10. Finish envelope — `full` variant does NOT set `finalize.redirect`,

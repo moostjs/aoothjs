@@ -569,13 +569,6 @@ export interface TermsBumpForm extends WithInlineConsentForm {
 @meta.label 'Session limit reached'
 @meta.description 'You are already signed in elsewhere. Choose what to do.'
 export interface ConcurrencyLimitForm {
-    @ui.form.order 10
-    @ui.form.type 'text'
-    @meta.label 'Action'
-    @meta.required
-    @expect.pattern '^logoutOthers$'
-    action: string
-
     @ui.form.action 'logoutOthers', 'Log out other sessions'
     logoutOthers?: ui.action
 }
