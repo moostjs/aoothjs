@@ -67,6 +67,22 @@ import type {
 } from "./auth-workflow.ctx";
 import type { AuthWorkflowOpts, ResolvedAuthWorkflowOpts } from "./auth-workflow.opts";
 import {
+  AskEmailForm,
+  AskPhoneForm,
+  ConcurrencyLimitForm,
+  EmailIdentifierForm,
+  EnrollAddressForm,
+  EnrollConfirmForm,
+  EnrollPickMethodForm,
+  InviteForm,
+  LoginCredentialsForm,
+  MfaCodeForm,
+  PincodeForm,
+  Select2faForm,
+  SetPasswordForm,
+  TermsBumpForm,
+} from "../atscript/models/forms.as";
+import {
   consentsPersistTailSchema,
   mfaLoopSchema,
   passwordPhaseSchema,
@@ -117,13 +133,32 @@ export type AuthDeliveryPayload =
     };
 
 /**
- * Minimal opts-merge for the skeleton. Populates the two `autoLogin*`
- * booleans + the device-trust cookie defaults so schema condition functions
- * (`!this.opts.autoLoginOnInvite`, etc.) read deterministic values. The
- * `forms` map is intentionally NOT defaulted here — the real form-schema
- * defaults are wired in step 4 alongside the step body merges. Stub @Step
- * bodies never traverse `this.opts.forms`, so the cast is safe for P1 step 3.
+ * Default form schemas — the bundled `forms.as` models the workflow's
+ * `useAtscriptWf()` callers resolve to. Consumers can override any field
+ * via `opts.forms.<field>` to ship their own atscript-annotated subclass
+ * (typically `extends` the bundled one to add `meta` / `ui` annotations).
+ *
+ * Recovery's `recoveryPincode` defaults to the shared `PincodeForm`; an
+ * app that wants a recovery-specific OTP form overrides this slot.
  */
+const DEFAULT_FORMS: ResolvedAuthWorkflowOpts["forms"] = {
+  loginCredentials: LoginCredentialsForm,
+  invite: InviteForm,
+  recoveryEmailIdentifier: EmailIdentifierForm,
+  askEmail: AskEmailForm,
+  askPhone: AskPhoneForm,
+  enrollPickMethod: EnrollPickMethodForm,
+  enrollAddress: EnrollAddressForm,
+  enrollConfirm: EnrollConfirmForm,
+  select2fa: Select2faForm,
+  mfaCode: MfaCodeForm,
+  pincode: PincodeForm,
+  setPassword: SetPasswordForm,
+  termsBump: TermsBumpForm,
+  concurrencyLimit: ConcurrencyLimitForm,
+  recoveryPincode: PincodeForm,
+};
+
 function mergeAuthWorkflowOpts(opts: Partial<AuthWorkflowOpts>): ResolvedAuthWorkflowOpts {
   return {
     autoLoginOnInvite: opts.autoLoginOnInvite ?? true,
@@ -143,7 +178,7 @@ function mergeAuthWorkflowOpts(opts: Partial<AuthWorkflowOpts>): ResolvedAuthWor
       bindsTo: "cookie",
       ...opts.deviceTrust,
     },
-    forms: (opts.forms ?? {}) as ResolvedAuthWorkflowOpts["forms"],
+    forms: { ...DEFAULT_FORMS, ...opts.forms },
   };
 }
 
@@ -2465,7 +2500,7 @@ export class AuthWorkflow {
    * `@Public()` on the body because the wf adapter dispatches the flow body
    * on every `start()` / `resume()` call (anonymous login).
    */
-  @Workflow("login")
+  @Workflow("auth/login/flow")
   @Public()
   @WorkflowSchema<AuthWfCtx>([
     { id: "init-login" },
@@ -2585,7 +2620,7 @@ export class AuthWorkflow {
    * all `@Public()` (anonymous resume). The body itself is `@Public()` so the
    * wf adapter can dispatch start/resume on anonymous magic-link clicks.
    */
-  @Workflow("invite")
+  @Workflow("auth/invite/start")
   @Public()
   @WorkflowSchema<AuthWfCtx>([
     // ── Phase A: admin invites (arbac-protected) ──
@@ -2663,7 +2698,7 @@ export class AuthWorkflow {
    * recovery.flow — OTP-via-email reset. `@Public()` on the body because
    * anonymous users start recovery.
    */
-  @Workflow("recover")
+  @Workflow("auth/recovery/flow")
   @Public()
   @WorkflowSchema<AuthWfCtx>([
     { id: "init-recovery" },

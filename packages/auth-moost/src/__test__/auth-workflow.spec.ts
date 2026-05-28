@@ -137,10 +137,16 @@ describe("AuthWorkflow construction (WF-AUTH-UNIFIED-002)", () => {
     expect(opts.deviceTrust.ttlMs).toBe(24 * 60 * 60_000);
     expect(opts.deviceTrust.bindsTo).toBe("cookie");
 
-    // forms — defaulted to {} so step bodies can do `this.opts.forms.pincode`
-    // without throwing (the real form schemas are filled in by consumers via
-    // overrides; absence here is fine for non-form-rendering paths).
-    expect(opts.forms).toEqual({});
+    // forms — defaulted to the bundled `forms.as` models so step bodies
+    // (`useAtscriptWf(this.opts.forms.X)`) hit real annotated types out of
+    // the box. Consumer override via `opts.forms.<field>` swaps any slot.
+    // Pin a representative field-count + a key slot so a regression that
+    // drops the default map is caught.
+    expect(Object.keys(opts.forms).length).toBe(15);
+    expect(opts.forms.loginCredentials).toBeTruthy();
+    expect(opts.forms.recoveryEmailIdentifier).toBeTruthy();
+    expect(opts.forms.pincode).toBeTruthy();
+    expect(opts.forms.setPassword).toBeTruthy();
   });
 
   it("preserves overrides for top-level fields", () => {
@@ -628,6 +634,10 @@ describe("AuthWorkflow schema integrity", () => {
     // WHY: the three flow paths (`login`, `invite`, `recover`) are the
     // canonical wf-id suffixes the controller mounts at /auth/<path>/flow.
     // Renaming or losing one would break the public REST surface.
-    expect(flows.map((f) => f.path).toSorted()).toEqual(["invite", "login", "recover"]);
+    expect(flows.map((f) => f.path).toSorted()).toEqual([
+      "auth/invite/start",
+      "auth/login/flow",
+      "auth/recovery/flow",
+    ]);
   });
 });

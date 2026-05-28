@@ -19,7 +19,11 @@ import { WfTrigger } from "./wf-trigger/decorator";
 import { buildInviteAlreadyAcceptedEnvelope } from "./workflow/auth-workflow";
 
 /** Workflows allowed by the bundled `/auth/trigger` endpoint. Subclasses override `triggerWf()` to extend. */
-export const DEFAULT_AUTH_WORKFLOWS = ["/login", "/invite", "/recover"] as const;
+export const DEFAULT_AUTH_WORKFLOWS = [
+  "auth/login/flow",
+  "auth/invite/start",
+  "auth/recovery/flow",
+] as const;
 
 /** Prefer an explicit body field, fall back to the refresh cookie when enabled. */
 function resolveRefreshToken(auth: AuthBindings, body: { refreshToken?: string } | undefined) {
