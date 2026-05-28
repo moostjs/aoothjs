@@ -376,6 +376,20 @@ export interface PincodeForm {
 @wf.context.pass 'consents'
 @wf.context.pass 'channel'
 export interface AskEmailForm extends WithInlineConsentForm {
+    /**
+     * Phantom disclosure paragraph staged by `resolveOtpDisclosure(ctx,
+     * 'email')` onto `ctx.channel.otpDisclosure`. Renders adjacent to the
+     * email input so the user reads the TCPA / PECR / CASL / GDPR-safe
+     * implied-consent copy BEFORE submitting the address. Hidden when the
+     * resolver returns an empty string so an override that wants to drop
+     * the disclosure (e.g. an enterprise tenant collecting explicit consent
+     * elsewhere) renders without an empty paragraph slot.
+     */
+    @ui.form.order 5
+    @ui.form.fn.value '(_, _d, ctx) => ctx.channel?.otpDisclosure || ""'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.channel?.otpDisclosure'
+    disclosure: ui.paragraph
+
     @ui.form.order 10
     @ui.form.type 'text'
     @meta.label 'Email'
@@ -393,6 +407,12 @@ export interface AskEmailForm extends WithInlineConsentForm {
 @wf.context.pass 'consents'
 @wf.context.pass 'channel'
 export interface AskPhoneForm extends WithInlineConsentForm {
+    /** SMS-branch counterpart of `AskEmailForm.disclosure` — see that field. */
+    @ui.form.order 5
+    @ui.form.fn.value '(_, _d, ctx) => ctx.channel?.otpDisclosure || ""'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.channel?.otpDisclosure'
+    disclosure: ui.paragraph
+
     @ui.form.order 10
     @ui.form.type 'text'
     @meta.label 'Phone (E.164)'
