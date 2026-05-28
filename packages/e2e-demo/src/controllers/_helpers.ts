@@ -17,7 +17,9 @@ export function scopedFilter(extra: Record<string, unknown>): Record<string, unk
 
 export function scopedSet(): Record<string, unknown> {
   const scopes = useArbac().getScopes<ArbacDbScope>() ?? [];
-  return scopes.reduce<Record<string, unknown>>((acc, s) => ({ ...acc, ...s.set }), {});
+  const out: Record<string, unknown> = {};
+  for (const s of scopes) Object.assign(out, s.set);
+  return out;
 }
 
 export function assertWritten(

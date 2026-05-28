@@ -486,32 +486,13 @@ export interface EnrollConfirmForm {
 }
 
 /**
- * Default minimal profile completion form. Consumers replace via
- * `LoginWorkflowOptions.profileCompleteForm` for richer shapes.
- */
-@meta.label 'Complete your profile'
-@meta.description 'Add a few details before you continue.'
-@wf.context.pass 'consents'
-export interface ProfileCompleteForm extends WithInlineConsentForm {
-    @ui.form.order 10
-    @ui.form.type 'text'
-    @meta.label 'First name'
-    firstName?: string
-
-    @ui.form.order 20
-    @ui.form.type 'text'
-    @meta.label 'Last name'
-    lastName?: string
-}
-
-/**
  * Standalone consent-bump prompt. Fires for returning users with pending
  * consents (set by `prepare-consents` from `ConsentStore.getPendingConsents`)
  * who did NOT pass through any onboarding carrier form (`AskEmailForm` /
- * `AskPhoneForm` / `SetPasswordForm` / `ProfileCompleteForm`) on this login —
- * those carrier forms collect consents inline via `WithInlineConsentForm`'s
- * inherited `AsConsentArray` field. The bump-prompt only renders the same
- * inherited consent block (no additional fields).
+ * `AskPhoneForm` / `SetPasswordForm`) on this login — those carrier forms
+ * collect consents inline via `WithInlineConsentForm`'s inherited
+ * `AsConsentArray` field. The bump-prompt only renders the same inherited
+ * consent block (no additional fields).
  */
 @meta.label 'Updated terms and policies'
 @meta.description 'Please review and accept the updated terms to continue.'

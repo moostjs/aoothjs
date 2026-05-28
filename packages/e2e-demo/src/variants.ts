@@ -4,41 +4,23 @@
  * single backend can serve every variant in `USER_STORIES.md` §3/4/5 without
  * spinning a fresh process per profile.
  *
- * The maps below are `Partial<...Opts>` (recovery + invite) or
- * `{ opts?, mfaCtx? }` (login) because the demo's `mergeWfOpts` two-level
- * deep merge layers `opts` on top of `demoLoginOpts` / `demoRecoveryOpts` /
- * `demoInviteOpts`, and `mfaCtx` is consumed by the `setMfaMode` /
- * `setMfaTransports` / `setCurrentMfa` overrides on `DemoLoginWorkflow`.
+ * The maps below carry `{ opts?, authOpts?, policy?, mfaCtx? }` slots. `opts`
+ * shallow-merges onto the demo's base `AuthWorkflowOpts` at workflow-ctor
+ * time. `authOpts` overlays the cross-workflow infrastructure subset (pincode
+ * timers, magic-link TTL) and is merged into `opts` before super(). `policy`
+ * supplies per-resolver payloads consulted by `DemoAuthWorkflow`'s
+ * `resolveXxx` overrides. `mfaCtx` is consumed by the unified `prepare-mfa`
+ * setter override.
  *
- * PR9 stripped `mfa.mode` / `mfa.transports` from `LoginWorkflowOpts` and
- * `InviteWorkflowOpts`. Those values now live on ctx (populated by atomic
- * `@Step` setters) — variants that previously poked `mfa.mode` /
- * `mfa.transports` via opts now declare them under `mfaCtx`, applied by the
- * setter overrides on `DemoLoginWorkflow`. The shared `AuthOpts` provider
- * holds cross-workflow MFA infrastructure (`pincodeResendTimeoutMs`, …).
+ * The unified `AuthWorkflow` replaces the prior three workflows; the policy
+ * shapes below are typed against `AuthWfCtx` fields directly.
  */
-import type {
-  InvitePolicyOverrides,
-  InviteWorkflowOpts,
-  LoginPolicyOverrides,
-  LoginWfCtx,
-  LoginWorkflowOpts,
-  MfaTransport,
-  RecoveryPolicyOverrides,
-  RecoveryWorkflowOpts,
-} from "@aooth/auth-moost";
-
-// Re-export so consumers that import the demo's variant types keep a single
-// import surface (`@e2e-demo` re-exports from "./variants" elsewhere).
-export type { InvitePolicyOverrides, LoginPolicyOverrides, RecoveryPolicyOverrides };
+import type { AuthWfCtx, AuthWorkflowOpts, MfaTransport } from "@aooth/auth-moost";
 
 /**
- * Static MFA ctx overrides applied by `DemoLoginWorkflow`'s setter steps
- * (`setMfaMode` / `setMfaTransports` / `setCurrentMfa`). PR9 stripped the
- * equivalent `mfa.mode` / `mfa.transports` keys from `LoginWorkflowOpts`;
- * variants that previously poked them via opts now declare them here, applied
- * at request time by the demo's setter overrides. Shape mirrors the
- * `WithLoginMfaCtxOverrides` interface in `test/harness.ts`.
+ * Static MFA ctx overrides applied by `DemoAuthWorkflow`'s `prepare-mfa`
+ * setter override. Writes onto `ctx.mfaPolicy` (mode + transports) and
+ * `ctx.mfa.current` (single-transport auto-pick).
  */
 export interface LoginMfaCtxOverrides {
   mfaMode?: "required" | "optional" | "disabled";
@@ -47,10 +29,8 @@ export interface LoginMfaCtxOverrides {
 }
 
 /**
- * Invite-side counterpart of `LoginMfaCtxOverrides`, applied by
- * `DemoInviteWorkflow`'s `inviteSetMfaMode` / `inviteSetMfaTransports` /
- * `inviteSetEnrollMethod` setter steps. Shape mirrors the
- * `WithInviteMfaCtxOverrides` interface in `test/harness.ts`.
+ * Invite-side counterpart. Writes the same mfaPolicy / enroll-method picks
+ * via `prepare-mfa` on the invite-accept resume.
  */
 export interface InviteMfaCtxOverrides {
   mfaMode?: "required" | "optional" | "disabled";
@@ -66,48 +46,70 @@ export interface InviteMfaCtxOverrides {
 // re-add it here — Playwright tests catch the regression at hydrate time.
 
 /**
- * Per-request `AuthOpts` overlay applied by `DemoLoginWorkflow` /
- * `DemoRecoveryWorkflow` / `DemoInviteWorkflow` ctors (FOR_EVENT scope) on top
- * of the demo's singleton `AuthOpts` instance. After the AuthOpts reshape the
- * cross-workflow knobs (pincode timers, magic-link TTL) live on a SINGLETON
- * provider — variants that need to flip them per-request go through this
- * field instead. Note: `loginUrl` / `totpIssuer` are NOT included here because
- * no current variant flips them per-request (and singleton scope makes that
- * non-trivial; if a future variant needs them, add to the AuthOpts clone path
- * in `cloneAuthOptsWithVariant` in `src/app.ts`).
+ * Per-request infrastructure overlay applied by `DemoAuthWorkflow`'s ctor
+ * (FOR_EVENT scope) onto the base `AuthWorkflowOpts`. The cross-workflow
+ * knobs (pincode timers, magic-link TTL) now live on `AuthWorkflowOpts`
+ * itself — this overlay merges into the workflow opts before super().
  */
-export interface AuthOptsVariantOverrides {
-  mfa?: { pincodeLength?: number; pincodeTtlMs?: number; pincodeResendTimeoutMs?: number };
-  magicLinkTtlMs?: number;
+export type AuthOptsVariantOverrides = Partial<Pick<AuthWorkflowOpts, "mfa" | "magicLinkTtlMs">>;
+
+/**
+ * Login-flow resolver overrides. Mirrors the shape of the matching
+ * `AuthWfCtx` resolved-policy slots so variants only need to spell out the
+ * fields they're overriding.
+ */
+export interface LoginPolicyOverrides {
+  alternateCredentials?: NonNullable<AuthWfCtx["alternateCredentials"]>;
+  deviceTrust?: NonNullable<AuthWfCtx["deviceTrust"]>;
+  enrollment?: NonNullable<AuthWfCtx["enrollment"]>;
+  finalize?: NonNullable<AuthWfCtx["finalize"]>;
+  guards?: NonNullable<AuthWfCtx["guards"]>;
+  sessionPolicy?: NonNullable<AuthWfCtx["sessionPolicy"]>;
+  mfaPolicy?: NonNullable<AuthWfCtx["mfaPolicy"]>;
 }
 
 /**
- * Login variant entry. `opts` carries login-only infrastructure overrides
- * (cookie name/TTL — magic-link TTL + pincode timers moved to `authOpts`).
- * `authOpts` carries per-request overlay onto the singleton `AuthOpts`
- * (pincode cooldown, magic-link TTL).
- * `policy` carries per-request policy groups (alternateCredentials, guards,
- * profile, …) applied by `DemoLoginWorkflow`'s `resolveXxx(ctx)` overrides.
- * `mfaCtx` carries the static MFA-ctx overrides written by the
- * `prepare-mfa-setup` step.
+ * Invite-flow resolver overrides. `mfa` is unified onto `mfaPolicy` (the
+ * legacy split `invite.mfa` resolver was collapsed when the three workflows
+ * merged).
+ */
+export interface InvitePolicyOverrides {
+  adminForm?: NonNullable<AuthWfCtx["adminForm"]>;
+  accept?: NonNullable<AuthWfCtx["accept"]>;
+  mfaPolicy?: NonNullable<AuthWfCtx["mfaPolicy"]>;
+}
+
+/**
+ * Recovery-flow resolver overrides. `delivery` / `preReset` / `audit` are
+ * gone — the unified workflow no longer supports per-flow delivery-mode
+ * choice or pre-reset factor gating, and audit moved to interceptors.
+ */
+export interface RecoveryPolicyOverrides {
+  postReset?: NonNullable<AuthWfCtx["postReset"]>;
+  mfaPolicy?: NonNullable<AuthWfCtx["mfaPolicy"]>;
+  recoveryAltActions?: NonNullable<AuthWfCtx["recoveryAltActions"]>;
+}
+
+/**
+ * Login variant entry. `opts` overlays the demo's base `AuthWorkflowOpts`
+ * (forms, device-trust cookie config). `authOpts` overlays the
+ * cross-workflow infrastructure subset (pincode timers, magic-link TTL).
+ * `policy` carries per-request resolver overrides. `mfaCtx` pushes static
+ * MFA state through the unified `prepare-mfa` setter.
  */
 export interface LoginVariant {
-  opts?: Partial<LoginWorkflowOpts>;
+  opts?: Partial<AuthWorkflowOpts>;
   authOpts?: AuthOptsVariantOverrides;
   policy?: LoginPolicyOverrides;
   mfaCtx?: LoginMfaCtxOverrides;
 }
 
 /**
- * Invite variant entry. `opts` is forms-only after the AuthOpts reshape
- * (magic-link TTL + pincode timers moved). `authOpts` carries per-request
- * overlay onto the singleton `AuthOpts`. `policy` carries per-request policy
- * groups (adminForm, send, accept, cancellation, audit, mfa) applied by
- * `DemoInviteWorkflow`'s `resolveXxx(ctx)` overrides. `mfaCtx` carries the
- * static MFA-ctx overrides written by the `invite-setup-mfa` step.
+ * Invite variant entry. Same shape as `LoginVariant`; `policy` consults the
+ * invite-flow resolver surface (admin-form, accept, mfaPolicy).
  */
 export interface InviteVariant {
-  opts?: Partial<InviteWorkflowOpts>;
+  opts?: Partial<AuthWorkflowOpts>;
   authOpts?: AuthOptsVariantOverrides;
   policy?: InvitePolicyOverrides;
   mfaCtx?: InviteMfaCtxOverrides;
@@ -119,10 +121,10 @@ export interface InviteVariant {
  */
 /**
  * Defaults for the alt-cred policy used in `policy.alternateCredentials`
- * payloads. Mirrors the base `LoginWorkflow.resolveAlternateCredentials`
+ * payloads. Mirrors the base `AuthWorkflow.resolveAlternateCredentials`
  * defaults so a variant only needs to flip the flags it cares about.
  */
-const ALT_DEFAULTS: NonNullable<LoginWfCtx["alternateCredentials"]> = {
+const ALT_DEFAULTS: NonNullable<AuthWfCtx["alternateCredentials"]> = {
   forgotPassword: true,
   signup: false,
   magicLink: false,
@@ -171,7 +173,7 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
     mfaCtx: { mfaMode: "disabled" },
   },
   // Drives WF-LOGIN-EXPIRED-01. The `guards.passwordExpiry: true` default
-  // (declared by `LoginWorkflow.resolveGuards`) combined with the app-wide
+  // (declared by `AuthWorkflow.resolveGuards`) combined with the app-wide
   // `password.maxAgeMs: 365 days` configured in `aooth.ts` causes the
   // `credentials` step to set `ctx.isPasswordExpired = true` for any user
   // whose stored `password.lastChanged` is older than the window. The
@@ -181,30 +183,22 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
   "password-expired": {
     mfaCtx: { mfaMode: "disabled" },
   },
-  // The prior `acceptance` variant relied on `policy.acceptance.termsVersion`
-  // driving the standalone bump-prompt; Phase 5 moved the consent half to the
-  // customer `ConsentStore` (`VARIANT_PENDING_CONSENTS['acceptance']` in
-  // `app.ts`) and Phase 6 moved the `profileCompleteRequired` half to a
-  // dedicated `profile.required` knob exercised here.
-  acceptance: {
-    policy: {
-      profile: { required: true },
-    },
-  },
+  // Phase 5 moved the consent half to the customer `ConsentStore`
+  // (`VARIANT_PENDING_CONSENTS['acceptance']` in `app.ts`).
+  acceptance: {},
   // Phase 5 dynamic consent — the customer ConsentStore (DemoConsentStore)
   // keys its `getPendingConsents` off the `x-wf-variant` header to return a
   // 2-descriptor set for this variant (required terms + optional marketing).
-  // No enrollment / no profile-complete on this profile so the workflow
-  // lands on TermsBumpForm after credentials with the `AsConsentArray`
-  // rendered for the `consents: string[]` field. Drives WF-CONSENT-ARRAY-01.
+  // No enrollment on this profile so the workflow lands on TermsBumpForm
+  // after credentials with the `AsConsentArray` rendered for the
+  // `consents: string[]` field. Drives WF-CONSENT-ARRAY-01.
   "consent-array": {
     mfaCtx: { mfaMode: "disabled" },
   },
   // Standalone terms re-acceptance prompt — `termsVersion: 'v3'` (declared by
   // `DemoConsentStore.getPendingConsents` via `VARIANT_PENDING_CONSENTS` in
-  // `app.ts`) with NO other carrier form (no enrollment / no profileComplete)
-  // so the workflow lands on `TermsBumpForm` after credentials. Drives
-  // WF-LOGIN-BUMP-01.
+  // `app.ts`) with NO other carrier form (no enrollment) so the workflow
+  // lands on `TermsBumpForm` after credentials. Drives WF-LOGIN-BUMP-01.
   "terms-bump": {
     mfaCtx: { mfaMode: "disabled" },
   },
@@ -222,23 +216,23 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
       guards: { passwordInitial: true, emailVerifiedRequired: true, passwordExpiry: true },
       enrollment: { ensureEmail: true, ensurePhone: true },
       deviceTrust: { enabled: true, optIn: true, skipsMfa: true },
-      // Phase 5/6 reshape — the consent half moved to `DemoConsentStore.getPendingConsents`
-      // (see `VARIANT_PENDING_CONSENTS['full']` in `app.ts`); `profileCompleteRequired`
-      // moved onto the dedicated `profile.required` knob.
-      profile: { required: true },
+      // Phase 5 reshape — the consent half moved to `DemoConsentStore.getPendingConsents`
+      // (see `VARIANT_PENDING_CONSENTS['full']` in `app.ts`).
       sessionPolicy: { concurrencyLimit: { max: 1, onLimit: "kickPrompt" } },
     },
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["sms", "email", "totp"] },
   },
   "redirect-home": {
-    policy: { finalize: { auditLogin: true, notifyNewDevice: false, redirect: "home" } },
+    // `auditLogin` removed from the finalize shape — audit moved to
+    // interceptors when the workflows unified.
+    policy: { finalize: { notifyNewDevice: false, redirect: "home" } },
   },
   // Like `mfa-full` but with a 1s pincode-resend cooldown so the resend-throttled
   // / resend-after-cooldown stories (WF-LOGIN-011 / -012) run inside a single e2e
-  // tick rather than the 60s production default. Post-AuthOpts reshape the
-  // cooldown moved off `opts.mfa` onto the shared `AuthOpts.mfa` provider —
-  // declared on the variant's `authOpts` overlay (cloned per-event by
-  // `DemoLoginWorkflow`'s ctor; the workflow then reads `this.authOpts.mfa.pincodeResendTimeoutMs`).
+  // tick rather than the 60s production default. The cooldown is a
+  // cross-workflow infrastructure knob on `AuthWorkflowOpts.mfa.pincodeResendTimeoutMs`;
+  // declared via the variant's `authOpts` overlay (merged into the workflow
+  // opts at ctor time).
   "mfa-fast-resend": {
     authOpts: { mfa: { pincodeResendTimeoutMs: 1000 } },
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["sms", "email", "totp"] },
@@ -270,7 +264,7 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
   // can't see SPA-side regressions (hidden-fn button visibility, form-scope
   // re-render after action dispatch, action-envelope shape from clickAction).
   //
-  // `required` + single transport → `prepareMfaSetup` auto-picks and the
+  // `required` + single transport → `prepareMfa` auto-picks and the
   // login workflow skips EnrollPickMethodForm straight to EnrollConfirmForm
   // (WF-LOGIN-033). The 1-transport gate is what enables auto-pick — drop it
   // or widen to 2+ transports and the picker pause comes back.
@@ -288,7 +282,6 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
   // Same as above but with a 1s pincode-resend cooldown so the
   // resend-throttled / resend-after-cooldown branches (WF-LOGIN-036) run
   // inside one test tick. Mirrors `mfa-fast-resend` for the enrolment side.
-  // Cooldown lives on `AuthOpts.mfa` post-AuthOpts reshape — see `mfa-fast-resend`.
   "mfa-enroll-optional-fast-resend": {
     authOpts: { mfa: { pincodeResendTimeoutMs: 1000 } },
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["sms", "email", "totp"] },
@@ -296,71 +289,63 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
 };
 
 /**
- * Recovery variant entry. `opts` is forms-only after the AuthOpts reshape
- * (magic-link TTL + OTP pincode timers moved). `authOpts` carries per-request
- * overlay onto the singleton `AuthOpts`. `policy` carries per-request policy
- * groups (delivery mode + otpTransports, preReset, postReset, altActions,
- * audit) applied by `DemoRecoveryWorkflow`'s `resolveXxx(ctx)` overrides.
+ * Recovery variant entry. `opts` overlays the demo's base `AuthWorkflowOpts`
+ * (forms only). `authOpts` overlays the cross-workflow infrastructure subset
+ * (pincode timers, magic-link TTL). `policy` carries per-request resolver
+ * overrides — `delivery` / `preReset` / `audit` resolvers GONE when the
+ * three workflows unified, so only `postReset` / `mfaPolicy` /
+ * `recoveryAltActions` remain.
  */
 export interface RecoveryVariant {
-  opts?: Partial<RecoveryWorkflowOpts>;
+  opts?: Partial<AuthWorkflowOpts>;
   authOpts?: AuthOptsVariantOverrides;
   policy?: RecoveryPolicyOverrides;
 }
 
 /**
  * Default-merged `postReset` policy — saves variants from spelling out the
- * full 3-field shape just to flip one flag. Mirrors `RecoveryWorkflow`'s
+ * full 2-field shape just to flip one flag. Mirrors `AuthWorkflow`'s
  * `resolvePostReset` defaults.
  */
 const POST_RESET_DEMO_DEFAULTS: NonNullable<RecoveryPolicyOverrides["postReset"]> = {
   revokeAllSessions: true,
-  freshLoginRequired: false,
   loginUrl: "/login",
 };
 
 /**
  * Recovery profiles — keys mirror `USER_STORIES.md` §4 variants R-A…R-G.
+ *
+ * Variants that exercised the legacy `delivery: { mode, otpTransports }`,
+ * `preReset`, or `audit` resolvers were DROPPED when the three workflows
+ * unified — those resolvers no longer exist. Remaining variants exercise
+ * either `postReset` policy, infrastructure overlays (`magicLinkTtlMs`,
+ * pincode cooldown), or the customer `ConsentStore` per-variant lookup.
  */
 export const RECOVERY_VARIANTS: Record<string, RecoveryVariant> = {
-  "default-magiclink": {
-    policy: { delivery: { mode: "magicLink", otpTransports: ["email"] } },
-  },
-  "otp-email": {
-    policy: { delivery: { mode: "otp", otpTransports: ["email"] } },
-  },
-  "otp-sms": {
-    policy: { delivery: { mode: "otp", otpTransports: ["sms"] } },
-  },
-  "otp-both": {
-    policy: { delivery: { mode: "otp", otpTransports: ["email", "sms"] } },
-  },
-  choice: {
-    policy: { delivery: { mode: "choice", otpTransports: ["email"] } },
-  },
-  "pre-factor": {
-    policy: { preReset: { requireKnownFactor: true } },
-  },
   "fresh-login": {
+    // `freshLoginRequired` was REMOVED from `AuthWfCtx["postReset"]` when
+    // the auto-login choice became the static `autoLoginOnRecover` opt;
+    // this variant's intent (force a fresh login after reset) is now
+    // expressed via that opt instead.
+    opts: { autoLoginOnRecover: false },
     policy: {
-      postReset: { ...POST_RESET_DEMO_DEFAULTS, freshLoginRequired: true },
+      postReset: { ...POST_RESET_DEMO_DEFAULTS },
     },
   },
   // Fast-expire magic-link variant — WF-RECOVERY-004. The persisted state
   // strategy honours `output.expires` so 1ms guarantees the resumed `wfs`
   // hits the "Invalid or expired workflow state" branch in @wooksjs/event-wf.
-  // Magic-link TTL moved off `RecoveryWorkflowOpts.delivery` onto `AuthOpts.magicLinkTtlMs`
-  // post-AuthOpts reshape — declared on the variant's `authOpts` overlay.
+  // Magic-link TTL lives on `AuthWorkflowOpts.magicLinkTtlMs` — declared on
+  // the variant's `authOpts` overlay (merged into the workflow opts at
+  // ctor time).
   "recovery-short-ttl": {
     authOpts: { magicLinkTtlMs: 1 },
-    policy: { delivery: { mode: "magicLink", otpTransports: ["email"] } },
   },
   // Short OTP resend cooldown — WF-RECOVERY-010/011. 1s cooldown lets the
   // first `Resend code` click trip the rate-limit branch, while a >1s wait
   // proves a second click after the cooldown sends a fresh code.
   "recovery-fast-resend": {
     authOpts: { mfa: { pincodeResendTimeoutMs: 1000 } },
-    policy: { delivery: { mode: "otp", otpTransports: ["email"] } },
   },
   // Phase-5 dynamic inline-consent on recovery — `DemoConsentStore` keys its
   // per-variant pending universe so this variant returns a required-terms
@@ -368,23 +353,18 @@ export const RECOVERY_VARIANTS: Record<string, RecoveryVariant> = {
   // Drives WF-RECOVERY-CONSENT-01. Terms-bump is the headline recovery
   // scenario for inline consent ("since you last set your password we
   // updated our terms").
-  "recovery-terms-bump": {
-    policy: {
-      delivery: { mode: "magicLink", otpTransports: ["email"] },
-    },
-  },
+  "recovery-terms-bump": {},
 };
 
 /**
  * Default-merged `accept` policy — saves variants from spelling out the full
- * 5-field shape just to flip one flag. Mirrors `InviteWorkflow.resolveAccept`
+ * 4-field shape just to flip one flag. Mirrors `AuthWorkflow.resolveAccept`
  * defaults, with `showConfirmation: false` swapped in to match the demo
  * default (existing demo tests assert the auto-login response payload —
  * pre-dating the BIG 3.3 confirmation pause).
  */
 const ACCEPT_DEMO_DEFAULTS: NonNullable<InvitePolicyOverrides["accept"]> = {
   alreadyAcceptedRedirectUrl: "/login",
-  freshLoginRequired: false,
   loginUrl: "/login",
   showConfirmation: false,
   confirmationMessage: "Your account has been created.",
@@ -394,7 +374,8 @@ const ACCEPT_DEMO_DEFAULTS: NonNullable<InvitePolicyOverrides["accept"]> = {
  * Invite profiles — keys mirror `USER_STORIES.md` §5 variants I-A…I-G. Each
  * entry uses the `{ opts?, policy?, mfaCtx? }` shape: `opts` carries infra
  * overrides (TTLs, pincode fields), `policy` carries `resolveXxx`-readable
- * policy groups, `mfaCtx` pushes static ctx through `invite-setup-mfa`.
+ * policy groups, `mfaCtx` pushes static ctx through the unified `prepare-mfa`
+ * setter on the invite resume.
  */
 export const INVITE_VARIANTS: Record<string, InviteVariant> = {
   "email-no-roles": {
@@ -409,7 +390,9 @@ export const INVITE_VARIANTS: Record<string, InviteVariant> = {
   },
   "short-ttl-confirmation": {
     // Invite magic-link TTL is declared on the `authOpts` overlay
-    // (`AuthOpts.magicLinkTtlMs`) — the workflow no longer owns send-mode.
+    // (`AuthWorkflowOpts.magicLinkTtlMs`) — the workflow no longer owns
+    // send-mode (the unified workflow doesn't have a per-flow delivery
+    // resolver).
     authOpts: { magicLinkTtlMs: 1000 },
     policy: { accept: { ...ACCEPT_DEMO_DEFAULTS, showConfirmation: true } },
   },

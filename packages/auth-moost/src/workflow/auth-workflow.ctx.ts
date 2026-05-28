@@ -95,7 +95,6 @@ export interface AuthWfCompletionState {
   passwordCompleted?: boolean;
   tokensIssued?: boolean;
   redirectUrl?: string;
-  profileApplied?: boolean;
   pendingInvitationCleared?: boolean;
   activated?: boolean;
   confirmationShown?: boolean;
@@ -285,7 +284,6 @@ export interface AuthWfCtx {
   completion?: AuthWfCompletionState;
 
   // ── Resolved policy groups (set by prepare-* @Steps) ──
-  profileCompleteRequired?: boolean; // [login]
   alternateCredentials?: AuthWfAltCredsPolicy; // [login]
   deviceTrust?: AuthWfDeviceTrustPolicy; // [login]
   enrollment?: AuthWfEnrollmentPolicy; // [login]
@@ -311,5 +309,4 @@ export interface AuthWfCtx {
   // ── Low-cardinality top-level flags ──
   isPasswordInitial?: boolean; // [login]
   isPasswordExpired?: boolean; // [login]
-  profileMissingFields?: string[]; // [login]
 }

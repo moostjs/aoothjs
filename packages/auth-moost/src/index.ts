@@ -38,6 +38,7 @@ export { generateMagicLinkToken } from "@aooth/auth";
 // ── Unified auth workflow ──────────────────────────────────────────────
 export {
   AuthWorkflow,
+  type AuthDeliveryPayload,
   buildInviteAlreadyAcceptedEnvelope,
   parseInviteRoles,
   RESERVED_USER_KEYS,

@@ -29,6 +29,7 @@ export default defineConfig({
       "no-shadow": "off",
       "no-await-in-loop": "off",
       "no-useless-constructor": "off",
+      "no-underscore-dangle": "off",
     },
   },
 });

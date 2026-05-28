@@ -121,16 +121,6 @@ export async function seedAll(handle: AppHandle): Promise<SeedFixtures> {
     tables.tenants.insertOne({ name: "Globex", plan: "enterprise" }),
   );
 
-  // Profile-missing-fields buffer — drives the `profile-complete` step for
-  // users that have no real DB column for this state. `DemoLoginWorkflow.credentials`
-  // reads this map after a successful login and injects the fields onto ctx.
-  /* eslint-disable no-underscore-dangle -- intentional globalThis slot */
-  const profileMissingBuf = (
-    globalThis as { __aoothE2eProfileMissingFields?: Map<string, string[]> }
-  ).__aoothE2eProfileMissingFields;
-  profileMissingBuf?.set("t1_iris", ["firstName", "lastName"]);
-  /* eslint-enable no-underscore-dangle */
-
   // Synthetic sentinel tenant so `_super` (`tenantId: '_global'`) satisfies
   // the FK declared in `user.as`. The superadmin role's scope is `none`, so
   // this row is never queried by tenant-scoped business logic; it exists

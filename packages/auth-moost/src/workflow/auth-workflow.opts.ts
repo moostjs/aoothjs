@@ -61,7 +61,6 @@ export interface AuthWorkflowOpts {
     setPassword?: TAtscriptAnnotatedType;
 
     // Profile + consents
-    profileComplete?: TAtscriptAnnotatedType;
     termsBump?: TAtscriptAnnotatedType;
 
     // Session policy
@@ -107,7 +106,6 @@ export interface ResolvedAuthWorkflowOpts {
     mfaCode: TAtscriptAnnotatedType;
     pincode: TAtscriptAnnotatedType;
     setPassword: TAtscriptAnnotatedType;
-    profileComplete: TAtscriptAnnotatedType;
     termsBump: TAtscriptAnnotatedType;
     concurrencyLimit: TAtscriptAnnotatedType;
     recoveryPincode: TAtscriptAnnotatedType;

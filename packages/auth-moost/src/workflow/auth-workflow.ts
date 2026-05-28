@@ -327,18 +327,6 @@ export class AuthWorkflow {
   }
 
   /**
-   * Persist the login profile-complete payload onto the user record. Default:
-   * no-op (the workflow records the form was submitted but writes nothing).
-   * Consumers override to write into their user store.
-   */
-  protected async applyLoginProfile(
-    _username: string,
-    _payload: Record<string, unknown>,
-  ): Promise<void> {
-    // No-op default.
-  }
-
-  /**
    * Override the structural duplicate rule for `admin-form`. Default: any
    * existing row → `'reject'`; nothing → `'allow'`. Multi-tenant apps that
    * allow re-inviting the same email into a different tenant override.
@@ -385,16 +373,6 @@ export class AuthWorkflow {
   }
 
   // ── Resolved policy surface (override on subclass to customize) ─────────
-
-  /**
-   * Resolve the profile-completion policy. Reached from login.flow only.
-   * Default-false matches the prior `LoginWorkflow` behaviour.
-   */
-  protected resolveProfile(
-    _ctx: AuthWfCtx,
-  ): { required: boolean } | Promise<{ required: boolean }> {
-    return { required: false };
-  }
 
   /**
    * Resolve the alternate-credentials policy (forgot-password / signup /
@@ -1078,20 +1056,6 @@ export class AuthWorkflow {
         throw err;
       },
     );
-  }
-
-  @Step("prepare-profile")
-  @Public()
-  prepareProfile(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
-    const result = this.resolveProfile(ctx);
-    if (result instanceof Promise) {
-      return result.then((resolved) => {
-        ctx.profileCompleteRequired = resolved.required;
-        return undefined;
-      });
-    }
-    ctx.profileCompleteRequired = result.required;
-    return undefined;
   }
 
   @Step("prepare-consents")
@@ -2194,27 +2158,6 @@ export class AuthWorkflow {
   }
 
   /**
-   * Profile-complete prompt — pauses for `ProfileCompleteForm`; deep-merges
-   * the input onto the user record via `applyLoginProfile`. SECURITY: strips
-   * reserved keys (`roles` / `account` / `password`) before handing off so a
-   * default deep-merge `applyLoginProfile` can't be used for self-promotion.
-   */
-  @Step("profile-complete")
-  @Public()
-  async profileComplete(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
-    const wf = useAtscriptWf(this.opts.forms.profileComplete);
-    const input = wf.resolveInput({ partial: "deep" }) as Record<string, unknown> & {
-      consents?: string[];
-    };
-    this.requireUsername(ctx);
-    this.processInlineConsent(ctx, input, wf);
-    const sanitized = stripReservedUserKeys(input);
-    await this.applyLoginProfile(ctx.username, sanitized);
-    (ctx.completion ??= {}).profileApplied = true;
-    return undefined;
-  }
-
-  /**
    * Standalone terms-bump prompt for returning users whose accepted terms
    * version is stale and no carrier form ran. Delegates to
    * `processInlineConsent` for validation + ctx writes.
@@ -2509,7 +2452,6 @@ export class AuthWorkflow {
     { break: (ctx) => !ctx.username },
 
     // Resolve all policy groups
-    { id: "prepare-profile" },
     { id: "prepare-consents" },
     { id: "prepare-alternate-credentials" },
     { id: "prepare-device-trust" },
@@ -2574,14 +2516,7 @@ export class AuthWorkflow {
     ...passwordPhaseSchema,
     { break: (ctx) => !!ctx.aborted },
 
-    // Profile + extra-step
-    {
-      id: "profile-complete",
-      condition: (ctx) =>
-        !!ctx.profileCompleteRequired &&
-        !ctx.completion?.profileApplied &&
-        (ctx.profileMissingFields?.length ?? 0) > 0,
-    },
+    // Extra-step
     { id: "extra-step", condition: (ctx) => !!ctx.isFirstLogin },
     {
       id: "terms-bump-prompt",

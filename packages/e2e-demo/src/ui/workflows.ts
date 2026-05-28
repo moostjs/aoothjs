@@ -73,12 +73,6 @@ const LOGIN_USERS: ReadonlyArray<TestCred> = [
       "Variant config flags this user with `termsAcceptedVersion = 'v0'` so the terms-accept step fires.",
   },
   {
-    username: "t1_profile_incomplete",
-    password: PWD,
-    notes:
-      "Variant config flags `profileMissingFields = ['firstName','lastName']` so the profile-complete step fires.",
-  },
-  {
     username: "_admin_inviter",
     password: PWD,
     notes:
