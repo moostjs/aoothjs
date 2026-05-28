@@ -248,11 +248,21 @@ export interface AuthWfAdminState {
   linkSent?: boolean;
 }
 
+/**
+ * Pre-fill payload surfaced to forms via `@wf.context.pass 'defaults'`.
+ * Used by recovery's `request` step to seed the email input from a
+ * `?username=` query param carried from login's `forgotPassword` alt-action.
+ */
+export interface AuthWfDefaults {
+  email?: string;
+}
+
 /** Unified workflow context shape — one type for all three flows. */
 export interface AuthWfCtx {
   // ── Identity ──
   username?: string;
   email?: string;
+  defaults?: AuthWfDefaults;
 
   // ── Server-only secrets (never @wf.context.pass) ──
   pin?: string;
