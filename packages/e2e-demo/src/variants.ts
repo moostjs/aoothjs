@@ -313,13 +313,6 @@ export const RECOVERY_VARIANTS: Record<string, RecoveryVariant> = {
   "recovery-auto-login": {
     opts: { autoLoginOnRecover: true },
   },
-  // Reserved for a future recovery-state TTL knob. `magicLinkTtlMs` is
-  // consumed only by the invite send-email step today; it has no effect on
-  // the recovery flow, so WF-RECOVERY-004 is `test.fixme`'d until a real
-  // recovery-side seam exists.
-  "recovery-short-ttl": {
-    authOpts: { magicLinkTtlMs: 1 },
-  },
   // Short OTP resend cooldown — WF-RECOVERY-010/011. 1s cooldown lets the
   // first `Resend code` click trip the rate-limit branch, while a >1s wait
   // proves a second click after the cooldown sends a fresh code.

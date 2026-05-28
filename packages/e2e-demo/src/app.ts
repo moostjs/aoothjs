@@ -550,12 +550,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     ): NonNullable<AuthWfCtx["postReset"]> | Promise<NonNullable<AuthWfCtx["postReset"]>> {
       const variant = pickVariant(RECOVERY_VARIANTS, readVariantHeader());
       if (variant?.policy?.postReset) return variant.policy.postReset;
-      // Demo default: opt out of revokeAllSessions so WF-RECOVERY-05 can keep
-      // documenting the "pre-existing session stays valid" branch. Production
-      // consumers should leave the secure default on.
-      const base = super.resolvePostReset(ctx);
-      if (base instanceof Promise) return base.then((r) => ({ ...r, revokeAllSessions: false }));
-      return { ...base, revokeAllSessions: false };
+      return super.resolvePostReset(ctx);
     }
 
     protected override resolveRecoveryAltActions(

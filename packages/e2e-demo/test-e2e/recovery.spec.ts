@@ -265,17 +265,6 @@ test.describe("recovery — recovery-auto-login", () => {
   });
 });
 
-test.describe("recovery — recovery-short-ttl", () => {
-  test.beforeEach(async ({ request }) => {
-    await resetApp(request);
-  });
-
-  // `magicLinkTtlMs` is only consumed by the invite send-email step today;
-  // no recovery-state TTL knob exists on `AuthWorkflowOpts` yet. Skip until
-  // the matrix has a real recovery-side TTL seam.
-  test.fixme("WF-RECOVERY-004: expired recovery state cannot resume", async () => {});
-});
-
 test.describe("recovery — recovery-fast-resend", () => {
   test.beforeEach(async ({ request }) => {
     await resetApp(request);
