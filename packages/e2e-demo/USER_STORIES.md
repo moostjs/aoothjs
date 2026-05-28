@@ -67,7 +67,7 @@ Variant entries are not old per-workflow option objects. They use the unified sh
 ```ts
 type Variant = {
   opts?: Partial<AuthWorkflowOpts>;
-  authOpts?: Partial<Pick<AuthWorkflowOpts, "mfa" | "magicLinkTtlMs">>;
+  authOpts?: Partial<Pick<AuthWorkflowOpts, "mfa">>;
   policy?: Record<string, /* AuthWfCtx policy slot */ unknown>;
   mfaCtx?: {
     mfaMode?: "required" | "optional" | "disabled";
@@ -119,15 +119,14 @@ Recovery variants:
 
 Invite variants:
 
-| Variant                    | Purpose                                        |
-| -------------------------- | ---------------------------------------------- |
-| `email-no-roles`           | Admin invite form with no role picker          |
-| `roles-profile`            | Role picker and accept-tail profile coverage   |
-| `short-ttl-confirmation`   | Expired invite state plus confirmation enabled |
-| `confirmation-message`     | Confirmation finish copy                       |
-| `idempotent-redirect`      | Already-accepted invite handling               |
-| `invite-mfa-optional-full` | Invite accept-tail MFA enrolment               |
-| `invite-terms`             | Inline consent on invite `SetPasswordForm`     |
+| Variant                    | Purpose                                      |
+| -------------------------- | -------------------------------------------- |
+| `email-no-roles`           | Admin invite form with no role picker        |
+| `roles-profile`            | Role picker and accept-tail profile coverage |
+| `confirmation-message`     | Confirmation finish copy                     |
+| `idempotent-redirect`      | Already-accepted invite handling             |
+| `invite-mfa-optional-full` | Invite accept-tail MFA enrolment             |
+| `invite-terms`             | Inline consent on invite `SetPasswordForm`   |
 
 ### 2.4 Test Infrastructure
 
@@ -145,15 +144,15 @@ The SPA reads `?variant=<name>` on `/wf` and forwards it as `x-wf-variant` on ev
 
 These stories prove the e2e demo is testing the new class shape, not the retired split workflow surface.
 
-| ID                  | Tier | Story                                                                                     | Assertions                                                                                                                              |
-| ------------------- | ---- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| WF-AUTH-UNIFIED-001 | P0   | `DemoAuthWorkflow` is the single replacement class for login, invite, recovery            | One `createReplaceRegistry([AuthWorkflow, DemoAuthWorkflow])`; no per-flow workflow-class knobs                                         |
-| WF-AUTH-UNIFIED-002 | P0   | Constructor merges variant `opts` and `authOpts` before `super(...)`                      | `mfa-fast-resend`, `recovery-fast-resend`, `short-ttl-confirmation` affect their flows without separate workflow option providers       |
-| WF-AUTH-UNIFIED-003 | P0   | Resolver dispatch uses ctx/flow state, not class type                                     | Login policy overrides do not leak into invite/recovery; invite `adminForm` and recovery `postReset` resolve from the same class        |
-| WF-AUTH-UNIFIED-004 | P0   | `deliver(payload)` handles every auth delivery kind                                       | Mailbox receives `mfa-pincode`, `enroll-pincode`, `recovery-pincode`, `invite-link`, and `new-device-notice` as mapped email/SMS events |
-| WF-AUTH-UNIFIED-005 | P1   | Shared pincode pair works for login MFA and recovery OTP                                  | Both flows enforce `ctx.pincode.resendAllowedAt`, set `ctx.otp.verified`, and clear `ctx.pin/pinExpire` after success                   |
-| WF-AUTH-UNIFIED-006 | P1   | Shared password form handles login initial, login expired, invite initial, recovery reset | `ctx.password.changeReason` is `"initial"`, `"expired"`, or `"reset"` and copy/policies render through `SetPasswordForm`                |
-| WF-AUTH-UNIFIED-007 | P1   | Invite and login share the MFA enrolment loop                                             | Login and invite optional enrolment support skip, method switching, cleanup, and `ctx.otp.verified` loop exit                           |
+| ID                  | Tier | Story                                                                                     | Assertions                                                                                                                                |
+| ------------------- | ---- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| WF-AUTH-UNIFIED-001 | P0   | `DemoAuthWorkflow` is the single replacement class for login, invite, recovery            | `app.registerControllers(DemoAuthController, DemoAuthWorkflow)` registers one class for all three flows; no per-flow workflow-class knobs |
+| WF-AUTH-UNIFIED-002 | P0   | Constructor merges variant `opts` and `authOpts` before `super(...)`                      | `mfa-fast-resend`, `recovery-fast-resend` affect their flows without separate workflow option providers                                   |
+| WF-AUTH-UNIFIED-003 | P0   | Resolver dispatch uses ctx/flow state, not class type                                     | Login policy overrides do not leak into invite/recovery; invite `adminForm` and recovery `postReset` resolve from the same class          |
+| WF-AUTH-UNIFIED-004 | P0   | `deliver(payload)` handles every auth delivery kind                                       | Mailbox receives `mfa-pincode`, `enroll-pincode`, `recovery-pincode`, and `invite-link` as mapped email/SMS events                        |
+| WF-AUTH-UNIFIED-005 | P1   | Shared pincode pair works for login MFA and recovery OTP                                  | Both flows enforce `ctx.pincode.resendAllowedAt`, set `ctx.otp.verified`, and clear `ctx.pin/pinExpire` after success                     |
+| WF-AUTH-UNIFIED-006 | P1   | Shared password form handles login initial, login expired, invite initial, recovery reset | `ctx.password.changeReason` is `"initial"`, `"expired"`, or `"reset"` and copy/policies render through `SetPasswordForm`                  |
+| WF-AUTH-UNIFIED-007 | P1   | Invite and login share the MFA enrolment loop                                             | Login and invite optional enrolment support skip, method switching, cleanup, and `ctx.otp.verified` loop exit                             |
 
 ---
 
@@ -279,24 +278,21 @@ Default invite process:
 
 ### Invite Matrix
 
-| ID                   | Tier | Variant                           | Story                                                                       | Assertions                                                  |
-| -------------------- | ---- | --------------------------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| WF-INVITE-001        | P0   | `email-no-roles`                  | Admin invites new email, invitee redeems, tokens issued                     | No roles field; invite email/link captured; activated user  |
-| WF-INVITE-002        | P1   | `email-no-roles`                  | Admin invites existing user                                                 | Inline duplicate error                                      |
-| WF-INVITE-003        | P1   | `email-no-roles`                  | Invitee abandons password form                                              | Pending invitation remains                                  |
-| WF-INVITE-004        | P2   | `short-ttl-confirmation`          | Expired invite state cannot resume                                          | 410/error block                                             |
-| WF-INVITE-005        | P0   | `roles-profile`                   | Role picker accepts whitelisted role                                        | Role field visible; selected role persisted                 |
-| WF-INVITE-006        | P1   | `roles-profile`                   | Invalid role is rejected                                                    | Inline role error                                           |
-| WF-INVITE-010        | P2   | `idempotent-redirect`             | Already-accepted link shows idempotent finish                               | Sign-in / request-new-invite actions visible                |
-| WF-INVITE-012        | P1   | `email-no-roles` or opts override | `autoLoginOnInvite=false` finishes without tokens                           | Fresh-login finish envelope; no `accessToken`               |
-| WF-INVITE-013        | P0   | `email-no-roles`                  | Re-invite pending user sends a new invite                                   | New mailbox invite entry                                    |
-| WF-INVITE-014        | P1   | `email-no-roles`                  | Re-invite already-accepted user returns 409                                 | User-readable error                                         |
-| WF-INVITE-018        | P2   | `email-no-roles`                  | Duplicate override reaches store-level uniqueness failure                   | Store-level 409 surfaces                                    |
-| WF-INVITE-019        | P2   | `short-ttl-confirmation`          | TTL=1s link expires                                                         | 410/error block                                             |
-| WF-INVITE-020        | P2   | `confirmation-message`            | Confirmation message renders after activation                               | “Your account has been created.” visible                    |
-| WF-INVITE-021        | P1   | `invite-mfa-optional-full`        | Invite-tail optional MFA enrolment skip activates user                      | No MFA method persisted; account activated                  |
-| WF-INVITE-022        | P1   | `invite-mfa-optional-full`        | Invite-tail method switch cleans unconfirmed method and completes enrolment | TOTP cleanup; SMS enrolment succeeds                        |
-| WF-INVITE-CONSENT-01 | P0   | `invite-terms`                    | Invite password form carries required terms consent                         | Consent log has `{id:"terms", version:"v1", accepted:true}` |
+| ID                   | Tier | Variant                    | Story                                                                       | Assertions                                                  |
+| -------------------- | ---- | -------------------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| WF-INVITE-001        | P0   | `email-no-roles`           | Admin invites new email, invitee redeems, tokens issued                     | No roles field; invite email/link captured; activated user  |
+| WF-INVITE-002        | P1   | `email-no-roles`           | Admin invites existing user                                                 | Inline duplicate error                                      |
+| WF-INVITE-003        | P1   | `email-no-roles`           | Invitee abandons password form                                              | Pending invitation remains                                  |
+| WF-INVITE-005        | P0   | `roles-profile`            | Role picker accepts whitelisted role                                        | Role field visible; selected role persisted                 |
+| WF-INVITE-006        | P1   | `roles-profile`            | Invalid role is rejected                                                    | Inline role error                                           |
+| WF-INVITE-010        | P2   | `idempotent-redirect`      | Already-accepted link shows idempotent finish                               | Sign-in / request-new-invite actions visible                |
+| WF-INVITE-013        | P0   | `email-no-roles`           | Re-invite pending user sends a new invite                                   | New mailbox invite entry                                    |
+| WF-INVITE-014        | P1   | `email-no-roles`           | Re-invite already-accepted user returns 409                                 | User-readable error                                         |
+| WF-INVITE-018        | P2   | `email-no-roles`           | Duplicate override reaches store-level uniqueness failure                   | Store-level 409 surfaces                                    |
+| WF-INVITE-020        | P2   | `confirmation-message`     | Confirmation message renders after activation                               | “Your account has been created.” visible                    |
+| WF-INVITE-021        | P1   | `invite-mfa-optional-full` | Invite-tail optional MFA enrolment skip activates user                      | No MFA method persisted; account activated                  |
+| WF-INVITE-022        | P1   | `invite-mfa-optional-full` | Invite-tail method switch cleans unconfirmed method and completes enrolment | TOTP cleanup; SMS enrolment succeeds                        |
+| WF-INVITE-CONSENT-01 | P0   | `invite-terms`             | Invite password form carries required terms consent                         | Consent log has `{id:"terms", version:"v1", accepted:true}` |
 
 Removed legacy invite rows:
 
@@ -307,6 +303,8 @@ Removed legacy invite rows:
 - `accept.freshLoginRequired`; use static `AuthWorkflowOpts.autoLoginOnInvite` instead.
 - Accept-tail profile-collect form (WF-INVITE-007, -008). The unified workflow has no built-in profile step; consumers add their own override step if profile collection is needed.
 - `@Workflow("auth/invite/cancel")` + `@Workflow("auth/invite/resend")` (WF-INVITE-015, -016, -017). Dropped in `6ff3efb` — invite is single-path email-only now.
+- `magicLinkTtlMs` opt + `short-ttl-confirmation` variant (WF-INVITE-004, -019). Magic-link TTL is now owned by `@StepTTL(...)` on the workflow's `send-email` @Step; customers override the step and re-decorate. Tests dropped because they were verifying engine TTL behavior, already covered upstream in `@prostojs/wf`.
+- `autoLoginOnInvite=false` finish-without-tokens (WF-INVITE-012). The opt still exists on `AuthWorkflowOpts`; no Playwright coverage planned (vitest covers the opts-merge contract).
 
 ---
 

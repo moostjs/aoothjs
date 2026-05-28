@@ -278,10 +278,8 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
  * P2 coverage for the invite family. Maps to USER_STORIES.md §5 rows tagged
  * Tier=P2:
  *
- *   WF-INVITE-004  variant `short-ttl-confirmation`  — expired magic-link click → 410
  *   WF-INVITE-010  variant `idempotent-redirect`     — already-accepted link click → 2-button finish
  *   WF-INVITE-018  variant `email-no-roles`          — `duplicateCheck='allow'` override (FIXME)
- *   WF-INVITE-019  variant `short-ttl-confirmation`  — TTL=1s click after 2.5s → 410
  *   WF-INVITE-020  variant `confirmation-message`    — `showConfirmation: true` finish message
  *
  * Same error-surface contract as P1: AsWfForm forwards trigger failures (incl.
@@ -294,58 +292,6 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
 test.describe("WF-INVITE — auth.invite family (P2)", () => {
   test.beforeEach(async ({ request }) => {
     await resetAppResilient(request);
-  });
-
-  // ── WF-INVITE-004 ────────────────────────────────────────────────────────
-  // BRANCH: `short-ttl-confirmation` variant sets `send.tokenTtlMs: 1000` →
-  // workflow stores `expires = Date.now() + 1000ms` on the wf-state row. After
-  // a >1s wait the invitee clicks the magic-link; moost-wf's resume path rejects
-  // the now-expired token and the auth-trigger handler returns a 410. AsWfForm
-  // forwards the failure to `@error`; WfPage paints `err.message` under
-  // `.scope-error`. Distinguishing assertion vs. -019: shorter wait window
-  // (1.5s — just past TTL) so timing-sensitive regressions in the wf-store's
-  // expiry check would surface here first.
-  test("WF-INVITE-004 expired magic-link click (1.5s past TTL) → 410 + error rendered", async ({
-    page,
-    request,
-    baseURL,
-  }) => {
-    await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth/invite/start", "short-ttl-confirmation"));
-    await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
-
-    const inviteeEmail = uniqueEmail("invite-004");
-    await fillField(page, "email", inviteeEmail);
-    const sentPromise = nextTriggerResponse(page, (b) => b.sent === true);
-    await submitForm(page);
-    await sentPromise;
-
-    const magic = await waitForEmail(
-      request,
-      (e) => e.kind === "invite.magicLink" && e.recipient === inviteeEmail,
-    );
-    const resumeUrl = rewriteToBaseUrl(magic.url as string, baseURL ?? "");
-
-    await page.waitForTimeout(1500);
-
-    // Fresh browser context to drop the admin cookies — invitee is anonymous.
-    const ctx = await page.context().browser()!.newContext();
-    const inviteePage = await ctx.newPage();
-    const errorRespPromise = inviteePage.waitForResponse(
-      (r) => r.url().includes("/auth/trigger") && r.status() >= 400,
-      { timeout: 10_000 },
-    );
-    await inviteePage.goto(resumeUrl);
-    const res = await errorRespPromise;
-    // wf-state expiry is signalled with 410 per `@atscript/moost-wf` resume contract
-    // (matching the invite workflow's own "cancelled invite" 410 from
-    // `inviteCheckPendingInvitation`). We accept any 4xx ≥ 410 here because the
-    // exact code is an upstream-contract detail; the user-visible behaviour is
-    // the painted error.
-    expect(res.status()).toBeGreaterThanOrEqual(400);
-    await expect(inviteePage.locator(".scope-error")).toBeVisible({ timeout: 5000 });
-    await expect(inviteePage.locator('[name="newPassword"]')).toHaveCount(0);
-    await ctx.close();
   });
 
   // ── WF-INVITE-010 ────────────────────────────────────────────────────────
@@ -476,55 +422,6 @@ test.describe("WF-INVITE — auth.invite family (P2)", () => {
     // Form re-renders — the workflow stayed on the admin invite step (the
     // 409 came from a step body, not from a validation error short-circuit).
     await expect(page.locator('[name="email"]')).toBeVisible();
-  });
-
-  // ── WF-INVITE-019 ────────────────────────────────────────────────────────
-  // BRANCH: same TTL-expiry mechanism as -004 (same `short-ttl-confirmation`
-  // variant, same wf-state expiry rejection on resume). Distinguishing
-  // assertion vs. -004: longer wait (2.5s — 2.5× the TTL) so this test stays
-  // green even on a host where event-loop / scheduler latency push the actual
-  // store-side expiry check past the 1.5s mark. Both being green proves the
-  // contract holds at two timings — guards against an off-by-one in the
-  // store's `now > expires` comparison.
-  test("WF-INVITE-019 expired magic-link click (2.5s past TTL) → 410 + error rendered", async ({
-    page,
-    request,
-    baseURL,
-  }) => {
-    await loginViaUi(page, USERS.admin_inviter);
-    await page.goto(wfUrl("auth/invite/start", "short-ttl-confirmation"));
-    await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
-
-    const inviteeEmail = uniqueEmail("invite-019");
-    await fillField(page, "email", inviteeEmail);
-    const sentPromise = nextTriggerResponse(page, (b) => b.sent === true);
-    await submitForm(page);
-    await sentPromise;
-
-    const magic = await waitForEmail(
-      request,
-      (e) => e.kind === "invite.magicLink" && e.recipient === inviteeEmail,
-    );
-    const resumeUrl = rewriteToBaseUrl(magic.url as string, baseURL ?? "");
-
-    await page.waitForTimeout(2500);
-
-    const ctx = await page.context().browser()!.newContext();
-    const inviteePage = await ctx.newPage();
-    const errorRespPromise = inviteePage.waitForResponse(
-      (r) => r.url().includes("/auth/trigger") && r.status() >= 400,
-      { timeout: 10_000 },
-    );
-    await inviteePage.goto(resumeUrl);
-    const res = await errorRespPromise;
-    expect(res.status()).toBeGreaterThanOrEqual(400);
-    await expect(inviteePage.locator(".scope-error")).toBeVisible({ timeout: 5000 });
-    // Distinguishing from -004: also assert no finish envelope was painted
-    // (an off-by-one regression could plausibly let the workflow run to a
-    // partial finish state instead of rejecting at resume).
-    await expect(inviteePage.locator("text=Workflow finished")).toHaveCount(0);
-    await expect(inviteePage.locator('[name="newPassword"]')).toHaveCount(0);
-    await ctx.close();
   });
 
   // ── WF-INVITE-020 ────────────────────────────────────────────────────────

@@ -5,10 +5,10 @@ export default defineConfig({
     "*": "vp check --fix",
   },
   fmt: {
-    ignorePatterns: ["**/*.as.d.ts", "**/*.as.js", "**/atscript.d.ts"],
+    ignorePatterns: ["**/*.as.d.ts", "**/*.as.js", "**/atscript.d.ts", "**/dist/**"],
   },
   lint: {
-    ignorePatterns: ["scripts/*", "**/*.as"],
+    ignorePatterns: ["scripts/*", "**/*.as", "**/dist/**"],
     categories: {
       correctness: "error",
       suspicious: "warn",

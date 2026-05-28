@@ -7,7 +7,7 @@
  * The maps below carry `{ opts?, authOpts?, policy?, mfaCtx? }` slots. `opts`
  * shallow-merges onto the demo's base `AuthWorkflowOpts` at workflow-ctor
  * time. `authOpts` overlays the cross-workflow infrastructure subset (pincode
- * timers, magic-link TTL) and is merged into `opts` before super(). `policy`
+ * timers) and is merged into `opts` before super(). `policy`
  * supplies per-resolver payloads consulted by `DemoAuthWorkflow`'s
  * `resolveXxx` overrides. `mfaCtx` is consumed by the unified `prepare-mfa`
  * setter override.
@@ -48,10 +48,10 @@ export interface InviteMfaCtxOverrides {
 /**
  * Per-request infrastructure overlay applied by `DemoAuthWorkflow`'s ctor
  * (FOR_EVENT scope) onto the base `AuthWorkflowOpts`. The cross-workflow
- * knobs (pincode timers, magic-link TTL) now live on `AuthWorkflowOpts`
- * itself — this overlay merges into the workflow opts before super().
+ * knobs (pincode timers) live on `AuthWorkflowOpts` itself — this overlay
+ * merges into the workflow opts before super().
  */
-export type AuthOptsVariantOverrides = Partial<Pick<AuthWorkflowOpts, "mfa" | "magicLinkTtlMs">>;
+export type AuthOptsVariantOverrides = Partial<Pick<AuthWorkflowOpts, "mfa">>;
 
 /**
  * Login-flow resolver overrides. Mirrors the shape of the matching
@@ -93,7 +93,7 @@ export interface RecoveryPolicyOverrides {
 /**
  * Login variant entry. `opts` overlays the demo's base `AuthWorkflowOpts`
  * (forms, device-trust cookie config). `authOpts` overlays the
- * cross-workflow infrastructure subset (pincode timers, magic-link TTL).
+ * cross-workflow infrastructure subset (pincode timers).
  * `policy` carries per-request resolver overrides. `mfaCtx` pushes static
  * MFA state through the unified `prepare-mfa` setter.
  */
@@ -291,8 +291,8 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
 /**
  * Recovery variant entry. `opts` overlays the demo's base `AuthWorkflowOpts`
  * (forms only). `authOpts` overlays the cross-workflow infrastructure subset
- * (pincode timers, magic-link TTL). `policy` carries per-request resolver
- * overrides on `postReset` / `mfaPolicy` / `recoveryAltActions`.
+ * (pincode timers). `policy` carries per-request resolver overrides on
+ * `postReset` / `mfaPolicy` / `recoveryAltActions`.
  */
 export interface RecoveryVariant {
   opts?: Partial<AuthWorkflowOpts>;
@@ -303,8 +303,8 @@ export interface RecoveryVariant {
 /**
  * Recovery profiles — keys mirror `USER_STORIES.md` §5 unified recovery
  * matrix. Variants exercise either `postReset` policy, infrastructure
- * overlays (`magicLinkTtlMs`, pincode cooldown), or the customer
- * `ConsentStore` per-variant lookup.
+ * overlays (pincode cooldown), or the customer `ConsentStore` per-variant
+ * lookup.
  */
 export const RECOVERY_VARIANTS: Record<string, RecoveryVariant> = {
   // Flips the static opt so the finish envelope issues tokens instead of
@@ -366,14 +366,6 @@ export const INVITE_VARIANTS: Record<string, InviteVariant> = {
     policy: {
       adminForm: { collectRoles: true },
     },
-  },
-  "short-ttl-confirmation": {
-    // Invite magic-link TTL is declared on the `authOpts` overlay
-    // (`AuthWorkflowOpts.magicLinkTtlMs`) — the workflow no longer owns
-    // send-mode (the unified workflow doesn't have a per-flow delivery
-    // resolver).
-    authOpts: { magicLinkTtlMs: 1000 },
-    policy: { accept: { ...ACCEPT_DEMO_DEFAULTS, showConfirmation: true } },
   },
   // Surfaces the confirmation message in the finish envelope (WF-INVITE-020).
   // Demo's other variants leave the message blank.

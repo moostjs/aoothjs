@@ -355,17 +355,11 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   app.adapter(new MoostWf());
 
   // Demo's base `AuthWorkflowOpts`. Cross-workflow infrastructure
-  // (pincode timers, magic-link TTL, loginUrl, totpIssuer) lives on this
-  // single surface; the prior `AuthOpts` provider is gone.
-  //
-  // `magicLinkTtlMs` defaults to `min(env.RECOVERY_TTL_MS, env.INVITE_TTL_MS)`
-  // so a test that shrinks ONE of the env vars (per-flow TTL-expiry tests)
-  // gets the short window on the shared knob. Variants that need to flip the
-  // TTL per-request go through `authOpts` overlay (merged into opts in the
-  // ctor).
-  const demoBaseOpts: Partial<AuthWorkflowOpts> = {
-    magicLinkTtlMs: Math.min(env.RECOVERY_TTL_MS, env.INVITE_TTL_MS),
-  };
+  // (pincode timers, loginUrl, totpIssuer) lives on this single surface.
+  // Magic-link TTL is owned by `@StepTTL` on the workflow's `send-email`
+  // @Step; the outlet's per-kind TTL function (passed via `deps.magicLinkTtlMs`
+  // below) drives the email-body "expires at" line independently.
+  const demoBaseOpts: Partial<AuthWorkflowOpts> = {};
 
   const consentStore = new DemoConsentStore();
 
