@@ -617,9 +617,7 @@ export abstract class AuthWorkflowBase {
     @WorkflowParam("context") ctx: InlineConsentCtx & AuthWfCtxBase,
   ): undefined | Promise<undefined> {
     if (!ctx.username) return undefined;
-    const result = this.consentStore.getPendingConsents(ctx.username, {
-      workflow: this.consentsWorkflowId,
-    });
+    const result = this.consentStore.getPendingConsents(ctx.username);
     if (result instanceof Promise) {
       return result.then((resolved) => {
         (ctx.consents ??= {}).pending = resolved;

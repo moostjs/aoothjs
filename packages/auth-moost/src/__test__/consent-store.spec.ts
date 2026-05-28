@@ -5,16 +5,13 @@ import { ConsentStore } from "../consent.store";
 describe("ConsentStore — no-op defaults (Phase 1 plumbing only)", () => {
   it("getPendingConsents returns empty array (no prompts when not overridden)", async () => {
     const store = new ConsentStore();
-    const result = await store.getPendingConsents("alice", { workflow: "auth/login/flow" });
+    const result = await store.getPendingConsents("alice");
     expect(result).toEqual([]);
   });
 
   it("getPendingConsents accepts undefined username (pre-bind carrier forms)", async () => {
     const store = new ConsentStore();
-    const result = await store.getPendingConsents(undefined, {
-      workflow: "auth/login/flow",
-      channel: "email",
-    });
+    const result = await store.getPendingConsents(undefined);
     expect(result).toEqual([]);
   });
 

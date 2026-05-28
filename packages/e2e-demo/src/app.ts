@@ -370,10 +370,7 @@ const VARIANT_PENDING_CONSENTS: Record<string, ConsentDescriptor[]> = {
  */
 @Injectable() // SINGLETON
 class DemoConsentStore extends ConsentStore {
-  override async getPendingConsents(
-    _username: string | undefined,
-    _ctx: { workflow: string; channel?: "email" | "sms" },
-  ): Promise<ConsentDescriptor[]> {
+  override async getPendingConsents(_username: string | undefined): Promise<ConsentDescriptor[]> {
     const variant = readVariantHeader();
     if (!variant) return [];
     const pending = VARIANT_PENDING_CONSENTS[variant];
