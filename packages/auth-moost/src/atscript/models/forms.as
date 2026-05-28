@@ -35,6 +35,7 @@ export interface WithInlineConsentForm {
     @meta.label 'Pending consents'
     @ui.form.component 'AsConsentArray'
     @ui.form.fn.attr 'pendingConsents', '(_, _d, ctx) => ctx.consents?.pending'
+    @ui.form.fn.hidden '(_, _d, ctx) => ctx.consents?.decidedAt !== undefined || (ctx.consents?.pending?.length ?? 0) === 0'
     @ui.form.grid.colSpan '12'
     consents: string[]
 }
@@ -360,9 +361,6 @@ export interface PincodeForm {
     @ui.form.fn.hidden '(_, _d, ctx) => (ctx.mfa?.methodCount ?? 0) < 2'
     useDifferentMethod?: ui.action
 
-    @ui.form.action 'backToLogin', 'Back to sign-in'
-    backToLogin?: ui.action
-
     @ui.form.action 'useDifferentTransport', 'Use a different transport'
     @ui.form.fn.hidden '(_, _d, ctx) => (ctx.otp?.transportCount ?? 0) < 2'
     useDifferentTransport?: ui.action
@@ -403,7 +401,7 @@ export interface AskEmailForm extends WithInlineConsentForm {
  * E.164 normalization happens server-side.
  */
 @meta.label 'Add your phone number'
-@meta.description 'We need a verified phone to send security notifications and verification codes.'
+@meta.description 'We need a verified phone to send security notifications and verification codes. Include your country code (for example +1 555 555 0100).'
 @wf.context.pass 'consents'
 @wf.context.pass 'channel'
 export interface AskPhoneForm extends WithInlineConsentForm {
@@ -415,7 +413,7 @@ export interface AskPhoneForm extends WithInlineConsentForm {
 
     @ui.form.order 10
     @ui.form.type 'text'
-    @meta.label 'Phone (E.164)'
+    @meta.label 'Phone number'
     @ui.form.autocomplete 'tel'
     @meta.required
     phone: string
@@ -571,9 +569,6 @@ export interface RecoveryModeSelectForm {
     @meta.required
     mode: string
 
-    @ui.form.order 20
-    @ui.form.action 'backToLogin', 'Back to sign-in'
-    backToLogin?: ui.action
 }
 
 /**
@@ -603,8 +598,4 @@ export interface RecoveryFactorForm {
     @expect.minLength 4
     @expect.maxLength 12
     value: string
-
-    @ui.form.order 30
-    @ui.form.action 'backToLogin', 'Back to sign-in'
-    backToLogin?: ui.action
 }
