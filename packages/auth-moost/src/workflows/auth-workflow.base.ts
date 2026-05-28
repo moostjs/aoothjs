@@ -963,14 +963,6 @@ export abstract class AuthWorkflowBase {
 // IS assignable to `TWorkflowItem<LoginWfCtx>` etc.
 
 /**
- * `prepare-consents` schema entry — fires once per workflow run, after the
- * `!ctx.username` break, to populate `ctx.consents.pending` from
- * `ConsentStore.getPendingConsents()`. Shared by `LoginWorkflow`,
- * `InviteWorkflow`, and `RecoveryWorkflow`.
- */
-export const consentsPreludeSchema: TWorkflowSchema<AuthWfCtxBase> = [{ id: "prepare-consents" }];
-
-/**
  * `persist-consents` schema entry — batched consent persistence. Fires once
  * per workflow run after any carrier form collected `consents` via
  * `processInlineConsent` (which sets `ctx.consents.decidedAt`). The
@@ -982,21 +974,4 @@ export const consentsPersistTailSchema: TWorkflowSchema<AuthWfCtxBase> = [
     id: "persist-consents",
     condition: (ctx) => !!ctx.consents?.decidedAt && !ctx.consents?.persisted,
   },
-];
-
-/**
- * `prepare-password-rules` + `create-password-form` pair — populates
- * `ctx.password.policies` (the `TransferablePolicy[]` wire shape) then
- * pauses on `SetPasswordForm`. Used by `LoginWorkflow` for the forced
- * password-change phase; the surrounding subflow (forced-initial /
- * expired) supplies the outer gate. `RecoveryWorkflow` uses a different
- * shape (`set-password` step, no `create-password-form`) and does not
- * consume this fragment. `InviteWorkflow` splits the pair with
- * `consentsPreludeSchema` between the two entries and gates
- * `create-password-form` on its own `ctx.completion.passwordSet` flag, so
- * it cannot adopt this fragment without reordering — left inline there.
- */
-export const passwordChangeSchema: TWorkflowSchema<AuthWfCtxBase> = [
-  { id: "prepare-password-rules" },
-  { id: "create-password-form" },
 ];

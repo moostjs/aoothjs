@@ -81,7 +81,6 @@ import {
   type AuthWfCtxBase,
   AuthWorkflowBase,
   consentsPersistTailSchema,
-  consentsPreludeSchema,
   type InlineConsentInput,
   type MfaEnrollDeps,
   stripReservedUserKeys,
@@ -496,7 +495,7 @@ export class InviteWorkflow extends AuthWorkflowBase {
           condition: (ctx) => !!ctx.accept?.alreadyAccepted,
         },
         { id: "prepare-password-rules" },
-        ...consentsPreludeSchema,
+        { id: "prepare-consents" },
         {
           id: "create-password-form",
           condition: (ctx) => !ctx.completion?.passwordSet,

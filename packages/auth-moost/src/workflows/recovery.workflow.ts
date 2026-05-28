@@ -68,7 +68,6 @@ import {
   type AuthWfCtxBase,
   AuthWorkflowBase,
   consentsPersistTailSchema,
-  consentsPreludeSchema,
   type InlineConsentInput,
 } from "./auth-workflow.base";
 import type { DeliverPayload } from "./login.workflow";
@@ -431,7 +430,7 @@ export class RecoveryWorkflow extends AuthWorkflowBase {
     { id: "prepare-post-reset" },
     { id: "prepare-alt-actions" },
     { id: "prepare-audit" },
-    ...consentsPreludeSchema,
+    { id: "prepare-consents" },
 
     // Mode picker — only when delivery.mode === 'choice' AND not already chosen.
     {

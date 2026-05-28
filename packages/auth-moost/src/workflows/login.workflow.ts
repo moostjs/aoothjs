@@ -90,10 +90,8 @@ import {
   type AuthWfCtxBase,
   AuthWorkflowBase,
   consentsPersistTailSchema,
-  consentsPreludeSchema,
   type InlineConsentInput,
   type MfaEnrollDeps,
-  passwordChangeSchema,
   stripReservedUserKeys,
 } from "./auth-workflow.base";
 import {
@@ -738,7 +736,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
 
     // Resolve all policy groups before any step reads them.
     { id: "prepare-profile" },
-    ...consentsPreludeSchema,
+    { id: "prepare-consents" },
     { id: "prepare-alternate-credentials" },
     { id: "prepare-device-trust" },
     { id: "prepare-enrollment" },
@@ -866,7 +864,7 @@ export class LoginWorkflow extends AuthWorkflowBase {
     {
       condition: (ctx) =>
         (!!ctx.isPasswordInitial || !!ctx.isPasswordExpired) && !ctx.completion?.passwordChanged,
-      steps: [...passwordChangeSchema],
+      steps: [{ id: "prepare-password-rules" }, { id: "create-password-form" }],
     },
     // No abort path from create-password-form anymore — the SetPasswordForm
     // has no alt-actions. The `{ break }` gate is retained for the wrapping
