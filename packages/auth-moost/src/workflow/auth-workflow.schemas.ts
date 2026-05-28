@@ -33,7 +33,7 @@ export const mfaLoopSchema: TWorkflowSchema<AuthWfCtx> = [
       {
         id: "check-trusted-device",
         condition: (ctx) =>
-          !ctx.otp?.verified && !!ctx.deviceTrust?.enabled && !!ctx.deviceTrust?.skipsMfa,
+          !ctx.otp?.verified && !!ctx.deviceTrust?.enabled && ctx.deviceTrust.skipsMfa,
       },
       { id: "load-enrolled-mfa-methods", condition: (ctx) => !ctx.otp?.verified },
       { id: "select-mfa-method", condition: (ctx) => !ctx.otp?.verified },

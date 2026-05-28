@@ -263,6 +263,12 @@ export interface AuthWfCtx {
   flow?: "login" | "invite" | "recovery";
   isFirstLogin?: boolean;
   newPasswordRequired?: boolean;
+  // Mirrors `AuthWorkflowOpts.autoLoginOn{Invite|Recover}` onto ctx so the
+  // finalize-* schema conditions can read it — wf engine invokes condition
+  // closures as plain functions, so `this.opts` is not reachable from inside
+  // the schema literal. Populated by `init-invite-admin` / `init-invite-accept`
+  // (from `autoLoginOnInvite`) and `init-recovery` (from `autoLoginOnRecover`).
+  autoLogin?: boolean;
 
   // ── Shared state groups (passed via @wf.context.pass) ──
   consents?: AuthWfConsentsState;
