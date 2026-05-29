@@ -2768,9 +2768,60 @@ export class AuthWorkflow {
    */
   @Step("finalize-fresh-login")
   @Public()
-  finalizeFreshLogin(@WorkflowParam("context") ctx: AuthWfCtx): undefined {
-    const target = ctx.postReset?.loginUrl ?? ctx.accept!.loginUrl!;
-    if (ctx.postReset) {
+  finalizeFreshLogin(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
+    // Invite — immediate redirect to login (no confirmation dwell).
+    if (!ctx.postReset) {
+      const target = ctx.accept!.loginUrl!;
+      finishWf({
+        next: {
+          trigger: "immediate",
+          action: { type: "redirect", target, reason: "fresh-login-required" },
+        },
+      });
+      (ctx.completion ??= {}).redirectUrl = target;
+      return undefined;
+    }
+    // Recovery — `admin-only` lockout never self-unlocks, so a reset that left
+    // the account locked must NOT pretend success. Only this mode can reach
+    // finalize still locked (self-service ran `unlock-account`; temporary
+    // auto-expires), so read the post-reset lock state and warn accordingly. A
+    // user who simply forgot their password (never tripped the lock) is not
+    // locked and still gets the normal success even under `admin-only`.
+    if (ctx.lockout?.mode === "admin-only") {
+      this.requireUsername(ctx);
+      return this.users.getUser(ctx.username).then((user) => {
+        this.finishRecoveryReset(ctx, user.account.locked);
+        return undefined;
+      });
+    }
+    this.finishRecoveryReset(ctx, false);
+    return undefined;
+  }
+
+  /**
+   * Emit the recovery password-reset terminal. `stillLocked` is only ever true
+   * for an `admin-only` account whose lock survived the reset — that terminal
+   * warns the user the account remains frozen and offers a manual back-to-
+   * sign-in (no misleading auto-redirect to a login they can't pass yet).
+   * Every other reset confirms success and auto-redirects to sign-in.
+   */
+  private finishRecoveryReset(ctx: AuthWfCtx, stillLocked: boolean): void {
+    const target = ctx.postReset!.loginUrl!;
+    if (stillLocked) {
+      finishWf({
+        message: {
+          level: "warn",
+          text: "Password updated, but your account is still locked. Contact an administrator to regain access.",
+        },
+        next: {
+          trigger: "manual",
+          primary: {
+            label: "Back to sign-in",
+            action: { type: "redirect", target, reason: "reset-locked" },
+          },
+        },
+      });
+    } else {
       finishWf({
         message: { level: "success", text: "Password updated. Redirecting to sign-in…" },
         next: {
@@ -2780,16 +2831,8 @@ export class AuthWorkflow {
           skipButton: { label: "Go now" },
         },
       });
-    } else {
-      finishWf({
-        next: {
-          trigger: "immediate",
-          action: { type: "redirect", target, reason: "fresh-login-required" },
-        },
-      });
     }
     (ctx.completion ??= {}).redirectUrl = target;
-    return undefined;
   }
 
   /**
