@@ -488,6 +488,56 @@ test.describe("LoginWorkflow / variant=mfa-full (P1)", () => {
     await expect(page.getByRole("radiogroup", { name: /MFA method/ })).toBeVisible();
   });
 
+  // BRANCH: per-channel cooldown anti-ping-pong gate. `useDifferentMethod`
+  // clears the CURRENT-channel `resendAllowedAt` so the user's first attempt
+  // at the new channel isn't gated for the wrong reason, BUT
+  // `channelCooldowns[<channel>]` survives method-switching so a
+  // SMS → Email → SMS ping-pong cannot be used to bypass the per-channel
+  // rate limit on either channel. This pins the gate at `select-2fa` — if
+  // the per-channel ledger ever stops outliving `useDifferentMethod` the
+  // test surfaces it as a red CI signal instead of silently re-opening the
+  // bypass vector.
+  test("WF-LOGIN-009b: SMS → Email → SMS ping-pong does NOT bypass per-channel cooldown", async ({
+    page,
+  }) => {
+    await page.goto(wfUrl(LOGIN_WF, "mfa-full"));
+    await fillField(page, "username", USERS.multi_mfa.username);
+    await fillField(page, "password", USERS.multi_mfa.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    // Land on TOTP MfaCodeForm (multi_mfa.defaultMfaMethod='totp'), bail to
+    // the picker.
+    await waitForFormInput(page, "code");
+    await page.getByRole("button", { name: "Use a different method" }).click();
+
+    // Pick Email → email pincode sent, channelCooldowns.email armed.
+    await waitForFormInput(page, "methodName");
+    await fillField(page, "methodName", "email");
+    await submitForm(page);
+    await waitForFormInput(page, "code");
+
+    // Bail to picker, pick SMS → sms pincode sent, channelCooldowns.sms armed.
+    // (Email's cooldown survives this switch — that's the whole point.)
+    await page.getByRole("button", { name: "Use a different method" }).click();
+    await waitForFormInput(page, "methodName");
+    await fillField(page, "methodName", "sms");
+    await submitForm(page);
+    await waitForFormInput(page, "code");
+
+    // Bail to picker once more, try to pick Email again. The pre-existing
+    // channelCooldowns.email entry MUST still gate the send → form-level
+    // "Please wait Ns before requesting another email code" banner. If this
+    // ever lets through, the ping-pong bypass is back.
+    await page.getByRole("button", { name: "Use a different method" }).click();
+    await waitForFormInput(page, "methodName");
+    await fillField(page, "methodName", "email");
+    await submitForm(page);
+
+    await expect(
+      page.getByText(/Please wait \d+s before requesting another email code/),
+    ).toBeVisible();
+  });
+
   // BRANCH: pincode resend within `pincodeResendTimeoutMs` → workflow throws
   // `requireInput({ formMessage: 'Please wait Ns' })` and does NOT call the
   // outlet again. Asserted via DOM error + mailbox unchanged. Uses the

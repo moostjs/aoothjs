@@ -1765,12 +1765,11 @@ export class AuthWorkflow {
     delete ctx.pin;
     delete ctx.pinExpire;
     // Channel-enrollment cooldown is local to the ask/verify pair. Clearing
-    // here prevents the enrollment cooldown from leaking into the downstream
-    // MFA-challenge cooldown (`select-2fa` reads the same `resendAllowedAt`
-    // before dispatching MFA pincodes). Clear `sentTo` for the same reason —
-    // the masked address from the enrolment step shouldn't render on the
-    // first MFA-challenge PincodeForm pause if `pincode-send` hasn't fired
-    // for it yet.
+    // `resendAllowedAt` + `sentTo` here keeps the enrolment cooldown from
+    // surfacing on the first MFA-challenge PincodeForm pause when nothing
+    // has been sent yet. `channelCooldowns` is MFA-challenge-only (set by
+    // `pincode-send` when `ctx.mfa?.method` is bound) so enrollment never
+    // touches it — nothing to clear here.
     if (ctx.pincode) {
       delete ctx.pincode.resendAllowedAt;
       delete ctx.pincode.sentTo;
@@ -1892,7 +1891,12 @@ export class AuthWorkflow {
       throw wf.requireInput({ errors: { methodName: "Unknown MFA method" } });
     }
     if (picked.kind === "sms" || picked.kind === "email") {
-      const cooldownUntil = ctx.pincode?.resendAllowedAt;
+      // PER-CHANNEL cooldown — survives `useDifferentMethod` so a user
+      // can't bypass SMS rate-limiting by ping-ponging SMS → Email → SMS.
+      // (`resendAllowedAt` mirrors only the CURRENT channel and is cleared
+      // on method-switch so the new-channel UX isn't gated for the wrong
+      // reason; `channelCooldowns` is the source of truth.)
+      const cooldownUntil = ctx.pincode?.channelCooldowns?.[picked.kind];
       if (cooldownUntil && Date.now() < cooldownUntil) {
         const waitSec = Math.ceil((cooldownUntil - Date.now()) / 1000);
         const channel = picked.kind === "sms" ? "SMS" : "email";
@@ -1945,7 +1949,15 @@ export class AuthWorkflow {
     const pincode = (ctx.pincode ??= {});
     pincode.sentTo = this.maskAddress(target.address, target.channel);
     pincode.codeLength = this.opts.mfa.pincodeLength;
-    pincode.resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
+    const cooldownAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
+    pincode.resendAllowedAt = cooldownAt;
+    // Per-channel cooldown lives alongside `resendAllowedAt` so the gate
+    // survives a `useDifferentMethod` clear (see `pincode-check` +
+    // `select-2fa`). Only MFA-challenge sends are tracked here — recovery
+    // is single-channel (email-only) so per-channel persistence is moot.
+    if (ctx.mfa?.method && (target.channel === "sms" || target.channel === "email")) {
+      (pincode.channelCooldowns ??= {})[target.channel] = cooldownAt;
+    }
     return undefined;
   }
 
@@ -1986,11 +1998,18 @@ export class AuthWorkflow {
         }
         delete ctx.pin;
         delete ctx.pinExpire;
-        // Method-switching MUST clear the resend cooldown — the next channel
-        // is a fresh send, not a re-send. Without this delete the user gets
-        // "Please wait Ns before requesting another <new-channel> code" on
-        // their first attempt at the new method (see select-2fa cooldown
-        // gate). Mirrors `verifyChannel`'s post-success cleanup.
+        // Method-switching MUST clear the CURRENT-channel resend cooldown —
+        // the next channel is a fresh send, not a re-send for the channel
+        // the user just walked away from. Without this delete, the user
+        // gets "Please wait Ns…" on the new channel for the WRONG reason
+        // (see select-2fa cooldown gate). Mirrors `verifyChannel`'s
+        // post-success cleanup.
+        //
+        // `channelCooldowns` is NOT cleared here — that's the per-channel
+        // ledger that survives method-switches so ping-ponging (SMS →
+        // Email → SMS → …) cannot bypass per-channel rate limiting.
+        // `select-2fa` + `pincode-send` consult that ledger on the next
+        // attempt.
         if (ctx.pincode) delete ctx.pincode.resendAllowedAt;
         return undefined;
       }

@@ -57,11 +57,21 @@ export interface AuthWfConsentsState {
  * UI hints for pincode entry — FORM-FACING via `@wf.context.pass 'pincode'`.
  * All three flows (login MFA SMS/email, recovery OTP, invite MFA
  * enrol-confirm) write here.
+ *
+ * `channelCooldowns` is the anti-ping-pong gate for the MFA-challenge loop:
+ * a single `resendAllowedAt` is cleared on every `useDifferentMethod` so the
+ * user's first attempt at the new channel isn't gated for the WRONG
+ * channel's reason, BUT the per-channel timestamps in `channelCooldowns`
+ * survive method-switching so ping-ponging (SMS → Email → SMS → …) cannot
+ * be used to bypass the per-channel rate limit. `pincode-send` enforces the
+ * per-channel gate before delivering; `select-2fa` enforces it BEFORE the
+ * send to surface a per-channel error string on the form.
  */
 export interface AuthWfPincodeUiState {
   sentTo?: string;
   codeLength?: number;
   resendAllowedAt?: number;
+  channelCooldowns?: Partial<Record<MfaTransport, number>>;
 }
 
 /**
