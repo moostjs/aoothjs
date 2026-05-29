@@ -411,18 +411,25 @@ export class AuthWorkflow {
 
   /**
    * Implements the "log out other sessions" branch of `sessionPolicy.concurrencyLimit`.
-   * Default: no-op. Consumers override to revoke sessions in their auth store.
+   * Default revokes every existing session via `auth.revokeAllForUser` — which is
+   * mandatory on every store (stateless ones use a per-user epoch sentinel), so the
+   * kick works without an override. Runs BEFORE `issue`, so the session about to be
+   * minted survives. Override to scope the revoke (e.g. keep the current device).
    */
-  protected async logoutOtherSessions(_username: string): Promise<void> {
-    // No-op default.
+  protected async logoutOtherSessions(username: string): Promise<void> {
+    await this.auth.revokeAllForUser(username);
   }
 
   /**
-   * Return the number of active (non-revoked, non-expired) sessions for the
-   * user. Default: returns `0` (no enforcement). Override with a real count.
+   * Return the number of active (non-revoked, non-expired) sessions for the user,
+   * used by the concurrency-limit gate. Default delegates to `auth.listForUser`,
+   * which counts access-kind credentials and returns `[]` for stateless stores
+   * (no round-trip) — so the count is real when the store can enumerate and `0`
+   * (gate disabled) when it can't. Only consulted when `resolveSessionPolicy`
+   * declared a `concurrencyLimit`. Override for a custom session source.
    */
-  protected async loadActiveSessionsCount(_username: string): Promise<number> {
-    return 0;
+  protected async loadActiveSessionsCount(username: string): Promise<number> {
+    return (await this.auth.listForUser(username)).length;
   }
 
   /**

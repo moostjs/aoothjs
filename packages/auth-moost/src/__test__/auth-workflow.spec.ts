@@ -55,6 +55,8 @@ class TestableAuthWorkflow extends AuthWorkflow {
   public exposeRedirect = (ctx: AuthWfCtx) => this.resolveRedirect(ctx);
   public exposeClientIp = () => this.resolveClientIp();
   public exposeDeliver = (payload: AuthDeliveryPayload) => this.deliver(payload);
+  public exposeLoadActiveSessionsCount = (u: string) => this.loadActiveSessionsCount(u);
+  public exposeLogoutOtherSessions = (u: string) => this.logoutOtherSessions(u);
   // `opts` is `protected readonly` — surfaced for the construction tests.
   public exposeOpts = () => this.opts;
 }
@@ -77,6 +79,13 @@ function makeDeps(): {
 function makeWorkflow(opts: Partial<AuthWorkflowOpts> = {}): TestableAuthWorkflow {
   const { users, auth, consentStore } = makeDeps();
   return new TestableAuthWorkflow(opts, users, auth, consentStore);
+}
+
+/** Like `makeWorkflow` but surfaces the same `auth` the workflow holds, so a
+ * test can seed real sessions into the store the session hooks read back. */
+function makeWorkflowWithAuth(): { wf: TestableAuthWorkflow; auth: AuthCredential } {
+  const { users, auth, consentStore } = makeDeps();
+  return { wf: new TestableAuthWorkflow({}, users, auth, consentStore), auth };
 }
 
 /**
@@ -316,6 +325,37 @@ describe("AuthWorkflow resolver defaults", () => {
     // not satisfy the `!!ctx.sessionPolicy?.concurrencyLimit` gate, but
     // pinning `{}` documents the intended shape.
     expect(r).toEqual({});
+  });
+
+  it("loadActiveSessionsCount — reflects the store's access-kind session count", async () => {
+    // WHY: a declared `concurrencyLimit` silently never tripped because the base
+    // hardcoded `0`, making `ctx.session.activeSessions` always 0 (SESSION_CONCURRENCY.md).
+    // Pin that the default now reports the store's REAL active-session count, so
+    // `resolveSessionPolicy({ concurrencyLimit })` enforces with no override on any
+    // store that can enumerate. A regression back to a constant re-breaks the gate.
+    const { wf, auth } = makeWorkflowWithAuth();
+    expect(await wf.exposeLoadActiveSessionsCount("alice")).toBe(0);
+    await auth.issue("alice");
+    await auth.issue("alice");
+    await auth.issue("bob");
+    expect(await wf.exposeLoadActiveSessionsCount("alice")).toBe(2);
+    // Per-user — bob's sessions never leak into alice's count.
+    expect(await wf.exposeLoadActiveSessionsCount("bob")).toBe(1);
+  });
+
+  it("logoutOtherSessions — default revokes the user's sessions, scoped per-user", async () => {
+    // WHY: the kickPrompt "log out other sessions" branch was a silent no-op, so a
+    // user who hit the limit could never actually free a slot without a consumer
+    // override. Pin that the default revokes via `auth.revokeAllForUser` (mandatory
+    // on every store) and stays scoped to the target user — the kick must not nuke
+    // other users' sessions.
+    const { wf, auth } = makeWorkflowWithAuth();
+    await auth.issue("alice");
+    await auth.issue("alice");
+    await auth.issue("bob");
+    await wf.exposeLogoutOtherSessions("alice");
+    expect(await wf.exposeLoadActiveSessionsCount("alice")).toBe(0);
+    expect(await wf.exposeLoadActiveSessionsCount("bob")).toBe(1);
   });
 
   it("resolveMfaPolicy — optional mode, all 3 transports, default issuer", async () => {
