@@ -622,12 +622,19 @@ test.describe("LoginWorkflow / variant=mfa-full (P1)", () => {
     expect(availableAt).toBeGreaterThan(Date.now());
   });
 
-  // BRANCH: the `code` input carries `maxlength = ctx.public.pincode.codeLength`,
-  // mirroring the server-side `pincodeLength` opt onto the DOM so the browser
-  // truncates over-long input before submit. The default in the demo is 6 — a
-  // regression that drops the binding (or the ctx field) shows up as the
-  // attribute being absent or empty.
-  test("WF-LOGIN-011c: code input carries maxlength = ctx.pincode.codeLength", async ({ page }) => {
+  // BRANCH: the `code` field wrapper carries `maxlength = ctx.public.pincode.codeLength`,
+  // mirroring the server-side `pincodeLength` opt onto the DOM. `@ui.form.fn.attr`
+  // targets the field WRAPPER (same as the `data-available-at` pattern on the
+  // resend action — see WF-LOGIN-011b) — that's where customer-subscribed input
+  // components mounted via `<AsForm :components>` receive the prop. The default
+  // vue-form input renderer does not currently forward the attr onto the inner
+  // <input>, so the browser will not enforce length on the bundled component;
+  // server-side `@expect.maxLength 12` (a static schema constraint) catches
+  // over-long submissions. Pinning the wrapper attr is what gives custom
+  // renderers a stable contract.
+  test("WF-LOGIN-011c: code field wrapper carries maxlength = ctx.pincode.codeLength", async ({
+    page,
+  }) => {
     await page.goto(wfUrl(LOGIN_WF, "mfa-full"));
     await fillField(page, "username", USERS.henry.username);
     await fillField(page, "password", USERS.henry.password);
@@ -635,7 +642,10 @@ test.describe("LoginWorkflow / variant=mfa-full (P1)", () => {
 
     await waitForFormInput(page, "code");
     const codeInput = page.locator('[name="code"]').first();
-    await expect(codeInput).toHaveAttribute("maxlength", "6");
+    const wrapper = codeInput.locator(
+      'xpath=ancestor::div[contains(@class,"as-default-field")][1]',
+    );
+    await expect(wrapper).toHaveAttribute("maxlength", "6");
   });
 
   // BRANCH: brute-force protection — `verifyPin` increments `ctx.pinAttempts`
