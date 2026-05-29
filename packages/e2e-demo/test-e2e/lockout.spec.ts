@@ -6,7 +6,13 @@
  *
  *   - admin-only   → tripping the threshold locks PERMANENTLY (lockEnds === 0)
  *                    and completing recovery resets the password but DOES NOT
- *                    lift the lock (the account stays frozen — admin only).
+ *                    lift the lock (the account stays frozen — admin only). The
+ *                    recovery terminal then WARNS "still locked, contact an
+ *                    administrator" instead of the normal success — but only
+ *                    when the account is actually locked: a plain forgot-
+ *                    password user (never tripped the lock) under the same mode
+ *                    still gets the normal success, because the warning keys on
+ *                    real lock state, not on the mode.
  *   - self-service → locks permanently too, but completing recovery runs the
  *                    `unlock-account` step, so login works again afterward.
  *   - temporary    → locks with a TIMED expiry (lockEnds > 0) and recovery
@@ -108,7 +114,16 @@ test.describe("Lockout posture (resolveLockout modes)", () => {
     // Recovery succeeds (the lock never gates recovery) and resets the password…
     await resetViaRecovery(page, request, "lockout-admin-only");
 
-    // …but the account is STILL locked — admin-only does not self-service unlock.
+    // …and the terminal WARNS the account is still frozen rather than showing
+    // the misleading "redirecting to sign-in" success — warn-level, with a
+    // manual "Back to sign-in" (no auto-redirect to a login the user can't pass
+    // yet). Scoped to the rendered finish-message, not the JSON debug dump.
+    await expect(page.locator('.as-wf-finish-message[data-level="warn"]')).toContainText(
+      "your account is still locked",
+    );
+    await expect(page.locator("button.as-wf-finish-primary")).toHaveText("Back to sign-in");
+
+    // …and the account is STILL locked — admin-only does not self-service unlock.
     const after = await readAccount(request, USERS.alice.username);
     expect(after.account.locked, "admin-only: recovery must NOT unlock").toBe(true);
 
@@ -118,6 +133,42 @@ test.describe("Lockout posture (resolveLockout modes)", () => {
     await fillField(page, "password", NEW_PASSWORD);
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
     await expect(page.getByText("Account locked, please try again later")).toBeVisible();
+  });
+
+  // admin-only, but NOT locked: a plain forgot-password user who never tripped
+  // the threshold must still get the normal success terminal — the "still
+  // locked" warning keys on the account's real lock state, not on the mode.
+  // A regression that keyed the warning on `mode === "admin-only"` alone would
+  // wrongly tell every recovering user under this tenant to "contact an admin".
+  test("WF-LOGIN-LOCKOUT-ADMIN-ONLY-UNLOCKED: forgot-password under admin-only (never locked) → normal success, login works", async ({
+    page,
+    request,
+  }) => {
+    // Sanity: a freshly-seeded alice is not locked.
+    const fresh = await readAccount(request, USERS.alice.username);
+    expect(fresh.account.locked, "fresh user is not locked").toBe(false);
+
+    // Recover under the admin-only variant WITHOUT tripping the lock first.
+    await resetViaRecovery(page, request, "lockout-admin-only");
+
+    // The terminal is the normal success ("…Redirecting to sign-in…") — NOT
+    // the "still locked" warning — for a user who was never locked. The
+    // distinguishing "Redirecting" is absent from the locked copy.
+    await expect(page.locator(".as-wf-finish-message")).toContainText(
+      "Password updated. Redirecting",
+    );
+
+    // The account stays unlocked and the reset password logs in cleanly.
+    const after = await readAccount(request, USERS.alice.username);
+    expect(after.account.locked, "never-locked recovery must not freeze the account").toBe(false);
+
+    await page.goto(wfUrl(LOGIN_WF, "lockout-admin-only"));
+    await fillField(page, "username", USERS.alice.username);
+    await fillField(page, "password", NEW_PASSWORD);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    const envelope = (await readFinishEnvelope(page)) as { data?: { accessToken?: string } };
+    expect(typeof envelope.data?.accessToken).toBe("string");
+    expect((envelope.data?.accessToken ?? "").length).toBeGreaterThan(0);
   });
 
   // self-service: permanent lock, but completing recovery runs unlock-account,
