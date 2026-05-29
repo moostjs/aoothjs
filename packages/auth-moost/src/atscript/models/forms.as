@@ -480,11 +480,12 @@ export interface EnrollAddressForm {
  * **TOTP branch.** `ctx.public.mfaEnroll.secret` holds the base32 secret and
  * `ctx.public.mfaEnroll.uri` the `otpauth://` URI — both are produced server-side by
  * `setup-mfa-method` and ride the `@wf.context.pass 'public'` whitelist.
- * The default rendering shows the secret as plain text so users can paste it
- * into their authenticator app even without a QR scanner. Customers who want
- * a scannable QR code can subscribe a custom renderer for the `qrCode` field
- * via `<AsWfForm :components>` (the field's `@ui.form.fn.value` exposes the
- * `otpauth://` URI string for the QR generator to consume).
+ * The `qrCode` field renders the `otpauth://` URI as a scannable QR image via
+ * the `AsQrCode` component (from `@atscript/vue-aooth`, registered on
+ * `<AsWfForm :components>`); its `@ui.form.fn.value` exposes the URI string the
+ * component consumes. `AsQrCode` ALSO extracts the base32 secret from the URI
+ * and renders it for manual entry (its `manualSecret` prop defaults on), so
+ * users whose authenticator app lacks a QR scanner can still set up.
  *
  * **SMS / email branch.** Single `transportHint` paragraph shows the masked
  * recipient.
@@ -498,25 +499,17 @@ export interface EnrollConfirmForm {
     transportHint?: ui.paragraph
 
     /**
-     * Phantom paragraph — `otpauth://` URI for the customer-side QR renderer.
-     * Default rendering shows the raw URI string (ugly but functional); the
-     * customer-supplied component path (see class docstring) is the intended
-     * production UX.
+     * Phantom field — `otpauth://` URI rendered as a scannable QR image by the
+     * `AsQrCode` component. `AsQrCode` also extracts the base32 secret from the
+     * URI and shows it for manual entry (its `manualSecret` prop defaults on),
+     * so there is no separate manual-secret field.
      */
     @ui.form.order 5
+    @ui.form.component 'AsQrCode'
+    @ui.form.fn.attr 'size', '() => 180'
     @ui.form.fn.value '(_, _d, ctx) => ctx.public?.mfaEnroll?.uri || ""'
     @ui.form.fn.hidden '(_, _d, ctx) => ctx.public?.mfaEnroll?.method !== "totp" || !ctx.public?.mfaEnroll?.uri'
     qrCode: ui.paragraph
-
-    /**
-     * Phantom paragraph — base32 secret formatted for manual entry. Shown
-     * alongside `qrCode` so authenticator apps without QR scanners (and users
-     * paranoid about scanning) can still set up.
-     */
-    @ui.form.order 6
-    @ui.form.fn.value '(_, _d, ctx) => ctx.public?.mfaEnroll?.method === "totp" && ctx.public?.mfaEnroll?.secret ? "Manual entry secret: " + ctx.public.mfaEnroll.secret : ""'
-    @ui.form.fn.hidden '(_, _d, ctx) => ctx.public?.mfaEnroll?.method !== "totp" || !ctx.public?.mfaEnroll?.secret'
-    manualSecret: ui.paragraph
 
     @ui.form.order 10
     @ui.form.type 'text'
