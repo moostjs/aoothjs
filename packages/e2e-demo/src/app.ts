@@ -30,7 +30,7 @@ import {
   WfTrigger,
   WfTriggerProvider,
 } from "@aooth/auth-moost";
-import { HandleStateStrategy, Step, WorkflowParam } from "@moostjs/event-wf";
+import { HandleStateStrategy, Step, type WfStateStrategy, WorkflowParam } from "@moostjs/event-wf";
 import { type UserCredentials, UserService } from "@aooth/user";
 import { MoostHttp, Post } from "@moostjs/event-http";
 import { MoostWf } from "@moostjs/event-wf";
@@ -675,10 +675,15 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   };
   @Injectable()
   class DemoWfTriggerProvider extends WfTriggerProvider {
-    constructor(wf: MoostWf) {
-      super(wf);
-      this.state = new HandleStateStrategy({ store: wfStateStore });
+    constructor(wf: MoostWf, auth: AuthCredential) {
+      super(wf, auth);
       this.outlets = [...this.outlets, createAuthEmailOutlet(demoEmailOutletDeps)];
+    }
+    // Durable strategy a workflow swaps to after first validated input — the
+    // app's DB-backed AsWfStore. The encapsulated start (and its secret, derived
+    // from the JWT-HMAC AuthCredential via deriveStateKey) is inherited unchanged.
+    protected override storeStrategy(): WfStateStrategy {
+      return new HandleStateStrategy({ store: wfStateStore });
     }
   }
 
