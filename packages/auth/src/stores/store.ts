@@ -34,6 +34,15 @@ export interface CredentialStore<TClaims extends object = object> {
   revokeAllForUser(userId: string): Promise<number>;
   /** List active credentials for a user (stateful only). */
   listForUser?(userId: string): Promise<Array<CredentialState<TClaims> & { token: string }>>;
+  /**
+   * Derive a stable, domain-separated 32-byte subkey from this store's
+   * symmetric secret via HKDF-SHA256. Used so other subsystems (e.g. the
+   * workflow-state encryption key) can reuse the auth secret WITHOUT the raw
+   * secret ever leaving the store. Only implemented by stores backed by a
+   * symmetric secret (JWT-HMAC, Encapsulated); stateful/asymmetric stores
+   * omit it. `label` provides domain separation (different label → different key).
+   */
+  deriveSubkey?(label: string): Buffer;
 }
 
 /**

@@ -2,6 +2,7 @@ import { createCipheriv, createDecipheriv, randomBytes, randomUUID, scryptSync }
 import type { CredentialState } from "../credential/types";
 import { AuthError } from "../errors";
 import { type Clock, defaultClock } from "../utils/clock";
+import { hkdfSubkey } from "./derive-subkey";
 import type { CredentialStore, DenylistStore } from "./store";
 
 const KEY_LEN = 32; // AES-256
@@ -136,6 +137,10 @@ export class CredentialStoreEncapsulated<
     // Returns 1 to signal "revocation took effect" without claiming a count.
     this.epochs.set(userId, this.clock.now());
     return 1;
+  }
+
+  deriveSubkey(label: string): Buffer {
+    return hkdfSubkey(this.key, label);
   }
 
   /**

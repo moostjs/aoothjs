@@ -289,6 +289,23 @@ export class AuthCredential<TClaims extends object = object> {
       }));
   }
 
+  /**
+   * Derive a stable 32-byte key from this credential's underlying store secret,
+   * domain-separated by `label`. Lets adjacent subsystems (e.g. workflow-state
+   * encryption) reuse the auth secret without managing a second one. Throws if
+   * the store has no reusable symmetric secret (stateful/asymmetric) — callers
+   * should then require an explicit secret.
+   */
+  deriveStateKey(label = "wf-state"): Buffer {
+    if (!this.store.deriveSubkey) {
+      throw new AuthError(
+        "INVALID_CONFIG",
+        "credential store has no reusable secret; provide an explicit wfStateSecret",
+      );
+    }
+    return this.store.deriveSubkey(label);
+  }
+
   private async enforceConcurrencyLimit(userId: string): Promise<void> {
     if (!this.store.listForUser || this.maxConcurrent === undefined) return;
     const all = await this.store.listForUser(userId);

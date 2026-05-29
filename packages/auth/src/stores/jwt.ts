@@ -3,6 +3,7 @@ import { type CryptoKey, type JWTPayload, SignJWT, jwtVerify } from "jose";
 import type { CredentialState } from "../credential/types";
 import { AuthError } from "../errors";
 import { type Clock, defaultClock } from "../utils/clock";
+import { hkdfSubkey } from "./derive-subkey";
 import type { CredentialStore, DenylistStore } from "./store";
 
 /**
@@ -191,6 +192,16 @@ export class CredentialStoreJwt<
     // to signal "revocation took effect" without claiming a precise count.
     this.epochs.set(userId, this.clock.now());
     return 1;
+  }
+
+  deriveSubkey(label: string): Buffer {
+    if (this.signingKey instanceof Uint8Array) {
+      return hkdfSubkey(this.signingKey, label);
+    }
+    throw new AuthError(
+      "INVALID_CONFIG",
+      "deriveSubkey requires a symmetric (HS*) secret; this JWT store uses an asymmetric key — provide an explicit wfStateSecret",
+    );
   }
 
   // --- internal helpers -------------------------------------------------
