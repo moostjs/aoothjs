@@ -331,12 +331,13 @@ export interface Select2faForm {
  *
  * **Resend cooldown contract.** `ctx.pincode.resendAllowedAt` is a wall-clock
  * timestamp (`Date.now() + pincodeResendTimeoutMs`) after which the server
- * will accept a `resend` action click. Customers who want a progress bar /
- * countdown / disabled state on the resend button can subscribe a custom
- * action component via `<AsWfForm :components>` and read the timestamp from
- * the form's `ctx.pincode.resendAllowedAt` (kept on the `@wf.context.pass
- * 'pincode'` whitelist). Server-side cooldown violations surface as a
- * `formMessage` banner — never an inline `code` field error — so the user
+ * will accept a `resend` action click. It rides the `@wf.context.pass
+ * 'pincode'` whitelist AND is mirrored onto the rendered resend element via
+ * `@ui.form.fn.attr 'data-available-at'` — customers can subscribe a custom
+ * action component via `<AsWfForm :components>` and drive a progress bar /
+ * countdown / disabled state straight off the DOM attribute (no need to
+ * re-derive the value from ctx). Server-side cooldown violations surface as
+ * a `formMessage` banner — never an inline `code` field error — so the user
  * isn't told their (unsubmitted) code is wrong.
  */
 @meta.label 'Enter the verification code'
@@ -365,6 +366,7 @@ export interface PincodeForm {
     rememberDevice: boolean
 
     @ui.form.action 'resend', 'Resend code'
+    @ui.form.fn.attr 'data-available-at', '(_, _d, ctx) => ctx.pincode?.resendAllowedAt'
     resend?: ui.action
 
     @ui.form.action 'useDifferentMethod', 'Use a different method'
@@ -533,6 +535,7 @@ export interface EnrollConfirmForm {
     code: string
 
     @ui.form.action 'resend', 'Resend code'
+    @ui.form.fn.attr 'data-available-at', '(_, _d, ctx) => ctx.pincode?.resendAllowedAt'
     @ui.form.fn.hidden '(_, _d, ctx) => ctx.mfaEnroll?.method === "totp"'
     resend?: ui.action
 

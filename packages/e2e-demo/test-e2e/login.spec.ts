@@ -529,6 +529,47 @@ test.describe("LoginWorkflow / variant=mfa-full (P1)", () => {
     expect(first.code).toBeTruthy();
   });
 
+  // BRANCH: Resend cooldown DATA contract — the workflow stamps
+  // `ctx.pincode.resendAllowedAt` (unix-ms) and the PincodeForm schema
+  // mirrors that via `@ui.form.fn.attr 'data-available-at'` onto the
+  // rendered resend action's wrapper. Customers who subscribe a custom
+  // resend renderer via `<AsWfForm :components>` drive their countdown /
+  // progress-bar / disabled-state straight off the DOM attribute — this
+  // test pins that contract so a refactor that drops the attr binding
+  // (or renames the metadata key) shows up as a red CI signal instead of
+  // silently breaking customer integrations.
+  test("WF-LOGIN-011b: resend action wrapper carries data-available-at = ctx.pincode.resendAllowedAt", async ({
+    page,
+  }) => {
+    await page.goto(wfUrl(LOGIN_WF, "mfa-full"));
+    await fillField(page, "username", USERS.henry.username);
+    await fillField(page, "password", USERS.henry.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    // Wait for the PincodeForm to land; the cooldown is armed by
+    // `pincode-send` BEFORE the pause, so the attr should be present on
+    // first render — no prior resend click needed.
+    await waitForFormInput(page, "code");
+
+    // The wrapper div carries the attr, not the inner button — mirrors the
+    // pattern used by AsConsentArray's `pendingconsents`. Customer custom
+    // components are passed the field-wrapper props.
+    const resendWrapper = page
+      .locator(".as-default-field.as-action-field")
+      .filter({ has: page.getByRole("button", { name: "Resend code" }) });
+    await expect(resendWrapper).toHaveAttribute("data-available-at", /^\d+$/);
+
+    // The stamped value must be a future timestamp — the workflow uses
+    // `Date.now() + pincodeResendTimeoutMs`; the default cooldown in the
+    // `mfa-full` variant is the demo's default (60s), so a generous lower
+    // bound suffices.
+    const rawAttr = await resendWrapper.getAttribute("data-available-at");
+    expect(rawAttr).toBeTruthy();
+    const availableAt = Number(rawAttr);
+    expect(Number.isFinite(availableAt)).toBe(true);
+    expect(availableAt).toBeGreaterThan(Date.now());
+  });
+
   // BRANCH: pincode resend AFTER `pincodeResendTimeoutMs` → workflow should
   // clear `ctx.pin` and re-run `pincode-send-login` on the next iteration.
   //
