@@ -807,6 +807,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       auditEvents: sharedAuditEventsBuffer,
       consentLog: sharedConsentLogBuffer,
       otpConsentLog: sharedOtpConsentLogBuffer,
+      wfStates: appDb.tables.wfStates,
     });
     app.registerControllers(TestMailboxController);
   }

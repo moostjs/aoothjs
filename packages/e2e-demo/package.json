@@ -48,6 +48,7 @@
     "@wooksjs/event-http": "catalog:",
     "better-sqlite3": "^12.6.2",
     "moost": "catalog:",
+    "qrcode": "^1.5.4",
     "unocss": "^66.6.8",
     "vue": "catalog:",
     "vue-router": "^4.5.0",

@@ -4,6 +4,8 @@ import type { UserService } from "@aooth/user";
 import { Delete, Get, Post } from "@moostjs/event-http";
 import { Controller, Param } from "moost";
 
+import type { AppDb } from "./db";
+
 /**
  * Shape captured by `DemoConsentStore.recordOtpChannelConsent` (a sibling
  * audit-record to `ConsentEvent` — `channel`/`target`/`disclosure` are
@@ -57,6 +59,17 @@ export interface TestMailboxDeps {
    * `ConsentEvent`. Drives WF-LOGIN-OTP-DISCLOSURE-01.
    */
   otpConsentLog: Map<string, OtpConsentRecord[]>;
+  /**
+   * The `wf_states` table (the durable store `AsWfStore` wraps). Drives the
+   * workflow state-strategy spec: `GET /__test/wf-states/count` proves the
+   * encapsulated START persists ZERO server rows and that a post-validation
+   * pause swaps to `store` (≥ 1 row); `DELETE /__test/wf-states` truncates it
+   * to simulate row eviction / a server restart while the user idles on the
+   * login form. `POST /__test/reset` already truncates this table (it's in the
+   * `reseed()` dropOrder in `app.ts`), but the spec deletes explicitly where it
+   * needs a known-zero baseline regardless of reset ordering.
+   */
+  wfStates: AppDb["tables"]["wfStates"];
 }
 
 /**
@@ -70,7 +83,8 @@ export interface TestMailboxDeps {
 export function createTestMailboxController(
   deps: TestMailboxDeps,
 ): new (...args: never[]) => unknown {
-  const { emails, sms, reseed, userService, auditEvents, consentLog, otpConsentLog } = deps;
+  const { emails, sms, reseed, userService, auditEvents, consentLog, otpConsentLog, wfStates } =
+    deps;
 
   // `@Public()` bypasses the global auth guard — these endpoints are the
   // entry point used BY tests, before any login has happened.
@@ -243,6 +257,33 @@ export function createTestMailboxController(
     @Get("otp-consent-log/:username")
     otpConsentLogFor(@Param("username") username: string): OtpConsentRecord[] {
       return otpConsentLog.get(username) ?? [];
+    }
+
+    /**
+     * Count the durable `wf_states` rows. The workflow state-strategy spec
+     * asserts `count === 0` right after an encapsulated START (no server row
+     * persisted pre-validation) and `count >= 1` after a step swaps to `store`
+     * on first validated input. Empty filter (`{}`) counts every row.
+     */
+    @Get("wf-states/count")
+    async wfStatesCount(): Promise<{ count: number }> {
+      const count = await wfStates.count();
+      return { count };
+    }
+
+    /**
+     * Truncate the `wf_states` table — simulates the durable row being evicted
+     * or the server restarting while a user idles on the login form. The
+     * headline state-strategy fix is that the encapsulated START rides in the
+     * `wfs` token, so wiping this table mid-flow must NOT 410 the login. Returns
+     * the pre-truncate count as `deleted` so the spec can assert it actually
+     * cleared rows (vs. silently no-op'ing). `{}` matches every row.
+     */
+    @Delete("wf-states")
+    async clearWfStates(): Promise<{ ok: true; deleted: number }> {
+      const deleted = await wfStates.count();
+      await wfStates.deleteMany({});
+      return { ok: true, deleted };
     }
   }
 
