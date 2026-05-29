@@ -144,7 +144,11 @@ export class UserService<T extends object = object> {
     return user;
   }
 
-  async login(username: string, password: string): Promise<LoginResult<T>> {
+  async login(
+    username: string,
+    password: string,
+    lockoutOverride?: Partial<LockoutConfig>,
+  ): Promise<LoginResult<T>> {
     const user = await this.store.findByUsername(username);
     if (!user) throw new UserAuthError("NOT_FOUND");
 
@@ -171,7 +175,12 @@ export class UserService<T extends object = object> {
       return { user, mfaRequired };
     }
 
-    return this.incrementAndMaybeLock(username, user.account, "INVALID_CREDENTIALS");
+    return this.incrementAndMaybeLock(
+      username,
+      user.account,
+      "INVALID_CREDENTIALS",
+      lockoutOverride,
+    );
   }
 
   async verifyPassword(username: string, password: string): Promise<boolean> {
@@ -387,7 +396,12 @@ export class UserService<T extends object = object> {
    * attacker who knows the password but not the TOTP gets `lockout.threshold`
    * total tries across BOTH factors, not `2 * threshold`.
    */
-  async verifyMfa(username: string, code: string, config?: TotpConfig): Promise<void> {
+  async verifyMfa(
+    username: string,
+    code: string,
+    config?: TotpConfig,
+    lockoutOverride?: Partial<LockoutConfig>,
+  ): Promise<void> {
     const user = await this.getUser(username);
 
     if (!user.account.active) {
@@ -437,7 +451,7 @@ export class UserService<T extends object = object> {
       if (!replayDuringCas) return;
     }
 
-    await this.incrementAndMaybeLock(username, user.account, "MFA_INVALID");
+    await this.incrementAndMaybeLock(username, user.account, "MFA_INVALID", lockoutOverride);
   }
 
   /**
@@ -633,14 +647,20 @@ export class UserService<T extends object = object> {
    * and always throw `errorCode` (with `details.lockEnds` when the lockout
    * just tripped). Used by both `login` and `verifyMfa` so the two factors
    * share one counter.
+   *
+   * `lockoutOverride` lets a caller (e.g. a workflow policy resolver) force a
+   * different posture for THIS lock — notably `{ duration: 0 }` to make the
+   * lock permanent (admin-/recovery-lift only) instead of timed. Unset fields
+   * fall back to `this.config.lockout`.
    */
   private async incrementAndMaybeLock(
     username: string,
     account: UserCredentials["account"],
     errorCode: "INVALID_CREDENTIALS" | "MFA_INVALID",
+    lockoutOverride?: Partial<LockoutConfig>,
   ): Promise<never> {
     const newAttempts = account.failedLoginAttempts + 1;
-    const { threshold, duration } = this.config.lockout;
+    const { threshold, duration } = { ...this.config.lockout, ...lockoutOverride };
     const shouldLock = threshold > 0 && newAttempts >= threshold;
 
     if (shouldLock) {

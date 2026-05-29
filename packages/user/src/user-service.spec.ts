@@ -294,6 +294,49 @@ describe("UserService", () => {
         expect((e as UserAuthError).type).toBe("LOCKED");
       }
     });
+
+    // WHY (Rule 9): the per-call `lockoutOverride` is the bridge that lets a
+    // workflow policy resolver pick the lock POSTURE per request (the
+    // admin-only / self-service / temporary modes) without reconstructing
+    // UserService. Here the service is configured TEMPORARY (duration 60s) but
+    // the caller forces a PERMANENT lock for this attempt — the override must
+    // win, so the lock never auto-expires. A regression that ignored the
+    // override (used config.duration) would auto-unlock after 60s and silently
+    // downgrade an admin-only/self-service policy to temporary.
+    it("per-call lockoutOverride forces a permanent lock even when config is temporary", async () => {
+      await createActiveUser(lockSvc, "alice", "pass123"); // lockSvc: duration 60_000
+      for (let i = 0; i < 3; i++) {
+        try {
+          await lockSvc.login("alice", "wrong", { duration: 0 });
+        } catch {}
+      }
+      const locked = await lockSvc.getUser("alice");
+      expect(locked.account.locked).toBe(true);
+      expect(locked.account.lockEnds).toBe(0); // 0 = permanent, not now+60_000
+
+      // Past the would-be temporary window: still locked (override held).
+      now += 61000;
+      try {
+        await lockSvc.login("alice", "pass123");
+        expect.unreachable();
+      } catch (e) {
+        expect((e as UserAuthError).type).toBe("LOCKED");
+      }
+    });
+
+    // Inverse: with no override the service's own temporary duration applies,
+    // so the same threshold trip yields a timed lock that DOES auto-expire.
+    // Pins that the override is opt-in and doesn't change the default path.
+    it("without an override the lock uses the configured temporary duration", async () => {
+      await createActiveUser(lockSvc, "alice", "pass123");
+      for (let i = 0; i < 3; i++) {
+        try {
+          await lockSvc.login("alice", "wrong");
+        } catch {}
+      }
+      const locked = await lockSvc.getUser("alice");
+      expect(locked.account.lockEnds).toBe(now + 60000);
+    });
   });
 
   describe("lockout — case sensitivity invariant", () => {
