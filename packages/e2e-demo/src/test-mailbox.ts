@@ -155,7 +155,12 @@ export function createTestMailboxController(
         methods: Array<{ name: string; confirmed: boolean; value: string }>;
         defaultMethod: string;
       };
-      account: { active: boolean; locked: boolean; pendingInvitation?: boolean };
+      account: {
+        active: boolean;
+        locked: boolean;
+        lockEnds: number;
+        pendingInvitation?: boolean;
+      };
     }> {
       const user = await userService.getUser(username);
       return {
@@ -171,6 +176,10 @@ export function createTestMailboxController(
         account: {
           active: user.account.active,
           locked: user.account.locked,
+          // lockEnds === 0 ⇒ permanent (admin-only / self-service); > 0 ⇒ timed
+          // (temporary). Lets lockout specs distinguish the modes without
+          // waiting out a timeout.
+          lockEnds: user.account.lockEnds,
           ...(user.account.pendingInvitation !== undefined && {
             pendingInvitation: user.account.pendingInvitation,
           }),

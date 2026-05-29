@@ -504,6 +504,18 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       return super.resolveSessionPolicy(ctx);
     }
 
+    // Flow-aware (like resolveMfaPolicy): the lock is SET during login but
+    // LIFTED during recovery, so each flow reads the mode from its own variant
+    // map. Same variant key in both LOGIN_VARIANTS + RECOVERY_VARIANTS drives
+    // one end-to-end mode across the lock→reset→unlock journey.
+    protected override resolveLockout(
+      ctx: AuthWfCtx,
+    ): NonNullable<AuthWfCtx["lockout"]> | Promise<NonNullable<AuthWfCtx["lockout"]>> {
+      const variantMap = detectFlow(ctx) === "recovery" ? RECOVERY_VARIANTS : LOGIN_VARIANTS;
+      const fromVariant = pickVariant(variantMap, readVariantHeader())?.policy?.lockout;
+      return fromVariant ?? super.resolveLockout(ctx);
+    }
+
     protected override resolveMfaPolicy(
       ctx: AuthWfCtx,
     ): NonNullable<AuthWfCtx["mfaPolicy"]> | Promise<NonNullable<AuthWfCtx["mfaPolicy"]>> {

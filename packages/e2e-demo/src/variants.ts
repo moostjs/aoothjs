@@ -64,6 +64,7 @@ export interface LoginPolicyOverrides {
   enrollment?: NonNullable<AuthWfCtx["enrollment"]>;
   finalize?: NonNullable<AuthWfCtx["finalize"]>;
   guards?: NonNullable<AuthWfCtx["guards"]>;
+  lockout?: NonNullable<AuthWfCtx["lockout"]>;
   sessionPolicy?: NonNullable<AuthWfCtx["sessionPolicy"]>;
   mfaPolicy?: NonNullable<AuthWfCtx["mfaPolicy"]>;
 }
@@ -86,6 +87,7 @@ export interface InvitePolicyOverrides {
  */
 export interface RecoveryPolicyOverrides {
   postReset?: NonNullable<AuthWfCtx["postReset"]>;
+  lockout?: NonNullable<AuthWfCtx["lockout"]>;
   mfaPolicy?: NonNullable<AuthWfCtx["mfaPolicy"]>;
   recoveryAltActions?: NonNullable<AuthWfCtx["recoveryAltActions"]>;
 }
@@ -286,6 +288,23 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
     authOpts: { mfa: { pincodeResendTimeoutMs: 1000 } },
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["sms", "email", "totp"] },
   },
+  // ── Lockout posture (resolveLockout) — WF-LOGIN-LOCKOUT-* ──
+  // MFA disabled so the bad-login path is pure credentials → lock trip, and a
+  // post-unlock login lands straight on `issue` with no MFA noise. The lock
+  // duration is forced by the MODE (permanent for admin-only/self-service),
+  // overriding the demo's env LOCKOUT_DURATION_MS at lock-set time.
+  "lockout-admin-only": {
+    mfaCtx: { mfaMode: "disabled" },
+    policy: { lockout: { mode: "admin-only" } },
+  },
+  "lockout-self-service": {
+    mfaCtx: { mfaMode: "disabled" },
+    policy: { lockout: { mode: "self-service" } },
+  },
+  "lockout-temporary": {
+    mfaCtx: { mfaMode: "disabled" },
+    policy: { lockout: { mode: "temporary" } },
+  },
 };
 
 /**
@@ -333,6 +352,15 @@ export const RECOVERY_VARIANTS: Record<string, RecoveryVariant> = {
   // scenario for inline consent ("since you last set your password we
   // updated our terms").
   "recovery-terms-bump": {},
+  // Lockout unlock-on-reset (WF-LOGIN-LOCKOUT-*) — the recovery side of the
+  // same mode chosen on login. `self-service` runs the `unlock-account` step
+  // after the reset; `admin-only` does NOT (the account stays frozen).
+  "lockout-self-service": {
+    policy: { lockout: { mode: "self-service" } },
+  },
+  "lockout-admin-only": {
+    policy: { lockout: { mode: "admin-only" } },
+  },
 };
 
 /**
