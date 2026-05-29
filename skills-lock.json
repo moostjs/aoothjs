@@ -11,37 +11,37 @@
       "source": "moostjs/atscript-db",
       "sourceType": "github",
       "skillPath": "skills/atscript-db/SKILL.md",
-      "computedHash": "48ed0afdf5220ef0f95831d4068195c3726c55da2a18597fe7c2d36878f6eb9d"
+      "computedHash": "0993f80060f64e086d99c1653667b7762856647d99d68fc15eb67af9c5f5d4a7"
     },
     "atscript-ui": {
       "source": "moostjs/atscript-ui",
       "sourceType": "github",
       "skillPath": "skills/atscript-ui/SKILL.md",
-      "computedHash": "aa25c680cf98262f4ba0e26bcb045e19a8a89c09ce7c8f7d152e4527baca3e87"
+      "computedHash": "7edf1a92bb978c7b16844b19792cccd6ea4b64f3d17074465e507f17d2765362"
     },
     "atscript-ui-forms": {
       "source": "moostjs/atscript-ui",
       "sourceType": "github",
       "skillPath": "skills/atscript-ui-forms/SKILL.md",
-      "computedHash": "57cac5a899c31f5d593faec2f3ba44c223712c4794abcb0589131dc11e77ab02"
+      "computedHash": "a1a7443bd2aa9d07d4610b08615d5b96448161a4bff46289f7c9147e17ed7c2b"
     },
     "atscript-ui-styles": {
       "source": "moostjs/atscript-ui",
       "sourceType": "github",
       "skillPath": "skills/atscript-ui-styles/SKILL.md",
-      "computedHash": "8b7fc374615fac742257837928da3767d018851bc289dba3f899745404e1514b"
+      "computedHash": "73ef71909024cde8d7169cb27457952a2395f139c0f8a2dbd3a14d021e1305e0"
     },
     "atscript-ui-tables": {
       "source": "moostjs/atscript-ui",
       "sourceType": "github",
       "skillPath": "skills/atscript-ui-tables/SKILL.md",
-      "computedHash": "a1a9d6a34c5c353de7926c4b9de736e8c7ab0662966e977c3d2867c144b4e6e4"
+      "computedHash": "ead9143b374e01bf7b45a8c2048d475587c459d732bb8f3cb3aded8fa5c08929"
     },
     "atscript-ui-wf": {
       "source": "moostjs/atscript-ui",
       "sourceType": "github",
       "skillPath": "skills/atscript-ui-wf/SKILL.md",
-      "computedHash": "19641cf12583f995abebe25f617b936c00696ce11265b0e3376c799782dc387a"
+      "computedHash": "3451b00e7adef094b96501c6779489b3054160d570eae552e475b7f8841f9452"
     },
     "frontend-design": {
       "source": "anthropics/skills",
@@ -53,7 +53,7 @@
       "source": "moostjs/moostjs",
       "sourceType": "github",
       "skillPath": "skills/moostjs/SKILL.md",
-      "computedHash": "9e022e59813c7027ce50f88e78f4e299a60ebea5fcce2fc5137a675d91c5dd61"
+      "computedHash": "b6eeeb5c9f37485f49b1eb3298c111a9bc843c0dbc53a2f781a4b7c3135156a2"
     },
     "playwright-cli": {
       "source": "microsoft/playwright-cli",
@@ -71,7 +71,7 @@
       "source": "wooksjs/wooksjs",
       "sourceType": "github",
       "skillPath": "skills/wooksjs/SKILL.md",
-      "computedHash": "286561edaf96fdca2cd713bcb41e29d690df86e0cd33acb792c8ed0bae905df7"
+      "computedHash": "d0d5c25c4d6d8633ddb858d28f07e74e9feca53334b8d4b9ce02834c6956f8a3"
     }
   }
 }
