@@ -97,15 +97,22 @@ export class WfTriggerProvider {
   async handle(opts: { allow?: string[]; token?: WfOutletTokenConfig } = {}): Promise<unknown> {
     const wfApp = this.wf.getWfApp();
     const deps: WfOutletTriggerDeps = {
+      // Forward `o.strategy` — the trigger resolves the registry default (start)
+      // or the incoming token's prefix (resume) and passes it here; the wf
+      // adapter sets the `wf.strategyName` slot from it, which the trigger then
+      // reads back at pause time. Dropping it leaves the slot unset and the
+      // trigger throws `Key "wf.strategyName" is not set` on every request.
       start: (schemaId, context, o) =>
         wfApp.start(schemaId, context as never, {
           input: o?.input,
           eventContext: (o?.eventContext ?? current()) as never,
+          strategy: o?.strategy,
         }),
       resume: (state, o) =>
         wfApp.resume(state as { schemaId: string; indexes: number[]; context: never }, {
           input: o?.input,
           eventContext: (o?.eventContext ?? current()) as never,
+          strategy: o?.strategy,
         }),
     };
     return handleAsOutletRequest(
