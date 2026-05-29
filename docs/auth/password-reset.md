@@ -197,19 +197,17 @@ if (!state || state.kind !== "magic.recovery") throw new HttpError(401);
 if (state.claims?.tenantId !== currentTenantId) throw new HttpError(401);
 ```
 
-`@aooth/auth-moost` does this for you via the `RecoveryWorkflow` guard chain. Rolling your own — remember to check it explicitly.
+`@aooth/auth-moost` does this for you via the recovery flow's resolver chain. Rolling your own — remember to check it explicitly.
 
 ## What `@aooth/auth-moost` adds on top
 
-If you're using moost, the [`RecoveryWorkflow`](../moost/workflows) wraps these primitives with:
+If you're using moost, the unified [`AuthWorkflow`](../moost/workflows)'s `recoveryFlow` (wfid `auth/recovery/flow`) wraps these primitives with:
 
-- HTTP route bindings (`POST /auth/recovery/start`, `POST /auth/recovery/finish`).
-- A multi-step workflow envelope (`WfFinished` shape, countdown auto-redirect).
-- Rate limiting and CAPTCHA hooks.
-- A pluggable `RecoveryConfig` for TTL, email kind, and auto-login behavior.
-- Audit-log entries at every step.
-- Username vs. email vs. phone identifier resolution.
-- Optional MFA challenge interleaving.
+- A single `/auth/trigger` entry point (no per-step routes — the flow is driven by the wf state token).
+- A multi-step `WfFinished` envelope (countdown auto-redirect, magic-link **or** OTP delivery).
+- `recoveryStateTtlMs` capping the request-to-reset window; per-request policy via `resolveXxx(ctx)` getters.
+- Anti-enumeration on the identifier step + optional known-factor verification before reset.
+- Post-reset session revocation + `autoLoginOnRecover` (auto-login vs fresh-login redirect).
 
 If your needs match the workflow's shape, use it. If they don't, the primitives on this page are what's underneath — and they're stable.
 
@@ -218,5 +216,5 @@ If your needs match the workflow's shape, use it. If they don't, the primitives 
 - [Magic Links](./magic-links) — token + URL + storage primitives.
 - [Refresh](./refresh#why-matters) — the same-ms `>=` epoch gate.
 - [Delivery](./delivery) — `EmailSender` contract for the recovery email.
-- [Moost — Workflows](../moost/workflows) — the `RecoveryWorkflow` shipped on top of these primitives.
+- [Moost — Workflows](../moost/workflows) — `AuthWorkflow`'s recovery flow shipped on top of these primitives.
 - [User — Password Hashing](../user/password) — `changePassword` and policy validation.

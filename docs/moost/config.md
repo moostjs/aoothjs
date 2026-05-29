@@ -1,6 +1,6 @@
 # Config Reference
 
-This page is the complete configuration reference for the Moost integration layer: `AuthOptions` (consumed by `authGuardInterceptor`, `useAuth`, the `AuthController`, and the workflow finalize steps) plus the security-relevant tuning knobs of the three workflows. Workflow options have their full shape in [Workflows](./workflows); here we surface only the security-load-bearing fields.
+This page is the complete configuration reference for the Moost integration layer: `AuthOptions` (consumed by `authGuardInterceptor`, `useAuth`, the `AuthController`) plus the `AuthWorkflow` configuration model. The workflow has two configuration layers — **infrastructure** on `AuthWorkflowOpts`, and **security policy** on `protected resolveXxx(ctx)` getters. Full signatures live in the [API reference](/api/auth-moost); the override mechanics are in [Workflows](./workflows).
 
 ## `AuthOptions`
 
@@ -40,52 +40,50 @@ Browsers don't send the refresh cookie to any path outside `/auth/refresh` by de
 The package does NOT bundle a CSRF strategy. `SameSite=Lax` on the access cookie is the default sole defence. For sensitive endpoints, add a CSRF-token interceptor that compares a custom header against a double-submitted cookie, or switch to `SameSite=Strict`. The bundled refresh cookie's narrow path is a CSRF mitigation specifically for token rotation, not a general defence.
 :::
 
-## Login workflow — security-load-bearing options
+## `AuthWorkflowOpts` — infrastructure knobs
 
-See [Workflows § LoginWorkflow](./workflows#loginworkflowopts-key-fields) for the full table. The security-relevant subset:
+Infrastructure-only configuration passed to the `AuthWorkflow` constructor. Every field is optional; defaults are applied by `mergeAuthWorkflowOpts`. **Security policy is NOT here** — see the resolver table below. Full shape: [API reference](/api/auth-moost#authworkflowopts-resolvedauthworkflowopts).
 
-| Field                                    | Default            | Security implication                                                                                                                           |
-| ---------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ------ | ----- | ------ |
-| `mfa.enabled`                            | `true`             | Master switch. `false` disables every MFA step.                                                                                                |
-| `mfa.pincodeTtlMs`                       | `5 * 60_000`       | OTP code lifetime. Shorter = stronger; longer = better UX in slow email environments.                                                          |
-| `mfa.pincodeResendTimeoutMs`             | `30_000`           | Cooldown — prevents OTP-flooding.                                                                                                              |
-| `mfa.pincodeLength`                      | `6`                | Digit count. 6 is OWASP-standard; 4 is too short for unrestricted retry; 8+ has UX cost.                                                       |
-| `mfa.enrollRequired`                     | `false`            | Force enrollment if the user has zero factors.                                                                                                 |
-| `deviceTrust.enabled`                    | `false`            | Master switch.                                                                                                                                 |
-| `deviceTrust.bindsTo`                    | `'cookie'`         | `'cookie'` accepts the cookie alone as proof; `'cookie+ip'` binds to the source IP too. `cookie+ip` is stricter (IP changes invalidate trust). |
-| `deviceTrust.ttlMs`                      | `24 * 60 * 60_000` | Trust window. Cap at 30 days or shorter.                                                                                                       |
-| `deviceTrust.skipsMfa`                   | `true`             | A trusted device skips the MFA loop. Set `false` if MFA must run on every login regardless of trust.                                           |
-| `sessionPolicy.concurrencyLimit.max`     | `null`             | When set, caps active sessions per user.                                                                                                       |
-| `sessionPolicy.concurrencyLimit.onLimit` | `'reject'`         | `'reject'` returns 429; `'kickPrompt'` pauses on `ConcurrencyLimitForm` so the user picks.                                                     |
-| `finalize.notifyNewDevice`               | `false`            | Whether to fire a "new device" notification on first login from an unrecognized device.                                                        |
-| `finalize.redirect`                      | `'referer'`        | `'referer'                                                                                                                                     | 'home' | string | false | null`. |
+| Field                        | Default                  | Notes                                                                                           |
+| ---------------------------- | ------------------------ | ----------------------------------------------------------------------------------------------- |
+| `autoLoginOnInvite`          | `true`                   | Issue tokens directly after invite acceptance (vs redirect to fresh login).                     |
+| `autoLoginOnRecover`         | `false`                  | Issue tokens directly after password reset (vs redirect to fresh login).                        |
+| `mfa.pincodeLength`          | `6`                      | OTP digit count. 6 is OWASP-standard.                                                           |
+| `mfa.pincodeTtlMs`           | `5 * 60_000`             | OTP code lifetime. Shorter = stronger.                                                          |
+| `mfa.pincodeResendTimeoutMs` | `60_000`                 | Resend cooldown — throttles OTP-flooding.                                                       |
+| `mfa.pincodeMaxAttempts`     | `5`                      | Wrong-code submissions per minted pincode before invalidation.                                  |
+| `recoveryStateTtlMs`         | `60 * 60_000`            | Caps the window between OTP request and password reset (applied at every recovery pause).       |
+| `loginUrl`                   | `'/login'`               | Canonical sign-in URL (post-accept / abort-to-login / post-reset redirects).                    |
+| `totpIssuer`                 | `'aooth'`                | TOTP provisioning issuer label (the QR's `issuer`).                                             |
+| `deviceTrust.cookieName`     | `'aooth_trusted_device'` | Trusted-device cookie name.                                                                     |
+| `deviceTrust.ttlMs`          | `24 * 60 * 60_000`       | Trusted-device cookie + record TTL.                                                             |
+| `deviceTrust.bindsTo`        | `'cookie'`               | `'cookie'` or `'cookie+ip'` (stricter — IP change invalidates trust).                           |
+| `forms.<slot>`               | bundled `.as` defaults   | Replace any bundled form schema with your own atscript type. See [Atscript Models](./atscript). |
 
-## Recovery workflow — security-load-bearing options
+## Security policy — `resolveXxx(ctx)` getters, not opts
 
-| Field                           | Default       | Security implication                                                                                                                                                                      |
-| ------------------------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------ |
-| `delivery.mode`                 | `'magicLink'` | `'magicLink'                                                                                                                                                                              | 'otp' | 'choice'`. Magic-link is more user-friendly but exposes a longer-lived secret. |
-| `delivery.magicLinkTtlMs`       | `60 * 60_000` | Magic link lifetime. 1h is a reasonable default; shorten for high-security apps.                                                                                                          |
-| `delivery.otp.ttlMs`            | `5 * 60_000`  | OTP lifetime.                                                                                                                                                                             |
-| `delivery.otp.resendCooldownMs` | `60_000`      | Resend cooldown — prevents OTP-flooding.                                                                                                                                                  |
-| `delivery.otp.codeLength`       | `6`           | Digit count.                                                                                                                                                                              |
-| `preReset.requireKnownFactor`   | `false`       | Require a second known factor (phone last-4 or current TOTP) before allowing reset. Defence against email-account-compromise attacks.                                                     |
-| `postReset.revokeAllSessions`   | `true`        | Kick every active session after reset. **Default ON** — flip OFF only for SPAs where the test fixture documents the "pre-existing session stays valid" branch. Production should keep ON. |
-| `postReset.freshLoginRequired`  | `false`       | Force a fresh login (no auto-login). Combined with `revokeAllSessions=true`, this is the strongest post-reset posture.                                                                    |
-| `audit.enabled`                 | `true`        | Whether to emit recovery audit events.                                                                                                                                                    |
+Everything that varies by request / tenant / user is a `protected resolveXxx(ctx)` method on `AuthWorkflow`, overridden in a subclass (see [Workflows — policy model](./workflows#the-policy-model)). Defaults below are the hardcoded resolver bodies.
 
-::: warning `postReset.revokeAllSessions` defaults to `true` — keep it that way
-A password reset that leaves sibling sessions valid is a known credential-theft-recovery weakness. The default kicks every active session. The demo opts out only to document the "pre-existing session stays valid" branch in its test suite — production consumers should leave the default on.
+| Resolver                                         | Default posture                                                     | Security implication                                                                                       |
+| ------------------------------------------------ | ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `resolveMfaPolicy`                               | `{ mode: 'optional', availableTransports: ['sms','email','totp'] }` | `mode: 'required'` forces MFA; restrict `availableTransports` to drop a channel.                           |
+| `resolveEnrollment`                              | `{ ensureEmail: false, ensurePhone: false }`                        | Force a confirmed email/phone before login completes.                                                      |
+| `resolveDeviceTrust`                             | `{ enabled: false, optIn: true, skipsMfa: true }`                   | Off by default. When enabled, a trusted device skips the MFA loop unless `skipsMfa: false`.                |
+| `resolveSessionPolicy`                           | `{}` — unlimited                                                    | Return `{ concurrencyLimit: { max, onLimit } }` to cap active sessions (`'reject'` vs `'kickPrompt'`).     |
+| `resolveLockout`                                 | `{ mode: 'temporary' }`                                             | `'admin-only'` for privileged accounts (lock never self-expires); `'self-service'` allows reset to unlock. |
+| `resolveGuards`                                  | `{ passwordInitial: true, passwordExpiry: true }`                   | Force a password change on first login / expiry; add `emailVerifiedRequired`.                              |
+| `resolveFinalize`                                | `{ notifyNewDevice: false, redirect: false }`                       | Fire a new-device notice; set a post-login redirect target.                                                |
+| `resolveOtpDisclosure`                           | generic TCPA/PECR/CASL/GDPR-safe copy per channel                   | Customize the disclosure paragraph shown beside the email/phone input.                                     |
+| `resolvePostReset` / `resolveRecoveryAltActions` | post-reset = revoke-sessions + redirect                             | Control session revocation + redirect after a recovery reset.                                              |
+| `resolveAdminForm` / `resolveAccept`             | invite admin form / accept-phase policy                             | Invite role whitelist (`getAvailableRoles`), post-accept confirmation + redirect.                          |
+
+::: warning Reset must revoke sibling sessions
+A password reset that leaves other sessions valid is a known credential-theft-recovery weakness. The bundled recovery flow revokes the user's other sessions after a reset; if you override `resolvePostReset`, preserve that behavior in production.
 :::
 
-## Invite workflow — security-load-bearing options
-
-| Field                       | Default                | Security implication                                                                                               |
-| --------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `send.tokenTtlMs`           | `7 * 24 * 60 * 60_000` | Magic link lifetime (7 days). Long because invites are click-when-convenient. Shorten for higher-security tenants. |
-| `accept.freshLoginRequired` | `false`                | Force fresh-login after acceptance (no auto-login).                                                                |
-| `cancellation.allowed`      | `true`                 | Whether `auth.cancelInvite` is enabled. Set `false` to make invites uncancellable.                                 |
-| `audit.enabled`             | `true`                 | Whether to emit invite audit events.                                                                               |
+::: tip There is no `audit.enabled` knob
+The bundled `AuthWorkflow` does not emit audit events itself. The `AuditEvent` / `AuditEmitter` types are exported for wiring your own sink — see [Audit Log](./audit).
+:::
 
 ## CSRF — explicit non-feature
 
@@ -123,5 +121,6 @@ All fields are present and non-optional in the resolved shape. The `refreshCooki
 ## See also
 
 - [AuthGuard & useAuth](./auth-guard) — the consumer of `AuthOptions`.
-- [Workflows](./workflows) — full per-workflow option tables.
+- [Workflows](./workflows) — the `AuthWorkflowOpts` vs `resolveXxx` policy model + override mechanics.
+- [API reference](/api/auth-moost) — full `AuthOptions` / `AuthWorkflowOpts` signatures.
 - [REST Controllers](./controllers) — how the cookies are written / cleared / read on each endpoint.

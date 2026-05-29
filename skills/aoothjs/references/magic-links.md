@@ -124,22 +124,24 @@ The denylist key for stateless stores is the `jti` (random UUID per token), not 
 The package does not assume your domain, scheme, or route shape. Consumers supply a builder:
 
 ```ts
-type BuildMagicLinkUrl = (kind: AuthEmailKind, token: string) => string;
+type BuildMagicLinkUrl = (kind: AuthEmailKind, token: string, ctx?: { userId?: string }) => string;
 
 // Convention used by `@aooth/auth-moost` + `@atscript/vue-wf`:
-const buildMagicLinkUrl: BuildMagicLinkUrl = (kind, token) => {
+const buildMagicLinkUrl: BuildMagicLinkUrl = (kind, token, ctx) => {
   switch (kind) {
     case "recovery.magicLink":
       return `https://app.example.com/auth/recovery?wfs=${token}`;
     case "invite.magicLink":
-      return `https://app.example.com/auth/invite?wfs=${token}`;
+      // ctx.userId is supplied for invite links → carries the invitee id so the
+      // GET /auth/invite/post-redemption side route can rebuild the envelope.
+      return `https://app.example.com/auth/invite?wfs=${token}${ctx?.userId ? `&uid=${ctx.userId}` : ""}`;
     default:
       throw new Error(`No URL convention for ${kind}`);
   }
 };
 ```
 
-Passing the token as `?wfs=<token>` lets a frontend mount `<AsWfForm initialToken="...">` to resume the workflow (see `atscript-ui-wf` for the receiving side). The convention is yours — `wfs` is a recommendation, not a wire requirement.
+Passing the token as `?wfs=<token>` lets a frontend mount `<AsWfForm initialToken="...">` to resume the workflow (see `atscript-ui-wf` for the receiving side). The convention is yours — `wfs` is a recommendation, not a wire requirement. The 3rd `ctx?: { userId? }` arg is populated only for `invite.magicLink` (so the invitee id rides in the URL for the post-redemption route).
 
 ## Recovery flow recipe
 

@@ -73,6 +73,7 @@ const moostSidebar = [
       { text: "Decorators", link: "/moost/decorators" },
       { text: "REST Controllers", link: "/moost/controllers" },
       { text: "Workflows", link: "/moost/workflows" },
+      { text: "SPA Components", link: "/moost/spa-components" },
       { text: "DB Controllers", link: "/moost/db-controllers" },
       { text: "Atscript Models", link: "/moost/atscript" },
       { text: "Audit Log", link: "/moost/audit" },

@@ -78,33 +78,33 @@ Losing the pepper invalidates every stored hash. Treat it like a database master
 
 All methods are `async` unless explicitly marked `(sync)`.
 
-| Method                                                                                    | Returns                    | Throws                                                                                    | Notes                                       |
-| ----------------------------------------------------------------------------------------- | -------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------- |
-| `createUser`                                                                              | `UserCredentials & T`      | `ALREADY_EXISTS`                                                                          | Omits `id` so DB defaults fire.             |
-| `getUser`                                                                                 | `UserCredentials & T`      | `NOT_FOUND`                                                                               |                                             |
-| `login`                                                                                   | `LoginResult<T>`           | `NOT_FOUND` / `INACTIVE` / `LOCKED` / `INVALID_CREDENTIALS`                               |                                             |
-| `verifyPassword`                                                                          | `boolean`                  | `NOT_FOUND`                                                                               | No side effects, bypasses lockout.          |
-| `changePassword`                                                                          | `void`                     | `INVALID_CREDENTIALS` / `PASSWORDS_MISMATCH` / `POLICY_VIOLATION` / `PASSWORD_IN_HISTORY` |                                             |
-| `setPassword`                                                                             | `void`                     | `POLICY_VIOLATION` / `PASSWORD_IN_HISTORY`                                                | Admin-style — no current password required. |
-| `deleteUser`                                                                              | `void`                     | `NOT_FOUND`                                                                               |                                             |
-| `update`                                                                                  | `UserCredentials & T`      | `NOT_FOUND`                                                                               | Deep-merge patch.                           |
-| `activateAccount` / `deactivateAccount`                                                   | `void`                     | `NOT_FOUND`                                                                               |                                             |
-| `lockAccount`                                                                             | `void`                     | `NOT_FOUND`                                                                               | `duration=0` ⇒ permanent.                   |
-| `unlockAccount`                                                                           | `void`                     | `NOT_FOUND`                                                                               | Resets `failedLoginAttempts` too.           |
-| `getLockStatus` (sync)                                                                    | `LockStatus`               | —                                                                                         |                                             |
-| `checkPolicies`                                                                           | `PolicyCheckResult`        | —                                                                                         |                                             |
-| `getTransferablePolicies` (sync)                                                          | `TransferablePolicy[]`     | —                                                                                         | String-rule policies only.                  |
-| `addMfaMethod` / `confirmMfaMethod` / `removeMfaMethod`                                   | `void`                     | `NOT_FOUND` / `MFA_NOT_CONFIGURED`                                                        |                                             |
-| `setDefaultMfaMethod`                                                                     | `void`                     | `MFA_NOT_CONFIGURED`                                                                      | Empty `name` clears the default.            |
-| `setMfaAutoSend`                                                                          | `void`                     | `NOT_FOUND`                                                                               |                                             |
-| `getAvailableMfaMethods` (sync)                                                           | `MfaMethodInfo[]`          | —                                                                                         | Masks `value`.                              |
-| `generateBackupCodes`                                                                     | `string[]`                 | `NOT_FOUND`                                                                               | Returns plaintext **once**.                 |
-| `consumeBackupCode`                                                                       | `boolean`                  | `NOT_FOUND`                                                                               | Read-then-write, **not atomic**.            |
-| `verifyMfa`                                                                               | `void`                     | `NOT_FOUND` / `INACTIVE` / `LOCKED` / `MFA_INVALID` / `MFA_NOT_CONFIGURED`                |                                             |
-| `issueTrustedDevice` (sync)                                                               | `TrustedDeviceRecord`      | plain `Error` if `deviceTrust.secret` unset                                               |                                             |
-| `addTrustedDevice` / `verifyTrustedDevice` / `revokeTrustedDevice` / `listTrustedDevices` | varies                     | `NOT_FOUND`                                                                               |                                             |
-| `getPasswordHasher` (sync)                                                                | `PasswordHasher`           | —                                                                                         | Escape hatch.                               |
-| `getConfig` (sync)                                                                        | `Readonly<ResolvedConfig>` | —                                                                                         |                                             |
+| Method                                                                                    | Returns                    | Throws                                                                                    | Notes                                         |
+| ----------------------------------------------------------------------------------------- | -------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `createUser`                                                                              | `UserCredentials & T`      | `ALREADY_EXISTS`                                                                          | Omits `id` so DB defaults fire.               |
+| `getUser`                                                                                 | `UserCredentials & T`      | `NOT_FOUND`                                                                               |                                               |
+| `login`                                                                                   | `LoginResult<T>`           | `NOT_FOUND` / `INACTIVE` / `LOCKED` / `INVALID_CREDENTIALS`                               |                                               |
+| `verifyPassword`                                                                          | `boolean`                  | `NOT_FOUND`                                                                               | No side effects, bypasses lockout.            |
+| `changePassword`                                                                          | `void`                     | `INVALID_CREDENTIALS` / `PASSWORDS_MISMATCH` / `POLICY_VIOLATION` / `PASSWORD_IN_HISTORY` |                                               |
+| `setPassword`                                                                             | `void`                     | `POLICY_VIOLATION` / `PASSWORD_IN_HISTORY`                                                | Admin-style — no current password required.   |
+| `deleteUser`                                                                              | `void`                     | `NOT_FOUND`                                                                               |                                               |
+| `update`                                                                                  | `UserCredentials & T`      | `NOT_FOUND`                                                                               | Deep-merge patch.                             |
+| `activateAccount` / `deactivateAccount`                                                   | `void`                     | `NOT_FOUND`                                                                               |                                               |
+| `lockAccount`                                                                             | `void`                     | `NOT_FOUND`                                                                               | `duration=0` ⇒ permanent.                     |
+| `unlockAccount`                                                                           | `void`                     | `NOT_FOUND`                                                                               | Resets `failedLoginAttempts` too.             |
+| `getLockStatus` (sync)                                                                    | `LockStatus`               | —                                                                                         |                                               |
+| `checkPolicies`                                                                           | `PolicyCheckResult`        | —                                                                                         |                                               |
+| `getTransferablePolicies` (sync)                                                          | `TransferablePolicy[]`     | —                                                                                         | String-rule policies only.                    |
+| `addMfaMethod` / `confirmMfaMethod` / `removeMfaMethod`                                   | `void`                     | `NOT_FOUND` / `MFA_NOT_CONFIGURED`                                                        |                                               |
+| `setDefaultMfaMethod`                                                                     | `void`                     | `MFA_NOT_CONFIGURED`                                                                      | Empty `name` clears the default.              |
+| `setMfaAutoSend`                                                                          | `void`                     | `NOT_FOUND`                                                                               |                                               |
+| `getAvailableMfaMethods` (sync)                                                           | `MfaMethodInfo[]`          | —                                                                                         | Masks `value`.                                |
+| `verifyTotpSetupCode`                                                                     | `void`                     | `NOT_FOUND` / `MFA_NOT_CONFIGURED` / `MFA_INVALID`                                        | Verify first code + flip method to confirmed. |
+| `verifyMfa`                                                                               | `void`                     | `NOT_FOUND` / `INACTIVE` / `LOCKED` / `MFA_INVALID` / `MFA_NOT_CONFIGURED`                | 4th arg `lockoutOverride?`.                   |
+| `isPasswordExpired` (sync)                                                                | `boolean`                  | —                                                                                         | Against `config.password` expiry policy.      |
+| `issueTrustedDevice` (sync)                                                               | `TrustedDeviceRecord`      | plain `Error` if `deviceTrust.secret` unset                                               |                                               |
+| `addTrustedDevice` / `verifyTrustedDevice` / `revokeTrustedDevice` / `listTrustedDevices` | varies                     | `NOT_FOUND`                                                                               |                                               |
+| `getPasswordHasher` (sync)                                                                | `PasswordHasher`           | —                                                                                         | Escape hatch.                                 |
+| `getConfig` (sync)                                                                        | `Readonly<ResolvedConfig>` | —                                                                                         |                                               |
 
 ## Methods — reference
 
@@ -137,7 +137,7 @@ await users.createUser("carol", "p4ss", { tenantId: "acme", email: "c@x.dev" });
 :::
 
 ::: warning `account.active` defaults to `false`
-`InviteWorkflow.acceptInvite` relies on this — pending invitees stay inactive until accept. For seed scripts, admin-create flows, or tests that don't go through invite, **call `activateAccount(username)` after** or `login()` throws `UserAuthError("INACTIVE")`. The login workflow deliberately re-maps `INACTIVE` to `"Invalid credentials"` (anti-enumeration), so the client-side failure looks identical to a wrong password.
+`AuthWorkflow`'s invite accept phase relies on this — pending invitees stay inactive until accept. For seed scripts, admin-create flows, or tests that don't go through invite, **call `activateAccount(username)` after** or `login()` throws `UserAuthError("INACTIVE")`. The login workflow deliberately re-maps `INACTIVE` to `"Invalid credentials"` (anti-enumeration), so the client-side failure looks identical to a wrong password.
 
 ```ts
 await users.createUser("alice", "S3cret!");
@@ -271,23 +271,33 @@ removeMfaMethod(username: string, name: string): Promise<void>
 ### `verifyMfa`
 
 ```ts
-verifyMfa(username: string, code: string, config?: TotpConfig): Promise<void>
+verifyMfa(
+  username: string,
+  code: string,
+  config?: TotpConfig,
+  lockoutOverride?: Partial<LockoutConfig>,
+): Promise<void>
 ```
 
-TOTP-only path. Increments the **same** `failedLoginAttempts` counter as `login`. Throws `MFA_INVALID` (with `details.lockEnds` when the failure tripped a lock) or `MFA_NOT_CONFIGURED` when no confirmed `totp` method exists.
+TOTP-only path. Increments the **same** `failedLoginAttempts` counter as `login`. Pass `lockoutOverride` to apply a per-call lockout posture (e.g. a stricter threshold for privileged accounts). Throws `MFA_INVALID` (with `details.lockEnds` when the failure tripped a lock) or `MFA_NOT_CONFIGURED` when no confirmed `totp` method exists.
 
-### `generateBackupCodes` / `consumeBackupCode`
+### `verifyTotpSetupCode`
 
 ```ts
-generateBackupCodes(username: string, count?: number): Promise<string[]>  // default 10
-consumeBackupCode(username: string, code: string): Promise<boolean>
+verifyTotpSetupCode(username: string, code: string, config?: TotpConfig): Promise<void>
 ```
 
-`generateBackupCodes` **replaces the entire batch** — return value is the plaintext list. Only hashes are stored. Plaintext is unrecoverable after the call returns.
+Enrollment-confirm helper: verifies `code` against the user's **unconfirmed** `totp` method and flips it to `confirmed: true` in one call. Throws `MFA_INVALID` on a wrong code, `MFA_NOT_CONFIGURED` when there's no pending `totp` method. Use it instead of a manual `verifyTotpCode` + `confirmMfaMethod` pair.
 
-::: warning `consumeBackupCode` is not atomic
-Two concurrent consumes of the same code can both succeed. Wrap in a transaction at the store layer if strict guarantees matter.
-:::
+### `isPasswordExpired`
+
+```ts
+isPasswordExpired(user: UserCredentials & T, now?: number): boolean
+```
+
+Sync check against the configured password-expiry policy. The `now` arg defaults to the injected clock — useful for deterministic tests.
+
+> There are **no** `generateBackupCodes` / `consumeBackupCode` methods — backup codes are not bundled. See [MFA Primitives — Backup codes](./mfa#backup-codes).
 
 ### Trusted devices
 

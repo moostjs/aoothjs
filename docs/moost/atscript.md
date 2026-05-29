@@ -9,7 +9,7 @@ This page covers the atscript integration — the compile-time `arbacPlugin()`, 
 | Compile-time plugin   | `@aooth/arbac-moost/plugin`               | Registers `@arbac.role` / `@arbac.attribute` / `@arbac.userId` so `.as` files type-check.                                        |
 | Runtime user provider | `@aooth/arbac-moost/atscript`             | `AtscriptArbacUserProvider` builds `getRoles` / `getAttrs` automatically from the model's annotations.                           |
 | Bundled user model    | `@aooth/arbac-moost/atscript/models[.as]` | `AoothArbacUserCredentials` — extends `@aooth/user`'s base credential record and pre-applies `@arbac.role` to `roles: string[]`. |
-| Bundled forms model   | `@aooth/auth-moost/atscript/models.as`    | 17+ form types consumed by the workflows. Replaceable per-workflow via `opts.forms.*`.                                           |
+| Bundled forms model   | `@aooth/auth-moost/atscript/models.as`    | 18 form types consumed by `AuthWorkflow`. Replaceable per-workflow via `opts.forms.*`.                                           |
 
 ::: warning Compile-time vs runtime imports
 `@aooth/arbac-moost/plugin` is **compile-time only** — atscript pulls it inside `atscript.config.ts`. No runtime DI surface. `@aooth/arbac-moost` (main) is the runtime — interceptor, composable, decorators, DB controllers, `MoostArbac`, hand-rolled provider base. `@aooth/arbac-moost/atscript` is the atscript-aware runtime: `AtscriptArbacUserProvider`, `ArbacUserTable`, and the re-exported `AoothArbacUserCredentials` model class.
@@ -261,43 +261,49 @@ Without a built `.as.d.ts` / `.as.js` pair, importing `MyUser` from `./models/us
 
 ## The forms model from `@aooth/auth-moost`
 
-The workflows consume 21 `.as` form types from [`packages/auth-moost/src/atscript/models/forms.as`](https://github.com/moostjs/aoothjs/blob/main/packages/auth-moost/src/atscript/models/forms.as):
+`AuthWorkflow` consumes **18** `.as` form types from [`packages/auth-moost/src/atscript/models/forms.as`](https://github.com/moostjs/aoothjs/blob/main/packages/auth-moost/src/atscript/models/forms.as):
 
-| Form                                     | Used by                                                                                      |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `LoginCredentialsForm`                   | Login phase 1                                                                                |
-| `MfaCodeForm`                            | Login phase 4 (TOTP entry)                                                                   |
-| `BackupCodeForm`                         | Login phase 4 (backup-code fallback)                                                         |
-| `EmailIdentifierForm`                    | Recovery `recoveryRequest`, login `forgotPassword` carries via `@wf.context.pass 'defaults'` |
-| `SetPasswordForm`                        | Login phase 5, recovery, invite                                                              |
-| `InviteForm`                             | Invite Phase A admin form — `@wf.context.pass 'availableRoles'`                              |
-| `InviteEmailForm`                        | `auth.reInvite`, `auth.cancelInvite`                                                         |
-| `InviteSendModeForm`                     | Invite `inviteSelectSendMode`                                                                |
-| `Select2faForm`                          | Login `select2fa`                                                                            |
-| `PincodeForm`                            | Login phase 4 (SMS/email OTP), recovery OTP                                                  |
-| `AskEmailForm` / `AskPhoneForm`          | Login enrollment loops                                                                       |
-| `TermsAcceptForm`                        | Login phase 6                                                                                |
-| `ProfileCompleteForm`                    | Login phase 6                                                                                |
-| `ConsentMarketingForm`                   | Login phase 6                                                                                |
-| `TenantSelectForm` / `PersonaSelectForm` | Login phase 7                                                                                |
-| `ConcurrencyLimitForm`                   | Login phase 8 (kickPrompt)                                                                   |
-| `MagicLinkRequestForm`                   | Login `magicLink` alt-action                                                                 |
-| `RecoveryModeSelectForm`                 | Recovery `recoverySelectMode`                                                                |
-| `RecoveryFactorForm`                     | Recovery `recoveryVerifyFactor`                                                              |
+| Form                              | Used by                                                                 |
+| --------------------------------- | ----------------------------------------------------------------------- |
+| `WithInlineConsentForm`           | Base — carries the inline `consents` field (extended by the four below) |
+| `LoginCredentialsForm`            | Login — username + password                                             |
+| `Select2faForm`                   | Login / invite — MFA method picker                                      |
+| `MfaCodeForm`                     | Login / invite — TOTP code entry                                        |
+| `PincodeForm`                     | Login / recovery — SMS/email OTP entry                                  |
+| `EmailIdentifierForm`             | Recovery — identifier (email/username)                                  |
+| `SetPasswordForm` ⁺               | Login forced change / invite set / recovery reset                       |
+| `EnrollPickMethodForm`            | MFA enrollment — pick method                                            |
+| `EnrollAddressForm`               | MFA enrollment — email/phone address                                    |
+| `EnrollConfirmForm` ⁺             | MFA enrollment — confirm (TOTP shows a QR)                              |
+| `AskEmailForm` / `AskPhoneForm` ⁺ | Login — channel enrollment carrier forms                                |
+| `TermsBumpForm` ⁺                 | Login — terms re-acceptance                                             |
+| `ConcurrencyLimitForm`            | Login — session-limit kick prompt                                       |
+| `InviteForm`                      | Invite admin form — email / name / roles                                |
+| `MagicLinkRequestForm`            | Login — `magicLink` alt-action                                          |
+| `RecoveryModeSelectForm`          | Recovery — magic-link vs OTP                                            |
+| `RecoveryFactorForm`              | Recovery — known-factor verification                                    |
 
-Every form is replaceable per-workflow through `opts.forms.<formName>`:
+⁺ extends `WithInlineConsentForm` (renders the inline pending-consents field).
+
+Three fields carry a `@ui.form.component '<Name>'` annotation pointing at SPA components from `@atscript/vue-aooth` — register the matching component name in `<AsWfForm :components>` (see [SPA Components](./spa-components)):
+
+| Field                            | `@ui.form.component` | Renders                                 |
+| -------------------------------- | -------------------- | --------------------------------------- |
+| `WithInlineConsentForm.consents` | `AsConsentArray`     | one checkbox per pending consent        |
+| `SetPasswordForm.passwordRules`  | `AsPasswordRules`    | live password-policy fulfillment dots   |
+| `EnrollConfirmForm.qrCode`       | `AsQrCode`           | scannable TOTP `otpauth://` QR + secret |
+
+Every form is replaceable per-workflow through `opts.forms.<slot>`:
 
 ```ts
 import { LoginCredentialsForm as MyLoginForm } from "./my-forms.as";
 
-const myLoginOpts: LoginWorkflowOpts = {
-  forms: { loginCredentials: MyLoginForm },
-};
+new AuthWorkflow({ forms: { loginCredentials: MyLoginForm } }, users, auth, consentStore);
 ```
 
-Annotations used: `@meta.label`, `@meta.required`, `@meta.sensitive`, `@ui.form.type`, `@ui.form.autocomplete`, `@expect.minLength`, `@expect.maxLength`, `@expect.pattern`, `@ui.form.fn.options`. See [`forms.as`](https://github.com/moostjs/aoothjs/blob/main/packages/auth-moost/src/atscript/models/forms.as) for the full source.
+Annotations used in `forms.as`: `@meta.label` / `@meta.required` / `@meta.sensitive` / `@meta.default` / `@meta.description`, `@ui.form.type` / `@ui.form.autocomplete` / `@ui.form.component` / `@ui.form.options` / `@ui.form.order` / `@ui.form.grid.colSpan` / `@ui.form.action` / `@ui.form.submit.text` / `@ui.form.validate`, the `@ui.form.fn.*` reactive family (`value` / `hidden` / `options` / `attr` / `title` / `description`), `@expect.minLength` / `@expect.maxLength` / `@expect.pattern`, and `@wf.context.pass` / `@wf.action.withData`.
 
-Clients consume the forms via `@atscript/vue-wf` (`<AsWfForm>` mounts the form at the paused step automatically).
+Clients consume the forms via `@atscript/vue-wf` (`<AsWfForm>` mounts the form at the paused step automatically). See [SPA Components](./spa-components).
 
 ## See also
 

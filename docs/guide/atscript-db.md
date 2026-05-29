@@ -119,7 +119,7 @@ export interface AppUser extends AoothUserCredentials {
 }
 ```
 
-Everything in `UserService`, `LoginWorkflow`, etc. still works — RBAC just is not enforced.
+Everything in `UserService`, `AuthWorkflow`, etc. still works — RBAC just is not enforced.
 
 ## The bundled credential table
 

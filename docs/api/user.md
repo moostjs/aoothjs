@@ -10,11 +10,13 @@ Complete export reference for `@aooth/user`. See the [User Conceptual Guide](/us
 new UserService<T>(store: UserStore<T>, config?: UserServiceConfig)
 ```
 
-Orchestrator for credential CRUD, login, lockout, password policy, MFA, backup codes, and trusted devices. Generic `T` adds custom user columns to every result. See [UserService](/user/service).
+Orchestrator for credential CRUD, login, lockout, password policy, MFA, and trusted devices. Generic `T` adds custom user columns to every result. See [UserService](/user/service).
 
-Async methods (selected): `createUser`, `getUser`, `login`, `verifyPassword`, `changePassword`, `setPassword`, `deleteUser`, `update`, `activateAccount`, `deactivateAccount`, `lockAccount`, `unlockAccount`, `checkPolicies`, `addMfaMethod`, `confirmMfaMethod`, `removeMfaMethod`, `setDefaultMfaMethod`, `setMfaAutoSend`, `generateBackupCodes`, `consumeBackupCode`, `verifyMfa`, `addTrustedDevice`, `verifyTrustedDevice`, `revokeTrustedDevice`, `listTrustedDevices`.
+Async methods (selected): `createUser`, `getUser`, `login`, `verifyPassword`, `changePassword`, `setPassword`, `deleteUser`, `update`, `activateAccount`, `deactivateAccount`, `lockAccount`, `unlockAccount`, `checkPolicies`, `addMfaMethod`, `confirmMfaMethod`, `removeMfaMethod`, `setDefaultMfaMethod`, `setMfaAutoSend`, `verifyMfa(username, code, transport?, lockoutOverride?)`, `verifyTotpSetupCode`, `addTrustedDevice`, `verifyTrustedDevice`, `revokeTrustedDevice`, `listTrustedDevices`.
 
-Sync helpers: `getLockStatus`, `getTransferablePolicies`, `getAvailableMfaMethods`, `issueTrustedDevice`, `getPasswordHasher`, `getConfig`.
+Sync helpers: `getLockStatus`, `isPasswordExpired`, `getTransferablePolicies`, `getAvailableMfaMethods`, `issueTrustedDevice`, `getPasswordHasher`, `getConfig`.
+
+> There are **no** `generateBackupCodes` / `consumeBackupCode` service methods. The `UserCredentials.backupCodes` field exists on the type but no bundled `UserService` API reads or writes it — wire your own if you need recovery codes.
 
 ### `UserStore<T extends object = object>` (abstract)
 
@@ -61,13 +63,14 @@ Wraps one rule (string compiled via `@prostojs/ftring`, or a function). String-r
 
 ## Functions
 
-### `normalizePolicies`
+### `definePasswordPolicy` / `normalizePolicies`
 
 ```ts
+function definePasswordPolicy(def: PasswordPolicyDef): PasswordPolicyInstance;
 function normalizePolicies(defs?: (PasswordPolicyDef | PasswordPolicyInstance)[]): PasswordPolicy[];
 ```
 
-Compiles an array of `PasswordPolicyDef` into ready-to-evaluate `PasswordPolicy` instances. See [Password Policies](/user/policy).
+`definePasswordPolicy` wraps one `PasswordPolicyDef` into an evaluatable instance; `normalizePolicies` compiles an array into ready-to-evaluate `PasswordPolicy` instances. See [Password Policies](/user/policy).
 
 ### Built-in policy factories
 
@@ -97,10 +100,9 @@ function verifyTotpCode(secret: string, code: string, config?: TotpConfig): bool
 function generateMfaCode(length?: number): string;
 function hashMfaCode(code: string): string;
 function verifyMfaCode(submitted: string, expectedHash: string): boolean;
-function generateBackupCodePlaintext(count?: number): string[];
 ```
 
-RFC-4226/6238 TOTP, generic MFA-code hash helpers, and backup-code plaintext generator. `verifyTotpCode` is constant-time and walks the full `[-window..window]`. See [MFA Primitives](/user/mfa).
+RFC-4226/6238 TOTP and generic MFA-code hash helpers. `verifyTotpCode` is constant-time and walks the full `[-window..window]`. See [MFA Primitives](/user/mfa).
 
 ### Masking & path utilities
 

@@ -8,13 +8,13 @@ This section documents the foundation of the aoothjs auth stack — the user cre
 
 The one orchestrator is **[`UserService<T>`](./service)** — every consumer-facing API call goes through it. Internally it composes:
 
-| Subsystem     | What it owns                                                                                                                                     |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Account state | `account.active`, `locked`, `lockEnds`, `failedLoginAttempts`, `lastLogin`                                                                       |
-| Password      | `PasswordHasher` + `PasswordPolicy` — hashing, verification, history, policy DSL                                                                 |
-| MFA           | `generateTotpSecret` / `generateTotpUri` / `generateTotpCode` / `verifyTotpCode`, `hashMfaCode` / `verifyMfaCode`, `generateBackupCodePlaintext` |
-| Storage       | `UserStore<T>` (abstract) — `exists` / `findByUsername` / `create` / `update` / `delete`                                                         |
-| Errors        | `UserAuthError` — every failure carries a discriminant `type` + structured `details`                                                             |
+| Subsystem     | What it owns                                                                                                                          |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Account state | `account.active`, `locked`, `lockEnds`, `failedLoginAttempts`, `lastLogin`                                                            |
+| Password      | `PasswordHasher` + `PasswordPolicy` — hashing, verification, history, policy DSL                                                      |
+| MFA           | `generateTotpSecret` / `generateTotpUri` / `generateTotpCode` / `verifyTotpCode`, `generateMfaCode` / `hashMfaCode` / `verifyMfaCode` |
+| Storage       | `UserStore<T>` (abstract) — `exists` / `findByUsername` / `create` / `update` / `delete`                                              |
+| Errors        | `UserAuthError` — every failure carries a discriminant `type` + structured `details`                                                  |
 
 ## What this package is not
 
@@ -36,10 +36,12 @@ import { UserService, UserStoreMemory, ppHasMinLength, ppHasNumber } from "@aoot
 const store = new UserStoreMemory();
 
 const users = new UserService(store, {
-  pepper: process.env.PASSWORD_PEPPER,
-  historyLength: 5,
+  password: {
+    pepper: process.env.PASSWORD_PEPPER,
+    historyLength: 5,
+    policies: [ppHasMinLength(12), ppHasNumber(1)],
+  },
   lockout: { threshold: 5, duration: 15 * 60_000 },
-  policies: [ppHasMinLength(12), ppHasNumber(1)],
 });
 
 await users.createUser("alice", "S3cret-passphrase!");
@@ -56,7 +58,7 @@ The service is **stateless** — every call hits the store. That makes horizonta
 - [`Credentials Model`](./credentials) — what `UserCredentials` looks like on disk, the `account` / `password` / `mfa` / `trustedDevices` sub-objects, and how to extend with custom columns via generic `T`.
 - [`Password Hashing`](./password) — `PasswordHasher`, self-describing hash strings, pepper, history, `generatePassword`, scrypt cost tuning, the `FAST_SCRYPT` test idiom.
 - [`Password Policies`](./policy) — the `@prostojs/ftring` string DSL, function rules, built-in factories (`ppHas*`), `getTransferablePolicies()` for client-side pre-validation.
-- [`MFA Primitives`](./mfa) — TOTP secret + URI + code + verify, one-time MFA-code helpers, backup codes, trusted devices. What's here and what's deliberately not.
+- [`MFA Primitives`](./mfa) — TOTP secret + URI + code + verify, one-time MFA-code helpers, trusted devices. What's here and what's deliberately not.
 - [`Stores`](./stores) — the `UserStore<T>` contract, `UserStoreMemory<T>` for tests, the `UserStoreUpdate { set, inc }` shape, and the `@atscript/db` adapter (`@aooth/user/atscript-db`).
 - [`Errors`](./errors) — the `UserAuthError` class, every `UserAuthErrorType`, and recommended HTTP status mappings.
 

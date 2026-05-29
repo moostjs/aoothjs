@@ -4,7 +4,7 @@ This walkthrough builds a minimal moost HTTP app with:
 
 - A `.as`-modelled user table backed by `@atscript/db-sqlite`.
 - JWT-issued sessions managed by `AuthCredential`.
-- `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow` mounted under `/auth/trigger`.
+- The unified `AuthWorkflow` (login / invite / recovery) mounted under `/auth/trigger`.
 - An ARBAC-aware `GET /me` route guarded by both the auth and arbac interceptors.
 
 Every snippet below is lifted from the working `packages/e2e-demo/` app — wire each block in order and you have a runnable server. Source references: [`e2e-demo/src/app.ts`](https://github.com/moostjs/aoothjs/blob/main/packages/e2e-demo/src/app.ts) and [`e2e-demo/src/aooth.ts`](https://github.com/moostjs/aoothjs/blob/main/packages/e2e-demo/src/aooth.ts).
@@ -195,10 +195,9 @@ import { AtscriptArbacUserProvider } from '@aooth/arbac-moost/atscript'
 import {
   AuthController,
   authGuardInterceptor,
+  AuthWorkflow,
+  ConsentStore,
   createAuthEmailOutlet,
-  InviteWorkflow,
-  LoginWorkflow,
-  RecoveryWorkflow,
   useAuth,
   UserId,
   WfTrigger,
@@ -206,8 +205,8 @@ import {
 } from '@aooth/auth-moost'
 import { AuthCredential } from '@aooth/auth'
 import { UserService } from '@aooth/user'
-import { formInputInterceptor } from '@atscript/moost-wf'
-import { HandleStateStrategy, MoostWf } from '@moostjs/event-wf'
+import { AsWfStore, formInputInterceptor } from '@atscript/moost-wf'
+import { HandleStateStrategy, MoostWf, type WfStateStrategy } from '@moostjs/event-wf'
 import { Get, MoostHttp } from '@moostjs/event-http'
 import {
   Controller, createProvideRegistry, createReplaceRegistry,
@@ -231,55 +230,39 @@ class MeController {
 `@Public()` from `@aooth/auth-moost` writes BOTH `authPublic=true` AND `arbacPublic=true`. There is no separate `@ArbacPublic` — bypassing one without the other was a deliberately-removed footgun.
 :::
 
-### 7a. Workflow subclasses
+### 7a. The workflow
 
-When you accept the default opts, register the shipped opts-less subclasses from `@aooth/auth-moost` — they remove the empty-opts boilerplate:
+There is **one** workflow class — `AuthWorkflow` — declaring three `@Workflow` schemas (`auth/login/flow`, `auth/invite/start`, `auth/recovery/flow`). If the default opts suit you, register it directly:
 
 ```ts
-import {
-  DefaultLoginWorkflow,
-  DefaultRecoveryWorkflow,
-  DefaultInviteWorkflow,
-} from "@aooth/auth-moost";
-
-app.registerControllers(
-  AuthController,
-  DefaultLoginWorkflow,
-  DefaultRecoveryWorkflow,
-  DefaultInviteWorkflow,
-);
+app.registerControllers(AuthController, AuthWorkflow);
 ```
 
-These exist because the base workflow constructors take `opts` as a non-class POJO first argument — moost's DI can't resolve interface types, so without them every consumer wrote the same three `super({}, users, auth)` shims.
-
-When you need to override `opts` or hooks (`deliver`, `audit`, etc.), subclass the base workflow directly:
-
-`LoginWorkflow` is configured by **subclassing** — the constructor accepts your options and you override `protected` methods for delivery, audit, role inference, etc.
+When you need custom infrastructure opts or to override `protected` policy hooks (`deliver`, `resolveXxx`), subclass it. Re-declare the **4-arg** constructor (the 4th param is the `ConsentStore`) so TS emits `design:paramtypes`:
 
 ```ts:line-numbers
-import type { DeliverPayload } from '@aooth/auth-moost'
+import type { AuthDeliveryPayload, AuthWfCtx } from '@aooth/auth-moost'
 
 @Inherit()
-@Injectable('FOR_EVENT')
-@Controller()
-class AppLoginWorkflow extends LoginWorkflow {
-  constructor(users: UserService, auth: AuthCredential) {
-    super({ mfa: { transports: ['email', 'totp'] } }, users, auth)
+@Controller() // SINGLETON
+class AppAuth extends AuthWorkflow {
+  constructor(users: UserService, auth: AuthCredential, consents: ConsentStore) {
+    super({ totpIssuer: 'AcmeCorp' }, users, auth, consents)
   }
-  protected override async deliver(payload: DeliverPayload) {
-    // forward to your EmailSender / SmsSender
+  protected override resolveMfaPolicy(_ctx: AuthWfCtx) {
+    return { mode: 'optional' as const, availableTransports: ['email', 'totp'] as const }
+  }
+  protected override async deliver(payload: AuthDeliveryPayload) {
+    // forward to your EmailSender / SmsSender, routed by payload.kind + payload.channel
   }
 }
+
+app.setReplaceRegistry(createReplaceRegistry([AuthWorkflow, AppAuth]))
+app.registerControllers(AuthController, AppAuth)
 ```
 
-::: warning Re-declare the constructor
-TypeScript emits fresh `design:paramtypes` per class. Without the explicit constructor, moost cannot resolve the parent's DI dependencies on the subclass. The `@Inherit()` decorator carries the parent class's `@Workflow` / `@WorkflowSchema` / `@Step` metadata down.
-:::
-
-Do the same for `RecoveryWorkflow` and `InviteWorkflow`. For brevity this Quick Start mounts only `AppLoginWorkflow`.
-
-::: warning Workflows not registered → 400 on trigger
-`AuthController.triggerWf` accepts `DEFAULT_AUTH_WORKFLOWS = ['auth.login', 'auth.recovery', 'auth.invite']`. With only `AppLoginWorkflow` registered, a `POST /auth/trigger` with `{"wfs":"auth.recovery"}` will 400 because the workflow id is not registered with `MoostWf`. Register the matching subclass before exposing the corresponding flow.
+::: warning Re-apply decorators + re-declare the constructor
+TypeScript emits fresh `design:paramtypes` per class — without the explicit 4-arg constructor, moost cannot resolve DI on the subclass. `@Inherit()` carries the parent's `@Workflow` / `@WorkflowSchema` / `@Step` / `@Public` metadata; `@Controller()` re-applies the SINGLETON scope (moost@0.6.x does not inherit it). Add `@Injectable("FOR_EVENT")` ONLY if the constructor reads request-scoped composables.
 :::
 
 ### 7b. ARBAC user provider
@@ -308,27 +291,26 @@ The provider reads `@arbac.role` and `@arbac.attribute` from the user model and 
 
 ### 7c. WF trigger provider
 
-The default `WfTriggerProvider` uses an in-memory state store and no email outlet. Subclass it to swap in your DB-backed state store and add the magic-link mailer.
+The default `WfTriggerProvider` persists nothing durable (state rides inside the SPA-held encapsulated token) and has no email outlet. Subclass it to make state durable via `storeStrategy()` and add the magic-link mailer. The constructor is `(wf, auth)`.
 
 ```ts:line-numbers
-import { AsWfStore } from '@atscript/moost-wf/store'
-
 @Injectable()
 class AppWfTriggerProvider extends WfTriggerProvider {
-  constructor(wf: MoostWf) {
-    super(wf)
-    this.state = new HandleStateStrategy({
-      store: new AsWfStore({ table: tables.wfStates }),
-    })
+  constructor(wf: MoostWf, auth: AuthCredential) {
+    super(wf, auth)
     this.outlets = [
       ...this.outlets,
       createAuthEmailOutlet({
         emailSender,
-        buildMagicLinkUrl: (kind, token) =>
-          `${process.env.FRONTEND_URL}/${kind === 'recovery.magicLink' ? 'recover' : 'accept-invite'}?wfs=${token}`,
+        buildMagicLinkUrl: (kind, token, ctx) =>
+          `${process.env.FRONTEND_URL}/${kind === 'recovery.magicLink' ? 'recover' : 'accept-invite'}?wfs=${token}${ctx?.userId ? `&uid=${ctx.userId}` : ''}`,
         magicLinkTtlMs: () => 60 * 60_000,
       }),
     ]
+  }
+  // Make the durable `store` strategy real — override storeStrategy(), do NOT assign `this.state`.
+  protected override storeStrategy(): WfStateStrategy {
+    return new HandleStateStrategy({ store: new AsWfStore({ table: tables.wfStates }) })
   }
 }
 ```
@@ -348,15 +330,16 @@ app.setProvideRegistry(createProvideRegistry(
 ))
 
 app.setReplaceRegistry(createReplaceRegistry(
-  [WfTriggerProvider,    AppWfTriggerProvider],
+  [WfTriggerProvider,      AppWfTriggerProvider],
   [ArbacUserProviderToken, AppArbacUserProvider],
+  [AuthWorkflow,           AppAuth],
 ))
 
 app.applyGlobalInterceptors(authGuardInterceptor({ cookie: { secure: false } }))
 app.applyGlobalInterceptors(formInputInterceptor())
 app.applyGlobalInterceptors(arbacAuthorizeInterceptor)
 
-app.registerControllers(AuthController, AppLoginWorkflow, MeController)
+app.registerControllers(AuthController, AppAuth, MeController)
 await app.init()
 await http.listen(3000)
 
@@ -381,27 +364,28 @@ await userService.activateAccount('alice')
 ```
 
 ::: warning `createUser` writes `account.active: false`
-`InviteWorkflow` relies on this default — pending invitees stay inactive until accept. For seed scripts and admin-create flows, **call `activateAccount(username)` after** or `login()` throws `UserAuthError("INACTIVE")`, which the login workflow deliberately re-maps to `"Invalid credentials"` (anti-enumeration). The client-side failure looks identical to a wrong password.
+`AuthWorkflow`'s invite accept phase relies on this default — pending invitees stay inactive until accept. For seed scripts and admin-create flows, **call `activateAccount(username)` after** or `login()` throws `UserAuthError("INACTIVE")`, which the login workflow deliberately re-maps to `"Invalid credentials"` (anti-enumeration). The client-side failure looks identical to a wrong password.
 :::
 
-Trigger the login workflow (this is the same envelope your frontend posts):
+Trigger the login workflow (this is the same wire your frontend's `<AsWfForm>` posts). **Start** a run by naming the workflow id in `wfid`; **resume** by sending back the `wfs` token plus `input`:
+
+```bash
+# Start — `wfid` names the workflow to start (no wfs yet)
+curl -X POST http://localhost:3000/auth/trigger \
+  -H 'content-type: application/json' \
+  -d '{"wfid":"auth/login/flow"}'
+```
+
+The first call returns a paused-form envelope containing `LoginCredentialsForm` and a `wfs` token — the workflow-session handle, **reused on every subsequent step until the run finishes**. Submit credentials (form values go under `input.formData`):
 
 ```bash
 curl -X POST http://localhost:3000/auth/trigger \
   -H 'content-type: application/json' \
-  -d '{"wfs":"auth.login"}'
+  -d '{"wfs":"<wfs-from-initial-response>","input":{"formData":{"username":"alice","password":"CorrectHorse123"}}}'
 ```
 
-The first call returns a paused-form envelope (`type: "wait"`) containing `LoginCredentialsForm`. The envelope's `wfs` is the workflow-session handle — **the same value is reused on every subsequent step until the workflow finishes**. Submit credentials:
-
-```bash
-curl -X POST http://localhost:3000/auth/trigger \
-  -H 'content-type: application/json' \
-  -d '{"wfs":"<wfs-from-initial-response>","input":{"username":"alice","password":"CorrectHorse123"}}'
-```
-
-::: tip The `wfs` is the session, not a per-step token
-The `wfs` URL token stays the same across every step of a workflow run. Refresh / bookmark / multi-tab on a paused workflow all resume from the current step. The token only changes when a new workflow starts.
+::: tip `wfid` starts, `wfs` resumes
+On **start** there is no token — the body carries `wfid` (the workflow id). On every later step the body carries the `wfs` token instead; the engine resumes the in-flight run. The `wfs` value stays the same across `wf.requireInput` re-renders, refresh, bookmark, and multi-tab — it only changes when the run finishes or a different workflow starts. See [Workflows — state tokens](../moost/workflows#workflow-state-tokens-wfs).
 :::
 
 On success the envelope's `type` is `"data"` and the response carries `aooth_session` + `aooth_refresh` cookies plus an `accessToken` in the body (because `enableBearer` defaults to `true`).
@@ -422,22 +406,23 @@ curl http://localhost:3000/me -H 'Authorization: Bearer <accessToken>'
 
 ## What else `/auth/*` ships
 
-`AuthController` mounts four routes under `@Controller('auth')`. All four are `@Public()` (the auth guard does not block them — they validate their own inputs):
+`AuthController` mounts five routes under `@Controller('auth')`. All five are `@Public()` (the auth guard does not block them — they validate their own inputs):
 
-| Method + path        | Body                           | Purpose                                                                                                               |
-| -------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `POST /auth/logout`  | `{ refreshToken? }` (optional) | Revokes the current access token + refresh (cookie or body). Always clears `aooth_session` / `aooth_refresh` cookies. |
-| `POST /auth/refresh` | `{ refreshToken? }` (optional) | Trades a refresh token for a fresh access + refresh pair. Reads cookie if no body field.                              |
-| `GET /auth/status`   | —                              | Returns the resolved `AuthContext { userId, claims }` if the guard could validate; 401 otherwise.                     |
-| `POST /auth/trigger` | `{ wfs, input? }`              | Drives any workflow in `DEFAULT_AUTH_WORKFLOWS = ['auth.login', 'auth.recovery', 'auth.invite']`.                     |
+| Method + path                      | Body / Query                   | Purpose                                                                                                               |
+| ---------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| `POST /auth/logout`                | `{ refreshToken? }` (optional) | Revokes the current access token + refresh (cookie or body). Always clears `aooth_session` / `aooth_refresh` cookies. |
+| `POST /auth/refresh`               | `{ refreshToken? }` (optional) | Trades a refresh token for a fresh access + refresh pair. Reads cookie if no body field.                              |
+| `GET /auth/status`                 | —                              | Returns the resolved `AuthContext { userId, claims }` if the guard could validate; 401 otherwise.                     |
+| `POST /auth/trigger`               | `{ wfid?, wfs?, input? }`      | Drives any workflow in `DEFAULT_AUTH_WORKFLOWS = ['auth/login/flow', 'auth/invite/start', 'auth/recovery/flow']`.     |
+| `GET /auth/invite/post-redemption` | `?uid=<userId>`                | Idempotent "already accepted" envelope for re-clicked invite links (needs a `UserService`).                           |
 
 Subclass `AuthController` to widen the trigger allow-list (override `triggerWf()` with your own `@WfTrigger({ allow })`).
 
-For self-signup, password reset, or invite acceptance use `RecoveryWorkflow` / `InviteWorkflow` — same subclass pattern as `LoginWorkflow`, mounted via the same `/auth/trigger` envelope. See the [Moost integration guide](../moost/) for the per-workflow option surface.
+Self-signup, password reset, and invite acceptance are all flows of the same `AuthWorkflow` — drive them through the same `/auth/trigger` wire by starting `auth/recovery/flow` or `auth/invite/start`. See the [Moost integration guide](../moost/) for the option + resolver surface.
 
 ## Common flows
 
-End-to-end snippets for the four most-asked Day-1 recipes. Each one assumes the Quick Start app is running and `AppRecoveryWorkflow` / `AppInviteWorkflow` are registered when relevant.
+End-to-end snippets for the four most-asked Day-1 recipes. Each one assumes the Quick Start app is running with `AppAuth` (the `AuthWorkflow` subclass) registered — all three flows live on that one class.
 
 ### Guard a single route by role
 
@@ -472,25 +457,25 @@ A request from a user whose `@arbac.attribute tenantId` is `'t1'` will see `scop
 
 ### Password reset (recovery flow)
 
-`RecoveryWorkflow` is a multi-step workflow that pauses on each user interaction. The envelope's `wfs` is the **workflow-session handle** — the same value is reused across every step until the flow finishes. The magic-link email carries a distinct token because it crosses an out-of-band boundary; once clicked, the FE posts that token back as the new `wfs`.
+The recovery flow (`auth/recovery/flow`) is a multi-step run that pauses on each user interaction. The envelope's `wfs` is the **workflow-session handle** — the same value is reused across every step until the flow finishes. The magic-link email carries a distinct token because it crosses an out-of-band boundary; once clicked, the FE posts that token back as the new `wfs`.
 
 ```bash
-# 1. Start: server returns wfs + RecoveryRequestForm
+# 1. Start: name the workflow with `wfid`; server returns wfs + the identifier form
 curl -X POST http://localhost:3000/auth/trigger \
   -H 'content-type: application/json' \
-  -d '{"wfs":"auth.recovery"}'
+  -d '{"wfid":"auth/recovery/flow"}'
 
 # 2. Submit identifier (username or email) — server emits the magic-link email.
 #    Same wfs from step 1 — the handle stays live across the pause.
 curl -X POST http://localhost:3000/auth/trigger \
   -H 'content-type: application/json' \
-  -d '{"wfs":"<wfs-from-step-1>","input":{"identifier":"alice"}}'
+  -d '{"wfs":"<wfs-from-step-1>","input":{"formData":{"identifier":"alice"}}}'
 
 # 3. User clicks the magic-link URL from email; FE posts that token back as wfs
 #    (this one IS a fresh token — it crossed the email outlet)
 curl -X POST http://localhost:3000/auth/trigger \
   -H 'content-type: application/json' \
-  -d '{"wfs":"<token-from-magic-link>","input":{"newPassword":"NewCorrectHorse42!"}}'
+  -d '{"wfs":"<token-from-magic-link>","input":{"formData":{"newPassword":"NewCorrectHorse42!"}}}'
 ```
 
 Wire `createAuthEmailOutlet({ emailSender, buildMagicLinkUrl })` into your `WfTriggerProvider` (step 7c above) — the outlet receives the kind `'recovery.magicLink'` and turns it into a clickable URL.
@@ -515,22 +500,21 @@ With `refresh: { rotation: 'always' }` (the Quick Start setting) every call mint
 
 ### Magic-link login
 
-`LoginWorkflow` supports passwordless entry through the same email outlet. The recovery recipe above doubles as the magic-link primitive — the only difference is which `kind` the outlet receives (`login.magicLink` vs `recovery.magicLink`). Your `buildMagicLinkUrl` callback should branch on the `kind`:
+The login flow supports passwordless entry through the same email outlet — the recovery recipe above doubles as the magic-link primitive; the only difference is which `kind` the outlet receives (`recovery.magicLink` vs the invite kind). Your `buildMagicLinkUrl` callback branches on `kind` (and reads the optional `{ userId }` third arg for invites):
 
 ```ts
-buildMagicLinkUrl: (kind, token) => {
-  const path = kind === "login.magicLink" ? "login" : "recover";
-  return `${process.env.FRONTEND_URL}/${path}?wfs=${token}`;
+buildMagicLinkUrl: (kind, token, ctx) => {
+  const path = kind === "invite.magicLink" ? "accept-invite" : "recover";
+  return `${process.env.FRONTEND_URL}/${path}?wfs=${token}${ctx?.userId ? `&uid=${ctx.userId}` : ""}`;
 };
 ```
 
-The clicked URL's `wfs` query parameter is resumed identically:
+The clicked URL's `wfs` query parameter is resumed identically (it's a resume token, so no `wfid`):
 
 ```bash
 curl -X POST http://localhost:3000/auth/trigger \
   -H 'content-type: application/json' \
   -d '{"wfs":"<token-from-clicked-link>"}'
-# → final envelope: { type: "data", end: { action: "data", data: { accessToken, ... } } }
 ```
 
 A successful resume drops the same cookies + access token as the password path.
@@ -539,5 +523,6 @@ A successful resume drops the same cookies + access token as the password path.
 
 - [Ecosystem & Packages](./ecosystem) — see what every package contributes and how they depend on each other.
 - [Using atscript-db Models](./atscript-db) — add custom columns, layer in `@arbac.attribute`, and wire `syncSchema`.
-- [Moost integration](../moost/) — extend `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow` with MFA, invites, password reset.
+- [Moost integration](../moost/) — the unified `AuthWorkflow`, its `resolveXxx` policy hooks, MFA, invites, password reset.
+- [SPA Components](../moost/spa-components) — render the workflow forms (QR, consents, password rules) in your frontend.
 - [ARBAC / Scopes](../arbac/scopes) — write scopes that filter DB queries automatically.

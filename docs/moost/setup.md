@@ -1,6 +1,6 @@
 # Setup
 
-This page is the full app-bootstrap recipe — everything you must wire into a fresh Moost app to get the auth guard, ARBAC, the REST controller, and the three workflows all online. It is loosely modeled on `packages/e2e-demo/src/app.ts`, which is the canonical end-to-end reference.
+This page is the full app-bootstrap recipe — everything you must wire into a fresh Moost app to get the auth guard, ARBAC, the REST controller, and the unified `AuthWorkflow` all online. It is loosely modeled on `packages/e2e-demo/src/app.ts`, which is the canonical end-to-end reference.
 
 ## Install
 
@@ -17,12 +17,12 @@ pnpm add @aooth/arbac @aooth/arbac-moost
 
 There are four things to wire, and they must happen in this order:
 
-| Step | What                                                                                                                                                                                                                                      | Why                                                                                                                         |
-| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| 1    | **Provide registry** — bind `AuthCredential`, `UserService`, `EmailSender` (string token), and a concrete `MoostArbac` if you customize roles.                                                                                            | The auth guard pulls `AuthCredential`. The trigger route's email outlet pulls `EmailSender`. ARBAC pulls `MoostArbac`.      |
-| 2    | **Replace registry** — bind `ArbacUserProviderToken` to your concrete provider, and `WfTriggerProvider` to your subclass with a DB-backed wf state store.                                                                                 | The base provider is abstract; the default trigger provider only has an in-memory state store.                              |
-| 3    | **Global interceptors** — `authGuardInterceptor(opts)`, `arbacAuthorizeInterceptor`, `formInputInterceptor()`.                                                                                                                            | Guards must run on every event; the form input interceptor is required by every workflow form pause.                        |
-| 4    | **Register controllers** — `AuthController` (or your subclass), workflow classes (use shipped `Default{Login,Recovery,Invite}Workflow` for the default-opts path, or your own subclasses to override opts / hooks), your own controllers. | Subclassing is only needed when you want custom opts or to override `protected` extension hooks (`deliver`, `audit`, etc.). |
+| Step | What                                                                                                                                                                                                       | Why                                                                                                                              |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | **Provide registry** — bind `AuthCredential`, `UserService`, `EmailSender` (string token), and a concrete `MoostArbac` if you customize roles.                                                             | The auth guard pulls `AuthCredential`. The trigger route's email outlet pulls `EmailSender`. ARBAC pulls `MoostArbac`.           |
+| 2    | **Replace registry** — bind `ArbacUserProviderToken` to your concrete provider, and (for durable workflow state) `WfTriggerProvider` to your subclass overriding `storeStrategy()`.                        | The base provider is abstract; the default trigger provider persists nothing durable (encapsulated state only).                  |
+| 3    | **Global interceptors** — `authGuardInterceptor(opts)`, `arbacAuthorizeInterceptor`, `formInputInterceptor()`.                                                                                             | Guards must run on every event; the form input interceptor is required by every workflow form pause.                             |
+| 4    | **Register controllers** — `AuthController` (or your subclass), the `AuthWorkflow` (register it directly for default opts, or a subclass to set opts / override `resolveXxx` hooks), your own controllers. | Subclassing is only needed when you want custom infra opts or to override `protected` policy hooks (`deliver`, `resolveXxx`, …). |
 
 ::: warning Order matters
 `setProvideRegistry` must happen before any controller is instantiated (the workflows pull `AuthCredential` and `UserService` from the registry). `setReplaceRegistry` for the ARBAC user provider must happen before `applyGlobalInterceptors(arbacAuthorizeInterceptor)` is followed by `app.init()`.
@@ -39,17 +39,16 @@ import { AtscriptArbacUserProvider } from "@aooth/arbac-moost/atscript";
 import {
   AuthController,
   authGuardInterceptor,
+  AuthWorkflow,
+  ConsentStore,
   createAuthEmailOutlet,
-  InviteWorkflow,
-  LoginWorkflow,
-  RecoveryWorkflow,
   Public,
   UserId,
   useAuth,
   WfTriggerProvider,
 } from "@aooth/auth-moost";
-import { formInputInterceptor } from "@atscript/moost-wf";
-import { HandleStateStrategy, MoostWf } from "@moostjs/event-wf";
+import { AsWfStore, formInputInterceptor } from "@atscript/moost-wf";
+import { HandleStateStrategy, MoostWf, type WfStateStrategy } from "@moostjs/event-wf";
 import { MoostHttp, Get } from "@moostjs/event-http";
 import {
   Controller,
@@ -72,67 +71,46 @@ const userService = new UserService(userStore, {
 });
 const emailSender = new MyEmailSender();
 
-// 2. Workflow subclasses
+// 2. AuthWorkflow subclass
 //
-// If you accept the default opts for all three workflows, skip this section
-// and register the shipped opts-less subclasses straight from @aooth/auth-moost:
-//
-//   import { DefaultLoginWorkflow, DefaultRecoveryWorkflow, DefaultInviteWorkflow } from "@aooth/auth-moost";
-//   app.registerControllers(AuthController, DefaultLoginWorkflow, DefaultRecoveryWorkflow, DefaultInviteWorkflow);
-//
-// Subclass directly when you want custom opts or to override `protected`
-// extension hooks (`deliver`, `audit`, ...). Re-declare the constructor so TS
-// emits design-paramtypes against the subclass.
+// Register `AuthWorkflow` directly if the default opts are fine. Subclass when
+// you want custom infrastructure opts or to override `protected` policy hooks
+// (`deliver`, `resolveXxx`, ...). Re-declare the 4-arg constructor so TS emits
+// design-paramtypes against the subclass — the 4th param is the ConsentStore.
 
 @Inherit()
-@Injectable("FOR_EVENT")
-@Controller()
-class MyLoginWorkflow extends LoginWorkflow {
-  constructor(users: UserService, auth: AuthCredential) {
-    super({ mfa: { transports: ["email", "totp"] } }, users, auth);
+@Controller() // SINGLETON — AuthWorkflow holds no per-event state on `this`
+class MyAuth extends AuthWorkflow {
+  constructor(users: UserService, auth: AuthCredential, consentStore: ConsentStore) {
+    super({ totpIssuer: "MyApp", loginUrl: "/sign-in" }, users, auth, consentStore);
   }
   protected override async deliver(payload) {
     await emailSender.send({
-      /* map payload → your sender */
+      /* map payload → your sender, routed by payload.kind + payload.channel */
     });
   }
-}
-
-@Inherit()
-@Injectable("FOR_EVENT")
-@Controller()
-class MyRecoveryWorkflow extends RecoveryWorkflow {
-  constructor(users: UserService, auth: AuthCredential) {
-    super({ delivery: { mode: "magicLink" } }, users, auth);
+  protected override resolveMfaPolicy(ctx) {
+    return { required: true, transports: ["email", "totp"] };
   }
 }
 
-// InviteWorkflow with empty opts — `DefaultInviteWorkflow` from @aooth/auth-moost
-// is the shipped equivalent of this class; use it instead unless you need to
-// override `deliver` or `audit`.
-@Inherit()
-@Injectable("FOR_EVENT")
-@Controller()
-class MyInviteWorkflow extends InviteWorkflow {
-  constructor(users: UserService, auth: AuthCredential) {
-    super({}, users, auth);
-  }
-}
-
-// 3. WfTriggerProvider subclass — swap in DB state + add the email outlet
+// 3. WfTriggerProvider subclass — make state durable + add the email outlet
 @Injectable()
 class MyWfTriggerProvider extends WfTriggerProvider {
-  constructor(wf: MoostWf) {
-    super(wf);
-    this.state = new HandleStateStrategy({ store: dbWfStore });
+  constructor(wf: MoostWf, auth: AuthCredential) {
+    super(wf, auth);
     this.outlets = [
       ...this.outlets,
       createAuthEmailOutlet({
         emailSender,
-        buildMagicLinkUrl: (kind, token) => `${env.FRONTEND_URL}/redeem?wfs=${token}`,
+        buildMagicLinkUrl: (kind, token, ctx) =>
+          `${env.FRONTEND_URL}/redeem?wfs=${token}${ctx?.userId ? `&uid=${ctx.userId}` : ""}`,
         magicLinkTtlMs: () => 60 * 60_000,
       }),
     ];
+  }
+  protected override storeStrategy(): WfStateStrategy {
+    return new HandleStateStrategy({ store: new AsWfStore({ table: wfStatesTable }) });
   }
 }
 
@@ -180,13 +158,7 @@ app.applyGlobalInterceptors(authGuardInterceptor({ cookie: { secure: false } }))
 app.applyGlobalInterceptors(arbacAuthorizeInterceptor);
 app.applyGlobalInterceptors(formInputInterceptor());
 
-app.registerControllers(
-  AuthController,
-  MyLoginWorkflow,
-  MyRecoveryWorkflow,
-  MyInviteWorkflow,
-  MeController,
-);
+app.registerControllers(AuthController, MyAuth, MeController);
 
 await app.init();
 
@@ -203,15 +175,16 @@ See [`packages/e2e-demo/src/app.ts`](https://github.com/moostjs/aoothjs/blob/mai
 
 The wiring above produces these routes:
 
-| Method | Path            | Source           | Notes                                                                                                       |
-| ------ | --------------- | ---------------- | ----------------------------------------------------------------------------------------------------------- |
-| `GET`  | `/me`           | `MeController`   | Protected by both guards. Requires a token and an ARBAC grant for `(resource=MeController, action=whoami)`. |
-| `GET`  | `/auth/status`  | `AuthController` | `@Public()` — runs anonymously, 401 if no context.                                                          |
-| `POST` | `/auth/logout`  | `AuthController` | `@Public()` — clears cookies, best-effort revokes both tokens.                                              |
-| `POST` | `/auth/refresh` | `AuthController` | `@Public()` — exchanges refresh for new access+refresh.                                                     |
-| `POST` | `/auth/trigger` | `AuthController` | `@Public()` — single entry point for `auth.login` / `auth.recovery` / `auth.invite`.                        |
+| Method | Path                           | Source           | Notes                                                                                                       |
+| ------ | ------------------------------ | ---------------- | ----------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/me`                          | `MeController`   | Protected by both guards. Requires a token and an ARBAC grant for `(resource=MeController, action=whoami)`. |
+| `GET`  | `/auth/status`                 | `AuthController` | `@Public()` — runs anonymously, 401 if no context.                                                          |
+| `POST` | `/auth/logout`                 | `AuthController` | `@Public()` — clears cookies, best-effort revokes both tokens.                                              |
+| `POST` | `/auth/refresh`                | `AuthController` | `@Public()` — exchanges refresh for new access+refresh.                                                     |
+| `POST` | `/auth/trigger`                | `AuthController` | `@Public()` — single entry point for `auth/login/flow` / `auth/invite/start` / `auth/recovery/flow`.        |
+| `GET`  | `/auth/invite/post-redemption` | `AuthController` | `@Public()` — idempotent "already accepted" envelope for re-clicked invite links.                           |
 
-The three workflow controllers themselves do **not** expose new HTTP routes — they're driven entirely through `/auth/trigger`. The body `{ wfid: "auth.login", input: { ... } }` and the `WfFinished` envelope are the entire wire protocol.
+The `AuthWorkflow` itself does **not** expose new HTTP routes — its three `@Workflow` schemas are driven entirely through `/auth/trigger`. The body `{ wfs?, input: { action?, formData? } }` and the `WfFinished` envelope are the entire wire protocol.
 
 ## DI tokens you can override
 
@@ -221,7 +194,7 @@ The three workflow controllers themselves do **not** expose new HTTP routes — 
 | `UserService`            | none — must be provided                                     | `setProvideRegistry([UserService, () => myInstance])`                                                         |
 | `"EmailSender"` (string) | none — must be provided when wiring `createAuthEmailOutlet` | `setProvideRegistry(["EmailSender", () => mySender])`                                                         |
 | `ArbacUserProviderToken` | base class is `abstract`                                    | `setReplaceRegistry([ArbacUserProviderToken, MyProvider])`                                                    |
-| `WfTriggerProvider`      | in-memory state + http outlet only                          | `setReplaceRegistry([WfTriggerProvider, MyTriggerProvider])`                                                  |
+| `WfTriggerProvider`      | encapsulated state (no durable store) + http outlet only    | `setReplaceRegistry([WfTriggerProvider, MyTriggerProvider])` — override `storeStrategy()` for durable state   |
 | `MoostArbac`             | default singleton                                           | rarely overridden — `setReplaceRegistry([MoostArbac, MyArbac])` if you need typed `evaluate<TScope>` defaults |
 
 ::: warning No DI tokens for senders, audit sinks, or trust stores
@@ -241,16 +214,16 @@ import {
   type BuildMagicLinkUrl,
   type AuthEmailEvent,
   type AuthEmailKind,
-  type DeliverPayload,
+  type AuthDeliveryPayload,
   type AuditEvent,
   type AuditEmitter,
-  // workflow classes
-  LoginWorkflow,
-  RecoveryWorkflow,
-  InviteWorkflow,
-  type LoginWorkflowOpts,
-  type RecoveryWorkflowOpts,
-  type InviteWorkflowOpts,
+  // unified workflow
+  AuthWorkflow,
+  type AuthWorkflowOpts,
+  type AuthWfCtx,
+  ConsentStore,
+  type ConsentDescriptor,
+  type ConsentEvent,
   // moost machinery
   AuthController,
   authGuardInterceptor,

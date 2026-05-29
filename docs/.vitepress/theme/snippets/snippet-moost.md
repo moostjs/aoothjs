@@ -4,9 +4,9 @@ import {
   authGuardInterceptor,
   Public,
   UserId,
-  LoginWorkflow,
-  type LoginWorkflowOpts,
-  type DeliverPayload,
+  AuthWorkflow,
+  ConsentStore,
+  type AuthDeliveryPayload,
 } from "@aooth/auth-moost";
 import {
   ArbacAuthorize,
@@ -16,12 +16,13 @@ import {
 } from "@aooth/arbac-moost";
 import type { AuthCredential } from "@aooth/auth";
 import type { UserService } from "@aooth/user";
-import { Controller, Inherit, Injectable } from "moost";
+import { Controller, Inherit, createReplaceRegistry } from "moost";
 import { Get } from "@moostjs/event-http";
 
 app.applyGlobalInterceptors(authGuardInterceptor());
 app.applyGlobalInterceptors(arbacAuthorizeInterceptor);
-app.registerControllers(AuthController, MyLoginWorkflow, ReportsController);
+app.setReplaceRegistry(createReplaceRegistry([AuthWorkflow, MyAuth]));
+app.registerControllers(AuthController, MyAuth, ReportsController);
 
 @Controller("reports")
 @ArbacResource("reports")
@@ -34,14 +35,14 @@ class ReportsController {
   }
 }
 
-@Inherit() @Injectable("FOR_EVENT") @Controller()
-class MyLoginWorkflow extends LoginWorkflow {
-  // Subclasses MUST re-declare the ctor — TS emits fresh design-paramtypes per class.
-  constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential) {
-    super(opts, users, auth);
+@Inherit() @Controller() // one class, three @Workflow schemas
+class MyAuth extends AuthWorkflow {
+  // Subclasses MUST re-declare the 4-arg ctor — TS emits fresh design-paramtypes per class.
+  constructor(users: UserService, auth: AuthCredential, consents: ConsentStore) {
+    super({ totpIssuer: "Acme" }, users, auth, consents);
   }
 
-  protected override async deliver(payload: DeliverPayload) {
+  protected override async deliver(payload: AuthDeliveryPayload) {
     if (payload.channel === "email") await emailSender.send(payload);
   }
 }

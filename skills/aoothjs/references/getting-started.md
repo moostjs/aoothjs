@@ -94,8 +94,8 @@ No `@aooth/auth` involved — that layer kicks in once you need tokens / cookies
 1. **Provide** `UserService`, `AuthCredential`, `MoostArbac`, and an `'EmailSender'` string token via `app.setProvideRegistry(createProvideRegistry(...))`.
 2. **Replace** `ArbacUserProviderToken` with your concrete provider via `app.setReplaceRegistry(createReplaceRegistry(...))`.
 3. **Apply globally** `authGuardInterceptor(opts)`, `arbacAuthorizeInterceptor`, and `formInputInterceptor()` (the last is from `@atscript/moost-wf`, required for workflow form pauses).
-4. **Register controllers** — `AuthController` ships the `/auth/{logout,refresh,status,trigger}` routes; subclass it to extend the workflow allow-list.
-5. **Subclass workflows** — `LoginWorkflow`, `RecoveryWorkflow`, `InviteWorkflow` are abstract w.r.t. transports. Override `protected deliver(payload)` to forward email/SMS to your sender; override `audit(event)` to fan out to your audit sink. Re-decorate the constructor — moost@0.6.x does NOT inherit `@Injectable()` across `extends`.
+4. **Register controllers** — `AuthController` ships the `/auth/{logout,refresh,status,trigger}` routes plus `GET /auth/invite/post-redemption`; subclass it to extend the workflow allow-list.
+5. **Subclass the workflow** — one class, `AuthWorkflow`, declares all three flows (`auth/login/flow`, `auth/invite/start`, `auth/recovery/flow`). Its 4-arg ctor is `(opts: Partial<AuthWorkflowOpts>, users: UserService, auth: AuthCredential, consentStore: ConsentStore)`. Override `protected deliver(payload: AuthDeliveryPayload)` to forward MFA / recovery / enroll pincodes + new-device notices to your sender (there is **no** `audit()` method — wire your own audit sink). Re-apply `@Inherit() @Controller()` and re-declare the ctor on the subclass — moost@0.6.x does NOT inherit decorators / `design:paramtypes` across `extends` (add `@Injectable("FOR_EVENT")` only if the ctor reads request-scoped composables).
 
 See the umbrella SKILL `## Quick start` for a 30-line example.
 

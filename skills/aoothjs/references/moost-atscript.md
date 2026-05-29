@@ -179,16 +179,16 @@ export interface MyLoginCredentialsForm {
 import { MyLoginCredentialsForm } from "./forms/my-login-credentials.as";
 
 @Inherit()
-@Injectable("FOR_EVENT")
 @Controller()
-class AppLoginWorkflow extends LoginWorkflow {
-  constructor(users: UserService, auth: AuthCredential) {
+class AppAuth extends AuthWorkflow {
+  constructor(users: UserService, auth: AuthCredential, consents: ConsentStore) {
     super(
       {
         forms: { loginCredentials: MyLoginCredentialsForm },
       },
       users,
       auth,
+      consents,
     );
   }
 }

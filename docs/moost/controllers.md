@@ -1,6 +1,6 @@
 # REST Controllers
 
-This page documents the bundled `AuthController` — its four endpoints, their decorators, request/response shapes, and how to subclass it to extend the workflow allow-list.
+This page documents the bundled `AuthController` — its five endpoints, their decorators, request/response shapes, and how to subclass it to extend the workflow allow-list.
 
 ## `AuthController`
 
@@ -10,27 +10,37 @@ import { AuthController } from "@aooth/auth-moost";
 app.registerControllers(AuthController);
 ```
 
-Decorated `@Controller("auth") @ArbacResource("auth")`. Constructor takes a DI-provided `AuthCredential`:
+Decorated `@Controller("auth") @ArbacResource("auth")`. Constructor takes a DI-provided `AuthCredential` plus an `@Optional()` `UserService`:
 
 ```ts
-constructor(private readonly auth: AuthCredential)
+constructor(
+  protected readonly auth: AuthCredential,
+  @Optional() protected readonly users?: UserService,
+)
 ```
 
-All four endpoints are `@Public()`. Authentication is enforced **inside** the handler bodies as defence-in-depth — every endpoint that requires a context calls `useAuth().getAuthContext()` and returns 401 if it's null. The reason they're public is that the routes themselves must be reachable to anonymous callers (a logged-out user trying to log in, an expired-access-token caller refreshing).
+`users` is optional — only `GET /auth/invite/post-redemption` reads it (returns 500 when unset); the other four routes work without a `UserService`.
+
+All five endpoints are `@Public()`. Authentication is enforced **inside** the handler bodies as defence-in-depth — every endpoint that requires a context calls `useAuth().getAuthContext()` and returns 401 if it's null. The reason they're public is that the routes themselves must be reachable to anonymous callers (a logged-out user trying to log in, an expired-access-token caller refreshing, an unauthenticated invitee redeeming a magic link).
 
 ## Endpoint table
 
-| Method | Path            | Decorators                                                | Body                                | Response                      | Notes                                                                                                                     |
-| ------ | --------------- | --------------------------------------------------------- | ----------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `POST` | `/auth/logout`  | `@Public()`                                               | `AuthLogoutBody { refreshToken? }`  | `AuthOkResponse { ok: true }` | Defence-in-depth 401 if null context. Best-effort revokes both tokens (failures silently ignored), then `clearCookies()`. |
-| `POST` | `/auth/refresh` | `@Public()`                                               | `AuthRefreshBody { refreshToken? }` | `AuthLoginResponse`           | Falls back to the refresh cookie. 401 on `AuthError`. Returns new access+refresh, writes cookies.                         |
-| `GET`  | `/auth/status`  | `@Public()`                                               | —                                   | `AuthContext`                 | 401 when no context.                                                                                                      |
-| `POST` | `/auth/trigger` | `@Public() @WfTrigger({ allow: DEFAULT_AUTH_WORKFLOWS })` | `{ wfid?, wfs?, input?, action? }`  | `WfFinished` envelope         | The single entry-point covering `auth.login`, `auth.recovery`, `auth.invite`.                                             |
+| Method | Path                           | Decorators                                                | Body                                       | Response                      | Notes                                                                                                                      |
+| ------ | ------------------------------ | --------------------------------------------------------- | ------------------------------------------ | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `POST` | `/auth/logout`                 | `@Public()`                                               | `AuthLogoutBody { refreshToken? }`         | `AuthOkResponse { ok: true }` | Defence-in-depth 401 if null context. Best-effort revokes both tokens (failures silently ignored), then `clearCookies()`.  |
+| `POST` | `/auth/refresh`                | `@Public()`                                               | `AuthRefreshBody { refreshToken? }`        | `AuthLoginResponse`           | Falls back to the refresh cookie. 401 on `AuthError`. Returns new access+refresh, writes cookies.                          |
+| `GET`  | `/auth/status`                 | `@Public()`                                               | —                                          | `AuthContext`                 | 401 when no context.                                                                                                       |
+| `POST` | `/auth/trigger`                | `@Public() @WfTrigger({ allow: DEFAULT_AUTH_WORKFLOWS })` | `{ wfs?, input?: { action?, formData? } }` | `WfFinished` envelope         | The single entry-point covering `auth/login/flow`, `auth/invite/start`, `auth/recovery/flow`.                              |
+| `GET`  | `/auth/invite/post-redemption` | `@Public()`                                               | `?uid=<userId>`                            | `WfFinished` envelope         | Idempotent "already accepted" envelope for re-clicked invite links after the wf state row is evicted. Needs `UserService`. |
 
 `DEFAULT_AUTH_WORKFLOWS` is the exported `as const` allow-list:
 
 ```ts
-export const DEFAULT_AUTH_WORKFLOWS = ["auth.login", "auth.recovery", "auth.invite"] as const;
+export const DEFAULT_AUTH_WORKFLOWS = [
+  "auth/login/flow",
+  "auth/invite/start",
+  "auth/recovery/flow",
+] as const;
 ```
 
 ## `POST /auth/logout`
@@ -94,31 +104,42 @@ Use this for an SPA's "am I logged in?" probe on page load. Pair with `/auth/ref
 
 ## `POST /auth/trigger`
 
-The single workflow trigger endpoint. The request body shape comes from `@atscript/moost-wf`'s standard wf-trigger contract:
+The single workflow trigger endpoint. The request body shape is `@atscript/moost-wf`'s wf-trigger contract — the wf engine reads the action + form data directly from `body.input`:
 
 ```ts
 POST /auth/trigger
 Content-Type: application/json
 
 {
-  "wfid": "auth.login",     // or "auth.recovery" / "auth.invite"; ignored if wfs is present
-  "wfs":  "<resume-token>", // resume an in-flight workflow; mutually exclusive with wfid
-  "input": { /* form values for the current paused step */ },
-  "action": "forgotPassword" // alt-action name (e.g. forgot-password, signup, magicLink, sso-<id>)
+  "wfs":  "<resume-token>",          // resume an in-flight workflow (absent on start)
+  "input": {
+    "action":   "forgotPassword",    // alt-action name (forgotPassword, signup, magicLink, sso-<id>)
+    "formData": { /* values for the current paused step */ }
+  }
 }
 ```
 
-Response: `WfFinished` envelope (either a paused form, a finished response, or an aborted response) — see [Workflows](./workflows#the-wffinished-envelope-contract).
+On **start** (no `wfs`), the workflow id is supplied by the client's `<AsWfForm :name="…">` (e.g. `auth/login/flow`) — the trigger rejects any id not in `allow`. On **resume**, the `wfs` token carries the id. Response: `WfFinished` envelope (paused form, finished, or aborted) — see [Workflows](./workflows#finish-error-envelopes).
 
 Behaviour:
 
 1. The handler body is intentionally empty (`override triggerWf(): void { }`). `@WfTrigger({ allow: DEFAULT_AUTH_WORKFLOWS })` wraps it as a `defineAfterInterceptor` that:
    - Instantiates `WfTriggerProvider`.
-   - Reads the trigger payload from body/query/cookie according to the provider's `tokenWire` config.
+   - Reads the trigger payload from body/query/cookie according to the provider's `token` wire config.
    - Dispatches into the requested workflow (rejecting any wfid not in `allow`).
    - Pauses on a form-input step → returns a paused envelope.
-   - Finishes → returns the `WfFinished` envelope (data, redirect, choice, or aborted).
-2. Cookies attached by workflow finalize steps (login `issue`, recovery `autoLoginFinish`, invite `autoLoginFinish`) flow through the `cookies` field on the envelope.
+   - Finishes → returns the `WfFinished` envelope.
+2. Cookies attached by the login/auto-login finalize steps flow through the `cookies` field on the envelope (built via `useAuth().buildFinishedCookies(issue)`).
+
+## `GET /auth/invite/post-redemption`
+
+A side route for re-clicked invite magic links. When an invitee clicks an already-redeemed link, the wf state row has been evicted (the resume returns `410`), so the workflow can't re-enter to render the idempotent "already accepted" envelope. The magic-link URL carries the invitee `uid` (from `buildMagicLinkUrl(kind, token, { userId })`), and this route rebuilds the same envelope from it:
+
+```ts
+GET /auth/invite/post-redemption?uid=<userId>
+```
+
+Resolves the user via the `@Optional()` `UserService` (500 if no `UserService` is wired), returns a `WfFinished` "already accepted" envelope when the invite is redeemed, or `404` when the invite is still pending. Override `protected resolveInvitePostRedemption()` to keep the `loginUrl` / `alreadyAcceptedRedirectUrl` in sync with your workflow opts.
 
 ## DTOs
 
@@ -159,14 +180,15 @@ The most common subclass extends the workflow allow-list. Two patterns:
 ```ts
 import { AuthController, DEFAULT_AUTH_WORKFLOWS, Public, WfTrigger } from "@aooth/auth-moost";
 import { AuthCredential } from "@aooth/auth";
-import { Inherit, Controller } from "moost";
+import { UserService } from "@aooth/user";
+import { Inherit, Controller, Optional } from "moost";
 import { Post } from "@moostjs/event-http";
 
 @Inherit()
 @Controller("auth")
 class MyAuthController extends AuthController {
-  constructor(auth: AuthCredential) {
-    super(auth);
+  constructor(auth: AuthCredential, @Optional() users?: UserService) {
+    super(auth, users); // forward both so post-redemption keeps working
   }
 
   @Post("trigger")

@@ -1,6 +1,6 @@
 # controllers
 
-REST surface and composables. Covers `AuthController`'s four endpoints, `authGuardInterceptor` options, `useAuth()` / `useArbac()` API, the decorator quartet, and the 401-vs-403 split. Workflow internals live in [workflows.md](workflows.md); DB scoping in [db-controllers.md](db-controllers.md).
+REST surface and composables. Covers `AuthController`'s five endpoints, `authGuardInterceptor` options, `useAuth()` / `useArbac()` API, the decorator quartet, and the 401-vs-403 split. Workflow internals live in [workflows.md](workflows.md); DB scoping in [db-controllers.md](db-controllers.md).
 
 ## Contents
 
@@ -14,16 +14,17 @@ REST surface and composables. Covers `AuthController`'s four endpoints, `authGua
 
 ## `AuthController` REST surface
 
-Class-decorated `@Controller("auth") @ArbacResource("auth")`. Constructor takes DI-provided `AuthCredential`.
+Class-decorated `@Controller("auth") @ArbacResource("auth")`. Constructor `(auth: AuthCredential, @Optional() users?: UserService)` — `users` is optional; only `GET /auth/invite/post-redemption` reads it (returns 500 when unset). All five routes are `@Public()`; auth is enforced **inside** handler bodies (defence-in-depth) so anonymous callers can still reach login / refresh / invite-redeem.
 
-| Method | Path            | Decorators                                                | Body                                | Response                      | Notes                                                                                                                                                                                             |
-| ------ | --------------- | --------------------------------------------------------- | ----------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| POST   | `/auth/logout`  | `@Public()`                                               | `AuthLogoutBody { refreshToken? }`  | `AuthOkResponse { ok: true }` | Defence-in-depth 401 if null context. Best-effort revokes access + refresh, then `clearCookies()`. Refresh cookie's narrow path means it's not auto-sent — body field falls back to cookie value. |
-| POST   | `/auth/refresh` | `@Public()`                                               | `AuthRefreshBody { refreshToken? }` | `AuthLoginResponse`           | Reads body OR refresh cookie. 401 on `AuthError`. Returns new access+refresh, writes cookies.                                                                                                     |
-| GET    | `/auth/status`  | `@Public()`                                               | —                                   | `AuthContext`                 | 401 when no context. Handler runs with null context (defence-in-depth) and explicitly null-checks.                                                                                                |
-| POST   | `/auth/trigger` | `@Public() @WfTrigger({ allow: DEFAULT_AUTH_WORKFLOWS })` | `{ wfid?, wfs?, input?, action? }`  | `WfFinished` envelope         | Single entry point covering `auth.login`, `auth.recovery`, `auth.invite`. Body fields documented in [workflows.md § wire protocol](workflows.md#workflow-wire-protocol).                          |
+| Method | Path                           | Decorators                                                | Body                                       | Response                      | Notes                                                                                                                                                                                                           |
+| ------ | ------------------------------ | --------------------------------------------------------- | ------------------------------------------ | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| POST   | `/auth/logout`                 | `@Public()`                                               | `AuthLogoutBody { refreshToken? }`         | `AuthOkResponse { ok: true }` | Defence-in-depth 401 if null context. Best-effort revokes access + refresh, then `clearCookies()`. Refresh cookie's narrow path means it's not auto-sent — body field is the only source.                       |
+| POST   | `/auth/refresh`                | `@Public()`                                               | `AuthRefreshBody { refreshToken? }`        | `AuthLoginResponse`           | Reads body OR refresh cookie. 401 on `AuthError`. Returns new access+refresh, writes cookies.                                                                                                                   |
+| GET    | `/auth/status`                 | `@Public()`                                               | —                                          | `AuthContext`                 | 401 when no context. Handler runs with null context (defence-in-depth) and explicitly null-checks.                                                                                                              |
+| POST   | `/auth/trigger`                | `@Public() @WfTrigger({ allow: DEFAULT_AUTH_WORKFLOWS })` | `{ wfs?, input?: { action?, formData? } }` | `WfFinished` envelope         | Single entry point covering `auth/login/flow`, `auth/invite/start`, `auth/recovery/flow`. Body fields documented in [workflows.md § wire contract](workflows.md#wire-contract-auth-trigger).                    |
+| GET    | `/auth/invite/post-redemption` | `@Public()`                                               | `?uid=<userId>`                            | `WfFinished` envelope         | Idempotent "already accepted" envelope for re-clicked invite links after the wf state row is evicted (resume would `410`). Needs the `@Optional()` `UserService` (500 if unset); `404` if invite still pending. |
 
-`DEFAULT_AUTH_WORKFLOWS = ["auth.login", "auth.recovery", "auth.invite"] as const`.
+`DEFAULT_AUTH_WORKFLOWS = ["auth/login/flow", "auth/invite/start", "auth/recovery/flow"] as const`.
 
 ### DTOs
 
@@ -54,8 +55,8 @@ To add app-specific workflows to the single trigger route, subclass `AuthControl
 @Inherit()
 @Controller("auth")
 class AppAuthController extends AuthController {
-  constructor(auth: AuthCredential) {
-    super(auth);
+  constructor(auth: AuthCredential, @Optional() users?: UserService) {
+    super(auth, users); // forward both so post-redemption keeps working
   }
   @Post("trigger")
   @Public()

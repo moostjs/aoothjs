@@ -32,7 +32,7 @@ Both return `Promise<void>`. Workflows **`await`** the call — it's part of the
 | `'invite.pincode'`     | Invitation via pincode                             | `code`, `expiresAt`, `username?` |
 | `'notifyNewDevice'`    | Informational — new device logged in               | `metadata` only                  |
 
-The kind is also what `BuildMagicLinkUrl(kind, token)` receives — so a single `EmailSender` can multiplex over templates by kind.
+The kind is also what `BuildMagicLinkUrl(kind, token, ctx?)` receives — so a single `EmailSender` can multiplex over templates by kind.
 
 ### `AuthEmailEvent`
 
@@ -267,39 +267,34 @@ The trade-off: a delivery failure no longer surfaces to the request. Build a dea
 
 ## Registration with workflows
 
-`@aooth/auth-moost` does **not** ship `EmailSender` / `SmsSender` as DI tokens — the Phase 4 workflow reshape dropped them in favor of `protected` method overrides on the workflow classes themselves (subclass `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow` and override `deliver*` / `auditLogin` / `storeTrustedDevice` etc.). Senders are wired by closure into those overrides.
+`@aooth/auth-moost` does **not** ship `EmailSender` / `SmsSender` as DI tokens — the unified `AuthWorkflow` routes direct sends through a single `protected deliver(payload: AuthDeliveryPayload)` override (branch on `payload.kind` + `payload.channel`). Senders are wired by closure into that override on your `AuthWorkflow` subclass.
 
-The magic-link outlet (`createAuthEmailOutlet`) is the one place that still takes an `EmailSender` directly — as a constructor dep, not via DI:
+The magic-link outlet (`createAuthEmailOutlet`) is the one place that takes an `EmailSender` directly — as a constructor dep on `WfTriggerProvider`, not via DI. Its `buildMagicLinkUrl` is the 3-arg `BuildMagicLinkUrl`:
 
 ```ts
 import { createAuthEmailOutlet } from "@aooth/auth-moost";
 
 const emailSender = new SesEmailSender(/* … */);
-const smsSender = new TwilioSmsSender(/* … */);
 
 const outlet = createAuthEmailOutlet({
   emailSender,
-  buildMagicLinkUrl: (kind, token) => `https://app.example.com/wf/${kind}?wfs=${token}`,
+  buildMagicLinkUrl: (kind, token, ctx) =>
+    `https://app.example.com/wf/${kind}?wfs=${token}${ctx?.userId ? `&uid=${ctx.userId}` : ""}`,
+  magicLinkTtlMs: (kind) => (kind === "invite.magicLink" ? 7 * 24 * 60 * 60_000 : 60 * 60_000),
 });
 ```
 
-To register the workflows themselves with Moost's DI, use the tuple form of `createProvideRegistry`:
+Register the workflow itself via the replace registry and `registerControllers`:
 
 ```ts
-import { Moost, createProvideRegistry } from "moost";
-import { AuthCredential } from "@aooth/auth";
-import { LoginWorkflow } from "@aooth/auth-moost";
+import { createReplaceRegistry } from "moost";
+import { AuthWorkflow } from "@aooth/auth-moost";
 
-const moost = new Moost();
-moost.setProvideRegistry(
-  createProvideRegistry(
-    [AuthCredential, () => auth],
-    [LoginWorkflow, () => new MyLoginWorkflow(users, auth)],
-  ),
-);
+app.setReplaceRegistry(createReplaceRegistry([AuthWorkflow, MyAuth]));
+app.registerControllers(AuthController, MyAuth);
 ```
 
-If a workflow is configured to use SMS but the override doesn't have an `SmsSender` in closure, the workflow throws at runtime on the first dispatch — see [Moost — Workflows](../moost/workflows).
+Your `MyAuth extends AuthWorkflow` `deliver()` override holds the `EmailSender` / `SmsSender` in closure and routes by `payload.channel`. See [Moost — Workflows](../moost/workflows).
 
 ## Locales and templates
 

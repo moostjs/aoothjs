@@ -101,7 +101,7 @@ const showcases = computed(() => [
     eyebrow: "Moost integration",
     title: "Decorators, workflows, controllers — declared, not assembled",
     body: "AuthGuard interceptor, useAuth and useArbac composables, an AuthController with a single /trigger entry-point covering three batteries-included workflows: login, recovery, invite. Each pauses for forms and emits a unified WfFinished envelope to the client.",
-    tags: ["@Public", "@ArbacAuthorize", "LoginWorkflow", "AsArbacDbController", "WfFinished"],
+    tags: ["@Public", "@ArbacAuthorize", "AuthWorkflow", "AsArbacDbController", "WfFinished"],
     link: "/moost/",
     linkText: "Explore @aooth/*-moost",
     snippet: SnippetMoost,

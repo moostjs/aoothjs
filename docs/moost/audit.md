@@ -1,6 +1,6 @@
 # Audit Log
 
-This page covers the audit event types, the events emitted by each workflow today, and how to wire a sink.
+`@aooth/auth-moost` exports two audit **types** but ships **no audit sink, and the bundled `AuthWorkflow` does not emit audit events itself.** There is no `audit()` hook on the workflow. This page documents the types and how to wire your own auditing.
 
 ## Types
 
@@ -19,129 +19,56 @@ interface AuditEmitter {
 }
 ```
 
-The `AuditEmitter` interface is exported but the package ships **no concrete sink**. Every workflow fires audit events through its `protected audit(event)` method (default no-op). You wire your sink by overriding `audit` on your workflow subclasses.
+`AuditEvent`'s open index signature lets you carry any extra fields; `AuditEmitter` is a minimal sink contract. Both are exported so your code and a shared audit utility can speak the same shape — neither is wired into the workflow for you.
 
-## Events emitted today
+## Wiring your own auditing
 
-| Workflow           | Step                    | `kind`               | Extra fields                                                                                      |
-| ------------------ | ----------------------- | -------------------- | ------------------------------------------------------------------------------------------------- |
-| `LoginWorkflow`    | `audit-login`           | `login.success`      | `method` = `mfaMethod ?? 'mfa.skipped' ?? 'password'`, optional `tenantId`                        |
-| `RecoveryWorkflow` | `recoveryRequest`       | `recovery.requested` | `email` (the requested address — emitted even on unknown addresses for anti-enumeration symmetry) |
-| `RecoveryWorkflow` | `recoveryAudit`         | `recovery.completed` | `deliveryMode`, optional `sessionsRevoked`                                                        |
-| `InviteWorkflow`   | invite Phase A          | `invite.created`     | invited `email`, `roles?`                                                                         |
-| `InviteWorkflow`   | `auth.reInvite`         | `invite.resent`      | `email`                                                                                           |
-| `InviteWorkflow`   | invite Phase B finalize | `invite.accepted`    | accepting `userId`                                                                                |
-| `InviteWorkflow`   | `auth.cancelInvite`     | `invite.cancelled`   | cancelled `email`                                                                                 |
+Two practical placements:
 
-All events include the standard `userId`, `workflow`, `ip`, `userAgent` fields when the workflow has access to them.
+### 1. From an `AuthWorkflow` subclass step
 
-## Wiring a sink
-
-Override `audit` on each workflow subclass:
+Emit from inside a `@Step` body (or an overridden `resolveXxx` / `deliver`) where you have the relevant context. For example, record a successful login by overriding the finalize step in your subclass and calling your own emitter:
 
 ```ts
-import { type AuditEvent, LoginWorkflow } from "@aooth/auth-moost";
+import { type AuditEvent, AuthWorkflow } from "@aooth/auth-moost";
+import { useHeaders } from "@wooksjs/event-http";
+
+const writeAudit = (e: AuditEvent) => auditTable.insert({ ...e, at: Date.now() });
 
 @Inherit()
-@Injectable("FOR_EVENT")
 @Controller()
-class MyLoginWorkflow extends LoginWorkflow {
-  constructor(users: UserService, auth: AuthCredential) {
-    super(myLoginOpts, users, auth);
+class MyAuth extends AuthWorkflow {
+  constructor(users: UserService, auth: AuthCredential, consents: ConsentStore) {
+    super({}, users, auth, consents);
   }
-  protected override async audit(event: AuditEvent): Promise<void> {
-    await auditTable.insert({
-      ...event,
-      at: new Date(),
-    });
+  // override a finalize / step method and emit your event
+  protected override async deliver(payload) {
+    await writeAudit({ kind: `deliver.${payload.kind}`, workflow: "auth", ...this.eventMeta() });
+    await super.deliver(payload);
+  }
+  private eventMeta() {
+    return { userAgent: useHeaders().get("user-agent") };
   }
 }
 ```
 
-Repeat for `MyRecoveryWorkflow` and `MyInviteWorkflow`. The three overrides will usually delegate to the same shared function:
+### 2. From a global interceptor
 
-```ts
-const writeAudit = async (event: AuditEvent) => {
-  await auditTable.insert({ ...event, at: new Date() });
-};
+For uniform request-level auditing across **all** routes (not just auth), a `defineAfterInterceptor` that records every event is usually the better seam — it captures HTTP requests and workflow steps alike, and avoids per-step override boilerplate. Workflow events inherit the originating HTTP event's `AuthContext`, IP, and user-agent through Moost's `parent` chain, so an interceptor reads the same values a step would.
 
-@Inherit()
-@Injectable("FOR_EVENT")
-@Controller()
-class MyLoginWorkflow extends LoginWorkflow {
-  constructor(u: UserService, a: AuthCredential) {
-    super(myLoginOpts, u, a);
-  }
-  protected override audit(e: AuditEvent) {
-    return writeAudit(e);
-  }
-}
-
-@Inherit()
-@Injectable("FOR_EVENT")
-@Controller()
-class MyRecoveryWorkflow extends RecoveryWorkflow {
-  constructor(u: UserService, a: AuthCredential) {
-    super(myRecoveryOpts, u, a);
-  }
-  protected override audit(e: AuditEvent) {
-    return writeAudit(e);
-  }
-}
-
-@Inherit()
-@Injectable("FOR_EVENT")
-@Controller()
-class MyInviteWorkflow extends InviteWorkflow {
-  constructor(u: UserService, a: AuthCredential) {
-    super(myInviteOpts, u, a);
-  }
-  protected override audit(e: AuditEvent) {
-    return writeAudit(e);
-  }
-}
-```
-
-## Disabling audit per workflow
-
-| Workflow           | Option                | Default | Notes                                                                            |
-| ------------------ | --------------------- | ------- | -------------------------------------------------------------------------------- |
-| `LoginWorkflow`    | `finalize.auditLogin` | `true`  | When `false`, the `audit-login` step is skipped entirely.                        |
-| `RecoveryWorkflow` | `audit.enabled`       | `true`  | When `false`, both `recovery.requested` and `recovery.completed` are suppressed. |
-| `InviteWorkflow`   | `audit.enabled`       | `true`  | When `false`, all four invite events are suppressed.                             |
-
-Use these knobs when:
-
-- Tests assert audit behaviour separately and the load-bearing assertion is "no audit when disabled".
-- You wire audit at a different layer (e.g. an HTTP middleware that captures every request, including the workflow ones) and want to avoid double-recording.
-
-## Standard fields and how they're populated
+## Populating the standard fields
 
 | Field       | Source                                                                        |
 | ----------- | ----------------------------------------------------------------------------- |
-| `userId`    | Workflow `ctx.username` (or `ctx.userId`) when resolved.                      |
-| `workflow`  | The wfid (`auth.login`, `auth.recovery`, `auth.invite`).                      |
+| `userId`    | `useAuth().getAuthContext()?.userId` (or the workflow's `ctx.username`).      |
+| `workflow`  | The wfid (`auth/login/flow`, `auth/invite/start`, `auth/recovery/flow`).      |
 | `ip`        | `useRequest().rawRequest.socket.remoteAddress` at the originating HTTP event. |
 | `userAgent` | `useHeaders().get('user-agent')` at the originating HTTP event.               |
-| `kind`      | The event-specific discriminant.                                              |
+| `kind`      | Your event-specific discriminant.                                             |
 
-For workflow events created via `WfTriggerProvider.handle()`, `ip` and `userAgent` are read from the **originating** HTTP event through Moost's `parent` chain — even when a step is paused for an outlet roundtrip and resumed minutes later, the IP and user-agent on the audit event are the resumption-request values (not the original click).
+## Extending the event shape
 
-## Extending event types
-
-`AuditEvent`'s index signature `[k: string]: unknown` makes it extensible. Add fields freely from inside an override:
-
-```ts
-protected override async audit(event: AuditEvent) {
-  await writeAudit({
-    ...event,
-    requestId: useRequest().rawRequest.headers["x-request-id"],
-    tenantId: useAuth().getAuthContext()?.claims?.tenantId,
-  });
-}
-```
-
-If you want compile-time typing for a custom shape, declaration-merge:
+The `[k: string]: unknown` index signature makes `AuditEvent` extensible at runtime. For compile-time typing of a custom shape, declaration-merge:
 
 ```ts
 declare module "@aooth/auth-moost" {
@@ -154,5 +81,5 @@ declare module "@aooth/auth-moost" {
 
 ## See also
 
-- [Workflows](./workflows) — full step phases for each workflow.
-- [Config Reference](./config) — the workflow option tables that control `audit.enabled` / `finalize.auditLogin`.
+- [Workflows](./workflows) — the override seams (`deliver`, `resolveXxx`, `@Step`) you emit from.
+- [API reference](/api/auth-moost#audit-types) — the exported `AuditEvent` / `AuditEmitter` signatures.

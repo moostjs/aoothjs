@@ -95,11 +95,7 @@ The array is patched as a **wholesale replacement**: the service reads the curre
 
 ## `backupCodes?: string[]`
 
-Hashes only — plaintext is returned **once** from `generateBackupCodes(...)` and never persisted. `consumeBackupCode` looks up the hash, removes it, writes the trimmed list back.
-
-::: warning Not atomic
-`consumeBackupCode` is read-modify-write at the service layer. Two concurrent consumes of the same code can both succeed against most stores. Wrap in a transaction if you need strict one-shot.
-:::
+A reserved slot on the type for recovery-code hashes. **No bundled `UserService` API reads or writes it** — there are no `generateBackupCodes` / `consumeBackupCode` methods. If you implement recovery codes, store `hashMfaCode` hashes here via `users.update(...)` and verify with `verifyMfaCode`. See [MFA Primitives — Backup codes](./mfa#backup-codes).
 
 ## Patch strategy summary
 

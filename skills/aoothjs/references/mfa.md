@@ -1,11 +1,12 @@
 # mfa
 
-Pure-Node TOTP / HOTP primitives, SHA-256 MFA-code helpers for email/SMS challenges, backup-code generation, and HMAC-bound trusted-device tokens.
+Pure-Node TOTP / HOTP primitives, SHA-256 MFA-code helpers for email/SMS challenges, and HMAC-bound trusted-device tokens. Backup codes are **not** a bundled primitive.
 
 ## Contents
 
 - [What this package owns (and what it doesn't)](#what-this-package-owns-and-what-it-doesnt)
 - [TOTP](#totp)
+- [TOTP enrollment + QR](#totp-enrollment--qr)
 - [otpauth URI for QR codes](#otpauth-uri-for-qr-codes)
 - [`generateMfaCode` + `hashMfaCode` + `verifyMfaCode`](#generatemfacode--hashmfacode--verifymfacode)
 - [Backup codes](#backup-codes)
@@ -17,7 +18,7 @@ Pure-Node TOTP / HOTP primitives, SHA-256 MFA-code helpers for email/SMS challen
 
 - TOTP secret generation, otpauth URI generation, code generation, and constant-time window verification.
 - One-time MFA code helpers (`generateMfaCode` + `hashMfaCode` + `verifyMfaCode`) for email/SMS challenges — challenge **state machine** lives in `@aooth/auth`.
-- Backup-code generation + hashing + one-shot consumption (`UserService.consumeBackupCode`).
+- `UserService.verifyTotpSetupCode` (enroll-confirm) + `verifyMfa` (login-time), both reading the user's stored `totp` secret.
 - Trusted-device token minting + HMAC verification (`UserService.issueTrustedDevice` / `verifyTrustedDevice`).
 - `UserService.verifyMfa` shares the lockout counter with `login` (see [user-service.md § The login sequence](./user-service.md#the-login-sequence)).
 
@@ -25,6 +26,7 @@ Pure-Node TOTP / HOTP primitives, SHA-256 MFA-code helpers for email/SMS challen
 
 - No email / SMS transport — `MfaMethod.value` is stored verbatim, delivery is `@aooth/auth`'s job.
 - No WebAuthn / FIDO2.
+- **No backup / recovery codes.** No `generateBackupCodePlaintext` export, no `UserService.generateBackupCodes` / `consumeBackupCode`. See [Backup codes](#backup-codes).
 - `verifyMfa` is TOTP-only; non-TOTP method names participate in `addMfaMethod` / `confirmMfaMethod` bookkeeping but are not verified by this package.
 
 ## TOTP
@@ -68,6 +70,20 @@ verifyTotpCode(secret, code, { window: 2, clock: () => fixedNow });
 ```
 
 Pass a `clock` for deterministic tests.
+
+## TOTP enrollment + QR
+
+The enroll-confirm verifier is `UserService.verifyTotpSetupCode(username, code, config?)` — it verifies the first code against the user's **unconfirmed** `totp` method and flips it to `confirmed: true` in one call (throws `MFA_INVALID` on a bad code). Use it instead of a manual `verifyTotpCode` + `confirmMfaMethod` pair.
+
+```ts
+const secret = generateTotpSecret();
+const uri = generateTotpUri(secret, "MyApp", username);
+await svc.addMfaMethod(username, { name: "totp", value: secret, confirmed: false });
+// render `uri` as a QR → user scans → submits first code
+await svc.verifyTotpSetupCode(username, submittedCode, { window: 1 });
+```
+
+In the moost stack, the bundled `EnrollConfirmForm.qrCode` field carries the `otpauth://` URI plus `@ui.form.component 'AsQrCode'`, so the SPA's `AsQrCode` component (from `@atscript/vue-aooth`) renders the scannable QR + manual base32 secret. See [spa-components.md](./spa-components.md).
 
 ## otpauth URI for QR codes
 
@@ -113,15 +129,9 @@ These power the challenge-ticket pattern used by `@aooth/auth` (the package stor
 
 ## Backup codes
 
-`generateBackupCodePlaintext(count = 10) → string[]`:
+**Not bundled.** There is no `generateBackupCodePlaintext` export and no `UserService.generateBackupCodes` / `consumeBackupCode` method. `UserCredentials.backupCodes?: string[]` exists as a reserved slot, but no shipped API reads or writes it.
 
-- Alphabet `ABCDEFGHJKMNPQRSTUVWXYZ23456789` — 31 chars, **excludes** the confusable set `I O L 0 1`.
-- 10 raw characters per code, formatted as `XXXX-XXXX-XX`.
-- Returns plaintext only — caller is responsible for hashing before persistence.
-
-`UserService.generateBackupCodes(username, count = 10)` wraps this: hashes each plaintext with `hashMfaCode`, replaces the user's `backupCodes[]`, returns plaintext **once**.
-
-`UserService.consumeBackupCode(username, code)` returns `true` on first match (using `verifyMfaCode` to compare the typed plaintext against each stored hash) and removes the matched hash. **Not atomic** — see [user-service.md § Backup codes](./user-service.md#backup-codes).
+Compose recovery codes from the primitives above: generate random codes yourself, hash each with `hashMfaCode`, store the hashes via `users.update(username, { set: { backupCodes } })`, and verify a submitted code with `verifyMfaCode` against the stored hashes (removing the matched hash). Wrap consume in a store-layer transaction if you need strict one-shot semantics.
 
 ## Trusted-device tokens
 

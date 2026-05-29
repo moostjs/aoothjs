@@ -68,21 +68,23 @@ The atscript workflow forms in `@aooth/auth-moost/atscript/models/forms.as` use 
 fixed annotation alphabet. Each is owned by a sibling skill — load the relevant skill
 for the full reference.
 
-| Annotation              | Owned by skill      | Used on                                                                                                                                      |
-| ----------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@ui.form.type`         | `atscript-ui-forms` | `password`, `textarea`, etc. — picks the renderer.                                                                                           |
-| `@ui.form.autocomplete` | `atscript-ui-forms` | HTML autocomplete hint (`username`, `current-password`, `new-password`, `one-time-code`, etc.).                                              |
-| `@ui.form.fn.options`   | `atscript-ui-forms` | Dynamic options (e.g. `Select2faForm.method` derives options from `ctx.availableMfaMethods`).                                                |
-| `@expect.minLength`     | `atscript`          | Validator constraint — used in pincode/backup-code forms.                                                                                    |
-| `@expect.maxLength`     | `atscript`          | Validator constraint.                                                                                                                        |
-| `@expect.pattern`       | `atscript`          | Regex pattern — `BackupCodeForm` uses `^[A-Z0-9-]+$`.                                                                                        |
-| `@wf.context.pass`      | `atscript-ui-wf`    | Carries non-form-field context values across the round-trip (`EmailIdentifierForm` uses `'defaults'`, `InviteForm` uses `'availableRoles'`). |
+| Annotation              | Owned by skill      | Used on                                                                                                                                                                                                                                                                                                                      |
+| ----------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@ui.form.type`         | `atscript-ui-forms` | `password`, `textarea`, etc. — picks the renderer.                                                                                                                                                                                                                                                                           |
+| `@ui.form.autocomplete` | `atscript-ui-forms` | HTML autocomplete hint (`username`, `current-password`, `new-password`, `one-time-code`, etc.).                                                                                                                                                                                                                              |
+| `@ui.form.fn.options`   | `atscript-ui-forms` | Dynamic options (e.g. `Select2faForm.method` derives options from `ctx.availableMfaMethods`).                                                                                                                                                                                                                                |
+| `@ui.form.component`    | `atscript-ui-forms` | Pins a named external SPA component (from `@atscript/vue-aooth`, registered in `<AsWfForm :components>`). Used on 3 fields: `WithInlineConsentForm.consents` → `AsConsentArray`, `SetPasswordForm.passwordRules` → `AsPasswordRules`, `EnrollConfirmForm.qrCode` → `AsQrCode`. See [spa-components.md](./spa-components.md). |
+| `@expect.minLength`     | `atscript`          | Validator constraint — used in pincode forms.                                                                                                                                                                                                                                                                                |
+| `@expect.maxLength`     | `atscript`          | Validator constraint.                                                                                                                                                                                                                                                                                                        |
+| `@expect.pattern`       | `atscript`          | Regex pattern — used on OTP / code form fields.                                                                                                                                                                                                                                                                              |
+| `@wf.context.pass`      | `atscript-ui-wf`    | Carries non-form-field context values across the round-trip (`EmailIdentifierForm` uses `'defaults'`, `InviteForm` uses `'availableRoles'`).                                                                                                                                                                                 |
 
-The full list of workflow form interfaces (`LoginCredentialsForm`, `MfaCodeForm`,
-`BackupCodeForm`, `EmailIdentifierForm`, `SetPasswordForm`, `InviteForm`,
-`InviteEmailForm`, `InviteSendModeForm`, `Select2faForm`, `PincodeForm`,
-`AskEmailForm`, `AskPhoneForm`, `TermsAcceptForm`, `ProfileCompleteForm`,
-`ConsentMarketingForm`, `TenantSelectForm`, `PersonaSelectForm`,
-`ConcurrencyLimitForm`, `MagicLinkRequestForm`, `RecoveryModeSelectForm`,
-`RecoveryFactorForm`) lives in `packages/auth-moost/src/atscript/models/forms.as`.
-Every form is replaceable per-workflow via `opts.forms.<formName>`.
+The full list of the **18** workflow form interfaces lives in
+`packages/auth-moost/src/atscript/models/forms.as` and is consumed by the single
+`AuthWorkflow`: `WithInlineConsentForm` (base — carries the inline `consents`
+field), `LoginCredentialsForm`, `Select2faForm`, `MfaCodeForm`, `PincodeForm`,
+`EmailIdentifierForm`, `SetPasswordForm`, `EnrollPickMethodForm`,
+`EnrollAddressForm`, `EnrollConfirmForm`, `AskEmailForm`, `AskPhoneForm`,
+`TermsBumpForm`, `ConcurrencyLimitForm`, `InviteForm`, `MagicLinkRequestForm`,
+`RecoveryModeSelectForm`, `RecoveryFactorForm`.
+Every form is replaceable per-workflow via `opts.forms.<slot>`.

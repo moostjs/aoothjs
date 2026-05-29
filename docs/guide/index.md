@@ -27,7 +27,7 @@ This page sketches the shape of the stack and points you at the right package fo
 | [`@aooth/auth`](../auth/)                        | authn         | Issue/validate/refresh/revoke bearer credentials (sessions or JWT), refresh rotation with reuse detection, magic-link tokens, email/SMS contracts. |
 | [`@aooth/arbac-core`](../arbac/core)             | authz         | Zero-dep RBAC evaluator — `TArbacRole`, `Arbac.evaluate()`, deny-wins, wildcard matching, dynamic scopes.                                          |
 | [`@aooth/arbac`](../arbac/)                      | authz         | Fluent `defineRole()` builder, `definePrivilege()` + `allowTable*` factories, scope-merge helpers, type codegen.                                   |
-| [`@aooth/auth-moost`](../moost/)                 | authn / moost | `AuthController`, `authGuardInterceptor`, `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow`, `@Public`, `@UserId`, `useAuth`.                |
+| [`@aooth/auth-moost`](../moost/)                 | authn / moost | `AuthController`, `authGuardInterceptor`, the unified `AuthWorkflow` (login / invite / recovery), `ConsentStore`, `@Public`, `@UserId`, `useAuth`. |
 | [`@aooth/arbac-moost`](../moost/arbac-authorize) | authz / moost | `arbacAuthorizeInterceptor`, `@ArbacResource` / `@ArbacAction`, `useArbac`, `AtscriptArbacUserProvider`.                                           |
 
 ## How they compose at runtime

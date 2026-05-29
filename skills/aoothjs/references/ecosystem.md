@@ -21,7 +21,7 @@ canonical wiring; this page is the map for "I need X — which package and which
 | `@aooth/arbac-core`  | Zero-dep `Arbac` evaluator with deny-wins, wildcard patterns (`*` / `**`), per-resource role pre-compile, lazy user-attrs resolve, `arbacPatternToRegex` utility                                                                                    | Role storage, builder API, scope-merge helpers, framework integration                                                     |
 | `@aooth/arbac`       | Builder API (`defineRole`), privilege factories (`definePrivilege`, `allowTableRead/Write/Action`), scope mergers (`mergeScopeFilters`, `unionProjections`, `restrictProjection`, `unionControlsPolicy`), codegen lib + CLI                         | The evaluator (re-exports from `arbac-core`), persistence                                                                 |
 | `@aooth/auth`        | `AuthCredential` issue/validate/refresh/revoke, 5 store impls (`Memory`/`Jwt`/`Encapsulated`/`Redis`/`AtscriptDb`), `DenylistStore` + impls, `generateMagicLinkToken`, transport contracts (`EmailSender`, `SmsSender`), `AuthError`                | Password hashing (delegates to `@aooth/user`), MFA verify, workflow orchestration                                         |
-| `@aooth/auth-moost`  | `AuthController` (`/auth/{logout,refresh,status,trigger}`), `authGuardInterceptor`, `@Public` (dual auth+arbac), `@UserId`, `useAuth`, three workflows (`LoginWorkflow`, `RecoveryWorkflow`, `InviteWorkflow`), `WfTriggerProvider`                 | Email/SMS delivery (consumer ships `EmailSender`/`SmsSender`), authorization (handled by `arbac-moost`)                   |
+| `@aooth/auth-moost`  | `AuthController` (`/auth/{logout,refresh,status,trigger,invite/post-redemption}`), `authGuardInterceptor`, `@Public` (dual auth+arbac), `@UserId`, `useAuth`, unified `AuthWorkflow` (login/invite/recovery), `ConsentStore`, `WfTriggerProvider`   | Email/SMS delivery (consumer ships `EmailSender`/`SmsSender`), authorization (handled by `arbac-moost`)                   |
 | `@aooth/arbac-moost` | `arbacAuthorizeInterceptor` (GUARD), `useArbac`, `@ArbacResource`/`@ArbacAction`/`@ArbacAuthorize`, `MoostArbac` (DI-injectable), `ArbacUserProvider` abstract, `AsArbacDbController` + `AsArbacDbReadableController`, atscript provider            | Authentication (pair with `authGuardInterceptor`), role/privilege storage, `.as` syntax (only the `@arbac.*` plugin spec) |
 
 ## Dependency graph
@@ -58,20 +58,20 @@ Notable edges:
 
 ## Which sub-skill to load
 
-| User question / task                                                               | Load skill                                                                   |
-| ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| "Create a user, change password, generate TOTP secret, mask MFA value"             | see [user.md](./user.md)                                                     |
-| "Write a `PasswordPolicy`, transferable rules, scrypt parameters, history"         | see [user.md](./user.md)                                                     |
-| "Lockout, trusted devices, backup codes, `consumeBackupCode`"                      | see [user.md](./user.md)                                                     |
-| "Define a role, scope union, deny-wins, codegen TS resource types"                 | see [arbac.md](./arbac.md)                                                   |
-| "`mergeScopeFilters` / `unionProjections` / `unionControlsPolicy` semantics"       | see [arbac.md](./arbac.md)                                                   |
-| "Issue / refresh JWT, magic link, denylist, refresh rotation modes"                | see [auth.md](./auth.md)                                                     |
-| "Redis / atscript-db credential store, `revokeAllForUser`, epoch"                  | see [auth.md](./auth.md)                                                     |
-| "Wire `AuthController`, `@Public()`, `@UserId()`, `useAuth()`, cookie config"      | see [moost.md](./moost.md)                                                   |
-| "Override `LoginWorkflow.deliver`, MFA pincode, `WfTriggerProvider`, outlets"      | see [moost.md](./moost.md)                                                   |
-| "`arbacAuthorizeInterceptor`, `useArbac`, `@ArbacResource`, `AsArbacDbController`" | see [moost.md](./moost.md)                                                   |
-| "`.as` user model, `@arbac.role` / `.attribute` / `.userId`, atscript plugin"      | this skill + see [moost.md](./moost.md) + [annotations.md](./annotations.md) |
-| Multi-package architecture / install / which-package-owns-what                     | this skill                                                                   |
+| User question / task                                                                        | Load skill                                                                   |
+| ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| "Create a user, change password, generate TOTP secret, mask MFA value"                      | see [user.md](./user.md)                                                     |
+| "Write a `PasswordPolicy`, transferable rules, scrypt parameters, history"                  | see [user.md](./user.md)                                                     |
+| "Lockout, trusted devices, `verifyTotpSetupCode`, `isPasswordExpired`"                      | see [user.md](./user.md)                                                     |
+| "Define a role, scope union, deny-wins, codegen TS resource types"                          | see [arbac.md](./arbac.md)                                                   |
+| "`mergeScopeFilters` / `unionProjections` / `unionControlsPolicy` semantics"                | see [arbac.md](./arbac.md)                                                   |
+| "Issue / refresh JWT, magic link, denylist, refresh rotation modes"                         | see [auth.md](./auth.md)                                                     |
+| "Redis / atscript-db credential store, `revokeAllForUser`, epoch"                           | see [auth.md](./auth.md)                                                     |
+| "Wire `AuthController`, `@Public()`, `@UserId()`, `useAuth()`, cookie config"               | see [moost.md](./moost.md)                                                   |
+| "Override `AuthWorkflow.deliver` / `resolveXxx`, MFA pincode, `WfTriggerProvider`, outlets" | see [moost.md](./moost.md)                                                   |
+| "`arbacAuthorizeInterceptor`, `useArbac`, `@ArbacResource`, `AsArbacDbController`"          | see [moost.md](./moost.md)                                                   |
+| "`.as` user model, `@arbac.role` / `.attribute` / `.userId`, atscript plugin"               | this skill + see [moost.md](./moost.md) + [annotations.md](./annotations.md) |
+| Multi-package architecture / install / which-package-owns-what                              | this skill                                                                   |
 
 ## Peer dependencies
 

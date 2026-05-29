@@ -10,7 +10,6 @@
 - [Account lifecycle](#account-lifecycle)
 - [Password policy methods](#password-policy-methods)
 - [MFA methods](#mfa-methods)
-- [Backup codes](#backup-codes)
 - [Trusted-device methods](#trusted-device-methods)
 - [Escape hatches](#escape-hatches)
 - [The login sequence](#the-login-sequence)
@@ -48,7 +47,7 @@ await svc.createUser("alice", "Strong-Pass-1!", { tenantId: "acme" });
 await svc.activateAccount("alice"); // ← required outside the invite flow
 ```
 
-> **`createUser` writes `account.active: false`.** `InviteWorkflow.acceptInvite` relies on this default (pending invitees stay inactive until accept). For seed scripts, admin-create flows, or tests that don't go through invite, **call `activateAccount(username)` after** or `login()` throws `UserAuthError("INACTIVE")` — and the login workflow deliberately re-maps that to `"Invalid credentials"` (anti-enumeration), so the failure looks like a wrong password client-side.
+> **`createUser` writes `account.active: false`.** AuthWorkflow's invite accept phase relies on this default (pending invitees stay inactive until accept). For seed scripts, admin-create flows, or tests that don't go through invite, **call `activateAccount(username)` after** or `login()` throws `UserAuthError("INACTIVE")` — and the login workflow deliberately re-maps that to `"Invalid credentials"` (anti-enumeration), so the failure looks like a wrong password client-side.
 
 ### `getUser(username) → Promise<UserCredentials & T>`
 
@@ -116,27 +115,21 @@ Filters to policies whose `rule` is a string — those compile via `@prostojs/ft
 
 ## MFA methods
 
-| Method                                | Behavior                                                                                                                                                                                         |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `addMfaMethod(username, method)`      | Upsert by `method.name` (existing same-name method is replaced).                                                                                                                                 |
-| `confirmMfaMethod(username, name)`    | Marks the method `confirmed: true`. Throws `MFA_NOT_CONFIGURED` if `name` unknown.                                                                                                               |
-| `removeMfaMethod(username, name)`     | Removes the method. If it was the default, `mfa.defaultMethod` is cleared to `""`.                                                                                                               |
-| `setDefaultMfaMethod(username, name)` | Sets `defaultMethod` and `autoSend: false`. Empty `name` clears the default. Throws `MFA_NOT_CONFIGURED` on non-empty unknown name.                                                              |
-| `setMfaAutoSend(username, value)`     | Toggles `mfa.autoSend`. Throws `NOT_FOUND` on no row.                                                                                                                                            |
-| `getAvailableMfaMethods(mfa)` (sync)  | Returns `{ name, isDefault, masked }[]` for confirmed methods. `masked` uses `maskMfaValue`.                                                                                                     |
-| `verifyMfa(username, code, config?)`  | TOTP-only path. Auto-unlocks expired locks, increments **the same** `failedLoginAttempts` as `login`, throws `MFA_INVALID`, `MFA_NOT_CONFIGURED`, `INACTIVE`, `LOCKED`, or `NOT_FOUND` per case. |
+| Method                                                 | Behavior                                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `addMfaMethod(username, method)`                       | Upsert by `method.name` (existing same-name method is replaced).                                                                                                                                                                                                                                                                      |
+| `confirmMfaMethod(username, name)`                     | Marks the method `confirmed: true`. Throws `MFA_NOT_CONFIGURED` if `name` unknown.                                                                                                                                                                                                                                                    |
+| `removeMfaMethod(username, name)`                      | Removes the method. If it was the default, `mfa.defaultMethod` is cleared to `""`.                                                                                                                                                                                                                                                    |
+| `setDefaultMfaMethod(username, name)`                  | Sets `defaultMethod` and `autoSend: false`. Empty `name` clears the default. Throws `MFA_NOT_CONFIGURED` on non-empty unknown name.                                                                                                                                                                                                   |
+| `setMfaAutoSend(username, value)`                      | Toggles `mfa.autoSend`. Throws `NOT_FOUND` on no row.                                                                                                                                                                                                                                                                                 |
+| `getAvailableMfaMethods(mfa)` (sync)                   | Returns `{ name, isDefault, masked }[]` for confirmed methods. `masked` uses `maskMfaValue`.                                                                                                                                                                                                                                          |
+| `verifyTotpSetupCode(username, code, config?)`         | Enroll-confirm helper: verifies `code` against the user's **unconfirmed** `totp` method and flips it to `confirmed: true` in one call. Throws `MFA_INVALID` / `MFA_NOT_CONFIGURED` / `NOT_FOUND`. Use instead of a manual `verifyTotpCode` + `confirmMfaMethod` pair.                                                                 |
+| `verifyMfa(username, code, config?, lockoutOverride?)` | TOTP-only path. Auto-unlocks expired locks, increments **the same** `failedLoginAttempts` as `login`, throws `MFA_INVALID`, `MFA_NOT_CONFIGURED`, `INACTIVE`, `LOCKED`, or `NOT_FOUND` per case. 4th `lockoutOverride?: Partial<LockoutConfig>` applies a per-call lockout posture (e.g. stricter threshold for privileged accounts). |
+| `isPasswordExpired(user, now?)` (sync)                 | Checks `user.password` against the configured password-expiry policy. `now` defaults to the injected clock — deterministic in tests.                                                                                                                                                                                                  |
 
 `verifyMfa` finds the method via `mfa.methods.find(m => m.name === 'totp' && m.confirmed)` — no other method names participate in this path; email / SMS challenges live in `@aooth/auth`.
 
-## Backup codes
-
-### `generateBackupCodes(username, count = 10) → Promise<string[]>`
-
-Generates plaintext codes via `generateBackupCodePlaintext`, hashes each with `hashMfaCode`, replaces the entire `backupCodes[]` array on the user, and returns plaintext **once**. After this call returns, plaintext is unrecoverable.
-
-### `consumeBackupCode(username, code) → Promise<boolean>`
-
-Linearly scans `user.backupCodes ?? []` with `verifyMfaCode`, removes the matched hash, persists the remaining array. **Not atomic** — read-then-write at the service layer; two concurrent consumes of the same code can both succeed. Wrap in a store transaction if strict guarantees are required.
+> **No bundled backup-code API.** There is no `generateBackupCodes` / `consumeBackupCode` service method and no `generateBackupCodePlaintext` export. The `UserCredentials.backupCodes?: string[]` field is a reserved slot — compose recovery codes yourself from `hashMfaCode` / `verifyMfaCode` + `users.update(...)`. See [mfa.md § Backup codes](./mfa.md#backup-codes).
 
 ## Trusted-device methods
 

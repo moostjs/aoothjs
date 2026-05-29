@@ -1,8 +1,84 @@
 # `@aooth/auth-moost` API Reference
 
-Complete export reference for `@aooth/auth-moost`. See the [Moost Integration Guide](/moost/), [AuthGuard & useAuth](/moost/auth-guard), [REST Controllers](/moost/controllers), and [Workflows](/moost/) for narrative documentation.
+Complete export reference for `@aooth/auth-moost`. See the [Moost Integration Guide](/moost/), [AuthGuard & useAuth](/moost/auth-guard), [REST Controllers](/moost/controllers), and [Workflows](/moost/workflows) for narrative documentation.
+
+Subpath exports: `.` (main, **ESM-only**), `./atscript` (bundled form models, ESM-only), `./atscript/models` + `./atscript/models.as`.
 
 ## Classes
+
+### `AuthWorkflow`
+
+```ts
+@Inherit()
+@Controller() // SINGLETON
+class AuthWorkflow {
+  constructor(
+    opts: Partial<AuthWorkflowOpts>,
+    users: UserService,
+    auth: AuthCredential,
+    consentStore: ConsentStore,
+  );
+}
+```
+
+The single unified workflow class. Replaces the former `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow` quartet. Declares **three** `@Workflow` methods, each `@Public()`:
+
+| Method         | Workflow id          | Covers                                     |
+| -------------- | -------------------- | ------------------------------------------ |
+| `loginFlow`    | `auth/login/flow`    | login + MFA + enrollment + finalize        |
+| `inviteFlow`   | `auth/invite/start`  | admin invite → anonymous magic-link accept |
+| `recoveryFlow` | `auth/recovery/flow` | magic-link **or** OTP password reset       |
+
+`AuthWorkflowOpts` is **infrastructure-only**; policy lives on `protected resolveXxx(ctx)` getters (each paired with a `@Step("prepare-<group>")`). Per-flow code discriminates by ctx-slot presence (`ctx.admin` / `ctx.accept` / `ctx.postReset`), never a flow-name field. Subclass with `@Inherit() @Controller()`, re-declare the 4-arg constructor (so TS emits `design:paramtypes`), override the hooks you need, and bind via `setReplaceRegistry([AuthWorkflow, MyAuth])`. See [Workflows](/moost/workflows) and [packages/auth-moost/CLAUDE.md](https://github.com/moostjs/aoothjs/blob/main/packages/auth-moost/CLAUDE.md).
+
+**Protected override surface** (defaults are no-ops or hardcoded policy):
+
+- `deliver(payload: AuthDeliveryPayload): void | Promise<void>` — outbound dispatch for direct sends (MFA / recovery / enroll pincodes, new-device notice). Route by `payload.kind` + `payload.channel`. NOT used for the invite magic link (emitted via the wf outlet). There is **no `audit()` method.**
+- `resolveXxx(ctx: AuthWfCtx)` policy getters — the override seam for context-varying policy. Return `T | Promise<T>` (never `async` on the default). The set: `resolveDeviceTrust`, `resolveMfaPolicy`, `resolveEnrollment`, `resolveSessionPolicy`, `resolveFinalize`, `resolveGuards`, `resolveLockout`, `resolveAlternateCredentials`, `resolveOtpDisclosure`, `resolveRiskStepUp`, `resolveRedirect`, `resolveRecoveryUrl`, `resolveRecoveryAltActions`, `resolveAdminForm`, `resolveAccept`, `resolvePostReset`, `resolvePincodeForm` / `resolvePincodeTarget` / `resolvePincodeAltAction`.
+- `getAvailableRoles(): string[] | undefined` — selectable role whitelist for the admin invite form (default `undefined` = no whitelist).
+- `loadActiveSessionsCount(username)` — async data fetcher for concurrency-limit policy.
+
+**Error posture** — `@Step` bodies throw exactly two shapes: `throw wf.requireInput({ errors, formMessage? })` for retriable input errors (engine re-renders the form under the SAME `wfs` handle; token survives), and `throw new HttpError(<status>, <msg>)` for terminal failures (token consumed). See [Error patterns](/moost/workflows#error-patterns).
+
+### `WfTriggerProvider`
+
+```ts
+@Injectable()
+class WfTriggerProvider {
+  constructor(wf: MoostWf, auth: AuthCredential);
+  handle(opts?: { allow?: string[]; token?: WfOutletTokenConfig }): Promise<unknown>;
+  // override seams:
+  protected storeStrategy(): WfStateStrategy;
+  protected wfStateSecret(): string | Buffer;
+  protected wfStateEncapsulatedTtlMs(): number | undefined;
+  // protected fields:
+  protected outlets: WfOutlet[];
+  protected token: WfOutletTokenConfig;
+}
+```
+
+Singleton owning workflow-state persistence, outlets, and the token wire. State is a **named-strategy registry**, not a single strategy: every workflow **starts** on the `encapsulated` strategy (the registry default) — state rides inside the SPA-held token, so an idle login form persists **zero** server-side rows and a restart can never `410 Gone` it. A later step calls `swapStrategy('store')` to move durable.
+
+Both registry entries default to `EncapsulatedStateStrategy`. To make `store` durable, override **`storeStrategy()`** to return a real `HandleStateStrategy` (do **not** assign a `this.state` field — that field no longer exists). The encapsulated secret defaults to `auth.deriveStateKey("wf-state")` (HKDF-derived, stable across restarts). `handle()` forwards the `strategy` run-option into `wfApp.start`/`resume` — required, or the wf adapter throws `Key "wf.strategyName" is not set`.
+
+```ts
+@Injectable()
+class MyWfTriggerProvider extends WfTriggerProvider {
+  constructor(wf: MoostWf, auth: AuthCredential) {
+    super(wf, auth);
+    this.outlets = [
+      ...this.outlets,
+      createAuthEmailOutlet({ emailSender, buildMagicLinkUrl, magicLinkTtlMs }),
+    ];
+  }
+  protected override storeStrategy(): WfStateStrategy {
+    return new HandleStateStrategy({ store: new AsWfStore({ table }) });
+  }
+}
+// app.setReplaceRegistry(createReplaceRegistry([WfTriggerProvider, MyWfTriggerProvider]))
+```
+
+`HandleStateStrategy` / `EncapsulatedStateStrategy` / `WfStateStrategy` come from `@moostjs/event-wf`; `AsWfStore` from `@atscript/moost-wf`. See [Workflows — state strategy](/moost/workflows#workflow-state-strategy).
 
 ### `AuthController`
 
@@ -10,97 +86,18 @@ Complete export reference for `@aooth/auth-moost`. See the [Moost Integration Gu
 @Controller("auth")
 @ArbacResource("auth")
 class AuthController {
-  constructor(auth: AuthCredential);
+  constructor(auth: AuthCredential, @Optional() users?: UserService);
 }
 ```
 
-REST surface — see the [Controllers](#rest-endpoints) section below for the four endpoints. Subclass and override `triggerWf()` to extend the workflow allow-list. See [REST Controllers](/moost/controllers).
-
-### `WfTriggerProvider`
-
-```ts
-@Injectable()
-class WfTriggerProvider {
-  constructor(wf: MoostWf);
-  handle(opts?: { allow?: string[]; token?: WfOutletTokenConfig }): Promise<unknown>;
-}
-```
-
-Singleton owning workflow state, outlets, and the token wire. Defaults: `HandleStateStrategy({ store: WfStateStoreMemory() })`, `[createAsHttpOutlet()]`, `{ read: ['body','query','cookie'], write: 'body', name: 'wfs' }`. Bind a subclass via `setReplaceRegistry([WfTriggerProvider, MyProvider])`.
-
-**Protected — assign in your subclass constructor**: `state: WfStateStrategy`, `outlets: WfOutlet[]`, `token: WfOutletTokenConfig`. Reassign these in the subclass `constructor` to swap the state store, register additional outlets, or override the token wire.
-
-```ts
-@Injectable()
-class MyWfTriggerProvider extends WfTriggerProvider {
-  constructor(wf: MoostWf) {
-    super(wf);
-    this.state = new HandleStateStrategy({ store: new AsWfStore({ table }) });
-    this.outlets = [
-      ...this.outlets,
-      createAuthEmailOutlet({ emailSender, buildMagicLinkUrl, magicLinkTtlMs }),
-    ];
-  }
-}
-```
-
-See [Workflows](/moost/).
-
-### `LoginWorkflow`
-
-```ts
-@Public()
-@Injectable("FOR_EVENT")
-@Controller()
-@Workflow("auth.login")
-class LoginWorkflow {
-  constructor(opts: LoginWorkflowOpts, users: UserService, auth: AuthCredential);
-}
-```
-
-Workflow class with steps spanning credentials → enrollment → MFA → device trust → forced password change → terms/profile/consent → tenant/persona select → concurrency limit → finalize. Critical invariant: every terminal step gates on `!ctx.aborted`. Override `protected` methods to wire delivery, audit, redirect, trusted-device storage. For per-tenant / per-user / per-request policy that the per-app `LoginWorkflowOpts` cannot express, override additional `protected` hooks on the class — see [Extension hooks](/moost/workflows#extension-hooks).
-
-**Error patterns** — `@Step` bodies throw exactly two shapes: `throw wf.requireInput({ errors, formMessage? })` for retriable input errors (engine re-renders the form under the SAME `wfs` handle; token survives), and `throw new HttpError(<status>, <msg>)` for terminal failures (token consumed; SPA renders final error). See [Error patterns](/moost/workflows#error-patterns-retriable-vs-terminal).
-
-See [Workflows](/moost/).
-
-### `RecoveryWorkflow`
-
-```ts
-@Public()
-@Injectable("FOR_EVENT")
-@Controller()
-@Workflow("auth.recovery")
-class RecoveryWorkflow {
-  constructor(opts: RecoveryWorkflowOpts, users: UserService, auth: AuthCredential);
-}
-```
-
-Magic-link OR OTP password-reset workflow. Anti-enumeration: unknown email still emits a generic `{ sent: true }` response. After reset, calls `auth.revokeAllForUser(userId)`. Override `emailToUserId` if `username !== email`. See [Workflows](/moost/).
-
-### `InviteWorkflow`
-
-```ts
-@ArbacResource("auth.invite")
-@ArbacAction("start")
-@Injectable("FOR_EVENT")
-@Controller()
-class InviteWorkflow {
-  constructor(opts: InviteWorkflowOpts, users: UserService, auth: AuthCredential);
-}
-```
-
-Registers three wfids: `auth.invite`, `auth.reInvite`, `auth.cancelInvite`. Phase A (admin) is ARBAC-gated by the class-level `@ArbacResource("auth.invite")` + `@ArbacAction("start")` grant. Phase B (anonymous magic-link resume) is per-step `@Public()` — there is no class-level `@Public()`. Server-side role-whitelist enforcement on admin-submitted roles. See [Workflows](/moost/).
+REST surface — see [REST endpoints](#rest-endpoints) below for the five routes. `users` is `@Optional()`: only `GET /auth/invite/post-redemption` reads it (returns 500 when unset); the other four routes work without a `UserService`. Subclass and override `triggerWf()` to extend the workflow allow-list. See [REST Controllers](/moost/controllers).
 
 ### `ConsentStore`
 
 ```ts
 @Injectable() // SINGLETON
 class ConsentStore {
-  getPendingConsents(
-    username: string | undefined,
-    ctx: { workflow: string; channel?: "email" | "sms" },
-  ): Promise<ConsentDescriptor[]>;
+  getPendingConsents(username: string | undefined): Promise<ConsentDescriptor[]>;
   save(username: string, events: ConsentEvent[]): Promise<void>;
   read(username: string, filter?: { id?: string }): Promise<ConsentEvent[]>;
   recordOtpChannelConsent(
@@ -113,13 +110,20 @@ class ConsentStore {
 
 interface ConsentDescriptor {
   id: string;
-  text: string;
-  required?: string;
+  text: string; // markdown links allowed
+  required?: string; // non-empty ⇒ mandatory; the string IS the error message
   version?: string;
+}
+
+interface ConsentEvent {
+  id: string;
+  accepted: boolean; // false rows are persisted too (audit-grade "was asked")
+  version?: string;
+  at: number;
 }
 ```
 
-Customer-overridable DI seam for the consent universe + persistence. All four methods are no-op defaults — extend the class and register the replacement via `setReplaceRegistry([ConsentStore, MyConsentStore])`. `getPendingConsents` drives `ctx.pendingConsents` on every workflow run (login, recovery, invite); the bundled forms surface them inline as a `consents: string[]` field on whichever form the user is currently filling out. See [Workflows — ConsentStore](/moost/workflows#consentstore-pending-consents-persistence).
+Customer-overridable DI seam for the consent universe + persistence. All four methods are no-op defaults — extend the class and register the replacement via `setReplaceRegistry([ConsentStore, MyConsentStore])`. **`getPendingConsents(username)` is user-scoped only** — the returned set must NOT vary by workflow or channel; OTP channel-ownership disclosures are recorded separately via `recordOtpChannelConsent`. Pending descriptors are transported to the SPA carrier form (via `@wf.context.pass`) and rendered by the `AsConsentArray` component. See [Workflows — ConsentStore](/moost/workflows#consent-collection).
 
 ## Functions
 
@@ -166,14 +170,33 @@ Shared moost `Mate` typed with `TAuthMeta`. Declaration-merged into `TMoostMetad
 ### `createAuthEmailOutlet`
 
 ```ts
-function createAuthEmailOutlet(deps: {
+interface AuthEmailOutletDeps {
   emailSender: EmailSender;
-  buildMagicLinkUrl: BuildMagicLinkUrl;
+  buildMagicLinkUrl: BuildMagicLinkUrl; // (kind, token, ctx?: { userId? }) => string
   magicLinkTtlMs: (kind: AuthEmailKind) => number;
-}): Outlet;
+}
+function createAuthEmailOutlet(deps: AuthEmailOutletDeps): WfOutlet;
 ```
 
-Builds the email outlet that delivers magic links. Wraps `@moostjs/event-wf`'s `createEmailOutlet(send)` and translates workflow tokens into `AuthEmailEvent` payloads via the consumer's `EmailSender` + `BuildMagicLinkUrl`. Add to `WfTriggerProvider.outlets`. See [Workflows](/moost/).
+Builds the email outlet that delivers the invite magic link. Wraps `@atscript/moost-wf`'s outlet primitive and translates workflow tokens into `AuthEmailEvent` payloads via the consumer's `EmailSender` + `BuildMagicLinkUrl`. The `buildMagicLinkUrl` callback receives a third `{ userId }` arg for the invite kind (used by the post-redemption side route). Add to `WfTriggerProvider.outlets`. See [Workflows](/moost/workflows).
+
+### Workflow helpers
+
+```ts
+function parseInviteRoles(input?: string[]): string[]; // trim + dedupe role ids
+function stripReservedUserKeys(profile: Record<string, unknown>): Record<string, unknown>;
+const RESERVED_USER_KEYS: ReadonlySet<string>; // keys profile forms must never carry
+function buildInviteAlreadyAcceptedEnvelope(opts: {
+  loginUrl: string;
+  alreadyAcceptedRedirectUrl: string;
+}): FinishWfOpts; // shared "already accepted" finish envelope
+```
+
+Exported so subclasses (and `AuthController.invitePostRedemption`) reuse the same role parsing, mass-assignment guard, and idempotent-redirect envelope.
+
+### `generateMagicLinkToken`
+
+Re-exported from `@aooth/auth` — see [`@aooth/auth` API](./auth#generatemagiclinktoken).
 
 ## Decorators
 
@@ -207,18 +230,19 @@ Sugar for `@Intercept(authGuardInterceptor(opts))`. Attaches the guard to a sing
 function WfTrigger(opts?: { allow?: string[]; token?: WfOutletTokenConfig }): MethodDecorator;
 ```
 
-Method decorator wrapping `defineAfterInterceptor` at `INTERCEPTOR` priority. When the handler returns `undefined`, the interceptor instantiates `WfTriggerProvider` and replies with `provider.handle(opts)`. Return a non-`undefined` value from the handler to short-circuit. `opts.token` overrides the provider's default wire (`WfOutletTokenConfig` from `@moostjs/event-wf`). See [Workflows](/moost/).
+Method decorator wrapping `defineAfterInterceptor` at `INTERCEPTOR` priority. When the handler returns `undefined`, the interceptor instantiates `WfTriggerProvider` and replies with `provider.handle(opts)`. Return a non-`undefined` value from the handler to short-circuit. `opts.token` overrides the provider's default wire (`WfOutletTokenConfig` from `@moostjs/event-wf`). See [Workflows](/moost/workflows).
 
 ## REST endpoints
 
-`AuthController` mounts four routes — all `@Public()`:
+`AuthController` mounts **five** routes — all `@Public()`:
 
-| Method | Path            | Body                               | Response              | Notes                                                                                                                           |
-| ------ | --------------- | ---------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `POST` | `/auth/logout`  | `AuthLogoutBody`                   | `AuthOkResponse`      | Defence-in-depth 401 on null context. Best-effort revokes both tokens.                                                          |
-| `POST` | `/auth/refresh` | `AuthRefreshBody`                  | `AuthLoginResponse`   | Falls back to refresh cookie. 401 on `AuthError`.                                                                               |
-| `GET`  | `/auth/status`  | —                                  | `AuthContext`         | 401 when no context.                                                                                                            |
-| `POST` | `/auth/trigger` | `{ wfid?, wfs?, input?, action? }` | `WfFinished` envelope | Single entry-point for `auth.login`, `auth.recovery`, `auth.invite`. Decorated `@WfTrigger({ allow: DEFAULT_AUTH_WORKFLOWS })`. |
+| Method | Path                           | Body / Query                               | Response              | Notes                                                                                                                        |
+| ------ | ------------------------------ | ------------------------------------------ | --------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `POST` | `/auth/logout`                 | `AuthLogoutBody`                           | `AuthOkResponse`      | Defence-in-depth 401 on null context. Best-effort revokes both tokens.                                                       |
+| `POST` | `/auth/refresh`                | `AuthRefreshBody`                          | `AuthLoginResponse`   | Falls back to refresh cookie. 401 on `AuthError`.                                                                            |
+| `GET`  | `/auth/status`                 | —                                          | `AuthContext`         | 401 when no context.                                                                                                         |
+| `POST` | `/auth/trigger`                | `{ wfs?, input?: { action?, formData? } }` | `WfFinished` envelope | Single entry-point for the three `AuthWorkflow` schemas. `@WfTrigger({ allow: DEFAULT_AUTH_WORKFLOWS })`.                    |
+| `GET`  | `/auth/invite/post-redemption` | `?uid=<userId>`                            | `WfFinished` envelope | Idempotent "already accepted" envelope for re-clicked invite links (after the wf state row is evicted). Needs `UserService`. |
 
 See [REST Controllers](/moost/controllers).
 
@@ -227,32 +251,29 @@ See [REST Controllers](/moost/controllers).
 ### `DEFAULT_AUTH_WORKFLOWS`
 
 ```ts
-const DEFAULT_AUTH_WORKFLOWS = ["auth.login", "auth.recovery", "auth.invite"] as const;
+const DEFAULT_AUTH_WORKFLOWS = [
+  "auth/login/flow",
+  "auth/invite/start",
+  "auth/recovery/flow",
+] as const;
 ```
 
-Default `allow` list for `@WfTrigger` on `AuthController.trigger()`. Subclasses override `triggerWf()` to extend. See [REST Controllers](/moost/controllers).
+Default `allow` list for `@WfTrigger` on `AuthController.triggerWf()`. Subclasses override `triggerWf()` with a different `@WfTrigger({ allow })` to extend. See [REST Controllers](/moost/controllers).
 
 ## DTOs
 
-### `AuthLogoutBody`
+### `AuthLogoutBody` / `AuthRefreshBody`
 
 ```ts
 interface AuthLogoutBody {
   refreshToken?: string;
 }
-```
-
-Refresh cookie's narrow `/auth/refresh` path means it is NOT auto-sent to `/auth/logout`. Explicit body field falls back to cookie. See [REST Controllers](/moost/controllers).
-
-### `AuthRefreshBody`
-
-```ts
 interface AuthRefreshBody {
   refreshToken?: string;
 }
 ```
 
-Same fallback semantics as `AuthLogoutBody`. See [REST Controllers](/moost/controllers).
+The refresh cookie's narrow `/auth/refresh` path means it is NOT auto-sent to `/auth/logout`. Explicit body field falls back to cookie. See [REST Controllers](/moost/controllers).
 
 ### `AuthLoginResponse`
 
@@ -278,84 +299,81 @@ interface AuthOkResponse {
 
 Used by `/auth/logout`. See [REST Controllers](/moost/controllers).
 
-## Workflow option types
+## Workflow option + payload types
 
-### `LoginWorkflowOpts`
+### `AuthWorkflowOpts` / `ResolvedAuthWorkflowOpts`
 
 ```ts
-interface LoginWorkflowOpts {
-  deviceTrust?: {
-    cookieName?: string; // default 'aooth_trusted_device'
-    ttlMs?: number; // default 24h
-    bindsTo?: "cookie" | "cookie+ip"; // default 'cookie'
+interface AuthWorkflowOpts {
+  autoLoginOnInvite?: boolean; // default true
+  autoLoginOnRecover?: boolean; // default false
+  mfa?: {
+    pincodeLength?: number; // 6
+    pincodeTtlMs?: number; // 5 min
+    pincodeResendTimeoutMs?: number; // 60s
+    pincodeMaxAttempts?: number; // 5
   };
+  recoveryStateTtlMs?: number; // 1h
+  loginUrl?: string; // '/login'
+  totpIssuer?: string; // 'aooth'
+  deviceTrust?: { cookieName?: string; ttlMs?: number; bindsTo?: "cookie" | "cookie+ip" };
   forms?: {
-    askEmail?: TAtscriptAnnotatedType;
-    askPhone?: TAtscriptAnnotatedType;
-    backupCode?: TAtscriptAnnotatedType;
-    concurrencyLimit?: TAtscriptAnnotatedType;
-    enrollAddress?: TAtscriptAnnotatedType;
-    enrollConfirm?: TAtscriptAnnotatedType;
-    enrollPickMethod?: TAtscriptAnnotatedType;
-    loginCredentials?: TAtscriptAnnotatedType;
-    mfaCode?: TAtscriptAnnotatedType;
-    personaSelect?: TAtscriptAnnotatedType;
-    pincode?: TAtscriptAnnotatedType;
-    profileComplete?: TAtscriptAnnotatedType;
-    select2fa?: TAtscriptAnnotatedType;
-    setPassword?: TAtscriptAnnotatedType;
-    tenantSelect?: TAtscriptAnnotatedType;
-    termsBump?: TAtscriptAnnotatedType;
+    /* one TAtscriptAnnotatedType slot per bundled form — see the form list below */
   };
 }
 ```
 
-Infrastructure-only — cross-workflow defaults (pincode timers, magic-link TTL, login URL, TOTP issuer) live on the `AuthOpts` DI provider; per-request / per-tenant / per-user policy lives on `protected resolveXxx(ctx)` methods on the `LoginWorkflow` subclass. See [Workflows — Extension hooks](/moost/workflows#extension-hooks).
+**Infrastructure-only.** Every field is optional; the constructor runs `mergeAuthWorkflowOpts(opts)` to produce a fully-populated `ResolvedAuthWorkflowOpts` read as `this.opts.<group>.<field>` without optional chaining. Policy NEVER lives here — if a knob varies by request/tenant/user it belongs on a `resolveXxx(ctx)` getter. Replace any bundled form per-slot via `opts.forms.<field>`. See [Workflows](/moost/workflows) and [Config Reference](/moost/config).
 
-### `RecoveryWorkflowOpts`
-
-```ts
-interface RecoveryWorkflowOpts {
-  forms?: {
-    emailIdentifier?: TAtscriptAnnotatedType;
-    pincode?: TAtscriptAnnotatedType;
-    recoveryFactor?: TAtscriptAnnotatedType;
-    recoveryModeSelect?: TAtscriptAnnotatedType;
-    setPassword?: TAtscriptAnnotatedType;
-  };
-}
-```
-
-Infrastructure-only — cross-workflow defaults (magic-link TTL, OTP pincode timers/length) live on the `AuthOpts` DI provider; per-request / per-tenant / per-user policy lives on `protected resolveXxx(ctx)` methods on the `RecoveryWorkflow` subclass. See [Workflows — Extension hooks](/moost/workflows#extension-hooks).
-
-### `InviteWorkflowOpts`
+### `AuthDeliveryPayload`
 
 ```ts
-interface InviteWorkflowOpts {
-  forms?: {
-    enrollAddress?: TAtscriptAnnotatedType;
-    enrollConfirm?: TAtscriptAnnotatedType;
-    enrollPickMethod?: TAtscriptAnnotatedType;
-    invite?: TAtscriptAnnotatedType;
-    inviteEmail?: TAtscriptAnnotatedType;
-    inviteSendMode?: TAtscriptAnnotatedType;
-    setPassword?: TAtscriptAnnotatedType;
-  };
-}
+type AuthDeliveryPayload =
+  | {
+      kind: "mfa-pincode";
+      channel: "sms" | "email";
+      recipient: string;
+      code: string;
+      expiresInMs: number;
+    }
+  | {
+      kind: "recovery-pincode";
+      channel: "email";
+      recipient: string;
+      code: string;
+      expiresInMs: number;
+    }
+  | {
+      kind: "enroll-pincode";
+      channel: "sms" | "email";
+      recipient: string;
+      code: string;
+      expiresInMs: number;
+    }
+  | { kind: "invite-link"; channel: "email"; recipient: string; url: string; expiresInMs: number }
+  | {
+      kind: "new-device-notice";
+      channel: "email";
+      recipient: string;
+      deviceLabel?: string;
+      loginAt: number;
+    };
 ```
 
-Infrastructure-only — cross-workflow defaults (magic-link TTL, pincode timers/length, TOTP issuer) live on the `AuthOpts` DI provider; per-request / per-tenant / per-user policy lives on `protected resolveXxx(ctx)` methods on the `InviteWorkflow` subclass. See [Workflows — Extension hooks](/moost/workflows#extension-hooks).
+The discriminated union passed to `AuthWorkflow.deliver(payload)`. Branch on `kind` for per-purpose templates and on `channel` for transport. See [Delivery](/auth/delivery).
+
+### Workflow context types
+
+The `@wf.context.pass` slots and policy-resolver return shapes are exported for typing subclass overrides: `AuthWfCtx`, `AuthWfCompletionState`, `AuthWfConsentsState`, `AuthWfMfaEnrollState`, `AuthWfPasswordUiState`, `AuthWfPincodeUiState`, `ConsentDescriptorLike`, `MfaSummary`, `MfaTransport`, `LoginRedirect`, `SsoProvider`, `ConcurrencyLimitOptions`. `AuthWfCtx` has **no `flow` field** — discriminate by ctx-slot presence (`ctx.admin` / `ctx.accept` / `ctx.postReset`).
 
 ## Re-exports from `@aooth/auth`
 
 Re-exported for convenience so consumers don't need a second import:
 
-- [`AuthContext`](./auth#authcontext-tclaims)
-- [`IssueResult`](./auth#issueresult)
-- [`EmailSender`](./auth#emailsender)
+- [`AuthContext`](./auth#authcontext-tclaims), [`IssueResult`](./auth#issueresult)
+- [`EmailSender`](./auth#emailsender), [`SmsSender`](./auth#smssender)
+- [`AuthEmailEvent`](./auth#authemailevent), [`AuthEmailKind`](./auth#authemailkind), [`AuthSmsEvent`](./auth#authsmsevent), [`AuthSmsKind`](./auth#authsmskind)
 - [`BuildMagicLinkUrl`](./auth#buildmagiclinkurl)
-- [`AuthEmailEvent`](./auth#authemailevent)
-- [`AuthEmailKind`](./auth#authemailkind)
 
 ## Audit types
 
@@ -375,7 +393,7 @@ interface AuditEmitter {
 }
 ```
 
-Package ships **no concrete sink** — workflows fire audit events through their `protected audit(event)` method (default no-op). Built-in event kinds: `login.success`, `recovery.requested`, `recovery.completed`, `invite.created`, `invite.resent`, `invite.accepted`, `invite.cancelled`. See [Audit Log](/moost/).
+These types are exported for consumers who wire their own audit sink. The bundled `AuthWorkflow` does **not** fire audit events itself (there is no `audit()` hook) — emit your own from a subclass step body or an interceptor. See [Audit Log](/moost/audit).
 
 ## Config types
 
@@ -404,7 +422,7 @@ interface AuthOptions {
 }
 ```
 
-Defaults: `cookie.name='aooth_session'`, `secure=true`, `sameSite='lax'`, `httpOnly=true`, `path='/'`. `refreshCookie.path='/auth/refresh'` (narrow path). `enableCookie=true`, `enableBearer=true`. Bearer wins when both transports are enabled. See [Config Reference](/moost/).
+Defaults: `cookie.name='aooth_session'`, `secure=true`, `sameSite='lax'`, `httpOnly=true`, `path='/'`. `refreshCookie.path='/auth/refresh'` (narrow path). `enableCookie=true`, `enableBearer=true`. Bearer wins when both transports are enabled. `ResolvedAuthCookieConfig` / `ResolvedAuthOptions` are the resolved (defaults-applied) views. See [Config Reference](/moost/config).
 
 ## Subpath: `@aooth/auth-moost/atscript`
 
@@ -412,8 +430,8 @@ Defaults: `cookie.name='aooth_session'`, `secure=true`, `sameSite='lax'`, `httpO
 import * as forms from "@aooth/auth-moost/atscript";
 ```
 
-Re-exports the form types from `src/atscript/models/forms.as`:
+Re-exports the **18** bundled form types from `src/atscript/models/forms.as`:
 
-`LoginCredentialsForm`, `MfaCodeForm`, `BackupCodeForm`, `EmailIdentifierForm`, `SetPasswordForm`, `InviteForm`, `InviteEmailForm`, `InviteSendModeForm`, `Select2faForm`, `PincodeForm`, `AskEmailForm`, `AskPhoneForm`, `TermsAcceptForm`, `ProfileCompleteForm`, `ConsentMarketingForm`, `TenantSelectForm`, `PersonaSelectForm`, `ConcurrencyLimitForm`, `MagicLinkRequestForm`, `RecoveryModeSelectForm`, `RecoveryFactorForm`.
+`WithInlineConsentForm` (base), `LoginCredentialsForm`, `MfaCodeForm`, `EmailIdentifierForm`, `SetPasswordForm`, `InviteForm`, `Select2faForm`, `PincodeForm`, `AskEmailForm`, `AskPhoneForm`, `EnrollPickMethodForm`, `EnrollAddressForm`, `EnrollConfirmForm`, `TermsBumpForm`, `ConcurrencyLimitForm`, `MagicLinkRequestForm`, `RecoveryModeSelectForm`, `RecoveryFactorForm`.
 
-Every form is replaceable per-workflow through `opts.forms.<formName>`. See [Atscript Models](/moost/) and [Workflows](/moost/).
+Several forms carry `@ui.form.component` annotations pointing at SPA components from `@atscript/vue-aooth`: `WithInlineConsentForm.consents → AsConsentArray`, `SetPasswordForm.passwordRules → AsPasswordRules`, `EnrollConfirmForm.qrCode → AsQrCode`. Replace any form per-workflow via `opts.forms.<field>` (typically `extends` the bundled one). See [Atscript Models](/moost/atscript) and [SPA Components](/moost/spa-components).

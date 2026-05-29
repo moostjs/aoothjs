@@ -1,18 +1,18 @@
 # MFA Primitives
 
-`@aooth/user` ships **primitives**, not a delivery system. This page documents what's in the package — TOTP secret/URI/code/verify, one-time MFA-code helpers, backup codes, trusted devices — and what's deliberately out of scope.
+`@aooth/user` ships **primitives**, not a delivery system. This page documents what's in the package — TOTP secret/URI/code/verify, one-time MFA-code helpers, trusted devices — and what's deliberately out of scope.
 
 ## What's here vs. what's not
 
 | Capability                                                                 | Where it lives                                  |
 | -------------------------------------------------------------------------- | ----------------------------------------------- |
-| TOTP secret generation, otpauth URI, code generation, constant-time verify | `@aooth/user/mfa/totp`                          |
-| SHA-256 one-time-code hash + verify (for email/SMS challenges)             | `@aooth/user/mfa/codes`                         |
-| Backup-code plaintext generation (alphabet, formatting)                    | `@aooth/user/mfa/backup-codes`                  |
-| `UserService.verifyMfa` (TOTP) + lockout-counter sharing                   | `@aooth/user/user-service`                      |
-| Trusted-device HMAC tokens + IP binding                                    | `@aooth/user/user-service`                      |
+| TOTP secret generation, otpauth URI, code generation, constant-time verify | `@aooth/user` (exported from the package root)  |
+| SHA-256 one-time-code hash + verify (for email/SMS challenges)             | `@aooth/user` (exported from the package root)  |
+| `UserService.verifyMfa` / `verifyTotpSetupCode` + lockout-counter sharing  | `@aooth/user`                                   |
+| Trusted-device HMAC tokens + IP binding                                    | `@aooth/user`                                   |
 | **Email / SMS delivery**                                                   | Your transport layer (or `@aooth/auth` senders) |
 | **Challenge state machine** ("issue OTP → wait → verify within N min")     | `@aooth/auth` + `@aooth/auth-moost` workflows   |
+| **Backup / recovery codes**                                                | Not bundled — see [below](#backup-codes)        |
 | **WebAuthn / FIDO2**                                                       | Not provided                                    |
 
 The split is deliberate: this package keeps the primitives pure so you can compose them into any workflow (HTTP, CLI, custom).
@@ -68,13 +68,13 @@ const uri = generateTotpUri(secret, "AcmeCorp", username);
 await users.addMfaMethod(username, { name: "totp", value: secret, confirmed: false });
 // render uri as QR → user scans → enters first code
 
-// 2. confirm
-if (verifyTotpCode(secret, submittedCode, { window: 1 })) {
-  await users.confirmMfaMethod(username, "totp");
-}
+// 2. confirm — `verifyTotpSetupCode` verifies the first code against the
+//    *unconfirmed* stored method and flips it to confirmed in one call
+//    (throws UserAuthError("MFA_INVALID") on a bad code).
+await users.verifyTotpSetupCode(username, submittedCode, { window: 1 });
 
 // 3. login-time verify (uses the user's stored secret internally)
-await users.verifyMfa(username, submittedCode, { window: 1 });
+await users.verifyMfa(username, submittedCode);
 ```
 
 `UserService.verifyMfa` reads the stored `totp` method, calls `verifyTotpCode` under the hood, and **shares the lockout counter with `login`** — combined `login + verifyMfa` failures count toward the same `failedLoginAttempts`, not two separate counters.
@@ -101,41 +101,15 @@ verifyMfaCode(submitted, expectedHash); // timingSafeEqual after re-hash
 This package does **not** persist the issued challenge or its TTL. Use `@aooth/auth` (or your own short-lived KV) for the challenge state machine. The primitives here are pure.
 :::
 
+## TOTP enrollment QR (moost workflows)
+
+`@aooth/user` gives you the `otpauth://` URI via `generateTotpUri`; rendering it as a scannable QR is the SPA's job. In the moost stack, the bundled `EnrollConfirmForm.qrCode` field carries that URI plus a `@ui.form.component 'AsQrCode'` annotation, so the SPA's `AsQrCode` component (from `@atscript/vue-aooth`) renders the QR + the manual base32 secret automatically. See [Moost — SPA Components](/moost/spa-components#asqrcode-totp-enrollment).
+
 ## Backup codes
 
-```ts
-import { generateBackupCodePlaintext } from "@aooth/user";
+Backup / recovery codes are **not a bundled primitive.** There is no `generateBackupCodePlaintext` export and no `generateBackupCodes` / `consumeBackupCode` `UserService` method. The `UserCredentials.backupCodes?: string[]` field exists on the type as a reserved slot, but no bundled API reads or writes it.
 
-const codes = generateBackupCodePlaintext(10);
-// → ["XK7P-M2N3-AB", "9QHF-DTUV-2W", ...]
-```
-
-| Property      | Value                                                          |
-| ------------- | -------------------------------------------------------------- |
-| Default count | `10`                                                           |
-| Alphabet      | `ABCDEFGHJKMNPQRSTUVWXYZ23456789` (no `I`, `O`, `L`, `0`, `1`) |
-| Format        | `XXXX-XXXX-XX` (3 groups, dash-separated)                      |
-| Length        | 10 alphabet chars + 2 dashes = 12 chars                        |
-| Source        | `crypto.randomBytes`                                           |
-
-The alphabet drops visually ambiguous characters so users transcribing from paper don't confuse `O` with `0` or `I` with `1`.
-
-### Service-level wrappers
-
-```ts
-// generate + persist hashes; return plaintext ONCE
-const plaintext = await users.generateBackupCodes("alice", 10);
-// show `plaintext` to the user immediately; never persist it
-
-// consume on use
-const ok = await users.consumeBackupCode("alice", submitted);
-```
-
-`generateBackupCodes` replaces the **entire** existing batch — there's no append. Only hashes (`hashMfaCode`-style SHA-256) are stored in `backupCodes[]`.
-
-::: warning `consumeBackupCode` is not atomic
-The service reads `backupCodes`, finds a matching hash, removes it, writes the trimmed array back. Two concurrent consumes of the same code can both succeed against most stores. Wrap in a transaction at the store layer if strict one-shot semantics matter.
-:::
+If you need recovery codes, compose them from the primitives above: generate random codes yourself, hash each with `hashMfaCode`, store the hashes in `backupCodes` via `users.update(username, { set: { backupCodes } })`, and verify a submitted code with `verifyMfaCode` against the stored hashes (removing the matched hash). Wrap consume in a store-layer transaction if you need strict one-shot semantics.
 
 ## Trusted devices
 

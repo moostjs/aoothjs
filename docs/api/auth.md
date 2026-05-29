@@ -15,10 +15,11 @@ class AuthCredential<TClaims extends object = object> {
   revoke(token: string): Promise<void>;
   revokeAllForUser(userId: string): Promise<number>;
   listForUser(userId: string): Promise<AuthContext<TClaims>[]>;
+  deriveStateKey(label?: string): Buffer; // HKDF-derived stable secret
 }
 ```
 
-The orchestrator. Store-agnostic — accepts any `CredentialStore` (stateful or stateless). Refresh rotation modes are `'none' | 'always' | 'sliding'` (default `'sliding'`). On reuse-after-grace, calls `onRotationReuse` and revokes every credential for the user. See [Credentials & Sessions](/auth/credentials) and [Refresh & Rotation](/auth/refresh).
+The orchestrator. Store-agnostic — accepts any `CredentialStore` (stateful or stateless). Refresh rotation modes are `'none' | 'always' | 'sliding'` (default `'sliding'`). On reuse-after-grace, calls `onRotationReuse` and revokes every credential for the user. `deriveStateKey(label = "wf-state")` HKDF-derives a stable secret from the configured auth secret — used by `@aooth/auth-moost`'s `WfTriggerProvider` as the default encapsulated wf-state token secret so it survives restarts without a separate config. See [Credentials & Sessions](/auth/credentials) and [Refresh & Rotation](/auth/refresh).
 
 `AuthCredentialOptions<TClaims>`:
 
@@ -284,10 +285,10 @@ Interface only — provider implementation is the consumer's responsibility. See
 ### `BuildMagicLinkUrl`
 
 ```ts
-type BuildMagicLinkUrl = (kind: AuthEmailKind, token: string) => string;
+type BuildMagicLinkUrl = (kind: AuthEmailKind, token: string, ctx?: { userId?: string }) => string;
 ```
 
-Consumer-owned URL builder fed to the magic-link outlet. See [Magic Links](/auth/magic-links).
+Consumer-owned URL builder fed to the magic-link outlet. The optional third `{ userId }` arg is supplied for the `invite.magicLink` kind so the URL can carry the invitee id (read by `AuthController.invitePostRedemption` for the idempotent already-accepted envelope); recovery callers ignore it. See [Magic Links](/auth/magic-links).
 
 ### `Clock`
 
