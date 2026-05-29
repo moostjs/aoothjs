@@ -46,6 +46,7 @@ import {
   Step,
   StepRetriableError,
   StepTTL,
+  swapStrategy,
   useWfFinished,
   useWfState,
   Workflow,
@@ -1078,6 +1079,11 @@ export class AuthWorkflow {
         this.lockoutOverride(ctx),
       );
       ctx.username = result.user.username;
+      // First validated input passed → move off the cheap encapsulated start to
+      // the durable store strategy, so the MFA / enrollment / password-change
+      // pauses survive restarts. Pre-validation stays encapsulated (no server row),
+      // so an idle login form can't 410-GONE. Sticky for the rest of the run.
+      swapStrategy("store");
       // Phase 2 inline guards — set top-level `isPasswordInitial`/`isPasswordExpired`
       // so `prepare-semantic-flags` (which runs later) can read them as a fallback.
       if (ctx.guards?.passwordInitial && result.user.password.isInitial) {
@@ -1213,6 +1219,8 @@ export class AuthWorkflow {
     }
 
     ctx.username = username;
+    // real user resolved → durable store for the OTP-send + password-reset pauses (resumable, 1h TTL); unknown-email anti-enumeration path above never reaches here
+    swapStrategy("store");
     return undefined;
   }
 
@@ -1704,6 +1712,8 @@ export class AuthWorkflow {
     const admin = (ctx.admin ??= {});
     if (admin.emailDispatched) return undefined;
     admin.emailDispatched = true;
+    // swap BEFORE the email-outlet pause so the magic-link token is a durable store handle the invitee can resume days later; the admin-form pause before this stayed encapsulated
+    swapStrategy("store");
     return outletEmail(ctx.email as string, "invite.magicLink", {
       username: ctx.username,
       ...(ctx.username && { userId: ctx.username }),
