@@ -343,6 +343,8 @@ export interface AuthWfCtx {
   // ── Server-only secrets (never @wf.context.pass) ──
   pin?: string;
   pinExpire?: number;
+  /** Wrong-code attempt counter for the currently minted pincode. Reset by `mintPin`; incremented by `verifyPin`; cleared when the cap is hit (which also clears `pin`/`pinExpire` so the user must request a fresh code). */
+  pinAttempts?: number;
   aborted?: boolean;
 
   // ── Semantic flags ──

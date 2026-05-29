@@ -583,14 +583,14 @@ test.describe("LoginWorkflow / variant=mfa-full (P1)", () => {
 
   // BRANCH: Resend cooldown DATA contract — the workflow stamps
   // `ctx.pincode.resendAllowedAt` (unix-ms) and the PincodeForm schema
-  // mirrors that via `@ui.form.fn.attr 'data-available-at'` onto the
+  // mirrors that via `@ui.form.fn.attr 'available-at'` onto the
   // rendered resend action's wrapper. Customers who subscribe a custom
   // resend renderer via `<AsWfForm :components>` drive their countdown /
   // progress-bar / disabled-state straight off the DOM attribute — this
   // test pins that contract so a refactor that drops the attr binding
   // (or renames the metadata key) shows up as a red CI signal instead of
   // silently breaking customer integrations.
-  test("WF-LOGIN-011b: resend action wrapper carries data-available-at = ctx.pincode.resendAllowedAt", async ({
+  test("WF-LOGIN-011b: resend action wrapper carries available-at = ctx.pincode.resendAllowedAt", async ({
     page,
   }) => {
     await page.goto(wfUrl(LOGIN_WF, "mfa-full"));
@@ -609,17 +609,70 @@ test.describe("LoginWorkflow / variant=mfa-full (P1)", () => {
     const resendWrapper = page
       .locator(".as-default-field.as-action-field")
       .filter({ has: page.getByRole("button", { name: "Resend code" }) });
-    await expect(resendWrapper).toHaveAttribute("data-available-at", /^\d+$/);
+    await expect(resendWrapper).toHaveAttribute("available-at", /^\d+$/);
 
     // The stamped value must be a future timestamp — the workflow uses
     // `Date.now() + pincodeResendTimeoutMs`; the default cooldown in the
     // `mfa-full` variant is the demo's default (60s), so a generous lower
     // bound suffices.
-    const rawAttr = await resendWrapper.getAttribute("data-available-at");
+    const rawAttr = await resendWrapper.getAttribute("available-at");
     expect(rawAttr).toBeTruthy();
     const availableAt = Number(rawAttr);
     expect(Number.isFinite(availableAt)).toBe(true);
     expect(availableAt).toBeGreaterThan(Date.now());
+  });
+
+  // BRANCH: the `code` input carries `maxlength = ctx.public.pincode.codeLength`,
+  // mirroring the server-side `pincodeLength` opt onto the DOM so the browser
+  // truncates over-long input before submit. The default in the demo is 6 — a
+  // regression that drops the binding (or the ctx field) shows up as the
+  // attribute being absent or empty.
+  test("WF-LOGIN-011c: code input carries maxlength = ctx.pincode.codeLength", async ({ page }) => {
+    await page.goto(wfUrl(LOGIN_WF, "mfa-full"));
+    await fillField(page, "username", USERS.henry.username);
+    await fillField(page, "password", USERS.henry.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    await waitForFormInput(page, "code");
+    const codeInput = page.locator('[name="code"]').first();
+    await expect(codeInput).toHaveAttribute("maxlength", "6");
+  });
+
+  // BRANCH: brute-force protection — `verifyPin` increments `ctx.pinAttempts`
+  // on each wrong submission and on the `pincodeMaxAttempts`-th miss
+  // invalidates the code (clears pin + pinExpire + pinAttempts) so the user
+  // must request a fresh one. Without this gate, an attacker could probe the
+  // full 10^pincodeLength space inside one `pincodeTtlMs` window. The default
+  // cap is 5, the wrong-code inline error is "Invalid code", and the
+  // cap-hit error is "Too many invalid attempts. Please request a new code."
+  test("WF-LOGIN-011d: 5th wrong pincode invalidates the code + surfaces 'Too many invalid attempts'", async ({
+    page,
+  }) => {
+    await page.goto(wfUrl(LOGIN_WF, "mfa-full"));
+    await fillField(page, "username", USERS.henry.username);
+    await fillField(page, "password", USERS.henry.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    await waitForFormInput(page, "code");
+    const verify = page.getByRole("button", { name: "Verify", exact: true });
+
+    // Attempts 1-4 → "Invalid code" inline. The form stays on PincodeForm —
+    // pin/pinExpire survive so the user can keep trying.
+    for (let i = 1; i <= 4; i++) {
+      await fillField(page, "code", "000000");
+      await verify.click();
+      await expect(page.getByText("Invalid code", { exact: true })).toBeVisible();
+    }
+
+    // Attempt 5 → cap hit. The server clears the pin and returns the distinct
+    // "Too many" message. Pin/pinExpire are gone so the next click will hit
+    // "Code expired" — pinning the actual "Too many" string here is what
+    // proves the cap fired, not the expiry fallback.
+    await fillField(page, "code", "000000");
+    await verify.click();
+    await expect(
+      page.getByText("Too many invalid attempts. Please request a new code.", { exact: true }),
+    ).toBeVisible();
   });
 
   // BRANCH: pincode resend AFTER `pincodeResendTimeoutMs` → workflow should

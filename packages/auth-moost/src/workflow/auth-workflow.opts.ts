@@ -21,6 +21,8 @@ export interface AuthWorkflowOpts {
     pincodeLength?: number;
     pincodeTtlMs?: number;
     pincodeResendTimeoutMs?: number;
+    /** Max wrong-code submissions per minted pincode before the code is invalidated and the user must request a fresh one. Defaults to 5. */
+    pincodeMaxAttempts?: number;
   };
   /** Persisted-state TTL for the recovery flow — caps the window between OTP request and password reset. Applied at every recovery-side `requireInput` pause via the wf engine's `output.expires`. */
   recoveryStateTtlMs?: number;
@@ -84,6 +86,7 @@ export interface ResolvedAuthWorkflowOpts {
     pincodeLength: number;
     pincodeTtlMs: number;
     pincodeResendTimeoutMs: number;
+    pincodeMaxAttempts: number;
   };
   recoveryStateTtlMs: number;
   loginUrl: string;

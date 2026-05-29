@@ -170,6 +170,7 @@ function mergeAuthWorkflowOpts(opts: Partial<AuthWorkflowOpts>): ResolvedAuthWor
       pincodeLength: opts.mfa?.pincodeLength ?? 6,
       pincodeTtlMs: opts.mfa?.pincodeTtlMs ?? 5 * 60 * 1000,
       pincodeResendTimeoutMs: opts.mfa?.pincodeResendTimeoutMs ?? 60_000,
+      pincodeMaxAttempts: opts.mfa?.pincodeMaxAttempts ?? 5,
     },
     recoveryStateTtlMs: opts.recoveryStateTtlMs ?? 60 * 60 * 1000,
     loginUrl: opts.loginUrl ?? "/login",
@@ -824,7 +825,7 @@ export class AuthWorkflow {
 
   /** Mint a numeric pincode + stash it onto ctx. Returns the plain code. */
   protected mintPin(
-    ctx: { pin?: string; pinExpire?: number },
+    ctx: { pin?: string; pinExpire?: number; pinAttempts?: number },
     length: number,
     ttlMs: number,
   ): string {
@@ -832,16 +833,40 @@ export class AuthWorkflow {
     for (let i = 0; i < length; i++) code += Math.floor(Math.random() * 10).toString();
     ctx.pin = code;
     ctx.pinExpire = Date.now() + ttlMs;
+    // Fresh code → fresh attempt budget. `delete` (not `= 0`) because wf
+    // state-token persistence rejects `undefined` AND we want the field
+    // absent when never used.
+    delete ctx.pinAttempts;
     return code;
   }
 
-  /** Verify a submitted pincode against ctx.pin. Returns error map or null. */
+  /**
+   * Verify a submitted pincode against `ctx.pin`. Returns an error map (with
+   * the message keyed under `code` so it renders inline on the code input) or
+   * `null` on success. Brute-force protection: wrong-code attempts increment
+   * `ctx.pinAttempts`; on the `pincodeMaxAttempts`-th miss the code is
+   * invalidated (clears `pin` + `pinExpire` + `pinAttempts`) and the returned
+   * error tells the user to request a fresh code. Without this gate the user
+   * could probe the full 10^pincodeLength space inside one `pincodeTtlMs`
+   * window.
+   */
   protected verifyPin(
-    ctx: { pin?: string; pinExpire?: number },
+    ctx: { pin?: string; pinExpire?: number; pinAttempts?: number },
     submitted: string | undefined,
   ): { code: string } | null {
     if (!ctx.pin || !ctx.pinExpire || Date.now() > ctx.pinExpire) return { code: "Code expired" };
-    if (submitted !== ctx.pin) return { code: "Invalid code" };
+    if (submitted !== ctx.pin) {
+      const attempts = (ctx.pinAttempts ?? 0) + 1;
+      if (attempts >= this.opts.mfa.pincodeMaxAttempts) {
+        delete ctx.pin;
+        delete ctx.pinExpire;
+        delete ctx.pinAttempts;
+        return { code: "Too many invalid attempts. Please request a new code." };
+      }
+      ctx.pinAttempts = attempts;
+      return { code: "Invalid code" };
+    }
+    delete ctx.pinAttempts;
     return null;
   }
 
@@ -1832,6 +1857,7 @@ export class AuthWorkflow {
     const pincode = (ctx.pincode ??= {});
     pincode.resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
     pincode.sentTo = this.maskAddress(value, isEmail ? "email" : "sms");
+    pincode.codeLength = this.opts.mfa.pincodeLength;
     const pincodeWf = this.useAtscriptWfPublic(ctx, this.opts.forms.pincode);
     throw this.throwPublic(ctx, pincodeWf);
   }
@@ -1877,6 +1903,7 @@ export class AuthWorkflow {
       const pincode = (ctx.pincode ??= {});
       pincode.resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
       pincode.sentTo = this.maskAddress(recipient, isEmail ? "email" : "sms");
+      pincode.codeLength = this.opts.mfa.pincodeLength;
       throw this.throwPublic(ctx, pincodeWf);
     }
     const input = pincodeWf.resolveInput() as { code: string };
@@ -2327,7 +2354,9 @@ export class AuthWorkflow {
     );
     m.address = input.address;
     const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
-    (ctx.pincode ??= {}).resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
+    const pincode = (ctx.pincode ??= {});
+    pincode.resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
+    pincode.codeLength = this.opts.mfa.pincodeLength;
     await this.sendEnrollPincode(ctx, input.address, code);
     return undefined;
   }
@@ -2383,7 +2412,9 @@ export class AuthWorkflow {
         });
       }
       const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
-      (ctx.pincode ??= {}).resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
+      const pincode = (ctx.pincode ??= {});
+      pincode.resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
+      pincode.codeLength = this.opts.mfa.pincodeLength;
       await this.sendEnrollPincode(ctx, m.address as string, code);
       return undefined;
     }
