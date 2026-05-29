@@ -234,6 +234,54 @@ test.describe("LoginWorkflow / variant=mfa-totp (single TOTP)", () => {
     expect(typeof envelope.data?.accessToken).toBe("string");
     expect((envelope.data?.accessToken ?? "").length).toBeGreaterThan(0);
   });
+
+  // ADVERSARIAL (Rule 9): a TOTP code is valid for its whole ~30s step (plus the
+  // ±1 drift window), so a code shoulder-surfed / intercepted during one login
+  // would be replayable on a second login moments later — UNLESS the server
+  // pins `lastUsedWindow` and refuses a counter it has already accepted. That
+  // replay guard lives in UserService.verifyMfa and today has ONLY unit
+  // coverage; this is the end-to-end proof. We compute ONE code and spend it
+  // twice: login #1 must succeed, login #2 with the SAME code must be rejected.
+  //
+  // Soundness: the two logins run milliseconds apart (same TOTP step), so the
+  // second rejection is the replay guard firing, not window expiry. The guard
+  // returns the generic "Invalid code" (verifyMfa maps replay → MFA_INVALID so
+  // it never leaks "replay" vs "wrong" to an attacker), so we assert on that.
+  // This test can never FALSELY fail — if the guard is broken, login #2
+  // succeeds and the no-token assertion trips.
+  test("WF-LOGIN-MFA-REPLAY-01: a TOTP code accepted once cannot be replayed on a second login", async ({
+    page,
+    request,
+  }) => {
+    const secretRes = await request.get(`/__test/totp-secret/${USERS.grace.username}`);
+    expect(secretRes.status()).toBe(200);
+    const { secret } = (await secretRes.json()) as { secret: string };
+    expect(secret, "demo seeds TOTP secret for t1_grace").toBeTruthy();
+    const code = totp(secret);
+
+    // Login #1 — the code is accepted and tokens issue.
+    await page.goto(wfUrl(LOGIN_WF, "mfa-totp"));
+    await fillField(page, "username", USERS.grace.username);
+    await fillField(page, "password", USERS.grace.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await waitForFormInput(page, "code");
+    await fillField(page, "code", code);
+    await page.locator("button.as-submit-btn, button[type=submit]").first().click();
+    const env1 = (await readFinishEnvelope(page)) as { data?: { accessToken?: string } };
+    expect(typeof env1.data?.accessToken, "first login spends the code").toBe("string");
+
+    // Login #2 — same code, same window. The replay guard must reject it.
+    await page.goto(wfUrl(LOGIN_WF, "mfa-totp"));
+    await fillField(page, "username", USERS.grace.username);
+    await fillField(page, "password", USERS.grace.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await waitForFormInput(page, "code");
+    await fillField(page, "code", code);
+    await page.locator("button.as-submit-btn, button[type=submit]").first().click();
+
+    await expect(page.getByText("Invalid code", { exact: true })).toBeVisible();
+    await expect(page.getByText("Workflow finished")).toHaveCount(0);
+  });
 });
 
 test.describe("LoginWorkflow / variant=enrollment", () => {
@@ -683,6 +731,109 @@ test.describe("LoginWorkflow / variant=mfa-full (P1)", () => {
     await expect(
       page.getByText("Too many invalid attempts. Please request a new code.", { exact: true }),
     ).toBeVisible();
+  });
+
+  // ADVERSARIAL (Rule 9): WF-LOGIN-011d proves the cap surfaces a MESSAGE; this
+  // proves the cap actually INVALIDATES the minted code. After the 5th wrong
+  // attempt the server deletes ctx.pin/pinExpire — so even submitting the REAL
+  // code that was emailed must now fail. A regression that showed the "too
+  // many" banner but left ctx.pin intact would let an attacker who later
+  // learns/intercepts the code still spend it inside the TTL window; this test
+  // is the only thing that catches that class of bug (the cap being cosmetic).
+  test("WF-LOGIN-011e: after the cap is hit the real code is dead — only a resend yields a usable one", async ({
+    page,
+    request,
+  }) => {
+    await page.goto(wfUrl(LOGIN_WF, "mfa-full"));
+    await fillField(page, "username", USERS.henry.username);
+    await fillField(page, "password", USERS.henry.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    await waitForFormInput(page, "code");
+
+    // Capture the REAL code the workflow emailed — this is the code that WOULD
+    // have worked on attempt 1. We deliberately don't use it until after the cap.
+    const otpEmail = await waitForEmail(
+      request,
+      (e) => e.kind === "login.pincode" && e.recipient === "henry@acme.test",
+    );
+    const realCode = otpEmail.code as string;
+    expect(realCode, "demo emailed a login pincode").toBeTruthy();
+
+    const verify = page.getByRole("button", { name: "Verify", exact: true });
+
+    // Burn all 5 attempts on wrong codes. Each submit is serialized on its
+    // `/auth/trigger` POST response — the inline "Invalid code" / "Too many"
+    // text is sticky across re-renders, so awaiting the round-trip (not the
+    // text) is what guarantees exactly 5 attempts register before we spend the
+    // real code on attempt 6.
+    for (let i = 1; i <= 5; i++) {
+      await fillField(page, "code", "000000");
+      await Promise.all([
+        page.waitForResponse(
+          (r) => r.url().includes("/auth/trigger") && r.request().method() === "POST",
+        ),
+        verify.click(),
+      ]);
+    }
+    await expect(
+      page.getByText("Too many invalid attempts. Please request a new code.", { exact: true }),
+    ).toBeVisible();
+
+    // The cap deleted ctx.pin, so the once-valid real code now reads as expired.
+    // It must NOT authenticate — no finish envelope, no accessToken.
+    await fillField(page, "code", realCode);
+    await verify.click();
+    await expect(page.getByText("Code expired", { exact: true })).toBeVisible();
+    await expect(page.getByText("Workflow finished")).toHaveCount(0);
+  });
+
+  // BOUNDARY (Rule 9): the cap is `attempts >= 5`, so a user gets exactly 4
+  // wrong tries and the FIFTH submission can still be a correct one. This pins
+  // the off-by-one: a regression to `>= 4` would lock out a fat-fingering
+  // legitimate user one try too early; `> 5` would weaken the cap. It also
+  // proves a successful verify clears ctx.pinAttempts (no lingering count).
+  test("WF-LOGIN-011f: four wrong attempts then the correct code still authenticates", async ({
+    page,
+    request,
+  }) => {
+    await page.goto(wfUrl(LOGIN_WF, "mfa-full"));
+    await fillField(page, "username", USERS.henry.username);
+    await fillField(page, "password", USERS.henry.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    await waitForFormInput(page, "code");
+    const otpEmail = await waitForEmail(
+      request,
+      (e) => e.kind === "login.pincode" && e.recipient === "henry@acme.test",
+    );
+    const realCode = otpEmail.code as string;
+    expect(realCode, "demo emailed a login pincode").toBeTruthy();
+
+    const verify = page.getByRole("button", { name: "Verify", exact: true });
+
+    // Four wrong attempts — each rejected, the code stays alive (< cap). Serialize
+    // on the `/auth/trigger` POST response so exactly four register (the inline
+    // "Invalid code" text is sticky across re-renders and can't be used to
+    // sequence the loop — a rapid-fire 5th would trip the cap and brick the
+    // real code that this test depends on landing as attempt 5).
+    for (let i = 1; i <= 4; i++) {
+      await fillField(page, "code", "000000");
+      await Promise.all([
+        page.waitForResponse(
+          (r) => r.url().includes("/auth/trigger") && r.request().method() === "POST",
+        ),
+        verify.click(),
+      ]);
+    }
+
+    // Fifth submission is the REAL code → must succeed (cap not yet reached).
+    await fillField(page, "code", realCode);
+    await verify.click();
+
+    const envelope = (await readFinishEnvelope(page)) as { data?: { accessToken?: string } };
+    expect(typeof envelope.data?.accessToken).toBe("string");
+    expect((envelope.data?.accessToken ?? "").length).toBeGreaterThan(0);
   });
 
   // BRANCH: pincode resend AFTER `pincodeResendTimeoutMs` → workflow should
@@ -1491,6 +1642,45 @@ test.describe("LoginWorkflow / MFA enrollment (PW MFA coverage)", () => {
     const envelope = (await readFinishEnvelope(page)) as { data?: { accessToken?: string } };
     expect(typeof envelope.data?.accessToken).toBe("string");
     expect((envelope.data?.accessToken ?? "").length).toBeGreaterThan(0);
+  });
+
+  /**
+   * ADVERSARIAL (Rule 9): the inverse of WF-LOGIN-034. WF-LOGIN-034 proves
+   * `skip` WORKS in optional mode; this proves it is ABSENT in `required`
+   * mode — which is the exact bypass the WF-LOGIN-034 docstring warns about
+   * ("a regression that ungates skip in required mode would let attackers
+   * bypass MFA entirely"). A 0-method user under a required-MFA policy is
+   * force-routed into enrollment; there must be NO control on EnrollConfirmForm
+   * that reaches `issue` without a valid factor. We assert two things: the
+   * skip action is not rendered, AND a wrong code does not yield tokens (the
+   * form holds you on the pincode). Together they pin "required ⇒ no escape
+   * hatch to an authenticated session without completing MFA."
+   */
+  test("WF-LOGIN-MFA-NOBYPASS-01: required MFA enrollment has no skip and a wrong code issues no tokens", async ({
+    page,
+    request,
+  }) => {
+    // Make alice a clean 0-method user so the required-MFA policy force-enrols.
+    const cleared = await request.post(`/__test/reset-mfa/${USERS.alice.username}`);
+    expect(cleared.status()).toBe(201);
+
+    await page.goto(wfUrl(LOGIN_WF, "mfa-enroll-required-totp"));
+    await fillField(page, "username", USERS.alice.username);
+    await fillField(page, "password", USERS.alice.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    // Auto-pick (single transport) lands straight on EnrollConfirmForm.
+    await waitForFormInput(page, "code");
+
+    // No bypass: the "Skip for now" action is gated on optional mode, so under
+    // a required policy it must not be in the DOM at all.
+    await expect(page.getByRole("button", { name: /Skip/i })).toHaveCount(0);
+
+    // And a wrong code cannot smuggle the user past the gate — no finish, no token.
+    await fillField(page, "code", "000000");
+    await submitForm(page);
+    await expect(page.getByText("Invalid code", { exact: true })).toBeVisible();
+    await expect(page.getByText("Workflow finished")).toHaveCount(0);
   });
 
   /**
