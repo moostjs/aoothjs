@@ -2788,14 +2788,28 @@ export class AuthWorkflow {
     // user who simply forgot their password (never tripped the lock) is not
     // locked and still gets the normal success even under `admin-only`.
     if (ctx.lockout?.mode === "admin-only") {
-      this.requireUsername(ctx);
-      return this.users.getUser(ctx.username).then((user) => {
-        this.finishRecoveryReset(ctx, user.account.locked);
+      return this.recoveryLeftAccountLocked(ctx).then((locked) => {
+        this.finishRecoveryReset(ctx, locked);
         return undefined;
       });
     }
     this.finishRecoveryReset(ctx, false);
     return undefined;
+  }
+
+  /**
+   * Post-reset store read: did an `admin-only` lockout survive the password
+   * reset (account still frozen)? Callers MUST first confirm
+   * `ctx.lockout?.mode === "admin-only"` so this read stays off the sync fast
+   * path for every other recovery + invite finalize — `self-service` ran
+   * `unlock-account` and `temporary` auto-expires, so only `admin-only` can
+   * reach finalize still locked. Shared by BOTH finalize terminals: fresh-login
+   * warns instead of confirming success, auto-login warns instead of minting
+   * tokens (a still-frozen account must never be logged straight in).
+   */
+  private recoveryLeftAccountLocked(ctx: AuthWfCtx): Promise<boolean> {
+    this.requireUsername(ctx);
+    return this.users.getUser(ctx.username).then((user) => user.account.locked);
   }
 
   /**
@@ -2845,6 +2859,16 @@ export class AuthWorkflow {
   @Public()
   async finalizeAutoLogin(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     this.requireUsername(ctx);
+    // An `admin-only` lockout that survived the reset must NOT be auto-logged-in
+    // — minting tokens would defeat the very freeze the fresh-login terminal
+    // warns about. Emit that same warn terminal (no tokens) instead. Only
+    // `admin-only` can reach here still locked (self-service unlocked,
+    // temporary auto-expires), and only recovery resolves `ctx.lockout`, so
+    // invite auto-login is unaffected.
+    if (ctx.lockout?.mode === "admin-only" && (await this.recoveryLeftAccountLocked(ctx))) {
+      this.finishRecoveryReset(ctx, true);
+      return undefined;
+    }
     const issue = await this.auth.issue(ctx.username);
     const auth = useAuth();
     const previousMessage = (useWfFinished().get()?.value as WfFinished | undefined)?.message;
