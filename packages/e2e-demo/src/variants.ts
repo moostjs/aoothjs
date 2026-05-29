@@ -361,6 +361,13 @@ export const RECOVERY_VARIANTS: Record<string, RecoveryVariant> = {
   "lockout-admin-only": {
     policy: { lockout: { mode: "admin-only" } },
   },
+  // admin-only lockout + autoLoginOnRecover — proves the auto-login finalize
+  // does NOT mint tokens for an account the reset left frozen (the freeze must
+  // outrank auto-login). WF-LOGIN-LOCKOUT-ADMIN-ONLY-AUTOLOGIN.
+  "lockout-admin-only-autologin": {
+    opts: { autoLoginOnRecover: true },
+    policy: { lockout: { mode: "admin-only" } },
+  },
 };
 
 /**

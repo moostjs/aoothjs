@@ -12,7 +12,10 @@
  *                    when the account is actually locked: a plain forgot-
  *                    password user (never tripped the lock) under the same mode
  *                    still gets the normal success, because the warning keys on
- *                    real lock state, not on the mode.
+ *                    real lock state, not on the mode. Even with
+ *                    autoLoginOnRecover, a still-frozen account is shown the
+ *                    warning and issued NO tokens — the freeze outranks auto-
+ *                    login.
  *   - self-service → locks permanently too, but completing recovery runs the
  *                    `unlock-account` step, so login works again afterward.
  *   - temporary    → locks with a TIMED expiry (lockEnds > 0) and recovery
@@ -169,6 +172,37 @@ test.describe("Lockout posture (resolveLockout modes)", () => {
     const envelope = (await readFinishEnvelope(page)) as { data?: { accessToken?: string } };
     expect(typeof envelope.data?.accessToken).toBe("string");
     expect((envelope.data?.accessToken ?? "").length).toBeGreaterThan(0);
+  });
+
+  // admin-only + autoLoginOnRecover: even when recovery is configured to
+  // auto-login on success, an account the reset left FROZEN must NOT be logged
+  // straight in — that would silently defeat the freeze. finalize-auto-login
+  // emits the same warn terminal as fresh-login and mints NO tokens. Regression
+  // guard for the bypass where auto-login issued tokens without consulting the
+  // lock.
+  test("WF-LOGIN-LOCKOUT-ADMIN-ONLY-AUTOLOGIN: still-frozen admin-only account is NOT auto-logged-in after recovery", async ({
+    page,
+    request,
+  }) => {
+    await tripLockout(page, "lockout-admin-only");
+    const locked = await readAccount(request, USERS.alice.username);
+    expect(locked.account.locked, "3 wrong passwords trip the permanent lock").toBe(true);
+    expect(locked.account.lockEnds, "admin-only is permanent → lockEnds 0").toBe(0);
+
+    // Recovery runs with autoLoginOnRecover=true AND admin-only lockout.
+    await resetViaRecovery(page, request, "lockout-admin-only-autologin");
+
+    // The terminal is the "still locked" warning — NOT an auto-login.
+    await expect(page.locator('.as-wf-finish-message[data-level="warn"]')).toContainText(
+      "your account is still locked",
+    );
+    // And the finish envelope carries NO tokens — the bypass is closed.
+    const envelope = (await readFinishEnvelope(page)) as { data?: { accessToken?: string } };
+    expect(envelope.data?.accessToken, "frozen account must not be auto-logged-in").toBeUndefined();
+
+    // The account is still frozen.
+    const after = await readAccount(request, USERS.alice.username);
+    expect(after.account.locked, "auto-login must not have lifted the freeze").toBe(true);
   });
 
   // self-service: permanent lock, but completing recovery runs unlock-account,
