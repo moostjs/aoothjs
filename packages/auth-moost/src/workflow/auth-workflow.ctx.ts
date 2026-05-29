@@ -202,6 +202,29 @@ export interface AuthWfSessionPolicy {
   concurrencyLimit?: ConcurrencyLimitOptions;
 }
 
+/**
+ * Failed-login lockout posture. Picks HOW a tripped account lockout is lifted:
+ * - `admin-only`   — permanent lock; only an admin (UserService.unlockAccount)
+ *                    lifts it. The recovery flow may still reset the password
+ *                    but does NOT unlock.
+ * - `self-service` — permanent lock; completing the recovery (password-reset)
+ *                    flow lifts it (`unlock-account` step).
+ * - `temporary`    — timed lock; auto-expires after the configured duration
+ *                    (UserService `lockout.duration`). Recovery does NOT
+ *                    unlock early. This is the default (preserves prior behavior).
+ *
+ * The mode governs the lock DURATION the workflow asks UserService to apply on
+ * the threshold trip (`temporary` → configured duration; the two permanent
+ * modes → `0`) and whether recovery runs `unlock-account`. The attempt
+ * THRESHOLD and the temporary DURATION themselves remain UserService config.
+ */
+export type AuthWfLockoutMode = "admin-only" | "self-service" | "temporary";
+
+/** Lockout policy (login + recovery). */
+export interface AuthWfLockoutPolicy {
+  mode: AuthWfLockoutMode;
+}
+
 /** Admin-form policy (invite admin phase). */
 export interface AuthWfAdminFormPolicy {
   collectRoles: boolean;
@@ -370,6 +393,7 @@ export interface AuthWfCtx {
   enrollment?: AuthWfEnrollmentPolicy; // [login]
   finalize?: AuthWfFinalizePolicy; // [login]
   guards?: AuthWfGuardsPolicy; // [login]
+  lockout?: AuthWfLockoutPolicy; // [login + recovery]
   sessionPolicy?: AuthWfSessionPolicy; // [login]
   mfaPolicy?: AuthWfMfaPolicy; // [login + invite]
   adminForm?: AuthWfAdminFormPolicy; // [invite admin]

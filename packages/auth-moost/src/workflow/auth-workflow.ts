@@ -529,6 +529,21 @@ export class AuthWorkflow {
   }
 
   /**
+   * Resolve the failed-login lockout posture (admin-only / self-service /
+   * temporary — see `AuthWfLockoutMode`). Reached from login.flow (decides the
+   * lock duration passed to `users.login` / `users.verifyMfa` on a threshold
+   * trip) and recovery.flow (decides whether `unlock-account` runs after a
+   * reset). Default `temporary` preserves the prior auto-expiry behavior.
+   * Customers override per-tenant / per-user (e.g. force `admin-only` for
+   * privileged accounts).
+   */
+  protected resolveLockout(
+    _ctx: AuthWfCtx,
+  ): NonNullable<AuthWfCtx["lockout"]> | Promise<NonNullable<AuthWfCtx["lockout"]>> {
+    return { mode: "temporary" };
+  }
+
+  /**
    * Resolve the unified MFA policy. Replaces login's hardcoded defaults +
    * invite's `{ issuer }` resolver. Issuer is sourced from
    * `this.opts.totpIssuer` so per-app TOTP labels remain a single knob.
@@ -1030,6 +1045,11 @@ export class AuthWorkflow {
     ctx.alternateCredentials = alt;
     const guardsResult = this.resolveGuards(ctx);
     ctx.guards = guardsResult instanceof Promise ? await guardsResult : guardsResult;
+    // Lockout posture is needed at lock-SET time (a failed login below), which
+    // runs before prepare-lockout — so inline-resolve it here (idempotent vs.
+    // the later prepare-lockout step, mirroring the guards pattern above).
+    const lockoutResult = this.resolveLockout(ctx);
+    ctx.lockout = lockoutResult instanceof Promise ? await lockoutResult : lockoutResult;
     // Mirror alt-credentials config into ctx so the form can hide each alt-action
     // button when its feature is disabled (`@ui.form.fn.hidden`).
     const altActions = (ctx.altActions ??= {});
@@ -1052,7 +1072,11 @@ export class AuthWorkflow {
     const input = wf.resolveInput() as { username: string; password: string };
 
     try {
-      const result = await this.users.login(input.username, input.password);
+      const result = await this.users.login(
+        input.username,
+        input.password,
+        this.lockoutOverride(ctx),
+      );
       ctx.username = result.user.username;
       // Phase 2 inline guards — set top-level `isPasswordInitial`/`isPasswordExpired`
       // so `prepare-semantic-flags` (which runs later) can read them as a fallback.
@@ -1371,6 +1395,31 @@ export class AuthWorkflow {
     }
     ctx.guards = result;
     return undefined;
+  }
+
+  @Step("prepare-lockout")
+  @Public()
+  prepareLockout(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
+    const result = this.resolveLockout(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.lockout = resolved;
+        return undefined;
+      });
+    }
+    ctx.lockout = result;
+    return undefined;
+  }
+
+  /**
+   * Per-call lockout override for `users.login` / `users.verifyMfa`, derived
+   * from the resolved mode. A permanent mode (`admin-only` / `self-service`)
+   * forces `duration: 0` so the threshold trip locks permanently;
+   * `temporary` (or an unresolved policy) returns `undefined` so UserService's
+   * own configured duration applies. Threshold stays UserService config.
+   */
+  protected lockoutOverride(ctx: AuthWfCtx): { duration: number } | undefined {
+    return ctx.lockout && ctx.lockout.mode !== "temporary" ? { duration: 0 } : undefined;
   }
 
   @Step("prepare-session-policy")
@@ -2217,7 +2266,7 @@ export class AuthWorkflow {
     const input = wf.resolveInput() as { code: string; rememberDevice?: boolean };
     this.requireUsername(ctx);
     try {
-      await this.users.verifyMfa(ctx.username, input.code);
+      await this.users.verifyMfa(ctx.username, input.code, undefined, this.lockoutOverride(ctx));
       (ctx.otp ??= {}).verified = true;
       (ctx.session ??= {}).riskStepUpEvaluated = false;
       if (ctx.deviceTrust?.enabled && ctx.deviceTrust?.optIn) {
@@ -2626,6 +2675,21 @@ export class AuthWorkflow {
     return undefined;
   }
 
+  /**
+   * Lift a failed-login lockout after a successful password reset. Recovery
+   * only — gated upstream by `ctx.lockout?.mode === "self-service"` so the
+   * `admin-only` mode keeps the account frozen (reset succeeds, lock stays)
+   * and `temporary` continues to rely on its own timeout. `unlockAccount`
+   * also zeroes `failedLoginAttempts`, so the next login starts clean.
+   */
+  @Step("unlock-account")
+  @Public()
+  async unlockAccount(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    if (!ctx.username) return undefined;
+    await this.users.unlockAccount(ctx.username);
+    return undefined;
+  }
+
   // ── Finalize (5) ──
 
   /**
@@ -2807,6 +2871,7 @@ export class AuthWorkflow {
     { id: "prepare-enrollment" },
     { id: "prepare-finalize" },
     { id: "prepare-guards" },
+    { id: "prepare-lockout" },
     { id: "prepare-session-policy" },
 
     // Semantic flags AFTER prepare-guards so it can read ctx.guards.* + ctx.isPasswordInitial/Expired
@@ -2977,6 +3042,7 @@ export class AuthWorkflow {
 
     { id: "prepare-post-reset" },
     { id: "prepare-recovery-alt-actions" },
+    { id: "prepare-lockout" }, // self-service mode → unlock-account runs in the post-reset tail
     { id: "prepare-consents" },
     { id: "prepare-semantic-flags" }, // sets ctx.password.changeReason = "reset"
 
@@ -3001,6 +3067,7 @@ export class AuthWorkflow {
     // subflow above; cursor advancement past the `{ break: !!ctx.aborted }`
     // gate already guarantees the password form completed.
     { id: "revoke-sessions", condition: (ctx) => !!ctx.postReset?.revokeAllSessions },
+    { id: "unlock-account", condition: (ctx) => ctx.lockout?.mode === "self-service" },
     ...consentsPersistTailSchema,
     // Finalize (recovery tail — gated by ctx.autoLogin, mirrored from
     // `opts.autoLoginOnRecover` by init-recovery).

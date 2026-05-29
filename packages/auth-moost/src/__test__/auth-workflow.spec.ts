@@ -35,6 +35,8 @@ class TestableAuthWorkflow extends AuthWorkflow {
   public exposeEnrollment = (ctx: AuthWfCtx) => this.resolveEnrollment(ctx);
   public exposeFinalize = (ctx: AuthWfCtx) => this.resolveFinalize(ctx);
   public exposeGuards = (ctx: AuthWfCtx) => this.resolveGuards(ctx);
+  public exposeLockout = (ctx: AuthWfCtx) => this.resolveLockout(ctx);
+  public exposeLockoutOverride = (ctx: AuthWfCtx) => this.lockoutOverride(ctx);
   public exposeSessionPolicy = (ctx: AuthWfCtx) => this.resolveSessionPolicy(ctx);
   public exposeMfaPolicy = (ctx: AuthWfCtx) => this.resolveMfaPolicy(ctx);
   public exposeOtpDisclosure = (ctx: AuthWfCtx, ch: "email" | "phone") =>
@@ -283,6 +285,27 @@ describe("AuthWorkflow resolver defaults", () => {
     // emailVerifiedRequired OFF — promoting this to ON would gate every
     // login on an email-verify carrier form (channel enrollment Phase 3).
     expect(r.emailVerifiedRequired).toBe(false);
+  });
+
+  it("resolveLockout — defaults to temporary (preserves prior auto-expiry behavior)", async () => {
+    const r = await settle(wf.exposeLockout(ctx));
+    // "temporary" → the threshold trip uses UserService's configured duration
+    // and auto-expires. Flipping the default to a permanent mode would silently
+    // start bricking every fat-fingering user into recovery/admin-unlock.
+    expect(r.mode).toBe("temporary");
+  });
+
+  it("lockoutOverride — permanent modes force duration:0; temporary/unset pass through", () => {
+    // The mapping the whole feature hinges on: only a NON-temporary mode forces
+    // a permanent lock at lock-SET time. A regression here would either
+    // downgrade admin-only/self-service to a timed lock (loss of the freeze) or
+    // wrongly force-permanent a temporary policy (users never auto-recover).
+    expect(wf.exposeLockoutOverride({})).toBeUndefined(); // no policy resolved yet
+    expect(wf.exposeLockoutOverride({ lockout: { mode: "temporary" } })).toBeUndefined();
+    expect(wf.exposeLockoutOverride({ lockout: { mode: "admin-only" } })).toEqual({ duration: 0 });
+    expect(wf.exposeLockoutOverride({ lockout: { mode: "self-service" } })).toEqual({
+      duration: 0,
+    });
   });
 
   it("resolveSessionPolicy — empty (no concurrency limit by default)", async () => {
