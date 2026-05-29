@@ -32,13 +32,7 @@ import {
   type UserCredentials,
   UserService,
 } from "@aooth/user";
-import {
-  abortWf,
-  finishWf,
-  type FinishWfOpts,
-  useAtscriptWf,
-  type WfFinished,
-} from "@atscript/moost-wf";
+import { finishWf, type FinishWfOpts, useAtscriptWf, type WfFinished } from "@atscript/moost-wf";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { HttpError } from "@moostjs/event-http";
 import {
@@ -2610,8 +2604,10 @@ export class AuthWorkflow {
 
   /**
    * Concurrency-limit gate — pauses for `ConcurrencyLimitForm`. `reject` mode
-   * blocks the login outright; `kickPrompt` mode lets the user cancel (sets
-   * `ctx.aborted`) or kick all other sessions.
+   * blocks the login outright with a form-level error. `kickPrompt` mode pauses
+   * on the fieldless prompt; submitting it (the 'Login' button) logs out the
+   * user's other sessions and continues. `resolveInput()` throws to pause on
+   * first arrival and returns once the submit resumes the step.
    */
   @Step("concurrency-limit")
   @Public()
@@ -2622,19 +2618,9 @@ export class AuthWorkflow {
     if (cfg.onLimit === "reject") {
       throw this.throwPublic(ctx, wf, { formMessage: "Session limit reached" });
     }
-    const action = wf.resolveAction();
-    if (action === "cancel") {
-      abortWf("sessionLimit", {
-        message: { level: "warn", text: "Concurrent session limit reached." },
-      });
-      ctx.aborted = true;
-      return undefined;
-    }
-    if (action === "logoutOthers" && ctx.username) {
-      await this.logoutOtherSessions(ctx.username);
-      return undefined;
-    }
-    throw this.throwPublic(ctx, wf);
+    wf.resolveInput(); // first arrival throws requireInput (pauses); the 'Login' submit resumes here
+    if (ctx.username) await this.logoutOtherSessions(ctx.username);
+    return undefined;
   }
 
   // ── Extra-step (1) — login + invite, gated on isFirstLogin ──

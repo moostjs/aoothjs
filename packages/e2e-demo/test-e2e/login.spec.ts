@@ -1276,7 +1276,17 @@ test.describe("LoginWorkflow / variant=concurrency (P1)", () => {
     await fillField(page, "password", "Password1!");
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
 
-    await expect(page.getByRole("button", { name: "Log out other sessions" })).toBeVisible();
+    // The kickPrompt is now a fieldless prompt: the explanatory paragraph + a
+    // primary "Login" submit, with NO "Log out other sessions" alt-action.
+    // WHY: the old form rendered a dead generic "Submit" plus the alt-action;
+    // the redo makes the single primary submit do the logout-and-continue, so
+    // a regression that reintroduces the alt-action (or drops the paragraph)
+    // must fail here.
+    await expect(
+      page.getByText("Other sessions will be logged out if you proceed to log in."),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Login", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Log out other sessions" })).toHaveCount(0);
   });
 
   // WF-LOGIN-029 (ConcurrencyLimitForm `cancel` alt-action) removed alongside
@@ -1560,10 +1570,10 @@ test.describe("LoginWorkflow / variant=full (P2)", () => {
 
     // 9. ConcurrencyLimitForm (kickPrompt) — iris has 1 active session
     // seeded, `full` variant has `concurrencyLimit: { max: 1, onLimit:
-    // 'kickPrompt' }`, so `1 >= 1` → the kick form pauses. Click
-    // "Log out other sessions" so the schema resumes through `issue`.
-    await expect(page.getByRole("button", { name: "Log out other sessions" })).toBeVisible();
-    await page.getByRole("button", { name: "Log out other sessions" }).click();
+    // 'kickPrompt' }`, so `1 >= 1` → the fieldless kick form pauses. Submit
+    // it (the "Login" button) to log out other sessions and resume `issue`.
+    await expect(page.getByRole("button", { name: "Login", exact: true })).toBeVisible();
+    await submitForm(page);
 
     // 10. Finish envelope — `full` variant does NOT set `finalize.redirect`,
     // so the `issue` step's data envelope stands.

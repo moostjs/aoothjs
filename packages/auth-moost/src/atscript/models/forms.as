@@ -551,16 +551,16 @@ export interface TermsBumpForm extends WithInlineConsentForm {
 }
 
 /**
- * Concurrency-limit kick prompt — user picks whether to log out other
- * sessions and continue. The user backs out of the prompt by navigating
- * away (the wf state token expires per the engine's TTL); no in-form
- * cancel alt-action.
+ * Concurrency-limit kick prompt. Fieldless by design — just the explanatory
+ * paragraph plus the primary submit ('Login'): submitting logs out the user's
+ * other sessions and continues the login. No alt-action and no in-form cancel;
+ * the user backs out by navigating away (the wf state token expires per the
+ * engine's TTL).
  */
 @meta.label 'Session limit reached'
-@meta.description 'You are already signed in elsewhere. Choose what to do.'
+@meta.description 'You are already signed in elsewhere. Other sessions will be logged out if you proceed to log in.'
+@ui.form.submit.text 'Login'
 export interface ConcurrencyLimitForm {
-    @ui.form.action 'logoutOthers', 'Log out other sessions'
-    logoutOthers?: ui.action
 }
 
 /**
