@@ -63,6 +63,7 @@ import { Public } from "../auth.decorator";
 import type {
   AuthWfCtx,
   AuthWfAltCredsPolicy,
+  AuthWfPublicState,
   ConsentDescriptorLike,
   MfaSummary,
   MfaTransport,
@@ -303,6 +304,28 @@ function readUsernameQueryParam(): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Subset-copy of `src` keyed by `keys`, omitting any key whose value is
+ * `undefined`. Returns `undefined` when no key carries a value — keeps
+ * `populatePublic` from emitting empty subgroups like `{ mfa: {} }` that
+ * would clutter the wire context.
+ */
+function pickDefined<T extends object, K extends keyof T>(
+  src: T,
+  keys: readonly K[],
+): Pick<T, K> | undefined {
+  const out: Partial<Pick<T, K>> = {};
+  let any = false;
+  for (const k of keys) {
+    const v = src[k];
+    if (v !== undefined) {
+      out[k] = v;
+      any = true;
+    }
+  }
+  return any ? (out as Pick<T, K>) : undefined;
 }
 
 @Inherit()
@@ -684,6 +707,109 @@ export class AuthWorkflow {
     if (!ctx.username) throw new HttpError(500, "Workflow state corrupted: missing username");
   }
 
+  /**
+   * Project the internal ctx state onto `ctx.public` — the ONLY top-level
+   * key whitelisted on form schemas (via `@wf.context.pass 'public'`).
+   * Mirrors `AuthWfPublicState` field-for-field; intentionally drops
+   * internal-only fields (`pincode.channelCooldowns`, `mfa.saveAsDefault` /
+   * `mfa.current` / `mfa.ignoreDefault`, `trust.deviceTrustToken`,
+   * `channel.phone` / `channel.emailConfirmed`, `mfaEnroll.address`, …)
+   * so they cannot leak to the wire.
+   *
+   * Called via `throwPublic` immediately before every `requireInput`-style
+   * pause so the FE always reads a fresh projection of the post-step ctx.
+   */
+  protected populatePublic(ctx: AuthWfCtx): void {
+    // wf state-token serialization rejects `undefined` (only string / number
+    // / boolean / null / array / object are allowed — same constraint that
+    // `ctx.foo = undefined` hits at state save time). `pickDefined` below
+    // copies only the keys that are actually set so we never emit an
+    // explicit `{ field: undefined }` for an unset field.
+    const pub: AuthWfPublicState = {};
+    if (ctx.consents) {
+      const sub = pickDefined(ctx.consents, ["pending", "decidedAt"] as const);
+      if (sub) pub.consents = sub as AuthWfPublicState["consents"];
+    }
+    if (ctx.altActions) {
+      const sub = pickDefined(ctx.altActions, ["forgotPassword", "signup", "magicLink"] as const);
+      if (sub) pub.altActions = sub as AuthWfPublicState["altActions"];
+    }
+    if (ctx.mfa) {
+      const sub = pickDefined(ctx.mfa, ["method", "methodCount", "enrolledMethods"] as const);
+      if (sub) pub.mfa = sub as AuthWfPublicState["mfa"];
+    }
+    if (ctx.pincode) {
+      const sub = pickDefined(ctx.pincode, ["sentTo", "codeLength", "resendAllowedAt"] as const);
+      if (sub) pub.pincode = sub as AuthWfPublicState["pincode"];
+    }
+    if (ctx.trust) {
+      const sub = pickDefined(ctx.trust, ["optIn"] as const);
+      if (sub) pub.trust = sub as AuthWfPublicState["trust"];
+    }
+    if (ctx.password) {
+      const sub = pickDefined(ctx.password, ["heading", "intro", "policies"] as const);
+      if (sub) pub.password = sub as AuthWfPublicState["password"];
+    }
+    if (ctx.admin) {
+      const sub = pickDefined(ctx.admin, ["availableRoles"] as const);
+      if (sub) pub.admin = sub as AuthWfPublicState["admin"];
+    }
+    if (ctx.channel) {
+      const sub = pickDefined(ctx.channel, ["otpDisclosure"] as const);
+      if (sub) pub.channel = sub as AuthWfPublicState["channel"];
+    }
+    if (ctx.mfaEnroll) {
+      const sub = pickDefined(ctx.mfaEnroll, [
+        "method",
+        "mode",
+        "availableTransports",
+        "secret",
+        "uri",
+      ] as const);
+      if (sub) pub.mfaEnroll = sub as AuthWfPublicState["mfaEnroll"];
+    }
+    if (ctx.defaults) {
+      const sub = pickDefined(ctx.defaults, ["email"] as const);
+      if (sub) pub.defaults = sub as AuthWfPublicState["defaults"];
+    }
+    if (ctx.newPasswordRequired !== undefined) {
+      pub.newPasswordRequired = ctx.newPasswordRequired;
+    }
+    ctx.public = pub;
+  }
+
+  /**
+   * Wrap `wf.requireInput(opts)` so `ctx.public` is freshly projected
+   * before the pause throws. Every `throw wf.requireInput(...)` in the
+   * codebase routes through this so no pause can ship a stale public
+   * surface (and no contributor can accidentally skip the projection).
+   */
+  protected throwPublic<T>(
+    ctx: AuthWfCtx,
+    wf: { requireInput(opts?: T): unknown },
+    opts?: T,
+  ): unknown {
+    this.populatePublic(ctx);
+    return wf.requireInput(opts);
+  }
+
+  /**
+   * Drop-in wrapper around `useAtscriptWf(type)` that projects `ctx.public`
+   * BEFORE returning the form handle. Steps that pause implicitly — via
+   * `wf.resolveInput()` throwing on missing input or `wf.resolveAction()`
+   * throwing on an unknown action — bypass `throwPublic`, so without this
+   * wrapper the implicit-pause path would ship a stale (or missing)
+   * `ctx.public`. Every `useAtscriptWf(...)` call in the workflow routes
+   * through this so both pause flavors snapshot the same fresh projection.
+   */
+  protected useAtscriptWfPublic(
+    ctx: AuthWfCtx,
+    type: Parameters<typeof useAtscriptWf>[0],
+  ): ReturnType<typeof useAtscriptWf> {
+    this.populatePublic(ctx);
+    return useAtscriptWf(type);
+  }
+
   /** Translate `CAS_EXHAUSTED` UserAuthError to 409 Conflict (OCC contract). */
   protected async withStoreErrorTranslation<T>(op: () => Promise<T>): Promise<T> {
     try {
@@ -748,7 +874,7 @@ export class AuthWorkflow {
     }
     for (const p of pending) {
       if (p.required && !submitted.has(p.id)) {
-        throw wf.requireInput({ errors: { consents: p.required } });
+        throw this.throwPublic(ctx, wf, { errors: { consents: p.required } });
       }
     }
     const group = (ctx.consents ??= {});
@@ -885,7 +1011,7 @@ export class AuthWorkflow {
     altActions.forgotPassword = alt.forgotPassword;
     altActions.signup = alt.signup;
     altActions.magicLink = alt.magicLink;
-    const wf = useAtscriptWf(this.opts.forms.loginCredentials);
+    const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.loginCredentials);
 
     // Alt-action routing — handled BEFORE the form-input pause so the user
     // can hit "Forgot password?" without filling in the form at all. SSO
@@ -932,9 +1058,11 @@ export class AuthWorkflow {
     } catch (err) {
       if (err instanceof UserAuthError) {
         if (err.type === "LOCKED") {
-          throw wf.requireInput({ formMessage: "Account locked, please try again later" });
+          throw this.throwPublic(ctx, wf, {
+            formMessage: "Account locked, please try again later",
+          });
         }
-        throw wf.requireInput({ formMessage: "Invalid credentials" });
+        throw this.throwPublic(ctx, wf, { formMessage: "Invalid credentials" });
       }
       throw err;
     }
@@ -995,7 +1123,7 @@ export class AuthWorkflow {
     const alt = altResult instanceof Promise ? await altResult : altResult;
     ctx.recoveryAltActions = alt;
 
-    const emailWf = useAtscriptWf(this.opts.forms.recoveryEmailIdentifier);
+    const emailWf = this.useAtscriptWfPublic(ctx, this.opts.forms.recoveryEmailIdentifier);
     const action = emailWf.resolveAction();
     if (action === "backToLogin" && alt.backToLogin) {
       // postReset not yet resolved — inline (idempotent vs. `prepare-post-reset`).
@@ -1011,7 +1139,7 @@ export class AuthWorkflow {
     if (rawFormData === undefined) {
       const prefilled = readUsernameQueryParam();
       if (prefilled) ctx.defaults = { email: prefilled };
-      throw emailWf.requireInput();
+      throw this.throwPublic(ctx, emailWf);
     }
 
     const input = emailWf.resolveInput() as { email: string };
@@ -1380,7 +1508,7 @@ export class AuthWorkflow {
   @ArbacResource("auth.invite")
   @ArbacAction("start")
   async adminForm(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
-    const wf = useAtscriptWf(this.opts.forms.invite);
+    const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.invite);
     const input = wf.resolveInput() as {
       email: string;
       roles: string[];
@@ -1391,17 +1519,17 @@ export class AuthWorkflow {
       const allowed = new Set(ctx.admin.availableRoles);
       const bad = parsed.find((r) => !allowed.has(r));
       if (bad !== undefined) {
-        throw wf.requireInput({ errors: { roles: "Invalid role" } });
+        throw this.throwPublic(ctx, wf, { errors: { roles: "Invalid role" } });
       }
     }
     const existing = await this.loadUserOrNull(email);
     const action = await this.duplicateInviteCheck({ email, existingUser: existing });
     if (action === "reject") {
       if (existing?.account?.pendingInvitation) {
-        throw wf.requireInput({ errors: { email: "Invite already pending" } });
+        throw this.throwPublic(ctx, wf, { errors: { email: "Invite already pending" } });
       }
-      if (existing) throw wf.requireInput({ errors: { email: "User already exists" } });
-      throw wf.requireInput({ errors: { email: "Duplicate invite rejected" } });
+      if (existing) throw this.throwPublic(ctx, wf, { errors: { email: "User already exists" } });
+      throw this.throwPublic(ctx, wf, { errors: { email: "Duplicate invite rejected" } });
     }
     ctx.email = email;
     if (parsed.length > 0) (ctx.admin ??= {}).roles = parsed;
@@ -1614,7 +1742,7 @@ export class AuthWorkflow {
       password.heading = "Set your initial password";
       password.intro = "Your account was created without a password. Choose one to continue.";
     }
-    const wf = useAtscriptWf(this.opts.forms.setPassword);
+    const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.setPassword);
     let input: { newPassword: string; confirmPassword: string; consents?: string[] };
     try {
       input = wf.resolveInput() as typeof input;
@@ -1623,19 +1751,25 @@ export class AuthWorkflow {
       throw err;
     }
     if (input.newPassword !== input.confirmPassword) {
-      throw wf.requireInput({ errors: { confirmPassword: "Passwords do not match" } });
+      throw this.throwPublic(ctx, wf, { errors: { confirmPassword: "Passwords do not match" } });
     }
     try {
       await this.users.setPassword(ctx.username, input.newPassword);
     } catch (err) {
       if (err instanceof UserAuthError) {
-        throw wf.requireInput({ errors: { newPassword: err.message } });
+        throw this.throwPublic(ctx, wf, { errors: { newPassword: err.message } });
       }
       throw err;
     }
     this.processInlineConsent(ctx, input, wf);
     ctx.isPasswordInitial = false;
     ctx.isPasswordExpired = false;
+    // Clear the forced-change flag now that the user has set a fresh
+    // password — without this, downstream forms keep seeing the gate as
+    // active. Notably `PincodeForm.rememberDevice` is hidden while
+    // `newPasswordRequired` is true, so an MFA pause that follows
+    // set-password would silently lose the trust-prompt UX.
+    ctx.newPasswordRequired = false;
     // `delete` (not `= undefined`) — wf state-token persistence rejects
     // explicit undefined.
     delete password.changeReason;
@@ -1660,7 +1794,10 @@ export class AuthWorkflow {
     // implied consent). Forwarded to `recordOtpChannelConsent` at verify-time.
     const disclosure = await this.resolveOtpDisclosure(ctx, channel);
     (ctx.channel ??= {}).otpDisclosure = disclosure;
-    const askWf = useAtscriptWf(isEmail ? this.opts.forms.askEmail : this.opts.forms.askPhone);
+    const askWf = this.useAtscriptWfPublic(
+      ctx,
+      isEmail ? this.opts.forms.askEmail : this.opts.forms.askPhone,
+    );
     const input = askWf.resolveInput() as {
       email?: string;
       phone?: string;
@@ -1695,8 +1832,8 @@ export class AuthWorkflow {
     const pincode = (ctx.pincode ??= {});
     pincode.resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
     pincode.sentTo = this.maskAddress(value, isEmail ? "email" : "sms");
-    const pincodeWf = useAtscriptWf(this.opts.forms.pincode);
-    throw pincodeWf.requireInput();
+    const pincodeWf = this.useAtscriptWfPublic(ctx, this.opts.forms.pincode);
+    throw this.throwPublic(ctx, pincodeWf);
   }
 
   @Step("verify/:channel(email|phone)")
@@ -1707,7 +1844,7 @@ export class AuthWorkflow {
   ): Promise<unknown> {
     this.requireUsername(ctx);
     const isEmail = channel === "email";
-    const pincodeWf = useAtscriptWf(this.opts.forms.pincode);
+    const pincodeWf = this.useAtscriptWfPublic(ctx, this.opts.forms.pincode);
     // Handle alt-action clicks BEFORE input parsing — the user may click
     // "Resend code" without ever filling in `code`, so a naive
     // `resolveInput()` would fail validation on a missing required field.
@@ -1724,7 +1861,7 @@ export class AuthWorkflow {
       // can render a progress bar / countdown without re-deriving the value.
       if (ctx.pincode?.resendAllowedAt && ctx.pincode.resendAllowedAt > Date.now()) {
         const remainingSec = Math.ceil((ctx.pincode.resendAllowedAt - Date.now()) / 1000);
-        throw pincodeWf.requireInput({
+        throw this.throwPublic(ctx, pincodeWf, {
           formMessage: `Please wait ${remainingSec}s before requesting a new code.`,
         });
       }
@@ -1740,11 +1877,11 @@ export class AuthWorkflow {
       const pincode = (ctx.pincode ??= {});
       pincode.resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
       pincode.sentTo = this.maskAddress(recipient, isEmail ? "email" : "sms");
-      throw pincodeWf.requireInput();
+      throw this.throwPublic(ctx, pincodeWf);
     }
     const input = pincodeWf.resolveInput() as { code: string };
     const pinErr = this.verifyPin(ctx, input.code);
-    if (pinErr) throw pincodeWf.requireInput({ errors: pinErr });
+    if (pinErr) throw this.throwPublic(ctx, pincodeWf, { errors: pinErr });
     await this.withStoreErrorTranslation(() =>
       this.users.confirmMfaMethod(ctx.username, isEmail ? "email" : "sms"),
     );
@@ -1883,12 +2020,12 @@ export class AuthWorkflow {
   @Step("select-2fa")
   @Public()
   async select2fa(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
-    const wf = useAtscriptWf(this.opts.forms.select2fa);
+    const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.select2fa);
     const input = wf.resolveInput() as { methodName: string; saveAsDefault?: boolean };
     const mfa = (ctx.mfa ??= {});
     const picked = (mfa.enrolledMethods ?? []).find((m) => m.methodName === input.methodName);
     if (!picked) {
-      throw wf.requireInput({ errors: { methodName: "Unknown MFA method" } });
+      throw this.throwPublic(ctx, wf, { errors: { methodName: "Unknown MFA method" } });
     }
     if (picked.kind === "sms" || picked.kind === "email") {
       // PER-CHANNEL cooldown — survives `useDifferentMethod` so a user
@@ -1902,7 +2039,7 @@ export class AuthWorkflow {
         const channel = picked.kind === "sms" ? "SMS" : "email";
         // Banner — the user clicked a method radio + Submit, not a `methodName`
         // input. Inline errors on a radio group are misattributed UX.
-        throw wf.requireInput({
+        throw this.throwPublic(ctx, wf, {
           formMessage: `Please wait ${waitSec}s before requesting another ${channel} code`,
         });
       }
@@ -1969,7 +2106,7 @@ export class AuthWorkflow {
   @Step("pincode-check")
   @Public()
   async pincodeCheck(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
-    const wf = useAtscriptWf(this.resolvePincodeForm(ctx));
+    const wf = this.useAtscriptWfPublic(ctx, this.resolvePincodeForm(ctx));
     const action = wf.resolveAction();
     if (action) {
       const outcome = this.resolvePincodeAltAction(ctx, action);
@@ -1979,7 +2116,7 @@ export class AuthWorkflow {
         // click, not a `code` input error).
         if (ctx.pincode?.resendAllowedAt && ctx.pincode.resendAllowedAt > Date.now()) {
           const remainingSec = Math.ceil((ctx.pincode.resendAllowedAt - Date.now()) / 1000);
-          throw wf.requireInput({
+          throw this.throwPublic(ctx, wf, {
             formMessage: `Please wait ${remainingSec}s before requesting a new code.`,
           });
         }
@@ -2022,7 +2159,7 @@ export class AuthWorkflow {
       throw err;
     }
     const pinErr = this.verifyPin(ctx, input.code);
-    if (pinErr) throw wf.requireInput({ errors: pinErr });
+    if (pinErr) throw this.throwPublic(ctx, wf, { errors: pinErr });
     (ctx.otp ??= {}).verified = true;
     // Re-arm risk step-up so it re-evaluates after this verification.
     (ctx.session ??= {}).riskStepUpEvaluated = false;
@@ -2042,7 +2179,7 @@ export class AuthWorkflow {
   @Step("totp-check")
   @Public()
   async totpCheck(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
-    const wf = useAtscriptWf(this.opts.forms.mfaCode);
+    const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.mfaCode);
     const action = wf.resolveAction();
     if (action === "useDifferentMethod") {
       const mfa = (ctx.mfa ??= {});
@@ -2062,19 +2199,23 @@ export class AuthWorkflow {
     } catch (err) {
       if (err instanceof UserAuthError) {
         if (err.type === "LOCKED") {
-          throw wf.requireInput({ formMessage: "Account locked, please try again later" });
+          throw this.throwPublic(ctx, wf, {
+            formMessage: "Account locked, please try again later",
+          });
         }
         if (err.type === "INACTIVE") {
-          throw wf.requireInput({ errors: { code: "Invalid code" } });
+          throw this.throwPublic(ctx, wf, { errors: { code: "Invalid code" } });
         }
         if (err.type === "MFA_NOT_CONFIGURED") {
           throw new HttpError(400, "No TOTP MFA configured");
         }
         if (err.type === "MFA_INVALID") {
           if (err.details?.lockEnds !== undefined) {
-            throw wf.requireInput({ formMessage: "Account locked, please try again later" });
+            throw this.throwPublic(ctx, wf, {
+              formMessage: "Account locked, please try again later",
+            });
           }
-          throw wf.requireInput({ errors: { code: "Invalid code" } });
+          throw this.throwPublic(ctx, wf, { errors: { code: "Invalid code" } });
         }
         if (err.type === "CAS_EXHAUSTED") throw new HttpError(409, err.message);
       }
@@ -2118,7 +2259,7 @@ export class AuthWorkflow {
     if (transports.length === 1) {
       m.method = transports[0];
     } else {
-      const wf = useAtscriptWf(this.opts.forms.enrollPickMethod);
+      const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.enrollPickMethod);
       if (mode === "optional" && wf.resolveAction() === "skip") {
         m.done = true;
         (ctx.otp ??= {}).verified = true;
@@ -2127,7 +2268,7 @@ export class AuthWorkflow {
       const input = wf.resolveInput() as { method: string };
       const picked = input.method as MfaTransport;
       if (!m.availableTransports.includes(picked)) {
-        throw wf.requireInput({ errors: { method: "Unknown method" } });
+        throw this.throwPublic(ctx, wf, { errors: { method: "Unknown method" } });
       }
       m.method = picked;
     }
@@ -2164,7 +2305,7 @@ export class AuthWorkflow {
     const username = ctx.username;
     const m = (ctx.mfaEnroll ??= {});
     const mode = m.mode ?? "optional";
-    const wf = useAtscriptWf(this.opts.forms.enrollAddress);
+    const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.enrollAddress);
     const action = wf.resolveAction();
     if (mode === "optional" && action === "skip") {
       m.done = true;
@@ -2217,7 +2358,7 @@ export class AuthWorkflow {
       m.secret = secret;
       m.uri = uri;
     }
-    const wf = useAtscriptWf(this.opts.forms.enrollConfirm);
+    const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.enrollConfirm);
     const mode = m.mode ?? "optional";
     const action = wf.resolveAction();
     if (mode === "optional" && action === "skip") {
@@ -2232,12 +2373,12 @@ export class AuthWorkflow {
     }
     if (action === "resend") {
       if (m.method === "totp") {
-        throw wf.requireInput({ formMessage: "Resend is not applicable for TOTP" });
+        throw this.throwPublic(ctx, wf, { formMessage: "Resend is not applicable for TOTP" });
       }
       const cooldown = ctx.pincode?.resendAllowedAt;
       if (cooldown && Date.now() < cooldown) {
         const waitSec = Math.ceil((cooldown - Date.now()) / 1000);
-        throw wf.requireInput({
+        throw this.throwPublic(ctx, wf, {
           formMessage: `Please wait ${waitSec}s before requesting another code`,
         });
       }
@@ -2252,13 +2393,13 @@ export class AuthWorkflow {
         await this.users.verifyTotpSetupCode(username, input.code);
       } catch (err) {
         if (err instanceof UserAuthError && err.type === "MFA_INVALID") {
-          throw wf.requireInput({ errors: { code: "Invalid code" } });
+          throw this.throwPublic(ctx, wf, { errors: { code: "Invalid code" } });
         }
         throw err;
       }
     } else {
       const pinErr = this.verifyPin(ctx, input.code);
-      if (pinErr) throw wf.requireInput({ errors: pinErr });
+      if (pinErr) throw this.throwPublic(ctx, wf, { errors: pinErr });
     }
     const methodName = m.method as MfaTransport;
     await this.withStoreErrorTranslation(() => this.users.confirmMfaMethod(username, methodName));
@@ -2351,7 +2492,7 @@ export class AuthWorkflow {
   @Step("terms-bump-prompt")
   @Public()
   termsBumpPrompt(@WorkflowParam("context") ctx: AuthWfCtx): undefined {
-    const wf = useAtscriptWf(this.opts.forms.termsBump);
+    const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.termsBump);
     const input = wf.resolveInput() as { consents?: string[] };
     this.processInlineConsent(ctx, input, wf);
     return undefined;
@@ -2380,9 +2521,9 @@ export class AuthWorkflow {
   async concurrencyLimit(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
     const cfg = ctx.sessionPolicy?.concurrencyLimit;
     if (!cfg) return undefined;
-    const wf = useAtscriptWf(this.opts.forms.concurrencyLimit);
+    const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.concurrencyLimit);
     if (cfg.onLimit === "reject") {
-      throw wf.requireInput({ formMessage: "Session limit reached" });
+      throw this.throwPublic(ctx, wf, { formMessage: "Session limit reached" });
     }
     const action = wf.resolveAction();
     if (action === "cancel") {
@@ -2396,7 +2537,7 @@ export class AuthWorkflow {
       await this.logoutOtherSessions(ctx.username);
       return undefined;
     }
-    throw wf.requireInput();
+    throw this.throwPublic(ctx, wf);
   }
 
   // ── Extra-step (1) — login + invite, gated on isFirstLogin ──
@@ -2641,6 +2782,16 @@ export class AuthWorkflow {
     // (which credentials sets inline). Idempotent on re-entry.
     { id: "prepare-semantic-flags" },
 
+    // Forced password change (shared) — runs BEFORE channel enrolment + MFA
+    // setup so the rest of the flow operates against a real authenticated
+    // password (a passwordInitial / passwordExpired user shouldn't be
+    // enrolling MFA factors against a placeholder credential). Mirrors the
+    // invite-accept schema ordering. `create-password-form` also clears
+    // `ctx.newPasswordRequired` on success so the downstream PincodeForm
+    // pause shows the `rememberDevice` checkbox normally.
+    ...passwordPhaseSchema,
+    { break: (ctx) => !!ctx.aborted },
+
     // Alt-cred stub registration (always condition: false; consumer overrides)
     {
       condition: () => false,
@@ -2688,10 +2839,6 @@ export class AuthWorkflow {
         !!ctx.trust?.newDevice &&
         (!ctx.deviceTrust?.optIn || !!ctx.trust?.rememberDevice),
     },
-
-    // Forced password change (shared) — uses semantic flag
-    ...passwordPhaseSchema,
-    { break: (ctx) => !!ctx.aborted },
 
     // Extra-step
     { id: "extra-step", condition: (ctx) => !!ctx.isFirstLogin },

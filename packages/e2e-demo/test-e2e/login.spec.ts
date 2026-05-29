@@ -264,45 +264,27 @@ test.describe("LoginWorkflow / variant=guards (passwordInitial)", () => {
     page,
     request,
   }) => {
-    // The shipped `guards` variant turns on BOTH `passwordInitial` and
-    // `emailVerifiedRequired`. Because t1_jack has no confirmed email MFA,
-    // the workflow runs `ensureEmail` (AskEmailForm → pincode) BEFORE
-    // `setPassword`. We walk through the email enrollment first so we
-    // actually reach the SetPasswordForm — which is what this story asserts.
+    // The shipped `guards` variant flips passwordInitial + emailVerifiedRequired.
+    // After the schema reorder (passwordPhaseSchema runs BEFORE channel
+    // enrolment + MFA), the first carrier form post-credentials is
+    // SetPasswordForm — t1_jack is seeded passwordInitial=true. Email
+    // enrolment runs AFTER set-password so the rest of the flow operates
+    // against a real password.
     await page.goto(wfUrl(LOGIN_WF, "guards"));
     await fillField(page, "username", USERS.jack.username);
     await fillField(page, "password", USERS.jack.password);
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
 
-    // 1. AskEmailForm pause from `ensureEmail` (emailVerifiedRequired).
-    await waitForFormInput(page, "email");
-    await fillField(page, "email", "jack@acme.test");
-    await page
-      .getByRole("button", { name: /Submit|Continue/i })
-      .first()
-      .click();
-
-    // 2. PincodeForm — read the captured email OTP.
-    await waitForFormInput(page, "code");
-    const otpEmail = await waitForEmail(
-      request,
-      (e) => e.kind === "login.pincode" && e.recipient === "jack@acme.test",
-    );
-    expect(otpEmail.code, "email pincode captured").toBeTruthy();
-    await fillField(page, "code", otpEmail.code as string);
-    await page.getByRole("button", { name: "Verify", exact: true }).click();
-
-    // 3. SetPasswordForm pause. Both inputs marked `new-password`.
+    // 1. SetPasswordForm pause. Both inputs marked `new-password`.
     await waitForFormInput(page, "newPassword");
     await waitForFormInput(page, "confirmPassword");
 
     // Pin the initial-flow heading + intro copy on the wire envelope. The
     // bundled phantom `heading` / `intro` paragraphs read
-    // `ctx.password.heading` / `ctx.password.intro` (set by
+    // `ctx.public.password.heading` / `ctx.public.password.intro` (set by
     // `create-password-form` before the pause). A regression that dropped
-    // the `@wf.context.pass 'password'` annotation OR swapped the
-    // initial/expired branches in the step body would silently mislead
-    // users.
+    // the field from `populatePublic` OR swapped the initial/expired
+    // branches in the step body would silently mislead users.
     await expect(page.getByText("Set your initial password")).toBeVisible();
     await expect(page.getByText(/account was created without a password/i)).toBeVisible();
 
@@ -313,10 +295,30 @@ test.describe("LoginWorkflow / variant=guards (passwordInitial)", () => {
     await page.locator("button.as-submit-btn").first().click();
     await expect(page.getByText(/Passwords must match|Passwords do not match/)).toBeVisible();
 
-    // Second try: matching → workflow proceeds and `issue` step mints tokens.
+    // Second try: matching → workflow proceeds past set-password.
     await fillField(page, "newPassword", "NewPass-123!");
     await fillField(page, "confirmPassword", "NewPass-123!");
     await page.locator("button.as-submit-btn").first().click();
+
+    // 2. AskEmailForm pause from `ensureEmail` (emailVerifiedRequired).
+    await waitForFormInput(page, "email");
+    await fillField(page, "email", "jack@acme.test");
+    await page
+      .getByRole("button", { name: /Submit|Continue/i })
+      .first()
+      .click();
+
+    // 3. PincodeForm — read the captured email OTP. `guards` variant has
+    // `mfaMode: disabled` so the MFA loop is a no-op and the next finish
+    // is `issue` minting tokens.
+    await waitForFormInput(page, "code");
+    const otpEmail = await waitForEmail(
+      request,
+      (e) => e.kind === "login.pincode" && e.recipient === "jack@acme.test",
+    );
+    expect(otpEmail.code, "email pincode captured").toBeTruthy();
+    await fillField(page, "code", otpEmail.code as string);
+    await page.getByRole("button", { name: "Verify", exact: true }).click();
 
     const envelope = (await readFinishEnvelope(page)) as { data?: { accessToken?: string } };
     expect(typeof envelope.data?.accessToken).toBe("string");
@@ -1268,24 +1270,35 @@ test.describe("LoginWorkflow / variant=full (P2)", () => {
   }) => {
     await page.goto(wfUrl(LOGIN_WF, "full"));
 
-    // 1. LoginCredentialsForm — username + password. Submitting credentials
-    // pauses on the first carrier form (AskEmailForm), where the dynamic
-    // consent block rides via the inherited `WithInlineConsentForm`.
+    // 1. LoginCredentialsForm — username + password. After the schema
+    // reorder (set-password runs BEFORE channel enrolment + MFA), the
+    // first carrier form is SetPasswordForm (iris has passwordInitial=true).
     await fillField(page, "username", USERS.iris.username);
     await fillField(page, "password", USERS.iris.password);
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
 
-    // 2. AskEmailForm (ensureEmail, no confirmed email MFA yet). The
-    // AsConsentArray block renders one checkbox per pending descriptor —
-    // tick both (terms is REQUIRED per descriptor.required, marketing is
-    // optional but tickable to record `accepted: true`).
-    await waitForFormInput(page, "email");
-    await fillField(page, "email", "iris@acme.test");
+    // 2. SetPasswordForm — `passwordInitial=true` seed → forced change.
+    // This is now the FIRST carrier form, so `WithInlineConsentForm`'s
+    // inherited AsConsentArray block renders here (one checkbox per pending
+    // descriptor — tick both: terms is REQUIRED, marketing is optional).
+    // `create-password-form` clears `ctx.newPasswordRequired` so the MFA
+    // pincode pause downstream renders `rememberDevice` normally.
+    await waitForFormInput(page, "newPassword");
+    await fillField(page, "newPassword", "NewIrisPass-1!");
+    await fillField(page, "confirmPassword", "NewIrisPass-1!");
     await page.locator('input[type="checkbox"]').nth(0).check();
     await page.locator('input[type="checkbox"]').nth(1).check();
+    await page.locator("button.as-submit-btn").first().click();
+
+    // 3. AskEmailForm (ensureEmail, no confirmed email MFA yet). After
+    // SetPassword set `ctx.consents.decidedAt`, the inline consent block
+    // self-hides here — only the email input + disclosure paragraph
+    // remain.
+    await waitForFormInput(page, "email");
+    await fillField(page, "email", "iris@acme.test");
     await submitForm(page);
 
-    // 3. PincodeForm — email OTP from the captured-mail buffer.
+    // 4. PincodeForm — email OTP from the captured-mail buffer.
     await waitForFormInput(page, "code");
     const emailEnrollOtp = await waitForEmail(
       request,
@@ -1294,12 +1307,12 @@ test.describe("LoginWorkflow / variant=full (P2)", () => {
     await fillField(page, "code", emailEnrollOtp.code as string);
     await submitForm(page);
 
-    // 4. AskPhoneForm (ensurePhone, no confirmed sms MFA yet).
+    // 5. AskPhoneForm (ensurePhone, no confirmed sms MFA yet).
     await waitForFormInput(page, "phone");
     await fillField(page, "phone", "+15555550777");
     await submitForm(page);
 
-    // 5. PincodeForm — sms OTP from the captured-sms buffer.
+    // 6. PincodeForm — sms OTP from the captured-sms buffer.
     await waitForFormInput(page, "code");
     const phoneEnrollSms = await waitForSms(
       request,
@@ -1308,7 +1321,7 @@ test.describe("LoginWorkflow / variant=full (P2)", () => {
     await fillField(page, "code", phoneEnrollSms.code);
     await submitForm(page);
 
-    // 6. Select2faForm — iris now has 2 confirmed methods (sms + email) with
+    // 7. Select2faForm — iris now has 2 confirmed methods (sms + email) with
     // no default → user picks. `methodName` must equal an enrolled MfaMethod
     // name. Pick `email` so the next pause is PincodeForm (email transport),
     // which also carries the `rememberDevice` checkbox we want to toggle.
@@ -1316,7 +1329,7 @@ test.describe("LoginWorkflow / variant=full (P2)", () => {
     await fillField(page, "methodName", "email");
     await submitForm(page);
 
-    // 7. PincodeForm — email MFA code. Tick rememberDevice so the
+    // 8. PincodeForm — email MFA code. Tick rememberDevice so the
     // `device-trust` step issues + persists a trust record (one of the
     // optional steps in the schema arc).
     await waitForFormInput(page, "code");
@@ -1330,12 +1343,6 @@ test.describe("LoginWorkflow / variant=full (P2)", () => {
     await fillField(page, "code", mfaOtp.code as string);
     await page.locator('[name="rememberDevice"]').first().check();
     await page.getByRole("button", { name: "Verify", exact: true }).click();
-
-    // 8. SetPasswordForm — `passwordInitial=true` seed → forced change.
-    await waitForFormInput(page, "newPassword");
-    await fillField(page, "newPassword", "NewIrisPass-1!");
-    await fillField(page, "confirmPassword", "NewIrisPass-1!");
-    await page.locator("button.as-submit-btn").first().click();
 
     // 9. ConcurrencyLimitForm (kickPrompt) — iris has 1 active session
     // seeded, `full` variant has `concurrencyLimit: { max: 1, onLimit:

@@ -4,11 +4,11 @@
  * Carrier forms `extends WithInlineConsentForm` to inherit it without
  * duplication.
  *
- * Backend transport: `@wf.context.pass 'consents'` ships the
+ * Backend transport: `@wf.context.pass 'public'` ships the
  * `AuthWfConsentsState` group (set by the `prepare-consents` @Step from
  * `ConsentStore.getPendingConsents()`) to the client. The
  * `@ui.form.fn.attr 'pendingConsents'` expression below binds
- * `ctx.consents?.pending` onto the `AsConsentArray` component
+ * `ctx.public?.consents?.pending` onto the `AsConsentArray` component
  * (`@atscript/vue-aooth`) which renders one checkbox per descriptor; the
  * user-submitted `string[]` carries back the SUBSET of `descriptor.id`s the
  * user ticked.
@@ -30,12 +30,12 @@
  * Absent / empty ⇒ optional (the `ConsentEvent.accepted` boolean lets
  * customers persist the un-ticked-optional decision for audit).
  */
-@wf.context.pass 'consents'
+@wf.context.pass 'public'
 export interface WithInlineConsentForm {
     @meta.label 'Pending consents'
     @ui.form.component 'AsConsentArray'
-    @ui.form.fn.attr 'pendingConsents', '(_, _d, ctx) => ctx.consents?.pending'
-    @ui.form.fn.hidden '(_, _d, ctx) => ctx.consents?.decidedAt !== undefined || (ctx.consents?.pending?.length ?? 0) === 0'
+    @ui.form.fn.attr 'pendingConsents', '(_, _d, ctx) => ctx.public?.consents?.pending'
+    @ui.form.fn.hidden '(_, _d, ctx) => ctx.public?.consents?.decidedAt !== undefined || (ctx.public?.consents?.pending?.length ?? 0) === 0'
     @ui.form.grid.colSpan '12'
     consents: string[]
 }
@@ -52,7 +52,7 @@ export interface WithInlineConsentForm {
  * `useAtscriptWf(form).resolveAction()` accepts the dynamic ids.
  */
 @meta.label 'Sign in'
-@wf.context.pass 'altActions'
+@wf.context.pass 'public'
 @ui.form.submit.text 'Sign in'
 export interface LoginCredentialsForm {
     @ui.form.order 10
@@ -71,18 +71,18 @@ export interface LoginCredentialsForm {
     @meta.required
     @expect.minLength 1
     @ui.form.action 'forgotPassword', 'Forgot password?'
-    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.altActions?.forgotPassword'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.public?.altActions?.forgotPassword'
     @wf.action.withData 'forgotPassword'
     password: string
 
     @ui.form.order 30
     @ui.form.action 'signup', 'Sign up'
-    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.altActions?.signup'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.public?.altActions?.signup'
     signup?: ui.action
 
     @ui.form.order 40
     @ui.form.action 'magicLink', 'Sign in with a magic link'
-    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.altActions?.magicLink'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.public?.altActions?.magicLink'
     magicLink?: ui.action
 }
 
@@ -96,11 +96,10 @@ export interface LoginCredentialsForm {
  * renders empty.
  */
 @meta.label 'Verify your identity'
-@wf.context.pass 'mfa'
-@wf.context.pass 'pincode'
+@wf.context.pass 'public'
 @ui.form.submit.text 'Verify'
 export interface MfaCodeForm {
-    @ui.form.fn.value '(_, _d, ctx) => ctx.mfa?.method === "totp" ? "Enter the current 6-digit code from your authenticator app." : ctx.pincode?.sentTo ? "Code sent to " + ctx.pincode.sentTo + "." : "Enter your verification code."'
+    @ui.form.fn.value '(_, _d, ctx) => ctx.public?.mfa?.method === "totp" ? "Enter the current 6-digit code from your authenticator app." : ctx.public?.pincode?.sentTo ? "Code sent to " + ctx.public.pincode.sentTo + "." : "Enter your verification code."'
     transportHint?: ui.paragraph
 
     @ui.form.type 'text'
@@ -113,20 +112,20 @@ export interface MfaCodeForm {
     code: string
 
     @ui.form.action 'useDifferentMethod', 'Use a different method'
-    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.mfa?.methodCount ?? 0) < 2'
+    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.public?.mfa?.methodCount ?? 0) < 2'
     useDifferentMethod?: ui.action
 
     @ui.form.type 'checkbox'
     @meta.label 'Remember this device'
     @meta.default 'false'
-    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.trust?.optIn || !!ctx.newPasswordRequired'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.public?.trust?.optIn || !!ctx.public?.newPasswordRequired'
     rememberDevice: boolean
 }
 
 /**
  * Email identifier form — used for password recovery initiation.
  *
- * `@wf.context.pass 'defaults'` whitelists the `defaults` ctx key so the
+ * `@wf.context.pass 'public'` whitelists the `defaults` ctx key so the
  * recovery `request` step can pre-fill the email field from the
  * `?username=` query param (carried in by the login workflow's
  * `forgotPassword` alt-action). Without this annotation the field is
@@ -134,7 +133,7 @@ export interface MfaCodeForm {
  */
 @meta.label 'Forgot your password?'
 @meta.description 'Enter your account email and we will send you a recovery link.'
-@wf.context.pass 'defaults'
+@wf.context.pass 'public'
 export interface EmailIdentifierForm {
     @ui.form.order 10
     @ui.form.type 'text'
@@ -156,7 +155,7 @@ export interface EmailIdentifierForm {
  * same expression). The workflow step retains a defensive equality check as
  * a belt-and-braces guard.
  *
- * `@wf.context.pass 'password'` whitelists the `AuthWfPasswordUiState`
+ * `@wf.context.pass 'public'` whitelists the `AuthWfPasswordUiState`
  * group on `ctx.password` so the prior preparePasswordRules /
  * createPasswordForm / setPassword steps can ship the transferable
  * password-policy rules (`UserService.getTransferablePolicies()`), the
@@ -166,7 +165,7 @@ export interface EmailIdentifierForm {
  *
  * Phase 7 — `passwordRules: ui.paragraph` is a phantom display field bound to
  * the `AsPasswordRules` component (`@atscript/vue-aooth`); the
- * `@ui.form.fn.attr 'policies'` expression reads `ctx.password?.policies`
+ * `@ui.form.fn.attr 'policies'` expression reads `ctx.public?.password?.policies`
  * (the transferable list seeded by the workflow's `prepare-password-rules`
  * @Step) and the `@ui.form.fn.attr 'password'` expression reads
  * `data.newPassword` so the rule-fulfillment readout updates live on every
@@ -186,9 +185,8 @@ export interface EmailIdentifierForm {
  * wants to abandon the flow closes / refreshes the page (the wf state token
  * expires per the engine's TTL).
  */
-@ui.form.fn.title '(_, _d, ctx) => ctx.password?.heading || "Set your password"'
-@wf.context.pass 'password'
-@wf.context.pass 'consents'
+@ui.form.fn.title '(_, _d, ctx) => ctx.public?.password?.heading || "Set your password"'
+@wf.context.pass 'public'
 export interface SetPasswordForm extends WithInlineConsentForm {
     /**
      * Phantom intro paragraph — pairs with the form's dynamic
@@ -200,8 +198,8 @@ export interface SetPasswordForm extends WithInlineConsentForm {
      * a default "Set your password" pause renders without an empty paragraph.
      */
     @ui.form.order 5
-    @ui.form.fn.value '(_, _d, ctx) => ctx.password?.intro || ""'
-    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.password?.intro'
+    @ui.form.fn.value '(_, _d, ctx) => ctx.public?.password?.intro || ""'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.public?.password?.intro'
     intro: ui.paragraph
 
     @ui.form.order 10
@@ -241,7 +239,7 @@ export interface SetPasswordForm extends WithInlineConsentForm {
     @ui.form.order 25
     @meta.label 'Password requirements'
     @ui.form.component 'AsPasswordRules'
-    @ui.form.fn.attr 'policies', '(_, _d, ctx) => ctx.password?.policies'
+    @ui.form.fn.attr 'policies', '(_, _d, ctx) => ctx.public?.password?.policies'
     @ui.form.fn.attr 'password', '(_, data) => data.newPassword'
     @ui.form.grid.colSpan '12'
     passwordRules: ui.paragraph
@@ -256,7 +254,7 @@ export interface SetPasswordForm extends WithInlineConsentForm {
  * extra fields into their user schema via the `prepareUser({...})` hook
  * (see `InviteWorkflow.prepareUser` jsdoc).
  *
- * `@wf.context.pass 'admin'` whitelists the workflow `ctx.admin` group so the
+ * `@wf.context.pass 'public'` whitelists the workflow `ctx.admin` group so the
  * `inviteAdminInviteForm` step can pass the role-picker options (via
  * `ctx.admin.availableRoles`) into the client form when `opts.getAvailableRoles`
  * is wired.
@@ -266,7 +264,7 @@ export interface SetPasswordForm extends WithInlineConsentForm {
  */
 @meta.label 'Send an invitation'
 @meta.description 'Enter the recipient email address and pick the roles to grant on acceptance. They will receive a magic link to set their password.'
-@wf.context.pass 'admin'
+@wf.context.pass 'public'
 export interface InviteForm {
     @ui.form.order 10
     @ui.form.type 'text'
@@ -279,7 +277,7 @@ export interface InviteForm {
     // dedicated multi-select widget tracked as atscript-ui follow-up.
     @ui.form.order 20
     @ui.form.type 'select'
-    @ui.form.fn.options '(_, _data, context) => Array.isArray(context.admin?.availableRoles) ? context.admin.availableRoles.map(r => ({ key: r, label: r })) : []'
+    @ui.form.fn.options '(_, _data, context) => Array.isArray(context.public?.admin?.availableRoles) ? context.public.admin.availableRoles.map(r => ({ key: r, label: r })) : []'
     @meta.label 'Roles'
     roles: string[]
 }
@@ -291,16 +289,16 @@ export interface InviteForm {
  * `opts.mfaTransports` filtering. `methodName` is the `MfaMethod.name`
  * (e.g. `"totp"`, `"email"`, `"sms"`); the workflow itself validates that the
  * supplied value is in the user's enrolled set. The dropdown options are
- * built from `ctx.mfa.enrolledMethods` (a `MfaSummary[]` populated by
+ * built from `ctx.public.mfa.enrolledMethods` (a `MfaSummary[]` populated by
  * `prepareMfaOptions`) so the user only sees factors they actually have.
  */
 @meta.label 'Choose a verification method'
 @meta.description 'Pick how you would like to verify your identity.'
-@wf.context.pass 'mfa'
+@wf.context.pass 'public'
 export interface Select2faForm {
     @ui.form.order 10
     @ui.form.type 'radio'
-    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.mfa?.enrolledMethods) ? ctx.mfa.enrolledMethods.map(m => ({ key: m.methodName, label: m.kind === "totp" ? "TOTP (Authenticator app)" : m.kind === "email" ? "Email" : m.kind === "sms" ? "SMS" : m.kind })) : []'
+    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.public?.mfa?.enrolledMethods) ? ctx.public.mfa.enrolledMethods.map(m => ({ key: m.methodName, label: m.kind === "totp" ? "TOTP (Authenticator app)" : m.kind === "email" ? "Email" : m.kind === "sms" ? "SMS" : m.kind })) : []'
     @meta.label 'MFA method'
     @meta.required
     methodName: string
@@ -313,7 +311,7 @@ export interface Select2faForm {
     @ui.form.type 'checkbox'
     @meta.label 'Remember this device'
     @meta.default 'false'
-    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.trust?.optIn || !!ctx.newPasswordRequired'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.public?.trust?.optIn || !!ctx.public?.newPasswordRequired'
     rememberDevice: boolean
 }
 
@@ -329,7 +327,7 @@ export interface Select2faForm {
  * on the consumer side; without it `@ui.form.fn.value` stays inert and
  * the paragraph renders empty.
  *
- * **Resend cooldown contract.** `ctx.pincode.resendAllowedAt` is a wall-clock
+ * **Resend cooldown contract.** `ctx.public.pincode.resendAllowedAt` is a wall-clock
  * timestamp (`Date.now() + pincodeResendTimeoutMs`) after which the server
  * will accept a `resend` action click. It rides the `@wf.context.pass
  * 'pincode'` whitelist AND is mirrored onto the rendered resend element via
@@ -341,13 +339,10 @@ export interface Select2faForm {
  * isn't told their (unsubmitted) code is wrong.
  */
 @meta.label 'Enter the verification code'
-@wf.context.pass 'mfa'
-@wf.context.pass 'pincode'
-@wf.context.pass 'trust'
-@wf.context.pass 'otp'
+@wf.context.pass 'public'
 @ui.form.submit.text 'Verify'
 export interface PincodeForm {
-    @ui.form.fn.value '(_, _d, ctx) => ctx.mfa?.method === "totp" ? "Enter the current 6-digit code from your authenticator app." : ctx.pincode?.sentTo ? "Code sent to " + ctx.pincode.sentTo + "." : "Enter your verification code."'
+    @ui.form.fn.value '(_, _d, ctx) => ctx.public?.mfa?.method === "totp" ? "Enter the current 6-digit code from your authenticator app." : ctx.public?.pincode?.sentTo ? "Code sent to " + ctx.public.pincode.sentTo + "." : "Enter your verification code."'
     transportHint?: ui.paragraph
 
     @ui.form.type 'text'
@@ -362,19 +357,19 @@ export interface PincodeForm {
     @ui.form.type 'checkbox'
     @meta.label 'Remember this device'
     @meta.default 'false'
-    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.trust?.optIn || !!ctx.newPasswordRequired'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.public?.trust?.optIn || !!ctx.public?.newPasswordRequired'
     rememberDevice: boolean
 
     @ui.form.action 'resend', 'Resend code'
-    @ui.form.fn.attr 'data-available-at', '(_, _d, ctx) => ctx.pincode?.resendAllowedAt'
+    @ui.form.fn.attr 'data-available-at', '(_, _d, ctx) => ctx.public?.pincode?.resendAllowedAt'
     resend?: ui.action
 
     @ui.form.action 'useDifferentMethod', 'Use a different method'
-    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.mfa?.methodCount ?? 0) < 2'
+    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.public?.mfa?.methodCount ?? 0) < 2'
     useDifferentMethod?: ui.action
 
     @ui.form.action 'useDifferentTransport', 'Use a different transport'
-    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.otp?.transportCount ?? 0) < 2'
+    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.public?.otp?.transportCount ?? 0) < 2'
     useDifferentTransport?: ui.action
 }
 
@@ -383,8 +378,7 @@ export interface PincodeForm {
  */
 @meta.label 'Add your email address'
 @meta.description 'We need a verified email to send security notifications and verification codes.'
-@wf.context.pass 'consents'
-@wf.context.pass 'channel'
+@wf.context.pass 'public'
 export interface AskEmailForm extends WithInlineConsentForm {
     /**
      * Phantom disclosure paragraph staged by `resolveOtpDisclosure(ctx,
@@ -396,8 +390,8 @@ export interface AskEmailForm extends WithInlineConsentForm {
      * elsewhere) renders without an empty paragraph slot.
      */
     @ui.form.order 5
-    @ui.form.fn.value '(_, _d, ctx) => ctx.channel?.otpDisclosure || ""'
-    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.channel?.otpDisclosure'
+    @ui.form.fn.value '(_, _d, ctx) => ctx.public?.channel?.otpDisclosure || ""'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.public?.channel?.otpDisclosure'
     disclosure: ui.paragraph
 
     @ui.form.order 10
@@ -414,13 +408,12 @@ export interface AskEmailForm extends WithInlineConsentForm {
  */
 @meta.label 'Add your phone number'
 @meta.description 'We need a verified phone to send security notifications and verification codes. Include your country code (for example +1 555 555 0100).'
-@wf.context.pass 'consents'
-@wf.context.pass 'channel'
+@wf.context.pass 'public'
 export interface AskPhoneForm extends WithInlineConsentForm {
     /** SMS-branch counterpart of `AskEmailForm.disclosure` — see that field. */
     @ui.form.order 5
-    @ui.form.fn.value '(_, _d, ctx) => ctx.channel?.otpDisclosure || ""'
-    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.channel?.otpDisclosure'
+    @ui.form.fn.value '(_, _d, ctx) => ctx.public?.channel?.otpDisclosure || ""'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.public?.channel?.otpDisclosure'
     disclosure: ui.paragraph
 
     @ui.form.order 10
@@ -433,22 +426,22 @@ export interface AskPhoneForm extends WithInlineConsentForm {
 
 /**
  * Forced MFA enrollment — method picker for `mfa-enroll-required`. Options
- * come from `ctx.mfaEnroll?.availableTransports` so only consumer-enabled
+ * come from `ctx.public?.mfaEnroll?.availableTransports` so only consumer-enabled
  * transports appear.
  */
 @meta.label 'Set up two-factor authentication'
 @meta.description 'Pick a method to receive your verification codes.'
-@wf.context.pass 'mfaEnroll'
+@wf.context.pass 'public'
 export interface EnrollPickMethodForm {
     @ui.form.order 10
     @ui.form.type 'radio'
-    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.mfaEnroll?.availableTransports) ? ctx.mfaEnroll.availableTransports.map(t => ({ key: t, label: t === "totp" ? "Authenticator app (TOTP)" : t === "sms" ? "SMS" : t === "email" ? "Email" : t })) : []'
+    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.public?.mfaEnroll?.availableTransports) ? ctx.public.mfaEnroll.availableTransports.map(t => ({ key: t, label: t === "totp" ? "Authenticator app (TOTP)" : t === "sms" ? "SMS" : t === "email" ? "Email" : t })) : []'
     @meta.label 'Choose a verification method'
     @meta.required
     method: string
 
     @ui.form.action 'skip', 'Skip for now'
-    @ui.form.fn.hidden '(_, _d, ctx) => ctx.mfaEnroll?.mode !== "optional"'
+    @ui.form.fn.hidden '(_, _d, ctx) => ctx.public?.mfaEnroll?.mode !== "optional"'
     skip?: ui.action
 }
 
@@ -460,9 +453,9 @@ export interface EnrollPickMethodForm {
  * forbids backing out mid-flow). `useDifferentMethod` is hidden when the
  * consumer has only one transport configured (nothing to switch to).
  */
-@ui.form.fn.title '(_, _d, ctx) => ctx.mfaEnroll?.method === "sms" ? "Add your phone number" : "Add your email"'
+@ui.form.fn.title '(_, _d, ctx) => ctx.public?.mfaEnroll?.method === "sms" ? "Add your phone number" : "Add your email"'
 @meta.description 'We will send you a one-time code to confirm.'
-@wf.context.pass 'mfaEnroll'
+@wf.context.pass 'public'
 export interface EnrollAddressForm {
     @ui.form.order 10
     @ui.form.type 'text'
@@ -471,20 +464,20 @@ export interface EnrollAddressForm {
     address: string
 
     @ui.form.action 'skip', 'Skip for now'
-    @ui.form.fn.hidden '(_, _d, ctx) => ctx.mfaEnroll?.mode !== "optional"'
+    @ui.form.fn.hidden '(_, _d, ctx) => ctx.public?.mfaEnroll?.mode !== "optional"'
     skip?: ui.action
 
     @ui.form.action 'useDifferentMethod', 'Use a different method'
-    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.mfaEnroll?.availableTransports?.length ?? 0) < 2'
+    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.public?.mfaEnroll?.availableTransports?.length ?? 0) < 2'
     useDifferentMethod?: ui.action
 }
 
 /**
  * Forced MFA enrollment — confirm code, shared by all three transports.
  *
- * **TOTP branch.** `ctx.mfaEnroll.secret` holds the base32 secret and
- * `ctx.mfaEnroll.uri` the `otpauth://` URI — both are produced server-side by
- * `setup-mfa-method` and ride the `@wf.context.pass 'mfaEnroll'` whitelist.
+ * **TOTP branch.** `ctx.public.mfaEnroll.secret` holds the base32 secret and
+ * `ctx.public.mfaEnroll.uri` the `otpauth://` URI — both are produced server-side by
+ * `setup-mfa-method` and ride the `@wf.context.pass 'public'` whitelist.
  * The default rendering shows the secret as plain text so users can paste it
  * into their authenticator app even without a QR scanner. Customers who want
  * a scannable QR code can subscribe a custom renderer for the `qrCode` field
@@ -495,12 +488,11 @@ export interface EnrollAddressForm {
  * recipient.
  */
 @meta.label 'Confirm your verification code'
-@wf.context.pass 'mfaEnroll'
-@wf.context.pass 'pincode'
+@wf.context.pass 'public'
 @ui.form.submit.text 'Confirm'
 export interface EnrollConfirmForm {
     @ui.form.order 1
-    @ui.form.fn.value '(_, _d, ctx) => ctx.mfaEnroll?.method === "totp" ? "Add the account to your authenticator app, then enter the 6-digit code it generates." : ctx.pincode?.sentTo ? "Code sent to " + ctx.pincode.sentTo + ". Enter it below to confirm." : "Enter the code to confirm enrollment."'
+    @ui.form.fn.value '(_, _d, ctx) => ctx.public?.mfaEnroll?.method === "totp" ? "Add the account to your authenticator app, then enter the 6-digit code it generates." : ctx.public?.pincode?.sentTo ? "Code sent to " + ctx.public.pincode.sentTo + ". Enter it below to confirm." : "Enter the code to confirm enrollment."'
     transportHint?: ui.paragraph
 
     /**
@@ -510,8 +502,8 @@ export interface EnrollConfirmForm {
      * production UX.
      */
     @ui.form.order 5
-    @ui.form.fn.value '(_, _d, ctx) => ctx.mfaEnroll?.uri || ""'
-    @ui.form.fn.hidden '(_, _d, ctx) => ctx.mfaEnroll?.method !== "totp" || !ctx.mfaEnroll?.uri'
+    @ui.form.fn.value '(_, _d, ctx) => ctx.public?.mfaEnroll?.uri || ""'
+    @ui.form.fn.hidden '(_, _d, ctx) => ctx.public?.mfaEnroll?.method !== "totp" || !ctx.public?.mfaEnroll?.uri'
     qrCode: ui.paragraph
 
     /**
@@ -520,8 +512,8 @@ export interface EnrollConfirmForm {
      * paranoid about scanning) can still set up.
      */
     @ui.form.order 6
-    @ui.form.fn.value '(_, _d, ctx) => ctx.mfaEnroll?.method === "totp" && ctx.mfaEnroll?.secret ? "Manual entry secret: " + ctx.mfaEnroll.secret : ""'
-    @ui.form.fn.hidden '(_, _d, ctx) => ctx.mfaEnroll?.method !== "totp" || !ctx.mfaEnroll?.secret'
+    @ui.form.fn.value '(_, _d, ctx) => ctx.public?.mfaEnroll?.method === "totp" && ctx.public?.mfaEnroll?.secret ? "Manual entry secret: " + ctx.public.mfaEnroll.secret : ""'
+    @ui.form.fn.hidden '(_, _d, ctx) => ctx.public?.mfaEnroll?.method !== "totp" || !ctx.public?.mfaEnroll?.secret'
     manualSecret: ui.paragraph
 
     @ui.form.order 10
@@ -535,16 +527,16 @@ export interface EnrollConfirmForm {
     code: string
 
     @ui.form.action 'resend', 'Resend code'
-    @ui.form.fn.attr 'data-available-at', '(_, _d, ctx) => ctx.pincode?.resendAllowedAt'
-    @ui.form.fn.hidden '(_, _d, ctx) => ctx.mfaEnroll?.method === "totp"'
+    @ui.form.fn.attr 'data-available-at', '(_, _d, ctx) => ctx.public?.pincode?.resendAllowedAt'
+    @ui.form.fn.hidden '(_, _d, ctx) => ctx.public?.mfaEnroll?.method === "totp"'
     resend?: ui.action
 
     @ui.form.action 'useDifferentMethod', 'Use a different method'
-    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.mfaEnroll?.availableTransports?.length ?? 0) < 2'
+    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.public?.mfaEnroll?.availableTransports?.length ?? 0) < 2'
     useDifferentMethod?: ui.action
 
     @ui.form.action 'skip', 'Skip for now'
-    @ui.form.fn.hidden '(_, _d, ctx) => ctx.mfaEnroll?.mode !== "optional"'
+    @ui.form.fn.hidden '(_, _d, ctx) => ctx.public?.mfaEnroll?.mode !== "optional"'
     skip?: ui.action
 }
 
@@ -559,7 +551,7 @@ export interface EnrollConfirmForm {
  */
 @meta.label 'Updated terms and policies'
 @meta.description 'Please review and accept the updated terms to continue.'
-@wf.context.pass 'consents'
+@wf.context.pass 'public'
 export interface TermsBumpForm extends WithInlineConsentForm {
 }
 
@@ -614,17 +606,17 @@ export interface RecoveryModeSelectForm {
  * `RecoveryWorkflowOptions.requireKnownRecoveryFactor` is true. The user
  * picks a factor type and supplies its value; the server validates against
  * the enrolled factor (phone last-4 or current TOTP code). Options are
- * built from `ctx.preReset.availableRecoveryFactors` (workflow whitelist ∩
+ * built from `ctx.public.preReset.availableRecoveryFactors` (workflow whitelist ∩
  * user's enrolled factors), so users only see factors they can actually
  * verify AND that the admin hasn't disabled via `opts.preReset.allowedFactors`.
  */
 @meta.label 'Verify your identity'
 @meta.description 'Confirm a detail we have on file before resetting your password.'
-@wf.context.pass 'preReset'
+@wf.context.pass 'public'
 export interface RecoveryFactorForm {
     @ui.form.order 10
     @ui.form.type 'radio'
-    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.preReset?.availableRecoveryFactors) ? ctx.preReset.availableRecoveryFactors : []'
+    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.public?.preReset?.availableRecoveryFactors) ? ctx.public.preReset.availableRecoveryFactors : []'
     @meta.label 'Factor'
     @meta.required
     factor: string

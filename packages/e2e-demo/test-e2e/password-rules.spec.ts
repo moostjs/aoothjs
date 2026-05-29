@@ -57,35 +57,16 @@ test.describe("LoginWorkflow / variant=guards (Phase 7 AsPasswordRules)", () => 
   }) => {
     // Variant `guards` flips passwordInitial+passwordExpiry+emailVerifiedRequired
     // (see e2e-demo/src/variants.ts). t1_jack is seeded with passwordInitial=true
-    // so post-credentials the workflow MUST reach SetPasswordForm — but first
-    // it gates through ensureEmail (AskEmailForm + email-OTP) because
-    // emailVerifiedRequired is also on. Mirrors the existing WF-LOGIN-021
-    // walkthrough; we re-use that path because there's no dedicated
-    // "password-initial only" variant today.
+    // so post-credentials the workflow lands directly on SetPasswordForm
+    // (passwordPhaseSchema runs BEFORE channel enrolment + MFA). Email
+    // enrolment runs AFTER the password is set; we walk through it for
+    // completeness so the test reaches the finish envelope.
     await page.goto(wfUrl(LOGIN_WF, "guards"));
     await fillField(page, "username", USERS.jack.username);
     await fillField(page, "password", USERS.jack.password);
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
 
-    // 1. AskEmailForm — supply jack's email so ensureEmail can deliver an OTP.
-    await waitForFormInput(page, "email");
-    await fillField(page, "email", "jack@acme.test");
-    await page
-      .getByRole("button", { name: /Submit|Continue/i })
-      .first()
-      .click();
-
-    // 2. PincodeForm — read the captured email OTP and verify.
-    await waitForFormInput(page, "code");
-    const otpEmail = await waitForEmail(
-      request,
-      (e) => e.kind === "login.pincode" && e.recipient === "jack@acme.test",
-    );
-    expect(otpEmail.code, "email pincode captured").toBeTruthy();
-    await fillField(page, "code", otpEmail.code as string);
-    await page.getByRole("button", { name: "Verify", exact: true }).click();
-
-    // 3. SetPasswordForm pause — both inputs visible + AsPasswordRules
+    // 1. SetPasswordForm pause — both inputs visible + AsPasswordRules
     // rendered. The component's root div carries `field-class="as-password-rules"`
     // (AsFieldShell propagates field-class as a class on its host). One row
     // per policy descriptor with `data-passed` toggles.
@@ -131,12 +112,32 @@ test.describe("LoginWorkflow / variant=guards (Phase 7 AsPasswordRules)", () => 
     await expect(rules.nth(1)).toHaveAttribute("data-passed", "true");
     await expect(rules.nth(2)).toHaveAttribute("data-passed", "true");
 
-    // Sanity tail — submit with matching confirm to prove the phantom
-    // field doesn't break form submission (a `ui.paragraph` carries no
-    // value; the workflow's setPassword step must not see passwordRules
-    // in the input payload).
+    // Submit with matching confirm to prove the phantom field doesn't
+    // break form submission (a `ui.paragraph` carries no value; the
+    // workflow's setPassword step must not see passwordRules in the input
+    // payload). After the reorder, the flow continues to AskEmailForm →
+    // PincodeForm before reaching the finish envelope.
     await fillField(page, "confirmPassword", "longenough1A!");
     await submitForm(page);
+
+    // AskEmailForm — supply jack's email so ensureEmail can deliver an OTP.
+    await waitForFormInput(page, "email");
+    await fillField(page, "email", "jack@acme.test");
+    await page
+      .getByRole("button", { name: /Submit|Continue/i })
+      .first()
+      .click();
+
+    // PincodeForm — read the captured email OTP and verify.
+    await waitForFormInput(page, "code");
+    const otpEmail = await waitForEmail(
+      request,
+      (e) => e.kind === "login.pincode" && e.recipient === "jack@acme.test",
+    );
+    expect(otpEmail.code, "email pincode captured").toBeTruthy();
+    await fillField(page, "code", otpEmail.code as string);
+    await page.getByRole("button", { name: "Verify", exact: true }).click();
+
     const envelope = (await readFinishEnvelope(page)) as { data?: { accessToken?: string } };
     expect(typeof envelope.data?.accessToken).toBe("string");
   });

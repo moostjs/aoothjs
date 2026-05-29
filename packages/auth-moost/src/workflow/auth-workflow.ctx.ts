@@ -264,6 +264,75 @@ export interface AuthWfDefaults {
   email?: string;
 }
 
+/**
+ * Public-facing context surface — the **only** group form schemas may read
+ * from via `@wf.context.pass 'public'`. Every other top-level key
+ * (`ctx.mfa`, `ctx.pincode`, `ctx.trust`, etc.) is server-only and must
+ * never be whitelisted on a form.
+ *
+ * Population is centralized in `AuthWorkflow.populatePublic(ctx)` which is
+ * invoked by the `throwPublic` helper immediately before any
+ * `requireInput`-style pause. Adding a new FE-consumed field has three
+ * touch points: add it to a subgroup here, copy it in `populatePublic`,
+ * and reference it in the form schema as `ctx.public.<group>.<field>`.
+ *
+ * Subgroups mirror the internal `ctx.<group>` shape one-for-one but only
+ * carry the subset of fields that forms actually read. Internal-only
+ * fields (e.g., `pincode.channelCooldowns`, `mfa.saveAsDefault`,
+ * `mfa.current`, `mfa.ignoreDefault`, `trust.deviceTrustToken`,
+ * `channel.phone`, `mfaEnroll.address`, …) are deliberately omitted so
+ * they cannot leak to the wire.
+ */
+export interface AuthWfPublicState {
+  /** Mirrors `ctx.consents` — pending descriptor list + decision marker. */
+  consents?: { pending?: ConsentDescriptorLike[]; decidedAt?: number };
+  /** Mirrors `ctx.altActions` — which alt-action buttons render on login. */
+  altActions?: { forgotPassword?: boolean; signup?: boolean; magicLink?: boolean };
+  /**
+   * Mirrors `ctx.mfa` — only the fields forms read (method picker /
+   * useDifferentMethod gating / transport-hint copy). Internal fields like
+   * `saveAsDefault`, `ignoreDefault`, `current` stay on `ctx.mfa`.
+   */
+  mfa?: { method?: MfaTransport; methodCount?: number; enrolledMethods?: MfaSummary[] };
+  /**
+   * Mirrors `ctx.pincode` — masked recipient + code length + resend
+   * timestamp. `channelCooldowns` (the per-channel anti-ping-pong ledger)
+   * is deliberately omitted so the FE cannot see which other channels are
+   * currently rate-limited.
+   */
+  pincode?: { sentTo?: string; codeLength?: number; resendAllowedAt?: number };
+  /** Mirrors `ctx.trust.optIn` — gates the "Remember this device" checkbox. */
+  trust?: { optIn?: boolean };
+  /**
+   * Mirrors `ctx.password` — policy ruleset for the live-rules renderer
+   * plus the per-flow title / intro copy. `changeReason` stays internal —
+   * the user-facing copy is already pre-rendered into `heading`/`intro`.
+   */
+  password?: { heading?: string; intro?: string; policies?: TransferablePolicy[] };
+  /** Mirrors `ctx.admin.availableRoles` — the role picker for invites. */
+  admin?: { availableRoles?: string[] };
+  /** Mirrors `ctx.channel.otpDisclosure` — TCPA/PECR disclosure paragraph. */
+  channel?: { otpDisclosure?: string };
+  /**
+   * Mirrors `ctx.mfaEnroll` — only what the enrolment forms display.
+   * `address` stays internal (user-typed, no need to bounce it back).
+   */
+  mfaEnroll?: {
+    method?: MfaTransport;
+    mode?: "required" | "optional";
+    availableTransports?: MfaTransport[];
+    secret?: string;
+    uri?: string;
+  };
+  /** Mirrors `ctx.defaults` — prefill source for the recovery email field. */
+  defaults?: { email?: string };
+  /**
+   * Mirrors `ctx.newPasswordRequired` — hides "Remember this device" on
+   * verify forms when a forced password change will follow.
+   */
+  newPasswordRequired?: boolean;
+}
+
 /** Unified workflow context shape — one type for all three flows. */
 export interface AuthWfCtx {
   // ── Identity ──
@@ -319,4 +388,12 @@ export interface AuthWfCtx {
   // ── Low-cardinality top-level flags ──
   isPasswordInitial?: boolean; // [login]
   isPasswordExpired?: boolean; // [login]
+
+  /**
+   * FE-facing surface — the ONLY top-level ctx key whitelisted on form
+   * schemas. Populated by `AuthWorkflow.populatePublic(ctx)` at every pause
+   * boundary; see `AuthWfPublicState` for the exact mirror shape. Never
+   * write to other `ctx.<group>` slots from form schemas — they're internal.
+   */
+  public?: AuthWfPublicState;
 }
