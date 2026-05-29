@@ -31,12 +31,16 @@ pnpm run ready                # vp fmt && vp lint && vp run test -r && vp run bu
 # Release (bumps version, runs ready, publishes, commits + tags)
 pnpm run release              # patch — also :minor, :major
 
-# e2e-demo (vite-node, not vp)
+# e2e-demo (vite / vite-node, not vp)
 cd packages/e2e-demo
-pnpm run dev                  # vite-node --watch src/main.ts
-pnpm run db:init              # seed the demo SQLite db
-pnpm run gen:atscript         # asc -f dts — regenerate .as.d.ts from .as models
+pnpm run dev                  # vite — combined SPA + moost backend (mounted as middleware via @moostjs/vite)
+DEMO_MODE=test SEED=true pnpm run dev   # boot for the Playwright harness (test endpoints + seeded users)
+pnpm run test:e2e             # playwright test — needs `dev` already running on :3001 (see playwright.config.ts)
+pnpm run db:init              # vite-node src/scripts/init-db.ts — seed the demo SQLite db
+pnpm run gen:atscript         # asc — regenerate .as.d.ts from .as models
 ```
+
+> `pnpm run dev:api` (`vite-node --watch src/main.ts`) is the legacy standalone backend and is currently broken under vite 8 + the `@moostjs/vite` plugin — both runtimes race to import `src/main.ts` and the synchronous `@atscript/db` schema fetch deadlocks the module-runner transport (~60s timeout). Use `pnpm run dev` for everything; it serves the same backend.
 
 ## Build / Tooling
 
