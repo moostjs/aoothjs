@@ -77,14 +77,14 @@
     "wooks": "catalog:"
   },
   "peerDependencies": {
-    "@atscript/moost-wf": ">=0.1.58",
-    "@atscript/typescript": ">=0.1.54",
-    "@moostjs/event-http": ">=0.6.10",
-    "@moostjs/event-wf": ">=0.6.10",
-    "@wooksjs/event-core": ">=0.7.12",
-    "@wooksjs/event-http": ">=0.7.12",
-    "@wooksjs/http-body": ">=0.7.12",
-    "moost": ">=0.6.10"
+    "@atscript/moost-wf": "catalog:",
+    "@atscript/typescript": "catalog:",
+    "@moostjs/event-http": "catalog:",
+    "@moostjs/event-wf": "catalog:",
+    "@wooksjs/event-core": "catalog:",
+    "@wooksjs/event-http": "catalog:",
+    "@wooksjs/http-body": "catalog:",
+    "moost": "catalog:"
   },
   "peerDependenciesMeta": {
     "@atscript/typescript": {

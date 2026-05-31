@@ -80,13 +80,13 @@
     "unplugin-atscript": "catalog:"
   },
   "peerDependencies": {
-    "@atscript/db": ">=0.1.79",
-    "@atscript/moost-db": ">=0.1.79",
-    "@atscript/typescript": ">=0.1.56",
-    "@moostjs/event-http": ">=0.6.10",
-    "@wooksjs/event-core": ">=0.7.12",
-    "@wooksjs/event-http": ">=0.7.12",
-    "moost": ">=0.6.10"
+    "@atscript/db": "catalog:",
+    "@atscript/moost-db": "catalog:",
+    "@atscript/typescript": "catalog:",
+    "@moostjs/event-http": "catalog:",
+    "@wooksjs/event-core": "catalog:",
+    "@wooksjs/event-http": "catalog:",
+    "moost": "catalog:"
   },
   "peerDependenciesMeta": {
     "@atscript/db": {
