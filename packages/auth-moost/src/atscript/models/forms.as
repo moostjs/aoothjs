@@ -624,3 +624,63 @@ export interface RecoveryFactorForm {
     @expect.maxLength 12
     value: string
 }
+
+/**
+ * Authenticated "change my password" form — surfaced by the
+ * change-password.flow `change-password-form` step to a SIGNED-IN user.
+ *
+ * Standalone (no `extends WithInlineConsentForm`) — a self-service password
+ * change carries no consent capture, unlike `SetPasswordForm`. The leading
+ * `currentPassword` field is the PRIMARY protection for this flow
+ * (re-authentication per OWASP ASVS 6.2.3) — `UserService.changePassword`
+ * verifies it before applying policy + history checks server-side.
+ *
+ * Reuses the same `ctx.public.password.{heading,intro,policies}` surface as
+ * `SetPasswordForm`, so the live `AsPasswordRules` renderer and dynamic copy
+ * work identically. Heading/intro are staged by `change-password-form`.
+ */
+@ui.form.fn.title '(_, _d, ctx) => ctx.public?.password?.heading || "Change your password"'
+@ui.form.submit.text 'Change password'
+@wf.context.pass 'public'
+export interface ChangePasswordForm {
+    @ui.form.order 5
+    @ui.form.fn.value '(_, _d, ctx) => ctx.public?.password?.intro || ""'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.public?.password?.intro'
+    @ui.form.grid.colSpan '12'
+    intro: ui.paragraph
+
+    @ui.form.order 8
+    @ui.form.type 'password'
+    @meta.label 'Current password'
+    @ui.form.autocomplete 'current-password'
+    @meta.sensitive
+    @meta.required
+    currentPassword: string
+
+    @ui.form.order 10
+    @ui.form.type 'password'
+    @meta.label 'New password'
+    @ui.form.autocomplete 'new-password'
+    @meta.sensitive
+    @meta.required
+    @expect.minLength 8
+    newPassword: string
+
+    @ui.form.order 20
+    @ui.form.type 'password'
+    @meta.label 'Confirm new password'
+    @ui.form.autocomplete 'new-password'
+    @meta.sensitive
+    @meta.required
+    @expect.minLength 8
+    @ui.form.validate '(v, data) => v === data.newPassword || "Passwords must match"'
+    confirmPassword: string
+
+    @ui.form.order 25
+    @meta.label 'Password requirements'
+    @ui.form.component 'AsPasswordRules'
+    @ui.form.fn.attr 'policies', '(_, _d, ctx) => ctx.public?.password?.policies'
+    @ui.form.fn.attr 'password', '(_, data) => data.newPassword'
+    @ui.form.grid.colSpan '12'
+    passwordRules: ui.paragraph
+}

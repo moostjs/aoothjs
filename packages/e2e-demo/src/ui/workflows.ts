@@ -10,6 +10,12 @@ export interface WfDescriptor {
   description: string;
   requiresAuth: boolean;
   testCreds?: ReadonlyArray<TestCred>;
+  /**
+   * Trigger endpoint override. Defaults to the public `/auth/trigger`.
+   * The change-password flow sets this to its GUARDED route so the SPA posts
+   * to the authenticated, arbac-gated endpoint instead.
+   */
+  endpoint?: string;
 }
 
 // All seeded users carry the same password — keeping it as a constant here
@@ -129,5 +135,16 @@ export const WORKFLOWS: ReadonlyArray<WfDescriptor> = [
     description: "Demo-specific app workflow (transfer project ownership).",
     requiresAuth: true,
     testCreds: ADMIN_USERS,
+  },
+  {
+    id: "auth/change-password/flow",
+    label: "Change password",
+    description:
+      "Authenticated user changes their own password — verifies the current password, then revokes other sessions and rotates the acting token.",
+    requiresAuth: true,
+    testCreds: LOGIN_USERS,
+    // GUARDED trigger — authenticated + the `auth:change-password` privilege
+    // (NOT the public `/auth/trigger`).
+    endpoint: "/auth/change-password",
   },
 ];

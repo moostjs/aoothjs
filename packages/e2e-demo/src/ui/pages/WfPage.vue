@@ -31,9 +31,24 @@ const descriptor = computed(() => WORKFLOWS.find((w) => w.id === wfId.value) ?? 
 // remount when the user switches variant mid-page, so the next request hits a
 // freshly-constructed (and freshly-merged) workflow controller.
 const formKey = computed(() => `${wfId.value}:${variant.value ?? ""}`);
-const fetchOptions = computed(() =>
-  variant.value ? { headers: { "x-wf-variant": variant.value } } : undefined,
-);
+
+// Demo session: the bundled login finish returns `data.accessToken` in the
+// body (the demo SPA is otherwise cookieless — see `onFinished`). We stash it in
+// sessionStorage and replay it as `Authorization: Bearer` so GUARDED triggers
+// (the change-password flow is the only non-`@Public` one) pass the auth guard,
+// which has `enableBearer` on by default. Public flows ignore it harmlessly.
+const DEMO_TOKEN_KEY = "aooth_demo_access_token";
+function readDemoToken(): string | undefined {
+  if (typeof sessionStorage === "undefined") return undefined;
+  return sessionStorage.getItem(DEMO_TOKEN_KEY) ?? undefined;
+}
+const fetchOptions = computed(() => {
+  const headers: Record<string, string> = {};
+  if (variant.value) headers["x-wf-variant"] = variant.value;
+  const token = readDemoToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return Object.keys(headers).length > 0 ? { headers } : undefined;
+});
 
 const hydrated = useHydrated();
 const types = createDefaultTypes();
@@ -62,6 +77,13 @@ function onFinished(result: unknown): void {
   finished.value = result;
   error.value = null;
   idempotentEnvelope.value = null;
+  // Persist the access token from any finish that issues one (login, recovery
+  // auto-login, change-password rotation) so subsequent guarded triggers
+  // authenticate. See `fetchOptions` for the replay side.
+  const token = (result as { data?: { accessToken?: unknown } } | null)?.data?.accessToken;
+  if (typeof token === "string" && token.length > 0 && typeof sessionStorage !== "undefined") {
+    sessionStorage.setItem(DEMO_TOKEN_KEY, token);
+  }
 }
 
 async function onError(err: { message?: string }): Promise<void> {
@@ -170,7 +192,7 @@ async function navigate(url: string): Promise<void> {
         <AsWfForm
           v-else-if="hydrated"
           :key="formKey"
-          path="/auth/trigger"
+          :path="descriptor?.endpoint ?? '/auth/trigger'"
           :name="wfId"
           :types="types"
           :components="components"

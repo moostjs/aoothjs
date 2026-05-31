@@ -66,4 +66,5 @@ export const adminRole = defineRole<UserAttrs, ArbacDbScope>()
     }),
   )
   .allow("auth.invite", "start")
+  .allow("auth.change-password", "*")
   .build();

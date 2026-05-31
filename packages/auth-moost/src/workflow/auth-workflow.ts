@@ -67,6 +67,7 @@ import type { AuthWorkflowOpts, ResolvedAuthWorkflowOpts } from "./auth-workflow
 import {
   AskEmailForm,
   AskPhoneForm,
+  ChangePasswordForm,
   ConcurrencyLimitForm,
   EmailIdentifierForm,
   EnrollAddressForm,
@@ -152,6 +153,7 @@ const DEFAULT_FORMS: ResolvedAuthWorkflowOpts["forms"] = {
   mfaCode: MfaCodeForm,
   pincode: PincodeForm,
   setPassword: SetPasswordForm,
+  changePassword: ChangePasswordForm,
   termsBump: TermsBumpForm,
   concurrencyLimit: ConcurrencyLimitForm,
   recoveryPincode: PincodeForm,
@@ -528,6 +530,24 @@ export class AuthWorkflow {
     _ctx: AuthWfCtx,
   ): NonNullable<AuthWfCtx["sessionPolicy"]> | Promise<NonNullable<AuthWfCtx["sessionPolicy"]>> {
     return {};
+  }
+
+  /**
+   * Resolve the authenticated change-password policy. Reached from
+   * change-password.flow only. Default revokes the user's other sessions on a
+   * successful change (OWASP Session Management) and applies NO rate limit —
+   * current-password re-entry (enforced by `UserService.changePassword`) is the
+   * primary protection, not throttling. Customers override to add a min-interval
+   * (`rateLimit.minIntervalMs`) or to keep other sessions alive.
+   *
+   * Whether the flow may be STARTED at all is governed by arbac on the trigger
+   * route (deny the `change-password` action to forbid it for SSO-only orgs) —
+   * there is deliberately no on/off flag here.
+   */
+  protected resolveChangePasswordPolicy(
+    _ctx: AuthWfCtx,
+  ): NonNullable<AuthWfCtx["changePassword"]> | Promise<NonNullable<AuthWfCtx["changePassword"]>> {
+    return { revokeOtherSessions: true };
   }
 
   /**
@@ -1035,6 +1055,28 @@ export class AuthWorkflow {
     return undefined;
   }
 
+  /**
+   * Bind the change-password flow to the CURRENT authenticated user. Identity
+   * comes from the session (`useAuth().getUserId()`) — NEVER from form input —
+   * so the flow is structurally "change MY password" with no target-user
+   * parameter. NOT `@Public()`: the trigger, the `@Workflow` body, and every
+   * step in this flow are gated by `@ArbacResource("auth.change-password")` +
+   * `@ArbacAction("self")`, so a customer enables the whole feature with a
+   * single `allow("auth.change-password", "*")` grant and forbids it (SSO-only
+   * orgs) by omitting it. `getUserId()` throws 401 if unauthenticated — defense
+   * in depth on top of the guarded trigger route.
+   */
+  @Step("init-change-password")
+  @ArbacResource("auth.change-password")
+  @ArbacAction("self")
+  initChangePassword(@WorkflowParam("context") ctx: AuthWfCtx): void {
+    ctx.username = useAuth().getUserId();
+    const password = (ctx.password ??= {});
+    password.heading = "Change your password";
+    password.intro = "Enter your current password, then choose a new one.";
+    return undefined;
+  }
+
   // ── Authentication entry (2) ──
 
   @Step("credentials")
@@ -1442,6 +1484,21 @@ export class AuthWorkflow {
       });
     }
     ctx.sessionPolicy = result;
+    return undefined;
+  }
+
+  @Step("prepare-change-password")
+  @ArbacResource("auth.change-password")
+  @ArbacAction("self")
+  prepareChangePassword(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
+    const result = this.resolveChangePasswordPolicy(ctx);
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        ctx.changePassword = resolved;
+        return undefined;
+      });
+    }
+    ctx.changePassword = result;
     return undefined;
   }
 
@@ -1860,6 +1917,123 @@ export class AuthWorkflow {
     delete password.changeReason;
     delete password.heading;
     delete password.intro;
+    return undefined;
+  }
+
+  // ── Authenticated change-password (change-password.flow) ──
+
+  /**
+   * Optional min-interval rate limit (Okta "minimum password age"). Gated
+   * upstream by `!!ctx.changePassword?.rateLimit`. Reuses `password.lastChanged`
+   * (no extra storage) — if the last change is more recent than
+   * `minIntervalMs`, emit a warn terminal and set `ctx.aborted` so the schema's
+   * `{ break }` short-circuits BEFORE the form pause (the user can't fix this by
+   * retrying the form — they must wait — so this is a terminal, not a
+   * `requireInput`). NOT the primary protection: current-password re-entry is.
+   */
+  @Step("enforce-change-password-rate-limit")
+  @ArbacResource("auth.change-password")
+  @ArbacAction("self")
+  async enforceChangePasswordRateLimit(
+    @WorkflowParam("context") ctx: AuthWfCtx,
+  ): Promise<undefined> {
+    const rl = ctx.changePassword?.rateLimit;
+    if (!rl) return undefined;
+    this.requireUsername(ctx);
+    const user = await this.users.getUser(ctx.username);
+    const last = user.password.lastChanged;
+    if (last && Date.now() - last < rl.minIntervalMs) {
+      ctx.aborted = true;
+      finishWf({
+        message: {
+          level: "warn",
+          text: "You changed your password too recently. Please try again later.",
+        },
+        next: {
+          trigger: "manual",
+          primary: {
+            label: "Back",
+            action: {
+              type: "redirect",
+              target: this.opts.loginUrl,
+              reason: "change-password-rate-limited",
+            },
+          },
+        },
+      });
+    }
+    return undefined;
+  }
+
+  /**
+   * Authenticated self-service password change. `ctx.username` is the SIGNED-IN
+   * user (set by `init-change-password` from the session — never form input).
+   * Pauses for `ChangePasswordForm`, then calls `users.changePassword`, which
+   * re-verifies the CURRENT password (primary protection) before applying the
+   * policy + history checks. `UserAuthError`s map to per-field form errors so
+   * the user can fix and retry in place (per the requireInput-not-HttpError
+   * convention).
+   */
+  @Step("change-password-form")
+  @ArbacResource("auth.change-password")
+  @ArbacAction("self")
+  async changePasswordForm(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
+    this.requireUsername(ctx);
+    const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.changePassword);
+    const input = wf.resolveInput() as {
+      currentPassword: string;
+      newPassword: string;
+      confirmPassword: string;
+    };
+    if (input.newPassword !== input.confirmPassword) {
+      throw this.throwPublic(ctx, wf, { errors: { confirmPassword: "Passwords do not match" } });
+    }
+    try {
+      await this.users.changePassword(
+        ctx.username,
+        input.currentPassword,
+        input.newPassword,
+        input.confirmPassword,
+      );
+    } catch (err) {
+      if (err instanceof UserAuthError) {
+        const field =
+          err.type === "INVALID_CREDENTIALS"
+            ? "currentPassword"
+            : err.type === "PASSWORDS_MISMATCH"
+              ? "confirmPassword"
+              : "newPassword";
+        throw this.throwPublic(ctx, wf, { errors: { [field]: err.message } });
+      }
+      throw err;
+    }
+    return undefined;
+  }
+
+  /**
+   * Change-password terminal — rotate the acting session's token (so the
+   * current device stays signed in on a FRESH credential) and emit a success
+   * message. Runs AFTER the optional `revoke-sessions` step, so the net effect
+   * is "kill every other session, keep this one on a new token" (OWASP Session
+   * Management: no ghost sessions survive a credential change).
+   */
+  @Step("finish-change-password")
+  @ArbacResource("auth.change-password")
+  @ArbacAction("self")
+  async finishChangePassword(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    this.requireUsername(ctx);
+    const issue = await this.auth.issue(ctx.username);
+    const auth = useAuth();
+    const envelope: WfFinished = {
+      finished: true,
+      data: auth.buildLoginResponse(ctx.username, issue),
+      message: { level: "success", text: "Your password has been changed." },
+    };
+    useWfFinished().set({
+      type: "data",
+      value: envelope,
+      cookies: auth.buildFinishedCookies(issue),
+    });
     return undefined;
   }
 
@@ -3146,4 +3320,39 @@ export class AuthWorkflow {
     // Note: notify-new-device is NOT fired here in this pass — see §13.
   ])
   recoveryFlow(): void {}
+
+  /**
+   * change-password.flow — authenticated self-service "change my password".
+   *
+   * `@Public()` on the body lets the wf adapter dispatch start/resume (mirrors
+   * the other flows); the FLOW itself is NOT public — `init-change-password` is
+   * arbac-gated (`auth:change-password`) and binds `ctx.username` from the
+   * session, so an unauthenticated / unauthorized caller is rejected at the
+   * first step. Customers forbid the feature (e.g. SSO-only orgs) by denying
+   * the `change-password` action — there is no on/off opts flag.
+   *
+   * NOT in `DEFAULT_AUTH_WORKFLOWS` — it must be reached via a GUARDED trigger
+   * route (see `AuthController.changePassword`), never the public
+   * `/auth/trigger`.
+   */
+  @Workflow("auth/change-password/flow")
+  @ArbacResource("auth.change-password")
+  @ArbacAction("self")
+  @WorkflowSchema<AuthWfCtx>([
+    { id: "init-change-password" }, // binds ctx.username from session + arbac gate
+    { break: (ctx) => !ctx.username },
+    { id: "prepare-change-password" },
+    { id: "prepare-password-rules" },
+    {
+      id: "enforce-change-password-rate-limit",
+      condition: (ctx) => !!ctx.changePassword?.rateLimit,
+    },
+    { break: (ctx) => !!ctx.aborted }, // rate-limit emitted a terminal
+    { id: "change-password-form" },
+    // Revoke the user's OTHER sessions, then re-issue the acting one on a fresh
+    // token (finish step) — net: no ghost sessions survive the change.
+    { id: "revoke-sessions", condition: (ctx) => !!ctx.changePassword?.revokeOtherSessions },
+    { id: "finish-change-password" },
+  ])
+  changePasswordFlow(): void {}
 }

@@ -203,6 +203,29 @@ export interface AuthWfSessionPolicy {
 }
 
 /**
+ * Authenticated change-password policy (change-password.flow). Resolved by
+ * `resolveChangePasswordPolicy`, written to `ctx.changePassword` by
+ * `prepare-change-password`. The flow's whole purpose is gated on this slot's
+ * presence (it's also the per-flow discriminator — see the package CLAUDE.md
+ * flow-discrimination table).
+ *
+ * Primary protection is current-password re-entry (enforced by
+ * `UserService.changePassword`), NOT rate limiting — so `rateLimit` is
+ * optional and off by default.
+ *
+ * - `revokeOtherSessions` — on success, revoke every session for the user then
+ *   re-issue the acting session a fresh token (OWASP Session Management: kill
+ *   ghost sessions after a credential change). Default `true`.
+ * - `rateLimit.minIntervalMs` — minimum gap between successive password changes
+ *   (Okta "minimum password age"). Enforced against `password.lastChanged` with
+ *   ZERO extra storage. Omit to disable.
+ */
+export interface AuthWfChangePasswordPolicy {
+  revokeOtherSessions: boolean;
+  rateLimit?: { minIntervalMs: number };
+}
+
+/**
  * Failed-login lockout posture. Picks HOW a tripped account lockout is lifted:
  * - `admin-only`   — permanent lock; only an admin (UserService.unlockAccount)
  *                    lifts it. The recovery flow may still reset the password
@@ -395,6 +418,7 @@ export interface AuthWfCtx {
   guards?: AuthWfGuardsPolicy; // [login]
   lockout?: AuthWfLockoutPolicy; // [login + recovery]
   sessionPolicy?: AuthWfSessionPolicy; // [login]
+  changePassword?: AuthWfChangePasswordPolicy; // [change-password] — also the flow discriminator
   mfaPolicy?: AuthWfMfaPolicy; // [login + invite]
   adminForm?: AuthWfAdminFormPolicy; // [invite admin]
   accept?: AuthWfAcceptState; // [invite accept]

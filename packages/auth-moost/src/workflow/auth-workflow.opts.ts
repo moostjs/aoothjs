@@ -61,6 +61,8 @@ export interface AuthWorkflowOpts {
 
     // Password
     setPassword?: TAtscriptAnnotatedType;
+    /** Authenticated self-service "change my password" form (current + new + confirm). */
+    changePassword?: TAtscriptAnnotatedType;
 
     // Profile + consents
     termsBump?: TAtscriptAnnotatedType;
@@ -109,6 +111,7 @@ export interface ResolvedAuthWorkflowOpts {
     mfaCode: TAtscriptAnnotatedType;
     pincode: TAtscriptAnnotatedType;
     setPassword: TAtscriptAnnotatedType;
+    changePassword: TAtscriptAnnotatedType;
     termsBump: TAtscriptAnnotatedType;
     concurrencyLimit: TAtscriptAnnotatedType;
     recoveryPincode: TAtscriptAnnotatedType;

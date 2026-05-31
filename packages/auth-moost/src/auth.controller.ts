@@ -1,4 +1,4 @@
-import { ArbacResource } from "@aooth/arbac-moost";
+import { ArbacAction, ArbacResource } from "@aooth/arbac-moost";
 import { type AuthContext, AuthCredential, AuthError, type IssueResult } from "@aooth/auth";
 import { UserAuthError, type UserCredentials, UserService } from "@aooth/user";
 import type { WfFinished } from "@atscript/moost-wf";
@@ -24,6 +24,13 @@ export const DEFAULT_AUTH_WORKFLOWS = [
   "auth/invite/start",
   "auth/recovery/flow",
 ] as const;
+
+/**
+ * Workflow id allowed by the GUARDED `/auth/change-password` trigger.
+ * Deliberately NOT in `DEFAULT_AUTH_WORKFLOWS` — the authenticated
+ * change-password flow must never be reachable from the public `/auth/trigger`.
+ */
+export const CHANGE_PASSWORD_WORKFLOW = "auth/change-password/flow";
 
 /** Prefer an explicit body field, fall back to the refresh cookie when enabled. */
 function resolveRefreshToken(auth: AuthBindings, body: { refreshToken?: string } | undefined) {
@@ -145,6 +152,27 @@ export class AuthController {
     // response when the handler returns `undefined`. Subclasses that want to
     // short-circuit (e.g. emit a custom error) override this and return a
     // non-undefined value; the interceptor then skips.
+  }
+
+  /**
+   * GUARDED trigger for the authenticated "change my password" flow. Unlike
+   * `triggerWf`, this is NOT `@Public()` — the auth guard rejects an
+   * unauthenticated caller with 401 before the flow starts. The method-level
+   * `@ArbacResource("auth.change-password")` overrides the class `"auth"`
+   * resource so the trigger, the `@Workflow` body, and every flow step all
+   * resolve to the same `auth.change-password` resource / `self` action — a
+   * customer enables the whole feature with a single
+   * `allow("auth.change-password", "*")` grant and forbids it (SSO-only orgs)
+   * by omitting that grant. The flow binds `ctx.username` from the session in
+   * `init-change-password`, so it is structurally "change MY password" — there
+   * is no target-user parameter.
+   */
+  @Post("change-password")
+  @ArbacResource("auth.change-password")
+  @ArbacAction("self")
+  @WfTrigger({ allow: [CHANGE_PASSWORD_WORKFLOW] })
+  changePassword(): void {
+    // Body intentionally empty — see `triggerWf`.
   }
 
   /**

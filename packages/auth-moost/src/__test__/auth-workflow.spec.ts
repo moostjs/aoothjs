@@ -38,6 +38,7 @@ class TestableAuthWorkflow extends AuthWorkflow {
   public exposeLockout = (ctx: AuthWfCtx) => this.resolveLockout(ctx);
   public exposeLockoutOverride = (ctx: AuthWfCtx) => this.lockoutOverride(ctx);
   public exposeSessionPolicy = (ctx: AuthWfCtx) => this.resolveSessionPolicy(ctx);
+  public exposeChangePasswordPolicy = (ctx: AuthWfCtx) => this.resolveChangePasswordPolicy(ctx);
   public exposeMfaPolicy = (ctx: AuthWfCtx) => this.resolveMfaPolicy(ctx);
   public exposeOtpDisclosure = (ctx: AuthWfCtx, ch: "email" | "phone") =>
     this.resolveOtpDisclosure(ctx, ch);
@@ -150,11 +151,15 @@ describe("AuthWorkflow construction (WF-AUTH-UNIFIED-002)", () => {
     // the box. Consumer override via `opts.forms.<field>` swaps any slot.
     // Pin a representative field-count + a key slot so a regression that
     // drops the default map is caught.
-    expect(Object.keys(opts.forms).length).toBe(15);
+    expect(Object.keys(opts.forms).length).toBe(16);
     expect(opts.forms.loginCredentials).toBeTruthy();
     expect(opts.forms.recoveryEmailIdentifier).toBeTruthy();
     expect(opts.forms.pincode).toBeTruthy();
     expect(opts.forms.setPassword).toBeTruthy();
+    // Authenticated change-password ships its own standalone form (current +
+    // new + confirm) — distinct from the reset/initial setPassword form.
+    expect(opts.forms.changePassword).toBeTruthy();
+    expect(opts.forms.changePassword).not.toBe(opts.forms.setPassword);
   });
 
   it("preserves overrides for top-level fields", () => {
@@ -325,6 +330,18 @@ describe("AuthWorkflow resolver defaults", () => {
     // not satisfy the `!!ctx.sessionPolicy?.concurrencyLimit` gate, but
     // pinning `{}` documents the intended shape.
     expect(r).toEqual({});
+  });
+
+  it("resolveChangePasswordPolicy — revokes other sessions, no rate limit by default", async () => {
+    // WHY: the two guarantees the change-password tail depends on. revokeOtherSessions
+    // ON is the OWASP "no ghost sessions survive a credential change" default; rateLimit
+    // ABSENT encodes the deliberate design call that current-password re-entry (enforced
+    // by UserService.changePassword), NOT throttling, is the primary protection. A
+    // regression that dropped revoke (ghost sessions) or shipped a default rate limit
+    // (lockout friction + wrong threat model) is caught here. Both stay overridable.
+    const r = await settle(wf.exposeChangePasswordPolicy(ctx));
+    expect(r).toEqual({ revokeOtherSessions: true });
+    expect(r.rateLimit).toBeUndefined();
   });
 
   it("loadActiveSessionsCount — reflects the store's access-kind session count", async () => {
@@ -662,7 +679,7 @@ describe("AuthWorkflow schema integrity", () => {
     return meta.wfSchema;
   }
 
-  it.each([["loginFlow"], ["inviteFlow"], ["recoveryFlow"]])(
+  it.each([["loginFlow"], ["inviteFlow"], ["recoveryFlow"], ["changePasswordFlow"]])(
     "every step id referenced in %s resolves to a registered @Step",
     (method: string) => {
       const schema = readSchemaFor(method);
@@ -679,7 +696,7 @@ describe("AuthWorkflow schema integrity", () => {
     },
   );
 
-  it("declares three @Workflow methods (login, invite, recover)", () => {
+  it("declares four @Workflow methods (login, invite, recover, change-password)", () => {
     const mate = getMoostMate();
     const proto = AuthWorkflow.prototype as object;
     const flows: { method: string; path: string }[] = [];
@@ -696,6 +713,7 @@ describe("AuthWorkflow schema integrity", () => {
     // canonical wf-id suffixes the controller mounts at /auth/<path>/flow.
     // Renaming or losing one would break the public REST surface.
     expect(flows.map((f) => f.path).toSorted()).toEqual([
+      "auth/change-password/flow",
       "auth/invite/start",
       "auth/login/flow",
       "auth/recovery/flow",

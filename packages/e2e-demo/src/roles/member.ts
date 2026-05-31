@@ -81,4 +81,10 @@ export const memberRole = defineRole<UserAttrs, ArbacDbScope>()
     }),
   )
   .allow("auth", "handover.trigger")
+  // Every signed-in contributor may change their OWN password. The guarded
+  // /auth/change-password trigger, the @Workflow body, and every flow step all
+  // resolve to the "auth.change-password" resource, so a single wildcard grant
+  // authorises the whole flow. An SSO-only deployment simply omits this grant —
+  // no on/off opts flag.
+  .allow("auth.change-password", "*")
   .build();
