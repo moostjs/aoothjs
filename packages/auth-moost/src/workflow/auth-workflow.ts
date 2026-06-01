@@ -2849,7 +2849,8 @@ export class AuthWorkflow {
    */
   @Step("extra-step")
   @Public()
-  extraStep(@WorkflowParam("context") _ctx: AuthWfCtx): undefined {
+  // oxlint-disable-next-line typescript/no-redundant-type-constituents -- explicit sync|async override seam, see CLAUDE.md "Pure extension-point stubs"
+  extraStep(@WorkflowParam("context") _ctx: AuthWfCtx): unknown | Promise<unknown> {
     return undefined;
   }
 
@@ -3124,31 +3125,36 @@ export class AuthWorkflow {
 
   @Step("magic-link-request")
   @Public()
-  magicLinkRequest(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  // oxlint-disable-next-line typescript/no-redundant-type-constituents -- explicit sync|async override seam, see CLAUDE.md "Pure extension-point stubs"
+  magicLinkRequest(@WorkflowParam("context") _ctx: AuthWfCtx): unknown | Promise<unknown> {
     return undefined;
   }
 
   @Step("magic-link-send")
   @Public()
-  magicLinkSend(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  // oxlint-disable-next-line typescript/no-redundant-type-constituents -- explicit sync|async override seam, see CLAUDE.md "Pure extension-point stubs"
+  magicLinkSend(@WorkflowParam("context") _ctx: AuthWfCtx): unknown | Promise<unknown> {
     return undefined;
   }
 
   @Step("magic-link-verified")
   @Public()
-  magicLinkVerified(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  // oxlint-disable-next-line typescript/no-redundant-type-constituents -- explicit sync|async override seam, see CLAUDE.md "Pure extension-point stubs"
+  magicLinkVerified(@WorkflowParam("context") _ctx: AuthWfCtx): unknown | Promise<unknown> {
     return undefined;
   }
 
   @Step("passkey")
   @Public()
-  passkey(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  // oxlint-disable-next-line typescript/no-redundant-type-constituents -- explicit sync|async override seam, see CLAUDE.md "Pure extension-point stubs"
+  passkey(@WorkflowParam("context") _ctx: AuthWfCtx): unknown | Promise<unknown> {
     return undefined;
   }
 
   @Step("sso-callback")
   @Public()
-  ssoCallback(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  // oxlint-disable-next-line typescript/no-redundant-type-constituents -- explicit sync|async override seam, see CLAUDE.md "Pure extension-point stubs"
+  ssoCallback(@WorkflowParam("context") _ctx: AuthWfCtx): unknown | Promise<unknown> {
     return undefined;
   }
 

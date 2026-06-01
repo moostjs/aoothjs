@@ -223,10 +223,42 @@ Default sync `@Step` bodies type the return as `T | Promise<T>` so customer subc
 ```ts
 initLogin(ctx): undefined | Promise<undefined> { return undefined; }            // sync default
 selectMfaMethod(ctx): undefined | Promise<undefined> { ... }                    // sync default
-magicLinkRequest(): void | Promise<void> { throw new HttpError(501, ...); }     // stub throws
 ```
 
 The wf engine awaits **only when the actual return value is a Promise**. Adding `async` to a default impl forces every default call to allocate a Promise, defeating the framework's sync fast-path optimization.
+
+### Pure extension-point stubs — `unknown | Promise<unknown>`
+
+A small set of `@Step` bodies are **pure consumer extension points**: no-op /
+placeholder defaults that exist only so a customer subclass can override them
+with arbitrary behaviour. These type their return as `unknown | Promise<unknown>`
+— NOT the narrow `undefined`/`void` the default body actually returns — so the
+override is free to return anything (a form pause, an `HttpResponse`, a payload,
+sync or async) without fighting the base signature:
+
+```ts
+@Step("extra-step")
+@Public()
+// oxlint-disable-next-line typescript/no-redundant-type-constituents -- explicit sync|async override seam, see CLAUDE.md "Pure extension-point stubs"
+extraStep(@WorkflowParam("context") _ctx: AuthWfCtx): unknown | Promise<unknown> { return undefined; }
+```
+
+This applies to `extra-step` and the five alt-cred stubs (`magic-link-request`,
+`magic-link-send`, `magic-link-verified`, `passkey`, `sso-callback`). It is the
+**exception** to the `T | Promise<T>` rule above — use the precise `T` form for
+every step whose default body carries real behaviour; reserve the `unknown` form
+for these designated override seams.
+
+**Lint note — the `oxlint-disable-next-line` directive above is required.**
+`unknown | Promise<unknown>` collapses to `unknown` (the top type absorbs the
+union), so the `correctness`-category rule `no-redundant-type-constituents`
+flags it and the pre-commit `vp check --fix` hook would otherwise rewrite it
+back to bare `unknown`, silently dropping the sync|async intent signal. The
+per-line disable keeps the explicit union (TS still normalises the emitted
+`.d.ts` type to `unknown`; the union is source-level documentation). Add the
+same directive to any new extension-point stub. Do NOT disable the rule
+workspace-wide in the root `vite.config.ts` — it catches real redundant unions
+everywhere else.
 
 ## Step IDs
 
