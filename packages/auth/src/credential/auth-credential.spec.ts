@@ -41,6 +41,7 @@ function makeAuth(
     method: opts.method,
     maxConcurrent: opts.maxConcurrent,
     onLimit: opts.onLimit,
+    trackLastSeen: opts.trackLastSeen,
   });
   return { auth, store, clock };
 }
@@ -325,6 +326,144 @@ describe("AuthCredential", () => {
       await expect(auth.issue("alice")).rejects.toMatchObject({
         type: "MAX_CONCURRENT_REACHED",
       });
+    });
+  });
+
+  describe("sessionId (token family)", () => {
+    it("stamps one sessionId on access + refresh, surfaced by validate()", async () => {
+      const { auth } = makeAuth({ refresh: { ttl: 60_000, rotation: "always" } });
+      const issued = await auth.issue("alice");
+      const ctxA = await auth.validate(issued.accessToken);
+      expect(ctxA?.sessionId).toBeTruthy();
+      // The refresh token shares the same session family.
+      const sessions = await auth.listSessions("alice");
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].sessionId).toBe(ctxA?.sessionId);
+    });
+
+    it("stays one session across N refreshes (rotation 'always')", async () => {
+      const { auth, clock } = makeAuth({ refresh: { ttl: 60_000, rotation: "always" } });
+      const first = await auth.issue("alice");
+      const original = (await auth.validate(first.accessToken))?.sessionId;
+      let refreshToken = first.refreshToken!;
+      for (let i = 0; i < 3; i++) {
+        clock.advance(10);
+        const rotated = await auth.refresh(refreshToken);
+        refreshToken = rotated.refreshToken!;
+        expect((await auth.validate(rotated.accessToken))?.sessionId).toBe(original);
+      }
+      const sessions = await auth.listSessions("alice");
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].sessionId).toBe(original);
+    });
+
+    it("legacy rows without sessionId fall back to the token fingerprint", async () => {
+      const { auth, store } = makeAuth();
+      const issued = await auth.issue("alice");
+      // Simulate a pre-sessionId row by stripping it in the store.
+      const list = await store.listForUser!("alice");
+      for (const e of list) {
+        delete (e as { sessionId?: string }).sessionId;
+        await store.update(e.token, e);
+      }
+      const ctx = await auth.validate(issued.accessToken);
+      expect(ctx?.sessionId).toBe(fingerprint(issued.accessToken));
+      const sessions = await auth.listSessions("alice");
+      expect(sessions[0].sessionId).toBe(fingerprint(issued.accessToken));
+    });
+  });
+
+  describe("listSessions", () => {
+    it("collapses access + refresh into one row with metadata + refresh expiry", async () => {
+      const { auth, clock } = makeAuth({
+        accessTtl: 1000,
+        refresh: { ttl: 60_000, rotation: "none" },
+      });
+      await auth.issue("alice", { metadata: { ip: "1.2.3.4", userAgent: "UA/1" } });
+      const sessions = await auth.listSessions("alice");
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].metadata).toEqual({ ip: "1.2.3.4", userAgent: "UA/1" });
+      expect(sessions[0].createdAt).toBe(clock.now());
+      // Refresh outlives access — its expiry is the session lifetime.
+      expect(sessions[0].expiresAt).toBe(clock.now() + 60_000);
+    });
+
+    it("returns one row per device, newest first", async () => {
+      const { auth, clock } = makeAuth();
+      await auth.issue("alice");
+      clock.advance(100);
+      await auth.issue("alice");
+      const sessions = await auth.listSessions("alice");
+      expect(sessions).toHaveLength(2);
+      expect(sessions[0].createdAt).toBeGreaterThan(sessions[1].createdAt);
+    });
+
+    it("maps each row through an enricher when provided", async () => {
+      const { auth } = makeAuth();
+      await auth.issue("alice", { metadata: { userAgent: "Chrome" } });
+      const [enriched] = await auth.listSessions("alice", {
+        enrich: (s) => ({ ...s, browser: s.metadata?.userAgent }),
+      });
+      expect((enriched as { browser?: string }).browser).toBe("Chrome");
+    });
+  });
+
+  describe("revokeSession + revokeOtherSessions", () => {
+    it("revokeSession kills exactly one device's family; others keep working", async () => {
+      const { auth } = makeAuth({ refresh: { ttl: 60_000, rotation: "none" } });
+      const a = await auth.issue("alice");
+      const b = await auth.issue("alice");
+      const sidA = (await auth.validate(a.accessToken))?.sessionId as string;
+      await auth.revokeSession("alice", sidA);
+      expect(await auth.validate(a.accessToken)).toBeNull();
+      // The refresh side of the same family is gone too.
+      await expect(auth.refresh(a.refreshToken!)).rejects.toMatchObject({ type: "INVALID_TOKEN" });
+      expect(await auth.validate(b.accessToken)).not.toBeNull();
+    });
+
+    it("revokeOtherSessions leaves only the current session", async () => {
+      const { auth } = makeAuth();
+      const a = await auth.issue("alice");
+      await auth.issue("alice");
+      await auth.issue("alice");
+      const sidA = (await auth.validate(a.accessToken))?.sessionId as string;
+      const revoked = await auth.revokeOtherSessions("alice", sidA);
+      expect(revoked).toBe(2);
+      const sessions = await auth.listSessions("alice");
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].sessionId).toBe(sidA);
+    });
+  });
+
+  describe("trackLastSeen", () => {
+    it("default false: no lastSeenAt, listSessions falls back to createdAt", async () => {
+      const { auth, clock } = makeAuth({ refresh: { ttl: 60_000, rotation: "always" } });
+      const first = await auth.issue("alice");
+      clock.advance(500);
+      await auth.refresh(first.refreshToken!);
+      const [s] = await auth.listSessions("alice");
+      expect(s.lastSeenAt).toBeUndefined();
+    });
+
+    it("'refresh': a refresh advances the session's lastSeenAt", async () => {
+      const { auth, clock } = makeAuth({
+        refresh: { ttl: 60_000, rotation: "always" },
+        trackLastSeen: "refresh",
+      });
+      const first = await auth.issue("alice");
+      clock.advance(500);
+      await auth.refresh(first.refreshToken!);
+      const [s] = await auth.listSessions("alice");
+      expect(s.lastSeenAt).toBe(clock.now());
+    });
+
+    it("'validate': touches lastSeenAt on each successful validate", async () => {
+      const { auth, clock } = makeAuth({ trackLastSeen: "validate" });
+      const issued = await auth.issue("alice");
+      clock.advance(250);
+      await auth.validate(issued.accessToken);
+      const [s] = await auth.listSessions("alice");
+      expect(s.lastSeenAt).toBe(clock.now());
     });
   });
 });

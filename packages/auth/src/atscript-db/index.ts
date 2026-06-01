@@ -24,6 +24,8 @@ export interface AuthCredentialRow<TClaims extends object = object> {
   };
   parentCredentialId?: string;
   rotatedAt?: number;
+  sessionId?: string;
+  lastSeenAt?: number;
 }
 
 /**
@@ -85,6 +87,8 @@ export class CredentialStoreAtscriptDb<
       metadata: state.metadata,
       parentCredentialId: state.parentCredentialId,
       rotatedAt: state.rotatedAt,
+      sessionId: state.sessionId,
+      lastSeenAt: state.lastSeenAt,
     };
     await this.table.insertOne(row);
     return token;
@@ -130,6 +134,8 @@ export class CredentialStoreAtscriptDb<
       metadata: state.metadata,
       parentCredentialId: state.parentCredentialId,
       rotatedAt: state.rotatedAt,
+      sessionId: state.sessionId,
+      lastSeenAt: state.lastSeenAt,
     };
     await this.table.replaceOne(row);
     return token;
@@ -137,6 +143,14 @@ export class CredentialStoreAtscriptDb<
 
   async revoke(token: string): Promise<void> {
     await this.table.deleteOne(token);
+  }
+
+  async touch(token: string, at: number): Promise<void> {
+    const row = await this.table.findOne({ filter: { token } });
+    if (!row) return;
+    if (row.expiresAt <= Date.now()) return;
+    // replaceOne keeps the adapter portable across engines without a patch op.
+    await this.table.replaceOne({ ...row, lastSeenAt: at });
   }
 
   async revokeAllForUser(userId: string): Promise<number> {
@@ -176,5 +190,7 @@ function rowToState<TClaims extends object>(
   if (row.kind === "access" || row.kind === "refresh") state.kind = row.kind;
   if (row.parentCredentialId !== undefined) state.parentCredentialId = row.parentCredentialId;
   if (row.rotatedAt !== undefined) state.rotatedAt = row.rotatedAt;
+  if (row.sessionId !== undefined) state.sessionId = row.sessionId;
+  if (row.lastSeenAt !== undefined) state.lastSeenAt = row.lastSeenAt;
   return state;
 }

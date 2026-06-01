@@ -143,6 +143,18 @@ export class CredentialStoreRedis<
     await this.redis.srem(this.userKey(state.userId), token);
   }
 
+  async touch(token: string, at: number): Promise<void> {
+    const raw = await this.redis.get(this.tokenKey(token));
+    if (raw === null) return;
+    const state = JSON.parse(raw) as CredentialState<TClaims>;
+    state.lastSeenAt = at;
+    // Preserve the remaining TTL — re-derive from the (unchanged) expiresAt so
+    // touching never resurrects or extends a credential past its expiry.
+    const ttlMs = Math.max(0, state.expiresAt - Date.now());
+    if (ttlMs <= 0) return;
+    await this.redis.set(this.tokenKey(token), JSON.stringify(state), "PX", ttlMs);
+  }
+
   async revokeAllForUser(userId: string): Promise<number> {
     const setKey = this.userKey(userId);
     const tokens = await this.redis.smembers(setKey);

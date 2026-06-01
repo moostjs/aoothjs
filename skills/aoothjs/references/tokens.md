@@ -116,6 +116,8 @@ Decryption failures (tampered ciphertext, bad authTag, malformed base64, malform
 
 `method: 'session' | 'token'` on `AuthCredentialOptions` is **just a label** carried into every `AuthContext`. Default `'token'`. The machinery is identical.
 
+> For the multi-device "active sessions" model (listing signed-in devices, per-device revoke, `sessionId` token-families) see [sessions.md](sessions.md) — a different concept from this `method` label.
+
 Conventional choices:
 
 | Use case                                    | `method`    | Store                                                | `accessTtl`                 |

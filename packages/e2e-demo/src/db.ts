@@ -5,6 +5,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 
 import { AuditEntry } from "./models/audit.as";
+import { DemoAuthCredential } from "./models/auth-credential.as";
 import { Comment } from "./models/comment.as";
 import { Department } from "./models/department.as";
 import { Document } from "./models/document.as";
@@ -24,6 +25,7 @@ export const ALL_MODELS = [
   Document,
   AuditEntry,
   DemoWfState,
+  DemoAuthCredential,
 ] as const;
 
 export interface AppDb {
@@ -38,6 +40,7 @@ export interface AppDb {
     documents: AtscriptDbTable<typeof Document>;
     audit: AtscriptDbTable<typeof AuditEntry>;
     wfStates: AtscriptDbTable<typeof DemoWfState>;
+    credentials: AtscriptDbTable<typeof DemoAuthCredential>;
   };
   close: () => void;
 }
@@ -67,6 +70,7 @@ export function createAppDb(dbPath: string): AppDb {
     documents: db.getTable(Document),
     audit: db.getTable(AuditEntry),
     wfStates: db.getTable(DemoWfState),
+    credentials: db.getTable(DemoAuthCredential),
   };
 
   return {

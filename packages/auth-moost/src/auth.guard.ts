@@ -10,7 +10,7 @@ import {
 } from "moost";
 
 import { type AuthOptions, resolveAuthOptions } from "./auth.config";
-import { authOptionsKey, setAuthContext, useAuth } from "./auth.composables";
+import { authOptionsKey, setAuthContext, setAuthCredential, useAuth } from "./auth.composables";
 import type { TAuthMeta } from "./auth.mate";
 
 /**
@@ -63,6 +63,9 @@ export function authGuardInterceptor(opts?: AuthOptions): TInterceptorDef {
     }
 
     const credential = await cc.instantiate(AuthCredential);
+    // Stash the instance so the `useAuth()` session facade (listSessions /
+    // revokeSession / revokeOtherSessions) can reach the configured store.
+    setAuthCredential(ctx, credential);
     const authContext = await credential.validate(token);
     if (!authContext) {
       if (isPublic) {

@@ -267,6 +267,25 @@ describe("CredentialStoreRedis — TTL semantics", () => {
   });
 });
 
+describe("CredentialStoreRedis — sessionId / lastSeenAt", () => {
+  it("round-trips sessionId through persist + listForUser", async () => {
+    const store = new CredentialStoreRedis({ redis: new MockRedis() });
+    await store.persist(makeState("alice", { sessionId: "sess-1" }));
+    const [entry] = await store.listForUser("alice");
+    expect(entry.sessionId).toBe("sess-1");
+  });
+
+  it("touch sets lastSeenAt on an existing token, preserves TTL, no-op for unknown", async () => {
+    const redis = new MockRedis();
+    const store = new CredentialStoreRedis({ redis });
+    const token = await store.persist(makeState("alice"), 60_000);
+    await store.touch(token, 12_345);
+    expect((await store.retrieve(token))?.lastSeenAt).toBe(12_345);
+    // Unknown token is a no-op (does not throw).
+    await store.touch("nope", 999);
+  });
+});
+
 describe("CredentialStoreRedis — custom prefix", () => {
   it("honours the prefix option for keys and the per-user set", async () => {
     // Prefix is part of the documented surface — consumers rely on it for

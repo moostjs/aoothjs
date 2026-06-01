@@ -32,20 +32,25 @@ interface CredentialStore<TClaims = object> {
   revoke(token: string): Promise<void>;
   revokeAllForUser(userId: string): Promise<number>;
   listForUser?(userId: string): Promise<Array<CredentialState<TClaims> & { token: string }>>;
+  // Optional session capabilities — see Sessions:
+  touch?(token: string, at: number): Promise<void>;
+  listSessions?(userId: string): Promise<Array<CredentialState<TClaims> & { token: string }>>;
 }
 ```
 
 ### Method semantics
 
-| Method             | Returns                  | On stateful store                                  | On stateless store                                                     |
-| ------------------ | ------------------------ | -------------------------------------------------- | ---------------------------------------------------------------------- |
-| `persist`          | the new token            | inserts row, returns generated UUID                | encodes state into token, returns it                                   |
-| `retrieve`         | state or `null`          | DB lookup; null on miss / expired / epoch-shadowed | crypto verify; null on bad sig / expired / denylisted / epoch-shadowed |
-| `consume`          | state or `null`          | atomic retrieve+delete                             | retrieve + `denylist.add(jti, expiresAt)`; throws without denylist     |
-| `update`           | possibly-different token | updates row in place, returns same token           | re-encodes state, returns new token; throws without denylist           |
-| `revoke`           | `void`                   | deletes row                                        | adds to denylist; throws without denylist                              |
-| `revokeAllForUser` | count                    | `deleteMany({ userId })`, real count               | bumps epoch, returns sentinel `1`                                      |
-| `listForUser`      | array                    | enumerated                                         | optional and absent on stateless                                       |
+| Method             | Returns                  | On stateful store                                                  | On stateless store                                                     |
+| ------------------ | ------------------------ | ------------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| `persist`          | the new token            | inserts row, returns generated UUID                                | encodes state into token, returns it                                   |
+| `retrieve`         | state or `null`          | DB lookup; null on miss / expired / epoch-shadowed                 | crypto verify; null on bad sig / expired / denylisted / epoch-shadowed |
+| `consume`          | state or `null`          | atomic retrieve+delete                                             | retrieve + `denylist.add(jti, expiresAt)`; throws without denylist     |
+| `update`           | possibly-different token | updates row in place, returns same token                           | re-encodes state, returns new token; throws without denylist           |
+| `revoke`           | `void`                   | deletes row                                                        | adds to denylist; throws without denylist                              |
+| `revokeAllForUser` | count                    | `deleteMany({ userId })`, real count                               | bumps epoch, returns sentinel `1`                                      |
+| `listForUser`      | array                    | enumerated                                                         | optional and absent on stateless                                       |
+| `touch`            | `void`                   | sets `lastSeenAt` on the row (used by `trackLastSeen: 'validate'`) | optional and absent — token is immutable once issued                   |
+| `listSessions`     | array                    | optional native session grouping (forward-compat; unused today)    | optional and absent on stateless                                       |
 
 ::: warning `update` may return a new token
 On stateless stores, `update` re-encodes the state into a fresh token — the returned string is different from the input. **Callers must use the returned value**, not the original. The orchestrator handles this internally; if you call `update` directly, do the same.
@@ -65,10 +70,12 @@ interface CredentialState<TClaims = object> {
   kind?: "access" | "refresh" | string;
   parentCredentialId?: string;
   rotatedAt?: number;
+  sessionId?: string; // token-family id, stable across rotation — see Sessions
+  lastSeenAt?: number; // activity time; only written under trackLastSeen
 }
 ```
 
-`kind` is free-form when you persist directly (e.g. `'magic.recovery'`). The orchestrator only emits `'access'` and `'refresh'`.
+`kind` is free-form when you persist directly (e.g. `'magic.recovery'`). The orchestrator only emits `'access'` and `'refresh'`. `sessionId` and `lastSeenAt` back the [Sessions](./sessions) APIs; both round-trip automatically in Memory/Redis (whole state is serialized) and have dedicated columns in the atscript-db `.as` model.
 
 ## `DenylistStore` — the interface
 

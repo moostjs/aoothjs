@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { AuthError } from "../errors";
 import type { CredentialStore, DenylistStore } from "../stores/store";
 import { type Clock, defaultClock } from "../utils/clock";
@@ -6,8 +6,11 @@ import type {
   AuthContext,
   CredentialMetadata,
   CredentialState,
+  EnrichedSession,
   IssueResult,
   RefreshConfig,
+  SessionEnricher,
+  SessionInfo,
 } from "./types";
 
 // Re-exported so existing import sites continue to compile.
@@ -47,6 +50,16 @@ export interface AuthCredentialOptions<TClaims extends object = object> {
   maxConcurrent?: number;
   /** Behavior when limit reached: 'reject' (default) or 'evict-oldest'. */
   onLimit?: "reject" | "evict-oldest";
+  /**
+   * Track per-session activity time (`lastSeenAt`). Default `false` — no extra
+   * writes; `listSessions` falls back to `createdAt`.
+   * - `'refresh'` (cheap): stamp `lastSeenAt` on the newly-minted credentials
+   *   during refresh — piggybacks the rotation write, no extra round-trip.
+   * - `'validate'` (accurate, costly): `store.touch(token, now)` on every
+   *   successful `validate()` — one write per authenticated request. Requires a
+   *   store that implements `touch`; a no-op on stores that don't.
+   */
+  trackLastSeen?: "refresh" | "validate" | false;
   /** Optional clock for testability. */
   clock?: Clock;
 }
@@ -54,6 +67,11 @@ export interface AuthCredentialOptions<TClaims extends object = object> {
 export interface IssueOptions<TClaims extends object = object> {
   claims?: TClaims;
   metadata?: CredentialMetadata;
+  /**
+   * Pre-supply the session id. Omit to let `issue()` mint a random opaque one.
+   * Both the access and refresh tokens of this login share it.
+   */
+  sessionId?: string;
 }
 
 /**
@@ -81,6 +99,7 @@ export class AuthCredential<TClaims extends object = object> {
   private readonly denylist?: DenylistStore;
   private readonly maxConcurrent?: number;
   private readonly onLimit: "reject" | "evict-oldest";
+  private readonly trackLastSeen: "refresh" | "validate" | false;
   private readonly clock: Clock;
   /**
    * Recently-consumed refresh tokens, keyed by the raw refresh token string.
@@ -103,6 +122,7 @@ export class AuthCredential<TClaims extends object = object> {
     this.denylist = opts.denylist;
     this.maxConcurrent = opts.maxConcurrent;
     this.onLimit = opts.onLimit ?? "reject";
+    this.trackLastSeen = opts.trackLastSeen ?? false;
     this.clock = opts.clock ?? defaultClock;
 
     // Catch the misconfiguration at boot rather than producing tokens that
@@ -124,6 +144,10 @@ export class AuthCredential<TClaims extends object = object> {
     }
 
     const now = this.clock.now();
+    // Mint the session id once and stamp it on BOTH the access and refresh
+    // tokens (and, via the rotation copies below, every future rotation), so a
+    // single login is one stable, opaque session for its whole lifetime.
+    const sessionId = options?.sessionId ?? randomUUID();
     const accessState: CredentialState<TClaims> = {
       userId,
       issuedAt: now,
@@ -131,6 +155,7 @@ export class AuthCredential<TClaims extends object = object> {
       kind: "access",
       claims: options?.claims,
       metadata: options?.metadata,
+      sessionId,
     };
     const accessToken = await this.store.persist(accessState, this.accessTtl);
 
@@ -144,6 +169,7 @@ export class AuthCredential<TClaims extends object = object> {
         kind: "refresh",
         claims: options?.claims,
         metadata: options?.metadata,
+        sessionId,
       };
       refreshToken = await this.store.persist(refreshState, this.refreshConfig.ttl);
       refreshExpiresAt = now + this.refreshConfig.ttl;
@@ -166,10 +192,20 @@ export class AuthCredential<TClaims extends object = object> {
     if (state.expiresAt <= this.clock.now()) return null;
     if (state.kind === "refresh") return null;
 
+    if (this.trackLastSeen === "validate" && this.store.touch) {
+      // Best-effort activity stamp — one write per authenticated request.
+      // Fire-and-forget would race the response; await keeps lastSeenAt
+      // monotonic but adds a store round-trip (documented cost).
+      await this.store.touch(accessToken, this.clock.now());
+    }
+
     return {
       userId: state.userId,
       method: this.method,
       credentialId: fingerprint(accessToken),
+      // Legacy tokens predating sessionId fall back to the token fingerprint —
+      // the SAME fallback listSessions uses, so "this device" matching holds.
+      sessionId: this.sessionIdOf(state.sessionId, accessToken),
       expiresAt: state.expiresAt,
       claims: state.claims,
     };
@@ -284,9 +320,122 @@ export class AuthCredential<TClaims extends object = object> {
         userId: entry.userId,
         method: this.method,
         credentialId: fingerprint(entry.token),
+        sessionId: this.sessionKeyOf(entry),
         expiresAt: entry.expiresAt,
         claims: entry.claims,
       }));
+  }
+
+  /**
+   * The session id for a credential: its stored `sessionId`, or the token
+   * fingerprint for legacy rows predating sessionId (so they surface as
+   * singleton sessions). The ONE place this fallback rule lives — shared by
+   * `validate()`, `listForUser()`, and the session-family methods so "this
+   * device" matching stays consistent across all of them.
+   */
+  private sessionIdOf(sessionId: string | undefined, token: string): string {
+    return sessionId ?? fingerprint(token);
+  }
+
+  /** Session-grouping key for a stored credential entry (token attached). */
+  private sessionKeyOf(entry: CredentialState<TClaims> & { token: string }): string {
+    return this.sessionIdOf(entry.sessionId, entry.token);
+  }
+
+  /**
+   * List the user's active sessions, one row per token family (access +
+   * refresh + every rotation collapsed by `sessionId`). Newest first by
+   * `lastSeenAt` (or `createdAt` when activity isn't tracked). Returns `[]` for
+   * stores that can't enumerate (stateless JWT/encapsulated). Pass `enrich` to
+   * map each row through a {@link SessionEnricher} (device/location labels).
+   */
+  async listSessions(
+    userId: string,
+    opts?: { enrich?: SessionEnricher },
+  ): Promise<SessionInfo[] | EnrichedSession[]> {
+    if (!this.store.listForUser) return [];
+    const all = await this.store.listForUser(userId);
+
+    // Group every credential of the user into its session family.
+    const families = new Map<string, Array<CredentialState<TClaims> & { token: string }>>();
+    for (const entry of all) {
+      const key = this.sessionKeyOf(entry);
+      const bucket = families.get(key);
+      if (bucket) bucket.push(entry);
+      else families.set(key, [entry]);
+    }
+
+    const sessions: SessionInfo[] = [];
+    for (const [sessionId, entries] of families) {
+      let createdAt = Infinity;
+      let lastSeenAt: number | undefined;
+      let refreshExpiresAt: number | undefined;
+      let accessExpiresAt: number | undefined;
+      let metadata: CredentialMetadata | undefined;
+      for (const e of entries) {
+        if (e.issuedAt < createdAt) createdAt = e.issuedAt;
+        if (
+          typeof e.lastSeenAt === "number" &&
+          (lastSeenAt === undefined || e.lastSeenAt > lastSeenAt)
+        ) {
+          lastSeenAt = e.lastSeenAt;
+        }
+        if (e.kind === "refresh") {
+          if (refreshExpiresAt === undefined || e.expiresAt > refreshExpiresAt) {
+            refreshExpiresAt = e.expiresAt;
+          }
+        } else if (accessExpiresAt === undefined || e.expiresAt > accessExpiresAt) {
+          accessExpiresAt = e.expiresAt;
+        }
+        // First non-empty metadata wins — all family members carry the same
+        // login-time metadata (copied forward on rotation).
+        if (!metadata && e.metadata) metadata = e.metadata;
+      }
+      sessions.push({
+        sessionId,
+        userId,
+        createdAt: createdAt === Infinity ? this.clock.now() : createdAt,
+        // Refresh outlives access; prefer its expiry as the session's lifetime.
+        expiresAt: refreshExpiresAt ?? accessExpiresAt ?? 0,
+        ...(lastSeenAt !== undefined && { lastSeenAt }),
+        ...(metadata && { metadata }),
+      });
+    }
+
+    sessions.sort((a, b) => (b.lastSeenAt ?? b.createdAt) - (a.lastSeenAt ?? a.createdAt));
+
+    if (!opts?.enrich) return sessions;
+    const enrich = opts.enrich;
+    // enrich may be sync or async — normalize so Promise.all is well-typed.
+    return Promise.all(sessions.map((s) => Promise.resolve(enrich(s))));
+  }
+
+  /**
+   * Revoke a single session — every token in its family (access + refresh +
+   * rotations). No-op for stores that can't enumerate. Other sessions keep
+   * validating.
+   */
+  async revokeSession(userId: string, sessionId: string): Promise<void> {
+    if (!this.store.listForUser) return;
+    const all = await this.store.listForUser(userId);
+    await Promise.all(
+      all
+        .filter((entry) => this.sessionKeyOf(entry) === sessionId)
+        .map((entry) => this.store.revoke(entry.token)),
+    );
+  }
+
+  /**
+   * Revoke every session for the user EXCEPT `keepSessionId` ("log out
+   * everywhere else"). Returns the number of distinct sessions revoked. No-op
+   * (returns 0) for stores that can't enumerate.
+   */
+  async revokeOtherSessions(userId: string, keepSessionId: string): Promise<number> {
+    if (!this.store.listForUser) return 0;
+    const all = await this.store.listForUser(userId);
+    const toRevoke = all.filter((entry) => this.sessionKeyOf(entry) !== keepSessionId);
+    await Promise.all(toRevoke.map((entry) => this.store.revoke(entry.token)));
+    return new Set(toRevoke.map((entry) => this.sessionKeyOf(entry))).size;
   }
 
   /**
@@ -338,6 +487,9 @@ export class AuthCredential<TClaims extends object = object> {
       kind: "access",
       claims: refreshState.claims,
       metadata: refreshState.metadata,
+      // Carry the session forward so every rotation stays in the same family.
+      sessionId: refreshState.sessionId,
+      ...(this.trackLastSeen === "refresh" && { lastSeenAt: now }),
     };
     const token = await this.store.persist(accessState, this.accessTtl);
     return { token, expiresAt: now + this.accessTtl };
@@ -362,6 +514,9 @@ export class AuthCredential<TClaims extends object = object> {
       claims: oldRefreshState.claims,
       metadata: oldRefreshState.metadata,
       parentCredentialId: oldRefreshToken,
+      // Carry the session forward so every rotation stays in the same family.
+      sessionId: oldRefreshState.sessionId,
+      ...(this.trackLastSeen === "refresh" && { lastSeenAt: now }),
     };
     const newRefreshToken = await this.store.persist(newRefreshState, this.refreshConfig.ttl);
 

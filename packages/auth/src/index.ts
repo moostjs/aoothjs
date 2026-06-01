@@ -7,8 +7,11 @@ export type {
   AuthContext,
   CredentialState,
   CredentialMetadata,
+  EnrichedSession,
   IssueResult,
   RefreshConfig,
+  SessionEnricher,
+  SessionInfo,
 } from "./credential/types";
 
 // Store interfaces

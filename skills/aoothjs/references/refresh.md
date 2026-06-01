@@ -71,6 +71,8 @@ Tunables:
 - `rotationGraceMs: 0` collapses sliding to "always-once": rotation happens on first use, any further use trips reuse.
 - The grace window is anchored to the original rotation: replays within the window return a fresh access token but do not re-rotate or extend the window.
 
+Every rotated pair inherits `claims`, `metadata`, and **`sessionId`** from its predecessor — so N refreshes stay one session (the token-family invariant the [sessions.md](sessions.md) APIs rely on). With `trackLastSeen: 'refresh'`, rotation also stamps `lastSeenAt`.
+
 ## Refresh reuse detection
 
 Triggered by `'always'` (any reuse) and `'sliding'` (reuse after grace). Sequence:

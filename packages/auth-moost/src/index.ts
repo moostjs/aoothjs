@@ -1,6 +1,12 @@
 // Re-exported from @aooth/auth — exposed in the public surface (handler
 // returns + helper parameters) so consumers don't need a second import.
-export type { AuthContext, IssueResult } from "@aooth/auth";
+export type {
+  AuthContext,
+  EnrichedSession,
+  IssueResult,
+  SessionEnricher,
+  SessionInfo,
+} from "@aooth/auth";
 
 export {
   type AuthOptions,
@@ -13,6 +19,7 @@ export { useAuth, type AuthBindings } from "./auth.composables";
 export { Public, UserId } from "./auth.decorator";
 export { getAuthMate, type TAuthMeta } from "./auth.mate";
 export { AuthController, DEFAULT_AUTH_WORKFLOWS } from "./auth.controller";
+export { SessionsController, SessionEnricherProvider } from "./sessions.controller";
 export type {
   AuthLoginResponse,
   AuthLogoutBody,
@@ -20,7 +27,7 @@ export type {
   AuthRefreshBody,
 } from "./auth.dto";
 export { WfTrigger, type WfTriggerOpts } from "./wf-trigger/decorator";
-export { WfTriggerProvider } from "./wf-trigger/provider";
+export { deriveWfStateSecret, WfTriggerProvider } from "./wf-trigger/provider";
 
 // Re-exported from @aooth/auth for ergonomic single-import setup; the
 // definitions are framework-agnostic and live in the core package.

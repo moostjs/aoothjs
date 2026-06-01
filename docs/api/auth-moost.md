@@ -92,6 +92,29 @@ class AuthController {
 
 REST surface — see [REST endpoints](#rest-endpoints) below for the five routes. `users` is `@Optional()`: only `GET /auth/invite/post-redemption` reads it (returns 500 when unset); the other four routes work without a `UserService`. Subclass and override `triggerWf()` to extend the workflow allow-list. See [REST Controllers](/moost/controllers).
 
+### `SessionsController`
+
+```ts
+@Controller("auth")
+@ArbacResource("auth.sessions")
+class SessionsController {
+  constructor(auth: AuthCredential, enricher: SessionEnricherProvider);
+}
+```
+
+Optional, opt-in by registration. Mounts `GET /auth/sessions` (`read`), `GET /auth/sessions/of/:userId` (`readAny`), `DELETE /auth/sessions/:sessionId` (`revoke`), `DELETE /auth/sessions?others=true` (`revoke`) — all under the `auth.sessions` ARBAC resource, none `@Public()`. A bare `DELETE /auth/sessions` is 400. Requires a stateful credential store. See [Sessions](/moost/sessions).
+
+### `SessionEnricherProvider`
+
+```ts
+@Injectable() // SINGLETON
+class SessionEnricherProvider {
+  enrich(session: SessionInfo): EnrichedSession | Promise<EnrichedSession>;
+}
+```
+
+Injectable read-time enricher used by `SessionsController`. Default is identity (aooth ships no UA/geo). Subclass + `setReplaceRegistry([SessionEnricherProvider, MyEnricher])` to add `device` / `browser` / `os` / `location`. See [Sessions](/moost/sessions).
+
 ### `ConsentStore`
 
 ```ts
@@ -144,6 +167,11 @@ interface AuthBindings {
   getAuthContext<TClaims>(): AuthContext<TClaims> | null;
   getUserId(): string; // throws HttpError(401)
   isAuthenticated(): boolean;
+  getSessionId(): string | undefined; // "this device" — AuthContext.sessionId
+  // Session facade, scoped to the current user (see Sessions):
+  listSessions(opts?: { enrich?: SessionEnricher }): Promise<SessionInfo[] | EnrichedSession[]>;
+  revokeSession(sessionId: string): Promise<void>;
+  revokeOtherSessions(): Promise<number>; // throws HttpError(401) if no current session
   readonly options: ResolvedAuthOptions; // throws HttpError(500) if guard missing
   extractToken(): string | undefined;
   writeCookies(issue: IssueResult): void;
@@ -154,7 +182,7 @@ interface AuthBindings {
 }
 ```
 
-`defineWook` returning per-event memoized bindings. The `options` getter throws `HttpError(500)` if no `authGuardInterceptor` is on the chain — configuration error, not runtime fallback. `buildLoginResponse` populates token fields only when `enableBearer === true`. See [AuthGuard & useAuth](/moost/auth-guard).
+`defineWook` returning per-event memoized bindings. The `options` getter throws `HttpError(500)` if no `authGuardInterceptor` is on the chain — configuration error, not runtime fallback. `buildLoginResponse` populates token fields only when `enableBearer === true`. The session facade (`listSessions` / `revokeSession` / `revokeOtherSessions`) resolves the guard-stashed `AuthCredential`; calling it off-request throws `HttpError(500)`. See [AuthGuard & useAuth](/moost/auth-guard) and [Sessions](/moost/sessions).
 
 ### `getAuthMate`
 
@@ -193,6 +221,14 @@ function buildInviteAlreadyAcceptedEnvelope(opts: {
 ```
 
 Exported so subclasses (and `AuthController.invitePostRedemption`) reuse the same role parsing, mass-assignment guard, and idempotent-redirect envelope.
+
+### `deriveWfStateSecret`
+
+```ts
+function deriveWfStateSecret(secret: string): Buffer;
+```
+
+SHA-256-derives the exact 32-byte key `EncapsulatedStateStrategy` requires from an arbitrary-length app secret. Override `WfTriggerProvider.wfStateSecret()` with `deriveWfStateSecret(env.MY_SECRET)` when the credential store has no reusable secret to HKDF-derive from (i.e. the atscript-db store, the recommended default for [Sessions](/moost/sessions)). Deterministic — stable across restarts. See [Workflows](/moost/workflows).
 
 ### `generateMagicLinkToken`
 

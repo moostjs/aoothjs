@@ -1,4 +1,11 @@
-import type { AuthContext, IssueResult } from "@aooth/auth";
+import type {
+  AuthContext,
+  AuthCredential,
+  EnrichedSession,
+  IssueResult,
+  SessionEnricher,
+  SessionInfo,
+} from "@aooth/auth";
 import type { EventContext } from "@wooksjs/event-core";
 import { current, defineWook, key } from "@wooksjs/event-core";
 import {
@@ -17,6 +24,12 @@ import type { AuthLoginResponse } from "./auth.dto";
 // Absent means the guard never ran.
 const authContextKey = key<AuthContext | null>("auth.context");
 
+// The per-event `AuthCredential` instance stashed by `authGuardInterceptor`
+// (it already instantiates one to `validate()`). Lets the `useAuth()` session
+// facade reach the configured store without re-resolving DI. Absent on routes
+// the guard short-circuits before instantiating (public + no token).
+const authCredentialKey = key<AuthCredential>("auth.credential");
+
 /**
  * Slot populated by `authGuardInterceptor(opts)` on the HTTP event. Workflow
  * step events started with `start({ eventContext: current() })` inherit the
@@ -30,6 +43,23 @@ export interface AuthBindings {
   /** @throws `HttpError(401)` if no `AuthContext` is present in the event. */
   getUserId(): string;
   isAuthenticated(): boolean;
+  /**
+   * `sessionId` of the token family that authenticated THIS request — for
+   * "this device" matching and as the `keepSessionId` for `revokeOtherSessions`.
+   * `undefined` when unauthenticated.
+   */
+  getSessionId(): string | undefined;
+
+  // ── Session facade (scoped to the current user) ─────────────────────
+  /** List the current user's active sessions (one row per device). */
+  listSessions(opts?: { enrich?: SessionEnricher }): Promise<SessionInfo[] | EnrichedSession[]>;
+  /** Revoke one of the current user's sessions by id (whole token family). */
+  revokeSession(sessionId: string): Promise<void>;
+  /**
+   * Log out the current user's OTHER sessions, keeping this one. Returns the
+   * count revoked. @throws `HttpError(401)` if the current session is unknown.
+   */
+  revokeOtherSessions(): Promise<number>;
 
   // ── Closures over resolved options ───────────────────────────────────
   /** @throws `HttpError(500)` when no `authGuardInterceptor(opts)` is on the chain. */
@@ -99,6 +129,32 @@ export const useAuth = defineWook((ctx: EventContext): AuthBindings => {
   };
 
   const isAuthenticated = (): boolean => getAuthContext() !== null;
+
+  const getSessionId = (): string | undefined => getAuthContext()?.sessionId ?? undefined;
+
+  const requireCredential = (): AuthCredential => {
+    if (!ctx.has(authCredentialKey)) {
+      throw new HttpError(
+        500,
+        "useAuth() session methods require authGuardInterceptor to have run on an authenticated route",
+      );
+    }
+    return ctx.get(authCredentialKey);
+  };
+
+  const listSessions = (opts?: {
+    enrich?: SessionEnricher;
+  }): Promise<SessionInfo[] | EnrichedSession[]> =>
+    requireCredential().listSessions(getUserId(), opts);
+
+  const revokeSession = (sessionId: string): Promise<void> =>
+    requireCredential().revokeSession(getUserId(), sessionId);
+
+  const revokeOtherSessions = (): Promise<number> => {
+    const sessionId = getSessionId();
+    if (!sessionId) throw new HttpError(401, "No current session to keep");
+    return requireCredential().revokeOtherSessions(getUserId(), sessionId);
+  };
 
   // Options are immutable for the lifetime of an event (set once by the
   // guard). Memoize the slot lookup so closures invoked multiple times per
@@ -205,6 +261,10 @@ export const useAuth = defineWook((ctx: EventContext): AuthBindings => {
     getAuthContext,
     getUserId,
     isAuthenticated,
+    getSessionId,
+    listSessions,
+    revokeSession,
+    revokeOtherSessions,
     get options() {
       return requireOptions();
     },
@@ -225,4 +285,12 @@ export function setAuthContext<TClaims extends object>(
   // `AuthContext<TClaims>` is structurally assignable to `AuthContext<object>`
   // because `claims?: TClaims` is covariant when TClaims extends object.
   ctx.set(authContextKey, value);
+}
+
+/**
+ * Internal: `authGuardInterceptor` stashes the per-event `AuthCredential` it
+ * instantiated, so the `useAuth()` session facade can reach the store.
+ */
+export function setAuthCredential(ctx: EventContext, value: AuthCredential): void {
+  ctx.set(authCredentialKey, value);
 }

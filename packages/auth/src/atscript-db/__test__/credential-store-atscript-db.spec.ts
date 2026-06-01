@@ -105,6 +105,28 @@ describe("CredentialStoreAtscriptDb — contract", () => {
   });
 });
 
+describe("CredentialStoreAtscriptDb — sessionId / lastSeenAt", () => {
+  it("round-trips sessionId through persist + retrieve + listForUser", async () => {
+    const store = new CredentialStoreAtscriptDb({ table: new MockTable() });
+    const token = await store.persist(makeState("alice", { sessionId: "sess-1" }));
+    expect((await store.retrieve(token))?.sessionId).toBe("sess-1");
+    const [entry] = await store.listForUser("alice");
+    expect(entry.sessionId).toBe("sess-1");
+  });
+
+  it("touch writes lastSeenAt via replaceOne on an existing token; no-op for unknown", async () => {
+    const table = new MockTable();
+    const store = new CredentialStoreAtscriptDb({ table });
+    const token = await store.persist(makeState("alice"));
+    await store.touch(token, 4242);
+    expect((await store.retrieve(token))?.lastSeenAt).toBe(4242);
+    const replaceCountBefore = table.opsOf("replaceOne").length;
+    // Unknown token is a no-op — does not throw, does not write.
+    await store.touch("nope", 1);
+    expect(table.opsOf("replaceOne")).toHaveLength(replaceCountBefore);
+  });
+});
+
 describe("CredentialStoreAtscriptDb — claims + metadata round-trip", () => {
   // Intent: claims and metadata are persisted opaquely (as JSON columns in
   // the shipped .as model). The adapter must round-trip them byte-for-byte

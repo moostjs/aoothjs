@@ -51,6 +51,7 @@ const authSidebar = [
     items: [
       { text: "Overview", link: "/auth/" },
       { text: "Credentials & Sessions", link: "/auth/credentials" },
+      { text: "Sessions", link: "/auth/sessions" },
       { text: "Tokens (JWT)", link: "/auth/tokens" },
       { text: "Refresh & Rotation", link: "/auth/refresh" },
       { text: "Magic Links", link: "/auth/magic-links" },
@@ -72,6 +73,7 @@ const moostSidebar = [
       { text: "ARBAC Authorize", link: "/moost/arbac-authorize" },
       { text: "Decorators", link: "/moost/decorators" },
       { text: "REST Controllers", link: "/moost/controllers" },
+      { text: "Sessions", link: "/moost/sessions" },
       { text: "Workflows", link: "/moost/workflows" },
       { text: "SPA Components", link: "/moost/spa-components" },
       { text: "DB Controllers", link: "/moost/db-controllers" },

@@ -15,11 +15,17 @@ class AuthCredential<TClaims extends object = object> {
   revoke(token: string): Promise<void>;
   revokeAllForUser(userId: string): Promise<number>;
   listForUser(userId: string): Promise<AuthContext<TClaims>[]>;
+  listSessions(
+    userId: string,
+    opts?: { enrich?: SessionEnricher },
+  ): Promise<SessionInfo[] | EnrichedSession[]>;
+  revokeSession(userId: string, sessionId: string): Promise<void>;
+  revokeOtherSessions(userId: string, keepSessionId: string): Promise<number>;
   deriveStateKey(label?: string): Buffer; // HKDF-derived stable secret
 }
 ```
 
-The orchestrator. Store-agnostic — accepts any `CredentialStore` (stateful or stateless). Refresh rotation modes are `'none' | 'always' | 'sliding'` (default `'sliding'`). On reuse-after-grace, calls `onRotationReuse` and revokes every credential for the user. `deriveStateKey(label = "wf-state")` HKDF-derives a stable secret from the configured auth secret — used by `@aooth/auth-moost`'s `WfTriggerProvider` as the default encapsulated wf-state token secret so it survives restarts without a separate config. See [Credentials & Sessions](/auth/credentials) and [Refresh & Rotation](/auth/refresh).
+The orchestrator. Store-agnostic — accepts any `CredentialStore` (stateful or stateless). Refresh rotation modes are `'none' | 'always' | 'sliding'` (default `'sliding'`). On reuse-after-grace, calls `onRotationReuse` and revokes every credential for the user. `listSessions` / `revokeSession` / `revokeOtherSessions` group the user's credentials into token families by `sessionId` (no-op `[]` / `0` on stores that can't enumerate) — see [Sessions](/auth/sessions). `deriveStateKey(label = "wf-state")` HKDF-derives a stable secret from the configured auth secret — used by `@aooth/auth-moost`'s `WfTriggerProvider` as the default encapsulated wf-state token secret so it survives restarts without a separate config. See [Credentials & Sessions](/auth/credentials) and [Refresh & Rotation](/auth/refresh).
 
 `AuthCredentialOptions<TClaims>`:
 
@@ -38,6 +44,7 @@ interface AuthCredentialOptions<TClaims extends object = object> {
   denylist?: DenylistStore;
   maxConcurrent?: number;
   onLimit?: "reject" | "evict-oldest"; // default 'reject'
+  trackLastSeen?: "refresh" | "validate" | false; // default false — see Sessions
   clock?: Clock;
 }
 ```
@@ -114,12 +121,13 @@ interface AuthContext<TClaims extends object = object> {
   userId: string;
   method: "session" | "token";
   credentialId: string; // sha256(accessToken) — safe to log
+  sessionId?: string; // token-family id; falls back to credentialId for legacy tokens
   expiresAt: number;
   claims?: TClaims;
 }
 ```
 
-The "who is calling" object returned by `validate`. `credentialId` is a fingerprint, not the token — cannot be replayed. See [Credentials & Sessions](/auth/credentials).
+The "who is calling" object returned by `validate`. `credentialId` is a fingerprint, not the token — cannot be replayed. `sessionId` identifies the token family ("this device") — see [Sessions](/auth/sessions). See [Credentials & Sessions](/auth/credentials).
 
 ### `CredentialMetadata`
 
@@ -146,10 +154,24 @@ interface CredentialState<TClaims extends object = object> {
   kind?: "access" | "refresh";
   parentCredentialId?: string;
   rotatedAt?: number;
+  sessionId?: string; // token-family id, stable across rotation
+  lastSeenAt?: number; // activity time; only written under trackLastSeen
 }
 ```
 
-The persisted shape stores hold. See [Stores](/auth/).
+The persisted shape stores hold. `sessionId` / `lastSeenAt` back the [Sessions](/auth/sessions) APIs. See [Stores](/auth/).
+
+### `IssueOptions<TClaims>`
+
+```ts
+interface IssueOptions<TClaims extends object = object> {
+  claims?: TClaims;
+  metadata?: CredentialMetadata;
+  sessionId?: string; // omit → issue() mints a random opaque one
+}
+```
+
+Options for `issue`. Supply `sessionId` to join an existing session family; omit to mint a fresh one. See [Sessions](/auth/sessions).
 
 ### `IssueResult`
 
@@ -190,10 +212,50 @@ interface CredentialStore<TClaims extends object = object> {
   revoke(token: string): Promise<void>;
   revokeAllForUser(userId: string): Promise<number>;
   listForUser?(userId: string): Promise<Array<CredentialState<TClaims> & { token: string }>>;
+  touch?(token: string, at: number): Promise<void>; // backs trackLastSeen: 'validate'
+  listSessions?(userId: string): Promise<Array<CredentialState<TClaims> & { token: string }>>; // optional native grouping
 }
 ```
 
-The pluggable storage contract. Stateless stores throw `STATELESS_OPERATION_UNSUPPORTED` on `consume`/`revoke`/`update` unless a `DenylistStore` is configured. `update` MAY return a different token (callers MUST use the returned value). See [Stores](/auth/).
+The pluggable storage contract. Stateless stores throw `STATELESS_OPERATION_UNSUPPORTED` on `consume`/`revoke`/`update` unless a `DenylistStore` is configured. `update` MAY return a different token (callers MUST use the returned value). `touch` / `listSessions` are optional session capabilities — see [Sessions](/auth/sessions). See [Stores](/auth/).
+
+### `SessionInfo`
+
+```ts
+interface SessionInfo {
+  sessionId: string;
+  userId: string;
+  createdAt: number; // origin credential's issuedAt
+  lastSeenAt?: number; // newest activity; falls back to createdAt
+  expiresAt: number; // live refresh token's expiry (or access)
+  current?: boolean; // set by the caller, not the store
+  metadata?: CredentialMetadata;
+}
+```
+
+One row per token family, returned by `listSessions`. See [Sessions](/auth/sessions).
+
+### `EnrichedSession`
+
+```ts
+interface EnrichedSession extends SessionInfo {
+  device?: string;
+  browser?: string;
+  os?: string;
+  location?: string;
+  geo?: { country?: string; city?: string };
+}
+```
+
+A `SessionInfo` augmented by a `SessionEnricher` at read time. aooth ships no UA/geo derivation. See [Sessions](/auth/sessions).
+
+### `SessionEnricher`
+
+```ts
+type SessionEnricher = (s: SessionInfo) => EnrichedSession | Promise<EnrichedSession>;
+```
+
+Consumer-supplied read-time mapper passed to `listSessions(userId, { enrich })`. See [Sessions](/auth/sessions).
 
 ### `DenylistStore`
 

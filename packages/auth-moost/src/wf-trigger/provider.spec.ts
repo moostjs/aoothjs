@@ -8,7 +8,7 @@ import {
 } from "@moostjs/event-wf";
 import { describe, expect, it } from "vite-plus/test";
 
-import { WfTriggerProvider } from "./provider";
+import { deriveWfStateSecret, WfTriggerProvider } from "./provider";
 
 // `stateRegistry()` never touches `wf` — a bare stub keeps the tests focused on
 // the strategy registry without standing up a real MoostWf app.
@@ -107,5 +107,23 @@ describe("WfTriggerProvider named strategy registry", () => {
     // user can leave it open and still resume.
     const p = new TestProvider(wfStub, jwtAuth());
     expect(p.publicTtl()).toBeUndefined();
+  });
+});
+
+describe("deriveWfStateSecret", () => {
+  // WHY: a stateful store (atscript-db) has no secret to derive from, so the
+  // default wfStateSecret() throws and the consumer must supply one. The
+  // encapsulated strategy needs EXACTLY 32 bytes (a raw string is parsed as
+  // hex), so this helper turns an arbitrary app secret into a usable key with
+  // no node:crypto knowledge required. A regression here = lazy crash on the
+  // first workflow start for every stateful-store consumer.
+  it("produces exactly 32 bytes from an arbitrary-length secret", () => {
+    expect(deriveWfStateSecret("short").length).toBe(32);
+    expect(deriveWfStateSecret("a".repeat(1000)).length).toBe(32);
+  });
+
+  it("is deterministic (stable across restarts) and input-sensitive", () => {
+    expect(deriveWfStateSecret("s3cr3t").equals(deriveWfStateSecret("s3cr3t"))).toBe(true);
+    expect(deriveWfStateSecret("s3cr3t").equals(deriveWfStateSecret("other"))).toBe(false);
   });
 });

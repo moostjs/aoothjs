@@ -19,6 +19,7 @@ This page is the map. Every concept here has a dedicated child page.
 │     AuthCredential<TClaims>                                 │
 │       issue · validate · refresh · revoke                   │
 │       revokeAllForUser · listForUser                        │
+│       listSessions · revokeSession · revokeOtherSessions    │
 │     CredentialStore<TClaims>     DenylistStore              │
 │     EmailSender · SmsSender · generateMagicLinkToken        │
 └────────────────────────┬────────────────────────────────────┘
@@ -65,6 +66,7 @@ That's the whole API on the hot path: `issue`, `validate`, plus `refresh` / `rev
 ## What each page covers
 
 - [Credentials & Sessions](./credentials) — `AuthCredential<TClaims>` orchestrator: every constructor option, every public method, the `AuthContext` shape, and how `credentialId` works as a non-replayable fingerprint. The choice between `method: 'session'` and `method: 'token'`.
+- [Sessions](./sessions) — the multi-device "active sessions" model: one stable `sessionId` per login (token family), `listSessions` / `revokeSession` / `revokeOtherSessions`, the read-time `SessionEnricher` seam (no UA/geo dependency), and opt-in `trackLastSeen` activity tracking.
 - [Tokens (JWT)](./tokens) — `CredentialStoreJwt` setup with `jose`: algorithm choice (HS\* vs. asymmetric), key management, the claim layout, and the algorithm-confusion defense. Plus `CredentialStoreEncapsulated` (AES-256-GCM) and when to prefer stateless over stateful.
 - [Refresh & Rotation](./refresh) — `RefreshConfig` with all three rotation modes (`'none'`, `'always'`, `'sliding'`), the grace window, reuse detection and the user-wide revocation cascade. `maxConcurrent` enforcement and `onLimit` strategies.
 - [Magic Links](./magic-links) — `generateMagicLinkToken()` and `BuildMagicLinkUrl`. Storing magic-link tokens as `CredentialState` for atomic single-use consumption.

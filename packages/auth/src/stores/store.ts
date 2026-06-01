@@ -35,6 +35,13 @@ export interface CredentialStore<TClaims extends object = object> {
   /** List active credentials for a user (stateful only). */
   listForUser?(userId: string): Promise<Array<CredentialState<TClaims> & { token: string }>>;
   /**
+   * Optional last-activity stamp. Set `state.lastSeenAt = at` for the token if
+   * it exists; no-op otherwise. Backs `AuthCredential`'s
+   * `trackLastSeen: 'validate'` mode. Stateless stores omit it (the token is
+   * immutable once issued).
+   */
+  touch?(token: string, at: number): Promise<void>;
+  /**
    * Derive a stable, domain-separated 32-byte subkey from this store's
    * symmetric secret via HKDF-SHA256. Used so other subsystems (e.g. the
    * workflow-state encryption key) can reuse the auth secret WITHOUT the raw

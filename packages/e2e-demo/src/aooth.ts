@@ -1,4 +1,5 @@
-import { AuthCredential, CredentialStoreJwt, DenylistStoreMemory } from "@aooth/auth";
+import { AuthCredential } from "@aooth/auth";
+import { type AuthCredentialTable, CredentialStoreAtscriptDb } from "@aooth/auth/atscript-db";
 import type { BuildMagicLinkUrl } from "@aooth/auth-moost";
 import { definePasswordPolicy, type UserCredentials, UserService } from "@aooth/user";
 import { type AuthUserTable, UsersStoreAtscriptDb } from "@aooth/user/atscript-db";
@@ -48,18 +49,13 @@ export interface AppAuthOptions {
 
 export interface AppAuth {
   authCredential: AuthCredential<Record<string, unknown>>;
-  credentialStore: CredentialStoreJwt<Record<string, unknown>>;
+  credentialStore: CredentialStoreAtscriptDb<Record<string, unknown>>;
   userStore: DemoUserStore;
   userService: UserService<DemoUser>;
   buildMagicLinkUrl: BuildMagicLinkUrl;
-  denylist: DenylistStoreMemory;
 }
 
 export function createAooth({ tables, env }: AppAuthOptions): AppAuth {
-  // Single shared denylist: `validate` consults it by raw token, the JWT store
-  // consults it by jti — keyspaces are disjoint so reuse is safe.
-  const denylist = new DenylistStoreMemory();
-
   // `AtscriptDbTable` returns `Record<string, unknown>` from its structural
   // reads, so the typed `AuthUserTable` surface needs a cast at the wiring
   // seam — same pattern `wf-store.ts` uses.
@@ -112,10 +108,12 @@ export function createAooth({ tables, env }: AppAuthOptions): AppAuth {
     deviceTrust: { secret: env.JWT_SECRET },
   });
 
-  const credentialStore = new CredentialStoreJwt<Record<string, unknown>>({
-    algorithm: "HS256",
-    secret: env.JWT_SECRET,
-    denylist,
+  // Stateful, enumerable credential store backed by the app's SQLite DB. A
+  // stateful store is what makes the "active sessions" panel possible —
+  // `listSessions` / `revokeSession` / `revokeOtherSessions` need to enumerate
+  // a user's token families, which a stateless JWT store can't do.
+  const credentialStore = new CredentialStoreAtscriptDb<Record<string, unknown>>({
+    table: tables.credentials as unknown as AuthCredentialTable<Record<string, unknown>>,
   });
 
   const authCredential = new AuthCredential<Record<string, unknown>>({
@@ -124,10 +122,11 @@ export function createAooth({ tables, env }: AppAuthOptions): AppAuth {
     accessTtl: env.ACCESS_TTL_MS,
     refresh: {
       ttl: env.REFRESH_TTL_MS,
-      // Stateless JWT: `sliding` degrades to `always` anyway. Be explicit.
       rotation: "always",
     },
-    denylist,
+    // Real activity time for the sessions panel — cheap (piggybacks the
+    // rotation write on each refresh).
+    trackLastSeen: "refresh",
   });
 
   const buildMagicLinkUrl: BuildMagicLinkUrl = (kind, token, ctx) => {
@@ -158,6 +157,5 @@ export function createAooth({ tables, env }: AppAuthOptions): AppAuth {
     userStore,
     userService,
     buildMagicLinkUrl,
-    denylist,
   };
 }

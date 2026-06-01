@@ -55,6 +55,8 @@ class TestableAuthWorkflow extends AuthWorkflow {
     this.resolvePincodeAltAction(ctx, a);
   public exposeRedirect = (ctx: AuthWfCtx) => this.resolveRedirect(ctx);
   public exposeClientIp = () => this.resolveClientIp();
+  public exposeUserAgent = () => this.resolveUserAgent();
+  public exposeIssueMetadata = (ctx: AuthWfCtx) => this.resolveIssueMetadata(ctx);
   public exposeDeliver = (payload: AuthDeliveryPayload) => this.deliver(payload);
   public exposeLoadActiveSessionsCount = (u: string) => this.loadActiveSessionsCount(u);
   public exposeLogoutOtherSessions = (u: string) => this.logoutOtherSessions(u);
@@ -530,6 +532,18 @@ describe("AuthWorkflow resolver defaults", () => {
     // resolver MUST swallow the "no event" throw and return undefined so
     // the cookie+ip bind path collapses to cookie-only safely.
     expect(wf.exposeClientIp()).toBeUndefined();
+  });
+
+  it("resolveUserAgent — undefined outside HTTP context (swallow + return)", () => {
+    // Sibling to resolveClientIp; same no-event tolerance.
+    expect(wf.exposeUserAgent()).toBeUndefined();
+  });
+
+  it("resolveIssueMetadata — undefined outside HTTP context (no IP, no UA)", () => {
+    // WHY (Request 1 acceptance): a hand-rolled (no-HTTP) wf run must issue
+    // with `metadata: undefined` rather than an empty `{}` object — so the
+    // store never persists a metadata key for non-HTTP issuance.
+    expect(wf.exposeIssueMetadata({} as AuthWfCtx)).toBeUndefined();
   });
 });
 

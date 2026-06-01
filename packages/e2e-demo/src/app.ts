@@ -25,7 +25,9 @@ import {
   ConsentStore,
   createAuthEmailOutlet,
   DEFAULT_AUTH_WORKFLOWS,
+  deriveWfStateSecret,
   Public,
+  SessionsController,
   useAuth,
   WfTrigger,
   WfTriggerProvider,
@@ -679,9 +681,15 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       super(wf, auth);
       this.outlets = [...this.outlets, createAuthEmailOutlet(demoEmailOutletDeps)];
     }
+    // The credential store is now atscript-db (stateful, no `deriveSubkey`), so
+    // the base `wfStateSecret()` (which HKDF-derives from the auth secret) would
+    // throw. Supply the encapsulated-start key explicitly — `deriveWfStateSecret`
+    // turns the app secret into the exact 32 bytes the strategy needs.
+    protected override wfStateSecret(): Buffer {
+      return deriveWfStateSecret(env.JWT_SECRET);
+    }
     // Durable strategy a workflow swaps to after first validated input — the
-    // app's DB-backed AsWfStore. The encapsulated start (and its secret, derived
-    // from the JWT-HMAC AuthCredential via deriveStateKey) is inherited unchanged.
+    // app's DB-backed AsWfStore.
     protected override storeStrategy(): WfStateStrategy {
       return new HandleStateStrategy({ store: wfStateStore });
     }
@@ -710,7 +718,11 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   }
   app.setReplaceRegistry(createReplaceRegistry([WfTriggerProvider, DemoWfTriggerProvider]));
 
-  app.registerControllers(DemoAuthController, DemoAuthWorkflow);
+  // Mount the bundled sessions endpoints (`GET/DELETE /auth/sessions`). The
+  // default `SessionEnricherProvider` (identity) is auto-resolved by DI; the
+  // SPA's portal parses the raw `metadata.userAgent` client-side, so no
+  // server-side enricher is wired here.
+  app.registerControllers(DemoAuthController, DemoAuthWorkflow, SessionsController);
 
   // Bind the atscript-driven user provider to the JWT subject for ARBAC.
   // `DemoUser.@meta.id` is a UUID but the JWT subject is `username`;
@@ -777,6 +789,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       t.projects,
       t.audit,
       t.wfStates,
+      t.credentials,
       t.users,
       t.departments,
       t.tenants,

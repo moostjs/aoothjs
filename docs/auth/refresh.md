@@ -114,6 +114,12 @@ const auth = new AuthCredential({
 
 :::
 
+## What rotation carries forward
+
+Each rotated pair inherits the previous credential's `claims`, `metadata`, **and `sessionId`** — so a login stays **one session** across N refreshes (the session-family invariant the [Sessions](./sessions) APIs rely on). `parentCredentialId` chains each rotation to its predecessor for reuse detection (below); `sessionId` is the durable id that survives the whole chain.
+
+With `trackLastSeen: 'refresh'`, each `refresh()` also stamps `lastSeenAt` on the newly-minted credentials — cheap activity tracking that piggybacks the rotation write. See [Sessions](./sessions#activity-tracking-lastseenat).
+
 ## Reuse detection
 
 When the orchestrator detects a refresh-token reuse, three things happen, in order:

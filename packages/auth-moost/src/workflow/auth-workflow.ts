@@ -20,7 +20,7 @@
  * is registerable as a Moost controller, but running any of its `@Workflow`
  * schemas would no-op every step.
  */
-import { AuthCredential } from "@aooth/auth";
+import { AuthCredential, type CredentialMetadata } from "@aooth/auth";
 import {
   generateTotpSecret,
   generateTotpUri,
@@ -2022,7 +2022,7 @@ export class AuthWorkflow {
   @ArbacAction("self")
   async finishChangePassword(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     this.requireUsername(ctx);
-    const issue = await this.auth.issue(ctx.username);
+    const issue = await this.issueForContext(ctx);
     const auth = useAuth();
     const envelope: WfFinished = {
       finished: true,
@@ -2214,6 +2214,49 @@ export class AuthWorkflow {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * Resolve the client `User-Agent` from the active HTTP request. Sibling to
+   * {@link resolveClientIp}; swallows the no-HTTP case (unit tests that
+   * hand-roll the wf runtime) by returning `undefined`.
+   */
+  protected resolveUserAgent(): string | undefined {
+    try {
+      const ua = useHeaders()["user-agent"];
+      const first = Array.isArray(ua) ? ua[0] : ua;
+      return typeof first === "string" && first.length > 0 ? first : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Build the {@link CredentialMetadata} captured onto every credential at
+   * issue time. Default records the request IP + User-Agent (the raw facts the
+   * session UI derives device/location from at read time). Returns `undefined`
+   * outside an HTTP context — so a hand-rolled (no-HTTP) wf run issues with
+   * `metadata: undefined`. Override to add a `label`, trim PII, etc.
+   */
+  protected resolveIssueMetadata(_ctx: AuthWfCtx): CredentialMetadata | undefined {
+    const ip = this.resolveClientIp();
+    const userAgent = this.resolveUserAgent();
+    if (ip === undefined && userAgent === undefined) return undefined;
+    return {
+      ...(ip !== undefined && { ip }),
+      ...(userAgent !== undefined && { userAgent }),
+    };
+  }
+
+  /**
+   * Mint a fresh credential for the workflow user, stamping the default
+   * issue-time metadata (IP + User-Agent via {@link resolveIssueMetadata}).
+   * Shared by every finish step that issues a session (login, change-password,
+   * recovery auto-login). Call after {@link requireUsername} has narrowed
+   * `username` (the typed param enforces it at the call site).
+   */
+  private issueForContext(ctx: AuthWfCtx & { username: string }) {
+    return this.auth.issue(ctx.username, { metadata: this.resolveIssueMetadata(ctx) });
   }
 
   /**
@@ -2841,13 +2884,28 @@ export class AuthWorkflow {
   // ── Recovery (1) ──
 
   /**
-   * Revoke all the user's existing sessions via `auth.revokeAllForUser`.
-   * Gated upstream by `ctx.postReset.revokeAllSessions`.
+   * Revoke the user's existing sessions. Shared by recovery (gated upstream by
+   * `ctx.postReset.revokeAllSessions`) and authenticated change-password (gated
+   * by `ctx.changePassword.revokeOtherSessions`).
+   *
+   * - Change-password runs in an authenticated context, so we KEEP the caller's
+   *   current device via `revokeOtherSessions(username, currentSessionId)` —
+   *   OWASP "invalidate other sessions" without logging the user out of the tab
+   *   they just changed their password in. If the current session can't be
+   *   resolved (no session id), fall back to revoking everything (fail-secure).
+   * - Recovery is anonymous (no current session to keep) → `revokeAllForUser`.
    */
   @Step("revoke-sessions")
   @Public()
   async revokeSessions(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     if (!ctx.username) return undefined;
+    if (ctx.changePassword?.revokeOtherSessions) {
+      const currentSessionId = useAuth().getSessionId();
+      if (currentSessionId) {
+        await this.auth.revokeOtherSessions(ctx.username, currentSessionId);
+        return undefined;
+      }
+    }
     await this.auth.revokeAllForUser(ctx.username);
     return undefined;
   }
@@ -2878,7 +2936,7 @@ export class AuthWorkflow {
   @Public()
   async issue(@WorkflowParam("context") ctx: AuthWfCtx): Promise<void> {
     this.requireUsername(ctx);
-    const issue = await this.auth.issue(ctx.username);
+    const issue = await this.issueForContext(ctx);
     const auth = useAuth();
     const envelope: WfFinished = {
       finished: true,
@@ -3046,7 +3104,7 @@ export class AuthWorkflow {
       this.finishRecoveryReset(ctx, true);
       return undefined;
     }
-    const issue = await this.auth.issue(ctx.username);
+    const issue = await this.issueForContext(ctx);
     const auth = useAuth();
     const previousMessage = (useWfFinished().get()?.value as WfFinished | undefined)?.message;
     const envelope: WfFinished = {

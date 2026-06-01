@@ -87,4 +87,8 @@ export const memberRole = defineRole<UserAttrs, ArbacDbScope>()
   // authorises the whole flow. An SSO-only deployment simply omits this grant —
   // no on/off opts flag.
   .allow("auth.change-password", "*")
+  // Manage one's OWN sessions: list (read) + revoke a device / log out others
+  // (revoke). `readAny` (another user's sessions) is admin-only, omitted here.
+  .allow("auth.sessions", "read")
+  .allow("auth.sessions", "revoke")
   .build();

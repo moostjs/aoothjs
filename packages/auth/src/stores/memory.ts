@@ -78,6 +78,12 @@ export class CredentialStoreMemory<
     this.indexRemove(state.userId, token);
   }
 
+  async touch(token: string, at: number): Promise<void> {
+    const state = this.states.get(token);
+    if (!state) return;
+    state.lastSeenAt = at;
+  }
+
   async revokeAllForUser(userId: string): Promise<number> {
     const tokens = this.byUser.get(userId);
     if (!tokens || tokens.size === 0) return 0;

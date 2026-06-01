@@ -24,6 +24,8 @@ interface CredentialStore<TClaims extends object = object> {
   revoke(token: string): Promise<void>;
   revokeAllForUser(userId: string): Promise<number>;
   listForUser?(userId: string): Promise<Array<CredentialState<TClaims> & { token: string }>>;
+  touch?(token: string, at: number): Promise<void>; // sessions: trackLastSeen 'validate'
+  listSessions?(userId: string): Promise<Array<CredentialState<TClaims> & { token: string }>>; // optional native grouping
 }
 ```
 
@@ -38,6 +40,8 @@ Behavioural contract every implementation MUST satisfy:
 | `revoke`           | Unknown token is a no-op. Idempotent.                                                                                                                                                                   |
 | `revokeAllForUser` | Cascade across `kind: 'access'` AND `kind: 'refresh'`. Stateful returns deletion count; stateless returns sentinel `1` ("epoch bumped, count unknown").                                                 |
 | `listForUser`      | Optional. When implemented, returns all live entries (access + refresh). The orchestrator filters refresh entries before returning to user code.                                                        |
+| `touch`            | Optional. Set `lastSeenAt = at` on the token if live; no-op otherwise. Backs `trackLastSeen: 'validate'`. Stateless omit (token immutable). See [sessions.md](sessions.md).                             |
+| `listSessions`     | Optional native session grouping — reserved/unused (the orchestrator groups `listForUser` by `sessionId`). See [sessions.md](sessions.md).                                                              |
 
 `CredentialState<TClaims>`:
 
@@ -51,6 +55,8 @@ interface CredentialState<TClaims extends object = object> {
   kind?: "access" | "refresh"; // default treated as 'access'
   parentCredentialId?: string; // rotated refresh: id of predecessor
   rotatedAt?: number; // set by sliding rotation
+  sessionId?: string; // token-family id, stable across rotation — see sessions.md
+  lastSeenAt?: number; // activity time; only written under trackLastSeen
 }
 ```
 

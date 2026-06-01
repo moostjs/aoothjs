@@ -61,6 +61,8 @@ The package treats sessions and tokens as the _same machinery_ — same store, s
 
 You can run both in one app — issue different credentials with different methods over different transports.
 
+For the multi-device "active sessions" view — listing a user's signed-in devices and revoking one or all-but-this-one — see [Sessions](./sessions).
+
 ## `issue(userId, options?)`
 
 Creates a new access credential (and optionally a refresh token).
@@ -128,10 +130,13 @@ interface AuthContext<TClaims extends object = object> {
   userId: string;
   method: 'session' | 'token';
   credentialId: string;     // sha256(accessToken)
+  sessionId?: string;       // stable across rotation; "this device" — see Sessions
   expiresAt: number;
   claims?: TClaims;
 }
 ```
+
+`sessionId` identifies the token family this request authenticated with — stable across refresh, the key for "this device" matching and per-device revoke. See [Sessions](./sessions).
 
 **Behavior**
 

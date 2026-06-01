@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { AuthCredential } from "@aooth/auth";
 import { createAsHttpOutlet, handleAsOutletRequest } from "@atscript/moost-wf";
 import {
@@ -45,6 +46,33 @@ import { Injectable } from "moost";
 /** Named state-strategy registry: the shape `handleAsOutletRequest` reads off `state`. */
 type StateRegistry = { strategies: Record<string, WfStateStrategy>; default: string };
 
+/**
+ * Derive the exact 32-byte key the encapsulated wf-state strategy requires from
+ * an arbitrary-length app secret.
+ *
+ * The default {@link WfTriggerProvider.wfStateSecret} reuses the auth secret via
+ * `AuthCredential.deriveStateKey()`, which only works for stores backed by a
+ * symmetric secret (JWT / encapsulated). A stateful store (e.g. atscript-db —
+ * the recommended default once you adopt the session-listing APIs) has no key
+ * material to derive from, so its `deriveStateKey()` throws. Such consumers must
+ * override `wfStateSecret()` and supply their own secret — but the strategy
+ * needs *exactly* 32 bytes (a raw string is otherwise parsed as hex), so the
+ * obvious `return env.MY_SECRET` fails. This helper does the SHA-256-to-32-bytes
+ * derivation for you, no `node:crypto` import required:
+ *
+ * ```ts
+ * protected override wfStateSecret(): Buffer {
+ *   return deriveWfStateSecret(env.MY_SECRET);
+ * }
+ * ```
+ *
+ * Deterministic — the same input always yields the same key, so it is stable
+ * across restarts (matching what `deriveStateKey` provided).
+ */
+export function deriveWfStateSecret(secret: string): Buffer {
+  return createHash("sha256").update(secret).digest();
+}
+
 @Injectable()
 export class WfTriggerProvider {
   protected outlets: WfOutlet[] = [createAsHttpOutlet()];
@@ -59,7 +87,15 @@ export class WfTriggerProvider {
     protected readonly auth: AuthCredential,
   ) {}
 
-  /** Secret for the encapsulated wf-state token. Default reuses the auth secret (HKDF-derived, stable across restarts). Override to supply a dedicated secret. */
+  /**
+   * Secret for the encapsulated wf-state token. Default reuses the auth secret
+   * (HKDF-derived, stable across restarts) — which works only for stores backed
+   * by a symmetric secret (JWT / encapsulated). A stateful store (atscript-db)
+   * has nothing to derive from, so `deriveStateKey()` throws; those consumers
+   * MUST override this and supply a dedicated secret. The strategy needs exactly
+   * 32 bytes, so wrap your app secret in {@link deriveWfStateSecret}:
+   * `return deriveWfStateSecret(env.MY_SECRET)`.
+   */
   protected wfStateSecret(): string | Buffer {
     return this.auth.deriveStateKey("wf-state");
   }

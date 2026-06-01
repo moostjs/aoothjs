@@ -160,4 +160,22 @@ describe("CredentialStoreMemory", () => {
       expect(list[0].token).toBe(persistent);
     });
   });
+
+  describe("sessionId / lastSeenAt", () => {
+    it("round-trips sessionId through persist + listForUser", async () => {
+      const store = new CredentialStoreMemory();
+      await store.persist(makeState("alice", { sessionId: "sess-1" }));
+      const [entry] = await store.listForUser("alice");
+      expect(entry.sessionId).toBe("sess-1");
+    });
+
+    it("touch sets lastSeenAt on an existing token, no-op for unknown", async () => {
+      const store = new CredentialStoreMemory();
+      const token = await store.persist(makeState("alice"));
+      await store.touch(token, 42);
+      expect((await store.retrieve(token))?.lastSeenAt).toBe(42);
+      // Unknown token is a no-op (does not throw).
+      await store.touch("nope", 99);
+    });
+  });
 });
