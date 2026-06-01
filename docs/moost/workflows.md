@@ -1,14 +1,15 @@
 # Workflows
 
-`@aooth/auth-moost` ships **one** workflow class — `AuthWorkflow` — that declares three `@moostjs/event-wf` schemas. It replaces the former `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow` quartet. This page is the narrative map: the policy model, the observable pauses of each flow, the extension seams, and the `wf-trigger` machinery that drives them via `/auth/trigger`. Full signatures live in the [API reference](/api/auth-moost). Client-side rendering of the forms lives in [SPA Components](./spa-components).
+`@aooth/auth-moost` ships **one** workflow class — `AuthWorkflow` — that declares four `@moostjs/event-wf` schemas. It replaces the former `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow` quartet. This page is the narrative map: the policy model, the observable pauses of each flow, the extension seams, and the `wf-trigger` machinery that drives them via `/auth/trigger`. Full signatures live in the [API reference](/api/auth-moost). Client-side rendering of the forms lives in [SPA Components](./spa-components).
 
-| `@Workflow` method | Workflow id          | Covers                                     |
-| ------------------ | -------------------- | ------------------------------------------ |
-| `loginFlow`        | `auth/login/flow`    | credentials → enrollment → MFA → finalize  |
-| `inviteFlow`       | `auth/invite/start`  | admin invite → anonymous magic-link accept |
-| `recoveryFlow`     | `auth/recovery/flow` | magic-link **or** OTP password reset       |
+| `@Workflow` method   | Workflow id                 | Covers                                     |
+| -------------------- | --------------------------- | ------------------------------------------ |
+| `loginFlow`          | `auth/login/flow`           | credentials → enrollment → MFA → finalize  |
+| `inviteFlow`         | `auth/invite/start`         | admin invite → anonymous magic-link accept |
+| `recoveryFlow`       | `auth/recovery/flow`        | magic-link **or** OTP password reset       |
+| `changePasswordFlow` | `auth/change-password/flow` | authenticated self-service password change |
 
-All three `@Workflow` bodies carry `@Public()` so the wf adapter can dispatch anonymous logins and magic-link clicks. Invite's admin-phase `@Step` methods deliberately omit `@Public()` — they are ARBAC-evaluated (the admin needs the `invite` permission).
+The login, invite, and recovery `@Workflow` bodies carry `@Public()` so the wf adapter can dispatch anonymous logins and magic-link clicks. Invite's admin-phase `@Step` methods deliberately omit `@Public()` — they are ARBAC-evaluated (the admin needs the `invite` permission). **Change-password is the one fully-gated flow**: neither its `@Workflow` body nor any of its steps is `@Public()` — every one carries `@ArbacResource("auth.change-password")` + `@ArbacAction("self")`, so it runs only for an authenticated principal whose role grants that resource. See [Change password](#change-password-auth-change-password-flow).
 
 ## The policy model
 
@@ -112,6 +113,18 @@ The run finishes by issuing tokens (or a fresh-login redirect). Any user-initiat
 ### Recovery (`auth/recovery/flow`)
 
 Identifier (anti-enumeration: unknown identifiers get the same response) → delivery mode (magic-link / OTP) → OTP entry or magic-link click → optional known-factor verification → new password (revokes existing sessions) → finish (auto-login when `autoLoginOnRecover`, else fresh-login redirect).
+
+### Change password (`auth/change-password/flow`) {#change-password-auth-change-password-flow}
+
+The authenticated "change MY password" flow — for a signed-in user rotating their own credential (distinct from recovery, which is for users who are locked out). The single pause is `ChangePasswordForm` (current password + new + confirm, with the live password-rules readout); on submit it verifies the current password, applies the new one through `UserService.changePassword`, optionally revokes the user's other sessions, and re-issues the acting session on a fresh token (so the current device stays signed in, no ghost sessions survive).
+
+**Identity is session-bound, never input.** `init-change-password` sets `ctx.username` from `useAuth().getUserId()` — there is no target-user parameter anywhere in the flow, so it is structurally "change my password", not "change someone's password".
+
+**Fully ARBAC-gated, no `@Public()`.** Unlike the other three flows, the `@Workflow` body and every step carry `@ArbacResource("auth.change-password")` + `@ArbacAction("self")`. A customer enables the feature with a single grant — `allow("auth.change-password", "*")` — and forbids it (e.g. SSO-only orgs that disallow local password changes) by simply omitting that grant. There is no on/off opts flag; the privilege **is** the switch. See [ARBAC Authorize — gating a whole workflow](./arbac-authorize#gating-a-multi-step-workflow).
+
+Policy lives on `resolveChangePasswordPolicy(ctx)` (override seam): `revokeOtherSessions` (default `true`) and an optional min-interval `rateLimit` (`{ minIntervalMs }`) that emits a terminal "try again later" before the form pause. Current-password re-entry is the primary protection; rate-limiting is optional defense-in-depth.
+
+This flow is **not** in `DEFAULT_AUTH_WORKFLOWS`, so it is unreachable from the public `/auth/trigger` — it is dispatched from its own guarded `POST /auth/change-password` route (`CHANGE_PASSWORD_WORKFLOW`). See [REST Controllers](./controllers).
 
 ## Outbound delivery — `deliver(payload)`
 

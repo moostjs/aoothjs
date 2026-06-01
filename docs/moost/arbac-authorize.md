@@ -42,6 +42,30 @@ class ArticlesController {
 
 When the interceptor is global, `@ArbacAuthorize()` is redundant — both attach the same interceptor at the same priority, so the second copy is a no-op. Most apps pick one strategy and stick to it.
 
+## Gating a multi-step workflow {#gating-a-multi-step-workflow}
+
+ARBAC evaluates **per handler the engine lands on** — and a `@moostjs/event-wf` workflow runs each `@Step` as its own evaluated handler, not just the `@Workflow` entry. So gating a workflow means decorating **every step the engine can reach**, not only the trigger. A step left bare (no `@ArbacResource`/`@ArbacAction`, no `@Public()`) falls through to the strict-by-default `resource = ClassName`, `action = methodName` (e.g. `prepareChangePassword` on `DemoAuthWorkflow`) — which no role grants, so a global authorize interceptor **denies mid-flow** with a confusing 403 on a method name.
+
+Two postures, per step:
+
+| Posture                                            | When                                                                                                                                       |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `@Public()`                                        | An anonymous request can legitimately land here (e.g. login / recovery / invite-accept steps — the flow runs before there is a principal). |
+| `@ArbacResource(r)` (+ optional `@ArbacAction(a)`) | The step requires a signed-in, authorized principal. Repeat the SAME `(r, a)` on every step so they share one privilege.                   |
+
+The bundled change-password flow takes the second posture end-to-end: the `@Workflow` body, the `POST /auth/change-password` trigger, and all five steps carry `@ArbacResource("auth.change-password")` + `@ArbacAction("self")`. Because method-level `@ArbacResource` wins the resolution chain (step 1) over the class-level `@ArbacResource("auth")` (step 2), they all resolve to the one resource, and a customer enables the entire feature with a single grant:
+
+```ts
+// One grant authorizes the trigger + the @Workflow body + every step.
+defineRole("member").allow("auth.change-password", "*");
+```
+
+Omitting that grant forbids the whole flow — the privilege **is** the on/off switch; there is no per-feature opts flag. Use a lowercase dot-separated resource id (`auth.change-password`) and a short action (`self`), matching the `auth` / `auth.invite` convention — not the slash-form workflow id.
+
+::: warning Decorate every reachable step, or the flow 403s mid-run
+A workflow's steps are individually ARBAC-evaluated. One bare step → `resource = ClassName, action = methodName` → denied (no role grants it). Symptom: the trigger authorizes, the form renders, then a step fails with `Insufficient privileges for action "prepareXxx" on resource "<ClassName>"`. Fix: put the same `@ArbacResource`(+`@ArbacAction`) on every step, or `@Public()` the ones an anonymous run can reach.
+:::
+
 ## The 401 vs 403 split
 
 | Cause                                                                       | Response                                                                       |
