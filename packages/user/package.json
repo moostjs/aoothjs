@@ -21,7 +21,8 @@
   },
   "files": [
     "dist",
-    "src/atscript-db/user-credentials.as"
+    "src/atscript-db/user-credentials.as",
+    "src/atscript-db/user-credentials.as.d.ts"
   ],
   "type": "module",
   "sideEffects": false,
@@ -39,7 +40,10 @@
       "import": "./dist/atscript-db.mjs",
       "require": "./dist/atscript-db.cjs"
     },
-    "./atscript-db/model.as": "./src/atscript-db/user-credentials.as",
+    "./atscript-db/model.as": {
+      "types": "./src/atscript-db/user-credentials.as.d.ts",
+      "default": "./src/atscript-db/user-credentials.as"
+    },
     "./package.json": "./package.json"
   },
   "publishConfig": {

@@ -42,8 +42,14 @@
       "types": "./dist/atscript/index.d.mts",
       "import": "./dist/atscript/index.mjs"
     },
-    "./atscript/models": "./src/atscript/models/user.as",
-    "./atscript/models.as": "./src/atscript/models/user.as",
+    "./atscript/models": {
+      "types": "./src/atscript/models/user.as.d.ts",
+      "default": "./src/atscript/models/user.as"
+    },
+    "./atscript/models.as": {
+      "types": "./src/atscript/models/user.as.d.ts",
+      "default": "./src/atscript/models/user.as"
+    },
     "./plugin": {
       "types": "./dist/plugin.d.mts",
       "import": "./dist/plugin.mjs"

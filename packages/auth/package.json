@@ -25,7 +25,8 @@
   },
   "files": [
     "dist",
-    "src/atscript-db/auth-credential.as"
+    "src/atscript-db/auth-credential.as",
+    "src/atscript-db/auth-credential.as.d.ts"
   ],
   "type": "module",
   "sideEffects": false,
@@ -48,7 +49,10 @@
       "import": "./dist/atscript-db.mjs",
       "require": "./dist/atscript-db.cjs"
     },
-    "./atscript-db/model.as": "./src/atscript-db/auth-credential.as",
+    "./atscript-db/model.as": {
+      "types": "./src/atscript-db/auth-credential.as.d.ts",
+      "default": "./src/atscript-db/auth-credential.as"
+    },
     "./package.json": "./package.json"
   },
   "publishConfig": {
