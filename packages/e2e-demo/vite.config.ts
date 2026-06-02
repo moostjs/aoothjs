@@ -22,6 +22,9 @@ export default defineConfig({
   // under `pnpm test:e2e`.
   test: {
     exclude: ["test-e2e/**", "node_modules/**", "dist/**"],
+    // This package's tests are Playwright (`test-e2e/`, run via `pnpm test:e2e`);
+    // it ships no vitest specs, so a recursive `vp test` must not fail it.
+    passWithNoTests: true,
   },
   // Dev-only: bundle packages that ship raw `.as` source so unplugin-atscript
   // can transform them.

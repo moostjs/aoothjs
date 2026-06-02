@@ -130,6 +130,40 @@ test.describe("Active sessions (auth.sessions)", () => {
     expect(res.status()).toBe(401);
   });
 
+  test("AS-007: logout ends THIS device's whole family (refresh included), not just cookies", async ({
+    page,
+    browser,
+  }) => {
+    // The #2 footgun: the httpOnly refresh cookie lives on `/auth/refresh` and
+    // is NOT sent to `/auth/logout`, so logout sees no refresh token. Pre-fix
+    // the refresh credential lingered for its full TTL and the "logged-out"
+    // session kept appearing in listSessions. Family-aware logout revokes the
+    // whole family by sessionId.
+    await loginViaUi(page, USERS.alice); // device A (will log out)
+    const ctx2 = await browser.newContext();
+    const page2 = await ctx2.newPage();
+    await loginViaUi(page2, USERS.alice); // device B (independent observer)
+
+    const before = (await (await page2.request.get("/auth/sessions")).json()) as SessionRow[];
+    expect(before).toHaveLength(2);
+
+    // Device A logs out with an empty body — and the refresh cookie's narrow
+    // path keeps it off `/auth/logout`. Exactly the SPA case.
+    const out = await page.request.post("/auth/logout", { data: {} });
+    expect(out.ok()).toBe(true);
+
+    // Device A is fully signed out.
+    expect((await page.request.get("/auth/status")).status()).toBe(401);
+
+    // Device B (separate cookie jar) now sees ONLY its own session — device A's
+    // whole family, the lingering refresh included, is gone from listSessions.
+    const after = (await (await page2.request.get("/auth/sessions")).json()) as SessionRow[];
+    expect(after).toHaveLength(1);
+    expect(after[0].current).toBe(true);
+
+    await ctx2.close();
+  });
+
   test("AS-006: changing password revokes OTHER sessions but keeps the current device", async ({
     page,
     browser,

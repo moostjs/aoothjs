@@ -1,9 +1,24 @@
 import type { TArbacRole } from "@aooth/arbac-moost";
-import { type AuthContext, CredentialStoreMemory } from "@aooth/auth";
+import { type AuthContext, AuthCredential, CredentialStoreMemory } from "@aooth/auth";
+import { UserService } from "@aooth/user";
+import { Controller, Inherit, Optional } from "moost";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
+import { AuthController } from "../auth.controller";
 import type { AuthLoginResponse } from "../auth.dto";
 import { type MyClaims, prepareControllerApp } from "./controller-utils";
+
+// A consumer subclass — the real downstream shape (extend AuthController, add
+// app workflows). Defined once at module scope so its moost/infact identity is
+// stable across tests. Used to prove the `@MoostInit` refresh-route resolution
+// is inherited and runs on a SUBCLASS mounted under a prefix.
+@Inherit()
+@Controller("auth")
+class PortalAuthController extends AuthController {
+  constructor(auth: AuthCredential, @Optional() users?: UserService) {
+    super(auth, users);
+  }
+}
 
 async function seedAndIssue(
   app: Awaited<ReturnType<typeof prepareControllerApp>>,
@@ -77,6 +92,41 @@ describe("AuthController", () => {
       });
       expect(refreshed.status).toBe(401);
     });
+
+    it("ends THIS device's whole session family even with no refresh token in the body", async () => {
+      // The real SPA footgun: the httpOnly refresh cookie sits on a narrow path
+      // and never reaches /auth/logout, and the client can't read it to echo in
+      // the body. Pre-family logout left that refresh credential alive for its
+      // full TTL, so the "logged-out" session lingered in listSessions. Logout
+      // now revokes the whole family by sessionId.
+      const app = await prepareControllerApp();
+      await app.users.createUser("alice", "Password123");
+      await app.users.activateAccount("alice");
+      const deviceA = await app.auth.issue("alice");
+      const deviceB = await app.auth.issue("alice");
+      expect(await app.auth.listSessions("alice")).toHaveLength(2);
+
+      const out = await app.request("/auth/logout", {
+        method: "POST",
+        headers: { authorization: `Bearer ${deviceA.accessToken}` },
+        json: {}, // no refreshToken — exactly the SPA case
+      });
+      expect(out.status).toBe(201);
+
+      // Device A's whole family is gone: access dead AND refresh unusable.
+      expect(await app.auth.validate(deviceA.accessToken)).toBeNull();
+      const refreshed = await app.request("/auth/refresh", {
+        method: "POST",
+        json: { refreshToken: deviceA.refreshToken as string },
+      });
+      expect(refreshed.status).toBe(401);
+
+      // Only this device was logged out — device B keeps working and the
+      // active-sessions list drops to one.
+      const sessions = await app.auth.listSessions("alice");
+      expect(sessions).toHaveLength(1);
+      expect(await app.auth.validate(deviceB.accessToken)).not.toBeNull();
+    });
   });
 
   describe("POST /auth/refresh", () => {
@@ -126,6 +176,90 @@ describe("AuthController", () => {
         json: { refreshToken: "not-a-real-token" },
       });
       expect(res.status).toBe(401);
+    });
+  });
+
+  describe("refresh cookie path (mount-prefix aware)", () => {
+    function refreshCookieOf(setCookies: string[]): string | undefined {
+      return setCookies.find((c) => c.startsWith("aooth_refresh="));
+    }
+
+    it("scopes the refresh cookie to the controller's mounted prefix", async () => {
+      // Mounted under `api/auth` → real endpoint is /api/auth/refresh. The
+      // cookie path must follow, not stay at the hardcoded /auth/refresh.
+      const app = await prepareControllerApp({ controllerPrefix: "api/auth" });
+      const { refreshToken } = await seedAndIssue(app, "alice", "Password123");
+      const out = await app.request("/api/auth/refresh", {
+        method: "POST",
+        json: { refreshToken },
+      });
+      expect(out.status).toBe(201);
+      expect(refreshCookieOf(out.setCookies)).toMatch(/;\s*Path=\/api\/auth\/refresh(;|$)/i);
+    });
+
+    it("lets an explicit refreshCookie.path win over derivation", async () => {
+      const app = await prepareControllerApp({
+        controllerPrefix: "api/auth",
+        refreshCookie: { path: "/custom/refresh" },
+      });
+      const { refreshToken } = await seedAndIssue(app, "alice", "Password123");
+      const out = await app.request("/api/auth/refresh", {
+        method: "POST",
+        json: { refreshToken },
+      });
+      expect(refreshCookieOf(out.setCookies)).toMatch(/;\s*Path=\/custom\/refresh(;|$)/i);
+    });
+
+    it("defaults to /auth/refresh at root mount", async () => {
+      const app = await prepareControllerApp();
+      const { refreshToken } = await seedAndIssue(app, "alice", "Password123");
+      const out = await app.request("/auth/refresh", {
+        method: "POST",
+        json: { refreshToken },
+      });
+      expect(refreshCookieOf(out.setCookies)).toMatch(/;\s*Path=\/auth\/refresh(;|$)/i);
+    });
+
+    it("never guesses when AuthController resolves to >1 refresh route — keeps the default", async () => {
+      // Mount AuthController under TWO non-root prefixes (api/auth + v2/auth) so
+      // `@HandlerPaths('refresh')` returns two paths. The boot `@MoostInit` hook
+      // must take its ambiguity branch — warn (exercising the injected logger)
+      // and leave the holder unset — so the cookie falls back to the configured
+      // DEFAULT `/auth/refresh` rather than guessing one of the two mounts.
+      // Both prefixes are non-root, so the default is distinct from either
+      // resolved path: a Path of /auth/refresh can ONLY mean the holder stayed
+      // unset. That `init()` resolves at all also proves `@InjectMoostLogger`
+      // injects a usable logger inside `@MoostInit`.
+      const app = await prepareControllerApp({
+        controllerPrefix: "api/auth",
+        // biome-ignore lint/suspicious/noExplicitAny: prefixed-tuple registration shape.
+        extraControllers: [["v2/auth", AuthController] as any],
+      });
+      const { refreshToken } = await seedAndIssue(app, "alice", "Password123");
+      const out = await app.request("/api/auth/refresh", {
+        method: "POST",
+        json: { refreshToken },
+      });
+      expect(out.status).toBe(201);
+      expect(refreshCookieOf(out.setCookies)).toMatch(/;\s*Path=\/auth\/refresh(;|$)/i);
+    });
+
+    it("follows a SUBCLASSED AuthController mounted under a prefix (the consumer case)", async () => {
+      // The motivating downstream scenario: a consumer subclasses AuthController
+      // and mounts it under a prefix. The inherited `@MoostInit` hook must run on
+      // the subclass and `@HandlerPaths('refresh')` must resolve the subclass's
+      // own prefixed route → cookie Path follows, with no config.
+      const app = await prepareControllerApp({
+        controllerClass: PortalAuthController,
+        controllerPrefix: "api/auth",
+      });
+      const { refreshToken } = await seedAndIssue(app, "alice", "Password123");
+      const out = await app.request("/api/auth/refresh", {
+        method: "POST",
+        json: { refreshToken },
+      });
+      expect(out.status).toBe(201);
+      expect(refreshCookieOf(out.setCookies)).toMatch(/;\s*Path=\/api\/auth\/refresh(;|$)/i);
     });
   });
 

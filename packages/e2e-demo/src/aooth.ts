@@ -66,8 +66,8 @@ export function createAooth({ tables, env }: AppAuthOptions): AppAuth {
   const userService = new UserService<DemoUser>(userStore, {
     password: {
       historyLength: 5,
-      // 1-year rotation policy (matches the rvmode B2B portal compliance
-      // requirement that motivated the upstream feature in PW_EXP.md). The
+      // 1-year rotation policy (a typical B2B compliance requirement that
+      // motivated the upstream feature in PW_EXP.md). The
       // demo seeds one user (t1_stale) with `password.lastChanged` deep in
       // the past so the `password-expired` login variant lands deterministically
       // on `SetPasswordForm` regardless of when the demo is booted. All other

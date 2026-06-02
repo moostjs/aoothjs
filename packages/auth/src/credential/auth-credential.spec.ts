@@ -180,16 +180,35 @@ describe("AuthCredential", () => {
   });
 
   describe("refresh: rotation 'always'", () => {
-    it("consumes old refresh; new pair issued; replay triggers theft response", async () => {
-      // Reuse-after-rotation must fire the OAuth theft response in 'always'
-      // mode — same signal as 'sliding' beyond grace. Sibling sessions for
-      // the same user must be revoked, not just the replayed token rejected.
+    it("rotates the token but keeps a FIXED session ceiling (expiry never slides)", async () => {
+      const { auth, clock } = makeAuth({
+        accessTtl: 1000,
+        refresh: { ttl: 60_000, rotation: "always" },
+      });
+      const initial = await auth.issue("alice");
+      const ceiling = initial.refreshExpiresAt!;
+      clock.advance(10_000);
+      const r1 = await auth.refresh(initial.refreshToken!);
+      expect(r1.refreshToken).not.toBe(initial.refreshToken);
+      // 'always' carries the family's original expiry forward — it must NOT
+      // extend to now + ttl the way 'sliding' does.
+      expect(r1.refreshExpiresAt).toBe(ceiling);
+      clock.advance(10_000);
+      const r2 = await auth.refresh(r1.refreshToken!);
+      expect(r2.refreshExpiresAt).toBe(ceiling);
+    });
+
+    it("benign concurrent refresh within grace re-issues a pair — no theft", async () => {
+      // The bug this guards: two tabs present the same just-rotated token at
+      // ~the same instant. Within grace the second presentation must succeed,
+      // NOT be mistaken for token theft.
       let reuseFired = 0;
-      const { auth } = makeAuth({
+      const { auth, clock } = makeAuth({
         accessTtl: 1000,
         refresh: {
           ttl: 60_000,
           rotation: "always",
+          rotationGraceMs: 5000,
           onRotationReuse: () => {
             reuseFired++;
           },
@@ -197,14 +216,87 @@ describe("AuthCredential", () => {
       });
       const sibling = await auth.issue("alice");
       const initial = await auth.issue("alice");
-      const refreshed = await auth.refresh(initial.refreshToken!);
-      expect(refreshed.refreshToken).not.toBe(initial.refreshToken);
+      const first = await auth.refresh(initial.refreshToken!);
+      clock.advance(10); // second tab, still inside grace
+      const second = await auth.refresh(initial.refreshToken!);
+      expect(second.accessToken).toBeTruthy();
+      expect(second.refreshToken).toBeTruthy();
+      expect(second.refreshToken).not.toBe(initial.refreshToken);
+      expect(reuseFired).toBe(0);
+      // No theft → neither the sibling session nor the freshly-issued tokens die.
+      expect(await auth.validate(sibling.accessToken)).not.toBeNull();
+      clock.advance(10);
+      expect((await auth.refresh(first.refreshToken!)).accessToken).toBeTruthy();
+    });
+
+    it("reuse after grace fires theft and revokes ONLY the compromised family (default)", async () => {
+      let reuseFired = 0;
+      // accessTtl well past the clock advance so the assertion measures
+      // revocation, not token expiry.
+      const { auth, clock } = makeAuth({
+        accessTtl: 60_000,
+        refresh: {
+          ttl: 600_000,
+          rotation: "always",
+          rotationGraceMs: 1000,
+          onRotationReuse: () => {
+            reuseFired++;
+          },
+        },
+      });
+      const sibling = await auth.issue("alice");
+      const initial = await auth.issue("alice");
+      await auth.refresh(initial.refreshToken!);
+      clock.advance(2000); // beyond grace
       await expect(auth.refresh(initial.refreshToken!)).rejects.toMatchObject({
         type: "REFRESH_REUSE_DETECTED",
       });
       expect(reuseFired).toBe(1);
-      // Sibling session for the same user must be revoked too.
+      // Default reuseResponse 'session' → the user's OTHER device survives.
+      expect(await auth.validate(sibling.accessToken)).not.toBeNull();
+    });
+
+    it("reuseResponse 'user' escalates theft to every session", async () => {
+      const { auth, clock } = makeAuth({
+        accessTtl: 60_000,
+        refresh: {
+          ttl: 600_000,
+          rotation: "always",
+          rotationGraceMs: 1000,
+          reuseResponse: "user",
+        },
+      });
+      const sibling = await auth.issue("alice");
+      const initial = await auth.issue("alice");
+      await auth.refresh(initial.refreshToken!);
+      clock.advance(2000);
+      await expect(auth.refresh(initial.refreshToken!)).rejects.toMatchObject({
+        type: "REFRESH_REUSE_DETECTED",
+      });
+      // 'user' scope revokes the sibling too.
       expect(await auth.validate(sibling.accessToken)).toBeNull();
+    });
+
+    it("grace is store-backed: holds across instances sharing one store", async () => {
+      // Two AuthCredential instances (think two ECS tasks behind a load
+      // balancer) sharing one store. The grace window must hold with NO
+      // in-memory state on the instance that sees the replay.
+      const clock = new FakeClock();
+      const store = new CredentialStoreMemory<MyClaims>({ clock });
+      const refresh = { ttl: 60_000, rotation: "always" as const, rotationGraceMs: 5000 };
+      const instanceA = new AuthCredential<MyClaims>({ store, clock, accessTtl: 1000, refresh });
+      const instanceB = new AuthCredential<MyClaims>({ store, clock, accessTtl: 1000, refresh });
+      const initial = await instanceA.issue("alice");
+      await instanceA.refresh(initial.refreshToken!); // A rotates
+      clock.advance(10);
+      // B replays the same token within grace → must succeed (B has no map entry).
+      const onB = await instanceB.refresh(initial.refreshToken!);
+      expect(onB.accessToken).toBeTruthy();
+      // Beyond grace, B treats the same replay as theft.
+      clock.advance(10_000);
+      await expect(instanceB.refresh(initial.refreshToken!)).rejects.toMatchObject({
+        type: "REFRESH_REUSE_DETECTED",
+      });
     });
   });
 

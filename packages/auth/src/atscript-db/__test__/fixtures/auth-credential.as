@@ -46,4 +46,14 @@ export interface AoothAuthCredential {
     /** Set by refresh-token rotation. */
     parentCredentialId?: string
     rotatedAt?: number.timestamp
+
+    /**
+     * Stable session-family id. Minted once at login, copied forward on every
+     * rotation. Indexed so a store could group/revoke a family natively.
+     */
+    @db.index.plain
+    sessionId?: string
+
+    /** Last-activity timestamp; written only under `trackLastSeen`. */
+    lastSeenAt?: number.timestamp
 }

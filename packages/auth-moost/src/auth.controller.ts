@@ -5,10 +5,19 @@ import type { WfFinished } from "@atscript/moost-wf";
 import { current } from "@wooksjs/event-core";
 import { Body, Get, HttpError, Post, Query } from "@moostjs/event-http";
 import { useCookies } from "@wooksjs/event-http";
-import { Controller, Optional } from "moost";
+import {
+  Controller,
+  HandlerPaths,
+  InjectMoostLogger,
+  MoostInit,
+  Optional,
+  type TConsoleBase,
+  useControllerContext,
+} from "moost";
 
 import { type AuthBindings, useAuth } from "./auth.composables";
 import { Public } from "./auth.decorator";
+import { normalizeCookiePath, RefreshCookiePathHolder } from "./auth.route";
 import type {
   AuthLoginResponse,
   AuthLogoutBody,
@@ -67,6 +76,35 @@ export class AuthController {
     @Optional() protected readonly users?: UserService,
   ) {}
 
+  /**
+   * Scope the refresh cookie to this controller's REAL mounted route, resolved
+   * once at application boot from Moost's post-bind route table. `@HandlerPaths`
+   * defaults to the running controller, so a prefixed or subclassed mount (e.g.
+   * `api/auth` → `/api/auth/refresh`) is handled with no config; the result
+   * feeds {@link RefreshCookiePathHolder}, which `authGuardInterceptor` reads.
+   * Leaves the holder unset — so the guard keeps its configured default — on 0
+   * matches (no refresh route registered) or >1 (ambiguous; never guess),
+   * warning at boot in the ambiguous case rather than on the first request.
+   */
+  @MoostInit()
+  async initRefreshCookiePath(
+    @HandlerPaths("refresh", { type: "HTTP" }) paths: string[],
+    @InjectMoostLogger("aooth:auth") logger: TConsoleBase,
+  ): Promise<void> {
+    if (paths.length === 1) {
+      // Same singleton the guard reads via `cc.instantiate`. The init hook runs
+      // inside a controller context, so this resolves identically.
+      const holder = await useControllerContext(current()).instantiate(RefreshCookiePathHolder);
+      holder.path = normalizeCookiePath(paths[0]);
+    } else if (paths.length > 1) {
+      logger.warn(
+        `[aooth] AuthController's refresh route resolved to ${paths.length} paths ` +
+          `(${paths.join(", ")}); the refresh cookie stays at its default. Set ` +
+          `refreshCookie.path explicitly on authGuardInterceptor(opts) to disambiguate.`,
+      );
+    }
+  }
+
   // `@Public()` bypasses ARBAC — logout is a self-scoped primitive ("kill
   // my own session"). Subclass + `@ArbacAction(...)` to gate it. The null
   // check below is defence-in-depth: the auth guard still populates the
@@ -78,16 +116,27 @@ export class AuthController {
     if (!auth.getAuthContext()) {
       throw new HttpError(401, "Not authenticated");
     }
+    // End THIS device's whole session — every token in the family (access +
+    // refresh + all rotations), keyed by sessionId — on stores that can
+    // enumerate. This is what a "log out" button wants now that aooth models a
+    // session as a token family: the SPA can't read the httpOnly refresh
+    // cookie, and that cookie's narrow path keeps it off `/auth/logout`, so the
+    // token-level revokes below cannot reach the refresh credential on their
+    // own. `revokeSession` closes that gap (and is a no-op on stateless stores,
+    // where the token-level fallback remains the mechanism).
+    const sessionId = auth.getSessionId();
+    if (sessionId) {
+      try {
+        await this.auth.revokeSession(auth.getUserId(), sessionId);
+      } catch {
+        /* best-effort — cookies still cleared below */
+      }
+    }
+    // Token-level fallback: covers stateless stores (where revokeSession no-ops)
+    // and an explicit refresh token in the body. Harmless no-ops once the
+    // family is already gone.
     const accessToken = auth.extractToken();
-    // Revoke the refresh side too — otherwise a stolen device could mint a
-    // fresh access token via `/auth/refresh` after the user "logged out".
-    // The refresh cookie's narrow path keeps it OUT of `/auth/logout`, so we
-    // prefer an explicit body field and fall back to the cookie just in case
-    // a consumer widened the path.
     const refreshToken = resolveRefreshToken(auth, body);
-    // Best-effort: the guard already validated the access token; if either
-    // revocation fails (e.g. store unreachable) we still clear cookies so the
-    // client's session ends.
     if (accessToken) {
       try {
         await this.auth.revoke(accessToken);

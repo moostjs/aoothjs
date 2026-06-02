@@ -9,16 +9,18 @@ interface RefreshConfig {
   ttl: number; // ms
   rotation?: "none" | "always" | "sliding"; // default 'sliding'
   rotationGraceMs?: number; // default 30_000
+  reuseResponse?: "session" | "user"; // default 'session'
   onRotationReuse?: (state: CredentialState) => void;
 }
 ```
 
-| Option            | Default     | Purpose                                                                                         |
-| ----------------- | ----------- | ----------------------------------------------------------------------------------------------- |
-| `ttl`             | (required)  | Lifetime of refresh tokens, ms.                                                                 |
-| `rotation`        | `'sliding'` | Rotation strategy — see [the three modes](#the-three-modes).                                    |
-| `rotationGraceMs` | `30_000`    | Sliding mode only — window after rotation during which the old refresh remains valid.           |
-| `onRotationReuse` | `undefined` | Hook called when reuse is detected after the grace window. Fires _before_ the user-wide revoke. |
+| Option            | Default     | Purpose                                                                                                              |
+| ----------------- | ----------- | -------------------------------------------------------------------------------------------------------------------- |
+| `ttl`             | (required)  | Lifetime of refresh tokens, ms.                                                                                      |
+| `rotation`        | `'sliding'` | Rotation strategy — see [the three modes](#the-three-modes).                                                         |
+| `rotationGraceMs` | `30_000`    | `sliding` **and** `always` — window after rotation during which the old refresh stays replay-valid.                  |
+| `reuseResponse`   | `'session'` | Blast radius on detected reuse: the compromised token family (`'session'`) or every session for the user (`'user'`). |
+| `onRotationReuse` | `undefined` | Hook called when reuse is detected. Fires _before_ the revoke.                                                       |
 
 The minimum opt-in:
 
@@ -32,11 +34,13 @@ const auth = new AuthCredential({
 
 ## The three modes
 
-| Mode                  | Old refresh after success              | Reuse handling                                                    | Typical use                             |
-| --------------------- | -------------------------------------- | ----------------------------------------------------------------- | --------------------------------------- |
-| `'none'`              | Stays usable until TTL                 | No reuse detection                                                | Long-lived API keys, no rotation policy |
-| `'always'`            | `consume`d (single-use)                | Any reuse → `REFRESH_REUSE_DETECTED` + user-wide revoke           | Strict rotation, stateless deployments  |
-| `'sliding'` (default) | Valid for `rotationGraceMs`, then dead | Reuse _after grace_ → `REFRESH_REUSE_DETECTED` + user-wide revoke | Browsers with parallel tabs / retries   |
+| Mode                  | Refresh expiry           | Old refresh after success (stateful)   | Reuse handling                                                 | Typical use                             |
+| --------------------- | ------------------------ | -------------------------------------- | -------------------------------------------------------------- | --------------------------------------- |
+| `'none'`              | unchanged                | Stays usable until TTL                 | No reuse detection                                             | Long-lived API keys, no rotation policy |
+| `'always'`            | **fixed** ceiling        | Valid for `rotationGraceMs`, then dead | Reuse _after grace_ → `REFRESH_REUSE_DETECTED` + family revoke | Rotation with an absolute session cap   |
+| `'sliding'` (default) | **slides** (`now + ttl`) | Valid for `rotationGraceMs`, then dead | Reuse _after grace_ → `REFRESH_REUSE_DETECTED` + family revoke | Browsers with parallel tabs / retries   |
+
+`'always'` and `'sliding'` differ only in **expiry**: `'sliding'` is a rolling session (each refresh pushes the expiry to `now + ttl`); `'always'` keeps the family's original expiry as a fixed ceiling, so the session has an absolute maximum lifetime regardless of activity. Both rotate the token on every refresh and **both are grace-tolerant** on stateful stores (a benign concurrent refresh within `rotationGraceMs` is not mistaken for theft — see [the grace window](#the-grace-window-and-concurrency)). On stateless stores neither can keep the old token valid, so both fall back to single-use semantics with a process-local reuse signal.
 
 ### `'none'` — no rotation
 
@@ -53,29 +57,31 @@ const auth = new AuthCredential({
 
 **Choose when** — the refresh token is intended as a long-lived secret (API key), or rotation overhead is unacceptable. No reuse detection — a leaked refresh token is exploitable until it expires.
 
-### `'always'` — rotate every time
+### `'always'` — rotate every time, fixed session ceiling
 
-Every successful `refresh()` consumes the old refresh and issues a new one. Reuse is detected immediately.
+Every successful `refresh()` rotates the refresh token, but each rotated token inherits the family's **original** `expiresAt` — the session has an absolute maximum lifetime no matter how often it refreshes. On a stateful store it shares the same grace window as `'sliding'`, so a benign concurrent refresh within `rotationGraceMs` is not mistaken for theft.
 
-**Timeline (happy path)**:
-
-```
-  t=0     issue()  →  access_a, refresh_r1
-  t=10m   refresh(refresh_r1)  →  access_b, refresh_r2   (r1 consumed)
-  t=20m   refresh(refresh_r2)  →  access_c, refresh_r3   (r2 consumed)
-```
-
-**Timeline (reuse)**:
+**Timeline (happy path)** — note the fixed expiry:
 
 ```
-  t=0     issue()  →  access_a, refresh_r1
-  t=10m   refresh(refresh_r1)  →  access_b, refresh_r2   (r1 consumed)
-  t=11m   refresh(refresh_r1)  →  AuthError('REFRESH_REUSE_DETECTED')
+  t=0     issue()  →  access_a, refresh_r1   (refresh expires at t=30d)
+  t=10m   refresh(refresh_r1)  →  access_b, refresh_r2   (still expires at t=30d)
+  t=20m   refresh(refresh_r2)  →  access_c, refresh_r3   (still expires at t=30d)
+  t=30d   refresh(refresh_rN)  →  AuthError('INVALID_TOKEN')  (ceiling reached)
+```
+
+**Timeline (reuse after grace)**:
+
+```
+  t=0      issue()  →  access_a, refresh_r1
+  t=10m    refresh(refresh_r1)  →  access_b, refresh_r2   (r1.rotatedAt set)
+  t=10m+5s refresh(refresh_r1)  →  access_b', refresh_r2'   (within grace — OK)
+  t=10m+35s refresh(refresh_r1) →  AuthError('REFRESH_REUSE_DETECTED')
                                  → onRotationReuse(state) called
-                                 → revokeAllForUser(state.userId)
+                                 → revokeSession(userId, sessionId)   (family only, by default)
 ```
 
-**Choose when** — strict per-request rotation matters more than tolerating brief client races. Pairs well with stateless stores (see the warning below).
+**Choose when** — you want token rotation but a hard cap on how long a session can live (high-security, compliance-driven absolute timeouts). For a rolling "stay logged in while active" session, use `'sliding'`.
 
 ### `'sliding'` — rotate with grace window
 
@@ -89,17 +95,19 @@ The default. The first `refresh()` marks the old token's `rotatedAt`; the old to
                                  → r1.rotatedAt = clock.now()
   t=10m+5s refresh(refresh_r1)  →  access_b', refresh_r2'   (within grace — OK)
   t=10m+35s refresh(refresh_r1) →  AuthError('REFRESH_REUSE_DETECTED')
-                                 → revokeAllForUser
+                                 → revokeSession(userId, sessionId)   (family only, by default)
 ```
 
-**Why the grace window** — real browsers race. A user double-taps "refresh", a service worker retries, two tabs both notice the access token is stale and call `refresh()` simultaneously. With `'always'`, the second call always loses; with `'sliding'`, both succeed inside the window. The first wins the rotation lottery; the second gets a fresh access token without invalidating anything.
+#### The grace window and concurrency
+
+**Why the grace window** — real browsers race. A user double-taps "refresh", a service worker retries, two tabs both notice the access token is stale and call `refresh()` simultaneously. Both `'sliding'` and `'always'` keep the just-rotated token replay-valid for `rotationGraceMs`, so the second call succeeds with a fresh pair instead of being mistaken for theft. The window is tracked in the store (`rotatedAt`), so it holds **across multiple app instances** — a refresh on instance A and a concurrent replay on instance B both land inside the window. Without it, any concurrency on a multi-instance deployment would trip the theft response and log the user out of every device on a benign race.
 
 **Choose when** — browsers are involved. Default for a reason.
 
-::: warning Stateless + `'sliding'` silently degrades
-On stateless stores (JWT, Encapsulated), the `rotatedAt` marker cannot resurface — the orchestrator writes the rotated state via `store.update`, which on stateless stores denylists the old `jti` and re-encodes into a brand-new token. The next presentation of the original refresh therefore looks like "unknown token" to the store (it's denylisted) — `refresh()` throws **`INVALID_TOKEN`** rather than `REFRESH_REUSE_DETECTED`, and the grace window never gets a chance to apply. There is no per-user theft response in this path either.
+::: warning Stateless stores can't offer the grace window
+On stateless stores (JWT, Encapsulated), the `rotatedAt` marker cannot resurface — the orchestrator writes the rotated state via `store.update`, which on stateless stores denylists the old `jti` and re-encodes into a brand-new token. The next presentation of the original refresh therefore looks like "unknown token" to the store (it's denylisted), so the cross-instance grace window cannot apply. Both `'sliding'` and `'always'` fall back to single-use semantics there, with a **process-local** reuse signal: a same-process replay still fires `REFRESH_REUSE_DETECTED`, but a replay that lands on a different instance just returns `INVALID_TOKEN`.
 
-If you're running stateless **use `rotation: 'always'` explicitly**. The intent matches the actual behavior, the rotation timeline becomes predictable, and reuse-after-consume fires the proper `REFRESH_REUSE_DETECTED` theft response.
+If you're running stateless **use `rotation: 'always'` explicitly** — the single-use intent matches the actual behavior and the rotation timeline becomes predictable.
 
 ```ts
 const auth = new AuthCredential({
@@ -122,13 +130,16 @@ With `trackLastSeen: 'refresh'`, each `refresh()` also stamps `lastSeenAt` on th
 
 ## Reuse detection
 
-When the orchestrator detects a refresh-token reuse, three things happen, in order:
+When the orchestrator detects a refresh-token reuse (a presentation after the grace window, or — on stateless stores — a replay of a single-use token), three things happen, in order:
 
 1. `onRotationReuse(state)` is called (if configured) — `state` is the offending `CredentialState` (the _original_, not the rotation).
-2. `auth.revokeAllForUser(state.userId)` — every access _and_ refresh credential for that user is revoked.
-3. `AuthError('REFRESH_REUSE_DETECTED')` is thrown with `details: { userId, parentCredentialId? }`.
+2. The compromised credentials are revoked per `reuseResponse`:
+   - **`'session'` (default)** — `auth.revokeSession(userId, sessionId)` kills only the reused token family (the compromised session). The legitimate user and the attacker share that family, so both are ended; the user's _other_ devices keep working.
+   - **`'user'`** — `auth.revokeAllForUser(userId)` revokes every session for the user.
+   - When the session can't be targeted (no `sessionId`, or a store that can't enumerate sessions, e.g. stateless), `'session'` falls back to the user-wide cascade so theft is never left un-revoked.
+3. `AuthError('REFRESH_REUSE_DETECTED')` is thrown with `details: { userId, sessionId?, rotatedAt? }`.
 
-**The reasoning**: a reused refresh token is taken to mean either (a) a token leak — the attacker and the legitimate user are both calling `refresh()` — or (b) a client bug. In either case, the safe response is to log every device of that user out and force a fresh login.
+**The reasoning**: a reused refresh token is taken to mean either (a) a token leak — the attacker and the legitimate user are both calling `refresh()` — or (b) a client bug. The default response ends the compromised session (the OAuth-best-practice token-family revocation) while leaving the user's other devices alone; escalate to `'user'` when any reuse should be treated as a full-account compromise.
 
 **Hook example** — alerting:
 
@@ -139,9 +150,10 @@ const auth = new AuthCredential({
   refresh: {
     ttl: 30 * 24 * 3600 * 1000,
     rotation: "sliding",
+    reuseResponse: "session", // default — or "user" to revoke everything
     onRotationReuse: (state) => {
-      log.warn({ userId: state.userId }, "refresh reuse detected; revoking all sessions");
-      audit.record({ kind: "refresh-reuse", userId: state.userId });
+      log.warn({ userId: state.userId, sessionId: state.sessionId }, "refresh reuse detected");
+      audit.record({ kind: "refresh-reuse", userId: state.userId, sessionId: state.sessionId });
     },
   },
 });
@@ -150,7 +162,7 @@ const auth = new AuthCredential({
 The hook fires synchronously before the revoke. It's a notification, not a veto — you cannot prevent the revoke from this hook.
 
 ::: tip Log the reuse, surface a clear UX
-After `REFRESH_REUSE_DETECTED`, the user is logged out everywhere. Show a clean message at login that explains why ("for your security, all sessions were ended"). Avoid blaming the user.
+After `REFRESH_REUSE_DETECTED`, the affected session (or, with `reuseResponse: 'user'`, every session) is ended. Show a clean message at login that explains why ("for your security, this session was ended"). Avoid blaming the user.
 :::
 
 ## The per-user revocation epoch
@@ -298,12 +310,12 @@ Reuse detection is disabled in `'none'` mode — a leaked refresh stays exploita
 
 ## Error mapping at the HTTP edge
 
-| Error                             | Suggested HTTP status                                                                           |
-| --------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `INVALID_TOKEN`                   | `401 Unauthorized`                                                                              |
-| `REFRESH_REUSE_DETECTED`          | `401 Unauthorized`, clear all cookies, redirect to login with a "logged out everywhere" message |
-| `STATELESS_OPERATION_UNSUPPORTED` | `500 Internal Server Error` — server misconfiguration                                           |
-| `MAX_CONCURRENT_REACHED`          | `429 Too Many Requests` or `409 Conflict`, plus a body shape the client recognises              |
+| Error                             | Suggested HTTP status                                                                                                                   |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `INVALID_TOKEN`                   | `401 Unauthorized`                                                                                                                      |
+| `REFRESH_REUSE_DETECTED`          | `401 Unauthorized`, clear cookies, redirect to login (the compromised session is ended; with `reuseResponse: 'user'`, every session is) |
+| `STATELESS_OPERATION_UNSUPPORTED` | `500 Internal Server Error` — server misconfiguration                                                                                   |
+| `MAX_CONCURRENT_REACHED`          | `429 Too Many Requests` or `409 Conflict`, plus a body shape the client recognises                                                      |
 
 See [Errors](./errors) for the full table.
 

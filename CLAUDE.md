@@ -42,6 +42,17 @@ pnpm run gen:atscript         # asc — regenerate .as.d.ts from .as models
 
 > `pnpm run dev:api` (`vite-node --watch src/main.ts`) is the legacy standalone backend and is currently broken under vite 8 + the `@moostjs/vite` plugin — both runtimes race to import `src/main.ts` and the synchronous `@atscript/db` schema fetch deadlocks the module-runner transport (~60s timeout). Use `pnpm run dev` for everything; it serves the same backend.
 
+> **e2e blocked? Reinstall + dedupe FIRST.** If `pnpm run dev` boots but every request 500s — e.g. `/__test/reset` throws `Cannot read properties of undefined (reading 'authorization')`, or any wooks composable (`useAuthorization`, `useHeaders`, `useCookies`) reads `undefined` — the cause is almost always a **duplicated `@wooksjs/event-core` / `moost` copy**: the request context is created by one copy and read by another, so the slot ids don't match (the `globalKey` dual-package hazard). It typically shows up as a module resolving from a **sibling project's `node_modules`** (e.g. `/Users/.../<some-other-repo>/node_modules/...@wooksjs+event-http`) — confirm with `cd packages/<pkg> && node -e "console.log(require.resolve('@wooksjs/event-http'))"`; it should resolve under this repo's own `node_modules`. Fix before touching any code:
+>
+> ```bash
+> pnpm install        # re-link the workspace (peer deps that walked up to a sibling repo get re-pinned)
+> pnpm dedupe         # collapse duplicate @wooksjs / moost copies to one
+> pnpm run build      # refresh dist (the demo runs @aooth/* from dist, not src)
+> rm -rf packages/e2e-demo/node_modules/.vite   # drop a stale pre-bundle cache
+> ```
+>
+> The same duplication makes `vp test` resolve native deps (e.g. `better-sqlite3`) from the wrong copy — another tell. Only after a clean install/dedupe should you suspect application code.
+
 ## Build / Tooling
 
 Uses **vite-plus** (`vp`) as the build/test/lint orchestrator — wraps Vite, Rolldown, Vitest, tsdown, Oxlint, and Oxfmt. Per-package builds are `vp pack`; tests are `vp test`; `vp check` runs fmt + lint + type-check.

@@ -122,7 +122,7 @@ Same Bearer-wins precedence as the guard. Returns the raw token string, or `unde
 
 ### `writeCookies(issue: IssueResult)` / `clearCookies()`
 
-Writes (or clears) the `aooth_session` + `aooth_refresh` `Set-Cookie` headers. **No-op when `enableCookie === false`.** The refresh cookie is written with the narrow `/auth/refresh` path by default — see [Config Reference](./config) for the rationale.
+Writes (or clears) the `aooth_session` + `aooth_refresh` `Set-Cookie` headers. **No-op when `enableCookie === false`.** The refresh cookie is written with a narrow path scoped to `AuthController`'s actual `refresh` route — auto-derived from Moost's route table at boot so it follows any mount prefix. See [Config Reference](./config) for the rationale and override.
 
 ### `buildLoginResponse(userId, issue): AuthLoginResponse`
 

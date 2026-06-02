@@ -25,13 +25,13 @@ All five endpoints are `@Public()`. Authentication is enforced **inside** the ha
 
 ## Endpoint table
 
-| Method | Path                           | Decorators                                                | Body                                       | Response                      | Notes                                                                                                                      |
-| ------ | ------------------------------ | --------------------------------------------------------- | ------------------------------------------ | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `POST` | `/auth/logout`                 | `@Public()`                                               | `AuthLogoutBody { refreshToken? }`         | `AuthOkResponse { ok: true }` | Defence-in-depth 401 if null context. Best-effort revokes both tokens (failures silently ignored), then `clearCookies()`.  |
-| `POST` | `/auth/refresh`                | `@Public()`                                               | `AuthRefreshBody { refreshToken? }`        | `AuthLoginResponse`           | Falls back to the refresh cookie. 401 on `AuthError`. Returns new access+refresh, writes cookies.                          |
-| `GET`  | `/auth/status`                 | `@Public()`                                               | —                                          | `AuthContext`                 | 401 when no context.                                                                                                       |
-| `POST` | `/auth/trigger`                | `@Public() @WfTrigger({ allow: DEFAULT_AUTH_WORKFLOWS })` | `{ wfs?, input?: { action?, formData? } }` | `WfFinished` envelope         | The single entry-point covering `auth/login/flow`, `auth/invite/start`, `auth/recovery/flow`.                              |
-| `GET`  | `/auth/invite/post-redemption` | `@Public()`                                               | `?uid=<userId>`                            | `WfFinished` envelope         | Idempotent "already accepted" envelope for re-clicked invite links after the wf state row is evicted. Needs `UserService`. |
+| Method | Path                           | Decorators                                                | Body                                       | Response                      | Notes                                                                                                                                                                  |
+| ------ | ------------------------------ | --------------------------------------------------------- | ------------------------------------------ | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST` | `/auth/logout`                 | `@Public()`                                               | `AuthLogoutBody { refreshToken? }`         | `AuthOkResponse { ok: true }` | Defence-in-depth 401 if null context. Revokes the current session's whole token family (`revokeSession`), with token-level revokes as fallback, then `clearCookies()`. |
+| `POST` | `/auth/refresh`                | `@Public()`                                               | `AuthRefreshBody { refreshToken? }`        | `AuthLoginResponse`           | Falls back to the refresh cookie. 401 on `AuthError`. Returns new access+refresh, writes cookies.                                                                      |
+| `GET`  | `/auth/status`                 | `@Public()`                                               | —                                          | `AuthContext`                 | 401 when no context.                                                                                                                                                   |
+| `POST` | `/auth/trigger`                | `@Public() @WfTrigger({ allow: DEFAULT_AUTH_WORKFLOWS })` | `{ wfs?, input?: { action?, formData? } }` | `WfFinished` envelope         | The single entry-point covering `auth/login/flow`, `auth/invite/start`, `auth/recovery/flow`.                                                                          |
+| `GET`  | `/auth/invite/post-redemption` | `@Public()`                                               | `?uid=<userId>`                            | `WfFinished` envelope         | Idempotent "already accepted" envelope for re-clicked invite links after the wf state row is evicted. Needs `UserService`.                                             |
 
 `DEFAULT_AUTH_WORKFLOWS` is the exported `as const` allow-list:
 
@@ -59,12 +59,14 @@ Response: `{ "ok": true }`.
 Behaviour:
 
 1. If `useAuth().getAuthContext()` is null → `throw HttpError(401, "Not authenticated")`. (Defence-in-depth — the route is `@Public()` only so the handler is reachable.)
-2. Pulls the access token via `useAuth().extractToken()`. Best-effort calls `auth.revoke(accessToken)`. Failures are silently swallowed (logout must not block on a denied revoke).
-3. Pulls `refreshToken` from the body. **No cookie fallback** — the refresh cookie's narrow path (`/auth/refresh`) means browsers don't send it to `/auth/logout`. If the client wants the refresh token revoked too, it must include it in the body.
+2. **Ends THIS device's whole session family.** Resolves the current `sessionId` from the auth context and best-effort calls `auth.revokeSession(userId, sessionId)` — revoking every token in the family (access + refresh + all rotations) on a store that can enumerate. This is what "log out" means now that a session is a token family: the SPA can't read the httpOnly refresh cookie, and that cookie's narrow path keeps it off `/auth/logout`, so the token-level revokes below can't reach the refresh credential on their own.
+3. **Token-level fallback.** Pulls the access token via `useAuth().extractToken()` and a `refreshToken` from the body, and best-effort revokes each. This covers stateless stores (where `revokeSession` is a no-op) and is a harmless no-op once the family is already gone. Failures are silently swallowed (logout must not block on a denied revoke).
 4. Calls `useAuth().clearCookies()` to clear both `Set-Cookie` headers.
 
+Net effect: a logged-out device disappears from `auth.listSessions(userId)` immediately on a stateful store — it no longer lingers for the refresh TTL — while the user's _other_ devices keep working.
+
 ::: warning Refresh cookie path is narrow on purpose
-The default `refreshCookie.path` is `/auth/refresh`, so browsers won't send it to any other path. That's why `/auth/logout` accepts a body `refreshToken` field rather than relying on the cookie. If you widen the path (e.g. to `/`), you lose the CSRF-resistance benefit — the refresh cookie is now sent on every request.
+The default `refreshCookie.path` is `/auth/refresh` (auto-derived to the controller's actual mount, see [Config Reference](./config)), so browsers won't send it to any other path. `/auth/logout` therefore can't read the refresh cookie — which is exactly why logout revokes the whole family by `sessionId` rather than relying on the cookie. A body `refreshToken` field is still accepted as a belt-and-suspenders fallback (and for stateless stores). If you widen the path (e.g. to `/`), you lose the CSRF-resistance benefit — the refresh cookie is now sent on every request.
 :::
 
 ## `POST /auth/refresh`

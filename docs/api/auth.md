@@ -25,7 +25,7 @@ class AuthCredential<TClaims extends object = object> {
 }
 ```
 
-The orchestrator. Store-agnostic — accepts any `CredentialStore` (stateful or stateless). Refresh rotation modes are `'none' | 'always' | 'sliding'` (default `'sliding'`). On reuse-after-grace, calls `onRotationReuse` and revokes every credential for the user. `listSessions` / `revokeSession` / `revokeOtherSessions` group the user's credentials into token families by `sessionId` (no-op `[]` / `0` on stores that can't enumerate) — see [Sessions](/auth/sessions). `deriveStateKey(label = "wf-state")` HKDF-derives a stable secret from the configured auth secret — used by `@aooth/auth-moost`'s `WfTriggerProvider` as the default encapsulated wf-state token secret so it survives restarts without a separate config. See [Credentials & Sessions](/auth/credentials) and [Refresh & Rotation](/auth/refresh).
+The orchestrator. Store-agnostic — accepts any `CredentialStore` (stateful or stateless). Refresh rotation modes are `'none' | 'always' | 'sliding'` (default `'sliding'`). On reuse-after-grace, calls `onRotationReuse` and revokes the compromised token family (or every session for the user with `refresh.reuseResponse: 'user'`). `listSessions` / `revokeSession` / `revokeOtherSessions` group the user's credentials into token families by `sessionId` (no-op `[]` / `0` on stores that can't enumerate) — see [Sessions](/auth/sessions). `deriveStateKey(label = "wf-state")` HKDF-derives a stable secret from the configured auth secret — used by `@aooth/auth-moost`'s `WfTriggerProvider` as the default encapsulated wf-state token secret so it survives restarts without a separate config. See [Credentials & Sessions](/auth/credentials) and [Refresh & Rotation](/auth/refresh).
 
 `AuthCredentialOptions<TClaims>`:
 
@@ -192,12 +192,13 @@ Returned by `issue` and `refresh`. `refreshToken` is present iff `refresh: Refre
 interface RefreshConfig {
   ttl: number;
   rotation?: "none" | "always" | "sliding"; // default 'sliding'
-  rotationGraceMs?: number; // default 30_000
+  rotationGraceMs?: number; // default 30_000 — sliding AND always
+  reuseResponse?: "session" | "user"; // default 'session'
   onRotationReuse?: (state: CredentialState) => void;
 }
 ```
 
-Rotation policy. `'sliding'` marks `rotatedAt` and tolerates reuse within `rotationGraceMs`; reuse after the grace fires the theft response. See [Refresh & Rotation](/auth/refresh).
+Rotation policy. Both `'sliding'` (rolling expiry) and `'always'` (fixed session ceiling) rotate every refresh, mark `rotatedAt`, and tolerate reuse within `rotationGraceMs` on stateful stores (store-backed, so the grace holds across instances); reuse after the grace fires the theft response. `reuseResponse` selects the blast radius: `'session'` (default — the compromised token family via `revokeSession`) or `'user'` (every session via `revokeAllForUser`). See [Refresh & Rotation](/auth/refresh).
 
 ## Types — Stores
 

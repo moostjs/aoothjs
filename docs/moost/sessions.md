@@ -44,7 +44,7 @@ All routes live under the `auth.sessions` ARBAC resource — **not** `@Public()`
 | `DELETE /auth/sessions/:sessionId`  | `revoke`     | Revoke one of the caller's sessions.                  |
 | `DELETE /auth/sessions?others=true` | `revoke`     | Log out everywhere else, keep current.                |
 
-A bare `DELETE /auth/sessions` (no `?others=true`) is a **400** — revoking _all_ your own sessions, current included, is what `POST /auth/logout` is for. Grant ordinary users `read` + `revoke` (own sessions) and reserve the separate `readAny` action for admins who inspect other users.
+A bare `DELETE /auth/sessions` (no `?others=true`) is a **400** — ending your _current_ device's session is what `POST /auth/logout` is for (it revokes this session's whole token family by `sessionId`). To end a _specific_ other device use `DELETE /auth/sessions/:sessionId`; to end every other device use `?others=true`. Grant ordinary users `read` + `revoke` (own sessions) and reserve the separate `readAny` action for admins who inspect other users.
 
 ## Capturing IP / User-Agent — `resolveIssueMetadata`
 

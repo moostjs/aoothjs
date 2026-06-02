@@ -87,9 +87,10 @@ export interface IssueOptions<TClaims extends object = object> {
  *   tokens stored side-by-side in the same store.
  * - `listForUser` and `maxConcurrent` consider only access-kind credentials,
  *   matching how callers typically display "active sessions".
- * - On detected refresh-reuse-after-grace, the orchestrator best-effort
- *   revokes ALL credentials for the affected user (access + refresh).
- *   This is OAuth-best-practice theft response; documented and intentional.
+ * - On detected refresh-reuse, the orchestrator best-effort revokes the
+ *   compromised token family (the OAuth-best-practice theft response). Set
+ *   `refresh.reuseResponse: 'user'` to escalate to revoking ALL of the user's
+ *   sessions. See {@link RefreshConfig.reuseResponse}.
  */
 export class AuthCredential<TClaims extends object = object> {
   private readonly store: CredentialStore<TClaims>;
@@ -111,7 +112,7 @@ export class AuthCredential<TClaims extends object = object> {
    */
   private readonly consumedRefreshes = new Map<
     string,
-    { userId: string; iat: number; exp: number }
+    { userId: string; iat: number; exp: number; sessionId?: string }
   >();
 
   constructor(opts: AuthCredentialOptions<TClaims>) {
@@ -237,16 +238,8 @@ export class AuthCredential<TClaims extends object = object> {
       case "none":
         // Issue new access only; keep the refresh token in place.
         return await this.refreshNone(oldState, refreshToken, now);
-      case "always": {
-        // Single-use refresh: consume old, issue new pair.
-        await this.store.consume(refreshToken);
-        this.consumedRefreshes.set(refreshToken, {
-          userId: oldState.userId,
-          iat: oldState.issuedAt,
-          exp: oldState.expiresAt,
-        });
-        return await this.issueRotatedPair(oldState, refreshToken, /* rotateOld */ false, now);
-      }
+      case "always":
+        return await this.refreshAlways(oldState, refreshToken, now);
       case "sliding":
         return await this.refreshSliding(oldState, refreshToken, now);
       default: {
@@ -272,10 +265,63 @@ export class AuthCredential<TClaims extends object = object> {
     };
   }
 
+  /**
+   * `sliding` rotation: rotate on every use and slide the refresh expiry
+   * forward (rolling session). Grace-tolerant via the shared store-backed
+   * window.
+   */
   private async refreshSliding(
     oldState: CredentialState<TClaims>,
     refreshToken: string,
     now: number,
+  ): Promise<IssueResult> {
+    return await this.rotateWithGrace(oldState, refreshToken, now, /* preserveExpiry */ false);
+  }
+
+  /**
+   * `always` rotation: rotate on every use but keep a FIXED session ceiling —
+   * each rotated token inherits the family's original `expiresAt` (no sliding).
+   *
+   * On a stateful store this reuses the same store-backed grace window as
+   * `sliding` (so a benign concurrent refresh within grace is NOT mistaken for
+   * theft, even across instances). On a stateless store the old token cannot be
+   * kept valid (`update` re-issues), so it falls back to single-use semantics
+   * with a process-local reuse signal — the only mechanism possible there.
+   */
+  private async refreshAlways(
+    oldState: CredentialState<TClaims>,
+    refreshToken: string,
+    now: number,
+  ): Promise<IssueResult> {
+    if (!this.store.listForUser) {
+      // Stateless store: no in-place mutation → no store-backed grace. Consume
+      // the old token and record the reuse signal in the process-local map so
+      // a same-process replay still fires the theft response.
+      await this.store.consume(refreshToken);
+      this.consumedRefreshes.set(refreshToken, {
+        userId: oldState.userId,
+        iat: oldState.issuedAt,
+        exp: oldState.expiresAt,
+        ...(oldState.sessionId !== undefined && { sessionId: oldState.sessionId }),
+      });
+      return await this.issueRotatedPair(oldState, refreshToken, /* rotateOld */ false, now, true);
+    }
+    return await this.rotateWithGrace(oldState, refreshToken, now, /* preserveExpiry */ true);
+  }
+
+  /**
+   * Shared rotation-with-grace mechanism for `sliding` and `always` on stateful
+   * stores. Keeps the old refresh valid + stamps `rotatedAt` on first rotation;
+   * within `rotationGraceMs` of that stamp it re-issues a fresh pair WITHOUT
+   * re-rotating (replay-tolerant); beyond grace it treats the re-presentation
+   * as theft. `preserveExpiry` selects fixed-ceiling (`always`) vs sliding
+   * (`sliding`) expiry for the new refresh token.
+   */
+  private async rotateWithGrace(
+    oldState: CredentialState<TClaims>,
+    refreshToken: string,
+    now: number,
+    preserveExpiry: boolean,
   ): Promise<IssueResult> {
     if (!this.refreshConfig) {
       throw new AuthError("INVALID_CONFIG", "Refresh not enabled");
@@ -284,23 +330,35 @@ export class AuthCredential<TClaims extends object = object> {
 
     // First rotation: nothing to validate against the grace window yet.
     if (typeof oldState.rotatedAt !== "number") {
-      return await this.issueRotatedPair(oldState, refreshToken, /* rotateOld */ true, now);
+      return await this.issueRotatedPair(
+        oldState,
+        refreshToken,
+        /* rotateOld */ true,
+        now,
+        preserveExpiry,
+      );
     }
 
     // Subsequent presentation of an already-rotated refresh.
     if (now - oldState.rotatedAt > graceMs) {
       // Reuse-after-grace: theft suspected.
-      this.refreshConfig.onRotationReuse?.(oldState);
-      // Best-effort theft response: revoke all credentials for this user.
-      await this.store.revokeAllForUser(oldState.userId);
-      throw new AuthError("REFRESH_REUSE_DETECTED", undefined, {
+      await this.respondToRefreshReuse({
         userId: oldState.userId,
+        sessionId: oldState.sessionId,
+        issuedAt: oldState.issuedAt,
+        expiresAt: oldState.expiresAt,
         rotatedAt: oldState.rotatedAt,
       });
     }
 
     // Within grace: replay-tolerant. Issue new tokens but don't re-rotate.
-    return await this.issueRotatedPair(oldState, refreshToken, /* rotateOld */ false, now);
+    return await this.issueRotatedPair(
+      oldState,
+      refreshToken,
+      /* rotateOld */ false,
+      now,
+      preserveExpiry,
+    );
   }
 
   async revoke(token: string): Promise<void> {
@@ -433,9 +491,18 @@ export class AuthCredential<TClaims extends object = object> {
   async revokeOtherSessions(userId: string, keepSessionId: string): Promise<number> {
     if (!this.store.listForUser) return 0;
     const all = await this.store.listForUser(userId);
-    const toRevoke = all.filter((entry) => this.sessionKeyOf(entry) !== keepSessionId);
-    await Promise.all(toRevoke.map((entry) => this.store.revoke(entry.token)));
-    return new Set(toRevoke.map((entry) => this.sessionKeyOf(entry))).size;
+    // Single pass: compute each family key once (it hashes the token for legacy
+    // rows), collecting the distinct revoked sessions for the count.
+    const revokedSessions = new Set<string>();
+    const revokes: Array<Promise<void>> = [];
+    for (const entry of all) {
+      const key = this.sessionKeyOf(entry);
+      if (key === keepSessionId) continue;
+      revokedSessions.add(key);
+      revokes.push(this.store.revoke(entry.token));
+    }
+    await Promise.all(revokes);
+    return revokedSessions.size;
   }
 
   /**
@@ -495,21 +562,39 @@ export class AuthCredential<TClaims extends object = object> {
     return { token, expiresAt: now + this.accessTtl };
   }
 
+  /**
+   * Issue a fresh access + refresh pair off an existing refresh credential.
+   * `preserveExpiry` keeps the family's original refresh `expiresAt` (a fixed
+   * session ceiling, used by `always`); otherwise the new refresh slides to
+   * `now + ttl` (used by `sliding`). `rotateOld` stamps the old refresh as
+   * rotated (keeping it valid through the grace window) instead of consuming it.
+   */
   private async issueRotatedPair(
     oldRefreshState: CredentialState<TClaims>,
     oldRefreshToken: string,
     rotateOld: boolean,
     now: number,
+    preserveExpiry = false,
   ): Promise<IssueResult> {
     if (!this.refreshConfig) {
       throw new AuthError("INVALID_CONFIG", "Refresh not enabled");
     }
     const access = await this.issueAccessFromRefresh(oldRefreshState, now);
 
+    // Fixed-ceiling (`always`) carries the family's original expiry forward;
+    // sliding extends to now + ttl. Persist with the *remaining* lifetime so a
+    // TTL-evicting store (Redis PX) never resurrects the token past its ceiling.
+    const refreshExpiresAt = preserveExpiry
+      ? oldRefreshState.expiresAt
+      : now + this.refreshConfig.ttl;
+    const refreshTtl = preserveExpiry
+      ? Math.max(0, oldRefreshState.expiresAt - now)
+      : this.refreshConfig.ttl;
+
     const newRefreshState: CredentialState<TClaims> = {
       userId: oldRefreshState.userId,
       issuedAt: now,
-      expiresAt: now + this.refreshConfig.ttl,
+      expiresAt: refreshExpiresAt,
       kind: "refresh",
       claims: oldRefreshState.claims,
       metadata: oldRefreshState.metadata,
@@ -518,11 +603,11 @@ export class AuthCredential<TClaims extends object = object> {
       sessionId: oldRefreshState.sessionId,
       ...(this.trackLastSeen === "refresh" && { lastSeenAt: now }),
     };
-    const newRefreshToken = await this.store.persist(newRefreshState, this.refreshConfig.ttl);
+    const newRefreshToken = await this.store.persist(newRefreshState, refreshTtl);
 
     if (rotateOld) {
       // Mark the old refresh as rotated; keep it valid until grace expires
-      // (its expiresAt remains as originally set; sliding logic uses rotatedAt).
+      // (its expiresAt remains as originally set; grace logic uses rotatedAt).
       const rotatedState: CredentialState<TClaims> = {
         ...oldRefreshState,
         rotatedAt: now,
@@ -534,13 +619,13 @@ export class AuthCredential<TClaims extends object = object> {
       accessToken: access.token,
       accessExpiresAt: access.expiresAt,
       refreshToken: newRefreshToken,
-      refreshExpiresAt: now + this.refreshConfig.ttl,
+      refreshExpiresAt,
     };
   }
 
   private lookupConsumedRefresh(
     token: string,
-  ): { userId: string; iat: number; exp: number } | null {
+  ): { userId: string; iat: number; exp: number; sessionId?: string } | null {
     const entry = this.consumedRefreshes.get(token);
     if (!entry) return null;
     if (entry.exp <= this.clock.now()) {
@@ -551,17 +636,56 @@ export class AuthCredential<TClaims extends object = object> {
   }
 
   private async fireRefreshReuseTheftResponse(
-    consumed: { userId: string; iat: number; exp: number },
+    consumed: { userId: string; iat: number; exp: number; sessionId?: string },
     refreshToken: string,
   ): Promise<void> {
-    this.refreshConfig?.onRotationReuse?.({
+    this.consumedRefreshes.delete(refreshToken);
+    await this.respondToRefreshReuse({
       userId: consumed.userId,
+      sessionId: consumed.sessionId,
       issuedAt: consumed.iat,
       expiresAt: consumed.exp,
-      kind: "refresh",
     });
-    await this.store.revokeAllForUser(consumed.userId);
-    this.consumedRefreshes.delete(refreshToken);
-    throw new AuthError("REFRESH_REUSE_DETECTED", undefined, { userId: consumed.userId });
+  }
+
+  /**
+   * Best-effort theft response for a detected refresh-token reuse. Fires the
+   * `onRotationReuse` hook, then revokes per {@link RefreshConfig.reuseResponse}:
+   * the compromised token family (`'session'`, default) or every session for
+   * the user (`'user'`). Falls back to user-wide revocation when the session
+   * can't be targeted (no `sessionId`, or a store that can't enumerate
+   * sessions). Always throws `REFRESH_REUSE_DETECTED`.
+   */
+  private async respondToRefreshReuse(reuse: {
+    userId: string;
+    sessionId?: string;
+    issuedAt: number;
+    expiresAt: number;
+    rotatedAt?: number;
+  }): Promise<never> {
+    this.refreshConfig?.onRotationReuse?.({
+      userId: reuse.userId,
+      issuedAt: reuse.issuedAt,
+      expiresAt: reuse.expiresAt,
+      kind: "refresh",
+      ...(reuse.sessionId !== undefined && { sessionId: reuse.sessionId }),
+      ...(reuse.rotatedAt !== undefined && { rotatedAt: reuse.rotatedAt }),
+    });
+
+    const scope = this.refreshConfig?.reuseResponse ?? "session";
+    // `revokeSession` needs an enumerable store and a concrete sessionId;
+    // without either, fall back to the user-wide cascade so theft never goes
+    // un-revoked.
+    if (scope === "session" && reuse.sessionId !== undefined && this.store.listForUser) {
+      await this.revokeSession(reuse.userId, reuse.sessionId);
+    } else {
+      await this.store.revokeAllForUser(reuse.userId);
+    }
+
+    throw new AuthError("REFRESH_REUSE_DETECTED", undefined, {
+      userId: reuse.userId,
+      ...(reuse.sessionId !== undefined && { sessionId: reuse.sessionId }),
+      ...(reuse.rotatedAt !== undefined && { rotatedAt: reuse.rotatedAt }),
+    });
   }
 }

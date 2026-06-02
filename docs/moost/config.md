@@ -15,25 +15,31 @@ app.applyGlobalInterceptors(
 );
 ```
 
-| Field                    | Default                          | Notes                                                                                                                                                                  |
-| ------------------------ | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | -------- |
-| `cookie.name`            | `'aooth_session'`                | Access cookie name.                                                                                                                                                    |
-| `cookie.secure`          | `true`                           | HTTPS-only — flip to `false` for local HTTP dev.                                                                                                                       |
-| `cookie.sameSite`        | `'lax'`                          | `'lax'                                                                                                                                                                 | 'strict' | 'none'`. |
-| `cookie.httpOnly`        | `true`                           | JS access to the cookie is blocked.                                                                                                                                    |
-| `cookie.path`            | `'/'`                            | Sent on every request.                                                                                                                                                 |
-| `cookie.domain`          | `undefined`                      | Defaults to the request host.                                                                                                                                          |
-| `refreshCookie.name`     | `'aooth_refresh'`                | Refresh cookie name.                                                                                                                                                   |
-| `refreshCookie.path`     | `'/auth/refresh'`                | **Narrow path** so the refresh cookie isn't sent on other endpoints — CSRF-resistance.                                                                                 |
-| `refreshCookie.secure`   | inherited from `cookie.secure`   |                                                                                                                                                                        |
-| `refreshCookie.sameSite` | inherited from `cookie.sameSite` |                                                                                                                                                                        |
-| `refreshCookie.httpOnly` | inherited from `cookie.httpOnly` |                                                                                                                                                                        |
-| `refreshCookie.domain`   | inherited from `cookie.domain`   |                                                                                                                                                                        |
-| `enableCookie`           | `true`                           | Master switch for cookie transport. When `false`, `writeCookies` / `clearCookies` are no-ops.                                                                          |
-| `enableBearer`           | `true`                           | Master switch for bearer transport. When both are `true`, **bearer wins**. When `false`, `accessToken` and `refreshToken` are omitted from `AuthLoginResponse` bodies. |
+| Field                    | Default                            | Notes                                                                                                                                                                                          |
+| ------------------------ | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | -------- |
+| `cookie.name`            | `'aooth_session'`                  | Access cookie name.                                                                                                                                                                            |
+| `cookie.secure`          | `true`                             | HTTPS-only — flip to `false` for local HTTP dev.                                                                                                                                               |
+| `cookie.sameSite`        | `'lax'`                            | `'lax'                                                                                                                                                                                         | 'strict' | 'none'`. |
+| `cookie.httpOnly`        | `true`                             | JS access to the cookie is blocked.                                                                                                                                                            |
+| `cookie.path`            | `'/'`                              | Sent on every request.                                                                                                                                                                         |
+| `cookie.domain`          | `undefined`                        | Defaults to the request host.                                                                                                                                                                  |
+| `refreshCookie.name`     | `'aooth_refresh'`                  | Refresh cookie name.                                                                                                                                                                           |
+| `refreshCookie.path`     | _auto-derived_ (`'/auth/refresh'`) | **Narrow path** so the refresh cookie isn't sent on other endpoints — CSRF-resistance. Auto-derived from `AuthController`'s actual mounted route (see note below); set explicitly to override. |
+| `refreshCookie.secure`   | inherited from `cookie.secure`     |                                                                                                                                                                                                |
+| `refreshCookie.sameSite` | inherited from `cookie.sameSite`   |                                                                                                                                                                                                |
+| `refreshCookie.httpOnly` | inherited from `cookie.httpOnly`   |                                                                                                                                                                                                |
+| `refreshCookie.domain`   | inherited from `cookie.domain`     |                                                                                                                                                                                                |
+| `enableCookie`           | `true`                             | Master switch for cookie transport. When `false`, `writeCookies` / `clearCookies` are no-ops.                                                                                                  |
+| `enableBearer`           | `true`                             | Master switch for bearer transport. When both are `true`, **bearer wins**. When `false`, `accessToken` and `refreshToken` are omitted from `AuthLoginResponse` bodies.                         |
+
+::: tip The refresh-cookie path follows the controller's mount prefix automatically
+You don't set `refreshCookie.path` by hand. The auth guard resolves it **once at boot** from Moost's route table — it finds `AuthController`'s actual `refresh` route and scopes the cookie to it. Mount the controller at the root (`@Controller("auth")` → `/auth/refresh`) or under a prefix (`registerControllers(['api/auth', AuthController])` → `/api/auth/refresh`) and the cookie path tracks it, so the browser always sends the refresh cookie to the real endpoint.
+
+Subclassed `AuthController`s resolve via the prototype chain. If the route can't be resolved unambiguously (no `AuthController` registered, or it's mounted more than once), the guard keeps the `/auth/refresh` default and logs a boot-time warning naming the mismatch — it never guesses. Setting `refreshCookie.path` explicitly always wins and skips derivation.
+:::
 
 ::: warning Narrow refresh cookie path is deliberate
-Browsers don't send the refresh cookie to any path outside `/auth/refresh` by default. That's why `/auth/logout` accepts a body `refreshToken` field — it can't read the cookie. Widening the path (e.g. to `/`) removes the CSRF-resistance benefit, and the refresh cookie is now exposed on every request.
+Browsers don't send the refresh cookie to any path outside its scoped path by default. That's why `/auth/logout` revokes the whole session family by `sessionId` (it can't read the refresh cookie) and only accepts a body `refreshToken` as a fallback. Widening the path (e.g. to `/`) removes the CSRF-resistance benefit, and the refresh cookie is now exposed on every request.
 :::
 
 ::: warning CSRF is your responsibility

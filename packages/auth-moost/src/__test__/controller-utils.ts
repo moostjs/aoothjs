@@ -82,6 +82,17 @@ export interface PrepareControllerOpts extends AuthOptions {
   /** When `false`, skip auto-registering `AuthController`. Default: `true`. */
   endpoints?: boolean;
   /**
+   * Mount `AuthController` under this prefix (e.g. `'api/auth'`) instead of at
+   * the root. Drives the refresh-cookie-path derivation tests.
+   */
+  controllerPrefix?: string;
+  /**
+   * Register this class instead of `AuthController` for the bundled endpoints
+   * (must extend `AuthController`). Lets the refresh-cookie-path tests cover a
+   * subclassed controller — the downstream consumer's case.
+   */
+  controllerClass?: typeof AuthController;
+  /**
    * Extra controllers to register alongside (or instead of, when
    * `endpoints=false`) `AuthController`. Registered BEFORE `moost.init()` so
    * routes are wired during the same boot pass — registering after init
@@ -143,6 +154,8 @@ export async function prepareControllerApp(
     userConfig: _u,
     withoutUserService,
     endpoints = true,
+    controllerPrefix,
+    controllerClass,
     arbac: arbacOpts,
     extraControllers,
     ...cfg
@@ -170,7 +183,10 @@ export async function prepareControllerApp(
   }
 
   if (endpoints) {
-    moost.registerControllers(AuthController);
+    const Ctrl = controllerClass ?? AuthController;
+    // biome-ignore lint/suspicious/noExplicitAny: registerControllers takes the
+    // package-internal prefixed-tuple shape; tests pass a plain class/tuple.
+    moost.registerControllers((controllerPrefix ? [controllerPrefix, Ctrl] : Ctrl) as any);
   }
   if (extraControllers && extraControllers.length > 0) {
     // biome-ignore lint/suspicious/noExplicitAny: moost.registerControllers takes the

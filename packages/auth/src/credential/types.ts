@@ -127,15 +127,42 @@ export interface RefreshConfig {
   /**
    * Rotation strategy. Defaults to 'sliding'.
    *
-   * Note: 'sliding' grace-period replay tolerance only works against stateful
-   * stores (e.g. {@link CredentialStoreMemory}). Stateless stores (JWT,
-   * Encapsulated) cannot mutate an issued token in place; after the first
-   * rotation the old refresh becomes unusable, so 'sliding' degrades to
-   * 'always' semantics. Use 'always' explicitly for stateless deployments.
+   * - `'none'` — issue a new access token only; the refresh token stays in place.
+   * - `'sliding'` — rotate the refresh token on every use and **slide** its
+   *   expiry forward (`now + ttl`); a rolling session that lives as long as it
+   *   keeps being used.
+   * - `'always'` — rotate the refresh token on every use but keep a **fixed**
+   *   session ceiling: each rotated token inherits the family's original
+   *   `expiresAt`, so the session has an absolute maximum lifetime regardless of
+   *   activity.
+   *
+   * Both `'sliding'` and `'always'` are **grace-tolerant** on stateful stores:
+   * a benign concurrent refresh (multi-tab / parallel requests presenting the
+   * just-rotated token) within {@link rotationGraceMs} re-issues a fresh pair
+   * instead of being mistaken for token theft. Because the grace window is
+   * tracked in the store (via {@link CredentialState.rotatedAt}), it is correct
+   * across multiple app instances.
+   *
+   * Note: the grace window needs a stateful store (one with `listForUser`).
+   * Stateless stores (JWT, Encapsulated) cannot mutate an issued token in place;
+   * after the first rotation the old refresh becomes unusable, so on those
+   * stores both `'sliding'` and `'always'` fall back to single-use semantics
+   * with a process-local reuse signal (no cross-instance grace).
    */
   rotation?: "none" | "always" | "sliding";
-  /** Grace period for sliding rotation, in milliseconds. Defaults to 30_000. */
+  /** Grace period for sliding/always rotation, in milliseconds. Defaults to 30_000. */
   rotationGraceMs?: number;
+  /**
+   * Revocation scope when refresh-token reuse is detected (replay after grace,
+   * or — on stateless stores — replay of a single-use token). Defaults to
+   * `'session'`: revoke only the compromised token family
+   * ({@link AuthCredential.revokeSession}), the OAuth-best-practice response.
+   * `'user'` revokes every session for the user
+   * ({@link AuthCredential.revokeAllForUser}) — more aggressive, opt-in. On
+   * stateless stores that cannot enumerate sessions, `'session'` falls back to
+   * the user-wide revocation epoch regardless.
+   */
+  reuseResponse?: "session" | "user";
   /** Theft detection hook — invoked when a previously-rotated refresh is reused. */
   onRotationReuse?: (state: CredentialState) => void;
 }

@@ -18,14 +18,15 @@ Reference for `RefreshConfig`, the three rotation modes, refresh-reuse detection
 interface RefreshConfig {
   ttl: number; // ms; >0 required
   rotation?: "none" | "always" | "sliding"; // default 'sliding'
-  rotationGraceMs?: number; // default 30_000
+  rotationGraceMs?: number; // default 30_000 — sliding AND always
+  reuseResponse?: "session" | "user"; // default 'session'
   onRotationReuse?: (state: CredentialState) => void;
 }
 ```
 
 Omitting `refresh` from `AuthCredentialOptions` disables refresh entirely — `auth.refresh()` throws `AuthError('INVALID_CONFIG', 'Refresh not enabled')`. `refresh.ttl <= 0` throws `INVALID_CONFIG` at construction.
 
-`onRotationReuse` runs **before** the user-wide cascade — log / page / quarantine in the hook, then let `revokeAllForUser` complete.
+`onRotationReuse` runs **before** the revoke. `reuseResponse` picks the blast radius: `'session'` (default) revokes only the compromised token family (`revokeSession`); `'user'` revokes every session (`revokeAllForUser`). When the session can't be targeted (no `sessionId`, or a store without `listForUser` such as stateless), `'session'` falls back to the user-wide cascade.
 
 ## Rotation modes
 
@@ -44,26 +45,27 @@ Use when refresh tokens are stored in a secure server-side bag (Moost session co
 
 ### `'always'`
 
-Single-use refresh. Every `auth.refresh()` consumes the old token and mints both a fresh access and a fresh refresh. Reuse of the consumed token triggers theft response.
+Rotate every refresh, but keep a **fixed session ceiling**: each rotated refresh inherits the family's original `expiresAt`, so the session has an absolute maximum lifetime regardless of activity. On a **stateful** store it shares the same grace window as `'sliding'` (so a benign concurrent refresh within `rotationGraceMs` is not mistaken for theft). On a **stateless** store the old token can't be kept valid, so it falls back to single-use (`consume`) with a process-local reuse signal.
 
 ```
-issue       →  A1 + R1
-refresh R1  →  A2 + R2   (R1 now invalid)
-refresh R2  →  A3 + R3
-refresh R1  →  REFRESH_REUSE_DETECTED  →  revokeAllForUser(uid)
+issue        →  A1 + R1          (R1 expires at the family ceiling)
+refresh R1   →  A2 + R2          (R1.rotatedAt set; R2 keeps the SAME ceiling)
+refresh R1   →  A2'+ R2'         (within grace — OK, no theft)   [stateful]
+… after grace …
+refresh R1   →  REFRESH_REUSE_DETECTED  →  revokeSession(uid, sid)   (family only, default)
 ```
 
-Behavior: when a previously-valid refresh token is presented after it has already been consumed/rotated, the orchestrator distinguishes that from "unknown token" and throws `REFRESH_REUSE_DETECTED` (firing the per-user revocation cascade), rather than the generic `INVALID_TOKEN`.
+`'always'` vs `'sliding'` differ only in **expiry**: `'always'` is a fixed ceiling, `'sliding'` slides to `now + ttl`. Both rotate every time and both are grace-tolerant on stateful stores. Choose `'always'` when you need an absolute session timeout (compliance); `'sliding'` for a rolling "stay logged in while active" session.
 
 ### `'sliding'` (default)
 
-Graceful rotation. The first `refresh` rotates and marks `rotatedAt = now` on the old refresh state. The old refresh remains usable for `rotationGraceMs` (default 30 s) — concurrent requests racing through a token rotation don't both fail. After grace, replay triggers theft response.
+Rolling rotation. The first `refresh` rotates and marks `rotatedAt = now` on the old refresh state; the new refresh expiry slides to `now + ttl`. The old refresh remains usable for `rotationGraceMs` (default 30 s) — concurrent requests racing through a token rotation don't both fail. The grace window is **store-backed** (`rotatedAt` lives in the store), so it holds across multiple app instances. After grace, replay triggers theft response.
 
 ```
 t=0     issue       →  A1 + R1
 t=100   refresh R1  →  A2 + R2          (R1.rotatedAt = 100, still valid until 100+30_000)
 t=200   refresh R1  →  A3 + R3          (within grace; no re-rotation)
-t=31000 refresh R1  →  REFRESH_REUSE_DETECTED  (after grace → cascade)
+t=31000 refresh R1  →  REFRESH_REUSE_DETECTED  (after grace → theft response)
 ```
 
 Tunables:
@@ -75,14 +77,14 @@ Every rotated pair inherits `claims`, `metadata`, and **`sessionId`** from its p
 
 ## Refresh reuse detection
 
-Triggered by `'always'` (any reuse) and `'sliding'` (reuse after grace). Sequence:
+Triggered by reuse **after grace** (stateful `'always'` / `'sliding'`) or replay of a consumed token (stateless). Sequence:
 
 1. `refreshConfig.onRotationReuse?.(state)` — synchronous hook for audit-log / alert.
-2. `store.revokeAllForUser(userId)` — cascade. Returns count (stateful) or sentinel `1` (stateless).
-3. `consumedRefreshes.delete(token)` for `'always'` mode.
-4. `throw new AuthError('REFRESH_REUSE_DETECTED', undefined, { userId, rotatedAt? })`.
+2. Revoke per `reuseResponse`: `'session'` (default) → `revokeSession(userId, sessionId)` (the compromised family only); `'user'` → `revokeAllForUser(userId)`. Falls back to `revokeAllForUser` when `sessionId` is absent or the store can't enumerate (stateless).
+3. `consumedRefreshes.delete(token)` for the stateless `'always'` path.
+4. `throw new AuthError('REFRESH_REUSE_DETECTED', undefined, { userId, sessionId?, rotatedAt? })`.
 
-The cascade revokes **both** `kind: 'access'` and `kind: 'refresh'` credentials for the user. Every existing access token will fail validation on next use.
+`'session'` (the default) revokes both `kind: 'access'` and `kind: 'refresh'` of the **compromised family** — the legitimate user and attacker share it, so both are ended while the user's other devices keep working. `'user'` widens that to every session. The default is the OAuth-best-practice token-family revocation.
 
 ## Stateless degradation
 
@@ -96,7 +98,7 @@ t=200 refresh R1  →  store.retrieve(R1) returns null (denylist hit)
                    →  AuthError('INVALID_TOKEN')   — NOT REUSE_DETECTED
 ```
 
-The grace window is unreachable. The reuse signal is also lost (no `consumedRefreshes` entry under sliding). **Use `rotation: 'always'` explicitly for stateless deployments.** `'always'` keeps the `consumedRefreshes` map populated and detects theft cleanly.
+The store-backed grace window is unreachable on stateless stores, and the reuse signal is lost under sliding (no `consumedRefreshes` entry). **Use `rotation: 'always'` explicitly for stateless deployments.** `'always'` keeps the `consumedRefreshes` map populated and detects theft — but that map is **process-local**, so on a multi-instance deployment a replay that lands on a different instance returns `INVALID_TOKEN` rather than `REFRESH_REUSE_DETECTED`. Cross-instance grace + theft detection requires a stateful store (Memory/Redis/AtscriptDb), where `rotatedAt` lives in the shared store.
 
 ## Concurrency limits
 

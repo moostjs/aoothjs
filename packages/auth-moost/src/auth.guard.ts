@@ -12,6 +12,7 @@ import {
 import { type AuthOptions, resolveAuthOptions } from "./auth.config";
 import { authOptionsKey, setAuthContext, setAuthCredential, useAuth } from "./auth.composables";
 import type { TAuthMeta } from "./auth.mate";
+import { RefreshCookiePathHolder } from "./auth.route";
 
 /**
  * `GUARD`-priority interceptor factory that authenticates incoming requests.
@@ -36,6 +37,13 @@ import type { TAuthMeta } from "./auth.mate";
  */
 export function authGuardInterceptor(opts?: AuthOptions): TInterceptorDef {
   const resolved = resolveAuthOptions(opts);
+  // An explicit refresh-cookie path always wins. Otherwise adopt the path
+  // `AuthController`'s `@MoostInit` resolved at boot from its real mounted route
+  // ({@link RefreshCookiePathHolder}). Merged once on the first request — a cheap
+  // singleton read of an already-populated value, with none of the old
+  // per-request route introspection or shared in-flight async state.
+  let refreshPathMerged = opts?.refreshCookie?.path !== undefined;
+
   return defineBeforeInterceptor(async () => {
     const ctx = current();
     if (ctx.get(eventTypeKey) !== "http") return;
@@ -46,6 +54,15 @@ export function authGuardInterceptor(opts?: AuthOptions): TInterceptorDef {
     ctx.set(authOptionsKey, resolved);
 
     const cc = useControllerContext(ctx);
+
+    if (!refreshPathMerged) {
+      const holder = await cc.instantiate(RefreshCookiePathHolder);
+      if (holder.path) {
+        resolved.refreshCookie = { ...resolved.refreshCookie, path: holder.path };
+      }
+      refreshPathMerged = true;
+    }
+
     const cMeta = cc.getControllerMeta<TAuthMeta>();
     const mMeta = cc.getMethodMeta<TAuthMeta>();
     const isPublic = mMeta?.authPublic ?? cMeta?.authPublic ?? false;
