@@ -706,8 +706,8 @@ export class AuthWorkflow {
     if (ctx.mfa?.method && ctx.mfa.method !== "totp") {
       const channel = ctx.mfa.method;
       const summary = ctx.mfa.enrolledMethods?.find((mm) => mm.kind === channel);
-      if (!ctx.username) throw new HttpError(500, "Workflow state corrupted: missing username");
-      return this.users.getUser(ctx.username).then((user) => {
+      if (!ctx.subject) throw new HttpError(500, "Workflow state corrupted: missing username");
+      return this.users.getUser(ctx.subject).then((user) => {
         const methodName = summary?.methodName ?? channel;
         const method = user.mfa.methods.find((m) => m.name === methodName && m.confirmed);
         if (!method) throw new HttpError(500, "MFA method no longer present");
@@ -735,14 +735,14 @@ export class AuthWorkflow {
   // ── Private helpers (ported from AuthWorkflowBase) ──────────────────────
 
   /**
-   * Asserts `ctx.username` is populated. Throws `HttpError(500)` on miss;
+   * Asserts `ctx.subject` is populated. Throws `HttpError(500)` on miss;
    * narrows `username` to `string` for the caller. Ported from
    * `AuthWorkflowBase` since the unified class no longer extends it.
    */
-  protected requireUsername<T extends { username?: string }>(
+  protected requireSubject<T extends { subject?: string }>(
     ctx: T,
-  ): asserts ctx is T & { username: string } {
-    if (!ctx.username) throw new HttpError(500, "Workflow state corrupted: missing username");
+  ): asserts ctx is T & { subject: string } {
+    if (!ctx.subject) throw new HttpError(500, "Workflow state corrupted: missing username");
   }
 
   /**
@@ -1066,7 +1066,7 @@ export class AuthWorkflow {
   @ArbacResource("auth.change-password")
   @ArbacAction("self")
   initChangePassword(@WorkflowParam("context") ctx: AuthWfCtx): void {
-    ctx.username = useAuth().getUserId();
+    ctx.subject = useAuth().getUserId();
     const password = (ctx.password ??= {});
     password.heading = "Change your password";
     password.intro = "Enter your current password, then choose a new one.";
@@ -1078,7 +1078,7 @@ export class AuthWorkflow {
   @Step("credentials")
   @Public()
   async credentials(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
-    // Runs BEFORE the `!ctx.username` gate / prepare-* steps, so we inline
+    // Runs BEFORE the `!ctx.subject` gate / prepare-* steps, so we inline
     // the alt-cred + guards resolvers we need (idempotent vs. later prepare-*).
     const altResult = this.resolveAlternateCredentials(ctx);
     const alt = altResult instanceof Promise ? await altResult : altResult;
@@ -1117,7 +1117,7 @@ export class AuthWorkflow {
         input.password,
         this.lockoutOverride(ctx),
       );
-      ctx.username = result.user.id;
+      ctx.subject = result.user.id;
       // First validated input passed → move off the cheap encapsulated start to
       // the durable store strategy, so the MFA / enrollment / password-change
       // pauses survive restarts. Pre-validation stays encapsulated (no server row),
@@ -1211,7 +1211,7 @@ export class AuthWorkflow {
   @Step("request")
   @Public()
   async request(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
-    // Runs BEFORE the `!ctx.username` gate / prepare-* steps; inline the
+    // Runs BEFORE the `!ctx.subject` gate / prepare-* steps; inline the
     // alt-actions resolver (idempotent vs. later `prepare-recovery-alt-actions`).
     const altResult = this.resolveRecoveryAltActions(ctx);
     const alt = altResult instanceof Promise ? await altResult : altResult;
@@ -1252,12 +1252,12 @@ export class AuthWorkflow {
     }
 
     if (!username) {
-      // Anti-enumeration: same generic response. Downstream skips via `ctx.username` gate.
+      // Anti-enumeration: same generic response. Downstream skips via `ctx.subject` gate.
       this.finishGenericRecovery();
       return undefined;
     }
 
-    ctx.username = username;
+    ctx.subject = username;
     // real user resolved → durable store for the OTP-send + password-reset pauses (resumable, 1h TTL); unknown-email anti-enumeration path above never reaches here
     swapStrategy("store");
     return undefined;
@@ -1340,11 +1340,11 @@ export class AuthWorkflow {
     if (ctx.isPasswordInitial) reason.changeReason = "initial";
     else if (ctx.isPasswordExpired) reason.changeReason = "expired";
     else delete reason.changeReason;
-    if (!ctx.username) {
+    if (!ctx.subject) {
       ctx.isFirstLogin = false;
       return undefined;
     }
-    return this.users.getUser(ctx.username).then(
+    return this.users.getUser(ctx.subject).then(
       (user) => {
         ctx.isFirstLogin = !user?.account?.lastLogin;
         return undefined;
@@ -1362,8 +1362,8 @@ export class AuthWorkflow {
   @Step("prepare-consents")
   @Public()
   prepareConsents(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
-    if (!ctx.username) return undefined;
-    const result = this.consentStore.getPendingConsents(ctx.username);
+    if (!ctx.subject) return undefined;
+    const result = this.consentStore.getPendingConsents(ctx.subject);
     if (result instanceof Promise) {
       return result.then((resolved) => {
         (ctx.consents ??= {}).pending = resolved;
@@ -1502,7 +1502,7 @@ export class AuthWorkflow {
 
   /**
    * Merges login's `prepare-mfa-setup` + invite's `prepare-mfa` + `setup-mfa`.
-   * Writes `ctx.mfaPolicy`; with `ctx.username` bound, pre-picks
+   * Writes `ctx.mfaPolicy`; with `ctx.subject` bound, pre-picks
    * `ctx.mfa.current` from the user's `defaultMethod` (challenge branch);
    * with zero confirmed methods and a single available transport, pre-picks
    * `ctx.mfaEnroll.method` (enrol branch). `enrolledMethods` is NOT written
@@ -1522,11 +1522,11 @@ export class AuthWorkflow {
           (ctx.mfaEnroll ??= {}).method = transports[0];
         }
       };
-      if (!ctx.username) {
+      if (!ctx.subject) {
         autoPickEnroll();
         return undefined;
       }
-      return this.users.getUser(ctx.username).then(
+      return this.users.getUser(ctx.subject).then(
         (user) => {
           const allowed = new Set(transports);
           const confirmed = (user?.mfa?.methods ?? []).filter(
@@ -1741,7 +1741,7 @@ export class AuthWorkflow {
     } as Partial<UserCredentials>);
     // The subject is the stable id (NOT the email handle) — downstream steps
     // resolve the user via id-keyed UserService calls.
-    ctx.username = created.id;
+    ctx.subject = created.id;
     return undefined;
   }
 
@@ -1775,7 +1775,7 @@ export class AuthWorkflow {
     swapStrategy("store");
     return outletEmail(ctx.email as string, "invite.magicLink", {
       username: ctx.email,
-      ...(ctx.username && { userId: ctx.username }),
+      ...(ctx.subject && { userId: ctx.subject }),
       ...(admin.roles && { roles: admin.roles }),
     });
   }
@@ -1790,10 +1790,10 @@ export class AuthWorkflow {
   @Step("check-pending-invitation")
   @Public()
   async checkPendingInvitation(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
-    if (!ctx.username) {
+    if (!ctx.subject) {
       throw new HttpError(500, "Workflow state corrupted: missing username at accept");
     }
-    const existing = await this.loadUserOrNull(ctx.username);
+    const existing = await this.loadUserOrNull(ctx.subject);
     if (!existing) {
       throw new HttpError(410, "This invite has been cancelled");
     }
@@ -1825,8 +1825,8 @@ export class AuthWorkflow {
   @Step("unset-pending-invitation")
   @Public()
   async unsetPendingInvitation(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
-    this.requireUsername(ctx);
-    await this.users.update(ctx.username, {
+    this.requireSubject(ctx);
+    await this.users.update(ctx.subject, {
       account: { pendingInvitation: false },
     } as Partial<UserCredentials>);
     return undefined;
@@ -1836,8 +1836,8 @@ export class AuthWorkflow {
   @Step("activate-user")
   @Public()
   async activateUser(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
-    this.requireUsername(ctx);
-    await this.users.activateAccount(ctx.username);
+    this.requireSubject(ctx);
+    await this.users.activateAccount(ctx.subject);
     return undefined;
   }
 
@@ -1868,7 +1868,7 @@ export class AuthWorkflow {
   @Step("create-password-form")
   @Public()
   async createPasswordForm(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
-    this.requireUsername(ctx);
+    this.requireSubject(ctx);
     // Stage context-aware copy BEFORE the pause so the inputRequired envelope
     // carries the rendered heading/intro alongside the form schema.
     const password = (ctx.password ??= {});
@@ -1897,7 +1897,7 @@ export class AuthWorkflow {
       throw this.throwPublic(ctx, wf, { errors: { confirmPassword: "Passwords do not match" } });
     }
     try {
-      await this.users.setPassword(ctx.username, input.newPassword);
+      await this.users.setPassword(ctx.subject, input.newPassword);
     } catch (err) {
       if (err instanceof UserAuthError) {
         throw this.throwPublic(ctx, wf, { errors: { newPassword: err.message } });
@@ -1940,8 +1940,8 @@ export class AuthWorkflow {
   ): Promise<undefined> {
     const rl = ctx.changePassword?.rateLimit;
     if (!rl) return undefined;
-    this.requireUsername(ctx);
-    const user = await this.users.getUser(ctx.username);
+    this.requireSubject(ctx);
+    const user = await this.users.getUser(ctx.subject);
     const last = user.password.lastChanged;
     if (last && Date.now() - last < rl.minIntervalMs) {
       ctx.aborted = true;
@@ -1967,7 +1967,7 @@ export class AuthWorkflow {
   }
 
   /**
-   * Authenticated self-service password change. `ctx.username` is the SIGNED-IN
+   * Authenticated self-service password change. `ctx.subject` is the SIGNED-IN
    * user (set by `init-change-password` from the session — never form input).
    * Pauses for `ChangePasswordForm`, then calls `users.changePassword`, which
    * re-verifies the CURRENT password (primary protection) before applying the
@@ -1979,7 +1979,7 @@ export class AuthWorkflow {
   @ArbacResource("auth.change-password")
   @ArbacAction("self")
   async changePasswordForm(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
-    this.requireUsername(ctx);
+    this.requireSubject(ctx);
     const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.changePassword);
     const input = wf.resolveInput() as {
       currentPassword: string;
@@ -1991,7 +1991,7 @@ export class AuthWorkflow {
     }
     try {
       await this.users.changePassword(
-        ctx.username,
+        ctx.subject,
         input.currentPassword,
         input.newPassword,
         input.confirmPassword,
@@ -2022,12 +2022,12 @@ export class AuthWorkflow {
   @ArbacResource("auth.change-password")
   @ArbacAction("self")
   async finishChangePassword(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
-    this.requireUsername(ctx);
+    this.requireSubject(ctx);
     const issue = await this.issueForContext(ctx);
     const auth = useAuth();
     const envelope: WfFinished = {
       finished: true,
-      data: auth.buildLoginResponse(ctx.username, issue),
+      data: auth.buildLoginResponse(ctx.subject, issue),
       message: { level: "success", text: "Your password has been changed." },
     };
     useWfFinished().set({
@@ -2046,7 +2046,7 @@ export class AuthWorkflow {
     @WorkflowParam("context") ctx: AuthWfCtx,
     @Param("channel") channel: "email" | "phone",
   ): Promise<unknown> {
-    this.requireUsername(ctx);
+    this.requireSubject(ctx);
     const isEmail = channel === "email";
     // Stage the disclosure BEFORE the pause — `useAtscriptWf` snapshots ctx
     // at the throw site so `@wf.context.pass 'channel'` rides on the carrier
@@ -2066,7 +2066,7 @@ export class AuthWorkflow {
     this.processInlineConsent(ctx, input, askWf);
     const value = (isEmail ? input.email : input.phone) as string;
     const methodName = isEmail ? "email" : "sms";
-    const username = ctx.username;
+    const username = ctx.subject;
     await this.withStoreErrorTranslation(() =>
       this.users.addMfaMethod(username, { name: methodName, value, confirmed: false }),
     );
@@ -2103,7 +2103,7 @@ export class AuthWorkflow {
     @WorkflowParam("context") ctx: AuthWfCtx,
     @Param("channel") channel: "email" | "phone",
   ): Promise<unknown> {
-    this.requireUsername(ctx);
+    this.requireSubject(ctx);
     const isEmail = channel === "email";
     const pincodeWf = this.useAtscriptWfPublic(ctx, this.opts.forms.pincode);
     // Handle alt-action clicks BEFORE input parsing — the user may click
@@ -2145,7 +2145,7 @@ export class AuthWorkflow {
     const pinErr = this.verifyPin(ctx, input.code);
     if (pinErr) throw this.throwPublic(ctx, pincodeWf, { errors: pinErr });
     await this.withStoreErrorTranslation(() =>
-      this.users.confirmMfaMethod(ctx.username, isEmail ? "email" : "sms"),
+      this.users.confirmMfaMethod(ctx.subject, isEmail ? "email" : "sms"),
     );
     const channelState = (ctx.channel ??= {});
     if (isEmail) channelState.emailConfirmed = true;
@@ -2155,7 +2155,7 @@ export class AuthWorkflow {
       const channelArg: "email" | "sms" = isEmail ? "email" : "sms";
       const target = (isEmail ? ctx.email : channelState.phone) as string;
       await this.consentStore.recordOtpChannelConsent(
-        ctx.username,
+        ctx.subject,
         channelArg,
         target,
         channelState.otpDisclosure,
@@ -2186,7 +2186,7 @@ export class AuthWorkflow {
   @Step("check-trusted-device")
   @Public()
   async checkTrustedDevice(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
-    if (!ctx.username) return undefined;
+    if (!ctx.subject) return undefined;
     const cookieValue = useCookies(current()).getCookie(this.opts.deviceTrust.cookieName);
     const trust = (ctx.trust ??= {});
     if (!cookieValue) {
@@ -2194,7 +2194,7 @@ export class AuthWorkflow {
       return undefined;
     }
     const ip = this.opts.deviceTrust.bindsTo === "cookie+ip" ? this.resolveClientIp() : undefined;
-    const ok = await this.users.verifyTrustedDevice(ctx.username, cookieValue, ip);
+    const ok = await this.users.verifyTrustedDevice(ctx.subject, cookieValue, ip);
     if (ok) {
       (ctx.otp ??= {}).verified = true;
       trust.deviceTrustToken = cookieValue;
@@ -2253,11 +2253,11 @@ export class AuthWorkflow {
    * Mint a fresh credential for the workflow user, stamping the default
    * issue-time metadata (IP + User-Agent via {@link resolveIssueMetadata}).
    * Shared by every finish step that issues a session (login, change-password,
-   * recovery auto-login). Call after {@link requireUsername} has narrowed
+   * recovery auto-login). Call after {@link requireSubject} has narrowed
    * `username` (the typed param enforces it at the call site).
    */
-  private issueForContext(ctx: AuthWfCtx & { username: string }) {
-    return this.auth.issue(ctx.username, { metadata: this.resolveIssueMetadata(ctx) });
+  private issueForContext(ctx: AuthWfCtx & { subject: string }) {
+    return this.auth.issue(ctx.subject, { metadata: this.resolveIssueMetadata(ctx) });
   }
 
   /**
@@ -2268,8 +2268,8 @@ export class AuthWorkflow {
   @Step("load-enrolled-mfa-methods")
   @Public()
   async loadEnrolledMfaMethods(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
-    if (!ctx.username) return undefined;
-    const user = await this.users.getUser(ctx.username);
+    if (!ctx.subject) return undefined;
+    const user = await this.users.getUser(ctx.subject);
     const mfa = (ctx.mfa ??= {});
     const allowed = new Set(ctx.mfaPolicy?.availableTransports ?? []);
     const methods = this.users.getAvailableMfaMethods(user.mfa);
@@ -2351,8 +2351,8 @@ export class AuthWorkflow {
     }
     mfa.method = picked.kind;
     mfa.saveAsDefault = Boolean(input.saveAsDefault);
-    if (mfa.saveAsDefault && ctx.username) {
-      await this.users.setDefaultMfaMethod(ctx.username, picked.methodName);
+    if (mfa.saveAsDefault && ctx.subject) {
+      await this.users.setDefaultMfaMethod(ctx.subject, picked.methodName);
     }
     return undefined;
   }
@@ -2493,9 +2493,9 @@ export class AuthWorkflow {
       return undefined;
     }
     const input = wf.resolveInput() as { code: string; rememberDevice?: boolean };
-    this.requireUsername(ctx);
+    this.requireSubject(ctx);
     try {
-      await this.users.verifyMfa(ctx.username, input.code, undefined, this.lockoutOverride(ctx));
+      await this.users.verifyMfa(ctx.subject, input.code, undefined, this.lockoutOverride(ctx));
       (ctx.otp ??= {}).verified = true;
       (ctx.session ??= {}).riskStepUpEvaluated = false;
       if (ctx.deviceTrust?.enabled && ctx.deviceTrust?.optIn) {
@@ -2538,8 +2538,8 @@ export class AuthWorkflow {
   @Step("enroll-pick-method")
   @Public()
   enrollPickMethod(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
-    this.requireUsername(ctx);
-    const username = ctx.username;
+    this.requireSubject(ctx);
+    const username = ctx.subject;
     const transports = ctx.mfaPolicy?.availableTransports ?? [];
     const mode = ctx.mfaPolicy?.mode === "required" ? "required" : "optional";
     const m = (ctx.mfaEnroll ??= {});
@@ -2606,8 +2606,8 @@ export class AuthWorkflow {
   @Step("enroll-address")
   @Public()
   async enrollAddress(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
-    this.requireUsername(ctx);
-    const username = ctx.username;
+    this.requireSubject(ctx);
+    const username = ctx.subject;
     const m = (ctx.mfaEnroll ??= {});
     const mode = m.mode ?? "optional";
     const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.enrollAddress);
@@ -2648,8 +2648,8 @@ export class AuthWorkflow {
   @Step("enroll-confirm")
   @Public()
   async enrollConfirm(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
-    this.requireUsername(ctx);
-    const username = ctx.username;
+    this.requireSubject(ctx);
+    const username = ctx.subject;
     const m = (ctx.mfaEnroll ??= {});
 
     // Idempotent TOTP provisioning at top of confirm — covers the
@@ -2780,10 +2780,10 @@ export class AuthWorkflow {
   @Public()
   async deviceTrust(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     if (ctx.newPasswordRequired) return undefined;
-    if (!ctx.username) return undefined;
+    if (!ctx.subject) return undefined;
     const ip = this.opts.deviceTrust.bindsTo === "cookie+ip" ? this.resolveClientIp() : undefined;
-    const record = await this.issueTrustedDevice(ctx.username, ip, this.opts.deviceTrust.ttlMs);
-    await this.storeTrustedDevice(ctx.username, record);
+    const record = await this.issueTrustedDevice(ctx.subject, ip, this.opts.deviceTrust.ttlMs);
+    await this.storeTrustedDevice(ctx.subject, record);
     (ctx.trust ??= {}).deviceTrustToken = record.token;
     useResponse(current()).setCookie(
       this.opts.deviceTrust.cookieName,
@@ -2814,8 +2814,8 @@ export class AuthWorkflow {
   @Step("load-active-sessions")
   @Public()
   async loadActiveSessions(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
-    if (!ctx.username) return undefined;
-    const n = await this.loadActiveSessionsCount(ctx.username);
+    if (!ctx.subject) return undefined;
+    const n = await this.loadActiveSessionsCount(ctx.subject);
     (ctx.session ??= {}).activeSessions = n;
     return undefined;
   }
@@ -2837,7 +2837,7 @@ export class AuthWorkflow {
       throw this.throwPublic(ctx, wf, { formMessage: "Session limit reached" });
     }
     wf.resolveInput(); // first arrival throws requireInput (pauses); the 'Login' submit resumes here
-    if (ctx.username) await this.logoutOtherSessions(ctx.username);
+    if (ctx.subject) await this.logoutOtherSessions(ctx.subject);
     return undefined;
   }
 
@@ -2864,7 +2864,7 @@ export class AuthWorkflow {
   @Step("persist-consents")
   @Public()
   async persistConsents(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
-    this.requireUsername(ctx);
+    this.requireSubject(ctx);
     const group = ctx.consents ?? {};
     const pending = group.pending ?? [];
     if (pending.length === 0) return undefined;
@@ -2879,7 +2879,7 @@ export class AuthWorkflow {
       if (p.version !== undefined) evt.version = p.version;
       return evt;
     });
-    await this.consentStore.save(ctx.username, events);
+    await this.consentStore.save(ctx.subject, events);
     return undefined;
   }
 
@@ -2900,15 +2900,15 @@ export class AuthWorkflow {
   @Step("revoke-sessions")
   @Public()
   async revokeSessions(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
-    if (!ctx.username) return undefined;
+    if (!ctx.subject) return undefined;
     if (ctx.changePassword?.revokeOtherSessions) {
       const currentSessionId = useAuth().getSessionId();
       if (currentSessionId) {
-        await this.auth.revokeOtherSessions(ctx.username, currentSessionId);
+        await this.auth.revokeOtherSessions(ctx.subject, currentSessionId);
         return undefined;
       }
     }
-    await this.auth.revokeAllForUser(ctx.username);
+    await this.auth.revokeAllForUser(ctx.subject);
     return undefined;
   }
 
@@ -2922,8 +2922,8 @@ export class AuthWorkflow {
   @Step("unlock-account")
   @Public()
   async unlockAccount(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
-    if (!ctx.username) return undefined;
-    await this.users.unlockAccount(ctx.username);
+    if (!ctx.subject) return undefined;
+    await this.users.unlockAccount(ctx.subject);
     return undefined;
   }
 
@@ -2937,12 +2937,12 @@ export class AuthWorkflow {
   @Step("issue")
   @Public()
   async issue(@WorkflowParam("context") ctx: AuthWfCtx): Promise<void> {
-    this.requireUsername(ctx);
+    this.requireSubject(ctx);
     const issue = await this.issueForContext(ctx);
     const auth = useAuth();
     const envelope: WfFinished = {
       finished: true,
-      data: auth.buildLoginResponse(ctx.username, issue),
+      data: auth.buildLoginResponse(ctx.subject, issue),
     };
     useWfFinished().set({
       type: "data",
@@ -3045,8 +3045,8 @@ export class AuthWorkflow {
    * tokens (a still-frozen account must never be logged straight in).
    */
   private recoveryLeftAccountLocked(ctx: AuthWfCtx): Promise<boolean> {
-    this.requireUsername(ctx);
-    return this.users.getUser(ctx.username).then((user) => user.account.locked);
+    this.requireSubject(ctx);
+    return this.users.getUser(ctx.subject).then((user) => user.account.locked);
   }
 
   /**
@@ -3095,7 +3095,7 @@ export class AuthWorkflow {
   @Step("finalize-auto-login")
   @Public()
   async finalizeAutoLogin(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
-    this.requireUsername(ctx);
+    this.requireSubject(ctx);
     // An `admin-only` lockout that survived the reset must NOT be auto-logged-in
     // — minting tokens would defeat the very freeze the fresh-login terminal
     // warns about. Emit that same warn terminal (no tokens) instead. Only
@@ -3111,7 +3111,7 @@ export class AuthWorkflow {
     const previousMessage = (useWfFinished().get()?.value as WfFinished | undefined)?.message;
     const envelope: WfFinished = {
       finished: true,
-      data: auth.buildLoginResponse(ctx.username, issue),
+      data: auth.buildLoginResponse(ctx.subject, issue),
       ...(previousMessage && { message: previousMessage }),
     };
     useWfFinished().set({
@@ -3171,7 +3171,7 @@ export class AuthWorkflow {
   @WorkflowSchema<AuthWfCtx>([
     { id: "init-login" },
     { id: "credentials" },
-    { break: (ctx) => !ctx.username },
+    { break: (ctx) => !ctx.subject },
 
     // Resolve all policy groups
     { id: "prepare-consents" },
@@ -3296,17 +3296,17 @@ export class AuthWorkflow {
     { id: "infer-roles", condition: (ctx) => !!ctx.email },
     {
       id: "build-user-extras",
-      condition: (ctx) => !!(ctx.email && !ctx.username && !ctx.admin?.userExtras),
+      condition: (ctx) => !!(ctx.email && !ctx.subject && !ctx.admin?.userExtras),
     },
     {
       id: "create-user",
-      condition: (ctx) => !!(ctx.email && !ctx.username && !!ctx.admin?.userExtras),
+      condition: (ctx) => !!(ctx.email && !ctx.subject && !!ctx.admin?.userExtras),
     },
-    { id: "send-email", condition: (ctx) => !!ctx.username },
+    { id: "send-email", condition: (ctx) => !!ctx.subject },
 
     // ── Phase B: anonymous magic-link resume (all public) ──
     {
-      condition: (ctx) => !!ctx.username,
+      condition: (ctx) => !!ctx.subject,
       steps: [
         { id: "init-invite-accept" }, // sets isFirstLogin=true, newPasswordRequired=true
         { id: "prepare-accept" },
@@ -3347,7 +3347,7 @@ export class AuthWorkflow {
   @WorkflowSchema<AuthWfCtx>([
     { id: "init-recovery" },
     { id: "request" },
-    { break: (ctx) => !ctx.username },
+    { break: (ctx) => !ctx.subject },
 
     { id: "prepare-post-reset" },
     { id: "prepare-recovery-alt-actions" },
@@ -3391,7 +3391,7 @@ export class AuthWorkflow {
    *
    * `@Public()` on the body lets the wf adapter dispatch start/resume (mirrors
    * the other flows); the FLOW itself is NOT public — `init-change-password` is
-   * arbac-gated (`auth:change-password`) and binds `ctx.username` from the
+   * arbac-gated (`auth:change-password`) and binds `ctx.subject` from the
    * session, so an unauthenticated / unauthorized caller is rejected at the
    * first step. Customers forbid the feature (e.g. SSO-only orgs) by denying
    * the `change-password` action — there is no on/off opts flag.
@@ -3404,8 +3404,8 @@ export class AuthWorkflow {
   @ArbacResource("auth.change-password")
   @ArbacAction("self")
   @WorkflowSchema<AuthWfCtx>([
-    { id: "init-change-password" }, // binds ctx.username from session + arbac gate
-    { break: (ctx) => !ctx.username },
+    { id: "init-change-password" }, // binds ctx.subject from session + arbac gate
+    { break: (ctx) => !ctx.subject },
     { id: "prepare-change-password" },
     { id: "prepare-password-rules" },
     {

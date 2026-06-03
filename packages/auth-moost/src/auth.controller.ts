@@ -212,7 +212,7 @@ export class AuthController {
    * resolve to the same `auth.change-password` resource / `self` action — a
    * customer enables the whole feature with a single
    * `allow("auth.change-password", "*")` grant and forbids it (SSO-only orgs)
-   * by omitting that grant. The flow binds `ctx.username` from the session in
+   * by omitting that grant. The flow binds `ctx.subject` from the session in
    * `init-change-password`, so it is structurally "change MY password" — there
    * is no target-user parameter.
    */

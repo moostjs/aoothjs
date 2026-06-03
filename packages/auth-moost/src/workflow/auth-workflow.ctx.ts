@@ -381,8 +381,9 @@ export interface AuthWfPublicState {
 
 /** Unified workflow context shape — one type for all three flows. */
 export interface AuthWfCtx {
-  // ── Identity ──
-  username?: string;
+  // ── Identity ── `subject` is the stable user id (the token subject), set by
+  // the credentials/change-password/invite steps and passed to `auth.issue`.
+  subject?: string;
   email?: string;
   defaults?: AuthWfDefaults;
 
