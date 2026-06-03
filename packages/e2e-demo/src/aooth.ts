@@ -16,10 +16,6 @@ import { readVariantHeader } from "./variants-server";
  * `tenantId` defaults are wired via `InviteWorkflowOptions.prepareUser` for
  * the bundled invite flow; this store-level fallback covers programmatic
  * `createUser` calls (seeders, admin scripts) that bypass the workflow hook.
- *
- * `findByUsername` falls back to email lookup so the bundled recovery flow
- * (which calls `userService.getUser(input.email)`) can resolve users in this
- * app where username is a short handle and email is the canonical contact.
  */
 class DemoUserStore extends UsersStoreAtscriptDb<DemoUser> {
   async create(data: UserCredentials & DemoUser): Promise<void> {
@@ -32,13 +28,6 @@ class DemoUserStore extends UsersStoreAtscriptDb<DemoUser> {
         typeof rec.tenantId === "string" && rec.tenantId.length > 0 ? rec.tenantId : "_global",
     } as unknown as UserCredentials & DemoUser;
     return super.create(patched);
-  }
-
-  async findByUsername(handle: string): Promise<(UserCredentials & DemoUser) | null> {
-    const byUsername = await super.findByUsername(handle);
-    if (byUsername) return byUsername;
-    const byEmail = await this.table.findOne({ filter: { email: handle } });
-    return (byEmail as (UserCredentials & DemoUser) | null) ?? null;
   }
 }
 

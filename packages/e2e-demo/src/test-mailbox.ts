@@ -149,7 +149,8 @@ export function createTestMailboxController(
      */
     @Get("totp-secret/:username")
     async totpSecret(@Param("username") username: string): Promise<{ secret: string }> {
-      const user = await userService.getUser(username);
+      const user = await userService.findByHandle(username);
+      if (!user) throw new Error(`No user ${username}`);
       const method = user.mfa.methods.find((m) => m.name === "totp" && m.confirmed);
       if (!method) throw new Error(`No confirmed TOTP method for ${username}`);
       return { secret: method.value };
@@ -176,7 +177,8 @@ export function createTestMailboxController(
         pendingInvitation?: boolean;
       };
     }> {
-      const user = await userService.getUser(username);
+      const user = await userService.findByHandle(username);
+      if (!user) throw new Error(`No user ${username}`);
       return {
         username: user.username,
         mfa: {
@@ -212,14 +214,15 @@ export function createTestMailboxController(
      */
     @Post("reset-mfa/:username")
     async resetMfa(@Param("username") username: string): Promise<{ ok: true; methods: number }> {
-      const user = await userService.getUser(username);
+      const user = await userService.findByHandle(username);
+      if (!user) throw new Error(`No user ${username}`);
       // Iterate names rather than calling a bulk-clear (no such helper today).
       // Snapshot first because `removeMfaMethod` re-reads + filters per call.
       const names = user.mfa.methods.map((m) => m.name);
       for (const name of names) {
-        await userService.removeMfaMethod(username, name);
+        await userService.removeMfaMethod(user.id, name);
       }
-      const after = await userService.getUser(username);
+      const after = await userService.getUser(user.id);
       return { ok: true, methods: after.mfa.methods.length };
     }
 
@@ -244,8 +247,10 @@ export function createTestMailboxController(
      * through a persist-consents step on this app instance.
      */
     @Get("consent-log/:username")
-    consentLogFor(@Param("username") username: string): ConsentEvent[] {
-      return consentLog.get(username) ?? [];
+    async consentLogFor(@Param("username") username: string): Promise<ConsentEvent[]> {
+      // Consents are keyed by the stable subject id now — resolve the handle.
+      const user = await userService.findByHandle(username);
+      return user ? (consentLog.get(user.id) ?? []) : [];
     }
 
     /**
@@ -255,8 +260,10 @@ export function createTestMailboxController(
      * Drives WF-LOGIN-OTP-DISCLOSURE-01.
      */
     @Get("otp-consent-log/:username")
-    otpConsentLogFor(@Param("username") username: string): OtpConsentRecord[] {
-      return otpConsentLog.get(username) ?? [];
+    async otpConsentLogFor(@Param("username") username: string): Promise<OtpConsentRecord[]> {
+      // OTP-channel consent records are keyed by the stable subject id now.
+      const user = await userService.findByHandle(username);
+      return user ? (otpConsentLog.get(user.id) ?? []) : [];
     }
 
     /**

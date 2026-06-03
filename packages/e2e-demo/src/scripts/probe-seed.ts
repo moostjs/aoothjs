@@ -26,7 +26,7 @@ async function main(): Promise<void> {
   }
 
   // t1_grace must have a confirmed totp MFA method.
-  const grace = await handle.aooth.userStore.findByUsername("t1_grace");
+  const grace = await handle.aooth.userStore.findByHandle("t1_grace");
   if (!grace) throw new Error("t1_grace not found");
   const totp = grace.mfa.methods.find((m) => m.name === "totp");
   if (!totp) throw new Error("t1_grace missing totp MFA method");
@@ -38,7 +38,7 @@ async function main(): Promise<void> {
   console.log("[probe-seed] t1_grace totp confirmed OK");
 
   // t1_alice must carry both `member` and `viewer` roles for UNION tests.
-  const alice = await handle.aooth.userStore.findByUsername("t1_alice");
+  const alice = await handle.aooth.userStore.findByHandle("t1_alice");
   if (!alice) throw new Error("t1_alice not found");
   const roles = (alice as unknown as { roles?: string[] }).roles ?? [];
   if (!roles.includes("member") || !roles.includes("viewer")) {

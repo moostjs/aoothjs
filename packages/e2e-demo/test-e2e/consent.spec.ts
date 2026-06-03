@@ -85,7 +85,9 @@ test.describe("LoginWorkflow / variant=consent-array (Phase 5 dynamic consent)",
       data?: { accessToken?: string; userId?: string };
     };
     expect(envelope.finished).toBe(true);
-    expect(envelope.data?.userId).toBe(USERS.alice.username);
+    // userId is the stable subject id (a uuid) now, not the username handle.
+    expect(typeof envelope.data?.userId).toBe("string");
+    expect(envelope.data?.userId).toBeTruthy();
     expect(typeof envelope.data?.accessToken).toBe("string");
 
     // Consent log records ONE event per pending descriptor with accepted=true

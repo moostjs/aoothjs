@@ -486,44 +486,44 @@ async function seedUser(handle: AppHandle, spec: UserSpec): Promise<SeededUser> 
   let totpSecret: string | undefined;
   if (spec.totp) {
     totpSecret = generateTotpSecret();
-    await aooth.userService.addMfaMethod(spec.username, {
+    await aooth.userService.addMfaMethod(id, {
       name: "totp",
       confirmed: false,
       value: totpSecret,
     });
-    await aooth.userService.confirmMfaMethod(spec.username, "totp");
+    await aooth.userService.confirmMfaMethod(id, "totp");
     // Surfaced for the dev operator running pnpm run dev — copy into an
     // authenticator app to drive the TOTP MFA branch from the UI.
     console.log(`[seed] ${spec.username} totp secret: ${totpSecret}`);
   }
 
   if (spec.mfaEmail) {
-    await aooth.userService.addMfaMethod(spec.username, {
+    await aooth.userService.addMfaMethod(id, {
       name: "email",
       confirmed: false,
       value: spec.email,
     });
-    await aooth.userService.confirmMfaMethod(spec.username, "email");
+    await aooth.userService.confirmMfaMethod(id, "email");
   }
 
   if (spec.mfaSms) {
-    await aooth.userService.addMfaMethod(spec.username, {
+    await aooth.userService.addMfaMethod(id, {
       name: "sms",
       confirmed: false,
       value: spec.mfaSms.phone,
     });
-    await aooth.userService.confirmMfaMethod(spec.username, "sms");
+    await aooth.userService.confirmMfaMethod(id, "sms");
   }
 
   if (spec.defaultMfaMethod) {
-    await aooth.userService.setDefaultMfaMethod(spec.username, spec.defaultMfaMethod);
+    await aooth.userService.setDefaultMfaMethod(id, spec.defaultMfaMethod);
   }
 
   let activeSessionTokens: string[] | undefined;
   if (spec.activeSessions) {
     activeSessionTokens = [];
     for (let i = 0; i < spec.activeSessions; i++) {
-      const issued = await aooth.authCredential.issue(spec.username);
+      const issued = await aooth.authCredential.issue(id);
       activeSessionTokens.push(issued.accessToken);
     }
     console.log(`[seed] ${spec.username} active sessions: ${activeSessionTokens.length}`);
@@ -531,7 +531,7 @@ async function seedUser(handle: AppHandle, spec: UserSpec): Promise<SeededUser> 
     // for an active-session count — record it here for `loadActiveSessions`.
     /* eslint-disable no-underscore-dangle -- intentional globalThis slot */
     const g = globalThis as { __aoothE2eActiveSessions?: Map<string, number> };
-    g.__aoothE2eActiveSessions?.set(spec.username, spec.activeSessions);
+    g.__aoothE2eActiveSessions?.set(id, spec.activeSessions);
     /* eslint-enable no-underscore-dangle */
   }
 

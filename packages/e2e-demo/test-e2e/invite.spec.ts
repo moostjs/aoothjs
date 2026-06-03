@@ -336,8 +336,10 @@ test.describe("WF-INVITE — auth.invite family (P2)", () => {
     );
     expect(magic.url, "magic-link email must carry a resume url").toBeTruthy();
     expect(magic.url).toContain("wfs=");
-    expect(magic.url, "magic-link must embed uid for the post-redemption fallback").toContain(
-      `uid=${encodeURIComponent(inviteeEmail)}`,
+    // `uid` is the user's stable id (the token subject) now — not the email —
+    // since post-redemption's getUser(uid) is id-keyed. Assert it's present.
+    expect(magic.url, "magic-link must embed uid for the post-redemption fallback").toMatch(
+      /[?&]uid=[^&]+/,
     );
 
     const resumeUrl = rewriteToBaseUrl(magic.url as string, baseURL ?? "");

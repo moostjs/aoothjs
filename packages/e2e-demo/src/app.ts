@@ -4,7 +4,7 @@ import {
   ArbacUserProviderToken,
   MoostArbac,
 } from "@aooth/arbac-moost";
-import { AtscriptArbacUserProvider } from "@aooth/arbac-moost/atscript";
+import { type ArbacUserTable, AtscriptArbacUserProvider } from "@aooth/arbac-moost/atscript";
 import {
   AuthCredential,
   type AuthEmailEvent,
@@ -604,15 +604,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       return super.duplicateInviteCheck(input);
     }
 
-    // Maps a recovery-step email to the canonical username. In this demo
-    // `DemoUser.username` happens to equal `DemoUser.email` for seeded users,
-    // so a direct email lookup is enough — but the indirection is what makes
-    // recovery work for any user model where `username !== email`.
-    protected override async emailToUserId(email: string): Promise<string | null> {
-      const user = await aooth.userStore.findByUsername(email);
-      return user ? user.username : null;
-    }
-
     // Variant-driven mfa-ctx setter override. Base step (called via super)
     // writes `ctx.mfaPolicy` from `resolveMfaPolicy` and pre-picks
     // `ctx.mfa.current` / `ctx.mfaEnroll.method`. Demo default forces
@@ -724,20 +715,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // server-side enricher is wired here.
   app.registerControllers(DemoAuthController, DemoAuthWorkflow, SessionsController);
 
-  // Bind the atscript-driven user provider to the JWT subject for ARBAC.
-  // `DemoUser.@meta.id` is a UUID but the JWT subject is `username`;
-  // `userStore.findByUsername` resolves either, so wrap it in the minimal
-  // `ArbacUserTable` shim and ignore the projection (small fixture, low
-  // payoff to optimize). This is the consumer-side override seam.
-  const arbacUserTable = {
-    async findOne(query: { filter: Record<string, unknown> }): Promise<DemoUser | null> {
-      const userId = query.filter.id as string | undefined;
-      if (!userId) return null;
-      const user = await aooth.userStore.findByUsername(userId);
-      return (user as DemoUser | null) ?? null;
-    },
-  };
-
   // `@Injectable()` (SINGLETON) — moost@0.6.x does NOT inherit injectable
   // metadata across `extends`, so each consumer subclass must re-apply it.
   // Per-event memoization happens via a wooks-slot cache inside
@@ -745,7 +722,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   @Injectable()
   class DemoArbacUserProvider extends AtscriptArbacUserProvider<DemoUser> {
     constructor() {
-      super(DemoUser, arbacUserTable);
+      // The session subject is now the stable surrogate `id`, so the provider
+      // can query the REAL users table directly — its default
+      // `findOne({ filter: { id } })` resolves the row by primary key.
+      super(DemoUser, appDb.tables.users as unknown as ArbacUserTable<DemoUser>);
     }
     override getUserId(): string {
       return useAuth().getUserId();

@@ -5,10 +5,6 @@ import { Department } from './department'
 @db.table 'users'
 @db.http.path '/users'
 export interface DemoUser extends AoothArbacUserCredentials {
-    @meta.id
-    @db.default.uuid
-    id: string
-
     @arbac.attribute
     @meta.required
     @db.rel.FK
@@ -17,9 +13,6 @@ export interface DemoUser extends AoothArbacUserCredentials {
     @arbac.attribute
     @db.rel.FK
     departmentId?: Department.id
-
-    @expect.maxLength 128
-    email?: string
 
     @expect.maxLength 1000
     secretNotes?: string
