@@ -35,6 +35,7 @@ export { UserStore } from "./store/user-store";
 export { UserStoreMemory } from "./store/memory";
 export {
   FederatedIdentityStore,
+  pickDefinedProfile,
   type FederatedIdentity,
   type NewFederatedIdentity,
   type FederatedProfileSnapshot,

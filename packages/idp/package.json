@@ -1,0 +1,58 @@
+{
+  "name": "@aooth/idp",
+  "version": "0.1.0",
+  "description": "Framework-agnostic OAuth2 / OIDC federated-login core for aoothjs (provider registry, PKCE/state, ID-token verification, account resolution)",
+  "keywords": [
+    "aoothjs",
+    "federated-login",
+    "oauth2",
+    "oidc",
+    "openid-connect",
+    "pkce",
+    "sso"
+  ],
+  "homepage": "https://github.com/moostjs/aoothjs/tree/main/packages/idp#readme",
+  "bugs": {
+    "url": "https://github.com/moostjs/aoothjs/issues"
+  },
+  "license": "MIT",
+  "author": "Artem Maltsev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/moostjs/aoothjs.git",
+    "directory": "packages/idp"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "dist/index.mjs",
+  "module": "./dist/index.mjs",
+  "types": "dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "vp pack",
+    "dev": "vp pack --watch",
+    "test": "vp test",
+    "check": "vp check"
+  },
+  "dependencies": {
+    "@aooth/auth": "workspace:*",
+    "@aooth/user": "workspace:*",
+    "jose": "^6.2.3"
+  },
+  "devDependencies": {
+    "vitest": "catalog:"
+  }
+}

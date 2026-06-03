@@ -90,6 +90,9 @@ catalogs:
     vite-plus:
       specifier: latest
       version: 0.1.24
+    vitest:
+      specifier: npm:@voidzero-dev/vite-plus-test@latest
+      version: 0.1.24
     vue:
       specifier: ^3.5.0
       version: 3.5.34
@@ -604,6 +607,22 @@ importers:
       vite-plus:
         specifier: 'catalog:'
         version: 0.1.24(@types/node@22.19.19)(esbuild@0.28.0)(happy-dom@18.0.1)(jiti@2.7.0)(tsx@4.22.3)(typescript@5.9.3)(unrun@0.2.39)(vite@8.0.14(@types/node@22.19.19)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3))
+
+  packages/idp:
+    dependencies:
+      '@aooth/auth':
+        specifier: workspace:*
+        version: link:../auth
+      '@aooth/user':
+        specifier: workspace:*
+        version: link:../user
+      jose:
+        specifier: ^6.2.3
+        version: 6.2.3
+    devDependencies:
+      vitest:
+        specifier: 'catalog:'
+        version: '@voidzero-dev/vite-plus-test@0.1.24(@types/node@22.19.19)(esbuild@0.28.0)(happy-dom@18.0.1)(jiti@2.7.0)(tsx@4.22.3)(typescript@5.9.3)(unrun@0.2.39)(vite@8.0.14(@types/node@22.19.19)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3))'
 
   packages/user:
     devDependencies:
