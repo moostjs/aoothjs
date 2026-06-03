@@ -10,7 +10,7 @@ const FAST_SCRYPT = { scryptN: 1024, scryptR: 1, scryptP: 1, keyLength: 32 };
 
 async function createActiveUser(svc: UserService, username: string, password?: string) {
   const user = await svc.createUser(username, password);
-  await svc.activateAccount(username);
+  await svc.activateAccount(user.id);
   return user;
 }
 
@@ -41,7 +41,7 @@ describe("UserService", () => {
     it("should create a user with a provided password", async () => {
       const user = await svc.createUser("alice", "MyPassword1!");
       expect(user.password.isInitial).toBe(false);
-      expect(await svc.verifyPassword("alice", "MyPassword1!")).toBe(true);
+      expect(await svc.verifyPassword(user.id, "MyPassword1!")).toBe(true);
     });
 
     it("should throw ALREADY_EXISTS for duplicate", async () => {
@@ -87,14 +87,12 @@ describe("UserService", () => {
       expect(user.id).toBe("user-123");
     });
 
-    // Regression for ISSUE-27 — a hard-coded `id: ""` on the base record
-    // shadowed atscript-db's `@db.default.uuid` so every invite-created user
-    // collided on PK, causing the second `create` to fail with UNIQUE.
-    // The contract being verified: `createUser` MUST NOT put any `id`
-    // property on the record handed to the store unless the caller provided
-    // one via `extras`. That way the store's defaults (UUID, sequence, ...)
-    // can fire on each insert.
-    it("does NOT include `id` on the record passed to store.create when no id is supplied", async () => {
+    // `createUser` now mints a stable surrogate `id` (a server-managed UUID,
+    // also the token subject) and stamps it onto the record handed to the
+    // store, so callers can `auth.issue(user.id)` without a re-read. The
+    // contract being verified: `createUser` DOES put a non-empty `id` on the
+    // record when the caller does not supply one.
+    it("mints a non-empty `id` on the record passed to store.create when no id is supplied", async () => {
       let received: Record<string, unknown> | undefined;
       const recordingStore = new UserStoreMemory();
       const originalCreate = recordingStore.create.bind(recordingStore);
@@ -106,11 +104,13 @@ describe("UserService", () => {
         password: { ...FAST_SCRYPT },
         clock: () => now,
       });
-      await recSvc.createUser("alice", "pass123");
+      const user = await recSvc.createUser("alice", "pass123");
       expect(received).toBeDefined();
-      // Use `in` so we catch `id: ""` / `id: undefined` — the original bug
-      // was `id: ""` overwriting the DB default.
-      expect("id" in (received as object)).toBe(false);
+      expect("id" in (received as object)).toBe(true);
+      expect(typeof received!.id).toBe("string");
+      expect((received!.id as string).length).toBeGreaterThan(0);
+      // The minted id is the one returned on the record.
+      expect(received!.id).toBe(user.id);
     });
 
     it("DOES include caller-supplied `id` on the record passed to store.create", async () => {
@@ -134,8 +134,8 @@ describe("UserService", () => {
 
   describe("getUser", () => {
     it("should return user data", async () => {
-      await svc.createUser("alice");
-      const user = await svc.getUser("alice");
+      const created = await svc.createUser("alice");
+      const user = await svc.getUser(created.id);
       expect(user.username).toBe("alice");
     });
 
@@ -188,30 +188,30 @@ describe("UserService", () => {
     });
 
     it("should increment failedLoginAttempts on failure", async () => {
-      await createActiveUser(svc, "alice", "pass123");
+      const alice = await createActiveUser(svc, "alice", "pass123");
       try {
         await svc.login("alice", "wrong");
       } catch {}
       try {
         await svc.login("alice", "wrong");
       } catch {}
-      const user = await svc.getUser("alice");
+      const user = await svc.getUser(alice.id);
       expect(user.account.failedLoginAttempts).toBe(2);
     });
 
     it("should reset failedLoginAttempts on success", async () => {
-      await createActiveUser(svc, "alice", "pass123");
+      const alice = await createActiveUser(svc, "alice", "pass123");
       try {
         await svc.login("alice", "wrong");
       } catch {}
       await svc.login("alice", "pass123");
-      const user = await svc.getUser("alice");
+      const user = await svc.getUser(alice.id);
       expect(user.account.failedLoginAttempts).toBe(0);
     });
 
     it("should indicate mfaRequired when MFA methods are confirmed", async () => {
-      await createActiveUser(svc, "alice", "pass123");
-      await svc.addMfaMethod("alice", {
+      const alice = await createActiveUser(svc, "alice", "pass123");
+      await svc.addMfaMethod(alice.id, {
         name: "totp",
         confirmed: true,
         value: "ABCDEF",
@@ -233,13 +233,13 @@ describe("UserService", () => {
     });
 
     it("should lock account after threshold failures", async () => {
-      await createActiveUser(lockSvc, "alice", "pass123");
+      const alice = await createActiveUser(lockSvc, "alice", "pass123");
       for (let i = 0; i < 3; i++) {
         try {
           await lockSvc.login("alice", "wrong");
         } catch {}
       }
-      const user = await lockSvc.getUser("alice");
+      const user = await lockSvc.getUser(alice.id);
       expect(user.account.locked).toBe(true);
       expect(user.account.lockReason).toBe("Too many login attempts");
     });
@@ -304,13 +304,13 @@ describe("UserService", () => {
     // override (used config.duration) would auto-unlock after 60s and silently
     // downgrade an admin-only/self-service policy to temporary.
     it("per-call lockoutOverride forces a permanent lock even when config is temporary", async () => {
-      await createActiveUser(lockSvc, "alice", "pass123"); // lockSvc: duration 60_000
+      const alice = await createActiveUser(lockSvc, "alice", "pass123"); // lockSvc: duration 60_000
       for (let i = 0; i < 3; i++) {
         try {
           await lockSvc.login("alice", "wrong", { duration: 0 });
         } catch {}
       }
-      const locked = await lockSvc.getUser("alice");
+      const locked = await lockSvc.getUser(alice.id);
       expect(locked.account.locked).toBe(true);
       expect(locked.account.lockEnds).toBe(0); // 0 = permanent, not now+60_000
 
@@ -328,19 +328,19 @@ describe("UserService", () => {
     // so the same threshold trip yields a timed lock that DOES auto-expire.
     // Pins that the override is opt-in and doesn't change the default path.
     it("without an override the lock uses the configured temporary duration", async () => {
-      await createActiveUser(lockSvc, "alice", "pass123");
+      const alice = await createActiveUser(lockSvc, "alice", "pass123");
       for (let i = 0; i < 3; i++) {
         try {
           await lockSvc.login("alice", "wrong");
         } catch {}
       }
-      const locked = await lockSvc.getUser("alice");
+      const locked = await lockSvc.getUser(alice.id);
       expect(locked.account.lockEnds).toBe(now + 60000);
     });
   });
 
   describe("lockout — case sensitivity invariant", () => {
-    // WHY: `findByUsername` and the lockout key are both case-sensitive today
+    // WHY: `findByHandle` and the lockout key are both case-sensitive today
     // (literal `username` string). These tests pin that invariant so a future
     // "let's make username lookup case-insensitive" change can't silently
     // break the lockout side: if lookup goes case-insensitive while the
@@ -361,28 +361,28 @@ describe("UserService", () => {
       // Two accounts that differ only in case must have INDEPENDENT lockout
       // budgets. Two accounts = two budgets; collapsing them would let one
       // account's failures DoS the other.
-      await createActiveUser(lockSvc, "alice", "pass123");
-      await createActiveUser(lockSvc, "Alice", "pass123");
+      const lowerUser = await createActiveUser(lockSvc, "alice", "pass123");
+      const upperUser = await createActiveUser(lockSvc, "Alice", "pass123");
 
       for (let i = 0; i < 3; i++) {
         try {
           await lockSvc.login("alice", "wrong");
         } catch {}
       }
-      const lower = await lockSvc.getUser("alice");
+      const lower = await lockSvc.getUser(lowerUser.id);
       expect(lower.account.locked).toBe(true);
 
       // `Alice` must still authenticate cleanly with her own credentials.
       const result = await lockSvc.login("Alice", "pass123");
       expect(result.user.username).toBe("Alice");
-      const upper = await lockSvc.getUser("Alice");
+      const upper = await lockSvc.getUser(upperUser.id);
       expect(upper.account.locked).toBe(false);
       expect(upper.account.failedLoginAttempts).toBe(0);
     });
 
     it("case-variant probing of a non-existent account does NOT inflate the real account's lockout budget", async () => {
       // Seed only `alice` (lowercase). `Alice` does not exist.
-      await createActiveUser(lockSvc, "alice", "pass123");
+      const alice = await createActiveUser(lockSvc, "alice", "pass123");
 
       // Probe the non-existent variant `Alice` 3 times — each must surface as
       // NOT_FOUND and must NOT be charged to `alice`'s budget.
@@ -397,7 +397,7 @@ describe("UserService", () => {
 
       // `alice`'s failure counter must still be zero — variant probes did not
       // bleed across.
-      const before = await lockSvc.getUser("alice");
+      const before = await lockSvc.getUser(alice.id);
       expect(before.account.failedLoginAttempts).toBe(0);
       expect(before.account.locked).toBe(false);
 
@@ -408,7 +408,7 @@ describe("UserService", () => {
           await lockSvc.login("alice", "wrong");
         } catch {}
       }
-      const mid = await lockSvc.getUser("alice");
+      const mid = await lockSvc.getUser(alice.id);
       expect(mid.account.locked).toBe(false);
       expect(mid.account.failedLoginAttempts).toBe(2);
 
@@ -417,23 +417,23 @@ describe("UserService", () => {
       try {
         await lockSvc.login("alice", "wrong");
       } catch {}
-      const locked = await lockSvc.getUser("alice");
+      const locked = await lockSvc.getUser(alice.id);
       expect(locked.account.locked).toBe(true);
     });
   });
 
   describe("changePassword", () => {
     it("should change password with correct current password", async () => {
-      await svc.createUser("alice", "oldpass");
-      await svc.changePassword("alice", "oldpass", "newpass");
-      expect(await svc.verifyPassword("alice", "newpass")).toBe(true);
-      expect(await svc.verifyPassword("alice", "oldpass")).toBe(false);
+      const alice = await svc.createUser("alice", "oldpass");
+      await svc.changePassword(alice.id, "oldpass", "newpass");
+      expect(await svc.verifyPassword(alice.id, "newpass")).toBe(true);
+      expect(await svc.verifyPassword(alice.id, "oldpass")).toBe(false);
     });
 
     it("should throw INVALID_CREDENTIALS for wrong current password", async () => {
-      await svc.createUser("alice", "oldpass");
+      const alice = await svc.createUser("alice", "oldpass");
       try {
-        await svc.changePassword("alice", "wrong", "newpass");
+        await svc.changePassword(alice.id, "wrong", "newpass");
         expect.unreachable();
       } catch (e) {
         expect((e as UserAuthError).type).toBe("INVALID_CREDENTIALS");
@@ -441,9 +441,9 @@ describe("UserService", () => {
     });
 
     it("should throw PASSWORDS_MISMATCH when repeat doesn't match", async () => {
-      await svc.createUser("alice", "oldpass");
+      const alice = await svc.createUser("alice", "oldpass");
       try {
-        await svc.changePassword("alice", "oldpass", "newpass", "different");
+        await svc.changePassword(alice.id, "oldpass", "newpass", "different");
         expect.unreachable();
       } catch (e) {
         expect((e as UserAuthError).type).toBe("PASSWORDS_MISMATCH");
@@ -451,9 +451,9 @@ describe("UserService", () => {
     });
 
     it("should throw PASSWORD_IN_HISTORY for current password reuse", async () => {
-      await svc.createUser("alice", "mypass");
+      const alice = await svc.createUser("alice", "mypass");
       try {
-        await svc.changePassword("alice", "mypass", "mypass");
+        await svc.changePassword(alice.id, "mypass", "mypass");
         expect.unreachable();
       } catch (e) {
         expect((e as UserAuthError).type).toBe("PASSWORD_IN_HISTORY");
@@ -465,13 +465,13 @@ describe("UserService", () => {
         password: { ...FAST_SCRYPT, historyLength: 3 },
         clock: () => now,
       });
-      await historySvc.createUser("alice", "pass1");
-      await historySvc.changePassword("alice", "pass1", "pass2");
-      await historySvc.changePassword("alice", "pass2", "pass3");
+      const alice = await historySvc.createUser("alice", "pass1");
+      await historySvc.changePassword(alice.id, "pass1", "pass2");
+      await historySvc.changePassword(alice.id, "pass2", "pass3");
 
       // pass1 should be in history
       try {
-        await historySvc.changePassword("alice", "pass3", "pass1");
+        await historySvc.changePassword(alice.id, "pass3", "pass1");
         expect.unreachable();
       } catch (e) {
         expect((e as UserAuthError).type).toBe("PASSWORD_IN_HISTORY");
@@ -483,9 +483,9 @@ describe("UserService", () => {
         password: { ...FAST_SCRYPT, policies: [ppHasMinLength(8), ppHasUpperCase(1)] },
         clock: () => now,
       });
-      await policySvc.createUser("alice", "OldPass1!");
+      const alice = await policySvc.createUser("alice", "OldPass1!");
       try {
-        await policySvc.changePassword("alice", "OldPass1!", "short");
+        await policySvc.changePassword(alice.id, "OldPass1!", "short");
         expect.unreachable();
       } catch (e) {
         expect((e as UserAuthError).type).toBe("POLICY_VIOLATION");
@@ -570,50 +570,50 @@ describe("UserService", () => {
 
   describe("setPassword", () => {
     it("should set password without current password verification", async () => {
-      await svc.createUser("alice", "oldpass");
-      await svc.setPassword("alice", "newpass");
-      expect(await svc.verifyPassword("alice", "newpass")).toBe(true);
+      const alice = await svc.createUser("alice", "oldpass");
+      await svc.setPassword(alice.id, "newpass");
+      expect(await svc.verifyPassword(alice.id, "newpass")).toBe(true);
     });
   });
 
   describe("account management", () => {
     it("should activate account", async () => {
-      await svc.createUser("alice");
-      await svc.activateAccount("alice");
-      const user = await svc.getUser("alice");
+      const alice = await svc.createUser("alice");
+      await svc.activateAccount(alice.id);
+      const user = await svc.getUser(alice.id);
       expect(user.account.active).toBe(true);
     });
 
     it("should deactivate account", async () => {
-      await svc.createUser("alice");
-      await svc.activateAccount("alice");
-      await svc.deactivateAccount("alice");
-      const user = await svc.getUser("alice");
+      const alice = await svc.createUser("alice");
+      await svc.activateAccount(alice.id);
+      await svc.deactivateAccount(alice.id);
+      const user = await svc.getUser(alice.id);
       expect(user.account.active).toBe(false);
     });
 
     it("should lock account with reason and duration", async () => {
-      await svc.createUser("alice");
-      await svc.lockAccount("alice", "Suspicious activity", 60000);
-      const user = await svc.getUser("alice");
+      const alice = await svc.createUser("alice");
+      await svc.lockAccount(alice.id, "Suspicious activity", 60000);
+      const user = await svc.getUser(alice.id);
       expect(user.account.locked).toBe(true);
       expect(user.account.lockReason).toBe("Suspicious activity");
       expect(user.account.lockEnds).toBe(now + 60000);
     });
 
     it("should lock permanently when no duration", async () => {
-      await svc.createUser("alice");
-      await svc.lockAccount("alice", "Banned");
-      const user = await svc.getUser("alice");
+      const alice = await svc.createUser("alice");
+      await svc.lockAccount(alice.id, "Banned");
+      const user = await svc.getUser(alice.id);
       expect(user.account.locked).toBe(true);
       expect(user.account.lockEnds).toBe(0);
     });
 
     it("should unlock account and reset failed attempts", async () => {
-      await svc.createUser("alice");
-      await svc.lockAccount("alice", "test");
-      await svc.unlockAccount("alice");
-      const user = await svc.getUser("alice");
+      const alice = await svc.createUser("alice");
+      await svc.lockAccount(alice.id, "test");
+      await svc.unlockAccount(alice.id);
+      const user = await svc.getUser(alice.id);
       expect(user.account.locked).toBe(false);
       expect(user.account.lockReason).toBe("");
       expect(user.account.failedLoginAttempts).toBe(0);
@@ -722,13 +722,16 @@ describe("UserService", () => {
   });
 
   describe("MFA management", () => {
+    let aliceId: string;
+
     beforeEach(async () => {
-      await svc.createUser("alice", "pass123");
+      const alice = await svc.createUser("alice", "pass123");
+      aliceId = alice.id;
     });
 
     it("should add an MFA method", async () => {
-      await svc.addMfaMethod("alice", { name: "email", confirmed: false, value: "alice@test.com" });
-      const user = await svc.getUser("alice");
+      await svc.addMfaMethod(aliceId, { name: "email", confirmed: false, value: "alice@test.com" });
+      const user = await svc.getUser(aliceId);
       const method = user.mfa.methods.find((m) => m.name === "email");
       expect(method).toBeDefined();
       expect(method!.confirmed).toBe(false);
@@ -736,23 +739,23 @@ describe("UserService", () => {
     });
 
     it("should replace existing method with same name", async () => {
-      await svc.addMfaMethod("alice", { name: "email", confirmed: false, value: "old@test.com" });
-      await svc.addMfaMethod("alice", { name: "email", confirmed: false, value: "new@test.com" });
-      const user = await svc.getUser("alice");
+      await svc.addMfaMethod(aliceId, { name: "email", confirmed: false, value: "old@test.com" });
+      await svc.addMfaMethod(aliceId, { name: "email", confirmed: false, value: "new@test.com" });
+      const user = await svc.getUser(aliceId);
       expect(user.mfa.methods.filter((m) => m.name === "email")).toHaveLength(1);
       expect(user.mfa.methods.find((m) => m.name === "email")!.value).toBe("new@test.com");
     });
 
     it("should confirm an MFA method", async () => {
-      await svc.addMfaMethod("alice", { name: "email", confirmed: false, value: "alice@test.com" });
-      await svc.confirmMfaMethod("alice", "email");
-      const user = await svc.getUser("alice");
+      await svc.addMfaMethod(aliceId, { name: "email", confirmed: false, value: "alice@test.com" });
+      await svc.confirmMfaMethod(aliceId, "email");
+      const user = await svc.getUser(aliceId);
       expect(user.mfa.methods.find((m) => m.name === "email")!.confirmed).toBe(true);
     });
 
     it("should throw MFA_NOT_CONFIGURED for unknown method", async () => {
       try {
-        await svc.confirmMfaMethod("alice", "nonexistent");
+        await svc.confirmMfaMethod(aliceId, "nonexistent");
         expect.unreachable();
       } catch (e) {
         expect((e as UserAuthError).type).toBe("MFA_NOT_CONFIGURED");
@@ -760,31 +763,31 @@ describe("UserService", () => {
     });
 
     it("should remove an MFA method", async () => {
-      await svc.addMfaMethod("alice", { name: "totp", confirmed: true, value: "ABC" });
-      await svc.removeMfaMethod("alice", "totp");
-      const user = await svc.getUser("alice");
+      await svc.addMfaMethod(aliceId, { name: "totp", confirmed: true, value: "ABC" });
+      await svc.removeMfaMethod(aliceId, "totp");
+      const user = await svc.getUser(aliceId);
       expect(user.mfa.methods.find((m) => m.name === "totp")).toBeUndefined();
     });
 
     it("should clear defaultMethod when removing the default method", async () => {
-      await svc.addMfaMethod("alice", { name: "totp", confirmed: true, value: "ABC" });
-      await svc.setDefaultMfaMethod("alice", "totp");
-      await svc.removeMfaMethod("alice", "totp");
-      const user = await svc.getUser("alice");
+      await svc.addMfaMethod(aliceId, { name: "totp", confirmed: true, value: "ABC" });
+      await svc.setDefaultMfaMethod(aliceId, "totp");
+      await svc.removeMfaMethod(aliceId, "totp");
+      const user = await svc.getUser(aliceId);
       expect(user.mfa.defaultMethod).toBe("");
     });
 
     it("should set default MFA method", async () => {
-      await svc.addMfaMethod("alice", { name: "email", confirmed: true, value: "a@b.c" });
-      await svc.setDefaultMfaMethod("alice", "email");
-      const user = await svc.getUser("alice");
+      await svc.addMfaMethod(aliceId, { name: "email", confirmed: true, value: "a@b.c" });
+      await svc.setDefaultMfaMethod(aliceId, "email");
+      const user = await svc.getUser(aliceId);
       expect(user.mfa.defaultMethod).toBe("email");
       expect(user.mfa.autoSend).toBe(false);
     });
 
     it("should throw MFA_NOT_CONFIGURED for setting non-existent default", async () => {
       try {
-        await svc.setDefaultMfaMethod("alice", "nonexistent");
+        await svc.setDefaultMfaMethod(aliceId, "nonexistent");
         expect.unreachable();
       } catch (e) {
         expect((e as UserAuthError).type).toBe("MFA_NOT_CONFIGURED");
@@ -792,9 +795,9 @@ describe("UserService", () => {
     });
 
     it("should get available (confirmed) MFA methods", async () => {
-      await svc.addMfaMethod("alice", { name: "email", confirmed: true, value: "alice@test.com" });
-      await svc.addMfaMethod("alice", { name: "totp", confirmed: false, value: "ABC" });
-      const user = await svc.getUser("alice");
+      await svc.addMfaMethod(aliceId, { name: "email", confirmed: true, value: "alice@test.com" });
+      await svc.addMfaMethod(aliceId, { name: "totp", confirmed: false, value: "ABC" });
+      const user = await svc.getUser(aliceId);
       const methods = svc.getAvailableMfaMethods(user.mfa);
       expect(methods).toHaveLength(1);
       expect(methods[0].name).toBe("email");
@@ -802,8 +805,8 @@ describe("UserService", () => {
     });
 
     it("should set MFA autoSend", async () => {
-      await svc.setMfaAutoSend("alice", true);
-      const user = await svc.getUser("alice");
+      await svc.setMfaAutoSend(aliceId, true);
+      const user = await svc.getUser(aliceId);
       expect(user.mfa.autoSend).toBe(true);
     });
 
@@ -811,10 +814,10 @@ describe("UserService", () => {
       // Two devices enrolling different MFA factors at the same time must
       // both land — the read-modify-write of mfa.methods[] used to drop one.
       await Promise.all([
-        svc.addMfaMethod("alice", { name: "totp", confirmed: false, value: "SECRET" }),
-        svc.addMfaMethod("alice", { name: "email", confirmed: false, value: "alice@test.com" }),
+        svc.addMfaMethod(aliceId, { name: "totp", confirmed: false, value: "SECRET" }),
+        svc.addMfaMethod(aliceId, { name: "email", confirmed: false, value: "alice@test.com" }),
       ]);
-      const user = await svc.getUser("alice");
+      const user = await svc.getUser(aliceId);
       expect(user.mfa.methods.map((m) => m.name).toSorted((a, b) => a.localeCompare(b))).toEqual([
         "email",
         "totp",
@@ -825,12 +828,12 @@ describe("UserService", () => {
       // User adds totp via one tab while confirming a pre-existing email
       // factor in another. Both writes must compose — confirming email
       // shouldn't wipe the newly-added totp from the methods array.
-      await svc.addMfaMethod("alice", { name: "email", confirmed: false, value: "alice@test.com" });
+      await svc.addMfaMethod(aliceId, { name: "email", confirmed: false, value: "alice@test.com" });
       await Promise.all([
-        svc.addMfaMethod("alice", { name: "totp", confirmed: false, value: "SECRET" }),
-        svc.confirmMfaMethod("alice", "email"),
+        svc.addMfaMethod(aliceId, { name: "totp", confirmed: false, value: "SECRET" }),
+        svc.confirmMfaMethod(aliceId, "email"),
       ]);
-      const user = await svc.getUser("alice");
+      const user = await svc.getUser(aliceId);
       const byName = Object.fromEntries(user.mfa.methods.map((m) => [m.name, m.confirmed]));
       expect(byName).toEqual({ email: true, totp: false });
     });
@@ -853,13 +856,13 @@ describe("UserService", () => {
 
   describe("setPassword", () => {
     it("should mark isInitial as false and update lastChanged", async () => {
-      await svc.createUser("alice");
-      const before = await svc.getUser("alice");
+      const alice = await svc.createUser("alice");
+      const before = await svc.getUser(alice.id);
       expect(before.password.isInitial).toBe(true);
 
       now += 1000;
-      await svc.setPassword("alice", "newpass123");
-      const after = await svc.getUser("alice");
+      await svc.setPassword(alice.id, "newpass123");
+      const after = await svc.getUser(alice.id);
       expect(after.password.isInitial).toBe(false);
       expect(after.password.lastChanged).toBe(now);
     });
@@ -878,8 +881,8 @@ describe("UserService", () => {
 
   describe("login with unconfirmed MFA only", () => {
     it("should return mfaRequired false when all MFA methods are unconfirmed", async () => {
-      await createActiveUser(svc, "alice", "pass123");
-      await svc.addMfaMethod("alice", { name: "totp", confirmed: false, value: "SECRET" });
+      const alice = await createActiveUser(svc, "alice", "pass123");
+      await svc.addMfaMethod(alice.id, { name: "totp", confirmed: false, value: "SECRET" });
       const result = await svc.login("alice", "pass123");
       expect(result.mfaRequired).toBe(false);
     });
@@ -899,6 +902,7 @@ describe("UserService", () => {
   describe("verifyMfa", () => {
     let mfaSvc: UserService;
     let secret: string;
+    let aliceId: string;
 
     beforeEach(async () => {
       mfaSvc = new UserService(store, {
@@ -906,19 +910,20 @@ describe("UserService", () => {
         lockout: { threshold: 3, duration: 60000 },
         clock: () => now,
       });
-      await createActiveUser(mfaSvc, "alice", "pass123");
+      const alice = await createActiveUser(mfaSvc, "alice", "pass123");
+      aliceId = alice.id;
       secret = generateTotpSecret();
-      await mfaSvc.addMfaMethod("alice", { name: "totp", confirmed: true, value: secret });
+      await mfaSvc.addMfaMethod(aliceId, { name: "totp", confirmed: true, value: secret });
     });
 
     it("should accept a valid TOTP code", async () => {
       const code = generateTotpCode(secret, { clock: () => now });
-      await mfaSvc.verifyMfa("alice", code, { clock: () => now });
+      await mfaSvc.verifyMfa(aliceId, code, { clock: () => now });
     });
 
     it("should throw MFA_INVALID on a wrong code", async () => {
       try {
-        await mfaSvc.verifyMfa("alice", "000000", { clock: () => now });
+        await mfaSvc.verifyMfa(aliceId, "000000", { clock: () => now });
         expect.unreachable();
       } catch (e) {
         expect((e as UserAuthError).type).toBe("MFA_INVALID");
@@ -926,9 +931,9 @@ describe("UserService", () => {
     });
 
     it("should throw MFA_NOT_CONFIGURED when user has no confirmed TOTP", async () => {
-      await mfaSvc.removeMfaMethod("alice", "totp");
+      await mfaSvc.removeMfaMethod(aliceId, "totp");
       try {
-        await mfaSvc.verifyMfa("alice", "123456", { clock: () => now });
+        await mfaSvc.verifyMfa(aliceId, "123456", { clock: () => now });
         expect.unreachable();
       } catch (e) {
         expect((e as UserAuthError).type).toBe("MFA_NOT_CONFIGURED");
@@ -937,22 +942,22 @@ describe("UserService", () => {
 
     it("should increment failedLoginAttempts on wrong code", async () => {
       try {
-        await mfaSvc.verifyMfa("alice", "000000", { clock: () => now });
+        await mfaSvc.verifyMfa(aliceId, "000000", { clock: () => now });
       } catch {}
       try {
-        await mfaSvc.verifyMfa("alice", "111111", { clock: () => now });
+        await mfaSvc.verifyMfa(aliceId, "111111", { clock: () => now });
       } catch {}
-      const user = await mfaSvc.getUser("alice");
+      const user = await mfaSvc.getUser(aliceId);
       expect(user.account.failedLoginAttempts).toBe(2);
     });
 
     it("should lock the account after threshold MFA failures", async () => {
       for (let i = 0; i < 3; i++) {
         try {
-          await mfaSvc.verifyMfa("alice", "000000", { clock: () => now });
+          await mfaSvc.verifyMfa(aliceId, "000000", { clock: () => now });
         } catch {}
       }
-      const user = await mfaSvc.getUser("alice");
+      const user = await mfaSvc.getUser(aliceId);
       expect(user.account.locked).toBe(true);
       expect(user.account.lockReason).toBe("Too many login attempts");
       expect(user.account.lockEnds).toBe(now + 60000);
@@ -960,13 +965,13 @@ describe("UserService", () => {
 
     it("should surface lockEnds in MFA_INVALID details when the failure trips the lock", async () => {
       try {
-        await mfaSvc.verifyMfa("alice", "000000", { clock: () => now });
+        await mfaSvc.verifyMfa(aliceId, "000000", { clock: () => now });
       } catch {}
       try {
-        await mfaSvc.verifyMfa("alice", "000000", { clock: () => now });
+        await mfaSvc.verifyMfa(aliceId, "000000", { clock: () => now });
       } catch {}
       try {
-        await mfaSvc.verifyMfa("alice", "000000", { clock: () => now });
+        await mfaSvc.verifyMfa(aliceId, "000000", { clock: () => now });
         expect.unreachable();
       } catch (e) {
         expect((e as UserAuthError).type).toBe("MFA_INVALID");
@@ -977,11 +982,11 @@ describe("UserService", () => {
     it("should throw LOCKED on subsequent attempts when account is already locked", async () => {
       for (let i = 0; i < 3; i++) {
         try {
-          await mfaSvc.verifyMfa("alice", "000000", { clock: () => now });
+          await mfaSvc.verifyMfa(aliceId, "000000", { clock: () => now });
         } catch {}
       }
       try {
-        await mfaSvc.verifyMfa("alice", "999999", { clock: () => now });
+        await mfaSvc.verifyMfa(aliceId, "999999", { clock: () => now });
         expect.unreachable();
       } catch (e) {
         expect((e as UserAuthError).type).toBe("LOCKED");
@@ -990,14 +995,14 @@ describe("UserService", () => {
 
     it("should reset failedLoginAttempts on successful verification", async () => {
       try {
-        await mfaSvc.verifyMfa("alice", "000000", { clock: () => now });
+        await mfaSvc.verifyMfa(aliceId, "000000", { clock: () => now });
       } catch {}
       try {
-        await mfaSvc.verifyMfa("alice", "111111", { clock: () => now });
+        await mfaSvc.verifyMfa(aliceId, "111111", { clock: () => now });
       } catch {}
       const code = generateTotpCode(secret, { clock: () => now });
-      await mfaSvc.verifyMfa("alice", code, { clock: () => now });
-      const user = await mfaSvc.getUser("alice");
+      await mfaSvc.verifyMfa(aliceId, code, { clock: () => now });
+      const user = await mfaSvc.getUser(aliceId);
       expect(user.account.failedLoginAttempts).toBe(0);
     });
 
@@ -1010,22 +1015,22 @@ describe("UserService", () => {
         await mfaSvc.login("alice", "wrong");
       } catch {}
       try {
-        await mfaSvc.verifyMfa("alice", "000000", { clock: () => now });
+        await mfaSvc.verifyMfa(aliceId, "000000", { clock: () => now });
       } catch {}
-      const user = await mfaSvc.getUser("alice");
+      const user = await mfaSvc.getUser(aliceId);
       expect(user.account.locked).toBe(true);
     });
 
     it("should auto-unlock after lock duration expires before verifying", async () => {
       for (let i = 0; i < 3; i++) {
         try {
-          await mfaSvc.verifyMfa("alice", "000000", { clock: () => now });
+          await mfaSvc.verifyMfa(aliceId, "000000", { clock: () => now });
         } catch {}
       }
       now += 61000;
       const code = generateTotpCode(secret, { clock: () => now });
-      await mfaSvc.verifyMfa("alice", code, { clock: () => now });
-      const user = await mfaSvc.getUser("alice");
+      await mfaSvc.verifyMfa(aliceId, code, { clock: () => now });
+      const user = await mfaSvc.getUser(aliceId);
       expect(user.account.locked).toBe(false);
     });
 
@@ -1044,14 +1049,14 @@ describe("UserService", () => {
       // live 30 s window. The replay surfaces as MFA_INVALID — same UX as a
       // wrong code, so we don't leak "replayed" vs "wrong" to the attacker.
       const code = generateTotpCode(secret, { clock: () => now });
-      await mfaSvc.verifyMfa("alice", code, { clock: () => now });
+      await mfaSvc.verifyMfa(aliceId, code, { clock: () => now });
       try {
-        await mfaSvc.verifyMfa("alice", code, { clock: () => now });
+        await mfaSvc.verifyMfa(aliceId, code, { clock: () => now });
         expect.unreachable();
       } catch (e) {
         expect((e as UserAuthError).type).toBe("MFA_INVALID");
       }
-      const user = await mfaSvc.getUser("alice");
+      const user = await mfaSvc.getUser(aliceId);
       expect(user.account.failedLoginAttempts).toBe(1);
     });
   });
@@ -1060,6 +1065,7 @@ describe("UserService", () => {
     let dtNow: number;
     let dtStore: UserStoreMemory;
     let dtSvc: UserService;
+    let aliceId: string;
 
     beforeEach(async () => {
       dtNow = 1000000;
@@ -1069,65 +1075,66 @@ describe("UserService", () => {
         clock: () => dtNow,
         deviceTrust: { secret: "unit-test-secret" },
       });
-      await createActiveUser(dtSvc, "alice", "Password1!");
+      const alice = await createActiveUser(dtSvc, "alice", "Password1!");
+      aliceId = alice.id;
     });
 
     it("issueTrustedDevice + addTrustedDevice + verifyTrustedDevice round-trips (no IP)", async () => {
-      const rec = dtSvc.issueTrustedDevice("alice", { ttlMs: 60_000 });
-      await dtSvc.addTrustedDevice("alice", rec);
-      expect(await dtSvc.verifyTrustedDevice("alice", rec.token)).toBe(true);
+      const rec = dtSvc.issueTrustedDevice(aliceId, { ttlMs: 60_000 });
+      await dtSvc.addTrustedDevice(aliceId, rec);
+      expect(await dtSvc.verifyTrustedDevice(aliceId, rec.token)).toBe(true);
     });
 
     it("issueTrustedDevice + verifyTrustedDevice round-trips with IP binding", async () => {
-      const rec = dtSvc.issueTrustedDevice("alice", { ttlMs: 60_000, ip: "10.0.0.1" });
-      await dtSvc.addTrustedDevice("alice", rec);
-      expect(await dtSvc.verifyTrustedDevice("alice", rec.token, "10.0.0.1")).toBe(true);
+      const rec = dtSvc.issueTrustedDevice(aliceId, { ttlMs: 60_000, ip: "10.0.0.1" });
+      await dtSvc.addTrustedDevice(aliceId, rec);
+      expect(await dtSvc.verifyTrustedDevice(aliceId, rec.token, "10.0.0.1")).toBe(true);
       // Wrong IP rejected — HMAC payload differs AND record IP differs.
-      expect(await dtSvc.verifyTrustedDevice("alice", rec.token, "10.0.0.2")).toBe(false);
+      expect(await dtSvc.verifyTrustedDevice(aliceId, rec.token, "10.0.0.2")).toBe(false);
     });
 
     it("verifyTrustedDevice returns false for a forged signature", async () => {
-      const rec = dtSvc.issueTrustedDevice("alice", { ttlMs: 60_000 });
-      await dtSvc.addTrustedDevice("alice", rec);
+      const rec = dtSvc.issueTrustedDevice(aliceId, { ttlMs: 60_000 });
+      await dtSvc.addTrustedDevice(aliceId, rec);
       const [raw] = rec.token.split(".");
       const fake = `${raw}.${"0".repeat(64)}`;
-      expect(await dtSvc.verifyTrustedDevice("alice", fake)).toBe(false);
+      expect(await dtSvc.verifyTrustedDevice(aliceId, fake)).toBe(false);
     });
 
     it("verifyTrustedDevice returns false when token signature is valid but no record persisted", async () => {
-      const rec = dtSvc.issueTrustedDevice("alice", { ttlMs: 60_000 });
+      const rec = dtSvc.issueTrustedDevice(aliceId, { ttlMs: 60_000 });
       // NB: NOT calling addTrustedDevice — signature would verify but record is absent.
-      expect(await dtSvc.verifyTrustedDevice("alice", rec.token)).toBe(false);
+      expect(await dtSvc.verifyTrustedDevice(aliceId, rec.token)).toBe(false);
     });
 
     it("verifyTrustedDevice returns false after expiry (clock advanced past expiresAt)", async () => {
-      const rec = dtSvc.issueTrustedDevice("alice", { ttlMs: 60_000 });
-      await dtSvc.addTrustedDevice("alice", rec);
+      const rec = dtSvc.issueTrustedDevice(aliceId, { ttlMs: 60_000 });
+      await dtSvc.addTrustedDevice(aliceId, rec);
       dtNow += 60_001;
-      expect(await dtSvc.verifyTrustedDevice("alice", rec.token)).toBe(false);
+      expect(await dtSvc.verifyTrustedDevice(aliceId, rec.token)).toBe(false);
     });
 
     it("revokeTrustedDevice removes the matching record (subsequent verify false)", async () => {
-      const rec = dtSvc.issueTrustedDevice("alice", { ttlMs: 60_000 });
-      await dtSvc.addTrustedDevice("alice", rec);
-      expect(await dtSvc.verifyTrustedDevice("alice", rec.token)).toBe(true);
-      await dtSvc.revokeTrustedDevice("alice", rec.token);
-      expect(await dtSvc.verifyTrustedDevice("alice", rec.token)).toBe(false);
+      const rec = dtSvc.issueTrustedDevice(aliceId, { ttlMs: 60_000 });
+      await dtSvc.addTrustedDevice(aliceId, rec);
+      expect(await dtSvc.verifyTrustedDevice(aliceId, rec.token)).toBe(true);
+      await dtSvc.revokeTrustedDevice(aliceId, rec.token);
+      expect(await dtSvc.verifyTrustedDevice(aliceId, rec.token)).toBe(false);
     });
 
     it("revokeTrustedDevice is a no-op for an unknown token (does not throw, leaves siblings)", async () => {
-      const rec = dtSvc.issueTrustedDevice("alice", { ttlMs: 60_000 });
-      await dtSvc.addTrustedDevice("alice", rec);
-      await dtSvc.revokeTrustedDevice("alice", "no-such-token.sig");
-      expect(await dtSvc.verifyTrustedDevice("alice", rec.token)).toBe(true);
+      const rec = dtSvc.issueTrustedDevice(aliceId, { ttlMs: 60_000 });
+      await dtSvc.addTrustedDevice(aliceId, rec);
+      await dtSvc.revokeTrustedDevice(aliceId, "no-such-token.sig");
+      expect(await dtSvc.verifyTrustedDevice(aliceId, rec.token)).toBe(true);
     });
 
     it("listTrustedDevices returns all persisted records in insertion order", async () => {
-      const r1 = dtSvc.issueTrustedDevice("alice", { ttlMs: 60_000, name: "macbook" });
-      await dtSvc.addTrustedDevice("alice", r1);
-      const r2 = dtSvc.issueTrustedDevice("alice", { ttlMs: 60_000, name: "phone" });
-      await dtSvc.addTrustedDevice("alice", r2);
-      const list = await dtSvc.listTrustedDevices("alice");
+      const r1 = dtSvc.issueTrustedDevice(aliceId, { ttlMs: 60_000, name: "macbook" });
+      await dtSvc.addTrustedDevice(aliceId, r1);
+      const r2 = dtSvc.issueTrustedDevice(aliceId, { ttlMs: 60_000, name: "phone" });
+      await dtSvc.addTrustedDevice(aliceId, r2);
+      const list = await dtSvc.listTrustedDevices(aliceId);
       expect(list.length).toBe(2);
       expect(list[0].name).toBe("macbook");
       expect(list[1].name).toBe("phone");
@@ -1137,10 +1144,10 @@ describe("UserService", () => {
       // Two devices opting in to "remember me" at the same instant: both
       // records must land. Pre-OCC the read-modify-write of trustedDevices[]
       // could drop one because both reads saw the empty list.
-      const r1 = dtSvc.issueTrustedDevice("alice", { ttlMs: 60_000, name: "macbook" });
-      const r2 = dtSvc.issueTrustedDevice("alice", { ttlMs: 60_000, name: "phone" });
-      await Promise.all([dtSvc.addTrustedDevice("alice", r1), dtSvc.addTrustedDevice("alice", r2)]);
-      const list = await dtSvc.listTrustedDevices("alice");
+      const r1 = dtSvc.issueTrustedDevice(aliceId, { ttlMs: 60_000, name: "macbook" });
+      const r2 = dtSvc.issueTrustedDevice(aliceId, { ttlMs: 60_000, name: "phone" });
+      await Promise.all([dtSvc.addTrustedDevice(aliceId, r1), dtSvc.addTrustedDevice(aliceId, r2)]);
+      const list = await dtSvc.listTrustedDevices(aliceId);
       const names = list.map((r) => r.name);
       expect(names).toHaveLength(2);
       expect(names).toContain("macbook");
@@ -1166,14 +1173,14 @@ describe("UserService", () => {
     });
 
     it("HMAC depends on the secret — a record signed by one secret cannot be verified by another", async () => {
-      const recA = dtSvc.issueTrustedDevice("alice", { ttlMs: 60_000 });
+      const recA = dtSvc.issueTrustedDevice(aliceId, { ttlMs: 60_000 });
       const otherSvc = new UserService(dtStore, {
         password: { ...FAST_SCRYPT },
         clock: () => dtNow,
         deviceTrust: { secret: "different-secret" },
       });
-      await dtSvc.addTrustedDevice("alice", recA);
-      expect(await otherSvc.verifyTrustedDevice("alice", recA.token)).toBe(false);
+      await dtSvc.addTrustedDevice(aliceId, recA);
+      expect(await otherSvc.verifyTrustedDevice(aliceId, recA.token)).toBe(false);
     });
   });
 });

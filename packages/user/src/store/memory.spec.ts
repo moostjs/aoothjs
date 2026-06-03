@@ -5,7 +5,7 @@ import { UserStoreMemory } from "./memory";
 
 function makeUser(username: string, overrides?: Partial<UserCredentials>): UserCredentials {
   return {
-    id: "",
+    id: `id-${username}`,
     username,
     password: { hash: "hash", history: [], lastChanged: 0, isInitial: false },
     account: {
@@ -35,19 +35,33 @@ describe("UserStoreMemory", () => {
     });
   });
 
-  describe("findByUsername", () => {
+  describe("findByHandle", () => {
     it("should return null for unknown user", async () => {
       const store = new UserStoreMemory();
-      expect(await store.findByUsername("unknown")).toBeNull();
+      expect(await store.findByHandle("unknown")).toBeNull();
     });
 
     it("should return cloned data", async () => {
       const store = new UserStoreMemory();
       await store.create(makeUser("alice"));
-      const a = await store.findByUsername("alice");
-      const b = await store.findByUsername("alice");
+      const a = await store.findByHandle("alice");
+      const b = await store.findByHandle("alice");
       expect(a).toEqual(b);
       expect(a).not.toBe(b);
+    });
+  });
+
+  describe("findById", () => {
+    it("should return null for unknown id", async () => {
+      const store = new UserStoreMemory();
+      expect(await store.findById("unknown")).toBeNull();
+    });
+
+    it("should read by the stable surrogate id", async () => {
+      const store = new UserStoreMemory();
+      await store.create(makeUser("alice"));
+      const user = await store.findById("id-alice");
+      expect(user!.username).toBe("alice");
     });
   });
 
@@ -55,7 +69,7 @@ describe("UserStoreMemory", () => {
     it("should store a user", async () => {
       const store = new UserStoreMemory();
       await store.create(makeUser("alice"));
-      const user = await store.findByUsername("alice");
+      const user = await store.findByHandle("alice");
       expect(user!.username).toBe("alice");
     });
 
@@ -82,8 +96,8 @@ describe("UserStoreMemory", () => {
     it("should deep merge set fields", async () => {
       const store = new UserStoreMemory();
       await store.create(makeUser("alice"));
-      await store.update("alice", { set: { account: { active: true } } as any });
-      const user = await store.findByUsername("alice");
+      await store.update("id-alice", { set: { account: { active: true } } as any });
+      const user = await store.findByHandle("alice");
       expect(user!.account.active).toBe(true);
       expect(user!.account.locked).toBe(false); // unchanged
     });
@@ -91,20 +105,20 @@ describe("UserStoreMemory", () => {
     it("should atomically increment with inc", async () => {
       const store = new UserStoreMemory();
       await store.create(makeUser("alice"));
-      await store.update("alice", { inc: { "account.failedLoginAttempts": 1 } });
-      await store.update("alice", { inc: { "account.failedLoginAttempts": 1 } });
-      const user = await store.findByUsername("alice");
+      await store.update("id-alice", { inc: { "account.failedLoginAttempts": 1 } });
+      await store.update("id-alice", { inc: { "account.failedLoginAttempts": 1 } });
+      const user = await store.findByHandle("alice");
       expect(user!.account.failedLoginAttempts).toBe(2);
     });
 
     it("should handle combined set and inc", async () => {
       const store = new UserStoreMemory();
       await store.create(makeUser("alice"));
-      await store.update("alice", {
+      await store.update("id-alice", {
         set: { account: { locked: true } } as any,
         inc: { "account.failedLoginAttempts": 3 },
       });
-      const user = await store.findByUsername("alice");
+      const user = await store.findByHandle("alice");
       expect(user!.account.locked).toBe(true);
       expect(user!.account.failedLoginAttempts).toBe(3);
     });
@@ -112,7 +126,9 @@ describe("UserStoreMemory", () => {
     it("should return true for successful update", async () => {
       const store = new UserStoreMemory();
       await store.create(makeUser("alice"));
-      expect(await store.update("alice", { set: { account: { active: true } } as any })).toBe(true);
+      expect(await store.update("id-alice", { set: { account: { active: true } } as any })).toBe(
+        true,
+      );
     });
   });
 
@@ -128,13 +144,13 @@ describe("UserStoreMemory", () => {
       const store = new UserStoreMemory();
       await store.create(makeUser("alice"));
       let calls = 0;
-      await store.withCas("alice", (user) => {
+      await store.withCas("id-alice", (user) => {
         calls++;
         expect(user.username).toBe("alice");
         return { set: { account: { active: true } } as any };
       });
       expect(calls).toBe(1);
-      const after = await store.findByUsername("alice");
+      const after = await store.findByHandle("alice");
       expect(after!.account.active).toBe(true);
       expect(after!.version).toBe(1);
     });
@@ -142,8 +158,8 @@ describe("UserStoreMemory", () => {
     it("mutator returning null exits cleanly without writing or bumping version", async () => {
       const store = new UserStoreMemory();
       await store.create(makeUser("alice"));
-      await store.withCas("alice", () => null);
-      const after = await store.findByUsername("alice");
+      await store.withCas("id-alice", () => null);
+      const after = await store.findByHandle("alice");
       expect(after!.version).toBe(0);
     });
 
@@ -167,10 +183,10 @@ describe("UserStoreMemory", () => {
       await store.create(makeUser("alice"));
       let calls = 0;
       try {
-        await store.withCas("alice", () => {
+        await store.withCas("id-alice", () => {
           calls++;
           // Sneak a competing write in between this attempt's read and its CAS.
-          void store.update("alice", { set: { account: { lastLogin: calls } } as any });
+          void store.update("id-alice", { set: { account: { lastLogin: calls } } as any });
           // We don't care about the patch contents — it'll never apply.
           return { set: { account: { failedLoginAttempts: calls } } as any };
         });
@@ -182,7 +198,7 @@ describe("UserStoreMemory", () => {
       expect(calls).toBe(2);
       // The competing writes DID land (they don't use expectedVersion), so
       // version is bumped twice — once per failed attempt's sneaked update.
-      const after = await store.findByUsername("alice");
+      const after = await store.findByHandle("alice");
       expect(after!.version).toBe(2);
       // The withCas patches (failedLoginAttempts) never landed.
       expect(after!.account.failedLoginAttempts).toBe(0);
@@ -196,19 +212,19 @@ describe("UserStoreMemory", () => {
       await store.create(makeUser("alice"));
       let calls = 0;
       await store.withCas(
-        "alice",
+        "id-alice",
         () => {
           calls++;
           if (calls <= 4) {
             // Compete for the first 4 attempts; let the 5th win.
-            void store.update("alice", { set: { account: { lastLogin: calls } } as any });
+            void store.update("id-alice", { set: { account: { lastLogin: calls } } as any });
           }
           return { set: { account: { failedLoginAttempts: calls } } as any };
         },
         { maxAttempts: 5 },
       );
       expect(calls).toBe(5);
-      const after = await store.findByUsername("alice");
+      const after = await store.findByHandle("alice");
       // 4 competing writes bumped the version, then attempt 5 succeeded
       // (its own +1). Total bumps = 5.
       expect(after!.version).toBe(5);

@@ -2,6 +2,14 @@ export interface UserCredentials {
   id: string;
   username: string;
   /**
+   * Unique login/contact handle. Indexed `@db.index.unique 'email_idx'` on the
+   * `AoothUserCredentials` model so it is independently unique from `username`
+   * and resolvable via `UserStore.findByHandle` / `findByIdentifier`. Optional
+   * because not every deployment populates it (and the invite flow sets
+   * `username := email`).
+   */
+  email?: string;
+  /**
    * Server-managed optimistic-concurrency counter. Bumped by `UserStore.update`
    * on every successful write; checked against `UserStoreUpdate.expectedVersion`
    * for CAS. Callers MUST NOT write it directly — atscript-db rejects direct

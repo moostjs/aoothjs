@@ -7,6 +7,9 @@ export interface AoothUserCredentials {
     @db.index.unique 'username_idx'
     username: string
 
+    @db.index.unique 'email_idx'
+    email?: string
+
     @db.column.version
     version: number.int
 

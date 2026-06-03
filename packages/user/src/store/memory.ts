@@ -1,41 +1,75 @@
+import { randomUUID } from "node:crypto";
+
 import { UserAuthError } from "../errors";
 import type { UserCredentials, UserStoreUpdate } from "../types";
 import { UserStore, type WithCasOptions } from "./user-store";
 import { deepMerge, incrementAtPath } from "../utils";
 
 export class UserStoreMemory<T extends object = object> extends UserStore<T> {
+  /** Keyed by the stable surrogate `id` (the token subject). */
   private store = new Map<string, UserCredentials & T>();
 
+  /**
+   * Optional seed. The map is keyed by each record's `id`; a record missing an
+   * `id` gets one minted (mirrors the DB `@db.default.uuid`). The seed object's
+   * keys are ignored — identity is the record's `id`.
+   */
   constructor(seed?: Record<string, UserCredentials & T>) {
     super();
     if (seed) {
-      for (const [key, value] of Object.entries(seed)) {
-        this.store.set(key, structuredClone(value));
+      for (const value of Object.values(seed)) {
+        const cloned = structuredClone(value);
+        if (!cloned.id) cloned.id = randomUUID();
+        this.store.set(cloned.id, cloned);
       }
     }
   }
 
-  async exists(username: string): Promise<boolean> {
-    return this.store.has(username);
+  async exists(handle: string): Promise<boolean> {
+    for (const u of this.store.values()) {
+      if (u.username === handle) return true;
+    }
+    return false;
   }
 
-  async findByUsername(username: string): Promise<(UserCredentials & T) | null> {
-    const user = this.store.get(username);
+  async findById(id: string): Promise<(UserCredentials & T) | null> {
+    const user = this.store.get(id);
     return user ? structuredClone(user) : null;
   }
 
-  async create(data: UserCredentials & T): Promise<void> {
-    if (this.store.has(data.username)) {
-      throw new UserAuthError("ALREADY_EXISTS", `User "${data.username}" already exists`);
+  async findByHandle(handle: string): Promise<(UserCredentials & T) | null> {
+    let byEmail: (UserCredentials & T) | null = null;
+    for (const u of this.store.values()) {
+      if (u.username === handle) return structuredClone(u);
+      if (byEmail === null && u.email !== undefined && u.email === handle) byEmail = u;
     }
-    // OCC counter is server-managed: seed unconditionally, ignore caller-supplied version.
-    const cloned = structuredClone(data);
-    cloned.version = 0;
-    this.store.set(data.username, cloned);
+    return byEmail ? structuredClone(byEmail) : null;
   }
 
-  async update(username: string, update: UserStoreUpdate): Promise<boolean> {
-    const user = this.store.get(username);
+  async findByIdentifier(value: string): Promise<(UserCredentials & T) | null> {
+    const byId = this.store.get(value);
+    if (byId) return structuredClone(byId);
+    return this.findByHandle(value);
+  }
+
+  async create(data: UserCredentials & T): Promise<void> {
+    const cloned = structuredClone(data);
+    if (!cloned.id) cloned.id = randomUUID();
+    for (const u of this.store.values()) {
+      if (u.username === cloned.username) {
+        throw new UserAuthError("ALREADY_EXISTS", `User "${cloned.username}" already exists`);
+      }
+      if (cloned.email !== undefined && u.email === cloned.email) {
+        throw new UserAuthError("ALREADY_EXISTS", `Email "${cloned.email}" already exists`);
+      }
+    }
+    // OCC counter is server-managed: seed unconditionally, ignore caller-supplied version.
+    cloned.version = 0;
+    this.store.set(cloned.id, cloned);
+  }
+
+  async update(id: string, update: UserStoreUpdate): Promise<boolean> {
+    const user = this.store.get(id);
     if (!user) return false;
     if (update.expectedVersion !== undefined && (user.version ?? 0) !== update.expectedVersion) {
       return false;
@@ -52,22 +86,22 @@ export class UserStoreMemory<T extends object = object> extends UserStore<T> {
     return true;
   }
 
-  async delete(username: string): Promise<boolean> {
-    return this.store.delete(username);
+  async delete(id: string): Promise<boolean> {
+    return this.store.delete(id);
   }
 
   async withCas(
-    username: string,
+    id: string,
     mutator: (current: UserCredentials & T) => UserStoreUpdate | null,
     opts?: WithCasOptions,
   ): Promise<void> {
     const maxAttempts = opts?.maxAttempts ?? 2;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const current = await this.findByUsername(username);
+      const current = await this.findById(id);
       if (!current) throw new UserAuthError("NOT_FOUND");
       const patch = mutator(current);
       if (patch === null) return;
-      const applied = await this.update(username, {
+      const applied = await this.update(id, {
         ...patch,
         expectedVersion: current.version ?? 0,
       });

@@ -10,31 +10,61 @@ export interface WithCasOptions {
   maxAttempts?: number;
 }
 
+/**
+ * Storage seam for user credentials, keyed by the stable surrogate **`id`**
+ * (the token subject). Reads come in three flavours:
+ *
+ * - `findById` — strict, by the surrogate id; the canonical identity read used
+ *   by authenticated flows that resolve the session subject (`getUserId()`).
+ * - `findByHandle` — deterministic LOGIN resolver (`username` then `email`).
+ * - `findByIdentifier` — permissive internal/admin/recovery lookup (`id`, then
+ *   `username`, then `email`).
+ *
+ * Writes (`update`/`delete`/`withCas`) all key on the surrogate `id`.
+ */
 export abstract class UserStore<T extends object = object> {
-  abstract exists(username: string): Promise<boolean>;
-  abstract findByUsername(username: string): Promise<(UserCredentials & T) | null>;
-  abstract create(data: UserCredentials & T): Promise<void>;
-  abstract update(username: string, update: UserStoreUpdate): Promise<boolean>;
+  /** True when a user with this login handle (`username`) exists. */
+  abstract exists(handle: string): Promise<boolean>;
   /**
-   * Hard-delete the row. Returns `true` when a row was removed, `false` when
-   * the username was not found. Used by `UserService.deleteUser` (and in turn
-   * by the invite workflow's `auth/invite/cancel` step).
+   * Strict read by the stable surrogate `id` — the token subject. Authenticated
+   * flows resolve the session subject (`useAuth().getUserId()`) through this.
    */
-  abstract delete(username: string): Promise<boolean>;
+  abstract findById(id: string): Promise<(UserCredentials & T) | null>;
   /**
-   * Run a read-modify-write cycle under optimistic concurrency. Each attempt
-   * fetches the current row, calls `mutator` with it, and applies the returned
-   * patch under CAS (`expectedVersion = current.version`). On CAS miss the
-   * cycle repeats up to `opts.maxAttempts`. The mutator MAY return `null` to
-   * exit early without writing — used for "race-loser detects nothing left to
-   * do" paths (e.g. the backup code was already consumed by the winner).
+   * Deterministic LOGIN resolver: matches `username` exactly, then `email`
+   * exactly (in that order). Intentionally NOT a permissive `$or` — `id`,
+   * `username`, and `email` are all strings, so a permissive match could
+   * silently resolve a value that is one user's username and another's email
+   * to an arbitrary account.
+   */
+  abstract findByHandle(handle: string): Promise<(UserCredentials & T) | null>;
+  /**
+   * Permissive lookup for internal / admin / recovery callers: `id`, then
+   * `username`, then `email` (ordered, first match). NOT for the login path —
+   * use `findByHandle` there.
+   */
+  abstract findByIdentifier(value: string): Promise<(UserCredentials & T) | null>;
+  abstract create(data: UserCredentials & T): Promise<void>;
+  /** Apply a patch to the row identified by the stable `id`. */
+  abstract update(id: string, update: UserStoreUpdate): Promise<boolean>;
+  /**
+   * Hard-delete the row by `id`. Returns `true` when a row was removed, `false`
+   * when the id was not found.
+   */
+  abstract delete(id: string): Promise<boolean>;
+  /**
+   * Run a read-modify-write cycle under optimistic concurrency, keyed by `id`.
+   * Each attempt re-reads (via `findById`), calls `mutator`, and applies the
+   * returned patch under CAS (`expectedVersion = current.version`). On CAS miss
+   * the cycle repeats up to `opts.maxAttempts`. The mutator MAY return `null`
+   * to exit early without writing (race-loser "nothing left to do").
    *
-   * Throws `UserAuthError("NOT_FOUND")` when no row matches `username`, or
-   * `UserAuthError("CAS_EXHAUSTED")` when retries are saturated. Errors
-   * thrown from inside `mutator` propagate immediately without retry.
+   * Throws `UserAuthError("NOT_FOUND")` when no row matches `id`, or
+   * `UserAuthError("CAS_EXHAUSTED")` when retries are saturated. Errors thrown
+   * from inside `mutator` propagate immediately without retry.
    */
   abstract withCas(
-    username: string,
+    id: string,
     mutator: (current: UserCredentials & T) => UserStoreUpdate | null,
     opts?: WithCasOptions,
   ): Promise<void>;

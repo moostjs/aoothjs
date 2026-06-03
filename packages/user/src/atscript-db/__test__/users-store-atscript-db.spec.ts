@@ -79,7 +79,7 @@ describe("UsersStoreAtscriptDb", () => {
   describe("create", () => {
     it("stores a record", async () => {
       await store.create(makeUserData());
-      const data = await store.findByUsername("alice");
+      const data = await store.findByHandle("alice");
       expect(data).not.toBeNull();
       expect(data!.username).toBe("alice");
       expect(data!.password.hash).toContain("$scrypt$");
@@ -98,10 +98,10 @@ describe("UsersStoreAtscriptDb", () => {
     });
   });
 
-  describe("findByUsername", () => {
+  describe("findByHandle", () => {
     it("returns full record", async () => {
       await store.create(makeUserData());
-      const data = await store.findByUsername("alice");
+      const data = await store.findByHandle("alice");
       expect(data).not.toBeNull();
       expect(data!.id).toBe("test-id-1");
       expect(data!.username).toBe("alice");
@@ -114,7 +114,21 @@ describe("UsersStoreAtscriptDb", () => {
     });
 
     it("returns null for unknown user", async () => {
-      expect(await store.findByUsername("nobody")).toBeNull();
+      expect(await store.findByHandle("nobody")).toBeNull();
+    });
+  });
+
+  describe("findById", () => {
+    it("returns full record by the surrogate id", async () => {
+      await store.create(makeUserData());
+      const data = await store.findById("test-id-1");
+      expect(data).not.toBeNull();
+      expect(data!.id).toBe("test-id-1");
+      expect(data!.username).toBe("alice");
+    });
+
+    it("returns null for unknown id", async () => {
+      expect(await store.findById("nope")).toBeNull();
     });
   });
 
@@ -124,62 +138,62 @@ describe("UsersStoreAtscriptDb", () => {
     });
 
     it("applies set operation", async () => {
-      await store.update("alice", {
+      await store.update("test-id-1", {
         set: { account: { active: true } } as any,
       });
-      const data = await store.findByUsername("alice");
+      const data = await store.findByHandle("alice");
       expect(data!.account.active).toBe(true);
     });
 
     it("applies multiple set operations", async () => {
-      await store.update("alice", {
+      await store.update("test-id-1", {
         set: {
           account: { locked: true, lockReason: "too many attempts", lockEnds: 9999 },
         } as any,
       });
-      const data = await store.findByUsername("alice");
+      const data = await store.findByHandle("alice");
       expect(data!.account.locked).toBe(true);
       expect(data!.account.lockReason).toBe("too many attempts");
       expect(data!.account.lockEnds).toBe(9999);
     });
 
     it("applies inc operation", async () => {
-      await store.update("alice", {
+      await store.update("test-id-1", {
         inc: { "account.failedLoginAttempts": 1 },
       });
-      const data1 = await store.findByUsername("alice");
+      const data1 = await store.findByHandle("alice");
       expect(data1!.account.failedLoginAttempts).toBe(1);
 
-      await store.update("alice", {
+      await store.update("test-id-1", {
         inc: { "account.failedLoginAttempts": 1 },
       });
-      const data2 = await store.findByUsername("alice");
+      const data2 = await store.findByHandle("alice");
       expect(data2!.account.failedLoginAttempts).toBe(2);
     });
 
     it("applies mixed set and inc operations", async () => {
-      await store.update("alice", {
+      await store.update("test-id-1", {
         set: { account: { locked: true } } as any,
         inc: { "account.failedLoginAttempts": 3 },
       });
-      const data = await store.findByUsername("alice");
+      const data = await store.findByHandle("alice");
       expect(data!.account.locked).toBe(true);
       expect(data!.account.failedLoginAttempts).toBe(3);
     });
 
     it("applies set on password history (JSON field)", async () => {
       const newHistory = ["$scrypt$N=1024,r=1,p=1,l=32$oldsalt$oldhash"];
-      await store.update("alice", {
+      await store.update("test-id-1", {
         set: { password: { history: newHistory } } as any,
       });
-      const data = await store.findByUsername("alice");
+      const data = await store.findByHandle("alice");
       expect(data!.password.history).toEqual(newHistory);
     });
 
     it("no-ops for empty update", async () => {
-      const result = await store.update("alice", {});
+      const result = await store.update("test-id-1", {});
       expect(result).toBe(true);
-      const data = await store.findByUsername("alice");
+      const data = await store.findByHandle("alice");
       expect(data!.username).toBe("alice");
     });
 
@@ -197,23 +211,25 @@ describe("UsersStoreAtscriptDb", () => {
         password: { scryptN: 1024, scryptR: 1, scryptP: 1, keyLength: 32 },
       });
 
-      // Create user
+      // Create user — now returns a record with a minted surrogate `id`.
       const user = await svc.createUser("bob", "Secret1!");
       expect(user.username).toBe("bob");
+      expect(typeof user.id).toBe("string");
+      expect(user.id.length).toBeGreaterThan(0);
       expect(user.password.hash).toContain("$scrypt$");
       expect(user.password.isInitial).toBe(false);
 
-      // Read back
-      const readUser = await svc.getUser("bob");
+      // Read back by id
+      const readUser = await svc.getUser(user.id);
       expect(readUser.username).toBe("bob");
       expect(readUser.password.hash).toBe(user.password.hash);
 
-      // Activate account
-      await svc.activateAccount("bob");
-      const activated = await svc.getUser("bob");
+      // Activate account (keyed by id)
+      await svc.activateAccount(user.id);
+      const activated = await svc.getUser(user.id);
       expect(activated.account.active).toBe(true);
 
-      // Login
+      // Login (keyed by the login handle)
       const result = await svc.login("bob", "Secret1!");
       expect(result.user.username).toBe("bob");
       expect(result.user.account.lastLogin).toBeGreaterThan(0);
@@ -231,10 +247,10 @@ describe("UsersStoreAtscriptDb", () => {
       const svc = new UserService(store, {
         password: { scryptN: 1024, scryptR: 1, scryptP: 1, keyLength: 32 },
       });
-      await svc.createUser("carol", "Secret1!");
+      const carol = await svc.createUser("carol", "Secret1!");
 
-      expect(await svc.verifyPassword("carol", "Secret1!")).toBe(true);
-      expect(await svc.verifyPassword("carol", "wrong")).toBe(false);
+      expect(await svc.verifyPassword(carol.id, "Secret1!")).toBe(true);
+      expect(await svc.verifyPassword(carol.id, "wrong")).toBe(false);
     });
 
     it("setPassword preserves password.hash through the @db.patch.strategy 'merge' subdoc and re-login succeeds", async () => {
@@ -256,15 +272,15 @@ describe("UsersStoreAtscriptDb", () => {
       const svc = new UserService(store, {
         password: { scryptN: 1024, scryptR: 1, scryptP: 1, keyLength: 32 },
       });
-      await svc.createUser("bob", "OldSecret1!");
-      await svc.activateAccount("bob");
-      expect((await store.findByUsername("bob"))!.password.hash).toMatch(/\$scrypt\$/);
+      const bob = await svc.createUser("bob", "OldSecret1!");
+      await svc.activateAccount(bob.id);
+      expect((await store.findByHandle("bob"))!.password.hash).toMatch(/\$scrypt\$/);
 
-      await svc.setPassword("bob", "NewSecret1!");
+      await svc.setPassword(bob.id, "NewSecret1!");
 
       // 1. Raw row preserves `password.hash` — the leaf-survival assertion.
       //    A merge-strategy adapter that drops this leaf would null/undefined it.
-      const after = await store.findByUsername("bob");
+      const after = await store.findByHandle("bob");
       expect(after!.password.hash).toMatch(/\$scrypt\$/);
       expect(after!.password.isInitial).toBe(false);
       // 2. The OLD hash got rotated into history (historyLength defaults to 0
@@ -277,12 +293,13 @@ describe("UsersStoreAtscriptDb", () => {
       // 3. verify against the new password — this is the load-bearing assertion.
       //    The BUG.md error fires HERE under Mongo: hasher.verify reads the
       //    stored hash (undefined) and `encoded.startsWith(PREFIX)` throws.
-      expect(await svc.verifyPassword("bob", "NewSecret1!")).toBe(true);
-      expect(await svc.verifyPassword("bob", "OldSecret1!")).toBe(false);
+      expect(await svc.verifyPassword(bob.id, "NewSecret1!")).toBe(true);
+      expect(await svc.verifyPassword(bob.id, "OldSecret1!")).toBe(false);
 
       // 4. Full login round-trip — same call surface that the workflow's
       //    `credentials` step uses on subsequent attempts. Throws under the
-      //    BUG.md repro; succeeds when hash survives.
+      //    BUG.md repro; succeeds when hash survives. Login stays keyed by the
+      //    login handle, not the surrogate id.
       const result = await svc.login("bob", "NewSecret1!");
       expect(result.user.username).toBe("bob");
     });
@@ -295,38 +312,38 @@ describe("UsersStoreAtscriptDb", () => {
       // version predicate fires in SQL. Without this, withCas would silently
       // degrade to last-write-wins on this backend.
       await store.create(makeUserData());
-      const initial = await store.findByUsername("alice");
+      const initial = await store.findByHandle("alice");
       expect(initial!.version).toBe(0);
 
       // Winner: CAS with expectedVersion=0 applies, version auto-bumps to 1.
       expect(
-        await store.update("alice", {
+        await store.update("test-id-1", {
           set: { account: { active: true } } as any,
           expectedVersion: 0,
         }),
       ).toBe(true);
-      const afterWinner = await store.findByUsername("alice");
+      const afterWinner = await store.findByHandle("alice");
       expect(afterWinner!.version).toBe(1);
       expect(afterWinner!.account.active).toBe(true);
 
       // Stale writer: expectedVersion=0 ≠ stored 1 → rejected, no mutation.
       expect(
-        await store.update("alice", {
+        await store.update("test-id-1", {
           set: { account: { lastLogin: 999 } } as any,
           expectedVersion: 0,
         }),
       ).toBe(false);
-      const afterStale = await store.findByUsername("alice");
+      const afterStale = await store.findByHandle("alice");
       expect(afterStale!.account.lastLogin).toBe(0);
       expect(afterStale!.version).toBe(1);
 
       // Same patch without expectedVersion goes through (no CAS predicate).
       expect(
-        await store.update("alice", {
+        await store.update("test-id-1", {
           set: { account: { lastLogin: 999 } } as any,
         }),
       ).toBe(true);
-      const afterUnchecked = await store.findByUsername("alice");
+      const afterUnchecked = await store.findByHandle("alice");
       expect(afterUnchecked!.account.lastLogin).toBe(999);
       expect(afterUnchecked!.version).toBe(2);
     });
@@ -334,21 +351,21 @@ describe("UsersStoreAtscriptDb", () => {
     it("withCas: applies the patch and auto-bumps version when uncontended", async () => {
       await store.create(makeUserData());
       let calls = 0;
-      await store.withCas("alice", (user) => {
+      await store.withCas("test-id-1", (user) => {
         calls++;
         expect(user.version).toBe(0);
         return { set: { account: { active: true } } as any };
       });
       expect(calls).toBe(1);
-      const after = await store.findByUsername("alice");
+      const after = await store.findByHandle("alice");
       expect(after!.account.active).toBe(true);
       expect(after!.version).toBe(1);
     });
 
     it("withCas: mutator returning null exits without writing or bumping version", async () => {
       await store.create(makeUserData());
-      await store.withCas("alice", () => null);
-      const after = await store.findByUsername("alice");
+      await store.withCas("test-id-1", () => null);
+      const after = await store.findByHandle("alice");
       expect(after!.version).toBe(0);
     });
 
@@ -372,12 +389,12 @@ describe("UsersStoreAtscriptDb", () => {
       // running against real SQLite reads — only the write side is stubbed.
       class FailingStore extends UsersStoreAtscriptDb {
         public missesInjected = 0;
-        override async update(username: string, update: any): Promise<boolean> {
+        override async update(id: string, update: any): Promise<boolean> {
           if (update.expectedVersion !== undefined) {
             this.missesInjected++;
             return false;
           }
-          return super.update(username, update);
+          return super.update(id, update);
         }
       }
       const failStore = new FailingStore({ table: table as unknown as AuthUserTable });
@@ -385,7 +402,7 @@ describe("UsersStoreAtscriptDb", () => {
 
       let calls = 0;
       try {
-        await failStore.withCas("alice", () => {
+        await failStore.withCas("test-id-1", () => {
           calls++;
           return { set: { account: { active: true } } as any };
         });
@@ -411,13 +428,13 @@ describe("UsersStoreAtscriptDb", () => {
       const svc = new UserService(store, {
         password: { scryptN: 1024, scryptR: 1, scryptP: 1, keyLength: 32 },
       });
-      await svc.createUser("dave", "Secret1!");
-      await svc.activateAccount("dave");
+      const dave = await svc.createUser("dave", "Secret1!");
+      await svc.activateAccount(dave.id);
 
-      await svc.addMfaMethod("dave", { name: "email", confirmed: false, value: "d@x.test" });
-      await svc.addMfaMethod("dave", { name: "totp", confirmed: false, value: "SECRET" });
+      await svc.addMfaMethod(dave.id, { name: "email", confirmed: false, value: "d@x.test" });
+      await svc.addMfaMethod(dave.id, { name: "totp", confirmed: false, value: "SECRET" });
 
-      const persisted = await store.findByUsername("dave");
+      const persisted = await store.findByHandle("dave");
       const names = persisted!.mfa.methods.map((m) => m.name);
       expect(names).toContain("email");
       expect(names).toContain("totp");

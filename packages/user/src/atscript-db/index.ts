@@ -53,7 +53,9 @@ interface UsersStoreAtscriptDbOptions<TUserCustom extends object> {
 /**
  * `@atscript/db`-backed `UserStore`. Pass the resolved table for the
  * `AoothUserCredentials` (or a `.as` interface extending it) shipped at the
- * `@aooth/user/atscript-db/model.as` subpath.
+ * `@aooth/user/atscript-db/model.as` subpath. Identity reads use the
+ * `@meta.id` PK (`id`) plus the unique `username` / `email` indexes; writes key
+ * on `id`.
  */
 export class UsersStoreAtscriptDb<
   TUserCustom extends object = object,
@@ -65,14 +67,27 @@ export class UsersStoreAtscriptDb<
     this.table = opts.table;
   }
 
-  async exists(username: string): Promise<boolean> {
-    const count = await this.table.count({ filter: { username } });
+  async exists(handle: string): Promise<boolean> {
+    const count = await this.table.count({ filter: { username: handle } });
     return count > 0;
   }
 
-  async findByUsername(username: string): Promise<(UserCredentials & TUserCustom) | null> {
-    const result = await this.table.findOne({ filter: { username } });
-    return (result as (UserCredentials & TUserCustom) | null) ?? null;
+  async findById(id: string): Promise<(UserCredentials & TUserCustom) | null> {
+    const result = await this.table.findOne({ filter: { id } });
+    return result as (UserCredentials & TUserCustom) | null;
+  }
+
+  async findByHandle(handle: string): Promise<(UserCredentials & TUserCustom) | null> {
+    const byUsername = await this.table.findOne({ filter: { username: handle } });
+    if (byUsername) return byUsername as UserCredentials & TUserCustom;
+    const byEmail = await this.table.findOne({ filter: { email: handle } });
+    return byEmail as (UserCredentials & TUserCustom) | null;
+  }
+
+  async findByIdentifier(value: string): Promise<(UserCredentials & TUserCustom) | null> {
+    const byId = await this.table.findOne({ filter: { id: value } });
+    if (byId) return byId as UserCredentials & TUserCustom;
+    return this.findByHandle(value);
   }
 
   async create(data: UserCredentials & TUserCustom): Promise<void> {
@@ -86,8 +101,8 @@ export class UsersStoreAtscriptDb<
     }
   }
 
-  async update(username: string, update: UserStoreUpdate): Promise<boolean> {
-    const patch: Record<string, unknown> = { username };
+  async update(id: string, update: UserStoreUpdate): Promise<boolean> {
+    const patch: Record<string, unknown> = { id };
 
     if (update.set) {
       Object.assign(patch, update.set);
@@ -99,7 +114,7 @@ export class UsersStoreAtscriptDb<
       }
     }
 
-    // If only username was set (no actual changes), no-op
+    // If only the id was set (no actual changes), no-op.
     if (Object.keys(patch).length <= 1) return true;
 
     if (update.expectedVersion !== undefined) {
@@ -110,8 +125,8 @@ export class UsersStoreAtscriptDb<
     return result.matchedCount > 0;
   }
 
-  async delete(username: string): Promise<boolean> {
-    const result = await this.table.deleteMany({ username });
+  async delete(id: string): Promise<boolean> {
+    const result = await this.table.deleteMany({ id });
     return result.deletedCount > 0;
   }
 
@@ -126,17 +141,17 @@ export class UsersStoreAtscriptDb<
    * `update()`.
    */
   async withCas(
-    username: string,
+    id: string,
     mutator: (current: UserCredentials & TUserCustom) => UserStoreUpdate | null,
     opts?: WithCasOptions,
   ): Promise<void> {
     const maxAttempts = opts?.maxAttempts ?? 2;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const current = await this.findByUsername(username);
+      const current = await this.findById(id);
       if (!current) throw new UserAuthError("NOT_FOUND");
       const patch = mutator(current);
       if (patch === null) return;
-      const applied = await this.update(username, {
+      const applied = await this.update(id, {
         ...patch,
         expectedVersion: current.version ?? 0,
       });

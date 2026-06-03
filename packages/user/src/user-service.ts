@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 
 import { UserAuthError } from "./errors";
 import { verifyTotpCode } from "./mfa/totp";
@@ -70,6 +70,15 @@ function deviceTrustSafeEqual(a: string, b: string): boolean {
   return timingSafeEqual(ab, bb);
 }
 
+/**
+ * Orchestrates user credentials over a pluggable {@link UserStore}.
+ *
+ * Identity model: the stable surrogate **`id`** is the token subject. `getUser`
+ * and every mutation/admin method are keyed by `id` (the value carried in the
+ * session and returned by `useAuth().getUserId()`); only `login` (and other
+ * handle-driven entry points) take a `username`/`email` login handle, resolved
+ * via `UserStore.findByHandle`.
+ */
 export class UserService<T extends object = object> {
   protected readonly config: ResolvedConfig;
   protected readonly hasher: PasswordHasher;
@@ -86,18 +95,22 @@ export class UserService<T extends object = object> {
    * Creates a user with `account.active: false`. The invite workflow relies
    * on this default (see `InviteWorkflow.acceptInvite` — pending invitees stay
    * inactive until they accept). For setup scripts / seeders / tests that
-   * don't go through invite, follow up with `activateAccount(username)` or
-   * `login()` will throw `UserAuthError("INACTIVE")` — which the login
-   * workflow deliberately re-maps to `"Invalid credentials"` to avoid account
+   * don't go through invite, follow up with `activateAccount(id)` or `login()`
+   * will throw `UserAuthError("INACTIVE")` — which the login workflow
+   * deliberately re-maps to `"Invalid credentials"` to avoid account
    * enumeration, so the failure is silent client-side.
+   *
+   * A stable `id` is minted here (server-managed surrogate, also the token
+   * subject) and returned on the record, so callers can `auth.issue(user.id)`
+   * without a re-read. Pass `id` via `extras` to override it.
    *
    * @param extras Optional partial user fields merged AFTER the base
    *   `UserCredentials` shape, so callers can populate consumer-specific
    *   required fields (e.g. `tenantId`) without subclassing the store.
    *   Because the merge is shallow and extras win, overlapping top-level
-   *   keys (`id`, `account`, `mfa`, ...) replace the defaults entirely —
-   *   pass nested objects with all required sub-fields if you intend to
-   *   override them.
+   *   keys (`id`, `email`, `account`, `mfa`, ...) replace the defaults
+   *   entirely — pass nested objects with all required sub-fields if you
+   *   intend to override them.
    */
   async createUser(
     username: string,
@@ -107,10 +120,8 @@ export class UserService<T extends object = object> {
     const pw = password ?? this.hasher.generatePassword();
     const hash = await this.hasher.hash(pw);
 
-    // Omit `id` from the base record so the underlying store/DB default
-    // (e.g. atscript-db's `@db.default.uuid`) decides. Callers that want a
-    // specific id pass it via `extras`.
-    const base: Omit<UserCredentials, "id"> = {
+    const base: UserCredentials = {
+      id: randomUUID(),
       username,
       password: {
         hash,
@@ -138,31 +149,32 @@ export class UserService<T extends object = object> {
     return userData;
   }
 
-  async getUser(username: string): Promise<UserCredentials & T> {
-    const user = await this.store.findByUsername(username);
+  /** Read by the stable `id` (the token subject). */
+  async getUser(id: string): Promise<UserCredentials & T> {
+    const user = await this.store.findById(id);
     if (!user) throw new UserAuthError("NOT_FOUND");
     return user;
   }
 
   async login(
-    username: string,
+    handle: string,
     password: string,
     lockoutOverride?: Partial<LockoutConfig>,
   ): Promise<LoginResult<T>> {
-    const user = await this.store.findByUsername(username);
+    const user = await this.store.findByHandle(handle);
     if (!user) throw new UserAuthError("NOT_FOUND");
 
     if (!user.account.active) {
       throw new UserAuthError("INACTIVE");
     }
 
-    await this.ensureNotLockedOrThrow(username, user.account);
+    await this.ensureNotLockedOrThrow(user.id, user.account);
 
     const valid = await this.hasher.verify(password, user.password.hash);
 
     if (valid) {
       const now = this.config.clock();
-      await this.store.update(username, {
+      await this.store.update(user.id, {
         set: {
           account: { lastLogin: now, failedLoginAttempts: 0 },
         } as DeepPartial<UserCredentials>,
@@ -176,21 +188,21 @@ export class UserService<T extends object = object> {
     }
 
     return this.incrementAndMaybeLock(
-      username,
+      user.id,
       user.account,
       "INVALID_CREDENTIALS",
       lockoutOverride,
     );
   }
 
-  async verifyPassword(username: string, password: string): Promise<boolean> {
-    const user = await this.store.findByUsername(username);
+  async verifyPassword(id: string, password: string): Promise<boolean> {
+    const user = await this.store.findById(id);
     if (!user) throw new UserAuthError("NOT_FOUND");
     return this.hasher.verify(password, user.password.hash);
   }
 
   async changePassword(
-    username: string,
+    id: string,
     currentPassword: string,
     newPassword: string,
     repeatPassword?: string,
@@ -199,26 +211,26 @@ export class UserService<T extends object = object> {
       throw new UserAuthError("PASSWORDS_MISMATCH");
     }
 
-    const user = await this.getUser(username);
+    const user = await this.getUser(id);
 
     const valid = await this.hasher.verify(currentPassword, user.password.hash);
     if (!valid) throw new UserAuthError("INVALID_CREDENTIALS");
 
-    await this.applyPasswordChange(username, user, newPassword);
+    await this.applyPasswordChange(id, user, newPassword);
   }
 
-  async setPassword(username: string, newPassword: string): Promise<void> {
-    const user = await this.getUser(username);
-    await this.applyPasswordChange(username, user, newPassword);
+  async setPassword(id: string, newPassword: string): Promise<void> {
+    const user = await this.getUser(id);
+    await this.applyPasswordChange(id, user, newPassword);
   }
 
   /**
-   * Hard-delete the user row. Returns nothing on success. Throws
-   * `UserAuthError("NOT_FOUND")` when no row matches `username`. Used by the
-   * invite workflow's `auth/invite/cancel` to revoke a pending invitation.
+   * Hard-delete the user row by `id`. Returns nothing on success. Throws
+   * `UserAuthError("NOT_FOUND")` when no row matches. Used by the invite
+   * workflow's `auth/invite/cancel` to revoke a pending invitation.
    */
-  async deleteUser(username: string): Promise<void> {
-    const removed = await this.store.delete(username);
+  async deleteUser(id: string): Promise<void> {
+    const removed = await this.store.delete(id);
     if (!removed) throw new UserAuthError("NOT_FOUND");
   }
 
@@ -228,34 +240,31 @@ export class UserService<T extends object = object> {
    * `@db.patch.strategy 'merge'` declaration). Returns the patched record.
    * Used by the invite workflow's `applyProfile` default fallback.
    */
-  async update(
-    username: string,
-    patch: Partial<UserCredentials & T>,
-  ): Promise<UserCredentials & T> {
-    const found = await this.store.update(username, {
+  async update(id: string, patch: Partial<UserCredentials & T>): Promise<UserCredentials & T> {
+    const found = await this.store.update(id, {
       set: patch as DeepPartial<UserCredentials>,
     });
     if (!found) throw new UserAuthError("NOT_FOUND");
-    return this.getUser(username);
+    return this.getUser(id);
   }
 
-  async activateAccount(username: string): Promise<void> {
-    const found = await this.store.update(username, {
+  async activateAccount(id: string): Promise<void> {
+    const found = await this.store.update(id, {
       set: { account: { active: true } } as DeepPartial<UserCredentials>,
     });
     if (!found) throw new UserAuthError("NOT_FOUND");
   }
 
-  async deactivateAccount(username: string): Promise<void> {
-    const found = await this.store.update(username, {
+  async deactivateAccount(id: string): Promise<void> {
+    const found = await this.store.update(id, {
       set: { account: { active: false } } as DeepPartial<UserCredentials>,
     });
     if (!found) throw new UserAuthError("NOT_FOUND");
   }
 
-  async lockAccount(username: string, reason: string, duration?: number): Promise<void> {
+  async lockAccount(id: string, reason: string, duration?: number): Promise<void> {
     const lockEnds = duration ? this.config.clock() + duration : 0;
-    const found = await this.store.update(username, {
+    const found = await this.store.update(id, {
       set: {
         account: { locked: true, lockReason: reason, lockEnds },
       } as DeepPartial<UserCredentials>,
@@ -263,8 +272,8 @@ export class UserService<T extends object = object> {
     if (!found) throw new UserAuthError("NOT_FOUND");
   }
 
-  async unlockAccount(username: string): Promise<void> {
-    const found = await this.store.update(username, {
+  async unlockAccount(id: string): Promise<void> {
+    const found = await this.store.update(id, {
       set: {
         account: { locked: false, lockReason: "", lockEnds: 0, failedLoginAttempts: 0 },
       } as DeepPartial<UserCredentials>,
@@ -331,15 +340,15 @@ export class UserService<T extends object = object> {
       }));
   }
 
-  async addMfaMethod(username: string, method: MfaMethod): Promise<void> {
-    await this.store.withCas(username, (user) => {
+  async addMfaMethod(id: string, method: MfaMethod): Promise<void> {
+    await this.store.withCas(id, (user) => {
       const methods = [...user.mfa.methods.filter((m) => m.name !== method.name), method];
       return { set: { mfa: { methods } } as DeepPartial<UserCredentials> };
     });
   }
 
-  async confirmMfaMethod(username: string, name: string): Promise<void> {
-    await this.store.withCas(username, (user) => {
+  async confirmMfaMethod(id: string, name: string): Promise<void> {
+    await this.store.withCas(id, (user) => {
       let found = false;
       const methods = user.mfa.methods.map((m) => {
         if (m.name === name) {
@@ -353,28 +362,28 @@ export class UserService<T extends object = object> {
     });
   }
 
-  async removeMfaMethod(username: string, name: string): Promise<void> {
-    const user = await this.getUser(username);
+  async removeMfaMethod(id: string, name: string): Promise<void> {
+    const user = await this.getUser(id);
     const methods = user.mfa.methods.filter((m) => m.name !== name);
     const update: DeepPartial<UserCredentials> = { mfa: { methods } };
     if (user.mfa.defaultMethod === name) {
       update.mfa!.defaultMethod = "";
     }
-    await this.store.update(username, { set: update });
+    await this.store.update(id, { set: update });
   }
 
-  async setDefaultMfaMethod(username: string, name: string): Promise<void> {
-    const user = await this.getUser(username);
+  async setDefaultMfaMethod(id: string, name: string): Promise<void> {
+    const user = await this.getUser(id);
     if (name && !user.mfa.methods.some((m) => m.name === name)) {
       throw new UserAuthError("MFA_NOT_CONFIGURED");
     }
-    await this.store.update(username, {
+    await this.store.update(id, {
       set: { mfa: { defaultMethod: name, autoSend: false } } as DeepPartial<UserCredentials>,
     });
   }
 
-  async setMfaAutoSend(username: string, value: boolean): Promise<void> {
-    const found = await this.store.update(username, {
+  async setMfaAutoSend(id: string, value: boolean): Promise<void> {
+    const found = await this.store.update(id, {
       set: { mfa: { autoSend: value } } as DeepPartial<UserCredentials>,
     });
     if (!found) throw new UserAuthError("NOT_FOUND");
@@ -397,18 +406,18 @@ export class UserService<T extends object = object> {
    * total tries across BOTH factors, not `2 * threshold`.
    */
   async verifyMfa(
-    username: string,
+    id: string,
     code: string,
     config?: TotpConfig,
     lockoutOverride?: Partial<LockoutConfig>,
   ): Promise<void> {
-    const user = await this.getUser(username);
+    const user = await this.getUser(id);
 
     if (!user.account.active) {
       throw new UserAuthError("INACTIVE");
     }
 
-    await this.ensureNotLockedOrThrow(username, user.account);
+    await this.ensureNotLockedOrThrow(id, user.account);
 
     const totp = user.mfa.methods.find((m) => m.name === "totp" && m.confirmed);
     if (!totp) throw new UserAuthError("MFA_NOT_CONFIGURED");
@@ -428,7 +437,7 @@ export class UserService<T extends object = object> {
       // and falls through to the wrong-code path. Without this re-check the
       // outer `isReplay` is bypassed by a race between `getUser` and `withCas`.
       let replayDuringCas = false;
-      await this.store.withCas(username, (current) => {
+      await this.store.withCas(id, (current) => {
         const currentTotp = current.mfa.methods.find((m) => m.name === "totp" && m.confirmed);
         if (
           currentTotp?.lastUsedWindow !== undefined &&
@@ -451,7 +460,7 @@ export class UserService<T extends object = object> {
       if (!replayDuringCas) return;
     }
 
-    await this.incrementAndMaybeLock(username, user.account, "MFA_INVALID", lockoutOverride);
+    await this.incrementAndMaybeLock(id, user.account, "MFA_INVALID", lockoutOverride);
   }
 
   /**
@@ -465,8 +474,8 @@ export class UserService<T extends object = object> {
    * Throws: NOT_FOUND if user missing; MFA_NOT_CONFIGURED if no unconfirmed
    * totp method; MFA_INVALID on wrong code.
    */
-  async verifyTotpSetupCode(username: string, code: string, config?: TotpConfig): Promise<void> {
-    const user = await this.getUser(username);
+  async verifyTotpSetupCode(id: string, code: string, config?: TotpConfig): Promise<void> {
+    const user = await this.getUser(id);
     const totp = user.mfa.methods.find((m) => m.name === "totp" && !m.confirmed);
     if (!totp) throw new UserAuthError("MFA_NOT_CONFIGURED");
     const matched = verifyTotpCode(totp.value, code, config);
@@ -508,8 +517,8 @@ export class UserService<T extends object = object> {
    * write — the array shape is preserved end-to-end so DB adapters with a
    * merge strategy replace the whole array.
    */
-  async addTrustedDevice(username: string, record: TrustedDeviceRecord): Promise<void> {
-    await this.store.withCas(username, (user) => {
+  async addTrustedDevice(id: string, record: TrustedDeviceRecord): Promise<void> {
+    await this.store.withCas(id, (user) => {
       const next = [...(user.trustedDevices ?? []), record];
       return { set: { trustedDevices: next } as DeepPartial<UserCredentials> };
     });
@@ -520,16 +529,16 @@ export class UserService<T extends object = object> {
    * the configured secret, AND (b) matches a persisted record that is still
    * within its expiry window and whose bound IP (if any) matches.
    */
-  async verifyTrustedDevice(username: string, token: string, ip?: string): Promise<boolean> {
+  async verifyTrustedDevice(userId: string, token: string, ip?: string): Promise<boolean> {
     const secret = this.requireDeviceTrustSecret();
     const sepIdx = token.lastIndexOf(DEVICE_TRUST_SEPARATOR);
     if (sepIdx <= 0) return false;
     const raw = token.slice(0, sepIdx);
     const sig = token.slice(sepIdx + 1);
-    const expectedSig = signDeviceTrust(secret, `${username}|${raw}|${ip ?? ""}`);
+    const expectedSig = signDeviceTrust(secret, `${userId}|${raw}|${ip ?? ""}`);
     if (!deviceTrustSafeEqual(sig, expectedSig)) return false;
 
-    const user = await this.store.findByUsername(username);
+    const user = await this.store.findById(userId);
     if (!user) return false;
     const list = user.trustedDevices ?? [];
     const now = this.config.clock();
@@ -543,19 +552,19 @@ export class UserService<T extends object = object> {
    * Remove a specific trust record from the user. No-op when the record is
    * absent — mirrors the legacy `DeviceTrustStore.revoke` semantics.
    */
-  async revokeTrustedDevice(username: string, token: string): Promise<void> {
-    const user = await this.store.findByUsername(username);
+  async revokeTrustedDevice(id: string, token: string): Promise<void> {
+    const user = await this.store.findById(id);
     if (!user) return;
     const list = user.trustedDevices ?? [];
     const next = list.filter((r) => r.token !== token);
     if (next.length === list.length) return;
-    await this.store.update(username, {
+    await this.store.update(id, {
       set: { trustedDevices: next } as DeepPartial<UserCredentials>,
     });
   }
 
-  async listTrustedDevices(username: string): Promise<TrustedDeviceRecord[]> {
-    const user = await this.getUser(username);
+  async listTrustedDevices(id: string): Promise<TrustedDeviceRecord[]> {
+    const user = await this.getUser(id);
     return user.trustedDevices ?? [];
   }
 
@@ -570,7 +579,7 @@ export class UserService<T extends object = object> {
   // ---- private helpers ----
 
   private async applyPasswordChange(
-    username: string,
+    id: string,
     user: UserCredentials & T,
     newPassword: string,
   ): Promise<void> {
@@ -599,7 +608,7 @@ export class UserService<T extends object = object> {
         ? [user.password.hash, ...user.password.history].filter(Boolean).slice(0, limit)
         : [];
 
-    await this.store.update(username, {
+    await this.store.update(id, {
       set: {
         password: {
           hash: newHash,
@@ -620,13 +629,13 @@ export class UserService<T extends object = object> {
    * `account` in place), or throw `LOCKED` otherwise.
    */
   private async ensureNotLockedOrThrow(
-    username: string,
+    id: string,
     account: UserCredentials["account"],
   ): Promise<void> {
     const lockStatus = this.getLockStatus(account);
     if (!lockStatus.locked) return;
     if (lockStatus.expired) {
-      await this.store.update(username, {
+      await this.store.update(id, {
         set: {
           account: { locked: false, lockReason: "", lockEnds: 0 },
         } as DeepPartial<UserCredentials>,
@@ -654,7 +663,7 @@ export class UserService<T extends object = object> {
    * fall back to `this.config.lockout`.
    */
   private async incrementAndMaybeLock(
-    username: string,
+    id: string,
     account: UserCredentials["account"],
     errorCode: "INVALID_CREDENTIALS" | "MFA_INVALID",
     lockoutOverride?: Partial<LockoutConfig>,
@@ -665,7 +674,7 @@ export class UserService<T extends object = object> {
 
     if (shouldLock) {
       const lockEnds = duration ? this.config.clock() + duration : 0;
-      await this.store.update(username, {
+      await this.store.update(id, {
         inc: { "account.failedLoginAttempts": 1 },
         set: {
           account: { locked: true, lockReason: "Too many login attempts", lockEnds },
@@ -674,7 +683,7 @@ export class UserService<T extends object = object> {
       throw new UserAuthError(errorCode, undefined, { lockEnds });
     }
 
-    await this.store.update(username, {
+    await this.store.update(id, {
       inc: { "account.failedLoginAttempts": 1 },
     });
     throw new UserAuthError(errorCode);

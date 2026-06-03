@@ -55,9 +55,10 @@ describe("UsersStoreAtscriptDb (structural surface, no @atscript/db)", () => {
     await store.create(makeUserData());
     expect(await store.exists("alice")).toBe(true);
 
-    const data = await store.findByUsername("alice");
+    const data = await store.findByHandle("alice");
     expect(data).not.toBeNull();
     expect(data!.username).toBe("alice");
+    expect(data!.id).toBe("test-id-1");
   });
 
   it("treats a non-DbError throw with `code === 'CONFLICT'` as ALREADY_EXISTS", async () => {
@@ -121,7 +122,7 @@ describe("UsersStoreAtscriptDb (structural surface, no @atscript/db)", () => {
     await store.create(makeUserData());
 
     table.ops.length = 0;
-    const result = await store.update("alice", {});
+    const result = await store.update("test-id-1", {});
 
     expect(result).toBe(true);
     expect(table.opsOf("updateOne")).toHaveLength(0);
