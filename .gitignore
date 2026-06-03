@@ -24,3 +24,8 @@ explorations
 src/atscript.d.ts
 **/src/atscript.d.ts
 TODO.md
+
+# Local design drafts — kept on disk for reference, NEVER committed (may name
+# internal/external products). Scrub before any goes into docs/skills/source.
+IDP.md
+rfc-credential-claims-arbac-bridge.md
