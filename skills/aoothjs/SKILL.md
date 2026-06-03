@@ -65,10 +65,10 @@ pnpm add -D unplugin-atscript @atscript/typescript @atscript/core
             │   └── /atscript-db  CredentialStoreAtscriptDb + AoothAuthCredential .as model
             │
             ├── @aooth/idp     federated-login core (depends on user+auth): OidcProvider/GoogleProvider/FakeIdentityProvider, OAuthProviderRegistry,
-            │                     FederatedLoginService.resolveUser, PKCE + signState/verifyState, OAuthError. NO moost/HTTP yet (forthcoming auth-moost wiring)
+            │                     FederatedLoginService.resolveUser, PKCE + signState/verifyState, OAuthError. HTTP/workflow wiring is in auth-moost (OAuthController + auth/oauth/flow)
             │
-            └── @aooth/auth-moost   AuthController, authGuardInterceptor, @Public, @UserId, useAuth,
-                                       AuthWorkflow (login/invite/recovery/signup), ConsentStore, WfTriggerProvider
+            └── @aooth/auth-moost   AuthController, SessionsController, OAuthController, authGuardInterceptor, @Public, @UserId, useAuth,
+                                       AuthWorkflow (login/invite/recovery/signup/change-password/oauth), ConsentStore, WfTriggerProvider
 ```
 
 ## Quick start
@@ -421,7 +421,8 @@ import arbacPlugin from "@aooth/arbac-moost/plugin";
 | **Federated login (IdP)** | [idp.md](references/idp.md)                         | `@aooth/idp` OAuth2/OIDC: `OidcProvider`/`GoogleProvider`/`FakeIdentityProvider`, ID-token §7 validation, `OAuthProviderRegistry`, `FederatedLoginService.resolveUser` + `FederatedPolicy`, `linkIdentity`, PKCE/signState, the `FederatedIdentityStore` (from `@aooth/user`) |
 | **Moost domain**          | [moost.md](references/moost.md)                     | `@aooth/auth-moost` + `@aooth/arbac-moost` overview: quick start, full invariants, key imports                                                                                                                                                                                |
 | Controllers + decorators  | [controllers.md](references/controllers.md)         | `AuthController` REST surface, `authGuardInterceptor`, `useAuth`, `useArbac`, all decorators, 401-vs-403 split                                                                                                                                                                |
-| Workflows                 | [workflows.md](references/workflows.md)             | unified `AuthWorkflow` (5 schemas: login/invite/recovery/signup/change-password), `AuthWorkflowOpts` vs `resolveXxx` policy, `ConsentStore`, `WfTriggerProvider` + `storeStrategy`, `deliver`, error posture, forms                                                           |
+| Workflows                 | [workflows.md](references/workflows.md)             | unified `AuthWorkflow` (6 schemas: login/invite/recovery/signup/change-password/oauth), `AuthWorkflowOpts` vs `resolveXxx` policy, `ConsentStore`, `WfTriggerProvider` + `storeStrategy`, `deliver`, error posture, forms                                                     |
+| Federated login (moost)   | [oauth.md](references/oauth.md)                     | `@aooth/auth-moost` OAuth wiring: `OAuthController` (start/link/unlink), `auth/oauth/flow` + `oauth-exchange`, `OAuthFlowStore` + STRING DI tokens, SPA callback bridge, CSRF/PKCE/redirect/account-gate invariants                                                           |
 | SPA components            | [spa-components.md](references/spa-components.md)   | render workflow forms client-side: `<AsWfForm>` + `@atscript/vue-aooth` (`AsQrCode`/`AsConsentArray`/`AsPasswordRules`), magic-link resume, `@ui.form.component`                                                                                                              |
 | DB controllers            | [db-controllers.md](references/db-controllers.md)   | `AsArbacDbController` hooks, `ArbacDbScope`, control-gate semantics, `DENY_FILTER`, identifier auto-preservation                                                                                                                                                              |
 | Atscript provider         | [moost-atscript.md](references/moost-atscript.md)   | `arbacPlugin()`, `@arbac.*` annotations, user-id resolution, `AtscriptArbacUserProvider`, bundled `.as` models                                                                                                                                                                |

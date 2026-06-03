@@ -434,6 +434,9 @@ importers:
       '@aooth/auth':
         specifier: workspace:*
         version: link:../auth
+      '@aooth/idp':
+        specifier: workspace:*
+        version: link:../idp
       '@aooth/user':
         specifier: workspace:*
         version: link:../user
@@ -495,6 +498,9 @@ importers:
       '@aooth/auth-moost':
         specifier: workspace:*
         version: link:../auth-moost
+      '@aooth/idp':
+        specifier: workspace:*
+        version: link:../idp
       '@aooth/user':
         specifier: workspace:*
         version: link:../user

@@ -149,8 +149,7 @@ export interface EmailIdentifierForm {
     email: string.email
 
     @ui.form.order 20
-    @ui.form.action 'backToLogin', 'Sign in'
-    @ui.form.attr 'text', 'Remembered your password?'
+    @ui.form.action 'backToLogin', 'Back to sign in'
     @ui.form.attr 'align', 'center'
     @ui.form.pushDown
     backToLogin?: ui.action

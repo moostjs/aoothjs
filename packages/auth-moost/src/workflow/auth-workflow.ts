@@ -21,6 +21,7 @@
  * schemas would no-op every step.
  */
 import { AuthCredential, type CredentialMetadata } from "@aooth/auth";
+import type { NormalizedProfile } from "@aooth/idp";
 import {
   generateTotpSecret,
   generateTotpUri,
@@ -50,11 +51,14 @@ import {
 import { current } from "@wooksjs/event-core";
 import { useCookies, useHeaders, useRequest, useResponse, useUrlParams } from "@wooksjs/event-http";
 import { ArbacAction, ArbacResource } from "@aooth/arbac-moost";
-import { Controller, Inherit, Param } from "moost";
+import { Controller, Inherit, Param, useControllerContext } from "moost";
 
 import { useAuth } from "../auth.composables";
 import { ConsentStore } from "../consent.store";
 import { Public } from "../auth.decorator";
+import { OAUTH_CSRF_COOKIE, safeEqual } from "../oauth/oauth-csrf";
+import { resolveOAuthRedirect } from "../oauth/oauth-redirect";
+import { OAuthRuntime } from "../oauth/oauth-runtime";
 import type {
   AuthWfCtx,
   AuthWfAltCredsPolicy,
@@ -443,6 +447,10 @@ export class AuthWorkflow {
    * `Referer` header (undefined when absent).
    */
   protected resolveRedirect(ctx: AuthWfCtx): string | undefined {
+    // OAuth flow: honor the validated app redirect carried across the bounce
+    // (already screened by `resolveOAuthRedirect` in `oauth-exchange`), ahead of
+    // the generic `finalize.redirect` policy.
+    if (ctx.oauth?.redirect) return ctx.oauth.redirect;
     const r = ctx.finalize?.redirect;
     if (!r) return undefined;
     if (r === "home") return "/";
@@ -453,6 +461,40 @@ export class AuthWorkflow {
       return typeof first === "string" && first.length > 0 ? first : undefined;
     }
     return undefined;
+  }
+
+  // ── OAuth / federated-login dependency seam ─────────────────────────────
+  //
+  // The `oauth-exchange` step needs three app-provided singletons that are NOT
+  // ctor deps — so a deployment that doesn't use federated login is never
+  // forced to provide them, and `AuthWorkflow`'s documented subclass ctor stays
+  // unchanged. They are bundled in {@link OAuthRuntime} (an `@Injectable` whose
+  // ctor deps resolve THROUGH the provide-registry — unlike a direct
+  // `infact.get(token)` of a factory-provided/abstract class, which fails).
+  // Reached ONLY when the OAuth flow actually runs. Override in a unit test to
+  // inject fakes without standing up the DI container. Named as a plain getter
+  // (NOT `resolveXxx`, reserved for policy resolvers, nor `loadXxx`, for
+  // external-store fetchers).
+
+  protected oauthRuntime(): Promise<OAuthRuntime> {
+    // `instantiate` (NOT `getMoostInfact().get`) carries the app's
+    // provide-registry, so `OAuthRuntime`'s `@Inject` token deps resolve — the
+    // same path `WfTrigger` uses for `WfTriggerProvider`. The step runs in the
+    // HTTP-parented wf event, so the controller context is reachable.
+    return useControllerContext().instantiate(OAuthRuntime);
+  }
+
+  /**
+   * Redirect target for a federated-login FAILURE terminal — provider denial,
+   * invalid/expired state, CSRF mismatch, missing transaction, exchange
+   * failure, `denied` / `needs-link` resolution, or a locked/inactive account.
+   * Benign + generic: it MUST NOT reveal WHICH check tripped (no
+   * tamper-vs-expiry oracle — see invariant #5). Default: the login URL with a
+   * single generic `?error=oauth`. Override to route to a dedicated SPA error
+   * page (still without leaking the reason).
+   */
+  protected resolveOAuthErrorRedirect(_ctx: AuthWfCtx, _reason: string): string {
+    return `${this.opts.loginUrl}?error=oauth`;
   }
 
   // ── Resolved policy surface (override on subclass to customize) ─────────
@@ -3314,6 +3356,177 @@ export class AuthWorkflow {
     return undefined;
   }
 
+  // ── Federated login (OAuth2 / OIDC) — auth/oauth/flow (1 real step) ──────
+  //
+  // ONE real step; everything after it reuses the shared login tail by @Step id
+  // (prepare-* / channel / MFA / consent / issue / redirect) — a federated user
+  // flows through the EXACT same gates as a password user. The PKCE verifier +
+  // OIDC nonce are read from the server-side `OAuthFlowStore` (keyed by the
+  // signed-state `random`), never from ctx or the URL.
+
+  /**
+   * Verify the OAuth callback and resolve a user. Reads `{ code, state, error }`
+   * from the trigger input (the SPA bridges the provider callback into
+   * `/auth/trigger` starting `auth/oauth/flow`). Order is security-critical:
+   *
+   *   verify state (HS256) → CSRF double-submit → single-use txn (PKCE verifier)
+   *   → provider.exchange (verified ID token) → link OR resolveUser → ACCOUNT-
+   *   STATE GATE → seed ctx.subject → fall through to the shared login tail.
+   *
+   * Every pre-subject failure collapses to one benign redirect terminal
+   * (`finishOAuth`) so the wire is not an oracle for which check tripped. The
+   * account-state gate MUST live here — `issue` does not re-gate, so without it
+   * a locked/inactive account could log straight in via OAuth.
+   */
+  @Step("oauth-exchange")
+  @Public()
+  async oauthExchange(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    const code = getInputField("code");
+    const state = getInputField("state");
+    // Provider-side denial (user declined) or a malformed callback — the SPA
+    // forwards the provider's `error`. Generic terminal either way.
+    if (getInputField("error") || !code || !state) {
+      return this.finishOAuth(ctx, "provider-denied");
+    }
+
+    const { registry, flowStore, federated } = await this.oauthRuntime();
+    // STATE_INVALID and STATE_EXPIRED collapse to one terminal (no oracle).
+    const payload = await registry.verifyState(state).catch(() => null);
+    if (!payload) return this.finishOAuth(ctx, "state");
+
+    // CSRF double-submit: the Lax cookie set at /start must match the verified
+    // state's `random`. Constant-time; a missing cookie fails closed.
+    const cookieRandom = useCookies(current()).getCookie(OAUTH_CSRF_COOKIE) ?? undefined;
+    if (!safeEqual(cookieRandom, payload.random)) return this.finishOAuth(ctx, "csrf");
+
+    // Single-use server-side transaction (PKCE verifier + nonce + /link binding).
+    // Consuming it here is the replay defense — a second callback finds nothing.
+    const txn = await flowStore.take(payload.random);
+    if (!txn || txn.provider !== payload.provider) return this.finishOAuth(ctx, "txn");
+
+    let profile: NormalizedProfile;
+    try {
+      const provider = registry.require(payload.provider);
+      profile = await provider.exchange({
+        code,
+        redirectUri: registry.redirectUri(payload.provider),
+        codeVerifier: txn.verifier,
+        expectedNonce: txn.nonce,
+      });
+    } catch {
+      // UNKNOWN_PROVIDER / EXCHANGE_FAILED / ID_TOKEN_INVALID / JWKS_FAILED — all
+      // benign-generic (a failed ID-token check must not differ from a network one).
+      return this.finishOAuth(ctx, "exchange");
+    }
+
+    const redirect = resolveOAuthRedirect(txn.redirect, "/");
+
+    // ── /link mode — attach the verified identity to the initiating user ──
+    // `txn.userId` is set ONLY by the guarded `/:provider/link` route, so its
+    // presence is a trusted (server-minted) signal. `linkIdentity`'s cross-user
+    // guard is the final confused-deputy backstop.
+    if (txn.userId) {
+      try {
+        await federated.linkIdentity({
+          provider: profile.provider,
+          subject: profile.subject,
+          userId: txn.userId,
+          profile,
+        });
+      } catch (err) {
+        if (err instanceof UserAuthError && err.type === "ALREADY_EXISTS") {
+          return this.finishOAuth(ctx, "already-linked");
+        }
+        throw err;
+      }
+      finishWf({
+        message: { level: "success", text: "Account linked." },
+        next: {
+          trigger: "immediate",
+          action: { type: "redirect", target: redirect, reason: "oauth-linked" },
+        },
+      });
+      return undefined; // subject never set → `{ break: !ctx.subject }` halts here
+    }
+
+    // ── login mode — resolve the verified profile to a user ──
+    const outcome = await federated.resolveUser(profile);
+    if (outcome.kind === "denied" || outcome.kind === "needs-link") {
+      // `needs-link` interactive completion (prove control of the existing
+      // account, then link) is deferred — v1 surfaces the generic terminal.
+      return this.finishOAuth(ctx, outcome.kind);
+    }
+
+    // outcome ∈ { linked, created, auto-linked } → carries `userId`.
+    // ACCOUNT-STATE GATE — run BEFORE setting `ctx.subject` so a blocked account
+    // leaves the subject unset and `{ break: !ctx.subject }` halts the flow.
+    // `created` auto-activates in `resolveUser`, so only a `linked` login to a
+    // disabled/locked account trips this — exactly what must be blocked.
+    const user = await this.users.getUser(outcome.userId);
+    if (user.account.locked || !user.account.active) {
+      return this.finishOAuth(ctx, "account-state");
+    }
+
+    ctx.subject = outcome.userId;
+    ctx.oauth = {
+      provider: profile.provider,
+      outcome: outcome.kind,
+      isNew: outcome.kind === "created",
+      redirect,
+    };
+    // A freshly federated account is a first login (drives `extra-step`).
+    if (outcome.kind === "created") ctx.isFirstLogin = true;
+
+    // Seed channel state from the resolved user so the shared enrolment / MFA /
+    // notify-new-device gates behave (mirrors `credentials`' post-login seeding).
+    // The provider email is a DISPLAY fallback only — it is never promoted to
+    // the unique login handle (a gated, later-phase concern).
+    const email = user.mfa.methods.find((m) => m.name === "email" && m.confirmed);
+    if (email) {
+      ctx.email = email.value;
+      (ctx.channel ??= {}).emailConfirmed = true;
+    } else if (profile.email) {
+      ctx.email = profile.email;
+    }
+    const phone = user.mfa.methods.find((m) => m.name === "sms" && m.confirmed);
+    if (phone) {
+      const channel = (ctx.channel ??= {});
+      channel.phone = phone.value;
+      channel.phoneConfirmed = true;
+    }
+
+    // Real subject resolved → durable store for any MFA / consent pause to come.
+    swapStrategy("store");
+    return undefined;
+  }
+
+  /**
+   * Emit a benign, generic federated-login failure terminal (immediate redirect
+   * to {@link resolveOAuthErrorRedirect}). Collapses EVERY pre-subject failure
+   * mode so the wire response is never an oracle for which check tripped
+   * (invariant #5). Returns `undefined` so the step can `return this.finishOAuth(...)`;
+   * `{ break: !ctx.subject }` then halts the flow (subject is never set on failure).
+   *
+   * The precise `reason` is handed to `resolveOAuthErrorRedirect` (the override
+   * seam — a consumer MAY branch the target on it, server-side) but the
+   * CLIENT-facing `action.reason` is deliberately the constant `"oauth-failed"`:
+   * exposing `oauth-${reason}` to the SPA would re-introduce the very
+   * which-check-tripped oracle invariant #5 forbids.
+   */
+  private finishOAuth(ctx: AuthWfCtx, reason: string): undefined {
+    finishWf({
+      next: {
+        trigger: "immediate",
+        action: {
+          type: "redirect",
+          target: this.resolveOAuthErrorRedirect(ctx, reason),
+          reason: "oauth-failed",
+        },
+      },
+    });
+    return undefined;
+  }
+
   // ── @Workflow methods (3) — schemas copied verbatim from UNIFICATION.md §9 ──
 
   /**
@@ -3627,4 +3840,108 @@ export class AuthWorkflow {
     { id: "finalize-auto-login" }, // v1 always auto-logins
   ])
   signupFlow(): void {}
+
+  /**
+   * oauth.flow — federated login (OAuth2 / OIDC). `@Public()` on the body
+   * (anonymous). Reachable via the public `/auth/trigger` (add `auth/oauth/flow`
+   * to the controller allow-list); the SPA bridges the provider callback into a
+   * START with `input.formData = { code, state }`. Security lives in the
+   * `oauth-exchange` step (signed-state + CSRF cookie + single-use PKCE txn +
+   * verified ID token + account-state gate), NOT in route gating.
+   *
+   * Post-subject tail is login.flow's verbatim (same @Step ids): the password
+   * phase is skipped (federated users never set `newPasswordRequired`); MFA /
+   * channel-enrolment / consent / concurrency / issue / redirect all reuse the
+   * shared bodies, so a federated user is gated identically to a password user.
+   */
+  @Workflow("auth/oauth/flow")
+  @Public()
+  @WorkflowSchema<AuthWfCtx>([
+    { id: "oauth-exchange" },
+    { break: (ctx) => !ctx.subject }, // link / denied / needs-link / blocked → finished, no subject
+
+    // Resolve all policy groups (mirrors login.flow post-credentials).
+    { id: "prepare-consents" },
+    { id: "prepare-alternate-credentials" },
+    { id: "prepare-device-trust" },
+    { id: "prepare-enrollment" },
+    { id: "prepare-finalize" },
+    { id: "prepare-guards" },
+    { id: "prepare-lockout" },
+    { id: "prepare-session-policy" },
+    { id: "prepare-semantic-flags" },
+
+    // Forced password change — gated on `newPasswordRequired`, which federated
+    // login never sets, so this no-ops. Kept for parity / customer overrides.
+    ...passwordPhaseSchema,
+    { break: (ctx) => !!ctx.aborted },
+
+    // Forced channel enrolment (gated on enrollment policy; default off).
+    {
+      id: "ask/email",
+      condition: (ctx) =>
+        (!!ctx.enrollment?.ensureEmail || !!ctx.guards?.emailVerifiedRequired) && !ctx.email,
+    },
+    {
+      id: "verify/email",
+      condition: (ctx) =>
+        (!!ctx.enrollment?.ensureEmail || !!ctx.guards?.emailVerifiedRequired) &&
+        !!ctx.email &&
+        !ctx.channel?.emailConfirmed,
+    },
+    {
+      id: "ask/phone",
+      condition: (ctx) => !!ctx.enrollment?.ensurePhone && !ctx.channel?.phone,
+    },
+    {
+      id: "verify/phone",
+      condition: (ctx) =>
+        !!ctx.enrollment?.ensurePhone && !!ctx.channel?.phone && !ctx.channel?.phoneConfirmed,
+    },
+
+    // MFA loop (shared) — a federated user with enrolled methods is still
+    // challenged; `mfaPolicy.mode === 'disabled'` skips the whole loop.
+    ...mfaLoopSchema,
+
+    // Post-MFA device-trust (gated; default off).
+    {
+      id: "device-trust",
+      condition: (ctx) =>
+        !!ctx.deviceTrust?.enabled &&
+        !!ctx.otp?.verified &&
+        !!ctx.trust?.newDevice &&
+        (!ctx.deviceTrust?.optIn || !!ctx.trust?.rememberDevice),
+    },
+
+    { id: "extra-step", condition: (ctx) => !!ctx.isFirstLogin },
+    {
+      id: "terms-bump-prompt",
+      condition: (ctx) => (ctx.consents?.pending?.length ?? 0) > 0 && !ctx.consents?.decidedAt,
+    },
+    ...consentsPersistTailSchema,
+
+    // Session policy (concurrency limit).
+    {
+      condition: (ctx) => !!ctx.sessionPolicy?.concurrencyLimit,
+      steps: [
+        { id: "load-active-sessions" },
+        {
+          id: "concurrency-limit",
+          condition: (ctx) =>
+            (ctx.session?.activeSessions ?? 0) >= ctx.sessionPolicy!.concurrencyLimit!.max,
+        },
+      ],
+    },
+    { break: (ctx) => !!ctx.aborted },
+
+    // Finalize (login-specific tail — same as login.flow).
+    { id: "issue" },
+    {
+      id: "notify-new-device",
+      condition: (ctx) =>
+        !ctx.isFirstLogin && !!ctx.finalize?.notifyNewDevice && !!ctx.trust?.newDevice,
+    },
+    { id: "redirect" },
+  ])
+  oauthFlow(): void {}
 }

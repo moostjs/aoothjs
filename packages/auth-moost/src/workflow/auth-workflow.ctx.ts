@@ -311,6 +311,34 @@ export interface AuthWfDefaults {
 }
 
 /**
+ * Federated-login (OAuth2 / OIDC) flow state. Populated by the `oauth-exchange`
+ * @Step after a verified provider profile resolves to a user. Its presence on
+ * ctx is the OAuth-flow discriminator (§ per-flow discrimination):
+ * `ctx.oauth` set ⇒ `auth/oauth/flow` is running (mirrors `ctx.accept` /
+ * `ctx.postReset` / `ctx.changePassword` / `ctx.signup`).
+ *
+ * Carries NO secret material — the PKCE verifier / nonce / authorization `code`
+ * are consumed inside `oauth-exchange` (verifier + nonce live server-side in the
+ * `OAuthFlowStore`, never on ctx). Only the post-resolve audit/UX fields land
+ * here.
+ */
+export interface AuthWfOAuthState {
+  /** The provider id (`google`, `oidc:<issuer>`, …) the subject authenticated with. */
+  provider: string;
+  /** The `FederatedLoginService.resolveUser` outcome that set `ctx.subject`. */
+  outcome?: "linked" | "created" | "auto-linked";
+  /** `true` only for the `created` outcome (a brand-new federated account). */
+  isNew?: boolean;
+  /**
+   * The validated post-login app redirect target carried across the OAuth
+   * bounce (signed into `state`, re-validated against the allow-list in
+   * `oauth-exchange`). Read by `resolveRedirect` so the `redirect` tail step
+   * sends the SPA to the originating page. Same-origin relative path only.
+   */
+  redirect?: string;
+}
+
+/**
  * Self-signup flow state. Populated by `init-signup` (policy from
  * `resolveSignupPolicy`) and `signup-form` (the `submitted` marker). Its
  * presence on ctx is the signup-flow discriminator (§ per-flow discrimination):
@@ -437,6 +465,7 @@ export interface AuthWfCtx {
   sessionPolicy?: AuthWfSessionPolicy; // [login]
   changePassword?: AuthWfChangePasswordPolicy; // [change-password] — also the flow discriminator
   signup?: AuthWfSignupState; // [signup] — also the flow discriminator
+  oauth?: AuthWfOAuthState; // [oauth] — also the flow discriminator
   mfaPolicy?: AuthWfMfaPolicy; // [login + invite]
   adminForm?: AuthWfAdminFormPolicy; // [invite admin]
   accept?: AuthWfAcceptState; // [invite accept]

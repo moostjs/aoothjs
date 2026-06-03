@@ -1,6 +1,6 @@
 # What is aoothjs?
 
-`aoothjs` is the authentication and authorization stack for the [moost](https://moost.org) + [atscript](https://atscript.dev) ecosystem. It ships six packages that split cleanly across two concerns — **who you are** (authn) and **what you can do** (authz) — and two integration layers — **framework-agnostic core** and **moost glue**.
+`aoothjs` is the authentication and authorization stack for the [moost](https://moost.org) + [atscript](https://atscript.dev) ecosystem. It ships seven packages that split cleanly across two concerns — **who you are** (authn) and **what you can do** (authz) — and two integration layers — **framework-agnostic core** and **moost glue**.
 
 This page sketches the shape of the stack and points you at the right package for each problem. When you are ready to write code, jump to [Quick Start](./quick-start) or [Installation](./installation).
 

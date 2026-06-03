@@ -2,6 +2,10 @@ export const ENV = {
   PORT: Number(process.env.PORT ?? 3001),
   DB_PATH: process.env.DB_PATH ?? ":memory:",
   FRONTEND_URL: process.env.FRONTEND_URL ?? "http://localhost:5173",
+  // Public origin the browser actually uses — the OAuth `redirect_uri` + the
+  // fake-IdP authorize URL are built from this, so it MUST match the serving
+  // port (the combined vite dev server + the Playwright baseURL = :3001).
+  PUBLIC_URL: process.env.PUBLIC_URL ?? `http://localhost:${Number(process.env.PORT ?? 3001)}`,
   JWT_SECRET: process.env.JWT_SECRET ?? "e2e-demo-secret-do-not-use-in-prod",
   ACCESS_TTL_MS: Number(process.env.ACCESS_TTL_MS ?? 60 * 60 * 1000),
   REFRESH_TTL_MS: Number(process.env.REFRESH_TTL_MS ?? 30 * 24 * 60 * 60 * 1000),

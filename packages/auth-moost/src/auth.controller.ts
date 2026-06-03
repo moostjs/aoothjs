@@ -33,6 +33,10 @@ export const DEFAULT_AUTH_WORKFLOWS = [
   "auth/invite/start",
   "auth/recovery/flow",
   "auth/signup/flow",
+  // Federated login. Safe to start publicly: the `oauth-exchange` step gates on
+  // a signed state + CSRF cookie + single-use PKCE transaction + a verified ID
+  // token, so an attacker can't forge a successful exchange via the trigger.
+  "auth/oauth/flow",
 ] as const;
 
 /**

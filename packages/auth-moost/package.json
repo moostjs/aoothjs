@@ -67,6 +67,7 @@
   "dependencies": {
     "@aooth/arbac-moost": "workspace:^",
     "@aooth/auth": "workspace:*",
+    "@aooth/idp": "workspace:*",
     "@aooth/user": "workspace:*",
     "@atscript/moost-wf": "catalog:",
     "@wooksjs/http-body": "catalog:"

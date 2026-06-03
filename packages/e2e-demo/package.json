@@ -23,6 +23,7 @@
     "@aooth/arbac-moost": "workspace:*",
     "@aooth/auth": "workspace:*",
     "@aooth/auth-moost": "workspace:*",
+    "@aooth/idp": "workspace:*",
     "@aooth/user": "workspace:*",
     "@atscript/core": "catalog:",
     "@atscript/db": "catalog:",

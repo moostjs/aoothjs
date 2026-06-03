@@ -47,7 +47,7 @@
 ```
 
 - `@aooth/auth` depends on `@aooth/user` for the credential record shape and password verification.
-- `@aooth/idp` depends on `@aooth/user` (concrete `UserService` + the `FederatedIdentityStore` that ships there) and reuses `@aooth/auth`'s `Clock`. It's the framework-agnostic federated-login core; the HTTP/workflow wiring is the forthcoming Moost integration.
+- `@aooth/idp` depends on `@aooth/user` (concrete `UserService` + the `FederatedIdentityStore` that ships there) and reuses `@aooth/auth`'s `Clock`. It's the framework-agnostic federated-login core; the HTTP/workflow wiring (`OAuthController` + `auth/oauth/flow`) lives in `@aooth/auth-moost`.
 - `@aooth/auth-moost` depends on both `@aooth/user` and `@aooth/auth` — workflows orchestrate `UserService` calls and store tokens via `AuthCredential`.
 - `@aooth/arbac-moost` depends on `@aooth/arbac-core`, `@aooth/arbac` (re-exports `ControlGate`, scope-merge helpers used by the DB controllers), and `@aooth/user` (for `UserCredentials` typing on the atscript provider) — all as runtime workspace deps.
 - `@aooth/arbac-moost` and `@aooth/auth-moost` have **no dependency on each other**. They are bound only at the app's `Moost.applyGlobalInterceptors(...)` boundary. You can use either independently.

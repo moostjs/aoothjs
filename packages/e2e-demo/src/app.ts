@@ -26,14 +26,23 @@ import {
   createAuthEmailOutlet,
   DEFAULT_AUTH_WORKFLOWS,
   deriveWfStateSecret,
+  FEDERATED_IDENTITY_STORE_TOKEN,
+  OAUTH_FLOW_STORE_TOKEN,
+  OAuthController,
+  OAuthFlowStoreMemory,
   Public,
   SessionsController,
   useAuth,
   WfTrigger,
   WfTriggerProvider,
 } from "@aooth/auth-moost";
+import { FakeIdentityProvider, FederatedLoginService, OAuthProviderRegistry } from "@aooth/idp";
 import { HandleStateStrategy, Step, type WfStateStrategy, WorkflowParam } from "@moostjs/event-wf";
 import { type UserCredentials, UserService } from "@aooth/user";
+import {
+  FederatedIdentityStoreAtscriptDb,
+  type FederatedIdentityTable,
+} from "@aooth/user/atscript-db";
 import { MoostHttp, Post } from "@moostjs/event-http";
 import { MoostWf } from "@moostjs/event-wf";
 import {
@@ -75,6 +84,7 @@ import {
   RECOVERY_VARIANTS,
 } from "./variants";
 import { readVariantHeader } from "./variants-server";
+import { createFakeIdpController } from "./oauth-fake-idp";
 import { createWfStore } from "./wf-store";
 import { makeHandoverWorkflow } from "./workflows/handover.workflow";
 
@@ -352,6 +362,40 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   const aooth = createAooth({ tables: appDb.tables, env });
   const wfStateStore = createWfStore(appDb);
 
+  // ── Federated login (OAuth2 / OIDC) wiring ──────────────────────────────
+  // A network-free fake Google provider whose authorize endpoint is the
+  // test-only `/__fake-idp/authorize` route; the account-link table is the
+  // real SQLite-backed `aooth_federated_identities`. The state secret reuses
+  // the app JWT secret. `OAuthFlowStoreMemory` holds the in-flight PKCE
+  // verifier server-side (single-instance demo — a multi-pod deployment would
+  // swap a shared store).
+  const fakeGoogle = new FakeIdentityProvider({
+    id: "google",
+    authorizationEndpoint: `${env.PUBLIC_URL}/__fake-idp/authorize`,
+  });
+  const oauthRegistry = new OAuthProviderRegistry({
+    baseUrl: env.PUBLIC_URL,
+    stateSecret: env.JWT_SECRET,
+    providers: [fakeGoogle],
+    // `require-interactive-link` (the safe default) + trust Google's verified
+    // email for the auto-link path; open self-signup so a first-time federated
+    // login creates the account.
+    policy: {
+      emailMatch: "require-interactive-link",
+      allowSignup: true,
+      trustEmailVerifiedFrom: ["google"],
+    },
+  });
+  const federatedStore = new FederatedIdentityStoreAtscriptDb({
+    table: appDb.tables.federatedIdentities as unknown as FederatedIdentityTable,
+  });
+  const federatedLogin = new FederatedLoginService<DemoUser>({
+    users: aooth.userService,
+    federated: federatedStore,
+    policy: oauthRegistry.policy,
+  });
+  const oauthFlowStore = new OAuthFlowStoreMemory();
+
   const app = new Moost();
   const moostHttp = new MoostHttp();
   app.adapter(moostHttp);
@@ -436,6 +480,18 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
 
     protected override deliver(payload: AuthDeliveryPayload): Promise<void> {
       return forwardDeliver(payload);
+    }
+
+    // The demo is cookieless — it replays `data.accessToken` from sessionStorage
+    // as a Bearer — so an OAuth login must FINISH with the token in `data`
+    // rather than have it replaced by a redirect-only envelope. Opt the OAuth
+    // flow out of the server-driven `redirect` step; the SPA callback page
+    // navigates client-side after stashing the token. A cookie-transport
+    // deployment keeps the library default (the redirect carries the session
+    // via Set-Cookie, so no `data` token is needed).
+    protected override resolveRedirect(ctx: AuthWfCtx): string | undefined {
+      if (ctx.oauth) return undefined;
+      return super.resolveRedirect(ctx);
     }
 
     // ── Variant-driven resolveXxx policy overrides ──
@@ -659,6 +715,13 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     // itself no longer consumes DI for senders/audit/trust/rate-limit —
     // those use `protected` method overrides on `DemoAuthWorkflow`.
     ["EmailSender", () => emailSender],
+    // Federated login. The two concrete services bind by class reference; the
+    // two ABSTRACT stores bind under explicit string tokens (see
+    // oauth-tokens.ts — an abstract class can't be a class-reference DI token).
+    [OAuthProviderRegistry, () => oauthRegistry],
+    [FederatedLoginService, () => federatedLogin],
+    [OAUTH_FLOW_STORE_TOKEN, () => oauthFlowStore],
+    [FEDERATED_IDENTITY_STORE_TOKEN, () => federatedStore],
   ];
   app.setProvideRegistry(createProvideRegistry(...authProviders));
   app.applyGlobalInterceptors(authGuardInterceptor({ cookie: { secure: false } }));
@@ -721,7 +784,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // default `SessionEnricherProvider` (identity) is auto-resolved by DI; the
   // SPA's portal parses the raw `metadata.userAgent` client-side, so no
   // server-side enricher is wired here.
-  app.registerControllers(DemoAuthController, DemoAuthWorkflow, SessionsController);
+  app.registerControllers(
+    DemoAuthController,
+    DemoAuthWorkflow,
+    SessionsController,
+    OAuthController,
+  );
 
   // `@Injectable()` (SINGLETON) — moost@0.6.x does NOT inherit injectable
   // metadata across `extends`, so each consumer subclass must re-apply it.
@@ -777,6 +845,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       t.projects,
       t.audit,
       t.wfStates,
+      t.federatedIdentities,
       t.credentials,
       t.users,
       t.departments,
@@ -811,6 +880,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       wfStates: appDb.tables.wfStates,
     });
     app.registerControllers(TestMailboxController);
+    // The fake OAuth provider's authorize endpoint — only meaningful in test
+    // mode (it's the bounce target baked into `fakeGoogle`'s authorize URL).
+    app.registerControllers(createFakeIdpController(fakeGoogle));
   }
 
   await app.init();

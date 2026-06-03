@@ -24,6 +24,9 @@ pnpm add @aooth/user @aooth/arbac
 # Credential layer
 pnpm add @aooth/auth
 
+# Federated login (OAuth2/OIDC "Sign in with Google") — optional; mounts via @aooth/auth-moost
+pnpm add @aooth/idp
+
 # Pick at most one persistence backend (or stay in-memory for tests)
 pnpm add @atscript/db @atscript/db-sqlite better-sqlite3   # atscript-db SQLite
 pnpm add ioredis                                            # Redis

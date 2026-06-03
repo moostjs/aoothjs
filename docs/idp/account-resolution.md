@@ -16,7 +16,7 @@ const svc = new FederatedLoginService({
 const outcome = await svc.resolveUser(profile);
 ```
 
-`resolveUser` returns a **discriminated outcome** so the caller (the forthcoming Moost workflow) can branch cleanly:
+`resolveUser` returns a **discriminated outcome** so the caller (the Moost [`auth/oauth/flow`](../moost/oauth) workflow) can branch cleanly:
 
 | `outcome.kind` | When                                                               | Carries           |
 | -------------- | ------------------------------------------------------------------ | ----------------- |
@@ -103,7 +103,7 @@ Shared config is injected into each provider that opts in (a provider's own cons
 
 ## PKCE & signed state {#pkce-signed-state}
 
-The browser-bounce primitives (used by the forthcoming controller):
+The browser-bounce primitives (used by the [`OAuthController`](../moost/oauth)):
 
 ```ts
 import { createPkcePair, generateNonce, signState, verifyState } from "@aooth/idp";

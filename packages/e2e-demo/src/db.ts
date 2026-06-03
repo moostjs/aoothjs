@@ -9,6 +9,7 @@ import { DemoAuthCredential } from "./models/auth-credential.as";
 import { Comment } from "./models/comment.as";
 import { Department } from "./models/department.as";
 import { Document } from "./models/document.as";
+import { DemoFederatedIdentity } from "./models/federated-identity.as";
 import { Project } from "./models/project.as";
 import { Task } from "./models/task.as";
 import { Tenant } from "./models/tenant.as";
@@ -26,6 +27,7 @@ export const ALL_MODELS = [
   AuditEntry,
   DemoWfState,
   DemoAuthCredential,
+  DemoFederatedIdentity,
 ] as const;
 
 export interface AppDb {
@@ -41,6 +43,7 @@ export interface AppDb {
     audit: AtscriptDbTable<typeof AuditEntry>;
     wfStates: AtscriptDbTable<typeof DemoWfState>;
     credentials: AtscriptDbTable<typeof DemoAuthCredential>;
+    federatedIdentities: AtscriptDbTable<typeof DemoFederatedIdentity>;
   };
   close: () => void;
 }
@@ -71,6 +74,7 @@ export function createAppDb(dbPath: string): AppDb {
     audit: db.getTable(AuditEntry),
     wfStates: db.getTable(DemoWfState),
     credentials: db.getTable(DemoAuthCredential),
+    federatedIdentities: db.getTable(DemoFederatedIdentity),
   };
 
   return {

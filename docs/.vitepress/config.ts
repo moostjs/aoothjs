@@ -87,6 +87,7 @@ const moostSidebar = [
       { text: "REST Controllers", link: "/moost/controllers" },
       { text: "Sessions", link: "/moost/sessions" },
       { text: "Workflows", link: "/moost/workflows" },
+      { text: "Federated Login (OAuth)", link: "/moost/oauth" },
       { text: "SPA Components", link: "/moost/spa-components" },
       { text: "DB Controllers", link: "/moost/db-controllers" },
       { text: "Atscript Models", link: "/moost/atscript" },

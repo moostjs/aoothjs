@@ -23,6 +23,21 @@ const selectedVariant = ref<Record<string, string>>({});
       Manual test harness — pick a workflow to drive end-to-end.
     </p>
 
+    <!-- Federated login: a plain anchor (NOT RouterLink) — `/auth/oauth/google/start`
+         is a backend route that 302s to the provider, so it needs a top-level
+         navigation, not an SPA push. -->
+    <a
+      href="/auth/oauth/google/start"
+      data-testid="login-google"
+      class="card layer-3 hover:layer-4 transition-colors block p-$m no-underline mb-$l"
+    >
+      <strong class="text-current">Sign in with Google</strong>
+      <p class="text-sm text-current-muted mt-$xs">
+        Federated login (OAuth2 / OIDC) — <code>auth/oauth/flow</code>. Bounces through the
+        test-only fake IdP and back.
+      </p>
+    </a>
+
     <ul class="flex flex-col gap-$s">
       <li v-for="wf in WORKFLOWS" :key="wf.id">
         <RouterLink

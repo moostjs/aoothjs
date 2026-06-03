@@ -742,6 +742,7 @@ describe("AuthWorkflow schema integrity", () => {
       "auth/change-password/flow",
       "auth/invite/start",
       "auth/login/flow",
+      "auth/oauth/flow",
       "auth/recovery/flow",
       "auth/signup/flow",
     ]);

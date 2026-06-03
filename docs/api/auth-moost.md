@@ -469,6 +469,80 @@ interface AuthOptions {
 
 Defaults: `cookie.name='aooth_session'`, `secure=true`, `sameSite='lax'`, `httpOnly=true`, `path='/'`. `refreshCookie.path='/auth/refresh'` (narrow path). `enableCookie=true`, `enableBearer=true`. Bearer wins when both transports are enabled. `ResolvedAuthCookieConfig` / `ResolvedAuthOptions` are the resolved (defaults-applied) views. See [Config Reference](/moost/config).
 
+## Federated login (OAuth2 / OIDC)
+
+The Moost wiring of [`@aooth/idp`](/api/idp). See [Federated Login (OAuth)](/moost/oauth) for the narrative.
+
+### `OAuthController`
+
+```ts
+@Controller("auth/oauth")
+class OAuthController {
+  // ctor: (registry, auth, users, @Inject(OAUTH_FLOW_STORE_TOKEN) flowStore,
+  //        @Inject(FEDERATED_IDENTITY_STORE_TOKEN) federated)
+  start(@Param provider, @Query redirect?): Promise<string>; // GET :provider/start  — @Public, 302
+  link(@Param provider, @Query redirect?): Promise<string>; //  GET :provider/link   — self-scoped, 302
+  unlink(@Param provider, @Param subject): Promise<{ ok: true }>; // DELETE :provider/:subject
+}
+```
+
+Mounted REST surface for federated login. `start`/`link` mint PKCE + nonce + a signed state and 302 to the provider; the callback is bridged by the SPA into `/auth/trigger` (`auth/oauth/flow`). Subclass to override `defaultRedirect()` / `resolveOAuthErrorRedirect()` or to add `@ArbacAction(...)`.
+
+### `OAuthFlowStore` / `OAuthFlowStoreMemory`
+
+```ts
+abstract class OAuthFlowStore {
+  abstract put(random: string, txn: NewOAuthFlowTransaction): Promise<void>;
+  abstract take(random: string): Promise<OAuthFlowTransaction | null>; // single-use
+}
+class OAuthFlowStoreMemory extends OAuthFlowStore {
+  constructor(opts?: { clock?: Clock; ttlMs?: number /* default 600_000 */ });
+}
+interface OAuthFlowTransaction {
+  provider: string;
+  verifier: string;
+  nonce: string;
+  redirect: string;
+  userId?: string;
+  expiresAt: number;
+}
+type NewOAuthFlowTransaction = Omit<OAuthFlowTransaction, "expiresAt">;
+```
+
+Server-side store for the in-flight PKCE verifier + nonce (+ `/link` userId), keyed by the signed-state `random`. `take` is single-use (replay defense). Memory impl is process-local — override for multi-pod.
+
+### `OAuthRuntime`
+
+```ts
+@Injectable()
+class OAuthRuntime {
+  constructor(registry, federated, @Inject(OAUTH_FLOW_STORE_TOKEN) flowStore);
+}
+```
+
+DI holder bundling the three federated-login singletons the `oauth-exchange` step resolves (via `useControllerContext().instantiate(OAuthRuntime)`), so `AuthWorkflow`'s ctor stays unchanged.
+
+### DI tokens + HTTP helpers
+
+```ts
+const OAUTH_FLOW_STORE_TOKEN = "aooth:OAuthFlowStore"; // provide OAuthFlowStore under this
+const FEDERATED_IDENTITY_STORE_TOKEN = "aooth:FederatedIdentityStore";
+const OAUTH_CSRF_COOKIE = "aooth_oauth";
+function oauthCsrfCookieAttrs(opts: {
+  secure: boolean;
+  maxAgeSec?: number;
+  path?: string;
+}): TCookieAttributesInput;
+function isSafeRelativeRedirect(target: string | undefined): target is string; // open-redirect §7
+function resolveOAuthRedirect(requested: string | undefined, fallback: string): string;
+```
+
+The abstract stores bind under **string tokens** (moost can't use an abstract class as a class-reference DI token). `OAUTH_CSRF_COOKIE` is the Lax double-submit cookie; `isSafeRelativeRedirect` rejects the §7 open-redirect bypass list (`//evil`, `/\evil`, absolute URLs, control chars).
+
+### Workflow: `auth/oauth/flow` + `ctx.oauth`
+
+`AuthWorkflow.oauthFlow()` (`@Workflow("auth/oauth/flow")`) — one real `@Step("oauth-exchange")` (verify state + CSRF + single-use txn + verified ID-token exchange + `resolveUser`/`linkIdentity` + account-state gate) then the shared login tail. `AuthWfCtx.oauth?: AuthWfOAuthState` (`{ provider, outcome?, isNew?, redirect? }`) is the flow discriminator. `auth/oauth/flow` is in `DEFAULT_AUTH_WORKFLOWS`.
+
 ## Subpath: `@aooth/auth-moost/atscript`
 
 ```ts

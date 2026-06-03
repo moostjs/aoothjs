@@ -35,7 +35,7 @@ class ReportsController {
   }
 }
 
-@Inherit() @Controller() // one class, five @Workflow schemas
+@Inherit() @Controller() // one class, six @Workflow schemas
 class MyAuth extends AuthWorkflow {
   // Subclasses MUST re-declare the 4-arg ctor — TS emits fresh design-paramtypes per class.
   constructor(users: UserService, auth: AuthCredential, consents: ConsentStore) {
