@@ -156,6 +156,24 @@ export class UserService<T extends object = object> {
     return user;
   }
 
+  /**
+   * Deterministic handle resolver — `username` exact, then `email` exact.
+   * Returns `null` when nothing matches. Maps a login/recovery handle to a row;
+   * `login` uses the same resolution.
+   */
+  async findByHandle(handle: string): Promise<(UserCredentials & T) | null> {
+    return this.store.findByHandle(handle);
+  }
+
+  /**
+   * Permissive lookup — `id`, then `username`, then `email` (ordered, first
+   * match). For internal / admin / recovery callers that may hold either an id
+   * or a handle. NOT for the login path (use {@link login}/{@link findByHandle}).
+   */
+  async findByIdentifier(value: string): Promise<(UserCredentials & T) | null> {
+    return this.store.findByIdentifier(value);
+  }
+
   async login(
     handle: string,
     password: string,
