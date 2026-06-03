@@ -64,6 +64,17 @@ const authSidebar = [
   },
 ];
 
+const idpSidebar = [
+  {
+    text: "IdP (Federated Login)",
+    items: [
+      { text: "Overview", link: "/idp/" },
+      { text: "Providers", link: "/idp/providers" },
+      { text: "Account Resolution & Linking", link: "/idp/account-resolution" },
+    ],
+  },
+];
+
 const moostSidebar = [
   {
     text: "Moost Integration",
@@ -93,6 +104,7 @@ const apiSidebar = [
       { text: "@aooth/arbac-core", link: "/api/arbac-core" },
       { text: "@aooth/arbac", link: "/api/arbac" },
       { text: "@aooth/auth", link: "/api/auth" },
+      { text: "@aooth/idp", link: "/api/idp" },
       { text: "@aooth/arbac-moost", link: "/api/arbac-moost" },
       { text: "@aooth/auth-moost", link: "/api/auth-moost" },
     ],
@@ -146,6 +158,7 @@ export default defineConfig({
       { text: "User", link: "/user/" },
       { text: "ARBAC", link: "/arbac/" },
       { text: "Auth", link: "/auth/" },
+      { text: "IdP", link: "/idp/" },
       { text: "Moost", link: "/moost/" },
       { text: "API", link: "/api/user" },
       {
@@ -164,6 +177,7 @@ export default defineConfig({
       "/user/": userSidebar,
       "/arbac/": arbacSidebar,
       "/auth/": authSidebar,
+      "/idp/": idpSidebar,
       "/moost/": moostSidebar,
       "/api/": apiSidebar,
     },

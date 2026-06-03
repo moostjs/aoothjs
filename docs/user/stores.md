@@ -254,9 +254,14 @@ The `as unknown as AuthUserTable` cast is required because `AtscriptDbTable<T>` 
 | `{ set: { backupCodes: [...] } }`               | Wholesale array replacement.                                                                                    |
 | `create` conflict                               | Adapter translates DB conflicts to `UserAuthError("ALREADY_EXISTS", ...)`.                                      |
 
+## The federated identity store
+
+`@aooth/user` also ships a second, independent store for **account linking** — `FederatedIdentityStore` (abstract) + `FederatedIdentityStoreMemory` + `FederatedIdentityStoreAtscriptDb` (from `@aooth/user/atscript-db`). It maps an external provider account `(provider, subject)` to a user `id` and is consumed by `@aooth/idp`'s `FederatedLoginService`. Its narrative, the matching policy, and the shipped `AoothFederatedIdentity` `.as` model live under [IdP — Account resolution](/idp/account-resolution); see the [API reference](/api/user#federated-identity-store) for the method surface.
+
 ## See also
 
 - [Credentials Model](./credentials) — the shape `UserStore<T>` persists.
+- [IdP — Account resolution](/idp/account-resolution) — the `FederatedIdentityStore` in context.
 - [Errors](./errors) — what `create` / `update` / `delete` throws when things go wrong.
 - [`@aooth/user/atscript-db` source](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/atscript-db/index.ts).
 - [Shipped `.as` model](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/atscript-db/user-credentials.as).

@@ -1,6 +1,6 @@
 # Ecosystem & Packages
 
-`aoothjs` is six packages. This page lists what each owns, what it depends on, and where to read more.
+`aoothjs` is seven packages. This page lists what each owns, what it depends on, and where to read more.
 
 ## Package map
 
@@ -8,6 +8,7 @@
 | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`@aooth/user`](../user/)                        | User credential record + password hashing + MFA primitives + lockout + pluggable `UserStore`.                                                                  |
 | [`@aooth/auth`](../auth/)                        | Issue / validate / refresh / revoke bearer credentials (sessions or JWT). Magic-link tokens. Email/SMS transport contracts.                                    |
+| [`@aooth/idp`](../idp/)                          | Federated-login core: OAuth2/OIDC provider clients (discovery + JWKS + ID-token verification), PKCE/state, `OAuthProviderRegistry`, `FederatedLoginService`.   |
 | [`@aooth/arbac-core`](../arbac/core)             | Zero-dep RBAC engine — `Arbac`, `TArbacRole`, `TArbacRule`, deny-wins evaluator, wildcard matcher.                                                             |
 | [`@aooth/arbac`](../arbac/)                      | Fluent `defineRole()` builder + `definePrivilege()` factories + scope-merge helpers + type codegen. Re-exports `arbac-core`.                                   |
 | [`@aooth/auth-moost`](../moost/)                 | moost glue: `AuthController`, `authGuardInterceptor`, the unified `AuthWorkflow` (login / invite / recovery), `ConsentStore`, `@Public`, `@UserId`, `useAuth`. |
@@ -46,6 +47,7 @@
 ```
 
 - `@aooth/auth` depends on `@aooth/user` for the credential record shape and password verification.
+- `@aooth/idp` depends on `@aooth/user` (concrete `UserService` + the `FederatedIdentityStore` that ships there) and reuses `@aooth/auth`'s `Clock`. It's the framework-agnostic federated-login core; the HTTP/workflow wiring is the forthcoming Moost integration.
 - `@aooth/auth-moost` depends on both `@aooth/user` and `@aooth/auth` — workflows orchestrate `UserService` calls and store tokens via `AuthCredential`.
 - `@aooth/arbac-moost` depends on `@aooth/arbac-core`, `@aooth/arbac` (re-exports `ControlGate`, scope-merge helpers used by the DB controllers), and `@aooth/user` (for `UserCredentials` typing on the atscript provider) — all as runtime workspace deps.
 - `@aooth/arbac-moost` and `@aooth/auth-moost` have **no dependency on each other**. They are bound only at the app's `Moost.applyGlobalInterceptors(...)` boundary. You can use either independently.

@@ -334,6 +334,69 @@ class UserAuthError extends Error {
 
 Every error path in `@aooth/user` funnels through this single class. The `type` field drives HTTP mapping at the controller layer. `details` carries `{ reason, lockEnds }` for `LOCKED`, `{ policies }` for `POLICY_VIOLATION`, and `{ lockEnds }` for `INVALID_CREDENTIALS` / `MFA_INVALID` when the failure tripped the lock. See [Errors](/user/errors).
 
+## Federated identity store
+
+The account-linking table for federated login — maps a provider account `(provider, subject)` to a user `id`. The narrative + policy live in [IdP — Account resolution](/idp/account-resolution); `@aooth/idp`'s `FederatedLoginService` is the consumer.
+
+### `FederatedIdentityStore` (abstract)
+
+```ts
+abstract class FederatedIdentityStore {
+  abstract find(provider: string, subject: string): Promise<FederatedIdentity | null>;
+  abstract listForUser(userId: string): Promise<FederatedIdentity[]>;
+  abstract link(rec: NewFederatedIdentity): Promise<FederatedIdentity>; // throws ALREADY_EXISTS if (provider,subject) linked to ANY user
+  abstract unlink(provider: string, subject: string): Promise<boolean>;
+  abstract touchLogin(
+    provider: string,
+    subject: string,
+    profile?: FederatedProfileSnapshot,
+  ): Promise<void>;
+  abstract deleteAllForUser(userId: string): Promise<number>; // GDPR — app-level, not a DB cascade
+}
+```
+
+`(provider, subject)` is the stable key; a user may own many rows (one per linked provider account). The owning `userId` is a **plain indexed column, not a hard FK** (`@aooth/user` can't know your concrete user table). See [Stores](/user/stores).
+
+### `FederatedIdentityStoreMemory`
+
+```ts
+new FederatedIdentityStoreMemory(opts?: { clock?: () => number })
+```
+
+In-memory reference impl (composite `(provider, subject)` key + `structuredClone` isolation, injectable clock).
+
+### `pickDefinedProfile`
+
+```ts
+function pickDefinedProfile(src: FederatedProfileSnapshot): FederatedProfileSnapshot;
+```
+
+Copies only the **defined** display fields — so a `touchLogin` / `link` with a partial profile never overwrites a stored value with `undefined`. Shared by every store impl and by `@aooth/idp`.
+
+### Federated types
+
+```ts
+interface FederatedProfileSnapshot {
+  email?: string;
+  emailVerified?: boolean;
+  displayName?: string;
+  avatarUrl?: string;
+}
+interface FederatedIdentity extends FederatedProfileSnapshot {
+  id: string; // surrogate PK
+  provider: string;
+  subject: string;
+  userId: string; // owner — the user's surrogate id
+  linkedAt: number;
+  lastLoginAt?: number;
+}
+interface NewFederatedIdentity extends FederatedProfileSnapshot {
+  provider: string;
+  subject: string;
+  userId: string;
+}
+```
+
 ## Subpath: `@aooth/user/atscript-db`
 
 ```ts
@@ -351,6 +414,15 @@ new UsersStoreAtscriptDb<TUserCustom>(opts: { table: AuthUserTable<TUserCustom> 
 ### `AuthUserTable<TUserCustom>` / `UserCredentialsRow<TUserCustom>`
 
 Structural-only types describing the subset of `AtscriptDbTable` methods the adapter needs and the row shape it expects. Apps cast their concrete `db.getTable(AppUser)` to `AuthUserTable`. See [Stores](/user/stores).
+
+### `FederatedIdentityStoreAtscriptDb` / `FederatedIdentityTable`
+
+```ts
+import { FederatedIdentityStoreAtscriptDb } from "@aooth/user/atscript-db";
+new FederatedIdentityStoreAtscriptDb(opts: { table: FederatedIdentityTable; clock?: () => number })
+```
+
+`@atscript/db`-backed `FederatedIdentityStore`. Mints the row `id` in-store, translates a unique-index `CONFLICT` into `UserAuthError('ALREADY_EXISTS')`. `FederatedIdentityTable` is the structural table surface (mirrors `AuthUserTable`). The shipped `AoothFederatedIdentity` `.as` model (at `@aooth/user/atscript-db/federated-model.as`) declares the compound-unique `(provider, subject)` index and a plain-indexed `userId`. See [IdP — Account resolution](/idp/account-resolution).
 
 ## Subpath: `@aooth/user/atscript-db/model.as`
 

@@ -3,19 +3,18 @@ name: aoothjs
 description: >-
   Use when adding authentication or authorization to a Moost app — login,
   JWT / session tokens, password + MFA (TOTP), RBAC roles, route guards,
-  magic links, password reset, invites, active sessions / per-device revoke.
-  Covers `@aooth/user`, `@aooth/auth`,
-  `@aooth/arbac-core`, `@aooth/arbac`, `@aooth/auth-moost`,
-  `@aooth/arbac-moost` — the aoothjs auth + authz stack for moost / atscript
-  apps. Triggers on `.as` user models extending `AoothUserCredentials` /
-  `AoothArbacUserCredentials`, `@arbac.role` / `@arbac.attribute` /
-  `@arbac.userId` annotations, refresh-token rotation, scope merging,
-  deny-wins evaluation, the unified `AuthWorkflow` (login / invite /
-  recovery / self-signup), `ConsentStore`, `WfFinished` envelopes, or wiring
-  `authGuardInterceptor` / `arbacAuthorizeInterceptor` into Moost. Out of
-  scope: moost internals (use `moostjs`), `.as` syntax / `@meta.*` / `asc`
-  (use `atscript`), `@atscript/db` / `moost-db` (use `atscript-db`),
-  `@ui.*` / SPA components (use `atscript-ui`).
+  magic links, password reset, invites, active sessions / per-device revoke,
+  OAuth2 / OIDC federated login (Sign in with Google). Covers `@aooth/user`,
+  `@aooth/auth`, `@aooth/idp`, `@aooth/arbac-core`, `@aooth/arbac`,
+  `@aooth/auth-moost`, `@aooth/arbac-moost` — the aoothjs auth + authz stack
+  for moost / atscript apps. Triggers on `.as` user models extending
+  `AoothUserCredentials` / `AoothArbacUserCredentials`, `@arbac.*` annotations,
+  refresh-token rotation, the unified `AuthWorkflow`
+  (login / invite / recovery / self-signup), `FederatedLoginService` /
+  `OAuthProviderRegistry`, `ConsentStore`, or wiring `authGuardInterceptor` /
+  `arbacAuthorizeInterceptor` into Moost. Out of scope: moost internals
+  (use `moostjs`), `.as` syntax / `asc` (use `atscript`), `@atscript/db` /
+  `moost-db` (use `atscript-db`), `@ui.*` / SPA components (use `atscript-ui`).
 ---
 
 # aoothjs
@@ -38,6 +37,9 @@ pnpm add @aooth/auth
 pnpm add ioredis                                     # opt: Redis store
 pnpm add @atscript/db                                # opt: DB-backed store
 
+# Federated login (OAuth2 / OIDC — Sign in with Google)
+pnpm add @aooth/idp                                  # opt: federated-login core
+
 # Moost integration
 pnpm add @aooth/auth-moost @aooth/arbac-moost moost
 pnpm add @moostjs/event-http @moostjs/event-wf @atscript/moost-wf
@@ -55,12 +57,15 @@ pnpm add -D unplugin-atscript @atscript/typescript @atscript/core
                        │                  └── /atscript     AtscriptArbacUserProvider, AoothArbacUserCredentials
                        │                  └── /plugin       arbacPlugin() — @arbac.role/.attribute/.userId
                        │
-@aooth/user                    UserService, password (scrypt), policy, TOTP/HOTP, backup codes, lockout
-    │   └── /atscript-db         UsersStoreAtscriptDb + AoothUserCredentials .as model
+@aooth/user                    UserService, password (scrypt), policy, TOTP/HOTP, backup codes, lockout, FederatedIdentityStore (account linking)
+    │   └── /atscript-db         UsersStoreAtscriptDb + AoothUserCredentials .as model; FederatedIdentityStoreAtscriptDb + AoothFederatedIdentity .as model
     │
     └── @aooth/auth            AuthCredential, stores (Memory/JWT/Encapsulated/Redis/AtscriptDb), denylist, magic links
             │   └── /redis        CredentialStoreRedis, DenylistStoreRedis
             │   └── /atscript-db  CredentialStoreAtscriptDb + AoothAuthCredential .as model
+            │
+            ├── @aooth/idp     federated-login core (depends on user+auth): OidcProvider/GoogleProvider/FakeIdentityProvider, OAuthProviderRegistry,
+            │                     FederatedLoginService.resolveUser, PKCE + signState/verifyState, OAuthError. NO moost/HTTP yet (forthcoming auth-moost wiring)
             │
             └── @aooth/auth-moost   AuthController, authGuardInterceptor, @Public, @UserId, useAuth,
                                        AuthWorkflow (login/invite/recovery/signup), ConsentStore, WfTriggerProvider
@@ -289,6 +294,44 @@ import { CredentialStoreAtscriptDb } from "@aooth/auth/atscript-db";
 import type { AuthCredentialRow, AuthCredentialTable } from "@aooth/auth/atscript-db";
 import { AoothAuthCredential } from "@aooth/auth/atscript-db/model.as";
 
+// — @aooth/idp (federated login — see references/idp.md for the full surface)
+import {
+  OidcProvider,
+  GoogleProvider,
+  FakeIdentityProvider,
+  OAuthProviderRegistry,
+  FederatedLoginService,
+  createPkcePair,
+  generateNonce,
+  signState,
+  verifyState,
+  resolveFederatedPolicy,
+  OAuthError,
+} from "@aooth/idp";
+import type {
+  IdentityProvider,
+  NormalizedProfile,
+  FederatedPolicy,
+  ResolveOutcome,
+  OidcProviderOptions,
+  OAuthProviderRegistryOptions,
+  FederatedLoginServiceDeps,
+  OAuthStatePayload,
+  OAuthErrorType,
+} from "@aooth/idp";
+// account-linking store ships in @aooth/user (NOT @aooth/idp):
+import {
+  FederatedIdentityStore,
+  FederatedIdentityStoreMemory,
+  pickDefinedProfile,
+} from "@aooth/user";
+import type {
+  FederatedIdentity,
+  NewFederatedIdentity,
+  FederatedProfileSnapshot,
+} from "@aooth/user";
+import { FederatedIdentityStoreAtscriptDb } from "@aooth/user/atscript-db";
+
 // — @aooth/auth-moost
 import {
   AuthController,
@@ -354,34 +397,35 @@ import arbacPlugin from "@aooth/arbac-moost/plugin";
 
 ## References — load only what's needed
 
-| Domain                   | File                                                | When                                                                                                                                                                                                                |
-| ------------------------ | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| First contact            | [getting-started.md](references/getting-started.md) | Install matrix, minimum wiring (with + without moost), atscript-db wiring, choosing token/user stores, testing patterns                                                                                             |
-| Ecosystem map            | [ecosystem.md](references/ecosystem.md)             | Package responsibility matrix, dep graph, peer-dep requirements, subpath export map                                                                                                                                 |
-| Annotation reference     | [annotations.md](references/annotations.md)         | Every `@arbac.*` annotation + how aoothjs reads `@db.*` / `@meta.*` / `@ui.form.*` / `@expect.*` / `@wf.*` from atscript                                                                                            |
-| **User domain**          | [user.md](references/user.md)                       | `@aooth/user` overview: `UserService` quick start, full invariants table, key imports                                                                                                                               |
-| `UserService` reference  | [user-service.md](references/user-service.md)       | Every public method, config defaults, login flow, lockout, MFA methods, backup codes, trusted devices                                                                                                               |
-| Password subsystem       | [password.md](references/password.md)               | Scrypt + pepper + history, `generatePassword`, `PasswordPolicy` DSL, transferable policies, built-in `ppHas*` factories                                                                                             |
-| MFA primitives           | [mfa.md](references/mfa.md)                         | TOTP secret/URI/code/verify, MFA-code helpers, backup codes, trusted-device tokens                                                                                                                                  |
-| User stores              | [user-stores.md](references/user-stores.md)         | `UserStore` contract, `UserStoreMemory`, custom-store skeleton, `UsersStoreAtscriptDb` wiring                                                                                                                       |
-| **ARBAC domain**         | [arbac.md](references/arbac.md)                     | `@aooth/arbac` + `arbac-core` overview: quick start, full invariants, key imports                                                                                                                                   |
-| Engine + builder         | [builder.md](references/builder.md)                 | `Arbac` class, `defineRole` chain, `definePrivilege` double-call, `allowTable*` helpers + action vocabulary                                                                                                         |
-| Scope merging            | [scopes.md](references/scopes.md)                   | `ArbacDbScope` shape, `mergeScopeFilters`, `unionProjections` truth table, `restrictProjection`, `unionControlsPolicy`                                                                                              |
-| Codegen                  | [codegen.md](references/codegen.md)                 | Library API + CLI: `extractResourceActions`, `generateResourceTypes`, `aoothjs-arbac-codegen --roles ... --output ...`                                                                                              |
-| **Auth domain**          | [auth.md](references/auth.md)                       | `@aooth/auth` overview: quick start, full invariants, key imports                                                                                                                                                   |
-| Tokens & sessions        | [tokens.md](references/tokens.md)                   | `CredentialStoreJwt` algorithms, claim layout, `CredentialStoreEncapsulated`, sessions vs tokens                                                                                                                    |
-| Refresh & rotation       | [refresh.md](references/refresh.md)                 | `RefreshConfig`, three rotation modes, reuse detection, stateless degradation, `maxConcurrent`, epoch revocation                                                                                                    |
-| Client (silent refresh)  | [client.md](references/client.md)                   | `@aooth/auth/client` browser subpath: `createAuthedFetch` — credentials forwarding, single-flight `/auth/refresh` on 401, retry-once, `onLogout`, status probe                                                      |
-| Magic links              | [magic-links.md](references/magic-links.md)         | `generateMagicLinkToken`, single-use guarantees, stateless `DenylistStore` requirement, recovery recipe                                                                                                             |
-| Auth stores              | [auth-stores.md](references/auth-stores.md)         | `CredentialStore` + `DenylistStore` contracts, Memory / Redis / atscript-db, shipped `AoothAuthCredential` model                                                                                                    |
-| Sessions / devices       | [sessions.md](references/sessions.md)               | Active-sessions screen: `sessionId` token-family, `listSessions` / `revokeSession` / `revokeOtherSessions`, `SessionEnricher`, `trackLastSeen`, `SessionsController` + `useAuth()` facade, `getSessionId`           |
-| **Moost domain**         | [moost.md](references/moost.md)                     | `@aooth/auth-moost` + `@aooth/arbac-moost` overview: quick start, full invariants, key imports                                                                                                                      |
-| Controllers + decorators | [controllers.md](references/controllers.md)         | `AuthController` REST surface, `authGuardInterceptor`, `useAuth`, `useArbac`, all decorators, 401-vs-403 split                                                                                                      |
-| Workflows                | [workflows.md](references/workflows.md)             | unified `AuthWorkflow` (5 schemas: login/invite/recovery/signup/change-password), `AuthWorkflowOpts` vs `resolveXxx` policy, `ConsentStore`, `WfTriggerProvider` + `storeStrategy`, `deliver`, error posture, forms |
-| SPA components           | [spa-components.md](references/spa-components.md)   | render workflow forms client-side: `<AsWfForm>` + `@atscript/vue-aooth` (`AsQrCode`/`AsConsentArray`/`AsPasswordRules`), magic-link resume, `@ui.form.component`                                                    |
-| DB controllers           | [db-controllers.md](references/db-controllers.md)   | `AsArbacDbController` hooks, `ArbacDbScope`, control-gate semantics, `DENY_FILTER`, identifier auto-preservation                                                                                                    |
-| Atscript provider        | [moost-atscript.md](references/moost-atscript.md)   | `arbacPlugin()`, `@arbac.*` annotations, user-id resolution, `AtscriptArbacUserProvider`, bundled `.as` models                                                                                                      |
-| Engine invariants        | [invariants.md](references/invariants.md)           | 18-row table of cross-package rules — deny-wins, refresh-degradation, `@Public()` dual-purpose, `@Injectable()` inheritance                                                                                         |
+| Domain                    | File                                                | When                                                                                                                                                                                                                                                                          |
+| ------------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| First contact             | [getting-started.md](references/getting-started.md) | Install matrix, minimum wiring (with + without moost), atscript-db wiring, choosing token/user stores, testing patterns                                                                                                                                                       |
+| Ecosystem map             | [ecosystem.md](references/ecosystem.md)             | Package responsibility matrix, dep graph, peer-dep requirements, subpath export map                                                                                                                                                                                           |
+| Annotation reference      | [annotations.md](references/annotations.md)         | Every `@arbac.*` annotation + how aoothjs reads `@db.*` / `@meta.*` / `@ui.form.*` / `@expect.*` / `@wf.*` from atscript                                                                                                                                                      |
+| **User domain**           | [user.md](references/user.md)                       | `@aooth/user` overview: `UserService` quick start, full invariants table, key imports                                                                                                                                                                                         |
+| `UserService` reference   | [user-service.md](references/user-service.md)       | Every public method, config defaults, login flow, lockout, MFA methods, backup codes, trusted devices                                                                                                                                                                         |
+| Password subsystem        | [password.md](references/password.md)               | Scrypt + pepper + history, `generatePassword`, `PasswordPolicy` DSL, transferable policies, built-in `ppHas*` factories                                                                                                                                                       |
+| MFA primitives            | [mfa.md](references/mfa.md)                         | TOTP secret/URI/code/verify, MFA-code helpers, backup codes, trusted-device tokens                                                                                                                                                                                            |
+| User stores               | [user-stores.md](references/user-stores.md)         | `UserStore` contract, `UserStoreMemory`, custom-store skeleton, `UsersStoreAtscriptDb` wiring                                                                                                                                                                                 |
+| **ARBAC domain**          | [arbac.md](references/arbac.md)                     | `@aooth/arbac` + `arbac-core` overview: quick start, full invariants, key imports                                                                                                                                                                                             |
+| Engine + builder          | [builder.md](references/builder.md)                 | `Arbac` class, `defineRole` chain, `definePrivilege` double-call, `allowTable*` helpers + action vocabulary                                                                                                                                                                   |
+| Scope merging             | [scopes.md](references/scopes.md)                   | `ArbacDbScope` shape, `mergeScopeFilters`, `unionProjections` truth table, `restrictProjection`, `unionControlsPolicy`                                                                                                                                                        |
+| Codegen                   | [codegen.md](references/codegen.md)                 | Library API + CLI: `extractResourceActions`, `generateResourceTypes`, `aoothjs-arbac-codegen --roles ... --output ...`                                                                                                                                                        |
+| **Auth domain**           | [auth.md](references/auth.md)                       | `@aooth/auth` overview: quick start, full invariants, key imports                                                                                                                                                                                                             |
+| Tokens & sessions         | [tokens.md](references/tokens.md)                   | `CredentialStoreJwt` algorithms, claim layout, `CredentialStoreEncapsulated`, sessions vs tokens                                                                                                                                                                              |
+| Refresh & rotation        | [refresh.md](references/refresh.md)                 | `RefreshConfig`, three rotation modes, reuse detection, stateless degradation, `maxConcurrent`, epoch revocation                                                                                                                                                              |
+| Client (silent refresh)   | [client.md](references/client.md)                   | `@aooth/auth/client` browser subpath: `createAuthedFetch` — credentials forwarding, single-flight `/auth/refresh` on 401, retry-once, `onLogout`, status probe                                                                                                                |
+| Magic links               | [magic-links.md](references/magic-links.md)         | `generateMagicLinkToken`, single-use guarantees, stateless `DenylistStore` requirement, recovery recipe                                                                                                                                                                       |
+| Auth stores               | [auth-stores.md](references/auth-stores.md)         | `CredentialStore` + `DenylistStore` contracts, Memory / Redis / atscript-db, shipped `AoothAuthCredential` model                                                                                                                                                              |
+| Sessions / devices        | [sessions.md](references/sessions.md)               | Active-sessions screen: `sessionId` token-family, `listSessions` / `revokeSession` / `revokeOtherSessions`, `SessionEnricher`, `trackLastSeen`, `SessionsController` + `useAuth()` facade, `getSessionId`                                                                     |
+| **Federated login (IdP)** | [idp.md](references/idp.md)                         | `@aooth/idp` OAuth2/OIDC: `OidcProvider`/`GoogleProvider`/`FakeIdentityProvider`, ID-token §7 validation, `OAuthProviderRegistry`, `FederatedLoginService.resolveUser` + `FederatedPolicy`, `linkIdentity`, PKCE/signState, the `FederatedIdentityStore` (from `@aooth/user`) |
+| **Moost domain**          | [moost.md](references/moost.md)                     | `@aooth/auth-moost` + `@aooth/arbac-moost` overview: quick start, full invariants, key imports                                                                                                                                                                                |
+| Controllers + decorators  | [controllers.md](references/controllers.md)         | `AuthController` REST surface, `authGuardInterceptor`, `useAuth`, `useArbac`, all decorators, 401-vs-403 split                                                                                                                                                                |
+| Workflows                 | [workflows.md](references/workflows.md)             | unified `AuthWorkflow` (5 schemas: login/invite/recovery/signup/change-password), `AuthWorkflowOpts` vs `resolveXxx` policy, `ConsentStore`, `WfTriggerProvider` + `storeStrategy`, `deliver`, error posture, forms                                                           |
+| SPA components            | [spa-components.md](references/spa-components.md)   | render workflow forms client-side: `<AsWfForm>` + `@atscript/vue-aooth` (`AsQrCode`/`AsConsentArray`/`AsPasswordRules`), magic-link resume, `@ui.form.component`                                                                                                              |
+| DB controllers            | [db-controllers.md](references/db-controllers.md)   | `AsArbacDbController` hooks, `ArbacDbScope`, control-gate semantics, `DENY_FILTER`, identifier auto-preservation                                                                                                                                                              |
+| Atscript provider         | [moost-atscript.md](references/moost-atscript.md)   | `arbacPlugin()`, `@arbac.*` annotations, user-id resolution, `AtscriptArbacUserProvider`, bundled `.as` models                                                                                                                                                                |
+| Engine invariants         | [invariants.md](references/invariants.md)           | 18-row table of cross-package rules — deny-wins, refresh-degradation, `@Public()` dual-purpose, `@Injectable()` inheritance                                                                                                                                                   |
 
 ## See also
 
