@@ -24,11 +24,15 @@ async function seedAndIssue(
   app: Awaited<ReturnType<typeof prepareControllerApp>>,
   username: string,
   password: string,
-): Promise<{ accessToken: string; refreshToken: string }> {
-  await app.users.createUser(username, password);
-  await app.users.activateAccount(username);
-  const issue = await app.auth.issue(username);
+): Promise<{ userId: string; accessToken: string; refreshToken: string }> {
+  // The session subject is the user's stable surrogate `id` (a uuid), NOT the
+  // username. `createUser` mints + returns the id; activation + issuance key
+  // off that id. The username stays the login HANDLE only.
+  const user = await app.users.createUser(username, password);
+  await app.users.activateAccount(user.id);
+  const issue = await app.auth.issue(user.id);
   return {
+    userId: user.id,
     accessToken: issue.accessToken,
     refreshToken: issue.refreshToken as string,
   };
@@ -100,11 +104,11 @@ describe("AuthController", () => {
       // full TTL, so the "logged-out" session lingered in listSessions. Logout
       // now revokes the whole family by sessionId.
       const app = await prepareControllerApp();
-      await app.users.createUser("alice", "Password123");
-      await app.users.activateAccount("alice");
-      const deviceA = await app.auth.issue("alice");
-      const deviceB = await app.auth.issue("alice");
-      expect(await app.auth.listSessions("alice")).toHaveLength(2);
+      const alice = await app.users.createUser("alice", "Password123");
+      await app.users.activateAccount(alice.id);
+      const deviceA = await app.auth.issue(alice.id);
+      const deviceB = await app.auth.issue(alice.id);
+      expect(await app.auth.listSessions(alice.id)).toHaveLength(2);
 
       const out = await app.request("/auth/logout", {
         method: "POST",
@@ -123,7 +127,7 @@ describe("AuthController", () => {
 
       // Only this device was logged out — device B keeps working and the
       // active-sessions list drops to one.
-      const sessions = await app.auth.listSessions("alice");
+      const sessions = await app.auth.listSessions(alice.id);
       expect(sessions).toHaveLength(1);
       expect(await app.auth.validate(deviceB.accessToken)).not.toBeNull();
     });
@@ -132,10 +136,12 @@ describe("AuthController", () => {
   describe("POST /auth/refresh", () => {
     let app: Awaited<ReturnType<typeof prepareControllerApp>>;
     let refreshToken: string;
+    let userId: string;
     beforeEach(async () => {
       app = await prepareControllerApp();
       const tokens = await seedAndIssue(app, "alice", "Password123");
       refreshToken = tokens.refreshToken;
+      userId = tokens.userId;
     });
 
     it("rotates tokens when given a body refreshToken", async () => {
@@ -145,12 +151,12 @@ describe("AuthController", () => {
       });
       expect(res.status).toBe(201);
       const body = res.body as AuthLoginResponse;
-      expect(body.userId).toBe("alice");
+      expect(body.userId).toBe(userId);
       expect(typeof body.accessToken).toBe("string");
       expect(body.accessToken).not.toBe(refreshToken);
       // The new access token validates:
       const ctx = await app.auth.validate(body.accessToken as string);
-      expect(ctx?.userId).toBe("alice");
+      expect(ctx?.userId).toBe(userId);
     });
 
     it("rotates tokens when given the refresh cookie", async () => {
@@ -161,7 +167,7 @@ describe("AuthController", () => {
       });
       expect(res.status).toBe(201);
       const body = res.body as AuthLoginResponse;
-      expect(body.userId).toBe("alice");
+      expect(body.userId).toBe(userId);
       expect(typeof body.accessToken).toBe("string");
     });
 
@@ -266,13 +272,13 @@ describe("AuthController", () => {
   describe("GET /auth/status", () => {
     it("returns the AuthContext for an authenticated user", async () => {
       const app = await prepareControllerApp();
-      const { accessToken } = await seedAndIssue(app, "alice", "Password123");
+      const { userId, accessToken } = await seedAndIssue(app, "alice", "Password123");
       const res = await app.request("/auth/status", {
         headers: { authorization: `Bearer ${accessToken}` },
       });
       expect(res.status).toBe(200);
       const body = res.body as AuthContext;
-      expect(body.userId).toBe("alice");
+      expect(body.userId).toBe(userId);
       expect(body.method).toBe("token");
       expect(typeof body.credentialId).toBe("string");
       expect(body.expiresAt).toBeGreaterThan(Date.now());
@@ -320,19 +326,21 @@ describe("AuthController", () => {
   describe("UserService independence (ISSUE-9 follow-up)", () => {
     async function noUserAppWithToken(): Promise<{
       noUserApp: Awaited<ReturnType<typeof prepareControllerApp>>;
+      userId: string;
       accessToken: string;
       refreshToken: string;
     }> {
       // Mint a valid token pair on a real-deps app, then re-bootstrap a
       // second app WITHOUT UserService but sharing the same in-memory token
-      // store. Proves the controller doesn't require UserService.
+      // store. Proves the controller doesn't require UserService. The session
+      // subject is the minted `id`, not the username handle.
       const sharedStore = new CredentialStoreMemory<MyClaims>();
       const seedApp = await prepareControllerApp({
         authOptions: { store: sharedStore },
       });
-      await seedApp.users.createUser("alice", "Password123");
-      await seedApp.users.activateAccount("alice");
-      const issue = await seedApp.auth.issue("alice");
+      const alice = await seedApp.users.createUser("alice", "Password123");
+      await seedApp.users.activateAccount(alice.id);
+      const issue = await seedApp.auth.issue(alice.id);
 
       const noUserApp = await prepareControllerApp({
         withoutUserService: true,
@@ -341,6 +349,7 @@ describe("AuthController", () => {
 
       return {
         noUserApp,
+        userId: alice.id,
         accessToken: issue.accessToken,
         refreshToken: issue.refreshToken as string,
       };
@@ -358,14 +367,14 @@ describe("AuthController", () => {
     });
 
     it("/auth/refresh succeeds when UserService is NOT provided", async () => {
-      const { noUserApp, refreshToken } = await noUserAppWithToken();
+      const { noUserApp, userId, refreshToken } = await noUserAppWithToken();
       const res = await noUserApp.request("/auth/refresh", {
         method: "POST",
         json: { refreshToken },
       });
       expect(res.status).toBe(201);
       const body = res.body as AuthLoginResponse;
-      expect(body.userId).toBe("alice");
+      expect(body.userId).toBe(userId);
     });
   });
 
@@ -388,19 +397,27 @@ describe("AuthController", () => {
       roles: string[],
     ): Promise<{
       app: Awaited<ReturnType<typeof prepareControllerApp>>;
+      userId: string;
       accessToken: string;
     }> {
-      const userRoles = new Map<string, string[]>([[username, roles]]);
+      // ARBAC roles are keyed by the SUBJECT = the user's `id` (what
+      // getUserId() returns at request time), not the username. The
+      // TestArbacUserProvider reads `userRoles` lazily BY REFERENCE, so the
+      // pattern is: pass the (empty) Map into prepareControllerApp, create the
+      // user to mint its id, then `.set(id, roles)` on that same Map ref before
+      // issuing.
+      const userRoles = new Map<string, string[]>();
       const app = await prepareControllerApp({
         arbac: {
           userRoles,
           roles: [ROLE_BARE],
         },
       });
-      await app.users.createUser(username, password);
-      await app.users.activateAccount(username);
-      const issue = await app.auth.issue(username);
-      return { app, accessToken: issue.accessToken };
+      const user = await app.users.createUser(username, password);
+      await app.users.activateAccount(user.id);
+      userRoles.set(user.id, roles);
+      const issue = await app.auth.issue(user.id);
+      return { app, userId: user.id, accessToken: issue.accessToken };
     }
 
     it("/auth/trigger is reachable anonymously — @Public() bypasses BOTH guards", async () => {
@@ -424,12 +441,12 @@ describe("AuthController", () => {
     });
 
     it("/auth/status succeeds for an authenticated user with NO arbac grants", async () => {
-      const { app, accessToken } = await loginAs("alice", "Password123", ["bare"]);
+      const { app, userId, accessToken } = await loginAs("alice", "Password123", ["bare"]);
       const res = await app.request("/auth/status", {
         headers: { authorization: `Bearer ${accessToken}` },
       });
       expect(res.status).toBe(200);
-      expect((res.body as AuthContext).userId).toBe("alice");
+      expect((res.body as AuthContext).userId).toBe(userId);
     });
 
     it("/auth/logout returns 401 anonymously — defence-in-depth on the @Public() bypass", async () => {

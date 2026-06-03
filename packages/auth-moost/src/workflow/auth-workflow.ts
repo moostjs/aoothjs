@@ -1000,17 +1000,13 @@ export class AuthWorkflow {
   }
 
   /**
-   * Load a user row by username, returning null on NOT_FOUND. Used by invite
-   * admin-phase steps (duplicate check) and accept-tail (pending-invitation
-   * gate).
+   * Load a user row by id OR email handle, returning null when none matches.
+   * Used by invite admin-phase steps (duplicate check, keyed by email) and the
+   * accept-tail (pending-invitation gate, keyed by the subject id) — so it
+   * resolves permissively via `findByIdentifier` (id → username → email).
    */
-  private async loadUserOrNull(username: string): Promise<UserCredentials | null> {
-    try {
-      return await this.users.getUser(username);
-    } catch (err) {
-      if (err instanceof UserAuthError && err.type === "NOT_FOUND") return null;
-      throw err;
-    }
+  private async loadUserOrNull(identifier: string): Promise<UserCredentials | null> {
+    return this.users.findByIdentifier(identifier);
   }
 
   // ── @Step stubs (66 — bodies filled in steps 4-6) ───────────────────────
@@ -1121,7 +1117,7 @@ export class AuthWorkflow {
         input.password,
         this.lockoutOverride(ctx),
       );
-      ctx.username = result.user.username;
+      ctx.username = result.user.id;
       // First validated input passed → move off the cheap encapsulated start to
       // the durable store strategy, so the MFA / enrollment / password-change
       // pauses survive restarts. Pre-validation stays encapsulated (no server row),
@@ -1249,7 +1245,7 @@ export class AuthWorkflow {
       const userId = await this.emailToUserId(email);
       if (userId) {
         const user = await this.users.getUser(userId);
-        username = user.username;
+        username = user.id;
       }
     } catch (err) {
       if (!(err instanceof UserAuthError) || err.type !== "NOT_FOUND") throw err;
@@ -1268,12 +1264,14 @@ export class AuthWorkflow {
   }
 
   /**
-   * Resolves the recovery-step `email` input to the canonical username.
-   * Default: returns the email unchanged. Apps with separate username/email
-   * MUST override; return `null` when no user matches.
+   * Resolves the recovery-step `email` input to the user's stable `id` (the
+   * token subject). Default: resolves via `findByHandle` (username exact, then
+   * email exact). Override for custom handle→id mapping; return `null` when no
+   * user matches.
    */
   protected async emailToUserId(email: string): Promise<string | null> {
-    return email;
+    const user = await this.users.findByHandle(email);
+    return user?.id ?? null;
   }
 
   /** Anti-enumeration generic finish envelope used when recovery's `request` step receives an unknown email. */
@@ -1729,18 +1727,21 @@ export class AuthWorkflow {
       ...ctx.admin?.userExtras,
       ...(adminRoles && adminRoles.length > 0 && { roles: adminRoles }),
     };
+    let created: UserCredentials;
     try {
-      await this.users.createUser(ctx.email, undefined, fields);
+      created = await this.users.createUser(ctx.email, undefined, fields);
     } catch (err) {
       if (err instanceof UserAuthError && err.type === "ALREADY_EXISTS") {
         throw new HttpError(409, "User already exists");
       }
       throw err;
     }
-    await this.users.update(ctx.email, {
+    await this.users.update(created.id, {
       account: { pendingInvitation: true },
     } as Partial<UserCredentials>);
-    ctx.username = ctx.email;
+    // The subject is the stable id (NOT the email handle) — downstream steps
+    // resolve the user via id-keyed UserService calls.
+    ctx.username = created.id;
     return undefined;
   }
 
@@ -1773,7 +1774,7 @@ export class AuthWorkflow {
     // swap BEFORE the email-outlet pause so the magic-link token is a durable store handle the invitee can resume days later; the admin-form pause before this stayed encapsulated
     swapStrategy("store");
     return outletEmail(ctx.email as string, "invite.magicLink", {
-      username: ctx.username,
+      username: ctx.email,
       ...(ctx.username && { userId: ctx.username }),
       ...(admin.roles && { roles: admin.roles }),
     });

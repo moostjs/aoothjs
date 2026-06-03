@@ -33,18 +33,26 @@ class UserIdProbeController {
 describe("@UserId() parameter decorator (ISSUE-5)", () => {
   let app: Awaited<ReturnType<typeof prepareControllerApp>>;
   let accessToken: string;
+  // The session SUBJECT is the user's stable surrogate `id` (a uuid), minted by
+  // `createUser`, NOT the username handle. Captured here so the positive-path
+  // assertion can pin the exact id the decorator must resolve.
+  let userId: string;
 
   beforeEach(async () => {
     // The probe controller must be registered BEFORE `moost.init()` —
     // post-init registration silently no-ops on the HTTP adapter (route
     // table is frozen at boot). `extraControllers` is the supported hook.
     app = await prepareControllerApp({ extraControllers: [UserIdProbeController] });
-    await app.users.createUser("alice", "Password123");
-    await app.users.activateAccount("alice");
+    // `createUser` takes the username HANDLE but RETURNS the record with the
+    // minted `id` — the stable subject every downstream call keys on.
+    const u = await app.users.createUser("alice", "Password123");
+    userId = u.id;
+    await app.users.activateAccount(userId);
     // `/auth/login` was dropped (AUTH-MOOST-5) — mint a token directly through
     // the AuthCredential so the test stays focused on the decorator, not the
-    // login flow (covered by workflow specs).
-    const issue = await app.auth.issue("alice");
+    // login flow (covered by workflow specs). The subject MUST be the user's
+    // `id` so `getUserId()` returns the id for a real-user session.
+    const issue = await app.auth.issue(userId);
     accessToken = issue.accessToken;
   });
 
@@ -53,16 +61,16 @@ describe("@UserId() parameter decorator (ISSUE-5)", () => {
     //   bearer header
     //     → authGuardInterceptor writes AuthContext to the event slot
     //       → @UserId() → Resolve(() => useAuth().getUserId())
-    //         → reads the slot, returns "alice"
-    //           → handler returns "alice"
-    // A regression in any link breaks this assertion. The literal "alice"
+    //         → reads the slot, returns the user's id
+    //           → handler returns the id
+    // A regression in any link breaks this assertion. The exact `userId`
     // (not just "any string") is load-bearing — it proves the decorator
     // resolves the *current* event's user id, not a hard-coded default.
     const res = await app.request("/probe/id", {
       headers: { authorization: `Bearer ${accessToken}` },
     });
     expect(res.status).toBe(200);
-    expect(res.body).toBe("alice");
+    expect(res.body).toBe(userId);
   });
 
   it("returns 401 on an anonymous request (guard interrupts before @UserId runs)", async () => {
