@@ -76,7 +76,7 @@ export interface LoginCredentialsForm {
     password: string
 
     @ui.form.order 30
-    @ui.form.action 'signup', 'Sign up'
+    @ui.form.action 'signup', 'Don’t have an account? Sign up now'
     @ui.form.fn.hidden '(_, _d, ctx) => !ctx.public?.altActions?.signup'
     signup?: ui.action
 
@@ -145,6 +145,38 @@ export interface EmailIdentifierForm {
 
     @ui.form.order 20
     @ui.form.action 'backToLogin', 'Back to sign-in'
+    backToLogin?: ui.action
+}
+
+/**
+ * Self-signup identifier form — the entry pause of `auth/signup/flow`.
+ *
+ * Intentionally email-only: the flow is verify-first, so the user proves
+ * email ownership via OTP BEFORE the account is created, and the password is
+ * set afterwards on the shared `SetPasswordForm` (so no plaintext password is
+ * ever held in workflow state across the OTP wait). `username` defaults to the
+ * email; consumers who want a distinct username — or richer profile capture —
+ * override this form via `setupAuthWorkflows({ forms: { signup: MyForm } })`
+ * and read the extra fields in a `signup-form` / `signup-extra-step` override.
+ *
+ * `@wf.context.pass 'public'` mirrors `EmailIdentifierForm` so a future
+ * prefill (`ctx.defaults.email`) works the same way.
+ */
+@meta.label 'Create your account'
+@meta.description 'Enter your email to get started — we will send you a verification code.'
+@wf.context.pass 'public'
+export interface SignupForm {
+    @ui.form.order 10
+    @ui.form.type 'text'
+    @meta.label 'Email'
+    @ui.form.autocomplete 'email'
+    @meta.required
+    email: string.email
+
+    // Primary cross-link to sign-in: signup is typically the INITIAL flow, so
+    // existing users click this to reach the login flow.
+    @ui.form.order 20
+    @ui.form.action 'backToLogin', 'I already have an account'
     backToLogin?: ui.action
 }
 

@@ -184,7 +184,7 @@ The wiring above produces these routes:
 | `POST` | `/auth/trigger`                | `AuthController` | `@Public()` — single entry point for `auth/login/flow` / `auth/invite/start` / `auth/recovery/flow`.        |
 | `GET`  | `/auth/invite/post-redemption` | `AuthController` | `@Public()` — idempotent "already accepted" envelope for re-clicked invite links.                           |
 
-The `AuthWorkflow` itself does **not** expose new HTTP routes — its three `@Workflow` schemas are driven entirely through `/auth/trigger`. The body `{ wfs?, input: { action?, formData? } }` and the `WfFinished` envelope are the entire wire protocol.
+The `AuthWorkflow` itself does **not** expose new HTTP routes — its public `@Workflow` schemas (login / invite / recovery / signup) are driven through `/auth/trigger`; the guarded `change-password` flow runs via its own `POST /auth/change-password` route. The body `{ wfs?, input: { action?, formData? } }` and the `WfFinished` envelope are the entire wire protocol.
 
 ## DI tokens you can override
 

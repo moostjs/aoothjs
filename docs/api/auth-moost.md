@@ -23,18 +23,19 @@ class AuthWorkflow {
 
 The single unified workflow class. Replaces the former `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow` quartet. Declares **three** `@Workflow` methods, each `@Public()`:
 
-| Method         | Workflow id          | Covers                                     |
-| -------------- | -------------------- | ------------------------------------------ |
-| `loginFlow`    | `auth/login/flow`    | login + MFA + enrollment + finalize        |
-| `inviteFlow`   | `auth/invite/start`  | admin invite → anonymous magic-link accept |
-| `recoveryFlow` | `auth/recovery/flow` | magic-link **or** OTP password reset       |
+| Method         | Workflow id          | Covers                                               |
+| -------------- | -------------------- | ---------------------------------------------------- |
+| `loginFlow`    | `auth/login/flow`    | login + MFA + enrollment + finalize                  |
+| `inviteFlow`   | `auth/invite/start`  | admin invite → anonymous magic-link accept           |
+| `recoveryFlow` | `auth/recovery/flow` | magic-link **or** OTP password reset                 |
+| `signupFlow`   | `auth/signup/flow`   | verify-first self-signup → set password → auto-login |
 
-`AuthWorkflowOpts` is **infrastructure-only**; policy lives on `protected resolveXxx(ctx)` getters (each paired with a `@Step("prepare-<group>")`). Per-flow code discriminates by ctx-slot presence (`ctx.admin` / `ctx.accept` / `ctx.postReset`), never a flow-name field. Subclass with `@Inherit() @Controller()`, re-declare the 4-arg constructor (so TS emits `design:paramtypes`), override the hooks you need, and bind via `setReplaceRegistry([AuthWorkflow, MyAuth])`. See [Workflows](/moost/workflows) and [packages/auth-moost/CLAUDE.md](https://github.com/moostjs/aoothjs/blob/main/packages/auth-moost/CLAUDE.md).
+`AuthWorkflowOpts` is **infrastructure-only**; policy lives on `protected resolveXxx(ctx)` getters (each paired with a `@Step("prepare-<group>")`). Per-flow code discriminates by ctx-slot presence (`ctx.admin` / `ctx.accept` / `ctx.postReset` / `ctx.signup`), never a flow-name field. Subclass with `@Inherit() @Controller()`, re-declare the 4-arg constructor (so TS emits `design:paramtypes`), override the hooks you need, and bind via `setReplaceRegistry([AuthWorkflow, MyAuth])`. See [Workflows](/moost/workflows) and [packages/auth-moost/CLAUDE.md](https://github.com/moostjs/aoothjs/blob/main/packages/auth-moost/CLAUDE.md).
 
 **Protected override surface** (defaults are no-ops or hardcoded policy):
 
 - `deliver(payload: AuthDeliveryPayload): void | Promise<void>` — outbound dispatch for direct sends (MFA / recovery / enroll pincodes, new-device notice). Route by `payload.kind` + `payload.channel`. NOT used for the invite magic link (emitted via the wf outlet). There is **no `audit()` method.**
-- `resolveXxx(ctx: AuthWfCtx)` policy getters — the override seam for context-varying policy. Return `T | Promise<T>` (never `async` on the default). The set: `resolveDeviceTrust`, `resolveMfaPolicy`, `resolveEnrollment`, `resolveSessionPolicy`, `resolveFinalize`, `resolveGuards`, `resolveLockout`, `resolveAlternateCredentials`, `resolveOtpDisclosure`, `resolveRiskStepUp`, `resolveRedirect`, `resolveRecoveryUrl`, `resolveRecoveryAltActions`, `resolveAdminForm`, `resolveAccept`, `resolvePostReset`, `resolvePincodeForm` / `resolvePincodeTarget` / `resolvePincodeAltAction`.
+- `resolveXxx(ctx: AuthWfCtx)` policy getters — the override seam for context-varying policy. Return `T | Promise<T>` (never `async` on the default). The set: `resolveDeviceTrust`, `resolveMfaPolicy`, `resolveEnrollment`, `resolveSessionPolicy`, `resolveFinalize`, `resolveGuards`, `resolveLockout`, `resolveAlternateCredentials`, `resolveSignupPolicy`, `resolveChangePasswordPolicy`, `resolveOtpDisclosure`, `resolveRiskStepUp`, `resolveRedirect`, `resolveRecoveryUrl`, `resolveRecoveryAltActions`, `resolveAdminForm`, `resolveAccept`, `resolvePostReset`, `resolvePincodeForm` / `resolvePincodeTarget` / `resolvePincodeAltAction`. `resolveSignupPolicy` returns `{ allowSignup, collectUsername }` — `allowSignup` defaults `false` (self-signup off / invite-only); `prepareUser` is shared with invite (signup passes empty `roles` + no `invitedBy`).
 - `getAvailableRoles(): string[] | undefined` — selectable role whitelist for the admin invite form (default `undefined` = no whitelist).
 - `loadActiveSessionsCount(username)` — async data fetcher for concurrency-limit policy.
 
@@ -272,13 +273,13 @@ Method decorator wrapping `defineAfterInterceptor` at `INTERCEPTOR` priority. Wh
 
 `AuthController` mounts **five** routes — all `@Public()`:
 
-| Method | Path                           | Body / Query                               | Response              | Notes                                                                                                                        |
-| ------ | ------------------------------ | ------------------------------------------ | --------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `POST` | `/auth/logout`                 | `AuthLogoutBody`                           | `AuthOkResponse`      | Defence-in-depth 401 on null context. Best-effort revokes both tokens.                                                       |
-| `POST` | `/auth/refresh`                | `AuthRefreshBody`                          | `AuthLoginResponse`   | Falls back to refresh cookie. 401 on `AuthError`.                                                                            |
-| `GET`  | `/auth/status`                 | —                                          | `AuthContext`         | 401 when no context.                                                                                                         |
-| `POST` | `/auth/trigger`                | `{ wfs?, input?: { action?, formData? } }` | `WfFinished` envelope | Single entry-point for the three `AuthWorkflow` schemas. `@WfTrigger({ allow: DEFAULT_AUTH_WORKFLOWS })`.                    |
-| `GET`  | `/auth/invite/post-redemption` | `?uid=<userId>`                            | `WfFinished` envelope | Idempotent "already accepted" envelope for re-clicked invite links (after the wf state row is evicted). Needs `UserService`. |
+| Method | Path                           | Body / Query                               | Response              | Notes                                                                                                                                              |
+| ------ | ------------------------------ | ------------------------------------------ | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST` | `/auth/logout`                 | `AuthLogoutBody`                           | `AuthOkResponse`      | Defence-in-depth 401 on null context. Best-effort revokes both tokens.                                                                             |
+| `POST` | `/auth/refresh`                | `AuthRefreshBody`                          | `AuthLoginResponse`   | Falls back to refresh cookie. 401 on `AuthError`.                                                                                                  |
+| `GET`  | `/auth/status`                 | —                                          | `AuthContext`         | 401 when no context.                                                                                                                               |
+| `POST` | `/auth/trigger`                | `{ wfs?, input?: { action?, formData? } }` | `WfFinished` envelope | Single entry-point for the `DEFAULT_AUTH_WORKFLOWS` schemas (login / invite / recovery / signup). `@WfTrigger({ allow: DEFAULT_AUTH_WORKFLOWS })`. |
+| `GET`  | `/auth/invite/post-redemption` | `?uid=<userId>`                            | `WfFinished` envelope | Idempotent "already accepted" envelope for re-clicked invite links (after the wf state row is evicted). Needs `UserService`.                       |
 
 See [REST Controllers](/moost/controllers).
 
@@ -291,6 +292,7 @@ const DEFAULT_AUTH_WORKFLOWS = [
   "auth/login/flow",
   "auth/invite/start",
   "auth/recovery/flow",
+  "auth/signup/flow",
 ] as const;
 ```
 
@@ -380,6 +382,13 @@ type AuthDeliveryPayload =
       expiresInMs: number;
     }
   | {
+      kind: "signup-pincode"; // verify-first self-signup email-ownership OTP
+      channel: "email";
+      recipient: string;
+      code: string;
+      expiresInMs: number;
+    }
+  | {
       kind: "enroll-pincode";
       channel: "sms" | "email";
       recipient: string;
@@ -400,7 +409,7 @@ The discriminated union passed to `AuthWorkflow.deliver(payload)`. Branch on `ki
 
 ### Workflow context types
 
-The `@wf.context.pass` slots and policy-resolver return shapes are exported for typing subclass overrides: `AuthWfCtx`, `AuthWfCompletionState`, `AuthWfConsentsState`, `AuthWfMfaEnrollState`, `AuthWfPasswordUiState`, `AuthWfPincodeUiState`, `ConsentDescriptorLike`, `MfaSummary`, `MfaTransport`, `LoginRedirect`, `SsoProvider`, `ConcurrencyLimitOptions`. `AuthWfCtx` has **no `flow` field** — discriminate by ctx-slot presence (`ctx.admin` / `ctx.accept` / `ctx.postReset`).
+The `@wf.context.pass` slots and policy-resolver return shapes are exported for typing subclass overrides: `AuthWfCtx`, `AuthWfCompletionState`, `AuthWfConsentsState`, `AuthWfMfaEnrollState`, `AuthWfPasswordUiState`, `AuthWfPincodeUiState`, `AuthWfSignupState`, `ConsentDescriptorLike`, `MfaSummary`, `MfaTransport`, `LoginRedirect`, `SsoProvider`, `ConcurrencyLimitOptions`. `AuthWfCtx` has **no `flow` field** — discriminate by ctx-slot presence (`ctx.admin` / `ctx.accept` / `ctx.postReset` / `ctx.signup`).
 
 ## Re-exports from `@aooth/auth`
 

@@ -72,6 +72,10 @@ export interface AuthWorkflowOpts {
 
     // Recovery
     recoveryPincode?: TAtscriptAnnotatedType;
+
+    // Signup
+    /** Self-signup identifier form (`auth/signup/flow` entry pause). */
+    signup?: TAtscriptAnnotatedType;
   };
 }
 
@@ -115,5 +119,6 @@ export interface ResolvedAuthWorkflowOpts {
     termsBump: TAtscriptAnnotatedType;
     concurrencyLimit: TAtscriptAnnotatedType;
     recoveryPincode: TAtscriptAnnotatedType;
+    signup: TAtscriptAnnotatedType;
   };
 }

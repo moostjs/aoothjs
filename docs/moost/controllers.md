@@ -30,7 +30,7 @@ All five endpoints are `@Public()`. Authentication is enforced **inside** the ha
 | `POST` | `/auth/logout`                 | `@Public()`                                               | `AuthLogoutBody { refreshToken? }`         | `AuthOkResponse { ok: true }` | Defence-in-depth 401 if null context. Revokes the current session's whole token family (`revokeSession`), with token-level revokes as fallback, then `clearCookies()`. |
 | `POST` | `/auth/refresh`                | `@Public()`                                               | `AuthRefreshBody { refreshToken? }`        | `AuthLoginResponse`           | Falls back to the refresh cookie. 401 on `AuthError`. Returns new access+refresh, writes cookies.                                                                      |
 | `GET`  | `/auth/status`                 | `@Public()`                                               | —                                          | `AuthContext`                 | 401 when no context.                                                                                                                                                   |
-| `POST` | `/auth/trigger`                | `@Public() @WfTrigger({ allow: DEFAULT_AUTH_WORKFLOWS })` | `{ wfs?, input?: { action?, formData? } }` | `WfFinished` envelope         | The single entry-point covering `auth/login/flow`, `auth/invite/start`, `auth/recovery/flow`.                                                                          |
+| `POST` | `/auth/trigger`                | `@Public() @WfTrigger({ allow: DEFAULT_AUTH_WORKFLOWS })` | `{ wfs?, input?: { action?, formData? } }` | `WfFinished` envelope         | The single entry-point covering `auth/login/flow`, `auth/invite/start`, `auth/recovery/flow`, `auth/signup/flow`.                                                      |
 | `GET`  | `/auth/invite/post-redemption` | `@Public()`                                               | `?uid=<userId>`                            | `WfFinished` envelope         | Idempotent "already accepted" envelope for re-clicked invite links after the wf state row is evicted. Needs `UserService`.                                             |
 
 `DEFAULT_AUTH_WORKFLOWS` is the exported `as const` allow-list:
@@ -40,8 +40,11 @@ export const DEFAULT_AUTH_WORKFLOWS = [
   "auth/login/flow",
   "auth/invite/start",
   "auth/recovery/flow",
+  "auth/signup/flow",
 ] as const;
 ```
+
+`auth/change-password/flow` is **not** in this list — it is guarded and dispatched from its own `POST /auth/change-password` route. `auth/signup/flow` is public (gated by `resolveSignupPolicy().allowSignup`, off by default) — see [Workflows — Self-signup](./workflows#self-signup-auth-signup-flow).
 
 ## `POST /auth/logout`
 

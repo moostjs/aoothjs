@@ -79,6 +79,7 @@ import {
   PincodeForm,
   Select2faForm,
   SetPasswordForm,
+  SignupForm,
   TermsBumpForm,
 } from "../atscript/models/forms.as";
 import {
@@ -104,6 +105,13 @@ export type AuthDeliveryPayload =
     }
   | {
       kind: "recovery-pincode";
+      channel: "email";
+      recipient: string;
+      code: string;
+      expiresInMs: number;
+    }
+  | {
+      kind: "signup-pincode";
       channel: "email";
       recipient: string;
       code: string;
@@ -157,6 +165,7 @@ const DEFAULT_FORMS: ResolvedAuthWorkflowOpts["forms"] = {
   termsBump: TermsBumpForm,
   concurrencyLimit: ConcurrencyLimitForm,
   recoveryPincode: PincodeForm,
+  signup: SignupForm,
 };
 
 function mergeAuthWorkflowOpts(opts: Partial<AuthWorkflowOpts>): ResolvedAuthWorkflowOpts {
@@ -548,6 +557,24 @@ export class AuthWorkflow {
     _ctx: AuthWfCtx,
   ): NonNullable<AuthWfCtx["changePassword"]> | Promise<NonNullable<AuthWfCtx["changePassword"]>> {
     return { revokeOtherSessions: true };
+  }
+
+  /**
+   * Resolve the self-signup policy. Reached from signup.flow's `init-signup`.
+   * Default `allowSignup: false` — invite-only is the safe default (mirrors
+   * `resolveAlternateCredentials().signup`); a deployment that wants open
+   * self-serve overrides this to `true` (and flips the login form's `signup`
+   * alt-action on via `resolveAlternateCredentials`). `collectUsername: false`
+   * means `username := email`; override + replace `opts.forms.signup` to
+   * collect a distinct username. There is intentionally no rate-limit field
+   * here yet — override the `signup-form` step (or front it with a captcha /
+   * IP gate) for abuse control; the OTP resend cooldown already bounds repeat
+   * sends per run.
+   */
+  protected resolveSignupPolicy(
+    _ctx: AuthWfCtx,
+  ): NonNullable<AuthWfCtx["signup"]> | Promise<NonNullable<AuthWfCtx["signup"]>> {
+    return { allowSignup: false, collectUsername: false };
   }
 
   /**
@@ -999,16 +1026,6 @@ export class AuthWorkflow {
     if (ctx.pincode) delete ctx.pincode.sentTo;
   }
 
-  /**
-   * Load a user row by id OR email handle, returning null when none matches.
-   * Used by invite admin-phase steps (duplicate check, keyed by email) and the
-   * accept-tail (pending-invitation gate, keyed by the subject id) — so it
-   * resolves permissively via `findByIdentifier` (id → username → email).
-   */
-  private async loadUserOrNull(identifier: string): Promise<UserCredentials | null> {
-    return this.users.findByIdentifier(identifier);
-  }
-
   // ── @Step stubs (66 — bodies filled in steps 4-6) ───────────────────────
   //
   // Each stub returns `undefined` and takes the ctx via `@WorkflowParam("context")`.
@@ -1242,11 +1259,9 @@ export class AuthWorkflow {
 
     let username: string | undefined;
     try {
-      const userId = await this.emailToUserId(email);
-      if (userId) {
-        const user = await this.users.getUser(userId);
-        username = user.id;
-      }
+      // `emailToUserId` already returns the stable `id` (the token subject) — no
+      // follow-up `getUser` round-trip needed; downstream OTP/reset steps re-read.
+      username = (await this.emailToUserId(email)) ?? undefined;
     } catch (err) {
       if (!(err instanceof UserAuthError) || err.type !== "NOT_FOUND") throw err;
     }
@@ -1660,7 +1675,7 @@ export class AuthWorkflow {
         throw this.throwPublic(ctx, wf, { errors: { roles: "Invalid role" } });
       }
     }
-    const existing = await this.loadUserOrNull(email);
+    const existing = await this.users.findByIdentifier(email);
     const action = await this.duplicateInviteCheck({ email, existingUser: existing });
     if (action === "reject") {
       if (existing?.account?.pendingInvitation) {
@@ -1793,7 +1808,7 @@ export class AuthWorkflow {
     if (!ctx.subject) {
       throw new HttpError(500, "Workflow state corrupted: missing subject at accept");
     }
-    const existing = await this.loadUserOrNull(ctx.subject);
+    const existing = await this.users.findByIdentifier(ctx.subject);
     if (!existing) {
       throw new HttpError(410, "This invite has been cancelled");
     }
@@ -2375,6 +2390,16 @@ export class AuthWorkflow {
       await this.deliver({
         kind: "mfa-pincode",
         channel: target.channel,
+        recipient: target.address,
+        code,
+        expiresInMs: this.opts.mfa.pincodeTtlMs,
+      });
+    } else if (ctx.signup) {
+      // Signup verify-first: prove email ownership before the row exists. The
+      // target is always email (`resolvePincodeTarget`'s non-MFA branch).
+      await this.deliver({
+        kind: "signup-pincode",
+        channel: "email",
         recipient: target.address,
         code,
         expiresInMs: this.opts.mfa.pincodeTtlMs,
@@ -3122,6 +3147,136 @@ export class AuthWorkflow {
     return undefined;
   }
 
+  // ── Signup flow (4) — verify-first self-signup (auth/signup/flow) ──
+
+  /**
+   * Entry step of `auth/signup/flow`. Inline-resolves the signup policy (runs
+   * BEFORE the `!allowSignup` gate, mirroring how `credentials` / `request`
+   * inline the front policies they need) and stamps `ctx.signup` — whose
+   * presence is the flow discriminator. Sets `ctx.autoLogin = true`: v1 always
+   * issues a session on success (the shared `finalize-fresh-login` assumes
+   * invite/recovery ctx slots, so signup uses `finalize-auto-login` only).
+   * When self-signup is disabled (the default), emits a terminal finish so the
+   * SPA shows a closed-signups message instead of a form; the schema's
+   * `{ break: !allowSignup }` short-circuits the rest.
+   */
+  @Step("init-signup")
+  @Public()
+  initSignup(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
+    const apply = (policy: NonNullable<AuthWfCtx["signup"]>): undefined => {
+      ctx.signup = policy;
+      ctx.autoLogin = true;
+      if (!policy.allowSignup) {
+        finishWf({ message: { level: "info", text: "Self-signup is currently disabled." } });
+      }
+      return undefined;
+    };
+    const result = this.resolveSignupPolicy(ctx);
+    return result instanceof Promise ? result.then(apply) : apply(result);
+  }
+
+  /**
+   * Collect the signup email (verify-first — no account exists yet). First
+   * entry pauses on `SignupForm`; on submit, stashes `ctx.email` and flips
+   * `ctx.signup.submitted` to open the OTP loop. `backToLogin` aborts to the
+   * login page. The bundled form is email-only (`username := email`); a custom
+   * `opts.forms.signup` + an override here can collect more.
+   */
+  @Step("signup-form")
+  @Public()
+  async signupForm(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.signup);
+    if (wf.resolveAction() === "backToLogin") {
+      // "I already have an account" — a deliberate cross-link to sign-in (NOT a
+      // cancel), since signup is typically the initial flow. `goto-login`
+      // distinguishes it from the post-OTP `already-registered` detection.
+      finishWf({
+        next: {
+          trigger: "immediate",
+          action: { type: "redirect", target: this.opts.loginUrl, reason: "goto-login" },
+        },
+      });
+      ctx.aborted = true;
+      return undefined;
+    }
+    const input = wf.resolveInput() as { email: string };
+    ctx.email = input.email;
+    (ctx.signup ??= {}).submitted = true;
+    // Move off the cheap encapsulated start onto the durable store strategy so
+    // the OTP + password-set pauses survive restarts (mirrors recovery's `request`).
+    swapStrategy("store");
+    return undefined;
+  }
+
+  /**
+   * Create the account — runs AFTER the OTP loop, so the email is proven. The
+   * existence check lives HERE (not before the OTP) so the wire path is
+   * identical for new and already-registered emails: both received an OTP
+   * pause, so an attacker on the wire cannot enumerate accounts. A taken email
+   * is only revealed to someone who actually controls the inbox, at which point
+   * we route them to sign-in. A new email creates the (still-inactive) user and
+   * arms the shared password-set phase (`newPasswordRequired`); the reused
+   * `activate-user` step flips it active AFTER the password is set.
+   */
+  @Step("signup-create-user")
+  @Public()
+  async signupCreateUser(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    const email = ctx.email;
+    if (!email) throw new HttpError(500, "Workflow state corrupted: missing email");
+    const existing = await this.users.findByHandle(email);
+    if (existing) {
+      this.finishSignupAlreadyRegistered();
+      return undefined;
+    }
+    // Reuse the invite `prepareUser` hook to source app-required columns
+    // (e.g. a NOT-NULL `tenantId`). Signup is distinguishable inside an
+    // override by the absence of `invitedBy` + empty `roles`.
+    const extras = await this.prepareUser({ email, roles: [] });
+    let created: UserCredentials;
+    try {
+      // username := email (bundled form is email-only); no password yet — the
+      // shared SetPasswordForm collects it next, so nothing plaintext is held
+      // in wf-state across the OTP wait.
+      created = await this.users.createUser(email, undefined, extras);
+    } catch (err) {
+      // Race: a concurrent signup created the row between findByHandle and here.
+      if (err instanceof UserAuthError && err.type === "ALREADY_EXISTS") {
+        this.finishSignupAlreadyRegistered();
+        return undefined;
+      }
+      throw err;
+    }
+    ctx.subject = created.id;
+    ctx.newPasswordRequired = true;
+    (ctx.password ??= {}).changeReason = "initial";
+    return undefined;
+  }
+
+  /** Generic "you already have an account" finish for the signup existence collision (safe — only reached post-OTP). */
+  private finishSignupAlreadyRegistered(): void {
+    finishWf({
+      message: { level: "info", text: "You already have an account. Please sign in." },
+      next: {
+        trigger: "immediate",
+        action: { type: "redirect", target: this.opts.loginUrl, reason: "already-registered" },
+      },
+    });
+  }
+
+  /**
+   * Customer extension point for signup — runs after the account is created,
+   * activated, and consents persisted, just before `finalize-auto-login`. The
+   * default is a no-op; a subclass overrides it to seed app-specific rows
+   * (tenant, profile, welcome email, audit record, ConsentStore.save, …) for
+   * the freshly-created `ctx.subject`. Mirrors login's `extra-step` seam.
+   */
+  @Step("signup-extra-step")
+  @Public()
+  // oxlint-disable-next-line typescript/no-redundant-type-constituents -- explicit sync|async override seam, see CLAUDE.md "Pure extension-point stubs"
+  signupExtraStep(@WorkflowParam("context") _ctx: AuthWfCtx): unknown | Promise<unknown> {
+    return undefined;
+  }
+
   // ── Alt-cred stubs (5; login-only, all condition: false placeholders) ──
 
   @Step("magic-link-request")
@@ -3420,4 +3575,56 @@ export class AuthWorkflow {
     { id: "finish-change-password" },
   ])
   changePasswordFlow(): void {}
+
+  /**
+   * signup.flow — verify-first self-signup. `@Public()` on the body (anonymous).
+   * NOT arbac-gated at the flow level: the `resolveSignupPolicy().allowSignup`
+   * gate is the on/off switch (default OFF — invite-only is the safe default).
+   * Reachable via the public `/auth/trigger` (add `auth/signup/flow` to the
+   * controller's `DEFAULT_AUTH_WORKFLOWS`).
+   *
+   * Shape = recovery's email→OTP front + invite's create→set-password→activate→
+   * auto-login tail, so it reuses `pincodeSendCheckPair`, `passwordPhaseSchema`,
+   * `prepare-consents` + `consentsPersistTailSchema`, `activate-user`, and
+   * `finalize-auto-login` verbatim. The account-existence check is deferred to
+   * `signup-create-user` (POST-OTP) so account existence never leaks on the
+   * wire — every email gets an identical OTP pause regardless of whether it is
+   * already registered.
+   */
+  @Workflow("auth/signup/flow")
+  @Public()
+  @WorkflowSchema<AuthWfCtx>([
+    { id: "init-signup" }, // resolve policy → ctx.signup; ctx.autoLogin=true; gate allowSignup
+    { break: (ctx) => !ctx.signup?.allowSignup }, // disabled → init-signup emitted the terminal
+    { id: "signup-form" }, // collect email → ctx.email + ctx.signup.submitted
+    { break: (ctx) => !ctx.signup?.submitted || !!ctx.aborted }, // backToLogin aborted
+
+    // Email-ownership OTP — reuse the shared pincode pair. `ctx.mfa.method` is
+    // unset + `ctx.signup` present → `pincode-send` emits `signup-pincode` and
+    // `resolvePincodeTarget` returns `ctx.email`. The code lives in wf-state
+    // (`mintPin`/`verifyPin`), so NO user row is needed to verify.
+    {
+      while: (ctx) => !ctx.otp?.verified && !ctx.aborted,
+      steps: pincodeSendCheckPair,
+    },
+    { break: (ctx) => !!ctx.aborted },
+
+    // Email proven → create the (inactive) account. Existence check is HERE,
+    // not earlier, so the wire path is identical for new vs taken emails.
+    { id: "signup-create-user", condition: (ctx) => !!ctx.otp?.verified && !ctx.subject },
+    { break: (ctx) => !ctx.subject }, // taken-email path finished without a subject
+
+    { id: "prepare-consents" }, // subject now set → pending consents render on SetPasswordForm
+
+    // User chooses their password (shared SetPasswordForm) — armed by
+    // `newPasswordRequired` set in `signup-create-user`.
+    ...passwordPhaseSchema,
+    { break: (ctx) => !!ctx.aborted },
+
+    { id: "activate-user" }, // flip active AFTER the password is set (reuse invite)
+    ...consentsPersistTailSchema,
+    { id: "signup-extra-step" }, // customer extension point
+    { id: "finalize-auto-login" }, // v1 always auto-logins
+  ])
+  signupFlow(): void {}
 }

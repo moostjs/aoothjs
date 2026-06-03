@@ -111,15 +111,18 @@ test.describe("LoginWorkflow / variant=full (signup enabled)", () => {
   test("WF-LOGIN-006: signup alt-action → redirect to /signup", async ({ page }) => {
     await page.goto(wfUrl(LOGIN_WF, "full"));
     await waitForFormInput(page, "username");
-    await expect(page.getByRole("button", { name: "Sign up", exact: true })).toBeVisible();
+    // Label is the full cross-link copy ("Don't have an account? Sign up now");
+    // match on the stable "Sign up" substring rather than the exact phrasing.
+    await expect(page.getByRole("button", { name: /Sign up/i })).toBeVisible();
 
     await clickAction(page, "Sign up");
 
-    // SPA router rewrites `/signup` → `/wf?id=auth.invite`.
+    // SPA router rewrites `/signup` → `/wf?id=auth/signup/flow` (the dedicated
+    // self-signup flow; previously this dead-ended at the invite flow).
     await page.waitForURL((url) => {
       const id = url.searchParams.get("id");
       return (
-        (url.pathname === "/wf" && id === "auth/invite/start") || url.pathname.startsWith("/signup")
+        (url.pathname === "/wf" && id === "auth/signup/flow") || url.pathname.startsWith("/signup")
       );
     });
   });

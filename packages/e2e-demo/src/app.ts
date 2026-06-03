@@ -165,6 +165,7 @@ function toEmailKind(kind: AuthDeliveryPayload["kind"]): import("@aooth/auth").A
     case "invite-link":
       return "invite.magicLink";
     case "recovery-pincode":
+    case "signup-pincode":
       return "recovery.pincode";
     case "new-device-notice":
       return "notifyNewDevice";
@@ -460,6 +461,13 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
         return base.then((b) => ({ ...b, forgotPassword: true, signup: true }));
       }
       return { ...base, forgotPassword: true, signup: true };
+    }
+
+    // Demo enables open self-signup so `auth/signup/flow` is reachable. The
+    // library default is `allowSignup: false` (invite-only); a real deployment
+    // opts in here (and typically gates it behind a captcha / rate limiter).
+    protected override resolveSignupPolicy(_ctx: AuthWfCtx): NonNullable<AuthWfCtx["signup"]> {
+      return { allowSignup: true, collectUsername: false };
     }
 
     protected override resolveDeviceTrust(

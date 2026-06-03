@@ -13,7 +13,7 @@ import WfPage from "./pages/WfPage.vue";
 export const WORKFLOW_URL_REDIRECTS: Readonly<Record<string, string>> = {
   "/login": "auth/login/flow",
   "/recover": "auth/recovery/flow",
-  "/signup": "auth/invite/start",
+  "/signup": "auth/signup/flow",
   // `/accept-invite?wfs=…` is the URL emitted by the demo's `buildMagicLinkUrl`
   // for the `invite.magicLink` outlet (see aooth.ts). Mapping it to
   // `auth/invite/start` lets WfPage pick up the `wfs` query as `initialToken`

@@ -58,13 +58,13 @@ For uniform request-level auditing across **all** routes (not just auth), a `def
 
 ## Populating the standard fields
 
-| Field       | Source                                                                        |
-| ----------- | ----------------------------------------------------------------------------- |
-| `userId`    | `useAuth().getAuthContext()?.userId` (or the workflow's `ctx.subject`).       |
-| `workflow`  | The wfid (`auth/login/flow`, `auth/invite/start`, `auth/recovery/flow`).      |
-| `ip`        | `useRequest().rawRequest.socket.remoteAddress` at the originating HTTP event. |
-| `userAgent` | `useHeaders().get('user-agent')` at the originating HTTP event.               |
-| `kind`      | Your event-specific discriminant.                                             |
+| Field       | Source                                                                                                                    |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `userId`    | `useAuth().getAuthContext()?.userId` (or the workflow's `ctx.subject`).                                                   |
+| `workflow`  | The wfid (`auth/login/flow`, `auth/invite/start`, `auth/recovery/flow`, `auth/signup/flow`, `auth/change-password/flow`). |
+| `ip`        | `useRequest().rawRequest.socket.remoteAddress` at the originating HTTP event.                                             |
+| `userAgent` | `useHeaders().get('user-agent')` at the originating HTTP event.                                                           |
+| `kind`      | Your event-specific discriminant.                                                                                         |
 
 ## Extending the event shape
 

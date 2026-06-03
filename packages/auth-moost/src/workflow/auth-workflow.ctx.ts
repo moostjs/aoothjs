@@ -311,6 +311,22 @@ export interface AuthWfDefaults {
 }
 
 /**
+ * Self-signup flow state. Populated by `init-signup` (policy from
+ * `resolveSignupPolicy`) and `signup-form` (the `submitted` marker). Its
+ * presence on ctx is the signup-flow discriminator (§ per-flow discrimination):
+ * `ctx.signup` set ⇒ `auth/signup/flow` is running (mirrors `ctx.accept` /
+ * `ctx.postReset` / `ctx.changePassword` for the other flows).
+ */
+export interface AuthWfSignupState {
+  /** Resolved gate — `false` (the default) disables self-signup; `init-signup` emits a terminal "signups are disabled" finish. */
+  allowSignup?: boolean;
+  /** When `true`, the signup form collects a `username` distinct from the email; otherwise `username := email`. */
+  collectUsername?: boolean;
+  /** Set by `signup-form` once a valid email (+ optional username) is submitted — gates the OTP loop. */
+  submitted?: boolean;
+}
+
+/**
  * Public-facing context surface — the **only** group form schemas may read
  * from via `@wf.context.pass 'public'`. Every other top-level key
  * (`ctx.mfa`, `ctx.pincode`, `ctx.trust`, etc.) is server-only and must
@@ -420,6 +436,7 @@ export interface AuthWfCtx {
   lockout?: AuthWfLockoutPolicy; // [login + recovery]
   sessionPolicy?: AuthWfSessionPolicy; // [login]
   changePassword?: AuthWfChangePasswordPolicy; // [change-password] — also the flow discriminator
+  signup?: AuthWfSignupState; // [signup] — also the flow discriminator
   mfaPolicy?: AuthWfMfaPolicy; // [login + invite]
   adminForm?: AuthWfAdminFormPolicy; // [invite admin]
   accept?: AuthWfAcceptState; // [invite accept]

@@ -32,6 +32,7 @@ export const DEFAULT_AUTH_WORKFLOWS = [
   "auth/login/flow",
   "auth/invite/start",
   "auth/recovery/flow",
+  "auth/signup/flow",
 ] as const;
 
 /**

@@ -130,7 +130,7 @@ Constructs the JSON body used by the workflow `issue` step and `/auth/refresh`. 
 
 ### `buildFinishedCookies(issue): WfFinishedResponse["cookies"]`
 
-Builds the `cookies` map that goes into the workflow `WfFinished` envelope. Used by all three workflows' finalize step variants that need to attach cookies via the raw envelope path:
+Builds the `cookies` map that goes into the workflow `WfFinished` envelope. Used by the workflows' finalize step variants that need to attach cookies via the raw envelope path (auto-login on login / invite / recovery / signup):
 
 ```ts
 useWfFinished().set({

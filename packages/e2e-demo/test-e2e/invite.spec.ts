@@ -153,8 +153,8 @@ test.describe("WF-INVITE — auth.invite family (P0)", () => {
  *   WF-INVITE-006  variant `roles-profile`      — role not in whitelist → form error
  *
  * The `t1_redeemed` seed has `username = email = t1_redeemed@example.com`,
- * which is the structural prerequisite for `loadUserOrNull(email)` to find
- * it via `findByUsername(email)`. -002 hits it.
+ * which is the structural prerequisite for `findByIdentifier(email)` to find
+ * it via the username/email handle match. -002 hits it.
  *
  * Error surface: AsWfForm forwards trigger failures to the `@error` slot →
  * `WfPage.vue` paints `err.message` inside `div.scope-error` near the form.
@@ -167,9 +167,9 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
   });
 
   // ── WF-INVITE-002 ────────────────────────────────────────────────────────
-  // BRANCH: `inviteAdminInviteForm` → `loadUserOrNull(email)` finds the
+  // BRANCH: `inviteAdminInviteForm` → `findByIdentifier(email)` finds the
   // already-accepted seed user (`t1_redeemed@example.com` — username equals
-  // email, so the `findByUsername` lookup resolves) → default
+  // email, so the handle lookup resolves) → default
   // `duplicateCheck` returns 'reject' → step calls
   // `wf.requireInput({ errors: { email: 'User already exists' } })`. The wf
   // engine re-pauses the same step under the same wfs token; the response is

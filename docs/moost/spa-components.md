@@ -41,7 +41,7 @@ const components = { AsConsentArray, AsPasswordRules, AsQrCode };
 ```
 
 - **`path`** — the `/auth/trigger` endpoint (the `AuthController` route the workflow runs behind).
-- **`name`** — the workflow id to start: `auth/login/flow`, `auth/invite/start`, or `auth/recovery/flow`.
+- **`name`** — the workflow id to start: `auth/login/flow`, `auth/invite/start`, `auth/recovery/flow`, or `auth/signup/flow`.
 - **`:types`** — the built-in field renderers from `@atscript/vue-form`.
 - **`:components`** — the aooth companion components, keyed by the names the forms emit.
 

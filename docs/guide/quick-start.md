@@ -218,7 +218,7 @@ class MeController {
 
 ### 7a. The workflow
 
-There is **one** workflow class — `AuthWorkflow` — declaring three `@Workflow` schemas (`auth/login/flow`, `auth/invite/start`, `auth/recovery/flow`). If the default opts suit you, register it directly:
+There is **one** workflow class — `AuthWorkflow` — declaring five `@Workflow` schemas (`auth/login/flow`, `auth/invite/start`, `auth/recovery/flow`, `auth/signup/flow`, and the guarded `auth/change-password/flow`). If the default opts suit you, register it directly:
 
 ```ts
 app.registerControllers(AuthController, AuthWorkflow);
@@ -391,21 +391,21 @@ curl http://localhost:3000/me -H 'Authorization: Bearer <accessToken>'
 
 `AuthController` mounts five routes under `@Controller('auth')`. All five are `@Public()` (the auth guard does not block them — they validate their own inputs):
 
-| Method + path                      | Body / Query                   | Purpose                                                                                                               |
-| ---------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `POST /auth/logout`                | `{ refreshToken? }` (optional) | Revokes the current access token + refresh (cookie or body). Always clears `aooth_session` / `aooth_refresh` cookies. |
-| `POST /auth/refresh`               | `{ refreshToken? }` (optional) | Trades a refresh token for a fresh access + refresh pair. Reads cookie if no body field.                              |
-| `GET /auth/status`                 | —                              | Returns the resolved `AuthContext { userId, claims }` if the guard could validate; 401 otherwise.                     |
-| `POST /auth/trigger`               | `{ wfid?, wfs?, input? }`      | Drives any workflow in `DEFAULT_AUTH_WORKFLOWS = ['auth/login/flow', 'auth/invite/start', 'auth/recovery/flow']`.     |
-| `GET /auth/invite/post-redemption` | `?uid=<userId>`                | Idempotent "already accepted" envelope for re-clicked invite links (needs a `UserService`).                           |
+| Method + path                      | Body / Query                   | Purpose                                                                                                                               |
+| ---------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /auth/logout`                | `{ refreshToken? }` (optional) | Revokes the current access token + refresh (cookie or body). Always clears `aooth_session` / `aooth_refresh` cookies.                 |
+| `POST /auth/refresh`               | `{ refreshToken? }` (optional) | Trades a refresh token for a fresh access + refresh pair. Reads cookie if no body field.                                              |
+| `GET /auth/status`                 | —                              | Returns the resolved `AuthContext { userId, claims }` if the guard could validate; 401 otherwise.                                     |
+| `POST /auth/trigger`               | `{ wfid?, wfs?, input? }`      | Drives any workflow in `DEFAULT_AUTH_WORKFLOWS = ['auth/login/flow', 'auth/invite/start', 'auth/recovery/flow', 'auth/signup/flow']`. |
+| `GET /auth/invite/post-redemption` | `?uid=<userId>`                | Idempotent "already accepted" envelope for re-clicked invite links (needs a `UserService`).                                           |
 
 Subclass `AuthController` to widen the trigger allow-list (override `triggerWf()` with your own `@WfTrigger({ allow })`).
 
-Self-signup, password reset, and invite acceptance are all flows of the same `AuthWorkflow` — drive them through the same `/auth/trigger` wire by starting `auth/recovery/flow` or `auth/invite/start`. See the [Moost integration guide](../moost/) for the option + resolver surface.
+Self-signup, password reset, and invite acceptance are all flows of the same `AuthWorkflow` — drive them through the same `/auth/trigger` wire by starting `auth/signup/flow`, `auth/recovery/flow`, or `auth/invite/start`. (Self-signup is off by default — enable it via `resolveSignupPolicy().allowSignup`.) See the [Moost integration guide](../moost/) for the option + resolver surface.
 
 ## Common flows
 
-End-to-end snippets for the four most-asked Day-1 recipes. Each one assumes the Quick Start app is running with `AppAuth` (the `AuthWorkflow` subclass) registered — all three flows live on that one class.
+End-to-end snippets for the four most-asked Day-1 recipes. Each one assumes the Quick Start app is running with `AppAuth` (the `AuthWorkflow` subclass) registered — all the flows live on that one class.
 
 ### Guard a single route by role
 

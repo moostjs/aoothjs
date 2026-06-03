@@ -39,6 +39,7 @@ class TestableAuthWorkflow extends AuthWorkflow {
   public exposeLockoutOverride = (ctx: AuthWfCtx) => this.lockoutOverride(ctx);
   public exposeSessionPolicy = (ctx: AuthWfCtx) => this.resolveSessionPolicy(ctx);
   public exposeChangePasswordPolicy = (ctx: AuthWfCtx) => this.resolveChangePasswordPolicy(ctx);
+  public exposeSignupPolicy = (ctx: AuthWfCtx) => this.resolveSignupPolicy(ctx);
   public exposeMfaPolicy = (ctx: AuthWfCtx) => this.resolveMfaPolicy(ctx);
   public exposeOtpDisclosure = (ctx: AuthWfCtx, ch: "email" | "phone") =>
     this.resolveOtpDisclosure(ctx, ch);
@@ -153,11 +154,13 @@ describe("AuthWorkflow construction (WF-AUTH-UNIFIED-002)", () => {
     // the box. Consumer override via `opts.forms.<field>` swaps any slot.
     // Pin a representative field-count + a key slot so a regression that
     // drops the default map is caught.
-    expect(Object.keys(opts.forms).length).toBe(16);
+    expect(Object.keys(opts.forms).length).toBe(17);
     expect(opts.forms.loginCredentials).toBeTruthy();
     expect(opts.forms.recoveryEmailIdentifier).toBeTruthy();
     expect(opts.forms.pincode).toBeTruthy();
     expect(opts.forms.setPassword).toBeTruthy();
+    // Self-signup ships its own email-entry form (`auth/signup/flow` entry pause).
+    expect(opts.forms.signup).toBeTruthy();
     // Authenticated change-password ships its own standalone form (current +
     // new + confirm) — distinct from the reset/initial setPassword form.
     expect(opts.forms.changePassword).toBeTruthy();
@@ -256,6 +259,15 @@ describe("AuthWorkflow resolver defaults", () => {
     // embedRecovery controls whether recovery runs inline as a sub-workflow.
     // Default OFF — recovery is a separate flow.
     expect(r.embedRecovery).toBe(false);
+  });
+
+  it("resolveSignupPolicy — allowSignup OFF, collectUsername OFF by default", async () => {
+    const r = await settle(wf.exposeSignupPolicy(ctx));
+    // allowSignup OFF: invite-only is the safer default — a deployment opts
+    // into open self-serve explicitly (mirrors resolveAlternateCredentials.signup).
+    expect(r.allowSignup).toBe(false);
+    // collectUsername OFF: bundled SignupForm is email-only, `username := email`.
+    expect(r.collectUsername).toBe(false);
   });
 
   it("resolveDeviceTrust — disabled by default, opt-in semantics, skips-MFA on remember", async () => {
@@ -710,7 +722,7 @@ describe("AuthWorkflow schema integrity", () => {
     },
   );
 
-  it("declares four @Workflow methods (login, invite, recover, change-password)", () => {
+  it("declares five @Workflow methods (login, invite, recover, change-password, signup)", () => {
     const mate = getMoostMate();
     const proto = AuthWorkflow.prototype as object;
     const flows: { method: string; path: string }[] = [];
@@ -723,14 +735,15 @@ describe("AuthWorkflow schema integrity", () => {
         if (h.type === "WF_FLOW") flows.push({ method: name, path: h.path });
       }
     }
-    // WHY: the three flow paths (`login`, `invite`, `recover`) are the
-    // canonical wf-id suffixes the controller mounts at /auth/<path>/flow.
-    // Renaming or losing one would break the public REST surface.
+    // WHY: these flow paths are the canonical wf-id suffixes the controller
+    // mounts at /auth/<path>/flow. Renaming or losing one would break the
+    // public REST surface.
     expect(flows.map((f) => f.path).toSorted()).toEqual([
       "auth/change-password/flow",
       "auth/invite/start",
       "auth/login/flow",
       "auth/recovery/flow",
+      "auth/signup/flow",
     ]);
   });
 });
