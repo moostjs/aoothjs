@@ -16,6 +16,19 @@ import { AnnotationSpec } from "@atscript/core";
  *   (1) `@arbac.userId`, (2) the single field of the `@db.table.preferredId.uniqueIndex`
  *   group, (3) `@meta.id` — first match wins.
  *
+ * Credential-side (restrict-only attenuation — a credential authorizes for
+ * strictly LESS than its owning user; soundness is the engine's scope
+ * conjunction, these only mark WHERE the narrowing inputs live):
+ *
+ * - `@arbac.attenuate.role` — marks the ONE credential field holding the
+ *   assumed-role SUBSET (`string[]`). Intersected with the user's roles
+ *   (fail-closed: a claimed role the user lacks is dropped). Exactly one per
+ *   type — multiple declarations throw at boot.
+ * - `@arbac.attenuate.attr "userAttrName"` — marks a credential field whose
+ *   value narrows the named USER attribute. The string argument is the target
+ *   key in the user model's `@arbac.attribute` keyspace (validated to exist at
+ *   boot). Multiple fields may each carry it, targeting different attrs.
+ *
  * Install in `atscript.config.ts`:
  *
  * ```ts
@@ -52,6 +65,31 @@ export default function arbacPlugin(): TAtscriptPlugin {
               nodeType: ["prop"],
               multiple: false,
             }),
+            attenuate: {
+              role: new AnnotationSpec({
+                description:
+                  "Marks the credential field holding the assumed-role SUBSET (string[]) for " +
+                  "restrict-only ARBAC attenuation. Intersected with the user's roles (fail-closed). " +
+                  "Exactly one @arbac.attenuate.role field per type — multiple declarations throw at boot.",
+                nodeType: ["prop"],
+                multiple: false,
+              }),
+              attr: new AnnotationSpec({
+                description:
+                  "Marks a credential field whose value narrows the named USER attribute for " +
+                  "restrict-only ARBAC attenuation. The argument is the target key in the user " +
+                  "model's @arbac.attribute keyspace (validated to exist at boot). Multiple fields " +
+                  "may each carry it, targeting different attrs.",
+                nodeType: ["prop"],
+                multiple: false,
+                argument: {
+                  name: "userAttr",
+                  type: "string",
+                  description:
+                    "Target user-attribute key (a field annotated @arbac.attribute on the user model).",
+                },
+              }),
+            },
           },
         },
       };
