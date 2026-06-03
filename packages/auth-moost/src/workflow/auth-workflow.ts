@@ -1675,7 +1675,7 @@ export class AuthWorkflow {
         throw this.throwPublic(ctx, wf, { errors: { roles: "Invalid role" } });
       }
     }
-    const existing = await this.users.findByIdentifier(email);
+    const existing = await this.users.findByHandle(email);
     const action = await this.duplicateInviteCheck({ email, existingUser: existing });
     if (action === "reject") {
       if (existing?.account?.pendingInvitation) {
