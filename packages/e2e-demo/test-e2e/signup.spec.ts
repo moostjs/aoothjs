@@ -117,13 +117,14 @@ test.describe("signup — verify-first self-signup (auth/signup/flow)", () => {
     ).toBeFalsy();
   });
 
-  test("WF-SIGNUP-003: 'I already have an account' on SignupForm → redirect to login (reason='goto-login'), no token", async ({
+  test("WF-SIGNUP-003: 'Already have an account? Sign in' on SignupForm → redirect to login (reason='goto-login'), no token", async ({
     page,
   }) => {
     await page.goto(wfUrl("auth/signup/flow"));
     await waitForFormInput(page, "email", 15_000);
-    // Signup is the initial flow; existing users cross-link to sign-in here.
-    await clickAction(page, "I already have an account");
+    // Signup is the initial flow; existing users cross-link to sign-in via the
+    // pushed-down "Already have an account? Sign in" alt-action (link = "Sign in").
+    await clickAction(page, "Sign in");
 
     await expect(page.getByText("Workflow finished.")).toBeVisible();
     const envelope = (await readFinishEnvelope(page)) as {

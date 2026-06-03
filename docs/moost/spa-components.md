@@ -59,6 +59,18 @@ When `ConsentStore.getPendingConsents(subject)` returns descriptors (the arg is 
 
 On `SetPasswordForm`, the phantom `passwordRules` field renders fulfillment dots that re-evaluate on every keystroke against `data.newPassword`, using the **same transferable policy expressions** the server enforces (shipped to the client via `UserService.getTransferablePolicies()`). See [Password Policies](/user/policy).
 
+## Cross-flow alt-action links {#cross-flow-alt-actions}
+
+The bundled forms' **cross-flow navigation** actions — login's `signup` ("Don't have an account? **Sign up**") and `magicLink`, the signup form's `backToLogin` ("Already have an account? **Sign in**"), and recovery's `backToLogin` ("Remembered your password? **Sign in**") — render as **pushed-down, centered "text + link" affordances below the submit button**, rather than inline above it. Three `@atscript/vue-aooth` / `@atscript/vue-form` annotations on the `ui.action` field drive this:
+
+| Annotation                                             | Effect                                                                                                            |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `@ui.form.pushDown`                                    | Moves the action into its own grid **below** the submit button (`def.pushDownFields`) instead of inline above it. |
+| `@ui.form.attr 'text', '…'`                            | Renders leading text before the link → `text [link]` (e.g. "Don't have an account? Sign up").                     |
+| `@ui.form.attr 'align', 'left' \| 'center' \| 'right'` | Aligns the text+link row. The bundled cross-flow links use `center`.                                              |
+
+`@atscript/moost-wf` serializes all three over the workflow round-trip, so a server-driven `<AsWfForm>` renders them identically. The `text`/`align` attrs apply only to the standalone `ui.action` button (the `AsAction` component) — not to the inline-on-input action variant (e.g. login's `forgotPassword`, which sits in the password field's footer). The annotation **semantics** are owned by the [atscript-ui docs](https://ui.atscript.dev); the bundled forms only declare them. To restyle or relabel, replace the form via `opts.forms.<slot>` and keep/adjust the annotations (action **ids** stay the routing contract — see [Workflows](./workflows)).
+
 ## Magic-link resume — `initialToken`
 
 `auth/recovery/flow` and `auth/invite/start` finish their first leg by emailing a URL carrying a `wfs=<token>` (and, for invites, a `uid=<userId>`). Route that into your workflow page and pass it as `:initial-token` so `<AsWfForm>` resumes the paused state instead of starting fresh:

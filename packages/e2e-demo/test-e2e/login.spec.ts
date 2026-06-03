@@ -111,8 +111,8 @@ test.describe("LoginWorkflow / variant=full (signup enabled)", () => {
   test("WF-LOGIN-006: signup alt-action → redirect to /signup", async ({ page }) => {
     await page.goto(wfUrl(LOGIN_WF, "full"));
     await waitForFormInput(page, "username");
-    // Label is the full cross-link copy ("Don't have an account? Sign up now");
-    // match on the stable "Sign up" substring rather than the exact phrasing.
+    // Pushed-down alt-action: leading text "Don't have an account?" + link
+    // button "Sign up" (the action label). Match the "Sign up" link button.
     await expect(page.getByRole("button", { name: /Sign up/i })).toBeVisible();
 
     await clickAction(page, "Sign up");
@@ -656,9 +656,11 @@ test.describe("LoginWorkflow / variant=mfa-full (P1)", () => {
 
     // The wrapper div carries the attr, not the inner button — mirrors the
     // pattern used by AsConsentArray's `pendingconsents`. Customer custom
-    // components are passed the field-wrapper props.
+    // components are passed the field-wrapper props. (atscript-ui 0.1.86 renders
+    // the action-field wrapper as `as-action-field as-action-<align>` — the
+    // `as-default-field` class it used to share with input fields was dropped.)
     const resendWrapper = page
-      .locator(".as-default-field.as-action-field")
+      .locator(".as-action-field")
       .filter({ has: page.getByRole("button", { name: "Resend code" }) });
     await expect(resendWrapper).toHaveAttribute("available-at", /^\d+$/);
 

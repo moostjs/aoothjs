@@ -290,7 +290,9 @@ import { LoginCredentialsForm as MyLoginForm } from "./my-forms.as";
 new AuthWorkflow({ forms: { loginCredentials: MyLoginForm } }, users, auth, consentStore);
 ```
 
-Annotations used in `forms.as`: `@meta.label` / `@meta.required` / `@meta.sensitive` / `@meta.default` / `@meta.description`, `@ui.form.type` / `@ui.form.autocomplete` / `@ui.form.component` / `@ui.form.options` / `@ui.form.order` / `@ui.form.grid.colSpan` / `@ui.form.action` / `@ui.form.submit.text` / `@ui.form.validate`, the `@ui.form.fn.*` reactive family (`value` / `hidden` / `options` / `attr` / `title` / `description`), `@expect.minLength` / `@expect.maxLength` / `@expect.pattern`, and `@wf.context.pass` / `@wf.action.withData`.
+Annotations used in `forms.as`: `@meta.label` / `@meta.required` / `@meta.sensitive` / `@meta.default` / `@meta.description`, `@ui.form.type` / `@ui.form.autocomplete` / `@ui.form.component` / `@ui.form.options` / `@ui.form.order` / `@ui.form.grid.colSpan` / `@ui.form.action` / `@ui.form.attr` / `@ui.form.pushDown` / `@ui.form.submit.text` / `@ui.form.validate`, the `@ui.form.fn.*` reactive family (`value` / `hidden` / `options` / `attr` / `title` / `description`), `@expect.minLength` / `@expect.maxLength` / `@expect.pattern`, and `@wf.context.pass` / `@wf.action.withData`.
+
+The cross-flow navigation actions (login's `signup` + `magicLink`, signup's `backToLogin`, recovery's `backToLogin`) carry `@ui.form.pushDown` + `@ui.form.attr 'text'/'align'` so they render as pushed-down, centered "text + link" affordances below the submit button — see [SPA Components — cross-flow alt-action links](./spa-components#cross-flow-alt-actions).
 
 Clients consume the forms via `@atscript/vue-wf` (`<AsWfForm>` mounts the form at the paused step automatically). See [SPA Components](./spa-components).
 

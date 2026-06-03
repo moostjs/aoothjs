@@ -184,12 +184,13 @@ test.describe("recovery — default (OTP-via-email)", () => {
   test("WF-RECOVERY-017: backToLogin on EmailIdentifierForm → finish reason='user-cancelled', no token", async ({
     page,
   }) => {
-    // `recoveryAltActions.backToLogin` defaults to true. Click `Back to
-    // sign-in` before submitting an email — `abortRecoveryToLogin` emits a
-    // redirect-with-reason finish envelope.
+    // `recoveryAltActions.backToLogin` defaults to true. Click the pushed-down
+    // "Remembered your password? Sign in" alt-action (link = "Sign in") before
+    // submitting an email — `abortRecoveryToLogin` emits a redirect-with-reason
+    // finish envelope.
     await page.goto(wfUrl("auth/recovery/flow"));
     await waitForFormInput(page, "email", 15_000);
-    await clickAction(page, "Back to sign-in");
+    await clickAction(page, "Sign in");
 
     await expect(page.getByText("Workflow finished.")).toBeVisible();
     const envelope = (await readFinishEnvelope(page)) as {

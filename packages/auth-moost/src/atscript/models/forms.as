@@ -76,12 +76,17 @@ export interface LoginCredentialsForm {
     password: string
 
     @ui.form.order 30
-    @ui.form.action 'signup', 'Don’t have an account? Sign up now'
+    @ui.form.action 'signup', 'Sign up'
+    @ui.form.attr 'text', 'Don’t have an account?'
+    @ui.form.attr 'align', 'center'
+    @ui.form.pushDown
     @ui.form.fn.hidden '(_, _d, ctx) => !ctx.public?.altActions?.signup'
     signup?: ui.action
 
     @ui.form.order 40
     @ui.form.action 'magicLink', 'Sign in with a magic link'
+    @ui.form.attr 'align', 'center'
+    @ui.form.pushDown
     @ui.form.fn.hidden '(_, _d, ctx) => !ctx.public?.altActions?.magicLink'
     magicLink?: ui.action
 }
@@ -144,7 +149,10 @@ export interface EmailIdentifierForm {
     email: string.email
 
     @ui.form.order 20
-    @ui.form.action 'backToLogin', 'Back to sign-in'
+    @ui.form.action 'backToLogin', 'Sign in'
+    @ui.form.attr 'text', 'Remembered your password?'
+    @ui.form.attr 'align', 'center'
+    @ui.form.pushDown
     backToLogin?: ui.action
 }
 
@@ -176,7 +184,10 @@ export interface SignupForm {
     // Primary cross-link to sign-in: signup is typically the INITIAL flow, so
     // existing users click this to reach the login flow.
     @ui.form.order 20
-    @ui.form.action 'backToLogin', 'I already have an account'
+    @ui.form.action 'backToLogin', 'Sign in'
+    @ui.form.attr 'text', 'Already have an account?'
+    @ui.form.attr 'align', 'center'
+    @ui.form.pushDown
     backToLogin?: ui.action
 }
 
