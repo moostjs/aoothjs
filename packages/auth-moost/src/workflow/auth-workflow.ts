@@ -1257,22 +1257,22 @@ export class AuthWorkflow {
     const email = input.email;
     ctx.email = email;
 
-    let username: string | undefined;
+    let subject: string | undefined;
     try {
       // `emailToUserId` already returns the stable `id` (the token subject) — no
       // follow-up `getUser` round-trip needed; downstream OTP/reset steps re-read.
-      username = (await this.emailToUserId(email)) ?? undefined;
+      subject = (await this.emailToUserId(email)) ?? undefined;
     } catch (err) {
       if (!(err instanceof UserAuthError) || err.type !== "NOT_FOUND") throw err;
     }
 
-    if (!username) {
+    if (!subject) {
       // Anti-enumeration: same generic response. Downstream skips via `ctx.subject` gate.
       this.finishGenericRecovery();
       return undefined;
     }
 
-    ctx.subject = username;
+    ctx.subject = subject;
     // real user resolved → durable store for the OTP-send + password-reset pauses (resumable, 1h TTL); unknown-email anti-enumeration path above never reaches here
     swapStrategy("store");
     return undefined;
