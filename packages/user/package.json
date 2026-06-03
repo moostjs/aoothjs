@@ -22,7 +22,9 @@
   "files": [
     "dist",
     "src/atscript-db/user-credentials.as",
-    "src/atscript-db/user-credentials.as.d.ts"
+    "src/atscript-db/user-credentials.as.d.ts",
+    "src/atscript-db/federated-identity.as",
+    "src/atscript-db/federated-identity.as.d.ts"
   ],
   "type": "module",
   "sideEffects": false,
@@ -43,6 +45,14 @@
     "./atscript-db/model.as": {
       "types": "./src/atscript-db/user-credentials.as.d.ts",
       "default": "./src/atscript-db/user-credentials.as"
+    },
+    "./atscript-db/federated-model": {
+      "types": "./src/atscript-db/federated-identity.as.d.ts",
+      "default": "./src/atscript-db/federated-identity.as"
+    },
+    "./atscript-db/federated-model.as": {
+      "types": "./src/atscript-db/federated-identity.as.d.ts",
+      "default": "./src/atscript-db/federated-identity.as"
     },
     "./package.json": "./package.json"
   },

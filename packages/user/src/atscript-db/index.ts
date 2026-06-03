@@ -160,3 +160,8 @@ export class UsersStoreAtscriptDb<
     throw new UserAuthError("CAS_EXHAUSTED");
   }
 }
+
+export {
+  FederatedIdentityStoreAtscriptDb,
+  type FederatedIdentityTable,
+} from "./federated-identity-store";

@@ -33,6 +33,14 @@ export { UserService } from "./user-service";
 // Store
 export { UserStore } from "./store/user-store";
 export { UserStoreMemory } from "./store/memory";
+export {
+  FederatedIdentityStore,
+  type FederatedIdentity,
+  type NewFederatedIdentity,
+  type FederatedProfileSnapshot,
+} from "./store/federated-identity-store";
+export { FederatedIdentityStoreMemory } from "./store/federated-identity-store-memory";
+export type { FederatedIdentityStoreMemoryOptions } from "./store/federated-identity-store-memory";
 
 // Password
 export { PasswordHasher } from "./password/hasher";
