@@ -1,2 +1,6 @@
 test-results/
 playwright-report/
+
+# generated demo DB (db:init / SEED)
+*.sqlite
+*.sqlite-journal
