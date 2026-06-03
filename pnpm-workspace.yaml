@@ -11,18 +11,18 @@ catalog:
   "@atscript/db-sql-tools": ^0.1.95
   "@atscript/db-sqlite": ^0.1.95
   "@atscript/moost-db": ^0.1.95
-  "@atscript/moost-ui-presets": ^0.1.83
+  "@atscript/moost-ui-presets": ^0.1.85
   "@atscript/moost-validator": ^0.1.68
-  "@atscript/moost-wf": ^0.1.83
+  "@atscript/moost-wf": ^0.1.85
   "@atscript/typescript": ^0.1.68
-  "@atscript/ui": ^0.1.83
-  "@atscript/ui-fns": ^0.1.83
-  "@atscript/ui-styles": ^0.1.83
-  "@atscript/ui-table": ^0.1.83
-  "@atscript/vue-aooth": ^0.1.83
-  "@atscript/vue-form": ^0.1.83
-  "@atscript/vue-table": ^0.1.83
-  "@atscript/vue-wf": ^0.1.83
+  "@atscript/ui": ^0.1.85
+  "@atscript/ui-fns": ^0.1.85
+  "@atscript/ui-styles": ^0.1.85
+  "@atscript/ui-table": ^0.1.85
+  "@atscript/vue-aooth": ^0.1.85
+  "@atscript/vue-form": ^0.1.85
+  "@atscript/vue-table": ^0.1.85
+  "@atscript/vue-wf": ^0.1.85
   "@iconify/utils": ^3.1.0
   "@moostjs/arbac": ^0.6.22
   "@moostjs/event-http": ^0.6.22

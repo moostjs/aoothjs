@@ -147,3 +147,9 @@ Caveats:
 - **Resets on process restart.** Multi-pod deployments lose the epoch on rollout. For durable per-user revocation, back the same machinery with `CredentialStoreRedis` / `CredentialStoreAtscriptDb` — both implement `revokeAllForUser` via real deletion, not an in-memory map.
 - **Not shared across instances.** A `revokeAllForUser` call on pod A doesn't propagate to pod B's `epochs` map. Mitigation: keep `accessTtl` short (≤15 min) so re-issue on the new pod re-anchors above the old token's `iat`.
 - **`'>'` would break recovery flows.** If you ever need stronger semantics (post-password-change tokens must be strictly newer), use a stateful store — the `>=` choice is intentional, not a bug.
+
+## See also
+
+- [client.md](client.md) — `createAuthedFetch`, the browser-side wrapper that calls `/auth/refresh` on a 401 (single-flight + retry-once).
+- [sessions.md](sessions.md) — the `sessionId` token-family carried across rotation.
+- [controllers.md](controllers.md) — `POST /auth/refresh` HTTP surface + auto-derived refresh cookie path.

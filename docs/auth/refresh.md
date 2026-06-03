@@ -322,6 +322,7 @@ See [Errors](./errors) for the full table.
 ## See also
 
 - [Credentials & Sessions](./credentials) — the orchestrator that wraps refresh logic.
+- [Client (Browser Silent Refresh)](./client) — `createAuthedFetch`, the SPA-side wrapper that calls `/auth/refresh` on a 401.
 - [Tokens (JWT)](./tokens) — why stateless `'sliding'` degrades.
 - [Stores](./stores) — `DenylistStore` implementations for stateless rotation.
 - The refresh logic source at [packages/auth/src/auth-credential.ts](https://github.com/moostjs/aoothjs/blob/main/packages/auth/src/auth-credential.ts).

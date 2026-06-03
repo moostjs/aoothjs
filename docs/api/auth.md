@@ -1,6 +1,6 @@
 # `@aooth/auth` API Reference
 
-Complete export reference for `@aooth/auth`. See the [Auth Conceptual Guide](/auth/) for narrative documentation. Subpaths: `./redis`, `./atscript-db`, `./atscript-db/model.as`.
+Complete export reference for `@aooth/auth`. See the [Auth Conceptual Guide](/auth/) for narrative documentation. Subpaths: `./redis`, `./atscript-db`, `./atscript-db/model.as`, `./client` (browser-safe).
 
 ## Classes
 
@@ -111,6 +111,39 @@ const defaultClock: Clock; // { now: () => Date.now() }
 ```
 
 The default `Clock` implementation injected into stores when none is supplied. Override for deterministic tests or skew-corrected clocks. See [Credentials & Sessions](/auth/credentials).
+
+## Client
+
+Exported from the browser-safe `@aooth/auth/client` subpath only (no `jose` / Node crypto). See [Client (Browser Silent Refresh)](/auth/client) for narrative.
+
+### `createAuthedFetch`
+
+```ts
+function createAuthedFetch<TFetch extends FetchFn = DefaultFetch>(
+  options?: CreateAuthedFetchOptions<TFetch>,
+): TFetch;
+
+interface CreateAuthedFetchOptions<TFetch extends FetchFn = DefaultFetch> {
+  refreshPath?: string; // default '/auth/refresh'
+  onLogout?: () => void; // fired once per failed refresh
+  fetch?: TFetch; // default: global fetch
+  refreshOn?: number[]; // default [401]
+}
+```
+
+A `fetch` wrapper for cookie-transport SPAs: forwards `credentials: "include"`, single-flights `POST {refreshPath}` on a matching status (single refresh for N concurrent failures), retries the original request once on success, and calls `onLogout()` once on failure. Returns a function with the same signature as the wrapped `fetch`. See [Client](/auth/client).
+
+### `FetchFn` / `MinimalResponse` / `MinimalRequestInit` / `DefaultFetch`
+
+```ts
+type FetchFn = (input: string | URL, init?: MinimalRequestInit) => Promise<MinimalResponse>;
+interface MinimalResponse {
+  readonly ok: boolean;
+  readonly status: number;
+}
+```
+
+Structural types so the subpath needs no DOM lib. The real DOM `fetch` / `Response` satisfy them; `DefaultFetch` resolves to the ambient `fetch` type when the consumer's tsconfig includes the DOM lib, so `createAuthedFetch()` returns a real `Response`.
 
 ## Types — Core
 

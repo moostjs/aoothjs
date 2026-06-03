@@ -54,6 +54,7 @@ const authSidebar = [
       { text: "Sessions", link: "/auth/sessions" },
       { text: "Tokens (JWT)", link: "/auth/tokens" },
       { text: "Refresh & Rotation", link: "/auth/refresh" },
+      { text: "Client (Silent Refresh)", link: "/auth/client" },
       { text: "Magic Links", link: "/auth/magic-links" },
       { text: "Password Reset", link: "/auth/password-reset" },
       { text: "Email & SMS Senders", link: "/auth/delivery" },

@@ -44,6 +44,11 @@
       "import": "./dist/redis.mjs",
       "require": "./dist/redis.cjs"
     },
+    "./client": {
+      "types": "./dist/client.d.mts",
+      "import": "./dist/client.mjs",
+      "require": "./dist/client.cjs"
+    },
     "./atscript-db": {
       "types": "./dist/atscript-db.d.mts",
       "import": "./dist/atscript-db.mjs",
