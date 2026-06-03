@@ -100,3 +100,47 @@ export function unionControlsPolicy(
 
   return result;
 }
+
+/**
+ * Conjoin two ALREADY-UNIONED controls policies (each the output of
+ * {@link unionControlsPolicy} for one authority pass) under DENY-WINS
+ * intersection — a control is permitted only if BOTH passes permit it. This is
+ * the credential-attenuation combiner; polarity is the **opposite** of
+ * {@link unionControlsPolicy} (which is additive / silence-wins).
+ *
+ * Per control key (absent ≡ allowed, matching {@link unionControlsPolicy}):
+ *   - denied (`false`) on EITHER side → `false`.
+ *   - allowed on one side → the OTHER side's gate (`allow ∧ X = X`).
+ *   - whitelist ∧ whitelist → the INTERSECTION of the two arrays (only values
+ *     allowed by both; may be empty = nothing permitted).
+ *
+ * @returns merged policy; keys absent from the result mean "allowed" (callers
+ *          treat a missing key as `true`), matching {@link unionControlsPolicy}.
+ */
+export function intersectControlsPolicy(
+  a: Record<string, ControlGate>,
+  b: Record<string, ControlGate>,
+): Record<string, ControlGate> {
+  const result: Record<string, ControlGate> = {};
+  const keys = new Set<string>([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of keys) {
+    const av: ControlGate = key in a ? a[key] : true; // absent ≡ allowed
+    const bv: ControlGate = key in b ? b[key] : true;
+    if (av === false || bv === false) {
+      result[key] = false; // deny-wins
+      continue;
+    }
+    if (av === true) {
+      if (Array.isArray(bv)) result[key] = [...bv]; // allow ∧ whitelist = whitelist
+      continue;
+    }
+    if (bv === true) {
+      if (Array.isArray(av)) result[key] = [...av];
+      continue;
+    }
+    // both whitelists → intersection (only values admitted by both)
+    const bset = new Set(bv);
+    result[key] = [...new Set(av)].filter((v) => bset.has(v)).toSorted();
+  }
+  return result;
+}

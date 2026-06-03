@@ -1,3 +1,12 @@
+/**
+ * Recursive JSON value. Lets `claims` carry structured/nested custom claims
+ * (e.g. the reserved `arbac` attenuation namespace from `@aooth/arbac-moost`),
+ * not only the JWT-registered scalar claims — while STILL being validated by
+ * the store (vs. an opaque blob). Scalars remain valid, so existing scalar
+ * claims round-trip unchanged.
+ */
+export type TJsonValue = string | number | boolean | TJsonValue[] | { [/.*/]: TJsonValue }
+
 @db.table 'aooth_credentials'
 @db.depth.limit 0
 export interface AoothAuthCredential {
@@ -24,16 +33,18 @@ export interface AoothAuthCredential {
     kind?: string
 
     /**
-     * Custom claims, stored as JSON. Pattern-property shape accepts any key
-     * with a scalar value — matches the JWT registered-claim spec (iss, sub,
-     * iat, exp, jti, aud, etc.) which are all primitives. Consumers needing
-     * nested/structured claims should subclass with an explicit `claims` shape.
+     * Custom claims, stored as JSON. Values are full JSON (`TJsonValue`), so
+     * besides the JWT registered scalar claims (iss, sub, iat, exp, jti, aud)
+     * a key may carry a nested/structured value — notably the reserved `arbac`
+     * attenuation namespace (`{ roles?: string[]; attrs?: {...} }`) consumed by
+     * `@aooth/arbac-moost`. Scalars remain valid, so existing claims are
+     * unaffected.
      */
     @db.json
     claims?: {
-        [/.*/]: string | number | boolean
+        [/.*/]: TJsonValue
     }
-
+I 
     /** Display metadata: ip, userAgent, fingerprint, label. */
     @db.json
     metadata?: {

@@ -13,8 +13,8 @@ export {
   restrictProjection,
   unionProjections,
 } from "./scope/projection";
-export { mergeScopeFilters } from "./scope/filter";
-export { unionControlsPolicy } from "./scope/controls";
+export { conjoinScopeFilters, mergeScopeFilters } from "./scope/filter";
+export { intersectControlsPolicy, unionControlsPolicy } from "./scope/controls";
 export type { ControlGate, TProjection, TScopeFilter } from "./scope/types";
 export type { TProjectionMode } from "./scope/projection";
 

@@ -1,4 +1,5 @@
 import {
+  type AoothArbacClaims,
   arbacAuthorizeInterceptor,
   type ArbacDbScope,
   ArbacUserProviderToken,
@@ -806,6 +807,13 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     override getUserId(): string {
       return useAuth().getUserId();
     }
+    // Source the credential's restrict-only ARBAC attenuation from the reserved
+    // `claims.arbac` namespace. arbac-moost stays auth-agnostic, so the consumer
+    // wires the auth read here; the engine still does the safe intersection. A
+    // normal token (no `claims.arbac`) returns undefined → full user authority.
+    override getAttenuation(): AoothArbacClaims | undefined {
+      return useAuth().getAuthContext<{ arbac?: AoothArbacClaims }>()?.claims?.arbac;
+    }
   }
   app.setReplaceRegistry(createReplaceRegistry([ArbacUserProviderToken, DemoArbacUserProvider]));
 
@@ -874,6 +882,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       sms: sharedSmsBuffer,
       reseed,
       userService: aooth.userService,
+      authCredential: aooth.authCredential,
       auditEvents: sharedAuditEventsBuffer,
       consentLog: sharedConsentLogBuffer,
       otpConsentLog: sharedOtpConsentLogBuffer,

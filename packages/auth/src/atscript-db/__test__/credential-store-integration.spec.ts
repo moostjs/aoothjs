@@ -104,6 +104,25 @@ describe("CredentialStoreAtscriptDb — integration against real SQLite", () => 
     expect(got?.metadata).toEqual(metadata);
   });
 
+  // NESTED claims round-trip — the `TJsonValue` widening lets a claim value be
+  // a structured object/array (e.g. the reserved `arbac` attenuation namespace),
+  // not just a scalar. Regression anchor: persist a nested claim and assert it
+  // loads back IDENTICALLY (the @db.json column must round-trip nested JSON,
+  // not flatten/null it).
+  it("@db.json round-trips a NESTED (structured) claim value through SQLite", async () => {
+    const claims = {
+      iat: 1_700_000_000,
+      arbac: { roles: ["doc-reader"], attrs: { tenantId: "t1", docIds: ["d1", "d2"] } },
+    } as unknown as DemoClaims;
+    const token = await store.persist(makeState("alice", { claims }));
+    const got = await store.retrieve(token);
+    expect(got?.claims).toEqual(claims);
+    expect((got?.claims as { arbac?: unknown })?.arbac).toEqual({
+      roles: ["doc-reader"],
+      attrs: { tenantId: "t1", docIds: ["d1", "d2"] },
+    });
+  });
+
   it("listForUser returns the persisted rows with tokens attached", async () => {
     const t1 = await store.persist(makeState("alice", { issuedAt: 1 }));
     const t2 = await store.persist(makeState("alice", { issuedAt: 2 }));

@@ -1,7 +1,8 @@
-import type { AuthEmailEvent, AuthSmsEvent } from "@aooth/auth";
+import type { AuthCredential, AuthEmailEvent, AuthSmsEvent } from "@aooth/auth";
 import { type AuditEvent, AuthGuarded, type ConsentEvent, Public, UserId } from "@aooth/auth-moost";
+import { arbacClaims } from "@aooth/arbac-moost";
 import type { UserService } from "@aooth/user";
-import { Delete, Get, Post } from "@moostjs/event-http";
+import { Body, Delete, Get, Post } from "@moostjs/event-http";
 import { Controller, Param } from "moost";
 
 import type { AppDb } from "./db";
@@ -36,6 +37,12 @@ export interface TestMailboxDeps {
    * be hard-coded in test code.
    */
   userService: UserService;
+  /**
+   * The auth credential orchestrator — used by `POST /__test/token-attenuated`
+   * to mint a down-scoped (restrict-only `claims.arbac`) token for the ARBAC
+   * attenuation specs, exercising the real credential → guard → ARBAC path.
+   */
+  authCredential: AuthCredential;
   /**
    * Captured `RecoveryWorkflow.audit(event)` payloads. The demo's recovery
    * subclass pushes here; `/__test/audit` returns the array; `__test/reset`
@@ -83,8 +90,17 @@ export interface TestMailboxDeps {
 export function createTestMailboxController(
   deps: TestMailboxDeps,
 ): new (...args: never[]) => unknown {
-  const { emails, sms, reseed, userService, auditEvents, consentLog, otpConsentLog, wfStates } =
-    deps;
+  const {
+    emails,
+    sms,
+    reseed,
+    userService,
+    authCredential,
+    auditEvents,
+    consentLog,
+    otpConsentLog,
+    wfStates,
+  } = deps;
 
   // Test endpoints take a user-visible handle (`t1_grace`); internals are
   // id-keyed. Resolve-or-throw once so the callers stay one-liners.
@@ -123,6 +139,29 @@ export function createTestMailboxController(
       auditEvents.length = 0;
       const seeded = await reseed();
       return { ok: true, seeded };
+    }
+
+    /**
+     * Mint an access token for a user, optionally down-scoped via the
+     * reserved `claims.arbac` namespace (restrict-only ARBAC attenuation).
+     * An empty body mints a FULL-authority token (no `claims.arbac`); passing
+     * `roles`/`attrs` mints a narrowed PAT-style token. Drives the
+     * arbac-attenuation specs end-to-end (credential → auth guard → ARBAC).
+     */
+    @Post("token-attenuated/:username")
+    async issueAttenuatedToken(
+      @Param("username") username: string,
+      @Body() body: { roles?: string[]; attrs?: Record<string, unknown> },
+    ): Promise<{ accessToken: string }> {
+      const user = await resolveUser(username);
+      const narrow = body.roles !== undefined || body.attrs !== undefined;
+      const issued = await authCredential.issue(
+        user.id,
+        narrow
+          ? { claims: arbacClaims({ assumeRoles: body.roles, attrs: body.attrs }) }
+          : undefined,
+      );
+      return { accessToken: issued.accessToken };
     }
 
     /**

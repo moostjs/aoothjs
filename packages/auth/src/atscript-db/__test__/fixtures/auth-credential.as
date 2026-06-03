@@ -1,3 +1,5 @@
+export type TJsonValue = string | number | boolean | TJsonValue[] | { [/.*/]: TJsonValue }
+
 @db.table 'aooth_credentials'
 @db.depth.limit 0
 export interface AoothAuthCredential {
@@ -31,7 +33,7 @@ export interface AoothAuthCredential {
      */
     @db.json
     claims?: {
-        [/.*/]: string | number | boolean
+        [/.*/]: TJsonValue
     }
 
     /** Display metadata: ip, userAgent, fingerprint, label. */

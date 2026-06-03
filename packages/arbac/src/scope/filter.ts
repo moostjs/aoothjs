@@ -34,6 +34,32 @@ export function mergeScopeFilters(scopes: TScopeFilter[]): TScopeFilter | undefi
   return { $or: scopes };
 }
 
+/**
+ * Conjoin two ALREADY-UNIONED scope filters (each the output of
+ * {@link mergeScopeFilters} for one authority pass) under `$and` semantics — a
+ * row survives only if BOTH sides admit it. This is the credential-attenuation
+ * combiner: it clips any widening the credential pass might introduce.
+ *
+ * Polarity is the **opposite** of {@link mergeScopeFilters}: an empty `{}` /
+ * `undefined` filter is the universe and acts as the **identity** here
+ * (dropped from the `$and`, contributing NO constraint) — never the absorbing
+ * "unrestricted wins". Never object-spreads the two filters (credential keys
+ * could overwrite user keys and silently widen).
+ *
+ * @returns the conjoined filter, or `undefined` when BOTH sides are unrestricted.
+ */
+export function conjoinScopeFilters(
+  a: TScopeFilter | undefined,
+  b: TScopeFilter | undefined,
+): TScopeFilter | undefined {
+  const aEmpty = !a || Object.keys(a).length === 0;
+  const bEmpty = !b || Object.keys(b).length === 0;
+  if (aEmpty && bEmpty) return undefined;
+  if (aEmpty) return b;
+  if (bEmpty) return a;
+  return { $and: [a, b] };
+}
+
 function canOptimizeToIn(scopes: TScopeFilter[]): boolean {
   const firstKeys = Object.keys(scopes[0]);
   if (firstKeys.length !== 1) return false;

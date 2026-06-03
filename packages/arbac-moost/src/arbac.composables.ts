@@ -4,6 +4,8 @@ import { current, key } from "@wooksjs/event-core";
 import { getConstructor, useControllerContext } from "moost";
 
 import type { TArbacMeta } from "./arbac.mate";
+import { conjoinArbacDbScopes } from "./attenuation";
+import type { ArbacDbScope } from "./db/as-arbac-db-controller";
 import { MoostArbac } from "./moost-arbac";
 import { ArbacUserProvider, ArbacUserProviderToken } from "./user.provider";
 
@@ -118,15 +120,37 @@ export const useArbac = (_ctx?: EventContext): ArbacBindings => {
       cc.instantiate(MoostArbac),
     ])) as [ArbacUserProvider, MoostArbac<object, TScope>];
     const userId = await user.getUserId();
+    // Restrict-only credential attenuation (the reserved `claims.arbac`),
+    // sourced through the optional provider hook so arbac-moost stays
+    // auth-agnostic. Only triggers the engine's dual-pass when the claim
+    // actually narrows (a present-but-empty `{}` is a no-op).
+    const att = user.getAttenuation ? await user.getAttenuation() : undefined;
+    const attenuate =
+      att && (att.roles !== undefined || att.attrs !== undefined)
+        ? { roles: att.roles, attrs: att.attrs }
+        : undefined;
     const result = await arbac.evaluate(
       { resource: effectiveResource, action: effectiveAction },
       {
         id: userId,
         roles: await user.getRoles(userId),
         attrs: (id: string) => user.getAttrs(id),
+        attenuate,
       },
     );
-    return { ...result, userId };
+    // Attenuated + allowed: conjoin the ceiling pass (`scopes`) with the
+    // narrowed pass (`credScopes`) into ONE composite scope. Every downstream
+    // application site unions the cached scope list per facet, and a
+    // single-element union is the identity — so they each apply the
+    // conjunction with no change to those sites.
+    if (result.allowed && result.credScopes !== undefined) {
+      const conjoined = conjoinArbacDbScopes(
+        (result.scopes ?? []) as ArbacDbScope[],
+        result.credScopes as ArbacDbScope[],
+      );
+      return { allowed: true, scopes: conjoined as unknown as TScope[], userId };
+    }
+    return { allowed: result.allowed, scopes: result.scopes, userId };
   };
 
   // See `evaluate` above for the type-witness rationale.
