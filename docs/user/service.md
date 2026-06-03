@@ -13,16 +13,18 @@ const users = new UserService<T extends object = object>(
 )
 ```
 
-The generic `T` extends the base `UserCredentials` with custom columns of your choice (e.g. `tenantId`, `displayName`, `email`). Those columns flow through `LoginResult.user`, the `createUser(extras)` parameter, and `update(patch)`.
+The generic `T` extends the base `UserCredentials` with custom columns of your choice (e.g. `tenantId`, `displayName`). `id`, `username`, and `email` are already on the base — `T` adds only the _extra_ columns. Those flow through `LoginResult.user`, the `createUser(extras)` parameter, and `update(patch)`.
 
 Source: [`user-service.ts:74`](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/user-service.ts#L74).
+
+::: tip Identity model — `id` vs. handle
+The stable surrogate **`id`** is the token subject (`useAuth().getUserId()`) and the key for **every read-by-identity and every write** on this service (`getUser`, `update`, `setPassword`, the MFA/lock/trusted-device methods, …). The **one** exception is `login(handle, …)`, which resolves a `username`-or-`email` **handle** via `UserStore.findByHandle`. Two passthrough reads cover the rest: `findByHandle` (deterministic login resolution) and `findByIdentifier` (permissive `id`→`username`→`email`, for admin/recovery). See [Stores](./stores).
+:::
 
 ### Generic example — custom user shape
 
 ```ts
 interface AppUser {
-  id: string;
-  email?: string;
   tenantId: string;
 }
 
@@ -30,13 +32,12 @@ const users = new UserService<AppUser>(store, {
   password: { pepper: process.env.PEPPER },
 });
 
-await users.createUser("alice", "p4ssw0rd!", {
-  id: crypto.randomUUID(),
-  tenantId: "acme",
-});
+// `id` is minted automatically; `username` is the 1st arg.
+const u = await users.createUser("alice", "p4ssw0rd!", { tenantId: "acme" });
 
-const { user } = await users.login("alice", "p4ssw0rd!");
+const { user } = await users.login("alice", "p4ssw0rd!"); // handle = username or email
 user.tenantId; // ← typed as string
+user.id; // ← base field, the token subject
 ```
 
 ## Config reference
@@ -63,9 +64,9 @@ Losing the pepper invalidates every stored hash. Treat it like a database master
 
 ## Login flow
 
-`UserService.login(username, password)`:
+`UserService.login(handle, password)` — `handle` is a `username` **or** `email`, resolved via `UserStore.findByHandle` (username first, then email; never a permissive `$or`):
 
-1. Look up the user — throws `NOT_FOUND` if missing.
+1. Look up the user by handle — throws `NOT_FOUND` if missing.
 2. Reject if `account.active === false` — throws `INACTIVE`.
 3. Reject if locked (auto-unlocks when `lockEnds` is past) — throws `LOCKED`.
 4. Verify the password:
@@ -78,33 +79,35 @@ Losing the pepper invalidates every stored hash. Treat it like a database master
 
 All methods are `async` unless explicitly marked `(sync)`.
 
-| Method                                                                                    | Returns                    | Throws                                                                                    | Notes                                         |
-| ----------------------------------------------------------------------------------------- | -------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------- |
-| `createUser`                                                                              | `UserCredentials & T`      | `ALREADY_EXISTS`                                                                          | Omits `id` so DB defaults fire.               |
-| `getUser`                                                                                 | `UserCredentials & T`      | `NOT_FOUND`                                                                               |                                               |
-| `login`                                                                                   | `LoginResult<T>`           | `NOT_FOUND` / `INACTIVE` / `LOCKED` / `INVALID_CREDENTIALS`                               |                                               |
-| `verifyPassword`                                                                          | `boolean`                  | `NOT_FOUND`                                                                               | No side effects, bypasses lockout.            |
-| `changePassword`                                                                          | `void`                     | `INVALID_CREDENTIALS` / `PASSWORDS_MISMATCH` / `POLICY_VIOLATION` / `PASSWORD_IN_HISTORY` |                                               |
-| `setPassword`                                                                             | `void`                     | `POLICY_VIOLATION` / `PASSWORD_IN_HISTORY`                                                | Admin-style — no current password required.   |
-| `deleteUser`                                                                              | `void`                     | `NOT_FOUND`                                                                               |                                               |
-| `update`                                                                                  | `UserCredentials & T`      | `NOT_FOUND`                                                                               | Deep-merge patch.                             |
-| `activateAccount` / `deactivateAccount`                                                   | `void`                     | `NOT_FOUND`                                                                               |                                               |
-| `lockAccount`                                                                             | `void`                     | `NOT_FOUND`                                                                               | `duration=0` ⇒ permanent.                     |
-| `unlockAccount`                                                                           | `void`                     | `NOT_FOUND`                                                                               | Resets `failedLoginAttempts` too.             |
-| `getLockStatus` (sync)                                                                    | `LockStatus`               | —                                                                                         |                                               |
-| `checkPolicies`                                                                           | `PolicyCheckResult`        | —                                                                                         |                                               |
-| `getTransferablePolicies` (sync)                                                          | `TransferablePolicy[]`     | —                                                                                         | String-rule policies only.                    |
-| `addMfaMethod` / `confirmMfaMethod` / `removeMfaMethod`                                   | `void`                     | `NOT_FOUND` / `MFA_NOT_CONFIGURED`                                                        |                                               |
-| `setDefaultMfaMethod`                                                                     | `void`                     | `MFA_NOT_CONFIGURED`                                                                      | Empty `name` clears the default.              |
-| `setMfaAutoSend`                                                                          | `void`                     | `NOT_FOUND`                                                                               |                                               |
-| `getAvailableMfaMethods` (sync)                                                           | `MfaMethodInfo[]`          | —                                                                                         | Masks `value`.                                |
-| `verifyTotpSetupCode`                                                                     | `void`                     | `NOT_FOUND` / `MFA_NOT_CONFIGURED` / `MFA_INVALID`                                        | Verify first code + flip method to confirmed. |
-| `verifyMfa`                                                                               | `void`                     | `NOT_FOUND` / `INACTIVE` / `LOCKED` / `MFA_INVALID` / `MFA_NOT_CONFIGURED`                | 4th arg `lockoutOverride?`.                   |
-| `isPasswordExpired` (sync)                                                                | `boolean`                  | —                                                                                         | Against `config.password` expiry policy.      |
-| `issueTrustedDevice` (sync)                                                               | `TrustedDeviceRecord`      | plain `Error` if `deviceTrust.secret` unset                                               |                                               |
-| `addTrustedDevice` / `verifyTrustedDevice` / `revokeTrustedDevice` / `listTrustedDevices` | varies                     | `NOT_FOUND`                                                                               |                                               |
-| `getPasswordHasher` (sync)                                                                | `PasswordHasher`           | —                                                                                         | Escape hatch.                                 |
-| `getConfig` (sync)                                                                        | `Readonly<ResolvedConfig>` | —                                                                                         |                                               |
+| Method                                                                                    | Returns                         | Throws                                                                                    | Notes                                                                                                      |
+| ----------------------------------------------------------------------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `createUser`                                                                              | `UserCredentials & T`           | `ALREADY_EXISTS`                                                                          | Mints `id` (`randomUUID`); `extras.id` overrides. `ALREADY_EXISTS` on duplicate `username` **or** `email`. |
+| `getUser`                                                                                 | `UserCredentials & T`           | `NOT_FOUND`                                                                               | By **`id`**.                                                                                               |
+| `findByHandle`                                                                            | `(UserCredentials & T) \| null` | —                                                                                         | Login resolver: `username` then `email`.                                                                   |
+| `findByIdentifier`                                                                        | `(UserCredentials & T) \| null` | —                                                                                         | Permissive: `id` → `username` → `email`.                                                                   |
+| `login`                                                                                   | `LoginResult<T>`                | `NOT_FOUND` / `INACTIVE` / `LOCKED` / `INVALID_CREDENTIALS`                               | Arg is a **handle** (`username`/`email`).                                                                  |
+| `verifyPassword`                                                                          | `boolean`                       | `NOT_FOUND`                                                                               | No side effects, bypasses lockout.                                                                         |
+| `changePassword`                                                                          | `void`                          | `INVALID_CREDENTIALS` / `PASSWORDS_MISMATCH` / `POLICY_VIOLATION` / `PASSWORD_IN_HISTORY` |                                                                                                            |
+| `setPassword`                                                                             | `void`                          | `POLICY_VIOLATION` / `PASSWORD_IN_HISTORY`                                                | Admin-style — no current password required.                                                                |
+| `deleteUser`                                                                              | `void`                          | `NOT_FOUND`                                                                               |                                                                                                            |
+| `update`                                                                                  | `UserCredentials & T`           | `NOT_FOUND`                                                                               | Deep-merge patch.                                                                                          |
+| `activateAccount` / `deactivateAccount`                                                   | `void`                          | `NOT_FOUND`                                                                               |                                                                                                            |
+| `lockAccount`                                                                             | `void`                          | `NOT_FOUND`                                                                               | `duration=0` ⇒ permanent.                                                                                  |
+| `unlockAccount`                                                                           | `void`                          | `NOT_FOUND`                                                                               | Resets `failedLoginAttempts` too.                                                                          |
+| `getLockStatus` (sync)                                                                    | `LockStatus`                    | —                                                                                         |                                                                                                            |
+| `checkPolicies`                                                                           | `PolicyCheckResult`             | —                                                                                         |                                                                                                            |
+| `getTransferablePolicies` (sync)                                                          | `TransferablePolicy[]`          | —                                                                                         | String-rule policies only.                                                                                 |
+| `addMfaMethod` / `confirmMfaMethod` / `removeMfaMethod`                                   | `void`                          | `NOT_FOUND` / `MFA_NOT_CONFIGURED`                                                        |                                                                                                            |
+| `setDefaultMfaMethod`                                                                     | `void`                          | `MFA_NOT_CONFIGURED`                                                                      | Empty `name` clears the default.                                                                           |
+| `setMfaAutoSend`                                                                          | `void`                          | `NOT_FOUND`                                                                               |                                                                                                            |
+| `getAvailableMfaMethods` (sync)                                                           | `MfaMethodInfo[]`               | —                                                                                         | Masks `value`.                                                                                             |
+| `verifyTotpSetupCode`                                                                     | `void`                          | `NOT_FOUND` / `MFA_NOT_CONFIGURED` / `MFA_INVALID`                                        | Verify first code + flip method to confirmed.                                                              |
+| `verifyMfa`                                                                               | `void`                          | `NOT_FOUND` / `INACTIVE` / `LOCKED` / `MFA_INVALID` / `MFA_NOT_CONFIGURED`                | 4th arg `lockoutOverride?`.                                                                                |
+| `isPasswordExpired` (sync)                                                                | `boolean`                       | —                                                                                         | Against `config.password` expiry policy.                                                                   |
+| `issueTrustedDevice` (sync)                                                               | `TrustedDeviceRecord`           | plain `Error` if `deviceTrust.secret` unset                                               |                                                                                                            |
+| `addTrustedDevice` / `verifyTrustedDevice` / `revokeTrustedDevice` / `listTrustedDevices` | varies                          | `NOT_FOUND`                                                                               |                                                                                                            |
+| `getPasswordHasher` (sync)                                                                | `PasswordHasher`                | —                                                                                         | Escape hatch.                                                                                              |
+| `getConfig` (sync)                                                                        | `Readonly<ResolvedConfig>`      | —                                                                                         |                                                                                                            |
 
 ## Methods — reference
 
@@ -137,27 +140,33 @@ await users.createUser("carol", "p4ss", { tenantId: "acme", email: "c@x.dev" });
 :::
 
 ::: warning `account.active` defaults to `false`
-`AuthWorkflow`'s invite accept phase relies on this — pending invitees stay inactive until accept. For seed scripts, admin-create flows, or tests that don't go through invite, **call `activateAccount(username)` after** or `login()` throws `UserAuthError("INACTIVE")`. The login workflow deliberately re-maps `INACTIVE` to `"Invalid credentials"` (anti-enumeration), so the client-side failure looks identical to a wrong password.
+`AuthWorkflow`'s invite accept phase relies on this — pending invitees stay inactive until accept. For seed scripts, admin-create flows, or tests that don't go through invite, **call `activateAccount(id)` after** or `login()` throws `UserAuthError("INACTIVE")`. The login workflow deliberately re-maps `INACTIVE` to `"Invalid credentials"` (anti-enumeration), so the client-side failure looks identical to a wrong password.
 
 ```ts
-await users.createUser("alice", "S3cret!");
-await users.activateAccount("alice"); // ← required outside the invite flow
+const u = await users.createUser("alice", "S3cret!");
+await users.activateAccount(u.id); // ← required outside the invite flow
 ```
 
 :::
 
-### `getUser`
+### `getUser` / `findByHandle` / `findByIdentifier`
 
 ```ts
-getUser(username: string): Promise<UserCredentials & T>
+getUser(id: string): Promise<UserCredentials & T> // throws NOT_FOUND
+findByHandle(handle: string): Promise<(UserCredentials & T) | null>
+findByIdentifier(value: string): Promise<(UserCredentials & T) | null>
 ```
 
-Throws `NOT_FOUND` when no row.
+`getUser` is the strict identity read by **`id`** (the token subject) — it throws `NOT_FOUND` when there's no row. The two `find*` passthroughs return `null` instead of throwing:
+
+- **`findByHandle`** — the deterministic login resolver: matches `username` exactly, then `email` exactly. Use it anywhere you have a user-supplied login handle (the login workflow's `emailToUserId` default delegates here).
+- **`findByIdentifier`** — permissive admin/recovery lookup: `id`, then `username`, then `email` (first match). Never use it for login — a value that is one user's username and another's email would resolve ambiguously.
 
 ### `login`
 
 ```ts
-login(username: string, password: string): Promise<LoginResult<T>>
+login(handle: string, password: string, lockoutOverride?: Partial<LockoutConfig>): Promise<LoginResult<T>>
+// handle = username OR email (resolved via findByHandle)
 // LoginResult<T> = { user: UserCredentials & T; mfaRequired: boolean }
 ```
 
@@ -181,7 +190,7 @@ try {
 Side-effect-free password check. Does **not** consume a lockout attempt.
 
 ```ts
-verifyPassword(username: string, password: string): Promise<boolean>
+verifyPassword(id: string, password: string): Promise<boolean>
 ```
 
 Use this for confirm-your-password gates (delete account, change email).
@@ -190,7 +199,7 @@ Use this for confirm-your-password gates (delete account, change email).
 
 ```ts
 changePassword(
-  username: string,
+  id: string,
   currentPassword: string,
   newPassword: string,
   repeatPassword?: string,
@@ -204,13 +213,13 @@ Order of checks: `PASSWORDS_MISMATCH` → `INVALID_CREDENTIALS` → policies →
 Admin path — skips current-password verification, still enforces policies and history.
 
 ```ts
-setPassword(username: string, newPassword: string): Promise<void>
+setPassword(id: string, newPassword: string): Promise<void>
 ```
 
 ### `update`
 
 ```ts
-update(username: string, patch: Partial<UserCredentials & T>): Promise<UserCredentials & T>
+update(id: string, patch: Partial<UserCredentials & T>): Promise<UserCredentials & T>
 ```
 
 Deep-merges the patch via `store.update({ set })` and returns the re-read record.
@@ -218,8 +227,8 @@ Deep-merges the patch via `store.update({ set })` and returns the re-read record
 ### `lockAccount` / `unlockAccount`
 
 ```ts
-lockAccount(username: string, reason: string, duration?: number): Promise<void>
-unlockAccount(username: string): Promise<void>
+lockAccount(id: string, reason: string, duration?: number): Promise<void>
+unlockAccount(id: string): Promise<void>
 ```
 
 `duration` is milliseconds. `0` or `undefined` ⇒ permanent.
@@ -261,9 +270,9 @@ Returns only policies whose `rule` is a string — those can be evaluated on the
 ### MFA — `addMfaMethod` / `confirmMfaMethod` / `removeMfaMethod`
 
 ```ts
-addMfaMethod(username: string, method: MfaMethod): Promise<void>
-confirmMfaMethod(username: string, name: string): Promise<void>
-removeMfaMethod(username: string, name: string): Promise<void>
+addMfaMethod(id: string, method: MfaMethod): Promise<void>
+confirmMfaMethod(id: string, name: string): Promise<void>
+removeMfaMethod(id: string, name: string): Promise<void>
 ```
 
 `addMfaMethod` upserts by `name`. Removing the current `defaultMethod` clears it.
@@ -272,7 +281,7 @@ removeMfaMethod(username: string, name: string): Promise<void>
 
 ```ts
 verifyMfa(
-  username: string,
+  id: string,
   code: string,
   config?: TotpConfig,
   lockoutOverride?: Partial<LockoutConfig>,
@@ -284,7 +293,7 @@ TOTP-only path. Increments the **same** `failedLoginAttempts` counter as `login`
 ### `verifyTotpSetupCode`
 
 ```ts
-verifyTotpSetupCode(username: string, code: string, config?: TotpConfig): Promise<void>
+verifyTotpSetupCode(id: string, code: string, config?: TotpConfig): Promise<void>
 ```
 
 Enrollment-confirm helper: verifies `code` against the user's **unconfirmed** `totp` method and flips it to `confirmed: true` in one call. Throws `MFA_INVALID` on a wrong code, `MFA_NOT_CONFIGURED` when there's no pending `totp` method. Use it instead of a manual `verifyTotpCode` + `confirmMfaMethod` pair.
@@ -303,10 +312,10 @@ Sync check against the configured password-expiry policy. The `now` arg defaults
 
 ```ts
 issueTrustedDevice(userId: string, opts: { ip?: string; ttlMs: number; name?: string }): TrustedDeviceRecord
-addTrustedDevice(username: string, record: TrustedDeviceRecord): Promise<void>
-verifyTrustedDevice(username: string, token: string, ip?: string): Promise<boolean>
-revokeTrustedDevice(username: string, token: string): Promise<void>
-listTrustedDevices(username: string): Promise<TrustedDeviceRecord[]>
+addTrustedDevice(id: string, record: TrustedDeviceRecord): Promise<void>
+verifyTrustedDevice(userId: string, token: string, ip?: string): Promise<boolean>
+revokeTrustedDevice(id: string, token: string): Promise<void>
+listTrustedDevices(id: string): Promise<TrustedDeviceRecord[]>
 ```
 
 The token is an opaque HMAC-signed string bound to the user (and optionally their IP). `verifyTrustedDevice` validates the signature, checks expiry, and (when issued with an `ip`) requires the same IP.

@@ -53,29 +53,15 @@ Extend `AoothArbacUserCredentials` to add the columns your app needs. Mark one `
 
 ```ts [src/models/user.as]
 import { AoothArbacUserCredentials } from '@aooth/arbac-moost/atscript/models'
-import { AoothUserCredentials } from '@aooth/user/atscript-db/model'
 
-// Tag the inherited `username` as the arbac user id so the provider looks
-// users up by `username` — the string `useAuth().getUserId()` returns.
-// `extends` can't redeclare inherited props; a mutating `annotate` block
-// patches the parent's prop in place. See atscript's `as-syntax.md#annotate`.
-annotate AoothUserCredentials {
-    @arbac.userId
-    username
-}
-
+// `id` (PK / @meta.id — the auth subject), `username` + `email` (unique
+// handles), and `version` are all inherited. Add only your own columns.
+// The provider resolves users by `@meta.id` (= the subject) with no @arbac.userId.
 @db.table 'users'
 export interface AppUser extends AoothArbacUserCredentials {
-    @meta.id
-    @db.default.uuid
-    id: string
-
     @arbac.attribute
     @meta.required
     tenantId: string
-
-    @expect.maxLength 128
-    email?: string
 
     @db.default.now
     createdAt: number.timestamp
@@ -273,15 +259,12 @@ import type { ArbacUserTable } from '@aooth/arbac-moost/atscript'
 @Injectable()
 class AppArbacUserProvider extends AtscriptArbacUserProvider<AppUser> {
   constructor() {
-    // With `@arbac.userId username` (declared via the `annotate
-    // AoothUserCredentials { ... }` block in src/models/user.as), the
-    // provider looks up by `username` directly — no shim needed.
+    // Provider resolves users by `@meta.id` (= `id` = the auth subject) —
+    // no `@arbac.userId` annotate, no shim.
     super(AppUser, db.getTable(AppUser) as unknown as ArbacUserTable<AppUser>)
   }
   override getUserId(): string {
-    // `useAuth().getUserId()` returns the username string — the auth subject
-    // `UserService.login(username, password)` set. The annotated
-    // `@arbac.userId username` makes the provider's lookup match.
+    // Returns the stable `id` — the token subject `auth.issue(subject)` set.
     return useAuth().getUserId()
   }
 }
@@ -364,7 +347,7 @@ await userService.activateAccount('alice')
 ```
 
 ::: warning `createUser` writes `account.active: false`
-`AuthWorkflow`'s invite accept phase relies on this default — pending invitees stay inactive until accept. For seed scripts and admin-create flows, **call `activateAccount(username)` after** or `login()` throws `UserAuthError("INACTIVE")`, which the login workflow deliberately re-maps to `"Invalid credentials"` (anti-enumeration). The client-side failure looks identical to a wrong password.
+`AuthWorkflow`'s invite accept phase relies on this default — pending invitees stay inactive until accept. For seed scripts and admin-create flows, **call `activateAccount(user.id)` after** (pass the `id` from `createUser`'s result) or `login()` throws `UserAuthError("INACTIVE")`, which the login workflow deliberately re-maps to `"Invalid credentials"` (anti-enumeration). The client-side failure looks identical to a wrong password.
 :::
 
 Trigger the login workflow (this is the same wire your frontend's `<AsWfForm>` posts). **Start** a run by naming the workflow id in `wfid`; **resume** by sending back the `wfs` token plus `input`:
@@ -394,15 +377,15 @@ Hit the protected route:
 
 ```bash
 curl http://localhost:3000/me -H 'Authorization: Bearer <accessToken>'
-# → { "userId": "alice" }
+# → { "userId": "9f8c2e10-…" }   ← alice's stable id (the token subject), not her username
 ```
 
 ## What the request just did
 
-1. `authGuardInterceptor` validated the bearer token via `AuthCredential.validate()` and stashed `AuthContext { userId: 'alice' }` onto the event.
-2. `arbacAuthorizeInterceptor` resolved `resource = 'me'` (from class-level `@ArbacResource('me')`), `action = 'read'` (from method-level `@ArbacAction('read')`), instantiated `AppArbacUserProvider`, fetched alice's `{ roles: ['member'], attrs: { tenantId: 't1' } }`, and called `Arbac.evaluate(...)`.
+1. `authGuardInterceptor` validated the bearer token via `AuthCredential.validate()` and stashed `AuthContext { userId: '<alice-id>' }` onto the event — `userId` is the stable surrogate `id`, the token `sub`.
+2. `arbacAuthorizeInterceptor` resolved `resource = 'me'` (from class-level `@ArbacResource('me')`), `action = 'read'` (from method-level `@ArbacAction('read')`), instantiated `AppArbacUserProvider`, fetched alice's `{ roles: ['member'], attrs: { tenantId: 't1' } }` (looked up by that id via `@meta.id`), and called `Arbac.evaluate(...)`.
 3. The `memberRole`'s `.allow('me', 'read')` rule matched. Scopes were set on the event.
-4. The handler ran, `useAuth().getUserId()` returned `'alice'`, and moost serialised the response.
+4. The handler ran, `useAuth().getUserId()` returned alice's `id`, and moost serialised the response.
 
 ## What else `/auth/*` ships
 

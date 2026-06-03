@@ -71,23 +71,12 @@ pnpm add -D unplugin-atscript @atscript/typescript @atscript/core
 ```ts
 // src/app-user.as
 import { AoothArbacUserCredentials } from '@aooth/arbac-moost/atscript/models'
-import { AoothUserCredentials } from '@aooth/user/atscript-db/model'
 
-// Tag the inherited `username` as the arbac user id. `useAuth().getUserId()`
-// returns the username string (the auth subject passed to UserService.login),
-// so the provider must look up by `username` — not by AppUser's `@meta.id` uuid.
-// Mutating `annotate` is the only way to patch an inherited prop; `extends`
-// can't redeclare. See atscript skill `as-syntax.md#annotate`.
-annotate AoothUserCredentials {
-    @arbac.userId
-    username
-}
-
+// id (PK / @meta.id — the token subject), username + email (unique handles),
+// version — all inherited. The auth subject IS @meta.id, so the provider's
+// default lookup chain resolves to it: NO @arbac.userId annotate needed.
 @db.table 'users'
 export interface AppUser extends AoothArbacUserCredentials {
-    @meta.id @db.default.uuid
-    id: string
-
     @arbac.attribute
     department?: string
 }
@@ -132,18 +121,14 @@ const auth = new AuthCredential({
 @Injectable()
 class AppUserProvider extends AtscriptArbacUserProvider<AppUser> {
   constructor() {
-    // `AppUser`'s `@arbac.userId username` (added via the `annotate
-    // AoothUserCredentials { ... }` block in app-user.as) lets the provider
-    // hit the table directly — no shim. The cast is needed because
-    // `AtscriptDbTable.findOne` is typed wider than `ArbacUserTable.findOne`
-    // (engine-specific `controls.*` keys); they're structurally compatible
-    // at runtime.
+    // Provider resolves users by `@meta.id` (= `id` = the auth subject) — no
+    // @arbac.userId, no shim. The cast is needed because `AtscriptDbTable.findOne`
+    // is typed wider than `ArbacUserTable.findOne` (engine-specific `controls.*`
+    // keys); they're structurally compatible at runtime.
     super(AppUser, db.getTable(AppUser) as unknown as ArbacUserTable<AppUser>);
   }
   override getUserId() {
-    // `useAuth().getUserId()` returns the username string — the auth subject
-    // set by `UserService.login(username, password)`. The provider's
-    // `@arbac.userId` chain points at `username`, so the lookup just works.
+    // Returns the stable `id` — the token `sub` claim `auth.issue(subject)` set.
     return useAuth().getUserId();
   }
 }

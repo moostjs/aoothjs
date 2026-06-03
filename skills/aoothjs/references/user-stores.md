@@ -16,23 +16,29 @@
 
 ```ts
 abstract class UserStore<T extends object = object> {
-  abstract exists(username: string): Promise<boolean>;
-  abstract findByUsername(username: string): Promise<(UserCredentials & T) | null>;
+  abstract exists(handle: string): Promise<boolean>; // by username
+  abstract findById(id: string): Promise<(UserCredentials & T) | null>;
+  abstract findByHandle(handle: string): Promise<(UserCredentials & T) | null>;
+  abstract findByIdentifier(value: string): Promise<(UserCredentials & T) | null>;
   abstract create(data: UserCredentials & T): Promise<void>;
-  abstract update(username: string, update: UserStoreUpdate): Promise<boolean>;
-  abstract delete(username: string): Promise<boolean>;
+  abstract update(id: string, update: UserStoreUpdate): Promise<boolean>;
+  abstract delete(id: string): Promise<boolean>;
+  abstract withCas(id, mutator, opts?): Promise<void>; // read-modify-write under OCC
 }
 ```
 
-| Method           | Required behavior                                                                                                           |
-| ---------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `exists`         | `true` iff a row matches `username`.                                                                                        |
-| `findByUsername` | Return the full row OR `null`. Treat the returned object as caller-owned (memory store deep-clones).                        |
-| `create`         | Insert. On unique-username conflict throw `UserAuthError("ALREADY_EXISTS", message)`.                                       |
-| `update`         | Apply `set` as deep-merge AND `inc` as atomic increment per dot-path. Return `false` when no row matched, `true` otherwise. |
-| `delete`         | Hard-delete. Return `false` when no row matched.                                                                            |
+**All reads-by-identity and ALL writes key on the surrogate `id`** (the token subject, `getUserId()`). The three reads differ by resolution:
 
-The service relies on the `false` return values to throw `NOT_FOUND` — never silently succeed when a row is missing.
+| Method             | Resolves by                                  | For                                                                                                 |
+| ------------------ | -------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `findById`         | the surrogate `id` only                      | canonical identity read; session-subject lookups                                                    |
+| `findByHandle`     | `username` exactly, **then** `email` exactly | the **login** path ONLY — ordered, never a permissive `$or`                                         |
+| `findByIdentifier` | `id`, then `username`, then `email`          | permissive internal / admin / recovery lookup                                                       |
+| `create`           | —                                            | Insert; mint `id` if absent; throw `ALREADY_EXISTS` on duplicate `username` **or** `email`          |
+| `update`/`delete`  | `id`                                         | return `false` when no row matched → service throws `NOT_FOUND`                                     |
+| `withCas`          | `id`                                         | re-read via `findById` → mutate → write under `expectedVersion`; throws `NOT_FOUND`/`CAS_EXHAUSTED` |
+
+`findByHandle` is NOT a permissive `$or`: `id`/`username`/`email` are all `string`, so a permissive match could resolve one user's username that equals another's email to the wrong account. Keep login on `findByHandle`. The service relies on the `false` return values to throw `NOT_FOUND` — never silently succeed when a row is missing.
 
 ## `UserStoreUpdate` shape
 
@@ -86,10 +92,10 @@ const seeded = new UserStoreMemory({
 });
 ```
 
-Backed by `Map<username, UserCredentials & T>`. Features:
+Backed by `Map<id, UserCredentials & T>` (keyed by the surrogate `id`). Features:
 
-- `create` throws `UserAuthError("ALREADY_EXISTS")` on duplicate.
-- `findByUsername` returns a **`structuredClone`** of the stored record — mutating it does not affect storage. (`memory.ts:24`.)
+- `create` mints an `id` if absent and throws `UserAuthError("ALREADY_EXISTS")` on a duplicate `username` **or** `email`.
+- Reads (`findById`/`findByHandle`/`findByIdentifier`) return a **`structuredClone`** of the stored record — mutating it does not affect storage.
 - `create` also stores a `structuredClone` — callers can keep using the object they passed in without leaking subsequent mutations into the store.
 - `update.set` deep-merges via the in-package `deepMerge` (top-level fields shallow-merged, plain-object sub-fields recursively merged, arrays / null / primitives replaced).
 - `update.inc` walks the dot-path with `incrementAtPath` (treats absent path components as `0`, creates intermediate objects on demand).
@@ -99,24 +105,34 @@ Recommended fake for tests — the seed constructor is convenient for fixture-ba
 
 ## Writing a custom store
 
-Start from the contract above. Five rules:
+Start from the contract above. Rules:
 
-1. **`create` MUST raise `UserAuthError("ALREADY_EXISTS", message)`** on a unique-username conflict. The atscript-db adapter translates `DbError.code === "CONFLICT"` to this; SQL stores translate the engine-specific unique-violation code (e.g. `SQLITE_CONSTRAINT_UNIQUE`, `23505` on Postgres).
-2. **`update` MUST treat `set` as a deep merge** for `password` / `account` / `mfa` / `trustedDevices`. The `.as` model encodes this via `@db.patch.strategy 'merge'`. Wholesale-replacing any of these sub-objects breaks partial-update semantics (e.g. a login update would clobber the user's MFA config).
-3. **`update` MUST treat `inc` as atomic** per dot-path. SQL: `SET col = col + N`. atscript-db: emits `{ $inc: N }` at the dot-path so the engine handles the atomic op.
-4. **`update` / `delete` return `false`** when no row matched. The service surfaces that as `NOT_FOUND`.
-5. **Arrays in `set` are full replacements.** The service has already built `next` from `prev` — your job is to persist whatever you receive.
+1. **Reads-by-identity and writes key on `id`.** `findById` is strict-by-`id`. `findByHandle` is the LOGIN resolver — match `username` first, `email` second, ordered (NEVER a permissive `$or`). `findByIdentifier` is permissive (`id` → `username` → `email`) for admin/recovery only.
+2. **`create` MUST raise `UserAuthError("ALREADY_EXISTS", message)`** on a duplicate `username` **or** `email`, and mint an `id` if the row arrives without one. The atscript-db adapter translates `DbError.code === "CONFLICT"`; SQL stores translate the engine-specific unique-violation code (e.g. `SQLITE_CONSTRAINT_UNIQUE`, `23505` on Postgres).
+3. **`update` MUST treat `set` as a deep merge** for `password` / `account` / `mfa` / `trustedDevices`. The `.as` model encodes this via `@db.patch.strategy 'merge'`. Wholesale-replacing any of these sub-objects breaks partial-update semantics (e.g. a login update would clobber the user's MFA config).
+4. **`update` MUST treat `inc` as atomic** per dot-path. SQL: `SET col = col + N`. atscript-db: emits `{ $inc: N }` at the dot-path so the engine handles the atomic op.
+5. **`update` / `delete` return `false`** when no row matched (by `id`). The service surfaces that as `NOT_FOUND`.
+6. **Arrays in `set` are full replacements.** The service has already built `next` from `prev` — your job is to persist whatever you receive.
+7. **`withCas`** loops up to `opts.maxAttempts` (default 2): re-read via `findById` → `mutator(current)` (may return `null` to bail) → `update` under `expectedVersion = current.version`; throw `CAS_EXHAUSTED` on saturation, `NOT_FOUND` on a missing row. See `UserStoreMemory.withCas`.
 
 ```ts
 import { UserStore, UserAuthError, type UserCredentials, type UserStoreUpdate } from "@aooth/user";
 
 class MyStore<T extends object = object> extends UserStore<T> {
-  async exists(username: string): Promise<boolean> {
-    /* SELECT 1 ... */
+  async exists(handle: string): Promise<boolean> {
+    /* SELECT 1 ... WHERE username = handle */
   }
-  async findByUsername(username: string): Promise<(UserCredentials & T) | null> {
-    const row = await db.selectOne({ username });
-    return row ?? null;
+  async findById(id: string): Promise<(UserCredentials & T) | null> {
+    return (await db.selectOne({ id })) ?? null;
+  }
+  async findByHandle(handle: string): Promise<(UserCredentials & T) | null> {
+    // username first, then email — ordered, never $or
+    return (
+      (await db.selectOne({ username: handle })) ?? (await db.selectOne({ email: handle })) ?? null
+    );
+  }
+  async findByIdentifier(value: string): Promise<(UserCredentials & T) | null> {
+    return (await this.findById(value)) ?? (await this.findByHandle(value));
   }
   async create(data: UserCredentials & T): Promise<void> {
     try {
@@ -128,13 +144,16 @@ class MyStore<T extends object = object> extends UserStore<T> {
       throw err;
     }
   }
-  async update(username: string, update: UserStoreUpdate): Promise<boolean> {
-    const { matched } = await db.deepMergeAndIncrement(username, update.set, update.inc);
+  async update(id: string, update: UserStoreUpdate): Promise<boolean> {
+    const { matched } = await db.deepMergeAndIncrement(id, update.set, update.inc);
     return matched;
   }
-  async delete(username: string): Promise<boolean> {
-    const { matched } = await db.delete({ username });
+  async delete(id: string): Promise<boolean> {
+    const { matched } = await db.delete({ id });
     return matched;
+  }
+  async withCas(id, mutator, opts) {
+    /* re-read findById(id) → mutate → update under expectedVersion; retry on CAS miss */
   }
 }
 ```
@@ -166,10 +185,12 @@ const svc = new UserService<CustomFields>(store, {
 How it maps the contract:
 
 - `exists` → `table.count({ filter: { username } }) > 0`.
-- `findByUsername` → `table.findOne({ filter: { username } })`.
-- `create` → `table.insertOne(data)`. Adapter translates DB conflict errors to `UserAuthError("ALREADY_EXISTS")`; any other error propagates.
-- `update` → forwards `update.set` as a deep-merge patch (the `.as` model's `@db.patch.strategy 'merge'` is load-bearing) and translates each `update.inc` entry into an engine-level atomic increment at the dot-path. No-op when nothing besides `username` is set. Returns `result.matchedCount > 0`.
-- `delete` → `table.deleteMany({ username })`, returns `result.deletedCount > 0`.
+- `findById` → `table.findOne({ filter: { id } })`.
+- `findByHandle` → `table.findOne({ filter: { username } })`, then `{ filter: { email } }` if no match (ordered).
+- `findByIdentifier` → `findById`, else `findByHandle`.
+- `create` → `table.insertOne(data)`. Adapter translates DB conflict errors (duplicate `username` or `email`) to `UserAuthError("ALREADY_EXISTS")`; any other error propagates.
+- `update` → `table.updateOne` keyed by `id`; forwards `update.set` as a deep-merge patch (the `.as` model's `@db.patch.strategy 'merge'` is load-bearing) and translates each `update.inc` entry into an engine-level atomic increment at the dot-path. Returns `result.matchedCount > 0`.
+- `delete` → `table.deleteMany({ id })`, returns `result.deletedCount > 0`.
 
 ## `AuthUserTable` and the cast pattern
 
@@ -201,8 +222,18 @@ The package ships `@aooth/user/atscript-db/model.as` as a literal-file export po
 
 ```atscript
 export interface AoothUserCredentials {
+    @meta.id
+    @db.default.uuid
+    id: string
+
     @db.index.unique 'username_idx'
     username: string
+
+    @db.index.unique 'email_idx'
+    email?: string
+
+    @db.column.version
+    version: number.int
 
     @db.patch.strategy 'merge'
     password: { hash: string; history: string[]; lastChanged: number.timestamp; isInitial: boolean }
@@ -224,6 +255,6 @@ export interface AoothUserCredentials {
 
 Notably:
 
-- **No `@meta.id` and no `@db.table`** — consumers always extend it. They pick the primary-key column, its default strategy (`@db.default.uuid`, `@db.default.increment`, etc.), and the table name.
+- **Ships `@meta.id` (`id`, the token subject), unique `username`/`email` handles, and `@db.column.version`.** The only thing left to the app is `@db.table` — **do NOT redeclare `id`/`email`** (redundant; risks flipping the unique-index/merge semantics). The two unique-index names differ (`username_idx`, `email_idx`) so they stay independent indexes.
 - `@db.patch.strategy 'merge'` propagates through `extends`. If you re-declare any of these sub-objects in your extending interface, the annotation does NOT carry over to the redeclaration — re-add it explicitly or you'll switch to wholesale replace.
 - `backupCodes?: string[]` (from `UserCredentials`) is NOT declared in the shipped `.as` model — add it on your extending interface if you store backup codes (the type is `string[]`, no per-element annotations needed).

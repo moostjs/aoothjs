@@ -36,42 +36,48 @@
 
 ## CRUD methods
 
+> **Identity keying.** Every read-by-identity and EVERY write takes the stable surrogate **`id`** (the token subject, `getUserId()`) — `getUser`, `update`, `deleteUser`, `setPassword`/`changePassword`, the lock/MFA/trusted-device methods. The ONE exception is **`login(handle, …)`**, which resolves a `username`/`email` handle via `store.findByHandle`. Two passthrough reads cover the rest: `findByHandle` (deterministic login) and `findByIdentifier` (permissive admin/recovery).
+
 ### `createUser(username, password?, extras?) → Promise<UserCredentials & T>`
 
-If `password` is omitted, `PasswordHasher.generatePassword()` runs and `password.isInitial` is `true`. The base record omits `id` so the store / DB default fires; `extras` shallow-merges over the base AFTER it. Top-level keys (`account`, `mfa`, `password`) in `extras` are wholesale replaced — pass full sub-objects when overriding.
+If `password` is omitted, `PasswordHasher.generatePassword()` runs and `password.isInitial` is `true`. The base record **mints `id: randomUUID()`** (the model's `@db.default.uuid` is just a fallback for direct inserts); `extras` shallow-merges over the base AFTER it, so `extras.id` overrides. Top-level keys (`account`, `mfa`, `password`) in `extras` are wholesale replaced — pass full sub-objects when overriding.
 
 ```ts
-await svc.createUser("alice"); // system-generated, isInitial=true
-await svc.createUser("alice", "Strong-Pass-1!");
-await svc.createUser("alice", "Strong-Pass-1!", { tenantId: "acme" });
-await svc.activateAccount("alice"); // ← required outside the invite flow
+const u = await svc.createUser("alice"); // system-generated, isInitial=true
+await svc.createUser("bob", "Strong-Pass-1!");
+await svc.createUser("carol", "Strong-Pass-1!", { tenantId: "acme" });
+await svc.activateAccount(u.id); // ← required outside the invite flow (by id)
 ```
 
-> **`createUser` writes `account.active: false`.** AuthWorkflow's invite accept phase relies on this default (pending invitees stay inactive until accept). For seed scripts, admin-create flows, or tests that don't go through invite, **call `activateAccount(username)` after** or `login()` throws `UserAuthError("INACTIVE")` — and the login workflow deliberately re-maps that to `"Invalid credentials"` (anti-enumeration), so the failure looks like a wrong password client-side.
+> **`createUser` writes `account.active: false`.** AuthWorkflow's invite accept phase relies on this default (pending invitees stay inactive until accept). For seed scripts, admin-create flows, or tests that don't go through invite, **call `activateAccount(id)` after** (the `id` from `createUser`'s result) or `login()` throws `UserAuthError("INACTIVE")` — and the login workflow deliberately re-maps that to `"Invalid credentials"` (anti-enumeration), so the failure looks like a wrong password client-side. `create` throws `ALREADY_EXISTS` on a duplicate `username` **or** `email`.
 
-### `getUser(username) → Promise<UserCredentials & T>`
+### `getUser(id) → Promise<UserCredentials & T>`
 
-Throws `NOT_FOUND` if missing.
+Strict read by the surrogate `id` (via `store.findById`). Throws `NOT_FOUND` if missing.
 
-### `update(username, patch) → Promise<UserCredentials & T>`
+### `findByHandle(handle)` / `findByIdentifier(value) → Promise<(UserCredentials & T) | null>`
 
-Deep-merge `patch` via `store.update({ set })`, then re-read. Top-level fields are shallow-merged; the merged sub-objects (`account` / `mfa` / `password`) follow their `@db.patch.strategy 'merge'` declaration.
+Passthroughs to the store. `findByHandle` = the deterministic LOGIN resolver (`username` then `email`, ordered — never `$or`). `findByIdentifier` = permissive admin/recovery (`id` → `username` → `email`). Both return `null` (don't throw) when missing. NEVER use `findByIdentifier` for login.
 
-### `deleteUser(username) → Promise<void>`
+### `update(id, patch) → Promise<UserCredentials & T>`
 
-Hard-delete. Throws `NOT_FOUND` when no row matched (`store.delete` returned `false`).
+Deep-merge `patch` via `store.update(id, { set })`, then re-read. Top-level fields are shallow-merged; the merged sub-objects (`account` / `mfa` / `password`) follow their `@db.patch.strategy 'merge'` declaration.
+
+### `deleteUser(id) → Promise<void>`
+
+Hard-delete by `id`. Throws `NOT_FOUND` when no row matched (`store.delete` returned `false`).
 
 ## Login + password flow
 
-### `login(username, password) → Promise<LoginResult<T>>`
+### `login(handle, password, lockoutOverride?) → Promise<LoginResult<T>>`
 
-`LoginResult<T> = { user: UserCredentials & T; mfaRequired: boolean }`. `mfaRequired` is `true` iff at least one MFA method on the user is `confirmed`. See [the login sequence](#the-login-sequence).
+`handle` = `username` OR `email` (resolved via `store.findByHandle`). `LoginResult<T> = { user: UserCredentials & T; mfaRequired: boolean }`. `mfaRequired` is `true` iff at least one MFA method on the user is `confirmed`. See [the login sequence](#the-login-sequence).
 
-### `verifyPassword(username, password) → Promise<boolean>`
+### `verifyPassword(id, password) → Promise<boolean>`
 
 No side effects, bypasses lockout. Useful for re-auth confirmations (e.g. "confirm to change password" UI flows).
 
-### `changePassword(username, current, new, repeat?) → Promise<void>`
+### `changePassword(id, current, new, repeat?) → Promise<void>`
 
 1. `repeat !== undefined && new !== repeat` → `PASSWORDS_MISMATCH`.
 2. `current` mismatch → `INVALID_CREDENTIALS`.
@@ -79,19 +85,19 @@ No side effects, bypasses lockout. Useful for re-auth confirmations (e.g. "confi
 4. Parallel `Promise.all` verifies `new` against `current.hash` + every `password.history[]` entry — any match throws `PASSWORD_IN_HISTORY`.
 5. Persist new hash + rotate history (length capped at `historyLength`; `0` keeps history empty).
 
-### `setPassword(username, new) → Promise<void>`
+### `setPassword(id, new) → Promise<void>`
 
 Admin-style. Same policy + history checks, no current-password verification.
 
 ## Account lifecycle
 
-| Method                              | Behavior                                                                                                                 |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `activateAccount(username)`         | Set `account.active = true`. Throws `NOT_FOUND` if no row.                                                               |
-| `deactivateAccount(username)`       | Set `account.active = false`. Throws `NOT_FOUND` if no row.                                                              |
-| `lockAccount(u, reason, duration?)` | `duration` ms → `lockEnds = clock() + duration`. Omitted / `0` → `lockEnds: 0` = permanent lock.                         |
-| `unlockAccount(username)`           | Clears `locked` / `lockReason` / `lockEnds` and resets `failedLoginAttempts`.                                            |
-| `getLockStatus(account)`            | **Sync.** Returns `{ locked, expired, reason, lockEnds }`. `expired` is `true` iff `lockEnds > 0 && lockEnds < clock()`. |
+| Method                               | Behavior                                                                                                                 |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| `activateAccount(id)`                | Set `account.active = true`. Throws `NOT_FOUND` if no row.                                                               |
+| `deactivateAccount(id)`              | Set `account.active = false`. Throws `NOT_FOUND` if no row.                                                              |
+| `lockAccount(id, reason, duration?)` | `duration` ms → `lockEnds = clock() + duration`. Omitted / `0` → `lockEnds: 0` = permanent lock.                         |
+| `unlockAccount(id)`                  | Clears `locked` / `lockReason` / `lockEnds` and resets `failedLoginAttempts`.                                            |
+| `getLockStatus(account)`             | **Sync.** Returns `{ locked, expired, reason, lockEnds }`. `expired` is `true` iff `lockEnds > 0 && lockEnds < clock()`. |
 
 `login` and `verifyMfa` auto-unlock when `expired` is true before throwing.
 
@@ -115,17 +121,17 @@ Filters to policies whose `rule` is a string — those compile via `@prostojs/ft
 
 ## MFA methods
 
-| Method                                                 | Behavior                                                                                                                                                                                                                                                                                                                              |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `addMfaMethod(username, method)`                       | Upsert by `method.name` (existing same-name method is replaced).                                                                                                                                                                                                                                                                      |
-| `confirmMfaMethod(username, name)`                     | Marks the method `confirmed: true`. Throws `MFA_NOT_CONFIGURED` if `name` unknown.                                                                                                                                                                                                                                                    |
-| `removeMfaMethod(username, name)`                      | Removes the method. If it was the default, `mfa.defaultMethod` is cleared to `""`.                                                                                                                                                                                                                                                    |
-| `setDefaultMfaMethod(username, name)`                  | Sets `defaultMethod` and `autoSend: false`. Empty `name` clears the default. Throws `MFA_NOT_CONFIGURED` on non-empty unknown name.                                                                                                                                                                                                   |
-| `setMfaAutoSend(username, value)`                      | Toggles `mfa.autoSend`. Throws `NOT_FOUND` on no row.                                                                                                                                                                                                                                                                                 |
-| `getAvailableMfaMethods(mfa)` (sync)                   | Returns `{ name, isDefault, masked }[]` for confirmed methods. `masked` uses `maskMfaValue`.                                                                                                                                                                                                                                          |
-| `verifyTotpSetupCode(username, code, config?)`         | Enroll-confirm helper: verifies `code` against the user's **unconfirmed** `totp` method and flips it to `confirmed: true` in one call. Throws `MFA_INVALID` / `MFA_NOT_CONFIGURED` / `NOT_FOUND`. Use instead of a manual `verifyTotpCode` + `confirmMfaMethod` pair.                                                                 |
-| `verifyMfa(username, code, config?, lockoutOverride?)` | TOTP-only path. Auto-unlocks expired locks, increments **the same** `failedLoginAttempts` as `login`, throws `MFA_INVALID`, `MFA_NOT_CONFIGURED`, `INACTIVE`, `LOCKED`, or `NOT_FOUND` per case. 4th `lockoutOverride?: Partial<LockoutConfig>` applies a per-call lockout posture (e.g. stricter threshold for privileged accounts). |
-| `isPasswordExpired(user, now?)` (sync)                 | Checks `user.password` against the configured password-expiry policy. `now` defaults to the injected clock — deterministic in tests.                                                                                                                                                                                                  |
+| Method                                           | Behavior                                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `addMfaMethod(id, method)`                       | Upsert by `method.name` (existing same-name method is replaced).                                                                                                                                                                                                                                                                      |
+| `confirmMfaMethod(id, name)`                     | Marks the method `confirmed: true`. Throws `MFA_NOT_CONFIGURED` if `name` unknown.                                                                                                                                                                                                                                                    |
+| `removeMfaMethod(id, name)`                      | Removes the method. If it was the default, `mfa.defaultMethod` is cleared to `""`.                                                                                                                                                                                                                                                    |
+| `setDefaultMfaMethod(id, name)`                  | Sets `defaultMethod` and `autoSend: false`. Empty `name` clears the default. Throws `MFA_NOT_CONFIGURED` on non-empty unknown name.                                                                                                                                                                                                   |
+| `setMfaAutoSend(id, value)`                      | Toggles `mfa.autoSend`. Throws `NOT_FOUND` on no row.                                                                                                                                                                                                                                                                                 |
+| `getAvailableMfaMethods(mfa)` (sync)             | Returns `{ name, isDefault, masked }[]` for confirmed methods. `masked` uses `maskMfaValue`.                                                                                                                                                                                                                                          |
+| `verifyTotpSetupCode(id, code, config?)`         | Enroll-confirm helper: verifies `code` against the user's **unconfirmed** `totp` method and flips it to `confirmed: true` in one call. Throws `MFA_INVALID` / `MFA_NOT_CONFIGURED` / `NOT_FOUND`. Use instead of a manual `verifyTotpCode` + `confirmMfaMethod` pair.                                                                 |
+| `verifyMfa(id, code, config?, lockoutOverride?)` | TOTP-only path. Auto-unlocks expired locks, increments **the same** `failedLoginAttempts` as `login`, throws `MFA_INVALID`, `MFA_NOT_CONFIGURED`, `INACTIVE`, `LOCKED`, or `NOT_FOUND` per case. 4th `lockoutOverride?: Partial<LockoutConfig>` applies a per-call lockout posture (e.g. stricter threshold for privileged accounts). |
+| `isPasswordExpired(user, now?)` (sync)           | Checks `user.password` against the configured password-expiry policy. `now` defaults to the injected clock — deterministic in tests.                                                                                                                                                                                                  |
 
 `verifyMfa` finds the method via `mfa.methods.find(m => m.name === 'totp' && m.confirmed)` — no other method names participate in this path; email / SMS challenges live in `@aooth/auth`.
 
@@ -139,19 +145,19 @@ All require `config.deviceTrust.secret`. Without it, `issueTrustedDevice` / `ver
 
 Mints `<raw 32-byte hex>.<hmac-sha256(userId|raw|ip-or-empty)>`. Does NOT persist — pair with `addTrustedDevice`. Returned record carries `token`, `ip` (if supplied), `issuedAt`, `expiresAt = clock() + ttlMs`, optional `name`.
 
-### `addTrustedDevice(username, record) → Promise<void>`
+### `addTrustedDevice(id, record) → Promise<void>`
 
 Appends to `trustedDevices`. Read-modify-write — the whole array is replaced in the patch.
 
-### `verifyTrustedDevice(username, token, ip?) → Promise<boolean>`
+### `verifyTrustedDevice(userId, token, ip?) → Promise<boolean>`
 
-Returns `true` iff the HMAC verifies against `username|raw|ip ?? ""` AND a persisted record matches `token` AND `expiresAt > now` AND `(record.ip === undefined || record.ip === ip)`. Pass the same `ip` you issued with — IP-binding is enforced when the stored record carries an `ip`.
+Returns `true` iff the HMAC verifies against `userId|raw|ip ?? ""` AND a persisted record matches `token` AND `expiresAt > now` AND `(record.ip === undefined || record.ip === ip)`. The HMAC is bound to the same id you minted the token with (`issueTrustedDevice(userId, …)`). Pass the same `ip` you issued with — IP-binding is enforced when the stored record carries an `ip`.
 
-### `revokeTrustedDevice(username, token) → Promise<void>`
+### `revokeTrustedDevice(id, token) → Promise<void>`
 
 Filters out by `token`. No-op when absent.
 
-### `listTrustedDevices(username) → Promise<TrustedDeviceRecord[]>`
+### `listTrustedDevices(id) → Promise<TrustedDeviceRecord[]>`
 
 Returns `user.trustedDevices ?? []`. Throws `NOT_FOUND` if the user is missing.
 
@@ -162,9 +168,9 @@ Returns `user.trustedDevices ?? []`. Throws `NOT_FOUND` if the user is missing.
 
 ## The login sequence
 
-`UserService.login(username, password)` runs:
+`UserService.login(handle, password)` runs (`handle` = `username`/`email`, resolved via `findByHandle`):
 
-1. Look up the user — throw `NOT_FOUND` if missing.
+1. Look up the user by handle — throw `NOT_FOUND` if missing.
 2. Reject if `account.active === false` — throw `INACTIVE`.
 3. Reject if locked — auto-unlocks when `lockEnds > 0 && lockEnds < clock()`; otherwise throws `LOCKED` with `details = { reason, lockEnds }`.
 4. Verify the password using the parameters baked into the stored hash + the configured pepper.

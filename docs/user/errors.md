@@ -58,7 +58,7 @@ try {
 | `type`                | Triggered by                                                                                                                                                                                   | `details` shape                                                                                                  | Recommended HTTP                       |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
 | `NOT_FOUND`           | `getUser`, `login`, `verifyPassword`, `verifyMfa`, `update`, `activate*`, `deactivate*`, `lock*`, `unlock*`, `deleteUser`, MFA / backup-code / trusted-device methods when the user is missing | —                                                                                                                | `404 Not Found`                        |
-| `ALREADY_EXISTS`      | `createUser` when the username is taken (`UserStoreMemory.create` throws it directly; `UsersStoreAtscriptDb` maps CONFLICT)                                                                    | —                                                                                                                | `409 Conflict`                         |
+| `ALREADY_EXISTS`      | `createUser` when the `username` **or** `email` is taken (`UserStoreMemory.create` throws it directly; `UsersStoreAtscriptDb` maps CONFLICT)                                                   | —                                                                                                                | `409 Conflict`                         |
 | `INACTIVE`            | `login`, `verifyMfa` when `account.active === false`                                                                                                                                           | —                                                                                                                | `403 Forbidden`                        |
 | `LOCKED`              | `ensureNotLockedOrThrow` in `login` / `verifyMfa` after the auto-unlock check, before password / TOTP verification                                                                             | `{ reason: string, lockEnds: number }`                                                                           | `403 Forbidden`                        |
 | `INVALID_CREDENTIALS` | bad password in `login`; bad current password in `changePassword`                                                                                                                              | `{ lockEnds: number }` **only** when the failure tripped the lock; otherwise absent                              | `401 Unauthorized`                     |
@@ -81,7 +81,7 @@ try {
 throw new UserAuthError("NOT_FOUND", "User not found");
 ```
 
-No `details` payload. Triggered everywhere a username lookup is required and `findByUsername` returns `null`. `update` and `delete` translate a store-layer "no row affected" return into this.
+No `details` payload. Triggered everywhere an identity lookup is required and the store read returns `null` (`getUser`/`findById`, or `findByHandle`/`findByIdentifier` on the recovery/admin paths). `update` and `delete` translate a store-layer "no row affected" return into this.
 
 ### `ALREADY_EXISTS`
 
@@ -89,7 +89,7 @@ No `details` payload. Triggered everywhere a username lookup is required and `fi
 throw new UserAuthError("ALREADY_EXISTS", "User already exists");
 ```
 
-No `details`. Custom stores must throw this themselves on unique-username conflict (`UserStoreMemory.create` and the atscript-db adapter do).
+No `details`. Custom stores must throw this themselves on a unique-handle conflict — duplicate `username` **or** `email` (`UserStoreMemory.create` and the atscript-db adapter both do).
 
 ### `INACTIVE`
 

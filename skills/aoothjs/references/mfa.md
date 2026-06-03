@@ -73,14 +73,14 @@ Pass a `clock` for deterministic tests.
 
 ## TOTP enrollment + QR
 
-The enroll-confirm verifier is `UserService.verifyTotpSetupCode(username, code, config?)` — it verifies the first code against the user's **unconfirmed** `totp` method and flips it to `confirmed: true` in one call (throws `MFA_INVALID` on a bad code). Use it instead of a manual `verifyTotpCode` + `confirmMfaMethod` pair.
+The enroll-confirm verifier is `UserService.verifyTotpSetupCode(id, code, config?)` — it verifies the first code against the user's **unconfirmed** `totp` method and flips it to `confirmed: true` in one call (throws `MFA_INVALID` on a bad code). Use it instead of a manual `verifyTotpCode` + `confirmMfaMethod` pair. Service methods key on the surrogate `id`; `username` below is only the TOTP URI label.
 
 ```ts
 const secret = generateTotpSecret();
-const uri = generateTotpUri(secret, "MyApp", username);
-await svc.addMfaMethod(username, { name: "totp", value: secret, confirmed: false });
+const uri = generateTotpUri(secret, "MyApp", username); // username = display label
+await svc.addMfaMethod(id, { name: "totp", value: secret, confirmed: false });
 // render `uri` as a QR → user scans → submits first code
-await svc.verifyTotpSetupCode(username, submittedCode, { window: 1 });
+await svc.verifyTotpSetupCode(id, submittedCode, { window: 1 });
 ```
 
 In the moost stack, the bundled `EnrollConfirmForm.qrCode` field carries the `otpauth://` URI plus `@ui.form.component 'AsQrCode'`, so the SPA's `AsQrCode` component (from `@atscript/vue-aooth`) renders the scannable QR + manual base32 secret. See [spa-components.md](./spa-components.md).
@@ -131,7 +131,7 @@ These power the challenge-ticket pattern used by `@aooth/auth` (the package stor
 
 **Not bundled.** There is no `generateBackupCodePlaintext` export and no `UserService.generateBackupCodes` / `consumeBackupCode` method. `UserCredentials.backupCodes?: string[]` exists as a reserved slot, but no shipped API reads or writes it.
 
-Compose recovery codes from the primitives above: generate random codes yourself, hash each with `hashMfaCode`, store the hashes via `users.update(username, { set: { backupCodes } })`, and verify a submitted code with `verifyMfaCode` against the stored hashes (removing the matched hash). Wrap consume in a store-layer transaction if you need strict one-shot semantics.
+Compose recovery codes from the primitives above: generate random codes yourself, hash each with `hashMfaCode`, store the hashes via `users.update(id, { backupCodes })`, and verify a submitted code with `verifyMfaCode` against the stored hashes (removing the matched hash). Wrap consume in a store-layer transaction if you need strict one-shot semantics.
 
 ## Trusted-device tokens
 

@@ -60,12 +60,8 @@ import { AoothUserCredentials } from '@aooth/user/atscript-db/model'
 
 @db.table 'users'
 export interface AppUser extends AoothUserCredentials {
-    @meta.id @db.default.uuid
-    id: string
-
-    @arbac.userId
-    username: string
-
+    // id (PK / @meta.id — the token subject), username + email — all inherited.
+    // No @arbac.userId: the default chain already resolves to @meta.id = id = subject.
     @arbac.role
     roles: string[]
 
@@ -88,6 +84,8 @@ Inline-role example uses `roles: string[]`. A rel-based shape would replace `rol
 3. `@meta.id`.
 
 If none of these resolves, the constructor throws. This is a hard fail — the provider cannot work without a stable user-id seam.
+
+**Since the id-subject re-key, the auth subject (`useAuth().getUserId()`) IS the base `@meta.id`** — so the chain falls through to step 3 and matches with **no `@arbac.userId`**. Do NOT annotate `@arbac.userId username` (the old pattern when the subject was the username): it would point the lookup at `username` while the subject is the `id`, and every request 401s "user not found".
 
 ## `AtscriptArbacUserProvider`
 

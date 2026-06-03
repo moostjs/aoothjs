@@ -146,7 +146,7 @@ interface ConsentEvent {
 }
 ```
 
-Customer-overridable DI seam for the consent universe + persistence. All four methods are no-op defaults — extend the class and register the replacement via `setReplaceRegistry([ConsentStore, MyConsentStore])`. **`getPendingConsents(username)` is user-scoped only** — the returned set must NOT vary by workflow or channel; OTP channel-ownership disclosures are recorded separately via `recordOtpChannelConsent`. Pending descriptors are transported to the SPA carrier form (via `@wf.context.pass`) and rendered by the `AsConsentArray` component. See [Workflows — ConsentStore](/moost/workflows#consent-collection).
+Customer-overridable DI seam for the consent universe + persistence. All four methods are no-op defaults — extend the class and register the replacement via `setReplaceRegistry([ConsentStore, MyConsentStore])`. **`getPendingConsents` is user-scoped only** — its argument is the **stable user id** (the workflow passes `ctx.subject`), and the returned set must NOT vary by workflow or channel; OTP channel-ownership disclosures are recorded separately via `recordOtpChannelConsent`. Pending descriptors are transported to the SPA carrier form (via `@wf.context.pass`) and rendered by the `AsConsentArray` component. See [Workflows — ConsentStore](/moost/workflows#consent-collection).
 
 ## Functions
 

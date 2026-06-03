@@ -25,7 +25,7 @@ new AuthWorkflow({ mfa: { enabled: true } }, ...) // no such field
 // ✅ right — policy on a resolver
 class MyAuth extends AuthWorkflow {
   protected override resolveMfaPolicy(ctx: AuthWfCtx) {
-    return { required: this.tenantRequiresMfa(ctx.username), transports: ["email", "totp"] };
+    return { required: this.tenantRequiresMfa(ctx.subject), transports: ["email", "totp"] };
   }
 }
 ```
@@ -118,7 +118,7 @@ Identifier (anti-enumeration: unknown identifiers get the same response) → del
 
 The authenticated "change MY password" flow — for a signed-in user rotating their own credential (distinct from recovery, which is for users who are locked out). The single pause is `ChangePasswordForm` (current password + new + confirm, with the live password-rules readout); on submit it verifies the current password, applies the new one through `UserService.changePassword`, optionally revokes the user's other sessions, and re-issues the acting session on a fresh token (so the current device stays signed in, no ghost sessions survive).
 
-**Identity is session-bound, never input.** `init-change-password` sets `ctx.username` from `useAuth().getUserId()` — there is no target-user parameter anywhere in the flow, so it is structurally "change my password", not "change someone's password".
+**Identity is session-bound, never input.** `init-change-password` sets `ctx.subject` (the stable user id) from `useAuth().getUserId()` — there is no target-user parameter anywhere in the flow, so it is structurally "change my password", not "change someone's password".
 
 **Fully ARBAC-gated, no `@Public()`.** Unlike the other three flows, the `@Workflow` body and every step carry `@ArbacResource("auth.change-password")` + `@ArbacAction("self")`. A customer enables the feature with a single grant — `allow("auth.change-password", "*")` — and forbids it (e.g. SSO-only orgs that disallow local password changes) by simply omitting that grant. There is no on/off opts flag; the privilege **is** the switch. See [ARBAC Authorize — gating a whole workflow](./arbac-authorize#gating-a-multi-step-workflow).
 
@@ -132,10 +132,10 @@ Override `protected deliver(payload: AuthDeliveryPayload)` to route direct sends
 
 ## Consent collection — `ConsentStore`
 
-`AuthWorkflow` takes `consentStore: ConsentStore` as its **4th** constructor param. On every run the `prepare-consents` step calls `getPendingConsents(username)` and writes the result to `ctx.consents.pending`; the bundled forms surface them inline as a `consents: string[]` field rendered by the `AsConsentArray` component. Signatures: [`ConsentStore` reference](/api/auth-moost#consentstore).
+`AuthWorkflow` takes `consentStore: ConsentStore` as its **4th** constructor param. On every run the `prepare-consents` step calls `getPendingConsents(ctx.subject)` — the argument is the **stable user id**, not the username — and writes the result to `ctx.consents.pending`; the bundled forms surface them inline as a `consents: string[]` field rendered by the `AsConsentArray` component. Signatures: [`ConsentStore` reference](/api/auth-moost#consentstore).
 
-::: warning `getPendingConsents(username)` is user-scoped only
-The returned descriptor set MUST NOT vary by workflow or transport channel — every flow consults the same user-level consent universe. OTP channel-ownership consent (which IS channel-specific) is captured separately via `recordOtpChannelConsent`.
+::: warning `getPendingConsents` is user-scoped only
+The argument is the **stable user id** (the workflow passes `ctx.subject`). The returned descriptor set MUST NOT vary by workflow or transport channel — every flow consults the same user-level consent universe. OTP channel-ownership consent (which IS channel-specific) is captured separately via `recordOtpChannelConsent`.
 :::
 
 ```ts
@@ -144,9 +144,9 @@ import { Injectable } from "moost";
 
 @Injectable() // SINGLETON
 class MyConsentStore extends ConsentStore {
-  override async getPendingConsents(username: string | undefined): Promise<ConsentDescriptor[]> {
-    if (!username) return [];
-    const accepted = await db.consents.find({ username, id: "terms" });
+  override async getPendingConsents(userId: string | undefined): Promise<ConsentDescriptor[]> {
+    if (!userId) return [];
+    const accepted = await db.consents.find({ userId, id: "terms" });
     if (accepted.some((e) => e.version === "v2")) return [];
     return [
       {
@@ -243,7 +243,7 @@ throw wf.requireInput({ formMessage: "Invalid credentials" });
 throw wf.requireInput({ errors: { confirmPassword: "Passwords do not match" } });
 
 // ❌ Terminal — not a client error; no form to retry from.
-if (!ctx.username) throw new HttpError(500, "Workflow state corrupted: missing username");
+if (!ctx.subject) throw new HttpError(500, "Workflow state corrupted: missing subject");
 if (!this.isCancellationEnabled()) throw new HttpError(403, "Invite cancellation is disabled");
 ```
 

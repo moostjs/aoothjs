@@ -6,8 +6,9 @@
 
 ```ts
 interface UserCredentials {
-  id: string;
-  username: string;
+  id: string; // stable surrogate — the token subject (`getUserId()`)
+  username: string; // unique login handle
+  email?: string; // unique login/contact handle (optional)
   password: PasswordData;
   account: AccountData;
   mfa: MfaData;
@@ -16,13 +17,22 @@ interface UserCredentials {
 }
 ```
 
+`id` is the **stable surrogate** the rest of the stack keys on — it is the JWT subject (`useAuth().getUserId()`), the key for every `UserService` write, and what ARBAC resolves a user by. `username` and `email` are independently-unique **login handles** (`UserStore.findByHandle` matches `username` then `email`); see [Stores](./stores).
+
 The shipped `.as` model: [`packages/user/src/atscript-db/user-credentials.as`](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/atscript-db/user-credentials.as).
 
 ```ts
 // from user-credentials.as
 export interface AoothUserCredentials {
+    @meta.id
+    @db.default.uuid
+    id: string
+
     @db.index.unique 'username_idx'
     username: string
+
+    @db.index.unique 'email_idx'
+    email?: string
 
     @db.patch.strategy 'merge'
     password: { /* … */ }
@@ -119,12 +129,12 @@ See [Stores](./stores) for the full contract.
 
 `UserService<T>` and `UserStore<T>` both accept a generic that augments the base type. Pass anything that's safe to merge into `UserCredentials`.
 
+`id`, `username`, and `email` are **base** fields — your generic `T` declares only the _extra_ columns:
+
 ```ts
 import { UserService, UserStoreMemory } from "@aooth/user";
 
 interface AppUser {
-  id: string;
-  email?: string;
   tenantId: string;
   roles?: string[];
 }
@@ -132,19 +142,22 @@ interface AppUser {
 const store = new UserStoreMemory<AppUser>();
 const users = new UserService<AppUser>(store);
 
-await users.createUser("alice", "p4ssw0rd!", {
-  id: crypto.randomUUID(),
+// `id` is minted automatically (randomUUID). `username` is the 1st arg;
+// `email` is an optional base handle — set it via `update` (or add it to your
+// `T` to pass it through `createUser`'s `extras`).
+const u = await users.createUser("alice", "p4ssw0rd!", {
   tenantId: "acme",
-  email: "alice@acme.dev",
   roles: ["admin"],
 });
+await users.update(u.id, { email: "alice@acme.dev" });
 
 const { user } = await users.login("alice", "p4ssw0rd!");
 user.tenantId; // typed as string
 user.roles; // typed as string[] | undefined
+user.id; // base field — the token subject
 ```
 
-When using `@atscript/db`, define the extension in `.as` so it shows up at the storage layer:
+When using `@atscript/db`, define the extension in `.as` so it shows up at the storage layer. `id` (PK), `username`, `email`, and `version` are all inherited — declare only your own columns plus `@db.table`:
 
 ```ts
 // app.as
@@ -152,12 +165,6 @@ import { AoothUserCredentials } from '@aooth/user/atscript-db/model.as'
 
 @db.table 'users'
 export interface AppUser extends AoothUserCredentials {
-    @meta.id
-    @db.default.uuid
-    id: string
-
-    email?: string
-
     @db.index.regular 'tenant_idx'
     tenantId: string
 
@@ -165,8 +172,8 @@ export interface AppUser extends AoothUserCredentials {
 }
 ```
 
-::: tip `createUser` deliberately omits `id`
-The base `createUser` builds a `UserCredentials` literal **without** an `id` field, so DB defaults like `@db.default.uuid` fire. If you want a specific id (migrating data, deterministic tests), pass it via `extras.id`.
+::: tip `createUser` mints the `id`
+`createUser` sets `id: randomUUID()` on the base record, so the surrogate is always populated before the row hits the store (the model's `@db.default.uuid` is just a fallback for direct inserts). Pass `extras.id` to override — e.g. migrating data or deterministic tests.
 :::
 
 ::: warning `extras` shallow-merges over base

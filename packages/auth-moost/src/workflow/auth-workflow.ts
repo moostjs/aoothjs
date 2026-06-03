@@ -706,7 +706,7 @@ export class AuthWorkflow {
     if (ctx.mfa?.method && ctx.mfa.method !== "totp") {
       const channel = ctx.mfa.method;
       const summary = ctx.mfa.enrolledMethods?.find((mm) => mm.kind === channel);
-      if (!ctx.subject) throw new HttpError(500, "Workflow state corrupted: missing username");
+      if (!ctx.subject) throw new HttpError(500, "Workflow state corrupted: missing subject");
       return this.users.getUser(ctx.subject).then((user) => {
         const methodName = summary?.methodName ?? channel;
         const method = user.mfa.methods.find((m) => m.name === methodName && m.confirmed);
@@ -736,13 +736,13 @@ export class AuthWorkflow {
 
   /**
    * Asserts `ctx.subject` is populated. Throws `HttpError(500)` on miss;
-   * narrows `username` to `string` for the caller. Ported from
+   * narrows `subject` to `string` for the caller. Ported from
    * `AuthWorkflowBase` since the unified class no longer extends it.
    */
   protected requireSubject<T extends { subject?: string }>(
     ctx: T,
   ): asserts ctx is T & { subject: string } {
-    if (!ctx.subject) throw new HttpError(500, "Workflow state corrupted: missing username");
+    if (!ctx.subject) throw new HttpError(500, "Workflow state corrupted: missing subject");
   }
 
   /**
@@ -1791,7 +1791,7 @@ export class AuthWorkflow {
   @Public()
   async checkPendingInvitation(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     if (!ctx.subject) {
-      throw new HttpError(500, "Workflow state corrupted: missing username at accept");
+      throw new HttpError(500, "Workflow state corrupted: missing subject at accept");
     }
     const existing = await this.loadUserOrNull(ctx.subject);
     if (!existing) {
@@ -2254,7 +2254,7 @@ export class AuthWorkflow {
    * issue-time metadata (IP + User-Agent via {@link resolveIssueMetadata}).
    * Shared by every finish step that issues a session (login, change-password,
    * recovery auto-login). Call after {@link requireSubject} has narrowed
-   * `username` (the typed param enforces it at the call site).
+   * `subject` (the typed param enforces it at the call site).
    */
   private issueForContext(ctx: AuthWfCtx & { subject: string }) {
     return this.auth.issue(ctx.subject, { metadata: this.resolveIssueMetadata(ctx) });

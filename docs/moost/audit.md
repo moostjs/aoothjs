@@ -60,7 +60,7 @@ For uniform request-level auditing across **all** routes (not just auth), a `def
 
 | Field       | Source                                                                        |
 | ----------- | ----------------------------------------------------------------------------- |
-| `userId`    | `useAuth().getAuthContext()?.userId` (or the workflow's `ctx.username`).      |
+| `userId`    | `useAuth().getAuthContext()?.userId` (or the workflow's `ctx.subject`).       |
 | `workflow`  | The wfid (`auth/login/flow`, `auth/invite/start`, `auth/recovery/flow`).      |
 | `ip`        | `useRequest().rawRequest.socket.remoteAddress` at the originating HTTP event. |
 | `userAgent` | `useHeaders().get('user-agent')` at the originating HTTP event.               |

@@ -109,19 +109,16 @@ import { AoothArbacUserCredentials } from '@aooth/arbac-moost/atscript/models'
 
 @db.table 'users'
 export interface AppUser extends AoothArbacUserCredentials {
-    @meta.id @db.default.uuid
-    id: string
-
+    // id (PK / @meta.id — the token subject), username + email (unique handles),
+    // version — ALL inherited. Add only @db.table + your own columns.
     @arbac.attribute
     department?: string
-
-    email?: string
 }
 ```
 
-`AoothArbacUserCredentials` extends `AoothUserCredentials` (the shipped credential interface with `password` / `account` / `mfa` / `trustedDevices` sub-objects, all carrying `@db.patch.strategy 'merge'`) and pre-applies `@arbac.role` to a `roles: string[]` field. You add:
+`AoothArbacUserCredentials` extends `AoothUserCredentials` (the shipped credential interface with the surrogate `id` (`@meta.id` + `@db.default.uuid` — the token subject), unique `username`/`email` handles, `version`, and `password` / `account` / `mfa` / `trustedDevices` sub-objects all carrying `@db.patch.strategy 'merge'`) and pre-applies `@arbac.role` to a `roles: string[]` field. You add:
 
-- A user-id field (`@meta.id` or a field of the `@db.table.preferredId.uniqueIndex` group). The atscript provider resolves the chain `@arbac.userId → preferredId group → @meta.id`. Constructor throws if none resolve.
+- `@db.table` (the only required addition) plus any custom columns. The user-id field is inherited — the provider resolves the chain `@arbac.userId → preferredId group → @meta.id`, and the base `@meta.id` (= `id` = the auth subject) satisfies step 3 with no annotation.
 - Zero or more `@arbac.attribute` fields — each one becomes a key on `UserAttrs`.
 
 Then build (`asc` or `unplugin-atscript`) and sync the schema:

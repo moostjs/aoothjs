@@ -86,6 +86,14 @@ export function createTestMailboxController(
   const { emails, sms, reseed, userService, auditEvents, consentLog, otpConsentLog, wfStates } =
     deps;
 
+  // Test endpoints take a user-visible handle (`t1_grace`); internals are
+  // id-keyed. Resolve-or-throw once so the callers stay one-liners.
+  const resolveUser = async (handle: string) => {
+    const user = await userService.findByHandle(handle);
+    if (!user) throw new Error(`No user ${handle}`);
+    return user;
+  };
+
   // `@Public()` bypasses the global auth guard — these endpoints are the
   // entry point used BY tests, before any login has happened.
   @Controller("__test")
@@ -149,8 +157,7 @@ export function createTestMailboxController(
      */
     @Get("totp-secret/:username")
     async totpSecret(@Param("username") username: string): Promise<{ secret: string }> {
-      const user = await userService.findByHandle(username);
-      if (!user) throw new Error(`No user ${username}`);
+      const user = await resolveUser(username);
       const method = user.mfa.methods.find((m) => m.name === "totp" && m.confirmed);
       if (!method) throw new Error(`No confirmed TOTP method for ${username}`);
       return { secret: method.value };
@@ -177,8 +184,7 @@ export function createTestMailboxController(
         pendingInvitation?: boolean;
       };
     }> {
-      const user = await userService.findByHandle(username);
-      if (!user) throw new Error(`No user ${username}`);
+      const user = await resolveUser(username);
       return {
         username: user.username,
         mfa: {
@@ -214,8 +220,7 @@ export function createTestMailboxController(
      */
     @Post("reset-mfa/:username")
     async resetMfa(@Param("username") username: string): Promise<{ ok: true; methods: number }> {
-      const user = await userService.findByHandle(username);
-      if (!user) throw new Error(`No user ${username}`);
+      const user = await resolveUser(username);
       // Iterate names rather than calling a bulk-clear (no such helper today).
       // Snapshot first because `removeMfaMethod` re-reads + filters per call.
       const names = user.mfa.methods.map((m) => m.name);

@@ -94,19 +94,8 @@ Marks the field carrying the canonical user id. Optional — if omitted, the res
 
 If none resolve, `AtscriptArbacUserProvider`'s constructor throws. Fail-loud, not fail-silent.
 
-::: tip Annotate `username` as `@arbac.userId` for the standard wiring
-`useAuth().getUserId()` returns the **username string** — the value `UserService.login(username, password)` set, not the user's `@meta.id` UUID. For the provider's lookup to match, declare `@arbac.userId` on the inherited `username` field via a mutating `annotate` block (`extends` can't redeclare inherited props):
-
-```atscript
-import { AoothUserCredentials } from '@aooth/user/atscript-db/model'
-
-annotate AoothUserCredentials {
-    @arbac.userId
-    username
-}
-```
-
-Without this, the chain falls through to `@meta.id` and `findOne({ filter: { id: 'alice' } })` returns null because `alice` is not a UUID.
+::: tip The default chain already matches the auth subject — leave `@arbac.userId` off
+`useAuth().getUserId()` returns the stable surrogate **`id`** — the token `sub` claim `auth.issue(subject)` set, which is the base model's `@meta.id`. So the chain falls through to `@meta.id` and `findOne({ filter: { id: <subject> } })` matches with **no annotation**. Don't add `@arbac.userId username` — that points the lookup at `username` while the subject is the `id`, so every request 401s with "user not found". (Earlier releases keyed the subject on `username` and required that annotate; the id-subject re-key removed it.)
 :::
 
 ## The bundled `AoothArbacUserCredentials` model

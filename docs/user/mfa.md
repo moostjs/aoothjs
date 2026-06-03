@@ -62,19 +62,23 @@ verifyTotpCode(secret, code, { period: 60 }); // 60 s steps
 ### Wiring into a user
 
 ```ts
+// Service methods key on the surrogate `id` (the token subject); `username`
+// here is only the human label baked into the TOTP URI.
+const { id, username } = user;
+
 // 1. enrollment
 const secret = generateTotpSecret();
 const uri = generateTotpUri(secret, "AcmeCorp", username);
-await users.addMfaMethod(username, { name: "totp", value: secret, confirmed: false });
+await users.addMfaMethod(id, { name: "totp", value: secret, confirmed: false });
 // render uri as QR → user scans → enters first code
 
 // 2. confirm — `verifyTotpSetupCode` verifies the first code against the
 //    *unconfirmed* stored method and flips it to confirmed in one call
 //    (throws UserAuthError("MFA_INVALID") on a bad code).
-await users.verifyTotpSetupCode(username, submittedCode, { window: 1 });
+await users.verifyTotpSetupCode(id, submittedCode, { window: 1 });
 
 // 3. login-time verify (uses the user's stored secret internally)
-await users.verifyMfa(username, submittedCode);
+await users.verifyMfa(id, submittedCode);
 ```
 
 `UserService.verifyMfa` reads the stored `totp` method, calls `verifyTotpCode` under the hood, and **shares the lockout counter with `login`** — combined `login + verifyMfa` failures count toward the same `failedLoginAttempts`, not two separate counters.
@@ -109,7 +113,7 @@ This package does **not** persist the issued challenge or its TTL. Use `@aooth/a
 
 Backup / recovery codes are **not a bundled primitive.** There is no `generateBackupCodePlaintext` export and no `generateBackupCodes` / `consumeBackupCode` `UserService` method. The `UserCredentials.backupCodes?: string[]` field exists on the type as a reserved slot, but no bundled API reads or writes it.
 
-If you need recovery codes, compose them from the primitives above: generate random codes yourself, hash each with `hashMfaCode`, store the hashes in `backupCodes` via `users.update(username, { set: { backupCodes } })`, and verify a submitted code with `verifyMfaCode` against the stored hashes (removing the matched hash). Wrap consume in a store-layer transaction if you need strict one-shot semantics.
+If you need recovery codes, compose them from the primitives above: generate random codes yourself, hash each with `hashMfaCode`, store the hashes in `backupCodes` via `users.update(id, { backupCodes })`, and verify a submitted code with `verifyMfaCode` against the stored hashes (removing the matched hash). Wrap consume in a store-layer transaction if you need strict one-shot semantics.
 
 ## Trusted devices
 

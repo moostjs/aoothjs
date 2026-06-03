@@ -8,13 +8,13 @@ This section documents the foundation of the aoothjs auth stack — the user cre
 
 The one orchestrator is **[`UserService<T>`](./service)** — every consumer-facing API call goes through it. Internally it composes:
 
-| Subsystem     | What it owns                                                                                                                          |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Account state | `account.active`, `locked`, `lockEnds`, `failedLoginAttempts`, `lastLogin`                                                            |
-| Password      | `PasswordHasher` + `PasswordPolicy` — hashing, verification, history, policy DSL                                                      |
-| MFA           | `generateTotpSecret` / `generateTotpUri` / `generateTotpCode` / `verifyTotpCode`, `generateMfaCode` / `hashMfaCode` / `verifyMfaCode` |
-| Storage       | `UserStore<T>` (abstract) — `exists` / `findByUsername` / `create` / `update` / `delete`                                              |
-| Errors        | `UserAuthError` — every failure carries a discriminant `type` + structured `details`                                                  |
+| Subsystem     | What it owns                                                                                                                                                                                         |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Account state | `account.active`, `locked`, `lockEnds`, `failedLoginAttempts`, `lastLogin`                                                                                                                           |
+| Password      | `PasswordHasher` + `PasswordPolicy` — hashing, verification, history, policy DSL                                                                                                                     |
+| MFA           | `generateTotpSecret` / `generateTotpUri` / `generateTotpCode` / `verifyTotpCode`, `generateMfaCode` / `hashMfaCode` / `verifyMfaCode`                                                                |
+| Storage       | `UserStore<T>` (abstract) — `findById` / `findByHandle` / `findByIdentifier` / `create` / `update` / `delete` / `withCas`, all keyed by the stable `id` (login resolves a handle via `findByHandle`) |
+| Errors        | `UserAuthError` — every failure carries a discriminant `type` + structured `details`                                                                                                                 |
 
 ## What this package is not
 

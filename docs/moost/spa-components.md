@@ -53,7 +53,7 @@ During MFA enrollment, the `EnrollConfirmForm.qrCode` field carries the `otpauth
 
 ## `AsConsentArray` — pending consents
 
-When `ConsentStore.getPendingConsents(username)` returns descriptors, the workflow transports them (via `@wf.context.pass`) to whichever form the user is currently on, and the inline `consents: string[]` field renders one checkbox per descriptor through `AsConsentArray`. The field **self-hides** when nothing is pending — no `@ui.form.fn.hidden` needed. Submitted ids are validated server-side against the pending set (the authoritative whitelist). See [Workflows — consent collection](./workflows#consent-collection).
+When `ConsentStore.getPendingConsents(subject)` returns descriptors (the arg is the stable user id), the workflow transports them (via `@wf.context.pass`) to whichever form the user is currently on, and the inline `consents: string[]` field renders one checkbox per descriptor through `AsConsentArray`. The field **self-hides** when nothing is pending — no `@ui.form.fn.hidden` needed. Submitted ids are validated server-side against the pending set (the authoritative whitelist). See [Workflows — consent collection](./workflows#consent-collection).
 
 ## `AsPasswordRules` — live policy readout
 

@@ -12,7 +12,9 @@ new UserService<T>(store: UserStore<T>, config?: UserServiceConfig)
 
 Orchestrator for credential CRUD, login, lockout, password policy, MFA, and trusted devices. Generic `T` adds custom user columns to every result. See [UserService](/user/service).
 
-Async methods (selected): `createUser`, `getUser`, `login`, `verifyPassword`, `changePassword`, `setPassword`, `deleteUser`, `update`, `activateAccount`, `deactivateAccount`, `lockAccount`, `unlockAccount`, `checkPolicies`, `addMfaMethod`, `confirmMfaMethod`, `removeMfaMethod`, `setDefaultMfaMethod`, `setMfaAutoSend`, `verifyMfa(username, code, transport?, lockoutOverride?)`, `verifyTotpSetupCode`, `addTrustedDevice`, `verifyTrustedDevice`, `revokeTrustedDevice`, `listTrustedDevices`.
+Async methods (selected): `createUser`, `getUser(id)`, `findByHandle(handle)`, `findByIdentifier(value)`, `login(handle, password, lockoutOverride?)`, `verifyPassword(id, …)`, `changePassword(id, …)`, `setPassword(id, …)`, `deleteUser(id)`, `update(id, patch)`, `activateAccount(id)`, `deactivateAccount(id)`, `lockAccount(id, …)`, `unlockAccount(id)`, `checkPolicies`, `addMfaMethod(id, …)`, `confirmMfaMethod(id, …)`, `removeMfaMethod(id, …)`, `setDefaultMfaMethod(id, …)`, `setMfaAutoSend(id, …)`, `verifyMfa(id, code, config?, lockoutOverride?)`, `verifyTotpSetupCode(id, …)`, `addTrustedDevice(id, …)`, `verifyTrustedDevice(userId, …)`, `revokeTrustedDevice(id, …)`, `listTrustedDevices(id)`.
+
+> **Identity keying:** every method takes the stable surrogate **`id`** (the token subject), **except** `login`, which resolves a `username`/`email` **handle** via `findByHandle`. `findByHandle` (login) and `findByIdentifier` (permissive admin/recovery) are the two handle-based reads. See [UserService](/user/service).
 
 Sync helpers: `getLockStatus`, `isPasswordExpired`, `getTransferablePolicies`, `getAvailableMfaMethods`, `issueTrustedDevice`, `getPasswordHasher`, `getConfig`.
 
@@ -22,15 +24,18 @@ Sync helpers: `getLockStatus`, `isPasswordExpired`, `getTransferablePolicies`, `
 
 ```ts
 abstract class UserStore<T> {
-  abstract exists(username: string): Promise<boolean>;
-  abstract findByUsername(username: string): Promise<(UserCredentials & T) | null>;
+  abstract exists(handle: string): Promise<boolean>; // by username
+  abstract findById(id: string): Promise<(UserCredentials & T) | null>;
+  abstract findByHandle(handle: string): Promise<(UserCredentials & T) | null>; // username then email
+  abstract findByIdentifier(value: string): Promise<(UserCredentials & T) | null>; // id → username → email
   abstract create(data: UserCredentials & T): Promise<void>;
-  abstract update(username: string, update: UserStoreUpdate): Promise<boolean>;
-  abstract delete(username: string): Promise<boolean>;
+  abstract update(id: string, update: UserStoreUpdate): Promise<boolean>;
+  abstract delete(id: string): Promise<boolean>;
+  abstract withCas(id, mutator, opts?): Promise<void>; // read-modify-write under OCC
 }
 ```
 
-Storage contract. `update` MUST deep-merge `set`, atomically apply `inc` per dot-path, and return `false` when no row matched. See [Stores](/user/stores).
+Storage contract — reads/writes key on the stable `id` (the three `find*` reads aside; `findByHandle` is the login resolver). `update` MUST deep-merge `set`, atomically apply `inc` per dot-path, and return `false` when no row matched. See [Stores](/user/stores).
 
 ### `UserStoreMemory<T>`
 
@@ -123,8 +128,9 @@ function setAtPath(obj: object, path: string, value: unknown): void;
 
 ```ts
 interface UserCredentials {
-  id: string;
-  username: string;
+  id: string; // stable surrogate — the token subject (getUserId())
+  username: string; // unique login handle
+  email?: string; // unique login/contact handle (optional)
   password: PasswordData;
   account: AccountData;
   mfa: MfaData;
@@ -348,4 +354,4 @@ Structural-only types describing the subset of `AtscriptDbTable` methods the ada
 
 ## Subpath: `@aooth/user/atscript-db/model.as`
 
-Raw `.as` file export. Defines `AoothUserCredentials` — `username` (with `@db.index.unique`) plus `@db.patch.strategy 'merge'` sub-objects for `password` / `account` / `mfa` / `trustedDevices`. Consumers extend it to add `@meta.id` and `@db.table`. See [Credentials Model](/user/credentials).
+Raw `.as` file export. Defines `AoothUserCredentials` — the surrogate `id` (`@meta.id` + `@db.default.uuid`), the unique `username` index, the unique optional `email` index, the `@db.column.version` counter, plus `@db.patch.strategy 'merge'` sub-objects for `password` / `account` / `mfa` / `trustedDevices`. Consumers extend it to add only `@db.table` (and any custom columns) — `id`/`email` are inherited. See [Credentials Model](/user/credentials).
