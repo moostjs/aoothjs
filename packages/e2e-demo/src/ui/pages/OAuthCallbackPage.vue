@@ -3,8 +3,9 @@ import { computed, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { AsWfForm } from "@atscript/vue-wf";
 import { createDefaultTypes } from "@atscript/vue-form";
-import { AsConsentArray, AsPasswordRules, AsQrCode, AsSsoProviders } from "@atscript/vue-aooth";
 import { useHydrated } from "../composables/useHydrated";
+import { writeDemoToken } from "../demoToken";
+import { wfFormComponents } from "../wfFormComponents";
 
 // The provider's `redirect_uri` lands the browser here
 // (`/auth/oauth/:provider/callback?code=…&state=…`). This page is a thin bridge:
@@ -36,25 +37,15 @@ const startInput = computed(() => ({
 
 const hydrated = useHydrated();
 const types = createDefaultTypes();
-// Same custom-component map as WfPage: a federated login can land on the SAME
-// consent / MFA-enrollment / prove-control steps a password login does, so the
-// callback's `<AsWfForm>` must register the renderers those forms reference
-// (AsConsentArray / AsPasswordRules / AsQrCode) plus AsSsoProviders for parity.
-const components = { AsConsentArray, AsPasswordRules, AsQrCode, AsSsoProviders };
 const error = ref<string | null>(null);
 const finished = ref<unknown>(null);
-
-// Mirror WfPage: the cookieless demo replays this Bearer token for guarded
-// triggers. A successful OAuth login finishes with `data.accessToken` (the demo
-// opts out of the server-driven redirect — see DemoAuthWorkflow.resolveRedirect).
-const DEMO_TOKEN_KEY = "aooth_demo_access_token";
 
 function onFinished(result: unknown): void {
   finished.value = result;
   error.value = null;
   const token = (result as { data?: { accessToken?: unknown } } | null)?.data?.accessToken;
   if (typeof token === "string" && token.length > 0) {
-    if (typeof sessionStorage !== "undefined") sessionStorage.setItem(DEMO_TOKEN_KEY, token);
+    writeDemoToken(token);
     // Success carries no redirect envelope in the demo → navigate home ourselves.
     void router.push("/");
   }
@@ -100,7 +91,7 @@ async function navigate(url: string): Promise<void> {
         name="auth/login/flow"
         path="/auth/trigger"
         :types="types"
-        :components="components"
+        :components="wfFormComponents"
         :input="startInput"
         :navigate="navigate"
         @finished="onFinished"

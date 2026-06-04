@@ -3,8 +3,9 @@ import { computed, ref } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import { AsWfFinish, AsWfForm, type WfFinished } from "@atscript/vue-wf";
 import { createDefaultTypes } from "@atscript/vue-form";
-import { AsConsentArray, AsPasswordRules, AsQrCode, AsSsoProviders } from "@atscript/vue-aooth";
 import { useHydrated } from "../composables/useHydrated";
+import { readDemoToken, writeDemoToken } from "../demoToken";
+import { wfFormComponents } from "../wfFormComponents";
 import { WORKFLOWS } from "../workflows";
 
 const route = useRoute();
@@ -32,16 +33,10 @@ const descriptor = computed(() => WORKFLOWS.find((w) => w.id === wfId.value) ?? 
 // freshly-constructed (and freshly-merged) workflow controller.
 const formKey = computed(() => `${wfId.value}:${variant.value ?? ""}`);
 
-// Demo session: the bundled login finish returns `data.accessToken` in the
-// body (the demo SPA is otherwise cookieless — see `onFinished`). We stash it in
-// sessionStorage and replay it as `Authorization: Bearer` so GUARDED triggers
-// (the change-password flow is the only non-`@Public` one) pass the auth guard,
-// which has `enableBearer` on by default. Public flows ignore it harmlessly.
-const DEMO_TOKEN_KEY = "aooth_demo_access_token";
-function readDemoToken(): string | undefined {
-  if (typeof sessionStorage === "undefined") return undefined;
-  return sessionStorage.getItem(DEMO_TOKEN_KEY) ?? undefined;
-}
+// Demo session: GUARDED triggers (the change-password flow is the only
+// non-`@Public` one) replay the stashed access token as `Authorization: Bearer`
+// so they pass the auth guard (`enableBearer` on by default). Public flows
+// ignore it harmlessly. See `demoToken.ts` for the stash/replay rationale.
 const fetchOptions = computed(() => {
   const headers: Record<string, string> = {};
   if (variant.value) headers["x-wf-variant"] = variant.value;
@@ -52,19 +47,6 @@ const fetchOptions = computed(() => {
 
 const hydrated = useHydrated();
 const types = createDefaultTypes();
-// Custom carrier-form components registered via `<AsWfForm :components>` →
-// `<AsForm :components>`. `AsConsentArray` (from `@atscript/vue-aooth`) is
-// the renderer for the `WithInlineConsentForm.consents: string[]` field —
-// it self-hides when `ctx.consents.pending` is empty. `AsPasswordRules`
-// renders the live password-policy fulfillment readout on
-// `SetPasswordForm.passwordRules` — its `policies` attr binds to
-// `ctx.password.policies` (Phase 7) and its `password` attr re-reads
-// `data.newPassword` on every keystroke so each row's `data-passed` flag
-// reflects the current input value. `AsSsoProviders` is the one-click SSO
-// picker for `LoginCredentialsForm.ssoProvider` — it reads the provider list
-// from `ctx.public.altActions.ssoProviders` (via the field's `providers` attr)
-// and self-hides when none are configured.
-const components = { AsConsentArray, AsPasswordRules, AsQrCode, AsSsoProviders };
 
 const finished = ref<unknown>(null);
 const error = ref<string | null>(null);
@@ -84,9 +66,7 @@ function onFinished(result: unknown): void {
   // auto-login, change-password rotation) so subsequent guarded triggers
   // authenticate. See `fetchOptions` for the replay side.
   const token = (result as { data?: { accessToken?: unknown } } | null)?.data?.accessToken;
-  if (typeof token === "string" && token.length > 0 && typeof sessionStorage !== "undefined") {
-    sessionStorage.setItem(DEMO_TOKEN_KEY, token);
-  }
+  if (typeof token === "string" && token.length > 0) writeDemoToken(token);
 }
 
 async function onError(err: { message?: string }): Promise<void> {
@@ -198,7 +178,7 @@ async function navigate(url: string): Promise<void> {
           :path="descriptor?.endpoint ?? '/auth/trigger'"
           :name="wfId"
           :types="types"
-          :components="components"
+          :components="wfFormComponents"
           :navigate="navigate"
           :fetch-options="fetchOptions"
           :initial-token="initialToken"

@@ -3,15 +3,7 @@ import { onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
 import type { ConnectedAccount } from "@aooth/auth-moost";
 import { useHydrated } from "../composables/useHydrated";
-
-// Cookieless demo: the bundled login finish returns `data.accessToken`, which
-// WfPage / OAuthCallbackPage stash in sessionStorage and replay as a Bearer for
-// guarded routes. The connected-accounts routes (`GET /auth/oauth/identities`,
-// `DELETE /auth/oauth/:provider/:subject`) are self-scoped, so they need it.
-const DEMO_TOKEN_KEY = "aooth_demo_access_token";
-function readToken(): string | null {
-  return typeof sessionStorage === "undefined" ? null : sessionStorage.getItem(DEMO_TOKEN_KEY);
-}
+import { readDemoToken } from "../demoToken";
 
 const hydrated = useHydrated();
 const authed = ref(false);
@@ -20,7 +12,7 @@ const accounts = ref<ConnectedAccount[] | null>(null);
 const error = ref<string | null>(null);
 
 async function load(): Promise<void> {
-  const token = readToken();
+  const token = readDemoToken();
   if (!token) {
     authed.value = false;
     return;
@@ -48,7 +40,7 @@ async function load(): Promise<void> {
 }
 
 async function unlink(account: ConnectedAccount): Promise<void> {
-  const token = readToken();
+  const token = readDemoToken();
   if (!token) return;
   error.value = null;
   const res = await fetch(
@@ -74,7 +66,7 @@ function linkedOn(ms: number): string {
 }
 
 onMounted(() => {
-  authed.value = !!readToken();
+  authed.value = !!readDemoToken();
   if (authed.value) void load();
 });
 </script>

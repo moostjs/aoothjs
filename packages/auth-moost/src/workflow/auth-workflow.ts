@@ -3777,9 +3777,10 @@ export class AuthWorkflow {
       ctx,
       isOtp ? this.opts.forms.proveControlOtp : this.opts.forms.proveControl,
     );
+    const action = wf.resolveAction();
 
     // `cancel` — abandon the link before the input pause (no link, no session).
-    if (wf.resolveAction() === "cancel") {
+    if (action === "cancel") {
       delete ctx.pendingLink;
       return this.finishOAuth(ctx, "needs-link");
     }
@@ -3803,7 +3804,7 @@ export class AuthWorkflow {
     // OTP mode: `resend` re-mints + re-delivers to the SAME own channel, gated
     // by the same per-pincode cooldown the MFA loop uses. (The password proof
     // form has no `resend` action, so this is unreachable in password mode.)
-    if (isOtp && wf.resolveAction() === "resend") {
+    if (isOtp && action === "resend") {
       const cooldown = pending.resendAllowedAt;
       if (cooldown && Date.now() < cooldown) {
         const waitSec = Math.ceil((cooldown - Date.now()) / 1000);
