@@ -34,7 +34,7 @@ pnpm add -D @atscript/core @atscript/typescript unplugin-atscript
 
 This is the dependency set used by [`packages/e2e-demo`](https://github.com/moostjs/aoothjs/blob/main/packages/e2e-demo/package.json) and is what the [Quick Start](./quick-start) builds.
 
-Federated login is opt-in — add `@aooth/idp` for OAuth2/OIDC "Sign in with Google". It has no new peer deps and mounts through `@aooth/auth-moost` (`OAuthController` + the `auth/oauth/flow` workflow):
+Federated login is opt-in — add `@aooth/idp` for OAuth2/OIDC "Sign in with Google". It has no new peer deps and mounts through `@aooth/auth-moost` (`OAuthController` + the federated leg of the `auth/login/flow` workflow):
 
 ```bash
 pnpm add @aooth/idp
@@ -65,7 +65,7 @@ The list below names the `peerDependencies` each package declares (versions reso
 | `@aooth/user` | always        |
 | `@aooth/auth` | always        |
 
-The framework-agnostic OAuth2/OIDC federated-login core (provider clients, ID-token verification, PKCE/state, `FederatedLoginService.resolveUser`). `jose ^6.2.3` ships as a regular dependency (shared with `@aooth/auth`) — no manual install. It has no HTTP transport of its own: mount it through `@aooth/auth-moost` (`OAuthController` + the `auth/oauth/flow` workflow). The `(provider, subject) → userId` link store is `FederatedIdentityStoreAtscriptDb` from `@aooth/user/atscript-db`.
+The framework-agnostic OAuth2/OIDC federated-login core (provider clients, ID-token verification, PKCE/state, `FederatedLoginService.resolveUser`). `jose ^6.2.3` ships as a regular dependency (shared with `@aooth/auth`) — no manual install. It has no HTTP transport of its own: mount it through `@aooth/auth-moost` (`OAuthController` + the federated leg of the `auth/login/flow` workflow). The `(provider, subject) → userId` link store is `FederatedIdentityStoreAtscriptDb` from `@aooth/user/atscript-db`.
 
 ### `@aooth/arbac-core`
 

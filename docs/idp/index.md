@@ -2,7 +2,7 @@
 
 `@aooth/idp` is the **federated-login core** in the aoothjs stack — the framework-agnostic half of "Sign in with Google / OIDC". It owns the OAuth2/OIDC provider clients (authorization URL + token exchange + full ID-token verification), the PKCE / signed-state primitives, the provider registry, and the account-resolution algorithm that maps a verified external identity to one of your users.
 
-It does **not** own credential issuance (that's [`@aooth/auth`](../auth/) — federated login ends in a normal `auth.issue`), it does **not** own the user record or the account-linking table (those live in [`@aooth/user`](../user/)), and it does **not** own the HTTP round-trip — the `/start` → provider → `/callback` controller and the workflow that re-enters the login gates (MFA, consent, enrollment) are the **Moost integration**, [`OAuthController` + `auth/oauth/flow`](../moost/oauth). This package is the portable building blocks under that wiring.
+It does **not** own credential issuance (that's [`@aooth/auth`](../auth/) — federated login ends in a normal `auth.issue`), it does **not** own the user record or the account-linking table (those live in [`@aooth/user`](../user/)), and it does **not** own the HTTP round-trip — the login-form SSO button → provider → `/callback` bridge and the `auth/login/flow` federated leg that re-enters the login gates (MFA, consent, enrollment) are the **Moost integration**, [`OAuthController` + `auth/login/flow`](../moost/oauth). This package is the portable building blocks under that wiring.
 
 This page is the map. Every concept here has a dedicated child page.
 
@@ -11,8 +11,8 @@ This page is the map. Every concept here has a dedicated child page.
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │  Framework integration → see Moost · Federated Login (OAuth)   │
-│  @aooth/auth-moost · OAuthController · auth/oauth/flow          │
-│     /start → provider → /callback → re-enter login gates       │
+│  @aooth/auth-moost · OAuthController · auth/login/flow (sso)    │
+│   login-form SSO → provider → /callback → re-enter login gates  │
 └───────────────┬───────────────────────────────┬───────────────┘
                 │                               │
                 ▼                               ▼

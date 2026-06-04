@@ -6,13 +6,14 @@ The bundled `AuthWorkflow` forms are **server-driven** atscript types — the se
 
 Three bundled form fields carry a `@ui.form.component '<Name>'` annotation naming a Vue component. `<AsForm>` (inside `<AsWfForm>`) resolves that **string** against the `:components` map you pass — so **the string in the `.as` schema MUST match a key in your `:components` map**, or the field falls back to the default renderer.
 
-| Form field                       | `@ui.form.component` | Component (`@atscript/vue-aooth`) | Renders                                                             |
-| -------------------------------- | -------------------- | --------------------------------- | ------------------------------------------------------------------- |
-| `WithInlineConsentForm.consents` | `AsConsentArray`     | `AsConsentArray`                  | one checkbox per pending consent; self-hides when none pending      |
-| `SetPasswordForm.passwordRules`  | `AsPasswordRules`    | `AsPasswordRules`                 | live password-policy fulfillment dots, re-evaluated per keystroke   |
-| `EnrollConfirmForm.qrCode`       | `AsQrCode`           | `AsQrCode`                        | scannable TOTP `otpauth://` QR + the base32 secret for manual entry |
+| Form field                         | `@ui.form.component` | Component (`@atscript/vue-aooth`) | Renders                                                             |
+| ---------------------------------- | -------------------- | --------------------------------- | ------------------------------------------------------------------- |
+| `WithInlineConsentForm.consents`   | `AsConsentArray`     | `AsConsentArray`                  | one checkbox per pending consent; self-hides when none pending      |
+| `SetPasswordForm.passwordRules`    | `AsPasswordRules`    | `AsPasswordRules`                 | live password-policy fulfillment dots, re-evaluated per keystroke   |
+| `EnrollConfirmForm.qrCode`         | `AsQrCode`           | `AsQrCode`                        | scannable TOTP `otpauth://` QR + the base32 secret for manual entry |
+| `LoginCredentialsForm.ssoProvider` | `AsSsoProviders`     | `AsSsoProviders`                  | one-click SSO provider buttons; self-hides when none configured     |
 
-All three components come from `@atscript/vue-aooth` (an external SPA package), not from any `@aooth/*` package.
+All four components come from `@atscript/vue-aooth` (an external SPA package), not from any `@aooth/*` package.
 
 ## Minimum wiring
 
@@ -20,11 +21,11 @@ All three components come from `@atscript/vue-aooth` (an external SPA package), 
 <script setup lang="ts">
 import { AsWfForm, AsWfFinish, type WfFinished } from "@atscript/vue-wf";
 import { createDefaultTypes } from "@atscript/vue-form";
-import { AsConsentArray, AsPasswordRules, AsQrCode } from "@atscript/vue-aooth";
+import { AsConsentArray, AsPasswordRules, AsQrCode, AsSsoProviders } from "@atscript/vue-aooth";
 
 const types = createDefaultTypes();
 // Keys here MUST match the `@ui.form.component '<Name>'` strings in the bundled forms.
-const components = { AsConsentArray, AsPasswordRules, AsQrCode };
+const components = { AsConsentArray, AsPasswordRules, AsQrCode, AsSsoProviders };
 </script>
 
 <template>
@@ -58,6 +59,12 @@ When `ConsentStore.getPendingConsents(subject)` returns descriptors (the arg is 
 ## `AsPasswordRules` — live policy readout
 
 On `SetPasswordForm`, the phantom `passwordRules` field renders fulfillment dots that re-evaluate on every keystroke against `data.newPassword`, using the **same transferable policy expressions** the server enforces (shipped to the client via `UserService.getTransferablePolicies()`). See [Password Policies](/user/policy).
+
+## `AsSsoProviders` — federated login buttons {#asssoproviders-federated-login}
+
+When you offer federated providers (`resolveAlternateCredentials().ssoProviders`), the login form's `LoginCredentialsForm.ssoProvider` field renders them through `AsSsoProviders`: a one-click picker that paints each provider as a button labelled with its server-owned `text` ("Continue with Google"), applies the provider's `icon` class verbatim, and on click both selects the id and fires the field's **data-carrying** `sso` action — there is no separate submit button, and the field **self-hides** when no providers are configured. The selected provider rides the partial submit and `AuthWorkflow.beginSso` turns it into the provider 302. See [Federated Login](./oauth#the-login-form-s-sso-button).
+
+The `icon` is a CSS class **you own**: because the icon strings arrive from server context, a UnoCSS-style static extractor never sees them in source — safelist each one and install the matching icon collection (the demo wires `i-simple-icons:google` via a second `presetIcons` + a `safelist` entry). The component-API details (props, `secondary` chips, the "or" divider) live in the [`@atscript/vue-aooth` docs](https://ui.atscript.dev).
 
 ## Cross-flow alt-action links {#cross-flow-alt-actions}
 

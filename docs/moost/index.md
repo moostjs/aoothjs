@@ -2,10 +2,10 @@
 
 This section answers: _how do I plug aoothjs into a Moost HTTP app, in what order, with which decorators, and which extension seams should I override?_ It covers two packages that together form the framework glue layer:
 
-| Package                                                                                   | Concern                                                                                                                                                                                                                                                                            |
-| ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`@aooth/auth-moost`](https://github.com/moostjs/aoothjs/tree/main/packages/auth-moost)   | Authentication. `authGuardInterceptor`, `useAuth()`, `AuthController`, the unified `AuthWorkflow` (login / invite / recovery / signup / oauth), `ConsentStore`, magic-link outlets, the `OAuthController` + `auth/oauth/flow` federated-login wiring over [`@aooth/idp`](../idp/). |
-| [`@aooth/arbac-moost`](https://github.com/moostjs/aoothjs/tree/main/packages/arbac-moost) | Authorization. `arbacAuthorizeInterceptor`, `useArbac()`, `@ArbacResource` / `@ArbacAction` / `@ArbacAuthorize`, `AsArbacDbController`, atscript-driven user provider.                                                                                                             |
+| Package                                                                                   | Concern                                                                                                                                                                                                                                                                          |
+| ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`@aooth/auth-moost`](https://github.com/moostjs/aoothjs/tree/main/packages/auth-moost)   | Authentication. `authGuardInterceptor`, `useAuth()`, `AuthController`, the unified `AuthWorkflow` (login / invite / recovery / signup / federated), `ConsentStore`, magic-link outlets, the `OAuthController` + federated leg of `auth/login/flow` over [`@aooth/idp`](../idp/). |
+| [`@aooth/arbac-moost`](https://github.com/moostjs/aoothjs/tree/main/packages/arbac-moost) | Authorization. `arbacAuthorizeInterceptor`, `useArbac()`, `@ArbacResource` / `@ArbacAction` / `@ArbacAuthorize`, `AsArbacDbController`, atscript-driven user provider.                                                                                                           |
 
 The two packages share one decorator on purpose: [`@Public()`](./decorators) writes both `authPublic=true` and `arbacPublic=true`, so a single annotation hides a route from both guards. Splitting the two into separate decorators was — in practice — a foot-gun.
 
@@ -15,21 +15,21 @@ The auth guard and the ARBAC interceptor are both `defineBeforeInterceptor` at `
 
 ## Where to start
 
-| If you want to…                                                                                  | Read                                 |
-| ------------------------------------------------------------------------------------------------ | ------------------------------------ |
-| Bootstrap a fresh app with both layers wired                                                     | [Setup](./setup)                     |
-| Understand `authGuardInterceptor` token extraction, public-route handling, 401 mapping           | [AuthGuard & useAuth](./auth-guard)  |
-| Understand `arbacAuthorizeInterceptor` resource/action resolution, scope plumbing, 403 mapping   | [ARBAC Authorize](./arbac-authorize) |
-| Look up every decorator and composable in one place                                              | [Decorators](./decorators)           |
-| Wire up `/auth/logout` / `/auth/refresh` / `/auth/status` / `/auth/trigger`                      | [REST Controllers](./controllers)    |
-| List a user's signed-in devices, revoke one / log out others, mount `SessionsController`         | [Sessions](./sessions)               |
-| Configure the unified `AuthWorkflow`, subclass it, override `resolveXxx`, hook the email outlet  | [Workflows](./workflows)             |
-| Wire "Sign in with Google" — mount `OAuthController`, the `auth/oauth/flow`, the callback bridge | [Federated Login (OAuth)](./oauth)   |
-| Render the workflow forms (QR, consents, password rules) in your SPA                             | [SPA Components](./spa-components)   |
-| Add ARBAC scopes to your `AsDbController`-derived REST endpoints                                 | [DB Controllers](./db-controllers)   |
-| Drive `@arbac.*` annotations from `.as` user models                                              | [Atscript Models](./atscript)        |
-| Wire an audit sink                                                                               | [Audit Log](./audit)                 |
-| Look up `AuthOptions` and `AuthWorkflowOpts` tuning knobs                                        | [Config Reference](./config)         |
+| If you want to…                                                                                            | Read                                 |
+| ---------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| Bootstrap a fresh app with both layers wired                                                               | [Setup](./setup)                     |
+| Understand `authGuardInterceptor` token extraction, public-route handling, 401 mapping                     | [AuthGuard & useAuth](./auth-guard)  |
+| Understand `arbacAuthorizeInterceptor` resource/action resolution, scope plumbing, 403 mapping             | [ARBAC Authorize](./arbac-authorize) |
+| Look up every decorator and composable in one place                                                        | [Decorators](./decorators)           |
+| Wire up `/auth/logout` / `/auth/refresh` / `/auth/status` / `/auth/trigger`                                | [REST Controllers](./controllers)    |
+| List a user's signed-in devices, revoke one / log out others, mount `SessionsController`                   | [Sessions](./sessions)               |
+| Configure the unified `AuthWorkflow`, subclass it, override `resolveXxx`, hook the email outlet            | [Workflows](./workflows)             |
+| Wire "Sign in with Google" — login-form SSO button, `OAuthController`, connected accounts, callback bridge | [Federated Login (OAuth)](./oauth)   |
+| Render the workflow forms (QR, consents, password rules) in your SPA                                       | [SPA Components](./spa-components)   |
+| Add ARBAC scopes to your `AsDbController`-derived REST endpoints                                           | [DB Controllers](./db-controllers)   |
+| Drive `@arbac.*` annotations from `.as` user models                                                        | [Atscript Models](./atscript)        |
+| Wire an audit sink                                                                                         | [Audit Log](./audit)                 |
+| Look up `AuthOptions` and `AuthWorkflowOpts` tuning knobs                                                  | [Config Reference](./config)         |
 
 ## Mental model
 

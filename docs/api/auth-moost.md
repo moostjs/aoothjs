@@ -478,54 +478,46 @@ The Moost wiring of [`@aooth/idp`](/api/idp). See [Federated Login (OAuth)](/moo
 ```ts
 @Controller("auth/oauth")
 class OAuthController {
-  // ctor: (registry, auth, users, @Inject(OAUTH_FLOW_STORE_TOKEN) flowStore,
-  //        @Inject(FEDERATED_IDENTITY_STORE_TOKEN) federated)
-  start(@Param provider, @Query redirect?): Promise<string>; // GET :provider/start  — @Public, 302
-  link(@Param provider, @Query redirect?): Promise<string>; //  GET :provider/link   — self-scoped, 302
+  // ctor: (registry, auth, users, @Inject(FEDERATED_IDENTITY_STORE_TOKEN) federated)
+  identities(): Promise<ConnectedAccount[]>; //                  GET identities        — self-scoped
+  link(@Param provider, @Query redirect?): Promise<string>; //   GET :provider/link    — self-scoped, 302
   unlink(@Param provider, @Param subject): Promise<{ ok: true }>; // DELETE :provider/:subject
 }
 ```
 
-Mounted REST surface for federated login. `start`/`link` mint PKCE + nonce + a signed state and 302 to the provider; the callback is bridged by the SPA into `/auth/trigger` (`auth/oauth/flow`). Subclass to override `defaultRedirect()` / `resolveOAuthErrorRedirect()` or to add `@ArbacAction(...)`.
+Mounted REST surface for federated ACCOUNT MANAGEMENT — the routes are self-scoped (`@Public()`, identity from `useAuth().getUserId()`). Anonymous LOGIN is NOT here: it's the login form's SSO button → `AuthWorkflow.beginSso`. `identities` lists the caller's connected accounts; `link` mints a signed state + PKCE-from-seed and 302s to the provider for an account link; `unlink` disconnects an identity (last-credential guard, then revokes the user's sessions). The callback is bridged by the SPA into `/auth/trigger` (`auth/login/flow`). Subclass to override `defaultRedirect()` or to add `@ArbacAction(...)`.
 
-### `OAuthFlowStore` / `OAuthFlowStoreMemory`
+### `ConnectedAccount`
 
 ```ts
-abstract class OAuthFlowStore {
-  abstract put(random: string, txn: NewOAuthFlowTransaction): Promise<void>;
-  abstract take(random: string): Promise<OAuthFlowTransaction | null>; // single-use
-}
-class OAuthFlowStoreMemory extends OAuthFlowStore {
-  constructor(opts?: { clock?: Clock; ttlMs?: number /* default 600_000 */ });
-}
-interface OAuthFlowTransaction {
+interface ConnectedAccount {
   provider: string;
-  verifier: string;
-  nonce: string;
-  redirect: string;
-  userId?: string;
-  expiresAt: number;
+  subject: string; // (provider, subject) is the unlink key
+  linkedAt: number;
+  lastLoginAt?: number;
+  email?: string;
+  emailVerified?: boolean;
+  displayName?: string;
+  avatarUrl?: string;
 }
-type NewOAuthFlowTransaction = Omit<OAuthFlowTransaction, "expiresAt">;
 ```
 
-Server-side store for the in-flight PKCE verifier + nonce (+ `/link` userId), keyed by the signed-state `random`. `take` is single-use (replay defense). Memory impl is process-local — override for multi-pod.
+Wire shape of `GET /auth/oauth/identities` — a display projection of a `FederatedIdentity` row (the surrogate `id` and the caller's own `userId` are dropped).
 
 ### `OAuthRuntime`
 
 ```ts
 @Injectable()
 class OAuthRuntime {
-  constructor(registry, federated, @Inject(OAUTH_FLOW_STORE_TOKEN) flowStore);
+  constructor(registry: OAuthProviderRegistry, federated: FederatedLoginService);
 }
 ```
 
-DI holder bundling the three federated-login singletons the `oauth-exchange` step resolves (via `useControllerContext().instantiate(OAuthRuntime)`), so `AuthWorkflow`'s ctor stays unchanged.
+DI holder bundling the two app-provided federated-login singletons the `sso-callback` / `prove-control` steps resolve (via `useControllerContext().instantiate(OAuthRuntime)`), so `AuthWorkflow`'s ctor stays unchanged.
 
-### DI tokens + HTTP helpers
+### DI token + HTTP helpers
 
 ```ts
-const OAUTH_FLOW_STORE_TOKEN = "aooth:OAuthFlowStore"; // provide OAuthFlowStore under this
 const FEDERATED_IDENTITY_STORE_TOKEN = "aooth:FederatedIdentityStore";
 const OAUTH_CSRF_COOKIE = "aooth_oauth";
 function oauthCsrfCookieAttrs(opts: {
@@ -537,11 +529,11 @@ function isSafeRelativeRedirect(target: string | undefined): target is string; /
 function resolveOAuthRedirect(requested: string | undefined, fallback: string): string;
 ```
 
-The abstract stores bind under **string tokens** (moost can't use an abstract class as a class-reference DI token). `OAUTH_CSRF_COOKIE` is the Lax double-submit cookie; `isSafeRelativeRedirect` rejects the §7 open-redirect bypass list (`//evil`, `/\evil`, absolute URLs, control chars).
+The abstract `FederatedIdentityStore` binds under a **string token** (moost can't use an abstract class as a class-reference DI token). There is **no** OAuth flow store — the round-trip is stateless (PKCE verifier + nonce are derived from the signed-state seed, never persisted). `OAUTH_CSRF_COOKIE` is the Lax double-submit cookie; `isSafeRelativeRedirect` rejects the §7 open-redirect bypass list (`//evil`, `/\evil`, absolute URLs, control chars).
 
-### Workflow: `auth/oauth/flow` + `ctx.oauth`
+### Federated leg of `auth/login/flow` + `ctx.oauth`
 
-`AuthWorkflow.oauthFlow()` (`@Workflow("auth/oauth/flow")`) — one real `@Step("oauth-exchange")` (verify state + CSRF + single-use txn + verified ID-token exchange + `resolveUser`/`linkIdentity` + account-state gate) then the shared login tail. `AuthWfCtx.oauth?: AuthWfOAuthState` (`{ provider, outcome?, isNew?, redirect? }`) is the flow discriminator. `auth/oauth/flow` is in `DEFAULT_AUTH_WORKFLOWS`.
+Federated login is merged into `auth/login/flow` (no separate OAuth workflow). The `sso-callback` step (`condition: !!ctx.idpInbound`) runs the verified exchange (verify state + CSRF double-submit + RE-derive verifier from the seed + verified ID-token exchange + `resolveUser`/`linkIdentity` + account-state gate); on `needs-link` it stashes `ctx.pendingLink` and diverts to the `prove-control` step (password or OTP-fallback proof, with `resend`) before setting `ctx.subject`, then the shared login tail runs. `AuthWfCtx.oauth?: AuthWfOAuthState` (`{ provider, outcome?, isNew?, redirect? }`; `outcome` includes `'interactively-linked'`) is the flow discriminator.
 
 ## Subpath: `@aooth/auth-moost/atscript`
 

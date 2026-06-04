@@ -16,7 +16,7 @@ const svc = new FederatedLoginService({
 const outcome = await svc.resolveUser(profile);
 ```
 
-`resolveUser` returns a **discriminated outcome** so the caller (the Moost [`auth/oauth/flow`](../moost/oauth) workflow) can branch cleanly:
+`resolveUser` returns a **discriminated outcome** so the caller (the Moost [`auth/login/flow`](../moost/oauth) `sso-callback` step) can branch cleanly:
 
 | `outcome.kind` | When                                                               | Carries           |
 | -------------- | ------------------------------------------------------------------ | ----------------- |
@@ -48,7 +48,7 @@ interface FederatedPolicy {
 
 `emailMatch` (default **`require-interactive-link`**) decides what happens when a federated login matches an existing local account **by email**:
 
-- **`require-interactive-link`** (default, safest) — never silently merge. `resolveUser` returns `needs-link` with the matched `candidateUserId`; the caller must prove control before linking.
+- **`require-interactive-link`** (default, safest) — never silently merge. `resolveUser` returns `needs-link` with the matched `candidateUserId`; the caller must prove control before linking. The bundled Moost wiring handles this with a [`prove-control` step](../moost/oauth#needs-link-interactive-account-completion) — re-enter the account's password, or (passwordless) verify an OTP sent to the account's OWN confirmed channel.
 - **`auto-link-if-verified`** — link automatically, but **only** when `profile.emailVerified === true` **and** `profile.provider` is in `trustEmailVerifiedFrom`. A deliberate security downgrade; if the conditions are not met it falls back to `needs-link` (never a silent duplicate).
 - **`create-separate`** — ignore the email match entirely and create a fresh account.
 

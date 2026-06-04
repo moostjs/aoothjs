@@ -8,11 +8,11 @@ The bundled `AuthWorkflow` forms are server-driven atscript types. The SPA rende
 <script setup lang="ts">
 import { AsWfForm, AsWfFinish, type WfFinished } from "@atscript/vue-wf";
 import { createDefaultTypes } from "@atscript/vue-form";
-import { AsConsentArray, AsPasswordRules, AsQrCode } from "@atscript/vue-aooth";
+import { AsConsentArray, AsPasswordRules, AsQrCode, AsSsoProviders } from "@atscript/vue-aooth";
 
 const types = createDefaultTypes();
 // keys MUST match the `@ui.form.component '<Name>'` strings in the bundled forms
-const components = { AsConsentArray, AsPasswordRules, AsQrCode };
+const components = { AsConsentArray, AsPasswordRules, AsQrCode, AsSsoProviders };
 </script>
 <template>
   <AsWfForm
@@ -33,7 +33,8 @@ const components = { AsConsentArray, AsPasswordRules, AsQrCode };
 | #   | Rule                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | **`@ui.form.component '<Name>'` resolves the string against `:components`.** The map key MUST match the string exactly, or the field falls back to the default renderer.                                                                                                                                                                                                                                                                                                                           |
-| 2   | **The three aooth components come from `@atscript/vue-aooth`** (external — NOT an `@aooth/*` package): `AsConsentArray`, `AsPasswordRules`, `AsQrCode`. `<AsWfForm>` / `<AsWfFinish>` come from `@atscript/vue-wf`.                                                                                                                                                                                                                                                                                |
+| 2   | **The four aooth components come from `@atscript/vue-aooth`** (external — NOT an `@aooth/*` package): `AsConsentArray`, `AsPasswordRules`, `AsQrCode`, `AsSsoProviders`. `<AsWfForm>` / `<AsWfFinish>` come from `@atscript/vue-wf`.                                                                                                                                                                                                                                                               |
+| 2b  | **`AsSsoProviders`** renders `LoginCredentialsForm.ssoProvider` as one-click provider buttons; a click selects the id AND fires the field's data-carrying `sso` action (no separate submit), self-hides when no providers configured. Its `icon` is a CSS class applied verbatim from server context → invisible to a static extractor → consumer must safelist it + install the icon collection (demo: `i-simple-icons:google` via a 2nd `presetIcons` + `safelist`).                             |
 | 3   | **`<AsWfForm name="…">` carries the wfid to START** (e.g. `auth/login/flow`); the wire sends it as `wfid`. Resume uses the `wfs` token.                                                                                                                                                                                                                                                                                                                                                            |
 | 4   | **Magic-link / pincode-link resume:** route the URL's `wfs` (and invite `uid`) into `:initial-token` so `<AsWfForm>` resumes instead of starting.                                                                                                                                                                                                                                                                                                                                                  |
 | 5   | **Re-clicked invite link, state evicted:** fall through to `GET /auth/invite/post-redemption?uid=<id>` and hand the `WfFinished` to `<AsWfFinish>`.                                                                                                                                                                                                                                                                                                                                                |
@@ -43,11 +44,12 @@ const components = { AsConsentArray, AsPasswordRules, AsQrCode };
 
 ## Component → server field map
 
-| Component (`@atscript/vue-aooth`) | server field (`@ui.form.component`) | renders                                                |
-| --------------------------------- | ----------------------------------- | ------------------------------------------------------ |
-| `AsQrCode`                        | `EnrollConfirmForm.qrCode`          | TOTP `otpauth://` QR + base32 secret (manual entry)    |
-| `AsConsentArray`                  | `WithInlineConsentForm.consents`    | one checkbox per pending consent; self-hides when none |
-| `AsPasswordRules`                 | `SetPasswordForm.passwordRules`     | live password-policy fulfillment dots (per keystroke)  |
+| Component (`@atscript/vue-aooth`) | server field (`@ui.form.component`) | renders                                                 |
+| --------------------------------- | ----------------------------------- | ------------------------------------------------------- |
+| `AsQrCode`                        | `EnrollConfirmForm.qrCode`          | TOTP `otpauth://` QR + base32 secret (manual entry)     |
+| `AsConsentArray`                  | `WithInlineConsentForm.consents`    | one checkbox per pending consent; self-hides when none  |
+| `AsPasswordRules`                 | `SetPasswordForm.passwordRules`     | live password-policy fulfillment dots (per keystroke)   |
+| `AsSsoProviders`                  | `LoginCredentialsForm.ssoProvider`  | one-click SSO buttons; fires data-carrying `sso` action |
 
 ## Variant config per request
 
@@ -64,7 +66,7 @@ const fetchOptions = computed(() =>
 ```ts
 import { AsWfForm, AsWfFinish, type WfFinished } from "@atscript/vue-wf";
 import { createDefaultTypes } from "@atscript/vue-form";
-import { AsConsentArray, AsPasswordRules, AsQrCode } from "@atscript/vue-aooth";
+import { AsConsentArray, AsPasswordRules, AsQrCode, AsSsoProviders } from "@atscript/vue-aooth";
 ```
 
 ## References
