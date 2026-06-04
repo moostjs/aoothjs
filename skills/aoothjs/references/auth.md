@@ -21,12 +21,12 @@ const auth = new AuthCredential<{ roles: string[] }>({
 });
 
 const { accessToken, refreshToken } = await auth.issue("alice", {
-  claims: { roles: ["admin"] },
+  roles: ["admin"], // typed payload field, flat (no `claims` container)
   metadata: { ip: "1.1.1.1", userAgent: "ua-string" },
 });
 
 const ctx = await auth.validate(accessToken);
-// ctx = { userId: 'alice', method: 'token', credentialId: '<sha256>', expiresAt, claims }
+// ctx = { userId: 'alice', method: 'token', credentialId: '<sha256>', expiresAt, roles }
 
 const rotated = await auth.refresh(refreshToken!);
 await auth.revoke(rotated.accessToken); // requires denylist
@@ -121,7 +121,7 @@ import type { BuildMagicLinkUrl } from "@aooth/auth";
 | Tokens & sessions  | [tokens.md](./tokens.md)                 | `CredentialStoreJwt` options, algorithm matrix (HS / RS / ES / EdDSA), JWT claim layout (`sub` / `iat` / `exp` / `jti` / `state.iatMs` / `state.expMs`), `CredentialStoreEncapsulated`, sessions vs tokens (`method` discriminator)  |
 | Refresh & rotation | [refresh.md](./refresh.md)               | `RefreshConfig` (`ttl` / `rotation` / `rotationGraceMs` / `onRotationReuse`), three rotation modes with timeline diagrams, stateless degradation, `MAX_CONCURRENT_REACHED` + `onLimit`, epoch revocation, `revokeAllForUser` cascade |
 | Magic links        | [magic-links.md](./magic-links.md)       | `generateMagicLinkToken()`, persistence pattern (`persist(state, ttlMs)` + `consume(token)`), stateless `DenylistStore` requirement, `BuildMagicLinkUrl`, recovery flow recipe                                                       |
-| Stores             | [auth-stores.md](./auth-stores.md)       | `CredentialStore<TClaims>` + `DenylistStore` contracts, `CredentialStoreMemory`, `CredentialStoreRedis` (3 key namespaces + `RedisLike`), `CredentialStoreAtscriptDb` (`AuthCredentialTable` shape, GC), the shipped `.as` model     |
+| Stores             | [auth-stores.md](./auth-stores.md)       | `CredentialStore<TPayload>` + `DenylistStore` contracts, `CredentialStoreMemory`, `CredentialStoreRedis` (3 key namespaces + `RedisLike`), `CredentialStoreAtscriptDb` (`AuthCredentialTable` shape, GC), the shipped `.as` model    |
 
 ## See also
 

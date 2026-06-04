@@ -1,6 +1,6 @@
 # Stores
 
-Reference for the `CredentialStore<TClaims>` + `DenylistStore` contracts, every shipped implementation, the `RedisLike` / `AuthCredentialTable` structural types, the shipped `.as` model, and the contract a custom store must satisfy. Token issuance / refresh / magic-link semantics live in [tokens.md](./tokens.md), [refresh.md](./refresh.md), [magic-links.md](./magic-links.md).
+Reference for the `CredentialStore<TPayload>` + `DenylistStore` contracts, every shipped implementation, the `RedisLike` / `AuthCredentialTable` structural types, the shipped `.as` model, and the contract a custom store must satisfy. Token issuance / refresh / magic-link semantics live in [tokens.md](./tokens.md), [refresh.md](./refresh.md), [magic-links.md](./magic-links.md).
 
 ## Contents
 
@@ -16,16 +16,16 @@ Reference for the `CredentialStore<TClaims>` + `DenylistStore` contracts, every 
 ## `CredentialStore` contract
 
 ```ts
-interface CredentialStore<TClaims extends object = object> {
-  persist(state: CredentialState<TClaims>, ttl?: number): Promise<string>;
-  retrieve(token: string): Promise<CredentialState<TClaims> | null>;
-  consume(token: string): Promise<CredentialState<TClaims> | null>;
-  update(token: string, state: CredentialState<TClaims>): Promise<string>;
+interface CredentialStore<TPayload extends object = object> {
+  persist(state: CredentialState & TPayload, ttl?: number): Promise<string>;
+  retrieve(token: string): Promise<(CredentialState & TPayload) | null>;
+  consume(token: string): Promise<(CredentialState & TPayload) | null>;
+  update(token: string, state: CredentialState & TPayload): Promise<string>;
   revoke(token: string): Promise<void>;
   revokeAllForUser(userId: string): Promise<number>;
-  listForUser?(userId: string): Promise<Array<CredentialState<TClaims> & { token: string }>>;
+  listForUser?(userId: string): Promise<Array<CredentialState & TPayload & { token: string }>>;
   touch?(token: string, at: number): Promise<void>; // sessions: trackLastSeen 'validate'
-  listSessions?(userId: string): Promise<Array<CredentialState<TClaims> & { token: string }>>; // optional native grouping
+  listSessions?(userId: string): Promise<Array<CredentialState & TPayload & { token: string }>>; // optional native grouping
 }
 ```
 
@@ -43,14 +43,13 @@ Behavioural contract every implementation MUST satisfy:
 | `touch`            | Optional. Set `lastSeenAt = at` on the token if live; no-op otherwise. Backs `trackLastSeen: 'validate'`. Stateless omit (token immutable). See [sessions.md](sessions.md).                             |
 | `listSessions`     | Optional native session grouping — reserved/unused (the orchestrator groups `listForUser` by `sessionId`). See [sessions.md](sessions.md).                                                              |
 
-`CredentialState<TClaims>`:
+`CredentialState & TPayload` — fixed envelope intersected with the consumer's typed payload (flat root fields; no `claims` container):
 
 ```ts
-interface CredentialState<TClaims extends object = object> {
+interface CredentialState {
   userId: string;
   issuedAt: number; // ms
   expiresAt: number; // ms
-  claims?: TClaims;
   metadata?: CredentialMetadata;
   kind?: "access" | "refresh"; // default treated as 'access'
   parentCredentialId?: string; // rotated refresh: id of predecessor
@@ -58,6 +57,9 @@ interface CredentialState<TClaims extends object = object> {
   sessionId?: string; // token-family id, stable across rotation — see sessions.md
   lastSeenAt?: number; // activity time; only written under trackLastSeen
 }
+// stores deal in `CredentialState & TPayload`; payload fields ride flat and
+// round-trip automatically (Memory/Redis serialize the whole state; atscript-db
+// persists the typed columns the consumer added to their model).
 ```
 
 ## `DenylistStore` contract
@@ -152,25 +154,25 @@ const store = new CredentialStoreAtscriptDb({
 });
 ```
 
-`AuthCredentialTable<TClaims>` is structural — only the methods the adapter calls are required:
+`AuthCredentialTable<TPayload>` is structural — only the methods the adapter calls are required:
 
 ```ts
-interface AuthCredentialTable<TClaims extends object = object> {
-  insertOne(row: AuthCredentialRow<TClaims>): Promise<{ insertedId: unknown }>;
-  findOne(q: { filter: Record<string, unknown> }): Promise<AuthCredentialRow<TClaims> | null>;
+interface AuthCredentialTable<TPayload extends object = object> {
+  insertOne(row: AuthCredentialRow<TPayload>): Promise<{ insertedId: unknown }>;
+  findOne(q: { filter: Record<string, unknown> }): Promise<AuthCredentialRow<TPayload> | null>;
   findMany(q: {
     filter?: Record<string, unknown>;
     controls?: Record<string, unknown>;
-  }): Promise<AuthCredentialRow<TClaims>[]>;
+  }): Promise<AuthCredentialRow<TPayload>[]>;
   replaceOne(
-    row: AuthCredentialRow<TClaims>,
+    row: AuthCredentialRow<TPayload>,
   ): Promise<{ matchedCount: number; modifiedCount: number }>;
   deleteOne(idOrPk: unknown): Promise<{ deletedCount: number }>;
   deleteMany(filter: Record<string, unknown>): Promise<{ deletedCount: number }>;
 }
 ```
 
-`AuthCredentialRow<TClaims>` mirrors the `.as` model field-for-field as a plain TS interface — re-declared so the auth package builds without `@atscript/typescript`. Shapes match by construction.
+`AuthCredentialRow<TPayload>` mirrors the `.as` model field-for-field as a plain TS interface — re-declared so the auth package builds without `@atscript/typescript`. Shapes match by construction.
 
 Implementation specifics:
 
@@ -193,12 +195,15 @@ export interface AoothAuthCredential {
                           issuedAt: number.timestamp
                           expiresAt: number.timestamp
                           kind?: string
-    @db.json              claims?: { [key: string]: any }
     @db.json              metadata?: { ip?: string, userAgent?: string, fingerprint?: string, label?: string }
                           parentCredentialId?: string
                           rotatedAt?: number.timestamp
+    @db.index.plain       sessionId?: string
+                          lastSeenAt?: number.timestamp
 }
 ```
+
+Envelope only — NO free-form `claims` column. Carry per-token payload by `extends AoothAuthCredential` + your own typed columns (the adapter round-trips them); `@aooth/arbac-moost` consumers annotate them `@arbac.attenuate.role` / `@arbac.attenuate.attr "userAttr"` for restrict-only credential attenuation.
 
 Annotations explained:
 
@@ -215,7 +220,7 @@ Wiring requires `@atscript/db` (peer dep, optional). For consumers that use a di
 
 ## Custom store contract
 
-Implement `CredentialStore<TClaims>` directly. Required behaviours (in addition to the method-level contracts above):
+Implement `CredentialStore<TPayload>` directly. Required behaviours (in addition to the method-level contracts above):
 
 1. **`persist` generates the token id.** Never trust the caller to supply one — UUIDs / opaque blobs are the store's responsibility.
 2. **Token bytes are opaque to `AuthCredential`.** The orchestrator hashes them for `credentialId` and passes them through; no parsing.
@@ -231,9 +236,9 @@ import type { CredentialStore, CredentialState } from "@aooth/auth";
 import { randomUUID } from "node:crypto";
 
 export class CredentialStoreCustom<
-  TClaims extends object = object,
-> implements CredentialStore<TClaims> {
-  async persist(state: CredentialState<TClaims>, ttl?: number): Promise<string> {
+  TPayload extends object = object,
+> implements CredentialStore<TPayload> {
+  async persist(state: CredentialState & TPayload, ttl?: number): Promise<string> {
     const token = randomUUID();
     const expiresAt = typeof ttl === "number" ? Date.now() + ttl : state.expiresAt;
     if (expiresAt <= Date.now()) throw new Error("dead credential");
@@ -241,7 +246,7 @@ export class CredentialStoreCustom<
     return token;
   }
   // retrieve / consume / update / revoke / revokeAllForUser / listForUser …
-  private async write(token: string, state: CredentialState<TClaims>): Promise<void> {
+  private async write(token: string, state: CredentialState & TPayload): Promise<void> {
     /* … */
   }
 }

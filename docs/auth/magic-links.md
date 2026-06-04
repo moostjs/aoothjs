@@ -67,7 +67,7 @@ The state shape:
   issuedAt: number;
   expiresAt: number;
   kind: 'magic.recovery',     // or whatever discriminator you pick
-  claims: { /* anything */ },
+  purpose: 'recovery',        // typed payload field (flat root field; no `claims` container)
   metadata: { ip, userAgent, /* … */ },
 }
 ```
@@ -107,7 +107,7 @@ async function sendRecoveryMagicLink(userId: string, email: string) {
       issuedAt: now,
       expiresAt: now + ttl,
       kind: "magic.recovery",
-      claims: { purpose: "recovery" },
+      purpose: "recovery", // typed payload field, flat
     },
     ttl,
   );
@@ -232,9 +232,7 @@ async function finishRecovery(token: string, newPassword: string) {
 
   // Auto-login this device — survives the same-ms epoch gate
   const { accessToken } = await auth.issue(state.userId, {
-    claims: {
-      /* roles, tenant, … */
-    },
+    /* roles, tenant, … — typed payload fields, passed flat */
     metadata: { ip: "...", userAgent: "..." },
   });
   return accessToken;

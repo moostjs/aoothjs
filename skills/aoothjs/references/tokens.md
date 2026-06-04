@@ -62,10 +62,10 @@ Verified state is rebuilt as:
   issuedAt: state.iatMs ?? payload.iat * 1000,
   expiresAt: state.expMs ?? payload.exp * 1000,
   kind: state.kind,                     // 'access' | 'refresh' | undefined
-  claims: state.claims,
   metadata: state.metadata,
   parentCredentialId: state.parentCredentialId,
   rotatedAt: state.rotatedAt,
+  ...state.payload,                     // consumer's typed payload fields, merged FLAT
 }
 ```
 

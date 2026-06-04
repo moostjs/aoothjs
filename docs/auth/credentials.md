@@ -1,6 +1,6 @@
 # Credentials & Sessions
 
-`AuthCredential<TClaims>` is the single orchestrator over every store. It issues, validates, refreshes and revokes bearer credentials, enforces concurrency limits, and detects refresh-token reuse. The store decides where state lives; the orchestrator decides how the lifecycle works.
+`AuthCredential<TPayload>` is the single orchestrator over every store. It issues, validates, refreshes and revokes bearer credentials, enforces concurrency limits, and detects refresh-token reuse. The store decides where state lives; the orchestrator decides how the lifecycle works.
 
 This page covers every constructor option and every public method.
 
@@ -18,8 +18,8 @@ const auth = new AuthCredential<{ roles: string[] }>({
 ### Constructor options
 
 ```ts
-interface AuthCredentialOptions<TClaims extends object> {
-  store: CredentialStore<TClaims>;
+interface AuthCredentialOptions<TPayload extends object> {
+  store: CredentialStore<TPayload>;
   method?: "session" | "token";
   accessTtl?: number;
   refresh?: RefreshConfig;
@@ -32,7 +32,7 @@ interface AuthCredentialOptions<TClaims extends object> {
 
 | Option          | Default                     | Purpose                                                                                                                                                      |
 | --------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `store`         | (required)                  | The `CredentialStore<TClaims>` instance. See [Stores](./stores).                                                                                             |
+| `store`         | (required)                  | The `CredentialStore<TPayload>` instance. See [Stores](./stores).                                                                                            |
 | `method`        | `'token'`                   | Tags every issued credential. `AuthContext.method` mirrors it. Use `'session'` for long-lived server-side sessions, `'token'` for short-lived bearer access. |
 | `accessTtl`     | `60 * 60 * 1000` (1 h)      | Lifetime of access credentials, ms. Validated `> 0` at construction — throws `INVALID_CONFIG` otherwise.                                                     |
 | `refresh`       | `undefined`                 | Opt in to refresh tokens. See [Refresh & Rotation](./refresh).                                                                                               |
@@ -72,10 +72,9 @@ Creates a new access credential (and optionally a refresh token).
 ```ts
 issue(
   userId: string,
-  options?: {
-    claims?: TClaims;
-    metadata?: CredentialMetadata;
-  },
+  // IssueOptions<TPayload> = TPayload & { metadata?; sessionId? } — the typed
+  // payload fields are passed FLAT, not under a `claims` key.
+  options?: IssueOptions<TPayload>,
 ): Promise<IssueResult>;
 
 interface IssueResult {
@@ -97,7 +96,9 @@ interface IssueResult {
 
 ```ts
 const { accessToken, refreshToken, accessExpiresAt } = await auth.issue("alice", {
-  claims: { roles: ["admin"], tenantId: "t-1" },
+  // typed root fields on your credential model, passed flat (no `claims` wrapper)
+  roles: ["admin"],
+  tenantId: "t-1",
   metadata: { ip: req.ip, userAgent: req.headers["user-agent"] },
 });
 ```
@@ -124,16 +125,17 @@ The hot path. Returns an `AuthContext` for a valid access token, or `null` for a
 **Signature**
 
 ```ts
-validate(accessToken: string): Promise<AuthContext<TClaims> | null>;
+validate(accessToken: string): Promise<AuthContext<TPayload> | null>;
 
-interface AuthContext<TClaims extends object = object> {
+// AuthContext<TPayload> = envelope & TPayload — the credential's typed root
+// fields surface FLAT (read `ctx.tenantId`, not `ctx.claims.tenantId`).
+type AuthContext<TPayload extends object = object> = {
   userId: string;
   method: 'session' | 'token';
   credentialId: string;     // sha256(accessToken)
   sessionId?: string;       // stable across rotation; "this device" — see Sessions
   expiresAt: number;
-  claims?: TClaims;
-}
+} & TPayload;
 ```
 
 `sessionId` identifies the token family this request authenticated with — stable across refresh, the key for "this device" matching and per-device revoke. See [Sessions](./sessions).
@@ -149,7 +151,7 @@ interface AuthContext<TClaims extends object = object> {
 ```ts
 const ctx = await auth.validate(bearer);
 if (!ctx) throw new HttpError(401);
-// ctx.userId, ctx.claims.roles, ctx.credentialId are safe to log
+// ctx.userId, ctx.roles (typed payload, flat), ctx.credentialId are safe to log
 ```
 
 ::: warning Never throws
@@ -255,7 +257,7 @@ Returns every live `AuthContext` for the user. Useful for "active sessions" UI.
 **Signature**
 
 ```ts
-listForUser(userId: string): Promise<AuthContext<TClaims>[]>;
+listForUser(userId: string): Promise<AuthContext<TPayload>[]>;
 ```
 
 Stateful stores enumerate. Stateless stores **cannot enumerate** — `listForUser` returns `[]`. Don't rely on this method for JWT deployments.
@@ -274,13 +276,12 @@ for (const s of sessions) {
 The exact shape returned by `validate` and `listForUser`:
 
 ```ts
-interface AuthContext<TClaims extends object = object> {
+type AuthContext<TPayload extends object = object> = {
   userId: string;
   method: "session" | "token";
   credentialId: string;
   expiresAt: number;
-  claims?: TClaims;
-}
+} & TPayload; // typed payload fields surface flat
 ```
 
 | Field          | Meaning                                                  |
@@ -289,7 +290,7 @@ interface AuthContext<TClaims extends object = object> {
 | `method`       | Whatever was configured at construction.                 |
 | `credentialId` | `sha256(accessToken)`. Stable, loggable, non-replayable. |
 | `expiresAt`    | Absolute ms timestamp.                                   |
-| `claims`       | The `TClaims` object passed at `issue()` time, if any.   |
+| `claims`       | The `TPayload` object passed at `issue()` time, if any.  |
 
 Note: `metadata` (IP, UA, fingerprint, label) is **not** on `AuthContext`. It lives in `CredentialState` server-side. The orchestrator deliberately doesn't echo it to the validation surface — keep it on the server.
 
@@ -347,7 +348,7 @@ const auth = new AuthCredential<{ roles: string[] }>({
 
 // Login
 const { accessToken, refreshToken } = await auth.issue("alice", {
-  claims: { roles: ["admin"] },
+  roles: ["admin"], // typed payload field, flat
   metadata: { ip: "1.1.1.1", userAgent: "Mozilla/..." },
 });
 

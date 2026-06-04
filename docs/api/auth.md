@@ -4,17 +4,17 @@ Complete export reference for `@aooth/auth`. See the [Auth Conceptual Guide](/au
 
 ## Classes
 
-### `AuthCredential<TClaims extends object = object>`
+### `AuthCredential<TPayload extends object = object>`
 
 ```ts
-class AuthCredential<TClaims extends object = object> {
-  constructor(opts: AuthCredentialOptions<TClaims>);
-  issue(userId: string, options?: IssueOptions<TClaims>): Promise<IssueResult>;
-  validate(accessToken: string): Promise<AuthContext<TClaims> | null>;
+class AuthCredential<TPayload extends object = object> {
+  constructor(opts: AuthCredentialOptions<TPayload>);
+  issue(userId: string, options?: IssueOptions<TPayload>): Promise<IssueResult>;
+  validate(accessToken: string): Promise<AuthContext<TPayload> | null>;
   refresh(refreshToken: string): Promise<IssueResult>;
   revoke(token: string): Promise<void>;
   revokeAllForUser(userId: string): Promise<number>;
-  listForUser(userId: string): Promise<AuthContext<TClaims>[]>;
+  listForUser(userId: string): Promise<AuthContext<TPayload>[]>;
   listSessions(
     userId: string,
     opts?: { enrich?: SessionEnricher },
@@ -27,11 +27,11 @@ class AuthCredential<TClaims extends object = object> {
 
 The orchestrator. Store-agnostic — accepts any `CredentialStore` (stateful or stateless). Refresh rotation modes are `'none' | 'always' | 'sliding'` (default `'sliding'`). On reuse-after-grace, calls `onRotationReuse` and revokes the compromised token family (or every session for the user with `refresh.reuseResponse: 'user'`). `listSessions` / `revokeSession` / `revokeOtherSessions` group the user's credentials into token families by `sessionId` (no-op `[]` / `0` on stores that can't enumerate) — see [Sessions](/auth/sessions). `deriveStateKey(label = "wf-state")` HKDF-derives a stable secret from the configured auth secret — used by `@aooth/auth-moost`'s `WfTriggerProvider` as the default encapsulated wf-state token secret so it survives restarts without a separate config. See [Credentials & Sessions](/auth/credentials) and [Refresh & Rotation](/auth/refresh).
 
-`AuthCredentialOptions<TClaims>`:
+`AuthCredentialOptions<TPayload>`:
 
 ```ts
-interface AuthCredentialOptions<TClaims extends object = object> {
-  store: CredentialStore<TClaims>;
+interface AuthCredentialOptions<TPayload extends object = object> {
+  store: CredentialStore<TPayload>;
   method?: "session" | "token"; // default 'token'
   accessTtl?: number; // default 1h; throws INVALID_CONFIG if ≤ 0
   refresh?: RefreshConfig;
@@ -49,18 +49,18 @@ interface AuthCredentialOptions<TClaims extends object = object> {
 }
 ```
 
-### `CredentialStoreMemory<TClaims>`
+### `CredentialStoreMemory<TPayload>`
 
 ```ts
-new CredentialStoreMemory<TClaims>();
+new CredentialStoreMemory<TPayload>();
 ```
 
 Reference stateful store. Holds `Map<token, state>` + `Map<userId, Set<token>>` for O(1) `revokeAllForUser`. See [Stores](/auth/).
 
-### `CredentialStoreJwt<TClaims>`
+### `CredentialStoreJwt<TPayload>`
 
 ```ts
-new CredentialStoreJwt<TClaims>(opts: {
+new CredentialStoreJwt<TPayload>(opts: {
   algorithm?: 'HS256'|'HS384'|'HS512'|'RS256'|'RS384'|'RS512'|'ES256'|'ES384'|'ES512'|'EdDSA'
   secret?: string | Uint8Array | CryptoKey
   privateKey?: CryptoKey | Uint8Array
@@ -74,10 +74,10 @@ new CredentialStoreJwt<TClaims>(opts: {
 
 Stateless JWT store using `jose`. Default algorithm `HS256`. JWT verify pins `algorithms: [this.algorithm]` to defend against algorithm-confusion. Custom claim `state` carries `iatMs`/`expMs` at ms precision. Throws `AuthError('INVALID_CONFIG')` if keys missing. See [Tokens (JWT)](/auth/tokens).
 
-### `CredentialStoreEncapsulated<TClaims>`
+### `CredentialStoreEncapsulated<TPayload>`
 
 ```ts
-new CredentialStoreEncapsulated<TClaims>(opts: {
+new CredentialStoreEncapsulated<TPayload>(opts: {
   secret: string | Buffer | Uint8Array  // string → scrypt KDF; 32-byte Buffer/Uint8Array skips KDF
   denylist?: DenylistStore
   clock?: Clock
@@ -147,20 +147,19 @@ Structural types so the subpath needs no DOM lib. The real DOM `fetch` / `Respon
 
 ## Types — Core
 
-### `AuthContext<TClaims>`
+### `AuthContext<TPayload>`
 
 ```ts
-interface AuthContext<TClaims extends object = object> {
+type AuthContext<TPayload extends object = object> = {
   userId: string;
   method: "session" | "token";
   credentialId: string; // sha256(accessToken) — safe to log
   sessionId?: string; // token-family id; falls back to credentialId for legacy tokens
   expiresAt: number;
-  claims?: TClaims;
-}
+} & TPayload; // the credential's typed root fields surface FLAT — no `claims` container
 ```
 
-The "who is calling" object returned by `validate`. `credentialId` is a fingerprint, not the token — cannot be replayed. `sessionId` identifies the token family ("this device") — see [Sessions](/auth/sessions). See [Credentials & Sessions](/auth/credentials).
+The "who is calling" object returned by `validate`. `credentialId` is a fingerprint, not the token — cannot be replayed. `sessionId` identifies the token family ("this device") — see [Sessions](/auth/sessions). The credential's per-token **payload** `TPayload` (the typed root fields a consumer adds to their model — e.g. `@arbac.attenuate.*` fields read by `@aooth/arbac-moost`) is intersected in and read by name (`ctx.tenantId`, not `ctx.claims.tenantId`). See [Credentials & Sessions](/auth/credentials).
 
 ### `CredentialMetadata`
 
@@ -175,14 +174,17 @@ interface CredentialMetadata {
 
 **Open to declaration merging** — augment via `declare module '@aooth/auth' { interface CredentialMetadata { ... } }`. See [Credentials & Sessions](/auth/credentials).
 
-### `CredentialState<TClaims>`
+### `CredentialState`
 
 ```ts
-interface CredentialState<TClaims extends object = object> {
+// The fixed ENVELOPE — no generic, no `claims`. A consumer's per-token payload
+// is NOT a field here; it rides as additional typed root fields intersected
+// via `CredentialState & TPayload` (the orchestrator + stores are generic over
+// that payload).
+interface CredentialState {
   userId: string;
   issuedAt: number;
   expiresAt: number;
-  claims?: TClaims;
   metadata?: CredentialMetadata;
   kind?: "access" | "refresh";
   parentCredentialId?: string;
@@ -192,19 +194,21 @@ interface CredentialState<TClaims extends object = object> {
 }
 ```
 
-The persisted shape stores hold. `sessionId` / `lastSeenAt` back the [Sessions](/auth/sessions) APIs. See [Stores](/auth/).
+The persisted envelope stores hold. `sessionId` / `lastSeenAt` back the [Sessions](/auth/sessions) APIs. See [Stores](/auth/).
 
-### `IssueOptions<TClaims>`
+### `IssueOptions<TPayload>`
 
 ```ts
-interface IssueOptions<TClaims extends object = object> {
-  claims?: TClaims;
+// The typed payload `TPayload` is spread FLAT alongside the two framework
+// hints; reserved keys `metadata`/`sessionId` (and the envelope keys) must not
+// be reused as payload field names.
+type IssueOptions<TPayload extends object = object> = TPayload & {
   metadata?: CredentialMetadata;
   sessionId?: string; // omit → issue() mints a random opaque one
-}
+};
 ```
 
-Options for `issue`. Supply `sessionId` to join an existing session family; omit to mint a fresh one. See [Sessions](/auth/sessions).
+Options for `issue`. Pass the credential's typed root fields directly (e.g. `issue(userId, { tenantId: "t-1" })`); supply `sessionId` to join an existing session family. See [Sessions](/auth/sessions).
 
 ### `IssueResult`
 
@@ -235,19 +239,19 @@ Rotation policy. Both `'sliding'` (rolling expiry) and `'always'` (fixed session
 
 ## Types — Stores
 
-### `CredentialStore<TClaims>`
+### `CredentialStore<TPayload>`
 
 ```ts
-interface CredentialStore<TClaims extends object = object> {
-  persist(state: CredentialState<TClaims>, ttl?: number): Promise<string>;
-  retrieve(token: string): Promise<CredentialState<TClaims> | null>;
-  consume(token: string): Promise<CredentialState<TClaims> | null>; // single-use
-  update(token: string, state: CredentialState<TClaims>): Promise<string>; // may return new token
+interface CredentialStore<TPayload extends object = object> {
+  persist(state: CredentialState & TPayload, ttl?: number): Promise<string>;
+  retrieve(token: string): Promise<(CredentialState & TPayload) | null>;
+  consume(token: string): Promise<(CredentialState & TPayload) | null>; // single-use
+  update(token: string, state: CredentialState & TPayload): Promise<string>; // may return new token
   revoke(token: string): Promise<void>;
   revokeAllForUser(userId: string): Promise<number>;
-  listForUser?(userId: string): Promise<Array<CredentialState<TClaims> & { token: string }>>;
+  listForUser?(userId: string): Promise<Array<CredentialState & TPayload & { token: string }>>;
   touch?(token: string, at: number): Promise<void>; // backs trackLastSeen: 'validate'
-  listSessions?(userId: string): Promise<Array<CredentialState<TClaims> & { token: string }>>; // optional native grouping
+  listSessions?(userId: string): Promise<Array<CredentialState & TPayload & { token: string }>>; // optional native grouping
 }
 ```
 
@@ -434,10 +438,10 @@ type AuthErrorType =
 import { CredentialStoreRedis, DenylistStoreRedis, RedisLike } from "@aooth/auth/redis";
 ```
 
-### `CredentialStoreRedis<TClaims>`
+### `CredentialStoreRedis<TPayload>`
 
 ```ts
-new CredentialStoreRedis<TClaims>(opts: {
+new CredentialStoreRedis<TPayload>(opts: {
   redis: RedisLike
   prefix?: string                  // default 'aooth:cred'
   clock?: Clock
@@ -483,11 +487,11 @@ import {
 import { AoothAuthCredential } from "@aooth/auth/atscript-db/model.as";
 ```
 
-### `CredentialStoreAtscriptDb<TClaims>`
+### `CredentialStoreAtscriptDb<TPayload>`
 
 ```ts
-new CredentialStoreAtscriptDb<TClaims>(opts: {
-  table: AuthCredentialTable<TClaims>
+new CredentialStoreAtscriptDb<TPayload>(opts: {
+  table: AuthCredentialTable<TPayload>
 })
 ```
 
@@ -495,16 +499,15 @@ The adapter takes only `{ table }` — there is no `clock` option. Time-sensitiv
 
 Single-table stateful store. `revokeAllForUser` uses `deleteMany({ userId })` — one round trip. `retrieve` GCs expired rows opportunistically. See [Stores](/auth/).
 
-### `AuthCredentialRow<TClaims>`
+### `AuthCredentialRow<TPayload>`
 
 ```ts
-interface AuthCredentialRow<TClaims extends object = object> {
+type AuthCredentialRow<TPayload extends object = object> = {
   token: string;
   userId: string;
   issuedAt: number;
   expiresAt: number;
   kind?: string;
-  claims?: TClaims;
   metadata?: {
     ip?: string;
     userAgent?: string;
@@ -513,24 +516,26 @@ interface AuthCredentialRow<TClaims extends object = object> {
   };
   parentCredentialId?: string;
   rotatedAt?: number;
-}
+  sessionId?: string;
+  lastSeenAt?: number;
+} & TPayload; // consumer's typed columns persist flat (replaces the dropped `claims` blob)
 ```
 
-Plain TS mirror of `AoothAuthCredential.as`. `kind` is a free-form `string` (the `.as` model intentionally does not narrow it) so the row can carry magic-link discriminators like `'magic.recovery'` alongside the orchestrator's `'access'` / `'refresh'`. See [Stores](/auth/).
+Plain TS mirror of `AoothAuthCredential.as` (envelope columns) intersected with the consumer's typed payload columns. `kind` is a free-form `string` (the `.as` model intentionally does not narrow it) so the row can carry magic-link discriminators like `'magic.recovery'` alongside the orchestrator's `'access'` / `'refresh'`. See [Stores](/auth/).
 
-### `AuthCredentialTable<TClaims>`
+### `AuthCredentialTable<TPayload>`
 
 ```ts
-interface AuthCredentialTable<TClaims extends object = object> {
-  insertOne(row: AuthCredentialRow<TClaims>): Promise<{ insertedId: unknown }>;
-  findOne(query: { filter: Record<string, unknown> }): Promise<AuthCredentialRow<TClaims> | null>;
+interface AuthCredentialTable<TPayload extends object = object> {
+  insertOne(row: AuthCredentialRow<TPayload>): Promise<{ insertedId: unknown }>;
+  findOne(query: { filter: Record<string, unknown> }): Promise<AuthCredentialRow<TPayload> | null>;
   findMany(query: {
     filter?: Record<string, unknown>;
     controls?: Record<string, unknown>;
-  }): Promise<AuthCredentialRow<TClaims>[]>;
+  }): Promise<AuthCredentialRow<TPayload>[]>;
   /** Replaces by PK on the row itself — no wrapper. */
   replaceOne(
-    row: AuthCredentialRow<TClaims>,
+    row: AuthCredentialRow<TPayload>,
   ): Promise<{ matchedCount: number; modifiedCount: number }>;
   /** Deletes by PK value (the token string). */
   deleteOne(idOrPk: unknown): Promise<{ deletedCount: number }>;

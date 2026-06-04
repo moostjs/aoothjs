@@ -16,11 +16,11 @@ This page is the map. Every concept here has a dedicated child page.
 ┌─────────────────────────────────────────────────────────────┐
 │  Method layer                                               │
 │  @aooth/auth                                              │
-│     AuthCredential<TClaims>                                 │
+│     AuthCredential<TPayload>                                 │
 │       issue · validate · refresh · revoke                   │
 │       revokeAllForUser · listForUser                        │
 │       listSessions · revokeSession · revokeOtherSessions    │
-│     CredentialStore<TClaims>     DenylistStore              │
+│     CredentialStore<TPayload>     DenylistStore              │
 │     EmailSender · SmsSender · generateMagicLinkToken        │
 └────────────────────────┬────────────────────────────────────┘
                          │
@@ -47,25 +47,25 @@ Stateless stores require a `DenylistStore` to support single-use operations (`co
 ```ts
 import { AuthCredential, CredentialStoreMemory } from "@aooth/auth";
 
-const auth = new AuthCredential<{ roles: string[] }>({
+const auth = new AuthCredential<{ roles?: string[] }>({
   store: new CredentialStoreMemory(),
   accessTtl: 60 * 60 * 1000,
 });
 
 const { accessToken } = await auth.issue("alice", {
-  claims: { roles: ["admin"] },
+  roles: ["admin"], // typed payload field, flat (no `claims` wrapper)
   metadata: { ip: "1.1.1.1" },
 });
 
 const ctx = await auth.validate(accessToken);
-// { userId: 'alice', method: 'token', credentialId: '<sha256>', expiresAt, claims: { roles: ['admin'] } }
+// { userId: 'alice', method: 'token', credentialId: '<sha256>', expiresAt, roles: ['admin'] }
 ```
 
 That's the whole API on the hot path: `issue`, `validate`, plus `refresh` / `revoke` / `revokeAllForUser` / `listForUser` for the rest of the lifecycle.
 
 ## What each page covers
 
-- [Credentials & Sessions](./credentials) — `AuthCredential<TClaims>` orchestrator: every constructor option, every public method, the `AuthContext` shape, and how `credentialId` works as a non-replayable fingerprint. The choice between `method: 'session'` and `method: 'token'`.
+- [Credentials & Sessions](./credentials) — `AuthCredential<TPayload>` orchestrator: every constructor option, every public method, the `AuthContext` shape, and how `credentialId` works as a non-replayable fingerprint. The choice between `method: 'session'` and `method: 'token'`.
 - [Sessions](./sessions) — the multi-device "active sessions" model: one stable `sessionId` per login (token family), `listSessions` / `revokeSession` / `revokeOtherSessions`, the read-time `SessionEnricher` seam (no UA/geo dependency), and opt-in `trackLastSeen` activity tracking.
 - [Tokens (JWT)](./tokens) — `CredentialStoreJwt` setup with `jose`: algorithm choice (HS\* vs. asymmetric), key management, the claim layout, and the algorithm-confusion defense. Plus `CredentialStoreEncapsulated` (AES-256-GCM) and when to prefer stateless over stateful.
 - [Refresh & Rotation](./refresh) — `RefreshConfig` with all three rotation modes (`'none'`, `'always'`, `'sliding'`), the grace window, reuse detection and the `reuseResponse` revocation scope (session-family by default, user-wide on escalation). `maxConcurrent` enforcement and `onLimit` strategies.
@@ -73,7 +73,7 @@ That's the whole API on the hot path: `issue`, `validate`, plus `refresh` / `rev
 - [Magic Links](./magic-links) — `generateMagicLinkToken()` and `BuildMagicLinkUrl`. Storing magic-link tokens as `CredentialState` for atomic single-use consumption.
 - [Password Reset](./password-reset) — How the primitives in this package compose into a recovery flow. The same-millisecond epoch gate that enables auto-login after reset. The full workflow lives in [`@aooth/auth-moost`](../moost/workflows).
 - [Email & SMS Senders](./delivery) — The `EmailSender` and `SmsSender` contracts. The kind unions for templated delivery (`recovery.magicLink`, `mfa.code`, `login.pincode`, etc).
-- [Stores](./stores) — Implementation matrix for `CredentialStore<TClaims>` and `DenylistStore`: `Memory`, `Redis` adapter, atscript-db adapter (with the shipped `.as` model), and how to write your own.
+- [Stores](./stores) — Implementation matrix for `CredentialStore<TPayload>` and `DenylistStore`: `Memory`, `Redis` adapter, atscript-db adapter (with the shipped `.as` model), and how to write your own.
 - [Errors](./errors) — `AuthError` and every variant of `AuthErrorType` with trigger, payload and recommended HTTP mapping.
 
 ## Installation
@@ -95,6 +95,6 @@ pnpm add @aooth/auth @atscript/db
 ## Conventions used across these pages
 
 - All TTLs are in **milliseconds**. JWT `iat` / `exp` are seconds (RFC 7519), but the store mirrors them at ms precision in a custom `state` claim — see [Tokens](./tokens).
-- `TClaims` is a free generic parameter on `AuthCredential<TClaims>`, `CredentialStore<TClaims>` and `CredentialState<TClaims>`. Pick a single shape per app and keep it stable.
+- `TPayload` is the credential's typed **payload** — the flat root fields a consumer adds to their model — threaded through `AuthCredential<TPayload>` / `CredentialStore<TPayload>` and intersected as `CredentialState & TPayload` / `AuthContext<TPayload>`. There is **no** free-form `claims` container: per-token data is typed root fields that round-trip through the store and surface by name. Pick a single shape per app and keep it stable.
 - `CredentialMetadata` is open to TypeScript declaration merging. Augment it with `declare module '@aooth/auth'` to type your IP / UA / fingerprint / label keys end-to-end.
 - The package never returns secrets through `validate` — `AuthContext.credentialId` is `sha256(accessToken)`, not the token itself.

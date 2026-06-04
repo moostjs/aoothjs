@@ -130,7 +130,7 @@ For a custom secondary check (e.g. enforce a tenant filter even when no scope is
 class ArticlesController extends AsArbacDbController<typeof Article> {
   protected override async transformFilter(filter) {
     const merged = await super.transformFilter(filter);
-    const tenantId = useAuth().getAuthContext()?.claims?.tenantId;
+    const tenantId = useAuth().getAuthContext<{ tenantId?: string }>()?.tenantId;
     if (!tenantId) throw new HttpError(403, "Missing tenant");
     return { $and: [merged, { tenantId }] };
   }

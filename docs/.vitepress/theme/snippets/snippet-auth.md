@@ -21,7 +21,7 @@ const auth = new AuthCredential<{ roles: string[] }>({
 });
 
 const issued = await auth.issue("alice", {
-  claims: { roles: ["admin"] },
+  roles: ["admin"], // typed payload field, flat
   metadata: { ip: req.ip },
 });
 

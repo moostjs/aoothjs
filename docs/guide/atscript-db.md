@@ -89,14 +89,16 @@ Source: [`e2e-demo/src/models/user.as`](https://github.com/moostjs/aoothjs/blob/
 
 The annotations that matter:
 
-| Annotation                              | Effect                                                                                                                                                                                                                               |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `@db.table 'users'`                     | Names the SQL/Mongo table. Required on the concrete model — the base ships without it (it's the only thing your extension must add).                                                                                                 |
-| `@meta.id` + `@db.default.uuid`         | Marks the PK (`id`) — **inherited from the base**, don't redeclare. `UserService.createUser` mints the `id` (`randomUUID`), so the `@db.default.uuid` fires only for direct inserts that bypass the service.                         |
-| `@arbac.attribute`                      | Every field marked here becomes a key in the `UserAttrs` map passed to role scopes — `attrs.tenantId` is available inside `defineRole().use(allowTableRead(..., { scope: (attrs) => ({ filter: { tenantId: attrs.tenantId } }) }))`. |
-| `@db.rel.FK`                            | Optional — declares a foreign-key relationship. Not required for ARBAC to work; useful when you want `@atscript/moost-db` to validate references.                                                                                    |
-| `@expect.maxLength` / `@expect.pattern` | Validation constraints surfaced through `@atscript/moost-validator`.                                                                                                                                                                 |
-| `@db.default.now`                       | Adapter sets the value to current epoch ms on insert.                                                                                                                                                                                |
+| Annotation                                      | Effect                                                                                                                                                                                                                               |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `@db.table 'users'`                             | Names the SQL/Mongo table. Required on the concrete model — the base ships without it (it's the only thing your extension must add).                                                                                                 |
+| `@meta.id` + `@db.default.uuid`                 | Marks the PK (`id`) — **inherited from the base**, don't redeclare. `UserService.createUser` mints the `id` (`randomUUID`), so the `@db.default.uuid` fires only for direct inserts that bypass the service.                         |
+| `@arbac.attribute`                              | Every field marked here becomes a key in the `UserAttrs` map passed to role scopes — `attrs.tenantId` is available inside `defineRole().use(allowTableRead(..., { scope: (attrs) => ({ filter: { tenantId: attrs.tenantId } }) }))`. |
+| `@arbac.attenuate.role` (credential)            | On a **credential** model — marks the one typed field holding a down-scoped token's assumed-role SUBSET (`string[]`). Intersected with the user's roles, fail-closed. Read via `extractAttenuation` for restrict-only attenuation.   |
+| `@arbac.attenuate.attr "userAttr"` (credential) | On a **credential** model — marks a typed field that narrows the named user attribute (`"userAttr"` = the target `@arbac.attribute` key, boot-validated). Multiple fields may target different attrs.                                |
+| `@db.rel.FK`                                    | Optional — declares a foreign-key relationship. Not required for ARBAC to work; useful when you want `@atscript/moost-db` to validate references.                                                                                    |
+| `@expect.maxLength` / `@expect.pattern`         | Validation constraints surfaced through `@atscript/moost-validator`.                                                                                                                                                                 |
+| `@db.default.now`                               | Adapter sets the value to current epoch ms on insert.                                                                                                                                                                                |
 
 ::: warning One `@arbac.role` field per user
 The `AtscriptArbacUserProvider` fails loud if it sees more than one field with `@arbac.role`. The bundled `AoothArbacUserCredentials` already declares one — do not redeclare in your extending interface.
@@ -188,7 +190,7 @@ Source: [`e2e-demo/src/aooth.ts`](https://github.com/moostjs/aoothjs/blob/main/p
 
 ## Register the atscript plugin
 
-`atscript.config.mts` registers the plugins responsible for compiling each namespace of annotations. The `arbacPlugin()` export registers `@arbac.role`, `@arbac.attribute`, and `@arbac.userId`. Without it, the compiler emits `unknownAnnotation` warnings (or errors, depending on your config) on every `@arbac.*` reference.
+`atscript.config.mts` registers the plugins responsible for compiling each namespace of annotations. The `arbacPlugin()` export registers `@arbac.role`, `@arbac.attribute`, `@arbac.userId`, and the credential-side `@arbac.attenuate.role` / `@arbac.attenuate.attr`. Without it, the compiler emits `unknownAnnotation` warnings (or errors, depending on your config) on every `@arbac.*` reference.
 
 ```ts:line-numbers
 import arbacPlugin from '@aooth/arbac-moost/plugin'

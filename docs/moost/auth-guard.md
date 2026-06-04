@@ -89,14 +89,14 @@ auth.buildFinishedCookies(issue);       // WfFinishedResponse["cookies"]
 auth.cookieAttrs(extra?);       // raw cookie attrs (CookieSetSerialized)
 ```
 
-### `getAuthContext<TClaims>(): AuthContext<TClaims> | null`
+### `getAuthContext<TPayload>(): AuthContext<TPayload> | null`
 
-Returns the stashed context or `null`. Generic so you can type your custom claims:
+Returns the stashed context or `null`. Generic so you can type the credential's payload (its typed root fields surface FLAT on the context — no `claims` container):
 
 ```ts
-const ctx = useAuth().getAuthContext<{ tenantId: string }>();
+const ctx = useAuth().getAuthContext<{ tenantId?: string }>();
 if (ctx) {
-  const tenant = ctx.claims.tenantId;
+  const tenant = ctx.tenantId;
 }
 ```
 

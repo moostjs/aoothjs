@@ -148,7 +148,7 @@ async function finishRecovery(token: string, newPassword: string) {
   await users.changePassword(state.userId, newPassword);
   await auth.revokeAllForUser(state.userId);
   const { accessToken } = await auth.issue(state.userId, {
-    claims: { roles: ["user"] },
+    roles: ["user"], // typed payload field, flat
     metadata: { ip: "…", userAgent: "…" },
   });
   return { userId: state.userId, accessToken };
@@ -194,7 +194,7 @@ For multi-tenant apps, double-check that the `userId` decoded from the consumed 
 ```ts
 const state = await store.consume(token);
 if (!state || state.kind !== "magic.recovery") throw new HttpError(401);
-if (state.claims?.tenantId !== currentTenantId) throw new HttpError(401);
+if (state.tenantId !== currentTenantId) throw new HttpError(401); // typed payload field, flat
 ```
 
 `@aooth/auth-moost` does this for you via the recovery flow's resolver chain. Rolling your own — remember to check it explicitly.

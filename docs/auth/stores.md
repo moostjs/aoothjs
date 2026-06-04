@@ -1,6 +1,6 @@
 # Stores
 
-`@aooth/auth` is store-agnostic — every persistence concern is behind `CredentialStore<TClaims>` and `DenylistStore`. This page covers every shipped implementation: the interfaces, the in-memory defaults, the Redis adapter, the atscript-db adapter (with the shipped `.as` model), and the matrix you'd use to pick between them.
+`@aooth/auth` is store-agnostic — every persistence concern is behind `CredentialStore<TPayload>` and `DenylistStore`. This page covers every shipped implementation: the interfaces, the in-memory defaults, the Redis adapter, the atscript-db adapter (with the shipped `.as` model), and the matrix you'd use to pick between them.
 
 ## The store matrix
 
@@ -19,22 +19,22 @@ And the denylist matrix:
 | `DenylistStoreMemory` | `@aooth/auth`       | In-process `Map` |
 | `DenylistStoreRedis`  | `@aooth/auth/redis` | Redis with TTL   |
 
-## `CredentialStore<TClaims>` — the interface
+## `CredentialStore<TPayload>` — the interface
 
 Every store implements this exact shape:
 
 ```ts
-interface CredentialStore<TClaims = object> {
-  persist(state: CredentialState<TClaims>, ttl?: number): Promise<string>;
-  retrieve(token: string): Promise<CredentialState<TClaims> | null>;
-  consume(token: string): Promise<CredentialState<TClaims> | null>;
-  update(token: string, state: CredentialState<TClaims>): Promise<string>;
+interface CredentialStore<TPayload = object> {
+  persist(state: CredentialState & TPayload, ttl?: number): Promise<string>;
+  retrieve(token: string): Promise<(CredentialState & TPayload) | null>;
+  consume(token: string): Promise<(CredentialState & TPayload) | null>;
+  update(token: string, state: CredentialState & TPayload): Promise<string>;
   revoke(token: string): Promise<void>;
   revokeAllForUser(userId: string): Promise<number>;
-  listForUser?(userId: string): Promise<Array<CredentialState<TClaims> & { token: string }>>;
+  listForUser?(userId: string): Promise<Array<CredentialState & TPayload & { token: string }>>;
   // Optional session capabilities — see Sessions:
   touch?(token: string, at: number): Promise<void>;
-  listSessions?(userId: string): Promise<Array<CredentialState<TClaims> & { token: string }>>;
+  listSessions?(userId: string): Promise<Array<CredentialState & TPayload & { token: string }>>;
 }
 ```
 
@@ -56,16 +56,16 @@ interface CredentialStore<TClaims = object> {
 On stateless stores, `update` re-encodes the state into a fresh token — the returned string is different from the input. **Callers must use the returned value**, not the original. The orchestrator handles this internally; if you call `update` directly, do the same.
 :::
 
-### `CredentialState<TClaims>`
+### `CredentialState & TPayload`
 
-The shape stored under each token:
+The shape stored under each token — the fixed **envelope** `CredentialState` intersected with the consumer's typed **payload** `TPayload` (their flat root fields; there is no `claims` container):
 
 ```ts
-interface CredentialState<TClaims = object> {
+// envelope — no generic, no `claims`
+interface CredentialState {
   userId: string;
   issuedAt: number;
   expiresAt: number;
-  claims?: TClaims;
   metadata?: CredentialMetadata;
   kind?: "access" | "refresh" | string;
   parentCredentialId?: string;
@@ -73,9 +73,10 @@ interface CredentialState<TClaims = object> {
   sessionId?: string; // token-family id, stable across rotation — see Sessions
   lastSeenAt?: number; // activity time; only written under trackLastSeen
 }
+// stores deal in `CredentialState & TPayload`; the payload fields ride flat.
 ```
 
-`kind` is free-form when you persist directly (e.g. `'magic.recovery'`). The orchestrator only emits `'access'` and `'refresh'`. `sessionId` and `lastSeenAt` back the [Sessions](./sessions) APIs; both round-trip automatically in Memory/Redis (whole state is serialized) and have dedicated columns in the atscript-db `.as` model.
+`kind` is free-form when you persist directly (e.g. `'magic.recovery'`). The orchestrator only emits `'access'` and `'refresh'`. `sessionId` and `lastSeenAt` back the [Sessions](./sessions) APIs; both round-trip automatically in Memory/Redis (whole state is serialized) and have dedicated columns in the atscript-db `.as` model. The consumer's `TPayload` fields round-trip the same way (Memory/Redis serialize the whole state; the atscript-db adapter persists them as the typed columns the consumer added to their model).
 
 ## `DenylistStore` — the interface
 
@@ -284,11 +285,6 @@ export interface AoothAuthCredential {
     kind?: string
 
     @db.json
-    claims?: {
-        [key: string]: any
-    }
-
-    @db.json
     metadata?: {
         ip?: string
         userAgent?: string
@@ -298,8 +294,14 @@ export interface AoothAuthCredential {
 
     parentCredentialId?: string
     rotatedAt?: number.timestamp
+
+    @db.index.plain
+    sessionId?: string
+    lastSeenAt?: number.timestamp
 }
 ```
+
+The base model is the **envelope only** — there is no free-form `claims` column. To carry per-token payload you `extends AoothAuthCredential` and add your own typed columns (scalars, or `@db.json` for structured ones); the `CredentialStoreAtscriptDb` adapter round-trips them automatically. `@aooth/arbac-moost` consumers annotate those columns with `@arbac.attenuate.role` / `@arbac.attenuate.attr "userAttr"` for restrict-only credential attenuation.
 
 | Field                             | Purpose                                                                                                   |
 | --------------------------------- | --------------------------------------------------------------------------------------------------------- |
@@ -317,21 +319,21 @@ The `@db.depth.limit 0` annotation prevents joins / projections from cascading t
 Augment `CredentialMetadata` via declaration merging (see [Credentials](./credentials#credentialmetadata-declaration-merging)). The `.as` model accepts any JSON shape because of `@db.json`; the TypeScript surface narrows it for you.
 :::
 
-### `AuthCredentialTable<TClaims>` — structural interface
+### `AuthCredentialTable<TPayload>` — structural interface
 
 The adapter doesn't directly require the `@atscript/db` table class — it requires a structurally-typed interface that the table happens to satisfy:
 
 ```ts
-interface AuthCredentialTable<TClaims = object> {
-  insertOne(row: AuthCredentialRow<TClaims>): Promise<{ insertedId: unknown }>;
-  findOne(query: { filter: Record<string, unknown> }): Promise<AuthCredentialRow<TClaims> | null>;
+interface AuthCredentialTable<TPayload = object> {
+  insertOne(row: AuthCredentialRow<TPayload>): Promise<{ insertedId: unknown }>;
+  findOne(query: { filter: Record<string, unknown> }): Promise<AuthCredentialRow<TPayload> | null>;
   findMany(query: {
     filter?: Record<string, unknown>;
     controls?: Record<string, unknown>;
-  }): Promise<AuthCredentialRow<TClaims>[]>;
+  }): Promise<AuthCredentialRow<TPayload>[]>;
   /** Replaces by PK on the row itself — no `{ filter, row }` wrapper. */
   replaceOne(
-    row: AuthCredentialRow<TClaims>,
+    row: AuthCredentialRow<TPayload>,
   ): Promise<{ matchedCount: number; modifiedCount: number }>;
   /** Deletes by PK value (the token string), not by filter. */
   deleteOne(idOrPk: unknown): Promise<{ deletedCount: number }>;
@@ -373,7 +375,7 @@ Updating a credential to be already-expired causes the row to be removed rather 
 
 ## Writing your own store
 
-Implement `CredentialStore<TClaims>`. Match these invariants:
+Implement `CredentialStore<TPayload>`. Match these invariants:
 
 1. **`persist` is atomic** — either the row exists or it doesn't, never half-written.
 2. **`consume` is atomic** — exactly one of two concurrent calls succeeds; the other returns `null`. This is the single-use guarantee for magic links.

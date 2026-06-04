@@ -165,7 +165,7 @@ Factory returning a `defineBeforeInterceptor` at `TInterceptorPriority.GUARD`. H
 function useAuth(): AuthBindings;
 
 interface AuthBindings {
-  getAuthContext<TClaims>(): AuthContext<TClaims> | null;
+  getAuthContext<TPayload>(): AuthContext<TPayload> | null;
   getUserId(): string; // throws HttpError(401)
   isAuthenticated(): boolean;
   getSessionId(): string | undefined; // "this device" — AuthContext.sessionId
