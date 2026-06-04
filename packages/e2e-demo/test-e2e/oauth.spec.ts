@@ -18,7 +18,16 @@
  */
 import { expect, test } from "@playwright/test";
 
-import { fillField, resetApp, submitForm, USERS } from "./harness";
+import {
+  clickAction,
+  fillField,
+  getEmails,
+  getSms,
+  resetApp,
+  submitForm,
+  USERS,
+  waitForSms,
+} from "./harness";
 
 const DEMO_TOKEN_KEY = "aooth_demo_access_token";
 
@@ -158,5 +167,84 @@ test.describe("OAuth / federated needs-link interactive completion", () => {
     await submitForm(page);
     await page.waitForURL((url) => url.pathname === "/", { timeout: 15_000 });
     expect(await page.evaluate((k) => sessionStorage.getItem(k), DEMO_TOKEN_KEY)).toBeTruthy();
+  });
+});
+
+/**
+ * OTP FALLBACK of the needs-link completion. When the matched account is
+ * PASSWORDLESS (`password.isInitial`), there is no password to re-enter, so
+ * `prove-control` mints a one-time code and delivers it to the account's OWN
+ * confirmed channel. `t1_otplink` is passwordless with a single confirmed SMS
+ * factor at a phone DISTINCT from its email — so the regression lock is
+ * unmistakable: the proof code must ride the SMS channel, NEVER the
+ * provider-supplied email (which an attacker controlling the IdP account owns).
+ */
+test.describe("OAuth / federated needs-link OTP fallback (passwordless account)", () => {
+  const OTP_USER_EMAIL = "otplink@acme.test";
+  const OTP_USER_PHONE = "+15555550144";
+
+  test("OAUTH-NEEDSLINK-OTP-01: a passwordless colliding account proves control via an OTP sent to its OWN sms channel (never the provider email), then links to the EXISTING account", async ({
+    page,
+    request,
+  }) => {
+    const otplinkId = await readUserId(request, "t1_otplink");
+    await bounceWithCollidingEmail(page, request, OTP_USER_EMAIL, "google-otp-needs-link-001");
+
+    // OTP fallback form (passwordless → no password to re-enter): the code
+    // input is present and there is NO password field on the prove-control form.
+    await expect(page.locator('[name="code"]')).toBeVisible();
+    expect(await page.locator('[name="password"]').count()).toBe(0);
+    // The form must NOT surface the provider-supplied email as the delivery
+    // target — the masked recipient is the OWN sms channel (invariant 3).
+    await expect(page.getByTestId("oauth-callback")).not.toContainText(OTP_USER_EMAIL);
+
+    // INVARIANT 3 — the proof code reached the account's OWN sms channel…
+    const sms = await waitForSms(request, (e) => e.recipient === OTP_USER_PHONE);
+    expect(sms.code, "OTP delivered to the account's own confirmed sms channel").toBeTruthy();
+    // …and NOT the federation-matched email (no code-bearing mail to it).
+    const emails = await getEmails(request);
+    expect(
+      emails.some((e) => e.recipient === OTP_USER_EMAIL && !!e.code),
+      "no OTP code may be delivered to the provider-supplied email",
+    ).toBe(false);
+
+    await fillField(page, "code", sms.code);
+    await submitForm(page);
+
+    // Proof passes → linkIdentity → shared login tail → issue → navigate home.
+    await page.waitForURL((url) => url.pathname === "/", { timeout: 15_000 });
+    const token = await page.evaluate((k) => sessionStorage.getItem(k), DEMO_TOKEN_KEY);
+    expect(token, "session issued after OTP proof + link").toBeTruthy();
+    const status = await page.request.get("/auth/status", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(status.status()).toBe(200);
+    const ctx = (await status.json()) as { userId?: string };
+    // Attached to the PRE-EXISTING passwordless account, not a new one.
+    expect(ctx.userId, "linked to the pre-existing passwordless account").toBe(otplinkId);
+  });
+
+  test("OAUTH-NEEDSLINK-OTP-02: an immediate resend is refused by the cooldown (armed on first dispatch); no second code is sent", async ({
+    page,
+    request,
+  }) => {
+    await bounceWithCollidingEmail(page, request, OTP_USER_EMAIL, "google-otp-needs-link-002");
+    await expect(page.locator('[name="code"]')).toBeVisible();
+
+    // First dispatch delivered exactly one code to the own channel + armed the
+    // resend cooldown (default 60s — the OAuth callback sends no fast variant).
+    const first = await waitForSms(request, (e) => e.recipient === OTP_USER_PHONE);
+    expect(first.code).toBeTruthy();
+    const countBefore = (await getSms(request)).filter(
+      (e) => e.recipient === OTP_USER_PHONE,
+    ).length;
+
+    // Immediate resend → the cooldown gate refuses with a "Please wait" message.
+    await clickAction(page, "Resend code");
+    await expect(page.getByText(/Please wait/i)).toBeVisible({ timeout: 10_000 });
+
+    // No second code was minted/delivered.
+    const countAfter = (await getSms(request)).filter((e) => e.recipient === OTP_USER_PHONE).length;
+    expect(countAfter, "cooldown blocked the resend — no new code").toBe(countBefore);
   });
 });

@@ -937,7 +937,12 @@ export class AuthWorkflow {
     if (ctx.pendingLink) {
       // Only the masked/UX fields — `candidateUserId` / `subject` / proof `pin`
       // stay server-only (never whitelisted onto the wire).
-      const sub = pickDefined(ctx.pendingLink, ["mode", "hint", "sentTo"] as const);
+      const sub = pickDefined(ctx.pendingLink, [
+        "mode",
+        "hint",
+        "sentTo",
+        "resendAllowedAt",
+      ] as const);
       if (sub) pub.proveControl = sub as AuthWfPublicState["proveControl"];
     }
     if (ctx.newPasswordRequired !== undefined) {
@@ -3685,6 +3690,32 @@ export class AuthWorkflow {
   }
 
   /**
+   * Mint + deliver an OTP proof code to the pending-link candidate's OWN
+   * confirmed channel (NEVER the provider-supplied email — that would be
+   * circular) and arm the resend cooldown. Shared by the first auto-dispatch
+   * and the `resend` action. Returns the masked delivery target, or `null` if
+   * the confirmed channel vanished between resolve and dispatch (the caller
+   * routes that to the safe generic terminal).
+   */
+  private async deliverPendingLinkPin(
+    candidate: UserCredentials,
+    pending: NonNullable<AuthWfCtx["pendingLink"]>,
+  ): Promise<string | null> {
+    const method = candidate.mfa.methods.find((m) => m.name === pending.otpChannel && m.confirmed);
+    if (!method) return null;
+    const code = this.mintPin(pending, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
+    await this.deliver({
+      kind: "mfa-pincode",
+      channel: pending.otpChannel as "email" | "sms",
+      recipient: method.value,
+      code,
+      expiresInMs: this.opts.mfa.pincodeTtlMs,
+    });
+    pending.resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
+    return this.maskAddress(method.value, pending.otpChannel as "email" | "sms");
+  }
+
+  /**
    * Interactive `needs-link` completion — prove control of the matched local
    * account, then attach the verified federated identity to it. Gated by the
    * login schema on `ctx.pendingLink && !ctx.subject`, so it runs ONLY on the
@@ -3736,26 +3767,36 @@ export class AuthWorkflow {
     // OTP mode: deliver the code to the account's OWN confirmed channel before
     // the first pause. `sent` guards against a re-mint/re-send on re-pause.
     if (isOtp && !pending.sent) {
-      const method = candidate.mfa.methods.find(
-        (m) => m.name === pending.otpChannel && m.confirmed,
-      );
+      const sentTo = await this.deliverPendingLinkPin(candidate, pending);
       // Channel vanished between resolve and proof → safe generic terminal.
-      if (!method) {
+      if (sentTo === null) {
         delete ctx.pendingLink;
         return this.finishOAuth(ctx, "needs-link");
       }
-      const code = this.mintPin(pending, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
-      await this.deliver({
-        kind: "mfa-pincode",
-        channel: pending.otpChannel as "email" | "sms",
-        recipient: method.value,
-        code,
-        expiresInMs: this.opts.mfa.pincodeTtlMs,
-      });
       pending.sent = true;
-      pending.sentTo = this.maskAddress(method.value, pending.otpChannel as "email" | "sms");
+      pending.sentTo = sentTo;
       // Re-pause WITH a fresh public projection so the form's "code sent to …"
       // copy (ctx.public.proveControl.sentTo, set just above) renders.
+      throw this.throwPublic(ctx, wf);
+    }
+
+    // OTP mode: `resend` re-mints + re-delivers to the SAME own channel, gated
+    // by the same per-pincode cooldown the MFA loop uses. (The password proof
+    // form has no `resend` action, so this is unreachable in password mode.)
+    if (isOtp && wf.resolveAction() === "resend") {
+      const cooldown = pending.resendAllowedAt;
+      if (cooldown && Date.now() < cooldown) {
+        const waitSec = Math.ceil((cooldown - Date.now()) / 1000);
+        throw this.throwPublic(ctx, wf, {
+          formMessage: `Please wait ${waitSec}s before requesting another code`,
+        });
+      }
+      const sentTo = await this.deliverPendingLinkPin(candidate, pending);
+      if (sentTo === null) {
+        delete ctx.pendingLink;
+        return this.finishOAuth(ctx, "needs-link");
+      }
+      pending.sentTo = sentTo;
       throw this.throwPublic(ctx, wf);
     }
 

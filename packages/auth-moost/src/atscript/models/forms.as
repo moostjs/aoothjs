@@ -829,6 +829,15 @@ export interface ProveControlOtpForm {
     @expect.pattern '^[0-9]+$'
     code: string
 
+    // Resend the OTP proof code to the SAME own channel — mirrors PincodeForm's
+    // resend. `available-at` binds the server-armed cooldown so the renderer can
+    // disable / count down the button; the `prove-control` @Step also gates it
+    // server-side (a too-soon resend re-pauses with a "Please wait Ns" message).
+    @ui.form.order 15
+    @ui.form.action 'resend', 'Resend code'
+    @ui.form.fn.attr 'available-at', '(_, _d, ctx) => ctx.public?.proveControl?.resendAllowedAt'
+    resend?: ui.action
+
     @ui.form.order 20
     @ui.form.action 'cancel', 'Cancel'
     @ui.form.attr 'align', 'center'

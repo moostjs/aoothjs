@@ -43,6 +43,7 @@ export interface SeedFixtures {
     t1_ivy: SeededUser;
     t1_iris: SeededUser;
     t1_jack: SeededUser;
+    t1_otplink: SeededUser;
     t1_stale: SeededUser;
     t1_locked: SeededUser;
     t1_multi_mfa: SeededUser;
@@ -212,6 +213,25 @@ export async function seedAll(handle: AppHandle): Promise<SeedFixtures> {
       departmentId: deptA.sales,
       roles: ["member"],
       passwordInitial: true,
+    },
+    {
+      // OAUTH-NEEDSLINK-OTP fixture. Passwordless (`passwordInitial`) account
+      // whose ONLY confirmed factor is SMS, at a phone DISTINCT from its email.
+      // A federated login whose verified profile email collides with
+      // `otplink@acme.test` resolves to `needs-link`; with no real password the
+      // `prove-control` step falls back to OTP — which MUST deliver the code to
+      // this OWN sms channel (the phone), NEVER the provider-supplied email (an
+      // attacker controlling the IdP account owns that, so a code sent there is
+      // circular). Regression-locks needs-link invariant 3. The phone differs
+      // from every other seeded number so the captured-SMS filter is unambiguous.
+      handle: "t1_otplink",
+      username: "t1_otplink",
+      email: "otplink@acme.test",
+      tenantId: tenantAId,
+      departmentId: deptA.ops,
+      roles: ["member"],
+      passwordInitial: true,
+      mfaSms: { phone: "+15555550144" },
     },
     {
       // Drives WF-LOGIN-EXPIRED-01. `passwordLastChanged: 1` is the

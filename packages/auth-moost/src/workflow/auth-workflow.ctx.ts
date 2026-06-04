@@ -385,6 +385,8 @@ export interface AuthWfPendingLinkState {
   otpChannel?: "email" | "sms";
   /** OTP mode only — flipped `true` after the first code dispatch so a re-pause doesn't re-send. */
   sent?: boolean;
+  /** OTP mode only — epoch ms before which a `resend` is refused (same per-pincode cooldown the MFA loop uses). Armed on every dispatch. */
+  resendAllowedAt?: number;
   /** Masked candidate identifier shown on the prove-control form ("an account for a***@x.com exists"). Safe to expose. */
   hint?: string;
   /** OTP mode only — masked delivery target for the "code sent to …" copy. Safe to expose. */
@@ -480,11 +482,17 @@ export interface AuthWfPublicState {
   defaults?: { email?: string };
   /**
    * Mirrors `ctx.pendingLink` display fields — the proof `mode`, the masked
-   * account `hint` ("an account for a***@x.com exists"), and (OTP mode) the
-   * masked delivery `sentTo`. Only masked/UX fields are projected — the
+   * account `hint` ("an account for a***@x.com exists"), the masked delivery
+   * `sentTo` (OTP mode), and the `resendAllowedAt` cooldown the resend button
+   * reads to disable/count-down. Only masked/UX fields are projected — the
    * `candidateUserId` / provider `subject` / proof `pin` stay server-only.
    */
-  proveControl?: { mode?: "password" | "otp"; hint?: string; sentTo?: string };
+  proveControl?: {
+    mode?: "password" | "otp";
+    hint?: string;
+    sentTo?: string;
+    resendAllowedAt?: number;
+  };
   /**
    * Mirrors `ctx.newPasswordRequired` — hides "Remember this device" on
    * verify forms when a forced password change will follow.

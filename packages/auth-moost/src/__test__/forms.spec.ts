@@ -78,6 +78,9 @@ describe("default form .as models", () => {
     const patterns = code.metadata.get("expect.pattern") as Array<{ pattern: string }> | undefined;
     expect(patterns?.[0]?.pattern).toBe("^[0-9]+$");
     expect(getProp(ProveControlOtpForm, "cancel")).toBeDefined();
+    // `resend` re-mints the OTP proof code (mirrors PincodeForm) — declared so
+    // `resolveAction()` accepts it and the cooldown gate in `proveControl` runs.
+    expect(getProp(ProveControlOtpForm, "resend")).toBeDefined();
   });
 
   it("InviteForm has required email and roles", () => {
