@@ -243,8 +243,10 @@ sync or async) without fighting the base signature:
 extraStep(@WorkflowParam("context") _ctx: AuthWfCtx): unknown | Promise<unknown> { return undefined; }
 ```
 
-This applies to `extra-step` and the five alt-cred stubs (`magic-link-request`,
-`magic-link-send`, `magic-link-verified`, `passkey`, `sso-callback`). It is the
+This applies to `extra-step` and the four alt-cred stubs (`magic-link-request`,
+`magic-link-send`, `magic-link-verified`, `passkey`). (`sso-callback` is NO
+LONGER a stub — federated login is merged into the login workflow, so it carries
+the real OAuth-callback exchange; see `AuthWorkflow.ssoCallback`.) It is the
 **exception** to the `T | Promise<T>` rule above — use the precise `T` form for
 every step whose default body carries real behaviour; reserve the `unknown` form
 for these designated override seams.

@@ -31,17 +31,10 @@ export { deriveWfStateSecret, WfTriggerProvider } from "./wf-trigger/provider";
 
 // ── Federated login (OAuth2 / OIDC) — moost integration of @aooth/idp ──
 export { OAuthController } from "./oauth/oauth.controller";
-export {
-  type NewOAuthFlowTransaction,
-  OAuthFlowStore,
-  OAuthFlowStoreMemory,
-  type OAuthFlowStoreMemoryOptions,
-  type OAuthFlowTransaction,
-} from "./oauth/oauth-flow-store";
 export { OAUTH_CSRF_COOKIE, oauthCsrfCookieAttrs } from "./oauth/oauth-csrf";
 export { isSafeRelativeRedirect, resolveOAuthRedirect } from "./oauth/oauth-redirect";
 export { OAuthRuntime } from "./oauth/oauth-runtime";
-export { FEDERATED_IDENTITY_STORE_TOKEN, OAUTH_FLOW_STORE_TOKEN } from "./oauth/oauth-tokens";
+export { FEDERATED_IDENTITY_STORE_TOKEN } from "./oauth/oauth-tokens";
 
 // Re-exported from @aooth/auth for ergonomic single-import setup; the
 // definitions are framework-agnostic and live in the core package.

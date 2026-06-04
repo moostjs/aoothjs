@@ -38,7 +38,8 @@ export function createRouter() {
       // Federated-login callback bridge — the provider's `redirect_uri` lands
       // here (a SPA route; the backend OAuthController has no GET `:provider/
       // callback`, so it falls through to the SPA). Forwards `code`/`state` into
-      // the `auth/oauth/flow` trigger. See OAuthCallbackPage.
+      // the `auth/login/flow` trigger (federated login is merged into login).
+      // See OAuthCallbackPage.
       {
         path: "/auth/oauth/:provider/callback",
         name: "oauth-callback",

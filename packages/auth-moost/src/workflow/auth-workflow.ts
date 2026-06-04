@@ -21,7 +21,7 @@
  * schemas would no-op every step.
  */
 import { AuthCredential, type CredentialMetadata } from "@aooth/auth";
-import type { NormalizedProfile } from "@aooth/idp";
+import { generateRandomState, type NormalizedProfile } from "@aooth/idp";
 import {
   generateTotpSecret,
   generateTotpUri,
@@ -56,7 +56,7 @@ import { Controller, Inherit, Param, useControllerContext } from "moost";
 import { useAuth } from "../auth.composables";
 import { ConsentStore } from "../consent.store";
 import { Public } from "../auth.decorator";
-import { OAUTH_CSRF_COOKIE, safeEqual } from "../oauth/oauth-csrf";
+import { OAUTH_CSRF_COOKIE, oauthCsrfCookieAttrs, safeEqual } from "../oauth/oauth-csrf";
 import { resolveOAuthRedirect } from "../oauth/oauth-redirect";
 import { OAuthRuntime } from "../oauth/oauth-runtime";
 import type {
@@ -448,7 +448,7 @@ export class AuthWorkflow {
    */
   protected resolveRedirect(ctx: AuthWfCtx): string | undefined {
     // OAuth flow: honor the validated app redirect carried across the bounce
-    // (already screened by `resolveOAuthRedirect` in `oauth-exchange`), ahead of
+    // (already screened by `resolveOAuthRedirect` in `sso-callback`), ahead of
     // the generic `finalize.redirect` policy.
     if (ctx.oauth?.redirect) return ctx.oauth.redirect;
     const r = ctx.finalize?.redirect;
@@ -465,7 +465,7 @@ export class AuthWorkflow {
 
   // ── OAuth / federated-login dependency seam ─────────────────────────────
   //
-  // The `oauth-exchange` step needs three app-provided singletons that are NOT
+  // The `sso-callback` step needs two app-provided singletons that are NOT
   // ctor deps — so a deployment that doesn't use federated login is never
   // forced to provide them, and `AuthWorkflow`'s documented subclass ctor stays
   // unchanged. They are bundled in {@link OAuthRuntime} (an `@Injectable` whose
@@ -497,11 +497,60 @@ export class AuthWorkflow {
     return `${this.opts.loginUrl}?error=oauth`;
   }
 
+  /**
+   * Leg 1 of federated login: turn an `sso-<id>` click on the login form into a
+   * redirect to the provider, then END the login wf. STATELESS — no flow store:
+   * a fresh non-secret `seed` is minted, the PKCE verifier + OIDC nonce are
+   * DERIVED from it (`registry.deriveSeededPkce`), the `challenge`/`nonce` build
+   * the authorize URL, and the seed rides in BOTH the signed `state` and a Lax
+   * double-submit CSRF cookie. The callback re-derives the identical verifier
+   * from `state.random` to redeem the `code` (see `sso-callback`) — so nothing
+   * secret is ever in the URL and no server-side transaction is persisted.
+   *
+   * The CSRF cookie is attached to the FINISH ENVELOPE's `cookies` (which the
+   * wf-trigger outlet writes onto the real HTTP response), NOT via
+   * `useResponse().setCookie` — the outlet builds its response from the
+   * `WfFinished` envelope and ignores response-context cookies. Same mechanism
+   * `issue` uses for the session cookie. The resume is a same-origin XHR, so the
+   * `Set-Cookie` is stored before `AsWfForm` follows the redirect.
+   */
+  protected async beginSso(providerId: string): Promise<void> {
+    const { registry } = await this.oauthRuntime();
+    const provider = registry.require(providerId);
+    const redirect = resolveOAuthRedirect(getInputField("redirect"), "/");
+    const seed = generateRandomState();
+    const { nonce, challenge } = registry.deriveSeededPkce(seed);
+    const state = await registry.signState({ random: seed, provider: providerId, redirect });
+    const authUrl = await provider.authorizationUrl({
+      redirectUri: registry.redirectUri(providerId),
+      state,
+      codeChallenge: challenge,
+      nonce,
+    });
+    const envelope: WfFinished = {
+      finished: true,
+      next: {
+        trigger: "immediate",
+        action: { type: "redirect", target: authUrl, reason: `sso-${providerId}` },
+      },
+    };
+    useWfFinished().set({
+      type: "data",
+      value: envelope,
+      cookies: {
+        [OAUTH_CSRF_COOKIE]: {
+          value: seed,
+          options: oauthCsrfCookieAttrs({ secure: useAuth().options.cookie.secure }),
+        },
+      },
+    });
+  }
+
   // ── Resolved policy surface (override on subclass to customize) ─────────
 
   /**
    * Resolve the alternate-credentials policy (forgot-password / signup /
-   * magic-link / SSO providers + their URLs). Reached from login.flow.
+   * magic-link / SSO providers). Reached from login.flow.
    */
   protected resolveAlternateCredentials(
     _ctx: AuthWfCtx,
@@ -838,7 +887,12 @@ export class AuthWorkflow {
       if (sub) pub.consents = sub as AuthWfPublicState["consents"];
     }
     if (ctx.altActions) {
-      const sub = pickDefined(ctx.altActions, ["forgotPassword", "signup", "magicLink"] as const);
+      const sub = pickDefined(ctx.altActions, [
+        "forgotPassword",
+        "signup",
+        "magicLink",
+        "ssoProviders",
+      ] as const);
       if (sub) pub.altActions = sub as AuthWfPublicState["altActions"];
     }
     if (ctx.mfa) {
@@ -1080,7 +1134,25 @@ export class AuthWorkflow {
 
   @Step("init-login")
   @Public()
-  initLogin(@WorkflowParam("context") _ctx: AuthWfCtx): void {
+  initLogin(@WorkflowParam("context") ctx: AuthWfCtx): void {
+    // Federated leg: a START whose input carries the OAuth callback `state`
+    // routes the schema to `sso-callback` and skips the `credentials` form.
+    // CAPTURE the inputs onto ctx NOW — the engine clears the step input after
+    // this step, so `sso-callback` (the next step) can't read them from the
+    // input anymore. `state` presence is the marker; `sso-callback` fully
+    // verifies it (a forged/garbage `state` just lands on the benign
+    // OAuth-failure terminal, never bypasses anything). A normal form GET /
+    // password resume carries no `state`.
+    const state = getInputField("state");
+    if (state) {
+      const code = getInputField("code");
+      const error = getInputField("error");
+      ctx.idpInbound = {
+        state,
+        ...(code !== undefined && { code }),
+        ...(error !== undefined && { error }),
+      };
+    }
     return undefined;
   }
 
@@ -1155,6 +1227,7 @@ export class AuthWorkflow {
     altActions.forgotPassword = alt.forgotPassword;
     altActions.signup = alt.signup;
     altActions.magicLink = alt.magicLink;
+    if (alt.ssoProviders.length > 0) altActions.ssoProviders = alt.ssoProviders;
     const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.loginCredentials);
 
     // Alt-action routing — handled BEFORE the form-input pause so the user
@@ -1164,7 +1237,7 @@ export class AuthWorkflow {
     const action = wf.resolveAction();
     if (action) {
       const typedUsername = getInputField("username");
-      const handled = this.handleCredentialsAlt(action, typedUsername, alt);
+      const handled = await this.handleCredentialsAlt(action, typedUsername, alt);
       if (handled === ALT_HANDLED) return undefined;
     }
 
@@ -1227,11 +1300,11 @@ export class AuthWorkflow {
    * / sso-<id>) to a `finishWf` redirect envelope. Returns `ALT_HANDLED` when
    * the caller should short-circuit without running form validation.
    */
-  private handleCredentialsAlt(
+  private async handleCredentialsAlt(
     action: string,
     typedUsername: string | undefined,
     alt: AuthWfAltCredsPolicy,
-  ): AltHandled | undefined {
+  ): Promise<AltHandled | undefined> {
     if (action === "forgotPassword" && alt.forgotPassword) {
       const url = this.resolveRecoveryUrl(typedUsername, alt);
       finishWf({
@@ -1254,14 +1327,15 @@ export class AuthWorkflow {
     if (action === "magicLink" && alt.magicLink) {
       throw new HttpError(501, "Magic-link login path not implemented in this version");
     }
-    const sso = alt.ssoProviders.find((p) => p.id === action);
-    if (sso) {
-      finishWf({
-        next: {
-          trigger: "immediate",
-          action: { type: "redirect", target: sso.url, reason: `sso-${sso.id}` },
-        },
-      });
+    if (action === "sso") {
+      // The bundled `AsSsoProviders` sets the chosen provider id into the
+      // `ssoProvider` field, then invokes this single data-carrying action.
+      const providerId = getInputField("ssoProvider");
+      const sso = providerId ? alt.ssoProviders.find((p) => p.id === providerId) : undefined;
+      // A missing / unoffered id is a malformed request — the bundled component
+      // only ever submits an offered provider.
+      if (!sso) throw new HttpError(400, "Unknown SSO provider");
+      await this.beginSso(sso.id);
       return ALT_HANDLED;
     }
     return undefined;
@@ -3319,7 +3393,7 @@ export class AuthWorkflow {
     return undefined;
   }
 
-  // ── Alt-cred stubs (5; login-only, all condition: false placeholders) ──
+  // ── Alt-cred stubs (4; login-only, all condition: false placeholders) ──
 
   @Step("magic-link-request")
   @Public()
@@ -3349,60 +3423,64 @@ export class AuthWorkflow {
     return undefined;
   }
 
-  @Step("sso-callback")
-  @Public()
-  // oxlint-disable-next-line typescript/no-redundant-type-constituents -- explicit sync|async override seam, see CLAUDE.md "Pure extension-point stubs"
-  ssoCallback(@WorkflowParam("context") _ctx: AuthWfCtx): unknown | Promise<unknown> {
-    return undefined;
-  }
-
-  // ── Federated login (OAuth2 / OIDC) — auth/oauth/flow (1 real step) ──────
+  // ── Federated login (OAuth2 / OIDC) — leg 2: the callback exchange ───────
   //
-  // ONE real step; everything after it reuses the shared login tail by @Step id
-  // (prepare-* / channel / MFA / consent / issue / redirect) — a federated user
-  // flows through the EXACT same gates as a password user. The PKCE verifier +
-  // OIDC nonce are read from the server-side `OAuthFlowStore` (keyed by the
-  // signed-state `random`), never from ctx or the URL.
+  // ONE real step (`sso-callback`); everything after it reuses the shared login
+  // tail by @Step id (prepare-* / channel / MFA / consent / issue / redirect) —
+  // a federated user flows through the EXACT same gates as a password user. The
+  // PKCE verifier + OIDC nonce are NOT stored: they are re-DERIVED here from the
+  // signed-state `random` seed (the value `beginSso` derived them from at leg 1),
+  // so the round-trip needs no server-side flow store and nothing secret rides
+  // in the URL.
 
   /**
-   * Verify the OAuth callback and resolve a user. Reads `{ code, state, error }`
-   * from the trigger input (the SPA bridges the provider callback into
-   * `/auth/trigger` starting `auth/oauth/flow`). Order is security-critical:
+   * Verify the OAuth callback and resolve a user. Reaches here (instead of
+   * `credentials`) when `init-login` saw an inbound `state` (`ctx.idpInbound`);
+   * reads `{ provider, code, state, error }` from the START input (the SPA
+   * bridges the provider callback into `/auth/trigger` STARTING `auth/login/flow`).
+   * Order is security-critical:
    *
-   *   verify state (HS256) → CSRF double-submit → single-use txn (PKCE verifier)
-   *   → provider.exchange (verified ID token) → link OR resolveUser → ACCOUNT-
-   *   STATE GATE → seed ctx.subject → fall through to the shared login tail.
+   *   verify state (HS256) → CSRF double-submit → re-derive PKCE verifier/nonce
+   *   from the seed → provider.exchange (verified ID token) → link OR resolveUser
+   *   → ACCOUNT-STATE GATE → seed ctx.subject → fall through to the shared tail.
+   *
+   * Replay defense is the provider's ONE-TIME `code` (a replayed callback fails
+   * at `exchange` when the provider rejects the already-redeemed code), plus the
+   * short-TTL signed state + CSRF cookie — the stateless design carries no
+   * single-use server marker, by design.
    *
    * Every pre-subject failure collapses to one benign redirect terminal
    * (`finishOAuth`) so the wire is not an oracle for which check tripped. The
    * account-state gate MUST live here — `issue` does not re-gate, so without it
    * a locked/inactive account could log straight in via OAuth.
    */
-  @Step("oauth-exchange")
+  @Step("sso-callback")
   @Public()
-  async oauthExchange(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
-    const code = getInputField("code");
-    const state = getInputField("state");
+  async ssoCallback(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    // `init-login` captured the callback inputs onto `ctx.idpInbound` — the
+    // step input is already cleared by the time this (the next step) runs.
+    const code = ctx.idpInbound?.code;
+    const state = ctx.idpInbound?.state;
     // Provider-side denial (user declined) or a malformed callback — the SPA
     // forwards the provider's `error`. Generic terminal either way.
-    if (getInputField("error") || !code || !state) {
+    if (ctx.idpInbound?.error || !code || !state) {
       return this.finishOAuth(ctx, "provider-denied");
     }
 
-    const { registry, flowStore, federated } = await this.oauthRuntime();
+    const { registry, federated } = await this.oauthRuntime();
     // STATE_INVALID and STATE_EXPIRED collapse to one terminal (no oracle).
     const payload = await registry.verifyState(state).catch(() => null);
     if (!payload) return this.finishOAuth(ctx, "state");
 
-    // CSRF double-submit: the Lax cookie set at /start must match the verified
-    // state's `random`. Constant-time; a missing cookie fails closed.
-    const cookieRandom = useCookies(current()).getCookie(OAUTH_CSRF_COOKIE) ?? undefined;
-    if (!safeEqual(cookieRandom, payload.random)) return this.finishOAuth(ctx, "csrf");
+    // CSRF double-submit: the Lax cookie set by `beginSso` must match the
+    // verified state's `random`. Constant-time; a missing cookie fails closed.
+    const cookieSeed = useCookies(current()).getCookie(OAUTH_CSRF_COOKIE) ?? undefined;
+    if (!safeEqual(cookieSeed, payload.random)) return this.finishOAuth(ctx, "csrf");
 
-    // Single-use server-side transaction (PKCE verifier + nonce + /link binding).
-    // Consuming it here is the replay defense — a second callback finds nothing.
-    const txn = await flowStore.take(payload.random);
-    if (!txn || txn.provider !== payload.provider) return this.finishOAuth(ctx, "txn");
+    // Re-derive the PKCE verifier + OIDC nonce from the signed-state seed — the
+    // SAME pair `beginSso` built the authorize request from (no flow store). The
+    // provider is bound by the signed `state`, so it needs no separate re-check.
+    const { verifier, nonce } = registry.deriveSeededPkce(payload.random);
 
     let profile: NormalizedProfile;
     try {
@@ -3410,8 +3488,8 @@ export class AuthWorkflow {
       profile = await provider.exchange({
         code,
         redirectUri: registry.redirectUri(payload.provider),
-        codeVerifier: txn.verifier,
-        expectedNonce: txn.nonce,
+        codeVerifier: verifier,
+        expectedNonce: nonce,
       });
     } catch {
       // UNKNOWN_PROVIDER / EXCHANGE_FAILED / ID_TOKEN_INVALID / JWKS_FAILED — all
@@ -3419,18 +3497,18 @@ export class AuthWorkflow {
       return this.finishOAuth(ctx, "exchange");
     }
 
-    const redirect = resolveOAuthRedirect(txn.redirect, "/");
+    const redirect = resolveOAuthRedirect(payload.redirect, "/");
 
     // ── /link mode — attach the verified identity to the initiating user ──
-    // `txn.userId` is set ONLY by the guarded `/:provider/link` route, so its
-    // presence is a trusted (server-minted) signal. `linkIdentity`'s cross-user
-    // guard is the final confused-deputy backstop.
-    if (txn.userId) {
+    // `state.userId` is set ONLY by the guarded `/:provider/link` route and is
+    // HS256-signed (tamper-proof, server-minted), so its presence is a trusted
+    // signal. `linkIdentity`'s cross-user guard is the final confused-deputy backstop.
+    if (payload.userId) {
       try {
         await federated.linkIdentity({
           provider: profile.provider,
           subject: profile.subject,
-          userId: txn.userId,
+          userId: payload.userId,
           profile,
         });
       } catch (err) {
@@ -3538,7 +3616,11 @@ export class AuthWorkflow {
   @Public()
   @WorkflowSchema<AuthWfCtx>([
     { id: "init-login" },
-    { id: "credentials" },
+    // Federated leg: an inbound OAuth callback (init-login set `idpInbound`)
+    // runs the exchange and SKIPS the password form; a normal login runs
+    // `credentials` and skips the exchange. Exactly one sets `ctx.subject`.
+    { id: "sso-callback", condition: (ctx) => !!ctx.idpInbound },
+    { id: "credentials", condition: (ctx) => !ctx.idpInbound },
     { break: (ctx) => !ctx.subject },
 
     // Resolve all policy groups
@@ -3573,7 +3655,6 @@ export class AuthWorkflow {
         { id: "magic-link-send" },
         { id: "magic-link-verified" },
         { id: "passkey" },
-        { id: "sso-callback" },
       ],
     },
 
@@ -3840,108 +3921,4 @@ export class AuthWorkflow {
     { id: "finalize-auto-login" }, // v1 always auto-logins
   ])
   signupFlow(): void {}
-
-  /**
-   * oauth.flow — federated login (OAuth2 / OIDC). `@Public()` on the body
-   * (anonymous). Reachable via the public `/auth/trigger` (add `auth/oauth/flow`
-   * to the controller allow-list); the SPA bridges the provider callback into a
-   * START with `input.formData = { code, state }`. Security lives in the
-   * `oauth-exchange` step (signed-state + CSRF cookie + single-use PKCE txn +
-   * verified ID token + account-state gate), NOT in route gating.
-   *
-   * Post-subject tail is login.flow's verbatim (same @Step ids): the password
-   * phase is skipped (federated users never set `newPasswordRequired`); MFA /
-   * channel-enrolment / consent / concurrency / issue / redirect all reuse the
-   * shared bodies, so a federated user is gated identically to a password user.
-   */
-  @Workflow("auth/oauth/flow")
-  @Public()
-  @WorkflowSchema<AuthWfCtx>([
-    { id: "oauth-exchange" },
-    { break: (ctx) => !ctx.subject }, // link / denied / needs-link / blocked → finished, no subject
-
-    // Resolve all policy groups (mirrors login.flow post-credentials).
-    { id: "prepare-consents" },
-    { id: "prepare-alternate-credentials" },
-    { id: "prepare-device-trust" },
-    { id: "prepare-enrollment" },
-    { id: "prepare-finalize" },
-    { id: "prepare-guards" },
-    { id: "prepare-lockout" },
-    { id: "prepare-session-policy" },
-    { id: "prepare-semantic-flags" },
-
-    // Forced password change — gated on `newPasswordRequired`, which federated
-    // login never sets, so this no-ops. Kept for parity / customer overrides.
-    ...passwordPhaseSchema,
-    { break: (ctx) => !!ctx.aborted },
-
-    // Forced channel enrolment (gated on enrollment policy; default off).
-    {
-      id: "ask/email",
-      condition: (ctx) =>
-        (!!ctx.enrollment?.ensureEmail || !!ctx.guards?.emailVerifiedRequired) && !ctx.email,
-    },
-    {
-      id: "verify/email",
-      condition: (ctx) =>
-        (!!ctx.enrollment?.ensureEmail || !!ctx.guards?.emailVerifiedRequired) &&
-        !!ctx.email &&
-        !ctx.channel?.emailConfirmed,
-    },
-    {
-      id: "ask/phone",
-      condition: (ctx) => !!ctx.enrollment?.ensurePhone && !ctx.channel?.phone,
-    },
-    {
-      id: "verify/phone",
-      condition: (ctx) =>
-        !!ctx.enrollment?.ensurePhone && !!ctx.channel?.phone && !ctx.channel?.phoneConfirmed,
-    },
-
-    // MFA loop (shared) — a federated user with enrolled methods is still
-    // challenged; `mfaPolicy.mode === 'disabled'` skips the whole loop.
-    ...mfaLoopSchema,
-
-    // Post-MFA device-trust (gated; default off).
-    {
-      id: "device-trust",
-      condition: (ctx) =>
-        !!ctx.deviceTrust?.enabled &&
-        !!ctx.otp?.verified &&
-        !!ctx.trust?.newDevice &&
-        (!ctx.deviceTrust?.optIn || !!ctx.trust?.rememberDevice),
-    },
-
-    { id: "extra-step", condition: (ctx) => !!ctx.isFirstLogin },
-    {
-      id: "terms-bump-prompt",
-      condition: (ctx) => (ctx.consents?.pending?.length ?? 0) > 0 && !ctx.consents?.decidedAt,
-    },
-    ...consentsPersistTailSchema,
-
-    // Session policy (concurrency limit).
-    {
-      condition: (ctx) => !!ctx.sessionPolicy?.concurrencyLimit,
-      steps: [
-        { id: "load-active-sessions" },
-        {
-          id: "concurrency-limit",
-          condition: (ctx) =>
-            (ctx.session?.activeSessions ?? 0) >= ctx.sessionPolicy!.concurrencyLimit!.max,
-        },
-      ],
-    },
-    { break: (ctx) => !!ctx.aborted },
-
-    // Finalize (login-specific tail — same as login.flow).
-    { id: "issue" },
-    {
-      id: "notify-new-device",
-      condition: (ctx) =>
-        !ctx.isFirstLogin && !!ctx.finalize?.notifyNewDevice && !!ctx.trust?.newDevice,
-    },
-    { id: "redirect" },
-  ])
-  oauthFlow(): void {}
 }

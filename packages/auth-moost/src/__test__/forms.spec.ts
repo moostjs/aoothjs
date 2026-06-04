@@ -68,6 +68,8 @@ describe("default form .as models", () => {
 
   it("each form validator accepts well-formed input", () => {
     expect(() =>
+      // `ssoProvider` is an OPTIONAL SSO carrier field — a password login omits
+      // it entirely, so well-formed credentials input is just username+password.
       LoginCredentialsForm.validator().validate({ username: "alice", password: "secret" }),
     ).not.toThrow();
     expect(() =>

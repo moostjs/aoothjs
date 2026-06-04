@@ -9,11 +9,11 @@ import { Controller } from "moost";
 /**
  * Test-only fake identity provider HTTP endpoint (mounted ONLY under
  * `DEMO_MODE=test`, like the `__test` mailbox). It stands in for a real OAuth
- * provider's authorization endpoint: the browser is 302'd here from
- * `/auth/oauth/:provider/start`, and it immediately bounces back to the signed
- * `redirect_uri` with a freshly-minted `code` (or an `error` to simulate user
- * denial). The matching profile is registered on the shared
- * {@link FakeIdentityProvider} so the server-side `oauth-exchange` resolves the
+ * provider's authorization endpoint: the browser is 302'd here when the login
+ * form's `sso` action runs (`AuthWorkflow.beginSso`), and it immediately bounces
+ * back to the signed `redirect_uri` with a freshly-minted `code` (or an `error`
+ * to simulate user denial). The matching profile is registered on the shared
+ * {@link FakeIdentityProvider} so the server-side `sso-callback` resolves the
  * `code` offline — no network, no real Google.
  *
  * Query knobs (all optional, sensible defaults) let a spec drive scenarios

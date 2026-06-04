@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { createPkcePair, generateNonce, generateRandomState, pkceChallengeFor } from "./pkce";
+import {
+  createPkcePair,
+  deriveSeededPkce,
+  generateNonce,
+  generateRandomState,
+  pkceChallengeFor,
+} from "./pkce";
 
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
 
@@ -37,5 +43,43 @@ describe("generateNonce / generateRandomState", () => {
     expect(generateRandomState()).toMatch(BASE64URL);
     expect(generateNonce()).not.toBe(generateNonce());
     expect(generateRandomState()).not.toBe(generateRandomState());
+  });
+});
+
+describe("deriveSeededPkce", () => {
+  const SECRET = "server-state-secret-aaaaaaaaaaaaaaaa";
+
+  it("derives an S256 pair shaped like createPkcePair (43-char base64url verifier)", () => {
+    const out = deriveSeededPkce(SECRET, "seed-1");
+    expect(out.method).toBe("S256");
+    expect(out.verifier).toMatch(BASE64URL);
+    expect(out.nonce).toMatch(BASE64URL);
+    expect(out.challenge).toMatch(BASE64URL);
+    // 32-byte HMAC-SHA256 digest → 43-char base64url, inside RFC 7636's 43–128.
+    expect(out.verifier.length).toBe(43);
+    expect(out.challenge).toBe(pkceChallengeFor(out.verifier));
+  });
+
+  it("is deterministic — /start and the callback re-derive the identical pair", () => {
+    expect(deriveSeededPkce(SECRET, "seed-1")).toEqual(deriveSeededPkce(SECRET, "seed-1"));
+  });
+
+  it("keeps verifier and nonce independent (domain separation)", () => {
+    const out = deriveSeededPkce(SECRET, "seed-1");
+    expect(out.verifier).not.toBe(out.nonce);
+  });
+
+  it("changes with the seed", () => {
+    const a = deriveSeededPkce(SECRET, "seed-1");
+    const b = deriveSeededPkce(SECRET, "seed-2");
+    expect(a.verifier).not.toBe(b.verifier);
+    expect(a.nonce).not.toBe(b.nonce);
+  });
+
+  it("changes with the secret (a different server cannot re-derive the verifier)", () => {
+    const a = deriveSeededPkce(SECRET, "seed-1");
+    const b = deriveSeededPkce("a-different-server-secret-bbbbbbbb", "seed-1");
+    expect(a.verifier).not.toBe(b.verifier);
+    expect(a.nonce).not.toBe(b.nonce);
   });
 });

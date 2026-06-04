@@ -29,14 +29,14 @@ import { buildInviteAlreadyAcceptedEnvelope } from "./workflow/auth-workflow";
 
 /** Workflows allowed by the bundled `/auth/trigger` endpoint. Subclasses override `triggerWf()` to extend. */
 export const DEFAULT_AUTH_WORKFLOWS = [
+  // Federated login is folded into `auth/login/flow`: an inbound OAuth callback
+  // (signed `state` present) routes the login schema to `sso-callback`, which
+  // gates on a signed state + CSRF cookie + verified ID token, so an attacker
+  // can't forge a successful exchange via the trigger.
   "auth/login/flow",
   "auth/invite/start",
   "auth/recovery/flow",
   "auth/signup/flow",
-  // Federated login. Safe to start publicly: the `oauth-exchange` step gates on
-  // a signed state + CSRF cookie + single-use PKCE transaction + a verified ID
-  // token, so an attacker can't forge a successful exchange via the trigger.
-  "auth/oauth/flow",
 ] as const;
 
 /**

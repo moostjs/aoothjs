@@ -21,9 +21,12 @@ export interface MfaSummary {
 export type LoginRedirect = "referer" | "home" | false | null;
 
 export interface SsoProvider {
+  /** Provider id — matches an `OAuthProviderRegistry` entry; sent as `ssoProvider` data on the `sso` action. */
   id: string;
+  /** Provider display name — the bundled `AsSsoProviders` renders "Continue with {label}". */
   label: string;
-  url: string;
+  /** Optional icon hint for the button (e.g. an icon-class key the renderer maps). */
+  icon?: string;
 }
 
 export interface ConcurrencyLimitOptions {
@@ -157,6 +160,8 @@ export interface AuthWfAltActionsState {
   signup?: boolean;
   magicLink?: boolean;
   usedMagicLink?: boolean;
+  /** SSO providers offered on the login form — each renders a `sso-<id>` button. */
+  ssoProviders?: SsoProvider[];
 }
 
 /** Alternate-credential policy (login). */
@@ -311,16 +316,17 @@ export interface AuthWfDefaults {
 }
 
 /**
- * Federated-login (OAuth2 / OIDC) flow state. Populated by the `oauth-exchange`
- * @Step after a verified provider profile resolves to a user. Its presence on
- * ctx is the OAuth-flow discriminator (§ per-flow discrimination):
- * `ctx.oauth` set ⇒ `auth/oauth/flow` is running (mirrors `ctx.accept` /
- * `ctx.postReset` / `ctx.changePassword` / `ctx.signup`).
+ * Federated-login (OAuth2 / OIDC) flow state. Populated by the `sso-callback`
+ * @Step after a verified provider profile resolves to a user. The login flow
+ * runs `sso-callback` (instead of `credentials`) when the start input carries
+ * an OAuth callback (`ctx.idpInbound`); `ctx.oauth` set ⇒ this login run came
+ * in through the federated leg (a discriminator usable by `resolveXxx` hooks,
+ * alongside `ctx.accept` / `ctx.postReset` / `ctx.signup`).
  *
  * Carries NO secret material — the PKCE verifier / nonce / authorization `code`
- * are consumed inside `oauth-exchange` (verifier + nonce live server-side in the
- * `OAuthFlowStore`, never on ctx). Only the post-resolve audit/UX fields land
- * here.
+ * are consumed inside `sso-callback`. The verifier + nonce are RE-DERIVED there
+ * from the signed-state seed (HMAC, stateless — no server-side flow store),
+ * never stored and never on ctx. Only the post-resolve audit/UX fields land here.
  */
 export interface AuthWfOAuthState {
   /** The provider id (`google`, `oidc:<issuer>`, …) the subject authenticated with. */
@@ -376,8 +382,13 @@ export interface AuthWfSignupState {
 export interface AuthWfPublicState {
   /** Mirrors `ctx.consents` — pending descriptor list + decision marker. */
   consents?: { pending?: ConsentDescriptorLike[]; decidedAt?: number };
-  /** Mirrors `ctx.altActions` — which alt-action buttons render on login. */
-  altActions?: { forgotPassword?: boolean; signup?: boolean; magicLink?: boolean };
+  /** Mirrors `ctx.altActions` — which alt-action buttons render on login (incl. SSO providers). */
+  altActions?: {
+    forgotPassword?: boolean;
+    signup?: boolean;
+    magicLink?: boolean;
+    ssoProviders?: SsoProvider[];
+  };
   /**
    * Mirrors `ctx.mfa` — only the fields forms read (method picker /
    * useDifferentMethod gating / transport-hint copy). Internal fields like
@@ -485,6 +496,14 @@ export interface AuthWfCtx {
   // ── Low-cardinality top-level flags ──
   isPasswordInitial?: boolean; // [login]
   isPasswordExpired?: boolean; // [login]
+  /**
+   * Captured by `init-login` when the START input is an OAuth callback (signed
+   * `state` present). Presence routes the login schema to `sso-callback` and
+   * skips `credentials`; `sso-callback` reads the callback inputs from HERE (not
+   * the step input) because the wf engine clears the step input after
+   * `init-login` runs — before `sso-callback` (the next step) executes.
+   */
+  idpInbound?: { code?: string; state: string; error?: string }; // [login — federated leg]
 
   /**
    * FE-facing surface — the ONLY top-level ctx key whitelisted on form

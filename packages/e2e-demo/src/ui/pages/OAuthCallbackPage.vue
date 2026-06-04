@@ -8,11 +8,13 @@ import { useHydrated } from "../composables/useHydrated";
 // The provider's `redirect_uri` lands the browser here
 // (`/auth/oauth/:provider/callback?code=…&state=…`). This page is a thin bridge:
 // it forwards `{ code, state }` (or a provider `error`) into the public
-// `/auth/trigger` as the START input of `auth/oauth/flow`, then renders the
+// `/auth/trigger` as the START input of `auth/login/flow` (federated login is
+// merged into the login workflow: `init-login` sees the inbound `state` and
+// routes to `sso-callback` instead of the password form), then renders the
 // result with the SAME `<AsWfForm>` the rest of the demo uses — so an MFA /
 // consent step that the OAuth login lands on is handled identically to a
-// password login. The PKCE verifier never reaches the browser; only the
-// single-use `code` does.
+// password login. The PKCE verifier never reaches the browser (it is re-derived
+// server-side from the signed-state seed); only the single-use `code` does.
 const route = useRoute();
 const router = useRouter();
 
@@ -23,7 +25,7 @@ const oauthError = computed(() =>
 );
 
 // START input — `<AsWfForm>` wraps this object as `input.formData`, which is
-// where `oauth-exchange` reads `code` / `state` / `error` (the shape every
+// where `sso-callback` reads `code` / `state` / `error` (the shape every
 // aooth form posts). So pass the BARE fields, NOT a nested `{ formData }`.
 const startInput = computed(() => ({
   ...(code.value ? { code: code.value } : {}),
@@ -89,7 +91,7 @@ async function navigate(url: string): Promise<void> {
     <div class="card layer-3 p-$l">
       <AsWfForm
         v-if="hydrated && (code || oauthError)"
-        name="auth/oauth/flow"
+        name="auth/login/flow"
         path="/auth/trigger"
         :types="types"
         :input="startInput"

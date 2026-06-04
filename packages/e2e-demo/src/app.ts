@@ -33,9 +33,7 @@ import {
   DEFAULT_AUTH_WORKFLOWS,
   deriveWfStateSecret,
   FEDERATED_IDENTITY_STORE_TOKEN,
-  OAUTH_FLOW_STORE_TOKEN,
   OAuthController,
-  OAuthFlowStoreMemory,
   Public,
   SessionsController,
   useAuth,
@@ -373,9 +371,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // A network-free fake Google provider whose authorize endpoint is the
   // test-only `/__fake-idp/authorize` route; the account-link table is the
   // real SQLite-backed `aooth_federated_identities`. The state secret reuses
-  // the app JWT secret. `OAuthFlowStoreMemory` holds the in-flight PKCE
-  // verifier server-side (single-instance demo — a multi-pod deployment would
-  // swap a shared store).
+  // the app JWT secret. The OAuth round-trip is STATELESS (no flow store): the
+  // PKCE verifier + OIDC nonce are re-derived from the signed-state seed, so
+  // any pod can complete a callback another started.
   const fakeGoogle = new FakeIdentityProvider({
     id: "google",
     authorizationEndpoint: `${env.PUBLIC_URL}/__fake-idp/authorize`,
@@ -401,7 +399,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     federated: federatedStore,
     policy: oauthRegistry.policy,
   });
-  const oauthFlowStore = new OAuthFlowStoreMemory();
 
   const app = new Moost();
   const moostHttp = new MoostHttp();
@@ -519,11 +516,14 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
       if (variant?.policy?.alternateCredentials) return variant.policy.alternateCredentials;
       // Demo default: forgotPassword + signup ON (dev UI dropdown surfaces them).
+      // Offer the fake Google provider on the login form — `AsSsoProviders`
+      // renders it from `ctx.public.altActions.ssoProviders`.
+      const ssoProviders = [{ id: "google", label: "Google", icon: "i-simple-icons-google" }];
       const base = super.resolveAlternateCredentials(ctx);
       if (base instanceof Promise) {
-        return base.then((b) => ({ ...b, forgotPassword: true, signup: true }));
+        return base.then((b) => ({ ...b, forgotPassword: true, signup: true, ssoProviders }));
       }
-      return { ...base, forgotPassword: true, signup: true };
+      return { ...base, forgotPassword: true, signup: true, ssoProviders };
     }
 
     // Demo enables open self-signup so `auth/signup/flow` is reachable. The
@@ -723,11 +723,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     // those use `protected` method overrides on `DemoAuthWorkflow`.
     ["EmailSender", () => emailSender],
     // Federated login. The two concrete services bind by class reference; the
-    // two ABSTRACT stores bind under explicit string tokens (see
-    // oauth-tokens.ts — an abstract class can't be a class-reference DI token).
+    // ABSTRACT `FederatedIdentityStore` binds under an explicit string token
+    // (see oauth-tokens.ts — an abstract class can't be a class-reference DI token).
     [OAuthProviderRegistry, () => oauthRegistry],
     [FederatedLoginService, () => federatedLogin],
-    [OAUTH_FLOW_STORE_TOKEN, () => oauthFlowStore],
     [FEDERATED_IDENTITY_STORE_TOKEN, () => federatedStore],
   ];
   app.setProvideRegistry(createProvideRegistry(...authProviders));

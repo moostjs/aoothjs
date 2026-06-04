@@ -1,5 +1,6 @@
 import type { Clock } from "@aooth/auth";
 import { OAuthError } from "./errors";
+import { type SeededPkce, deriveSeededPkce } from "./pkce";
 import {
   type OAuthStatePayload,
   type SignStateOptions,
@@ -126,5 +127,15 @@ export class OAuthProviderRegistry {
   /** Verify + decode a state token against the registry's `stateSecret`. */
   verifyState(token: string, opts?: VerifyStateOptions): Promise<OAuthStatePayload> {
     return verifyState(token, this.stateSecret, opts);
+  }
+
+  /**
+   * Derive the stateless PKCE verifier + OIDC nonce from the signed-state
+   * `random` seed, using the registry's `stateSecret`. `/start` and the
+   * callback call this with the SAME seed to obtain the SAME pair without any
+   * server-side flow store. See {@link deriveSeededPkce}.
+   */
+  deriveSeededPkce(seed: string): SeededPkce {
+    return deriveSeededPkce(this.stateSecret, seed);
   }
 }

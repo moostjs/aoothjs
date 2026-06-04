@@ -23,8 +23,7 @@ import { beforeEach, describe, expect, it } from "vite-plus/test";
 import { authGuardInterceptor } from "../auth.guard";
 import { OAUTH_CSRF_COOKIE } from "../oauth/oauth-csrf";
 import { OAuthController } from "../oauth/oauth.controller";
-import { OAuthFlowStoreMemory } from "../oauth/oauth-flow-store";
-import { FEDERATED_IDENTITY_STORE_TOKEN, OAUTH_FLOW_STORE_TOKEN } from "../oauth/oauth-tokens";
+import { FEDERATED_IDENTITY_STORE_TOKEN } from "../oauth/oauth-tokens";
 
 const STATE_SECRET = "test-oauth-state-secret-0123456789";
 
@@ -34,7 +33,6 @@ interface Harness {
     init?: RequestInit,
   ) => Promise<{ status: number; body: unknown; location: string | null; setCookies: string[] }>;
   registry: OAuthProviderRegistry;
-  flowStore: OAuthFlowStoreMemory;
   federated: FederatedIdentityStoreMemory;
   auth: AuthCredential;
   users: UserService;
@@ -59,7 +57,6 @@ async function buildApp(): Promise<Harness> {
     providers: [new FakeIdentityProvider({ id: "google" })],
     policy: { allowSignup: true, trustEmailVerifiedFrom: ["google"] },
   });
-  const flowStore = new OAuthFlowStoreMemory();
   const federated = new FederatedIdentityStoreMemory();
 
   moost.setProvideRegistry(
@@ -67,8 +64,7 @@ async function buildApp(): Promise<Harness> {
       [AuthCredential, () => auth],
       [UserService, () => users],
       [OAuthProviderRegistry, () => registry],
-      // Abstract stores bind under explicit string tokens (see oauth-tokens.ts).
-      [OAUTH_FLOW_STORE_TOKEN, () => flowStore],
+      // Abstract store binds under an explicit string token (see oauth-tokens.ts).
       [FEDERATED_IDENTITY_STORE_TOKEN, () => federated],
     ),
   );
@@ -97,15 +93,14 @@ async function buildApp(): Promise<Harness> {
     };
   }
 
-  return { request, registry, flowStore, federated, auth, users };
+  return { request, registry, federated, auth, users };
 }
 
-/** Pull `random` out of the signed `state` in a 302 Location URL, then take the txn. */
-async function txnFromLocation(h: Harness, location: string) {
+/** Verify + decode the signed `state` carried in a 302 Location URL. */
+async function statePayloadFromLocation(location: string) {
   const state = new URL(location).searchParams.get("state");
   expect(state, "Location carries a signed state").toBeTruthy();
-  const payload = await verifyState(state!, STATE_SECRET);
-  return { payload, txn: await h.flowStore.take(payload.random) };
+  return verifyState(state!, STATE_SECRET);
 }
 
 function csrfCookieValue(setCookies: string[]): string | null {
@@ -114,53 +109,11 @@ function csrfCookieValue(setCookies: string[]): string | null {
   return c.slice(`${OAUTH_CSRF_COOKIE}=`.length).split(";")[0] ?? null;
 }
 
-describe("OAuthController /:provider/start", () => {
-  let h: Harness;
-  beforeEach(async () => {
-    h = await buildApp();
-  });
+const bearer = (token: string) => ({ headers: { authorization: `Bearer ${token}` } });
 
-  it("404s an unknown provider", async () => {
-    const res = await h.request("/auth/oauth/github/start");
-    expect(res.status).toBe(404);
-  });
-
-  it("302s to the provider with a signed state, PKCE challenge, and a Lax CSRF cookie", async () => {
-    const res = await h.request("/auth/oauth/google/start?redirect=/dashboard");
-    expect(res.status).toBe(302);
-    expect(res.location).toBeTruthy();
-    const url = new URL(res.location!);
-    expect(url.origin + url.pathname).toBe("https://fake-idp.test/authorize");
-    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
-    expect(url.searchParams.get("code_challenge")).toBeTruthy();
-    expect(url.searchParams.get("redirect_uri")).toBe(
-      "https://app.test/auth/oauth/google/callback",
-    );
-
-    // CSRF cookie is set, Lax + httpOnly, and equals the signed state's random.
-    const cookie = res.setCookies.find((s) => s.startsWith(`${OAUTH_CSRF_COOKIE}=`));
-    expect(cookie).toBeTruthy();
-    expect(cookie).toMatch(/HttpOnly/i);
-    expect(cookie).toMatch(/SameSite=Lax/i);
-
-    const { payload, txn } = await txnFromLocation(h, res.location!);
-    expect(payload.provider).toBe("google");
-    expect(payload.redirect).toBe("/dashboard");
-    expect(csrfCookieValue(res.setCookies)).toBe(payload.random);
-    // Secret half is server-side, never in the URL/state.
-    expect(payload.verifier).toBeUndefined();
-    expect(txn?.verifier).toBeTruthy();
-    expect(txn?.nonce).toBeTruthy();
-    expect(txn?.userId).toBeUndefined(); // login, not link
-  });
-
-  it("falls back to '/' for an open-redirect target", async () => {
-    const res = await h.request("/auth/oauth/google/start?redirect=https://evil.test");
-    const { payload } = await txnFromLocation(h, res.location!);
-    expect(payload.redirect).toBe("/");
-  });
-});
-
+// Anonymous LOGIN is no longer a controller route — it lives in `auth/login/flow`
+// (`AuthWorkflow.beginSso`). The controller now serves only the authenticated
+// account-management routes: `/:provider/link` and `DELETE /:provider/:subject`.
 describe("OAuthController /:provider/link", () => {
   let h: Harness;
   beforeEach(async () => {
@@ -172,16 +125,55 @@ describe("OAuthController /:provider/link", () => {
     expect(res.status).toBe(401);
   });
 
-  it("binds the authenticated userId into the server-side transaction (never the URL)", async () => {
+  it("404s an unknown provider (authenticated)", async () => {
     const issued = await h.auth.issue("user-42");
-    const res = await h.request("/auth/oauth/google/link", {
-      headers: { authorization: `Bearer ${issued.accessToken}` },
-    });
+    const res = await h.request("/auth/oauth/github/link", bearer(issued.accessToken));
+    expect(res.status).toBe(404);
+  });
+
+  it("302s to the provider with a signed state, derived PKCE challenge, and a Lax CSRF cookie", async () => {
+    const issued = await h.auth.issue("user-42");
+    const res = await h.request(
+      "/auth/oauth/google/link?redirect=/dashboard",
+      bearer(issued.accessToken),
+    );
     expect(res.status).toBe(302);
-    const { payload, txn } = await txnFromLocation(h, res.location!);
-    expect(txn?.userId).toBe("user-42");
-    // userId stays server-side — it must NOT leak into the signed state.
-    expect(payload.userId).toBeUndefined();
+    expect(res.location).toBeTruthy();
+    const url = new URL(res.location!);
+    expect(url.origin + url.pathname).toBe("https://fake-idp.test/authorize");
+    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(url.searchParams.get("redirect_uri")).toBe(
+      "https://app.test/auth/oauth/google/callback",
+    );
+
+    // CSRF cookie is set, Lax + httpOnly, and equals the signed state's `random` seed.
+    const cookie = res.setCookies.find((s) => s.startsWith(`${OAUTH_CSRF_COOKIE}=`));
+    expect(cookie).toMatch(/HttpOnly/i);
+    expect(cookie).toMatch(/SameSite=Lax/i);
+
+    const payload = await statePayloadFromLocation(res.location!);
+    expect(payload.provider).toBe("google");
+    expect(payload.redirect).toBe("/dashboard");
+    expect(csrfCookieValue(res.setCookies)).toBe(payload.random);
+    // `userId` is bound in the SIGNED state (HS256, tamper-proof) — the callback
+    // links the verified identity to this user.
+    expect(payload.userId).toBe("user-42");
+    // STATELESS: the verifier is never in the URL/state — it is re-derived from
+    // the seed. The challenge in the URL must match the derived verifier's.
+    expect(payload.verifier).toBeUndefined();
+    expect(url.searchParams.get("code_challenge")).toBe(
+      h.registry.deriveSeededPkce(payload.random).challenge,
+    );
+  });
+
+  it("falls back to '/' for an open-redirect target", async () => {
+    const issued = await h.auth.issue("user-42");
+    const res = await h.request(
+      "/auth/oauth/google/link?redirect=https://evil.test",
+      bearer(issued.accessToken),
+    );
+    const payload = await statePayloadFromLocation(res.location!);
+    expect(payload.redirect).toBe("/");
   });
 });
 
@@ -201,7 +193,7 @@ describe("OAuthController unlink", () => {
     await h.federated.link({ provider: "google", subject: "sub-other", userId: "user-2" });
     const res = await h.request("/auth/oauth/google/sub-other", {
       method: "DELETE",
-      headers: { authorization: `Bearer ${issued.accessToken}` },
+      ...bearer(issued.accessToken),
     });
     expect(res.status).toBe(404);
   });
@@ -212,7 +204,7 @@ describe("OAuthController unlink", () => {
     const issued = await h.auth.issue(user.id);
     const res = await h.request("/auth/oauth/google/sub-solo", {
       method: "DELETE",
-      headers: { authorization: `Bearer ${issued.accessToken}` },
+      ...bearer(issued.accessToken),
     });
     expect(res.status).toBe(409);
     // Still linked — the guard refused.
@@ -227,7 +219,7 @@ describe("OAuthController unlink", () => {
 
     const res = await h.request("/auth/oauth/google/sub-a", {
       method: "DELETE",
-      headers: { authorization: `Bearer ${issued.accessToken}` },
+      ...bearer(issued.accessToken),
     });
     // moost defaults a body-returning DELETE to 202 (same as the shipped
     // `SessionsController.revokeSession`).

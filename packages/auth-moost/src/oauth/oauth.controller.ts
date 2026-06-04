@@ -1,11 +1,5 @@
 import { AuthCredential } from "@aooth/auth";
-import {
-  createPkcePair,
-  generateNonce,
-  generateRandomState,
-  OAuthError,
-  OAuthProviderRegistry,
-} from "@aooth/idp";
+import { generateRandomState, OAuthError, OAuthProviderRegistry } from "@aooth/idp";
 import { FederatedIdentityStore, UserService } from "@aooth/user";
 import { Delete, Get, HttpError, Query } from "@moostjs/event-http";
 import { current } from "@wooksjs/event-core";
@@ -15,67 +9,57 @@ import { Controller, Inject, Param } from "moost";
 import { useAuth } from "../auth.composables";
 import { Public } from "../auth.decorator";
 import { OAUTH_CSRF_COOKIE, oauthCsrfCookieAttrs } from "./oauth-csrf";
-import { OAuthFlowStore } from "./oauth-flow-store";
 import { resolveOAuthRedirect } from "./oauth-redirect";
-import { FEDERATED_IDENTITY_STORE_TOKEN, OAUTH_FLOW_STORE_TOKEN } from "./oauth-tokens";
+import { FEDERATED_IDENTITY_STORE_TOKEN } from "./oauth-tokens";
 
-/** State-token + CSRF-cookie + flow-store TTL (seconds). Matches `signState`'s default. */
+/** Signed-state + CSRF-cookie TTL (seconds). Matches `signState`'s default. */
 const OAUTH_TTL_SEC = 600;
 
 /**
- * REST surface for federated login (OAuth2 / OIDC), RFC IDP.md §3.7. THREE
- * routes — the interactive callback is deliberately NOT here: the provider's
- * `redirect_uri` lands on the SPA, which bridges `{ code, state }` into the
- * public `/auth/trigger` starting `auth/oauth/flow` (so MFA / consent / cookie
- * issuance all reuse the existing workflow machinery). Everything secret about
- * the round-trip — the PKCE verifier + OIDC nonce — lives server-side in
- * {@link OAuthFlowStore}; only the single-use `code` is ever exposed to the SPA
- * (strictly tighter than a classic public-SPA client, which also holds the
- * verifier).
+ * REST surface for federated-login ACCOUNT MANAGEMENT (OAuth2 / OIDC), RFC
+ * IDP.md §3.7. Two routes — anonymous LOGIN is NOT here: it lives in the login
+ * workflow (the login form offers a "Continue with <provider>" button that ends
+ * the wf with a redirect to the provider; see `AuthWorkflow.beginSso`). The
+ * provider's `redirect_uri` lands on the SPA, which bridges `{ provider, code,
+ * state }` into the public `/auth/trigger` STARTING `auth/login/flow` — so MFA /
+ * consent / cookie issuance reuse the existing workflow machinery.
  *
- * - `GET  /auth/oauth/:provider/start` — begin login. `@Public()`; 302s to the
- *   provider after minting PKCE + nonce + an anti-CSRF `random`, persisting the
- *   secret half in `OAuthFlowStore`, signing `{ random, provider, redirect }`
- *   into `state`, and dropping a Lax double-submit cookie.
+ * The round-trip is STATELESS — no flow store. The PKCE verifier + OIDC nonce
+ * are DERIVED from a non-secret seed carried in the signed `state` (the same
+ * seed double-submitted in the CSRF cookie) and re-derived at the callback (see
+ * {@link OAuthProviderRegistry.deriveSeededPkce}). Nothing secret rides in the URL.
+ *
  * - `GET  /auth/oauth/:provider/link` — begin an account-LINK for the
- *   authenticated user (binds `userId` into the server-side transaction).
- *   Self-scoped: `getUserId()` 401s an anonymous caller.
+ *   authenticated user. 302s to the provider after deriving PKCE/nonce from a
+ *   fresh seed and signing `{ random, provider, redirect, userId }` into `state`
+ *   (the `userId` is HS256-signed → tamper-proof, server-minted). Self-scoped:
+ *   `getUserId()` 401s an anonymous caller. `sso-callback` links the verified
+ *   identity to that `userId`.
  * - `DELETE /auth/oauth/:provider/:subject` — disconnect a linked identity.
  *   Self-scoped; guards against removing the user's only sign-in method, then
  *   revokes the user's sessions.
  *
- * `start` / `link` are `@Public()` self-scoped primitives (mirroring
- * `AuthController.logout`/`status`): anonymous start is the whole point, and
- * link/unlink derive identity from the session, never from a parameter.
- * Subclass + add `@ArbacAction(...)` to gate them further.
+ * `link` / `unlink` are `@Public()` self-scoped primitives (mirroring
+ * `AuthController.logout`/`status`): they derive identity from the session,
+ * never from a parameter. Subclass + add `@ArbacAction(...)` to gate them further.
  */
 @Controller("auth/oauth")
 export class OAuthController {
   // `registry` / `auth` / `users` are CONCRETE classes — their provide-registry
-  // entries resolve through moost's class-reference ctor injection. The two
-  // STORES are abstract, for which that path falls back to auto-instantiating a
-  // body-less class; they are injected via explicit string tokens instead (see
-  // oauth-tokens.ts).
+  // entries resolve through moost's class-reference ctor injection. The
+  // `FederatedIdentityStore` is abstract, for which that path falls back to
+  // auto-instantiating a body-less class; it is injected via an explicit string
+  // token instead (see oauth-tokens.ts).
   constructor(
     protected readonly registry: OAuthProviderRegistry,
     protected readonly auth: AuthCredential,
     protected readonly users: UserService,
-    @Inject(OAUTH_FLOW_STORE_TOKEN) protected readonly flowStore: OAuthFlowStore,
     @Inject(FEDERATED_IDENTITY_STORE_TOKEN) protected readonly federated: FederatedIdentityStore,
   ) {}
 
   /** Default post-login redirect when the caller supplies none / an unsafe one. */
   protected defaultRedirect(): string {
     return "/";
-  }
-
-  @Get(":provider/start")
-  @Public()
-  async start(
-    @Param("provider") providerId: string,
-    @Query("redirect") redirect: string | undefined,
-  ): Promise<string> {
-    return this.begin(providerId, redirect, undefined);
   }
 
   @Get(":provider/link")
@@ -92,11 +76,14 @@ export class OAuthController {
   }
 
   /**
-   * Shared start machinery for login (`userId` undefined) and link (`userId`
-   * set): mint PKCE + nonce + anti-CSRF random, stash the secret half + any
-   * link-userId in `OAuthFlowStore`, sign `{ random, provider, redirect }` into
-   * `state`, drop the Lax double-submit cookie, and 302 to the provider's
-   * authorization URL. Returns an empty body (the redirect is in the headers).
+   * Start machinery for an account-LINK: STATELESS — mint a fresh non-secret
+   * `seed`, DERIVE the PKCE verifier + OIDC nonce from it
+   * (`registry.deriveSeededPkce`), sign `{ random: seed, provider, redirect,
+   * userId }` into `state` (the `userId` makes the callback link to THIS user;
+   * HS256-signed so it's tamper-proof), drop the Lax double-submit cookie
+   * holding the seed, and 302 to the provider. The verifier is NOT persisted —
+   * `sso-callback` re-derives it from `state.random`. Returns an empty body
+   * (the redirect is in the headers).
    */
   protected async begin(
     providerId: string,
@@ -105,33 +92,29 @@ export class OAuthController {
   ): Promise<string> {
     const provider = this.requireProvider(providerId);
     const safeRedirect = resolveOAuthRedirect(redirect, this.defaultRedirect());
-    const pkce = createPkcePair();
-    const nonce = generateNonce();
-    const random = generateRandomState();
-
-    await this.flowStore.put(random, {
-      provider: providerId,
-      verifier: pkce.verifier,
-      nonce,
-      redirect: safeRedirect,
-      ...(userId !== undefined && { userId }),
-    });
+    const seed = generateRandomState();
+    const { nonce, challenge } = this.registry.deriveSeededPkce(seed);
 
     const state = await this.registry.signState(
-      { random, provider: providerId, redirect: safeRedirect },
+      {
+        random: seed,
+        provider: providerId,
+        redirect: safeRedirect,
+        ...(userId !== undefined && { userId }),
+      },
       { ttlSec: OAUTH_TTL_SEC },
     );
     const authUrl = await provider.authorizationUrl({
       redirectUri: this.registry.redirectUri(providerId),
       state,
-      codeChallenge: pkce.challenge,
+      codeChallenge: challenge,
       nonce,
     });
 
     const res = useResponse(current());
     res.setCookie(
       OAUTH_CSRF_COOKIE,
-      random,
+      seed,
       oauthCsrfCookieAttrs({ secure: useAuth().options.cookie.secure, maxAgeSec: OAUTH_TTL_SEC }),
     );
     res.status = 302;

@@ -45,11 +45,15 @@ export interface WithInlineConsentForm {
  *
  * Override via `setupAuthWorkflows({ forms: { loginCredentials: MyForm } })`.
  *
- * SSO provider ids (configured via
- * `opts.alternateCredentials.ssoProviders[].id`) are NOT declared here —
- * consumers who enable SSO supply their own `loginCredentials` form and add a
- * matching phantom `ui.action` field per provider so
- * `useAtscriptWf(form).resolveAction()` accepts the dynamic ids.
+ * SSO providers render out of the box: the `AsSsoProviders` component reads the
+ * resolved provider list off `ctx.public.altActions.ssoProviders` (a dynamic
+ * `SsoProvider[]`) and renders one button per provider. Because the server's
+ * `resolveAction()` only accepts DECLARED actions, providers don't get a
+ * per-id action — instead a single data-carrying `sso` action is declared
+ * here, and `AsSsoProviders` sets the chosen id into `ssoProvider` before
+ * invoking it (`useAtscriptWf(form).resolveAction()` sees `sso`; the workflow
+ * reads `ssoProvider` from the submitted data). The whole block hides when no
+ * providers are configured, so a password-only deployment renders unchanged.
  */
 @meta.label 'Sign in'
 @wf.context.pass 'public'
@@ -89,6 +93,25 @@ export interface LoginCredentialsForm {
     @ui.form.pushDown
     @ui.form.fn.hidden '(_, _d, ctx) => !ctx.public?.altActions?.magicLink'
     magicLink?: ui.action
+
+    // SSO providers — rendered from `ctx.public.altActions.ssoProviders` with
+    // the built-in radio renderer (no custom component needed). The `sso`
+    // action is DATA-CARRYING (`@wf.action.withData`), so the selected
+    // `ssoProvider` rides in the submitted data and the workflow redirects to
+    // that provider (same mechanism `forgotPassword` uses to carry the typed
+    // username). OPTIONAL on purpose — a password login (or a hand-rolled
+    // client) submits without it and must NOT be blocked; only the `sso` action
+    // carries it. The whole block hides when no providers are configured. A
+    // one-click button component can replace this via `setupAuthWorkflows({ forms })`.
+    @ui.form.order 50
+    @ui.form.type 'radio'
+    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.public?.altActions?.ssoProviders) ? ctx.public.altActions.ssoProviders.map((p) => ({ key: p.id, label: "Continue with " + p.label })) : []'
+    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.public?.altActions?.ssoProviders?.length ?? 0) === 0'
+    @meta.label 'Or sign in with'
+    @ui.form.action 'sso', 'Continue'
+    @wf.action.withData 'sso'
+    @ui.form.grid.colSpan '12'
+    ssoProvider?: string
 }
 
 /**

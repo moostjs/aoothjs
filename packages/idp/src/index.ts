@@ -20,8 +20,14 @@ export type {
 export { isConfigurableProvider, defaultUsernameStrategy, resolveFederatedPolicy } from "./types";
 
 // PKCE / nonce / CSRF-random primitives
-export { createPkcePair, pkceChallengeFor, generateNonce, generateRandomState } from "./pkce";
-export type { PkcePair } from "./pkce";
+export {
+  createPkcePair,
+  pkceChallengeFor,
+  generateNonce,
+  generateRandomState,
+  deriveSeededPkce,
+} from "./pkce";
+export type { PkcePair, SeededPkce } from "./pkce";
 
 // Signed state
 export { signState, verifyState } from "./state";
