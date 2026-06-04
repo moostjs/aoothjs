@@ -5,6 +5,8 @@ import {
   InviteForm,
   LoginCredentialsForm,
   MfaCodeForm,
+  ProveControlForm,
+  ProveControlOtpForm,
   SetPasswordForm,
 } from "../atscript/index";
 
@@ -57,6 +59,27 @@ describe("default form .as models", () => {
     expect(confirm.metadata.get("ui.form.autocomplete")).toBe("new-password");
   });
 
+  it("ProveControlForm requires a password with current-password autocomplete", () => {
+    const password = getProp(ProveControlForm, "password");
+    expect(password).toBeDefined();
+    expect(password.metadata.get("meta.required")).toBeTruthy();
+    expect(password.metadata.get("ui.form.type")).toBe("password");
+    expect(password.metadata.get("meta.sensitive")).toBe(true);
+    expect(password.metadata.get("ui.form.autocomplete")).toBe("current-password");
+    // `cancel` is the only alt-action — declared so `resolveAction()` accepts it.
+    expect(getProp(ProveControlForm, "cancel")).toBeDefined();
+  });
+
+  it("ProveControlOtpForm requires a digit-only code (OTP fallback proof)", () => {
+    const code = getProp(ProveControlOtpForm, "code");
+    expect(code).toBeDefined();
+    expect(code.metadata.get("meta.required")).toBeTruthy();
+    expect(code.metadata.get("ui.form.autocomplete")).toBe("one-time-code");
+    const patterns = code.metadata.get("expect.pattern") as Array<{ pattern: string }> | undefined;
+    expect(patterns?.[0]?.pattern).toBe("^[0-9]+$");
+    expect(getProp(ProveControlOtpForm, "cancel")).toBeDefined();
+  });
+
   it("InviteForm has required email and roles", () => {
     const email = getProp(InviteForm, "email");
     const roles = getProp(InviteForm, "roles");
@@ -88,6 +111,8 @@ describe("default form .as models", () => {
     expect(() =>
       InviteForm.validator().validate({ email: "bob@example.com", roles: [] }),
     ).not.toThrow();
+    expect(() => ProveControlForm.validator().validate({ password: "Password1!" })).not.toThrow();
+    expect(() => ProveControlOtpForm.validator().validate({ code: "123456" })).not.toThrow();
   });
 
   it("each form validator rejects ill-formed input", () => {
@@ -100,5 +125,7 @@ describe("default form .as models", () => {
     expect(() =>
       SetPasswordForm.validator().validate({ newPassword: "short", confirmPassword: "short" }),
     ).toThrow();
+    // OTP proof code is digit-only; a non-numeric code is rejected.
+    expect(() => ProveControlOtpForm.validator().validate({ code: "abcd" })).toThrow();
   });
 });

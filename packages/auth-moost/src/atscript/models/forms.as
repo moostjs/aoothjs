@@ -749,3 +749,82 @@ export interface ChangePasswordForm {
     @ui.form.grid.colSpan '12'
     passwordRules: ui.paragraph
 }
+
+/**
+ * Prove control of an EXISTING local account before a federated identity is
+ * attached to it — the interactive completion of `FederatedLoginService`'s
+ * `needs-link` outcome (a verified provider profile whose email matches an
+ * existing account under the default `require-interactive-link` policy). The
+ * PASSWORD variant: the matched account has a real password, so the user
+ * re-enters it to prove ownership.
+ *
+ * The `prove-control` @Step binds the username to the matched account
+ * server-side (the user never types it) and verifies via `UserService.login`,
+ * so this form collects only the password. `intro` renders the masked account
+ * hint off `ctx.public.proveControl.hint` ("…account for a***@x.com…") — a
+ * deliberate, BOUNDED account-existence disclosure (surfacing the candidate is
+ * the whole point of `needs-link`). A wrong password re-pauses with a generic
+ * inline error; the `cancel` action abandons the link (no account created, no
+ * session issued, generic terminal).
+ *
+ * Override via `setupAuthWorkflows({ forms: { proveControl: MyForm } })`.
+ */
+@meta.label 'Confirm your identity'
+@wf.context.pass 'public'
+@ui.form.submit.text 'Verify and link'
+export interface ProveControlForm {
+    @ui.form.order 5
+    @ui.form.fn.value '(_, _d, ctx) => ctx.public?.proveControl?.hint ? "An account for " + ctx.public.proveControl.hint + " already exists. Enter its password to link this sign-in method." : "Enter your existing account password to link this sign-in method."'
+    intro: ui.paragraph
+
+    @ui.form.order 10
+    @ui.form.type 'password'
+    @meta.label 'Password'
+    @ui.form.autocomplete 'current-password'
+    @meta.sensitive
+    @meta.required
+    @expect.minLength 1
+    password: string
+
+    @ui.form.order 20
+    @ui.form.action 'cancel', 'Cancel'
+    @ui.form.attr 'align', 'center'
+    @ui.form.pushDown
+    cancel?: ui.action
+}
+
+/**
+ * OTP FALLBACK of the `needs-link` completion — used when the matched account
+ * is passwordless (`password.isInitial`), so there is no password to re-enter.
+ * The `prove-control` @Step mints a one-time code and delivers it to the
+ * account's OWN confirmed email/SMS channel (NEVER the provider-supplied
+ * address — that would be circular, since the attacker controls the provider
+ * account), then this form collects the code. `intro` shows the masked
+ * delivery target off `ctx.public.proveControl.sentTo`.
+ *
+ * Override via `setupAuthWorkflows({ forms: { proveControlOtp: MyForm } })`.
+ */
+@meta.label 'Confirm your identity'
+@wf.context.pass 'public'
+@ui.form.submit.text 'Verify and link'
+export interface ProveControlOtpForm {
+    @ui.form.order 5
+    @ui.form.fn.value '(_, _d, ctx) => ctx.public?.proveControl?.sentTo ? "We sent a verification code to " + ctx.public.proveControl.sentTo + ". Enter it to link this sign-in method to your existing account." : "Enter the verification code to link this sign-in method to your existing account."'
+    intro: ui.paragraph
+
+    @ui.form.order 10
+    @ui.form.type 'text'
+    @meta.label 'Verification code'
+    @ui.form.autocomplete 'one-time-code'
+    @meta.required
+    @expect.minLength 4
+    @expect.maxLength 12
+    @expect.pattern '^[0-9]+$'
+    code: string
+
+    @ui.form.order 20
+    @ui.form.action 'cancel', 'Cancel'
+    @ui.form.attr 'align', 'center'
+    @ui.form.pushDown
+    cancel?: ui.action
+}

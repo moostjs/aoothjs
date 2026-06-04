@@ -1,10 +1,17 @@
 import { randomUUID } from "node:crypto";
 import type { FakeIdentityProvider } from "@aooth/idp";
 import { Public } from "@aooth/auth-moost";
-import { Get, Query } from "@moostjs/event-http";
+import { Body, Get, Post, Query } from "@moostjs/event-http";
 import { current } from "@wooksjs/event-core";
 import { useResponse } from "@wooksjs/event-http";
 import { Controller } from "moost";
+
+/** One-shot profile override settable by a spec via `POST /__fake-idp/profile`. */
+interface FakeIdpProfileOverride {
+  sub?: string;
+  email?: string;
+  emailVerified?: boolean;
+}
 
 /**
  * Test-only fake identity provider HTTP endpoint (mounted ONLY under
@@ -23,8 +30,23 @@ import { Controller } from "moost";
 export function createFakeIdpController(
   provider: FakeIdentityProvider,
 ): new (...args: never[]) => unknown {
+  // One-shot profile override for the NEXT authorize bounce. The login form
+  // builds the authorize URL server-side (`AuthWorkflow.beginSso`), so a spec
+  // can't thread `sub`/`email` knobs through the browser redirect — it POSTs
+  // them here first instead. Consumed (cleared) by the next `authorize` so it
+  // can't bleed into a later test. Drives the `needs-link` interactive path: a
+  // verified profile whose email collides with an existing seeded account.
+  let nextProfile: FakeIdpProfileOverride | null = null;
+
   @Controller("__fake-idp")
   class FakeIdpController {
+    @Post("profile")
+    @Public()
+    setNextProfile(@Body() body: FakeIdpProfileOverride): { ok: true } {
+      nextProfile = { ...body };
+      return { ok: true };
+    }
+
     @Get("authorize")
     @Public()
     authorize(
@@ -40,6 +62,11 @@ export function createFakeIdpController(
         res.status = 400;
         return "fake-idp: missing redirect_uri or state";
       }
+      // Consume the one-shot override (if any) — overrides query, which overrides
+      // the default. Cleared regardless of path so a set-but-unused override
+      // never leaks into the next bounce.
+      const override = nextProfile;
+      nextProfile = null;
       const back = new URL(redirectUri);
       back.searchParams.set("state", state);
 
@@ -55,9 +82,9 @@ export function createFakeIdpController(
       // authorize→callback bounce does.
       const code = randomUUID();
       provider.setProfile(code, {
-        subject: sub ?? "google-sub-demo",
-        email: email ?? "oauth.user@acme.test",
-        emailVerified: emailVerified !== "false",
+        subject: override?.sub ?? sub ?? "google-sub-demo",
+        email: override?.email ?? email ?? "oauth.user@acme.test",
+        emailVerified: override?.emailVerified ?? emailVerified !== "false",
         displayName: "OAuth Demo User",
         raw: {},
       });

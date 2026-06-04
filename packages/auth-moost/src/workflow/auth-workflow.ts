@@ -23,6 +23,7 @@
 import { AuthCredential, type CredentialMetadata } from "@aooth/auth";
 import type { NormalizedProfile } from "@aooth/idp";
 import {
+  type FederatedProfileSnapshot,
   generateTotpSecret,
   generateTotpUri,
   maskEmail,
@@ -82,6 +83,8 @@ import {
   LoginCredentialsForm,
   MfaCodeForm,
   PincodeForm,
+  ProveControlForm,
+  ProveControlOtpForm,
   Select2faForm,
   SetPasswordForm,
   SignupForm,
@@ -167,6 +170,8 @@ const DEFAULT_FORMS: ResolvedAuthWorkflowOpts["forms"] = {
   pincode: PincodeForm,
   setPassword: SetPasswordForm,
   changePassword: ChangePasswordForm,
+  proveControl: ProveControlForm,
+  proveControlOtp: ProveControlOtpForm,
   termsBump: TermsBumpForm,
   concurrencyLimit: ConcurrencyLimitForm,
   recoveryPincode: PincodeForm,
@@ -928,6 +933,12 @@ export class AuthWorkflow {
     if (ctx.defaults) {
       const sub = pickDefined(ctx.defaults, ["email"] as const);
       if (sub) pub.defaults = sub as AuthWfPublicState["defaults"];
+    }
+    if (ctx.pendingLink) {
+      // Only the masked/UX fields — `candidateUserId` / `subject` / proof `pin`
+      // stay server-only (never whitelisted onto the wire).
+      const sub = pickDefined(ctx.pendingLink, ["mode", "hint", "sentTo"] as const);
+      if (sub) pub.proveControl = sub as AuthWfPublicState["proveControl"];
     }
     if (ctx.newPasswordRequired !== undefined) {
       pub.newPasswordRequired = ctx.newPasswordRequired;
@@ -3525,10 +3536,16 @@ export class AuthWorkflow {
 
     // ── login mode — resolve the verified profile to a user ──
     const outcome = await federated.resolveUser(profile);
-    if (outcome.kind === "denied" || outcome.kind === "needs-link") {
-      // `needs-link` interactive completion (prove control of the existing
-      // account, then link) is deferred — v1 surfaces the generic terminal.
-      return this.finishOAuth(ctx, outcome.kind);
+    // `denied` is a genuine terminal — no account to proceed into / signup refused.
+    if (outcome.kind === "denied") return this.finishOAuth(ctx, "denied");
+    // `needs-link` — a verified profile whose email matches an EXISTING local
+    // account (default `require-interactive-link` policy). Don't silently merge:
+    // stash the candidate + verified profile and divert to the `prove-control`
+    // @Step, which challenges for control of the account BEFORE `linkIdentity`.
+    // `ctx.subject` stays UNSET so the `{ break: !ctx.subject }` gate keeps the
+    // unproven user out of the issue tail until proof succeeds.
+    if (outcome.kind === "needs-link") {
+      return this.stashPendingLink(ctx, profile, outcome.candidateUserId, redirect);
     }
 
     // outcome ∈ { linked, created, auto-linked } → carries `userId`.
@@ -3601,6 +3618,210 @@ export class AuthWorkflow {
     return undefined;
   }
 
+  /**
+   * `needs-link` setup (decision A — password, OTP fallback). Decide how the
+   * user will prove control of the matched account, stash the pending-link
+   * state, and return so the `prove-control` @Step (gated on `ctx.pendingLink`)
+   * pauses for the challenge. Deliberately does NOT set `ctx.subject` — proving
+   * control is exactly what authorizes that.
+   *
+   * Proof channel:
+   *  - account has a real password (`!password.isInitial`) → `password`;
+   *  - else a confirmed email/SMS factor exists → `otp` to THAT channel (NEVER
+   *    the provider-supplied email — the attacker controls the provider account,
+   *    so a code sent there would be circular);
+   *  - else no provable channel → generic terminal (cannot safely link).
+   */
+  protected async stashPendingLink(
+    ctx: AuthWfCtx,
+    profile: NormalizedProfile,
+    candidateUserId: string,
+    redirect: string,
+  ): Promise<undefined> {
+    const candidate = await this.users.getUser(candidateUserId);
+    let mode: "password" | "otp";
+    let otpChannel: "email" | "sms" | undefined;
+    if (!candidate.password.isInitial) {
+      mode = "password";
+    } else {
+      const otp = candidate.mfa.methods.find(
+        (m) => (m.name === "email" || m.name === "sms") && m.confirmed,
+      );
+      // Passwordless AND no confirmed contact channel of its own → unprovable.
+      if (!otp) return this.finishOAuth(ctx, "needs-link");
+      mode = "otp";
+      otpChannel = otp.name as "email" | "sms";
+    }
+    // Display snapshot for the federated row — `profile.raw` (transient verified
+    // claims) is dropped: it must never land in the persisted wf state (RFC §7).
+    const snapshot: FederatedProfileSnapshot = {};
+    if (profile.email !== undefined) snapshot.email = profile.email;
+    if (profile.emailVerified !== undefined) snapshot.emailVerified = profile.emailVerified;
+    if (profile.displayName !== undefined) snapshot.displayName = profile.displayName;
+    if (profile.avatarUrl !== undefined) snapshot.avatarUrl = profile.avatarUrl;
+    ctx.pendingLink = {
+      candidateUserId,
+      provider: profile.provider,
+      subject: profile.subject,
+      mode,
+      snapshot,
+      // `profile.email` is guaranteed on `needs-link` (resolveUser only returns
+      // it inside `if (profile.email …)`); masked for the form's account hint.
+      ...(profile.email ? { hint: maskEmail(profile.email) } : {}),
+      ...(otpChannel ? { otpChannel } : {}),
+      ...(redirect ? { redirect } : {}),
+    };
+    // Durable store so the prove-control pause (+ the rest of the run) survive.
+    swapStrategy("store");
+    return undefined;
+  }
+
+  /**
+   * Interactive `needs-link` completion — prove control of the matched local
+   * account, then attach the verified federated identity to it. Gated by the
+   * login schema on `ctx.pendingLink && !ctx.subject`, so it runs ONLY on the
+   * federated email-collision path and ONLY while the account is unproven.
+   *
+   * PASSWORD mode re-verifies the account's password via `UserService.login`
+   * with the username bound server-side from `candidateUserId` (the user never
+   * types it, so this can't be repurposed to sign into a different account).
+   * OTP mode verifies a code delivered to the account's OWN confirmed channel.
+   * A wrong proof re-pauses with a generic inline error; `cancel` abandons the
+   * link. On success: `linkIdentity` (cross-user `ALREADY_EXISTS` guarded) →
+   * account-state gate → set `ctx.subject` + `ctx.oauth` → seed channel state →
+   * fall through to the shared login tail exactly like any other login.
+   */
+  @Step("prove-control")
+  @Public()
+  async proveControl(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    const pending = ctx.pendingLink;
+    // Schema gates entry on `pendingLink && !subject`; defensive no-op otherwise.
+    if (!pending || ctx.subject) return undefined;
+    const { federated } = await this.oauthRuntime();
+    // The candidate is re-fetched on every (re-)entry across the proof pause, so
+    // it can vanish mid-flow (admin deletes the account while the user lingers on
+    // the form). Route a NOT_FOUND to the same safe generic terminal as the other
+    // pre-subject failures rather than letting it escape the workflow as a 500.
+    let candidate: UserCredentials;
+    try {
+      candidate = await this.users.getUser(pending.candidateUserId);
+    } catch (err) {
+      if (err instanceof UserAuthError && err.type === "NOT_FOUND") {
+        delete ctx.pendingLink;
+        return this.finishOAuth(ctx, "needs-link");
+      }
+      throw err;
+    }
+
+    const isOtp = pending.mode === "otp";
+    const wf = this.useAtscriptWfPublic(
+      ctx,
+      isOtp ? this.opts.forms.proveControlOtp : this.opts.forms.proveControl,
+    );
+
+    // `cancel` — abandon the link before the input pause (no link, no session).
+    if (wf.resolveAction() === "cancel") {
+      delete ctx.pendingLink;
+      return this.finishOAuth(ctx, "needs-link");
+    }
+
+    // OTP mode: deliver the code to the account's OWN confirmed channel before
+    // the first pause. `sent` guards against a re-mint/re-send on re-pause.
+    if (isOtp && !pending.sent) {
+      const method = candidate.mfa.methods.find(
+        (m) => m.name === pending.otpChannel && m.confirmed,
+      );
+      // Channel vanished between resolve and proof → safe generic terminal.
+      if (!method) {
+        delete ctx.pendingLink;
+        return this.finishOAuth(ctx, "needs-link");
+      }
+      const code = this.mintPin(pending, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
+      await this.deliver({
+        kind: "mfa-pincode",
+        channel: pending.otpChannel as "email" | "sms",
+        recipient: method.value,
+        code,
+        expiresInMs: this.opts.mfa.pincodeTtlMs,
+      });
+      pending.sent = true;
+      pending.sentTo = this.maskAddress(method.value, pending.otpChannel as "email" | "sms");
+      // Re-pause WITH a fresh public projection so the form's "code sent to …"
+      // copy (ctx.public.proveControl.sentTo, set just above) renders.
+      throw this.throwPublic(ctx, wf);
+    }
+
+    const input = wf.resolveInput() as { password?: string; code?: string };
+
+    // ── Verify proof of control (wrong proof → generic inline re-pause) ──
+    if (isOtp) {
+      const pinErr = this.verifyPin(pending, input.code);
+      if (pinErr) throw this.throwPublic(ctx, wf, { errors: pinErr });
+    } else {
+      try {
+        await this.users.login(candidate.username, input.password ?? "", this.lockoutOverride(ctx));
+      } catch (err) {
+        if (err instanceof UserAuthError && err.type === "LOCKED") {
+          throw this.throwPublic(ctx, wf, {
+            formMessage: "Account locked, please try again later",
+          });
+        }
+        throw this.throwPublic(ctx, wf, { errors: { password: "Invalid password" } });
+      }
+    }
+
+    // ── Account-state gate — BEFORE linking / setting subject (mirror the
+    // sso-callback success gate; essential for the OTP path since verifyPin,
+    // unlike users.login, does not itself reject a locked/inactive account). ──
+    if (candidate.account.locked || !candidate.account.active) {
+      delete ctx.pendingLink;
+      return this.finishOAuth(ctx, "account-state");
+    }
+
+    // ── Attach the verified identity — cross-user takeover guarded ──
+    try {
+      await federated.linkIdentity({
+        provider: pending.provider,
+        subject: pending.subject,
+        userId: pending.candidateUserId,
+        ...(pending.snapshot ? { profile: pending.snapshot } : {}),
+      });
+    } catch (err) {
+      if (err instanceof UserAuthError && err.type === "ALREADY_EXISTS") {
+        delete ctx.pendingLink;
+        return this.finishOAuth(ctx, "already-linked");
+      }
+      throw err;
+    }
+
+    // ── Converge to the post-success shape (mirror the ssoCallback success
+    // branch) so the shared login tail runs identically for an interactive link. ──
+    ctx.subject = pending.candidateUserId;
+    ctx.oauth = {
+      provider: pending.provider,
+      outcome: "interactively-linked",
+      isNew: false,
+      ...(pending.redirect ? { redirect: pending.redirect } : {}),
+    };
+    const email = candidate.mfa.methods.find((m) => m.name === "email" && m.confirmed);
+    if (email) {
+      ctx.email = email.value;
+      (ctx.channel ??= {}).emailConfirmed = true;
+    } else if (pending.snapshot?.email) {
+      ctx.email = pending.snapshot.email;
+    }
+    const phone = candidate.mfa.methods.find((m) => m.name === "sms" && m.confirmed);
+    if (phone) {
+      const channel = (ctx.channel ??= {});
+      channel.phone = phone.value;
+      channel.phoneConfirmed = true;
+    }
+
+    delete ctx.pendingLink;
+    swapStrategy("store");
+    return undefined;
+  }
+
   // ── @Workflow methods (3) — schemas copied verbatim from UNIFICATION.md §9 ──
 
   /**
@@ -3617,6 +3838,11 @@ export class AuthWorkflow {
     // `credentials` and skips the exchange. Exactly one sets `ctx.subject`.
     { id: "sso-callback", condition: (ctx) => !!ctx.idpInbound },
     { id: "credentials", condition: (ctx) => !ctx.idpInbound },
+    // Federated `needs-link` interactive completion — runs only when
+    // `sso-callback` matched the verified profile to an existing account and
+    // stashed `ctx.pendingLink`. Must precede the `!ctx.subject` break because
+    // its whole job is to prove control and THEN set `ctx.subject`.
+    { id: "prove-control", condition: (ctx) => !!ctx.pendingLink && !ctx.subject },
     { break: (ctx) => !ctx.subject },
 
     // Resolve all policy groups

@@ -64,6 +64,12 @@ export interface AuthWorkflowOpts {
     /** Authenticated self-service "change my password" form (current + new + confirm). */
     changePassword?: TAtscriptAnnotatedType;
 
+    // Federated needs-link proof-of-control (interactive completion)
+    /** Password-proof form rendered by `prove-control` when the matched account has a real password. */
+    proveControl?: TAtscriptAnnotatedType;
+    /** OTP-proof form rendered by `prove-control` when the matched account is passwordless. */
+    proveControlOtp?: TAtscriptAnnotatedType;
+
     // Profile + consents
     termsBump?: TAtscriptAnnotatedType;
 
@@ -116,6 +122,8 @@ export interface ResolvedAuthWorkflowOpts {
     pincode: TAtscriptAnnotatedType;
     setPassword: TAtscriptAnnotatedType;
     changePassword: TAtscriptAnnotatedType;
+    proveControl: TAtscriptAnnotatedType;
+    proveControlOtp: TAtscriptAnnotatedType;
     termsBump: TAtscriptAnnotatedType;
     concurrencyLimit: TAtscriptAnnotatedType;
     recoveryPincode: TAtscriptAnnotatedType;

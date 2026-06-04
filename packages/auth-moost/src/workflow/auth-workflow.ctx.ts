@@ -6,7 +6,7 @@
  *
  * Replaces the prior `LoginWfCtx` / `InviteWfCtx` / `RecoveryWfCtx` trio.
  */
-import type { TransferablePolicy } from "@aooth/user";
+import type { FederatedProfileSnapshot, TransferablePolicy } from "@aooth/user";
 
 export type MfaTransport = "sms" | "email" | "totp";
 
@@ -331,8 +331,14 @@ export interface AuthWfDefaults {
 export interface AuthWfOAuthState {
   /** The provider id (`google`, `oidc:<issuer>`, …) the subject authenticated with. */
   provider: string;
-  /** The `FederatedLoginService.resolveUser` outcome that set `ctx.subject`. */
-  outcome?: "linked" | "created" | "auto-linked";
+  /**
+   * The `FederatedLoginService.resolveUser` outcome that set `ctx.subject`.
+   * `interactively-linked` is the `prove-control` completion of a `needs-link`
+   * (the user proved control of an existing account, after which the verified
+   * identity was attached) — recorded distinctly from a returning `linked` for
+   * audit fidelity.
+   */
+  outcome?: "linked" | "created" | "auto-linked" | "interactively-linked";
   /** `true` only for the `created` outcome (a brand-new federated account). */
   isNew?: boolean;
   /**
@@ -342,6 +348,51 @@ export interface AuthWfOAuthState {
    * sends the SPA to the originating page. Same-origin relative path only.
    */
   redirect?: string;
+}
+
+/**
+ * Pending interactive identity-link state — set by `sso-callback` when
+ * `FederatedLoginService.resolveUser` returns `needs-link` (a verified
+ * federated profile whose email matches an EXISTING local account under the
+ * default `require-interactive-link` policy). The `prove-control` @Step reads
+ * this to challenge the user for control of `candidateUserId`; on success it
+ * calls `linkIdentity` and only THEN sets `ctx.subject`. Cleared
+ * (`delete ctx.pendingLink`) once the link completes, the user cancels, or a
+ * terminal failure fires.
+ *
+ * SECURITY: `candidateUserId` is UNTRUSTED until the proof passes — it must
+ * NEVER be copied to `ctx.subject` before then, because `{ break: !ctx.subject }`
+ * (the schema gate right after `sso-callback`) is what keeps an unproven user
+ * out of the token-issuing tail. The `snapshot` has `profile.raw` stripped (raw
+ * claims are never persisted — RFC §7). The OTP-proof code lives HERE, not on the
+ * shared top-level `ctx.pin`, so it cannot collide with the post-link MFA loop's
+ * own pincode in the same run.
+ */
+export interface AuthWfPendingLinkState {
+  /** The existing local account the verified identity attaches to once control is proven. UNTRUSTED until then. */
+  candidateUserId: string;
+  /** Provider id (`google`, `oidc:<issuer>`, …) of the verified identity awaiting link. */
+  provider: string;
+  /** The IdP subject (`sub`) of the verified identity awaiting link. */
+  subject: string;
+  /** Display snapshot stamped onto the federated row on link (`profile.raw` stripped). */
+  snapshot?: FederatedProfileSnapshot;
+  /** Validated post-link app redirect, carried from the signed `state`. Same-origin relative path. */
+  redirect?: string;
+  /** Proof channel: `password` (account has a real password) or `otp` (passwordless → code to the account's OWN confirmed channel). */
+  mode: "password" | "otp";
+  /** OTP mode only — the candidate's confirmed channel the proof code is delivered to. */
+  otpChannel?: "email" | "sms";
+  /** OTP mode only — flipped `true` after the first code dispatch so a re-pause doesn't re-send. */
+  sent?: boolean;
+  /** Masked candidate identifier shown on the prove-control form ("an account for a***@x.com exists"). Safe to expose. */
+  hint?: string;
+  /** OTP mode only — masked delivery target for the "code sent to …" copy. Safe to expose. */
+  sentTo?: string;
+  // ── OTP proof code — isolated from the MFA-loop's top-level `ctx.pin` ──
+  pin?: string;
+  pinExpire?: number;
+  pinAttempts?: number;
 }
 
 /**
@@ -428,6 +479,13 @@ export interface AuthWfPublicState {
   /** Mirrors `ctx.defaults` — prefill source for the recovery email field. */
   defaults?: { email?: string };
   /**
+   * Mirrors `ctx.pendingLink` display fields — the proof `mode`, the masked
+   * account `hint` ("an account for a***@x.com exists"), and (OTP mode) the
+   * masked delivery `sentTo`. Only masked/UX fields are projected — the
+   * `candidateUserId` / provider `subject` / proof `pin` stay server-only.
+   */
+  proveControl?: { mode?: "password" | "otp"; hint?: string; sentTo?: string };
+  /**
    * Mirrors `ctx.newPasswordRequired` — hides "Remember this device" on
    * verify forms when a forced password change will follow.
    */
@@ -477,6 +535,7 @@ export interface AuthWfCtx {
   changePassword?: AuthWfChangePasswordPolicy; // [change-password] — also the flow discriminator
   signup?: AuthWfSignupState; // [signup] — also the flow discriminator
   oauth?: AuthWfOAuthState; // [oauth] — also the flow discriminator
+  pendingLink?: AuthWfPendingLinkState; // [login — federated needs-link, gates the prove-control step]
   mfaPolicy?: AuthWfMfaPolicy; // [login + invite]
   adminForm?: AuthWfAdminFormPolicy; // [invite admin]
   accept?: AuthWfAcceptState; // [invite accept]

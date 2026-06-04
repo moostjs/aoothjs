@@ -154,11 +154,15 @@ describe("AuthWorkflow construction (WF-AUTH-UNIFIED-002)", () => {
     // the box. Consumer override via `opts.forms.<field>` swaps any slot.
     // Pin a representative field-count + a key slot so a regression that
     // drops the default map is caught.
-    expect(Object.keys(opts.forms).length).toBe(17);
+    expect(Object.keys(opts.forms).length).toBe(19);
     expect(opts.forms.loginCredentials).toBeTruthy();
     expect(opts.forms.recoveryEmailIdentifier).toBeTruthy();
     expect(opts.forms.pincode).toBeTruthy();
     expect(opts.forms.setPassword).toBeTruthy();
+    // Federated needs-link interactive completion ships its own proof forms
+    // (password + OTP fallback) so `prove-control` resolves real annotated types.
+    expect(opts.forms.proveControl).toBeTruthy();
+    expect(opts.forms.proveControlOtp).toBeTruthy();
     // Self-signup ships its own email-entry form (`auth/signup/flow` entry pause).
     expect(opts.forms.signup).toBeTruthy();
     // Authenticated change-password ships its own standalone form (current +
