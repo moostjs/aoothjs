@@ -23,12 +23,12 @@
 import { AuthCredential, type CredentialMetadata } from "@aooth/auth";
 import type { NormalizedProfile } from "@aooth/idp";
 import {
-  type FederatedProfileSnapshot,
   generateTotpSecret,
   generateTotpUri,
   maskEmail,
   maskPhone,
   type MfaMethodInfo,
+  pickDefinedProfile,
   type TrustedDeviceRecord,
   UserAuthError,
   type UserCredentials,
@@ -3569,22 +3569,8 @@ export class AuthWorkflow {
     if (outcome.kind === "created") ctx.isFirstLogin = true;
 
     // Seed channel state from the resolved user so the shared enrolment / MFA /
-    // notify-new-device gates behave (mirrors `credentials`' post-login seeding).
-    // The provider email is a DISPLAY fallback only — it is never promoted to
-    // the unique login handle (a gated, later-phase concern).
-    const email = user.mfa.methods.find((m) => m.name === "email" && m.confirmed);
-    if (email) {
-      ctx.email = email.value;
-      (ctx.channel ??= {}).emailConfirmed = true;
-    } else if (profile.email) {
-      ctx.email = profile.email;
-    }
-    const phone = user.mfa.methods.find((m) => m.name === "sms" && m.confirmed);
-    if (phone) {
-      const channel = (ctx.channel ??= {});
-      channel.phone = phone.value;
-      channel.phoneConfirmed = true;
-    }
+    // notify-new-device gates behave. The provider email is a display fallback.
+    this.seedChannelState(ctx, user, profile.email);
 
     // Real subject resolved → durable store for any MFA / consent pause to come.
     swapStrategy("store");
@@ -3616,6 +3602,30 @@ export class AuthWorkflow {
       },
     });
     return undefined;
+  }
+
+  /**
+   * Seed `ctx.email` / `ctx.channel` from a resolved user's confirmed channels —
+   * shared by `ssoCallback` (linked / created / auto-linked) and `proveControl`
+   * (interactively-linked) so the post-success channel shape can't drift between
+   * the two federated entry points. Mirrors `credentials`' post-login seeding.
+   * `fallbackEmail` (the provider / snapshot email) is a DISPLAY fallback only —
+   * never promoted to the unique login handle (a gated, later-phase concern).
+   */
+  private seedChannelState(ctx: AuthWfCtx, user: UserCredentials, fallbackEmail?: string): void {
+    const email = user.mfa.methods.find((m) => m.name === "email" && m.confirmed);
+    if (email) {
+      ctx.email = email.value;
+      (ctx.channel ??= {}).emailConfirmed = true;
+    } else if (fallbackEmail) {
+      ctx.email = fallbackEmail;
+    }
+    const phone = user.mfa.methods.find((m) => m.name === "sms" && m.confirmed);
+    if (phone) {
+      const channel = (ctx.channel ??= {});
+      channel.phone = phone.value;
+      channel.phoneConfirmed = true;
+    }
   }
 
   /**
@@ -3652,13 +3662,11 @@ export class AuthWorkflow {
       mode = "otp";
       otpChannel = otp.name as "email" | "sms";
     }
-    // Display snapshot for the federated row — `profile.raw` (transient verified
-    // claims) is dropped: it must never land in the persisted wf state (RFC §7).
-    const snapshot: FederatedProfileSnapshot = {};
-    if (profile.email !== undefined) snapshot.email = profile.email;
-    if (profile.emailVerified !== undefined) snapshot.emailVerified = profile.emailVerified;
-    if (profile.displayName !== undefined) snapshot.displayName = profile.displayName;
-    if (profile.avatarUrl !== undefined) snapshot.avatarUrl = profile.avatarUrl;
+    // Display snapshot for the federated row — `NormalizedProfile` is a
+    // structural superset of `FederatedProfileSnapshot`, so `pickDefinedProfile`
+    // copies just the defined display fields and drops `profile.raw` (transient
+    // verified claims must never land in the persisted wf state — RFC §7).
+    const snapshot = pickDefinedProfile(profile);
     ctx.pendingLink = {
       candidateUserId,
       provider: profile.provider,
@@ -3803,19 +3811,7 @@ export class AuthWorkflow {
       isNew: false,
       ...(pending.redirect ? { redirect: pending.redirect } : {}),
     };
-    const email = candidate.mfa.methods.find((m) => m.name === "email" && m.confirmed);
-    if (email) {
-      ctx.email = email.value;
-      (ctx.channel ??= {}).emailConfirmed = true;
-    } else if (pending.snapshot?.email) {
-      ctx.email = pending.snapshot.email;
-    }
-    const phone = candidate.mfa.methods.find((m) => m.name === "sms" && m.confirmed);
-    if (phone) {
-      const channel = (ctx.channel ??= {});
-      channel.phone = phone.value;
-      channel.phoneConfirmed = true;
-    }
+    this.seedChannelState(ctx, candidate, pending.snapshot?.email);
 
     delete ctx.pendingLink;
     swapStrategy("store");
