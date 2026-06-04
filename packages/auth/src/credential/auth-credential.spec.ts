@@ -20,8 +20,10 @@ class FakeClock implements Clock {
   }
 }
 
-interface MyClaims extends Record<string, unknown> {
-  roles: string[];
+// Typed credential payload — flat root fields (replacing the dropped `claims`
+// container). Optional, since a normal token carries none.
+interface MyClaims {
+  roles?: string[];
   email?: string;
 }
 
@@ -48,10 +50,11 @@ function makeAuth(
 
 describe("AuthCredential", () => {
   describe("issue + validate", () => {
-    it("roundtrips userId, claims, metadata, and expiresAt", async () => {
+    it("roundtrips userId, payload, metadata, and expiresAt", async () => {
       const { auth, clock } = makeAuth({ accessTtl: 5000 });
       const result = await auth.issue("alice", {
-        claims: { roles: ["admin"], email: "a@x" },
+        roles: ["admin"],
+        email: "a@x",
         metadata: { ip: "1.1.1.1", label: "browser" },
       });
       expect(result.accessToken).toBeTruthy();
@@ -66,7 +69,8 @@ describe("AuthCredential", () => {
       expect(ctx?.credentialId).toBe(fingerprint(result.accessToken));
       expect(ctx?.credentialId).not.toBe(result.accessToken);
       expect(ctx?.expiresAt).toBe(result.accessExpiresAt);
-      expect(ctx?.claims).toEqual({ roles: ["admin"], email: "a@x" });
+      expect(ctx?.roles).toEqual(["admin"]);
+      expect(ctx?.email).toBe("a@x");
     });
 
     it("returns null for unknown token", async () => {

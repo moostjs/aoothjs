@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { AuthError } from "../errors";
 import type { CredentialStore, DenylistStore } from "../stores/store";
 import { type Clock, defaultClock } from "../utils/clock";
+import { credentialPayloadOf } from "./payload";
 import type {
   AuthContext,
   CredentialMetadata,
@@ -28,9 +29,9 @@ function fingerprint(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
-export interface AuthCredentialOptions<TClaims extends object = object> {
+export interface AuthCredentialOptions<TPayload extends object = object> {
   /** Pluggable credential store (Memory, JWT, Encapsulated, ...). */
-  store: CredentialStore<TClaims>;
+  store: CredentialStore<TPayload>;
   /** Default 'token' — distinguishes session-style from token-style use. */
   method?: "session" | "token";
   /** Access token TTL in milliseconds. Defaults to 1 hour. Must be > 0. */
@@ -64,15 +65,22 @@ export interface AuthCredentialOptions<TClaims extends object = object> {
   clock?: Clock;
 }
 
-export interface IssueOptions<TClaims extends object = object> {
-  claims?: TClaims;
+/**
+ * Options for {@link AuthCredential.issue}. The credential's typed payload
+ * `TPayload` (the root fields a consumer added to their credential model — e.g.
+ * `@arbac.attenuate.*`-annotated fields) is spread flat alongside the two
+ * framework-level hints below. Reserved keys `metadata` and `sessionId` (and
+ * the {@link CredentialState} envelope keys) must not be reused as payload
+ * field names.
+ */
+export type IssueOptions<TPayload extends object = object> = TPayload & {
   metadata?: CredentialMetadata;
   /**
    * Pre-supply the session id. Omit to let `issue()` mint a random opaque one.
    * Both the access and refresh tokens of this login share it.
    */
   sessionId?: string;
-}
+};
 
 /**
  * Orchestrates credential issuance, validation, refresh, and revocation
@@ -92,8 +100,8 @@ export interface IssueOptions<TClaims extends object = object> {
  *   `refresh.reuseResponse: 'user'` to escalate to revoking ALL of the user's
  *   sessions. See {@link RefreshConfig.reuseResponse}.
  */
-export class AuthCredential<TClaims extends object = object> {
-  private readonly store: CredentialStore<TClaims>;
+export class AuthCredential<TPayload extends object = object> {
+  private readonly store: CredentialStore<TPayload>;
   private readonly method: "session" | "token";
   private readonly accessTtl: number;
   private readonly refreshConfig?: RefreshConfig;
@@ -115,7 +123,7 @@ export class AuthCredential<TClaims extends object = object> {
     { userId: string; iat: number; exp: number; sessionId?: string }
   >();
 
-  constructor(opts: AuthCredentialOptions<TClaims>) {
+  constructor(opts: AuthCredentialOptions<TPayload>) {
     this.store = opts.store;
     this.method = opts.method ?? "token";
     this.accessTtl = opts.accessTtl ?? DEFAULT_ACCESS_TTL;
@@ -139,39 +147,45 @@ export class AuthCredential<TClaims extends object = object> {
     }
   }
 
-  async issue(userId: string, options?: IssueOptions<TClaims>): Promise<IssueResult> {
+  async issue(userId: string, options?: IssueOptions<TPayload>): Promise<IssueResult> {
     if (this.maxConcurrent !== undefined && this.store.listForUser) {
       await this.enforceConcurrencyLimit(userId);
     }
 
     const now = this.clock.now();
+    // Split the framework-level hints from the consumer's typed payload — the
+    // remaining keys (`...payload`) are the credential's root fields and ride
+    // flat on the persisted state (no `claims` container).
+    const opts = options ?? ({} as IssueOptions<TPayload>);
+    const { metadata, sessionId: providedSessionId, ...payload } = opts;
     // Mint the session id once and stamp it on BOTH the access and refresh
     // tokens (and, via the rotation copies below, every future rotation), so a
     // single login is one stable, opaque session for its whole lifetime.
-    const sessionId = options?.sessionId ?? randomUUID();
-    const accessState: CredentialState<TClaims> = {
+    const sessionId = providedSessionId ?? randomUUID();
+    // Payload spread first so the envelope fields always win a name clash.
+    const accessState = {
+      ...payload,
       userId,
       issuedAt: now,
       expiresAt: now + this.accessTtl,
       kind: "access",
-      claims: options?.claims,
-      metadata: options?.metadata,
+      metadata,
       sessionId,
-    };
+    } as CredentialState & TPayload;
     const accessToken = await this.store.persist(accessState, this.accessTtl);
 
     let refreshToken: string | undefined;
     let refreshExpiresAt: number | undefined;
     if (this.refreshConfig) {
-      const refreshState: CredentialState<TClaims> = {
+      const refreshState = {
+        ...payload,
         userId,
         issuedAt: now,
         expiresAt: now + this.refreshConfig.ttl,
         kind: "refresh",
-        claims: options?.claims,
-        metadata: options?.metadata,
+        metadata,
         sessionId,
-      };
+      } as CredentialState & TPayload;
       refreshToken = await this.store.persist(refreshState, this.refreshConfig.ttl);
       refreshExpiresAt = now + this.refreshConfig.ttl;
     }
@@ -184,7 +198,7 @@ export class AuthCredential<TClaims extends object = object> {
     };
   }
 
-  async validate(accessToken: string): Promise<AuthContext<TClaims> | null> {
+  async validate(accessToken: string): Promise<AuthContext<TPayload> | null> {
     if (this.denylist && (await this.denylist.has(accessToken))) {
       return null;
     }
@@ -200,7 +214,10 @@ export class AuthCredential<TClaims extends object = object> {
       await this.store.touch(accessToken, this.clock.now());
     }
 
+    // Surface the credential's typed payload fields by name (excludes envelope
+    // internals like parentCredentialId); the base read-fields win any clash.
     return {
+      ...credentialPayloadOf<TPayload>(state),
       userId: state.userId,
       method: this.method,
       credentialId: fingerprint(accessToken),
@@ -208,8 +225,7 @@ export class AuthCredential<TClaims extends object = object> {
       // the SAME fallback listSessions uses, so "this device" matching holds.
       sessionId: this.sessionIdOf(state.sessionId, accessToken),
       expiresAt: state.expiresAt,
-      claims: state.claims,
-    };
+    } as AuthContext<TPayload>;
   }
 
   async refresh(refreshToken: string): Promise<IssueResult> {
@@ -252,7 +268,7 @@ export class AuthCredential<TClaims extends object = object> {
   }
 
   private async refreshNone(
-    oldState: CredentialState<TClaims>,
+    oldState: CredentialState & TPayload,
     refreshToken: string,
     now: number,
   ): Promise<IssueResult> {
@@ -271,7 +287,7 @@ export class AuthCredential<TClaims extends object = object> {
    * window.
    */
   private async refreshSliding(
-    oldState: CredentialState<TClaims>,
+    oldState: CredentialState & TPayload,
     refreshToken: string,
     now: number,
   ): Promise<IssueResult> {
@@ -289,7 +305,7 @@ export class AuthCredential<TClaims extends object = object> {
    * with a process-local reuse signal — the only mechanism possible there.
    */
   private async refreshAlways(
-    oldState: CredentialState<TClaims>,
+    oldState: CredentialState & TPayload,
     refreshToken: string,
     now: number,
   ): Promise<IssueResult> {
@@ -318,7 +334,7 @@ export class AuthCredential<TClaims extends object = object> {
    * (`sliding`) expiry for the new refresh token.
    */
   private async rotateWithGrace(
-    oldState: CredentialState<TClaims>,
+    oldState: CredentialState & TPayload,
     refreshToken: string,
     now: number,
     preserveExpiry: boolean,
@@ -369,19 +385,22 @@ export class AuthCredential<TClaims extends object = object> {
     return await this.store.revokeAllForUser(userId);
   }
 
-  async listForUser(userId: string): Promise<Array<AuthContext<TClaims>>> {
+  async listForUser(userId: string): Promise<Array<AuthContext<TPayload>>> {
     if (!this.store.listForUser) return [];
     const all = await this.store.listForUser(userId);
     return all
       .filter((entry) => entry.kind !== "refresh")
-      .map((entry) => ({
-        userId: entry.userId,
-        method: this.method,
-        credentialId: fingerprint(entry.token),
-        sessionId: this.sessionKeyOf(entry),
-        expiresAt: entry.expiresAt,
-        claims: entry.claims,
-      }));
+      .map(
+        (entry) =>
+          ({
+            ...credentialPayloadOf<TPayload>(entry),
+            userId: entry.userId,
+            method: this.method,
+            credentialId: fingerprint(entry.token),
+            sessionId: this.sessionKeyOf(entry),
+            expiresAt: entry.expiresAt,
+          }) as AuthContext<TPayload>,
+      );
   }
 
   /**
@@ -396,7 +415,7 @@ export class AuthCredential<TClaims extends object = object> {
   }
 
   /** Session-grouping key for a stored credential entry (token attached). */
-  private sessionKeyOf(entry: CredentialState<TClaims> & { token: string }): string {
+  private sessionKeyOf(entry: CredentialState & TPayload & { token: string }): string {
     return this.sessionIdOf(entry.sessionId, entry.token);
   }
 
@@ -415,7 +434,7 @@ export class AuthCredential<TClaims extends object = object> {
     const all = await this.store.listForUser(userId);
 
     // Group every credential of the user into its session family.
-    const families = new Map<string, Array<CredentialState<TClaims> & { token: string }>>();
+    const families = new Map<string, Array<CredentialState & TPayload & { token: string }>>();
     for (const entry of all) {
       const key = this.sessionKeyOf(entry);
       const bucket = families.get(key);
@@ -544,20 +563,21 @@ export class AuthCredential<TClaims extends object = object> {
   }
 
   private async issueAccessFromRefresh(
-    refreshState: CredentialState<TClaims>,
+    refreshState: CredentialState & TPayload,
     now: number,
   ): Promise<{ token: string; expiresAt: number }> {
-    const accessState: CredentialState<TClaims> = {
+    const accessState = {
+      // Carry the credential's typed payload forward across rotation.
+      ...credentialPayloadOf<TPayload>(refreshState),
       userId: refreshState.userId,
       issuedAt: now,
       expiresAt: now + this.accessTtl,
       kind: "access",
-      claims: refreshState.claims,
       metadata: refreshState.metadata,
       // Carry the session forward so every rotation stays in the same family.
       sessionId: refreshState.sessionId,
       ...(this.trackLastSeen === "refresh" && { lastSeenAt: now }),
-    };
+    } as CredentialState & TPayload;
     const token = await this.store.persist(accessState, this.accessTtl);
     return { token, expiresAt: now + this.accessTtl };
   }
@@ -570,7 +590,7 @@ export class AuthCredential<TClaims extends object = object> {
    * rotated (keeping it valid through the grace window) instead of consuming it.
    */
   private async issueRotatedPair(
-    oldRefreshState: CredentialState<TClaims>,
+    oldRefreshState: CredentialState & TPayload,
     oldRefreshToken: string,
     rotateOld: boolean,
     now: number,
@@ -591,24 +611,25 @@ export class AuthCredential<TClaims extends object = object> {
       ? Math.max(0, oldRefreshState.expiresAt - now)
       : this.refreshConfig.ttl;
 
-    const newRefreshState: CredentialState<TClaims> = {
+    const newRefreshState = {
+      // Carry the credential's typed payload forward across rotation.
+      ...credentialPayloadOf<TPayload>(oldRefreshState),
       userId: oldRefreshState.userId,
       issuedAt: now,
       expiresAt: refreshExpiresAt,
       kind: "refresh",
-      claims: oldRefreshState.claims,
       metadata: oldRefreshState.metadata,
       parentCredentialId: oldRefreshToken,
       // Carry the session forward so every rotation stays in the same family.
       sessionId: oldRefreshState.sessionId,
       ...(this.trackLastSeen === "refresh" && { lastSeenAt: now }),
-    };
+    } as CredentialState & TPayload;
     const newRefreshToken = await this.store.persist(newRefreshState, refreshTtl);
 
     if (rotateOld) {
       // Mark the old refresh as rotated; keep it valid until grace expires
       // (its expiresAt remains as originally set; grace logic uses rotatedAt).
-      const rotatedState: CredentialState<TClaims> = {
+      const rotatedState: CredentialState & TPayload = {
         ...oldRefreshState,
         rotatedAt: now,
       };

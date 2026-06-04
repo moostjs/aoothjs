@@ -34,20 +34,20 @@ export abstract class ArbacUserProvider<TUserAttrs extends object = object> {
   abstract getAttrs(id: string): TUserAttrs | Promise<TUserAttrs>;
 
   /**
-   * OPTIONAL: source the credential's restrict-only ARBAC attenuation (the
-   * reserved `claims.arbac` namespace) for the current request. When it
-   * returns claims, `useArbac().evaluate()` runs the engine's dual-pass
-   * outcome-intersection so the credential can do/see/affect strictly LESS
-   * than its owning user; returning `undefined` (the default — this method is
-   * unimplemented on the base/atscript providers) means "no narrowing", i.e.
-   * the credential authorizes with the user's full authority (today's
-   * behavior).
+   * OPTIONAL: source the credential's restrict-only ARBAC attenuation for the
+   * current request. When it returns claims, `useArbac().evaluate()` runs the
+   * engine's dual-pass outcome-intersection so the credential can do/see/affect
+   * strictly LESS than its owning user; returning `undefined` (the default —
+   * this method is unimplemented on the base/atscript providers) means "no
+   * narrowing", i.e. the credential authorizes with the user's full authority.
    *
    * `arbac-moost` is auth-agnostic, so the base class does NOT read the auth
-   * layer. A consumer wires it up by overriding this to return
-   * `useAuth().getAuthContext().claims?.arbac` (or wherever the app carries
-   * its scoped-token claims). The restrict-only intersection happens in the
-   * engine regardless, so an app cannot get the safety wrong here.
+   * layer. A consumer wires it up by overriding this to read the credential's
+   * typed root fields and return their attenuation — typically
+   * `extractAttenuation(CredentialModel, useAuth().getAuthContext())`, which
+   * walks the model's `@arbac.attenuate.*`-annotated fields (from
+   * `@aooth/arbac-moost/atscript`). The restrict-only intersection happens in
+   * the engine regardless, so an app cannot get the safety wrong here.
    */
   getAttenuation?(): AoothArbacClaims | undefined | Promise<AoothArbacClaims | undefined>;
 }

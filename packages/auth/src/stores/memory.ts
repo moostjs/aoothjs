@@ -16,9 +16,9 @@ export type { Clock } from "../utils/clock";
  * - Both maps are kept in sync on every mutation.
  */
 export class CredentialStoreMemory<
-  TClaims extends object = object,
-> implements CredentialStore<TClaims> {
-  private readonly states = new Map<string, CredentialState<TClaims>>();
+  TPayload extends object = object,
+> implements CredentialStore<TPayload> {
+  private readonly states = new Map<string, CredentialState & TPayload>();
   private readonly byUser = new Map<string, Set<string>>();
   private readonly clock: Clock;
 
@@ -26,9 +26,9 @@ export class CredentialStoreMemory<
     this.clock = opts?.clock ?? defaultClock;
   }
 
-  async persist(state: CredentialState<TClaims>, ttl?: number): Promise<string> {
+  async persist(state: CredentialState & TPayload, ttl?: number): Promise<string> {
     const token = randomUUID();
-    const stored: CredentialState<TClaims> = { ...state };
+    const stored: CredentialState & TPayload = { ...state };
     if (typeof ttl === "number") {
       stored.expiresAt = this.clock.now() + ttl;
     }
@@ -37,7 +37,7 @@ export class CredentialStoreMemory<
     return token;
   }
 
-  async retrieve(token: string): Promise<CredentialState<TClaims> | null> {
+  async retrieve(token: string): Promise<(CredentialState & TPayload) | null> {
     const state = this.states.get(token);
     if (!state) return null;
     if (state.expiresAt <= this.clock.now()) {
@@ -48,14 +48,14 @@ export class CredentialStoreMemory<
     return { ...state };
   }
 
-  async consume(token: string): Promise<CredentialState<TClaims> | null> {
+  async consume(token: string): Promise<(CredentialState & TPayload) | null> {
     const state = await this.retrieve(token);
     if (!state) return null;
     await this.revoke(token);
     return state;
   }
 
-  async update(token: string, state: CredentialState<TClaims>): Promise<string> {
+  async update(token: string, state: CredentialState & TPayload): Promise<string> {
     const existing = this.states.get(token);
     if (!existing) {
       // No-op for unknown tokens — `update()` is for mutating an already
@@ -95,11 +95,13 @@ export class CredentialStoreMemory<
     return count;
   }
 
-  async listForUser(userId: string): Promise<Array<CredentialState<TClaims> & { token: string }>> {
+  async listForUser(
+    userId: string,
+  ): Promise<Array<CredentialState & TPayload & { token: string }>> {
     const tokens = this.byUser.get(userId);
     if (!tokens || tokens.size === 0) return [];
     const now = this.clock.now();
-    const out: Array<CredentialState<TClaims> & { token: string }> = [];
+    const out: Array<CredentialState & TPayload & { token: string }> = [];
     const expired: string[] = [];
     for (const token of tokens) {
       const state = this.states.get(token);

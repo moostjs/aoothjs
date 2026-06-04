@@ -11,20 +11,19 @@ import { prepareFixtures } from "./test-utils";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let AoothAuthCredential: any;
 
-// Scalar-only by design — matches the .as model's pattern-property
-// constraint (`[/.*/]: string | number | boolean`), which mirrors the JWT
-// registered-claims spec (iss/sub/iat/exp/jti are all scalars). Consumers
-// needing arrays or nested objects subclass with a richer `claims` shape.
+// Typed credential payload — the flat root fields a consumer adds when they
+// `extends AoothAuthCredential`. Mirrors the fixture model's payload columns:
+// a scalar (`scope`) and a structured `@db.json` column (`grants`). Optional,
+// since a normal token carries none. Replaces the dropped free-form `claims`.
 interface DemoClaims {
-  scope: string;
-  isAdmin: boolean;
-  iat: number;
+  scope?: string;
+  grants?: { roles?: string[]; tenantId?: string };
 }
 
 function makeState(
   userId: string,
-  overrides?: Partial<CredentialState<DemoClaims>>,
-): CredentialState<DemoClaims> {
+  overrides?: Partial<CredentialState & DemoClaims>,
+): CredentialState & DemoClaims {
   return {
     userId,
     issuedAt: Date.now(),
@@ -80,47 +79,37 @@ describe("CredentialStoreAtscriptDb — integration against real SQLite", () => 
     expect(got?.kind).toBe("refresh");
   });
 
-  // The load-bearing assertion. The .as model declares `claims` and
-  // `metadata` as `@db.json` columns — without that the adapter's JSON
-  // values would be flattened into separate columns (which SQLite either
-  // rejects or silently truncates depending on shape). If `@db.json` ever
-  // gets dropped from the model, this test fails at table.ensureTable()
-  // OR returns junk on retrieve.
-  it("@db.json columns round-trip claims + metadata through SQLite", async () => {
-    const claims: DemoClaims = {
-      scope: "read:tasks write:tasks",
-      isAdmin: true,
-      iat: 1_700_000_000,
-    };
+  // The load-bearing assertion. A consumer's typed payload fields persist as
+  // REAL columns — a scalar (`scope`) and a `@db.json` structured column
+  // (`grants`) — alongside the `@db.json` `metadata`. If `@db.json` is ever
+  // dropped from a structured column, this fails at table.ensureTable() OR
+  // returns junk on retrieve.
+  it("typed payload columns + metadata round-trip through SQLite", async () => {
     const metadata = {
       ip: "10.0.0.1",
       userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
       fingerprint: "fp-abc-123",
       label: "MacBook Pro",
     };
-    const token = await store.persist(makeState("alice", { claims, metadata }));
+    const token = await store.persist(
+      makeState("alice", { scope: "read:tasks write:tasks", metadata }),
+    );
     const got = await store.retrieve(token);
-    expect(got?.claims).toEqual(claims);
+    expect(got?.scope).toBe("read:tasks write:tasks");
     expect(got?.metadata).toEqual(metadata);
   });
 
-  // NESTED claims round-trip — the `TJsonValue` widening lets a claim value be
-  // a structured object/array (e.g. the reserved `arbac` attenuation namespace),
-  // not just a scalar. Regression anchor: persist a nested claim and assert it
-  // loads back IDENTICALLY (the @db.json column must round-trip nested JSON,
-  // not flatten/null it).
-  it("@db.json round-trips a NESTED (structured) claim value through SQLite", async () => {
-    const claims = {
-      iat: 1_700_000_000,
-      arbac: { roles: ["doc-reader"], attrs: { tenantId: "t1", docIds: ["d1", "d2"] } },
-    } as unknown as DemoClaims;
-    const token = await store.persist(makeState("alice", { claims }));
+  // STRUCTURED typed payload round-trip — a payload field can be a structured
+  // object (e.g. the `grants` column), not just a scalar, and the `@db.json`
+  // column must load it back IDENTICALLY (not flatten/null it). This is the
+  // typed-field replacement for the old free-form nested-claims test.
+  it("@db.json round-trips a STRUCTURED typed payload column through SQLite", async () => {
+    const grants = { roles: ["doc-reader"], tenantId: "t1" };
+    const token = await store.persist(makeState("alice", { grants }));
     const got = await store.retrieve(token);
-    expect(got?.claims).toEqual(claims);
-    expect((got?.claims as { arbac?: unknown })?.arbac).toEqual({
-      roles: ["doc-reader"],
-      attrs: { tenantId: "t1", docIds: ["d1", "d2"] },
-    });
+    expect(got?.grants).toEqual(grants);
+    expect(got?.grants?.roles).toEqual(["doc-reader"]);
+    expect(got?.grants?.tenantId).toBe("t1");
   });
 
   it("listForUser returns the persisted rows with tokens attached", async () => {

@@ -29,7 +29,9 @@ export function TestHandler(): MethodDecorator {
   ) as MethodDecorator;
 }
 
-export interface MyClaims extends Record<string, unknown> {
+// Typed credential payload — flat root fields (replacing the dropped `claims`
+// container). Surfaces on the AuthContext by name.
+export interface MyClaims {
   roles?: string[];
 }
 

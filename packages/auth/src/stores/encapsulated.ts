@@ -27,9 +27,7 @@ export interface CredentialStoreEncapsulatedOptions {
   clock?: Clock;
 }
 
-interface EncryptedPayload<TClaims extends object> extends CredentialState<TClaims> {
-  jti: string;
-}
+type EncryptedPayload<TPayload extends object> = CredentialState & TPayload & { jti: string };
 
 /**
  * Stateless credential store that encrypts the credential state with
@@ -57,8 +55,8 @@ interface EncryptedPayload<TClaims extends object> extends CredentialState<TClai
  * cross-instance cascade semantics.
  */
 export class CredentialStoreEncapsulated<
-  TClaims extends object = object,
-> implements CredentialStore<TClaims> {
+  TPayload extends object = object,
+> implements CredentialStore<TPayload> {
   private readonly key: Buffer;
   private readonly denylist?: DenylistStore;
   private readonly clock: Clock;
@@ -81,10 +79,10 @@ export class CredentialStoreEncapsulated<
     this.clock = opts.clock ?? defaultClock;
   }
 
-  async persist(state: CredentialState<TClaims>, ttl?: number): Promise<string> {
+  async persist(state: CredentialState & TPayload, ttl?: number): Promise<string> {
     const jti = randomUUID();
     const expiresAt = typeof ttl === "number" ? this.clock.now() + ttl : state.expiresAt;
-    const payload: EncryptedPayload<TClaims> = { ...state, expiresAt, jti };
+    const payload: EncryptedPayload<TPayload> = { ...state, expiresAt, jti };
 
     const iv = randomBytes(IV_LEN);
     const cipher = createCipheriv("aes-256-gcm", this.key, iv);
@@ -95,7 +93,7 @@ export class CredentialStoreEncapsulated<
     return Buffer.concat([iv, ciphertext, authTag]).toString("base64url");
   }
 
-  async retrieve(token: string): Promise<CredentialState<TClaims> | null> {
+  async retrieve(token: string): Promise<(CredentialState & TPayload) | null> {
     const decrypted = this.decrypt(token);
     if (!decrypted) return null;
     if (decrypted.expiresAt <= this.clock.now()) return null;
@@ -104,7 +102,7 @@ export class CredentialStoreEncapsulated<
     return stripJti(decrypted);
   }
 
-  async consume(token: string): Promise<CredentialState<TClaims> | null> {
+  async consume(token: string): Promise<(CredentialState & TPayload) | null> {
     const denylist = this.requireDenylist("consume");
     const decrypted = this.decrypt(token);
     if (!decrypted) return null;
@@ -115,7 +113,7 @@ export class CredentialStoreEncapsulated<
     return stripJti(decrypted);
   }
 
-  async update(token: string, state: CredentialState<TClaims>): Promise<string> {
+  async update(token: string, state: CredentialState & TPayload): Promise<string> {
     const denylist = this.requireDenylist("update");
     const decrypted = this.decrypt(token);
     if (decrypted) {
@@ -148,7 +146,7 @@ export class CredentialStoreEncapsulated<
    * epoch. Same-ms mints (`issuedAt === epoch`) are accepted so a workflow can
    * revoke and re-issue in one tick. Mirrors `CredentialStoreJwt.passesEpoch`.
    */
-  private passesEpoch(payload: EncryptedPayload<TClaims>): boolean {
+  private passesEpoch(payload: EncryptedPayload<TPayload>): boolean {
     const epoch = this.epochs.get(payload.userId);
     if (epoch === undefined) return true;
     return payload.issuedAt >= epoch;
@@ -164,7 +162,7 @@ export class CredentialStoreEncapsulated<
     return this.denylist;
   }
 
-  private decrypt(token: string): EncryptedPayload<TClaims> | null {
+  private decrypt(token: string): EncryptedPayload<TPayload> | null {
     try {
       const blob = Buffer.from(token, "base64url");
       // Need at least IV + 1 byte ciphertext + tag.
@@ -175,7 +173,7 @@ export class CredentialStoreEncapsulated<
       const decipher = createDecipheriv("aes-256-gcm", this.key, iv);
       decipher.setAuthTag(authTag);
       const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-      const parsed = JSON.parse(plain.toString("utf8")) as EncryptedPayload<TClaims>;
+      const parsed = JSON.parse(plain.toString("utf8")) as EncryptedPayload<TPayload>;
       if (
         typeof parsed?.userId !== "string" ||
         typeof parsed.jti !== "string" ||
@@ -205,9 +203,11 @@ function deriveKey(secret: string | Buffer | Uint8Array): Buffer {
   return scryptSync(secret, KDF_SALT, KEY_LEN);
 }
 
-function stripJti<TClaims extends object>(
-  payload: EncryptedPayload<TClaims>,
-): CredentialState<TClaims> {
+function stripJti<TPayload extends object>(
+  payload: EncryptedPayload<TPayload>,
+): CredentialState & TPayload {
   const { jti: _jti, ...rest } = payload;
-  return rest;
+  // `rest` is the full state minus `jti`; TS can't prove the generic-spread
+  // residue equals `CredentialState & TPayload`, so assert at the boundary.
+  return rest as CredentialState & TPayload;
 }

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { type CryptoKey, type JWTPayload, SignJWT, jwtVerify } from "jose";
+import { credentialPayloadOf } from "../credential/payload";
 import type { CredentialState } from "../credential/types";
 import { AuthError } from "../errors";
 import { type Clock, defaultClock } from "../utils/clock";
@@ -46,7 +47,14 @@ export interface CredentialStoreJwtOptions {
 
 interface StateClaim {
   kind?: "access" | "refresh";
-  claims?: unknown;
+  /**
+   * The credential's typed payload — the consumer's flat root fields — carried
+   * as a nested object inside the signed `state` envelope. This nesting is the
+   * stateless transport's internal wire format (NOT a persisted DB column);
+   * keeping it nested avoids collisions with the registered JWT claims
+   * (sub/iat/exp/jti/iss/aud). Replaces the old free-form `claims` blob.
+   */
+  payload?: Record<string, unknown>;
   metadata?: unknown;
   parentCredentialId?: string;
   rotatedAt?: number;
@@ -69,8 +77,8 @@ interface StateClaim {
  * STATELESS_OPERATION_UNSUPPORTED.
  */
 export class CredentialStoreJwt<
-  TClaims extends object = object,
-> implements CredentialStore<TClaims> {
+  TPayload extends object = object,
+> implements CredentialStore<TPayload> {
   private readonly algorithm: JwtAlgorithm;
   private readonly signingKey: CryptoKey | Uint8Array;
   private readonly verifyingKey: CryptoKey | Uint8Array;
@@ -118,7 +126,7 @@ export class CredentialStoreJwt<
     }
   }
 
-  async persist(state: CredentialState<TClaims>, ttl?: number): Promise<string> {
+  async persist(state: CredentialState & TPayload, ttl?: number): Promise<string> {
     const jti = randomUUID();
     const now = this.clock.now();
     const expiresAtMs = typeof ttl === "number" ? now + ttl : state.expiresAt;
@@ -128,7 +136,8 @@ export class CredentialStoreJwt<
       expMs: expiresAtMs,
     };
     if (state.kind !== undefined) stateClaim.kind = state.kind;
-    if (state.claims !== undefined) stateClaim.claims = state.claims;
+    const payload = credentialPayloadOf<Record<string, unknown>>(state);
+    if (Object.keys(payload).length > 0) stateClaim.payload = payload;
     if (state.metadata !== undefined) stateClaim.metadata = state.metadata;
     if (state.parentCredentialId !== undefined)
       stateClaim.parentCredentialId = state.parentCredentialId;
@@ -147,7 +156,7 @@ export class CredentialStoreJwt<
     return builder.sign(this.signingKey);
   }
 
-  async retrieve(token: string): Promise<CredentialState<TClaims> | null> {
+  async retrieve(token: string): Promise<(CredentialState & TPayload) | null> {
     const verified = await this.verify(token);
     if (!verified) return null;
     if (this.denylist && verified.payload.jti) {
@@ -157,7 +166,7 @@ export class CredentialStoreJwt<
     return this.payloadToState(verified.payload);
   }
 
-  async consume(token: string): Promise<CredentialState<TClaims> | null> {
+  async consume(token: string): Promise<(CredentialState & TPayload) | null> {
     const denylist = this.requireDenylist("consume");
     const verified = await this.verify(token);
     if (!verified) return null;
@@ -170,7 +179,7 @@ export class CredentialStoreJwt<
     return this.payloadToState(verified.payload);
   }
 
-  async update(token: string, state: CredentialState<TClaims>): Promise<string> {
+  async update(token: string, state: CredentialState & TPayload): Promise<string> {
     const denylist = this.requireDenylist("update");
     const verified = await this.verify(token);
     if (verified?.payload.jti) {
@@ -261,7 +270,7 @@ export class CredentialStoreJwt<
     }
   }
 
-  private payloadToState(payload: JWTPayload): CredentialState<TClaims> | null {
+  private payloadToState(payload: JWTPayload): (CredentialState & TPayload) | null {
     if (typeof payload.sub !== "string") return null;
     if (typeof payload.iat !== "number" || typeof payload.exp !== "number") return null;
 
@@ -270,19 +279,22 @@ export class CredentialStoreJwt<
     // `iat`/`exp` for backward compatibility with externally minted tokens.
     const issuedAt = typeof stateClaim.iatMs === "number" ? stateClaim.iatMs : payload.iat * 1000;
     const expiresAt = typeof stateClaim.expMs === "number" ? stateClaim.expMs : payload.exp * 1000;
-    const out: CredentialState<TClaims> = {
+    const out: CredentialState = {
       userId: payload.sub,
       issuedAt,
       expiresAt,
     };
     if (stateClaim.kind !== undefined) out.kind = stateClaim.kind;
-    if (stateClaim.claims !== undefined) out.claims = stateClaim.claims as TClaims;
     if (stateClaim.metadata !== undefined)
-      out.metadata = stateClaim.metadata as CredentialState<TClaims>["metadata"];
+      out.metadata = stateClaim.metadata as CredentialState["metadata"];
     if (stateClaim.parentCredentialId !== undefined)
       out.parentCredentialId = stateClaim.parentCredentialId;
     if (stateClaim.rotatedAt !== undefined) out.rotatedAt = stateClaim.rotatedAt;
-    return out;
+    // Merge the consumer's typed payload (flat root fields) back onto the state.
+    if (stateClaim.payload && typeof stateClaim.payload === "object") {
+      Object.assign(out, stateClaim.payload);
+    }
+    return out as CredentialState & TPayload;
   }
 }
 

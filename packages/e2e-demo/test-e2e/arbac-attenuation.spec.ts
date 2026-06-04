@@ -3,11 +3,11 @@ import { type APIRequestContext, expect, test } from "@playwright/test";
 import { resetApp, USERS } from "./harness";
 
 /**
- * End-to-end proof of the credential-claims → ARBAC attenuation bridge: a
- * down-scoped token (the reserved `claims.arbac` namespace, minted via the
+ * End-to-end proof of the credential → ARBAC attenuation bridge: a down-scoped
+ * token (the credential's TYPED `@arbac.attenuate.*` root fields, minted via the
  * test-only `/__test/token-attenuated` endpoint) authorizes for strictly LESS
- * than its owning user — restrict-only, enforced by the real auth guard +
- * ARBAC interceptor + DB-controller scope application against SQLite.
+ * than its owning user — restrict-only, enforced by the real auth guard + ARBAC
+ * interceptor + DB-controller scope application against SQLite.
  *
  * `t1_alice` holds `["member", "viewer"]` in tenant A: member grants the
  * `tasks/new` write + tenant-scoped reads; viewer is read-only.

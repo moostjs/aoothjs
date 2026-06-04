@@ -39,7 +39,7 @@ const authCredentialKey = key<AuthCredential>("auth.credential");
 export const authOptionsKey = key<ResolvedAuthOptions>("auth.options");
 
 export interface AuthBindings {
-  getAuthContext<TClaims extends object = Record<string, unknown>>(): AuthContext<TClaims> | null;
+  getAuthContext<TPayload extends object = Record<string, unknown>>(): AuthContext<TPayload> | null;
   /** @throws `HttpError(401)` if no `AuthContext` is present in the event. */
   getUserId(): string;
   isAuthenticated(): boolean;
@@ -114,12 +114,13 @@ function cookieAttrsFrom(
  */
 export const useAuth = defineWook((ctx: EventContext): AuthBindings => {
   const getAuthContext = <
-    TClaims extends object = Record<string, unknown>,
-  >(): AuthContext<TClaims> | null => {
+    TPayload extends object = Record<string, unknown>,
+  >(): AuthContext<TPayload> | null => {
     if (!ctx.has(authContextKey)) return null;
-    // The slot is erased to `AuthContext<object>` at boot; caller asserts the
-    // specific TClaims shape they expect. No runtime check — caller's risk.
-    return ctx.get(authContextKey) as AuthContext<TClaims> | null;
+    // The slot is erased to the base `AuthContext` envelope; the caller asserts
+    // the credential's typed payload shape they expect (its `@arbac.attenuate.*`
+    // and other root fields surface flat on the context). No runtime check.
+    return ctx.get(authContextKey) as AuthContext<TPayload> | null;
   };
 
   const getUserId = (): string => {
@@ -278,12 +279,13 @@ export const useAuth = defineWook((ctx: EventContext): AuthBindings => {
 });
 
 /** Internal: only `authGuardInterceptor` writes the slot. */
-export function setAuthContext<TClaims extends object>(
+export function setAuthContext<TPayload extends object>(
   ctx: EventContext,
-  value: AuthContext<TClaims> | null,
+  value: AuthContext<TPayload> | null,
 ): void {
-  // `AuthContext<TClaims>` is structurally assignable to `AuthContext<object>`
-  // because `claims?: TClaims` is covariant when TClaims extends object.
+  // `AuthContext<TPayload>` (= the read envelope intersected with the
+  // credential's typed payload) is a subtype of the slot's `AuthContext`, so
+  // the extra payload fields are erased to the base envelope at the slot.
   ctx.set(authContextKey, value);
 }
 

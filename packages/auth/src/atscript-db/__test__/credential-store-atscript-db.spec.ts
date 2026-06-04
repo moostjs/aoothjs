@@ -127,15 +127,14 @@ describe("CredentialStoreAtscriptDb — sessionId / lastSeenAt", () => {
   });
 });
 
-describe("CredentialStoreAtscriptDb — claims + metadata round-trip", () => {
-  // Intent: claims and metadata are persisted opaquely (as JSON columns in
-  // the shipped .as model). The adapter must round-trip them byte-for-byte
-  // through persist → retrieve → consume; a regression here means JWT
-  // payloads and session-display metadata silently drop on the wire.
-  it("persists claims + metadata and returns them on retrieve", async () => {
+describe("CredentialStoreAtscriptDb — typed payload + metadata round-trip", () => {
+  // Intent: a consumer's typed payload (the flat root fields added to their
+  // `extends AoothAuthCredential` model) and metadata persist as real columns.
+  // The adapter must round-trip them byte-for-byte through persist → retrieve;
+  // a regression here means per-token data silently drops on the wire.
+  it("persists typed payload + metadata and returns them on retrieve", async () => {
     const table = new MockTable<{ scope: string; roles: string[] }>();
     const store = new CredentialStoreAtscriptDb<{ scope: string; roles: string[] }>({ table });
-    const claims = { scope: "read:tasks", roles: ["admin", "user"] };
     const metadata = {
       ip: "10.0.0.1",
       userAgent: "Mozilla/5.0",
@@ -147,49 +146,49 @@ describe("CredentialStoreAtscriptDb — claims + metadata round-trip", () => {
       issuedAt: Date.now(),
       expiresAt: Date.now() + 60_000,
       kind: "refresh",
-      claims,
+      scope: "read:tasks",
+      roles: ["admin", "user"],
       metadata,
     });
     const got = await store.retrieve(token);
-    expect(got?.claims).toEqual(claims);
+    expect(got?.scope).toBe("read:tasks");
+    expect(got?.roles).toEqual(["admin", "user"]);
     expect(got?.metadata).toEqual(metadata);
   });
 
-  it("does not surface claims/metadata when none were persisted (no synthetic empty objects)", async () => {
-    // Surface contract: omitting a field on persist must yield `undefined` on
-    // retrieve, not `{}` or `null`. Downstream code uses `state.claims` as a
-    // presence flag (e.g. for JWT signing only when there are custom claims)
-    // — a synthetic empty object would silently flip that branch.
+  it("does not surface payload/metadata when none were persisted (no synthetic fields)", async () => {
+    // Surface contract: omitting a field on persist must NOT synthesize it on
+    // retrieve — the adapter returns only the envelope fields actually written.
     const table = new MockTable();
     const store = new CredentialStoreAtscriptDb({ table });
     const token = await store.persist(makeState("alice"));
     const got = await store.retrieve(token);
-    expect(got?.claims).toBeUndefined();
     expect(got?.metadata).toBeUndefined();
+    expect(Object.keys(got ?? {}).toSorted()).toEqual(["expiresAt", "issuedAt", "kind", "userId"]);
   });
 
-  it("update replaces claims + metadata wholesale (no merge)", async () => {
+  it("update replaces typed payload + metadata wholesale (no merge)", async () => {
     // Adapter contract: update is replace-semantic, not patch-semantic. The
-    // refresh-token rotation path relies on this — a stale fingerprint or
-    // an old claims set MUST NOT survive a rotation.
+    // refresh-token rotation path relies on this — a stale fingerprint or an
+    // old payload value MUST NOT survive a rotation.
     const table = new MockTable<{ scope: string }>();
     const store = new CredentialStoreAtscriptDb<{ scope: string }>({ table });
     const token = await store.persist({
       userId: "alice",
       issuedAt: Date.now(),
       expiresAt: Date.now() + 60_000,
-      claims: { scope: "read:tasks" },
+      scope: "read:tasks",
       metadata: { ip: "10.0.0.1" },
     });
     await store.update(token, {
       userId: "alice",
       issuedAt: Date.now(),
       expiresAt: Date.now() + 120_000,
-      claims: { scope: "write:tasks" },
+      scope: "write:tasks",
       metadata: { ip: "10.0.0.2" },
     });
     const got = await store.retrieve(token);
-    expect(got?.claims).toEqual({ scope: "write:tasks" });
+    expect(got?.scope).toBe("write:tasks");
     expect(got?.metadata).toEqual({ ip: "10.0.0.2" });
   });
 });

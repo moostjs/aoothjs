@@ -120,10 +120,11 @@ export const useArbac = (_ctx?: EventContext): ArbacBindings => {
       cc.instantiate(MoostArbac),
     ])) as [ArbacUserProvider, MoostArbac<object, TScope>];
     const userId = await user.getUserId();
-    // Restrict-only credential attenuation (the reserved `claims.arbac`),
-    // sourced through the optional provider hook so arbac-moost stays
-    // auth-agnostic. Only triggers the engine's dual-pass when the claim
-    // actually narrows (a present-but-empty `{}` is a no-op).
+    // Restrict-only credential attenuation (the credential's typed
+    // `@arbac.attenuate.*` root fields), sourced through the optional provider
+    // hook so arbac-moost stays auth-agnostic. Only triggers the engine's
+    // dual-pass when the claim actually narrows (a present-but-empty `{}` is a
+    // no-op).
     const att = user.getAttenuation ? await user.getAttenuation() : undefined;
     const attenuate =
       att && (att.roles !== undefined || att.attrs !== undefined)

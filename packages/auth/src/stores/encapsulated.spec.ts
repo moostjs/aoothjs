@@ -15,16 +15,18 @@ class FakeClock implements Clock {
   }
 }
 
+// Typed credential payload — flat root fields (replacing the dropped `claims`
+// container). Optional, since a normal token carries none.
 interface MyClaims {
-  role: "admin" | "user";
-  tenant: string;
+  role?: "admin" | "user";
+  tenant?: string;
 }
 
 function makeState(
   userId: string,
   now: number,
-  overrides?: Partial<CredentialState<MyClaims>>,
-): CredentialState<MyClaims> {
+  overrides?: Partial<CredentialState & MyClaims>,
+): CredentialState & MyClaims {
   return {
     userId,
     issuedAt: now,
@@ -45,13 +47,15 @@ describe("CredentialStoreEncapsulated", () => {
   it("persists and retrieves state (claims + metadata roundtrip)", async () => {
     const store = new CredentialStoreEncapsulated<MyClaims>({ secret: SECRET, clock });
     const state = makeState("alice", clock.now(), {
-      claims: { role: "admin", tenant: "acme" },
+      role: "admin",
+      tenant: "acme",
       metadata: { ip: "10.0.0.1", userAgent: "test" },
     });
     const token = await store.persist(state);
     const round = await store.retrieve(token);
     expect(round?.userId).toBe("alice");
-    expect(round?.claims).toEqual({ role: "admin", tenant: "acme" });
+    expect(round?.role).toBe("admin");
+    expect(round?.tenant).toBe("acme");
     expect(round?.metadata).toEqual({ ip: "10.0.0.1", userAgent: "test" });
     expect(round?.issuedAt).toBe(state.issuedAt);
     expect(round?.expiresAt).toBe(state.expiresAt);
@@ -153,16 +157,16 @@ describe("CredentialStoreEncapsulated", () => {
       clock,
     });
     const token = await store.persist(
-      makeState("alice", clock.now(), { claims: { role: "user", tenant: "acme" } }),
+      makeState("alice", clock.now(), { role: "user", tenant: "acme" }),
     );
     const newToken = await store.update(
       token,
-      makeState("alice", clock.now(), { claims: { role: "admin", tenant: "acme" } }),
+      makeState("alice", clock.now(), { role: "admin", tenant: "acme" }),
     );
     expect(newToken).not.toBe(token);
     expect(await store.retrieve(token)).toBeNull();
     const fresh = await store.retrieve(newToken);
-    expect(fresh?.claims?.role).toBe("admin");
+    expect(fresh?.role).toBe("admin");
   });
 
   it("update without denylist throws", async () => {
@@ -267,15 +271,15 @@ describe("CredentialStoreEncapsulated", () => {
     expect(round?.rotatedAt).toBe(clock.now() - 1000);
   });
 
-  it("roundtrips with strongly typed claims", async () => {
+  it("roundtrips with strongly typed payload fields", async () => {
     const store = new CredentialStoreEncapsulated<MyClaims>({ secret: SECRET, clock });
     const token = await store.persist(
-      makeState("alice", clock.now(), { claims: { role: "admin", tenant: "acme" } }),
+      makeState("alice", clock.now(), { role: "admin", tenant: "acme" }),
     );
     const round = await store.retrieve(token);
-    const role: "admin" | "user" | undefined = round?.claims?.role;
+    const role: "admin" | "user" | undefined = round?.role;
     expect(role).toBe("admin");
-    expect(round?.claims?.tenant).toBe("acme");
+    expect(round?.tenant).toBe("acme");
   });
 
   it("constructor throws INVALID_CONFIG with no secret", () => {

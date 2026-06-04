@@ -56,8 +56,8 @@ interface RedisCredentialStoreOptions {
  * lazily prune dead members on `listForUser` and `revokeAllForUser`.
  */
 export class CredentialStoreRedis<
-  TClaims extends object = object,
-> implements CredentialStore<TClaims> {
+  TPayload extends object = object,
+> implements CredentialStore<TPayload> {
   private readonly redis: RedisLike;
   private readonly prefix: string;
 
@@ -74,9 +74,9 @@ export class CredentialStoreRedis<
     return `${this.prefix}:u:${userId}`;
   }
 
-  async persist(state: CredentialState<TClaims>, ttl?: number): Promise<string> {
+  async persist(state: CredentialState & TPayload, ttl?: number): Promise<string> {
     const token = randomUUID();
-    const stored: CredentialState<TClaims> = { ...state };
+    const stored: CredentialState & TPayload = { ...state };
     if (typeof ttl === "number") {
       // Mirror the memory store: caller-supplied ttl overrides the state's
       // expiresAt. Always compute absolute expiry from the moment of write.
@@ -95,10 +95,10 @@ export class CredentialStoreRedis<
     return token;
   }
 
-  async retrieve(token: string): Promise<CredentialState<TClaims> | null> {
+  async retrieve(token: string): Promise<(CredentialState & TPayload) | null> {
     const raw = await this.redis.get(this.tokenKey(token));
     if (raw === null) return null;
-    const state = JSON.parse(raw) as CredentialState<TClaims>;
+    const state = JSON.parse(raw) as CredentialState & TPayload;
     if (state.expiresAt <= Date.now()) {
       // Redis should have expired it, but guard against clock skew.
       await this.redis.del(this.tokenKey(token));
@@ -108,20 +108,20 @@ export class CredentialStoreRedis<
     return state;
   }
 
-  async consume(token: string): Promise<CredentialState<TClaims> | null> {
+  async consume(token: string): Promise<(CredentialState & TPayload) | null> {
     const state = await this.retrieve(token);
     if (!state) return null;
     await this.revoke(token);
     return state;
   }
 
-  async update(token: string, state: CredentialState<TClaims>): Promise<string> {
+  async update(token: string, state: CredentialState & TPayload): Promise<string> {
     const existingRaw = await this.redis.get(this.tokenKey(token));
     if (existingRaw === null) {
       // Mirror memory store: unknown tokens are no-ops, not resurrections.
       return token;
     }
-    const existing = JSON.parse(existingRaw) as CredentialState<TClaims>;
+    const existing = JSON.parse(existingRaw) as CredentialState & TPayload;
     if (existing.userId !== state.userId) {
       await this.redis.srem(this.userKey(existing.userId), token);
       await this.redis.sadd(this.userKey(state.userId), token);
@@ -138,7 +138,7 @@ export class CredentialStoreRedis<
   async revoke(token: string): Promise<void> {
     const raw = await this.redis.get(this.tokenKey(token));
     if (raw === null) return;
-    const state = JSON.parse(raw) as CredentialState<TClaims>;
+    const state = JSON.parse(raw) as CredentialState & TPayload;
     await this.redis.del(this.tokenKey(token));
     await this.redis.srem(this.userKey(state.userId), token);
   }
@@ -146,7 +146,7 @@ export class CredentialStoreRedis<
   async touch(token: string, at: number): Promise<void> {
     const raw = await this.redis.get(this.tokenKey(token));
     if (raw === null) return;
-    const state = JSON.parse(raw) as CredentialState<TClaims>;
+    const state = JSON.parse(raw) as CredentialState & TPayload;
     state.lastSeenAt = at;
     // Preserve the remaining TTL — re-derive from the (unchanged) expiresAt so
     // touching never resurrects or extends a credential past its expiry.
@@ -168,12 +168,14 @@ export class CredentialStoreRedis<
     return removed;
   }
 
-  async listForUser(userId: string): Promise<Array<CredentialState<TClaims> & { token: string }>> {
+  async listForUser(
+    userId: string,
+  ): Promise<Array<CredentialState & TPayload & { token: string }>> {
     const setKey = this.userKey(userId);
     const tokens = await this.redis.smembers(setKey);
     if (tokens.length === 0) return [];
     const now = Date.now();
-    const out: Array<CredentialState<TClaims> & { token: string }> = [];
+    const out: Array<CredentialState & TPayload & { token: string }> = [];
     const dead: string[] = [];
     for (const token of tokens) {
       const raw = await this.redis.get(this.tokenKey(token));
@@ -181,7 +183,7 @@ export class CredentialStoreRedis<
         dead.push(token);
         continue;
       }
-      const state = JSON.parse(raw) as CredentialState<TClaims>;
+      const state = JSON.parse(raw) as CredentialState & TPayload;
       if (state.expiresAt <= now) {
         dead.push(token);
         continue;

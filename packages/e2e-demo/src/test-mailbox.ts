@@ -1,6 +1,5 @@
 import type { AuthCredential, AuthEmailEvent, AuthSmsEvent } from "@aooth/auth";
 import { type AuditEvent, AuthGuarded, type ConsentEvent, Public, UserId } from "@aooth/auth-moost";
-import { arbacClaims } from "@aooth/arbac-moost";
 import type { UserService } from "@aooth/user";
 import { Body, Delete, Get, Post } from "@moostjs/event-http";
 import { Controller, Param } from "moost";
@@ -39,8 +38,9 @@ export interface TestMailboxDeps {
   userService: UserService;
   /**
    * The auth credential orchestrator — used by `POST /__test/token-attenuated`
-   * to mint a down-scoped (restrict-only `claims.arbac`) token for the ARBAC
-   * attenuation specs, exercising the real credential → guard → ARBAC path.
+   * to mint a down-scoped (restrict-only, via the credential's typed
+   * `@arbac.attenuate.*` fields) token for the ARBAC attenuation specs,
+   * exercising the real credential → guard → ARBAC path.
    */
   authCredential: AuthCredential;
   /**
@@ -142,11 +142,13 @@ export function createTestMailboxController(
     }
 
     /**
-     * Mint an access token for a user, optionally down-scoped via the
-     * reserved `claims.arbac` namespace (restrict-only ARBAC attenuation).
-     * An empty body mints a FULL-authority token (no `claims.arbac`); passing
-     * `roles`/`attrs` mints a narrowed PAT-style token. Drives the
-     * arbac-attenuation specs end-to-end (credential → auth guard → ARBAC).
+     * Mint an access token for a user, optionally down-scoped via the typed
+     * `@arbac.attenuate.*` root fields on `DemoAuthCredential` (restrict-only
+     * ARBAC attenuation). An empty body mints a FULL-authority token (no
+     * attenuate fields set); passing `roles`/`attrs` mints a narrowed PAT-style
+     * token. Drives the arbac-attenuation specs end-to-end (credential → auth
+     * guard → ARBAC). The test API's `attrs` keys are user-attribute names; the
+     * endpoint maps them onto the credential's narrowing columns.
      */
     @Post("token-attenuated/:username")
     async issueAttenuatedToken(
@@ -155,12 +157,19 @@ export function createTestMailboxController(
     ): Promise<{ accessToken: string }> {
       const user = await resolveUser(username);
       const narrow = body.roles !== undefined || body.attrs !== undefined;
-      const issued = await authCredential.issue(
-        user.id,
-        narrow
-          ? { claims: arbacClaims({ assumeRoles: body.roles, attrs: body.attrs }) }
-          : undefined,
-      );
+      // Build the typed attenuation payload (flat root fields on the credential
+      // model). The atscript-db store persists them as real columns.
+      const payload: {
+        assumedRoles?: string[];
+        scopedTenant?: string;
+        scopedDepartment?: string;
+      } = {};
+      if (body.roles !== undefined) payload.assumedRoles = body.roles;
+      if (typeof body.attrs?.tenantId === "string") payload.scopedTenant = body.attrs.tenantId;
+      if (typeof body.attrs?.departmentId === "string") {
+        payload.scopedDepartment = body.attrs.departmentId;
+      }
+      const issued = await authCredential.issue(user.id, narrow ? payload : undefined);
       return { accessToken: issued.accessToken };
     }
 

@@ -1,5 +1,3 @@
-export type TJsonValue = string | number | boolean | TJsonValue[] | { [/.*/]: TJsonValue }
-
 @db.table 'aooth_credentials'
 @db.depth.limit 0
 export interface AoothAuthCredential {
@@ -25,17 +23,6 @@ export interface AoothAuthCredential {
      */
     kind?: string
 
-    /**
-     * Custom claims, stored as JSON. Pattern-property shape accepts any key
-     * with a scalar value — matches the JWT registered-claim spec (iss, sub,
-     * iat, exp, jti, aud, etc.) which are all primitives. Consumers needing
-     * nested/structured claims should subclass with an explicit `claims` shape.
-     */
-    @db.json
-    claims?: {
-        [/.*/]: TJsonValue
-    }
-
     /** Display metadata: ip, userAgent, fingerprint, label. */
     @db.json
     metadata?: {
@@ -58,4 +45,19 @@ export interface AoothAuthCredential {
 
     /** Last-activity timestamp; written only under `trackLastSeen`. */
     lastSeenAt?: number.timestamp
+
+    /**
+     * Customer-typed payload — proves that root fields a consumer adds when
+     * they `extends AoothAuthCredential` persist + round-trip as REAL typed
+     * columns (the replacement for the dropped free-form `claims` blob).
+     * A scalar column...
+     */
+    scope?: string
+
+    /** ...and a structured typed column (validated, not a free-form blob). */
+    @db.json
+    grants?: {
+        roles?: string[]
+        tenantId?: string
+    }
 }

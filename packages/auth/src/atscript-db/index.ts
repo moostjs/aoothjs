@@ -1,21 +1,25 @@
 import { randomUUID } from "node:crypto";
+import { credentialPayloadOf } from "../credential/payload";
 import type { CredentialState } from "../credential/types";
 import type { CredentialStore } from "../stores/store";
 
 /**
  * Persisted row shape — mirrors `AoothAuthCredential` from
- * `./auth-credential.as`. Re-declared here as a plain TS interface so
- * consumers can use the adapter without running the atscript build (and so
- * `@aooth/auth` doesn't need to depend on `@atscript/typescript` at build
- * time). When you DO wire the `.as` model, the shapes match by construction.
+ * `./auth-credential.as`. Re-declared here as a plain TS type so consumers can
+ * use the adapter without running the atscript build (and so `@aooth/auth`
+ * doesn't need to depend on `@atscript/typescript` at build time). When you DO
+ * wire the `.as` model, the shapes match by construction.
+ *
+ * The consumer's typed payload `TPayload` (the root fields they add to their
+ * `extends AoothAuthCredential` model) is intersected flat — those become real
+ * typed columns, replacing the dropped free-form `claims` blob.
  */
-export interface AuthCredentialRow<TClaims extends object = object> {
+export type AuthCredentialRow<TPayload extends object = object> = {
   token: string;
   userId: string;
   issuedAt: number;
   expiresAt: number;
   kind?: string;
-  claims?: TClaims;
   metadata?: {
     ip?: string;
     userAgent?: string;
@@ -26,7 +30,7 @@ export interface AuthCredentialRow<TClaims extends object = object> {
   rotatedAt?: number;
   sessionId?: string;
   lastSeenAt?: number;
-}
+} & TPayload;
 
 /**
  * Structural surface of `AtscriptDbTable` covering exactly the methods this
@@ -34,22 +38,22 @@ export interface AuthCredentialRow<TClaims extends object = object> {
  * `@aooth/auth` public surface — consumers pass `db.getTable(AoothAuthCredential)`
  * directly and TypeScript matches by-shape.
  */
-export interface AuthCredentialTable<TClaims extends object = object> {
-  insertOne(row: AuthCredentialRow<TClaims>): Promise<{ insertedId: unknown }>;
-  findOne(query: { filter: Record<string, unknown> }): Promise<AuthCredentialRow<TClaims> | null>;
+export interface AuthCredentialTable<TPayload extends object = object> {
+  insertOne(row: AuthCredentialRow<TPayload>): Promise<{ insertedId: unknown }>;
+  findOne(query: { filter: Record<string, unknown> }): Promise<AuthCredentialRow<TPayload> | null>;
   findMany(query: {
     filter?: Record<string, unknown>;
     controls?: Record<string, unknown>;
-  }): Promise<AuthCredentialRow<TClaims>[]>;
+  }): Promise<AuthCredentialRow<TPayload>[]>;
   replaceOne(
-    row: AuthCredentialRow<TClaims>,
+    row: AuthCredentialRow<TPayload>,
   ): Promise<{ matchedCount: number; modifiedCount: number }>;
   deleteOne(idOrPk: unknown): Promise<{ deletedCount: number }>;
   deleteMany(filter: Record<string, unknown>): Promise<{ deletedCount: number }>;
 }
 
-interface CredentialStoreAtscriptDbOptions<TClaims extends object> {
-  table: AuthCredentialTable<TClaims>;
+interface CredentialStoreAtscriptDbOptions<TPayload extends object> {
+  table: AuthCredentialTable<TPayload>;
 }
 
 /**
@@ -66,35 +70,36 @@ interface CredentialStoreAtscriptDbOptions<TClaims extends object> {
  * adapter.
  */
 export class CredentialStoreAtscriptDb<
-  TClaims extends object = object,
-> implements CredentialStore<TClaims> {
-  private readonly table: AuthCredentialTable<TClaims>;
+  TPayload extends object = object,
+> implements CredentialStore<TPayload> {
+  private readonly table: AuthCredentialTable<TPayload>;
 
-  constructor(opts: CredentialStoreAtscriptDbOptions<TClaims>) {
+  constructor(opts: CredentialStoreAtscriptDbOptions<TPayload>) {
     this.table = opts.table;
   }
 
-  async persist(state: CredentialState<TClaims>, ttl?: number): Promise<string> {
+  async persist(state: CredentialState & TPayload, ttl?: number): Promise<string> {
     const token = randomUUID();
     const expiresAt = typeof ttl === "number" ? Date.now() + ttl : state.expiresAt;
-    const row: AuthCredentialRow<TClaims> = {
+    const row = {
+      // Typed payload columns first; envelope fields win any name clash.
+      ...credentialPayloadOf<TPayload>(state),
       token,
       userId: state.userId,
       issuedAt: state.issuedAt,
       expiresAt,
       kind: state.kind,
-      claims: state.claims,
       metadata: state.metadata,
       parentCredentialId: state.parentCredentialId,
       rotatedAt: state.rotatedAt,
       sessionId: state.sessionId,
       lastSeenAt: state.lastSeenAt,
-    };
+    } as AuthCredentialRow<TPayload>;
     await this.table.insertOne(row);
     return token;
   }
 
-  async retrieve(token: string): Promise<CredentialState<TClaims> | null> {
+  async retrieve(token: string): Promise<(CredentialState & TPayload) | null> {
     const row = await this.table.findOne({ filter: { token } });
     if (!row) return null;
     if (row.expiresAt <= Date.now()) {
@@ -105,14 +110,14 @@ export class CredentialStoreAtscriptDb<
     return rowToState(row);
   }
 
-  async consume(token: string): Promise<CredentialState<TClaims> | null> {
+  async consume(token: string): Promise<(CredentialState & TPayload) | null> {
     const state = await this.retrieve(token);
     if (!state) return null;
     await this.revoke(token);
     return state;
   }
 
-  async update(token: string, state: CredentialState<TClaims>): Promise<string> {
+  async update(token: string, state: CredentialState & TPayload): Promise<string> {
     const existing = await this.table.findOne({ filter: { token } });
     if (!existing) {
       // Mirror the memory/Redis stores: unknown tokens are no-ops.
@@ -124,19 +129,19 @@ export class CredentialStoreAtscriptDb<
       await this.revoke(token);
       return token;
     }
-    const row: AuthCredentialRow<TClaims> = {
+    const row = {
+      ...credentialPayloadOf<TPayload>(state),
       token,
       userId: state.userId,
       issuedAt: state.issuedAt,
       expiresAt: state.expiresAt,
       kind: state.kind,
-      claims: state.claims,
       metadata: state.metadata,
       parentCredentialId: state.parentCredentialId,
       rotatedAt: state.rotatedAt,
       sessionId: state.sessionId,
       lastSeenAt: state.lastSeenAt,
-    };
+    } as AuthCredentialRow<TPayload>;
     await this.table.replaceOne(row);
     return token;
   }
@@ -158,10 +163,12 @@ export class CredentialStoreAtscriptDb<
     return result.deletedCount;
   }
 
-  async listForUser(userId: string): Promise<Array<CredentialState<TClaims> & { token: string }>> {
+  async listForUser(
+    userId: string,
+  ): Promise<Array<CredentialState & TPayload & { token: string }>> {
     const now = Date.now();
     const rows = await this.table.findMany({ filter: { userId } });
-    const out: Array<CredentialState<TClaims> & { token: string }> = [];
+    const out: Array<CredentialState & TPayload & { token: string }> = [];
     const expired: string[] = [];
     for (const row of rows) {
       if (row.expiresAt <= now) {
@@ -177,20 +184,22 @@ export class CredentialStoreAtscriptDb<
   }
 }
 
-function rowToState<TClaims extends object>(
-  row: AuthCredentialRow<TClaims>,
-): CredentialState<TClaims> {
-  const state: CredentialState<TClaims> = {
+function rowToState<TPayload extends object>(
+  row: AuthCredentialRow<TPayload>,
+): CredentialState & TPayload {
+  // Typed payload columns first (excludes envelope keys + `token`); the
+  // explicit envelope assignments below win any clash.
+  const state: CredentialState = {
+    ...credentialPayloadOf<TPayload>(row),
     userId: row.userId,
     issuedAt: row.issuedAt,
     expiresAt: row.expiresAt,
   };
-  if (row.claims !== undefined) state.claims = row.claims;
   if (row.metadata !== undefined) state.metadata = row.metadata;
   if (row.kind === "access" || row.kind === "refresh") state.kind = row.kind;
   if (row.parentCredentialId !== undefined) state.parentCredentialId = row.parentCredentialId;
   if (row.rotatedAt !== undefined) state.rotatedAt = row.rotatedAt;
   if (row.sessionId !== undefined) state.sessionId = row.sessionId;
   if (row.lastSeenAt !== undefined) state.lastSeenAt = row.lastSeenAt;
-  return state;
+  return state as CredentialState & TPayload;
 }

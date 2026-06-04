@@ -16,8 +16,10 @@ class FakeClock implements Clock {
   }
 }
 
-interface MyClaims extends Record<string, unknown> {
-  role: "admin" | "user";
+// Typed credential payload — flat root fields (replacing the dropped `claims`
+// container). Optional, since a normal token carries none.
+interface MyClaims {
+  role?: "admin" | "user";
 }
 
 const JWT_SECRET = "integration-test-secret-of-sufficient-length-1234567890";
@@ -60,11 +62,11 @@ describe.each(stateless)("AuthCredential + %s store", (_, makeStore) => {
     const clock = new FakeClock();
     const { store } = makeStore(clock);
     const auth = new AuthCredential<MyClaims>({ store, clock, accessTtl: 60_000 });
-    const { accessToken } = await auth.issue("alice", { claims: { role: "admin" } });
+    const { accessToken } = await auth.issue("alice", { role: "admin" });
 
     const ctx = await auth.validate(accessToken);
     expect(ctx?.userId).toBe("alice");
-    expect(ctx?.claims?.role).toBe("admin");
+    expect(ctx?.role).toBe("admin");
 
     await auth.revoke(accessToken);
     expect(await auth.validate(accessToken)).toBeNull();

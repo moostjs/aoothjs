@@ -13,4 +13,22 @@ import { AoothAuthCredential } from '@aooth/auth/atscript-db/model'
 
 @db.table 'aooth_credentials'
 @db.depth.limit 0
-export interface DemoAuthCredential extends AoothAuthCredential {}
+export interface DemoAuthCredential extends AoothAuthCredential {
+    // Restrict-only ARBAC attenuation as TYPED ROOT columns (the replacement
+    // for the dropped free-form `claims.arbac` namespace). A down-scoped
+    // PAT/session sets these; a normal token leaves them unset (full authority).
+    // `@aooth/arbac-moost`'s `extractAttenuation` walks these annotations.
+
+    /** Assumed-role SUBSET — intersected with the user's roles (fail-closed). */
+    @arbac.attenuate.role
+    @db.json
+    assumedRoles?: string[]
+
+    /** Narrow the user's `tenantId` attribute (name-decoupled from the column). */
+    @arbac.attenuate.attr "tenantId"
+    scopedTenant?: string
+
+    /** Narrow the user's `departmentId` attribute. */
+    @arbac.attenuate.attr "departmentId"
+    scopedDepartment?: string
+}

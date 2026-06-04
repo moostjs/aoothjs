@@ -1,25 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { arbacClaims, conjoinArbacDbScopes } from "./attenuation";
+import { conjoinArbacDbScopes } from "./attenuation";
 import type { ArbacDbScope } from "./db/as-arbac-db-controller";
-
-describe("arbacClaims — mint helper", () => {
-  it("wraps under the reserved `arbac` namespace", () => {
-    expect(arbacClaims({ assumeRoles: ["doc-reader"], attrs: { docScope: ["d1"] } })).toStrictEqual(
-      {
-        arbac: { roles: ["doc-reader"], attrs: { docScope: ["d1"] } },
-      },
-    );
-  });
-
-  it("preserves the explicit empty (deny-all) case", () => {
-    expect(arbacClaims({ assumeRoles: [] })).toStrictEqual({ arbac: { roles: [] } });
-  });
-
-  it("omits roles entirely for attrs-only narrowing", () => {
-    expect(arbacClaims({ attrs: { t: 1 } })).toStrictEqual({ arbac: { attrs: { t: 1 } } });
-  });
-});
 
 describe("conjoinArbacDbScopes — composite restrict-only conjunction", () => {
   it("filter: $and of the two unions ({} side is the identity)", () => {

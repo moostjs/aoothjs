@@ -1,8 +1,9 @@
 /**
- * What a successful auth check produces.
- * Generic over TClaims for typed custom claims.
+ * The read-time envelope a successful auth check always produces — the fixed
+ * fields, before the credential's typed payload is merged in. See
+ * {@link AuthContext}.
  */
-export interface AuthContext<TClaims extends object = object> {
+export interface AuthContextBase {
   userId: string;
   method: "session" | "token";
   credentialId: string;
@@ -16,8 +17,17 @@ export interface AuthContext<TClaims extends object = object> {
    */
   sessionId?: string;
   expiresAt: number;
-  claims?: TClaims;
 }
+
+/**
+ * What a successful auth check produces: the {@link AuthContextBase} envelope
+ * intersected with the credential's **typed payload** `TPayload` — the root
+ * fields a consumer adds to their credential model (e.g. an
+ * `@arbac.attenuate.*`-annotated field read by `@aooth/arbac-moost`). There is
+ * no free-form `claims` container; per-token data is typed, validated root
+ * fields that round-trip through the store and surface here by name.
+ */
+export type AuthContext<TPayload extends object = object> = AuthContextBase & TPayload;
 
 /**
  * Display metadata for stateful credentials.
@@ -34,13 +44,17 @@ export interface CredentialMetadata {
 }
 
 /**
- * Persisted state of a credential.
+ * Persisted state of a credential — the fixed **envelope**. A consumer's
+ * per-token payload is NOT a field here; it is carried as additional typed
+ * root fields intersected via `CredentialState & TPayload` (the orchestrator,
+ * stores, and atscript-db adapter are generic over that payload). Reserved
+ * envelope keys (see {@link credentialPayloadOf}) must not be reused as
+ * payload field names.
  */
-export interface CredentialState<TClaims extends object = object> {
+export interface CredentialState {
   userId: string;
   issuedAt: number;
   expiresAt: number;
-  claims?: TClaims;
   metadata?: CredentialMetadata;
   /**
    * Discriminant between access and refresh credentials persisted in the same store.

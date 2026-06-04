@@ -45,7 +45,7 @@ describe("AuthGuard interceptor", () => {
 
   it("admits a protected route with a valid Bearer token and populates AuthContext", async () => {
     const app = await prepareTestApp([ProtectedController]);
-    const { accessToken } = await app.auth.issue("alice", { claims: { roles: ["admin"] } });
+    const { accessToken } = await app.auth.issue("alice", { roles: ["admin"] });
     const result = await runGuardForHandler(app, "ProtectedController", "handler", {
       headers: { authorization: `Bearer ${accessToken}` },
     });

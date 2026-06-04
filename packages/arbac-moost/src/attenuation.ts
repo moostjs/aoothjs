@@ -10,42 +10,25 @@ import {
 import type { ArbacDbScope } from "./db/as-arbac-db-controller";
 
 /**
- * Reserved-namespace ARBAC claims carried on an authenticated credential as
- * `claims.arbac`. Sourced into evaluation via the optional
- * `ArbacUserProvider.getAttenuation()` hook, they NARROW (never expand) the
- * principal — see {@link arbacClaims} to mint them and the engine's
- * `evaluate({ attenuate })` for the restrict-only outcome-intersection.
+ * The restrict-only ARBAC attenuation carried by a credential — its assumed
+ * role SUBSET and narrowing attribute overrides. Sourced into evaluation via
+ * the optional `ArbacUserProvider.getAttenuation()` hook (typically built by
+ * walking the credential model's `@arbac.attenuate.*`-annotated typed root
+ * fields with {@link extractAttenuation}), it NARROWS (never expands) the
+ * principal — see the engine's `evaluate({ attenuate })` for the restrict-only
+ * outcome-intersection.
  *
  * - `roles` — assume a SUBSET of the user's roles. `[]` = no roles (deny-all,
  *   fail-closed); an OMITTED key = keep all the user's roles (attrs-only
  *   narrowing); a role the user lacks is dropped by the intersection.
- * - `attrs` — extra/overriding inputs to scope predicates, intended to narrow
- *   scopes. They are merged LOCALLY into the credential pass only and clipped
- *   by the scope conjunction, so they can never widen beyond the user.
+ * - `attrs` — extra/overriding inputs to scope predicates, keyed by the target
+ *   user-attribute name, intended to narrow scopes. They are merged LOCALLY
+ *   into the credential pass only and clipped by the scope conjunction, so they
+ *   can never widen beyond the user.
  */
 export interface AoothArbacClaims {
   roles?: string[];
   attrs?: Record<string, unknown>;
-}
-
-/**
- * Mint the reserved `claims.arbac` namespace for a down-scoped credential
- * (PAT / API key / down-scoped session). Pass to `AuthCredential.issue`:
- *
- * ```ts
- * issue(userId, { claims: arbacClaims({ assumeRoles: ["doc-reader"], attrs: { docScope } }) });
- * ```
- *
- * The empty case is explicit: `arbacClaims({ assumeRoles: [] })` mints a
- * deny-all credential. Omit `assumeRoles` entirely for attrs-only narrowing.
- */
-export function arbacClaims(opts: { assumeRoles?: string[]; attrs?: Record<string, unknown> }): {
-  arbac: AoothArbacClaims;
-} {
-  const arbac: AoothArbacClaims = {};
-  if (opts.assumeRoles !== undefined) arbac.roles = opts.assumeRoles;
-  if (opts.attrs !== undefined) arbac.attrs = opts.attrs;
-  return { arbac };
 }
 
 /**

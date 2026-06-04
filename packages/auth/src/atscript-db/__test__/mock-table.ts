@@ -10,11 +10,11 @@ import type { AuthCredentialRow, AuthCredentialTable } from "../index";
  * calls `deleteOne` when the new state is already expired (parity with the
  * Redis adapter's fail-loud rule).
  */
-export class MockTable<TClaims extends object = object> implements AuthCredentialTable<TClaims> {
-  rows = new Map<string, AuthCredentialRow<TClaims>>();
+export class MockTable<TPayload extends object = object> implements AuthCredentialTable<TPayload> {
+  rows = new Map<string, AuthCredentialRow<TPayload>>();
   ops: Array<{ cmd: string; args: unknown[] }> = [];
 
-  async insertOne(row: AuthCredentialRow<TClaims>): Promise<{ insertedId: unknown }> {
+  async insertOne(row: AuthCredentialRow<TPayload>): Promise<{ insertedId: unknown }> {
     this.ops.push({ cmd: "insertOne", args: [row] });
     this.rows.set(row.token, { ...row });
     return { insertedId: row.token };
@@ -22,7 +22,7 @@ export class MockTable<TClaims extends object = object> implements AuthCredentia
 
   async findOne(query: {
     filter: Record<string, unknown>;
-  }): Promise<AuthCredentialRow<TClaims> | null> {
+  }): Promise<AuthCredentialRow<TPayload> | null> {
     this.ops.push({ cmd: "findOne", args: [query] });
     const token = query.filter.token as string | undefined;
     if (token !== undefined) {
@@ -35,7 +35,7 @@ export class MockTable<TClaims extends object = object> implements AuthCredentia
   async findMany(query: {
     filter?: Record<string, unknown>;
     controls?: Record<string, unknown>;
-  }): Promise<AuthCredentialRow<TClaims>[]> {
+  }): Promise<AuthCredentialRow<TPayload>[]> {
     this.ops.push({ cmd: "findMany", args: [query] });
     const filter = query.filter ?? {};
     return Array.from(this.rows.values())
@@ -44,7 +44,7 @@ export class MockTable<TClaims extends object = object> implements AuthCredentia
   }
 
   async replaceOne(
-    row: AuthCredentialRow<TClaims>,
+    row: AuthCredentialRow<TPayload>,
   ): Promise<{ matchedCount: number; modifiedCount: number }> {
     this.ops.push({ cmd: "replaceOne", args: [row] });
     if (!this.rows.has(row.token)) return { matchedCount: 0, modifiedCount: 0 };
@@ -77,7 +77,7 @@ export class MockTable<TClaims extends object = object> implements AuthCredentia
 
   // ---- internal -----------------------------------------------------------
 
-  private matches(row: AuthCredentialRow<TClaims>, filter: Record<string, unknown>): boolean {
+  private matches(row: AuthCredentialRow<TPayload>, filter: Record<string, unknown>): boolean {
     const rowDict = row as unknown as Record<string, unknown>;
     for (const [k, v] of Object.entries(filter)) {
       if (v && typeof v === "object" && "$in" in (v as Record<string, unknown>)) {

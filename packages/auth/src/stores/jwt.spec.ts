@@ -16,16 +16,18 @@ class FakeClock implements Clock {
   }
 }
 
+// Typed credential payload — flat root fields (replacing the dropped `claims`
+// container). Optional, since a normal token carries none.
 interface MyClaims {
-  role: "admin" | "user";
-  scope: string[];
+  role?: "admin" | "user";
+  scope?: string[];
 }
 
 function makeState(
   userId: string,
   now: number,
-  overrides?: Partial<CredentialState<MyClaims>>,
-): CredentialState<MyClaims> {
+  overrides?: Partial<CredentialState & MyClaims>,
+): CredentialState & MyClaims {
   return {
     userId,
     issuedAt: now,
@@ -45,9 +47,10 @@ describe("CredentialStoreJwt", () => {
     });
 
     it("persists and retrieves state (roundtrip)", async () => {
-      const store = new CredentialStoreJwt({ secret: SECRET, clock });
+      const store = new CredentialStoreJwt<MyClaims>({ secret: SECRET, clock });
       const state = makeState("alice", clock.now(), {
-        claims: { role: "admin", scope: ["read", "write"] },
+        role: "admin",
+        scope: ["read", "write"],
         metadata: { ip: "1.2.3.4", userAgent: "ua" },
       });
       const token = await store.persist(state);
@@ -57,7 +60,8 @@ describe("CredentialStoreJwt", () => {
       const round = await store.retrieve(token);
       expect(round?.userId).toBe("alice");
       expect(round?.kind).toBe("access");
-      expect(round?.claims).toEqual({ role: "admin", scope: ["read", "write"] });
+      expect(round?.role).toBe("admin");
+      expect(round?.scope).toEqual(["read", "write"]);
       expect(round?.metadata).toEqual({ ip: "1.2.3.4", userAgent: "ua" });
       expect(round?.issuedAt).toBe(state.issuedAt);
       expect(round?.expiresAt).toBe(state.expiresAt);
@@ -124,12 +128,12 @@ describe("CredentialStoreJwt", () => {
       const token = await store.persist(makeState("alice", clock.now()));
       const newToken = await store.update(
         token,
-        makeState("alice", clock.now(), { claims: { role: "user", scope: ["read"] } }),
+        makeState("alice", clock.now(), { role: "user", scope: ["read"] }),
       );
       expect(newToken).not.toBe(token);
       expect(await store.retrieve(token)).toBeNull();
       const fresh = await store.retrieve(newToken);
-      expect(fresh?.claims?.role).toBe("user");
+      expect(fresh?.role).toBe("user");
     });
 
     it("update without denylist throws", async () => {
@@ -349,11 +353,11 @@ describe("CredentialStoreJwt", () => {
         clock,
       });
       const token = await store.persist(
-        makeState("alice", clock.now(), { claims: { role: "admin", scope: [] } }),
+        makeState("alice", clock.now(), { role: "admin", scope: [] }),
       );
       const round = await store.retrieve(token);
       expect(round?.userId).toBe("alice");
-      expect(round?.claims?.role).toBe("admin");
+      expect(round?.role).toBe("admin");
     });
   });
 

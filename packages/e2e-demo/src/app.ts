@@ -5,7 +5,12 @@ import {
   ArbacUserProviderToken,
   MoostArbac,
 } from "@aooth/arbac-moost";
-import { type ArbacUserTable, AtscriptArbacUserProvider } from "@aooth/arbac-moost/atscript";
+import {
+  type ArbacUserTable,
+  AtscriptArbacUserProvider,
+  extractAttenuation,
+  validateAttenuationTargets,
+} from "@aooth/arbac-moost/atscript";
 import {
   AuthCredential,
   type AuthEmailEvent,
@@ -72,6 +77,7 @@ import {
   makeTenantsController,
   makeUsersController,
 } from "./controllers";
+import { DemoAuthCredential } from "./models/auth-credential.as";
 import { DemoUser } from "./models/user.as";
 import { allRoles, type UserAttrs } from "./roles";
 import { seedAll } from "./seed";
@@ -803,16 +809,21 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       // can query the REAL users table directly — its default
       // `findOne({ filter: { id } })` resolves the row by primary key.
       super(DemoUser, appDb.tables.users as unknown as ArbacUserTable<DemoUser>);
+      // Boot-time: every @arbac.attenuate.attr target on the credential model
+      // must name a real @arbac.attribute on the user model — fail loud on a typo.
+      validateAttenuationTargets(DemoAuthCredential, ["tenantId", "departmentId"]);
     }
     override getUserId(): string {
       return useAuth().getUserId();
     }
-    // Source the credential's restrict-only ARBAC attenuation from the reserved
-    // `claims.arbac` namespace. arbac-moost stays auth-agnostic, so the consumer
-    // wires the auth read here; the engine still does the safe intersection. A
-    // normal token (no `claims.arbac`) returns undefined → full user authority.
+    // Source the credential's restrict-only ARBAC attenuation from its TYPED
+    // @arbac.attenuate.* root fields (surfaced flat on the auth context).
+    // arbac-moost stays auth-agnostic, so the consumer wires the auth read here;
+    // `extractAttenuation` walks the model's annotations and the engine does the
+    // safe intersection. A normal token (no attenuate fields set) → undefined →
+    // full user authority.
     override getAttenuation(): AoothArbacClaims | undefined {
-      return useAuth().getAuthContext<{ arbac?: AoothArbacClaims }>()?.claims?.arbac;
+      return extractAttenuation(DemoAuthCredential, useAuth().getAuthContext());
     }
   }
   app.setReplaceRegistry(createReplaceRegistry([ArbacUserProviderToken, DemoArbacUserProvider]));
