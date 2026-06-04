@@ -1,6 +1,6 @@
 import { AuthCredential } from "@aooth/auth";
 import { OAuthError, OAuthProviderRegistry } from "@aooth/idp";
-import { FederatedIdentityStore, UserService } from "@aooth/user";
+import { FederatedIdentityStore, UserService, type FederatedIdentity } from "@aooth/user";
 import { Delete, Get, HttpError, Query } from "@moostjs/event-http";
 import { current } from "@wooksjs/event-core";
 import { useResponse } from "@wooksjs/event-http";
@@ -27,6 +27,10 @@ import { FEDERATED_IDENTITY_STORE_TOKEN } from "./oauth-tokens";
  * seed double-submitted in the CSRF cookie) and re-derived at the callback (see
  * {@link OAuthProviderRegistry.deriveSeededPkce}). Nothing secret rides in the URL.
  *
+ * - `GET  /auth/oauth/identities` — list the current user's CONNECTED ACCOUNTS
+ *   (linked provider identities). Self-scoped read projection over
+ *   `FederatedIdentityStore.listForUser(userId)`; `(provider, subject)` is the
+ *   key the client passes back to `unlink`.
  * - `GET  /auth/oauth/:provider/link` — begin an account-LINK for the
  *   authenticated user. 302s to the provider after deriving PKCE/nonce from a
  *   fresh seed and signing `{ random, provider, redirect, userId }` into `state`
@@ -37,9 +41,10 @@ import { FEDERATED_IDENTITY_STORE_TOKEN } from "./oauth-tokens";
  *   Self-scoped; guards against removing the user's only sign-in method, then
  *   revokes the user's sessions.
  *
- * `link` / `unlink` are `@Public()` self-scoped primitives (mirroring
- * `AuthController.logout`/`status`): they derive identity from the session,
- * never from a parameter. Subclass + add `@ArbacAction(...)` to gate them further.
+ * `identities` / `link` / `unlink` are `@Public()` self-scoped primitives
+ * (mirroring `AuthController.logout`/`status`): they derive identity from the
+ * session, never from a parameter. Subclass + add `@ArbacAction(...)` to gate
+ * them further (e.g. an admin cross-user view).
  */
 @Controller("auth/oauth")
 export class OAuthController {
@@ -58,6 +63,23 @@ export class OAuthController {
   /** Default post-login redirect when the caller supplies none / an unsafe one. */
   protected defaultRedirect(): string {
     return "/";
+  }
+
+  /**
+   * List the CURRENT user's connected accounts — every provider identity linked
+   * to them, the "connected accounts" view. Self-scoped (`getUserId()` 401s an
+   * anonymous caller), mirroring `link`/`unlink`. Returns a display projection
+   * via {@link toConnectedAccount}: the surrogate `id` and the (own) `userId`
+   * are dropped, and `(provider, subject)` is exactly the key the client passes
+   * back to `DELETE :provider/:subject` to disconnect a row. Ordered by
+   * `linkedAt` (oldest first) by the store.
+   */
+  @Get("identities")
+  @Public()
+  async identities(): Promise<ConnectedAccount[]> {
+    const userId = useAuth().getUserId();
+    const rows = await this.federated.listForUser(userId);
+    return rows.map(toConnectedAccount);
   }
 
   @Get(":provider/link")
@@ -158,4 +180,37 @@ export class OAuthController {
       throw err;
     }
   }
+}
+
+/**
+ * Wire shape of one connected account returned by `GET /auth/oauth/identities`.
+ * A display projection of a {@link FederatedIdentity} row: the surrogate `id`
+ * and the (caller's own) `userId` are intentionally omitted. `(provider,
+ * subject)` is the disconnect key the client passes back to
+ * `DELETE /auth/oauth/:provider/:subject`; the remaining fields are the profile
+ * snapshot the row carries for display.
+ */
+export interface ConnectedAccount {
+  provider: string;
+  subject: string;
+  linkedAt: number;
+  lastLoginAt?: number;
+  email?: string;
+  emailVerified?: boolean;
+  displayName?: string;
+  avatarUrl?: string;
+}
+
+/** Project a stored {@link FederatedIdentity} row to its wire {@link ConnectedAccount}. */
+function toConnectedAccount(i: FederatedIdentity): ConnectedAccount {
+  return {
+    provider: i.provider,
+    subject: i.subject,
+    linkedAt: i.linkedAt,
+    ...(i.lastLoginAt !== undefined && { lastLoginAt: i.lastLoginAt }),
+    ...(i.email !== undefined && { email: i.email }),
+    ...(i.emailVerified !== undefined && { emailVerified: i.emailVerified }),
+    ...(i.displayName !== undefined && { displayName: i.displayName }),
+    ...(i.avatarUrl !== undefined && { avatarUrl: i.avatarUrl }),
+  };
 }

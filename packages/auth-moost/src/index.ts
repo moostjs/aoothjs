@@ -30,7 +30,7 @@ export { WfTrigger, type WfTriggerOpts } from "./wf-trigger/decorator";
 export { deriveWfStateSecret, WfTriggerProvider } from "./wf-trigger/provider";
 
 // ── Federated login (OAuth2 / OIDC) — moost integration of @aooth/idp ──
-export { OAuthController } from "./oauth/oauth.controller";
+export { type ConnectedAccount, OAuthController } from "./oauth/oauth.controller";
 export { OAUTH_CSRF_COOKIE, oauthCsrfCookieAttrs } from "./oauth/oauth-csrf";
 export { isSafeRelativeRedirect, resolveOAuthRedirect } from "./oauth/oauth-redirect";
 export { OAuthRuntime } from "./oauth/oauth-runtime";

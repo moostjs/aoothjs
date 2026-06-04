@@ -39,6 +39,27 @@ const selectedVariant = ref<Record<string, string>>({});
       </p>
     </RouterLink>
 
+    <!-- Authenticated self-service surface (not a workflow): the connected-
+         accounts page lists the signed-in user's linked providers + unlinks
+         them. Sign in first (any flow that stashes a token) so the page's
+         Bearer replay authenticates `GET /auth/oauth/identities`. -->
+    <RouterLink
+      :to="{ name: 'connected-accounts' }"
+      data-testid="nav-connected-accounts"
+      class="card layer-3 hover:layer-4 transition-colors block p-$m no-underline mb-$l"
+    >
+      <div class="flex items-center justify-between gap-$s">
+        <strong class="text-current">Connected accounts</strong>
+        <span class="text-xs scope-warn text-current-muted px-$xs rounded-r0 layer-4">
+          requires auth
+        </span>
+      </div>
+      <p class="text-sm text-current-muted mt-$xs">
+        <code>GET /auth/oauth/identities</code> — your linked sign-in providers; unlink to
+        disconnect one.
+      </p>
+    </RouterLink>
+
     <ul class="flex flex-col gap-$s">
       <li v-for="wf in WORKFLOWS" :key="wf.id">
         <RouterLink

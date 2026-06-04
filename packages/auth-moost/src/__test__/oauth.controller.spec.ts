@@ -231,3 +231,49 @@ describe("OAuthController unlink", () => {
     expect(await h.auth.validate(issued.accessToken)).toBeNull();
   });
 });
+
+describe("OAuthController identities (connected accounts)", () => {
+  let h: Harness;
+  beforeEach(async () => {
+    h = await buildApp();
+  });
+
+  it("401s an anonymous caller", async () => {
+    const res = await h.request("/auth/oauth/identities");
+    expect(res.status).toBe(401);
+  });
+
+  it("returns an empty list when the user has no linked identities", async () => {
+    const issued = await h.auth.issue("user-1");
+    const res = await h.request("/auth/oauth/identities", bearer(issued.accessToken));
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+  });
+
+  it("lists ONLY the caller's identities, projected (no id/userId), keyed by (provider, subject)", async () => {
+    await h.federated.link({
+      provider: "google",
+      subject: "sub-mine",
+      userId: "user-1",
+      email: "me@test",
+      displayName: "Me",
+    });
+    // A different user's link must NOT leak into the caller's list.
+    await h.federated.link({ provider: "github", subject: "sub-other", userId: "user-2" });
+    const issued = await h.auth.issue("user-1");
+    const res = await h.request("/auth/oauth/identities", bearer(issued.accessToken));
+
+    expect(res.status).toBe(200);
+    const list = res.body as Array<Record<string, unknown>>;
+    expect(list).toHaveLength(1);
+    const row = list[0];
+    expect(row.provider).toBe("google");
+    expect(row.subject).toBe("sub-mine");
+    expect(row.email).toBe("me@test");
+    expect(row.displayName).toBe("Me");
+    expect(typeof row.linkedAt).toBe("number");
+    // Projection drops the surrogate `id` and the (caller's own) `userId`.
+    expect(row).not.toHaveProperty("id");
+    expect(row).not.toHaveProperty("userId");
+  });
+});

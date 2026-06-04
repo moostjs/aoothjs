@@ -1,4 +1,5 @@
 import { createMemoryHistory, createRouter as _createRouter, createWebHistory } from "vue-router";
+import ConnectedAccountsPage from "./pages/ConnectedAccountsPage.vue";
 import HomePage from "./pages/HomePage.vue";
 import OAuthCallbackPage from "./pages/OAuthCallbackPage.vue";
 import WfPage from "./pages/WfPage.vue";
@@ -35,6 +36,10 @@ export function createRouter() {
     routes: [
       { path: "/", name: "home", component: HomePage },
       { path: "/wf", name: "wf", component: WfPage },
+      // Authenticated self-service surface — lists the signed-in user's linked
+      // provider identities (GET /auth/oauth/identities) and unlinks them. The
+      // only non-/wf authenticated page; reads the stashed Bearer like WfPage.
+      { path: "/accounts", name: "connected-accounts", component: ConnectedAccountsPage },
       // Federated-login callback bridge — the provider's `redirect_uri` lands
       // here (a SPA route; the backend OAuthController has no GET `:provider/
       // callback`, so it falls through to the SPA). Forwards `code`/`state` into

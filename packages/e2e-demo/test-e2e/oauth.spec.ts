@@ -248,3 +248,54 @@ test.describe("OAuth / federated needs-link OTP fallback (passwordless account)"
     expect(countAfter, "cooldown blocked the resend — no new code").toBe(countBefore);
   });
 });
+
+/**
+ * Connected-accounts SELF-SERVICE surface — `GET /auth/oauth/identities` (the
+ * list route added to OAuthController) rendered by the SPA's `/accounts` page,
+ * with the existing self-scoped `DELETE /auth/oauth/:provider/:subject` unlink.
+ * Both routes derive identity from the session (the demo replays the stashed
+ * Bearer), so a sign-in must precede them.
+ */
+test.describe("OAuth / connected-accounts surface (GET identities + /accounts page)", () => {
+  test("OAUTH-CONNECTED-01: the page lists a linked identity and unlinks it (password account)", async ({
+    page,
+    request,
+  }) => {
+    // Link google to alice — a PASSWORD account — via the needs-link proof path,
+    // so the later unlink won't trip the last-sign-in-method guard.
+    await bounceWithCollidingEmail(page, request, "alice@acme.test", "google-connected-01");
+    await fillField(page, "password", USERS.alice.password);
+    await submitForm(page);
+    await page.waitForURL((url) => url.pathname === "/", { timeout: 15_000 });
+
+    // The /accounts page lists the freshly linked google identity.
+    await page.goto("/accounts");
+    const row = page.getByTestId("connected-account-google");
+    await expect(row).toBeVisible({ timeout: 10_000 });
+    await expect(row).toContainText(/google/i);
+
+    // Unlink it — alice keeps her password, so the guard allows removal; the row
+    // drops (optimistic local removal, since unlink revokes the session).
+    await row.getByRole("button", { name: /unlink/i }).click();
+    await expect(page.getByTestId("connected-account-google")).toHaveCount(0);
+    await expect(page.getByTestId("ca-empty")).toBeVisible();
+  });
+
+  test("OAUTH-CONNECTED-02: unlinking the ONLY sign-in method is refused by the last-credential guard", async ({
+    page,
+  }) => {
+    // First federated login CREATES a passwordless, google-only account
+    // (`createUser` sets `password.isInitial = true`).
+    await signInWithGoogle(page);
+
+    await page.goto("/accounts");
+    const row = page.getByTestId("connected-account-google");
+    await expect(row).toBeVisible({ timeout: 10_000 });
+
+    // Unlink is refused — it's the only sign-in method (no password, no other
+    // link). The server 409 surfaces inline and the row stays.
+    await row.getByRole("button", { name: /unlink/i }).click();
+    await expect(page.getByTestId("ca-error")).toContainText(/only sign-in method/i);
+    await expect(page.getByTestId("connected-account-google")).toBeVisible();
+  });
+});
