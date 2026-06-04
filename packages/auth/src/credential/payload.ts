@@ -5,23 +5,25 @@ import type { CredentialState } from "./types";
  * `listForUser`/atscript-db rows). A consumer's typed payload fields are
  * everything on a `CredentialState & TPayload` object that is NOT one of these.
  *
- * KEEP IN SYNC with {@link CredentialState}: adding an envelope field without
- * adding it here would leak that field into the extracted payload (and onto
- * {@link import("./types").AuthContext}). A payload field must never reuse one
- * of these names.
+ * The `Record<…, true>` shape makes this self-syncing with {@link CredentialState}:
+ * adding an envelope field without listing it here is a COMPILE error (the
+ * record would be missing a required key), so a new field can never silently
+ * leak into the extracted payload (and onto {@link import("./types").AuthContext}).
+ * A payload field must never reuse one of these names.
  */
-const ENVELOPE_KEYS: ReadonlySet<string> = new Set<keyof CredentialState | "token">([
-  "userId",
-  "issuedAt",
-  "expiresAt",
-  "metadata",
-  "kind",
-  "parentCredentialId",
-  "rotatedAt",
-  "sessionId",
-  "lastSeenAt",
-  "token",
-]);
+const ENVELOPE_KEY_FLAGS: Record<keyof CredentialState | "token", true> = {
+  userId: true,
+  issuedAt: true,
+  expiresAt: true,
+  metadata: true,
+  kind: true,
+  parentCredentialId: true,
+  rotatedAt: true,
+  sessionId: true,
+  lastSeenAt: true,
+  token: true,
+};
+const ENVELOPE_KEYS: ReadonlySet<string> = new Set(Object.keys(ENVELOPE_KEY_FLAGS));
 
 /**
  * Extract a credential's typed payload — every own enumerable key that is not a

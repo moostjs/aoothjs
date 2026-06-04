@@ -1,6 +1,7 @@
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 
 import type { AoothArbacClaims } from "../attenuation";
+import { uniqueStrings } from "./role-list";
 
 /**
  * Spec computed once per credential `TAtscriptAnnotatedType` — which typed root
@@ -85,17 +86,7 @@ export function validateAttenuationTargets(
 
 /** Lenient role parse: accept `string | string[]`, drop empty/non-string, dedupe. */
 function parseRoles(raw: unknown): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  const push = (v: unknown) => {
-    if (typeof v === "string" && v !== "" && !seen.has(v)) {
-      seen.add(v);
-      out.push(v);
-    }
-  };
-  if (Array.isArray(raw)) for (const item of raw) push(item);
-  else push(raw);
-  return out;
+  return uniqueStrings(Array.isArray(raw) ? raw : [raw]);
 }
 
 /**

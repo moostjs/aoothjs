@@ -81,21 +81,7 @@ export class CredentialStoreAtscriptDb<
   async persist(state: CredentialState & TPayload, ttl?: number): Promise<string> {
     const token = randomUUID();
     const expiresAt = typeof ttl === "number" ? Date.now() + ttl : state.expiresAt;
-    const row = {
-      // Typed payload columns first; envelope fields win any name clash.
-      ...credentialPayloadOf<TPayload>(state),
-      token,
-      userId: state.userId,
-      issuedAt: state.issuedAt,
-      expiresAt,
-      kind: state.kind,
-      metadata: state.metadata,
-      parentCredentialId: state.parentCredentialId,
-      rotatedAt: state.rotatedAt,
-      sessionId: state.sessionId,
-      lastSeenAt: state.lastSeenAt,
-    } as AuthCredentialRow<TPayload>;
-    await this.table.insertOne(row);
+    await this.table.insertOne(stateToRow(state, token, expiresAt));
     return token;
   }
 
@@ -129,20 +115,7 @@ export class CredentialStoreAtscriptDb<
       await this.revoke(token);
       return token;
     }
-    const row = {
-      ...credentialPayloadOf<TPayload>(state),
-      token,
-      userId: state.userId,
-      issuedAt: state.issuedAt,
-      expiresAt: state.expiresAt,
-      kind: state.kind,
-      metadata: state.metadata,
-      parentCredentialId: state.parentCredentialId,
-      rotatedAt: state.rotatedAt,
-      sessionId: state.sessionId,
-      lastSeenAt: state.lastSeenAt,
-    } as AuthCredentialRow<TPayload>;
-    await this.table.replaceOne(row);
+    await this.table.replaceOne(stateToRow(state, token, state.expiresAt));
     return token;
   }
 
@@ -182,6 +155,32 @@ export class CredentialStoreAtscriptDb<
     }
     return out;
   }
+}
+
+/**
+ * Build the persisted row from a credential state: typed payload columns first
+ * (so an envelope field wins a name clash), then the fixed envelope fields and
+ * the resolved `token` + `expiresAt`. Shared by `persist` and `update`, which
+ * differ only in the `expiresAt` they resolve.
+ */
+function stateToRow<TPayload extends object>(
+  state: CredentialState & TPayload,
+  token: string,
+  expiresAt: number,
+): AuthCredentialRow<TPayload> {
+  return {
+    ...credentialPayloadOf<TPayload>(state),
+    token,
+    userId: state.userId,
+    issuedAt: state.issuedAt,
+    expiresAt,
+    kind: state.kind,
+    metadata: state.metadata,
+    parentCredentialId: state.parentCredentialId,
+    rotatedAt: state.rotatedAt,
+    sessionId: state.sessionId,
+    lastSeenAt: state.lastSeenAt,
+  } as AuthCredentialRow<TPayload>;
 }
 
 function rowToState<TPayload extends object>(

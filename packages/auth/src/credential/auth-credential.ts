@@ -29,6 +29,20 @@ function fingerprint(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
+/**
+ * Merge a credential's typed payload under the fixed {@link CredentialState}
+ * envelope, asserting the `CredentialState & TPayload` shape in ONE place. The
+ * payload is spread first so an envelope field always wins a name clash. Every
+ * issue / rotation state builder routes through here so the spread-order
+ * invariant and the (irreducible, generic-spread) boundary cast live once.
+ */
+function stateWithPayload<TPayload extends object>(
+  payload: object,
+  envelope: CredentialState,
+): CredentialState & TPayload {
+  return { ...payload, ...envelope } as CredentialState & TPayload;
+}
+
 export interface AuthCredentialOptions<TPayload extends object = object> {
   /** Pluggable credential store (Memory, JWT, Encapsulated, ...). */
   store: CredentialStore<TPayload>;
@@ -162,30 +176,27 @@ export class AuthCredential<TPayload extends object = object> {
     // tokens (and, via the rotation copies below, every future rotation), so a
     // single login is one stable, opaque session for its whole lifetime.
     const sessionId = providedSessionId ?? randomUUID();
-    // Payload spread first so the envelope fields always win a name clash.
-    const accessState = {
-      ...payload,
+    const accessState = stateWithPayload<TPayload>(payload, {
       userId,
       issuedAt: now,
       expiresAt: now + this.accessTtl,
       kind: "access",
       metadata,
       sessionId,
-    } as CredentialState & TPayload;
+    });
     const accessToken = await this.store.persist(accessState, this.accessTtl);
 
     let refreshToken: string | undefined;
     let refreshExpiresAt: number | undefined;
     if (this.refreshConfig) {
-      const refreshState = {
-        ...payload,
+      const refreshState = stateWithPayload<TPayload>(payload, {
         userId,
         issuedAt: now,
         expiresAt: now + this.refreshConfig.ttl,
         kind: "refresh",
         metadata,
         sessionId,
-      } as CredentialState & TPayload;
+      });
       refreshToken = await this.store.persist(refreshState, this.refreshConfig.ttl);
       refreshExpiresAt = now + this.refreshConfig.ttl;
     }
@@ -566,18 +577,16 @@ export class AuthCredential<TPayload extends object = object> {
     refreshState: CredentialState & TPayload,
     now: number,
   ): Promise<{ token: string; expiresAt: number }> {
-    const accessState = {
-      // Carry the credential's typed payload forward across rotation.
-      ...credentialPayloadOf<TPayload>(refreshState),
+    // Carry the credential's typed payload + session forward across rotation.
+    const accessState = stateWithPayload<TPayload>(credentialPayloadOf<TPayload>(refreshState), {
       userId: refreshState.userId,
       issuedAt: now,
       expiresAt: now + this.accessTtl,
       kind: "access",
       metadata: refreshState.metadata,
-      // Carry the session forward so every rotation stays in the same family.
       sessionId: refreshState.sessionId,
       ...(this.trackLastSeen === "refresh" && { lastSeenAt: now }),
-    } as CredentialState & TPayload;
+    });
     const token = await this.store.persist(accessState, this.accessTtl);
     return { token, expiresAt: now + this.accessTtl };
   }
@@ -611,19 +620,20 @@ export class AuthCredential<TPayload extends object = object> {
       ? Math.max(0, oldRefreshState.expiresAt - now)
       : this.refreshConfig.ttl;
 
-    const newRefreshState = {
-      // Carry the credential's typed payload forward across rotation.
-      ...credentialPayloadOf<TPayload>(oldRefreshState),
-      userId: oldRefreshState.userId,
-      issuedAt: now,
-      expiresAt: refreshExpiresAt,
-      kind: "refresh",
-      metadata: oldRefreshState.metadata,
-      parentCredentialId: oldRefreshToken,
-      // Carry the session forward so every rotation stays in the same family.
-      sessionId: oldRefreshState.sessionId,
-      ...(this.trackLastSeen === "refresh" && { lastSeenAt: now }),
-    } as CredentialState & TPayload;
+    // Carry the credential's typed payload + session forward across rotation.
+    const newRefreshState = stateWithPayload<TPayload>(
+      credentialPayloadOf<TPayload>(oldRefreshState),
+      {
+        userId: oldRefreshState.userId,
+        issuedAt: now,
+        expiresAt: refreshExpiresAt,
+        kind: "refresh",
+        metadata: oldRefreshState.metadata,
+        parentCredentialId: oldRefreshToken,
+        sessionId: oldRefreshState.sessionId,
+        ...(this.trackLastSeen === "refresh" && { lastSeenAt: now }),
+      },
+    );
     const newRefreshToken = await this.store.persist(newRefreshState, refreshTtl);
 
     if (rotateOld) {

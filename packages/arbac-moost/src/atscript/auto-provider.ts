@@ -4,6 +4,7 @@ import { defineWook, key } from "@wooksjs/event-core";
 import { Injectable } from "moost";
 
 import { ArbacUserProvider } from "../user.provider";
+import { uniqueStrings } from "./role-list";
 
 /**
  * Minimal atscript-db readable surface used to fetch the user record.
@@ -324,33 +325,17 @@ export abstract class AtscriptArbacUserProvider<
     const raw = rec[roleField.name];
     if (raw === undefined || raw === null) return [];
 
-    const seen = new Set<string>();
-    const out: string[] = [];
-
-    const push = (val: unknown) => {
-      if (typeof val === "string" && val !== "" && !seen.has(val)) {
-        seen.add(val);
-        out.push(val);
-      }
-    };
-
     if (roleField.shape === "inline") {
-      if (Array.isArray(raw)) {
-        for (const item of raw) push(item);
-      } else {
-        push(raw);
-      }
-    } else {
-      // rel.from: raw is an array of joined role records.
-      if (!Array.isArray(raw)) return out;
-      const idField = roleField.roleTargetIdField;
-      for (const item of raw) {
-        if (item && typeof item === "object") {
-          push((item as Record<string, unknown>)[idField]);
-        }
-      }
+      return uniqueStrings(Array.isArray(raw) ? raw : [raw]);
     }
-    return out;
+    // rel.from: raw is an array of joined role records; pull each role id.
+    if (!Array.isArray(raw)) return [];
+    const idField = roleField.roleTargetIdField;
+    return uniqueStrings(
+      raw.map((item) =>
+        item && typeof item === "object" ? (item as Record<string, unknown>)[idField] : undefined,
+      ),
+    );
   }
 
   /**
