@@ -28,10 +28,10 @@ async function signInWithGoogle(
 ): Promise<{ userId: string; token: string }> {
   await page.goto("/login");
   // The login form offers SSO providers from `ctx.public.altActions.ssoProviders`
-  // as a radio group; selecting one + "Continue" fires the data-carrying `sso`
-  // action (the chosen provider id rides in `ssoProvider`).
-  await page.getByRole("radio", { name: "Continue with Google" }).check();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  // via the `AsSsoProviders` one-click picker: each provider is a single button
+  // whose click both selects the provider id AND fires the data-carrying `sso`
+  // action (the chosen provider rides in `ssoProvider`) — no separate submit.
+  await page.getByRole("button", { name: "Continue with Google" }).click();
 
   // Success path: the callback bridge stashes the access token and navigates home.
   await page.waitForURL((url) => url.pathname === "/", { timeout: 15_000 });
@@ -97,8 +97,8 @@ async function bounceWithCollidingEmail(
     data: { email, sub, emailVerified: true },
   });
   await page.goto("/login");
-  await page.getByRole("radio", { name: "Continue with Google" }).check();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  // One-click SSO pill (see signInWithGoogle) — fires the `sso` action directly.
+  await page.getByRole("button", { name: "Continue with Google" }).click();
   // Wait out the /login → fake-IdP → callback navigation chain before any fill:
   // the /login form ALSO has a `password` field, so filling before the
   // prove-control form has rendered would race the bounce navigation.

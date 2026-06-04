@@ -56,6 +56,7 @@
     "vunor": "catalog:"
   },
   "devDependencies": {
+    "@iconify-json/simple-icons": "^1.2.84",
     "@playwright/test": "^1.55.0",
     "@types/node": "catalog:",
     "@unocss/vite": "^66.6.8",

@@ -3,7 +3,7 @@ import { computed, ref } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import { AsWfFinish, AsWfForm, type WfFinished } from "@atscript/vue-wf";
 import { createDefaultTypes } from "@atscript/vue-form";
-import { AsConsentArray, AsPasswordRules, AsQrCode } from "@atscript/vue-aooth";
+import { AsConsentArray, AsPasswordRules, AsQrCode, AsSsoProviders } from "@atscript/vue-aooth";
 import { useHydrated } from "../composables/useHydrated";
 import { WORKFLOWS } from "../workflows";
 
@@ -60,8 +60,11 @@ const types = createDefaultTypes();
 // `SetPasswordForm.passwordRules` — its `policies` attr binds to
 // `ctx.password.policies` (Phase 7) and its `password` attr re-reads
 // `data.newPassword` on every keystroke so each row's `data-passed` flag
-// reflects the current input value.
-const components = { AsConsentArray, AsPasswordRules, AsQrCode };
+// reflects the current input value. `AsSsoProviders` is the one-click SSO
+// picker for `LoginCredentialsForm.ssoProvider` — it reads the provider list
+// from `ctx.public.altActions.ssoProviders` (via the field's `providers` attr)
+// and self-hides when none are configured.
+const components = { AsConsentArray, AsPasswordRules, AsQrCode, AsSsoProviders };
 
 const finished = ref<unknown>(null);
 const error = ref<string | null>(null);

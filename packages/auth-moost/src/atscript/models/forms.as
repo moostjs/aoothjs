@@ -94,18 +94,25 @@ export interface LoginCredentialsForm {
     @ui.form.fn.hidden '(_, _d, ctx) => !ctx.public?.altActions?.magicLink'
     magicLink?: ui.action
 
-    // SSO providers — rendered from `ctx.public.altActions.ssoProviders` with
-    // the built-in radio renderer (no custom component needed). The `sso`
+    // SSO providers — rendered from `ctx.public.altActions.ssoProviders` by the
+    // `AsSsoProviders` one-click picker (registered on `<AsWfForm :components>`).
+    // Each provider becomes a full-width button whose VERBATIM `text` the server
+    // owns ("Continue with {label}"); a click both selects the provider id and
+    // fires the `sso` action — the component is chromeless and suppresses the
+    // shell's footer action link, so there is NO separate submit button (the
+    // `'Continue'` action label is inert here, kept only because the action
+    // DECLARATION is what `resolveAction()` whitelists for the emit). The `sso`
     // action is DATA-CARRYING (`@wf.action.withData`), so the selected
     // `ssoProvider` rides in the submitted data and the workflow redirects to
     // that provider (same mechanism `forgotPassword` uses to carry the typed
     // username). OPTIONAL on purpose — a password login (or a hand-rolled
     // client) submits without it and must NOT be blocked; only the `sso` action
-    // carries it. The whole block hides when no providers are configured. A
-    // one-click button component can replace this via `setupAuthWorkflows({ forms })`.
+    // carries it. `AsSsoProviders` self-hides on an empty `providers` list; the
+    // explicit `@ui.form.fn.hidden` keeps the field out of the grid flow too.
+    // Swap the component via `setupAuthWorkflows({ forms })`.
     @ui.form.order 50
-    @ui.form.type 'radio'
-    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.public?.altActions?.ssoProviders) ? ctx.public.altActions.ssoProviders.map((p) => ({ key: p.id, label: "Continue with " + p.label })) : []'
+    @ui.form.component 'AsSsoProviders'
+    @ui.form.fn.attr 'providers', '(_, _d, ctx) => Array.isArray(ctx.public?.altActions?.ssoProviders) ? ctx.public.altActions.ssoProviders.map((p) => ({ id: p.id, text: "Continue with " + p.label, icon: p.icon })) : []'
     @ui.form.fn.hidden '(_, _d, ctx) => (ctx.public?.altActions?.ssoProviders?.length ?? 0) === 0'
     @meta.label 'Or sign in with'
     @ui.form.action 'sso', 'Continue'

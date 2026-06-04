@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { AsWfForm } from "@atscript/vue-wf";
 import { createDefaultTypes } from "@atscript/vue-form";
+import { AsConsentArray, AsPasswordRules, AsQrCode, AsSsoProviders } from "@atscript/vue-aooth";
 import { useHydrated } from "../composables/useHydrated";
 
 // The provider's `redirect_uri` lands the browser here
@@ -35,6 +36,11 @@ const startInput = computed(() => ({
 
 const hydrated = useHydrated();
 const types = createDefaultTypes();
+// Same custom-component map as WfPage: a federated login can land on the SAME
+// consent / MFA-enrollment / prove-control steps a password login does, so the
+// callback's `<AsWfForm>` must register the renderers those forms reference
+// (AsConsentArray / AsPasswordRules / AsQrCode) plus AsSsoProviders for parity.
+const components = { AsConsentArray, AsPasswordRules, AsQrCode, AsSsoProviders };
 const error = ref<string | null>(null);
 const finished = ref<unknown>(null);
 
@@ -94,6 +100,7 @@ async function navigate(url: string): Promise<void> {
         name="auth/login/flow"
         path="/auth/trigger"
         :types="types"
+        :components="components"
         :input="startInput"
         :navigate="navigate"
         @finished="onFinished"

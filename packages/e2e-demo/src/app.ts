@@ -517,8 +517,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       if (variant?.policy?.alternateCredentials) return variant.policy.alternateCredentials;
       // Demo default: forgotPassword + signup ON (dev UI dropdown surfaces them).
       // Offer the fake Google provider on the login form — `AsSsoProviders`
-      // renders it from `ctx.public.altActions.ssoProviders`.
-      const ssoProviders = [{ id: "google", label: "Google", icon: "i-simple-icons-google" }];
+      // renders it from `ctx.public.altActions.ssoProviders`. The `icon` is a
+      // `i-simple-icons:*` class (colon form, parsed unambiguously) wired +
+      // safelisted in `uno.config.ts` — see the note there.
+      const ssoProviders = [{ id: "google", label: "Google", icon: "i-simple-icons:google" }];
       const base = super.resolveAlternateCredentials(ctx);
       if (base instanceof Promise) {
         return base.then((b) => ({ ...b, forgotPassword: true, signup: true, ssoProviders }));
