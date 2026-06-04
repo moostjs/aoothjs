@@ -21,7 +21,7 @@
  * schemas would no-op every step.
  */
 import { AuthCredential, type CredentialMetadata } from "@aooth/auth";
-import { generateRandomState, type NormalizedProfile } from "@aooth/idp";
+import type { NormalizedProfile } from "@aooth/idp";
 import {
   generateTotpSecret,
   generateTotpUri,
@@ -56,6 +56,7 @@ import { Controller, Inherit, Param, useControllerContext } from "moost";
 import { useAuth } from "../auth.composables";
 import { ConsentStore } from "../consent.store";
 import { Public } from "../auth.decorator";
+import { buildOAuthAuthorizeRequest, OAUTH_TTL_SEC } from "../oauth/oauth-authorize";
 import { OAUTH_CSRF_COOKIE, oauthCsrfCookieAttrs, safeEqual } from "../oauth/oauth-csrf";
 import { resolveOAuthRedirect } from "../oauth/oauth-redirect";
 import { OAuthRuntime } from "../oauth/oauth-runtime";
@@ -518,15 +519,7 @@ export class AuthWorkflow {
     const { registry } = await this.oauthRuntime();
     const provider = registry.require(providerId);
     const redirect = resolveOAuthRedirect(getInputField("redirect"), "/");
-    const seed = generateRandomState();
-    const { nonce, challenge } = registry.deriveSeededPkce(seed);
-    const state = await registry.signState({ random: seed, provider: providerId, redirect });
-    const authUrl = await provider.authorizationUrl({
-      redirectUri: registry.redirectUri(providerId),
-      state,
-      codeChallenge: challenge,
-      nonce,
-    });
+    const { seed, authUrl } = await buildOAuthAuthorizeRequest(registry, provider, { redirect });
     const envelope: WfFinished = {
       finished: true,
       next: {
@@ -540,7 +533,10 @@ export class AuthWorkflow {
       cookies: {
         [OAUTH_CSRF_COOKIE]: {
           value: seed,
-          options: oauthCsrfCookieAttrs({ secure: useAuth().options.cookie.secure }),
+          options: oauthCsrfCookieAttrs({
+            secure: useAuth().options.cookie.secure,
+            maxAgeSec: OAUTH_TTL_SEC,
+          }),
         },
       },
     });

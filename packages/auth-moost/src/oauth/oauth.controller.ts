@@ -1,5 +1,5 @@
 import { AuthCredential } from "@aooth/auth";
-import { generateRandomState, OAuthError, OAuthProviderRegistry } from "@aooth/idp";
+import { OAuthError, OAuthProviderRegistry } from "@aooth/idp";
 import { FederatedIdentityStore, UserService } from "@aooth/user";
 import { Delete, Get, HttpError, Query } from "@moostjs/event-http";
 import { current } from "@wooksjs/event-core";
@@ -8,12 +8,10 @@ import { Controller, Inject, Param } from "moost";
 
 import { useAuth } from "../auth.composables";
 import { Public } from "../auth.decorator";
+import { buildOAuthAuthorizeRequest, OAUTH_TTL_SEC } from "./oauth-authorize";
 import { OAUTH_CSRF_COOKIE, oauthCsrfCookieAttrs } from "./oauth-csrf";
 import { resolveOAuthRedirect } from "./oauth-redirect";
 import { FEDERATED_IDENTITY_STORE_TOKEN } from "./oauth-tokens";
-
-/** Signed-state + CSRF-cookie TTL (seconds). Matches `signState`'s default. */
-const OAUTH_TTL_SEC = 600;
 
 /**
  * REST surface for federated-login ACCOUNT MANAGEMENT (OAuth2 / OIDC), RFC
@@ -92,23 +90,9 @@ export class OAuthController {
   ): Promise<string> {
     const provider = this.requireProvider(providerId);
     const safeRedirect = resolveOAuthRedirect(redirect, this.defaultRedirect());
-    const seed = generateRandomState();
-    const { nonce, challenge } = this.registry.deriveSeededPkce(seed);
-
-    const state = await this.registry.signState(
-      {
-        random: seed,
-        provider: providerId,
-        redirect: safeRedirect,
-        ...(userId !== undefined && { userId }),
-      },
-      { ttlSec: OAUTH_TTL_SEC },
-    );
-    const authUrl = await provider.authorizationUrl({
-      redirectUri: this.registry.redirectUri(providerId),
-      state,
-      codeChallenge: challenge,
-      nonce,
+    const { seed, authUrl } = await buildOAuthAuthorizeRequest(this.registry, provider, {
+      redirect: safeRedirect,
+      ...(userId !== undefined && { userId }),
     });
 
     const res = useResponse(current());
