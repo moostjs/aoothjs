@@ -253,6 +253,19 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
     policy: { deviceTrust: { enabled: true, optIn: true, skipsMfa: true } },
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["email"] },
   },
+  // Like `device-trust`, but the login FINISHES with a server-driven redirect
+  // (`finalize.redirect: "home"`) instead of the demo's default data envelope.
+  // This is the path where the trusted-device cookie MUST ride the finish
+  // envelope's `cookies` map: the `redirect` step rebuilds the envelope and
+  // preserves only `existing.cookies`, so a response-context `setCookie` would
+  // be dropped. Drives WF-LOGIN-037 (the cookie-survives-redirect regression).
+  "device-trust-redirect": {
+    policy: {
+      deviceTrust: { enabled: true, optIn: true, skipsMfa: true },
+      finalize: { notifyNewDevice: false, redirect: "home" },
+    },
+    mfaCtx: { mfaMode: "optional", availableMfaTransports: ["email"] },
+  },
   // Same as `concurrency` but rejects with HTTP 429 instead of pausing on
   // kickPrompt (WF-LOGIN-030).
   "concurrency-reject": {

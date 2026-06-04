@@ -476,6 +476,39 @@ test.describe("LoginWorkflow / variant=device-trust", () => {
     await expect(page.getByText("Workflow finished")).toBeVisible({ timeout: 15_000 });
     await expect(page.locator('[name="code"]')).toHaveCount(0);
   });
+
+  test("WF-LOGIN-037: the trusted-device cookie rides the finish envelope, so it survives a server-redirect finish", async ({
+    page,
+    context,
+    request,
+  }) => {
+    // device-trust + a server-driven `redirect` finish — the path where the
+    // `redirect` step rebuilds the envelope and preserves only its `cookies`
+    // map, so a response-context `setCookie` would be dropped. Regression-locks
+    // the fix that moves the trusted-device cookie onto the finish envelope.
+    await page.goto(wfUrl(LOGIN_WF, "device-trust-redirect"));
+    await fillField(page, "username", USERS.henry.username);
+    await fillField(page, "password", USERS.henry.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    await waitForFormInput(page, "code");
+    const otp = await waitForEmail(
+      request,
+      (e) => e.kind === "login.pincode" && e.recipient === "henry@acme.test",
+    );
+    await fillField(page, "code", otp.code as string);
+    await page.locator('[name="rememberDevice"]').first().check();
+    await page.getByRole("button", { name: "Verify", exact: true }).click();
+
+    // The finish is a redirect → the SPA navigates home; the trusted-device
+    // Set-Cookie rode the same resume XHR response (stored before navigation).
+    await page.waitForURL((url) => url.pathname === "/", { timeout: 15_000 });
+    const cookies = await context.cookies();
+    expect(
+      cookies.some((c) => c.name === "aooth_trusted_device"),
+      "trusted-device cookie is set even though the login finished with a redirect",
+    ).toBe(true);
+  });
 });
 
 // ─── P1 STORIES ──────────────────────────────────────────────────────────────

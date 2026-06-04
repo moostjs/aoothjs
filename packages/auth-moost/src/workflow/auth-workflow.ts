@@ -50,7 +50,7 @@ import {
   WorkflowSchema,
 } from "@moostjs/event-wf";
 import { current } from "@wooksjs/event-core";
-import { useCookies, useHeaders, useRequest, useResponse, useUrlParams } from "@wooksjs/event-http";
+import { useCookies, useHeaders, useRequest, useUrlParams } from "@wooksjs/event-http";
 import { ArbacAction, ArbacResource } from "@aooth/arbac-moost";
 import { Controller, Inherit, Param, useControllerContext } from "moost";
 
@@ -2937,12 +2937,16 @@ export class AuthWorkflow {
     const ip = this.opts.deviceTrust.bindsTo === "cookie+ip" ? this.resolveClientIp() : undefined;
     const record = await this.issueTrustedDevice(ctx.subject, ip, this.opts.deviceTrust.ttlMs);
     await this.storeTrustedDevice(ctx.subject, record);
+    // Stash the token for `issue` to attach to the FINISH ENVELOPE's `cookies`
+    // map — NOT `useResponse().setCookie` here. The wf-trigger outlet builds its
+    // response from the `WfFinished` envelope and ignores response-context
+    // cookies on a redirect finish: a response-context `setCookie` survives a
+    // DATA finish by luck, but a consumer whose login finishes with a server
+    // `redirect` (the `redirect` step preserves only `existing.cookies`) would
+    // silently lose the trusted-device cookie → MFA never gets skipped on the
+    // next login. Same envelope mechanism `issue` uses for the session cookie
+    // and `beginSso` for the CSRF cookie.
     (ctx.trust ??= {}).deviceTrustToken = record.token;
-    useResponse(current()).setCookie(
-      this.opts.deviceTrust.cookieName,
-      record.token,
-      useAuth().cookieAttrs({ maxAge: this.opts.deviceTrust.ttlMs / 1000 }),
-    );
     return undefined;
   }
 
@@ -3097,10 +3101,26 @@ export class AuthWorkflow {
       finished: true,
       data: auth.buildLoginResponse(ctx.subject, issue),
     };
+    // Attach the trusted-device cookie (minted by `device-trust`) to the finish
+    // envelope alongside the session cookies, so it survives a server `redirect`
+    // finish (where the `redirect` step preserves only `existing.cookies`,
+    // never response-context `setCookie`). Independent of `enableCookie` —
+    // device trust is a separate concern from token transport — so it's added
+    // even when `buildFinishedCookies` returns undefined (cookieless deploys).
+    const sessionCookies = auth.buildFinishedCookies(issue);
+    const cookies = ctx.trust?.deviceTrustToken
+      ? {
+          ...sessionCookies,
+          [this.opts.deviceTrust.cookieName]: {
+            value: ctx.trust.deviceTrustToken,
+            options: auth.cookieAttrs({ maxAge: this.opts.deviceTrust.ttlMs / 1000 }),
+          },
+        }
+      : sessionCookies;
     useWfFinished().set({
       type: "data",
       value: envelope,
-      cookies: auth.buildFinishedCookies(issue),
+      ...(cookies && { cookies }),
     });
   }
 
