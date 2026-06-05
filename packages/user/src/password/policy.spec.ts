@@ -91,6 +91,7 @@ describe("definePasswordPolicy", () => {
     const mangledSource = `(a, b) => a.length >= b`;
     const serialized = `(v) => (${mangledSource})(v, 4)`;
     // Evaluating the serialized text on the "frontend": just compile to a fn.
+    // oxlint-disable-next-line typescript/no-implied-eval -- intentional: the test simulates a frontend hydrating a transferable (serialized) policy
     const evalFn = new Function(`return ${serialized}`)() as (v: string) => boolean;
     expect(evalFn("abc")).toBe(false);
     expect(evalFn("abcd")).toBe(true);
@@ -170,6 +171,7 @@ describe("equivalence: backend rule vs serialized frontend hydrator", () => {
       const p = new PasswordPolicy(def);
       // Compile serialized via `new Function` — same shape any frontend
       // hydrator would use (plain function literal, no library dependency).
+      // oxlint-disable-next-line typescript/no-implied-eval -- intentional: simulates frontend hydration of a transferable policy
       const frontend = new Function(`return ${def.serialized}`)() as (v: string) => boolean;
       for (const sample of samples) {
         const backend = await p.evaluate(sample);

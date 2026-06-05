@@ -26,9 +26,9 @@
     "release:minor": "node scripts/release.js minor",
     "release:major": "node scripts/release.js major",
     "prepare": "vp config",
-    "docs": "vitepress dev docs",
-    "docs-build": "vitepress build docs",
-    "docs-serve": "vitepress serve docs"
+    "docs": "pnpm --filter ./docs dev",
+    "docs-build": "pnpm --filter ./docs build",
+    "docs-serve": "pnpm --filter ./docs serve"
   },
   "devDependencies": {
     "@atscript/core": "catalog:",
@@ -44,7 +44,6 @@
     "conventional-changelog-cli": "^4.1.0",
     "typescript": "catalog:",
     "vite-plus": "catalog:",
-    "vitepress": "^1.0.0-beta.1",
     "wooks": "catalog:"
   },
   "engines": {
@@ -56,6 +55,10 @@
       "better-sqlite3",
       "@atscript/db",
       "@atscript/db-sqlite"
-    ]
+    ],
+    "overrides": {
+      "vite": "8.0.14",
+      "vitepress>vite": "^7.3.1"
+    }
   }
 }
