@@ -117,7 +117,10 @@ export class AuthorizeController {
     });
 
     // 4. Hand off to the login page (same-origin, server-controlled path).
-    const target = `${this.loginPath()}?authz=${encodeURIComponent(handle)}`;
+    //    `loginPath()` may already carry a query (e.g. a UI variant), so pick the
+    //    right separator.
+    const loginPath = this.loginPath();
+    const target = `${loginPath}${loginPath.includes("?") ? "&" : "?"}authz=${encodeURIComponent(handle)}`;
     res.status = 302;
     res.setHeader("Location", target);
     return "";

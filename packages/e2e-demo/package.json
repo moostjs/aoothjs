@@ -24,6 +24,7 @@
     "@aooth/auth": "workspace:*",
     "@aooth/auth-moost": "workspace:*",
     "@aooth/idp": "workspace:*",
+    "@aooth/login-client": "workspace:*",
     "@aooth/user": "workspace:*",
     "@atscript/core": "catalog:",
     "@atscript/db": "catalog:",

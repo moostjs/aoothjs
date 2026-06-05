@@ -499,6 +499,9 @@ importers:
       '@aooth/idp':
         specifier: workspace:*
         version: link:../idp
+      '@aooth/login-client':
+        specifier: workspace:*
+        version: link:../login-client
       '@aooth/user':
         specifier: workspace:*
         version: link:../user

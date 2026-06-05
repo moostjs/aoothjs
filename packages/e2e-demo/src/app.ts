@@ -32,8 +32,15 @@ import {
   createAuthEmailOutlet,
   DEFAULT_AUTH_WORKFLOWS,
   deriveWfStateSecret,
+  AUTH_CODE_STORE_TOKEN,
+  AuthCodeStoreMemory,
+  AuthorizeController,
+  CLIENT_REDIRECT_POLICY_TOKEN,
   FEDERATED_IDENTITY_STORE_TOKEN,
+  LoopbackClientPolicy,
   OAuthController,
+  PENDING_AUTHORIZATION_STORE_TOKEN,
+  PendingAuthorizationStoreMemory,
   Public,
   SessionsController,
   useAuth,
@@ -734,6 +741,14 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     }
   }
 
+  // Authorization server (AUTH-SERVER.md Tier 1) — a CLI loopback grant. The
+  // two stores are in-memory (single-process demo); a multi-pod deployment swaps
+  // a durable impl under the same DI tokens. The loopback policy mints a
+  // full-authority `cli-session` for any 127.0.0.1 / localhost redirect.
+  const pendingAuthStore = new PendingAuthorizationStoreMemory();
+  const authCodeStore = new AuthCodeStoreMemory();
+  const clientRedirectPolicy = new LoopbackClientPolicy();
+
   // Canonical REST + guard wiring + per-workflow providers registered via DI.
   const authProviders: Parameters<typeof createProvideRegistry> = [
     [AuthCredential, () => aooth.authCredential],
@@ -750,6 +765,11 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     [OAuthProviderRegistry, () => oauthRegistry],
     [FederatedLoginService, () => federatedLogin],
     [FEDERATED_IDENTITY_STORE_TOKEN, () => federatedStore],
+    // Authorization server (CLI loopback grant). All three are abstract /
+    // interface deps, so they bind under explicit string tokens.
+    [CLIENT_REDIRECT_POLICY_TOKEN, () => clientRedirectPolicy],
+    [PENDING_AUTHORIZATION_STORE_TOKEN, () => pendingAuthStore],
+    [AUTH_CODE_STORE_TOKEN, () => authCodeStore],
   ];
   app.setProvideRegistry(createProvideRegistry(...authProviders));
   app.applyGlobalInterceptors(authGuardInterceptor({ cookie: { secure: false } }));
@@ -806,6 +826,20 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       // see AuthController.triggerWf — body intentionally empty.
     }
   }
+
+  // Authorization server: bounce the `/auth/authorize` grant to the demo's
+  // default login page. No-variant login is a clean username + password round
+  // trip for a non-MFA seeded user (the demo ConsentStore returns no pending
+  // consents without an `x-wf-variant` header) AND it offers the "Continue with
+  // <provider>" SSO button, so the CLI grant exercises both the password path
+  // and the mid-login SSO detour (the `ctx.authz` handle carry).
+  @Inherit()
+  @Controller("auth")
+  class DemoAuthorizeController extends AuthorizeController {
+    protected override loginPath(): string {
+      return "/login";
+    }
+  }
   app.setReplaceRegistry(createReplaceRegistry([WfTriggerProvider, DemoWfTriggerProvider]));
 
   // Mount the bundled sessions endpoints (`GET/DELETE /auth/sessions`). The
@@ -817,6 +851,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     DemoAuthWorkflow,
     SessionsController,
     OAuthController,
+    DemoAuthorizeController,
   );
 
   // `@Injectable()` (SINGLETON) — moost@0.6.x does NOT inherit injectable

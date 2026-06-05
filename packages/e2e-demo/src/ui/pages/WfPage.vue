@@ -26,6 +26,16 @@ const initialToken = computed(() => {
   const raw = route.query.wfs;
   return typeof raw === "string" && raw.length > 0 ? raw : undefined;
 });
+// Authorization-server grant (AUTH-SERVER.md Tier 1): `GET /auth/authorize`
+// bounces the browser to `/login?authz=<handle>` (the handle survives the
+// `/login` → `/wf?id=auth/login/flow` router redirect, which preserves the
+// query). Forward it as the login flow's START input — `<AsWfForm :input>` wraps
+// it as `input.formData.authz`, which `init-login` reads to raise `ctx.authz` so
+// the run ends at the `mint-authz-code` terminal instead of issuing a session.
+const authzInput = computed(() => {
+  const raw = route.query.authz;
+  return typeof raw === "string" && raw.length > 0 ? { authz: raw } : undefined;
+});
 const descriptor = computed(() => WORKFLOWS.find((w) => w.id === wfId.value) ?? null);
 // Variant travels via header → server picks the preset in the workflow
 // controller constructor. Re-keying on `wfId + variant` forces `<AsWfForm>` to
@@ -182,6 +192,7 @@ async function navigate(url: string): Promise<void> {
           :navigate="navigate"
           :fetch-options="fetchOptions"
           :initial-token="initialToken"
+          :input="authzInput"
           @finished="onFinished"
           @error="onError"
         />
