@@ -1,6 +1,6 @@
 # Workflow conventions (auth-moost)
 
-Canonical reference: [`AuthWorkflow`](src/workflow/auth-workflow.ts) — one concrete class with three `@Workflow` methods (`loginFlow`, `inviteFlow`, `recoveryFlow`) covering `/login`, `/invite`, `/recover`. Replaces the prior `LoginWorkflow` + `InviteWorkflow` + `RecoveryWorkflow` + `AuthWorkflowBase` quartet.
+Canonical reference: [`AuthWorkflow`](src/workflow/auth-workflow.ts) — one concrete class with **six** `@Workflow` methods. Four are public, dispatched via `POST /auth/trigger` (the `DEFAULT_AUTH_WORKFLOWS` allow-list): `loginFlow` (`auth/login/flow`, incl. the federated SSO leg), `inviteFlow` (`auth/invite/start`), `recoveryFlow` (`auth/recovery/flow`), `signupFlow` (`auth/signup/flow`). Two are ARBAC-gated authenticated self-service flows, each dispatched from its own guarded route and deliberately excluded from the public allow-list: `changePasswordFlow` (`auth/change-password/flow` → `POST /auth/change-password`) and `addMfaFlow` (`auth/add-mfa/flow` → `POST /auth/add-mfa`). Replaces the prior `LoginWorkflow` + `InviteWorkflow` + `RecoveryWorkflow` + `AuthWorkflowBase` quartet.
 
 ## Layering — what lives where
 
@@ -69,12 +69,15 @@ app.setReplaceRegistry(createReplaceRegistry([AuthWorkflow, MyAuth]));
 which prepare-\* steps have populated which ctx slot. Use this table when
 writing a resolver / step body that needs to discriminate:
 
-| Slot present      | Flow                  | Populated by                               |
-| ----------------- | --------------------- | ------------------------------------------ |
-| `ctx.admin`       | invite (admin phase)  | `init-invite-admin` + `prepare-admin-form` |
-| `ctx.accept`      | invite (accept phase) | `init-invite-accept` + `prepare-accept`    |
-| `ctx.postReset`   | recovery              | `init-recovery` + `prepare-post-reset`     |
-| _(none of these)_ | login                 | _(implicit — login is the fallback)_       |
+| Slot present         | Flow                  | Populated by                                       |
+| -------------------- | --------------------- | -------------------------------------------------- |
+| `ctx.admin`          | invite (admin phase)  | `init-invite-admin` + `prepare-admin-form`         |
+| `ctx.accept`         | invite (accept phase) | `init-invite-accept` + `prepare-accept`            |
+| `ctx.postReset`      | recovery              | `init-recovery` + `prepare-post-reset`             |
+| `ctx.signup`         | self-signup           | `init-signup`                                      |
+| `ctx.changePassword` | change-password       | `init-change-password` + `prepare-change-password` |
+| `ctx.addMfa`         | add-mfa               | `init-add-mfa`                                     |
+| _(none of these)_    | login                 | _(implicit — login is the fallback)_               |
 
 Customer resolver discriminating across flows:
 
@@ -83,6 +86,9 @@ protected resolveSomething(ctx: AuthWfCtx) {
   if (ctx.admin) return { ...invite-admin-flavored... };
   if (ctx.accept) return { ...invite-accept-flavored... };
   if (ctx.postReset) return { ...recovery-flavored... };
+  if (ctx.signup) return { ...signup-flavored... };
+  if (ctx.changePassword) return { ...change-password-flavored... };
+  if (ctx.addMfa) return { ...add-mfa-flavored... };
   return { ...login-flavored... };
 }
 ```
@@ -322,8 +328,9 @@ moost@0.6.x does NOT inherit `@Injectable` across `extends`, so each subclass mu
 
 `AuthWorkflow` itself is NOT `@Public()` at the class level — invite admin-phase @Step methods are arbac-evaluated (the admin needs the `invite` permission). Instead:
 
-- The three `@Workflow` bodies (`loginFlow`, `inviteFlow`, `recoveryFlow`) all carry `@Public()` so the wf adapter can dispatch start/resume on anonymous magic-link clicks and unauthenticated logins.
-- Every @Step the engine may land on under anonymous auth carries per-step `@Public()` — login's entire step set, recovery's entire step set, and invite's accept-tail steps. Admin-phase @Step methods (`admin-form`, `infer-roles`, `build-user-extras`, `create-user`) deliberately omit `@Public()`.
+- The four **public** `@Workflow` bodies (`loginFlow`, `inviteFlow`, `recoveryFlow`, `signupFlow`) all carry `@Public()` so the wf adapter can dispatch start/resume on anonymous magic-link clicks, self-signups, and unauthenticated logins.
+- The two **gated** `@Workflow` bodies (`changePasswordFlow`, `addMfaFlow`) do NOT carry `@Public()` — they (plus their `init-*` / `finish-*` steps) carry `@ArbacResource("auth.change-password" | "auth.add-mfa") @ArbacAction("self")`, so an anonymous request 401s and an unprivileged one 403s before the flow starts (the grant is the on/off switch — no opts flag). Every step of change-password is decorated too; add-mfa decorates its `init`/`finish` and relies on the gated init running first. See the docs-site "ARBAC Authorize — gating a whole workflow".
+- Every @Step the engine may land on under anonymous auth carries per-step `@Public()` — login's entire step set, recovery's entire step set, signup's entire step set, and invite's accept-tail steps. Admin-phase @Step methods (`admin-form`, `infer-roles`, `build-user-extras`, `create-user`) deliberately omit `@Public()`. **Caveat for the gated flows:** add-mfa reuses login's enroll-trio steps, which ARE `@Public()` — but its gated `init-add-mfa` runs first, so entry is always authorized; the public trio steps are only reachable mid-flow once the gate has passed.
 
 Pick the default per step by asking: **can an anonymous request legitimately land on this step?** If yes, `@Public()`. If no, leave it off and let arbac evaluate normally.
 
@@ -407,6 +414,6 @@ Subclass MUST:
 - ❌ Renaming `loadActiveSessions`-style data fetchers to `resolveXxx` (data fetchers, not policy resolvers).
 - ❌ Using `resolveXxx` as a `@Step` id or `@Step` handler method name.
 - ❌ Widening helper return types (`resolveRecoveryUrl`, `resolveRedirect`) to `T | Promise<T>` — stay strictly sync; consumers needing async override the calling @Step.
-- ❌ Branching on a "flow name" — `AuthWfCtx` has no such field. Discriminate via ctx-slot presence (`ctx.admin` / `ctx.accept` / `ctx.postReset`).
+- ❌ Branching on a "flow name" — `AuthWfCtx` has no such field. Discriminate via ctx-slot presence (`ctx.admin` / `ctx.accept` / `ctx.postReset` / `ctx.signup` / `ctx.changePassword` / `ctx.addMfa`; none ⇒ login).
 - ❌ Passing the workflow id / channel as a second argument to `ConsentStore.getPendingConsents` — the signature is `(username)` only; the consent universe is user-scoped, not workflow-scoped.
 - ❌ `ctx.foo = undefined` to clear an optional ctx field at the end of a @Step body. The wf state-token persistence layer JSON-schema-validates the serialized ctx and rejects `undefined` (allowed types: string / number / boolean / null / array / object). Use `delete ctx.foo` instead — drops the key from the payload cleanly. Bare-boolean / nullable-string fields can also assign `false` / `null` if a forward step relies on presence rather than reads the field directly.

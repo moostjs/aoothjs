@@ -389,7 +389,7 @@ curl http://localhost:3000/me -H 'Authorization: Bearer <accessToken>'
 
 ## What else `/auth/*` ships
 
-`AuthController` mounts five routes under `@Controller('auth')`. All five are `@Public()` (the auth guard does not block them — they validate their own inputs):
+`AuthController` mounts seven routes under `@Controller('auth')`. These five are `@Public()` (the auth guard does not block them — they validate their own inputs):
 
 | Method + path                      | Body / Query                   | Purpose                                                                                                                               |
 | ---------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
@@ -398,6 +398,8 @@ curl http://localhost:3000/me -H 'Authorization: Bearer <accessToken>'
 | `GET /auth/status`                 | —                              | Returns the resolved `AuthContext { userId, claims }` if the guard could validate; 401 otherwise.                                     |
 | `POST /auth/trigger`               | `{ wfid?, wfs?, input? }`      | Drives any workflow in `DEFAULT_AUTH_WORKFLOWS = ['auth/login/flow', 'auth/invite/start', 'auth/recovery/flow', 'auth/signup/flow']`. |
 | `GET /auth/invite/post-redemption` | `?uid=<userId>`                | Idempotent "already accepted" envelope for re-clicked invite links (needs a `UserService`).                                           |
+
+Two further routes — `POST /auth/change-password` and `POST /auth/add-mfa` — are **not** `@Public()`: they're ARBAC-gated authenticated self-service flows, each switched on by granting its resource (`allow('auth.change-password', '*')` / `allow('auth.add-mfa', '*')`). See [REST Controllers](/moost/controllers) and [Workflows](/moost/workflows#add-mfa-auth-add-mfa-flow).
 
 Subclass `AuthController` to widen the trigger allow-list (override `triggerWf()` with your own `@WfTrigger({ allow })`).
 

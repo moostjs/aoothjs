@@ -91,7 +91,7 @@ class AuthController {
 }
 ```
 
-REST surface — see [REST endpoints](#rest-endpoints) below for the five routes. `users` is `@Optional()`: only `GET /auth/invite/post-redemption` reads it (returns 500 when unset); the other four routes work without a `UserService`. Subclass and override `triggerWf()` to extend the workflow allow-list. See [REST Controllers](/moost/controllers).
+REST surface — see [REST endpoints](#rest-endpoints) below for the seven routes (five `@Public()`, two ARBAC-gated). `users` is `@Optional()`: only `GET /auth/invite/post-redemption` reads it directly (returns 500 when unset); the other routes work without a `UserService` on the controller. Subclass and override `triggerWf()` to extend the workflow allow-list. See [REST Controllers](/moost/controllers).
 
 ### `SessionsController`
 
@@ -271,15 +271,17 @@ Method decorator wrapping `defineAfterInterceptor` at `INTERCEPTOR` priority. Wh
 
 ## REST endpoints
 
-`AuthController` mounts **five** routes — all `@Public()`:
+`AuthController` mounts **seven** routes — five `@Public()`, two ARBAC-gated authenticated self-service flows:
 
-| Method | Path                           | Body / Query                               | Response              | Notes                                                                                                                                              |
-| ------ | ------------------------------ | ------------------------------------------ | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST` | `/auth/logout`                 | `AuthLogoutBody`                           | `AuthOkResponse`      | Defence-in-depth 401 on null context. Best-effort revokes both tokens.                                                                             |
-| `POST` | `/auth/refresh`                | `AuthRefreshBody`                          | `AuthLoginResponse`   | Falls back to refresh cookie. 401 on `AuthError`.                                                                                                  |
-| `GET`  | `/auth/status`                 | —                                          | `AuthContext`         | 401 when no context.                                                                                                                               |
-| `POST` | `/auth/trigger`                | `{ wfs?, input?: { action?, formData? } }` | `WfFinished` envelope | Single entry-point for the `DEFAULT_AUTH_WORKFLOWS` schemas (login / invite / recovery / signup). `@WfTrigger({ allow: DEFAULT_AUTH_WORKFLOWS })`. |
-| `GET`  | `/auth/invite/post-redemption` | `?uid=<userId>`                            | `WfFinished` envelope | Idempotent "already accepted" envelope for re-clicked invite links (after the wf state row is evicted). Needs `UserService`.                       |
+| Method | Path                           | Body / Query                               | Response              | Notes                                                                                                                                                |
+| ------ | ------------------------------ | ------------------------------------------ | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST` | `/auth/logout`                 | `AuthLogoutBody`                           | `AuthOkResponse`      | `@Public()`. Defence-in-depth 401 on null context. Revokes this session's whole token family (`revokeSession`), token-level revokes as fallback.     |
+| `POST` | `/auth/refresh`                | `AuthRefreshBody`                          | `AuthLoginResponse`   | `@Public()`. Falls back to refresh cookie. 401 on `AuthError`.                                                                                       |
+| `GET`  | `/auth/status`                 | —                                          | `AuthContext`         | `@Public()`. 401 when no context.                                                                                                                    |
+| `POST` | `/auth/trigger`                | `{ wfs?, input?: { action?, formData? } }` | `WfFinished` envelope | `@Public() @WfTrigger({ allow: DEFAULT_AUTH_WORKFLOWS })`. Single entry-point for the public schemas (login / invite / recovery / signup).           |
+| `GET`  | `/auth/invite/post-redemption` | `?uid=<userId>`                            | `WfFinished` envelope | `@Public()`. Idempotent "already accepted" envelope for re-clicked invite links (after the wf state row is evicted). Needs `UserService`.            |
+| `POST` | `/auth/change-password`        | `{ wfs?, input?: { action?, formData? } }` | `WfFinished` envelope | **Gated** — `@ArbacResource("auth.change-password") @ArbacAction("self") @WfTrigger({ allow: [CHANGE_PASSWORD_WORKFLOW] })`. 401/403 before handler. |
+| `POST` | `/auth/add-mfa`                | `{ wfs?, input?: { action?, formData? } }` | `WfFinished` envelope | **Gated** — `@ArbacResource("auth.add-mfa") @ArbacAction("self") @WfTrigger({ allow: [ADD_MFA_WORKFLOW] })`. Authenticated add-a-second-factor flow. |
 
 See [REST Controllers](/moost/controllers).
 
@@ -297,6 +299,15 @@ const DEFAULT_AUTH_WORKFLOWS = [
 ```
 
 Default `allow` list for `@WfTrigger` on `AuthController.triggerWf()`. Subclasses override `triggerWf()` with a different `@WfTrigger({ allow })` to extend. See [REST Controllers](/moost/controllers).
+
+### `CHANGE_PASSWORD_WORKFLOW` / `ADD_MFA_WORKFLOW`
+
+```ts
+const CHANGE_PASSWORD_WORKFLOW = "auth/change-password/flow";
+const ADD_MFA_WORKFLOW = "auth/add-mfa/flow";
+```
+
+Workflow ids for the two **gated** self-service flows, exported separately and deliberately **excluded** from `DEFAULT_AUTH_WORKFLOWS`. Each is the sole entry on its own route's `@WfTrigger({ allow })` (`POST /auth/change-password`, `POST /auth/add-mfa`), so neither is reachable from the public `/auth/trigger`. Enable a flow by granting its ARBAC resource (`allow("auth.change-password", "*")` / `allow("auth.add-mfa", "*")`); omit the grant to disable it entirely — the privilege **is** the switch. See [Workflows — Change password](/moost/workflows#change-password-auth-change-password-flow) and [Add MFA method](/moost/workflows#add-mfa-auth-add-mfa-flow).
 
 ## DTOs
 

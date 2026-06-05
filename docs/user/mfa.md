@@ -172,4 +172,5 @@ maskMfaValue({ name: "email", confirmed: true, value: "alice@acme.dev" });
 
 - [`UserService.verifyMfa`](./service#verifymfa) — the lockout-aware verify path.
 - [Credentials Model — `mfa` sub-object](./credentials#mfa-mfadata).
+- [Moost — Add MFA method workflow](/moost/workflows#add-mfa-auth-add-mfa-flow) — the bundled, ARBAC-gated HTTP flow that drives `addMfaMethod` + `confirmMfaMethod` for a signed-in user (pick a transport → enter address / scan QR → verify pincode). Use [`UserService.removeMfaMethod`](./service) for the unenroll direction (no bundled flow).
 - `@aooth/auth` — challenge state machine, email/SMS senders.
