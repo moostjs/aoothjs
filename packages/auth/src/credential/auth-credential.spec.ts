@@ -199,6 +199,60 @@ describe("AuthCredential", () => {
     });
   });
 
+  describe("issue: semantic kind + kind-aware listSessions", () => {
+    it("stamps the semantic kind into metadata.credentialKind and surfaces SessionInfo.kind", async () => {
+      const { auth } = makeAuth();
+      await auth.issue("alice", { kind: "cli-session", metadata: { ip: "1.2.3.4" } });
+      const [s] = await auth.listSessions("alice", { kind: "cli-session" });
+      expect(s.kind).toBe("cli-session");
+      // It lives in the metadata bag (the zero-migration storage), alongside ip.
+      expect(s.metadata).toEqual({ ip: "1.2.3.4", credentialKind: "cli-session" });
+    });
+
+    it("listSessions defaults to the browser-safe set — cli-session / pat are excluded", async () => {
+      const { auth } = makeAuth();
+      await auth.issue("alice"); // ordinary interactive session (no kind)
+      await auth.issue("alice", { kind: "cli-session" });
+      await auth.issue("alice", { kind: "pat" });
+      const browser = await auth.listSessions("alice");
+      expect(browser).toHaveLength(1);
+      expect(browser[0].kind).toBeUndefined(); // ordinary sessions omit it
+    });
+
+    it("filters to an explicit kind, supports an array, and '*' returns every kind", async () => {
+      const { auth } = makeAuth();
+      await auth.issue("alice");
+      await auth.issue("alice", { kind: "cli-session" });
+      await auth.issue("alice", { kind: "pat" });
+
+      expect(await auth.listSessions("alice", { kind: "cli-session" })).toHaveLength(1);
+      expect(await auth.listSessions("alice", { kind: ["cli-session", "pat"] })).toHaveLength(2);
+      // "*" bypasses the filter — the interactive session + both labelled ones.
+      expect(await auth.listSessions("alice", { kind: "*" })).toHaveLength(3);
+      // "session" matches the unlabelled interactive credential.
+      expect(await auth.listSessions("alice", { kind: "session" })).toHaveLength(1);
+    });
+
+    it("the semantic kind survives refresh rotation (carried in metadata)", async () => {
+      const { auth } = makeAuth({ refresh: { ttl: 60_000, rotation: "always" } });
+      const r = await auth.issue("alice", { kind: "cli-session" });
+      // Rotate — the new pair must keep the family's kind (read off the session,
+      // since the kind lives in metadata, not on the request AuthContext).
+      await auth.refresh(r.refreshToken!);
+      const [s] = await auth.listSessions("alice", { kind: "cli-session" });
+      expect(s.kind).toBe("cli-session");
+    });
+
+    it("kind is a reserved hint — it does not leak onto the typed payload", async () => {
+      const { auth } = makeAuth();
+      const r = await auth.issue("alice", { kind: "pat", roles: ["admin"] });
+      const ctx = await auth.validate(r.accessToken);
+      expect(ctx?.roles).toEqual(["admin"]);
+      const rec = ctx as unknown as Record<string, unknown>;
+      expect(rec.kind).toBeUndefined();
+    });
+  });
+
   describe("revoke + revokeAllForUser", () => {
     it("revokeAllForUser invalidates every active token", async () => {
       const { auth } = makeAuth();

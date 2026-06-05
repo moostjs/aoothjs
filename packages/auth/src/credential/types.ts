@@ -41,6 +41,16 @@ export interface CredentialMetadata {
   userAgent?: string;
   fingerprint?: string;
   label?: string;
+  /**
+   * Semantic credential kind — e.g. `"cli-session"` / `"pat"` — distinct from
+   * the internal {@link CredentialState.kind} (`access`/`refresh`) discriminator.
+   * Set from `IssueOptions.kind` at mint time and carried forward across
+   * rotation with the rest of `metadata`, so the whole session family shares it.
+   * Stored here (not as a top-level envelope column) so it round-trips through
+   * every store with no schema change; surfaced as {@link SessionInfo.kind} and
+   * the `listSessions({ kind })` filter. Absent ⇒ an ordinary interactive session.
+   */
+  credentialKind?: string;
 }
 
 /**
@@ -100,6 +110,13 @@ export interface SessionInfo {
   /** Set by the caller (e.g. `SessionsController`) when this is the caller's own session. */
   current?: boolean;
   metadata?: CredentialMetadata;
+  /**
+   * Semantic credential kind of the family (`metadata.credentialKind`) — e.g.
+   * `"cli-session"` / `"pat"`. Omitted for ordinary interactive sessions. Lets a
+   * UI segment non-browser credentials into their own bucket; the matching
+   * filter is `listSessions({ kind })`.
+   */
+  kind?: string;
 }
 
 /**

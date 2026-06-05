@@ -43,6 +43,18 @@ function stateWithPayload<TPayload extends object>(
   return { ...payload, ...envelope } as CredentialState & TPayload;
 }
 
+/**
+ * Match a session family's semantic kind against a `listSessions({ kind })`
+ * filter. No filter ⇒ only ordinary interactive sessions (`"session"`), keeping
+ * `cli-session` / `pat` credentials out of the default "active sessions" view.
+ * A `"*"` value (a bare string or anywhere in the array) matches every kind.
+ */
+function matchesSessionKind(kind: string, filter?: string | string[]): boolean {
+  if (filter === undefined) return kind === "session";
+  const wanted = Array.isArray(filter) ? filter : [filter];
+  return wanted.includes("*") || wanted.includes(kind);
+}
+
 export interface AuthCredentialOptions<TPayload extends object = object> {
   /** Pluggable credential store (Memory, JWT, Encapsulated, ...). */
   store: CredentialStore<TPayload>;
@@ -84,8 +96,8 @@ export interface AuthCredentialOptions<TPayload extends object = object> {
  * `TPayload` (the root fields a consumer added to their credential model — e.g.
  * `@arbac.attenuate.*`-annotated fields) is spread flat alongside the
  * framework-level hints below. Reserved keys `metadata`, `sessionId`, `ttl`,
- * `expiresAt` (and the {@link CredentialState} envelope keys) must not be reused
- * as payload field names.
+ * `expiresAt`, `kind` (and the {@link CredentialState} envelope keys) must not be
+ * reused as payload field names.
  */
 export type IssueOptions<TPayload extends object = object> = TPayload & {
   metadata?: CredentialMetadata;
@@ -109,6 +121,16 @@ export type IssueOptions<TPayload extends object = object> = TPayload & {
    * Use when the caller already holds the exact instant.
    */
   expiresAt?: number;
+  /**
+   * Semantic credential kind for THIS mint — e.g. `"cli-session"` / `"pat"`.
+   * Distinct from the internal access/refresh discriminator
+   * ({@link CredentialState.kind}): it is stored in `metadata.credentialKind`
+   * and carried forward across rotation, so the whole session family is
+   * labelled. Surfaced as {@link SessionInfo.kind} and consumed by the
+   * `listSessions({ kind })` filter to keep non-browser credentials out of the
+   * default "active sessions" view. Omit for an ordinary interactive session.
+   */
+  kind?: string;
 };
 
 /**
@@ -186,7 +208,14 @@ export class AuthCredential<TPayload extends object = object> {
     // remaining keys (`...payload`) are the credential's root fields and ride
     // flat on the persisted state (no `claims` container).
     const opts = options ?? ({} as IssueOptions<TPayload>);
-    const { metadata, sessionId: providedSessionId, ttl, expiresAt, ...payload } = opts;
+    const { metadata, sessionId: providedSessionId, ttl, expiresAt, kind, ...payload } = opts;
+
+    // Fold the semantic `kind` into the persisted metadata bag — it rides every
+    // store losslessly and is carried forward across rotation with the rest of
+    // `metadata`, so the whole session family is labelled. This keeps the
+    // envelope `kind` free for the internal access/refresh discriminator.
+    const effectiveMetadata: CredentialMetadata | undefined =
+      kind !== undefined ? { ...metadata, credentialKind: kind } : metadata;
 
     // Resolve THIS mint's access-token expiry: an explicit `expiresAt` wins, else
     // a per-mint `ttl` override, else the instance `accessTtl`. Omitting both
@@ -213,7 +242,7 @@ export class AuthCredential<TPayload extends object = object> {
       issuedAt: now,
       expiresAt: accessExpiresAt,
       kind: "access",
-      metadata,
+      metadata: effectiveMetadata,
       sessionId,
     });
     const accessToken = await this.store.persist(accessState, accessStoreTtl);
@@ -226,7 +255,7 @@ export class AuthCredential<TPayload extends object = object> {
         issuedAt: now,
         expiresAt: now + this.refreshConfig.ttl,
         kind: "refresh",
-        metadata,
+        metadata: effectiveMetadata,
         sessionId,
       });
       refreshToken = await this.store.persist(refreshState, this.refreshConfig.ttl);
@@ -471,7 +500,7 @@ export class AuthCredential<TPayload extends object = object> {
    */
   async listSessions(
     userId: string,
-    opts?: { enrich?: SessionEnricher },
+    opts?: { enrich?: SessionEnricher; kind?: string | string[] },
   ): Promise<SessionInfo[] | EnrichedSession[]> {
     if (!this.store.listForUser) return [];
     const all = await this.store.listForUser(userId);
@@ -511,6 +540,12 @@ export class AuthCredential<TPayload extends object = object> {
         // login-time metadata (copied forward on rotation).
         if (!metadata && e.metadata) metadata = e.metadata;
       }
+      // Semantic kind of the family (stamped at mint, carried in `metadata`).
+      // Filter HERE, against the raw rows — the SessionInfo deliberately drops
+      // payload/attenuation, so kind can't be recovered downstream. Absent ⇒
+      // an ordinary interactive session.
+      const credentialKind = metadata?.credentialKind;
+      if (!matchesSessionKind(credentialKind ?? "session", opts?.kind)) continue;
       sessions.push({
         sessionId,
         userId,
@@ -519,6 +554,7 @@ export class AuthCredential<TPayload extends object = object> {
         expiresAt: refreshExpiresAt ?? accessExpiresAt ?? 0,
         ...(lastSeenAt !== undefined && { lastSeenAt }),
         ...(metadata && { metadata }),
+        ...(credentialKind !== undefined && { kind: credentialKind }),
       });
     }
 

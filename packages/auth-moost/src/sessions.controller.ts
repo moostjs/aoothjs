@@ -48,6 +48,9 @@ export class SessionEnricherProvider {
  *
  * Each `SessionInfo` is mapped through the injectable {@link SessionEnricherProvider}
  * before returning, and the caller's own session is flagged `current: true`.
+ * Both reads default to the browser-safe set (ordinary interactive sessions);
+ * `?kind=<kind>` segments a non-browser bucket (e.g. `?kind=cli-session`) and
+ * `?kind=*` returns every kind.
  * NOT `@Public()` — the auth guard rejects unauthenticated callers with 401 and
  * ARBAC gates each action; a customer enables it with `allow("auth.sessions", "*")`.
  */
@@ -61,10 +64,11 @@ export class SessionsController {
 
   @Get("sessions")
   @ArbacAction("read")
-  async listSessions(): Promise<EnrichedSession[]> {
+  async listSessions(@Query("kind") kind?: string): Promise<EnrichedSession[]> {
     const auth = useAuth();
     const sessions = (await this.auth.listSessions(auth.getUserId(), {
       enrich: (s) => this.enricher.enrich(s),
+      ...(kind !== undefined && { kind }),
     })) as EnrichedSession[];
     const current = auth.getSessionId();
     // Flag the caller's own session in place — the enricher already produced
@@ -80,9 +84,13 @@ export class SessionsController {
    */
   @Get("sessions/of/:userId")
   @ArbacAction("readAny")
-  async listSessionsOf(@Param("userId") userId: string): Promise<EnrichedSession[]> {
+  async listSessionsOf(
+    @Param("userId") userId: string,
+    @Query("kind") kind?: string,
+  ): Promise<EnrichedSession[]> {
     const sessions = await this.auth.listSessions(userId, {
       enrich: (s) => this.enricher.enrich(s),
+      ...(kind !== undefined && { kind }),
     });
     // No `current` flag — these are not the admin's own sessions.
     return sessions as EnrichedSession[];

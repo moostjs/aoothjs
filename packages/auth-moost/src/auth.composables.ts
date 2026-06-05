@@ -51,8 +51,15 @@ export interface AuthBindings {
   getSessionId(): string | undefined;
 
   // ── Session facade (scoped to the current user) ─────────────────────
-  /** List the current user's active sessions (one row per device). */
-  listSessions(opts?: { enrich?: SessionEnricher }): Promise<SessionInfo[] | EnrichedSession[]>;
+  /**
+   * List the current user's active sessions (one row per device). Defaults to
+   * the browser-safe set (ordinary interactive sessions); pass `kind` to segment
+   * a non-browser bucket (`kind: "cli-session"`) or `kind: "*"` for every kind.
+   */
+  listSessions(opts?: {
+    enrich?: SessionEnricher;
+    kind?: string | string[];
+  }): Promise<SessionInfo[] | EnrichedSession[]>;
   /** Revoke one of the current user's sessions by id (whole token family). */
   revokeSession(sessionId: string): Promise<void>;
   /**
@@ -145,6 +152,7 @@ export const useAuth = defineWook((ctx: EventContext): AuthBindings => {
 
   const listSessions = (opts?: {
     enrich?: SessionEnricher;
+    kind?: string | string[];
   }): Promise<SessionInfo[] | EnrichedSession[]> =>
     requireCredential().listSessions(getUserId(), opts);
 
