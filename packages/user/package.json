@@ -1,6 +1,6 @@
 {
   "name": "@aooth/user",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "User credential primitives for aoothjs",
   "keywords": [
     "aoothjs",
