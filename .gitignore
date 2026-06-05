@@ -30,4 +30,5 @@ TODO.md
 # Anchored to repo root: macOS git runs core.ignorecase=true, so an unanchored
 # `IDP.md` would also match `docs/api/idp.md`, `references/idp.md`, etc.
 /IDP.md
+/AUTH-SERVER.md
 /rfc-credential-claims-arbac-bridge.md
