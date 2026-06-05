@@ -60,6 +60,7 @@ import { Public } from "../auth.decorator";
 import { buildOAuthAuthorizeRequest, OAUTH_TTL_SEC } from "../oauth/oauth-authorize";
 import { OAUTH_CSRF_COOKIE, oauthCsrfCookieAttrs, safeEqual } from "../oauth/oauth-csrf";
 import { resolveOAuthRedirect } from "../oauth/oauth-redirect";
+import { AuthorizeRuntime } from "../authz/authorize-runtime";
 import { OAuthRuntime } from "../oauth/oauth-runtime";
 import type {
   AuthWfCtx,
@@ -496,6 +497,16 @@ export class AuthWorkflow {
   }
 
   /**
+   * Resolve the {@link AuthorizeRuntime} (the pending-authorization + auth-code
+   * stores) for the `mint-authz-code` terminal — same `instantiate` path as
+   * {@link oauthRuntime}, reached ONLY when a login was started from
+   * `/auth/authorize` (`ctx.authz` set). Override in a unit test to inject fakes.
+   */
+  protected authorizeRuntime(): Promise<AuthorizeRuntime> {
+    return useControllerContext().instantiate(AuthorizeRuntime);
+  }
+
+  /**
    * Redirect target for a federated-login FAILURE terminal — provider denial,
    * invalid/expired state, CSRF mismatch, missing transaction, exchange
    * failure, `denied` / `needs-link` resolution, or a locked/inactive account.
@@ -525,11 +536,16 @@ export class AuthWorkflow {
    * `issue` uses for the session cookie. The resume is a same-origin XHR, so the
    * `Set-Cookie` is stored before `AsWfForm` follows the redirect.
    */
-  protected async beginSso(providerId: string): Promise<void> {
+  protected async beginSso(providerId: string, authzHandle?: string): Promise<void> {
     const { registry } = await this.oauthRuntime();
     const provider = registry.require(providerId);
     const redirect = resolveOAuthRedirect(getInputField("redirect"), "/");
-    const { seed, authUrl } = await buildOAuthAuthorizeRequest(registry, provider, { redirect });
+    // Carry an in-flight authorization-server grant through the provider detour:
+    // fold its handle into the signed state so `sso-callback` re-raises `ctx.authz`.
+    const { seed, authUrl } = await buildOAuthAuthorizeRequest(registry, provider, {
+      redirect,
+      ...(authzHandle !== undefined && { handle: authzHandle }),
+    });
     const envelope: WfFinished = {
       finished: true,
       next: {
@@ -1170,6 +1186,12 @@ export class AuthWorkflow {
         ...(error !== undefined && { error }),
       };
     }
+    // Authorization-server leg: a START whose input carries the pending-auth
+    // `authz` handle (the SPA forwards it from `/auth/authorize`'s `?authz=`
+    // bounce) routes the login tail to `mint-authz-code` instead of `issue`. A
+    // bogus handle just dead-ends at that terminal's benign "expired" finish.
+    const authz = getInputField("authz");
+    if (authz) ctx.authz = { handle: authz };
     return undefined;
   }
 
@@ -1254,7 +1276,12 @@ export class AuthWorkflow {
     const action = wf.resolveAction();
     if (action) {
       const typedUsername = getInputField("username");
-      const handled = await this.handleCredentialsAlt(action, typedUsername, alt);
+      const handled = await this.handleCredentialsAlt(
+        action,
+        typedUsername,
+        alt,
+        ctx.authz?.handle,
+      );
       if (handled === ALT_HANDLED) return undefined;
     }
 
@@ -1321,6 +1348,7 @@ export class AuthWorkflow {
     action: string,
     typedUsername: string | undefined,
     alt: AuthWfAltCredsPolicy,
+    authzHandle?: string,
   ): Promise<AltHandled | undefined> {
     if (action === "forgotPassword" && alt.forgotPassword) {
       const url = this.resolveRecoveryUrl(typedUsername, alt);
@@ -1352,7 +1380,7 @@ export class AuthWorkflow {
       // A missing / unoffered id is a malformed request — the bundled component
       // only ever submits an offered provider.
       if (!sso) throw new HttpError(400, "Unknown SSO provider");
-      await this.beginSso(sso.id);
+      await this.beginSso(sso.id, authzHandle);
       return ALT_HANDLED;
     }
     return undefined;
@@ -3175,6 +3203,51 @@ export class AuthWorkflow {
   }
 
   /**
+   * Authorization-server terminal (AUTH-SERVER.md §4.4). Reached INSTEAD of
+   * `issue`/`redirect` when this login was started from `GET /auth/authorize`
+   * (`ctx.authz` set by `init-login` or re-raised by `sso-callback`). Mints a
+   * single-use authorization code bound to the authenticated user + the pending
+   * request's PKCE challenge / redirect / token policy, then 302s the browser to
+   * `redirect_uri?code&state`. It does NOT issue a session and attaches NO
+   * cookies — the token is minted later, off the browser, at `POST /auth/token`.
+   */
+  @Step("mint-authz-code")
+  @Public()
+  async mintAuthzCode(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    this.requireSubject(ctx);
+    const handle = ctx.authz?.handle;
+    const { pending, codes } = await this.authorizeRuntime();
+    const req = handle ? await pending.get(handle) : null;
+    if (!handle || !req) {
+      // The pending authorization expired / is unknown (or a forged `authz`
+      // handle) — fail soft: no session, no code.
+      finishWf({
+        message: { level: "error", text: "Authorization request expired. Please try again." },
+      });
+      return undefined;
+    }
+    const { code } = await codes.mint({
+      userId: ctx.subject,
+      codeChallenge: req.codeChallenge,
+      redirectUri: req.redirectUri,
+      ...(req.clientId !== undefined && { clientId: req.clientId }),
+      tokenPolicy: req.tokenPolicy,
+    });
+    await pending.delete(handle);
+
+    const url = new URL(req.redirectUri);
+    url.searchParams.set("code", code);
+    if (req.clientState !== undefined) url.searchParams.set("state", req.clientState);
+    finishWf({
+      next: {
+        trigger: "immediate",
+        action: { type: "redirect", target: url.toString(), reason: "authz-code" },
+      },
+    });
+    return undefined;
+  }
+
+  /**
    * Fresh-login finalize — invite + recovery. Emits a finish envelope that
    * redirects the user to `loginUrl`. Invite uses an immediate redirect;
    * recovery uses an auto countdown so the user reads the "Password updated"
@@ -3535,6 +3608,13 @@ export class AuthWorkflow {
     }
 
     const redirect = resolveOAuthRedirect(payload.redirect, "/");
+
+    // Authorization-server grant carried through this provider detour: the
+    // pending-auth handle rode the signed federated `state` (folded in by
+    // `beginSso`). Re-raise `ctx.authz` so this second run's tail mints the auth
+    // code for the original client instead of issuing a browser session. Only
+    // present on an authorize-initiated login — never an ordinary SSO login/link.
+    if (payload.handle) ctx.authz = { handle: payload.handle };
 
     // ── /link mode — attach the verified identity to the initiating user ──
     // `state.userId` is set ONLY by the guarded `/:provider/link` route and is
@@ -4015,14 +4095,25 @@ export class AuthWorkflow {
     },
     { break: (ctx) => !!ctx.aborted },
 
-    // Finalize (login-specific tail)
-    { id: "issue" },
+    // Finalize — EXACTLY ONE terminal. An authorization-server login (started
+    // from /auth/authorize, `ctx.authz` set) mints an auth code and delivers it
+    // to the client WITHOUT issuing a browser session; every other login takes
+    // the normal issue → notify → redirect tail. `ctx.authz` is set by
+    // init-login / sso-callback and never flips in the tail, so the condition is
+    // safe to hoist onto the subflow.
     {
-      id: "notify-new-device",
-      condition: (ctx) =>
-        !ctx.isFirstLogin && !!ctx.finalize?.notifyNewDevice && !!ctx.trust?.newDevice,
+      condition: (ctx) => !ctx.authz,
+      steps: [
+        { id: "issue" },
+        {
+          id: "notify-new-device",
+          condition: (ctx) =>
+            !ctx.isFirstLogin && !!ctx.finalize?.notifyNewDevice && !!ctx.trust?.newDevice,
+        },
+        { id: "redirect" },
+      ],
     },
-    { id: "redirect" },
+    { id: "mint-authz-code", condition: (ctx) => !!ctx.authz },
   ])
   loginFlow(): void {}
 

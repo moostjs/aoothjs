@@ -36,6 +36,39 @@ export { isSafeRelativeRedirect, resolveOAuthRedirect } from "./oauth/oauth-redi
 export { OAuthRuntime } from "./oauth/oauth-runtime";
 export { FEDERATED_IDENTITY_STORE_TOKEN } from "./oauth/oauth-tokens";
 
+// ── Authorization server (AUTH-SERVER.md Tier 1) — aoothjs as an OAuth provider
+//    for its OWN clients (CLI loopback today; first-party service SSO later). ──
+export { AuthorizeController } from "./authz/authorize.controller";
+export { AuthorizeRuntime } from "./authz/authorize-runtime";
+export {
+  AuthCodeStore,
+  AuthCodeStoreMemory,
+  type AuthCode,
+  type AuthCodeStoreMemoryOptions,
+  type NewAuthCode,
+} from "./authz/auth-code-store";
+export {
+  PendingAuthorizationStore,
+  PendingAuthorizationStoreMemory,
+  type NewPendingAuthorization,
+  type PendingAuthorization,
+  type PendingAuthorizationStoreMemoryOptions,
+} from "./authz/pending-authorization-store";
+export {
+  isLoopbackRedirectUri,
+  LoopbackClientPolicy,
+  type ClientRedirectPolicy,
+  type LoopbackClientPolicyOptions,
+  type ResolvedClient,
+} from "./authz/client-policy";
+export { AuthorizeError, type AuthorizeErrorCode } from "./authz/authz-errors";
+export { type TokenPolicy } from "./authz/token-policy";
+export {
+  AUTH_CODE_STORE_TOKEN,
+  CLIENT_REDIRECT_POLICY_TOKEN,
+  PENDING_AUTHORIZATION_STORE_TOKEN,
+} from "./authz/authz-tokens";
+
 // Re-exported from @aooth/auth for ergonomic single-import setup; the
 // definitions are framework-agnostic and live in the core package.
 export type {

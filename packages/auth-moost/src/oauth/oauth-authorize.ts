@@ -12,6 +12,14 @@ export interface OAuthAuthorizeInput {
    * `sso-callback` links the verified identity to THIS user. Absent for login.
    */
   userId?: string;
+  /**
+   * Opaque pending-authorization handle (AUTH-SERVER.md §4.6). Set ONLY when an
+   * authorization-server login takes a "Continue with <provider>" detour — it is
+   * folded into the signed `state` so `sso-callback` can re-raise `ctx.authz` in
+   * the second run. Non-secret (the secret material stays server-side in the
+   * pending-authorization store). Absent for an ordinary federated login/link.
+   */
+  handle?: string;
 }
 
 /**
@@ -44,6 +52,7 @@ export async function buildOAuthAuthorizeRequest(
       provider: provider.id,
       redirect: input.redirect,
       ...(input.userId !== undefined && { userId: input.userId }),
+      ...(input.handle !== undefined && { handle: input.handle }),
     },
     { ttlSec: OAUTH_TTL_SEC },
   );

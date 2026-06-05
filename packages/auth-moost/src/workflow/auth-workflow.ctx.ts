@@ -573,6 +573,17 @@ export interface AuthWfCtx {
   idpInbound?: { code?: string; state: string; error?: string }; // [login — federated leg]
 
   /**
+   * Authorization-server marker (AUTH-SERVER.md §4.4). Set when this login was
+   * started from `GET /auth/authorize` — `init-login` raises it from the START
+   * input `authz` (the opaque pending-authorization handle), and `sso-callback`
+   * re-raises it from the federated `state.handle` when the user took a
+   * "Continue with <provider>" detour mid-authorize. Presence routes the login
+   * tail to the `mint-authz-code` terminal (deliver an auth code to the client)
+   * INSTEAD of `issue`/`redirect` — no browser session is minted.
+   */
+  authz?: { handle: string }; // [login — authorization-server grant]
+
+  /**
    * FE-facing surface — the ONLY top-level ctx key whitelisted on form
    * schemas. Populated by `AuthWorkflow.populatePublic(ctx)` at every pause
    * boundary; see `AuthWfPublicState` for the exact mirror shape. Never
