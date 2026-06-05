@@ -53,6 +53,12 @@ pnpm run gen:atscript         # asc — regenerate .as.d.ts from .as models
 >
 > The same duplication makes `vp test` resolve native deps (e.g. `better-sqlite3`) from the wrong copy — another tell. Only after a clean install/dedupe should you suspect application code.
 
+> **`vp check` shows `vite.config.ts` TS2321 "Excessive stack depth comparing types … and `UserConfig`" (+ a cascade TS2769)?** The root cause is in vite-plus, not this repo: vite-plus's `PackUserConfig` is a **self-referential augmentation** of its own `UserConfig` (`UserConfig → pack: PackUserConfig → … UserConfig`), and when cross-project linking leaves a **duplicate `vite-plus` virtual-store resolution** (often at the pnpm **peer-hash** level — `ls node_modules/.pnpm/vite-plus@*` can show a single `0.1.24` yet two `_<differentHash>` entries, so a version count won't reveal it, _and_ it can reappear after any `pnpm install`), tsc blows its 50-level instantiation-depth limit comparing the config literal against `UserConfig`. It trips only the `-moost` configs (their `pack.plugins`/`deps` make the literal deep enough), not simpler ones like `packages/auth`. Moost itself is **not** in the type chain — the package name is coincidental.
+>
+> **Fix (already applied to `packages/auth-moost` + `packages/arbac-moost`): cast the config —** `export default defineConfig(config as any)` with an `oxlint-disable-next-line typescript/no-explicit-any`. This is **resolution-independent**: it holds no matter how the store resolves, unlike a clean reinstall or a `pnpm.overrides` pin (both only fix it transiently — the very next `pnpm install` re-breaks them, _verified_). **Apply the same cast to any NEW package whose `vite.config.ts` sets `pack.plugins`.** (A clean `rm -rf node_modules && pnpm install` is still the remedy for the _runtime_ wooks/moost dual-package hazard above — just not for this type error.)
+>
+> Aside: a clean reinstall drops the hoisted real-`vite` bin the demo's `dev: "vite"` script relied on (the catalog aliases `vite` → `@voidzero-dev/vite-plus-core`, bin `vp`) — after one, boot the demo with **`pnpm exec vp dev`** instead of `pnpm run dev`.
+
 ## Build / Tooling
 
 Uses **vite-plus** (`vp`) as the build/test/lint orchestrator — wraps Vite, Rolldown, Vitest, tsdown, Oxlint, and Oxfmt. Per-package builds are `vp pack`; tests are `vp test`; `vp check` runs fmt + lint + type-check.
