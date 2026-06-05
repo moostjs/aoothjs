@@ -23,13 +23,19 @@ export interface AoothAuthCredential {
      */
     kind?: string
 
-    /** Display metadata: ip, userAgent, fingerprint, label. */
+    /**
+     * Display metadata: ip, userAgent, fingerprint, label, plus the semantic
+     * credential kind (`cli-session` / `pat` / …) folded in by `issue()`. The
+     * `@db.json` column is schema-validated, so every field `CredentialMetadata`
+     * may carry must be declared here.
+     */
     @db.json
     metadata?: {
         ip?: string
         userAgent?: string
         fingerprint?: string
         label?: string
+        credentialKind?: string
     }
 
     /** Set by refresh-token rotation. */
