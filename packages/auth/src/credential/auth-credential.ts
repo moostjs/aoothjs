@@ -82,10 +82,10 @@ export interface AuthCredentialOptions<TPayload extends object = object> {
 /**
  * Options for {@link AuthCredential.issue}. The credential's typed payload
  * `TPayload` (the root fields a consumer added to their credential model — e.g.
- * `@arbac.attenuate.*`-annotated fields) is spread flat alongside the two
- * framework-level hints below. Reserved keys `metadata` and `sessionId` (and
- * the {@link CredentialState} envelope keys) must not be reused as payload
- * field names.
+ * `@arbac.attenuate.*`-annotated fields) is spread flat alongside the
+ * framework-level hints below. Reserved keys `metadata`, `sessionId`, `ttl`,
+ * `expiresAt` (and the {@link CredentialState} envelope keys) must not be reused
+ * as payload field names.
  */
 export type IssueOptions<TPayload extends object = object> = TPayload & {
   metadata?: CredentialMetadata;
@@ -94,6 +94,21 @@ export type IssueOptions<TPayload extends object = object> = TPayload & {
    * Both the access and refresh tokens of this login share it.
    */
   sessionId?: string;
+  /**
+   * Per-mint access-token lifetime in **milliseconds**, overriding the
+   * instance-level `accessTtl` for THIS credential only — so one `AuthCredential`
+   * can mint, say, a 30-minute browser session AND a long-lived PAT/CLI token
+   * without a second instance/posture. Must be `> 0`. Mutually exclusive with
+   * {@link expiresAt}. The refresh token (if any) is unaffected — it keeps
+   * `refresh.ttl`.
+   */
+  ttl?: number;
+  /**
+   * Absolute access-token expiry instant (ms since epoch), overriding both
+   * `ttl` and the instance `accessTtl`. Mutually exclusive with {@link ttl}.
+   * Use when the caller already holds the exact instant.
+   */
+  expiresAt?: number;
 };
 
 /**
@@ -171,7 +186,24 @@ export class AuthCredential<TPayload extends object = object> {
     // remaining keys (`...payload`) are the credential's root fields and ride
     // flat on the persisted state (no `claims` container).
     const opts = options ?? ({} as IssueOptions<TPayload>);
-    const { metadata, sessionId: providedSessionId, ...payload } = opts;
+    const { metadata, sessionId: providedSessionId, ttl, expiresAt, ...payload } = opts;
+
+    // Resolve THIS mint's access-token expiry: an explicit `expiresAt` wins, else
+    // a per-mint `ttl` override, else the instance `accessTtl`. Omitting both
+    // reproduces the prior behavior exactly. The two overrides are exclusive.
+    if (ttl !== undefined && expiresAt !== undefined) {
+      throw new AuthError("INVALID_CONFIG", "issue: pass either `ttl` or `expiresAt`, not both");
+    }
+    if (ttl !== undefined && ttl <= 0) {
+      throw new AuthError("INVALID_CONFIG", `issue: ttl must be > 0 (got ${ttl})`);
+    }
+    const accessExpiresAt = expiresAt ?? now + (ttl ?? this.accessTtl);
+    // Persist with the remaining lifetime (`expiry - now`); the stores derive the
+    // row/exp from `now + ttl`, so this keeps the stored expiry identical to the
+    // resolved `accessExpiresAt`. A past `expiresAt` yields a non-positive ttl →
+    // a born-expired credential (`validate()` rejects it), never a live token.
+    const accessStoreTtl = accessExpiresAt - now;
+
     // Mint the session id once and stamp it on BOTH the access and refresh
     // tokens (and, via the rotation copies below, every future rotation), so a
     // single login is one stable, opaque session for its whole lifetime.
@@ -179,12 +211,12 @@ export class AuthCredential<TPayload extends object = object> {
     const accessState = stateWithPayload<TPayload>(payload, {
       userId,
       issuedAt: now,
-      expiresAt: now + this.accessTtl,
+      expiresAt: accessExpiresAt,
       kind: "access",
       metadata,
       sessionId,
     });
-    const accessToken = await this.store.persist(accessState, this.accessTtl);
+    const accessToken = await this.store.persist(accessState, accessStoreTtl);
 
     let refreshToken: string | undefined;
     let refreshExpiresAt: number | undefined;
@@ -204,7 +236,7 @@ export class AuthCredential<TPayload extends object = object> {
     return {
       accessToken,
       refreshToken,
-      accessExpiresAt: now + this.accessTtl,
+      accessExpiresAt,
       refreshExpiresAt,
     };
   }

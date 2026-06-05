@@ -124,6 +124,81 @@ describe("AuthCredential", () => {
     });
   });
 
+  describe("issue: per-mint TTL / expiresAt override", () => {
+    it("defaults to the instance accessTtl when neither ttl nor expiresAt is given", async () => {
+      const { auth, clock } = makeAuth({ accessTtl: 5000 });
+      const r = await auth.issue("alice");
+      expect(r.accessExpiresAt).toBe(clock.now() + 5000);
+    });
+
+    it("ttl overrides the instance accessTtl for THIS mint only", async () => {
+      // One instance mints both a short session and a long-lived PAT — the whole
+      // point of the per-mint override (no second AuthCredential/posture).
+      const { auth, clock } = makeAuth({ accessTtl: 30 * 60_000 });
+      const oneYear = 365 * 24 * 60 * 60_000;
+      const pat = await auth.issue("alice", { ttl: oneYear });
+      expect(pat.accessExpiresAt).toBe(clock.now() + oneYear);
+
+      // Still valid after the instance accessTtl would have expired.
+      clock.advance(30 * 60_000 + 1);
+      expect(await auth.validate(pat.accessToken)).not.toBeNull();
+
+      // A second mint on the same instance keeps the default lifetime.
+      const session = await auth.issue("alice");
+      expect(session.accessExpiresAt).toBe(clock.now() + 30 * 60_000);
+    });
+
+    it("expiresAt sets the absolute expiry instant", async () => {
+      const { auth, clock } = makeAuth({ accessTtl: 1000 });
+      const at = clock.now() + 7 * 24 * 60 * 60_000;
+      const r = await auth.issue("alice", { expiresAt: at });
+      expect(r.accessExpiresAt).toBe(at);
+      const ctx = await auth.validate(r.accessToken);
+      expect(ctx?.expiresAt).toBe(at);
+    });
+
+    it("the per-mint ttl does NOT affect the refresh token (it keeps refresh.ttl)", async () => {
+      const { auth, clock } = makeAuth({
+        accessTtl: 1000,
+        refresh: { ttl: 60_000, rotation: "none" },
+      });
+      const oneDay = 24 * 60 * 60_000;
+      const r = await auth.issue("alice", { ttl: oneDay });
+      expect(r.accessExpiresAt).toBe(clock.now() + oneDay);
+      expect(r.refreshExpiresAt).toBe(clock.now() + 60_000); // unchanged
+    });
+
+    it("rejects ttl + expiresAt together (INVALID_CONFIG)", async () => {
+      const { auth, clock } = makeAuth();
+      await expect(
+        auth.issue("alice", { ttl: 1000, expiresAt: clock.now() + 1000 }),
+      ).rejects.toThrow(AuthError);
+    });
+
+    it("rejects ttl <= 0 (INVALID_CONFIG)", async () => {
+      const { auth } = makeAuth();
+      await expect(auth.issue("alice", { ttl: 0 })).rejects.toThrow(AuthError);
+      await expect(auth.issue("alice", { ttl: -1 })).rejects.toThrow(AuthError);
+    });
+
+    it("a past expiresAt yields a born-expired token (validate rejects), not a no-expiry one", async () => {
+      const { auth, clock } = makeAuth();
+      const r = await auth.issue("alice", { expiresAt: clock.now() - 1 });
+      expect(await auth.validate(r.accessToken)).toBeNull();
+    });
+
+    it("ttl/expiresAt are stripped from the persisted payload (reserved keys)", async () => {
+      const { auth } = makeAuth({ accessTtl: 5000 });
+      const r = await auth.issue("alice", { ttl: 9999, roles: ["admin"] });
+      const ctx = await auth.validate(r.accessToken);
+      expect(ctx?.roles).toEqual(["admin"]);
+      // The reserved hints must not leak onto the typed payload / AuthContext.
+      const rec = ctx as unknown as Record<string, unknown>;
+      expect(rec.ttl).toBeUndefined();
+      expect(rec.expiresAt).toBe(r.accessExpiresAt);
+    });
+  });
+
   describe("revoke + revokeAllForUser", () => {
     it("revokeAllForUser invalidates every active token", async () => {
       const { auth } = makeAuth();
