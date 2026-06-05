@@ -93,6 +93,7 @@ import {
 } from "../atscript/models/forms.as";
 import {
   consentsPersistTailSchema,
+  enrollTrioSteps,
   mfaLoopSchema,
   passwordPhaseSchema,
   pincodeSendCheckPair,
@@ -1271,12 +1272,9 @@ export class AuthWorkflow {
     const policyResult = this.resolveMfaPolicy(ctx);
     const policy = policyResult instanceof Promise ? await policyResult : policyResult;
     const all = policy.availableTransports;
-    const allowed = new Set(all);
     const user = await this.users.getUser(username);
     const enrolled = new Set(
-      (user.mfa?.methods ?? [])
-        .filter((m) => m.confirmed && allowed.has(m.name as MfaTransport))
-        .map((m) => m.name as MfaTransport),
+      (user.mfa?.methods ?? []).filter((m) => m.confirmed).map((m) => m.name as MfaTransport),
     );
     const remaining = all.filter((t) => !enrolled.has(t));
     ctx.mfaPolicy = { mode: "optional", availableTransports: remaining, issuer: policy.issuer };
@@ -4381,23 +4379,7 @@ export class AuthWorkflow {
     // than one pauses on the picker form listing exactly the remainder.
     {
       condition: (ctx) => (ctx.addMfa?.candidates?.length ?? 0) > 0,
-      steps: [
-        { id: "enroll-pick-method", condition: (ctx) => !ctx.mfaEnroll?.method },
-        {
-          id: "enroll-address",
-          condition: (ctx) =>
-            !!ctx.mfaEnroll?.method &&
-            (ctx.mfaEnroll.method === "sms" || ctx.mfaEnroll.method === "email") &&
-            !ctx.mfaEnroll.address,
-        },
-        {
-          id: "enroll-confirm",
-          condition: (ctx) =>
-            !!ctx.mfaEnroll?.method &&
-            (ctx.mfaEnroll.method === "totp" || !!ctx.mfaEnroll.address) &&
-            !ctx.mfaEnroll.done,
-        },
-      ],
+      steps: enrollTrioSteps,
     },
     { id: "finish-add-mfa" },
   ])

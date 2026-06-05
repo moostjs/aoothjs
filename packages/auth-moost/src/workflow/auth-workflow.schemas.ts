@@ -25,6 +25,31 @@ export const pincodeSendCheckPair: TWorkflowSchema<AuthWfCtx> = [
  * For invite users (zero enrolled methods), the enrol trio fires and its confirm step sets
  * `otp.verified=true`. For login users with enrolled methods, the challenge branches set it directly.
  */
+/**
+ * The MFA enrolment trio — `enroll-pick-method` → `enroll-address` →
+ * `enroll-confirm`. Shared verbatim by login/invite's forced first-time
+ * enrolment (inside {@link mfaLoopSchema}) and the standalone add-mfa flow; the
+ * only thing that differs between call sites is the OUTER gate (no-methods vs
+ * un-enrolled-remainder), so the trio's own internal gating lives here once.
+ */
+export const enrollTrioSteps: TWorkflowSchema<AuthWfCtx> = [
+  { id: "enroll-pick-method", condition: (ctx) => !ctx.mfaEnroll?.method },
+  {
+    id: "enroll-address",
+    condition: (ctx) =>
+      !!ctx.mfaEnroll?.method &&
+      (ctx.mfaEnroll.method === "sms" || ctx.mfaEnroll.method === "email") &&
+      !ctx.mfaEnroll.address,
+  },
+  {
+    id: "enroll-confirm",
+    condition: (ctx) =>
+      !!ctx.mfaEnroll?.method &&
+      (ctx.mfaEnroll.method === "totp" || !!ctx.mfaEnroll.address) &&
+      !ctx.mfaEnroll.done,
+  },
+];
+
 export const mfaLoopSchema: TWorkflowSchema<AuthWfCtx> = [
   { id: "prepare-mfa" },
   {
@@ -57,23 +82,7 @@ export const mfaLoopSchema: TWorkflowSchema<AuthWfCtx> = [
           !ctx.otp?.verified &&
           (ctx.mfa?.enrolledMethods?.length ?? 0) === 0 &&
           (ctx.mfaPolicy?.availableTransports?.length ?? 0) > 0,
-        steps: [
-          { id: "enroll-pick-method", condition: (ctx) => !ctx.mfaEnroll?.method },
-          {
-            id: "enroll-address",
-            condition: (ctx) =>
-              !!ctx.mfaEnroll?.method &&
-              (ctx.mfaEnroll.method === "sms" || ctx.mfaEnroll.method === "email") &&
-              !ctx.mfaEnroll.address,
-          },
-          {
-            id: "enroll-confirm",
-            condition: (ctx) =>
-              !!ctx.mfaEnroll?.method &&
-              (ctx.mfaEnroll.method === "totp" || !!ctx.mfaEnroll.address) &&
-              !ctx.mfaEnroll.done,
-          },
-        ],
+        steps: enrollTrioSteps,
       },
       // Risk step-up — may clear otp.verified to re-arm the loop
       {
