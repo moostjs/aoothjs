@@ -222,6 +222,7 @@ export function createTestMailboxController(
     async readUser(@Param("username") username: string): Promise<{
       id: string;
       username: string;
+      roles: string[];
       mfa: {
         methods: Array<{ name: string; confirmed: boolean; value: string }>;
         defaultMethod: string;
@@ -234,9 +235,15 @@ export function createTestMailboxController(
       };
     }> {
       const user = await resolveUser(username);
+      // Surface provisioned roles so e2e can prove federated `created` accounts
+      // run `prepareUser` (a present array passes through the DemoUser read
+      // model; an absent one would default to `[]`).
+      const rawRoles = (user as { roles?: unknown }).roles;
+      const roles = Array.isArray(rawRoles) ? (rawRoles as string[]) : [];
       return {
         id: user.id,
         username: user.username,
+        roles,
         mfa: {
           methods: user.mfa.methods.map((m) => ({
             name: m.name,

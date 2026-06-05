@@ -78,6 +78,29 @@ test.describe("OAuth / federated login (merged into auth/login/flow)", () => {
     const second = await signInWithGoogle(page);
     expect(second.userId, "linked to the same user, not a new one").toBe(first.userId);
   });
+
+  test("OAUTH-PROVISION-01: a first-time federated account is provisioned via prepareUser (baseline roles seeded)", async ({
+    page,
+    request,
+  }) => {
+    // Fresh provider identity whose verified email matches NO seeded account →
+    // `resolveUser` returns `created` (a brand-new federated signup).
+    await request.post("/__fake-idp/profile", {
+      data: { email: "sso-new@acme.test", sub: "sub-provision-1", emailVerified: true },
+    });
+    const { userId } = await signInWithGoogle(page);
+    expect(userId, "first federated login created the account").toBeTruthy();
+
+    // The federated `created` path now runs the FederatedLoginService
+    // `prepareUser` hook → the new account lands with the app-required columns a
+    // password-signup / invite-accept account gets. Before the fix it was a
+    // bare, role-less half-account (no roles → ARBAC would deny every API).
+    const res = await request.get("/__test/user/sso-new@acme.test");
+    expect(res.status()).toBe(200);
+    const user = (await res.json()) as { id: string; roles: string[] };
+    expect(user.id, "the queried account is the one just created").toBe(userId);
+    expect(user.roles, "baseline roles seeded by prepareUser").toEqual(["member", "viewer"]);
+  });
 });
 
 /** Read a seeded user's stable id (the `/__test/user` helper exposes it). */

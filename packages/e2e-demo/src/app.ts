@@ -652,10 +652,14 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       return sharedActiveSessionsBuffer.get(username) ?? 0;
     }
 
-    // Demonstrates the `prepareUser` hook: populate the consumer-required
-    // `tenantId` field before `userService.createUser` runs.
+    // The ONE provisioning hook for every new-account path — password-signup,
+    // invite-accept, AND first-time federated login all run it (federated via
+    // `sso-callback`'s post-create pass). Seeds the consumer-required `tenantId`
+    // plus a baseline role set, so a brand-new account (however created) lands
+    // usable instead of bare. Ignores its input — the demo's defaults are
+    // request-independent (and a federated profile may carry no email).
     protected override async prepareUser(): Promise<Record<string, unknown>> {
-      return { tenantId: "_global" };
+      return { tenantId: "_global", roles: ["member", "viewer"] };
     }
 
     protected override async getAvailableRoles(): Promise<string[]> {

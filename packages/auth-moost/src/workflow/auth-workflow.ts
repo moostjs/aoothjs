@@ -391,12 +391,17 @@ export class AuthWorkflow {
   }
 
   /**
-   * Build the extras dict merged into the freshly-created user row by the
-   * `create-user` step. Default: `{}`. Override to populate e.g. a
-   * required `tenantId` from request context.
+   * Build the extras dict merged into the freshly-created user row. Runs for
+   * EVERY new-account path: password-signup and invite-accept merge it at
+   * `createUser` time (the `create-user` step), and a first-time federated
+   * login applies it from `sso-callback` (post-create `users.update`). Default:
+   * `{}`. Override to populate e.g. a required `tenantId` from request context.
+   *
+   * `email` is optional: a federated profile can carry no email, so overrides
+   * must tolerate `email === undefined`.
    */
   protected prepareUser(_input: {
-    email: string;
+    email?: string;
     roles: string[];
     invitedBy?: string;
   }): Promise<Record<string, unknown>> | Record<string, unknown> {
@@ -3591,7 +3596,20 @@ export class AuthWorkflow {
       redirect,
     };
     // A freshly federated account is a first login (drives `extra-step`).
-    if (outcome.kind === "created") ctx.isFirstLogin = true;
+    if (outcome.kind === "created") {
+      ctx.isFirstLogin = true;
+      // Provision it the SAME way password-signup / invite-accept do: run the
+      // shared `prepareUser` hook and write its result onto the new row, so a
+      // first-time SSO user lands with the app-required columns (roles, tenant
+      // defaults, …) instead of a bare account. `resolveUser` already created +
+      // activated + linked the row, so this is the post-create extras pass —
+      // mirroring the invite `create-user` step's follow-up `users.update`. A
+      // federated profile may carry no email; `prepareUser.email` is optional.
+      const extras = await this.prepareUser({ email: profile.email, roles: [] });
+      if (Object.keys(extras).length > 0) {
+        await this.users.update(outcome.userId, extras as Partial<UserCredentials>);
+      }
+    }
 
     // Seed channel state from the resolved user so the shared enrolment / MFA /
     // notify-new-device gates behave. The provider email is a display fallback.
