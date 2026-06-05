@@ -1243,6 +1243,52 @@ export class AuthWorkflow {
     return undefined;
   }
 
+  /**
+   * Bind the standalone "add an MFA method" flow to the CURRENT authenticated
+   * user and narrow enrolment to the transports they have NOT enrolled yet.
+   * Identity comes from the session (`useAuth().getUserId()`) — never form input
+   * — so it is structurally "add a factor to MY account". Mirrors
+   * `init-change-password`'s arbac gate (`auth.add-mfa` / `self`): a customer
+   * enables the feature with a single `allow("auth.add-mfa", "*")` grant and
+   * forbids it by omitting it. `getUserId()` throws 401 if unauthenticated —
+   * defence in depth on top of the guarded trigger route.
+   *
+   * Drives the REUSED enrol trio (`enroll-pick-method` / `enroll-address` /
+   * `enroll-confirm`) by setting `ctx.mfaPolicy.availableTransports` to the
+   * un-enrolled remainder — so the picker offers only those and auto-picks when
+   * exactly one remains. Forces `mode: "optional"` (the user opted in; an empty
+   * remainder must finish gracefully, never 500 as `required` would). The
+   * remainder is stashed on `ctx.addMfa.candidates` (flow discriminator + finish
+   * summary); when the user already has a default, `enroll-confirm` is asked to
+   * keep it (`mfaEnroll.keepExistingDefault`).
+   */
+  @Step("init-add-mfa")
+  @ArbacResource("auth.add-mfa")
+  @ArbacAction("self")
+  async initAddMfa(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    const username = useAuth().getUserId();
+    ctx.subject = username;
+    const policyResult = this.resolveMfaPolicy(ctx);
+    const policy = policyResult instanceof Promise ? await policyResult : policyResult;
+    const all = policy.availableTransports;
+    const allowed = new Set(all);
+    const user = await this.users.getUser(username);
+    const enrolled = new Set(
+      (user.mfa?.methods ?? [])
+        .filter((m) => m.confirmed && allowed.has(m.name as MfaTransport))
+        .map((m) => m.name as MfaTransport),
+    );
+    const remaining = all.filter((t) => !enrolled.has(t));
+    ctx.mfaPolicy = { mode: "optional", availableTransports: remaining, issuer: policy.issuer };
+    ctx.addMfa = { candidates: remaining };
+    // Preserve the user's existing default — adding a secondary factor must not
+    // silently change which method is challenged first at next login. (With zero
+    // methods there's no default to keep, so the first added one becomes default
+    // — same as login-time forced enrolment.)
+    if (user.mfa?.defaultMethod) (ctx.mfaEnroll ??= {}).keepExistingDefault = true;
+    return undefined;
+  }
+
   // ── Authentication entry (2) ──
 
   @Step("credentials")
@@ -2214,6 +2260,51 @@ export class AuthWorkflow {
     return undefined;
   }
 
+  /**
+   * Terminal for the add-MFA flow. The user KEEPS their current session (no
+   * re-issue, no cookies) — this is a plain data finish. `mfaEnroll.done &&
+   * mfaEnroll.method` is the success signal: a real confirm keeps `.method`,
+   * whereas a cancel runs `cleanupEnrollment` (which deletes it). An empty
+   * `addMfa.candidates` distinguishes "nothing left to add" from a user cancel.
+   */
+  @Step("finish-add-mfa")
+  @ArbacResource("auth.add-mfa")
+  @ArbacAction("self")
+  finishAddMfa(@WorkflowParam("context") ctx: AuthWfCtx): undefined {
+    const labels: Record<MfaTransport, string> = {
+      totp: "Authenticator app",
+      email: "Email code",
+      sms: "Text-message code",
+    };
+    const method = ctx.mfaEnroll?.method;
+    const candidates = ctx.addMfa?.candidates ?? [];
+    let envelope: WfFinished;
+    if (ctx.mfaEnroll?.done && method) {
+      envelope = {
+        finished: true,
+        data: { added: true, method },
+        message: { level: "success", text: `${labels[method]} added.` },
+      };
+    } else if (candidates.length === 0) {
+      envelope = {
+        finished: true,
+        data: { added: false, reason: "no-methods-available" },
+        message: {
+          level: "info",
+          text: "You've already set up every available authentication method.",
+        },
+      };
+    } else {
+      envelope = {
+        finished: true,
+        data: { added: false, reason: "cancelled" },
+        message: { level: "info", text: "No authentication method was added." },
+      };
+    }
+    useWfFinished().set({ type: "data", value: envelope });
+    return undefined;
+  }
+
   // ── Channel enrolment (2) — login only, parameterized by :channel ──
 
   @Step("ask/:channel(email|phone)")
@@ -2898,7 +2989,11 @@ export class AuthWorkflow {
     }
     const methodName = m.method as MfaTransport;
     await this.withStoreErrorTranslation(() => this.users.confirmMfaMethod(username, methodName));
-    await this.users.setDefaultMfaMethod(username, methodName);
+    // Make this the default UNLESS the add-MFA flow asked to keep the existing
+    // one (the user is adding a secondary factor, not their first). On the
+    // login/invite forced-enrolment path `keepExistingDefault` is unset and the
+    // user has no default yet, so the first method still becomes default.
+    if (!m.keepExistingDefault) await this.users.setDefaultMfaMethod(username, methodName);
     m.done = true;
     (ctx.otp ??= {}).verified = true;
     delete ctx.pin;
@@ -4258,6 +4353,55 @@ export class AuthWorkflow {
     { id: "finish-change-password" },
   ])
   changePasswordFlow(): void {}
+
+  /**
+   * add-mfa.flow — authenticated self-service "add a second factor". Same
+   * gating model as change-password: NOT `@Public()` — `init-add-mfa` is arbac-
+   * gated (`auth.add-mfa` / `self`) and binds `ctx.subject` from the session, so
+   * an unauthenticated / unauthorized caller is rejected at the first step. NOT
+   * in `DEFAULT_AUTH_WORKFLOWS` — reached only via the GUARDED trigger route
+   * (`AuthController.addMfa`), never the public `/auth/trigger`.
+   *
+   * The body REUSES the login/invite forced-enrolment trio verbatim
+   * (`enroll-pick-method` → `enroll-address` → `enroll-confirm`); the only
+   * difference is the driver: `init-add-mfa` narrows `ctx.mfaPolicy`
+   * `availableTransports` to the transports the user has NOT enrolled, so the
+   * picker offers exactly those and auto-picks when one remains. Available only
+   * when something is un-enrolled — with everything enrolled the trio is skipped
+   * and `finish-add-mfa` returns a benign "nothing to add" terminal.
+   */
+  @Workflow("auth/add-mfa/flow")
+  @ArbacResource("auth.add-mfa")
+  @ArbacAction("self")
+  @WorkflowSchema<AuthWfCtx>([
+    { id: "init-add-mfa" }, // arbac gate + bind subject + narrow transports to the un-enrolled remainder
+    { break: (ctx) => !ctx.subject }, // defence in depth (init throws 401 if unauth)
+    // Enrol the chosen method — REUSES the login/invite trio verbatim, gated on
+    // there being something to add. One remaining transport auto-picks; more
+    // than one pauses on the picker form listing exactly the remainder.
+    {
+      condition: (ctx) => (ctx.addMfa?.candidates?.length ?? 0) > 0,
+      steps: [
+        { id: "enroll-pick-method", condition: (ctx) => !ctx.mfaEnroll?.method },
+        {
+          id: "enroll-address",
+          condition: (ctx) =>
+            !!ctx.mfaEnroll?.method &&
+            (ctx.mfaEnroll.method === "sms" || ctx.mfaEnroll.method === "email") &&
+            !ctx.mfaEnroll.address,
+        },
+        {
+          id: "enroll-confirm",
+          condition: (ctx) =>
+            !!ctx.mfaEnroll?.method &&
+            (ctx.mfaEnroll.method === "totp" || !!ctx.mfaEnroll.address) &&
+            !ctx.mfaEnroll.done,
+        },
+      ],
+    },
+    { id: "finish-add-mfa" },
+  ])
+  addMfaFlow(): void {}
 
   /**
    * signup.flow — verify-first self-signup. `@Public()` on the body (anonymous).

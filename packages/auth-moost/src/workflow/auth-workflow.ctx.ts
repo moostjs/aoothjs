@@ -89,6 +89,15 @@ export interface AuthWfMfaEnrollState {
   availableTransports?: MfaTransport[];
   mode?: "required" | "optional";
   done?: boolean;
+  /**
+   * When set, `enroll-confirm` does NOT make the freshly-confirmed method the
+   * user's default. Set by `init-add-mfa` (the standalone add-MFA flow) when the
+   * user already has a default — adding a secondary factor must not silently
+   * change which method is challenged first. Unset on the login/invite forced-
+   * enrolment path (the user has no default yet), so the first method still
+   * becomes the default there — behaviour-preserving.
+   */
+  keepExistingDefault?: boolean;
 }
 
 /** FORM-FACING via `@wf.context.pass 'password'`. Read by `SetPasswordForm`. */
@@ -398,6 +407,26 @@ export interface AuthWfPendingLinkState {
 }
 
 /**
+ * Standalone add-MFA flow state (`auth/add-mfa/flow`). Populated by
+ * `init-add-mfa`; its presence on ctx is the flow discriminator (§ per-flow
+ * discrimination — mirrors `ctx.changePassword` / `ctx.signup`). The flow
+ * REUSES the login/invite enrolment trio (`enroll-pick-method` /
+ * `enroll-address` / `enroll-confirm`), driving it via `ctx.mfaPolicy`
+ * narrowed to the un-enrolled transports — so a logged-in user adds exactly the
+ * methods they don't already have (single remaining transport auto-picks).
+ */
+export interface AuthWfAddMfaState {
+  /**
+   * Transports the user has NOT yet confirmed = resolved
+   * `availableTransports` minus already-enrolled. The enrol picker offers
+   * exactly these; an empty list means there is nothing to add and the flow
+   * finishes with a benign "no methods available" terminal. `finish-add-mfa`
+   * reads it to distinguish "nothing to add" from "user cancelled".
+   */
+  candidates?: MfaTransport[];
+}
+
+/**
  * Self-signup flow state. Populated by `init-signup` (policy from
  * `resolveSignupPolicy`) and `signup-form` (the `submitted` marker). Its
  * presence on ctx is the signup-flow discriminator (§ per-flow discrimination):
@@ -542,6 +571,7 @@ export interface AuthWfCtx {
   sessionPolicy?: AuthWfSessionPolicy; // [login]
   changePassword?: AuthWfChangePasswordPolicy; // [change-password] — also the flow discriminator
   signup?: AuthWfSignupState; // [signup] — also the flow discriminator
+  addMfa?: AuthWfAddMfaState; // [add-mfa] — also the flow discriminator
   oauth?: AuthWfOAuthState; // [oauth] — also the flow discriminator
   pendingLink?: AuthWfPendingLinkState; // [login — federated needs-link, gates the prove-control step]
   mfaPolicy?: AuthWfMfaPolicy; // [login + invite]

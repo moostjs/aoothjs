@@ -726,7 +726,7 @@ describe("AuthWorkflow schema integrity", () => {
     },
   );
 
-  it("declares five @Workflow methods (login, invite, recover, change-password, signup)", () => {
+  it("declares six @Workflow methods (login, invite, recover, change-password, signup, add-mfa)", () => {
     const mate = getMoostMate();
     const proto = AuthWorkflow.prototype as object;
     const flows: { method: string; path: string }[] = [];
@@ -743,6 +743,7 @@ describe("AuthWorkflow schema integrity", () => {
     // mounts at /auth/<path>/flow. Renaming or losing one would break the
     // public REST surface.
     expect(flows.map((f) => f.path).toSorted()).toEqual([
+      "auth/add-mfa/flow",
       "auth/change-password/flow",
       "auth/invite/start",
       "auth/login/flow",

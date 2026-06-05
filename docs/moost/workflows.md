@@ -1,6 +1,6 @@
 # Workflows
 
-`@aooth/auth-moost` ships **one** workflow class — `AuthWorkflow` — that declares five `@moostjs/event-wf` schemas. It replaces the former `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow` quartet. This page is the narrative map: the policy model, the observable pauses of each flow, the extension seams, and the `wf-trigger` machinery that drives them via `/auth/trigger`. Full signatures live in the [API reference](/api/auth-moost). Client-side rendering of the forms lives in [SPA Components](./spa-components).
+`@aooth/auth-moost` ships **one** workflow class — `AuthWorkflow` — that declares six `@moostjs/event-wf` schemas. It replaces the former `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow` quartet. This page is the narrative map: the policy model, the observable pauses of each flow, the extension seams, and the `wf-trigger` machinery that drives them via `/auth/trigger`. Full signatures live in the [API reference](/api/auth-moost). Client-side rendering of the forms lives in [SPA Components](./spa-components).
 
 | `@Workflow` method   | Workflow id                 | Covers                                               |
 | -------------------- | --------------------------- | ---------------------------------------------------- |
@@ -8,9 +8,10 @@
 | `inviteFlow`         | `auth/invite/start`         | admin invite → anonymous magic-link accept           |
 | `recoveryFlow`       | `auth/recovery/flow`        | magic-link **or** OTP password reset                 |
 | `changePasswordFlow` | `auth/change-password/flow` | authenticated self-service password change           |
+| `addMfaFlow`         | `auth/add-mfa/flow`         | authenticated self-service "add a second factor"     |
 | `signupFlow`         | `auth/signup/flow`          | verify-first self-signup → set password → auto-login |
 
-The login, invite, recovery, and signup `@Workflow` bodies carry `@Public()` so the wf adapter can dispatch anonymous logins, magic-link clicks, and self-signups. Invite's admin-phase `@Step` methods deliberately omit `@Public()` — they are ARBAC-evaluated (the admin needs the `invite` permission). **Change-password is the one fully-gated flow**: neither its `@Workflow` body nor any of its steps is `@Public()` — every one carries `@ArbacResource("auth.change-password")` + `@ArbacAction("self")`, so it runs only for an authenticated principal whose role grants that resource. See [Change password](#change-password-auth-change-password-flow).
+The login, invite, recovery, and signup `@Workflow` bodies carry `@Public()` so the wf adapter can dispatch anonymous logins, magic-link clicks, and self-signups. Invite's admin-phase `@Step` methods deliberately omit `@Public()` — they are ARBAC-evaluated (the admin needs the `invite` permission). **Change-password and add-mfa are the two fully-gated flows**: neither flow's `@Workflow` body nor its `init` / `finish` steps is `@Public()` — they carry `@ArbacResource("auth.change-password")` / `@ArbacResource("auth.add-mfa")` + `@ArbacAction("self")`, so each runs only for an authenticated principal whose role grants that resource. See [Change password](#change-password-auth-change-password-flow) and [Add MFA method](#add-mfa-auth-add-mfa-flow).
 
 ## The policy model
 
@@ -127,6 +128,16 @@ The authenticated "change MY password" flow — for a signed-in user rotating th
 Policy lives on `resolveChangePasswordPolicy(ctx)` (override seam): `revokeOtherSessions` (default `true`) and an optional min-interval `rateLimit` (`{ minIntervalMs }`) that emits a terminal "try again later" before the form pause. Current-password re-entry is the primary protection; rate-limiting is optional defense-in-depth.
 
 This flow is **not** in `DEFAULT_AUTH_WORKFLOWS`, so it is unreachable from the public `/auth/trigger` — it is dispatched from its own guarded `POST /auth/change-password` route (`CHANGE_PASSWORD_WORKFLOW`). See [REST Controllers](./controllers).
+
+### Add MFA method (`auth/add-mfa/flow`) {#add-mfa-auth-add-mfa-flow}
+
+The authenticated "add a second factor" flow — the profile-maintenance twin of change-password, for a signed-in user enrolling an _additional_ MFA method on demand (distinct from login's _forced_ first-time enrollment). It **reuses the login/invite enrollment trio verbatim** — `enroll-pick-method` → `enroll-address` → `enroll-confirm` — so the pauses are identical: pick a method (auto-picked when only one un-enrolled transport remains), enter the email/phone or scan the TOTP QR, then submit the pincode / setup code to confirm. The user keeps their current session — the finish is a plain data envelope (`{ added, method }`), no token re-issue.
+
+**Only the un-enrolled transports are offered.** `init-add-mfa` resolves the MFA policy, subtracts the methods the user has already confirmed, and narrows `ctx.mfaPolicy.availableTransports` to the remainder — so the picker lists exactly what's addable. With **nothing** left to add the trio is skipped and the flow finishes benignly (`{ added: false, reason: "no-methods-available" }`); a UI should only surface an "Add MFA" entry point when at least one transport is un-enrolled.
+
+**The existing default is preserved.** When the user already has a default method, the newly-confirmed factor is added but does **not** become the default (a secondary factor must not silently change which method is challenged first). When the user has none yet, the first added method becomes the default — same as login-time enrollment.
+
+**Identity is session-bound + fully ARBAC-gated**, exactly like change-password: `init-add-mfa` sets `ctx.subject` from `useAuth().getUserId()` (no target-user parameter), and the `@Workflow` body + the `init` / `finish` steps carry `@ArbacResource("auth.add-mfa")` + `@ArbacAction("self")`. Enable with `allow("auth.add-mfa", "*")`; omit to disable. **Not** in `DEFAULT_AUTH_WORKFLOWS` — dispatched from its own guarded `POST /auth/add-mfa` route (`ADD_MFA_WORKFLOW`). To let users _remove_ a factor, wire an endpoint onto [`UserService.removeMfaMethod`](/user/service) (no bundled flow — single-call domain op). See [REST Controllers](./controllers).
 
 ### Self-signup (`auth/signup/flow`)
 

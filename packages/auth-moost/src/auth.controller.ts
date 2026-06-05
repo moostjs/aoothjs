@@ -46,6 +46,14 @@ export const DEFAULT_AUTH_WORKFLOWS = [
  */
 export const CHANGE_PASSWORD_WORKFLOW = "auth/change-password/flow";
 
+/**
+ * Workflow id allowed by the GUARDED `/auth/add-mfa` trigger — the authenticated
+ * "add a second factor" flow. Like {@link CHANGE_PASSWORD_WORKFLOW}, deliberately
+ * NOT in `DEFAULT_AUTH_WORKFLOWS`: it must never be reachable from the public
+ * `/auth/trigger`.
+ */
+export const ADD_MFA_WORKFLOW = "auth/add-mfa/flow";
+
 /** Prefer an explicit body field, fall back to the refresh cookie when enabled. */
 function resolveRefreshToken(auth: AuthBindings, body: { refreshToken?: string } | undefined) {
   if (typeof body?.refreshToken === "string") return body.refreshToken;
@@ -226,6 +234,25 @@ export class AuthController {
   @ArbacAction("self")
   @WfTrigger({ allow: [CHANGE_PASSWORD_WORKFLOW] })
   changePassword(): void {
+    // Body intentionally empty — see `triggerWf`.
+  }
+
+  /**
+   * GUARDED trigger for the authenticated "add an MFA method" flow — the
+   * profile-maintenance twin of {@link changePassword}. NOT `@Public()`: the
+   * auth guard rejects an unauthenticated caller with 401 before the flow
+   * starts, and `@ArbacResource("auth.add-mfa")` / `@ArbacAction("self")` gate
+   * the trigger, the `@Workflow` body, and the arbac-gated flow steps to one
+   * resource/action — a customer enables it with a single
+   * `allow("auth.add-mfa", "*")` grant and forbids it by omitting it. The flow
+   * binds `ctx.subject` from the session in `init-add-mfa`, so it is
+   * structurally "add a factor to MY account" with no target-user parameter.
+   */
+  @Post("add-mfa")
+  @ArbacResource("auth.add-mfa")
+  @ArbacAction("self")
+  @WfTrigger({ allow: [ADD_MFA_WORKFLOW] })
+  addMfa(): void {
     // Body intentionally empty — see `triggerWf`.
   }
 

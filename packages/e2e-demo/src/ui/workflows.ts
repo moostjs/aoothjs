@@ -105,6 +105,21 @@ const INVITE_ADMIN_USERS: ReadonlyArray<TestCred> = [
   },
 ];
 
+// Single-method users have exactly one of three transports enrolled, so the
+// add-MFA picker offers the other two; `t1_multi_mfa` has all three (nothing to
+// add). `t1_alice` has none — the picker offers all three.
+const ADD_MFA_USERS: ReadonlyArray<TestCred> = [
+  { username: "t1_grace", password: PWD, notes: "Has TOTP — can add Email-OTP or SMS-OTP." },
+  { username: "t1_henry", password: PWD, notes: "Has Email-OTP — can add SMS-OTP or TOTP." },
+  { username: "t1_ivy", password: PWD, notes: "Has SMS-OTP — can add Email-OTP or TOTP." },
+  {
+    username: "t1_multi_mfa",
+    password: PWD,
+    notes: "Email + SMS + TOTP all enrolled — the flow reports nothing left to add.",
+  },
+  { username: "t1_alice", password: PWD, notes: "No MFA — the picker offers all three." },
+];
+
 export const WORKFLOWS: ReadonlyArray<WfDescriptor> = [
   {
     id: "auth/login/flow",
@@ -146,5 +161,16 @@ export const WORKFLOWS: ReadonlyArray<WfDescriptor> = [
     // GUARDED trigger — authenticated + the `auth:change-password` privilege
     // (NOT the public `/auth/trigger`).
     endpoint: "/auth/change-password",
+  },
+  {
+    id: "auth/add-mfa/flow",
+    label: "Add MFA method",
+    description:
+      "Authenticated user adds a second factor — offers only the transports they haven't enrolled yet (auto-picks when one remains), then verifies via QR/TOTP setup code or an email/SMS pincode. Sign in as a single-method user (t1_grace TOTP, t1_henry email, t1_ivy SMS) to add another; t1_multi_mfa has all three, so the flow reports nothing left to add.",
+    requiresAuth: true,
+    testCreds: ADD_MFA_USERS,
+    // GUARDED trigger — authenticated + the `auth:add-mfa` privilege (NOT the
+    // public `/auth/trigger`).
+    endpoint: "/auth/add-mfa",
   },
 ];

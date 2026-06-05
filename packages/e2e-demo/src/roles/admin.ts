@@ -67,6 +67,7 @@ export const adminRole = defineRole<UserAttrs, ArbacDbScope>()
   )
   .allow("auth.invite", "start")
   .allow("auth.change-password", "*")
+  .allow("auth.add-mfa", "*")
   // Own sessions (read/revoke) plus cross-user read (`readAny`) for admin
   // session oversight.
   .allow("auth.sessions", "*")

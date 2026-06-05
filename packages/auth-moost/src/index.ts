@@ -18,7 +18,12 @@ export { authGuardInterceptor, AuthGuarded } from "./auth.guard";
 export { useAuth, type AuthBindings } from "./auth.composables";
 export { Public, UserId } from "./auth.decorator";
 export { getAuthMate, type TAuthMeta } from "./auth.mate";
-export { AuthController, DEFAULT_AUTH_WORKFLOWS } from "./auth.controller";
+export {
+  AuthController,
+  ADD_MFA_WORKFLOW,
+  CHANGE_PASSWORD_WORKFLOW,
+  DEFAULT_AUTH_WORKFLOWS,
+} from "./auth.controller";
 export { SessionsController, SessionEnricherProvider } from "./sessions.controller";
 export type {
   AuthLoginResponse,
