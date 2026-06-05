@@ -14,6 +14,11 @@ for (const key of [
 import { createHash } from "node:crypto";
 
 import { AuthCredential, CredentialStoreMemory, type SessionInfo } from "@aooth/auth";
+import {
+  AuthCodeStoreMemory,
+  LoopbackClientPolicy,
+  PendingAuthorizationStoreMemory,
+} from "@aooth/auth/authz";
 import { MoostHttp } from "@moostjs/event-http";
 import { createHttpApp } from "@wooksjs/event-http";
 import { createProvideRegistry, getMoostInfact, Moost } from "moost";
@@ -21,15 +26,12 @@ import { beforeEach, describe, expect, it } from "vite-plus/test";
 import { Wooks } from "wooks";
 
 import { authGuardInterceptor } from "../auth.guard";
-import { AuthCodeStoreMemory } from "../authz/auth-code-store";
 import { AuthorizeController } from "../authz/authorize.controller";
 import {
   AUTH_CODE_STORE_TOKEN,
   CLIENT_REDIRECT_POLICY_TOKEN,
   PENDING_AUTHORIZATION_STORE_TOKEN,
 } from "../authz/authz-tokens";
-import { LoopbackClientPolicy } from "../authz/client-policy";
-import { PendingAuthorizationStoreMemory } from "../authz/pending-authorization-store";
 
 const LOOPBACK = "http://127.0.0.1:5000/callback";
 const pkce = (verifier: string): string =>

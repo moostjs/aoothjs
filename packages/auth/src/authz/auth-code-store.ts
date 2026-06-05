@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { type Clock, defaultClock } from "../utils/clock";
 import type { TokenPolicy } from "./token-policy";
 
 /**
@@ -50,8 +51,8 @@ export abstract class AuthCodeStore {
 }
 
 export interface AuthCodeStoreMemoryOptions {
-  /** Injectable clock for deterministic expiry. Defaults to `Date.now`. */
-  clock?: () => number;
+  /** Injectable clock for deterministic expiry. Defaults to {@link defaultClock}. */
+  clock?: Clock;
   /** Code lifetime. Default 60 s. */
   ttlMs?: number;
 }
@@ -65,12 +66,12 @@ const DEFAULT_CODE_TTL_MS = 60_000;
  */
 export class AuthCodeStoreMemory extends AuthCodeStore {
   private store = new Map<string, AuthCode>();
-  private clock: () => number;
+  private clock: Clock;
   private ttlMs: number;
 
   constructor(opts?: AuthCodeStoreMemoryOptions) {
     super();
-    this.clock = opts?.clock ?? Date.now;
+    this.clock = opts?.clock ?? defaultClock;
     this.ttlMs = opts?.ttlMs ?? DEFAULT_CODE_TTL_MS;
   }
 
@@ -82,7 +83,7 @@ export class AuthCodeStoreMemory extends AuthCodeStore {
       codeChallenge: rec.codeChallenge,
       redirectUri: rec.redirectUri,
       tokenPolicy: structuredClone(rec.tokenPolicy),
-      expiresAt: this.clock() + this.ttlMs,
+      expiresAt: this.clock.now() + this.ttlMs,
       ...(rec.clientId !== undefined && { clientId: rec.clientId }),
     };
     this.store.set(code, structuredClone(row));
@@ -95,7 +96,7 @@ export class AuthCodeStoreMemory extends AuthCodeStore {
     // Claim it FIRST (single-use) — a concurrent re-consume now misses, even if
     // this row turns out expired below.
     this.store.delete(code);
-    if (row.expiresAt <= this.clock()) return null;
+    if (row.expiresAt <= this.clock.now()) return null;
     return structuredClone(row);
   }
 }

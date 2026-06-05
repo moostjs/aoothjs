@@ -49,6 +49,11 @@
       "import": "./dist/client.mjs",
       "require": "./dist/client.cjs"
     },
+    "./authz": {
+      "types": "./dist/authz.d.mts",
+      "import": "./dist/authz.mjs",
+      "require": "./dist/authz.cjs"
+    },
     "./atscript-db": {
       "types": "./dist/atscript-db.d.mts",
       "import": "./dist/atscript-db.mjs",

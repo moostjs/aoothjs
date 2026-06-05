@@ -24,6 +24,7 @@
       "@aooth/arbac-moost/plugin": ["./packages/arbac-moost/src/plugin.ts"],
       "@aooth/auth-moost/atscript": ["./packages/auth-moost/src/atscript/index.ts"],
       "@aooth/auth/client": ["./packages/auth/src/client/index.ts"],
+      "@aooth/auth/authz": ["./packages/auth/src/authz/index.ts"],
       "@aooth/*": ["./packages/*/src"]
     }
   }

@@ -31,7 +31,7 @@ describe("PendingAuthorizationStoreMemory", () => {
 
   it("expires after the ttl", async () => {
     const clock = new FakeClock();
-    const store = new PendingAuthorizationStoreMemory({ clock: clock.now, ttlMs: 1000 });
+    const store = new PendingAuthorizationStoreMemory({ clock, ttlMs: 1000 });
     const { handle } = await store.create({
       redirectUri: "http://127.0.0.1:5000/cb",
       codeChallenge: "c",
@@ -85,7 +85,7 @@ describe("AuthCodeStoreMemory", () => {
 
   it("an expired code consumes to null", async () => {
     const clock = new FakeClock();
-    const store = new AuthCodeStoreMemory({ clock: clock.now, ttlMs: 60_000 });
+    const store = new AuthCodeStoreMemory({ clock, ttlMs: 60_000 });
     const { code } = await store.mint({
       userId: "u-1",
       codeChallenge: "c",

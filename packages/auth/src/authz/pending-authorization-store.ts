@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { type Clock, defaultClock } from "../utils/clock";
 import type { TokenPolicy } from "./token-policy";
 
 /**
@@ -43,7 +44,7 @@ export interface NewPendingAuthorization {
  * (≈ the login-session ceiling): created at `/authorize`, read+deleted at the
  * wf terminal. An in-memory impl ships for single-process apps + tests; a
  * multi-pod deployment provides a durable (e.g. Redis) impl under the same
- * {@link import("./authz-tokens").PENDING_AUTHORIZATION_STORE_TOKEN}.
+ * `PENDING_AUTHORIZATION_STORE_TOKEN` (from `@aooth/auth-moost`).
  */
 export abstract class PendingAuthorizationStore {
   /** Record a new pending authorization; returns its opaque `handle`. */
@@ -55,8 +56,8 @@ export abstract class PendingAuthorizationStore {
 }
 
 export interface PendingAuthorizationStoreMemoryOptions {
-  /** Injectable clock for deterministic expiry. Defaults to `Date.now`. */
-  clock?: () => number;
+  /** Injectable clock for deterministic expiry. Defaults to {@link defaultClock}. */
+  clock?: Clock;
   /** How long a pending authorization stays valid. Default 15 min. */
   ttlMs?: number;
 }
@@ -69,17 +70,17 @@ const DEFAULT_PENDING_TTL_MS = 15 * 60_000;
  */
 export class PendingAuthorizationStoreMemory extends PendingAuthorizationStore {
   private store = new Map<string, PendingAuthorization>();
-  private clock: () => number;
+  private clock: Clock;
   private ttlMs: number;
 
   constructor(opts?: PendingAuthorizationStoreMemoryOptions) {
     super();
-    this.clock = opts?.clock ?? Date.now;
+    this.clock = opts?.clock ?? defaultClock;
     this.ttlMs = opts?.ttlMs ?? DEFAULT_PENDING_TTL_MS;
   }
 
   async create(rec: NewPendingAuthorization): Promise<{ handle: string }> {
-    const now = this.clock();
+    const now = this.clock.now();
     const row: PendingAuthorization = {
       handle: randomUUID(),
       redirectUri: rec.redirectUri,
@@ -98,7 +99,7 @@ export class PendingAuthorizationStoreMemory extends PendingAuthorizationStore {
   async get(handle: string): Promise<PendingAuthorization | null> {
     const row = this.store.get(handle);
     if (!row) return null;
-    if (row.expiresAt <= this.clock()) {
+    if (row.expiresAt <= this.clock.now()) {
       this.store.delete(handle);
       return null;
     }

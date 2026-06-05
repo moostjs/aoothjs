@@ -1,27 +1,23 @@
-import { createHash } from "node:crypto";
-
 import { AuthCredential, type IssueOptions } from "@aooth/auth";
+import {
+  AuthorizeError,
+  type AuthCodeStore,
+  type ClientRedirectPolicy,
+  type PendingAuthorizationStore,
+  type TokenPolicy,
+} from "@aooth/auth/authz";
+import { pkceChallengeFor } from "@aooth/idp";
 import { Body, Get, Post, Query } from "@moostjs/event-http";
 import { current } from "@wooksjs/event-core";
 import { useResponse } from "@wooksjs/event-http";
 import { Controller, Inject } from "moost";
 
 import { Public } from "../auth.decorator";
-import type { AuthCodeStore } from "./auth-code-store";
-import { AuthorizeError } from "./authz-errors";
 import {
   AUTH_CODE_STORE_TOKEN,
   CLIENT_REDIRECT_POLICY_TOKEN,
   PENDING_AUTHORIZATION_STORE_TOKEN,
 } from "./authz-tokens";
-import type { ClientRedirectPolicy } from "./client-policy";
-import type { PendingAuthorizationStore } from "./pending-authorization-store";
-import type { TokenPolicy } from "./token-policy";
-
-/** RFC 4648 §5 base64url (no padding) S256 challenge of a PKCE verifier. */
-function pkceChallengeOf(verifier: string): string {
-  return createHash("sha256").update(verifier).digest("base64url");
-}
 
 /** RFC-6749-shaped token-endpoint error response. */
 interface TokenError {
@@ -157,7 +153,7 @@ export class AuthorizeController {
       return { error: "invalid_grant" };
     }
     // PKCE: the verifier must hash to the challenge bound at authorize time.
-    if (pkceChallengeOf(codeVerifier) !== row.codeChallenge) {
+    if (pkceChallengeFor(codeVerifier) !== row.codeChallenge) {
       res.status = 400;
       return { error: "invalid_grant" };
     }

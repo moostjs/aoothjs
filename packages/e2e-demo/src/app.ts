@@ -19,6 +19,11 @@ import {
   type SmsSender,
 } from "@aooth/auth";
 import {
+  AuthCodeStoreMemory,
+  LoopbackClientPolicy,
+  PendingAuthorizationStoreMemory,
+} from "@aooth/auth/authz";
+import {
   type AuditEvent,
   type AuthDeliveryPayload,
   AuthController,
@@ -33,14 +38,11 @@ import {
   DEFAULT_AUTH_WORKFLOWS,
   deriveWfStateSecret,
   AUTH_CODE_STORE_TOKEN,
-  AuthCodeStoreMemory,
   AuthorizeController,
   CLIENT_REDIRECT_POLICY_TOKEN,
   FEDERATED_IDENTITY_STORE_TOKEN,
-  LoopbackClientPolicy,
   OAuthController,
   PENDING_AUTHORIZATION_STORE_TOKEN,
-  PendingAuthorizationStoreMemory,
   Public,
   SessionsController,
   useAuth,
@@ -827,19 +829,15 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     }
   }
 
-  // Authorization server: bounce the `/auth/authorize` grant to the demo's
-  // default login page. No-variant login is a clean username + password round
-  // trip for a non-MFA seeded user (the demo ConsentStore returns no pending
-  // consents without an `x-wf-variant` header) AND it offers the "Continue with
-  // <provider>" SSO button, so the CLI grant exercises both the password path
-  // and the mid-login SSO detour (the `ctx.authz` handle carry).
-  @Inherit()
-  @Controller("auth")
-  class DemoAuthorizeController extends AuthorizeController {
-    protected override loginPath(): string {
-      return "/login";
-    }
-  }
+  // Authorization server: the `/auth/authorize` grant bounces to the SPA login
+  // page. `AuthorizeController.loginPath()` already defaults to `/login` — the
+  // demo's actual login route — so the base controller is mounted as-is (a
+  // subclass would override `loginPath()` only for a custom route). No-variant
+  // login is a clean username + password round trip for a non-MFA seeded user
+  // (the demo ConsentStore returns no pending consents without an `x-wf-variant`
+  // header) AND it offers the "Continue with <provider>" SSO button, so the CLI
+  // grant exercises both the password path and the mid-login SSO detour (the
+  // `ctx.authz` handle carry).
   app.setReplaceRegistry(createReplaceRegistry([WfTriggerProvider, DemoWfTriggerProvider]));
 
   // Mount the bundled sessions endpoints (`GET/DELETE /auth/sessions`). The
@@ -851,7 +849,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     DemoAuthWorkflow,
     SessionsController,
     OAuthController,
-    DemoAuthorizeController,
+    AuthorizeController,
   );
 
   // `@Injectable()` (SINGLETON) — moost@0.6.x does NOT inherit injectable

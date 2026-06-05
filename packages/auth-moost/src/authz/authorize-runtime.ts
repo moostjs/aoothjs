@@ -1,8 +1,7 @@
+import type { AuthCodeStore, PendingAuthorizationStore } from "@aooth/auth/authz";
 import { Inject, Injectable } from "moost";
 
-import type { AuthCodeStore } from "./auth-code-store";
 import { AUTH_CODE_STORE_TOKEN, PENDING_AUTHORIZATION_STORE_TOKEN } from "./authz-tokens";
-import type { PendingAuthorizationStore } from "./pending-authorization-store";
 
 /**
  * DI holder bundling the two abstract authorization-server stores the login-wf

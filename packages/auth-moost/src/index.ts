@@ -37,32 +37,13 @@ export { OAuthRuntime } from "./oauth/oauth-runtime";
 export { FEDERATED_IDENTITY_STORE_TOKEN } from "./oauth/oauth-tokens";
 
 // ── Authorization server (AUTH-SERVER.md Tier 1) — aoothjs as an OAuth provider
-//    for its OWN clients (CLI loopback today; first-party service SSO later). ──
+//    for its OWN clients (CLI loopback today; first-party service SSO later).
+//    The framework-agnostic stores, client/redirect policy, token policy, and
+//    error taxonomy live in `@aooth/auth/authz`; this layer adds the HTTP
+//    endpoints + the moost-DI binding tokens (mirrors the federated split, where
+//    the store lives in `@aooth/user` and only the token lives here). ──
 export { AuthorizeController } from "./authz/authorize.controller";
 export { AuthorizeRuntime } from "./authz/authorize-runtime";
-export {
-  AuthCodeStore,
-  AuthCodeStoreMemory,
-  type AuthCode,
-  type AuthCodeStoreMemoryOptions,
-  type NewAuthCode,
-} from "./authz/auth-code-store";
-export {
-  PendingAuthorizationStore,
-  PendingAuthorizationStoreMemory,
-  type NewPendingAuthorization,
-  type PendingAuthorization,
-  type PendingAuthorizationStoreMemoryOptions,
-} from "./authz/pending-authorization-store";
-export {
-  isLoopbackRedirectUri,
-  LoopbackClientPolicy,
-  type ClientRedirectPolicy,
-  type LoopbackClientPolicyOptions,
-  type ResolvedClient,
-} from "./authz/client-policy";
-export { AuthorizeError, type AuthorizeErrorCode } from "./authz/authz-errors";
-export { type TokenPolicy } from "./authz/token-policy";
 export {
   AUTH_CODE_STORE_TOKEN,
   CLIENT_REDIRECT_POLICY_TOKEN,

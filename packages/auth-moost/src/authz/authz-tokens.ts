@@ -1,7 +1,9 @@
 /**
  * Explicit string DI tokens for the ABSTRACT authorization-server stores
- * ({@link import("./pending-authorization-store").PendingAuthorizationStore},
- * {@link import("./auth-code-store").AuthCodeStore}).
+ * ({@link import("@aooth/auth/authz").PendingAuthorizationStore},
+ * {@link import("@aooth/auth/authz").AuthCodeStore}) — the framework-agnostic
+ * abstracts live in `@aooth/auth/authz`; these moost-DI binding strings stay in
+ * the integration layer (the same split as `FEDERATED_IDENTITY_STORE_TOKEN`).
  *
  * Both are abstract classes. moost's constructor injection keys the
  * provide-registry by the design:paramtype class reference — fine for a CONCRETE
@@ -24,7 +26,7 @@ export const PENDING_AUTHORIZATION_STORE_TOKEN = "aooth:PendingAuthorizationStor
 export const AUTH_CODE_STORE_TOKEN = "aooth:AuthCodeStore";
 
 /**
- * DI token for the {@link import("./client-policy").ClientRedirectPolicy} — an
+ * DI token for the {@link import("@aooth/auth/authz").ClientRedirectPolicy} — an
  * interface, so it has no class reference to inject by. Provide the concrete
  * policy (e.g. `new LoopbackClientPolicy()`) under this string.
  */
