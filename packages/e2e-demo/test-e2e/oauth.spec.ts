@@ -32,17 +32,20 @@ import {
 const DEMO_TOKEN_KEY = "aooth_demo_access_token";
 
 /** Drive one full OAuth round-trip via the login form; return the authenticated session. */
-async function signInWithGoogle(
+async function signInWithProvider(
   page: import("@playwright/test").Page,
+  buttonName: string,
 ): Promise<{ userId: string; token: string }> {
   await page.goto("/login");
   // The login form offers SSO providers from `ctx.public.altActions.ssoProviders`
   // via the `AsSsoProviders` one-click picker: each provider is a single button
   // whose click both selects the provider id AND fires the data-carrying `sso`
   // action (the chosen provider rides in `ssoProvider`) — no separate submit.
-  await page.getByRole("button", { name: "Continue with Google" }).click();
+  await page.getByRole("button", { name: buttonName }).click();
 
   // Success path: the callback bridge stashes the access token and navigates home.
+  // Google/GitHub bounce via a 302 GET; Apple via a `form_post` POST that the
+  // OAuthController converts back to the SAME GET SPA bridge — both land here.
   await page.waitForURL((url) => url.pathname === "/", { timeout: 15_000 });
   const token = await page.evaluate((k) => sessionStorage.getItem(k), DEMO_TOKEN_KEY);
   expect(token, "access token stashed after federated login").toBeTruthy();
@@ -55,6 +58,12 @@ async function signInWithGoogle(
   const ctx = (await status.json()) as { userId?: string };
   expect(ctx.userId, "session carries a user id").toBeTruthy();
   return { userId: ctx.userId!, token: token! };
+}
+
+function signInWithGoogle(
+  page: import("@playwright/test").Page,
+): Promise<{ userId: string; token: string }> {
+  return signInWithProvider(page, "Continue with Google");
 }
 
 test.beforeEach(async ({ request }) => {
@@ -99,6 +108,45 @@ test.describe("OAuth / federated login (merged into auth/login/flow)", () => {
     expect(res.status()).toBe(200);
     const user = (await res.json()) as { id: string; roles: string[] };
     expect(user.id, "the queried account is the one just created").toBe(userId);
+    expect(user.roles, "baseline roles seeded by prepareUser").toEqual(["member", "viewer"]);
+  });
+
+  test("OAUTH-GITHUB-01: GitHub federated login (GET callback) creates a provisioned account", async ({
+    page,
+    request,
+  }) => {
+    // GitHub uses the SAME GET-callback transport as Google — a second provider
+    // on the identical state/PKCE/wf path. A first login creates the account and
+    // runs the shared provisioning tail (baseline roles).
+    const { userId } = await signInWithProvider(page, "Continue with GitHub");
+    expect(userId, "GitHub federated login created/linked a user").toBeTruthy();
+
+    const res = await request.get("/__test/user/github.user@acme.test");
+    expect(res.status()).toBe(200);
+    const user = (await res.json()) as { id: string; roles: string[] };
+    expect(user.id).toBe(userId);
+    expect(user.roles, "baseline roles seeded by prepareUser").toEqual(["member", "viewer"]);
+  });
+
+  test("OAUTH-APPLE-FORMPOST-01: Apple federated login completes through the form_post POST→GET bounce", async ({
+    page,
+    request,
+  }) => {
+    // Apple's `response_mode=form_post` makes the callback a cross-site POST: the
+    // fake IdP returns an auto-submitting form that POSTs to
+    // /auth/oauth/apple/callback, the OAuthController 303-bounces it to the GET
+    // SPA bridge, and from there the flow is byte-identical to Google/GitHub.
+    // This is the end-to-end proof that the POST→GET bounce works in a browser.
+    const { userId } = await signInWithProvider(page, "Continue with Apple");
+    expect(
+      userId,
+      "Apple federated login created/linked a user via the form_post bounce",
+    ).toBeTruthy();
+
+    const res = await request.get("/__test/user/apple.user@acme.test");
+    expect(res.status()).toBe(200);
+    const user = (await res.json()) as { id: string; roles: string[] };
+    expect(user.id).toBe(userId);
     expect(user.roles, "baseline roles seeded by prepareUser").toEqual(["member", "viewer"]);
   });
 });

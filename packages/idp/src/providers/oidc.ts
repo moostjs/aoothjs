@@ -10,6 +10,7 @@ import type {
   NormalizedProfile,
   SharedProviderConfig,
 } from "../types";
+import { buildAuthorizeUrl, fetchJson, resolveFetch } from "./oauth2-shared";
 
 /** The four endpoints the OIDC client needs — discovered or supplied explicitly. */
 export interface OidcDiscoveryDocument {
@@ -19,13 +20,34 @@ export interface OidcDiscoveryDocument {
   jwks_uri: string;
 }
 
+/** Context handed to a {@link ClientSecretFactory} at exchange time. */
+export interface ClientSecretContext {
+  /**
+   * The provider's resolved clock (honors a registry-injected clock). Time-based
+   * secrets — Apple's ES256 JWT — stamp `iat`/`exp` from it.
+   */
+  clock: Clock;
+}
+
+/**
+ * A dynamic `client_secret` source. Most IdPs use a static string; a provider
+ * whose secret is minted per request (Apple's short-lived ES256 `.p8` JWT)
+ * supplies a factory instead. Called lazily at each token exchange — after the
+ * registry's `applyDefaults` — so it sees the resolved {@link ClientSecretContext.clock}.
+ */
+export type ClientSecretFactory = (ctx: ClientSecretContext) => string | Promise<string>;
+
 export interface OidcProviderOptions {
   /** Provider id. Default `oidc:<issuer>`; `GoogleProvider` pins `'google'`. */
   id?: string;
   /** The exact issuer — used for discovery AND `iss` validation (must match). */
   issuer: string;
   clientId: string;
-  clientSecret: string;
+  /**
+   * The OAuth `client_secret`: a static string, or a {@link ClientSecretFactory}
+   * for providers (Apple) that mint a short-lived secret per request.
+   */
+  clientSecret: string | ClientSecretFactory;
   /** Requested scopes. Default `['openid', 'email', 'profile']`. */
   scopes?: string[];
   /**
@@ -70,7 +92,7 @@ export class OidcProvider implements ConfigurableProvider {
   readonly id: string;
   protected readonly issuer: string;
   protected readonly clientId: string;
-  protected readonly clientSecret: string;
+  protected readonly clientSecret: string | ClientSecretFactory;
   protected readonly scopes: string[];
   protected readonly signingAlgs: string[];
 
@@ -93,11 +115,14 @@ export class OidcProvider implements ConfigurableProvider {
 
   constructor(opts: OidcProviderOptions) {
     if (!opts.issuer) throw new OAuthError("INVALID_CONFIG", "OIDC provider requires an 'issuer'");
-    if (!opts.clientId || !opts.clientSecret) {
-      throw new OAuthError(
-        "INVALID_CONFIG",
-        "OIDC provider requires 'clientId' and 'clientSecret'",
-      );
+    if (!opts.clientId) {
+      throw new OAuthError("INVALID_CONFIG", "OIDC provider requires a 'clientId'");
+    }
+    // A `clientSecret` is required — either a static string or a factory that
+    // mints one per request (Apple's ES256 `.p8` JWT). A factory is truthy, so a
+    // dynamic-secret provider satisfies this without supplying a static value.
+    if (!opts.clientSecret) {
+      throw new OAuthError("INVALID_CONFIG", "OIDC provider requires a 'clientSecret'");
     }
     this.id = opts.id ?? `oidc:${opts.issuer}`;
     this.issuer = opts.issuer;
@@ -136,21 +161,38 @@ export class OidcProvider implements ConfigurableProvider {
   }
 
   private get fetchFn(): FetchLike {
-    return this.fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
+    return resolveFetch(this.fetchImpl);
+  }
+
+  /**
+   * The `client_secret` sent to the token endpoint: a static string as-is, or a
+   * {@link ClientSecretFactory}'s per-request value (Apple's minted ES256 JWT).
+   * Resolved lazily here so a factory sees the registry-injected clock.
+   */
+  private resolveClientSecret(): string | Promise<string> {
+    return typeof this.clientSecret === "function"
+      ? this.clientSecret({ clock: this.clock })
+      : this.clientSecret;
+  }
+
+  /**
+   * Extra authorization-request query params merged into {@link authorizationUrl}.
+   * Default none; AppleProvider returns `{ response_mode: 'form_post' }` (required
+   * by Apple whenever `email`/`name` scope is requested).
+   */
+  protected extraAuthorizationParams(_args: AuthorizationUrlArgs): Record<string, string> {
+    return {};
   }
 
   async authorizationUrl(args: AuthorizationUrlArgs): Promise<string> {
     const { authorization_endpoint } = await this.resolveEndpoints();
-    const url = new URL(authorization_endpoint);
-    url.searchParams.set("response_type", "code");
-    url.searchParams.set("client_id", this.clientId);
-    url.searchParams.set("redirect_uri", args.redirectUri);
-    url.searchParams.set("scope", (args.scopes ?? this.scopes).join(" "));
-    url.searchParams.set("state", args.state);
-    url.searchParams.set("code_challenge", args.codeChallenge);
-    url.searchParams.set("code_challenge_method", "S256");
-    if (args.nonce) url.searchParams.set("nonce", args.nonce);
-    return url.toString();
+    return buildAuthorizeUrl(authorization_endpoint, args, {
+      responseType: true,
+      clientId: this.clientId,
+      scopes: this.scopes,
+      nonce: true,
+      extraParams: this.extraAuthorizationParams(args),
+    });
   }
 
   async exchange(args: ExchangeArgs): Promise<NormalizedProfile> {
@@ -175,34 +217,22 @@ export class OidcProvider implements ConfigurableProvider {
       code: args.code,
       redirect_uri: args.redirectUri,
       client_id: this.clientId,
-      client_secret: this.clientSecret,
+      client_secret: await this.resolveClientSecret(),
       code_verifier: args.codeVerifier,
     });
-    let res: Awaited<ReturnType<FetchLike>>;
-    try {
-      res = await this.fetchFn(tokenEndpoint, {
+    return (await fetchJson(
+      this.fetchFn,
+      tokenEndpoint,
+      {
         method: "POST",
         headers: {
           "content-type": "application/x-www-form-urlencoded",
           accept: "application/json",
         },
         body: body.toString(),
-      });
-    } catch (err) {
-      throw new OAuthError("EXCHANGE_FAILED", "Token endpoint request failed", {
-        cause: String(err),
-      });
-    }
-    if (!res.ok) {
-      throw new OAuthError("EXCHANGE_FAILED", `Token endpoint returned ${res.status}`, {
-        status: res.status,
-      });
-    }
-    try {
-      return (await res.json()) as Record<string, unknown>;
-    } catch {
-      throw new OAuthError("EXCHANGE_FAILED", "Token endpoint returned a non-JSON body");
-    }
+      },
+      { label: "Token endpoint" },
+    )) as Record<string, unknown>;
   }
 
   private async verifyIdToken(
@@ -259,7 +289,12 @@ export class OidcProvider implements ConfigurableProvider {
     return this.normalize(payload);
   }
 
-  private normalize(payload: JWTPayload): NormalizedProfile {
+  /**
+   * Map verified claims → {@link NormalizedProfile}. `protected` so a provider
+   * (Apple) can post-process — e.g. coerce Apple's spec-violating STRING
+   * `email_verified` after the base has applied the strict boolean-only rule.
+   */
+  protected normalize(payload: JWTPayload): NormalizedProfile {
     const profile: NormalizedProfile = {
       provider: this.id,
       subject: payload.sub as string,
@@ -279,15 +314,13 @@ export class OidcProvider implements ConfigurableProvider {
     if (this.discoveryCache) return this.discoveryCache;
 
     const wellKnown = `${this.issuer.replace(/\/$/, "")}/.well-known/openid-configuration`;
-    let doc: OidcDiscoveryDocument;
-    try {
-      const res = await this.fetchFn(wellKnown, { headers: { accept: "application/json" } });
-      if (!res.ok) throw new Error(`discovery ${res.status}`);
-      doc = (await res.json()) as OidcDiscoveryDocument;
-    } catch (err) {
-      // Fail closed: without endpoints we cannot verify anything.
-      throw new OAuthError("JWKS_FAILED", "OIDC discovery failed", { cause: String(err) });
-    }
+    // Fail closed: without endpoints we cannot verify anything.
+    const doc = (await fetchJson(
+      this.fetchFn,
+      wellKnown,
+      { headers: { accept: "application/json" } },
+      { label: "OIDC discovery", errorType: "JWKS_FAILED" },
+    )) as OidcDiscoveryDocument;
     this.discoveryCache = this.validateDiscovery(doc);
     return this.discoveryCache;
   }

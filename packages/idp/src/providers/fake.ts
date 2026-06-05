@@ -5,6 +5,7 @@ import type {
   IdentityProvider,
   NormalizedProfile,
 } from "../types";
+import { buildAuthorizeUrl } from "./oauth2-shared";
 
 export interface FakeIdentityProviderOptions {
   /** Provider id. Default `'fake'`. */
@@ -43,13 +44,9 @@ export class FakeIdentityProvider implements IdentityProvider {
   }
 
   authorizationUrl(args: AuthorizationUrlArgs): Promise<string> {
-    const url = new URL(this.authorizationEndpoint);
-    url.searchParams.set("redirect_uri", args.redirectUri);
-    url.searchParams.set("state", args.state);
-    url.searchParams.set("code_challenge", args.codeChallenge);
-    url.searchParams.set("code_challenge_method", "S256");
-    if (args.nonce) url.searchParams.set("nonce", args.nonce);
-    return Promise.resolve(url.toString());
+    // Mimics an OIDC authorize request (carries the nonce) but is otherwise the
+    // bare PKCE core — no client_id / scope, the e2e bounce doesn't need them.
+    return Promise.resolve(buildAuthorizeUrl(this.authorizationEndpoint, args, { nonce: true }));
   }
 
   exchange(args: ExchangeArgs): Promise<NormalizedProfile> {

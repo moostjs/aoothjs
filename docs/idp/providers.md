@@ -1,6 +1,6 @@
 # Providers
 
-A provider turns an external IdP into a uniform two-method contract: build the authorization URL, then exchange the returned `code` for a **verified, normalized profile**. `@aooth/idp` ships a generic OIDC provider, a Google preset, and a deterministic fake for tests.
+A provider turns an external IdP into a uniform two-method contract: build the authorization URL, then exchange the returned `code` for a **verified, normalized profile**. `@aooth/idp` ships a generic OIDC provider, a Google preset, a GitHub (OAuth2) provider, an Apple (Sign in with Apple) provider, and a deterministic fake for tests.
 
 ## The contract
 
@@ -75,6 +75,52 @@ const google = new GoogleProvider({
 ```
 
 `email_verified` is taken **strictly** from the boolean ID-token claim — a non-boolean value yields `emailVerified: undefined` (no string-truthiness coercion). Whether you trust it for auto-linking is a policy decision — see [Account resolution](./account-resolution).
+
+## `GithubProvider` — OAuth2 (no OIDC)
+
+GitHub is pure OAuth2 — there is **no** ID token, JWKS, or nonce. After the authorization-code + PKCE exchange, the profile is read from GitHub's REST API:
+
+```ts
+import { GithubProvider } from "@aooth/idp";
+
+const github = new GithubProvider({
+  clientId: process.env.GH_CLIENT_ID!,
+  clientSecret: process.env.GH_CLIENT_SECRET!,
+  // scopes default to ['read:user', 'user:email']
+});
+// provider.id === 'github'
+```
+
+`exchange()` redeems the `code` (the token endpoint is asked for JSON), then `GET /user` and `GET /user/emails`. `subject` is `String(user.id)` (the stable numeric id), `displayName` is `name ?? login`, and `avatarUrl` is `avatar_url`.
+
+**`emailVerified` is strict** (the account-takeover-sensitive bit): it is `true` **only** when the user's **primary** `/user/emails` entry is GitHub-verified. A non-primary or unverified address — or a fall-back to the public `/user` email when the `user:email` scope is absent — yields `emailVerified: false`. So a GitHub email is never trusted as proof-of-control unless it is the verified primary. GitHub is deliberately **out** of the recommended `trustEmailVerifiedFrom` default.
+
+> GitHub's REST API rejects requests without a `User-Agent`; the provider sends one (`'aoothjs'` by default, override via `userAgent`). Endpoints are overridable (`tokenEndpoint` / `userEndpoint` / `emailsEndpoint`) for GitHub Enterprise.
+
+## `AppleProvider` — Sign in with Apple (OIDC + `form_post`)
+
+Apple **is** an OpenID Connect provider (issuer `https://appleid.apple.com`), so `AppleProvider` extends `OidcProvider` and inherits the full §7 ID-token validation, JWKS rotation, discovery, and PKCE. It overrides only what Apple does differently:
+
+```ts
+import { AppleProvider } from "@aooth/idp";
+
+const apple = new AppleProvider({
+  clientId: process.env.APPLE_SERVICES_ID!, // the Services ID (OAuth client_id / aud)
+  teamId: process.env.APPLE_TEAM_ID!, // 10-char Developer Team ID
+  keyId: process.env.APPLE_KEY_ID!, // the .p8 key's Key ID
+  privateKey: process.env.APPLE_PRIVATE_KEY!, // the .p8 EC P-256 key, PKCS#8 PEM
+  // scopes default to ['openid', 'email'] (name is deferred — see below)
+});
+// provider.id === 'apple'
+```
+
+| What Apple does differently   | How `AppleProvider` handles it                                                                                                                                                                                                                                                    |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **No static client secret**   | The `client_secret` is a short-lived **ES256 JWT** signed with the `.p8` key (`iss=teamId`, `sub=clientId`, `aud=https://appleid.apple.com`, header `kid`). Minted on demand and cached until ~1 min before its `exp` (default TTL 1 h, `clientSecretTtlSec`).                    |
+| **`response_mode=form_post`** | Required whenever `email`/`name` scope is requested, so the callback is a cross-site **POST**. `AppleProvider` declares it on the authorize URL; `@aooth/auth-moost`'s `OAuthController` bounces that POST back to the normal GET callback (see [moost — OAuth](../moost/oauth)). |
+| **String `email_verified`**   | Apple violates OIDC by sending `email_verified` as the string `"true"`/`"false"`; `AppleProvider` coerces it after the base's strict boolean-only pass.                                                                                                                           |
+
+> The user's **name** arrives only on the _first_ authorization, in the `form_post` `user` field (never in the ID token). v1 deliberately does **not** capture it, so `displayName` is `undefined` for Apple — collect a display name post-signup if you need one.
 
 ## `FakeIdentityProvider` — deterministic, no network
 

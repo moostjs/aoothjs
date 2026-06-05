@@ -38,6 +38,10 @@ export { OidcProvider } from "./providers/oidc";
 export type { OidcProviderOptions, OidcDiscoveryDocument } from "./providers/oidc";
 export { GoogleProvider } from "./providers/google";
 export type { GoogleProviderOptions } from "./providers/google";
+export { GithubProvider } from "./providers/github";
+export type { GithubProviderOptions } from "./providers/github";
+export { AppleProvider } from "./providers/apple";
+export type { AppleProviderOptions } from "./providers/apple";
 export { FakeIdentityProvider } from "./providers/fake";
 export type { FakeIdentityProviderOptions } from "./providers/fake";
 

@@ -97,6 +97,7 @@ The controller serves only the **authenticated account-management** routes — a
 | `GET /auth/oauth/identities`            | self-scoped | List the current user's **connected accounts** — `FederatedIdentityStore.listForUser(userId)`, projected.       |
 | `GET /auth/oauth/:provider/link`        | self-scoped | Begin an account **link** for the current user (`getUserId()` 401s anon). Binds `userId` into the signed state. |
 | `DELETE /auth/oauth/:provider/:subject` | self-scoped | Disconnect a linked identity. Refuses to remove the last sign-in method; then revokes the user's sessions.      |
+| `POST /auth/oauth/:provider/callback`   | public      | **`form_post` bounce** (Apple). 303-redirects the cross-site POST to the GET SPA callback — see below.          |
 
 `identities` / `link` / `unlink` are `@Public()` self-scoped primitives (like `logout`/`status`) — they derive identity from the session, never from a parameter. Subclass + add `@ArbacAction(...)` to gate further (e.g. an admin cross-user view).
 
@@ -107,6 +108,12 @@ Returns one `ConnectedAccount` per linked provider identity — a display projec
 ## The `redirect_uri` is YOUR route
 
 `OAuthProviderRegistry.redirectUri(id)` is `baseUrl + /auth/oauth/:provider/callback`. In a SPA app that path is a **client route** you implement (the backend `OAuthController` has no `GET …/callback`) — it reads `code`/`state` from the URL and POSTs them into `/auth/trigger` as the START `input.formData` of `auth/login/flow`. Register the **exact** `redirect_uri` at the provider; `exchange()` re-sends it byte-for-byte. Register the SAME custom-component map on the callback page's `<AsWfForm>` as on the login page — a federated login can land on the MFA / consent / prove-control forms.
+
+### `form_post` providers (Apple) — the POST bounce {#form-post-providers-apple}
+
+A provider that uses `response_mode=form_post` (Apple, whenever `email`/`name` scope is requested) POSTs the callback `application/x-www-form-urlencoded` — a static SPA page can't read a POST body. For these the `OAuthController` registers a thin server route `POST /auth/oauth/:provider/callback` that **303-redirects** the POST to the _same_ SPA callback URL as a GET with `code`/`state`/`error` in the query. From there it is byte-identical to the Google/GitHub GET path — the SPA forwards `{ code, state }` to `/auth/trigger` and `sso-callback` does all verification.
+
+The bounce is a **dumb transport adapter** — it verifies nothing (state, CSRF, and exchange all stay in `sso-callback`). The `POST` route and the SPA's `GET` route share the path but never collide (different methods). The Lax CSRF cookie is (correctly) not sent on the cross-site POST and is not read by the bounce; it rides the subsequent same-origin `/auth/trigger` XHR where the double-submit is checked. No SPA change is needed beyond the existing GET callback page.
 
 ## DOs / DON'Ts
 

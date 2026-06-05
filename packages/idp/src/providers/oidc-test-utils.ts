@@ -23,17 +23,26 @@ export interface TestSigner {
   jwksMismatched: JWTVerifyGetKey;
 }
 
-export async function makeRs256Signer(kid = "test-kid-1"): Promise<TestSigner> {
-  const { publicKey, privateKey } = await generateKeyPair("RS256", { extractable: true });
+/** Build a signer for an arbitrary asymmetric alg (RS256 for OIDC, ES256 for Apple). */
+export async function makeSigner(alg = "RS256", kid = "test-kid-1"): Promise<TestSigner> {
+  const { publicKey, privateKey } = await generateKeyPair(alg, { extractable: true });
   const jwk = await exportJWK(publicKey);
-  const jwks = createLocalJWKSet({ keys: [{ ...jwk, kid, alg: "RS256", use: "sig" }] });
+  const jwks = createLocalJWKSet({ keys: [{ ...jwk, kid, alg, use: "sig" }] });
 
-  const other = await generateKeyPair("RS256", { extractable: true });
+  const other = await generateKeyPair(alg, { extractable: true });
   const otherJwk = await exportJWK(other.publicKey);
   const jwksMismatched = createLocalJWKSet({
-    keys: [{ ...otherJwk, kid: "other-kid", alg: "RS256", use: "sig" }],
+    keys: [{ ...otherJwk, kid: "other-kid", alg, use: "sig" }],
   });
   return { privateKey, kid, jwks, jwksMismatched };
+}
+
+export function makeRs256Signer(kid = "test-kid-1"): Promise<TestSigner> {
+  return makeSigner("RS256", kid);
+}
+
+export function makeEs256Signer(kid = "test-es256-kid"): Promise<TestSigner> {
+  return makeSigner("ES256", kid);
 }
 
 export interface IdTokenInput {

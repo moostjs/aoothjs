@@ -1,7 +1,7 @@
 import { AuthCredential } from "@aooth/auth";
 import { OAuthError, OAuthProviderRegistry } from "@aooth/idp";
 import { FederatedIdentityStore, UserService, type FederatedIdentity } from "@aooth/user";
-import { Delete, Get, HttpError, Query } from "@moostjs/event-http";
+import { Body, Delete, Get, HttpError, Post, Query } from "@moostjs/event-http";
 import { current } from "@wooksjs/event-core";
 import { useResponse } from "@wooksjs/event-http";
 import { Controller, Inject, Param } from "moost";
@@ -125,6 +125,54 @@ export class OAuthController {
     );
     res.status = 302;
     res.setHeader("Location", authUrl);
+    return "";
+  }
+
+  /**
+   * `response_mode=form_post` callback bounce (Apple). Apple POSTs the callback
+   * — `application/x-www-form-urlencoded { code, state, id_token, user? }` — to
+   * the FIXED `redirect_uri`, because it requires `form_post` whenever `email`/
+   * `name` scope is requested. A static SPA page can't read a POST body, so this
+   * thin server route 303-redirects (POST → GET) to the SAME SPA callback URL
+   * with `code`/`state`/`error` in the query. From there it is BYTE-IDENTICAL to
+   * the Google/GitHub GET-callback path: the SPA forwards `{ code, state }` to
+   * `/auth/trigger`, and `sso-callback` does ALL verification (signed state,
+   * CSRF double-submit, PKCE re-derivation, ID-token exchange).
+   *
+   * This route is a DUMB transport adapter — it intentionally verifies nothing.
+   * The Lax CSRF cookie is (correctly) NOT sent on Apple's cross-site POST and
+   * is NOT read here; it rides the subsequent SAME-ORIGIN `/auth/trigger` XHR,
+   * where `sso-callback` checks it. The GET method on this same path is served
+   * by the SPA (no server handler), so there is no collision.
+   *
+   * Same-origin only: the 303 target is the registry's relative callback path
+   * with `:provider` path-encoded and only `code`/`state`/`error` echoed — never
+   * an attacker-influenced absolute URL.
+   */
+  @Post(":provider/callback")
+  @Public()
+  formPostCallback(
+    @Param("provider") providerId: string,
+    @Body() body: { code?: unknown; state?: unknown; error?: unknown } | undefined,
+  ): string {
+    // 404 an unknown provider (consistency with the other routes); a bounce for
+    // a non-existent provider would only dead-end at `sso-callback` anyway.
+    this.requireProvider(providerId);
+
+    // Echo ONLY code/state/error onto the GET-callback query — never any other
+    // body field an attacker could POST through this bounce.
+    const params = new URLSearchParams();
+    for (const key of ["state", "code", "error"] as const) {
+      const value = body?.[key];
+      if (typeof value === "string" && value) params.set(key, value);
+    }
+
+    const query = params.toString();
+    const target = `${this.registry.callbackPath(providerId)}${query ? `?${query}` : ""}`;
+
+    const res = useResponse(current());
+    res.status = 303; // POST → GET (the SPA bridge expects a GET with query params)
+    res.setHeader("Location", target);
     return "";
   }
 

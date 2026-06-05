@@ -378,10 +378,22 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     id: "google",
     authorizationEndpoint: `${env.PUBLIC_URL}/__fake-idp/authorize`,
   });
+  // GitHub fits the GET-callback path identically to Google. Apple uses
+  // `response_mode=form_post` (a cross-site POST callback) — the fake authorize
+  // endpoint returns an auto-submitting form for `mode=form_post`, which the
+  // `OAuthController` POST→GET bounce converts back to the shared GET SPA bridge.
+  const fakeGithub = new FakeIdentityProvider({
+    id: "github",
+    authorizationEndpoint: `${env.PUBLIC_URL}/__fake-idp/authorize`,
+  });
+  const fakeApple = new FakeIdentityProvider({
+    id: "apple",
+    authorizationEndpoint: `${env.PUBLIC_URL}/__fake-idp/authorize?mode=form_post`,
+  });
   const oauthRegistry = new OAuthProviderRegistry({
     baseUrl: env.PUBLIC_URL,
     stateSecret: env.JWT_SECRET,
-    providers: [fakeGoogle],
+    providers: [fakeGoogle, fakeGithub, fakeApple],
     // `require-interactive-link` (the safe default) + trust Google's verified
     // email for the auto-link path; open self-signup so a first-time federated
     // login creates the account.
@@ -520,7 +532,11 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       // renders it from `ctx.public.altActions.ssoProviders`. The `icon` is a
       // `i-simple-icons:*` class (colon form, parsed unambiguously) wired +
       // safelisted in `uno.config.ts` — see the note there.
-      const ssoProviders = [{ id: "google", label: "Google", icon: "i-simple-icons:google" }];
+      const ssoProviders = [
+        { id: "google", label: "Google", icon: "i-simple-icons:google" },
+        { id: "github", label: "GitHub", icon: "i-simple-icons:github" },
+        { id: "apple", label: "Apple", icon: "i-simple-icons:apple" },
+      ];
       const base = super.resolveAlternateCredentials(ctx);
       if (base instanceof Promise) {
         return base.then((b) => ({ ...b, forgotPassword: true, signup: true, ssoProviders }));
@@ -907,7 +923,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     app.registerControllers(TestMailboxController);
     // The fake OAuth provider's authorize endpoint — only meaningful in test
     // mode (it's the bounce target baked into `fakeGoogle`'s authorize URL).
-    app.registerControllers(createFakeIdpController(fakeGoogle));
+    app.registerControllers(createFakeIdpController([fakeGoogle, fakeGithub, fakeApple]));
   }
 
   await app.init();

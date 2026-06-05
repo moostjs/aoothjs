@@ -277,3 +277,64 @@ describe("OAuthController identities (connected accounts)", () => {
     expect(row).not.toHaveProperty("userId");
   });
 });
+
+// Apple's `response_mode=form_post` POSTs the callback cross-site; the bounce
+// route 303s it back to the SAME SPA callback path as a GET so everything
+// downstream (state / CSRF / exchange in `sso-callback`) is identical to the
+// Google/GitHub GET path. The route is a dumb transport adapter — it verifies
+// nothing and sets no cookie.
+describe("OAuthController POST :provider/callback (form_post bounce)", () => {
+  let h: Harness;
+  beforeEach(async () => {
+    h = await buildApp();
+  });
+
+  const formPost = (path: string, fields: Record<string, string>) =>
+    h.request(path, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(fields).toString(),
+    });
+
+  it("303-bounces a form_post {code,state} to the GET SPA callback URL", async () => {
+    const res = await formPost("/auth/oauth/google/callback", {
+      code: "the-code",
+      state: "the-state",
+    });
+    expect(res.status).toBe(303);
+    expect(res.location).toBeTruthy();
+    // Relative, same-origin callback path with code/state echoed into the query.
+    const u = new URL(res.location!, "https://app.test");
+    expect(u.pathname).toBe("/auth/oauth/google/callback");
+    expect(u.searchParams.get("code")).toBe("the-code");
+    expect(u.searchParams.get("state")).toBe("the-state");
+    // The bounce verifies nothing and sets no cookie of its own.
+    expect(res.setCookies).toHaveLength(0);
+  });
+
+  it("forwards a provider error and omits absent params", async () => {
+    const res = await formPost("/auth/oauth/google/callback", { error: "user_cancelled" });
+    expect(res.status).toBe(303);
+    const u = new URL(res.location!, "https://app.test");
+    expect(u.searchParams.get("error")).toBe("user_cancelled");
+    expect(u.searchParams.has("code")).toBe(false);
+    expect(u.searchParams.has("state")).toBe(false);
+  });
+
+  it("echoes ONLY code/state/error — never unexpected fields", async () => {
+    const res = await formPost("/auth/oauth/google/callback", {
+      code: "c",
+      state: "s",
+      id_token: "should-not-bounce",
+      user: '{"name":{"firstName":"X"}}',
+    });
+    const u = new URL(res.location!, "https://app.test");
+    expect(u.searchParams.has("id_token")).toBe(false);
+    expect(u.searchParams.has("user")).toBe(false);
+  });
+
+  it("404s a form_post for an unknown provider", async () => {
+    const res = await formPost("/auth/oauth/apple/callback", { code: "c", state: "s" });
+    expect(res.status).toBe(404);
+  });
+});

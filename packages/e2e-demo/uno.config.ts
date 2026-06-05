@@ -31,5 +31,5 @@ export default defineConfig({
   // collection installed + wired above). One line per configured provider icon.
   // See the @atscript/vue-aooth AsSsoProviders docs: "the consumer owns the
   // icon collection and UnoCSS safelist".
-  safelist: ["i-simple-icons:google"],
+  safelist: ["i-simple-icons:google", "i-simple-icons:github", "i-simple-icons:apple"],
 });

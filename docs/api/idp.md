@@ -22,6 +22,22 @@ new GoogleProvider(opts: GoogleProviderOptions) // = OidcProviderOptions without
 
 `OidcProvider` pinned to Google's issuer + `RS256`; `id === 'google'`. See [Providers](/idp/providers).
 
+### `GithubProvider`
+
+```ts
+new GithubProvider(opts: GithubProviderOptions)
+```
+
+OAuth2-only (no ID token / JWKS / nonce); `id === 'github'`. `exchange()` redeems the `code` then reads `GET /user` + `GET /user/emails`. `emailVerified` is `true` only for the verified **primary** email. See [Providers](/idp/providers#githubprovider-oauth2-no-oidc).
+
+### `AppleProvider`
+
+```ts
+new AppleProvider(opts: AppleProviderOptions)
+```
+
+Extends `OidcProvider` (issuer `https://appleid.apple.com`, `ES256`); `id === 'apple'`. Mints a per-request ES256 `client_secret` JWT from the `.p8` key, declares `response_mode=form_post`, and coerces Apple's string `email_verified`. See [Providers](/idp/providers#appleprovider-sign-in-with-apple-oidc-form-post).
+
 ### `FakeIdentityProvider`
 
 ```ts
@@ -155,6 +171,28 @@ interface OidcProviderOptions {
   fetch?: FetchLike;
 }
 type GoogleProviderOptions = Omit<OidcProviderOptions, "id" | "issuer">;
+interface GithubProviderOptions {
+  clientId: string;
+  clientSecret: string;
+  id?: string; // default 'github'
+  scopes?: string[]; // default ['read:user','user:email']
+  userAgent?: string; // GitHub requires one; default 'aoothjs'
+  authorizationEndpoint?: string; // overridable for GitHub Enterprise
+  tokenEndpoint?: string;
+  userEndpoint?: string;
+  emailsEndpoint?: string;
+  fetch?: FetchLike;
+}
+// Apple: OIDC options minus id/issuer/clientSecret/idTokenSigningAlgs/scopes, plus the .p8 secret material
+interface AppleProviderOptions {
+  clientId: string; // the Services ID (OAuth client_id / aud)
+  teamId: string; // 10-char Developer Team ID → client-secret JWT `iss`
+  keyId: string; // the .p8 key's Key ID → client-secret JWT header `kid`
+  privateKey: string; // the .p8 EC P-256 key, PKCS#8 PEM
+  scopes?: string[]; // default ['openid','email']
+  clientSecretTtlSec?: number; // default 3600 (Apple max ≈ 6 months)
+  // + the OidcProvider seams: discovery?, jwks?, tokenEndpoint?, clockToleranceSec?, clock?, fetch?
+}
 interface FakeIdentityProviderOptions {
   id?: string;
   authorizationEndpoint?: string;
