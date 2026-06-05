@@ -631,6 +631,12 @@ importers:
         specifier: 'catalog:'
         version: '@voidzero-dev/vite-plus-test@0.1.24(@types/node@22.19.19)(esbuild@0.28.0)(happy-dom@18.0.1)(jiti@2.7.0)(tsx@4.22.3)(typescript@5.9.3)(unrun@0.2.39)(vite@8.0.14(@types/node@22.19.19)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3))'
 
+  packages/login-client:
+    devDependencies:
+      vitest:
+        specifier: 'catalog:'
+        version: '@voidzero-dev/vite-plus-test@0.1.24(@types/node@22.19.19)(esbuild@0.28.0)(happy-dom@18.0.1)(jiti@2.7.0)(tsx@4.22.3)(typescript@5.9.3)(unrun@0.2.39)(vite@8.0.14(@types/node@22.19.19)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3))'
+
   packages/user:
     devDependencies:
       '@atscript/core':
