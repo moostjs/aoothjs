@@ -143,11 +143,12 @@ import { AsWfStore } from "@atscript/moost-wf";
 
 ## References
 
-| Domain                   | File                                   | When                                                                                 |
-| ------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------ |
-| Controllers + decorators | [controllers.md](controllers.md)       | `/auth/trigger` + 4 other routes, `useAuth`, 401-vs-403                              |
-| SPA rendering            | [spa-components.md](spa-components.md) | render forms client-side; AsQrCode/AsConsentArray/AsPasswordRules; magic-link resume |
-| Engine invariants        | [invariants.md](invariants.md)         | cross-package rules                                                                  |
+| Domain                    | File                                               | When                                                                                                                                                                  |
+| ------------------------- | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Controllers + decorators  | [controllers.md](controllers.md)                   | `/auth/trigger` + 4 other routes, `useAuth`, 401-vs-403                                                                                                               |
+| Phone / recovery channels | [recovery-and-handles.md](recovery-and-handles.md) | login by phone, recovery OTP channel M1 (`resolveRecoveryChannel`) vs registered M2 (`resolveRecoveryDeliverySource`), handle promotion (`resolvePromoteHandleField`) |
+| SPA rendering             | [spa-components.md](spa-components.md)             | render forms client-side; AsQrCode/AsConsentArray/AsPasswordRules; magic-link resume                                                                                  |
+| Engine invariants         | [invariants.md](invariants.md)                     | cross-package rules                                                                                                                                                   |
 
 ## See also
 

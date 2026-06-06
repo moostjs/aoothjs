@@ -2,19 +2,20 @@
 name: aoothjs
 description: >-
   Use when adding authentication or authorization to a Moost app — login,
-  JWT / session tokens, password + MFA (TOTP), RBAC roles, route guards,
-  magic links, password reset, invites, active sessions / per-device revoke,
-  OAuth2 / OIDC federated login (Sign in with Google), or BE the OIDC
-  provider (CLI / service SSO). Covers `@aooth/user`,
-  `@aooth/auth`, `@aooth/idp`, `@aooth/arbac-core`, `@aooth/arbac`,
-  `@aooth/auth-moost`, `@aooth/arbac-moost` — the aoothjs auth + authz stack
-  for moost / atscript apps. Triggers on `.as` user models extending
-  `AoothUserCredentials` / `AoothArbacUserCredentials`, `@arbac.*` annotations,
-  refresh-token rotation, the unified `AuthWorkflow`, `FederatedLoginService` /
-  `OAuthProviderRegistry`, `ConsentStore`, or wiring `authGuardInterceptor` /
-  `arbacAuthorizeInterceptor` into Moost. Out of scope: moost internals
-  (use `moostjs`), `.as` syntax / `asc` (use `atscript`), `@atscript/db` /
-  `moost-db` (use `atscript-db`), `@ui.*` / SPA components (use `atscript-ui`).
+  JWT / session tokens, password + MFA (TOTP), login / recovery by phone
+  (SMS OTP), RBAC roles / guards, magic links, password reset, invites,
+  session / device revoke, OAuth2/OIDC federated login (Sign in with Google),
+  or BE the OIDC provider (CLI SSO). Covers `@aooth/user`, `@aooth/auth`,
+  `@aooth/idp`, `@aooth/arbac`, `@aooth/auth-moost`, `@aooth/arbac-moost` —
+  the aoothjs auth+authz stack for moost/atscript apps. Triggers on `.as`
+  user models extending `AoothUserCredentials` / `AoothArbacUserCredentials`,
+  `@arbac.*` / `@aooth.user.*` annotations, refresh-token rotation, the
+  unified `AuthWorkflow` + recovery-channel / promote-to-handle seams,
+  `FederatedLoginService` / `OAuthProviderRegistry`, `ConsentStore`, or wiring
+  `authGuardInterceptor` / `arbacAuthorizeInterceptor` into Moost. Out of
+  scope: moost internals (`moostjs`), `.as` / `asc` (`atscript`),
+  `@atscript/db` / `moost-db` (`atscript-db`), `@ui.*` / SPA components
+  (`atscript-ui`).
 ---
 
 # aoothjs
@@ -422,7 +423,8 @@ import arbacPlugin from "@aooth/arbac-moost/plugin";
 | **Federated login (IdP)** | [idp.md](references/idp.md)                                   | `@aooth/idp` OAuth2/OIDC: `OidcProvider`/`GoogleProvider`/`FakeIdentityProvider`, ID-token §7 validation, `OAuthProviderRegistry`, `FederatedLoginService.resolveUser` + `FederatedPolicy`, `linkIdentity`, PKCE/signState, the `FederatedIdentityStore` (from `@aooth/user`)                                                                                                                                              |
 | **Moost domain**          | [moost.md](references/moost.md)                               | `@aooth/auth-moost` + `@aooth/arbac-moost` overview: quick start, full invariants, key imports                                                                                                                                                                                                                                                                                                                             |
 | Controllers + decorators  | [controllers.md](references/controllers.md)                   | `AuthController` REST surface, `authGuardInterceptor`, `useAuth`, `useArbac`, all decorators, 401-vs-403 split                                                                                                                                                                                                                                                                                                             |
-| Workflows                 | [workflows.md](references/workflows.md)                       | unified `AuthWorkflow` (6 schemas: login [federated merged in] / invite / recovery / signup / change-password / add-mfa), `AuthWorkflowOpts` vs `resolveXxx` policy, `ConsentStore`, `WfTriggerProvider` + `storeStrategy`, `deliver`, error posture, forms                                                                                                                                                                |
+| Workflows                 | [workflows.md](references/workflows.md)                       | unified `AuthWorkflow` (6 schemas: login [federated merged in] / invite / recovery / signup / change-password / add-mfa), `AuthWorkflowOpts` vs `resolveXxx` policy, the full extension-point catalog, `ConsentStore`, `WfTriggerProvider` + `storeStrategy`, `deliver`, error posture, forms                                                                                                                              |
+| Phone / recovery channels | [recovery-and-handles.md](references/recovery-and-handles.md) | login by phone (`@aooth.user.phone` handle), recovery OTP channel M1 (`resolveRecoveryChannel`) vs registered-channel M2 (`resolveRecoveryDeliverySource` + `selectRecoveryRegisteredMethod`), auto-promote a confirmed channel to a login handle (`resolvePromoteHandleField` + `promote-to-handle`). Load when wiring SMS recovery, phone login, or handle promotion                                                     |
 | Federated login (moost)   | [oauth.md](references/oauth.md)                               | `@aooth/auth-moost` OAuth wiring: login-form SSO button + `beginSso`, `OAuthController` (identities/link/unlink), federated leg of `auth/login/flow` (`sso-callback` + `needs-link` `prove-control` w/ OTP fallback + resend), stateless PKCE, connected accounts, callback bridge, CSRF/redirect/gate invariants                                                                                                          |
 | Authorization server      | [authorization-server.md](references/authorization-server.md) | aoothjs AS an OAuth/OIDC PROVIDER (`@aooth/auth/authz` + `@aooth/auth-moost`): `AuthorizeController` (`/auth/authorize` + `/auth/token` + discovery + JWKS), Tier 1 `LoopbackClientPolicy` (CLI) vs Tier 2 `RegisteredClientPolicy`/`CompositeClientPolicy`, `IdTokenSigner` + `OidcClaimsResolver` getter-override seam (NOT DI), authority-fixed-at-authorize, pending/auth-code stores, consuming it via `OidcProvider` |
 | SPA components            | [spa-components.md](references/spa-components.md)             | render workflow forms client-side: `<AsWfForm>` + `@atscript/vue-aooth` (`AsQrCode`/`AsConsentArray`/`AsPasswordRules`/`AsSsoProviders`), magic-link resume, `@ui.form.component`                                                                                                                                                                                                                                          |

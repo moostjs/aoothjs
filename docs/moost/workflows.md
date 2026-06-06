@@ -91,6 +91,66 @@ app.setReplaceRegistry(createReplaceRegistry([AuthWorkflow, MyAuth]));
 `@moostjs/event-wf` registers every `@Step("id")` into one global registry — identical IDs on two classes silently collide. When adding steps in a subclass, pick IDs that won't clash with the base inventory. Never use a `resolveXxx` name as a `@Step` id or handler method name (that name is reserved for the policy getters).
 :::
 
+## Extension point catalog
+
+Every `protected` member below is an override seam — change behavior by subclassing `AuthWorkflow` and overriding it (the [subclass recipe](#the-subclass-recipe) above). Resolvers return `T | Promise<T>` (never `async` on the default); each has a `prepare-<group>` `@Step` that writes its result to `ctx.<group>`. Full signatures live in the [API reference](/api/auth-moost); the narrative below (and the linked topic pages) shows how to use the high-traffic ones.
+
+### Policy resolvers — context-varying policy (per request / tenant / user)
+
+| Resolver                                                                         | Decides                                                                           | Default                     | Flow(s)                                                                                          |
+| -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------ |
+| `resolveMfaPolicy`                                                               | MFA mode / available transports / TOTP issuer                                     | `optional`, all transports  | login, invite, add-mfa                                                                           |
+| `resolveEnrollment`                                                              | force a confirmed email/phone before issuing                                      | `ensureEmail/Phone: false`  | login                                                                                            |
+| `resolveDeviceTrust`                                                             | trusted-device posture (enabled / optIn / skipsMfa)                               | disabled                    | login                                                                                            |
+| `resolveLockout`                                                                 | failed-login lockout mode (temporary / self-service / admin-only)                 | `temporary`                 | login, recovery                                                                                  |
+| `resolveGuards`                                                                  | login-time guards (passwordInitial / passwordExpiry / emailVerifiedRequired)      | initial-password guard on   | login                                                                                            |
+| `resolveSessionPolicy`                                                           | session concurrency limit                                                         | none                        | login                                                                                            |
+| `resolveFinalize`                                                                | new-device notice + post-login redirect mode                                      | both off                    | login                                                                                            |
+| `resolveRiskStepUp`                                                              | require an extra MFA round (risk-based)                                           | `require: false`            | login                                                                                            |
+| `resolveAlternateCredentials`                                                    | which login alt-actions show (forgotPassword / signup / magicLink / SSO list)     | forgot-password on          | login                                                                                            |
+| `resolveSignupPolicy`                                                            | self-signup on/off + collectUsername                                              | `allowSignup: false`        | signup                                                                                           |
+| `resolveChangePasswordPolicy`                                                    | revokeOtherSessions + optional rate-limit                                         | revoke on                   | change-password                                                                                  |
+| `resolveAccept`                                                                  | invite accept-tail (redirect / confirmation)                                      | redirect to `loginUrl`      | invite                                                                                           |
+| `resolveAdminForm`                                                               | invite admin form (collectRoles)                                                  | `collectRoles: true`        | invite                                                                                           |
+| `resolvePostReset`                                                               | recovery post-reset (revokeAllSessions / loginUrl)                                | revoke all on               | recovery                                                                                         |
+| `resolveRecoveryAltActions`                                                      | recovery alt-actions (backToLogin)                                                | on                          | recovery                                                                                         |
+| `resolveRecoveryChannel`                                                         | M1 OTP transport for the typed identifier                                         | `email`                     | recovery → [guide](./recovery-and-handles#recovery-channel-m1)                                   |
+| `resolveRecoveryDeliverySource`                                                  | M1 (`typed`) vs M2 (`registered`) OTP delivery                                    | `typed`                     | recovery → [guide](./recovery-and-handles#registered-channel-recovery-m2)                        |
+| `resolvePromoteHandleField`                                                      | which login-handle column a confirmed channel promotes into                       | `undefined` (off)           | login, invite, add-mfa → [guide](./recovery-and-handles#promote-a-confirmed-channel-to-a-handle) |
+| `resolveOtpDisclosure`                                                           | per-channel consent copy under the address input                                  | empty                       | login, add-mfa                                                                                   |
+| `resolveRedirect`                                                                | post-login redirect URL                                                           | per `resolveFinalize`       | login                                                                                            |
+| `resolveOAuthErrorRedirect`                                                      | federated-login failure redirect target                                           | error page                  | login (SSO)                                                                                      |
+| `resolvePincodeForm` / `resolvePincodeTarget` / `resolvePincodeAltAction`        | which OTP form, recipient+channel, alt-action mapping for the shared pincode pair | MFA-vs-recovery by ctx slot | login, recovery                                                                                  |
+| `resolveRecoveryUrl` _(sync helper)_                                             | URL the `forgotPassword` alt-action targets                                       | `loginUrl`-derived          | login                                                                                            |
+| `resolveClientIp` / `resolveUserAgent` / `resolveIssueMetadata` _(sync helpers)_ | device-trust + audit metadata at issue time                                       | request headers             | login                                                                                            |
+
+`selectRecoveryRegisteredMethod(user)` is a sync helper (not a resolver) paired with M2 — see its [guide](./recovery-and-handles#registered-channel-recovery-m2).
+
+### Step extension-point stubs — no-op `@Step`s you override for new behavior
+
+| `@Step`                                                          | Override to                                                        | Reached from           |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------ | ---------------------- |
+| `extra-step`                                                     | add input pauses / persistence to the login + invite-accept tail   | login, invite          |
+| `signup-extra-step`                                              | seed app rows / welcome email after self-signup creates the user   | signup                 |
+| `promote-to-handle`                                              | (usually leave as-is; gate via `resolvePromoteHandleField`)        | login, invite, add-mfa |
+| `magic-link-request` / `magic-link-send` / `magic-link-verified` | implement a magic-link login credential (bundled stubs are no-ops) | login                  |
+| `passkey`                                                        | implement a passkey credential (bundled stub is a no-op)           | login                  |
+
+### Lifecycle hooks
+
+| Hook                                             | Override to                                                                                                                             | Default               |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| `deliver(payload)`                               | route MFA / recovery / enrollment pincodes + new-device notices by `kind` + `channel` — see [below](#outbound-delivery-deliver-payload) | no-op                 |
+| `prepareUser(input)`                             | supply required app columns on a freshly-created row (shared by invite + signup)                                                        | `{}`                  |
+| `inferAdminRoles(input)`                         | derive roles server-side from the admin invite payload                                                                                  | `[]`                  |
+| `getAvailableRoles()`                            | whitelist selectable roles on the admin invite form                                                                                     | none                  |
+| `duplicateInviteCheck(input)`                    | override the duplicate-invitee rule                                                                                                     | reject if user exists |
+| `logoutOtherSessions(username)`                  | customize the concurrency-limit eviction                                                                                                | revoke all            |
+| `loadActiveSessionsCount(username)`              | count active sessions for the concurrency prompt                                                                                        | store-backed          |
+| `beginSso` / `oauthRuntime` / `authorizeRuntime` | federated-login wiring — see [Federated Login](./oauth)                                                                                 | runtime-resolved      |
+
+[`ConsentStore`](#consent-collection-consentstore) (`getPendingConsents` / `save` / `read` / `recordOtpChannelConsent`) and the [`WfTriggerProvider`](#wf-trigger-workflow-trigger-machinery) overrides (`storeStrategy` / `wfStateSecret` / `wfStateEncapsulatedTtlMs` / `stateRegistry`) are separate provider classes, documented in their own sections below.
+
 ## What the user sees
 
 ### Login (`auth/login/flow`)
@@ -116,6 +176,8 @@ The run finishes by issuing tokens (or a fresh-login redirect). Any user-initiat
 ### Recovery (`auth/recovery/flow`)
 
 Identifier (anti-enumeration: unknown identifiers get the same response) → delivery mode (magic-link / OTP) → OTP entry or magic-link click → optional known-factor verification → new password (revokes existing sessions) → finish (auto-login when `autoLoginOnRecover`, else fresh-login redirect).
+
+Where the OTP is **delivered** is itself an extension seam: M1 sends it to the identifier the user typed (transport picked by `resolveRecoveryChannel`), M2 sends it to a channel already verified on the resolved row (`resolveRecoveryDeliverySource` + `selectRecoveryRegisteredMethod`). Logging in _by phone_ and auto-promoting a confirmed channel into a login handle (`resolvePromoteHandleField`) live alongside these — see [Phone, recovery channels & handle promotion](./recovery-and-handles).
 
 ### Change password (`auth/change-password/flow`) {#change-password-auth-change-password-flow}
 

@@ -15,22 +15,23 @@ The auth guard and the ARBAC interceptor are both `defineBeforeInterceptor` at `
 
 ## Where to start
 
-| If you want to…                                                                                            | Read                                           |
-| ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
-| Bootstrap a fresh app with both layers wired                                                               | [Setup](./setup)                               |
-| Understand `authGuardInterceptor` token extraction, public-route handling, 401 mapping                     | [AuthGuard & useAuth](./auth-guard)            |
-| Understand `arbacAuthorizeInterceptor` resource/action resolution, scope plumbing, 403 mapping             | [ARBAC Authorize](./arbac-authorize)           |
-| Look up every decorator and composable in one place                                                        | [Decorators](./decorators)                     |
-| Wire up `/auth/logout` / `/auth/refresh` / `/auth/status` / `/auth/trigger`                                | [REST Controllers](./controllers)              |
-| List a user's signed-in devices, revoke one / log out others, mount `SessionsController`                   | [Sessions](./sessions)                         |
-| Configure the unified `AuthWorkflow`, subclass it, override `resolveXxx`, hook the email outlet            | [Workflows](./workflows)                       |
-| Wire "Sign in with Google" — login-form SSO button, `OAuthController`, connected accounts, callback bridge | [Federated Login (OAuth)](./oauth)             |
-| Turn the app INTO an OAuth/OIDC provider — CLI loopback login + first-party "Sign in with the main app"    | [Authorization Server](./authorization-server) |
-| Render the workflow forms (QR, consents, password rules) in your SPA                                       | [SPA Components](./spa-components)             |
-| Add ARBAC scopes to your `AsDbController`-derived REST endpoints                                           | [DB Controllers](./db-controllers)             |
-| Drive `@arbac.*` annotations from `.as` user models                                                        | [Atscript Models](./atscript)                  |
-| Wire an audit sink                                                                                         | [Audit Log](./audit)                           |
-| Look up `AuthOptions` and `AuthWorkflowOpts` tuning knobs                                                  | [Config Reference](./config)                   |
+| If you want to…                                                                                            | Read                                                         |
+| ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| Bootstrap a fresh app with both layers wired                                                               | [Setup](./setup)                                             |
+| Understand `authGuardInterceptor` token extraction, public-route handling, 401 mapping                     | [AuthGuard & useAuth](./auth-guard)                          |
+| Understand `arbacAuthorizeInterceptor` resource/action resolution, scope plumbing, 403 mapping             | [ARBAC Authorize](./arbac-authorize)                         |
+| Look up every decorator and composable in one place                                                        | [Decorators](./decorators)                                   |
+| Wire up `/auth/logout` / `/auth/refresh` / `/auth/status` / `/auth/trigger`                                | [REST Controllers](./controllers)                            |
+| List a user's signed-in devices, revoke one / log out others, mount `SessionsController`                   | [Sessions](./sessions)                                       |
+| Configure the unified `AuthWorkflow`, subclass it, override `resolveXxx`, hook the email outlet            | [Workflows](./workflows)                                     |
+| Let users log in / recover by phone, deliver the recovery OTP to a verified channel, auto-promote handles  | [Phone, Recovery Channels & Handles](./recovery-and-handles) |
+| Wire "Sign in with Google" — login-form SSO button, `OAuthController`, connected accounts, callback bridge | [Federated Login (OAuth)](./oauth)                           |
+| Turn the app INTO an OAuth/OIDC provider — CLI loopback login + first-party "Sign in with the main app"    | [Authorization Server](./authorization-server)               |
+| Render the workflow forms (QR, consents, password rules) in your SPA                                       | [SPA Components](./spa-components)                           |
+| Add ARBAC scopes to your `AsDbController`-derived REST endpoints                                           | [DB Controllers](./db-controllers)                           |
+| Drive `@arbac.*` annotations from `.as` user models                                                        | [Atscript Models](./atscript)                                |
+| Wire an audit sink                                                                                         | [Audit Log](./audit)                                         |
+| Look up `AuthOptions` and `AuthWorkflowOpts` tuning knobs                                                  | [Config Reference](./config)                                 |
 
 ## Mental model
 
