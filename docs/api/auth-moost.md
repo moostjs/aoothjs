@@ -546,6 +546,60 @@ The abstract `FederatedIdentityStore` binds under a **string token** (moost can'
 
 Federated login is merged into `auth/login/flow` (no separate OAuth workflow). The `sso-callback` step (`condition: !!ctx.idpInbound`) runs the verified exchange (verify state + CSRF double-submit + RE-derive verifier from the seed + verified ID-token exchange + `resolveUser`/`linkIdentity` + account-state gate); on `needs-link` it stashes `ctx.pendingLink` and diverts to the `prove-control` step (password or OTP-fallback proof, with `resend`) before setting `ctx.subject`, then the shared login tail runs. `AuthWfCtx.oauth?: AuthWfOAuthState` (`{ provider, outcome?, isNew?, redirect? }`; `outcome` includes `'interactively-linked'`) is the flow discriminator.
 
+## Authorization server
+
+The Moost HTTP layer for the authorization server (aoothjs AS an OAuth/OIDC provider for its own clients). The framework-agnostic stores, policies, signer, and claims resolver live in [`@aooth/auth/authz`](/api/auth#authz-subpath). See [Authorization Server](/moost/authorization-server) for the narrative + wiring.
+
+### `AuthorizeController`
+
+```ts
+@Controller("auth")
+class AuthorizeController {
+  // ctor: (auth, @Inject(CLIENT_REDIRECT_POLICY_TOKEN) policy,
+  //        @Inject(PENDING_AUTHORIZATION_STORE_TOKEN) pending,
+  //        @Inject(AUTH_CODE_STORE_TOKEN) codes)
+  authorize(/* @Query response_type, client_id?, redirect_uri, state?, code_challenge,
+                code_challenge_method, scope?, nonce? */): Promise<string>; // GET authorize  → 302
+  token(/* @Body { grant_type, code, code_verifier, client_id?, client_secret? } */): Promise<
+    TokenSuccess | TokenError
+  >; //                                     POST token
+  discovery(): OidcDiscoveryDocument | TokenError; //   GET .well-known/openid-configuration (Tier 2)
+  jwks(): Promise<{ keys: JWK[] }> | TokenError; //     GET jwks                             (Tier 2)
+  // override seams (Tier 2 — getters, NOT DI; see below):
+  protected getIdTokenSigner(): IdTokenSigner | undefined; //      default: undefined → 404 / no id_token
+  protected getOidcClaimsResolver(): OidcClaimsResolver; //        default: NoopOidcClaimsResolver
+  protected loginPath(): string; //                               default: "/login"
+}
+```
+
+All routes are `@Public()`. `authorize` runs the trust gate (`policy.resolveClient`) FIRST, records the pending authorization (authority fixed here), and 302s `/login?authz=<handle>`. `token` consumes the single-use code, verifies PKCE, authenticates the client (Tier 2), and mints the access token and/or `id_token` — off the browser. `discovery` / `jwks` 404 when no signer is wired (Tier-1-only).
+
+**The signer / claims resolver are getters, not DI tokens.** An optional `@Inject`/`@Optional` dependency panics in moost's `resolveMoost` route-table pass (triggered by `AuthController`'s `@MoostInit` refresh-cookie hook → _"Class is not Injectable and not Optional"_). A subclass overrides `getIdTokenSigner()` / `getOidcClaimsResolver()` and is registered in place of the base class (re-declare the ctor with the same three `@Inject` tokens — moost@0.6.x doesn't inherit `@Inject` across `extends`).
+
+### `AuthorizeRuntime`
+
+```ts
+@Injectable()
+class AuthorizeRuntime {
+  constructor(
+    @Inject(PENDING_AUTHORIZATION_STORE_TOKEN) pending: PendingAuthorizationStore,
+    @Inject(AUTH_CODE_STORE_TOKEN) codes: AuthCodeStore,
+  );
+}
+```
+
+DI holder bundling the two stores the login-wf `mint-authz-code` terminal needs (a `@Step` body can't `@Inject` a string token, so it resolves this via `useControllerContext().instantiate(AuthorizeRuntime)`). Mirrors `OAuthRuntime`.
+
+### DI tokens
+
+```ts
+const CLIENT_REDIRECT_POLICY_TOKEN = "aooth:ClientRedirectPolicy";
+const PENDING_AUTHORIZATION_STORE_TOKEN = "aooth:PendingAuthorizationStore";
+const AUTH_CODE_STORE_TOKEN = "aooth:AuthCodeStore";
+```
+
+Provide the concrete `ClientRedirectPolicy` (a `LoopbackClientPolicy`, `RegisteredClientPolicy`, or `CompositeClientPolicy`) + the two stores under these strings — all three are abstract/interface deps with no class reference to inject by.
+
 ## Subpath: `@aooth/auth-moost/atscript`
 
 ```ts

@@ -142,6 +142,18 @@ export function createTestMailboxController(
     }
 
     /**
+     * Tier-2 OIDC self-federation landing (OIDC-SELF-01). The demo's own
+     * `/auth/authorize` grant 302s the registered `demo-oidc` `redirect_uri`
+     * here with `?code&state`; the Playwright spec reads them off `page.url()`
+     * and hands the code to a REAL `OidcProvider`. A plain 200 so the browser
+     * lands deterministically (not the SPA history-fallback catch-all).
+     */
+    @Get("oidc-callback")
+    oidcCallback(): string {
+      return "<!doctype html><title>oidc-callback</title>ok";
+    }
+
+    /**
      * Mint an access token for a user, optionally down-scoped via the typed
      * `@arbac.attenuate.*` root fields on `DemoAuthCredential` (restrict-only
      * ARBAC attenuation). An empty body mints a FULL-authority token (no

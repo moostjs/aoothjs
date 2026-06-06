@@ -14,6 +14,8 @@ export type AuthorizeErrorCode =
   | "invalid_grant"
   /** Unknown or unauthenticated client (Tier 2). */
   | "invalid_client"
+  /** A known client used a grant/response it is not allowed (Tier 2). */
+  | "unauthorized_client"
   /** The user declined the authorization (consent). */
   | "access_denied"
   /** An unexpected server-side failure. */

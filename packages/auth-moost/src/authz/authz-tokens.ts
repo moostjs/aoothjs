@@ -28,6 +28,13 @@ export const AUTH_CODE_STORE_TOKEN = "aooth:AuthCodeStore";
 /**
  * DI token for the {@link import("@aooth/auth/authz").ClientRedirectPolicy} — an
  * interface, so it has no class reference to inject by. Provide the concrete
- * policy (e.g. `new LoopbackClientPolicy()`) under this string.
+ * policy (e.g. `new LoopbackClientPolicy()`, a `RegisteredClientPolicy`, or a
+ * `CompositeClientPolicy` of both) under this string.
  */
 export const CLIENT_REDIRECT_POLICY_TOKEN = "aooth:ClientRedirectPolicy";
+
+// NOTE: the Tier-2 OIDC `id_token` signer + claims resolver are NOT DI tokens —
+// they are optional, and an optional `@Inject`/`@Optional` dependency panics in
+// moost's `resolveMoost` route-table pass (`useHandlerPaths`). They are supplied
+// instead by overriding `AuthorizeController.getIdTokenSigner()` /
+// `getOidcClaimsResolver()` in a subclass (see that controller).

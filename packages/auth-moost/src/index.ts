@@ -41,10 +41,11 @@ export { isSafeRelativeRedirect, resolveOAuthRedirect } from "./oauth/oauth-redi
 export { OAuthRuntime } from "./oauth/oauth-runtime";
 export { FEDERATED_IDENTITY_STORE_TOKEN } from "./oauth/oauth-tokens";
 
-// ── Authorization server (AUTH-SERVER.md Tier 1) — aoothjs as an OAuth provider
-//    for its OWN clients (CLI loopback today; first-party service SSO later).
-//    The framework-agnostic stores, client/redirect policy, token policy, and
-//    error taxonomy live in `@aooth/auth/authz`; this layer adds the HTTP
+// ── Authorization server (AUTH-SERVER.md) — aoothjs as an OAuth/OIDC provider
+//    for its OWN clients (CLI loopback, Tier 1; first-party service SSO with
+//    id_token / JWKS / discovery, Tier 2). The framework-agnostic stores,
+//    client/redirect policies, id_token signer, claims resolver, token policy,
+//    and error taxonomy live in `@aooth/auth/authz`; this layer adds the HTTP
 //    endpoints + the moost-DI binding tokens (mirrors the federated split, where
 //    the store lives in `@aooth/user` and only the token lives here). ──
 export { AuthorizeController } from "./authz/authorize.controller";

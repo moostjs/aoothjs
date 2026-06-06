@@ -12,6 +12,21 @@ export interface ResolvedClient {
   redirectUri: string;
   /** What the grant mints (fixed here, recorded on the pending authorization). */
   tokenPolicy: TokenPolicy;
+  /**
+   * Tier 2 (OIDC): mint an `id_token` with `aud` = {@link audience}. Omitted ⇒
+   * no `id_token` (Tier-1 loopback).
+   */
+  idToken?: boolean;
+  /**
+   * Mint an access token. **Omitted ⇒ minted** (preserves Tier-1 loopback,
+   * where the CLI gets an access token); set `false` for a pure-OIDC sign-in
+   * client that should receive identity only.
+   */
+  accessToken?: boolean;
+  /** The `id_token` `aud` (the registered `client_id`). */
+  audience?: string;
+  /** Granted scope (space-joined) — `requested ∩ allowed`; drives the `id_token` profile claims. */
+  scope?: string;
 }
 
 /**
@@ -32,7 +47,15 @@ export interface ClientRedirectPolicy {
   resolveClient(args: {
     clientId?: string;
     redirectUri: string;
+    scope?: string;
   }): ResolvedClient | Promise<ResolvedClient>;
+  /**
+   * Tier 2: authenticate the client at `POST /auth/token` — verify the
+   * `client_secret` of a confidential client (PKCE is the binding for a public
+   * one). THROW an {@link AuthorizeError} (`invalid_client`) on failure. Optional:
+   * a public-only policy (loopback) omits it.
+   */
+  authenticateClient?(args: { clientId?: string; clientSecret?: string }): void | Promise<void>;
 }
 
 /**
@@ -86,10 +109,16 @@ export class LoopbackClientPolicy implements ClientRedirectPolicy {
     this.tokenPolicy = opts?.tokenPolicy ?? DEFAULT_CLI_TOKEN_POLICY;
   }
 
-  resolveClient(args: { clientId?: string; redirectUri: string }): ResolvedClient {
+  resolveClient(args: { clientId?: string; redirectUri: string; scope?: string }): ResolvedClient {
     if (!isLoopbackRedirectUri(args.redirectUri)) {
       throw new AuthorizeError("invalid_redirect", "redirect_uri must be a loopback address");
     }
-    return { redirectUri: args.redirectUri, tokenPolicy: structuredClone(this.tokenPolicy) };
+    // A loopback grant is full-authority (no id_token, access token minted); pass
+    // the requested scope through informationally.
+    return {
+      redirectUri: args.redirectUri,
+      tokenPolicy: structuredClone(this.tokenPolicy),
+      ...(args.scope !== undefined && { scope: args.scope }),
+    };
   }
 }

@@ -19,9 +19,17 @@ import {
   type SmsSender,
 } from "@aooth/auth";
 import {
+  type AuthCodeStore,
   AuthCodeStoreMemory,
+  type ClientRedirectPolicy,
+  CompositeClientPolicy,
+  IdTokenSigner,
   LoopbackClientPolicy,
+  OidcClaimsResolver,
+  type PendingAuthorizationStore,
   PendingAuthorizationStoreMemory,
+  RegisteredClientPolicy,
+  scopeGrants,
 } from "@aooth/auth/authz";
 import {
   type AuditEvent,
@@ -64,9 +72,11 @@ import {
   createReplaceRegistry,
   getMoostInfact,
   Inherit,
+  Inject,
   Injectable,
   Moost,
 } from "moost";
+import { generateKeyPairSync } from "node:crypto";
 import type { AddressInfo } from "node:net";
 
 import { type AppAuth, createAooth } from "./aooth";
@@ -743,13 +753,71 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     }
   }
 
-  // Authorization server (AUTH-SERVER.md Tier 1) — a CLI loopback grant. The
-  // two stores are in-memory (single-process demo); a multi-pod deployment swaps
-  // a durable impl under the same DI tokens. The loopback policy mints a
-  // full-authority `cli-session` for any 127.0.0.1 / localhost redirect.
+  // Authorization server (AUTH-SERVER.md) — Tier 1 CLI loopback grant AND Tier 2
+  // first-party OIDC ("Sign in with the demo"). The two stores are in-memory
+  // (single-process demo); a multi-pod deployment swaps a durable impl under the
+  // same DI tokens.
   const pendingAuthStore = new PendingAuthorizationStoreMemory();
   const authCodeStore = new AuthCodeStoreMemory();
-  const clientRedirectPolicy = new LoopbackClientPolicy();
+
+  // Tier 2: a fresh RSA keypair signs `id_token`s; its public half is published
+  // at `GET /auth/jwks` and described by `GET /auth/.well-known/openid-configuration`.
+  // The `issuer` is `{origin}/auth` — the exact value a relying `OidcProvider`
+  // is configured with, so `id_token.iss` / `doc.issuer` match byte-for-byte.
+  const oidcIssuer = `http://localhost:${port}/auth`;
+  const { publicKey: oidcPublicKey, privateKey: oidcPrivateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  const idTokenSigner = new IdTokenSigner({
+    issuer: oidcIssuer,
+    kid: "demo-1",
+    alg: "RS256",
+    publicKey: oidcPublicKey,
+    privateKey: oidcPrivateKey,
+  });
+
+  // Profile claims for the `id_token`, read from the REAL user record and gated
+  // by the granted scope (`email`/`email_verified` under `email`, `name` under
+  // `profile`). The registered claims (`iss`/`aud`/`sub`/`iat`/`exp`/`nonce`) are
+  // owned by the controller; this only supplies the consumer-shaped profile.
+  class DemoOidcClaimsResolver extends OidcClaimsResolver {
+    async resolveClaims(
+      userId: string,
+      scope: string | undefined,
+    ): Promise<Record<string, unknown>> {
+      const user = await aooth.userService.getUser(userId);
+      const claims: Record<string, unknown> = {};
+      if (scopeGrants(scope, "email") && user.email !== undefined) {
+        claims.email = user.email;
+        claims.email_verified = true; // first-party: the account email is verified
+      }
+      if (scopeGrants(scope, "profile") && user.displayName !== undefined) {
+        claims.name = user.displayName;
+      }
+      return claims;
+    }
+  }
+  const oidcClaimsResolver = new DemoOidcClaimsResolver();
+
+  // The Tier-1 loopback policy (any localhost redirect → full-authority CLI
+  // session) and a Tier-2 registry of ONE first-party OIDC client run side by
+  // side via CompositeClientPolicy, dispatched on the presence of `client_id`.
+  // `demo-oidc` is a PUBLIC client (PKCE-bound, no secret), sign-in only
+  // (`id_token`, no access token), redirecting to the test-harness landing.
+  const clientRedirectPolicy = new CompositeClientPolicy({
+    loopback: new LoopbackClientPolicy(),
+    registered: new RegisteredClientPolicy({
+      clients: [
+        {
+          clientId: "demo-oidc",
+          redirectUris: [`http://localhost:${port}/__test/oidc-callback`],
+          scopes: ["openid", "email", "profile"],
+        },
+      ],
+    }),
+  });
 
   // Canonical REST + guard wiring + per-workflow providers registered via DI.
   const authProviders: Parameters<typeof createProvideRegistry> = [
@@ -831,13 +899,37 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
 
   // Authorization server: the `/auth/authorize` grant bounces to the SPA login
   // page. `AuthorizeController.loginPath()` already defaults to `/login` — the
-  // demo's actual login route — so the base controller is mounted as-is (a
-  // subclass would override `loginPath()` only for a custom route). No-variant
-  // login is a clean username + password round trip for a non-MFA seeded user
-  // (the demo ConsentStore returns no pending consents without an `x-wf-variant`
-  // header) AND it offers the "Continue with <provider>" SSO button, so the CLI
-  // grant exercises both the password path and the mid-login SSO detour (the
-  // `ctx.authz` handle carry).
+  // demo's actual login route. No-variant login is a clean username + password
+  // round trip for a non-MFA seeded user (the demo ConsentStore returns no
+  // pending consents without an `x-wf-variant` header) AND it offers the
+  // "Continue with <provider>" SSO button, so the CLI grant exercises both the
+  // password path and the mid-login SSO detour (the `ctx.authz` handle carry).
+  //
+  // The Tier-2 OIDC `id_token` signer + claims resolver are supplied by
+  // OVERRIDING the controller's `getIdTokenSigner()` / `getOidcClaimsResolver()`
+  // getters (NOT DI tokens — an optional `@Inject`/`@Optional` dependency panics
+  // in moost's `resolveMoost` route-table pass; see the controller). moost@0.6.x
+  // does NOT inherit `@Inject` / `design:paramtypes` across `extends`, so the
+  // ctor is re-declared with the same three tokens and forwards to `super()`.
+  @Inherit()
+  @Controller("auth")
+  class DemoAuthorizeController extends AuthorizeController {
+    constructor(
+      auth: AuthCredential,
+      @Inject(CLIENT_REDIRECT_POLICY_TOKEN) policy: ClientRedirectPolicy,
+      @Inject(PENDING_AUTHORIZATION_STORE_TOKEN) pending: PendingAuthorizationStore,
+      @Inject(AUTH_CODE_STORE_TOKEN) codes: AuthCodeStore,
+    ) {
+      super(auth, policy, pending, codes);
+    }
+    protected override getIdTokenSigner(): IdTokenSigner {
+      return idTokenSigner;
+    }
+    protected override getOidcClaimsResolver(): OidcClaimsResolver {
+      return oidcClaimsResolver;
+    }
+  }
+
   app.setReplaceRegistry(createReplaceRegistry([WfTriggerProvider, DemoWfTriggerProvider]));
 
   // Mount the bundled sessions endpoints (`GET/DELETE /auth/sessions`). The
@@ -849,7 +941,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     DemoAuthWorkflow,
     SessionsController,
     OAuthController,
-    AuthorizeController,
+    DemoAuthorizeController,
   );
 
   // `@Injectable()` (SINGLETON) — moost@0.6.x does NOT inherit injectable

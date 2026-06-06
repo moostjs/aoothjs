@@ -21,8 +21,16 @@ export interface PendingAuthorization {
   codeChallenge: string;
   /** The client's `state`, echoed back on the redirect so the client can correlate. */
   clientState?: string;
-  /** Requested scope (space-joined), informational for Tier 1. */
+  /** Granted scope (space-joined) — `requested ∩ allowed`; drives the `id_token` profile claims. */
   scope?: string;
+  /** OIDC `nonce` from the authorize request — echoed into the `id_token` (Tier 2). */
+  nonce?: string;
+  /** Mint an `id_token` at `/token` (Tier 2). */
+  idToken?: boolean;
+  /** Mint an access token at `/token`. Omitted ⇒ minted (Tier-1 loopback). */
+  accessToken?: boolean;
+  /** The `id_token` `aud` (the registered `client_id`). */
+  audience?: string;
   /** What the grant will mint (fixed at authorize time). */
   tokenPolicy: TokenPolicy;
   createdAt: number;
@@ -36,6 +44,10 @@ export interface NewPendingAuthorization {
   codeChallenge: string;
   clientState?: string;
   scope?: string;
+  nonce?: string;
+  idToken?: boolean;
+  accessToken?: boolean;
+  audience?: string;
   tokenPolicy: TokenPolicy;
 }
 
@@ -91,6 +103,10 @@ export class PendingAuthorizationStoreMemory extends PendingAuthorizationStore {
       ...(rec.clientId !== undefined && { clientId: rec.clientId }),
       ...(rec.clientState !== undefined && { clientState: rec.clientState }),
       ...(rec.scope !== undefined && { scope: rec.scope }),
+      ...(rec.nonce !== undefined && { nonce: rec.nonce }),
+      ...(rec.idToken !== undefined && { idToken: rec.idToken }),
+      ...(rec.accessToken !== undefined && { accessToken: rec.accessToken }),
+      ...(rec.audience !== undefined && { audience: rec.audience }),
     };
     this.store.set(row.handle, structuredClone(row));
     return { handle: row.handle };

@@ -20,6 +20,16 @@ export interface AuthCode {
   redirectUri: string;
   /** Registered client id (Tier 2), absent for a public/loopback client. */
   clientId?: string;
+  /** Granted scope (space-joined) — drives the `id_token` profile claims. */
+  scope?: string;
+  /** OIDC `nonce` from the authorize request — echoed into the `id_token` (Tier 2). */
+  nonce?: string;
+  /** Mint an `id_token` at `/token` (Tier 2). */
+  idToken?: boolean;
+  /** Mint an access token at `/token`. Omitted ⇒ minted (Tier-1 loopback). */
+  accessToken?: boolean;
+  /** The `id_token` `aud` (the registered `client_id`). */
+  audience?: string;
   /** What `/token` mints when this code is redeemed. */
   tokenPolicy: TokenPolicy;
   expiresAt: number;
@@ -31,6 +41,11 @@ export interface NewAuthCode {
   codeChallenge: string;
   redirectUri: string;
   clientId?: string;
+  scope?: string;
+  nonce?: string;
+  idToken?: boolean;
+  accessToken?: boolean;
+  audience?: string;
   tokenPolicy: TokenPolicy;
 }
 
@@ -85,6 +100,11 @@ export class AuthCodeStoreMemory extends AuthCodeStore {
       tokenPolicy: structuredClone(rec.tokenPolicy),
       expiresAt: this.clock.now() + this.ttlMs,
       ...(rec.clientId !== undefined && { clientId: rec.clientId }),
+      ...(rec.scope !== undefined && { scope: rec.scope }),
+      ...(rec.nonce !== undefined && { nonce: rec.nonce }),
+      ...(rec.idToken !== undefined && { idToken: rec.idToken }),
+      ...(rec.accessToken !== undefined && { accessToken: rec.accessToken }),
+      ...(rec.audience !== undefined && { audience: rec.audience }),
     };
     this.store.set(code, structuredClone(row));
     return { code };

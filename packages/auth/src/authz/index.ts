@@ -11,7 +11,7 @@ export type { TokenPolicy } from "./token-policy";
 // Failure taxonomy.
 export { AuthorizeError, type AuthorizeErrorCode } from "./authz-errors";
 
-// Client / redirect trust boundary (Tier 1 = loopback).
+// Client / redirect trust boundary (Tier 1 = loopback, Tier 2 = registered).
 export {
   isLoopbackRedirectUri,
   LoopbackClientPolicy,
@@ -19,6 +19,24 @@ export {
   type LoopbackClientPolicyOptions,
   type ResolvedClient,
 } from "./client-policy";
+export {
+  RegisteredClientPolicy,
+  type RegisteredClient,
+  type RegisteredClientPolicyOptions,
+} from "./registered-client-policy";
+export {
+  CompositeClientPolicy,
+  type CompositeClientPolicyOptions,
+} from "./composite-client-policy";
+
+// Tier-2 OIDC: id_token signing + JWKS, and the pluggable profile-claims seam.
+export {
+  IdTokenSigner,
+  type IdTokenAlg,
+  type IdTokenClaims,
+  type IdTokenSignerOptions,
+} from "./id-token-signer";
+export { NoopOidcClaimsResolver, OidcClaimsResolver, scopeGrants } from "./oidc-claims-resolver";
 
 // In-flight authorization store (abstract + in-memory reference impl).
 export {

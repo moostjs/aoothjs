@@ -1,6 +1,6 @@
 # `@aooth/auth` API Reference
 
-Complete export reference for `@aooth/auth`. See the [Auth Conceptual Guide](/auth/) for narrative documentation. Subpaths: `./redis`, `./atscript-db`, `./atscript-db/model.as`, `./client` (browser-safe).
+Complete export reference for `@aooth/auth`. See the [Auth Conceptual Guide](/auth/) for narrative documentation. Subpaths: `./redis`, `./atscript-db`, `./atscript-db/model.as`, `./client` (browser-safe), `./authz` (authorization server — see the [Authorization Server guide](/moost/authorization-server)).
 
 ## Classes
 
@@ -544,3 +544,96 @@ interface AuthCredentialTable<TPayload extends object = object> {
 ```
 
 Structural interface — the subset of `AtscriptDbTable` the adapter uses. Apps cast their `db.getTable(AoothAuthCredential)` to this type. See [Stores](/auth/).
+
+## Subpath: `@aooth/auth/authz`
+
+The framework-agnostic authorization-server layer (aoothjs AS an OAuth/OIDC provider for its own clients). Narrative + wiring: [Authorization Server](/moost/authorization-server). The moost HTTP endpoints live in [`@aooth/auth-moost`](/api/auth-moost#authorization-server).
+
+### `IdTokenSigner`
+
+```ts
+class IdTokenSigner {
+  constructor(opts: IdTokenSignerOptions);
+  readonly issuer: string; // canonical (trailing slash stripped)
+  readonly alg: IdTokenAlg; // 'RS256' | 'ES256'
+  readonly kid: string;
+  sign(claims: IdTokenClaims): Promise<string>; // a signed id_token JWS
+  jwks(): Promise<{ keys: JWK[] }>; // public half, for GET /auth/jwks
+}
+```
+
+Signs OIDC `id_token`s (RS256/ES256) and publishes the matching JWKS. Holds one asymmetric keypair (`privateKey` PKCS8 PEM, `publicKey` SPKI PEM); keys are imported lazily + cached, so construction is cheap and synchronous. `issuer` is canonicalised once so `iss` / discovery `issuer` / derived endpoint URLs are byte-identical (a relying party compares for exact equality). Never used for the access token. `IdTokenSignerOptions`: `{ issuer, kid, privateKey, publicKey, alg?='RS256', ttlSec?=300, clock? }`.
+
+### `LoopbackClientPolicy`
+
+```ts
+class LoopbackClientPolicy implements ClientRedirectPolicy {
+  resolveClient(args: { clientId?; redirectUri; scope? }): ResolvedClient;
+}
+```
+
+Tier-1 policy: accepts any `redirect_uri` whose host is a loopback literal (`127.0.0.1` / `[::1]` / `localhost`) on any port (RFC 8252), rejects everything else. Public client (no `client_id`/secret); PKCE is the binding.
+
+### `RegisteredClientPolicy`
+
+```ts
+class RegisteredClientPolicy implements ClientRedirectPolicy {
+  constructor(opts: { clients: RegisteredClient[] });
+  resolveClient(args: { clientId?; redirectUri; scope? }): ResolvedClient;
+  authenticateClient(args: { clientId?; clientSecret? }): void; // confidential → constant-time secret check
+}
+```
+
+Tier-2 policy: a static registry of first-party clients. Authorizes the client + `redirect_uri` against the registered allowlist, resolves granted scope (`requested ∩ allowed`) and what the grant delivers (`id_token`/`access_token`, `aud = client_id`). An unregistered client or unlisted redirect throws `AuthorizeError`.
+
+### `CompositeClientPolicy`
+
+```ts
+class CompositeClientPolicy implements ClientRedirectPolicy {
+  constructor(opts: { loopback: ClientRedirectPolicy; registered: ClientRedirectPolicy });
+}
+```
+
+Runs Tier 1 + Tier 2 side by side, dispatching on the **presence of `client_id`** (a request with one → `registered`, without → `loopback`). Each sub-policy still owns its own redirect validation.
+
+### `OidcClaimsResolver` / `NoopOidcClaimsResolver`
+
+```ts
+abstract class OidcClaimsResolver {
+  abstract resolveClaims(
+    userId: string,
+    scope: string | undefined,
+  ): Record<string, unknown> | Promise<Record<string, unknown>>;
+}
+class NoopOidcClaimsResolver extends OidcClaimsResolver {} // emits {} → sub-only id_token
+```
+
+Supplies the **profile** claims (`email`/`email_verified`/`name`/…) for an `id_token` — the part that depends on the consumer's user shape. The registered claims (`iss`/`aud`/`sub`/`iat`/`exp`/`nonce`) are owned by the controller. Honour the granted `scope` with `scopeGrants`.
+
+### `PendingAuthorizationStoreMemory` / `AuthCodeStoreMemory`
+
+```ts
+class PendingAuthorizationStoreMemory extends PendingAuthorizationStore {}
+class AuthCodeStoreMemory extends AuthCodeStore {}
+```
+
+In-memory implementations of the two short-lived server-side stores (for tests / single-process). `AuthCodeStore.consume()` is single-use + atomic. A multi-pod deployment swaps a durable atscript-db adapter under the same DI tokens.
+
+### Functions
+
+- `scopeGrants(scope: string | undefined, claim: string): boolean` — `true` when the space-joined `scope` grants `claim` (`"email"` / `"profile"` / …).
+- `isLoopbackRedirectUri(uri: string): boolean` — the host check `LoopbackClientPolicy` uses.
+
+### Types
+
+- `TokenPolicy` — `{ kind?, ttl?, payload? }`. What the grant mints, decided by the policy (never the client request) and recorded at `/authorize` time. `payload` carries `@arbac.attenuate.*` fields for a scoped token; omit for full authority.
+- `ResolvedClient` — the policy's verdict: `{ clientId?, redirectUri, tokenPolicy, scope?, idToken?, accessToken?, audience? }`.
+- `RegisteredClient` — `{ clientId, redirectUris?, redirectPrefixes?, type?='public', clientSecret?, idToken?=true, accessToken?=false, scopes?, tokenPolicy? }`.
+- `IdTokenClaims` — `{ sub, aud, nonce?, ttlSec?, extra? }` (the `extra` map is the resolver's profile claims).
+- `IdTokenAlg` — `'RS256' | 'ES256'`.
+- `ClientRedirectPolicy` — the policy interface (`resolveClient` + optional `authenticateClient`).
+- `PendingAuthorizationStore` / `AuthCodeStore` — the abstract store contracts.
+
+### Errors
+
+- `AuthorizeError` (`code: AuthorizeErrorCode`) — `'invalid_request' | 'invalid_client' | 'invalid_grant' | 'invalid_redirect' | 'access_denied' | 'unauthorized_client' | 'server_error'`. Thrown by the policies; mapped to the OAuth error responses by the controller.

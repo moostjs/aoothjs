@@ -3324,6 +3324,11 @@ export class AuthWorkflow {
       codeChallenge: req.codeChallenge,
       redirectUri: req.redirectUri,
       ...(req.clientId !== undefined && { clientId: req.clientId }),
+      ...(req.scope !== undefined && { scope: req.scope }),
+      ...(req.nonce !== undefined && { nonce: req.nonce }),
+      ...(req.idToken !== undefined && { idToken: req.idToken }),
+      ...(req.accessToken !== undefined && { accessToken: req.accessToken }),
+      ...(req.audience !== undefined && { audience: req.audience }),
       tokenPolicy: req.tokenPolicy,
     });
     await pending.delete(handle);
