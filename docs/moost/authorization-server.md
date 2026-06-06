@@ -98,9 +98,12 @@ const signer = new IdTokenSigner({
 
 // 2. Profile claims, read from YOUR user record and gated by the granted scope.
 //    The registered claims (iss/aud/sub/iat/exp/nonce) are owned by the controller.
+//    `email`/`name` are NOT base `UserCredentials` fields — they're whatever YOUR
+//    user model declares (the base type carries no `email`; a login-handle email
+//    is a consumer field tagged `@aooth.user.email`). Read your own columns here.
 class MyClaimsResolver extends OidcClaimsResolver {
   async resolveClaims(userId: string, scope: string | undefined) {
-    const user = await userService.getUser(userId);
+    const user = await userService.getUser(userId); // UserService<YourUserModel>
     const claims: Record<string, unknown> = {};
     if (scopeGrants(scope, "email") && user.email) {
       claims.email = user.email;
