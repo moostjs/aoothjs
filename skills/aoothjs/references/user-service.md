@@ -36,7 +36,7 @@
 
 ## CRUD methods
 
-> **Identity keying.** Every read-by-identity and EVERY write takes the stable surrogate **`id`** (the token subject, `getUserId()`) — `getUser`, `update`, `deleteUser`, `setPassword`/`changePassword`, the lock/MFA/trusted-device methods. The ONE exception is **`login(handle, …)`**, which resolves a `username`/`email` handle via `store.findByHandle`. Two passthrough reads cover the rest: `findByHandle` (deterministic login) and `findByIdentifier` (permissive admin/recovery).
+> **Identity keying.** Every read-by-identity and EVERY write takes the stable surrogate **`id`** (the token subject, `getUserId()`) — `getUser`, `update`, `deleteUser`, `setPassword`/`changePassword`, the lock/MFA/trusted-device methods. The ONE exception is **`login(handle, …)`**, which resolves a handle via `store.findByHandle` — `username` (the one base login handle, always present) then any consumer-declared secondary handle fields. Two passthrough reads cover the rest: `findByHandle` (deterministic login) and `findByIdentifier` (permissive admin/recovery).
 
 ### `createUser(username, password?, extras?) → Promise<UserCredentials & T>`
 
@@ -49,7 +49,7 @@ await svc.createUser("carol", "Strong-Pass-1!", { tenantId: "acme" });
 await svc.activateAccount(u.id); // ← required outside the invite flow (by id)
 ```
 
-> **`createUser` writes `account.active: false`.** AuthWorkflow's invite accept phase relies on this default (pending invitees stay inactive until accept). For seed scripts, admin-create flows, or tests that don't go through invite, **call `activateAccount(id)` after** (the `id` from `createUser`'s result) or `login()` throws `UserAuthError("INACTIVE")` — and the login workflow deliberately re-maps that to `"Invalid credentials"` (anti-enumeration), so the failure looks like a wrong password client-side. `create` throws `ALREADY_EXISTS` on a duplicate `username` **or** `email`.
+> **`createUser` writes `account.active: false`.** AuthWorkflow's invite accept phase relies on this default (pending invitees stay inactive until accept). For seed scripts, admin-create flows, or tests that don't go through invite, **call `activateAccount(id)` after** (the `id` from `createUser`'s result) or `login()` throws `UserAuthError("INACTIVE")` — and the login workflow deliberately re-maps that to `"Invalid credentials"` (anti-enumeration), so the failure looks like a wrong password client-side. `create` throws `ALREADY_EXISTS` on a duplicate `username` **or** any configured secondary handle field (mirrors the DB unique index).
 
 ### `getUser(id) → Promise<UserCredentials & T>`
 
@@ -57,7 +57,7 @@ Strict read by the surrogate `id` (via `store.findById`). Throws `NOT_FOUND` if 
 
 ### `findByHandle(handle)` / `findByIdentifier(value) → Promise<(UserCredentials & T) | null>`
 
-Passthroughs to the store. `findByHandle` = the deterministic LOGIN resolver (`username` then `email`, ordered — never `$or`). `findByIdentifier` = permissive admin/recovery (`id` → `username` → `email`). Both return `null` (don't throw) when missing. NEVER use `findByIdentifier` for login.
+Passthroughs to the store. `findByHandle` = the deterministic LOGIN resolver (`username` then the configured secondary handle fields in order — never `$or`). `findByIdentifier` = permissive admin/recovery (`id` → `username` → the configured secondary handles). Both return `null` (don't throw) when missing. NEVER use `findByIdentifier` for login. The secondary handle fields (e.g. email then phone) are consumer-declared on the user model — see [recovery-and-handles.md](./recovery-and-handles.md).
 
 ### `update(id, patch) → Promise<UserCredentials & T>`
 
@@ -71,7 +71,7 @@ Hard-delete by `id`. Throws `NOT_FOUND` when no row matched (`store.delete` retu
 
 ### `login(handle, password, lockoutOverride?) → Promise<LoginResult<T>>`
 
-`handle` = `username` OR `email` (resolved via `store.findByHandle`). `LoginResult<T> = { user: UserCredentials & T; mfaRequired: boolean }`. `mfaRequired` is `true` iff at least one MFA method on the user is `confirmed`. See [the login sequence](#the-login-sequence).
+`handle` = `username` OR any configured secondary handle field (resolved via `store.findByHandle`). `LoginResult<T> = { user: UserCredentials & T; mfaRequired: boolean }`. `mfaRequired` is `true` iff at least one MFA method on the user is `confirmed`. See [the login sequence](#the-login-sequence).
 
 ### `verifyPassword(id, password) → Promise<boolean>`
 
@@ -135,7 +135,7 @@ Filters to policies whose `rule` is a string — those compile via `@prostojs/ft
 
 `verifyMfa` finds the method via `mfa.methods.find(m => m.name === 'totp' && m.confirmed)` — no other method names participate in this path; email / SMS challenges live in `@aooth/auth`.
 
-> **No bundled backup-code API.** There is no `generateBackupCodes` / `consumeBackupCode` service method and no `generateBackupCodePlaintext` export. The `UserCredentials.backupCodes?: string[]` field is a reserved slot — compose recovery codes yourself from `hashMfaCode` / `verifyMfaCode` + `users.update(...)`. See [mfa.md § Backup codes](./mfa.md#backup-codes).
+> **No bundled backup-code API.** There is no `generateBackupCodes` / `consumeBackupCode` service method and no `generateBackupCodePlaintext` export, and the base record carries no `backupCodes` field — compose recovery codes yourself from `hashMfaCode` / `verifyMfaCode` + `users.update(...)`, declaring your own column on the user model if you want to persist them. See [mfa.md § Backup codes](./mfa.md#backup-codes).
 
 ## Trusted-device methods
 
@@ -168,7 +168,7 @@ Returns `user.trustedDevices ?? []`. Throws `NOT_FOUND` if the user is missing.
 
 ## The login sequence
 
-`UserService.login(handle, password)` runs (`handle` = `username`/`email`, resolved via `findByHandle`):
+`UserService.login(handle, password)` runs (`handle` = `username` or a configured secondary handle, resolved via `findByHandle`):
 
 1. Look up the user by handle — throw `NOT_FOUND` if missing.
 2. Reject if `account.active === false` — throw `INACTIVE`.

@@ -25,13 +25,13 @@ Source: [`packages/user/src/store/user-store.ts`](https://github.com/moostjs/aoo
 ::: warning Reads, writes, and the stable `id`
 Everything keys on the surrogate **`id`** (the token subject — what `useAuth().getUserId()` returns), **except** the three flavours of read:
 
-| Method                    | Resolves by                                       | Use for                                                             |
-| ------------------------- | ------------------------------------------------- | ------------------------------------------------------------------- |
-| `findById(id)`            | the surrogate `id` only                           | the canonical identity read — authenticated/session-subject lookups |
-| `findByHandle(handle)`    | `username` exactly, **then** `email` exactly      | the **login** path only (deterministic, ordered)                    |
-| `findByIdentifier(value)` | `id`, then `username`, then `email` (first match) | permissive internal / admin / recovery lookup                       |
+| Method                    | Resolves by                                                            | Use for                                                             |
+| ------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `findById(id)`            | the surrogate `id` only                                                | the canonical identity read — authenticated/session-subject lookups |
+| `findByHandle(handle)`    | `username` exactly, **then** the configured handle fields in order     | the **login** path only (deterministic, ordered)                    |
+| `findByIdentifier(value)` | `id`, then `username`, then the configured handle fields (first match) | permissive internal / admin / recovery lookup                       |
 
-`findByHandle` is intentionally **not** a permissive `$or`: `id`, `username`, and `email` are all `string`, so a single permissive match could silently resolve one user's username that happens to equal another user's email to the wrong account. Keep login on `findByHandle`.
+`findByHandle` is intentionally **not** a permissive `$or`: `username` and every handle column are all `string`, so a single permissive match could silently resolve one user's username that happens to equal another user's email/phone handle to the wrong account. Keep login on `findByHandle`. The secondary handle fields are not hardcoded — the wiring resolves them from your model's `@aooth.user.email` / `@aooth.user.phone` markers and threads the ordered list into the store, which stays name-agnostic (see [Phone, Recovery Channels & Handles](/moost/recovery-and-handles)).
 :::
 
 ## `UserStoreUpdate` — the patch protocol
@@ -62,13 +62,13 @@ Every mutation in `UserService` translates to one of these. The two cooperate �
 
 A correct `UserStore<T>` implementation:
 
-1. **`create` throws `ALREADY_EXISTS`** on a unique-username conflict (use `UserAuthError` from `@aooth/user`).
+1. **`create` throws `ALREADY_EXISTS`** on a duplicate `username` — or any configured handle column — conflict (use `UserAuthError` from `@aooth/user`), mirroring the DB unique indexes.
 2. **`update` deep-merges the `set` patch** for object-valued sub-keys (`password`, `account`, `mfa`, `trustedDevices`). Don't wholesale-replace those sub-objects from a partial.
 3. **Arrays in `set` are wholesale replacements.** The service builds the next array client-side (e.g. `backupCodes`, `trustedDevices`) and hands you the full list.
 4. **`update` applies `inc` atomically** per dot-path. SQL: `SET col = col + N`. JSON columns: equivalent atomic primitive in your engine.
 5. **`update` and `delete` return `false` when no row matched.** The service uses that to throw `NOT_FOUND`.
 6. **Reads return `null`**, not a thrown error, when missing — for all three of `findById`, `findByHandle`, `findByIdentifier`.
-7. **`findByHandle` matches `username` first, then `email`** — ordered, never a permissive `$or`. See the warning above.
+7. **`findByHandle` matches `username` first, then the configured handle fields in order** — ordered, never a permissive `$or`. The handle fields are not hardcoded; the wiring derives them from `@aooth.user.email` / `@aooth.user.phone` and passes the ordered list to the store. See the warning above.
 8. **`withCas` re-reads via `findById`** each attempt and applies the patch under CAS (`expectedVersion = current.version`); it throws `NOT_FOUND` when `id` is missing and `CAS_EXHAUSTED` when retries saturate.
 
 A minimal but valid in-memory implementation lives at [`UserStoreMemory`](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/store/memory.ts) — read that as your reference.
@@ -82,13 +82,13 @@ const store = new UserStoreMemory(); // empty
 const seeded = new UserStoreMemory({ alice: existingRecord });
 ```
 
-| Behavior  | Detail                                                                                                                       |
-| --------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Storage   | `Map<id, structuredClone(record)>` — keyed by the surrogate `id`.                                                            |
-| Isolation | reads return a `structuredClone` — mutating the result does **not** affect storage.                                          |
-| Conflicts | `create` mints an `id` if absent and throws `UserAuthError("ALREADY_EXISTS", ...)` on a duplicate `username` **or** `email`. |
-| `inc`     | Atomic numeric add at dot-path via `setAtPath`.                                                                              |
-| `set`     | Deep-merge for objects, wholesale-replace for arrays.                                                                        |
+| Behavior  | Detail                                                                                                                                                                           |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Storage   | `Map<id, structuredClone(record)>` — keyed by the surrogate `id`.                                                                                                                |
+| Isolation | reads return a `structuredClone` — mutating the result does **not** affect storage.                                                                                              |
+| Conflicts | `create` mints an `id` if absent and throws `UserAuthError("ALREADY_EXISTS", ...)` on a duplicate `username` **or** any configured handle field (passed via `{ handleFields }`). |
+| `inc`     | Atomic numeric add at dot-path via `setAtPath`.                                                                                                                                  |
+| `set`     | Deep-merge for objects, wholesale-replace for arrays.                                                                                                                            |
 
 It's the recommended fake for unit tests and for prototyping before you wire a real DB.
 
@@ -109,7 +109,13 @@ import { UserStore, UserAuthError } from "@aooth/user";
 import type { UserCredentials, UserStoreUpdate, DeepPartial } from "@aooth/user";
 
 export class PostgresUserStore<T extends object = object> extends UserStore<T> {
-  constructor(private sql: any /* your sql tag */) {
+  // Ordered secondary handle columns (e.g. ["email", "phone"]) — the wiring
+  // resolves these from your model's `@aooth.user.*` markers and hands them in.
+  // The store stays name-agnostic; an empty list means username-only login.
+  constructor(
+    private sql: any /* your sql tag */,
+    private handleFields: string[] = [],
+  ) {
     super();
   }
 
@@ -123,15 +129,20 @@ export class PostgresUserStore<T extends object = object> extends UserStore<T> {
     return r[0] ?? null;
   }
 
-  // LOGIN resolver — username first, then email. NEVER a permissive `$or`.
+  // LOGIN resolver — username first, then the configured handle fields in order.
+  // NEVER a permissive `$or`.
   async findByHandle(handle: string) {
     const byU = await this.sql`SELECT * FROM users WHERE username = ${handle} LIMIT 1`;
     if (byU[0]) return byU[0];
-    const byE = await this.sql`SELECT * FROM users WHERE email = ${handle} LIMIT 1`;
-    return byE[0] ?? null;
+    for (const field of this.handleFields) {
+      // `field` is a trusted column name from the resolved handle spec, not user input.
+      const byH = await this.sql`SELECT * FROM users WHERE ${this.sql(field)} = ${handle} LIMIT 1`;
+      if (byH[0]) return byH[0];
+    }
+    return null;
   }
 
-  // Permissive internal/admin/recovery lookup — id, then username, then email.
+  // Permissive internal/admin/recovery lookup — id, then username, then the handle fields.
   async findByIdentifier(value: string) {
     return (await this.findById(value)) ?? (await this.findByHandle(value));
   }
@@ -167,7 +178,7 @@ export class PostgresUserStore<T extends object = object> extends UserStore<T> {
   }
 
   private isConflict(e: any) {
-    return e?.code === "23505"; /* PG unique_violation — username or email */
+    return e?.code === "23505"; /* PG unique_violation — username or any handle column */
   }
 }
 ```
@@ -202,7 +213,7 @@ import { AoothUserCredentials } from "@aooth/user/atscript-db/model.as";
 
 ### Extend the model in your app
 
-The shipped interface already declares the surrogate **`id`** (`@meta.id` + `@db.default.uuid`), the unique `username` index, the unique optional `email` index, the `@db.column.version` counter, and the `@db.patch.strategy 'merge'` sub-objects. The **only** thing it omits is `@db.table` (the model is storage-agnostic until you bind it). So your extension just names the table — **don't** re-declare `id` or `email`:
+The shipped interface already declares the surrogate **`id`** (`@meta.id` + `@db.default.uuid`), the unique `username` index (the one base login handle), the `@db.column.version` counter, and the `@db.patch.strategy 'merge'` sub-objects. It omits `@db.table` (the model is storage-agnostic until you bind it) — and, deliberately, it ships **no** `email` or `phone`. A secondary login/recovery handle is **consumer-declared**: you add your own field, index it `@db.index.unique`, and tag it `@aooth.user.email` / `@aooth.user.phone`. So your extension names the table and declares whichever handles you want — **don't** re-declare `id`:
 
 ```ts
 // app.as
@@ -210,14 +221,19 @@ import { AoothUserCredentials } from '@aooth/user/atscript-db/model.as'
 
 @db.table 'users'
 export interface AppUser extends AoothUserCredentials {
-    // id, username (unique), email (unique), version — all inherited.
-    // Add only your own columns here.
+    // id, username (unique), version — all inherited.
+    // Declare your own secondary login/recovery handle(s):
+    @db.index.unique 'email_idx'
+    @aooth.user.email
+    email?: string
+
+    // Add any other columns here.
     tenantId: string
 }
 ```
 
-::: warning Re-declaring `id` / `email` is redundant (and risky)
-Earlier releases required you to add `@meta.id id` and `email` yourself. As of the id-subject re-key they live on the base — re-declaring them in an extending interface is at best redundant and at worst flips the unique-index or merge semantics. Inherit them.
+::: warning Re-declaring `id` is redundant; declaring `email` / `phone` is required
+`id` lives on the base — re-declaring it in an extending interface is at best redundant and at worst flips the unique-index or merge semantics, so inherit it. By contrast, `email` and `phone` are **not** on the base: if you want login or recovery by email/phone you **must** declare your own field, give it `@db.index.unique` (the account-takeover guard — `findByHandle` must resolve to at most one row; a missing index warns and disables the handle), and tag it `@aooth.user.email` / `@aooth.user.phone`. The wiring discovers these markers at boot and threads the ordered handle list into the store. See [Phone, Recovery Channels & Handles](/moost/recovery-and-handles).
 :::
 
 ::: warning Don't re-declare merged sub-objects without `@db.patch.strategy 'merge'`

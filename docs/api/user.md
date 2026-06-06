@@ -14,11 +14,11 @@ Orchestrator for credential CRUD, login, lockout, password policy, MFA, and trus
 
 Async methods (selected): `createUser`, `getUser(id)`, `findByHandle(handle)`, `findByIdentifier(value)`, `login(handle, password, lockoutOverride?)`, `verifyPassword(id, …)`, `changePassword(id, …)`, `setPassword(id, …)`, `deleteUser(id)`, `update(id, patch)`, `activateAccount(id)`, `deactivateAccount(id)`, `lockAccount(id, …)`, `unlockAccount(id)`, `checkPolicies`, `addMfaMethod(id, …)`, `confirmMfaMethod(id, …)`, `removeMfaMethod(id, …)`, `setDefaultMfaMethod(id, …)`, `setMfaAutoSend(id, …)`, `verifyMfa(id, code, config?, lockoutOverride?)`, `verifyTotpSetupCode(id, …)`, `addTrustedDevice(id, …)`, `verifyTrustedDevice(userId, …)`, `revokeTrustedDevice(id, …)`, `listTrustedDevices(id)`.
 
-> **Identity keying:** every method takes the stable surrogate **`id`** (the token subject), **except** `login`, which resolves a `username`/`email` **handle** via `findByHandle`. `findByHandle` (login) and `findByIdentifier` (permissive admin/recovery) are the two handle-based reads. See [UserService](/user/service).
+> **Identity keying:** every method takes the stable surrogate **`id`** (the token subject), **except** `login`, which resolves a **handle** via `findByHandle` — the base `username`, then any consumer-declared secondary handle fields (e.g. `email`/`phone`) in configured order. `findByHandle` (login) and `findByIdentifier` (permissive admin/recovery) are the two handle-based reads. See [UserService](/user/service) and [Credentials Model](/user/credentials).
 
 Sync helpers: `getLockStatus`, `isPasswordExpired`, `getTransferablePolicies`, `getAvailableMfaMethods`, `issueTrustedDevice`, `getPasswordHasher`, `getConfig`.
 
-> There are **no** `generateBackupCodes` / `consumeBackupCode` service methods. The `UserCredentials.backupCodes` field exists on the type but no bundled `UserService` API reads or writes it — wire your own if you need recovery codes.
+> There are **no** `generateBackupCodes` / `consumeBackupCode` service methods, and the base `UserCredentials` carries no `backupCodes` field — wire your own (a consumer-declared column + service) if you need recovery codes.
 
 ### `UserStore<T extends object = object>` (abstract)
 
@@ -26,8 +26,8 @@ Sync helpers: `getLockStatus`, `isPasswordExpired`, `getTransferablePolicies`, `
 abstract class UserStore<T> {
   abstract exists(handle: string): Promise<boolean>; // by username
   abstract findById(id: string): Promise<(UserCredentials & T) | null>;
-  abstract findByHandle(handle: string): Promise<(UserCredentials & T) | null>; // username then email
-  abstract findByIdentifier(value: string): Promise<(UserCredentials & T) | null>; // id → username → email
+  abstract findByHandle(handle: string): Promise<(UserCredentials & T) | null>; // username then configured handle fields
+  abstract findByIdentifier(value: string): Promise<(UserCredentials & T) | null>; // id → username → configured handle fields
   abstract create(data: UserCredentials & T): Promise<void>;
   abstract update(id: string, update: UserStoreUpdate): Promise<boolean>;
   abstract delete(id: string): Promise<boolean>;
@@ -129,12 +129,11 @@ function setAtPath(obj: object, path: string, value: unknown): void;
 ```ts
 interface UserCredentials {
   id: string; // stable surrogate — the token subject (getUserId())
-  username: string; // unique login handle
-  email?: string; // unique login/contact handle (optional)
+  username: string; // the one base login handle (always present)
+  version?: number; // server-managed OCC counter (seeded 0 on insert)
   password: PasswordData;
   account: AccountData;
   mfa: MfaData;
-  backupCodes?: string[];
   trustedDevices?: TrustedDeviceRecord[];
 }
 interface PasswordData {
@@ -426,4 +425,4 @@ new FederatedIdentityStoreAtscriptDb(opts: { table: FederatedIdentityTable; cloc
 
 ## Subpath: `@aooth/user/atscript-db/model.as`
 
-Raw `.as` file export. Defines `AoothUserCredentials` — the surrogate `id` (`@meta.id` + `@db.default.uuid`), the unique `username` index, the unique optional `email` index, the `@db.column.version` counter, plus `@db.patch.strategy 'merge'` sub-objects for `password` / `account` / `mfa` / `trustedDevices`. Consumers extend it to add only `@db.table` (and any custom columns) — `id`/`email` are inherited. See [Credentials Model](/user/credentials).
+Raw `.as` file export. Defines `AoothUserCredentials` — the surrogate `id` (`@meta.id` + `@db.default.uuid`), the unique `username` index (the one base login handle), the `@db.column.version` counter, plus `@db.patch.strategy 'merge'` sub-objects for `password` / `account` / `mfa` / `trustedDevices`. The base carries **no** `email`/`phone` — a secondary login/recovery handle is **consumer-declared**: add your own field, index it `@db.index.unique`, and tag it `@aooth.user.email` / `@aooth.user.phone`. Consumers extend the model to add `@db.table` and any custom columns; `id`/`username` are inherited. See [Credentials Model](/user/credentials) and [Phone, Recovery Channels & Handles](/moost/recovery-and-handles).

@@ -6,11 +6,11 @@ The patterns below are taken from [`packages/e2e-demo/`](https://github.com/moos
 
 ## The three shipped models
 
-| Model                       | Subpath                                 | Purpose                                                                                                                                                                                                |
-| --------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `AoothUserCredentials`      | `@aooth/user/atscript-db/model.as`      | Base credential record — the surrogate `id` (PK / token subject), unique `username` + `email` handles, `version`, `password`, `account`, `mfa`, `trustedDevices`. Only `@db.table` is left to the app. |
-| `AoothArbacUserCredentials` | `@aooth/arbac-moost/atscript/models.as` | Extends `AoothUserCredentials` with `@arbac.role roles: string[]`. The default user shape when ARBAC is in play.                                                                                       |
-| `AoothAuthCredential`       | `@aooth/auth/atscript-db/model.as`      | Bearer-token row — `token` (PK), `userId`, `issuedAt`, `expiresAt`, `claims`, `metadata`. Already complete — apps usually do not extend it.                                                            |
+| Model                       | Subpath                                 | Purpose                                                                                                                                                                                                                                                                                                               |
+| --------------------------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AoothUserCredentials`      | `@aooth/user/atscript-db/model.as`      | Base credential record — the surrogate `id` (PK / token subject), the unique `username` handle, `version`, `password`, `account`, `mfa`, `trustedDevices`. Only `@db.table` is left to the app. Secondary login/recovery handles (email, phone) are consumer-declared — see [Credentials Model](../user/credentials). |
+| `AoothArbacUserCredentials` | `@aooth/arbac-moost/atscript/models.as` | Extends `AoothUserCredentials` with `@arbac.role roles: string[]`. The default user shape when ARBAC is in play.                                                                                                                                                                                                      |
+| `AoothAuthCredential`       | `@aooth/auth/atscript-db/model.as`      | Bearer-token row — `token` (PK), `userId`, `issuedAt`, `expiresAt`, `claims`, `metadata`. Already complete — apps usually do not extend it.                                                                                                                                                                           |
 
 ::: info Subpath form
 The `package.json` exports the raw `.as` source under the `.as` suffix (e.g. `'@aooth/user/atscript-db/model.as'`). That is what `unplugin-atscript` resolves and what the e2e demo imports. There is no separate no-extension subpath — always include `.as`.
@@ -26,9 +26,6 @@ export interface AoothUserCredentials {
 
     @db.index.unique 'username_idx'
     username: string
-
-    @db.index.unique 'email_idx'
-    email?: string
 
     @db.column.version
     version: number.int
@@ -52,7 +49,7 @@ Source: [`user-credentials.as`](https://github.com/moostjs/aoothjs/blob/main/pac
 
 Two things to notice:
 
-1. **The surrogate `id` is the PK** (`@meta.id` + `@db.default.uuid`) and the **token subject** — what `useAuth().getUserId()` returns and what ARBAC resolves a user by. `username` and `email` are independently-unique **login handles** (`@db.index.unique`, distinct index names so they don't collapse into one compound index). The only thing left to the app is `@db.table` — **don't redeclare `id`/`email`**.
+1. **The surrogate `id` is the PK** (`@meta.id` + `@db.default.uuid`) and the **token subject** — what `useAuth().getUserId()` returns and what ARBAC resolves a user by. `username` is the one base **login handle** (`@db.index.unique`), always present. Secondary login/recovery handles (email, phone) are **not** in the base — **you declare your own** email/phone field on your extending model, index it `@db.index.unique`, and tag it `@aooth.user.email` / `@aooth.user.phone`. The only thing left to the app for the base is `@db.table` — **don't redeclare `id`**. See [Credentials Model](../user/credentials) and [Phone, Recovery Channels & Handles](../moost/recovery-and-handles).
 2. **`@db.patch.strategy 'merge'`** on `password`, `account`, `mfa`, `trustedDevices`. This is how the `UsersStoreAtscriptDb` adapter knows that a `set` patch like `{ account: { lastLogin } }` should merge into the existing row, not replace the whole sub-object. **Do not redeclare these sub-objects without the same annotation** — TypeScript shape inheritance does not carry the atscript annotation. See the [`@aooth/user` invariants](../user/#invariants).
 
 ## Extending for ARBAC
@@ -67,7 +64,7 @@ import { Department } from './department'
 @db.table 'users'
 @db.http.path '/users'
 export interface DemoUser extends AoothArbacUserCredentials {
-    // id (PK / @meta.id), username + email (unique handles), version — inherited.
+    // id (PK / @meta.id), username (unique handle), version — inherited.
     @arbac.attribute
     @meta.required
     @db.rel.FK
@@ -79,6 +76,17 @@ export interface DemoUser extends AoothArbacUserCredentials {
 
     @expect.maxLength 80
     displayName?: string
+
+    // Secondary login/recovery handles — consumer-declared, not in the base.
+    // Each MUST carry @db.index.unique (the account-takeover guard).
+    @db.index.unique 'email_idx'
+    @aooth.user.email
+    email?: string
+
+    @expect.maxLength 32
+    @db.index.unique 'phone_idx'
+    @aooth.user.phone
+    phone?: string
 
     @db.default.now
     createdAt: number.timestamp
@@ -113,7 +121,9 @@ import { AoothUserCredentials } from '@aooth/user/atscript-db/model.as'
 
 @db.table 'users'
 export interface AppUser extends AoothUserCredentials {
-    // id (PK), username + email (unique handles), version — inherited.
+    // id (PK), username (unique handle), version — inherited.
+    // Declare your own email/phone handle here if you want login/recovery by them
+    // (index it @db.index.unique + tag @aooth.user.email / @aooth.user.phone).
     @db.default.now
     createdAt: number.timestamp
 }
@@ -267,7 +277,7 @@ We recommend gitignoring the compiled artefacts. Add `gen:atscript` to your preb
 
 ## Recap
 
-1. Extend `AoothArbacUserCredentials` (or `AoothUserCredentials`) with your own columns — `id` (PK), `username`, `email`, and `version` are inherited; add only `@db.table`.
+1. Extend `AoothArbacUserCredentials` (or `AoothUserCredentials`) with your own columns — `id` (PK), `username`, and `version` are inherited; add `@db.table` (and your own `@db.index.unique` + `@aooth.user.email`/`@aooth.user.phone` handle fields if you want login/recovery by email/phone).
 2. Mark scope keys with `@arbac.attribute`.
 3. No `@arbac.userId` annotate needed — the auth subject is the base `@meta.id` (`id`), which the provider resolves by default.
 4. Pass the model to `syncSchema()` along with `AoothAuthCredential`.

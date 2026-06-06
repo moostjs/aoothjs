@@ -7,17 +7,16 @@
 ```ts
 interface UserCredentials {
   id: string; // stable surrogate — the token subject (`getUserId()`)
-  username: string; // unique login handle
-  email?: string; // unique login/contact handle (optional)
+  username: string; // the ONE base login handle (always present)
+  version?: number; // server-managed optimistic-concurrency counter
   password: PasswordData;
   account: AccountData;
   mfa: MfaData;
   trustedDevices?: TrustedDeviceRecord[];
-  backupCodes?: string[]; // hashes only
 }
 ```
 
-`id` is the **stable surrogate** the rest of the stack keys on — it is the JWT subject (`useAuth().getUserId()`), the key for every `UserService` write, and what ARBAC resolves a user by. `username` and `email` are independently-unique **login handles** (`UserStore.findByHandle` matches `username` then `email`); see [Stores](./stores).
+`id` is the **stable surrogate** the rest of the stack keys on — it is the JWT subject (`useAuth().getUserId()`), the key for every `UserService` write, and what ARBAC resolves a user by. `username` is the **one base login handle** (always present, unique). Any secondary login handle (email, phone) is **consumer-declared** — you add the field on your own `.as` model, mark it `@db.index.unique`, and tag it `@aooth.user.email` / `@aooth.user.phone`; the wiring threads those ordered handle fields into the store. `UserStore.findByHandle` matches `username` first, then the configured handle fields in order; see [Stores](./stores) and [Phone, Recovery Channels & Handles](/moost/recovery-and-handles).
 
 The shipped `.as` model: [`packages/user/src/atscript-db/user-credentials.as`](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/atscript-db/user-credentials.as).
 
@@ -31,8 +30,8 @@ export interface AoothUserCredentials {
     @db.index.unique 'username_idx'
     username: string
 
-    @db.index.unique 'email_idx'
-    email?: string
+    @db.column.version
+    version: number.int
 
     @db.patch.strategy 'merge'
     password: { /* … */ }
@@ -103,9 +102,9 @@ The expiration check is `lockEnds > 0 && lockEnds < now`. Use `lockAccount(u, re
 
 The array is patched as a **wholesale replacement**: the service reads the current array, computes the next array client-side, and writes the full list back.
 
-## `backupCodes?: string[]`
+## Recovery codes (consumer-declared)
 
-A reserved slot on the type for recovery-code hashes. **No bundled `UserService` API reads or writes it** — there are no `generateBackupCodes` / `consumeBackupCode` methods. If you implement recovery codes, store `hashMfaCode` hashes here via `users.update(...)` and verify with `verifyMfaCode`. See [MFA Primitives — Backup codes](./mfa#backup-codes).
+There is **no base `backupCodes` field and no bundled `UserService` API** for recovery codes — no `generateBackupCodes` / `consumeBackupCode` methods. If you implement recovery codes, declare your own column (e.g. `backupCodes?: string[]`) on your `.as` user model, store `hashMfaCode` hashes there via `users.update(...)`, and verify with `verifyMfaCode`. See [MFA Primitives — Backup codes](./mfa#backup-codes).
 
 ## Patch strategy summary
 
@@ -129,7 +128,7 @@ See [Stores](./stores) for the full contract.
 
 `UserService<T>` and `UserStore<T>` both accept a generic that augments the base type. Pass anything that's safe to merge into `UserCredentials`.
 
-`id`, `username`, and `email` are **base** fields — your generic `T` declares only the _extra_ columns:
+`id` and `username` are **base** fields — your generic `T` declares the _extra_ columns, including any secondary login handle (email, phone):
 
 ```ts
 import { UserService, UserStoreMemory } from "@aooth/user";
@@ -137,14 +136,15 @@ import { UserService, UserStoreMemory } from "@aooth/user";
 interface AppUser {
   tenantId: string;
   roles?: string[];
+  email?: string; // your own secondary login handle (not a base field)
 }
 
-const store = new UserStoreMemory<AppUser>();
+const store = new UserStoreMemory<AppUser>({}, { handleFields: ["email"] });
 const users = new UserService<AppUser>(store);
 
-// `id` is minted automatically (randomUUID). `username` is the 1st arg;
-// `email` is an optional base handle — set it via `update` (or add it to your
-// `T` to pass it through `createUser`'s `extras`).
+// `id` is minted automatically (randomUUID). `username` is the 1st arg (the
+// base handle). `email` lives on your `T` — pass it through `createUser`'s
+// `extras` or set it later via `update`.
 const u = await users.createUser("alice", "p4ssw0rd!", {
   tenantId: "acme",
   roles: ["admin"],
@@ -157,7 +157,7 @@ user.roles; // typed as string[] | undefined
 user.id; // base field — the token subject
 ```
 
-When using `@atscript/db`, define the extension in `.as` so it shows up at the storage layer. `id` (PK), `username`, `email`, and `version` are all inherited — declare only your own columns plus `@db.table`:
+When using `@atscript/db`, define the extension in `.as` so it shows up at the storage layer. `id` (PK), `username`, and `version` are all inherited — declare your own columns plus `@db.table`, including any secondary login handle (mark it `@db.index.unique` and tag it `@aooth.user.email` / `@aooth.user.phone` so the wiring picks it up):
 
 ```ts
 // app.as
@@ -169,6 +169,10 @@ export interface AppUser extends AoothUserCredentials {
     tenantId: string
 
     roles?: string[]
+
+    @db.index.unique 'email_idx'
+    @aooth.user.email
+    email?: string
 }
 ```
 

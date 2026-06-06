@@ -29,16 +29,18 @@ abstract class UserStore<T extends object = object> {
 
 **All reads-by-identity and ALL writes key on the surrogate `id`** (the token subject, `getUserId()`). The three reads differ by resolution:
 
-| Method             | Resolves by                                  | For                                                                                                 |
-| ------------------ | -------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `findById`         | the surrogate `id` only                      | canonical identity read; session-subject lookups                                                    |
-| `findByHandle`     | `username` exactly, **then** `email` exactly | the **login** path ONLY — ordered, never a permissive `$or`                                         |
-| `findByIdentifier` | `id`, then `username`, then `email`          | permissive internal / admin / recovery lookup                                                       |
-| `create`           | —                                            | Insert; mint `id` if absent; throw `ALREADY_EXISTS` on duplicate `username` **or** `email`          |
-| `update`/`delete`  | `id`                                         | return `false` when no row matched → service throws `NOT_FOUND`                                     |
-| `withCas`          | `id`                                         | re-read via `findById` → mutate → write under `expectedVersion`; throws `NOT_FOUND`/`CAS_EXHAUSTED` |
+| Method             | Resolves by                                                        | For                                                                                                            |
+| ------------------ | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `findById`         | the surrogate `id` only                                            | canonical identity read; session-subject lookups                                                               |
+| `findByHandle`     | `username` exactly, **then** the configured handle fields in order | the **login** path ONLY — ordered, never a permissive `$or`                                                    |
+| `findByIdentifier` | `id`, then `username`, then the configured handle fields           | permissive internal / admin / recovery lookup                                                                  |
+| `create`           | —                                                                  | Insert; mint `id` if absent; throw `ALREADY_EXISTS` on duplicate `username` **or** any configured handle value |
+| `update`/`delete`  | `id`                                                               | return `false` when no row matched → service throws `NOT_FOUND`                                                |
+| `withCas`          | `id`                                                               | re-read via `findById` → mutate → write under `expectedVersion`; throws `NOT_FOUND`/`CAS_EXHAUSTED`            |
 
-`findByHandle` is NOT a permissive `$or`: `id`/`username`/`email` are all `string`, so a permissive match could resolve one user's username that equals another's email to the wrong account. Keep login on `findByHandle`. The service relies on the `false` return values to throw `NOT_FOUND` — never silently succeed when a row is missing.
+The secondary handle fields are the consumer-declared, `@db.index.unique` columns tagged `@aooth.user.email` / `@aooth.user.phone` (resolved by the wiring into the store's ordered `handleFields`); `username` is the one base login handle. See [recovery-and-handles.md](recovery-and-handles.md).
+
+`findByHandle` is NOT a permissive `$or`: `id`/`username`/handle fields are all `string`, so a permissive match could resolve one user's username that equals another's handle value to the wrong account. Keep login on `findByHandle`. The service relies on the `false` return values to throw `NOT_FOUND` — never silently succeed when a row is missing.
 
 ## `UserStoreUpdate` shape
 
@@ -70,9 +72,6 @@ Examples actually emitted by `UserService`:
 // MFA method add
 { set: { mfa: { methods: [...next] } } }
 
-// backup-codes batch (full replacement)
-{ set: { backupCodes: hashes } }
-
 // trusted-device append (full array replacement, read-modify-write at service layer)
 { set: { trustedDevices: [...next] } }
 ```
@@ -94,7 +93,7 @@ const seeded = new UserStoreMemory({
 
 Backed by `Map<id, UserCredentials & T>` (keyed by the surrogate `id`). Features:
 
-- `create` mints an `id` if absent and throws `UserAuthError("ALREADY_EXISTS")` on a duplicate `username` **or** `email`.
+- `create` mints an `id` if absent and throws `UserAuthError("ALREADY_EXISTS")` on a duplicate `username` **or** any configured handle field value (it takes the same `handleFields` as the atscript-db store; omit for username-only).
 - Reads (`findById`/`findByHandle`/`findByIdentifier`) return a **`structuredClone`** of the stored record — mutating it does not affect storage.
 - `create` also stores a `structuredClone` — callers can keep using the object they passed in without leaking subsequent mutations into the store.
 - `update.set` deep-merges via the in-package `deepMerge` (top-level fields shallow-merged, plain-object sub-fields recursively merged, arrays / null / primitives replaced).
@@ -107,8 +106,8 @@ Recommended fake for tests — the seed constructor is convenient for fixture-ba
 
 Start from the contract above. Rules:
 
-1. **Reads-by-identity and writes key on `id`.** `findById` is strict-by-`id`. `findByHandle` is the LOGIN resolver — match `username` first, `email` second, ordered (NEVER a permissive `$or`). `findByIdentifier` is permissive (`id` → `username` → `email`) for admin/recovery only.
-2. **`create` MUST raise `UserAuthError("ALREADY_EXISTS", message)`** on a duplicate `username` **or** `email`, and mint an `id` if the row arrives without one. The atscript-db adapter translates `DbError.code === "CONFLICT"`; SQL stores translate the engine-specific unique-violation code (e.g. `SQLITE_CONSTRAINT_UNIQUE`, `23505` on Postgres).
+1. **Reads-by-identity and writes key on `id`.** `findById` is strict-by-`id`. `findByHandle` is the LOGIN resolver — match `username` first, then the configured handle fields in order (NEVER a permissive `$or`). `findByIdentifier` is permissive (`id` → `username` → the configured handle fields) for admin/recovery only. The handle fields are the consumer-declared `@aooth.user.email` / `@aooth.user.phone` columns the wiring resolves into the store's ordered `handleFields` — the store stays name-agnostic (see [recovery-and-handles.md](recovery-and-handles.md)).
+2. **`create` MUST raise `UserAuthError("ALREADY_EXISTS", message)`** on a duplicate `username` **or** any configured handle field value, and mint an `id` if the row arrives without one. The atscript-db adapter translates `DbError.code === "CONFLICT"`; SQL stores translate the engine-specific unique-violation code (e.g. `SQLITE_CONSTRAINT_UNIQUE`, `23505` on Postgres).
 3. **`update` MUST treat `set` as a deep merge** for `password` / `account` / `mfa` / `trustedDevices`. The `.as` model encodes this via `@db.patch.strategy 'merge'`. Wholesale-replacing any of these sub-objects breaks partial-update semantics (e.g. a login update would clobber the user's MFA config).
 4. **`update` MUST treat `inc` as atomic** per dot-path. SQL: `SET col = col + N`. atscript-db: emits `{ $inc: N }` at the dot-path so the engine handles the atomic op.
 5. **`update` / `delete` return `false`** when no row matched (by `id`). The service surfaces that as `NOT_FOUND`.
@@ -119,6 +118,11 @@ Start from the contract above. Rules:
 import { UserStore, UserAuthError, type UserCredentials, type UserStoreUpdate } from "@aooth/user";
 
 class MyStore<T extends object = object> extends UserStore<T> {
+  // Ordered secondary handle columns (e.g. ["email", "phone"]) the wiring
+  // resolved from the model's @aooth.user.* annotations; [] for username-only.
+  constructor(private readonly handleFields: string[] = []) {
+    super();
+  }
   async exists(handle: string): Promise<boolean> {
     /* SELECT 1 ... WHERE username = handle */
   }
@@ -126,10 +130,13 @@ class MyStore<T extends object = object> extends UserStore<T> {
     return (await db.selectOne({ id })) ?? null;
   }
   async findByHandle(handle: string): Promise<(UserCredentials & T) | null> {
-    // username first, then email — ordered, never $or
-    return (
-      (await db.selectOne({ username: handle })) ?? (await db.selectOne({ email: handle })) ?? null
-    );
+    // username first, then each configured handle field — ordered, never $or
+    let row = await db.selectOne({ username: handle });
+    for (const field of this.handleFields) {
+      if (row) break;
+      row = await db.selectOne({ [field]: handle });
+    }
+    return row ?? null;
   }
   async findByIdentifier(value: string): Promise<(UserCredentials & T) | null> {
     return (await this.findById(value)) ?? (await this.findByHandle(value));
@@ -186,9 +193,9 @@ How it maps the contract:
 
 - `exists` → `table.count({ filter: { username } }) > 0`.
 - `findById` → `table.findOne({ filter: { id } })`.
-- `findByHandle` → `table.findOne({ filter: { username } })`, then `{ filter: { email } }` if no match (ordered).
+- `findByHandle` → `table.findOne({ filter: { username } })`, then `{ filter: { [field]: handle } }` for each configured handle field if no match (ordered).
 - `findByIdentifier` → `findById`, else `findByHandle`.
-- `create` → `table.insertOne(data)`. Adapter translates DB conflict errors (duplicate `username` or `email`) to `UserAuthError("ALREADY_EXISTS")`; any other error propagates.
+- `create` → `table.insertOne(data)`. Adapter translates DB conflict errors (duplicate `username` or any configured handle value) to `UserAuthError("ALREADY_EXISTS")`; any other error propagates.
 - `update` → `table.updateOne` keyed by `id`; forwards `update.set` as a deep-merge patch (the `.as` model's `@db.patch.strategy 'merge'` is load-bearing) and translates each `update.inc` entry into an engine-level atomic increment at the dot-path. Returns `result.matchedCount > 0`.
 - `delete` → `table.deleteMany({ id })`, returns `result.deletedCount > 0`.
 
@@ -229,9 +236,6 @@ export interface AoothUserCredentials {
     @db.index.unique 'username_idx'
     username: string
 
-    @db.index.unique 'email_idx'
-    email?: string
-
     @db.column.version
     version: number.int
 
@@ -255,9 +259,9 @@ export interface AoothUserCredentials {
 
 Notably:
 
-- **Ships `@meta.id` (`id`, the token subject), unique `username`/`email` handles, and `@db.column.version`.** The only thing left to the app is `@db.table` — **do NOT redeclare `id`/`email`** (redundant; risks flipping the unique-index/merge semantics). The two unique-index names differ (`username_idx`, `email_idx`) so they stay independent indexes.
+- **Ships `@meta.id` (`id`, the token subject), the unique `username` handle (the one base login handle), and `@db.column.version`.** The base has **no `email` and no `phone`** — do NOT redeclare `id`/`username`/`version` (redundant; risks flipping the unique-index/merge semantics). Add `@db.table` on your extending interface, plus any secondary login/recovery handle YOURSELF: declare your own `email` / `phone` field, give it `@db.index.unique`, and tag it `@aooth.user.email` / `@aooth.user.phone` (the unique index is the account-takeover guard; without it the handle is warn-and-disabled at boot). See [recovery-and-handles.md](recovery-and-handles.md).
 - `@db.patch.strategy 'merge'` propagates through `extends`. If you re-declare any of these sub-objects in your extending interface, the annotation does NOT carry over to the redeclaration — re-add it explicitly or you'll switch to wholesale replace.
-- `backupCodes?: string[]` (from `UserCredentials`) is NOT declared in the shipped `.as` model — add it on your extending interface if you store backup codes (the type is `string[]`, no per-element annotations needed).
+- `backupCodes?: string[]` is NOT declared in the shipped `.as` model (nor on the `UserCredentials` type) — add it on your extending interface if you store backup codes (the type is `string[]`, no per-element annotations needed).
 
 ## Federated identity store (account linking)
 
