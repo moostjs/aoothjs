@@ -1,4 +1,3 @@
-import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -6,20 +5,7 @@ import {
   getArbacAttenuationSpec,
   validateAttenuationTargets,
 } from "./attenuation-extract";
-
-/**
- * Build a minimal `TAtscriptAnnotatedType` whose object props carry the given
- * per-field annotation map — exactly the surface `extractAttenuation` reads
- * (`type.kind`, `type.props`, `fieldType.metadata.get`). Lets us unit-test the
- * annotation walk without compiling an `.as` fixture.
- */
-function mockCredType(fields: Record<string, Record<string, unknown>>): TAtscriptAnnotatedType {
-  const props = new Map<string, { metadata: { get: (k: string) => unknown } }>();
-  for (const [name, anns] of Object.entries(fields)) {
-    props.set(name, { metadata: { get: (k: string) => anns[k] } });
-  }
-  return { type: { kind: "object", props } } as unknown as TAtscriptAnnotatedType;
-}
+import { mockAnnotatedType } from "./__test__/mock-annotated-type";
 
 const ROLE = "arbac.attenuate.role";
 const ATTR = "arbac.attenuate.attr";
@@ -27,7 +13,7 @@ const ATTR = "arbac.attenuate.attr";
 describe("getArbacAttenuationSpec — annotation walk", () => {
   it("collects the single role field and the attr→userAttr mappings", () => {
     const spec = getArbacAttenuationSpec(
-      mockCredType({
+      mockAnnotatedType({
         assumedRoles: { [ROLE]: true },
         scopedTenant: { [ATTR]: "tenantId" },
         scopedDept: { [ATTR]: "departmentId" },
@@ -43,19 +29,19 @@ describe("getArbacAttenuationSpec — annotation walk", () => {
 
   it("throws on more than one @arbac.attenuate.role field", () => {
     expect(() =>
-      getArbacAttenuationSpec(mockCredType({ a: { [ROLE]: true }, b: { [ROLE]: true } })),
+      getArbacAttenuationSpec(mockAnnotatedType({ a: { [ROLE]: true }, b: { [ROLE]: true } })),
     ).toThrow(/multiple @arbac.attenuate.role/);
   });
 
   it("returns an empty spec for a model with no attenuation annotations", () => {
-    const spec = getArbacAttenuationSpec(mockCredType({ token: {}, userId: {} }));
+    const spec = getArbacAttenuationSpec(mockAnnotatedType({ token: {}, userId: {} }));
     expect(spec.roleField).toBeUndefined();
     expect(spec.attrFields).toEqual([]);
   });
 });
 
 describe("validateAttenuationTargets — boot-time cross-model check", () => {
-  const credType = mockCredType({
+  const credType = mockAnnotatedType({
     assumedRoles: { [ROLE]: true },
     scopedTenant: { [ATTR]: "tenantId" },
   });
@@ -65,13 +51,13 @@ describe("validateAttenuationTargets — boot-time cross-model check", () => {
   });
 
   it("throws when an attr target is missing from the user attr keyspace", () => {
-    const bad = mockCredType({ scopedX: { [ATTR]: "nope" } });
+    const bad = mockAnnotatedType({ scopedX: { [ATTR]: "nope" } });
     expect(() => validateAttenuationTargets(bad, ["tenantId"])).toThrow(/"nope"/);
   });
 });
 
 describe("extractAttenuation — restrict-only attenuation from typed fields", () => {
-  const credType = mockCredType({
+  const credType = mockAnnotatedType({
     assumedRoles: { [ROLE]: true },
     scopedTenant: { [ATTR]: "tenantId" },
   });
@@ -84,7 +70,7 @@ describe("extractAttenuation — restrict-only attenuation from typed fields", (
   });
 
   it("a model with no attenuation annotations → undefined (full authority)", () => {
-    expect(extractAttenuation(mockCredType({ token: {} }), { token: "x" })).toBeUndefined();
+    expect(extractAttenuation(mockAnnotatedType({ token: {} }), { token: "x" })).toBeUndefined();
   });
 
   it("an attenuation-capable model whose token sets nothing → undefined (full authority)", () => {
