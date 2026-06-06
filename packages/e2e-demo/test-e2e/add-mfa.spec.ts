@@ -13,6 +13,7 @@ import {
   USERS,
   waitForEmail,
   waitForFormInput,
+  readTotpQrSecret,
   waitForTotpQrStep,
   wfUrl,
 } from "./harness";
@@ -199,18 +200,19 @@ test.describe("Manage-MFA workflow (WF-MANAGE-MFA / MME)", () => {
     await fillField(page, "operation", "replace:totp");
     await submitForm(page);
 
-    // QR step provisions a NEW secret (the single TOTP slot is clobbered, with
-    // the old one stashed for cancel/restore). Read it back from the unconfirmed
-    // row and prove it changed.
-    await waitForTotpQrStep(page);
-    const provisioned = await readUser(request, USERS.grace.username);
-    const newSecret = provisioned.mfa.methods.find((m) => m.name === "totp")?.value;
+    // QR step stages a NEW secret in wf-state (write-on-confirm: the live
+    // confirmed secret in the store is NOT touched yet). Read the rendered secret
+    // and prove it changed — AND that the store still holds the OLD one (no
+    // pre-confirm clobber → the no-strand guarantee).
+    const newSecret = await readTotpQrSecret(page);
     expect(newSecret).toBeTruthy();
     expect(newSecret).not.toBe(oldSecret);
+    const midReplace = await readUser(request, USERS.grace.username);
+    expect(midReplace.mfa.methods.find((m) => m.name === "totp")?.value).toBe(oldSecret);
 
     await continuePastTotpQr(page);
     await waitForFormInput(page, "code");
-    await fillField(page, "code", totp(newSecret as string));
+    await fillField(page, "code", totp(newSecret));
     await submitForm(page);
 
     const env = (await readFinishEnvelope(page)) as {
@@ -289,22 +291,29 @@ test.describe("Manage-MFA workflow (WF-MANAGE-MFA / MME)", () => {
     await fillField(page, "method", "totp");
     await submitForm(page);
 
-    // QR step: the scannable QR renders and there is NO code input yet.
+    // QR step: the scannable QR renders and there is NO code input yet. The
+    // secret is staged in wf-state (write-on-confirm) — read it from the QR.
     await waitForTotpQrStep(page);
     await expect(page.locator('[name="code"]')).toHaveCount(0);
+    const secret = await readTotpQrSecret(page);
+    expect(secret).toBeTruthy();
 
     await continuePastTotpQr(page);
     // NOW the code field appears.
     await waitForFormInput(page, "code");
-    const provisioned = await readUser(request, USERS.alice.username);
-    const secret = provisioned.mfa.methods.find((m) => m.name === "totp")?.value;
-    expect(secret).toBeTruthy();
-    await fillField(page, "code", totp(secret as string));
+    await fillField(page, "code", totp(secret));
     await submitForm(page);
 
     const env = (await readFinishEnvelope(page)) as { data?: { added?: boolean; method?: string } };
     expect(env.data?.added).toBe(true);
     expect(env.data?.method).toBe("totp");
+
+    // write-on-confirm: only after confirm is the factor persisted (as the
+    // rendered secret).
+    const rec = await readUser(request, USERS.alice.username);
+    const totpRow = rec.mfa.methods.find((m) => m.name === "totp");
+    expect(totpRow?.confirmed).toBe(true);
+    expect(totpRow?.value).toBe(secret);
   });
 
   test("MME-08 (address validation): a malformed email is rejected before any code is sent", async ({

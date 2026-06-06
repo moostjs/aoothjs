@@ -163,6 +163,20 @@ export async function continuePastTotpQr(page: Page): Promise<void> {
   await submitForm(page);
 }
 
+/**
+ * Read the manual-entry base32 secret rendered on the TOTP QR step. Under
+ * write-on-confirm the secret is staged in wf-state and NOT persisted to the
+ * user record until the setup code verifies, so the rendered secret (not a DB
+ * row) is the source of truth for computing the enrollment code. Call this while
+ * the QR step is showing, BEFORE `continuePastTotpQr`.
+ */
+export async function readTotpQrSecret(page: Page): Promise<string> {
+  await waitForTotpQrStep(page);
+  const el = page.locator(".as-qr-code .as-qr-code-secret").first();
+  await el.waitFor({ state: "visible", timeout: 5000 });
+  return ((await el.textContent()) ?? "").trim();
+}
+
 /** Submit the form via its primary submit button (the one rendered by AsForm). */
 export async function submitForm(page: Page): Promise<void> {
   await page.locator("button.as-submit-btn, button[type=submit]").first().click();

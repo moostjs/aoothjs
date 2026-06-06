@@ -232,29 +232,27 @@ test.describe("MFA enrollment / TOTP QR", () => {
     const secretText = ((await secretEl.textContent()) ?? "").trim();
     expect(secretText.length, "manual-entry base32 secret is non-empty").toBeGreaterThan(0);
 
-    // Cross-check: the manual secret equals the server-provisioned (unconfirmed)
-    // TOTP method value, and computing a code against it confirms enrollment —
-    // pins that the QR/secret render the REAL provisioned secret, not a stale
-    // placeholder.
+    // Write-on-confirm: the secret is staged in wf-state and NOT persisted until
+    // the code verifies, so there is no DB row to cross-check yet — the rendered
+    // manual secret IS the wf-state secret. Compute the code against THAT.
+    await continuePastTotpQr(page);
+    await waitForFormInput(page, "code");
+    await fillField(page, "code", totp(secretText));
+    await submitForm(page);
+    const envelope = (await readFinishEnvelope(page)) as { data?: { accessToken?: string } };
+    expect(typeof envelope.data?.accessToken).toBe("string");
+    expect((envelope.data?.accessToken ?? "").length).toBeGreaterThan(0);
+
+    // write-on-confirm cross-check: ONLY now is the secret persisted — as a
+    // CONFIRMED row whose value is exactly the secret the QR rendered.
     const userRes = await request.get(`/__test/user/${USERS.alice.username}`);
     expect(userRes.status()).toBe(200);
     const userRec = (await userRes.json()) as {
       mfa: { methods: Array<{ name: string; confirmed: boolean; value: string }> };
     };
     const totpRow = userRec.mfa.methods.find((m) => m.name === "totp");
-    expect(totpRow, "auto-pick provisioned an unconfirmed totp method").toBeDefined();
-    expect(totpRow!.confirmed).toBe(false);
-    expect(secretText, "rendered manual secret matches the provisioned secret").toBe(
-      totpRow!.value,
-    );
-
-    // Continue past the QR to the code-entry step.
-    await continuePastTotpQr(page);
-    await waitForFormInput(page, "code");
-    await fillField(page, "code", totp(totpRow!.value));
-    await submitForm(page);
-    const envelope = (await readFinishEnvelope(page)) as { data?: { accessToken?: string } };
-    expect(typeof envelope.data?.accessToken).toBe("string");
-    expect((envelope.data?.accessToken ?? "").length).toBeGreaterThan(0);
+    expect(totpRow, "confirm persisted the totp factor").toBeDefined();
+    expect(totpRow!.confirmed).toBe(true);
+    expect(totpRow!.value, "persisted secret equals the rendered one").toBe(secretText);
   });
 });

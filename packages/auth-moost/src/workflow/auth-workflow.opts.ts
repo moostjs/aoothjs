@@ -61,6 +61,8 @@ export interface AuthWorkflowOpts {
     manageMfa?: TAtscriptAnnotatedType;
     /** Confirm-removal pause for the manage-MFA "Remove" action. */
     removeMfaConfirm?: TAtscriptAnnotatedType;
+    /** Password re-auth — step-up fallback when no factor is MFA-challengeable. */
+    passwordReauth?: TAtscriptAnnotatedType;
 
     // MFA challenge
     select2fa?: TAtscriptAnnotatedType;
@@ -128,6 +130,7 @@ export interface ResolvedAuthWorkflowOpts {
     enrollConfirm: TAtscriptAnnotatedType;
     manageMfa: TAtscriptAnnotatedType;
     removeMfaConfirm: TAtscriptAnnotatedType;
+    passwordReauth: TAtscriptAnnotatedType;
     select2fa: TAtscriptAnnotatedType;
     mfaCode: TAtscriptAnnotatedType;
     pincode: TAtscriptAnnotatedType;

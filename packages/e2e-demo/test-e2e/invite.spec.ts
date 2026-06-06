@@ -573,15 +573,16 @@ test.describe("WF-INVITE — auth.invite family (MFA enrollment, PW MFA coverage
   /**
    * BRANCH: `EnrollConfirmForm.useDifferentMethod` (totp branch — `resend`
    * is hidden when method='totp' so the only alt-action is the switch).
-   * Clicking it must (a) trigger `cleanupEnrollment` so the unconfirmed
-   * totp row is removed, (b) clear `ctx.enrollMethod`, (c) loop back to
-   * EnrollPickMethodForm. PR7-2 fixed a regression where the linear invite
-   * schema let useDifferentMethod from Phase 3 fall through to activation
-   * with NO MFA enrolled even under required mode — this test pins the
-   * cleanup half (the activation half is the vitest WF-INVITE-15 territory)
-   * AND proves a fresh totp pick after the switch can still complete normally.
+   * Clicking it must (a) clear `ctx.mfaEnroll.method` and (b) loop back to
+   * EnrollPickMethodForm. Under write-on-confirm nothing is persisted before
+   * the code verifies, so there is no partial totp row to remove — the test
+   * asserts none was ever written. PR7-2 fixed a regression where the linear
+   * invite schema let useDifferentMethod from Phase 3 fall through to activation
+   * with NO MFA enrolled even under required mode — this pins the loop-back half
+   * (the activation half is vitest WF-INVITE-15 territory) AND proves a fresh
+   * totp pick after the switch can still complete normally.
    */
-  test("WF-INVITE-022 invite-tail optional + useDifferentMethod from EnrollConfirmForm (totp→sms) → loops to picker, cleanup removes totp row, sms enroll completes", async ({
+  test("WF-INVITE-022 invite-tail optional + useDifferentMethod from EnrollConfirmForm (totp→sms) → loops to picker (write-on-confirm: no partial totp row ever written), sms enroll completes", async ({
     page,
     request,
     baseURL,
@@ -618,22 +619,22 @@ test.describe("WF-INVITE — auth.invite family (MFA enrollment, PW MFA coverage
     await fillField(inviteePage, "method", "totp");
     await submitForm(inviteePage);
 
-    // TOTP QR step. Mid-flow store assertion: the unconfirmed totp row was
-    // persisted at pick (proves the cleanup branch below isn't a vacuous pass
-    // on a system that never wrote one).
+    // TOTP QR step. Write-on-confirm: NOTHING is persisted to the user record at
+    // pick/QR — the secret is staged in wf-state only, so there is no partial
+    // totp row mid-flow (the QR renders the staged secret).
     await waitForTotpQrStep(inviteePage);
     const before = await request.get(`/__test/user/${encodeURIComponent(inviteeEmail)}`);
     const beforeRec = (await before.json()) as {
       mfa: { methods: Array<{ name: string; confirmed: boolean }> };
     };
-    expect(beforeRec.mfa.methods.find((m) => m.name === "totp")?.confirmed).toBe(false);
+    expect(beforeRec.mfa.methods.find((m) => m.name === "totp")).toBeUndefined();
 
-    // useDifferentMethod (available on the QR step too) — loops back to picker,
-    // cleanupEnrollment removes the totp row.
+    // useDifferentMethod (available on the QR step too) — loops back to picker.
+    // With nothing persisted there is nothing to undo; the loop just re-fires.
     await clickAction(inviteePage, "Use a different method");
     await waitForFormInput(inviteePage, "method");
 
-    // Cleanup proof: no totp row left.
+    // Still no totp row (none was ever written).
     const mid = await request.get(`/__test/user/${encodeURIComponent(inviteeEmail)}`);
     const midRec = (await mid.json()) as {
       mfa: { methods: Array<{ name: string }> };

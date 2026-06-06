@@ -698,6 +698,31 @@ export interface RemoveMfaConfirmForm {
 }
 
 /**
+ * Manage-MFA password re-auth — the step-up FALLBACK rendered when the user's
+ * only confirmed factor(s) are of kinds the policy no longer allows, so nothing
+ * is MFA-challengeable (`ctx.addMfa.stepUpMode === "password"`). A single
+ * current-password field; the submit verifies it via `UserService.verifyPassword`
+ * and 'Cancel' backs out. See `AuthWorkflow.managePasswordReauth`.
+ */
+@meta.label 'Confirm your password'
+@meta.description 'Re-enter your account password to manage your two-factor methods.'
+@wf.context.pass 'public'
+@ui.form.submit.text 'Verify'
+export interface PasswordReauthForm {
+    @ui.form.order 10
+    @ui.form.type 'password'
+    @meta.label 'Password'
+    @ui.form.autocomplete 'current-password'
+    @meta.sensitive
+    @meta.required
+    @expect.minLength 1
+    password: string
+
+    @ui.form.action 'cancel', 'Cancel'
+    cancel?: ui.action
+}
+
+/**
  * Standalone consent-bump prompt. Fires for returning users with pending
  * consents (set by `prepare-consents` from `ConsentStore.getPendingConsents`)
  * who did NOT pass through any onboarding carrier form (`AskEmailForm` /

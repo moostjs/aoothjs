@@ -103,14 +103,6 @@ export interface AuthWfMfaEnrollState {
    */
   qrSeen?: boolean;
   /**
-   * This enrolment REPLACES an existing confirmed factor's value (manage-MFA
-   * "Change" action), rather than adding a brand-new transport. Replace is
-   * verify-then-write for sms/email (the old value stays valid until the new
-   * one is proven); for TOTP the old secret is stashed on
-   * `AuthWfAddMfaState.replaced` so a cancel can restore it.
-   */
-  replace?: boolean;
-  /**
    * When set, `enroll-confirm` does NOT make the freshly-confirmed method the
    * user's default. Set by `init-add-mfa` (the standalone add-MFA flow) when the
    * user already has a default — adding a secondary factor must not silently
@@ -456,11 +448,23 @@ export interface AuthWfAddMfaState {
   locked?: MfaTransport[];
   /**
    * `true` when the user already has ≥1 confirmed method, so the manage flow
-   * must step-up (verify an existing factor) BEFORE offering add/change/remove,
-   * and shows the management menu. `false` (zero confirmed methods) skips both
-   * — the flow degrades to the first-time enrol picker (the opt-in path).
+   * must step-up (re-verify identity) BEFORE offering add/change/remove, and
+   * shows the management menu. The METHOD of step-up is `stepUpMode`. `false`
+   * (zero confirmed methods) skips both — the flow degrades to the first-time
+   * enrol picker (the opt-in path).
    */
   stepUpRequired?: boolean;
+  /**
+   * How the step-up is performed (set by `init-add-mfa` when `stepUpRequired`):
+   * - `'mfa'` — the user has ≥1 confirmed factor whose kind is still in the
+   *   policy's `availableTransports`, so `mfaStepUpLoop` challenges it.
+   * - `'password'` — every confirmed factor is of a kind the policy no longer
+   *   allows (none is challengeable), so `manage-password-reauth` re-verifies
+   *   via the account password instead. Fail-closed fallback that keeps "prove
+   *   identity before managing factors" intact even after a policy tightening
+   *   orphaned the only enrolled factor.
+   */
+  stepUpMode?: "mfa" | "password";
   /**
    * Set once the step-up factor verifies AND the flow has swapped off the
    * encapsulated start onto the durable `store` strategy (server-anchored,
@@ -471,13 +475,6 @@ export interface AuthWfAddMfaState {
   action?: "add" | "replace" | "remove";
   /** The transport the chosen `action` applies to. */
   target?: MfaTransport;
-  /**
-   * Old confirmed factor stashed before a TOTP **replace** overwrites it (TOTP
-   * has a single slot, so verifying the new secret requires provisioning it,
-   * which displaces the old). A cancel/abort restores from here; success drops
-   * it. sms/email replace is verify-then-write and never stashes.
-   */
-  replaced?: { name: string; value: string; wasDefault?: boolean };
   /** Set by `confirm-remove-mfa` so `finish-add-mfa` can report which factor was removed. */
   removed?: MfaTransport;
 }

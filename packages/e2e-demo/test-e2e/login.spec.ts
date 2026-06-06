@@ -27,6 +27,7 @@ import {
   waitForEmail,
   waitForFormInput,
   waitForSms,
+  readTotpQrSecret,
   waitForTotpQrStep,
   wfUrl,
 } from "./harness";
@@ -1669,30 +1670,32 @@ test.describe("LoginWorkflow / MFA enrollment (PW MFA coverage)", () => {
 
     // Auto-pick proof: NO `method` radio (EnrollPickMethodForm's signature) —
     // a single transport auto-picks straight into the enrol trio. TOTP now shows
-    // the QR on its own step BEFORE code entry; continue past it.
+    // the QR on its own step BEFORE code entry.
     await expect(page.locator('[name="method"]')).toHaveCount(0);
+
+    // Write-on-confirm: the secret is staged in wf-state (rendered on the QR
+    // step), NOT persisted to the user record until the code verifies — read it
+    // from the rendered QR, then continue to code entry.
+    const secret = await readTotpQrSecret(page);
+    expect(secret.length).toBeGreaterThan(0);
     await continuePastTotpQr(page);
     await waitForFormInput(page, "code");
-
-    // Server-provisioned TOTP secret is on the unconfirmed mfa.methods row.
-    // Read via /__test/user/:username (the totp-secret endpoint filters on
-    // confirmed=true and would 500 here because the row isn't confirmed yet).
-    const userRes = await request.get(`/__test/user/${USERS.alice.username}`);
-    expect(userRes.status()).toBe(200);
-    const userRec = (await userRes.json()) as {
-      mfa: { methods: Array<{ name: string; confirmed: boolean; value: string }> };
-    };
-    const totpRow = userRec.mfa.methods.find((m) => m.name === "totp");
-    expect(totpRow, "auto-pick provisioned an unconfirmed totp method").toBeDefined();
-    expect(totpRow!.confirmed).toBe(false);
-    expect(totpRow!.value.length).toBeGreaterThan(0);
-
-    await fillField(page, "code", totp(totpRow!.value));
+    await fillField(page, "code", totp(secret));
     await submitForm(page);
 
     const envelope = (await readFinishEnvelope(page)) as { data?: { accessToken?: string } };
     expect(typeof envelope.data?.accessToken).toBe("string");
     expect((envelope.data?.accessToken ?? "").length).toBeGreaterThan(0);
+
+    // write-on-confirm: only after the code verifies is the factor persisted.
+    const userRes = await request.get(`/__test/user/${USERS.alice.username}`);
+    const userRec = (await userRes.json()) as {
+      mfa: { methods: Array<{ name: string; confirmed: boolean; value: string }> };
+    };
+    const totpRow = userRec.mfa.methods.find((m) => m.name === "totp");
+    expect(totpRow, "confirm persisted the totp factor").toBeDefined();
+    expect(totpRow!.confirmed).toBe(true);
+    expect(totpRow!.value).toBe(secret);
   });
 
   /**
@@ -1776,15 +1779,15 @@ test.describe("LoginWorkflow / MFA enrollment (PW MFA coverage)", () => {
 
   /**
    * BRANCH: `EnrollAddressForm.useDifferentMethod` (visible when ≥2
-   * transports) dispatches `action: 'useDifferentMethod'` which triggers
-   * `cleanupEnrollment` server-side (deletes the unconfirmed method row
-   * created by the picker pick), clears `ctx.enrollMethod`, and loops the
-   * schema back to `EnrollPickMethodForm`. A regression that skipped the
-   * cleanup would leave a covert unconfirmed sms row in the user record
-   * even after the user backed out; a regression that didn't clear
-   * `ctx.enrollMethod` would loop forever on the address form.
+   * transports) dispatches `action: 'useDifferentMethod'`, which clears
+   * `ctx.mfaEnroll.method` and loops the schema back to `EnrollPickMethodForm`.
+   * Under write-on-confirm nothing is persisted until the code verifies, so
+   * there is no row to clean up — but a regression that didn't clear the method
+   * would loop forever on the address form, and one that wrote a row early would
+   * leave a covert unconfirmed sms row. This pins both: back to the picker, no
+   * sms row in the record.
    */
-  test("WF-LOGIN-035: optional + useDifferentMethod from EnrollAddressForm → returns to picker, unconfirmed row cleaned up", async ({
+  test("WF-LOGIN-035: optional + useDifferentMethod from EnrollAddressForm → returns to picker, no covert row written", async ({
     page,
     request,
   }) => {
@@ -1802,8 +1805,7 @@ test.describe("LoginWorkflow / MFA enrollment (PW MFA coverage)", () => {
     await submitForm(page);
 
     // EnrollAddressForm — `address` field. Don't fill it; click
-    // `useDifferentMethod` so the cleanup path is exercised before any row
-    // is persisted via Phase 2 (Phase 2 only persists on submit).
+    // `useDifferentMethod` to bail back to the picker.
     await waitForFormInput(page, "address");
     await clickAction(page, "Use a different method");
 
@@ -1811,10 +1813,9 @@ test.describe("LoginWorkflow / MFA enrollment (PW MFA coverage)", () => {
     await waitForFormInput(page, "method");
     await expect(page.locator('[name="address"]')).toHaveCount(0);
 
-    // Cleanup proof: no covert sms row exists. (Address form submission was
-    // never made, so this also doubles as proof that the picker pick alone
-    // doesn't materialize a row before address submission — which would be
-    // a different defect-class.)
+    // Write-on-confirm proof: no covert sms row exists — the enrol trio never
+    // touches the user record until the code verifies, so neither the picker
+    // pick nor the abandoned address form materialized a row.
     const userRes = await request.get(`/__test/user/${USERS.alice.username}`);
     const userRec = (await userRes.json()) as {
       mfa: { methods: Array<{ name: string }> };
