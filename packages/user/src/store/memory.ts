@@ -77,23 +77,36 @@ export class UserStoreMemory<T extends object = object> extends UserStore<T> {
   async create(data: UserCredentials & T): Promise<void> {
     const cloned = structuredClone(data);
     if (!cloned.id) cloned.id = randomUUID();
-    const clonedRec = cloned as Record<string, unknown>;
     for (const u of this.store.values()) {
       if (u.username === cloned.username) {
         throw new UserAuthError("ALREADY_EXISTS", `User "${cloned.username}" already exists`);
       }
-      const rec = u as Record<string, unknown>;
-      for (const field of this.handleFields) {
-        const value = clonedRec[field];
-        // Handle values are string columns; a non-string is never a collision.
-        if (typeof value === "string" && rec[field] === value) {
+    }
+    // New row not yet in the store, so there is no self to exclude.
+    this.assertHandlesUnique(cloned as Record<string, unknown>);
+    // OCC counter is server-managed: seed unconditionally, ignore caller-supplied version.
+    cloned.version = 0;
+    this.store.set(cloned.id, cloned);
+  }
+
+  /**
+   * Throw `ALREADY_EXISTS` if any record other than `excludeId` already holds
+   * one of `rec`'s handle-column values — the in-memory mirror of the
+   * atscript-db store's unique index, so `create` and `update` enforce the same
+   * collision contract (which `promote-to-handle` swallows best-effort). Handle
+   * values are string columns; a non-string is never a collision.
+   */
+  private assertHandlesUnique(rec: Record<string, unknown>, excludeId?: string): void {
+    for (const field of this.handleFields) {
+      const value = rec[field];
+      if (typeof value !== "string") continue;
+      for (const [otherId, other] of this.store) {
+        if (otherId === excludeId) continue;
+        if ((other as Record<string, unknown>)[field] === value) {
           throw new UserAuthError("ALREADY_EXISTS", `${field} "${value}" already exists`);
         }
       }
     }
-    // OCC counter is server-managed: seed unconditionally, ignore caller-supplied version.
-    cloned.version = 0;
-    this.store.set(cloned.id, cloned);
   }
 
   async update(id: string, update: UserStoreUpdate): Promise<boolean> {
@@ -103,6 +116,10 @@ export class UserStoreMemory<T extends object = object> extends UserStore<T> {
       return false;
     }
     if (update.set) {
+      // Enforce handle uniqueness on writes that touch a handle column (mirrors
+      // the atscript-db store's unique index) — excluding the record being
+      // patched, since re-writing its own value is not a collision.
+      this.assertHandlesUnique(update.set as Record<string, unknown>, id);
       deepMerge(user, update.set as Record<string, unknown>);
     }
     if (update.inc) {

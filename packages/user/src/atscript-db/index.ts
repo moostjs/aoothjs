@@ -137,8 +137,20 @@ export class UsersStoreAtscriptDb<
       patch.$cas = { version: update.expectedVersion };
     }
 
-    const result = await this.table.updateOne(patch);
-    return result.matchedCount > 0;
+    try {
+      const result = await this.table.updateOne(patch);
+      return result.matchedCount > 0;
+    } catch (e: unknown) {
+      // Symmetric with `create`: a unique-index collision — e.g. promoting a
+      // confirmed email/phone into its handle column when another account
+      // already owns that value — surfaces as a typed `ALREADY_EXISTS` rather
+      // than a raw `@atscript/db` `CONFLICT`, so callers (promote-to-handle)
+      // can treat it as a best-effort no-op instead of a 500.
+      if (isConflict(e)) {
+        throw new UserAuthError("ALREADY_EXISTS", "Update conflicts with an existing unique value");
+      }
+      throw e;
+    }
   }
 
   async delete(id: string): Promise<boolean> {

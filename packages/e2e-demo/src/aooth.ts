@@ -43,6 +43,14 @@ export interface AppAuth {
   userStore: DemoUserStore;
   userService: UserService<DemoUser>;
   buildMagicLinkUrl: BuildMagicLinkUrl;
+  /**
+   * Resolved `@aooth.user.email` / `@aooth.user.phone` handle-column names
+   * (or `undefined` when the model doesn't annotate one / it lacks a unique
+   * index). `DemoAuthWorkflow.resolvePromoteHandleField` returns these to turn
+   * channel→handle promotion ON for the demo.
+   */
+  emailField: string | undefined;
+  phoneField: string | undefined;
 }
 
 export function createAooth({ tables, env }: AppAuthOptions): AppAuth {
@@ -158,5 +166,7 @@ export function createAooth({ tables, env }: AppAuthOptions): AppAuth {
     userStore,
     userService,
     buildMagicLinkUrl,
+    emailField: handles.emailField,
+    phoneField: handles.phoneField,
   };
 }

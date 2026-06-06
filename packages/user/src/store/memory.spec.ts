@@ -130,6 +130,30 @@ describe("UserStoreMemory", () => {
         true,
       );
     });
+
+    it("should throw ALREADY_EXISTS when a set writes a handle value owned by another user", async () => {
+      const store = new UserStoreMemory(undefined, { handleFields: ["email"] });
+      await store.create(makeUser("alice", { email: "shared@x.com" } as any));
+      await store.create(makeUser("bob"));
+      // Mirrors the atscript-db store's unique index — keeps promote-to-handle
+      // best-effort against either adapter.
+      await expect(
+        store.update("id-bob", { set: { email: "shared@x.com" } as any }),
+      ).rejects.toThrow(UserAuthError);
+      try {
+        await store.update("id-bob", { set: { email: "shared@x.com" } as any });
+      } catch (e) {
+        expect((e as UserAuthError).type).toBe("ALREADY_EXISTS");
+      }
+    });
+
+    it("should allow writing a handle value no other user owns (promotion happy-path)", async () => {
+      const store = new UserStoreMemory(undefined, { handleFields: ["email"] });
+      await store.create(makeUser("alice", { email: "alice@x.com" } as any));
+      // Re-writing the same user's own value and a brand-new unused value both succeed.
+      expect(await store.update("id-alice", { set: { email: "alice@x.com" } as any })).toBe(true);
+      expect(await store.update("id-alice", { set: { email: "new@x.com" } as any })).toBe(true);
+    });
   });
 
   describe("seed constructor", () => {

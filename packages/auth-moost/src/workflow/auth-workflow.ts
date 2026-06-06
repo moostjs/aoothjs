@@ -878,6 +878,28 @@ export class AuthWorkflow {
   }
 
   /**
+   * Decide which login-handle column a freshly-confirmed channel should be
+   * promoted into — so a verified email/phone becomes a login + recovery
+   * handle (`findByHandle`) automatically. Returns the target field name, or
+   * `undefined` to NOT promote (the default).
+   *
+   * Default is OFF: the handle columns are declared via `@aooth.user.*`
+   * annotations on the consumer's concrete model and resolved ONCE at boot
+   * (`@aooth/arbac-moost`'s `getAoothUserHandleSpec`) — `AuthWorkflow` holds no
+   * handle to that model and stays off the per-request reflection path. A
+   * deployment turns promotion ON by overriding this to return the
+   * boot-resolved `emailField` / `phoneField` for the channel — see the demo's
+   * `DemoAuthWorkflow`. `channel` is the wire protocol (`'email'` | `'sms'`),
+   * matching `resolveOtpDisclosure` / the MFA transport.
+   */
+  protected resolvePromoteHandleField(
+    _ctx: AuthWfCtx,
+    _channel: "email" | "sms",
+  ): string | undefined | Promise<string | undefined> {
+    return undefined;
+  }
+
+  /**
    * Route a form alt-action click to a canonical outcome. Defaults match the
    * action ids the bundled `PincodeForm` declares; customers override per
    * form when adding new actions or remapping the canonical ones.
@@ -3018,6 +3040,55 @@ export class AuthWorkflow {
     delete ctx.pin;
     delete ctx.pinExpire;
     return undefined;
+  }
+
+  /**
+   * Promote a freshly-confirmed channel into its login-handle column so future
+   * login + recovery resolve the account by it (`findByHandle`). Runs once,
+   * right after `enroll-confirm` in the shared enrolment trio (so it covers
+   * add-mfa AND login/invite forced first-time enrolment). Default is a no-op
+   * unless `resolvePromoteHandleField` is overridden to name a handle column.
+   *
+   * Overridable extension point: a deployment can replace this with richer
+   * logic — e.g. pause on a carrier form asking whether to use the new number
+   * as a login handle before writing it.
+   *
+   * Fires only for a freshly-confirmed `email` / `sms` factor carrying an
+   * address. TOTP has no address; a skipped / `useDifferentMethod` enrolment
+   * cleared `method` + `address` in `cleanupEnrollment`, so the guard below
+   * excludes both — only an actually-confirmed channel is promoted.
+   */
+  @Step("promote-to-handle")
+  @Public()
+  async promoteToHandle(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    const m = ctx.mfaEnroll;
+    if (ctx.subject && m?.address && (m.method === "email" || m.method === "sms")) {
+      const field = await this.resolvePromoteHandleField(ctx, m.method);
+      if (field) await this.applyHandlePromotion(ctx.subject, field, m.address);
+    }
+    ctx.promoteToHandleDone = true;
+    return undefined;
+  }
+
+  /**
+   * Best-effort write of a confirmed channel value into its handle column.
+   * Swallows `ALREADY_EXISTS` — the value is already a handle on ANOTHER
+   * account (e.g. two accounts legitimately sharing one phone for MFA): the
+   * second account keeps the factor as MFA-only and is simply not promoted.
+   * Any other store error propagates. (`UserService.update` translates a
+   * unique-index `CONFLICT` to `ALREADY_EXISTS` for both store adapters.)
+   */
+  protected async applyHandlePromotion(
+    subject: string,
+    field: string,
+    value: string,
+  ): Promise<void> {
+    try {
+      await this.users.update(subject, { [field]: value } as Partial<UserCredentials>);
+    } catch (err) {
+      if (err instanceof UserAuthError && err.type === "ALREADY_EXISTS") return;
+      throw err;
+    }
   }
 
   /**

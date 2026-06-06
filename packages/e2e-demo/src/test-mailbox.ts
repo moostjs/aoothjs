@@ -235,6 +235,8 @@ export function createTestMailboxController(
       id: string;
       username: string;
       roles: string[];
+      email?: string;
+      phone?: string;
       mfa: {
         methods: Array<{ name: string; confirmed: boolean; value: string }>;
         defaultMethod: string;
@@ -252,10 +254,18 @@ export function createTestMailboxController(
       // model; an absent one would default to `[]`).
       const rawRoles = (user as { roles?: unknown }).roles;
       const roles = Array.isArray(rawRoles) ? (rawRoles as string[]) : [];
+      // The `@aooth.user.email` / `@aooth.user.phone` handle columns live on
+      // the DemoUser custom shape, not base `UserCredentials` — surface them so
+      // promote-to-handle e2e can assert a confirmed channel was written.
+      const handles = user as { email?: unknown; phone?: unknown };
+      const email = typeof handles.email === "string" ? handles.email : undefined;
+      const phone = typeof handles.phone === "string" ? handles.phone : undefined;
       return {
         id: user.id,
         username: user.username,
         roles,
+        email,
+        phone,
         mfa: {
           methods: user.mfa.methods.map((m) => ({
             name: m.name,

@@ -48,6 +48,15 @@ export const enrollTrioSteps: TWorkflowSchema<AuthWfCtx> = [
       (ctx.mfaEnroll.method === "totp" || !!ctx.mfaEnroll.address) &&
       !ctx.mfaEnroll.done,
   },
+  // After a channel is confirmed (`mfaEnroll.done`), promote the verified
+  // email/phone into its login handle. Default no-op; turns ON when the
+  // consumer overrides `resolvePromoteHandleField`. Fires once per flow
+  // (guarded by `promoteToHandleDone`). Shared by both trio call sites —
+  // add-mfa AND login/invite forced first-time enrolment.
+  {
+    id: "promote-to-handle",
+    condition: (ctx) => !!ctx.mfaEnroll?.done && !ctx.promoteToHandleDone,
+  },
 ];
 
 export const mfaLoopSchema: TWorkflowSchema<AuthWfCtx> = [

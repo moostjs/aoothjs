@@ -545,6 +545,21 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       return /^\+?[0-9][0-9\s().-]{6,}$/.test(identifier) ? "sms" : "email";
     }
 
+    // Turn channel→handle promotion ON for the demo: after a user confirms an
+    // email/SMS factor, write the verified value into its `@aooth.user.*`
+    // handle column (`email` / `phone` on DemoUser) so it becomes a login +
+    // recovery handle. The field names come from `getAoothUserHandleSpec`
+    // (resolved once at boot, surfaced on `aooth`); `undefined` leaves the
+    // base no-op in force, so a model without that annotated+unique handle
+    // simply isn't promoted. The store enforces the unique index — a value
+    // already owned by another account stays MFA-only (best-effort).
+    protected override resolvePromoteHandleField(
+      _ctx: AuthWfCtx,
+      channel: "email" | "sms",
+    ): string | undefined {
+      return channel === "email" ? aooth.emailField : aooth.phoneField;
+    }
+
     // The demo is cookieless — it replays `data.accessToken` from sessionStorage
     // as a Bearer — so an OAuth login must FINISH with the token in `data`
     // rather than have it replaced by a redirect-only envelope. Opt the OAuth

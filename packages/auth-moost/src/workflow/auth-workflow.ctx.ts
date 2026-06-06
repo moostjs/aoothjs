@@ -560,6 +560,13 @@ export interface AuthWfCtx {
   mfaEnroll?: AuthWfMfaEnrollState;
   password?: AuthWfPasswordUiState;
   completion?: AuthWfCompletionState;
+  /**
+   * Marks that the `promote-to-handle` @Step has already run for this flow, so
+   * it fires once after a channel is confirmed and is skipped on every later
+   * resume (the store write is idempotent, but re-running it each resume would
+   * be wasteful). Server-only — never `@wf.context.pass`'d.
+   */
+  promoteToHandleDone?: boolean;
 
   // ── Resolved policy groups (set by prepare-* @Steps) ──
   alternateCredentials?: AuthWfAltCredsPolicy; // [login]
