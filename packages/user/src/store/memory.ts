@@ -10,12 +10,25 @@ export class UserStoreMemory<T extends object = object> extends UserStore<T> {
   private store = new Map<string, UserCredentials & T>();
 
   /**
+   * Ordered secondary handle fields (e.g. email then phone) resolved from the
+   * model's `@aooth.user.*` annotations by the wiring layer (`handleFields` of
+   * `getAoothUserHandleSpec`). Tried by `findByHandle` after `username`, and
+   * enforced unique by `create`. Empty when no handles are configured (login by
+   * email/phone unavailable).
+   */
+  private readonly handleFields: string[];
+
+  /**
    * Optional seed. The map is keyed by each record's `id`; a record missing an
    * `id` gets one minted (mirrors the DB `@db.default.uuid`). The seed object's
    * keys are ignored — identity is the record's `id`.
+   *
+   * `opts.handleFields` names the ordered secondary login handles (mirroring
+   * `UsersStoreAtscriptDb`); omit it for username-only resolution.
    */
-  constructor(seed?: Record<string, UserCredentials & T>) {
+  constructor(seed?: Record<string, UserCredentials & T>, opts?: { handleFields?: string[] }) {
     super();
+    this.handleFields = opts?.handleFields ?? [];
     if (seed) {
       for (const value of Object.values(seed)) {
         const cloned = structuredClone(value);
@@ -38,12 +51,21 @@ export class UserStoreMemory<T extends object = object> extends UserStore<T> {
   }
 
   async findByHandle(handle: string): Promise<(UserCredentials & T) | null> {
-    let byEmail: (UserCredentials & T) | null = null;
+    let byHandle: (UserCredentials & T) | null = null;
     for (const u of this.store.values()) {
       if (u.username === handle) return structuredClone(u);
-      if (byEmail === null && u.email !== undefined && u.email === handle) byEmail = u;
+      if (byHandle === null) {
+        const rec = u as Record<string, unknown>;
+        for (const field of this.handleFields) {
+          const value = rec[field];
+          if (value !== undefined && value === handle) {
+            byHandle = u;
+            break;
+          }
+        }
+      }
     }
-    return byEmail ? structuredClone(byEmail) : null;
+    return byHandle ? structuredClone(byHandle) : null;
   }
 
   async findByIdentifier(value: string): Promise<(UserCredentials & T) | null> {
@@ -55,12 +77,18 @@ export class UserStoreMemory<T extends object = object> extends UserStore<T> {
   async create(data: UserCredentials & T): Promise<void> {
     const cloned = structuredClone(data);
     if (!cloned.id) cloned.id = randomUUID();
+    const clonedRec = cloned as Record<string, unknown>;
     for (const u of this.store.values()) {
       if (u.username === cloned.username) {
         throw new UserAuthError("ALREADY_EXISTS", `User "${cloned.username}" already exists`);
       }
-      if (cloned.email !== undefined && u.email === cloned.email) {
-        throw new UserAuthError("ALREADY_EXISTS", `Email "${cloned.email}" already exists`);
+      const rec = u as Record<string, unknown>;
+      for (const field of this.handleFields) {
+        const value = clonedRec[field];
+        // Handle values are string columns; a non-string is never a collision.
+        if (typeof value === "string" && rec[field] === value) {
+          throw new UserAuthError("ALREADY_EXISTS", `${field} "${value}" already exists`);
+        }
       }
     }
     // OCC counter is server-managed: seed unconditionally, ignore caller-supplied version.

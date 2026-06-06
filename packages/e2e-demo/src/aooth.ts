@@ -1,3 +1,4 @@
+import { getAoothUserHandleSpec } from "@aooth/arbac-moost/atscript";
 import { AuthCredential } from "@aooth/auth";
 import { type AuthCredentialTable, CredentialStoreAtscriptDb } from "@aooth/auth/atscript-db";
 import type { BuildMagicLinkUrl } from "@aooth/auth-moost";
@@ -6,7 +7,7 @@ import { type AuthUserTable, UsersStoreAtscriptDb } from "@aooth/user/atscript-d
 
 import type { AppDb } from "./db";
 import type { AppEnv } from "./env";
-import type { DemoUser } from "./models/user.as";
+import { DemoUser } from "./models/user.as";
 import { readVariantHeader } from "./variants-server";
 
 /**
@@ -45,11 +46,22 @@ export interface AppAuth {
 }
 
 export function createAooth({ tables, env }: AppAuthOptions): AppAuth {
+  // Resolve the login-handle field names ONCE from the model's `@aooth.user.*`
+  // annotations (the spec is WeakMap-cached per type). The store then iterates a
+  // precomputed field list per `findByHandle` — zero annotation reflection on
+  // the hot path. Warn-and-disable: a handle field missing `@db.index.unique` is
+  // dropped here (login by it becomes unavailable). DemoUser annotates both
+  // `email` and `phone` with a unique index, so `warnings` is empty in practice.
+  const handles = getAoothUserHandleSpec(DemoUser);
+  for (const warning of handles.warnings) {
+    console.warn(`[aooth] ${warning}`);
+  }
   // `AtscriptDbTable` returns `Record<string, unknown>` from its structural
   // reads, so the typed `AuthUserTable` surface needs a cast at the wiring
   // seam — same pattern `wf-store.ts` uses.
   const userStore = new DemoUserStore({
     table: tables.users as unknown as AuthUserTable<DemoUser>,
+    handleFields: handles.handleFields,
   });
 
   const userService = new UserService<DemoUser>(userStore, {

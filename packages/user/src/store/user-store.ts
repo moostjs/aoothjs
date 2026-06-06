@@ -16,9 +16,10 @@ export interface WithCasOptions {
  *
  * - `findById` — strict, by the surrogate id; the canonical identity read used
  *   by authenticated flows that resolve the session subject (`getUserId()`).
- * - `findByHandle` — deterministic LOGIN resolver (`username` then `email`).
+ * - `findByHandle` — deterministic LOGIN resolver (`username`, then the
+ *   annotation-resolved handle fields — email, then phone — in order).
  * - `findByIdentifier` — permissive internal/admin/recovery lookup (`id`, then
- *   `username`, then `email`).
+ *   the `findByHandle` chain).
  *
  * Writes (`update`/`delete`/`withCas`) all key on the surrogate `id`.
  */
@@ -31,17 +32,19 @@ export abstract class UserStore<T extends object = object> {
    */
   abstract findById(id: string): Promise<(UserCredentials & T) | null>;
   /**
-   * Deterministic LOGIN resolver: matches `username` exactly, then `email`
-   * exactly (in that order). Intentionally NOT a permissive `$or` — `id`,
-   * `username`, and `email` are all strings, so a permissive match could
-   * silently resolve a value that is one user's username and another's email
-   * to an arbitrary account.
+   * Deterministic LOGIN resolver: matches `username` exactly, then each
+   * annotation-resolved handle field (email, then phone) exactly, in that
+   * order. Intentionally NOT a permissive `$or` — handle values are all
+   * strings, so a permissive match could silently resolve a value that is one
+   * user's username and another's email to an arbitrary account. Each handle
+   * field is unique-when-present (the `@aooth.user.*` boot contract), so a
+   * present value resolves to at most one row.
    */
   abstract findByHandle(handle: string): Promise<(UserCredentials & T) | null>;
   /**
-   * Permissive lookup for internal / admin / recovery callers: `id`, then
-   * `username`, then `email` (ordered, first match). NOT for the login path —
-   * use `findByHandle` there.
+   * Permissive lookup for internal / admin / recovery callers: `id`, then the
+   * `findByHandle` chain (`username`, then the resolved handle fields). NOT for
+   * the login path — use `findByHandle` there.
    */
   abstract findByIdentifier(value: string): Promise<(UserCredentials & T) | null>;
   abstract create(data: UserCredentials & T): Promise<void>;

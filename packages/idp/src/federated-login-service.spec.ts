@@ -13,7 +13,13 @@ let clockMs: number;
 
 beforeEach(() => {
   clockMs = 1000;
-  users = new UserService(new UserStoreMemory(), { clock: () => clockMs });
+  // This suite uses `email` as the secondary login handle (the email-match
+  // branch resolves a federated identity to an existing account via
+  // `findByHandle(profile.email)`), so configure the store's resolved handle
+  // field — mirroring what the wiring layer derives from `@aooth.user.email`.
+  users = new UserService(new UserStoreMemory(undefined, { handleFields: ["email"] }), {
+    clock: () => clockMs,
+  });
   fed = new FederatedIdentityStoreMemory({ clock: () => clockMs });
 });
 
@@ -41,7 +47,10 @@ describe("resolveUser — new account (branch 3)", () => {
     const out = await svc().resolveUser(profile({ email: "new@x.com" }));
     if (out.kind !== "created") throw new Error("expected created");
     const user = await users.getUser(out.userId);
-    expect(user.email).toBeUndefined(); // email lives on the federated row only
+    // `email` is a consumer-declared handle column, not on the base credential
+    // type — read it structurally. The provider email must NOT be written to the
+    // account login handle (it lives on the federated identity row only).
+    expect((user as Record<string, unknown>).email).toBeUndefined();
   });
 
   it("denies signup when allowSignup is false", async () => {

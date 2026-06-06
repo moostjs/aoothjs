@@ -29,6 +29,16 @@ import { AnnotationSpec } from "@atscript/core";
  *   key in the user model's `@arbac.attribute` keyspace (validated to exist at
  *   boot). Multiple fields may each carry it, targeting different attrs.
  *
+ * This plugin also registers the `@aooth.user.*` identity-handle namespace
+ * (read by `getAoothUserHandleSpec`) so `.as` user models can mark their login
+ * handles name-agnostically:
+ *
+ * - `@aooth.user.email` — the field is the EMAIL login/recovery handle. Resolved
+ *   by annotation (not by being literally named `email`). MUST carry
+ *   `@db.index.unique` (unique-when-present); without it the handle is disabled
+ *   with a warning. At most one per type.
+ * - `@aooth.user.phone` — the PHONE login/recovery handle, same contract.
+ *
  * Install in `atscript.config.ts`:
  *
  * ```ts
@@ -88,6 +98,28 @@ export default function arbacPlugin(): TAtscriptPlugin {
                   description:
                     "Target user-attribute key (a field annotated @arbac.attribute on the user model).",
                 },
+              }),
+            },
+          },
+          aooth: {
+            user: {
+              email: new AnnotationSpec({
+                description:
+                  "Marks this field as the EMAIL login/recovery handle. The framework resolves " +
+                  "the field by this annotation (name-agnostic) for findByHandle / recovery / signup. " +
+                  "The field MUST carry @db.index.unique (unique-when-present) — a handle must resolve " +
+                  "to at most one row; without a unique index the email handle is DISABLED with a warning. " +
+                  "At most one @aooth.user.email field per type — multiple declarations throw at boot.",
+                nodeType: ["prop"],
+                multiple: false,
+              }),
+              phone: new AnnotationSpec({
+                description:
+                  "Marks this field as the PHONE login/recovery handle. Same resolution + unique-index " +
+                  "contract as @aooth.user.email (disabled with a warning when the field lacks " +
+                  "@db.index.unique). At most one @aooth.user.phone field per type — multiple throw at boot.",
+                nodeType: ["prop"],
+                multiple: false,
               }),
             },
           },

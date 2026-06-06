@@ -38,16 +38,21 @@ export class MockTable<TUserCustom extends object = object> implements AuthUserT
     const typed = row as UserCredentialsRow<TUserCustom>;
     const id = (typed.id as string | undefined) ?? randomUUID();
     const username = typed.username;
-    const email = typed.email;
+    // `email` is now a consumer-declared handle field (not on the base
+    // `UserCredentials`), so read it structurally. The shipped test fixture
+    // (`test-user.as`) still declares the `email_idx` unique index, so the mock
+    // mirrors it to keep simulating the DB's unique constraints.
+    const email = (typed as Record<string, unknown>).email;
     // Real `@atscript/db` throws a `DbError` on a unique-index collision — but
     // the adapter only looks at `.code`, so a structurally-shaped throw is
     // enough to prove the contract. Mirror the unique columns: `id` (PK),
     // `username`, and `email`.
     for (const existing of this.rows.values()) {
+      const existingRec = existing as unknown as Record<string, unknown>;
       if (
         existing.id === id ||
         existing.username === username ||
-        (email !== undefined && existing.email === email)
+        (email !== undefined && existingRec.email === email)
       ) {
         throw Object.assign(new Error("duplicate"), { code: "CONFLICT" });
       }

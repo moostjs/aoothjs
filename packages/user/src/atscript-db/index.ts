@@ -48,23 +48,36 @@ function isConflict(err: unknown): boolean {
 
 interface UsersStoreAtscriptDbOptions<TUserCustom extends object> {
   table: AuthUserTable<TUserCustom>;
+  /**
+   * Ordered login-handle field names (e.g. email then phone), resolved from the
+   * model's `@aooth.user.*` annotations by the wiring layer (`handleFields` of
+   * `getAoothUserHandleSpec`). `findByHandle` falls back to a `{ [field]: handle }`
+   * lookup for each, in order, after `username`. Omit/empty to disable handle
+   * resolution (login by anything but `username` unavailable). The base credential
+   * model no longer hardcodes `email` — the field names are whatever the
+   * consumer's `.as` model annotates.
+   */
+  handleFields?: string[];
 }
 
 /**
  * `@atscript/db`-backed `UserStore`. Pass the resolved table for the
  * `AoothUserCredentials` (or a `.as` interface extending it) shipped at the
  * `@aooth/user/atscript-db/model.as` subpath. Identity reads use the
- * `@meta.id` PK (`id`) plus the unique `username` / `email` indexes; writes key
- * on `id`.
+ * `@meta.id` PK (`id`) and the unique `username` index, plus any
+ * annotation-resolved `handleFields`; writes key on `id`.
  */
 export class UsersStoreAtscriptDb<
   TUserCustom extends object = object,
 > extends UserStore<TUserCustom> {
   protected table: AuthUserTable<TUserCustom>;
+  /** Secondary handle fields tried (in order) by `findByHandle` after `username`. */
+  protected readonly handleFields: string[];
 
   constructor(opts: UsersStoreAtscriptDbOptions<TUserCustom>) {
     super();
     this.table = opts.table;
+    this.handleFields = opts.handleFields ?? [];
   }
 
   async exists(handle: string): Promise<boolean> {
@@ -80,8 +93,11 @@ export class UsersStoreAtscriptDb<
   async findByHandle(handle: string): Promise<(UserCredentials & TUserCustom) | null> {
     const byUsername = await this.table.findOne({ filter: { username: handle } });
     if (byUsername) return byUsername as UserCredentials & TUserCustom;
-    const byEmail = await this.table.findOne({ filter: { email: handle } });
-    return byEmail as (UserCredentials & TUserCustom) | null;
+    for (const field of this.handleFields) {
+      const byHandle = await this.table.findOne({ filter: { [field]: handle } });
+      if (byHandle) return byHandle as UserCredentials & TUserCustom;
+    }
+    return null;
   }
 
   async findByIdentifier(value: string): Promise<(UserCredentials & TUserCustom) | null> {

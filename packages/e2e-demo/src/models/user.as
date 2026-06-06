@@ -20,7 +20,13 @@ export interface DemoUser extends AoothArbacUserCredentials {
     @expect.maxLength 80
     displayName?: string
 
+    @db.index.unique 'email_idx'
+    @aooth.user.email
+    email?: string
+
     @expect.maxLength 32
+    @db.index.unique 'phone_idx'
+    @aooth.user.phone
     phone?: string
 
     @db.default.now
