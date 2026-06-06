@@ -81,12 +81,15 @@ import {
   EnrollAddressForm,
   EnrollConfirmForm,
   EnrollPickMethodForm,
+  EnrollTotpQrForm,
   InviteForm,
   LoginCredentialsForm,
+  ManageMfaForm,
   MfaCodeForm,
   PincodeForm,
   ProveControlForm,
   ProveControlOtpForm,
+  RemoveMfaConfirmForm,
   Select2faForm,
   SetPasswordForm,
   SignupForm,
@@ -96,6 +99,7 @@ import {
   consentsPersistTailSchema,
   enrollTrioSteps,
   mfaLoopSchema,
+  mfaStepUpLoop,
   passwordPhaseSchema,
   pincodeSendCheckPair,
 } from "./auth-workflow.schemas";
@@ -167,7 +171,10 @@ const DEFAULT_FORMS: ResolvedAuthWorkflowOpts["forms"] = {
   askPhone: AskPhoneForm,
   enrollPickMethod: EnrollPickMethodForm,
   enrollAddress: EnrollAddressForm,
+  enrollTotpQr: EnrollTotpQrForm,
   enrollConfirm: EnrollConfirmForm,
+  manageMfa: ManageMfaForm,
+  removeMfaConfirm: RemoveMfaConfirmForm,
   select2fa: Select2faForm,
   mfaCode: MfaCodeForm,
   pincode: PincodeForm,
@@ -736,6 +743,31 @@ export class AuthWorkflow {
   }
 
   /**
+   * Transports the user may NOT change or remove via the manage-MFA flow.
+   * Default: none — every factor is freely manageable. Reached from
+   * `auth/add-mfa/flow` (`prepare-locked-mfa-transports`).
+   *
+   * Override to forbid changing a factor whose value IS a login handle — e.g.
+   * the MFA `email` equals the `@aooth.user.email` handle, so letting the user
+   * swap it here would desync identity. A typical override loads the user and
+   * compares each enrolled channel value against the boot-resolved handle
+   * fields (`getAoothUserHandleSpec(...).emailField` / `.phoneField`):
+   *
+   * ```ts
+   * protected async resolveLockedMfaTransports(ctx: AuthWfCtx): Promise<MfaTransport[]> {
+   *   const user = await this.users.getUser(ctx.subject!);
+   *   const locked: MfaTransport[] = [];
+   *   const email = user.mfa?.methods?.find((m) => m.name === "email" && m.confirmed);
+   *   if (email && email.value === (user as { email?: string }).email) locked.push("email");
+   *   return locked;
+   * }
+   * ```
+   */
+  protected resolveLockedMfaTransports(_ctx: AuthWfCtx): MfaTransport[] | Promise<MfaTransport[]> {
+    return [];
+  }
+
+  /**
    * Resolve the channel-OTP disclosure copy rendered beneath the email/phone
    * input on `AskEmailForm` / `AskPhoneForm`. Reached from login.flow Phase 3.
    * Default returns a TCPA / PECR / CASL / GDPR-safe English paragraph that is
@@ -1089,6 +1121,13 @@ export class AuthWorkflow {
       ] as const);
       if (sub) pub.mfaEnroll = sub as AuthWfPublicState["mfaEnroll"];
     }
+    if (ctx.addMfa) {
+      // Manage-menu inputs only — `candidates` (Add options) + `locked`
+      // (omit from Change/Remove). Internal manage fields (`action`,
+      // `target`, `replaced`, `stepUp*`) stay server-only.
+      const sub = pickDefined(ctx.addMfa, ["candidates", "locked"] as const);
+      if (sub) pub.manage = sub as AuthWfPublicState["manage"];
+    }
     if (ctx.defaults) {
       const sub = pickDefined(ctx.defaults, ["email"] as const);
       if (sub) pub.defaults = sub as AuthWfPublicState["defaults"];
@@ -1279,18 +1318,156 @@ export class AuthWorkflow {
    */
   protected async cleanupEnrollment(ctx: AuthWfCtx, username: string): Promise<void> {
     const m = ctx.mfaEnroll;
+    if (m?.method) {
+      await this.withStoreErrorTranslation(() => this.users.removeMfaMethod(username, m.method!));
+    }
+    this.clearEnrollScratch(ctx);
+  }
+
+  /**
+   * Drop the per-enrolment scratch fields (the `mfaEnroll` provisioning fields +
+   * the pincode timers/`sentTo`) off ctx — the shared teardown used by
+   * {@link cleanupEnrollment} and {@link cancelManageEnrollment}. Does NOT touch
+   * the store; callers undo their own persisted side-effects first.
+   */
+  protected clearEnrollScratch(ctx: AuthWfCtx): void {
+    const m = ctx.mfaEnroll;
     if (m) {
-      if (m.method) {
-        await this.withStoreErrorTranslation(() => this.users.removeMfaMethod(username, m.method!));
-      }
       delete m.method;
       delete m.address;
       delete m.secret;
       delete m.uri;
+      delete m.qrSeen;
     }
     delete ctx.pin;
     delete ctx.pinExpire;
     if (ctx.pincode) delete ctx.pincode.sentTo;
+  }
+
+  /**
+   * Validate a user-typed MFA address for its transport. Server-side counterpart
+   * to `EnrollAddressForm`'s client `@ui.form.validate` hint — the authoritative
+   * check (a client can bypass the hint). Returns an error string for the form,
+   * or `undefined` when valid. Email must look like an email; SMS is permissive
+   * E.164-ish (normalized by {@link normalizeMfaAddress}). Override for stricter
+   * (e.g. libphonenumber) validation.
+   */
+  protected validateMfaAddress(method: MfaTransport, value: string): string | undefined {
+    const v = (value ?? "").trim();
+    if (!v) return "This field is required";
+    if (method === "email") {
+      return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v) ? undefined : "Enter a valid email address";
+    }
+    if (method === "sms") {
+      const digits = v.replace(/[\s()+.-]/g, "");
+      return /^[1-9]\d{6,14}$/.test(digits) ? undefined : "Enter a valid phone number";
+    }
+    return undefined;
+  }
+
+  /**
+   * Light normalization of a validated MFA address before it is stored. Default:
+   * trims, and strips spacing/punctuation from SMS numbers while KEEPING the
+   * leading `+` (E.164 canonical form). Email is just trimmed. Override for full
+   * E.164 canonicalization.
+   */
+  protected normalizeMfaAddress(method: MfaTransport, value: string): string {
+    const v = value.trim();
+    return method === "sms" ? v.replace(/[\s().-]/g, "") : v;
+  }
+
+  /**
+   * Before a manage-MFA TOTP **replace** clobbers the single confirmed totp row
+   * (provisioning the new secret is required to verify the new code), stash the
+   * old confirmed value so a cancel/abort can restore it. sms/email replace is
+   * verify-then-write and never needs this.
+   */
+  protected async stashReplacedTotp(ctx: AuthWfCtx, username: string): Promise<void> {
+    const user = await this.users.getUser(username);
+    const old = (user.mfa?.methods ?? []).find((m) => m.name === "totp" && m.confirmed);
+    if (old) {
+      (ctx.addMfa ??= {}).replaced = {
+        name: "totp",
+        value: old.value,
+        wasDefault: user.mfa?.defaultMethod === "totp",
+      };
+    }
+  }
+
+  /**
+   * Abort an in-progress manage-MFA enrolment cleanly: undo any store mutation,
+   * clear scratch, and set `ctx.aborted` so the schema breaks to
+   * `finish-add-mfa` (cancelled terminal). Three cases:
+   * - TOTP replace → restore the stashed (clobbered) old confirmed secret.
+   * - sms/email replace → nothing was written (verify-then-write), nothing to undo.
+   * - add → drop the unconfirmed new method row.
+   */
+  protected async cancelManageEnrollment(ctx: AuthWfCtx): Promise<void> {
+    const username = ctx.subject;
+    const m = ctx.mfaEnroll;
+    if (username && m) {
+      if (m.method === "totp" && ctx.addMfa?.replaced) {
+        // TOTP replace — restore the stashed (clobbered) old confirmed secret.
+        const r = ctx.addMfa.replaced;
+        await this.withStoreErrorTranslation(() =>
+          this.users.addMfaMethod(username, { name: r.name, value: r.value, confirmed: true }),
+        );
+        if (r.wasDefault) await this.users.setDefaultMfaMethod(username, r.name);
+        delete ctx.addMfa.replaced;
+      } else if (!m.replace && m.method) {
+        // add — drop the unconfirmed new method row.
+        await this.withStoreErrorTranslation(() => this.users.removeMfaMethod(username, m.method!));
+      }
+      // sms/email replace — nothing persisted yet (verify-then-write); scratch cleared below.
+    }
+    this.clearEnrollScratch(ctx);
+    ctx.aborted = true;
+  }
+
+  /**
+   * Shared skip / cancel / useDifferentMethod triage for the enrol-trio steps
+   * that have already persisted an unconfirmed row (`enroll-totp-qr` +
+   * `enroll-confirm`): `cancel` / `useDifferentMethod` (manage) abort the flow,
+   * `skip` (opt-in) and `useDifferentMethod` (opt-in) tear down the partial
+   * enrolment. Returns `true` when the action terminated the step so the caller
+   * can `return undefined`. (`enroll-pick-method` / `enroll-address` keep their
+   * own preludes — their skip/useDifferentMethod arms diverge from this one.)
+   *
+   * SECURITY: in `'manage'` mode BOTH `cancel` and `useDifferentMethod` route
+   * through {@link cancelManageEnrollment}, NEVER {@link cleanupEnrollment}.
+   * `useDifferentMethod` is hidden by the manage forms but stays in their
+   * declared action whitelist, so a crafted resume can still send it; on a
+   * REPLACE `m.method` is the OLD confirmed factor's name, and cleanupEnrollment
+   * would `removeMfaMethod` it — deleting the user's live factor (and clearing
+   * its default) before any replacement is verified (strand/lockout).
+   * cancelManageEnrollment is replace-aware: it restores a stashed TOTP replace,
+   * drops an unconfirmed add, and leaves an sms/email verify-then-write replace
+   * untouched.
+   */
+  protected async handleEnrollExit(
+    ctx: AuthWfCtx,
+    action: string | undefined,
+    username: string,
+  ): Promise<boolean> {
+    const m = (ctx.mfaEnroll ??= {});
+    const mode = m.mode ?? "optional";
+    if (mode === "manage" && (action === "cancel" || action === "useDifferentMethod")) {
+      await this.cancelManageEnrollment(ctx);
+      return true;
+    }
+    if (mode === "optional" && action === "skip") {
+      await this.cleanupEnrollment(ctx, username);
+      m.done = true;
+      (ctx.otp ??= {}).verified = true;
+      return true;
+    }
+    if (action === "useDifferentMethod") {
+      // opt-in/required only — `m.method` here is an UNCONFIRMED brand-new row,
+      // so tearing it down (and re-firing the picker) is safe.
+      await this.cleanupEnrollment(ctx, username);
+      return true;
+    }
+    return false;
   }
 
   // ── @Step stubs (66 — bodies filled in steps 4-6) ───────────────────────
@@ -1382,23 +1559,23 @@ export class AuthWorkflow {
   }
 
   /**
-   * Bind the standalone "add an MFA method" flow to the CURRENT authenticated
-   * user and narrow enrolment to the transports they have NOT enrolled yet.
-   * Identity comes from the session (`useAuth().getUserId()`) — never form input
-   * — so it is structurally "add a factor to MY account". Mirrors
-   * `init-change-password`'s arbac gate (`auth.add-mfa` / `self`): a customer
-   * enables the feature with a single `allow("auth.add-mfa", "*")` grant and
-   * forbids it by omitting it. `getUserId()` throws 401 if unauthenticated —
-   * defence in depth on top of the guarded trigger route.
+   * Bind the standalone "Manage two-factor authentication" flow (add / change /
+   * remove) to the CURRENT authenticated user. Identity comes from the session
+   * (`useAuth().getUserId()`) — never form input — so it is structurally "manage
+   * MY factors". Mirrors `init-change-password`'s arbac gate (`auth.add-mfa` /
+   * `self`): a customer enables the feature with a single
+   * `allow("auth.add-mfa", "*")` grant and forbids it by omitting it.
+   * `getUserId()` throws 401 if unauthenticated — defence in depth on top of the
+   * guarded trigger route.
    *
-   * Drives the REUSED enrol trio (`enroll-pick-method` / `enroll-address` /
-   * `enroll-confirm`) by setting `ctx.mfaPolicy.availableTransports` to the
-   * un-enrolled remainder — so the picker offers only those and auto-picks when
-   * exactly one remains. Forces `mode: "optional"` (the user opted in; an empty
-   * remainder must finish gracefully, never 500 as `required` would). The
-   * remainder is stashed on `ctx.addMfa.candidates` (flow discriminator + finish
-   * summary); when the user already has a default, `enroll-confirm` is asked to
-   * keep it (`mfaEnroll.keepExistingDefault`).
+   * Sets `ctx.mfaPolicy.availableTransports` to the FULL policy set (so the
+   * step-up's `load-enrolled-mfa-methods` can see the confirmed factors to
+   * challenge) and tracks the un-enrolled `candidates` separately on
+   * `ctx.addMfa` for the menu's Add options. `stepUpRequired` is set when the
+   * user has a challengeable confirmed factor — gating both the step-up and the
+   * management menu; a zero-MFA user skips both and falls through to the
+   * first-time enrol picker (the opt-in path). Puts the enrol forms in
+   * `'manage'` mode (Cancel, not "Skip for now") and keeps the existing default.
    */
   @Step("init-add-mfa")
   @ArbacResource("auth.add-mfa")
@@ -1410,17 +1587,32 @@ export class AuthWorkflow {
     const policy = policyResult instanceof Promise ? await policyResult : policyResult;
     const all = policy.availableTransports;
     const user = await this.users.getUser(username);
-    const enrolled = new Set(
-      (user.mfa?.methods ?? []).filter((m) => m.confirmed).map((m) => m.name as MfaTransport),
+    const enrolledKinds = new Set(
+      this.users
+        .getAvailableMfaMethods(user.mfa)
+        .map((m) => this.mfaKindOf(m.name))
+        .filter((k): k is MfaTransport => k !== null),
     );
-    const remaining = all.filter((t) => !enrolled.has(t));
-    ctx.mfaPolicy = { mode: "optional", availableTransports: remaining, issuer: policy.issuer };
-    ctx.addMfa = { candidates: remaining };
-    // Preserve the user's existing default — adding a secondary factor must not
-    // silently change which method is challenged first at next login. (With zero
-    // methods there's no default to keep, so the first added one becomes default
-    // — same as login-time forced enrolment.)
-    if (user.mfa?.defaultMethod) (ctx.mfaEnroll ??= {}).keepExistingDefault = true;
+    // Un-enrolled transports = the "Add" options on the manage menu.
+    const candidates = all.filter((t) => !enrolledKinds.has(t));
+    // Step-up only when the user has a CHALLENGEABLE confirmed factor (one whose
+    // kind the policy still allows) — otherwise the step-up loop would have
+    // nothing to challenge and never flip `otp.verified`.
+    const challengeable = [...enrolledKinds].filter((k) => all.includes(k));
+    // FULL transport set on the policy so the step-up's `load-enrolled-mfa-methods`
+    // (which filters by `availableTransports`) sees the confirmed factors. The
+    // un-enrolled `candidates` for the Add menu are tracked separately on `addMfa`.
+    ctx.mfaPolicy = { mode: policy.mode, availableTransports: all, issuer: policy.issuer };
+    ctx.addMfa = { candidates, stepUpRequired: challengeable.length > 0 };
+    // 'manage' mode drives the enrol forms' skip/cancel visibility (no "Skip for
+    // now" — the user opened this on purpose — and a "Cancel" action instead).
+    const m = (ctx.mfaEnroll ??= {});
+    m.mode = "manage";
+    // Preserve the user's existing default — adding/replacing a factor must not
+    // silently change which method is challenged first at next login. (A zero-MFA
+    // user has no default to keep, so the first added one becomes default — same
+    // as login-time forced enrolment.)
+    if (user.mfa?.defaultMethod) m.keepExistingDefault = true;
     return undefined;
   }
 
@@ -2414,11 +2606,10 @@ export class AuthWorkflow {
   }
 
   /**
-   * Terminal for the add-MFA flow. The user KEEPS their current session (no
-   * re-issue, no cookies) — this is a plain data finish. `mfaEnroll.done &&
-   * mfaEnroll.method` is the success signal: a real confirm keeps `.method`,
-   * whereas a cancel runs `cleanupEnrollment` (which deletes it). An empty
-   * `addMfa.candidates` distinguishes "nothing left to add" from a user cancel.
+   * Terminal for the manage-MFA flow. The user KEEPS their current session (no
+   * re-issue, no cookies) — a plain data finish. Outcomes, in priority order:
+   * removed → changed (`replace` + done) → added (done) → nothing-available
+   * (zero candidates, never had to step-up) → cancelled.
    */
   @Step("finish-add-mfa")
   @ArbacResource("auth.add-mfa")
@@ -2429,16 +2620,30 @@ export class AuthWorkflow {
       email: "Email code",
       sms: "Text-message code",
     };
-    const method = ctx.mfaEnroll?.method;
-    const candidates = ctx.addMfa?.candidates ?? [];
+    const m = ctx.mfaEnroll;
+    const addMfa = ctx.addMfa;
+    const method = m?.method;
+    const candidates = addMfa?.candidates ?? [];
     let envelope: WfFinished;
-    if (ctx.mfaEnroll?.done && method) {
+    if (addMfa?.removed) {
+      envelope = {
+        finished: true,
+        data: { removed: true, method: addMfa.removed },
+        message: { level: "success", text: `${labels[addMfa.removed]} removed.` },
+      };
+    } else if (m?.done && method && addMfa?.action === "replace") {
+      envelope = {
+        finished: true,
+        data: { changed: true, method },
+        message: { level: "success", text: `${labels[method]} updated.` },
+      };
+    } else if (m?.done && method) {
       envelope = {
         finished: true,
         data: { added: true, method },
         message: { level: "success", text: `${labels[method]} added.` },
       };
-    } else if (candidates.length === 0) {
+    } else if (candidates.length === 0 && !addMfa?.stepUpRequired) {
       envelope = {
         finished: true,
         data: { added: false, reason: "no-methods-available" },
@@ -2451,10 +2656,146 @@ export class AuthWorkflow {
       envelope = {
         finished: true,
         data: { added: false, reason: "cancelled" },
-        message: { level: "info", text: "No authentication method was added." },
+        message: { level: "info", text: "No changes were made to your two-factor methods." },
       };
     }
     useWfFinished().set({ type: "data", value: envelope });
+    return undefined;
+  }
+
+  /**
+   * Resolve which transports the user may NOT change/remove via the manage flow
+   * (calls {@link resolveLockedMfaTransports}) and write them to
+   * `ctx.addMfa.locked`. Mirrors the `prepare-<group>` convention.
+   */
+  @Step("prepare-locked-mfa-transports")
+  @ArbacResource("auth.add-mfa")
+  @ArbacAction("self")
+  prepareLockedMfaTransports(
+    @WorkflowParam("context") ctx: AuthWfCtx,
+  ): undefined | Promise<undefined> {
+    const result = this.resolveLockedMfaTransports(ctx);
+    const apply = (locked: MfaTransport[]): undefined => {
+      (ctx.addMfa ??= {}).locked = locked;
+      return undefined;
+    };
+    if (result instanceof Promise) return result.then(apply);
+    return apply(result);
+  }
+
+  /**
+   * Fires once the step-up factor verifies — anchor the rest of the flow in the
+   * durable `store` strategy (mirrors login's swap-after-credentials): the
+   * pincode becomes single-use server state and the staged new factor lives
+   * server-side instead of in the SPA-held encapsulated token. Degrades to
+   * encapsulated when no durable store is wired (the registry default).
+   */
+  @Step("manage-stepup-done")
+  @ArbacResource("auth.add-mfa")
+  @ArbacAction("self")
+  manageStepUpDone(@WorkflowParam("context") ctx: AuthWfCtx): undefined {
+    swapStrategy("store");
+    (ctx.addMfa ??= {}).stepUpDone = true;
+    return undefined;
+  }
+
+  /**
+   * Manage-MFA menu — pauses on `ManageMfaForm` and routes the chosen
+   * `operation` (`add:<t>` / `replace:<t>` / `remove:<t>`). Only reached when
+   * the user has ≥1 confirmed factor (a zero-MFA user goes straight to the enrol
+   * picker). Re-checks the locked set + candidate membership server-side, then
+   * sets `ctx.addMfa.action`/`target` (and pre-seeds `mfaEnroll.method` for
+   * add/change). `cancel`, or nothing actionable, aborts to the finish terminal.
+   */
+  @Step("manage-menu")
+  @ArbacResource("auth.add-mfa")
+  @ArbacAction("self")
+  async manageMenu(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    this.requireSubject(ctx);
+    const addMfa = (ctx.addMfa ??= {});
+    const enrolled = ctx.mfa?.enrolledMethods ?? [];
+    const locked = new Set(addMfa.locked ?? []);
+    const candidates = addMfa.candidates ?? [];
+    const changeable = enrolled.filter((e) => !locked.has(e.kind));
+    // Nothing to add and nothing changeable → benign finish (avoids a radio
+    // form with zero options that could never be submitted).
+    if (candidates.length === 0 && changeable.length === 0) {
+      ctx.aborted = true;
+      return undefined;
+    }
+    const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.manageMfa);
+    if (wf.resolveAction() === "cancel") {
+      ctx.aborted = true;
+      return undefined;
+    }
+    const input = wf.resolveInput() as { operation: string };
+    const sep = input.operation.indexOf(":");
+    const action = (sep >= 0 ? input.operation.slice(0, sep) : "") as "add" | "replace" | "remove";
+    const target = (sep >= 0 ? input.operation.slice(sep + 1) : "") as MfaTransport;
+    if (action === "add") {
+      if (!candidates.includes(target)) {
+        throw this.throwPublic(ctx, wf, { errors: { operation: "That method isn't available" } });
+      }
+    } else if (action === "replace" || action === "remove") {
+      if (locked.has(target)) {
+        throw this.throwPublic(ctx, wf, { formMessage: "That method can't be changed here." });
+      }
+      if (!enrolled.some((e) => e.kind === target)) {
+        throw this.throwPublic(ctx, wf, { errors: { operation: "Unknown method" } });
+      }
+    } else {
+      throw this.throwPublic(ctx, wf, { errors: { operation: "Choose an option" } });
+    }
+    addMfa.action = action;
+    addMfa.target = target;
+    const m = (ctx.mfaEnroll ??= {});
+    if (action === "add" || action === "replace") {
+      m.method = target;
+      m.replace = action === "replace";
+      delete m.address;
+      delete m.qrSeen;
+      delete m.done;
+      delete m.secret;
+      delete m.uri;
+    } else {
+      // remove — expose the target to the confirm form via public.mfaEnroll.method
+      m.method = target;
+    }
+    return undefined;
+  }
+
+  /**
+   * Manage-MFA remove confirmation. Pauses on `RemoveMfaConfirmForm`; the
+   * 'Remove' submit performs the removal, 'Cancel' aborts. Re-checks the locked
+   * set (defence in depth) and blocks removing the LAST confirmed factor when
+   * the policy mode is `required` (you must keep at least one).
+   */
+  @Step("confirm-remove-mfa")
+  @ArbacResource("auth.add-mfa")
+  @ArbacAction("self")
+  async confirmRemoveMfa(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    this.requireSubject(ctx);
+    const username = ctx.subject;
+    const addMfa = (ctx.addMfa ??= {});
+    const target = addMfa.target as MfaTransport;
+    const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.removeMfaConfirm);
+    if (wf.resolveAction() === "cancel") {
+      ctx.aborted = true;
+      return undefined;
+    }
+    if ((addMfa.locked ?? []).includes(target)) {
+      throw this.throwPublic(ctx, wf, { formMessage: "That method can't be removed here." });
+    }
+    const enrolled = ctx.mfa?.enrolledMethods ?? [];
+    if (enrolled.length <= 1 && ctx.mfaPolicy?.mode === "required") {
+      throw this.throwPublic(ctx, wf, {
+        formMessage: "You must keep at least one two-factor method.",
+      });
+    }
+    wf.resolveInput(); // pauses on first arrival; the 'Remove' submit resumes here
+    const methodName = enrolled.find((e) => e.kind === target)?.methodName ?? target;
+    await this.withStoreErrorTranslation(() => this.users.removeMfaMethod(username, methodName));
+    addMfa.removed = target;
     return undefined;
   }
 
@@ -2981,8 +3322,10 @@ export class AuthWorkflow {
   /**
    * Unified MFA-enrol phase 1 (pick method). Auto-picks a single transport,
    * otherwise pauses for `EnrollPickMethodForm`. When TOTP is picked, the
-   * secret is idempotently provisioned in the same step body. Handles
-   * `skip` in `'optional'` mode.
+   * secret is idempotently provisioned in the same step body. Handles `skip`
+   * (optional opt-in) / `cancel` (manage). In the manage flow this only runs
+   * for a zero-MFA user — once the user has factors, the menu pre-seeds
+   * `mfaEnroll.method` (add/change) so the picker is skipped.
    */
   @Step("enroll-pick-method")
   @Public()
@@ -2990,14 +3333,17 @@ export class AuthWorkflow {
     this.requireSubject(ctx);
     const username = ctx.subject;
     const transports = ctx.mfaPolicy?.availableTransports ?? [];
-    const mode = ctx.mfaPolicy?.mode === "required" ? "required" : "optional";
     const m = (ctx.mfaEnroll ??= {});
+    // Preserve a pre-set 'manage' mode (init-add-mfa); otherwise derive from policy.
+    const mode =
+      m.mode === "manage" ? "manage" : ctx.mfaPolicy?.mode === "required" ? "required" : "optional";
     m.mode = mode;
     if (!m.availableTransports) m.availableTransports = [...transports];
 
-    // 0-transport guard.
+    // 0-transport guard — only `required` mode (forced enrolment) is a hard
+    // error; optional/manage finish gracefully.
     if (transports.length === 0) {
-      if (mode === "optional") {
+      if (mode !== "required") {
         m.done = true;
         (ctx.otp ??= {}).verified = true;
         return undefined;
@@ -3014,7 +3360,12 @@ export class AuthWorkflow {
       m.method = transports[0];
     } else {
       const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.enrollPickMethod);
-      if (mode === "optional" && wf.resolveAction() === "skip") {
+      const action = wf.resolveAction();
+      if (mode === "manage" && action === "cancel") {
+        ctx.aborted = true;
+        return undefined;
+      }
+      if (mode === "optional" && action === "skip") {
         m.done = true;
         (ctx.otp ??= {}).verified = true;
         return undefined;
@@ -3050,7 +3401,11 @@ export class AuthWorkflow {
 
   /**
    * Unified MFA-enrol phase 2 (collect sms/email address + send pincode).
-   * Not invoked for totp. Handles `skip` / `useDifferentMethod`.
+   * Not invoked for totp. Handles `skip` (opt-in) / `cancel` (manage) /
+   * `useDifferentMethod`. Validates the address server-side (the client
+   * `@ui.form.validate` hint is advisory). For a manage **replace** the new
+   * value is NOT written yet — the existing confirmed row stays valid until the
+   * new value's code is verified in `enroll-confirm` (verify-then-write).
    */
   @Step("enroll-address")
   @Public()
@@ -3061,6 +3416,10 @@ export class AuthWorkflow {
     const mode = m.mode ?? "optional";
     const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.enrollAddress);
     const action = wf.resolveAction();
+    if (mode === "manage" && action === "cancel") {
+      await this.cancelManageEnrollment(ctx);
+      return undefined;
+    }
     if (mode === "optional" && action === "skip") {
       m.done = true;
       (ctx.otp ??= {}).verified = true;
@@ -3072,39 +3431,47 @@ export class AuthWorkflow {
     }
     const input = wf.resolveInput() as { address: string };
     const methodName = m.method as MfaTransport;
-    await this.withStoreErrorTranslation(() =>
-      this.users.addMfaMethod(username, {
-        name: methodName,
-        value: input.address,
-        confirmed: false,
-      }),
-    );
-    m.address = input.address;
+    const addrErr = this.validateMfaAddress(methodName, input.address);
+    if (addrErr) throw this.throwPublic(ctx, wf, { errors: { address: addrErr } });
+    const address = this.normalizeMfaAddress(methodName, input.address);
+    // ADD writes the unconfirmed row now; REPLACE defers the write to
+    // enroll-confirm (keep the old confirmed value valid until verification).
+    if (!m.replace) {
+      await this.withStoreErrorTranslation(() =>
+        this.users.addMfaMethod(username, {
+          name: methodName,
+          value: address,
+          confirmed: false,
+        }),
+      );
+    }
+    m.address = address;
     const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
     const pincode = (ctx.pincode ??= {});
     pincode.resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
     pincode.codeLength = this.opts.mfa.pincodeLength;
-    await this.sendEnrollPincode(ctx, input.address, code);
+    await this.sendEnrollPincode(ctx, address, code);
     return undefined;
   }
 
   /**
-   * Unified MFA-enrol phase 3 (verify pincode/TOTP, mark confirmed). On
-   * success sets `ctx.mfaEnroll.done = true` AND `ctx.otp.verified = true`
-   * (the loop-exit signal — enrol-confirm verifies an OTP, so the unified
-   * `otp.verified` flag fires alongside the MFA-specific `mfaEnroll.done`).
+   * MFA-enrol TOTP QR step — shown on its OWN pause between method-pick and
+   * code-entry (so the user scans first, types the code next). Idempotently
+   * provisions the TOTP secret (covers the auto-pick / menu-pre-seeded paths
+   * where `enroll-pick-method` was skipped), then pauses on `EnrollTotpQrForm`.
+   * For a manage **replace** it stashes the old confirmed secret first (the
+   * single totp slot is about to be clobbered) so a cancel can restore it.
+   * Handles `skip` (opt-in) / `cancel` (manage) / `useDifferentMethod`.
    */
-  @Step("enroll-confirm")
+  @Step("enroll-totp-qr")
   @Public()
-  async enrollConfirm(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+  async enrollTotpQr(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     this.requireSubject(ctx);
     const username = ctx.subject;
     const m = (ctx.mfaEnroll ??= {});
-
-    // Idempotent TOTP provisioning at top of confirm — covers the
-    // single-transport auto-pick path (`prepare-mfa` may pre-pick totp
-    // without going through `enrollPickMethod`).
     if (m.method === "totp" && !m.secret) {
+      // Replacing the existing totp clobbers it — stash for cancel/restore.
+      if (m.replace) await this.stashReplacedTotp(ctx, username);
       const issuer = ctx.mfaPolicy?.issuer ?? this.opts.totpIssuer;
       const secret = generateTotpSecret();
       const uri = generateTotpUri(secret, issuer, username);
@@ -3114,19 +3481,31 @@ export class AuthWorkflow {
       m.secret = secret;
       m.uri = uri;
     }
+    const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.enrollTotpQr);
+    if (await this.handleEnrollExit(ctx, wf.resolveAction(), username)) return undefined;
+    wf.resolveInput(); // pauses on first arrival; the 'Continue' submit resumes here
+    m.qrSeen = true;
+    return undefined;
+  }
+
+  /**
+   * Unified MFA-enrol phase 3 (verify pincode/TOTP, mark confirmed). On
+   * success sets `ctx.mfaEnroll.done = true` AND `ctx.otp.verified = true`
+   * (the loop-exit signal — enrol-confirm verifies an OTP, so the unified
+   * `otp.verified` flag fires alongside the MFA-specific `mfaEnroll.done`).
+   * For a manage **replace** of sms/email this is where the new (verified)
+   * value is finally written (verify-then-write); for totp the new unconfirmed
+   * secret was provisioned in `enroll-totp-qr` and is flipped confirmed here.
+   */
+  @Step("enroll-confirm")
+  @Public()
+  async enrollConfirm(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    this.requireSubject(ctx);
+    const username = ctx.subject;
+    const m = (ctx.mfaEnroll ??= {});
     const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.enrollConfirm);
-    const mode = m.mode ?? "optional";
     const action = wf.resolveAction();
-    if (mode === "optional" && action === "skip") {
-      await this.cleanupEnrollment(ctx, username);
-      m.done = true;
-      (ctx.otp ??= {}).verified = true;
-      return undefined;
-    }
-    if (action === "useDifferentMethod") {
-      await this.cleanupEnrollment(ctx, username);
-      return undefined;
-    }
+    if (await this.handleEnrollExit(ctx, action, username)) return undefined;
     if (action === "resend") {
       if (m.method === "totp") {
         throw this.throwPublic(ctx, wf, { formMessage: "Resend is not applicable for TOTP" });
@@ -3160,11 +3539,26 @@ export class AuthWorkflow {
       if (pinErr) throw this.throwPublic(ctx, wf, { errors: pinErr });
     }
     const methodName = m.method as MfaTransport;
-    await this.withStoreErrorTranslation(() => this.users.confirmMfaMethod(username, methodName));
-    // Make this the default UNLESS the add-MFA flow asked to keep the existing
-    // one (the user is adding a secondary factor, not their first). On the
-    // login/invite forced-enrolment path `keepExistingDefault` is unset and the
-    // user has no default yet, so the first method still becomes default.
+    if (m.replace && (methodName === "sms" || methodName === "email")) {
+      // verify-then-write: the new value is proven, persist it as confirmed now
+      // (the old confirmed value was never clobbered, so there was no exposure).
+      await this.withStoreErrorTranslation(() =>
+        this.users.addMfaMethod(username, {
+          name: methodName,
+          value: m.address as string,
+          confirmed: true,
+        }),
+      );
+    } else {
+      // add (sms/email/totp) + totp replace (new secret already written unconfirmed).
+      await this.withStoreErrorTranslation(() => this.users.confirmMfaMethod(username, methodName));
+    }
+    // Replace succeeded → drop the totp restore stash.
+    if (ctx.addMfa?.replaced) delete ctx.addMfa.replaced;
+    // Make this the default UNLESS the flow asked to keep the existing one (the
+    // user is adding/replacing a secondary factor, not setting their first). On
+    // the login/invite forced-enrolment path `keepExistingDefault` is unset and
+    // the user has no default yet, so the first method still becomes default.
     if (!m.keepExistingDefault) await this.users.setDefaultMfaMethod(username, methodName);
     m.done = true;
     (ctx.otp ??= {}).verified = true;
@@ -4581,35 +4975,86 @@ export class AuthWorkflow {
   changePasswordFlow(): void {}
 
   /**
-   * add-mfa.flow — authenticated self-service "add a second factor". Same
-   * gating model as change-password: NOT `@Public()` — `init-add-mfa` is arbac-
-   * gated (`auth.add-mfa` / `self`) and binds `ctx.subject` from the session, so
-   * an unauthenticated / unauthorized caller is rejected at the first step. NOT
-   * in `DEFAULT_AUTH_WORKFLOWS` — reached only via the GUARDED trigger route
+   * add-mfa.flow — authenticated self-service "Manage two-factor
+   * authentication" (add / change / remove). Same gating model as
+   * change-password: NOT `@Public()` — `init-add-mfa` is arbac-gated
+   * (`auth.add-mfa` / `self`) and binds `ctx.subject` from the session, so an
+   * unauthenticated / unauthorized caller is rejected at the first step. NOT in
+   * `DEFAULT_AUTH_WORKFLOWS` — reached only via the GUARDED trigger route
    * (`AuthController.addMfa`), never the public `/auth/trigger`.
    *
-   * The body REUSES the login/invite forced-enrolment trio verbatim
-   * (`enroll-pick-method` → `enroll-address` → `enroll-confirm`); the only
-   * difference is the driver: `init-add-mfa` narrows `ctx.mfaPolicy`
-   * `availableTransports` to the transports the user has NOT enrolled, so the
-   * picker offers exactly those and auto-picks when one remains. Available only
-   * when something is un-enrolled — with everything enrolled the trio is skipped
-   * and `finish-add-mfa` returns a benign "nothing to add" terminal.
+   * Shape:
+   * 1. `init-add-mfa` — bind subject, resolve the FULL transport set + the
+   *    un-enrolled `candidates`, mark `stepUpRequired` when the user already has
+   *    ≥1 confirmed factor, and put the enrol forms in `'manage'` mode.
+   * 2. `prepare-locked-mfa-transports` — resolve which factors the consumer
+   *    forbids changing (handle-bound email/phone).
+   * 3. STEP-UP (only when `stepUpRequired`): challenge an EXISTING factor via
+   *    {@link mfaStepUpLoop} — re-verify identity before any change. On success
+   *    `manage-stepup-done` swaps off the encapsulated start onto the durable
+   *    `store` strategy (server-anchored, replay-resistant; mirrors login's
+   *    swap-after-credentials).
+   * 4. `manage-menu` (only when `stepUpRequired`) — pick add / change / remove +
+   *    target; pre-seeds `mfaEnroll.method` for add/change.
+   * 5. Route: `confirm-remove-mfa` for remove; otherwise the REUSED enrol trio
+   *    (`enroll-pick-method` → `enroll-address` / `enroll-totp-qr` →
+   *    `enroll-confirm`). A zero-MFA user skips step-up + menu and lands on the
+   *    enrol picker directly (the first-time opt-in path).
+   * 6. `finish-add-mfa` — added / changed / removed / cancelled / nothing terminal.
+   *    The user KEEPS their session (no token re-issue).
    */
   @Workflow("auth/add-mfa/flow")
   @ArbacResource("auth.add-mfa")
   @ArbacAction("self")
   @WorkflowSchema<AuthWfCtx>([
-    { id: "init-add-mfa" }, // arbac gate + bind subject + narrow transports to the un-enrolled remainder
+    { id: "init-add-mfa" }, // arbac gate + bind subject + full transports + candidates + stepUpRequired + mode='manage'
     { break: (ctx) => !ctx.subject }, // defence in depth (init throws 401 if unauth)
-    // Enrol the chosen method — REUSES the login/invite trio verbatim, gated on
-    // there being something to add. One remaining transport auto-picks; more
-    // than one pauses on the picker form listing exactly the remainder.
+    { id: "prepare-locked-mfa-transports" }, // resolve handle-bound (non-changeable) factors
+    // Step-up: re-verify an EXISTING factor before any change (no trusted-device
+    // bypass). Only when the user has something to verify.
     {
-      condition: (ctx) => (ctx.addMfa?.candidates?.length ?? 0) > 0,
+      condition: (ctx) => !!ctx.addMfa?.stepUpRequired,
+      steps: mfaStepUpLoop,
+    },
+    // A cancel/exit DURING step-up (mfaStepUpLoop breaks its while on aborted)
+    // must not fall through into the menu/enrolment — jump straight to the
+    // cancelled terminal. Fail closed: no management write without a fresh
+    // challenge. (Menu/remove cancels set aborted LATER and are handled by the
+    // `!ctx.aborted` gates below, so this break only catches step-up aborts.)
+    { break: (ctx) => !!ctx.aborted },
+    // First validated input passed → anchor the rest of the flow in the durable
+    // store (single-use OTP, server-side staging of the new factor).
+    {
+      id: "manage-stepup-done",
+      condition: (ctx) =>
+        !!ctx.addMfa?.stepUpRequired && !!ctx.otp?.verified && !ctx.addMfa?.stepUpDone,
+    },
+    // Management menu — only for users who have methods to manage. Sets
+    // `addMfa.action` + `target` (and `mfaEnroll.method` for add/change), or sets
+    // `ctx.aborted` on cancel. NO `{ break }` here — a cancel/abort must still
+    // reach `finish-add-mfa` (which emits the cancelled terminal); the
+    // intermediate steps below are simply gated off on `ctx.aborted`.
+    {
+      id: "manage-menu",
+      condition: (ctx) => !!ctx.addMfa?.stepUpRequired && !ctx.addMfa?.action,
+    },
+    // Remove route.
+    {
+      id: "confirm-remove-mfa",
+      condition: (ctx) => !ctx.aborted && ctx.addMfa?.action === "remove",
+    },
+    // Add / change route — REUSES the login/invite trio verbatim (+ QR step).
+    // Gated so a zero-MFA user (no menu) still enrolls over `candidates`, and a
+    // menu pick of add/change runs with `mfaEnroll.method` pre-seeded. NOT for
+    // remove, and NOT once aborted (cancel must not fall through into enrolment).
+    {
+      condition: (ctx) =>
+        !ctx.aborted &&
+        ctx.addMfa?.action !== "remove" &&
+        (ctx.addMfa?.action === "replace" || (ctx.addMfa?.candidates?.length ?? 0) > 0),
       steps: enrollTrioSteps,
     },
-    { id: "finish-add-mfa" },
+    { id: "finish-add-mfa" }, // always runs — added / changed / removed / cancelled terminal
   ])
   addMfaFlow(): void {}
 

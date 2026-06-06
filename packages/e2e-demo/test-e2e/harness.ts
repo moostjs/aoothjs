@@ -148,6 +148,21 @@ export async function clickAction(page: Page, label: string): Promise<void> {
   await page.getByRole("button", { name: label, exact: false }).first().click();
 }
 
+/**
+ * Wait for the TOTP QR step (`EnrollTotpQrForm`) — the `AsQrCode` root renders
+ * the scannable QR + manual secret on its OWN pause, between method-pick and
+ * code-entry. (Shared by login/invite opt-in AND the manage-MFA flow.)
+ */
+export async function waitForTotpQrStep(page: Page, timeoutMs = 5000): Promise<void> {
+  await page.locator(".as-qr-code").first().waitFor({ state: "visible", timeout: timeoutMs });
+}
+
+/** Advance past the TOTP QR step by clicking its "Continue" submit. */
+export async function continuePastTotpQr(page: Page): Promise<void> {
+  await waitForTotpQrStep(page);
+  await submitForm(page);
+}
+
 /** Submit the form via its primary submit button (the one rendered by AsForm). */
 export async function submitForm(page: Page): Promise<void> {
   await page.locator("button.as-submit-btn, button[type=submit]").first().click();

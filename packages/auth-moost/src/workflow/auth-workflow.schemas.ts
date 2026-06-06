@@ -47,11 +47,18 @@ export const enrollTrioSteps: TWorkflowSchema<AuthWfCtx> = [
       (ctx.mfaEnroll.method === "sms" || ctx.mfaEnroll.method === "email") &&
       !ctx.mfaEnroll.address,
   },
+  // TOTP only — show the QR + manual secret on its OWN pause before code entry,
+  // so the user scans first and types the code on the next screen. Shared by
+  // both trio call sites (add-mfa AND login/invite first-time opt-in).
+  {
+    id: "enroll-totp-qr",
+    condition: (ctx) => ctx.mfaEnroll?.method === "totp" && !ctx.mfaEnroll.qrSeen,
+  },
   {
     id: "enroll-confirm",
     condition: (ctx) =>
       !!ctx.mfaEnroll?.method &&
-      (ctx.mfaEnroll.method === "totp" || !!ctx.mfaEnroll.address) &&
+      (ctx.mfaEnroll.method === "totp" ? !!ctx.mfaEnroll.qrSeen : !!ctx.mfaEnroll.address) &&
       !ctx.mfaEnroll.done,
   },
   // After a channel is confirmed (`mfaEnroll.done`), promote the verified
@@ -62,6 +69,48 @@ export const enrollTrioSteps: TWorkflowSchema<AuthWfCtx> = [
   {
     id: "promote-to-handle",
     condition: (ctx) => !!ctx.mfaEnroll?.done && !ctx.promoteToHandleDone,
+  },
+];
+
+/**
+ * MFA step-up loop — challenge an EXISTING confirmed factor (no enrolment).
+ * Reuses the login challenge steps verbatim, but DELIBERATELY omits
+ * `check-trusted-device` and `risk-step-up`: in a management context a trusted
+ * device must NOT be allowed to bypass the step-up (that is the whole point of
+ * re-verifying before letting the user change/remove a factor). Loop exits when
+ * a challenge step flips `ctx.otp.verified`. Used by the standalone add/manage-
+ * MFA flow, guarded by `ctx.addMfa.stepUpRequired` (set only when the user has
+ * ≥1 confirmed method).
+ *
+ * The `while` also breaks on `ctx.aborted` so a cancel/exit on the challenge
+ * form (e.g. `pincode-check`'s `exit` alt-action, or a customer-added Back on
+ * the MFA challenge) terminates the loop instead of spinning the engine's
+ * guardless inner loop forever. The paired `{ break: !!aborted }` after this
+ * sub-schema in `addMfaFlow` then routes an aborted step-up straight to
+ * `finish-add-mfa` (the cancelled terminal) — fail CLOSED: the user reaches no
+ * management write without a fresh challenge. (Note: login's `mfaLoopSchema`
+ * intentionally does NOT carry this guard — exiting login's challenge loop
+ * without a paired failure terminal would risk issuing a session, so that one
+ * stays fail-closed via the engine's no-progress stall instead.)
+ */
+export const mfaStepUpLoop: TWorkflowSchema<AuthWfCtx> = [
+  {
+    while: (ctx) => !ctx.otp?.verified && !ctx.aborted,
+    steps: [
+      { id: "load-enrolled-mfa-methods", condition: (ctx) => !ctx.otp?.verified },
+      { id: "select-mfa-method", condition: (ctx) => !ctx.otp?.verified },
+      {
+        id: "select-2fa",
+        condition: (ctx) =>
+          !ctx.otp?.verified && !ctx.mfa?.method && (ctx.mfa?.enrolledMethods?.length ?? 0) > 1,
+      },
+      {
+        condition: (ctx) =>
+          !ctx.otp?.verified && (ctx.mfa?.method === "sms" || ctx.mfa?.method === "email"),
+        steps: pincodeSendCheckPair,
+      },
+      { id: "totp-check", condition: (ctx) => !ctx.otp?.verified && ctx.mfa?.method === "totp" },
+    ],
   },
 ];
 

@@ -164,9 +164,9 @@ export const WORKFLOWS: ReadonlyArray<WfDescriptor> = [
   },
   {
     id: "auth/add-mfa/flow",
-    label: "Add MFA method",
+    label: "Manage MFA",
     description:
-      "Authenticated user adds a second factor — offers only the transports they haven't enrolled yet (auto-picks when one remains), then verifies via QR/TOTP setup code or an email/SMS pincode. Sign in as a single-method user (t1_grace TOTP, t1_henry email, t1_ivy SMS) to add another; t1_multi_mfa has all three, so the flow reports nothing left to add.",
+      "Authenticated user manages their two-factor methods — add / change / remove. If they already have a factor it first STEPS UP (verifies an existing one), then shows a menu; a zero-MFA user goes straight to the enrol picker. TOTP shows the QR on its own step before code entry. Handle-bound factors (an MFA email/phone that is also a login handle) are locked from change/remove. Sign in as a single-method user (t1_grace TOTP, t1_henry email, t1_ivy SMS) or t1_multi_mfa (all three).",
     requiresAuth: true,
     testCreds: ADD_MFA_USERS,
     // GUARDED trigger — authenticated + the `auth:add-mfa` privilege (NOT the

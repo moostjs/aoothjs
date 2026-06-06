@@ -45,6 +45,7 @@ import {
   createAuthEmailOutlet,
   DEFAULT_AUTH_WORKFLOWS,
   deriveWfStateSecret,
+  type MfaTransport,
   AUTH_CODE_STORE_TOKEN,
   AuthorizeController,
   CLIENT_REDIRECT_POLICY_TOKEN,
@@ -568,6 +569,31 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       channel: "email" | "sms",
     ): string | undefined {
       return channel === "email" ? aooth.emailField : aooth.phoneField;
+    }
+
+    // Forbid changing/removing a factor whose value IS a login handle — the MFA
+    // email equals the `@aooth.user.email` column, or the MFA phone equals
+    // `@aooth.user.phone`. The user signs in with it, so swapping it via the
+    // manage-MFA flow would desync identity (and removing it would orphan a
+    // login handle). The manage menu omits these from Change/Remove and re-checks
+    // server-side. Demo policy — a customer decides their own lock rule.
+    protected override async resolveLockedMfaTransports(ctx: AuthWfCtx): Promise<MfaTransport[]> {
+      if (!ctx.subject) return [];
+      const user = await aooth.userService.getUser(ctx.subject);
+      const rec = user as unknown as Record<string, unknown>;
+      const methods = user.mfa?.methods ?? [];
+      const locked: MfaTransport[] = [];
+      const lockIfHandle = (field: string | undefined, name: string, transport: MfaTransport) => {
+        if (!field) return;
+        const hv = rec[field];
+        const handle = typeof hv === "string" ? hv.trim().toLowerCase() : "";
+        const m = methods.find((x) => x.name === name && x.confirmed);
+        const mv = typeof m?.value === "string" ? m.value.trim().toLowerCase() : "";
+        if (handle && mv === handle) locked.push(transport);
+      };
+      lockIfHandle(aooth.emailField, "email", "email");
+      lockIfHandle(aooth.phoneField, "sms", "sms");
+      return locked;
     }
 
     // The demo is cookieless — it replays `data.accessToken` from sessionStorage

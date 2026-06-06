@@ -52,7 +52,15 @@ export interface AuthWorkflowOpts {
     // MFA enrolment
     enrollPickMethod?: TAtscriptAnnotatedType;
     enrollAddress?: TAtscriptAnnotatedType;
+    /** TOTP QR step — shown before the code-entry pause (manage + opt-in). */
+    enrollTotpQr?: TAtscriptAnnotatedType;
     enrollConfirm?: TAtscriptAnnotatedType;
+
+    // Manage-MFA (standalone authenticated flow)
+    /** Manage-MFA menu (Add / Change / Remove) shown after step-up. */
+    manageMfa?: TAtscriptAnnotatedType;
+    /** Confirm-removal pause for the manage-MFA "Remove" action. */
+    removeMfaConfirm?: TAtscriptAnnotatedType;
 
     // MFA challenge
     select2fa?: TAtscriptAnnotatedType;
@@ -116,7 +124,10 @@ export interface ResolvedAuthWorkflowOpts {
     askPhone: TAtscriptAnnotatedType;
     enrollPickMethod: TAtscriptAnnotatedType;
     enrollAddress: TAtscriptAnnotatedType;
+    enrollTotpQr: TAtscriptAnnotatedType;
     enrollConfirm: TAtscriptAnnotatedType;
+    manageMfa: TAtscriptAnnotatedType;
+    removeMfaConfirm: TAtscriptAnnotatedType;
     select2fa: TAtscriptAnnotatedType;
     mfaCode: TAtscriptAnnotatedType;
     pincode: TAtscriptAnnotatedType;

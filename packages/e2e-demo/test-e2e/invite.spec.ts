@@ -32,6 +32,7 @@ import {
   waitForEmail,
   waitForFormInput,
   waitForSms,
+  waitForTotpQrStep,
   wfUrl,
 } from "./harness";
 
@@ -611,24 +612,24 @@ test.describe("WF-INVITE — auth.invite family (MFA enrollment, PW MFA coverage
     await submitForm(inviteePage);
 
     // Picker → pick totp. TOTP skips the EnrollAddressForm (no address to
-    // collect; secret is server-provisioned) and lands straight on
-    // EnrollConfirmForm. Wait for `method` first.
+    // collect; secret is server-provisioned) and lands on the TOTP QR step.
+    // Wait for `method` first.
     await waitForFormInput(inviteePage, "method");
     await fillField(inviteePage, "method", "totp");
     await submitForm(inviteePage);
 
-    // EnrollConfirmForm — `code` field. Mid-flow store assertion: the
-    // unconfirmed totp row was persisted by Phase 1 (proves the cleanup
-    // branch below isn't a vacuous pass on a system that never wrote one).
-    await waitForFormInput(inviteePage, "code");
+    // TOTP QR step. Mid-flow store assertion: the unconfirmed totp row was
+    // persisted at pick (proves the cleanup branch below isn't a vacuous pass
+    // on a system that never wrote one).
+    await waitForTotpQrStep(inviteePage);
     const before = await request.get(`/__test/user/${encodeURIComponent(inviteeEmail)}`);
     const beforeRec = (await before.json()) as {
       mfa: { methods: Array<{ name: string; confirmed: boolean }> };
     };
     expect(beforeRec.mfa.methods.find((m) => m.name === "totp")?.confirmed).toBe(false);
 
-    // useDifferentMethod — loops back to picker, cleanupEnrollment removes
-    // the totp row.
+    // useDifferentMethod (available on the QR step too) — loops back to picker,
+    // cleanupEnrollment removes the totp row.
     await clickAction(inviteePage, "Use a different method");
     await waitForFormInput(inviteePage, "method");
 

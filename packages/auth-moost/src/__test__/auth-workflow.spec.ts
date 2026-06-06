@@ -4,9 +4,10 @@ import { getMoostMate } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import { ConsentStore } from "../consent.store";
-import type { AuthWfAltCredsPolicy, AuthWfCtx } from "../workflow/auth-workflow.ctx";
+import type { AuthWfAltCredsPolicy, AuthWfCtx, MfaTransport } from "../workflow/auth-workflow.ctx";
 import type { AuthDeliveryPayload } from "../workflow/auth-workflow";
 import { AuthWorkflow } from "../workflow/auth-workflow";
+import { enrollTrioSteps, mfaStepUpLoop } from "../workflow/auth-workflow.schemas";
 import type { AuthWorkflowOpts } from "../workflow/auth-workflow.opts";
 
 // ── Test scaffolding ───────────────────────────────────────────────────────
@@ -41,6 +42,11 @@ class TestableAuthWorkflow extends AuthWorkflow {
   public exposeChangePasswordPolicy = (ctx: AuthWfCtx) => this.resolveChangePasswordPolicy(ctx);
   public exposeSignupPolicy = (ctx: AuthWfCtx) => this.resolveSignupPolicy(ctx);
   public exposeMfaPolicy = (ctx: AuthWfCtx) => this.resolveMfaPolicy(ctx);
+  public exposeLockedMfaTransports = (ctx: AuthWfCtx) => this.resolveLockedMfaTransports(ctx);
+  public exposeValidateMfaAddress = (m: MfaTransport, v: string) => this.validateMfaAddress(m, v);
+  public exposeNormalizeMfaAddress = (m: MfaTransport, v: string) => this.normalizeMfaAddress(m, v);
+  public exposeHandleEnrollExit = (ctx: AuthWfCtx, action: string | undefined, username: string) =>
+    this.handleEnrollExit(ctx, action, username);
   public exposeOtpDisclosure = (ctx: AuthWfCtx, ch: "email" | "phone") =>
     this.resolveOtpDisclosure(ctx, ch);
   public exposeRiskStepUp = (ctx: AuthWfCtx) => this.resolveRiskStepUp(ctx);
@@ -110,6 +116,22 @@ function userWithMethods(methods: UserCredentials["mfa"]["methods"]): UserCreden
   return { mfa: { methods, defaultMethod: "", autoSend: false } } as UserCredentials;
 }
 
+/** Evaluate a workflow-schema node's `condition` against a sample ctx. */
+function evalCondition(node: unknown, ctx: AuthWfCtx): boolean {
+  const c = (node as { condition?: (ctx: AuthWfCtx) => boolean }).condition;
+  return c ? c(ctx) : true;
+}
+
+/** Flatten a workflow schema's step ids (recursing into nested `steps`). */
+function collectSchemaStepIds(nodes: unknown[]): string[] {
+  const out: string[] = [];
+  for (const n of nodes as { id?: string; steps?: unknown[] }[]) {
+    if (n.id) out.push(n.id);
+    if (Array.isArray(n.steps)) out.push(...collectSchemaStepIds(n.steps));
+  }
+  return out;
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // 1. Construction — opts defaults + merging
 // WHY: `this.opts.<group>.<field>` is read by step bodies and schema
@@ -162,9 +184,13 @@ describe("AuthWorkflow construction (WF-AUTH-UNIFIED-002)", () => {
     // the box. Consumer override via `opts.forms.<field>` swaps any slot.
     // Pin a representative field-count + a key slot so a regression that
     // drops the default map is caught.
-    expect(Object.keys(opts.forms).length).toBe(19);
+    expect(Object.keys(opts.forms).length).toBe(22);
     expect(opts.forms.loginCredentials).toBeTruthy();
     expect(opts.forms.recoveryEmailIdentifier).toBeTruthy();
+    // Manage-MFA additions: QR step + menu + remove-confirm.
+    expect(opts.forms.enrollTotpQr).toBeTruthy();
+    expect(opts.forms.manageMfa).toBeTruthy();
+    expect(opts.forms.removeMfaConfirm).toBeTruthy();
     expect(opts.forms.pincode).toBeTruthy();
     expect(opts.forms.setPassword).toBeTruthy();
     // Federated needs-link interactive completion ships its own proof forms
@@ -762,22 +788,26 @@ describe("AuthWorkflow schema integrity", () => {
     return meta.wfSchema;
   }
 
-  it.each([["loginFlow"], ["inviteFlow"], ["recoveryFlow"], ["changePasswordFlow"]])(
-    "every step id referenced in %s resolves to a registered @Step",
-    (method: string) => {
-      const schema = readSchemaFor(method);
-      const referenced = collectStepIds(schema);
-      const declared = expandStepIds(collectStepIdsFromHandlers());
+  it.each([
+    ["loginFlow"],
+    ["inviteFlow"],
+    ["recoveryFlow"],
+    ["changePasswordFlow"],
+    ["addMfaFlow"],
+    ["signupFlow"],
+  ])("every step id referenced in %s resolves to a registered @Step", (method: string) => {
+    const schema = readSchemaFor(method);
+    const referenced = collectStepIds(schema);
+    const declared = expandStepIds(collectStepIdsFromHandlers());
 
-      const missing = [...referenced].filter((id) => !declared.has(id));
-      // WHY: a typo (or a step renamed in source but not in the schema array)
-      // would silently no-op at runtime. Failing loud here is the contract.
-      expect(missing).toEqual([]);
-      // Sanity: at least one id resolved — guards against a regression where
-      // the schema-read fallback returned `[]` and the test "passed" trivially.
-      expect(referenced.size).toBeGreaterThan(0);
-    },
-  );
+    const missing = [...referenced].filter((id) => !declared.has(id));
+    // WHY: a typo (or a step renamed in source but not in the schema array)
+    // would silently no-op at runtime. Failing loud here is the contract.
+    expect(missing).toEqual([]);
+    // Sanity: at least one id resolved — guards against a regression where
+    // the schema-read fallback returned `[]` and the test "passed" trivially.
+    expect(referenced.size).toBeGreaterThan(0);
+  });
 
   it("declares six @Workflow methods (login, invite, recover, change-password, signup, add-mfa)", () => {
     const mate = getMoostMate();
@@ -803,5 +833,174 @@ describe("AuthWorkflow schema integrity", () => {
       "auth/recovery/flow",
       "auth/signup/flow",
     ]);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Manage-MFA (WF-MANAGE-MFA) — the unit-testable surface of the add/change/
+// remove flow. Full-flow behaviour (step-up challenge, replace-no-strand,
+// remove gating, garbage-address rejection, QR-before-code) is exercised
+// end-to-end by the Playwright suite; here we pin the pure resolvers/helpers
+// and the shared-schema shape that drives that behaviour.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("Manage-MFA resolvers + helpers (WF-MANAGE-MFA)", () => {
+  it("resolveLockedMfaTransports defaults to none locked", async () => {
+    const wf = makeWorkflow();
+    expect(await settle(wf.exposeLockedMfaTransports({ subject: "u1" }))).toEqual([]);
+  });
+
+  it("validateMfaAddress rejects garbage and accepts well-formed values per transport", () => {
+    const wf = makeWorkflow();
+    // email branch — the finding-#2 bug ("blbalba" used to pass).
+    expect(wf.exposeValidateMfaAddress("email", "blbalba")).toBeTruthy();
+    expect(wf.exposeValidateMfaAddress("email", "alice@example.com")).toBeUndefined();
+    expect(wf.exposeValidateMfaAddress("email", "")).toBeTruthy();
+    // sms branch — permissive E.164-ish; punctuation tolerated, letters not.
+    expect(wf.exposeValidateMfaAddress("sms", "blbalba")).toBeTruthy();
+    expect(wf.exposeValidateMfaAddress("sms", "+1 (555) 555-0100")).toBeUndefined();
+    expect(wf.exposeValidateMfaAddress("sms", "123")).toBeTruthy(); // too short
+    // totp carries no deliverable address.
+    expect(wf.exposeValidateMfaAddress("totp", "anything")).toBeUndefined();
+  });
+
+  it("normalizeMfaAddress strips SMS punctuation and trims email", () => {
+    const wf = makeWorkflow();
+    expect(wf.exposeNormalizeMfaAddress("sms", " +1 (555) 555-0100 ")).toBe("+15555550100");
+    expect(wf.exposeNormalizeMfaAddress("email", "  Alice@Example.com ")).toBe("Alice@Example.com");
+  });
+});
+
+describe("Manage-MFA shared-schema shape (WF-MANAGE-MFA)", () => {
+  const cond = evalCondition;
+
+  it("enrollTrioSteps puts the TOTP QR step BEFORE code entry", () => {
+    const ids = enrollTrioSteps.map((s) => (s as { id?: string }).id);
+    const qrIdx = ids.indexOf("enroll-totp-qr");
+    const confirmIdx = ids.indexOf("enroll-confirm");
+    expect(qrIdx).toBeGreaterThanOrEqual(0);
+    expect(confirmIdx).toBeGreaterThanOrEqual(0);
+    expect(qrIdx).toBeLessThan(confirmIdx);
+  });
+
+  it("the TOTP QR step gates on totp + !qrSeen; confirm waits for qrSeen (TOTP)", () => {
+    const qr = enrollTrioSteps.find((s) => (s as { id?: string }).id === "enroll-totp-qr")!;
+    const confirm = enrollTrioSteps.find((s) => (s as { id?: string }).id === "enroll-confirm")!;
+    // QR shows for an un-scanned totp enrolment, hides once scanned.
+    expect(cond(qr, { mfaEnroll: { method: "totp" } })).toBe(true);
+    expect(cond(qr, { mfaEnroll: { method: "totp", qrSeen: true } })).toBe(false);
+    expect(cond(qr, { mfaEnroll: { method: "email", address: "a@b.co" } })).toBe(false);
+    // Confirm holds back for TOTP until the QR has been seen.
+    expect(cond(confirm, { mfaEnroll: { method: "totp" } })).toBe(false);
+    expect(cond(confirm, { mfaEnroll: { method: "totp", qrSeen: true } })).toBe(true);
+    // sms/email confirm still gates on address (unchanged).
+    expect(cond(confirm, { mfaEnroll: { method: "email", address: "a@b.co" } })).toBe(true);
+  });
+
+  it("mfaStepUpLoop reuses the challenge arm but excludes trusted-device + risk-step-up", () => {
+    const ids = collectSchemaStepIds(mfaStepUpLoop);
+    // Challenge an EXISTING factor.
+    expect(ids).toContain("load-enrolled-mfa-methods");
+    expect(ids).toContain("select-mfa-method");
+    expect(ids).toContain("totp-check");
+    // SECURITY: a trusted device must NOT bypass step-up, and no risk re-arm.
+    expect(ids).not.toContain("check-trusted-device");
+    expect(ids).not.toContain("risk-step-up");
+    // And it must NOT enrol (no new-factor steps in the step-up arm).
+    expect(ids).not.toContain("enroll-pick-method");
+    expect(ids).not.toContain("enroll-confirm");
+  });
+
+  it("mfaStepUpLoop while breaks on abort (no guardless infinite spin on cancel/exit)", () => {
+    const loop = mfaStepUpLoop[0] as { while?: (ctx: AuthWfCtx) => boolean };
+    expect(typeof loop.while).toBe("function");
+    // Keep challenging until verified…
+    expect(loop.while!({})).toBe(true);
+    expect(loop.while!({ otp: { verified: true } })).toBe(false);
+    // …but a cancel/exit (`ctx.aborted`) must terminate the loop, NOT spin the
+    // engine's guardless inner loop forever. The paired `{ break: !!aborted }`
+    // in addMfaFlow then routes the aborted step-up to the cancelled terminal.
+    expect(loop.while!({ aborted: true })).toBe(false);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Manage-MFA REPLACE strand-safety (WF-MANAGE-MFA) — regression for the
+// `useDifferentMethod`-in-manage strand/lockout. The manage forms HIDE
+// `useDifferentMethod` client-side, but it stays in their DECLARED action
+// whitelist, so a crafted resume can still send it. handleEnrollExit must route
+// manage cancel AND useDifferentMethod through the replace-aware
+// cancelManageEnrollment — never cleanupEnrollment, which would removeMfaMethod
+// the user's still-confirmed factor mid-replace (deleting a live factor + its
+// default before any replacement is verified).
+// ───────────────────────────────────────────────────────────────────────────
+describe("Manage-MFA replace strand-safety (WF-MANAGE-MFA)", () => {
+  it("manage REPLACE of sms: useDifferentMethod aborts WITHOUT stranding the live factor", async () => {
+    const { users, auth, consentStore } = makeDeps();
+    const wf = new TestableAuthWorkflow({}, users, auth, consentStore);
+    const { id } = await users.createUser("strand-sms", "pw");
+    await users.addMfaMethod(id, { name: "sms", value: "+15555550001", confirmed: true });
+    await users.setDefaultMfaMethod(id, "sms");
+    // mid-replace: verify-then-write hasn't written the new value, so the only
+    // row named "sms" is the user's LIVE confirmed factor.
+    const ctx: AuthWfCtx = {
+      subject: id,
+      mfaEnroll: { mode: "manage", method: "sms", replace: true },
+      addMfa: { action: "replace", target: "sms" },
+    };
+    expect(await wf.exposeHandleEnrollExit(ctx, "useDifferentMethod", id)).toBe(true);
+    expect(ctx.aborted).toBe(true);
+    const after = await users.getUser(id);
+    expect(after.mfa.methods.find((m) => m.name === "sms")).toMatchObject({
+      value: "+15555550001",
+      confirmed: true,
+    });
+    expect(after.mfa.defaultMethod).toBe("sms"); // default not blanked
+  });
+
+  it("manage REPLACE of totp: useDifferentMethod restores the stashed (clobbered) secret + default", async () => {
+    const { users, auth, consentStore } = makeDeps();
+    const wf = new TestableAuthWorkflow({}, users, auth, consentStore);
+    const { id } = await users.createUser("strand-totp", "pw");
+    // post-clobber state: enroll-totp-qr already overwrote the single totp slot
+    // with a NEW unconfirmed secret and stashed the OLD confirmed one on addMfa.
+    await users.addMfaMethod(id, { name: "totp", value: "NEW-UNCONFIRMED", confirmed: false });
+    const ctx: AuthWfCtx = {
+      subject: id,
+      mfaEnroll: { mode: "manage", method: "totp", replace: true },
+      addMfa: {
+        action: "replace",
+        target: "totp",
+        replaced: { name: "totp", value: "OLD-CONFIRMED", wasDefault: true },
+      },
+    };
+    expect(await wf.exposeHandleEnrollExit(ctx, "useDifferentMethod", id)).toBe(true);
+    expect(ctx.aborted).toBe(true);
+    const after = await users.getUser(id);
+    expect(after.mfa.methods.find((m) => m.name === "totp")).toMatchObject({
+      value: "OLD-CONFIRMED",
+      confirmed: true,
+    });
+    expect(after.mfa.defaultMethod).toBe("totp"); // wasDefault restored
+  });
+
+  it("manage ADD: useDifferentMethod drops only the unconfirmed new row, keeps the existing factor", async () => {
+    const { users, auth, consentStore } = makeDeps();
+    const wf = new TestableAuthWorkflow({}, users, auth, consentStore);
+    const { id } = await users.createUser("add-drop", "pw");
+    await users.addMfaMethod(id, { name: "email", value: "a@b.co", confirmed: true });
+    await users.setDefaultMfaMethod(id, "email");
+    await users.addMfaMethod(id, { name: "sms", value: "+15555550002", confirmed: false });
+    const ctx: AuthWfCtx = {
+      subject: id,
+      mfaEnroll: { mode: "manage", method: "sms", replace: false },
+      addMfa: { action: "add", target: "sms" },
+    };
+    expect(await wf.exposeHandleEnrollExit(ctx, "useDifferentMethod", id)).toBe(true);
+    expect(ctx.aborted).toBe(true);
+    const after = await users.getUser(id);
+    expect(after.mfa.methods.find((m) => m.name === "sms")).toBeUndefined(); // unconfirmed add dropped
+    expect(after.mfa.methods.find((m) => m.name === "email")).toMatchObject({ confirmed: true });
+    expect(after.mfa.defaultMethod).toBe("email"); // existing factor + default intact
   });
 });

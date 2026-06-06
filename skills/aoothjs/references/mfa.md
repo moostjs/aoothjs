@@ -28,7 +28,7 @@ Pure-Node TOTP / HOTP primitives, SHA-256 MFA-code helpers for email/SMS challen
 - No WebAuthn / FIDO2.
 - **No backup / recovery codes.** No `generateBackupCodePlaintext` export, no `UserService.generateBackupCodes` / `consumeBackupCode`. See [Backup codes](#backup-codes).
 - `verifyMfa` is TOTP-only; non-TOTP method names participate in `addMfaMethod` / `confirmMfaMethod` bookkeeping but are not verified by this package.
-- **No HTTP enrollment flow.** The bundled, ARBAC-gated "add a second factor" workflow (`auth/add-mfa/flow`) that orchestrates `addMfaMethod` + `confirmMfaMethod` for a signed-in user — pick transport → enter address / scan QR → verify pincode — lives in `@aooth/auth-moost`. See [workflows.md § add-mfa (invariant 16)](workflows.md#invariants). The unenroll direction is `UserService.removeMfaMethod(userId, name)` — no bundled flow.
+- **No HTTP enrollment flow.** The bundled, ARBAC-gated **"Manage MFA"** workflow (`auth/add-mfa/flow`) — **add / change / remove** a factor for a signed-in user, **step-up first** (re-verify an existing factor before any change), TOTP QR on its own step — lives in `@aooth/auth-moost`. See [workflows.md § add-mfa (invariant 16)](workflows.md#invariants). `UserService.removeMfaMethod(userId, name)` is also a direct domain call.
 
 ## TOTP
 

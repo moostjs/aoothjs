@@ -87,8 +87,29 @@ export interface AuthWfMfaEnrollState {
   secret?: string;
   uri?: string;
   availableTransports?: MfaTransport[];
-  mode?: "required" | "optional";
+  /**
+   * Drives skip / cancel visibility on the enrolment forms:
+   * - `'optional'` — login/invite first-time opt-in: "Skip for now" shows.
+   * - `'required'` — forced enrolment: neither skip nor cancel.
+   * - `'manage'` — the standalone manage-MFA flow (user opened it on purpose):
+   *   "Skip for now" is hidden, a "Cancel" action shows instead.
+   */
+  mode?: "required" | "optional" | "manage";
   done?: boolean;
+  /**
+   * Gates the standalone `enroll-totp-qr` step (TOTP only). Set once the user
+   * has been shown the QR/secret and clicked Continue, so the QR pause fires
+   * before — not alongside — the code-entry step. Shared by both surfaces.
+   */
+  qrSeen?: boolean;
+  /**
+   * This enrolment REPLACES an existing confirmed factor's value (manage-MFA
+   * "Change" action), rather than adding a brand-new transport. Replace is
+   * verify-then-write for sms/email (the old value stays valid until the new
+   * one is proven); for TOTP the old secret is stashed on
+   * `AuthWfAddMfaState.replaced` so a cancel can restore it.
+   */
+  replace?: boolean;
   /**
    * When set, `enroll-confirm` does NOT make the freshly-confirmed method the
    * user's default. Set by `init-add-mfa` (the standalone add-MFA flow) when the
@@ -418,12 +439,47 @@ export interface AuthWfPendingLinkState {
 export interface AuthWfAddMfaState {
   /**
    * Transports the user has NOT yet confirmed = resolved
-   * `availableTransports` minus already-enrolled. The enrol picker offers
-   * exactly these; an empty list means there is nothing to add and the flow
-   * finishes with a benign "no methods available" terminal. `finish-add-mfa`
-   * reads it to distinguish "nothing to add" from "user cancelled".
+   * `availableTransports` minus already-enrolled. The manage menu offers these
+   * as "Add" options (a zero-MFA user goes straight to the enrol picker over
+   * the same list). `finish-add-mfa` reads it to distinguish "nothing to add"
+   * from "user cancelled".
    */
   candidates?: MfaTransport[];
+  /**
+   * Transports the user may NOT change or remove via this flow — resolved by
+   * `resolveLockedMfaTransports` (default: none). A customer locks a factor
+   * whose value IS a login handle (e.g. the MFA email equals the
+   * `@aooth.user.email` handle) so the user can't silently desync it here.
+   * Locked transports are omitted from the menu's Change/Remove options and
+   * re-checked server-side in `manage-menu` / `confirm-remove-mfa`.
+   */
+  locked?: MfaTransport[];
+  /**
+   * `true` when the user already has ≥1 confirmed method, so the manage flow
+   * must step-up (verify an existing factor) BEFORE offering add/change/remove,
+   * and shows the management menu. `false` (zero confirmed methods) skips both
+   * — the flow degrades to the first-time enrol picker (the opt-in path).
+   */
+  stepUpRequired?: boolean;
+  /**
+   * Set once the step-up factor verifies AND the flow has swapped off the
+   * encapsulated start onto the durable `store` strategy (server-anchored,
+   * replay-resistant). Gates the one-time swap + the management menu.
+   */
+  stepUpDone?: boolean;
+  /** The management action the user picked on the menu. */
+  action?: "add" | "replace" | "remove";
+  /** The transport the chosen `action` applies to. */
+  target?: MfaTransport;
+  /**
+   * Old confirmed factor stashed before a TOTP **replace** overwrites it (TOTP
+   * has a single slot, so verifying the new secret requires provisioning it,
+   * which displaces the old). A cancel/abort restores from here; success drops
+   * it. sms/email replace is verify-then-write and never stashes.
+   */
+  replaced?: { name: string; value: string; wasDefault?: boolean };
+  /** Set by `confirm-remove-mfa` so `finish-add-mfa` can report which factor was removed. */
+  removed?: MfaTransport;
 }
 
 /**
@@ -500,13 +556,16 @@ export interface AuthWfPublicState {
    * Mirrors `ctx.mfaEnroll` — only what the enrolment forms display.
    * `address` stays internal (user-typed, no need to bounce it back).
    */
-  mfaEnroll?: {
-    method?: MfaTransport;
-    mode?: "required" | "optional";
-    availableTransports?: MfaTransport[];
-    secret?: string;
-    uri?: string;
-  };
+  mfaEnroll?: Pick<
+    AuthWfMfaEnrollState,
+    "method" | "mode" | "availableTransports" | "secret" | "uri"
+  >;
+  /**
+   * Mirrors the manage-MFA menu inputs — the un-enrolled transports the user
+   * can Add and the locked transports to omit from Change/Remove. The enrolled
+   * method list the menu cross-references is `public.mfa.enrolledMethods`.
+   */
+  manage?: { candidates?: MfaTransport[]; locked?: MfaTransport[] };
   /** Mirrors `ctx.defaults` — prefill source for the recovery email field. */
   defaults?: { email?: string };
   /**

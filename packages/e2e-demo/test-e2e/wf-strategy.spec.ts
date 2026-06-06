@@ -22,6 +22,7 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 
 import {
+  continuePastTotpQr,
   fillField,
   readFinishEnvelope,
   resetApp,
@@ -29,6 +30,7 @@ import {
   totp,
   USERS,
   waitForFormInput,
+  waitForTotpQrStep,
   wfUrl,
 } from "./harness";
 
@@ -212,9 +214,9 @@ test.describe("MFA enrollment / TOTP QR", () => {
     await fillField(page, "password", USERS.alice.password);
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
 
-    // Auto-pick (single transport) lands straight on EnrollConfirmForm — `code`
-    // is its signature field.
-    await waitForFormInput(page, "code");
+    // Auto-pick (single transport) lands on the dedicated TOTP QR step — the QR
+    // + manual secret render HERE, before code entry.
+    await waitForTotpQrStep(page);
 
     // The QR component rendered its root + the per-URI stack.
     const qrRoot = page.locator(".as-qr-code").first();
@@ -246,6 +248,9 @@ test.describe("MFA enrollment / TOTP QR", () => {
       totpRow!.value,
     );
 
+    // Continue past the QR to the code-entry step.
+    await continuePastTotpQr(page);
+    await waitForFormInput(page, "code");
     await fillField(page, "code", totp(totpRow!.value));
     await submitForm(page);
     const envelope = (await readFinishEnvelope(page)) as { data?: { accessToken?: string } };

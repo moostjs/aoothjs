@@ -15,6 +15,7 @@ import { expect, test } from "@playwright/test";
 
 import {
   clickAction,
+  continuePastTotpQr,
   fillField,
   getEmails,
   getSms,
@@ -26,6 +27,7 @@ import {
   waitForEmail,
   waitForFormInput,
   waitForSms,
+  waitForTotpQrStep,
   wfUrl,
 } from "./harness";
 
@@ -1665,11 +1667,12 @@ test.describe("LoginWorkflow / MFA enrollment (PW MFA coverage)", () => {
     await fillField(page, "password", USERS.alice.password);
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
 
-    // Auto-pick proof: the `code` input is EnrollConfirmForm's signature
-    // field; EnrollPickMethodForm's signature is the `method` radio. If
-    // auto-pick is gone, `method` would render and `code` would not.
-    await waitForFormInput(page, "code");
+    // Auto-pick proof: NO `method` radio (EnrollPickMethodForm's signature) —
+    // a single transport auto-picks straight into the enrol trio. TOTP now shows
+    // the QR on its own step BEFORE code entry; continue past it.
     await expect(page.locator('[name="method"]')).toHaveCount(0);
+    await continuePastTotpQr(page);
+    await waitForFormInput(page, "code");
 
     // Server-provisioned TOTP secret is on the unconfirmed mfa.methods row.
     // Read via /__test/user/:username (the totp-secret endpoint filters on
@@ -1717,11 +1720,15 @@ test.describe("LoginWorkflow / MFA enrollment (PW MFA coverage)", () => {
     await fillField(page, "password", USERS.alice.password);
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
 
-    // Auto-pick (single transport) lands straight on EnrollConfirmForm.
+    // Auto-pick (single transport). NO bypass even on the QR step — "Skip for
+    // now" is gated on optional mode, so under a required policy it must not be
+    // in the DOM on the QR step OR the code step.
+    await waitForTotpQrStep(page);
+    await expect(page.getByRole("button", { name: /Skip/i })).toHaveCount(0);
+    await continuePastTotpQr(page);
     await waitForFormInput(page, "code");
 
-    // No bypass: the "Skip for now" action is gated on optional mode, so under
-    // a required policy it must not be in the DOM at all.
+    // Same on the code step.
     await expect(page.getByRole("button", { name: /Skip/i })).toHaveCount(0);
 
     // And a wrong code cannot smuggle the user past the gate — no finish, no token.

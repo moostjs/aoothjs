@@ -506,6 +506,7 @@ export interface AskPhoneForm extends WithInlineConsentForm {
 @meta.label 'Set up two-factor authentication'
 @meta.description 'Pick a method to receive your verification codes.'
 @wf.context.pass 'public'
+@ui.form.submit.text 'Continue'
 export interface EnrollPickMethodForm {
     @ui.form.order 10
     @ui.form.type 'radio'
@@ -514,9 +515,16 @@ export interface EnrollPickMethodForm {
     @meta.required
     method: string
 
+    // Login/invite opt-in only: a user who chose to defer MFA backs out here.
     @ui.form.action 'skip', 'Skip for now'
     @ui.form.fn.hidden '(_, _d, ctx) => ctx.public?.mfaEnroll?.mode !== "optional"'
     skip?: ui.action
+
+    // Manage-MFA only: the user opened this on purpose, so "Skip" makes no
+    // sense — offer a clean cancel instead.
+    @ui.form.action 'cancel', 'Cancel'
+    @ui.form.fn.hidden '(_, _d, ctx) => ctx.public?.mfaEnroll?.mode !== "manage"'
+    cancel?: ui.action
 }
 
 /**
@@ -530,34 +538,38 @@ export interface EnrollPickMethodForm {
 @ui.form.fn.title '(_, _d, ctx) => ctx.public?.mfaEnroll?.method === "sms" ? "Add your phone number" : "Add your email"'
 @meta.description 'We will send you a one-time code to confirm.'
 @wf.context.pass 'public'
+@ui.form.submit.text 'Send code'
 export interface EnrollAddressForm {
     @ui.form.order 10
     @ui.form.type 'text'
     @meta.label 'Address'
     @meta.required
+    // Client-side format hint — email branch must look like an email; the SMS
+    // branch stays free-form (server-side E.164 normalization). The robust
+    // check is server-side in the `enroll-address` step regardless of client.
+    @ui.form.validate '(v, _d, ctx) => ctx.public?.mfaEnroll?.method !== "email" || /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v) || "Enter a valid email address"'
     address: string
 
     @ui.form.action 'skip', 'Skip for now'
     @ui.form.fn.hidden '(_, _d, ctx) => ctx.public?.mfaEnroll?.mode !== "optional"'
     skip?: ui.action
 
+    @ui.form.action 'cancel', 'Cancel'
+    @ui.form.fn.hidden '(_, _d, ctx) => ctx.public?.mfaEnroll?.mode !== "manage"'
+    cancel?: ui.action
+
     @ui.form.action 'useDifferentMethod', 'Use a different method'
-    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.public?.mfaEnroll?.availableTransports?.length ?? 0) < 2'
+    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.public?.mfaEnroll?.availableTransports?.length ?? 0) < 2 || ctx.public?.mfaEnroll?.mode === "manage"'
     useDifferentMethod?: ui.action
 }
 
 /**
- * Forced MFA enrollment — confirm code, shared by all three transports.
+ * MFA enrollment — confirm code, shared by all three transports.
  *
- * **TOTP branch.** `ctx.public.mfaEnroll.secret` holds the base32 secret and
- * `ctx.public.mfaEnroll.uri` the `otpauth://` URI — both are produced server-side by
- * `setup-mfa-method` and ride the `@wf.context.pass 'public'` whitelist.
- * The `qrCode` field renders the `otpauth://` URI as a scannable QR image via
- * the `AsQrCode` component (from `@atscript/vue-aooth`, registered on
- * `<AsWfForm :components>`); its `@ui.form.fn.value` exposes the URI string the
- * component consumes. `AsQrCode` ALSO extracts the base32 secret from the URI
- * and renders it for manual entry (its `manualSecret` prop defaults on), so
- * users whose authenticator app lacks a QR scanner can still set up.
+ * **TOTP branch.** The scannable QR + manual base32 secret are shown on the
+ * PRECEDING `enroll-totp-qr` step ({@link EnrollTotpQrForm}), so this form only
+ * collects the 6-digit code the authenticator generates — `transportHint`
+ * reminds the user to enter it.
  *
  * **SMS / email branch.** Single `transportHint` paragraph shows the masked
  * recipient.
@@ -567,21 +579,8 @@ export interface EnrollAddressForm {
 @ui.form.submit.text 'Confirm'
 export interface EnrollConfirmForm {
     @ui.form.order 1
-    @ui.form.fn.value '(_, _d, ctx) => ctx.public?.mfaEnroll?.method === "totp" ? "Add the account to your authenticator app, then enter the 6-digit code it generates." : ctx.public?.pincode?.sentTo ? "Code sent to " + ctx.public.pincode.sentTo + ". Enter it below to confirm." : "Enter the code to confirm enrollment."'
+    @ui.form.fn.value '(_, _d, ctx) => ctx.public?.mfaEnroll?.method === "totp" ? "Enter the 6-digit code from your authenticator app." : ctx.public?.pincode?.sentTo ? "Code sent to " + ctx.public.pincode.sentTo + ". Enter it below to confirm." : "Enter the code to confirm enrollment."'
     transportHint?: ui.paragraph
-
-    /**
-     * Phantom field — `otpauth://` URI rendered as a scannable QR image by the
-     * `AsQrCode` component. `AsQrCode` also extracts the base32 secret from the
-     * URI and shows it for manual entry (its `manualSecret` prop defaults on),
-     * so there is no separate manual-secret field.
-     */
-    @ui.form.order 5
-    @ui.form.component 'AsQrCode'
-    @ui.form.fn.attr 'size', '() => 180'
-    @ui.form.fn.value '(_, _d, ctx) => ctx.public?.mfaEnroll?.uri || ""'
-    @ui.form.fn.hidden '(_, _d, ctx) => ctx.public?.mfaEnroll?.method !== "totp" || !ctx.public?.mfaEnroll?.uri'
-    qrCode: ui.paragraph
 
     @ui.form.order 10
     @ui.form.type 'text'
@@ -599,12 +598,103 @@ export interface EnrollConfirmForm {
     resend?: ui.action
 
     @ui.form.action 'useDifferentMethod', 'Use a different method'
-    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.public?.mfaEnroll?.availableTransports?.length ?? 0) < 2'
+    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.public?.mfaEnroll?.availableTransports?.length ?? 0) < 2 || ctx.public?.mfaEnroll?.mode === "manage"'
     useDifferentMethod?: ui.action
+
+    @ui.form.action 'cancel', 'Cancel'
+    @ui.form.fn.hidden '(_, _d, ctx) => ctx.public?.mfaEnroll?.mode !== "manage"'
+    cancel?: ui.action
 
     @ui.form.action 'skip', 'Skip for now'
     @ui.form.fn.hidden '(_, _d, ctx) => ctx.public?.mfaEnroll?.mode !== "optional"'
     skip?: ui.action
+}
+
+/**
+ * MFA enrollment — TOTP QR step. Shown on its OWN pause (the `enroll-totp-qr`
+ * step) BETWEEN method-pick and code-entry, so the user scans first and types
+ * the code on the next screen — instead of QR + input crowded on one form.
+ *
+ * `ctx.public.mfaEnroll.uri` carries the `otpauth://` URI (provisioned
+ * server-side). The `qrCode` field renders it as a scannable image via the
+ * `AsQrCode` component (`@atscript/vue-aooth`); `AsQrCode` also extracts the
+ * base32 secret from the URI and shows it for manual entry (its `manualSecret`
+ * prop defaults on), so users whose app lacks a scanner can still set up.
+ */
+@meta.label 'Scan this QR code'
+@meta.description 'Open your authenticator app and scan the code (or enter the key manually), then continue to enter the code it shows.'
+@wf.context.pass 'public'
+@ui.form.submit.text 'Continue'
+export interface EnrollTotpQrForm {
+    @ui.form.order 5
+    @ui.form.component 'AsQrCode'
+    @ui.form.fn.attr 'size', '() => 180'
+    @ui.form.fn.value '(_, _d, ctx) => ctx.public?.mfaEnroll?.uri || ""'
+    qrCode: ui.paragraph
+
+    @ui.form.action 'useDifferentMethod', 'Use a different method'
+    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.public?.mfaEnroll?.availableTransports?.length ?? 0) < 2 || ctx.public?.mfaEnroll?.mode === "manage"'
+    useDifferentMethod?: ui.action
+
+    @ui.form.action 'cancel', 'Cancel'
+    @ui.form.fn.hidden '(_, _d, ctx) => ctx.public?.mfaEnroll?.mode !== "manage"'
+    cancel?: ui.action
+
+    @ui.form.action 'skip', 'Skip for now'
+    @ui.form.fn.hidden '(_, _d, ctx) => ctx.public?.mfaEnroll?.mode !== "optional"'
+    skip?: ui.action
+}
+
+/**
+ * Manage-MFA menu — the authenticated user's hub for the standalone
+ * `auth/add-mfa/flow` once they have ≥1 confirmed factor (shown after the
+ * step-up challenge). A single radio whose value encodes both action and
+ * target (`add:totp` / `replace:email` / `remove:sms`):
+ * - **Add** options come from `ctx.public.manage.candidates` (un-enrolled).
+ * - **Change / Remove** options come from `ctx.public.mfa.enrolledMethods`,
+ *   with any transport in `ctx.public.manage.locked` omitted (a handle-bound
+ *   factor the consumer forbids changing here — `lockedNote` explains why).
+ *
+ * A zero-MFA user never sees this form — the flow routes straight to the
+ * enrol picker (first-time opt-in).
+ */
+@meta.label 'Manage two-factor authentication'
+@meta.description 'Add, change, or remove a verification method.'
+@wf.context.pass 'public'
+@ui.form.submit.text 'Continue'
+export interface ManageMfaForm {
+    @ui.form.order 5
+    @ui.form.fn.value '(_, _d, ctx) => (ctx.public?.manage?.locked?.length ?? 0) > 0 ? "Some methods are also used to sign in and can’t be changed here." : ""'
+    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.public?.manage?.locked?.length ?? 0) === 0'
+    lockedNote: ui.paragraph
+
+    @ui.form.order 10
+    @ui.form.type 'radio'
+    @ui.form.fn.options '(_, _d, ctx) => { const lbl = (t) => t === "totp" ? "authenticator app" : t === "sms" ? "SMS" : t === "email" ? "email" : t; const locked = ctx.public?.manage?.locked ?? []; const out = []; for (const t of (ctx.public?.manage?.candidates ?? [])) out.push({ key: "add:" + t, label: "Add " + lbl(t) }); for (const m of (ctx.public?.mfa?.enrolledMethods ?? [])) { if (locked.includes(m.kind)) continue; out.push({ key: "replace:" + m.kind, label: "Change " + lbl(m.kind) + (m.masked ? " (" + m.masked + ")" : "") }); out.push({ key: "remove:" + m.kind, label: "Remove " + lbl(m.kind) }); } return out; }'
+    @meta.label 'What would you like to do?'
+    @meta.required
+    operation: string
+
+    @ui.form.action 'cancel', 'Cancel'
+    cancel?: ui.action
+}
+
+/**
+ * Manage-MFA — confirm removing a factor. Fieldless apart from the explanatory
+ * paragraph; the primary submit ('Remove') performs the removal, 'Cancel'
+ * backs out. `manage-menu` has already bound the target transport on
+ * `ctx.addMfa.target`; the description reads it back for the user.
+ */
+@meta.label 'Remove this method?'
+@wf.context.pass 'public'
+@ui.form.submit.text 'Remove'
+export interface RemoveMfaConfirmForm {
+    @ui.form.order 1
+    @ui.form.fn.value '(_, _d, ctx) => { const t = ctx.public?.mfaEnroll?.method; const lbl = t === "totp" ? "your authenticator app" : t === "sms" ? "SMS codes" : t === "email" ? "email codes" : "this method"; return "Remove " + lbl + " as a two-factor method? You can set it up again later."; }'
+    notice: ui.paragraph
+
+    @ui.form.action 'cancel', 'Cancel'
+    cancel?: ui.action
 }
 
 /**
