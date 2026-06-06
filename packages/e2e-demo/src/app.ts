@@ -82,6 +82,7 @@ import type { AddressInfo } from "node:net";
 import { type AppAuth, createAooth } from "./aooth";
 import { type AppDb, createAppDb, syncAppSchema } from "./db";
 import { ConsoleEmailSender } from "./email/console-email-sender";
+import { ConsoleSmsSender } from "./sms/console-sms-sender";
 import { type AppEnv, ENV } from "./env";
 import {
   HealthController,
@@ -203,6 +204,21 @@ function toEmailKind(kind: AuthDeliveryPayload["kind"]): import("@aooth/auth").A
       return "recovery.pincode";
     case "new-device-notice":
       return "notifyNewDevice";
+    default:
+      return "login.pincode";
+  }
+}
+
+// SMS counterpart of `toEmailKind`. Only pincode kinds reach the SMS branch at
+// runtime (channel `"sms"` is carried by mfa / enroll / recovery pincodes), so
+// recovery is audited as `recovery.pincode` rather than mislabeled as a login
+// code; everything else collapses to `login.pincode`.
+function toSmsKind(kind: AuthDeliveryPayload["kind"]): import("@aooth/auth").AuthSmsKind {
+  switch (kind) {
+    case "recovery-pincode":
+      return "recovery.pincode";
+    case "invite-link":
+      return "invite.pincode";
     default:
       return "login.pincode";
   }
@@ -448,13 +464,14 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // Shared `deliver()` body for `DemoAuthWorkflow`. The discriminated
   // `AuthDeliveryPayload` narrows `kind` to the matching transport type, so
   // no casts are needed when forwarding to EmailSender / SmsSender.
+  const consoleSmsSender = new ConsoleSmsSender();
   const demoSmsSender: SmsSender = {
     async send(event) {
       if (isTestMode) {
         sharedSmsBuffer.push(event);
         return;
       }
-      console.log("[demo SMS]", event.kind, event.recipient, event.code);
+      await consoleSmsSender.send(event);
     },
   };
 
@@ -470,10 +487,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       });
       return;
     }
-    // SMS only carries pincode kinds at runtime — they all map to the single
-    // `login.pincode` AuthSmsKind that the demo SmsSender understands.
+    // SMS carries the pincode kinds (mfa / enroll / recovery). Map each to its
+    // delivery-grained AuthSmsKind so the audit/test sees `recovery.pincode`.
     await demoSmsSender.send({
-      kind: "login.pincode",
+      kind: toSmsKind(payload.kind),
       recipient: payload.recipient,
       code: payload.code,
       ttlMs: payload.expiresInMs ?? 0,
@@ -515,6 +532,17 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
 
     protected override deliver(payload: AuthDeliveryPayload): Promise<void> {
       return forwardDeliver(payload);
+    }
+
+    // Recovery channel inference (M1): the address is always the typed
+    // identifier (`ctx.email`) — the handle that resolved the account — so we
+    // pick the channel from its shape. A phone-shaped value routes the OTP via
+    // SMS; anything else stays email. Only meaningful for the `recovery-via-sms`
+    // variant, whose `RecoveryIdentifierForm` lets a phone through; the default
+    // `EmailIdentifierForm` only ever yields an email, so this returns "email".
+    protected override resolveRecoveryChannel(ctx: AuthWfCtx): "email" | "sms" {
+      const identifier = ctx.email ?? "";
+      return /^\+?[0-9][0-9\s().-]{6,}$/.test(identifier) ? "sms" : "email";
     }
 
     // The demo is cookieless — it replays `data.accessToken` from sessionStorage

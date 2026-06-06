@@ -17,6 +17,8 @@
  */
 import type { AuthWfCtx, AuthWorkflowOpts, MfaTransport } from "@aooth/auth-moost";
 
+import { RecoveryIdentifierForm } from "./models/auth-forms.as";
+
 /**
  * Static MFA ctx overrides applied by `DemoAuthWorkflow`'s `prepare-mfa`
  * setter override. Writes onto `ctx.mfaPolicy` (mode + transports) and
@@ -365,6 +367,14 @@ export const RECOVERY_VARIANTS: Record<string, RecoveryVariant> = {
   // scenario for inline consent ("since you last set your password we
   // updated our terms").
   "recovery-terms-bump": {},
+  // Recovery-via-SMS (M1) — swaps in a phone-capable identifier form. The user
+  // types a phone (their `@aooth.user.phone` handle), `emailToUserId` resolves
+  // the account via `findByHandle`, and `DemoAuthWorkflow.resolveRecoveryChannel`
+  // infers `sms` from the value shape, so the OTP is delivered by SMS to the
+  // typed phone (= the verified handle). Drives WF-RECOVERY-SMS-*.
+  "recovery-via-sms": {
+    opts: { forms: { recoveryEmailIdentifier: RecoveryIdentifierForm } },
+  },
   // Lockout unlock-on-reset (WF-LOGIN-LOCKOUT-*) — the recovery side of the
   // same mode chosen on login. `self-service` runs the `unlock-account` step
   // after the reset; `admin-only` does NOT (the account stays frozen).

@@ -115,7 +115,7 @@ export type AuthDeliveryPayload =
     }
   | {
       kind: "recovery-pincode";
-      channel: "email";
+      channel: "sms" | "email";
       recipient: string;
       code: string;
       expiresInMs: number;
@@ -855,7 +855,26 @@ export class AuthWorkflow {
         return { address: method.value, channel };
       });
     }
-    return { address: ctx.email ?? "", channel: "email" };
+    const recoveryAddress = ctx.email ?? "";
+    const recoveryChannel = this.resolveRecoveryChannel(ctx);
+    if (recoveryChannel instanceof Promise) {
+      return recoveryChannel.then((channel) => ({ address: recoveryAddress, channel }));
+    }
+    return { address: recoveryAddress, channel: recoveryChannel };
+  }
+
+  /**
+   * Recovery OTP delivery channel. The address is ALWAYS the typed recovery
+   * identifier (`ctx.email`) — symmetric with how email recovery already works:
+   * the OTP goes to the value the user typed, which is the handle that resolved
+   * the account (`findByHandle`), so identifier == destination and there is no
+   * cross-account redirect. Default `"email"`. A deployment whose recovery form
+   * accepts a phone overrides this to route SMS (e.g. infer from the identifier
+   * shape) — see the demo's `DemoAuthWorkflow`. Recovery picks ONE channel per
+   * run, so the single `resendAllowedAt` cooldown gate still suffices.
+   */
+  protected resolveRecoveryChannel(_ctx: AuthWfCtx): "email" | "sms" | Promise<"email" | "sms"> {
+    return "email";
   }
 
   /**
@@ -2633,9 +2652,10 @@ export class AuthWorkflow {
     const targetResult = this.resolvePincodeTarget(ctx);
     const target = targetResult instanceof Promise ? await targetResult : targetResult;
     const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
-    // Branched on `kind` discriminator: `AuthDeliveryPayload` pins
-    // `recovery-pincode` to `channel: "email"` (a recovery target is always
-    // email per `resolvePincodeTarget`'s recovery branch).
+    // Branched on `kind` discriminator. `recovery-pincode` carries
+    // `target.channel` — email by default, SMS when `resolveRecoveryChannel`
+    // routes it (the address is the typed identifier either way). Signup is
+    // always email.
     if (ctx.mfa?.method) {
       await this.deliver({
         kind: "mfa-pincode",
@@ -2657,7 +2677,7 @@ export class AuthWorkflow {
     } else {
       await this.deliver({
         kind: "recovery-pincode",
-        channel: "email",
+        channel: target.channel,
         recipient: target.address,
         code,
         expiresInMs: this.opts.mfa.pincodeTtlMs,
@@ -2671,7 +2691,8 @@ export class AuthWorkflow {
     // Per-channel cooldown lives alongside `resendAllowedAt` so the gate
     // survives a `useDifferentMethod` clear (see `pincode-check` +
     // `select-2fa`). Only MFA-challenge sends are tracked here — recovery
-    // is single-channel (email-only) so per-channel persistence is moot.
+    // picks ONE channel per run (email or SMS), so the single `resendAllowedAt`
+    // gate suffices and per-channel persistence is moot.
     if (ctx.mfa?.method && (target.channel === "sms" || target.channel === "email")) {
       (pincode.channelCooldowns ??= {})[target.channel] = cooldownAt;
     }
