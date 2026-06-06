@@ -111,9 +111,9 @@ This package does **not** persist the issued challenge or its TTL. Use `@aooth/a
 
 ## Backup codes
 
-Backup / recovery codes are **not a bundled primitive.** There is no `generateBackupCodePlaintext` export and no `generateBackupCodes` / `consumeBackupCode` `UserService` method. The `UserCredentials.backupCodes?: string[]` field exists on the type as a reserved slot, but no bundled API reads or writes it.
+Backup / recovery codes are **not a bundled primitive.** There is no `generateBackupCodePlaintext` export and no `generateBackupCodes` / `consumeBackupCode` `UserService` method, and the base `UserCredentials` carries **no** `backupCodes` field — nothing reads or writes one.
 
-If you need recovery codes, compose them from the primitives above: generate random codes yourself, hash each with `hashMfaCode`, store the hashes in `backupCodes` via `users.update(id, { backupCodes })`, and verify a submitted code with `verifyMfaCode` against the stored hashes (removing the matched hash). Wrap consume in a store-layer transaction if you need strict one-shot semantics.
+If you need recovery codes, compose them from the primitives above: declare your own `backupCodes?: string[]` column on your user model (like any other custom field on `T`), generate random codes yourself, hash each with `hashMfaCode`, store the hashes via `users.update(id, { backupCodes })`, and verify a submitted code with `verifyMfaCode` against the stored hashes (removing the matched hash). Wrap consume in a store-layer transaction if you need strict one-shot semantics.
 
 ## Trusted devices
 

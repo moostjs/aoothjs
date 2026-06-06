@@ -130,7 +130,7 @@ These power the challenge-ticket pattern used by `@aooth/auth` (the package stor
 
 ## Backup codes
 
-**Not bundled.** There is no `generateBackupCodePlaintext` export and no `UserService.generateBackupCodes` / `consumeBackupCode` method. `UserCredentials.backupCodes?: string[]` exists as a reserved slot, but no shipped API reads or writes it.
+**Not bundled.** There is no `generateBackupCodePlaintext` export and no `UserService.generateBackupCodes` / `consumeBackupCode` method, and the base `UserCredentials` has **no** `backupCodes` field — it is an app-composed column you declare on your own user model (hash with `hashMfaCode`, store via `users.update(...)`, verify with `verifyMfaCode`).
 
 Compose recovery codes from the primitives above: generate random codes yourself, hash each with `hashMfaCode`, store the hashes via `users.update(id, { backupCodes })`, and verify a submitted code with `verifyMfaCode` against the stored hashes (removing the matched hash). Wrap consume in a store-layer transaction if you need strict one-shot semantics.
 

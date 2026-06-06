@@ -47,16 +47,16 @@ Every mutation in `UserService` translates to one of these. The two cooperate �
 
 ### What `UserService` actually emits
 
-| Action                          | Patch                                                                                                     |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Login success                   | `{ set: { account: { lastLogin: now, failedLoginAttempts: 0 } } }`                                        |
-| Login failure (below threshold) | `{ inc: { "account.failedLoginAttempts": 1 } }`                                                           |
-| Login failure tripping lock     | `{ inc: { "account.failedLoginAttempts": 1 }, set: { account: { locked: true, lockReason, lockEnds } } }` |
-| Password change                 | `{ set: { password: { hash, history, lastChanged: now, isInitial: false } } }`                            |
-| Replace backup codes            | `{ set: { backupCodes: [hash, hash, ...] } }`                                                             |
-| Trusted devices                 | `{ set: { trustedDevices: [...nextArray] } }`                                                             |
-| MFA change                      | `{ set: { mfa: { methods, defaultMethod, autoSend } } }`                                                  |
-| Lock / unlock                   | `{ set: { account: { locked, lockReason, lockEnds } } }`                                                  |
+| Action                                 | Patch                                                                                                     |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Login success                          | `{ set: { account: { lastLogin: now, failedLoginAttempts: 0 } } }`                                        |
+| Login failure (below threshold)        | `{ inc: { "account.failedLoginAttempts": 1 } }`                                                           |
+| Login failure tripping lock            | `{ inc: { "account.failedLoginAttempts": 1 }, set: { account: { locked: true, lockReason, lockEnds } } }` |
+| Password change                        | `{ set: { password: { hash, history, lastChanged: now, isInitial: false } } }`                            |
+| Replace backup codes (consumer column) | `{ set: { backupCodes: [hash, hash, ...] } }`                                                             |
+| Trusted devices                        | `{ set: { trustedDevices: [...nextArray] } }`                                                             |
+| MFA change                             | `{ set: { mfa: { methods, defaultMethod, autoSend } } }`                                                  |
+| Lock / unlock                          | `{ set: { account: { locked, lockReason, lockEnds } } }`                                                  |
 
 ## What a custom store must do
 
@@ -64,7 +64,7 @@ A correct `UserStore<T>` implementation:
 
 1. **`create` throws `ALREADY_EXISTS`** on a duplicate `username` — or any configured handle column — conflict (use `UserAuthError` from `@aooth/user`), mirroring the DB unique indexes.
 2. **`update` deep-merges the `set` patch** for object-valued sub-keys (`password`, `account`, `mfa`, `trustedDevices`). Don't wholesale-replace those sub-objects from a partial.
-3. **Arrays in `set` are wholesale replacements.** The service builds the next array client-side (e.g. `backupCodes`, `trustedDevices`) and hands you the full list.
+3. **Arrays in `set` are wholesale replacements.** The service builds the next array client-side (e.g. `trustedDevices`, or an app-composed `backupCodes` column) and hands you the full list.
 4. **`update` applies `inc` atomically** per dot-path. SQL: `SET col = col + N`. JSON columns: equivalent atomic primitive in your engine.
 5. **`update` and `delete` return `false` when no row matched.** The service uses that to throw `NOT_FOUND`.
 6. **Reads return `null`**, not a thrown error, when missing — for all three of `findById`, `findByHandle`, `findByIdentifier`.
@@ -263,12 +263,12 @@ The `as unknown as AuthUserTable` cast is required because `AtscriptDbTable<T>` 
 
 ### What the adapter does
 
-| `UserService` patch                             | atscript-db op                                                                                                  |
-| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `{ set: { account: { ... } } }`                 | Deep merge into the `account` JSON column (via `@db.patch.strategy 'merge'`).                                   |
-| `{ inc: { "account.failedLoginAttempts": 1 } }` | `{ $inc: 1 }` at the dot-path, emitting `account.failedLoginAttempts = account.failedLoginAttempts + 1` in SQL. |
-| `{ set: { backupCodes: [...] } }`               | Wholesale array replacement.                                                                                    |
-| `create` conflict                               | Adapter translates DB conflicts to `UserAuthError("ALREADY_EXISTS", ...)`.                                      |
+| `UserService` patch                                 | atscript-db op                                                                                                  |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `{ set: { account: { ... } } }`                     | Deep merge into the `account` JSON column (via `@db.patch.strategy 'merge'`).                                   |
+| `{ inc: { "account.failedLoginAttempts": 1 } }`     | `{ $inc: 1 }` at the dot-path, emitting `account.failedLoginAttempts = account.failedLoginAttempts + 1` in SQL. |
+| `{ set: { backupCodes: [...] } }` (consumer column) | Wholesale array replacement.                                                                                    |
+| `create` conflict                                   | Adapter translates DB conflicts to `UserAuthError("ALREADY_EXISTS", ...)`.                                      |
 
 ## The federated identity store
 
