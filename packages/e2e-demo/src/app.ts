@@ -545,6 +545,16 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       return /^\+?[0-9][0-9\s().-]{6,}$/.test(identifier) ? "sms" : "email";
     }
 
+    // Recovery delivery model (M1 vs M2), keyed off the recovery variant header.
+    // The `recovery-registered` variant sets `policy.deliverySource: "registered"`
+    // to arm M2 — the user types only an account identifier and the OTP goes to a
+    // channel already verified on the row (the base `selectRecoveryRegisteredMethod`
+    // picks it, SMS-first). Every other variant (and the no-variant default) leaves
+    // M1 in force: the OTP goes to the typed identifier.
+    protected override resolveRecoveryDeliverySource(_ctx: AuthWfCtx): "typed" | "registered" {
+      return pickVariant(RECOVERY_VARIANTS, readVariantHeader())?.policy?.deliverySource ?? "typed";
+    }
+
     // Turn channel→handle promotion ON for the demo: after a user confirms an
     // email/SMS factor, write the verified value into its `@aooth.user.*`
     // handle column (`email` / `phone` on DemoUser) so it becomes a login +

@@ -92,6 +92,8 @@ export interface RecoveryPolicyOverrides {
   lockout?: NonNullable<AuthWfCtx["lockout"]>;
   mfaPolicy?: NonNullable<AuthWfCtx["mfaPolicy"]>;
   recoveryAltActions?: NonNullable<AuthWfCtx["recoveryAltActions"]>;
+  /** Recovery OTP delivery model — `"registered"` arms M2 (OTP to a verified row channel). Default M1. */
+  deliverySource?: "typed" | "registered";
 }
 
 /**
@@ -374,6 +376,28 @@ export const RECOVERY_VARIANTS: Record<string, RecoveryVariant> = {
   // typed phone (= the verified handle). Drives WF-RECOVERY-SMS-*.
   "recovery-via-sms": {
     opts: { forms: { recoveryEmailIdentifier: RecoveryIdentifierForm } },
+  },
+  // Recovery via a REGISTERED channel (M2) — `policy.deliverySource: "registered"`
+  // arms `DemoAuthWorkflow.resolveRecoveryDeliverySource`. The user types only an
+  // account identifier (a plain username — the `RecoveryIdentifierForm` accepts
+  // it, vs the bundled email-only form), `emailToUserId` resolves the account,
+  // and the OTP is delivered to a channel already verified on the row
+  // (`selectRecoveryRegisteredMethod` — SMS-first), NOT to anything typed. A row
+  // with no deliverable confirmed method hits the anti-enumeration generic
+  // finish. Drives WF-RECOVERY-REGISTERED-*.
+  "recovery-registered": {
+    opts: { forms: { recoveryEmailIdentifier: RecoveryIdentifierForm } },
+    policy: { deliverySource: "registered" },
+  },
+  // M2 + a 1s resend cooldown — lets WF-RECOVERY-REGISTERED-05 exercise the
+  // request→send TOCTOU: start recovery (first OTP sent), delete the registered
+  // method mid-flow, then resend after the cooldown. The resend's pincode-send
+  // finds no method and degrades to the generic anti-enumeration finish (never a
+  // 500) instead of delivering.
+  "recovery-registered-fast-resend": {
+    opts: { forms: { recoveryEmailIdentifier: RecoveryIdentifierForm } },
+    authOpts: { mfa: { pincodeResendTimeoutMs: 1000 } },
+    policy: { deliverySource: "registered" },
   },
   // Lockout unlock-on-reset (WF-LOGIN-LOCKOUT-*) — the recovery side of the
   // same mode chosen on login. `self-service` runs the `unlock-account` step

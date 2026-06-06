@@ -1,5 +1,5 @@
 import { AuthCredential, CredentialStoreMemory } from "@aooth/auth";
-import { UserService, UserStoreMemory } from "@aooth/user";
+import { type UserCredentials, UserService, UserStoreMemory } from "@aooth/user";
 import { getMoostMate } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -52,6 +52,9 @@ class TestableAuthWorkflow extends AuthWorkflow {
   public exposeRecoveryAltActions = (ctx: AuthWfCtx) => this.resolveRecoveryAltActions(ctx);
   public exposePincodeForm = (ctx: AuthWfCtx) => this.resolvePincodeForm(ctx);
   public exposePincodeTarget = (ctx: AuthWfCtx) => this.resolvePincodeTarget(ctx);
+  public exposeRecoveryDeliverySource = (ctx: AuthWfCtx) => this.resolveRecoveryDeliverySource(ctx);
+  public exposeSelectRecoveryRegisteredMethod = (user: UserCredentials) =>
+    this.selectRecoveryRegisteredMethod(user);
   public exposePincodeAltAction = (ctx: AuthWfCtx, a: string) =>
     this.resolvePincodeAltAction(ctx, a);
   public exposeRedirect = (ctx: AuthWfCtx) => this.resolveRedirect(ctx);
@@ -100,6 +103,11 @@ function makeWorkflowWithAuth(): { wf: TestableAuthWorkflow; auth: AuthCredentia
  */
 async function settle<T>(v: T | Promise<T>): Promise<T> {
   return v instanceof Promise ? await v : v;
+}
+
+/** Minimal `UserCredentials` carrying just the MFA methods a recovery-selection test reads. */
+function userWithMethods(methods: UserCredentials["mfa"]["methods"]): UserCredentials {
+  return { mfa: { methods, defaultMethod: "", autoSend: false } } as UserCredentials;
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -511,6 +519,51 @@ describe("AuthWorkflow resolver defaults", () => {
 
     const withEmail = await settle(wf.exposePincodeTarget({ email: "bob@x.io" }));
     expect(withEmail).toEqual({ address: "bob@x.io", channel: "email" });
+  });
+
+  it("resolveRecoveryDeliverySource — defaults to 'typed' (M1)", async () => {
+    // WHY: M2 (registered-channel recovery) is strictly opt-in. The default
+    // MUST be "typed" so an un-overridden deployment keeps delivering the OTP
+    // to the typed identifier (identifier == destination); a regression that
+    // flipped the default would silently route every recovery to a row channel
+    // and break the unknown-identifier anti-enumeration symmetry.
+    expect(await settle(wf.exposeRecoveryDeliverySource({}))).toBe("typed");
+  });
+
+  it("selectRecoveryRegisteredMethod — SMS-first, email-fallback, TOTP/unconfirmed skipped", () => {
+    // WHY: this is the M2 destination-selection policy. The OTP recipient is
+    // read off the chosen method's `value`, so the selection rule is security-
+    // relevant — it decides which pre-verified channel an account can recover
+    // through. Pin: (1) a confirmed SMS wins over a confirmed email
+    // (phone-first); (2) email is the fallback when no SMS; (3) TOTP carries no
+    // deliverable address and is never selected; (4) unconfirmed methods don't
+    // count; (5) no deliverable method → null (caller turns this into the
+    // anti-enumeration generic finish).
+    const sms = { name: "sms", confirmed: true, value: "+15555550101" };
+    const email = { name: "email", confirmed: true, value: "a@b.io" };
+    const totp = { name: "totp", confirmed: true, value: "SECRET" };
+
+    // SMS wins even when email is also confirmed (order-independent).
+    expect(wf.exposeSelectRecoveryRegisteredMethod(userWithMethods([email, sms]))).toBe(sms);
+    expect(wf.exposeSelectRecoveryRegisteredMethod(userWithMethods([sms, email]))).toBe(sms);
+    // Email fallback when no SMS.
+    expect(wf.exposeSelectRecoveryRegisteredMethod(userWithMethods([email, totp]))).toBe(email);
+    // TOTP-only → null (not deliverable).
+    expect(wf.exposeSelectRecoveryRegisteredMethod(userWithMethods([totp]))).toBeNull();
+    // Unconfirmed SMS does not count → falls back to confirmed email.
+    expect(
+      wf.exposeSelectRecoveryRegisteredMethod(
+        userWithMethods([{ name: "sms", confirmed: false, value: "+15555550109" }, email]),
+      ),
+    ).toBe(email);
+    // No methods at all → null.
+    expect(wf.exposeSelectRecoveryRegisteredMethod(userWithMethods([]))).toBeNull();
+    // An sms method with no value is not deliverable → null.
+    expect(
+      wf.exposeSelectRecoveryRegisteredMethod(
+        userWithMethods([{ name: "sms", confirmed: true, value: "" }]),
+      ),
+    ).toBeNull();
   });
 
   it("resolvePincodeAltAction — maps canonical PincodeForm action ids; unknowns fall through", () => {

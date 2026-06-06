@@ -27,6 +27,7 @@ import {
   generateTotpUri,
   maskEmail,
   maskPhone,
+  type MfaMethod,
   type MfaMethodInfo,
   pickDefinedProfile,
   type TrustedDeviceRecord,
@@ -346,6 +347,18 @@ function pickDefined<T extends object, K extends keyof T>(
   }
   return any ? (out as Pick<T, K>) : undefined;
 }
+
+/**
+ * Thrown by `recoveryPincodeTarget`'s registered (M2) branch when the confirmed
+ * recovery method that `request`'s guard saw has VANISHED before send time
+ * (deleted between the two row loads — the request→send TOCTOU). `pincode-send`
+ * catches it and degrades to the generic anti-enumeration finish instead of
+ * surfacing a distinguishable 500, so a known account can never become
+ * distinguishable from an unknown one on a resend. Recovery-only; the MFA
+ * challenge branch keeps its own `HttpError(500)` (that path is post-password,
+ * so enumeration is moot there).
+ */
+class RecoveryMethodUnavailableError extends Error {}
 
 @Inherit()
 @Controller()
@@ -855,12 +868,56 @@ export class AuthWorkflow {
         return { address: method.value, channel };
       });
     }
-    const recoveryAddress = ctx.email ?? "";
-    const recoveryChannel = this.resolveRecoveryChannel(ctx);
-    if (recoveryChannel instanceof Promise) {
-      return recoveryChannel.then((channel) => ({ address: recoveryAddress, channel }));
+    // Recovery branch — `resolveRecoveryDeliverySource` picks the delivery
+    // model. M1 (`"typed"`, default): OTP to the typed identifier. M2
+    // (`"registered"`): OTP to a channel already verified on the row (read off
+    // the selected confirmed method, never from user input).
+    const sourceResult = this.resolveRecoveryDeliverySource(ctx);
+    if (sourceResult instanceof Promise) {
+      return sourceResult.then((source) => this.recoveryPincodeTarget(ctx, source));
     }
-    return { address: recoveryAddress, channel: recoveryChannel };
+    return this.recoveryPincodeTarget(ctx, sourceResult);
+  }
+
+  /**
+   * Resolve the recovery OTP `{ address, channel }` for the chosen delivery
+   * `source`.
+   *
+   * - `"typed"` (M1): the address is the typed recovery identifier (`ctx.email`)
+   *   — identifier == destination, so no cross-account redirect — and the
+   *   channel comes from `resolveRecoveryChannel` (identifier-shape inference).
+   * - `"registered"` (M2): the address is read off a confirmed MFA method on the
+   *   row (`selectRecoveryRegisteredMethod`) and the channel is that method's own
+   *   kind. The user only typed an account identifier; the destination is a
+   *   pre-verified channel they already control, so this also can't redirect
+   *   cross-account. `request`'s M2 guard normally generic-finishes any row with
+   *   no deliverable method up front; if the method is deleted in the narrow
+   *   window between that guard and this send (e.g. on a resend), this throws
+   *   `RecoveryMethodUnavailableError`, which `pincode-send` degrades to the
+   *   same generic finish — never a distinguishable 500.
+   */
+  private recoveryPincodeTarget(
+    ctx: AuthWfCtx,
+    source: "typed" | "registered",
+  ):
+    | { address: string; channel: "sms" | "email" }
+    | Promise<{ address: string; channel: "sms" | "email" }> {
+    if (source === "registered") {
+      this.requireSubject(ctx);
+      return this.users.getUser(ctx.subject).then((user) => {
+        const method = this.selectRecoveryRegisteredMethod(user);
+        const channel = method && this.mfaKindOf(method.name);
+        if (!method || (channel !== "sms" && channel !== "email")) {
+          throw new RecoveryMethodUnavailableError();
+        }
+        return { address: method.value, channel };
+      });
+    }
+    const address = ctx.email ?? "";
+    const channel = this.resolveRecoveryChannel(ctx);
+    return channel instanceof Promise
+      ? channel.then((c) => ({ address, channel: c }))
+      : { address, channel };
   }
 
   /**
@@ -875,6 +932,45 @@ export class AuthWorkflow {
    */
   protected resolveRecoveryChannel(_ctx: AuthWfCtx): "email" | "sms" | Promise<"email" | "sms"> {
     return "email";
+  }
+
+  /**
+   * Recovery OTP delivery model. Two options:
+   *
+   * - `"typed"` (default — M1): the OTP goes to the recovery identifier the user
+   *   types. Identifier == destination, so there is no cross-account redirect;
+   *   `resolveRecoveryChannel` picks email vs SMS from the identifier shape.
+   * - `"registered"` (M2): the user enters only an account identifier (e.g. a
+   *   username) and the OTP is delivered to a channel **already verified on the
+   *   row** — `selectRecoveryRegisteredMethod` picks the confirmed MFA method;
+   *   the destination is never taken from user input, so it cannot be redirected
+   *   to an attacker-controlled address. A row with no deliverable confirmed
+   *   method finishes with the generic anti-enumeration envelope (see `request`).
+   *
+   * Consulted inline by `request` (no-method guard) and `recoveryPincodeTarget`
+   * — no `prepare-*` step, mirroring `resolveRecoveryChannel`. Override to arm
+   * M2 (per-tenant / per-variant); see the demo's `DemoAuthWorkflow`.
+   */
+  protected resolveRecoveryDeliverySource(
+    _ctx: AuthWfCtx,
+  ): "typed" | "registered" | Promise<"typed" | "registered"> {
+    return "typed";
+  }
+
+  /**
+   * Pick the confirmed MFA method a registered-channel recovery (M2) delivers
+   * its OTP to. Prefers a confirmed SMS method, then a confirmed email method —
+   * phone-recovery-first. TOTP carries no deliverable address and is skipped.
+   * Returns `null` when the row has no deliverable confirmed method; the caller
+   * turns that into the anti-enumeration generic finish. Stays sync (operates on
+   * an already-loaded row); override to change the selection policy (e.g. honour
+   * the user's `mfa.defaultMethod`).
+   */
+  protected selectRecoveryRegisteredMethod(user: UserCredentials): MfaMethod | null {
+    const methods = user.mfa?.methods ?? [];
+    const pick = (kind: "sms" | "email") =>
+      methods.find((m) => m.confirmed && !!m.value && this.mfaKindOf(m.name) === kind);
+    return pick("sms") ?? pick("email") ?? null;
   }
 
   /**
@@ -1516,6 +1612,24 @@ export class AuthWorkflow {
       // Anti-enumeration: same generic response. Downstream skips via `ctx.subject` gate.
       this.finishGenericRecovery();
       return undefined;
+    }
+
+    // M2 (registered-channel recovery): the OTP is delivered to a channel
+    // already verified on the row, not to the typed identifier. If the resolved
+    // account has no deliverable confirmed method, emit the SAME generic
+    // envelope as the unknown-identifier path above — so an attacker cannot
+    // distinguish "no such account" from "account with no recoverable channel"
+    // — and leave `ctx.subject` unset so the `{ break: !ctx.subject }` gate
+    // short-circuits the rest of the flow. (M1 has no such gate: the typed
+    // identifier is itself the destination.)
+    const sourceResult = this.resolveRecoveryDeliverySource(ctx);
+    const source = sourceResult instanceof Promise ? await sourceResult : sourceResult;
+    if (source === "registered") {
+      const user = await this.users.getUser(subject);
+      if (!this.selectRecoveryRegisteredMethod(user)) {
+        this.finishGenericRecovery();
+        return undefined;
+      }
     }
 
     ctx.subject = subject;
@@ -2671,8 +2785,25 @@ export class AuthWorkflow {
   @Step("pincode-send")
   @Public()
   async pincodeSend(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
-    const targetResult = this.resolvePincodeTarget(ctx);
-    const target = targetResult instanceof Promise ? await targetResult : targetResult;
+    let target: { address: string; channel: "sms" | "email" };
+    try {
+      const targetResult = this.resolvePincodeTarget(ctx);
+      target = targetResult instanceof Promise ? await targetResult : targetResult;
+    } catch (err) {
+      // Registered-channel recovery (M2): the confirmed method `request`'s guard
+      // saw was deleted before this send (the request→send TOCTOU, reachable on a
+      // resend). Degrade to the SAME generic finish as an unknown identifier —
+      // never a distinguishable 500 — and abort the OTP loop. `ctx.aborted`
+      // exits the recovery `while` and trips its `{ break: !!ctx.aborted }`;
+      // `pincode-check` is gated on `!ctx.aborted` so it does not overwrite this
+      // finish with a form pause.
+      if (err instanceof RecoveryMethodUnavailableError) {
+        ctx.aborted = true;
+        this.finishGenericRecovery();
+        return undefined;
+      }
+      throw err;
+    }
     const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
     // Branched on `kind` discriminator. `recovery-pincode` carries
     // `target.channel` — email by default, SMS when `resolveRecoveryChannel`

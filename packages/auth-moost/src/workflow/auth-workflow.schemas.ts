@@ -13,7 +13,13 @@ import type { AuthWfCtx } from "./auth-workflow.ctx";
  */
 export const pincodeSendCheckPair: TWorkflowSchema<AuthWfCtx> = [
   { id: "pincode-send", condition: (ctx) => !ctx.pin },
-  { id: "pincode-check" },
+  // `!ctx.aborted` lets `pincode-send` terminate the loop in-place: registered-
+  // channel recovery (M2) aborts here when the confirmed method vanished between
+  // `request` and this send (the request→send TOCTOU), staging the generic
+  // anti-enumeration finish — without this guard `pincode-check` would run next
+  // and overwrite that finish with a form pause. Login/MFA never set `aborted`
+  // mid-pair, so the gate is a no-op there.
+  { id: "pincode-check", condition: (ctx) => !ctx.aborted },
 ];
 
 /**
