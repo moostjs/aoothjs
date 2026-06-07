@@ -7,6 +7,7 @@ import { useHydrated } from "../composables/useHydrated";
 import { readDemoToken, writeDemoToken } from "../demoToken";
 import { wfFormComponents } from "../wfFormComponents";
 import { WORKFLOWS } from "../workflows";
+import WfHostCancelForm from "../components/WfHostCancelForm.vue";
 
 const route = useRoute();
 const router = useRouter();
@@ -182,6 +183,21 @@ async function navigate(url: string): Promise<void> {
 
       <div ref="formHost" class="card layer-3 p-$l">
         <AsWfFinish v-if="idempotentEnvelope" :payload="idempotentEnvelope" :navigate="navigate" />
+        <!-- Flows whose forms hide their built-in `cancel` (manage-MFA) render
+             through the host-cancel shell, which supplies its own Cancel button
+             and fires the `cancel` action on abandon. See WfHostCancelForm.vue. -->
+        <WfHostCancelForm
+          v-else-if="hydrated && descriptor?.hostCancel"
+          :key="formKey"
+          :path="descriptor?.endpoint ?? '/auth/trigger'"
+          :name="wfId ?? ''"
+          :types="types"
+          :components="wfFormComponents"
+          :navigate="navigate"
+          :fetch-options="fetchOptions"
+          @finished="onFinished"
+          @error="onError"
+        />
         <AsWfForm
           v-else-if="hydrated"
           :key="formKey"

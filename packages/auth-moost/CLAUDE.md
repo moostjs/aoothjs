@@ -334,6 +334,18 @@ moost@0.6.x does NOT inherit `@Injectable` across `extends`, so each subclass mu
 
 Pick the default per step by asking: **can an anonymous request legitimately land on this step?** If yes, `@Public()`. If no, leave it off and let arbac evaluate normally.
 
+## Manage-MFA host cancel
+
+Every manage-MFA form (`EnrollPickMethodForm`, `EnrollAddressForm`, `EnrollConfirmForm`, `EnrollTotpQrForm`, `ManageMfaForm`, `RemoveMfaConfirmForm`, `PasswordReauthForm`) declares a `cancel` action but **hides it** with `@ui.form.fn.hidden '() => true'`. The action stays in the form's whitelist (`resolveAction` accepts it) — only the default button is suppressed. The contract for consumers:
+
+- **Render your own Cancel** affordance and dispatch the `cancel` action when the user abandons the flow. That aborts the run server-side (→ the cancelled terminal in `finish-add-mfa`), which lets the durable wf-state row be cleaned up immediately instead of lingering until it expires — matters once the flow has `swapStrategy("store")`'d after step-up.
+- `<AsWfForm>` only **emits** `action` (no imperative `action()`), and the AsForm slot bag has no `invokeAction`, so a host button can't fire a workflow action through the component. Use the headless `useWfForm()` engine and call `action('cancel')`. The demo's `packages/e2e-demo/src/ui/components/WfHostCancelForm.vue` is the reference shell (gated on `formDef.fields.some(f => f.name === 'cancel')` so the host Cancel never appears on the reused login step-up challenge forms, which do NOT whitelist `cancel`).
+- The 4 shared enrol-trio forms also appear in login/invite; their `cancel` was already hidden there (it was only ever shown in `'manage'` mode), so always-hiding it changes nothing for those flows.
+
+Keep `cancel` in the whitelist when adding any new manage-MFA form — hide the button, never drop the action. Same applies to `useDifferentMethod` on the manage forms.
+
+`EnrollAddressForm`'s single `address` field carries a transport-aware `@ui.form.fn.label` ("Phone number" for sms, "Email address" for email, reading `ctx.public.mfaEnroll.method`); `@meta.label 'Address'` is the static fallback when `@atscript/ui-fns` is not installed (the fn key overrides static when present).
+
 ## Wooks composables for event-context access
 
 ```ts

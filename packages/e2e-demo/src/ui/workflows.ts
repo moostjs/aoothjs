@@ -16,6 +16,15 @@ export interface WfDescriptor {
    * to the authenticated, arbac-gated endpoint instead.
    */
   endpoint?: string;
+  /**
+   * Render this flow through the headless host-cancel shell instead of the
+   * default `<AsWfForm>`. The manage-MFA forms hide their built-in `cancel`
+   * action (it stays in the whitelist); a host that wants a Cancel affordance
+   * supplies its own and dispatches the `cancel` action so the flow aborts and
+   * its durable wf-state row is cleaned up. The demo's `<WfHostCancelForm>` is
+   * the reference implementation of that consumer-side pattern.
+   */
+  hostCancel?: boolean;
 }
 
 // All seeded users carry the same password — keeping it as a constant here
@@ -172,5 +181,8 @@ export const WORKFLOWS: ReadonlyArray<WfDescriptor> = [
     // GUARDED trigger — authenticated + the `auth:add-mfa` privilege (NOT the
     // public `/auth/trigger`).
     endpoint: "/auth/add-mfa",
+    // The manage-MFA forms hide their built-in `cancel`, so render through the
+    // host-cancel shell which supplies its own Cancel button.
+    hostCancel: true,
   },
 ];

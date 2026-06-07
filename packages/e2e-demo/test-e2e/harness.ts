@@ -29,6 +29,13 @@ export async function getSms(request: APIRequestContext): Promise<AuthSmsEvent[]
   return (await res.json()) as AuthSmsEvent[];
 }
 
+/** Count the durable wf-state rows (`GET /__test/wf-states/count`, all rows). */
+export async function wfStatesCount(request: APIRequestContext): Promise<number> {
+  const res = await request.get("/__test/wf-states/count");
+  expect(res.status(), "wf-states/count endpoint mounted (run with DEMO_MODE=test)").toBe(200);
+  return ((await res.json()) as { count: number }).count;
+}
+
 /**
  * Polls the captured-emails buffer until at least one event matches `filter`,
  * then returns the most recent match. Times out at 5s — workflows emit

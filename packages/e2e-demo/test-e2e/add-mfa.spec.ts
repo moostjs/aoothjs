@@ -15,6 +15,7 @@ import {
   waitForFormInput,
   readTotpQrSecret,
   waitForTotpQrStep,
+  wfStatesCount,
   wfUrl,
 } from "./harness";
 
@@ -106,10 +107,13 @@ test.describe("Manage-MFA workflow (WF-MANAGE-MFA / MME)", () => {
     await page.goto(wfUrl(MANAGE_WF));
     // No confirmed factor → no step-up, no menu: straight to the enrol picker.
     await waitForFormInput(page, "method");
-    // MANAGE mode: the picker offers "Cancel" (the user opened this on purpose),
-    // never "Skip for now" (that's the login opt-in affordance).
+    // MANAGE mode: never "Skip for now" (that's the login opt-in affordance).
+    // The form's built-in `cancel` is HIDDEN (kept whitelisted); the demo, as a
+    // consumer, renders its OWN Cancel via the host-cancel shell — so there is
+    // exactly one Cancel button and it is the host's `.wf-host-cancel`.
     await expect(page.getByRole("button", { name: /Skip/i })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Cancel", exact: false })).toHaveCount(1);
+    await expect(page.locator(".wf-host-cancel")).toHaveCount(1);
 
     await fillField(page, "method", "email");
     await submitForm(page);
@@ -349,7 +353,7 @@ test.describe("Manage-MFA workflow (WF-MANAGE-MFA / MME)", () => {
     expect(res.status()).toBe(401);
   });
 
-  test("MME-10 (cancel): grace verifies TOTP → cancels the menu → no change", async ({
+  test("MME-10 (cancel): grace verifies TOTP → host Cancel aborts → no change + wf-state cleaned", async ({
     page,
     request,
   }) => {
@@ -358,9 +362,26 @@ test.describe("Manage-MFA workflow (WF-MANAGE-MFA / MME)", () => {
     await page.goto(wfUrl(MANAGE_WF));
     await stepUpTotp(page, request, USERS.grace.username);
 
+    // After step-up the manage flow has swapped to the durable store, so a row
+    // exists. The form's built-in cancel is hidden — the demo's host-cancel
+    // shell supplies the only Cancel button. Clicking it fires the `cancel`
+    // action, which is the WHOLE POINT of keeping cancel whitelisted: it aborts
+    // the run server-side so the durable wf-state row is cleaned up rather than
+    // left to expire.
+    const rowsBeforeCancel = await wfStatesCount(request);
+    expect(
+      rowsBeforeCancel,
+      "manage flow swapped to store → ≥1 durable row",
+    ).toBeGreaterThanOrEqual(1);
+
     await clickAction(page, "Cancel");
     const env = (await readFinishEnvelope(page)) as { data?: { added?: boolean; reason?: string } };
     expect(env.data?.added).toBe(false);
+
+    // The cancel aborted the flow → the durable row is gone (not orphaned).
+    expect(await wfStatesCount(request), "cancel cleaned up the wf-state row").toBeLessThan(
+      rowsBeforeCancel,
+    );
 
     // Untouched: grace still has exactly her TOTP and her (empty, unseeded) default.
     const rec = await readUser(request, USERS.grace.username);

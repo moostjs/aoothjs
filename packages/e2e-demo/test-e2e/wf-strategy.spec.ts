@@ -31,6 +31,7 @@ import {
   USERS,
   waitForFormInput,
   waitForTotpQrStep,
+  wfStatesCount,
   wfUrl,
 } from "./harness";
 
@@ -55,15 +56,6 @@ async function triggerToken(page: Page, action: () => Promise<void>): Promise<st
   ]);
   const body = (await resp.json()) as { wfs?: string };
   return body.wfs ?? "";
-}
-
-/** Read `{ count }` off `GET /__test/wf-states/count`. */
-async function wfStatesCount(
-  request: import("@playwright/test").APIRequestContext,
-): Promise<number> {
-  const res = await request.get("/__test/wf-states/count");
-  expect(res.status(), "wf-states/count endpoint mounted (run with DEMO_MODE=test)").toBe(200);
-  return ((await res.json()) as { count: number }).count;
 }
 
 test.describe("LoginWorkflow / state strategy", () => {

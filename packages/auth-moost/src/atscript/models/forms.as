@@ -521,9 +521,11 @@ export interface EnrollPickMethodForm {
     skip?: ui.action
 
     // Manage-MFA only: the user opened this on purpose, so "Skip" makes no
-    // sense — offer a clean cancel instead.
+    // sense — a `cancel` action is declared instead (host-rendered, see below).
+    // Built-in cancel hidden but kept whitelisted so a host can fire it — see
+    // auth-moost CLAUDE.md "Manage-MFA host cancel" (consumer renders its own).
     @ui.form.action 'cancel', 'Cancel'
-    @ui.form.fn.hidden '(_, _d, ctx) => ctx.public?.mfaEnroll?.mode !== "manage"'
+    @ui.form.fn.hidden '() => true'
     cancel?: ui.action
 }
 
@@ -542,7 +544,13 @@ export interface EnrollPickMethodForm {
 export interface EnrollAddressForm {
     @ui.form.order 10
     @ui.form.type 'text'
+    // Transport-aware label: this single field collects either a phone number
+    // (sms) or an email (email), so the label reads the chosen transport off
+    // `ctx.public.mfaEnroll.method`. `@meta.label 'Address'` is the static
+    // fallback when `@atscript/ui-fns` is absent (the fn key overrides it when
+    // present — fn wins over static, else static is the fallback).
     @meta.label 'Address'
+    @ui.form.fn.label '(_, _d, ctx) => ctx.public?.mfaEnroll?.method === "sms" ? "Phone number" : ctx.public?.mfaEnroll?.method === "email" ? "Email address" : "Address"'
     @meta.required
     // Client-side format hint — email branch must look like an email; the SMS
     // branch stays free-form (server-side E.164 normalization). The robust
@@ -554,8 +562,10 @@ export interface EnrollAddressForm {
     @ui.form.fn.hidden '(_, _d, ctx) => ctx.public?.mfaEnroll?.mode !== "optional"'
     skip?: ui.action
 
+    // Built-in cancel hidden but kept whitelisted so a host can fire it — see
+    // auth-moost CLAUDE.md "Manage-MFA host cancel" (consumer renders its own).
     @ui.form.action 'cancel', 'Cancel'
-    @ui.form.fn.hidden '(_, _d, ctx) => ctx.public?.mfaEnroll?.mode !== "manage"'
+    @ui.form.fn.hidden '() => true'
     cancel?: ui.action
 
     @ui.form.action 'useDifferentMethod', 'Use a different method'
@@ -601,8 +611,10 @@ export interface EnrollConfirmForm {
     @ui.form.fn.hidden '(_, _d, ctx) => (ctx.public?.mfaEnroll?.availableTransports?.length ?? 0) < 2 || ctx.public?.mfaEnroll?.mode === "manage"'
     useDifferentMethod?: ui.action
 
+    // Built-in cancel hidden but kept whitelisted so a host can fire it — see
+    // auth-moost CLAUDE.md "Manage-MFA host cancel" (consumer renders its own).
     @ui.form.action 'cancel', 'Cancel'
-    @ui.form.fn.hidden '(_, _d, ctx) => ctx.public?.mfaEnroll?.mode !== "manage"'
+    @ui.form.fn.hidden '() => true'
     cancel?: ui.action
 
     @ui.form.action 'skip', 'Skip for now'
@@ -636,8 +648,10 @@ export interface EnrollTotpQrForm {
     @ui.form.fn.hidden '(_, _d, ctx) => (ctx.public?.mfaEnroll?.availableTransports?.length ?? 0) < 2 || ctx.public?.mfaEnroll?.mode === "manage"'
     useDifferentMethod?: ui.action
 
+    // Built-in cancel hidden but kept whitelisted so a host can fire it — see
+    // auth-moost CLAUDE.md "Manage-MFA host cancel" (consumer renders its own).
     @ui.form.action 'cancel', 'Cancel'
-    @ui.form.fn.hidden '(_, _d, ctx) => ctx.public?.mfaEnroll?.mode !== "manage"'
+    @ui.form.fn.hidden '() => true'
     cancel?: ui.action
 
     @ui.form.action 'skip', 'Skip for now'
@@ -675,7 +689,10 @@ export interface ManageMfaForm {
     @meta.required
     operation: string
 
+    // Hidden built-in cancel — host renders its own and fires `cancel` on
+    // abandon (so the durable wf-state row is cleaned, not left to expire).
     @ui.form.action 'cancel', 'Cancel'
+    @ui.form.fn.hidden '() => true'
     cancel?: ui.action
 }
 
@@ -693,7 +710,10 @@ export interface RemoveMfaConfirmForm {
     @ui.form.fn.value '(_, _d, ctx) => { const t = ctx.public?.mfaEnroll?.method; const lbl = t === "totp" ? "your authenticator app" : t === "sms" ? "SMS codes" : t === "email" ? "email codes" : "this method"; return "Remove " + lbl + " as a two-factor method? You can set it up again later."; }'
     notice: ui.paragraph
 
+    // Hidden built-in cancel — host renders its own and fires `cancel` on
+    // abandon (so the durable wf-state row is cleaned, not left to expire).
     @ui.form.action 'cancel', 'Cancel'
+    @ui.form.fn.hidden '() => true'
     cancel?: ui.action
 }
 
@@ -718,7 +738,10 @@ export interface PasswordReauthForm {
     @expect.minLength 1
     password: string
 
+    // Hidden built-in cancel — host renders its own and fires `cancel` on
+    // abandon (so the durable wf-state row is cleaned, not left to expire).
     @ui.form.action 'cancel', 'Cancel'
+    @ui.form.fn.hidden '() => true'
     cancel?: ui.action
 }
 
