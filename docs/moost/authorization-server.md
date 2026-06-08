@@ -67,7 +67,7 @@ app.setProvideRegistry(
 app.registerControllers(AuthorizeController /* + AuthController, your AuthWorkflow subclass */);
 ```
 
-The memory stores are single-process; a multi-pod deployment swaps a durable atscript-db adapter under the **same** tokens. `AuthorizeController.loginPath()` defaults to `/login` — override it in a subclass for a custom login route. The CLI side is a minimal-dependency browser+loopback helper (generate `state` + PKCE → open the browser → await the one-shot loopback callback → verify `state` → `POST /auth/token`).
+The memory stores are single-process; a multi-pod deployment swaps the durable `PendingAuthorizationStoreAtscriptDb` / `AuthCodeStoreAtscriptDb` (from `@aooth/auth/atscript-db`, backed by the `@aooth/auth/atscript-db/pending-authorization` + `…/auth-code` models) under the **same** tokens — no controller change. `AuthorizeController.loginPath()` defaults to `/login` — override it in a subclass for a custom login route. The CLI side is a minimal-dependency browser+loopback helper (generate `state` + PKCE → open the browser → await the one-shot loopback callback → verify `state` → `POST /auth/token`).
 
 ## Wiring — Tier 2 (first-party OIDC)
 

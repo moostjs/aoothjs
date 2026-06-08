@@ -3,6 +3,10 @@ import { credentialPayloadOf } from "../credential/payload";
 import type { CredentialState } from "../credential/types";
 import type { CredentialStore } from "../stores/store";
 
+// Durable authorization-server stores (AUTH-SERVER.md §4.3) — same atscript-db
+// adapter pattern as `CredentialStoreAtscriptDb` below.
+export * from "./authz-stores";
+
 /**
  * Persisted row shape — mirrors `AoothAuthCredential` from
  * `./auth-credential.as`. Re-declared here as a plain TS type so consumers can

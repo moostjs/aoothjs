@@ -5,7 +5,9 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 
 import { AuditEntry } from "./models/audit.as";
+import { DemoAuthCode } from "./models/auth-code.as";
 import { DemoAuthCredential } from "./models/auth-credential.as";
+import { DemoPendingAuthorization } from "./models/pending-authorization.as";
 import { Comment } from "./models/comment.as";
 import { Department } from "./models/department.as";
 import { Document } from "./models/document.as";
@@ -28,6 +30,8 @@ export const ALL_MODELS = [
   DemoWfState,
   DemoAuthCredential,
   DemoFederatedIdentity,
+  DemoPendingAuthorization,
+  DemoAuthCode,
 ] as const;
 
 export interface AppDb {
@@ -44,6 +48,8 @@ export interface AppDb {
     wfStates: AtscriptDbTable<typeof DemoWfState>;
     credentials: AtscriptDbTable<typeof DemoAuthCredential>;
     federatedIdentities: AtscriptDbTable<typeof DemoFederatedIdentity>;
+    pendingAuthorizations: AtscriptDbTable<typeof DemoPendingAuthorization>;
+    authCodes: AtscriptDbTable<typeof DemoAuthCode>;
   };
   close: () => void;
 }
@@ -75,6 +81,8 @@ export function createAppDb(dbPath: string): AppDb {
     wfStates: db.getTable(DemoWfState),
     credentials: db.getTable(DemoAuthCredential),
     federatedIdentities: db.getTable(DemoFederatedIdentity),
+    pendingAuthorizations: db.getTable(DemoPendingAuthorization),
+    authCodes: db.getTable(DemoAuthCode),
   };
 
   return {

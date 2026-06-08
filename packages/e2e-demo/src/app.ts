@@ -20,17 +20,21 @@ import {
 } from "@aooth/auth";
 import {
   type AuthCodeStore,
-  AuthCodeStoreMemory,
   type ClientRedirectPolicy,
   CompositeClientPolicy,
   IdTokenSigner,
   LoopbackClientPolicy,
   OidcClaimsResolver,
   type PendingAuthorizationStore,
-  PendingAuthorizationStoreMemory,
   RegisteredClientPolicy,
   scopeGrants,
 } from "@aooth/auth/authz";
+import {
+  AuthCodeStoreAtscriptDb,
+  type AuthCodeTable,
+  PendingAuthorizationStoreAtscriptDb,
+  type PendingAuthorizationTable,
+} from "@aooth/auth/atscript-db";
 import {
   type AuditEvent,
   type AuthDeliveryPayload,
@@ -833,11 +837,17 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   }
 
   // Authorization server (AUTH-SERVER.md) — Tier 1 CLI loopback grant AND Tier 2
-  // first-party OIDC ("Sign in with the demo"). The two stores are in-memory
-  // (single-process demo); a multi-pod deployment swaps a durable impl under the
-  // same DI tokens.
-  const pendingAuthStore = new PendingAuthorizationStoreMemory();
-  const authCodeStore = new AuthCodeStoreMemory();
+  // first-party OIDC ("Sign in with the demo"). The two short-lived stores are
+  // backed by atscript-db (the durable, multi-pod-safe adapters) on the same
+  // SQLite DB as the rest of the demo, wired under the standard DI tokens —
+  // exercising the durable path end-to-end (the auth-code consume is a real
+  // atomic check-and-delete against SQLite).
+  const pendingAuthStore = new PendingAuthorizationStoreAtscriptDb({
+    table: appDb.tables.pendingAuthorizations as unknown as PendingAuthorizationTable,
+  });
+  const authCodeStore = new AuthCodeStoreAtscriptDb({
+    table: appDb.tables.authCodes as unknown as AuthCodeTable,
+  });
 
   // Tier 2: a fresh RSA keypair signs `id_token`s; its public half is published
   // at `GET /auth/jwks` and described by `GET /auth/.well-known/openid-configuration`.
@@ -1091,6 +1101,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       t.wfStates,
       t.federatedIdentities,
       t.credentials,
+      t.authCodes,
+      t.pendingAuthorizations,
       t.users,
       t.departments,
       t.tenants,

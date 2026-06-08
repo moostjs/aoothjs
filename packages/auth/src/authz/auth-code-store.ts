@@ -72,7 +72,8 @@ export interface AuthCodeStoreMemoryOptions {
   ttlMs?: number;
 }
 
-const DEFAULT_CODE_TTL_MS = 60_000;
+/** Default auth-code lifetime (60 s). Shared by the memory + atscript-db stores. */
+export const DEFAULT_CODE_TTL_MS = 60_000;
 
 /**
  * In-memory {@link AuthCodeStore} — the reference impl. `consume` is atomic

@@ -74,7 +74,8 @@ export interface PendingAuthorizationStoreMemoryOptions {
   ttlMs?: number;
 }
 
-const DEFAULT_PENDING_TTL_MS = 15 * 60_000;
+/** Default pending-authorization lifetime (15 min). Shared by the memory + atscript-db stores. */
+export const DEFAULT_PENDING_TTL_MS = 15 * 60_000;
 
 /**
  * In-memory {@link PendingAuthorizationStore} — the reference impl for a

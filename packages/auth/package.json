@@ -26,7 +26,11 @@
   "files": [
     "dist",
     "src/atscript-db/auth-credential.as",
-    "src/atscript-db/auth-credential.as.d.ts"
+    "src/atscript-db/auth-credential.as.d.ts",
+    "src/atscript-db/pending-authorization.as",
+    "src/atscript-db/pending-authorization.as.d.ts",
+    "src/atscript-db/auth-code.as",
+    "src/atscript-db/auth-code.as.d.ts"
   ],
   "type": "module",
   "sideEffects": false,
@@ -66,6 +70,22 @@
     "./atscript-db/model.as": {
       "types": "./src/atscript-db/auth-credential.as.d.ts",
       "default": "./src/atscript-db/auth-credential.as"
+    },
+    "./atscript-db/pending-authorization": {
+      "types": "./src/atscript-db/pending-authorization.as.d.ts",
+      "default": "./src/atscript-db/pending-authorization.as"
+    },
+    "./atscript-db/pending-authorization.as": {
+      "types": "./src/atscript-db/pending-authorization.as.d.ts",
+      "default": "./src/atscript-db/pending-authorization.as"
+    },
+    "./atscript-db/auth-code": {
+      "types": "./src/atscript-db/auth-code.as.d.ts",
+      "default": "./src/atscript-db/auth-code.as"
+    },
+    "./atscript-db/auth-code.as": {
+      "types": "./src/atscript-db/auth-code.as.d.ts",
+      "default": "./src/atscript-db/auth-code.as"
     },
     "./package.json": "./package.json"
   },

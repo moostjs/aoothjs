@@ -483,8 +483,15 @@ import {
   CredentialStoreAtscriptDb,
   AuthCredentialRow,
   AuthCredentialTable,
+  // Durable authorization-server stores (multi-pod) — see below.
+  PendingAuthorizationStoreAtscriptDb,
+  PendingAuthorizationTable,
+  AuthCodeStoreAtscriptDb,
+  AuthCodeTable,
 } from "@aooth/auth/atscript-db";
 import { AoothAuthCredential } from "@aooth/auth/atscript-db/model.as";
+import { AoothPendingAuthorization } from "@aooth/auth/atscript-db/pending-authorization";
+import { AoothAuthCode } from "@aooth/auth/atscript-db/auth-code";
 ```
 
 ### `CredentialStoreAtscriptDb<TPayload>`
@@ -498,6 +505,21 @@ new CredentialStoreAtscriptDb<TPayload>(opts: {
 The adapter takes only `{ table }` — there is no `clock` option. Time-sensitive bookkeeping (TTL checks, opportunistic GC) reads `Date.now()` directly.
 
 Single-table stateful store. `revokeAllForUser` uses `deleteMany({ userId })` — one round trip. `retrieve` GCs expired rows opportunistically. See [Stores](/auth/).
+
+### `PendingAuthorizationStoreAtscriptDb` / `AuthCodeStoreAtscriptDb`
+
+```ts
+new PendingAuthorizationStoreAtscriptDb(opts: {
+  table: PendingAuthorizationTable; // db.getTable(AoothPendingAuthorization)
+  clock?: Clock; ttlMs?: number;    // default 15 min
+})
+new AuthCodeStoreAtscriptDb(opts: {
+  table: AuthCodeTable;             // db.getTable(AoothAuthCode)
+  clock?: Clock; ttlMs?: number;    // default 60 s
+})
+```
+
+Durable (multi-pod) implementations of the two authorization-server stores from [`@aooth/auth/authz`](#authz-subpath) — drop-in under the same `PENDING_AUTHORIZATION_STORE_TOKEN` / `AUTH_CODE_STORE_TOKEN`. Back them with the raw `.as` models (`@aooth/auth/atscript-db/pending-authorization` + `…/auth-code`). The grant's `tokenPolicy` persists as a JSON string (its `payload` is an open record a closed `@db.json` would reject). `AuthCodeStoreAtscriptDb.consume` is an atomic check-and-delete — it reads the row, then `deleteOne(code)`, and only the caller whose delete reports `deletedCount === 1` wins the row (single-use under a concurrent double-redeem / back-button replay), so no version column is needed. See [Authorization Server](/moost/authorization-server).
 
 ### `AuthCredentialRow<TPayload>`
 
@@ -617,7 +639,7 @@ class PendingAuthorizationStoreMemory extends PendingAuthorizationStore {}
 class AuthCodeStoreMemory extends AuthCodeStore {}
 ```
 
-In-memory implementations of the two short-lived server-side stores (for tests / single-process). `AuthCodeStore.consume()` is single-use + atomic. A multi-pod deployment swaps a durable atscript-db adapter under the same DI tokens.
+In-memory implementations of the two short-lived server-side stores (for tests / single-process). `AuthCodeStore.consume()` is single-use + atomic. A multi-pod deployment swaps the durable `PendingAuthorizationStoreAtscriptDb` / `AuthCodeStoreAtscriptDb` (see the [`@aooth/auth/atscript-db` subpath](#subpath-aooth-auth-atscript-db)) under the same DI tokens.
 
 ### Functions
 
