@@ -23,6 +23,7 @@
 import { AuthCredential, type CredentialMetadata } from "@aooth/auth";
 import type { NormalizedProfile } from "@aooth/idp";
 import {
+  generateMfaCode,
   generateTotpSecret,
   generateTotpUri,
   maskEmail,
@@ -1202,8 +1203,11 @@ export class AuthWorkflow {
     length: number,
     ttlMs: number,
   ): string {
-    let code = "";
-    for (let i = 0; i < length; i++) code += Math.floor(Math.random() * 10).toString();
+    // SECURITY: CSPRNG, never Math.random(). This pin gates account recovery,
+    // the email/SMS MFA second factor, signup email verification, and the
+    // federated link proof-of-control challenge — a predictable code is an
+    // account-takeover primitive (CWE-338).
+    const code = generateMfaCode(length);
     ctx.pin = code;
     ctx.pinExpire = Date.now() + ttlMs;
     // Fresh code → fresh attempt budget. `delete` (not `= 0`) because wf

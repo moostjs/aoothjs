@@ -1,7 +1,6 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import { base32 } from "../base-x";
 import type { TotpConfig } from "../types";
-import { generateSecureRandom } from "../utils";
 
 export function generateTotpSecret(bytes = 20): string {
   return base32.encode(randomBytes(bytes)).toString().replace(/=+$/, "").toUpperCase();
@@ -62,7 +61,12 @@ export function verifyTotpCode(secret: string, code: string, config?: TotpConfig
 }
 
 export function generateMfaCode(length = 6): string {
-  return generateSecureRandom(length, "0123456789");
+  // CSPRNG, unbiased: randomInt() uses rejection sampling internally, so each
+  // digit is uniform over 0-9 (no modulo bias). Never use Math.random() here —
+  // these codes gate authentication, account recovery, and MFA.
+  let code = "";
+  for (let i = 0; i < length; i++) code += randomInt(10).toString();
+  return code;
 }
 
 // RFC 4226 HOTP
