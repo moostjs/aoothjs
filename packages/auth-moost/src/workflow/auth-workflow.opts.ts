@@ -92,6 +92,10 @@ export interface AuthWorkflowOpts {
     // Signup
     /** Self-signup identifier form (`auth/signup/flow` entry pause). */
     signup?: TAtscriptAnnotatedType;
+
+    // Authorization server
+    /** Consent prompt shown before `mint-authz-code` mints an auth code (AUTH-SERVER.md §6). */
+    authzConsent?: TAtscriptAnnotatedType;
   };
 }
 
@@ -142,5 +146,6 @@ export interface ResolvedAuthWorkflowOpts {
     concurrencyLimit: TAtscriptAnnotatedType;
     recoveryPincode: TAtscriptAnnotatedType;
     signup: TAtscriptAnnotatedType;
+    authzConsent: TAtscriptAnnotatedType;
   };
 }

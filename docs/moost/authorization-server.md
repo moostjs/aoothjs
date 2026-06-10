@@ -12,11 +12,14 @@ client opens browser →
                        &code_challenge&code_challenge_method=S256&scope?&nonce?
     → policy.resolveClient(...)  ← TRUST GATE: authorize client + redirect_uri (+ scope) FIRST
     → PendingAuthorizationStore.create(...)  ← ALL authority fixed HERE (tokenPolicy, id_token
-                                                intent, audience, granted scope, nonce)
-    → 302 /login?authz=<opaque handle>       ← the SPA forwards the handle into auth/login/flow
-  → user authenticates (password / MFA / consent / mid-flow SSO) →
-      the login workflow's `mint-authz-code` terminal mints a single-use CODE bound to
-      ctx.subject + the recorded authority, and 302s redirect_uri?code=&state=
+                              intent, audience, granted scope, nonce) + a browser-binding secret
+    → 302 /login?authz=<opaque handle>  + Set-Cookie: aooth_authz=<binding>  (httpOnly, Lax)
+                                             ← the SPA forwards the handle into auth/login/flow
+  → user authenticates (password / MFA / mid-flow SSO) →
+      `authz-consent` terminal: re-verify the aooth_authz browser binding, then the user
+          explicitly APPROVES the client (Deny → 302 redirect_uri?error=access_denied, no code) →
+      `mint-authz-code` terminal mints a single-use CODE bound to ctx.subject + the recorded
+          authority, and 302s redirect_uri?code=&state=
   → POST /auth/token { grant_type, code, code_verifier, client_id?, client_secret? }
     → consume code (single-use) → verify PKCE → authenticate client (Tier 2) →
       mint access_token and/or id_token  ← minted HERE, off the browser
@@ -196,12 +199,22 @@ protected getOidcClaimsResolver(): OidcClaimsResolver { /* default: NoopOidcClai
 
 ## Stores — fix the authority early, single-use the code
 
-| Store                       | Holds                                                                                                                                                                         | TTL                         | Notes                                                                             |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- | --------------------------------------------------------------------------------- |
-| `PendingAuthorizationStore` | the in-flight request, keyed by an opaque `handle`: `{ clientId?, redirectUri, codeChallenge, clientState?, scope?, nonce?, idToken?, accessToken?, audience?, tokenPolicy }` | ≈ the login-session ceiling | The `handle` rides the login-wf ctx and survives a "Continue with Google" detour. |
-| `AuthCodeStore`             | the minted code, keyed by the code: `{ userId, codeChallenge, redirectUri, clientId?, scope?, nonce?, idToken?, accessToken?, audience?, tokenPolicy, expiresAt }`            | ≈ 30–60 s                   | **`consume()` is single-use + atomic** — a reuse / double-redeem misses.          |
+| Store                       | Holds                                                                                                                                                                                  | TTL                         | Notes                                                                                                                                                                                                                               |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PendingAuthorizationStore` | the in-flight request, keyed by an opaque `handle`: `{ clientId?, redirectUri, codeChallenge, clientState?, scope?, nonce?, idToken?, accessToken?, audience?, tokenPolicy, binding }` | ≈ the login-session ceiling | The `handle` rides the login-wf ctx and survives a "Continue with Google" detour. `binding` is the per-request browser-binding secret ([Consent gate](#consent-gate-browser-binding)) — a custom durable store **must** persist it. |
+| `AuthCodeStore`             | the minted code, keyed by the code: `{ userId, codeChallenge, redirectUri, clientId?, scope?, nonce?, idToken?, accessToken?, audience?, tokenPolicy, expiresAt }`                     | ≈ 30–60 s                   | **`consume()` is single-use + atomic** — a reuse / double-redeem misses.                                                                                                                                                            |
 
 Both ship abstract + in-memory (tests) + an atscript-db adapter. The login workflow's `mint-authz-code` terminal resolves them through the `AuthorizeRuntime` DI holder (a `@Step` body can't `@Inject` a string token, so it instantiates `AuthorizeRuntime`, whose ctor resolves the two tokens).
+
+## Consent gate & browser binding {#consent-gate-browser-binding}
+
+Two defenses run **before** `mint-authz-code` mints a code, so a logged-in (or silently re-authenticated) browser cannot be walked into delivering a code to a client it never approved. Both are built in — you don't wire anything.
+
+**1. Browser binding (the `aooth_authz` cookie).** `GET /auth/authorize` mints a high-entropy `binding` secret, records it on the pending authorization, and drops it as an `httpOnly; SameSite=Lax` `aooth_authz` cookie. The `authz-consent` step constant-time-matches that cookie against the stored secret before doing anything; a mismatch (or absence) fails closed — no prompt, no code. The opaque `authz` handle alone is a bearer ticket, so phishing it into a **different** browser would otherwise let an attacker's client receive a code minted for the victim. The binding closes that: the secret lives only in the browser that started the request, so the handle can be redeemed **only** in that browser. `SameSite=Lax` is deliberate — the cookie must still ride the top-level GET back from a "Continue with Google" detour.
+
+**2. Explicit consent (the `authz-consent` step).** After authentication the run pauses on the bundled `AuthorizeConsentForm` (the `authzConsent` slot in [`opts.forms`](./workflows)): the user sees which client + scope is asking and must press **Authorize**. **Deny** (or abandoning) 302s the client back with `error=access_denied` and mints nothing. The form is a standard workflow form — it renders through `<AsWfForm>` with no bespoke component, and you override its copy by swapping `opts.forms.authzConsent` for an `extends AuthorizeConsentForm` subclass (import it from [`@aooth/auth-moost/atscript`](../api/auth-moost)).
+
+The mint step runs **only** after consent stamps approval on the run, so a deny / binding failure leaves its own finish intact (a benign error, or the `access_denied` redirect) — `mint-authz-code` never overwrites it. `AuthorizeController` sets the cookie via the package-exported [`AUTHZ_BINDING_COOKIE`](../api/auth-moost) name + `authzBindingCookieAttrs` (parallel to the federated `OAUTH_CSRF_COOKIE`); reference the name if a reverse proxy filters cookies by allowlist.
 
 ## DOs / DON'Ts
 
@@ -212,6 +225,8 @@ Both ship abstract + in-memory (tests) + an atscript-db adapter. The login workf
 - **DON'T** wire an `id_token` client without a signer — the token endpoint returns `500 server_error` (a misconfiguration, not a client error) rather than mint an unsigned identity assertion.
 - **DON'T** send a `client_id` on a loopback (Tier 1) `/token` request — a code minted for a public loopback client must carry **no** `client_id`; a spurious one is rejected `401` to keep the binding symmetric.
 - **DO** mount the `AuthorizeController` subclass (not the base) when you override the getters — registering the base class would mint `sub`-only tokens with no signer.
+- **DO** serve `loginPath()` on the **same origin** as `/auth/authorize` — the `aooth_authz` binding cookie is host-scoped; a cross-origin login route never receives it, so `authz-consent` fails closed and no code is ever minted. ([Consent gate](#consent-gate-browser-binding).)
+- **DO** persist the `binding` field in any custom durable `PendingAuthorizationStore` — the consent gate matches the cookie against it; drop it and every authorize request fails the binding check.
 
 ## See also
 

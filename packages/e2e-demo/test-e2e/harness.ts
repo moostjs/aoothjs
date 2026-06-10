@@ -190,6 +190,26 @@ export async function submitForm(page: Page): Promise<void> {
 }
 
 /**
+ * Wait for the authorization-server consent prompt (AUTH-SERVER.md §6) — the
+ * `AuthorizeConsentForm` pause the `authz-consent` step renders after
+ * authentication on an authorize-initiated login.
+ */
+export async function waitForConsent(page: Page): Promise<void> {
+  await page
+    .getByText("wants to sign in to your account", { exact: false })
+    .waitFor({ state: "visible", timeout: 10_000 });
+}
+
+/**
+ * Approve the authorization-server consent gate: wait for the prompt, then
+ * press 'Authorize' (the form's primary submit) so the code mint can proceed.
+ */
+export async function approveConsent(page: Page): Promise<void> {
+  await waitForConsent(page);
+  await submitForm(page);
+}
+
+/**
  * Rewrite an absolute magic-link URL onto BASE_URL so the resume hits the
  * demo backend (which serves the SPA in test mode). Magic links land with
  * the SPA dev origin (e.g. http://localhost:5173) baked in by AuthEmailEvent.

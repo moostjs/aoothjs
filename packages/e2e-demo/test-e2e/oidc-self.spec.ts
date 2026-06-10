@@ -21,7 +21,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { OidcProvider } from "@aooth/idp";
 import { expect, test } from "@playwright/test";
 
-import { fillField, resetApp, submitForm, USERS } from "./harness";
+import { approveConsent, fillField, resetApp, submitForm, USERS } from "./harness";
 
 const b64url = (b: Buffer): string => b.toString("base64url");
 
@@ -49,12 +49,14 @@ test("OIDC-SELF-01: a real OidcProvider signs in with the demo (discovery + JWKS
     `&nonce=${nonce}&state=${state}` +
     `&code_challenge=${codeChallenge}&code_challenge_method=S256`;
 
-  // Drive the browser: authorize → /login?authz= → password login → 302 to the
-  // registered redirect carrying ?code&state.
+  // Drive the browser: authorize → /login?authz= → password login → consent
+  // (browser-binding check + explicit approval) → 302 to the registered redirect
+  // carrying ?code&state.
   await page.goto(authorizeUrl);
   await fillField(page, "username", USERS.alice.username);
   await fillField(page, "password", USERS.alice.password);
   await submitForm(page);
+  await approveConsent(page);
   await page.waitForURL(/\/__test\/oidc-callback\?/u, { timeout: 15_000 });
 
   const cb = new URL(page.url());

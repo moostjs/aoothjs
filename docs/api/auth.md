@@ -654,7 +654,7 @@ In-memory implementations of the two short-lived server-side stores (for tests /
 - `IdTokenClaims` — `{ sub, aud, nonce?, ttlSec?, extra? }` (the `extra` map is the resolver's profile claims).
 - `IdTokenAlg` — `'RS256' | 'ES256'`.
 - `ClientRedirectPolicy` — the policy interface (`resolveClient` + optional `authenticateClient`).
-- `PendingAuthorizationStore` / `AuthCodeStore` — the abstract store contracts.
+- `PendingAuthorizationStore` / `AuthCodeStore` — the abstract store contracts. A pending-authorization record carries a `binding` secret (the value of the `aooth_authz` browser-binding cookie) alongside the request fields — a custom durable store **must** round-trip it, or the consent gate's binding check fails closed. See [Consent gate & browser binding](/moost/authorization-server#consent-gate-browser-binding).
 
 ### Errors
 

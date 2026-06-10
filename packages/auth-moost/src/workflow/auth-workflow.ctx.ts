@@ -583,6 +583,13 @@ export interface AuthWfPublicState {
    * verify forms when a forced password change will follow.
    */
   newPasswordRequired?: boolean;
+  /**
+   * Mirrors the display-only fields of `ctx.authz` — the requesting client's
+   * id/name and granted scope, shown on the authorize-consent form. The
+   * `handle` and the `approved` gate stay server-only (never whitelisted onto
+   * the wire).
+   */
+  authz?: { clientName?: string; scope?: string };
 }
 
 /** Unified workflow context shape — one type for all three flows. */
@@ -671,10 +678,13 @@ export interface AuthWfCtx {
    * input `authz` (the opaque pending-authorization handle), and `sso-callback`
    * re-raises it from the federated `state.handle` when the user took a
    * "Continue with <provider>" detour mid-authorize. Presence routes the login
-   * tail to the `mint-authz-code` terminal (deliver an auth code to the client)
-   * INSTEAD of `issue`/`redirect` — no browser session is minted.
+   * tail to the `authz-consent` → `mint-authz-code` terminal (deliver an auth
+   * code to the client) INSTEAD of `issue`/`redirect` — no browser session is
+   * minted. `clientName`/`scope` are staged by `authz-consent` for the consent
+   * form's display copy; `approved` is the explicit user-consent gate the
+   * `mint-authz-code` terminal requires before it will mint a code.
    */
-  authz?: { handle: string }; // [login — authorization-server grant]
+  authz?: { handle: string; clientName?: string; scope?: string; approved?: boolean }; // [login — authorization-server grant]
 
   /**
    * FE-facing surface — the ONLY top-level ctx key whitelisted on form

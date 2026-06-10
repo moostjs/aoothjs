@@ -50,6 +50,7 @@ export { FEDERATED_IDENTITY_STORE_TOKEN } from "./oauth/oauth-tokens";
 //    the store lives in `@aooth/user` and only the token lives here). ──
 export { AuthorizeController } from "./authz/authorize.controller";
 export { AuthorizeRuntime } from "./authz/authorize-runtime";
+export { AUTHZ_BINDING_COOKIE, authzBindingCookieAttrs } from "./authz/authz-binding";
 export {
   AUTH_CODE_STORE_TOKEN,
   CLIENT_REDIRECT_POLICY_TOKEN,

@@ -40,6 +40,7 @@ function newPending(overrides?: Partial<NewPendingAuthorization>): NewPendingAut
     tokenPolicy: POLICY,
     clientState: "xyz-state",
     scope: "openid email",
+    binding: "binding-secret-xyz",
     ...overrides,
   };
 }
@@ -115,6 +116,7 @@ describe("authz durable stores — integration against real SQLite", () => {
       expect(got?.scope).toBe("openid email");
       // The whole point: arbitrary payload keys survive the JSON-string column.
       expect(got?.tokenPolicy).toEqual(POLICY);
+      expect(got?.binding).toBe("binding-secret-xyz");
       expect(got?.createdAt).toBeTypeOf("number");
       expect(got?.expiresAt).toBeGreaterThan(got!.createdAt);
     });

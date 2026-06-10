@@ -33,11 +33,13 @@ import { Wooks } from "wooks";
 
 import { authGuardInterceptor } from "../auth.guard";
 import { AuthorizeController } from "../authz/authorize.controller";
+import { AUTHZ_BINDING_COOKIE } from "../authz/authz-binding";
 import {
   AUTH_CODE_STORE_TOKEN,
   CLIENT_REDIRECT_POLICY_TOKEN,
   PENDING_AUTHORIZATION_STORE_TOKEN,
 } from "../authz/authz-tokens";
+import { parseCookieValue } from "./controller-utils";
 
 const LOOPBACK = "http://127.0.0.1:5000/callback";
 const pkce = (verifier: string): string =>
@@ -47,10 +49,36 @@ interface Harness {
   request: (
     input: string,
     init?: RequestInit,
-  ) => Promise<{ status: number; body: unknown; location: string | null }>;
+  ) => Promise<{
+    status: number;
+    body: unknown;
+    location: string | null;
+    setCookies: string[];
+  }>;
   auth: AuthCredential;
   pending: PendingAuthorizationStoreMemory;
   codes: AuthCodeStoreMemory;
+}
+
+/** Wrap `http.request`: JSON-parse the body when possible, collect Location + Set-Cookie. */
+function makeRequester(http: MoostHttp): Harness["request"] {
+  return async (input, init = {}) => {
+    const response = await http.request(input, init);
+    if (!response) return { status: 0, body: null, location: null, setCookies: [] };
+    const text = await response.text();
+    let body: unknown = text;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      /* leave as text */
+    }
+    return {
+      status: response.status,
+      body,
+      location: response.headers.get("location"),
+      setCookies: response.headers.getSetCookie(),
+    };
+  };
 }
 
 async function buildApp(): Promise<Harness> {
@@ -81,20 +109,7 @@ async function buildApp(): Promise<Harness> {
   moost.registerControllers(AuthorizeController as any);
   await moost.init();
 
-  async function request(input: string, init: RequestInit = {}) {
-    const response = await http.request(input, init);
-    if (!response) return { status: 0, body: null, location: null };
-    const text = await response.text();
-    let body: unknown = text;
-    try {
-      body = text ? JSON.parse(text) : null;
-    } catch {
-      /* leave as text */
-    }
-    return { status: response.status, body, location: response.headers.get("location") };
-  }
-
-  return { request, auth, pending, codes };
+  return { request: makeRequester(http), auth, pending, codes };
 }
 
 const form = (fields: Record<string, string>): RequestInit => ({
@@ -124,6 +139,23 @@ describe("AuthorizeController GET /auth/authorize", () => {
     expect(row?.codeChallenge).toBe("chal");
     expect(row?.scope).toBe("api");
     expect(row?.tokenPolicy.kind).toBe("cli-session");
+
+    // Browser binding (AUTH-SERVER.md §6): a high-entropy `binding` is recorded
+    // on the pending row AND dropped as the httpOnly `aooth_authz` cookie, so a
+    // phished handle is inert in any other browser. The two must match exactly.
+    expect(row?.binding).toBeTruthy();
+    const bindingCookie = res.setCookies.find((c) => c.startsWith(`${AUTHZ_BINDING_COOKIE}=`));
+    expect(bindingCookie, "the authorize 302 sets the binding cookie").toBeTruthy();
+    expect(bindingCookie).toMatch(/HttpOnly/i);
+    expect(bindingCookie).toMatch(/SameSite=Lax/i);
+    expect(parseCookieValue(bindingCookie!, AUTHZ_BINDING_COOKIE)).toBe(row!.binding);
+
+    // The cookie's Max-Age tracks the pending row's TTL (derived from its
+    // `expiresAt`), not a stale constant — so a store with a custom `ttlMs`
+    // stays in sync rather than expiring the cookie early/late.
+    const maxAge = Number(/Max-Age=(\d+)/i.exec(bindingCookie!)?.[1]);
+    const rowTtlSec = Math.round((row!.expiresAt - row!.createdAt) / 1000);
+    expect(Math.abs(maxAge - rowTtlSec)).toBeLessThanOrEqual(5);
   });
 
   it("400s a non-loopback redirect_uri (the open-redirect gate)", async () => {
@@ -367,20 +399,7 @@ async function buildOidcApp(): Promise<OidcHarness> {
   moost.registerControllers(OidcAuthorizeController as any);
   await moost.init();
 
-  async function request(input: string, init: RequestInit = {}) {
-    const response = await http.request(input, init);
-    if (!response) return { status: 0, body: null, location: null };
-    const text = await response.text();
-    let body: unknown = text;
-    try {
-      body = text ? JSON.parse(text) : null;
-    } catch {
-      /* leave as text */
-    }
-    return { status: response.status, body, location: response.headers.get("location") };
-  }
-
-  return { request, auth, pending, codes, signer };
+  return { request: makeRequester(http), auth, pending, codes, signer };
 }
 
 describe("AuthorizeController Tier 2 — OIDC", () => {

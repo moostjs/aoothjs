@@ -45,6 +45,8 @@ export interface PendingAuthorizationRow {
   audience?: string;
   /** `JSON.stringify(TokenPolicy)`. */
   tokenPolicy: string;
+  /** Browser-binding secret — mirrored into the `aooth_authz` cookie at `/authorize`. */
+  binding: string;
   createdAt: number;
   expiresAt: number;
 }
@@ -86,16 +88,18 @@ export class PendingAuthorizationStoreAtscriptDb extends PendingAuthorizationSto
     this.ttlMs = opts.ttlMs ?? DEFAULT_PENDING_TTL_MS;
   }
 
-  async create(rec: NewPendingAuthorization): Promise<{ handle: string }> {
+  async create(rec: NewPendingAuthorization): Promise<{ handle: string; expiresAt: number }> {
     const now = this.clock.now();
     const handle = randomUUID();
+    const expiresAt = now + this.ttlMs;
     await this.table.insertOne({
       handle,
       redirectUri: rec.redirectUri,
       codeChallenge: rec.codeChallenge,
       tokenPolicy: JSON.stringify(rec.tokenPolicy),
+      binding: rec.binding,
       createdAt: now,
-      expiresAt: now + this.ttlMs,
+      expiresAt,
       ...(rec.clientId !== undefined && { clientId: rec.clientId }),
       ...(rec.clientState !== undefined && { clientState: rec.clientState }),
       ...(rec.scope !== undefined && { scope: rec.scope }),
@@ -104,7 +108,7 @@ export class PendingAuthorizationStoreAtscriptDb extends PendingAuthorizationSto
       ...(rec.accessToken !== undefined && { accessToken: rec.accessToken }),
       ...(rec.audience !== undefined && { audience: rec.audience }),
     });
-    return { handle };
+    return { handle, expiresAt };
   }
 
   async get(handle: string): Promise<PendingAuthorization | null> {
@@ -130,6 +134,7 @@ function rowToPending(row: PendingAuthorizationRow): PendingAuthorization {
     redirectUri: row.redirectUri,
     codeChallenge: row.codeChallenge,
     tokenPolicy: JSON.parse(row.tokenPolicy) as TokenPolicy,
+    binding: row.binding,
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,
   };

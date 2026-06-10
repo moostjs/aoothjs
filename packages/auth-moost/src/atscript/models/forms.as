@@ -982,3 +982,29 @@ export interface ProveControlOtpForm {
     @ui.form.pushDown
     cancel?: ui.action
 }
+
+/**
+ * Authorization-server consent prompt (AUTH-SERVER.md §4.4 / §6). Rendered by
+ * the `authz-consent` @Step once the human is authenticated, BEFORE
+ * `mint-authz-code` mints the authorization code — so a logged-in (or silently
+ * SSO-re-authenticated) browser cannot be walked into delivering a code to a
+ * client it never approved. Fieldless apart from the explanatory paragraph; the
+ * primary submit ('Authorize') records consent and proceeds to the mint, the
+ * 'Deny' action 302s the client back with `error=access_denied`. The requesting
+ * client + scope ride the `@wf.context.pass 'public'` `ctx.public.authz`
+ * whitelist (display-only — the handle / approval gate stay server-side).
+ */
+@meta.label 'Authorize access'
+@wf.context.pass 'public'
+@ui.form.submit.text 'Authorize'
+export interface AuthorizeConsentForm {
+    @ui.form.order 1
+    @ui.form.fn.value '(_, _d, ctx) => { const a = ctx.public?.authz; const who = a?.clientName ? "“" + a.clientName + "”" : "A local application"; const sc = a?.scope ? " It is requesting access to: " + a.scope + "." : ""; return who + " wants to sign in to your account." + sc + " Authorize this only if you started it."; }'
+    notice: ui.paragraph
+
+    @ui.form.order 10
+    @ui.form.action 'deny', 'Deny'
+    @ui.form.attr 'align', 'center'
+    @ui.form.pushDown
+    deny?: ui.action
+}

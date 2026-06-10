@@ -67,6 +67,10 @@ class TestableAuthWorkflow extends AuthWorkflow {
   public exposeClientIp = () => this.resolveClientIp();
   public exposeUserAgent = () => this.resolveUserAgent();
   public exposeIssueMetadata = (ctx: AuthWfCtx) => this.resolveIssueMetadata(ctx);
+  public exposePopulatePublic = (ctx: AuthWfCtx) => {
+    this.populatePublic(ctx);
+    return ctx.public;
+  };
   public exposeDeliver = (payload: AuthDeliveryPayload) => this.deliver(payload);
   public exposeLoadActiveSessionsCount = (u: string) => this.loadActiveSessionsCount(u);
   public exposeLogoutOtherSessions = (u: string) => this.logoutOtherSessions(u);
@@ -184,9 +188,11 @@ describe("AuthWorkflow construction (WF-AUTH-UNIFIED-002)", () => {
     // the box. Consumer override via `opts.forms.<field>` swaps any slot.
     // Pin a representative field-count + a key slot so a regression that
     // drops the default map is caught.
-    expect(Object.keys(opts.forms).length).toBe(23);
+    expect(Object.keys(opts.forms).length).toBe(24);
     expect(opts.forms.loginCredentials).toBeTruthy();
     expect(opts.forms.recoveryEmailIdentifier).toBeTruthy();
+    // Authorization-server consent gate (AUTH-SERVER.md §6).
+    expect(opts.forms.authzConsent).toBeTruthy();
     // Manage-MFA additions: QR step + menu + remove-confirm + password re-auth.
     expect(opts.forms.enrollTotpQr).toBeTruthy();
     expect(opts.forms.manageMfa).toBeTruthy();
@@ -1038,5 +1044,33 @@ describe("Manage-MFA strand-safety (WF-MANAGE-MFA)", () => {
     expect(after.mfa.methods.find((m) => m.name === "sms")).toBeUndefined();
     expect(after.mfa.methods.find((m) => m.name === "email")).toMatchObject({ confirmed: true });
     expect(after.mfa.defaultMethod).toBe("email");
+  });
+});
+
+describe("authorize-consent public projection (AUTH-SERVER.md §6)", () => {
+  it("projects only the display fields of ctx.authz — handle + approval stay server-only", () => {
+    const { users, auth, consentStore } = makeDeps();
+    const wf = new TestableAuthWorkflow({}, users, auth, consentStore);
+    const ctx: AuthWfCtx = {
+      subject: "u-1",
+      authz: { handle: "h-secret", clientName: "svc", scope: "openid email", approved: true },
+    };
+    const pub = wf.exposePopulatePublic(ctx);
+    const projected = pub?.authz as Record<string, unknown> | undefined;
+    // Display copy reaches the consent form …
+    expect(projected).toEqual({ clientName: "svc", scope: "openid email" });
+    // … but the opaque handle and the approval gate must NEVER ride the wire
+    // (the exact `toEqual` above already forbids extra keys; asserted explicitly
+    // here as a regression guard against the whitelist widening).
+    expect(projected?.handle).toBeUndefined();
+    expect(projected?.approved).toBeUndefined();
+  });
+
+  it("omits ctx.public.authz entirely when no display fields are staged yet", () => {
+    const { users, auth, consentStore } = makeDeps();
+    const wf = new TestableAuthWorkflow({}, users, auth, consentStore);
+    // init-login sets only the handle; authz-consent stages clientName/scope later.
+    const pub = wf.exposePopulatePublic({ subject: "u-1", authz: { handle: "h" } });
+    expect(pub?.authz).toBeUndefined();
   });
 });

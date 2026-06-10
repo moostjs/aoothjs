@@ -61,6 +61,8 @@ import { useAuth } from "../auth.composables";
 import { ConsentStore } from "../consent.store";
 import { Public } from "../auth.decorator";
 import { buildOAuthAuthorizeRequest, OAUTH_TTL_SEC } from "../oauth/oauth-authorize";
+import { AUTHZ_BINDING_COOKIE } from "../authz/authz-binding";
+import { authzRedirectUrl } from "../authz/authz-redirect";
 import { OAUTH_CSRF_COOKIE, oauthCsrfCookieAttrs, safeEqual } from "../oauth/oauth-csrf";
 import { resolveOAuthRedirect } from "../oauth/oauth-redirect";
 import { AuthorizeRuntime } from "../authz/authorize-runtime";
@@ -77,6 +79,7 @@ import type { AuthWorkflowOpts, ResolvedAuthWorkflowOpts } from "./auth-workflow
 import {
   AskEmailForm,
   AskPhoneForm,
+  AuthorizeConsentForm,
   ChangePasswordForm,
   ConcurrencyLimitForm,
   EmailIdentifierForm,
@@ -190,6 +193,7 @@ const DEFAULT_FORMS: ResolvedAuthWorkflowOpts["forms"] = {
   concurrencyLimit: ConcurrencyLimitForm,
   recoveryPincode: PincodeForm,
   signup: SignupForm,
+  authzConsent: AuthorizeConsentForm,
 };
 
 function mergeAuthWorkflowOpts(opts: Partial<AuthWorkflowOpts>): ResolvedAuthWorkflowOpts {
@@ -1149,6 +1153,12 @@ export class AuthWorkflow {
     }
     if (ctx.newPasswordRequired !== undefined) {
       pub.newPasswordRequired = ctx.newPasswordRequired;
+    }
+    if (ctx.authz) {
+      // Display-only — `handle`/`approved` stay server-only. `clientName`/`scope`
+      // are staged by `authz-consent` from the pending authorization.
+      const sub = pickDefined(ctx.authz, ["clientName", "scope"] as const);
+      if (sub) pub.authz = sub as AuthWfPublicState["authz"];
     }
     ctx.public = pub;
   }
@@ -3885,6 +3895,89 @@ export class AuthWorkflow {
   }
 
   /**
+   * Authorization-server consent gate (AUTH-SERVER.md §4.4 / §6). Runs BEFORE
+   * `mint-authz-code` whenever `ctx.authz` is set. Two mandatory jobs:
+   *
+   *  1. **Browser binding** — verify the request carries the `aooth_authz`
+   *     cookie that constant-time-matches the secret recorded on the pending
+   *     authorization. An `authz` handle phished into a DIFFERENT browser (the
+   *     account-takeover primitive) fails here, because the secret lives only
+   *     in the browser that initiated `GET /auth/authorize`.
+   *  2. **Explicit consent** — pause on the consent form and require the user
+   *     to press 'Authorize'. 'Deny' (or abandoning) 302s the client back with
+   *     `error=access_denied` and mints nothing. This blocks the same-browser
+   *     forced-navigation variant: a logged-in / silently-SSO-re-authenticated
+   *     victim is shown WHICH client is asking and must approve it.
+   *
+   * On approval it stamps `ctx.authz.approved`, which `mint-authz-code`
+   * re-checks alongside a binding re-verification before minting.
+   */
+  @Step("authz-consent")
+  @Public()
+  async authzConsent(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    this.requireSubject(ctx);
+    const authz = ctx.authz;
+    const { pending } = await this.authorizeRuntime();
+    const req = authz ? await pending.get(authz.handle) : null;
+    if (!authz || !req) {
+      finishWf({
+        message: { level: "error", text: "Authorization request expired. Please try again." },
+      });
+      return undefined;
+    }
+    // (1) Browser binding — fail fast (and burn the handle) BEFORE prompting, so
+    // a handle phished into the wrong browser never renders a consent prompt.
+    if (!this.verifyAuthzBinding(req)) {
+      await pending.delete(authz.handle);
+      finishWf({
+        message: {
+          level: "error",
+          text: "This authorization could not be verified for your browser. Please start again.",
+        },
+      });
+      return undefined;
+    }
+    // Stage the display copy (client + scope) for the consent form. `clientId`
+    // is absent for a public/loopback client → the form reads "A local application".
+    if (req.clientId !== undefined) authz.clientName = req.clientId;
+    if (req.scope !== undefined) authz.scope = req.scope;
+
+    // (2) Explicit consent — pause, then branch on Deny vs the Authorize submit.
+    const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.authzConsent);
+    if (wf.resolveAction() === "deny") {
+      await pending.delete(authz.handle);
+      finishWf({
+        next: {
+          trigger: "immediate",
+          action: {
+            type: "redirect",
+            target: authzRedirectUrl(req.redirectUri, {
+              error: "access_denied",
+              state: req.clientState,
+            }),
+            reason: "authz-denied",
+          },
+        },
+      });
+      return undefined;
+    }
+    wf.resolveInput(); // pause until the 'Authorize' submit
+    authz.approved = true;
+    return undefined;
+  }
+
+  /**
+   * Constant-time match of the `aooth_authz` binding cookie against the secret
+   * recorded on the pending authorization. Fail-closed (`false`) when the cookie
+   * is absent or differs, so a request without the browser binding can never
+   * redeem the handle. See {@link authzConsent}.
+   */
+  protected verifyAuthzBinding(req: { binding: string }): boolean {
+    const cookie = useCookies(current()).getCookie(AUTHZ_BINDING_COOKIE);
+    return safeEqual(cookie, req.binding);
+  }
+
+  /**
    * Authorization-server terminal (AUTH-SERVER.md §4.4). Reached INSTEAD of
    * `issue`/`redirect` when this login was started from `GET /auth/authorize`
    * (`ctx.authz` set by `init-login` or re-raised by `sso-callback`). Mints a
@@ -3892,6 +3985,7 @@ export class AuthWorkflow {
    * request's PKCE challenge / redirect / token policy, then 302s the browser to
    * `redirect_uri?code&state`. It does NOT issue a session and attaches NO
    * cookies — the token is minted later, off the browser, at `POST /auth/token`.
+   * Gated by {@link authzConsent} (binding + explicit approval).
    */
   @Step("mint-authz-code")
   @Public()
@@ -3905,6 +3999,21 @@ export class AuthWorkflow {
       // handle) — fail soft: no session, no code.
       finishWf({
         message: { level: "error", text: "Authorization request expired. Please try again." },
+      });
+      return undefined;
+    }
+    // Defense in depth: mint ONLY after `authz-consent` verified the browser
+    // binding AND captured explicit approval. `authz-consent` runs first and
+    // finishes the run on a binding failure or a deny, so in the normal path
+    // `approved` is set and the binding re-check passes here; a reordering /
+    // direct-resume that skips consent fails closed (no `approved` ⇒ no code).
+    if (ctx.authz?.approved !== true || !this.verifyAuthzBinding(req)) {
+      await pending.delete(handle);
+      finishWf({
+        message: {
+          level: "error",
+          text: "Authorization could not be completed. Please start again.",
+        },
       });
       return undefined;
     }
@@ -3922,13 +4031,14 @@ export class AuthWorkflow {
     });
     await pending.delete(handle);
 
-    const url = new URL(req.redirectUri);
-    url.searchParams.set("code", code);
-    if (req.clientState !== undefined) url.searchParams.set("state", req.clientState);
     finishWf({
       next: {
         trigger: "immediate",
-        action: { type: "redirect", target: url.toString(), reason: "authz-code" },
+        action: {
+          type: "redirect",
+          target: authzRedirectUrl(req.redirectUri, { code, state: req.clientState }),
+          reason: "authz-code",
+        },
       },
     });
     return undefined;
@@ -4800,7 +4910,16 @@ export class AuthWorkflow {
         { id: "redirect" },
       ],
     },
-    { id: "mint-authz-code", condition: (ctx) => !!ctx.authz },
+    // Authorization-server tail — consent gate FIRST (browser-binding check +
+    // explicit approval), then the code mint. `authz-consent` finishes the run
+    // itself on a binding failure or a Deny (a benign error / an
+    // `error=access_denied` redirect) WITHOUT setting `approved`; `mint-authz-code`
+    // runs ONLY when `approved` is set, so it never overwrites that finish.
+    // (`finishWf` does NOT halt the schema — a bare `!!ctx.authz` would let
+    // `mint-authz-code` re-run after a deny and clobber the redirect with
+    // "expired"; the `approved` gate is what keeps the deny/binding finish intact.)
+    { id: "authz-consent", condition: (ctx) => !!ctx.authz },
+    { id: "mint-authz-code", condition: (ctx) => ctx.authz?.approved === true },
   ])
   loginFlow(): void {}
 

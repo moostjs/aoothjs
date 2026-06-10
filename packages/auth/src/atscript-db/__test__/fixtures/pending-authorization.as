@@ -19,6 +19,7 @@ export interface AoothPendingAuthorization {
     audience?: string
 
     tokenPolicy: string
+    binding: string
 
     createdAt: number.timestamp
     expiresAt: number.timestamp

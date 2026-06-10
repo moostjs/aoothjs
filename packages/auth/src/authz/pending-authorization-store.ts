@@ -33,6 +33,15 @@ export interface PendingAuthorization {
   audience?: string;
   /** What the grant will mint (fixed at authorize time). */
   tokenPolicy: TokenPolicy;
+  /**
+   * High-entropy browser-binding secret (AUTH-SERVER.md §6). Set at
+   * `/auth/authorize` and mirrored into the `aooth_authz` cookie; the
+   * code-minting terminal accepts the handle ONLY when the request carries a
+   * cookie that constant-time-matches this value — so the opaque handle can be
+   * redeemed only by the browser that started the request, not one it was
+   * phished into.
+   */
+  binding: string;
   createdAt: number;
   expiresAt: number;
 }
@@ -49,6 +58,8 @@ export interface NewPendingAuthorization {
   accessToken?: boolean;
   audience?: string;
   tokenPolicy: TokenPolicy;
+  /** Browser-binding secret (see {@link PendingAuthorization.binding}). */
+  binding: string;
 }
 
 /**
@@ -59,8 +70,13 @@ export interface NewPendingAuthorization {
  * `PENDING_AUTHORIZATION_STORE_TOKEN` (from `@aooth/auth-moost`).
  */
 export abstract class PendingAuthorizationStore {
-  /** Record a new pending authorization; returns its opaque `handle`. */
-  abstract create(rec: NewPendingAuthorization): Promise<{ handle: string }>;
+  /**
+   * Record a new pending authorization; returns its opaque `handle` and the
+   * row's `expiresAt` (epoch ms). The caller derives the `aooth_authz` binding
+   * cookie's lifetime from `expiresAt`, so the cookie tracks the row's actual
+   * TTL even when a store is configured with a non-default `ttlMs`.
+   */
+  abstract create(rec: NewPendingAuthorization): Promise<{ handle: string; expiresAt: number }>;
   /** Fetch by handle, or `null` when unknown/expired. */
   abstract get(handle: string): Promise<PendingAuthorization | null>;
   /** Drop a handle once consumed. Returns `true` when a row was removed. */
@@ -92,13 +108,14 @@ export class PendingAuthorizationStoreMemory extends PendingAuthorizationStore {
     this.ttlMs = opts?.ttlMs ?? DEFAULT_PENDING_TTL_MS;
   }
 
-  async create(rec: NewPendingAuthorization): Promise<{ handle: string }> {
+  async create(rec: NewPendingAuthorization): Promise<{ handle: string; expiresAt: number }> {
     const now = this.clock.now();
     const row: PendingAuthorization = {
       handle: randomUUID(),
       redirectUri: rec.redirectUri,
       codeChallenge: rec.codeChallenge,
       tokenPolicy: structuredClone(rec.tokenPolicy),
+      binding: rec.binding,
       createdAt: now,
       expiresAt: now + this.ttlMs,
       ...(rec.clientId !== undefined && { clientId: rec.clientId }),
@@ -110,7 +127,7 @@ export class PendingAuthorizationStoreMemory extends PendingAuthorizationStore {
       ...(rec.audience !== undefined && { audience: rec.audience }),
     };
     this.store.set(row.handle, structuredClone(row));
-    return { handle: row.handle };
+    return { handle: row.handle, expiresAt: row.expiresAt };
   }
 
   async get(handle: string): Promise<PendingAuthorization | null> {

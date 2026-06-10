@@ -14,16 +14,20 @@ class FakeClock {
 describe("PendingAuthorizationStoreMemory", () => {
   it("creates, fetches by handle, and deletes", async () => {
     const store = new PendingAuthorizationStoreMemory();
-    const { handle } = await store.create({
+    const { handle, expiresAt } = await store.create({
       redirectUri: "http://127.0.0.1:5000/cb",
       codeChallenge: "chal",
       clientState: "cs",
       tokenPolicy: { kind: "cli-session", ttl: 1000 },
+      binding: "bind-secret",
     });
     const row = await store.get(handle);
     expect(row?.redirectUri).toBe("http://127.0.0.1:5000/cb");
     expect(row?.clientState).toBe("cs");
     expect(row?.tokenPolicy).toEqual({ kind: "cli-session", ttl: 1000 });
+    expect(row?.binding).toBe("bind-secret");
+    // create() surfaces the row's expiry so the caller can size the binding cookie.
+    expect(expiresAt).toBe(row?.expiresAt);
 
     expect(await store.delete(handle)).toBe(true);
     expect(await store.get(handle)).toBeNull();
@@ -36,6 +40,7 @@ describe("PendingAuthorizationStoreMemory", () => {
       redirectUri: "http://127.0.0.1:5000/cb",
       codeChallenge: "c",
       tokenPolicy: {},
+      binding: "b",
     });
     clock.advance(1001);
     expect(await store.get(handle)).toBeNull();
@@ -47,6 +52,7 @@ describe("PendingAuthorizationStoreMemory", () => {
       redirectUri: "http://127.0.0.1/cb",
       codeChallenge: "c",
       tokenPolicy: { payload: { tenant: "t1" } },
+      binding: "b",
     });
     const a = await store.get(handle);
     (a as { tokenPolicy: { payload?: Record<string, unknown> } }).tokenPolicy.payload!.tenant = "x";

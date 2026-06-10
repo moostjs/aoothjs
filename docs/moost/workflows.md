@@ -165,8 +165,9 @@ A login run pauses on one or more of these forms before issuing tokens. Which pa
 5. **Forced password change** — when the password is flagged initial or expired.
 6. **Terms / consent** — when `ConsentStore.getPendingConsents` returns descriptors (rendered inline on the open form).
 7. **Concurrency-limit prompt** — when `resolveSessionPolicy` sets a max-sessions limit and it's exceeded.
+8. **Authorize consent** — only when the login was started from `GET /auth/authorize` (the [authorization-server](./authorization-server) flow). After authentication the run verifies the `aooth_authz` browser binding and pauses on `AuthorizeConsentForm`; **Authorize** mints the code, **Deny** returns `error=access_denied`. See [Consent gate & browser binding](./authorization-server#consent-gate-browser-binding).
 
-The run finishes by issuing tokens (or a fresh-login redirect). Any user-initiated abort (`Cancel`, decline-terms) emits a structured `aborted` envelope via `abortWf`.
+The run finishes by issuing tokens (or a fresh-login redirect) — or, for an authorize-initiated login, by minting a single-use code to the requesting client instead of a browser session. Any user-initiated abort (`Cancel`, decline-terms) emits a structured `aborted` envelope via `abortWf`.
 
 ### Invite (`auth/invite/start`)
 

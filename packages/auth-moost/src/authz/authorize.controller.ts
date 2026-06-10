@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+
 import { AuthCredential, type IssueOptions } from "@aooth/auth";
 import {
   AuthorizeError,
@@ -15,7 +17,10 @@ import { current } from "@wooksjs/event-core";
 import { useResponse } from "@wooksjs/event-http";
 import { Controller, Inject } from "moost";
 
+import { useAuth } from "../auth.composables";
 import { Public } from "../auth.decorator";
+import { AUTHZ_BINDING_COOKIE, authzBindingCookieAttrs } from "./authz-binding";
+import { authzRedirectUrl } from "./authz-redirect";
 import {
   AUTH_CODE_STORE_TOKEN,
   CLIENT_REDIRECT_POLICY_TOKEN,
@@ -157,9 +162,17 @@ export class AuthorizeController {
       return this.redirectError(resolved.redirectUri, "invalid_request", state);
     }
 
-    // 3. Record the in-flight request; ALL authority (token policy, id_token
+    // 3. Mint the browser-binding secret (AUTH-SERVER.md §6). It is recorded on
+    //    the pending authorization AND dropped as the `aooth_authz` cookie below;
+    //    the code-minting terminal redeems the handle only when the request
+    //    carries a cookie that constant-time-matches this. So a handle phished
+    //    into a VICTIM's browser is inert — the secret lives only in the browser
+    //    that initiated this request (the attacker's, in the takeover scenario).
+    const binding = randomBytes(32).toString("base64url");
+
+    // 4. Record the in-flight request; ALL authority (token policy, id_token
     //    intent, audience, granted scope) is fixed here, copied from the policy.
-    const { handle } = await this.pending.create({
+    const { handle, expiresAt } = await this.pending.create({
       ...(resolved.clientId !== undefined && { clientId: resolved.clientId }),
       redirectUri: resolved.redirectUri,
       codeChallenge,
@@ -170,9 +183,20 @@ export class AuthorizeController {
       ...(resolved.accessToken !== undefined && { accessToken: resolved.accessToken }),
       ...(resolved.audience !== undefined && { audience: resolved.audience }),
       tokenPolicy: resolved.tokenPolicy,
+      binding,
     });
 
-    // 4. Hand off to the login page (same-origin, server-controlled path).
+    // 5. Bind the request to this browser (httpOnly, SameSite=Lax so it survives
+    //    a "Continue with <provider>" detour) and hand off to the login page
+    //    (same-origin, server-controlled path). The cookie's lifetime is the
+    //    pending row's remaining TTL, so the two stay in sync for any store
+    //    `ttlMs` — never a stale constant.
+    const maxAgeSec = Math.max(1, Math.round((expiresAt - Date.now()) / 1000));
+    res.setCookie(
+      AUTHZ_BINDING_COOKIE,
+      binding,
+      authzBindingCookieAttrs({ secure: useAuth().options.cookie.secure, maxAgeSec }),
+    );
     const loginPath = this.loginPath();
     const target = `${loginPath}${loginPath.includes("?") ? "&" : "?"}authz=${encodeURIComponent(handle)}`;
     res.status = 302;
@@ -338,12 +362,9 @@ export class AuthorizeController {
 
   /** Fail soft: 302 the validated client redirect with an `?error=` (+ echoed `state`). */
   protected redirectError(redirectUri: string, error: string, state: string | undefined): string {
-    const url = new URL(redirectUri);
-    url.searchParams.set("error", error);
-    if (state !== undefined) url.searchParams.set("state", state);
     const res = useResponse(current());
     res.status = 302;
-    res.setHeader("Location", url.toString());
+    res.setHeader("Location", authzRedirectUrl(redirectUri, { error, state }));
     return "";
   }
 }

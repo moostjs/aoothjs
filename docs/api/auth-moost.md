@@ -572,7 +572,7 @@ class AuthorizeController {
 }
 ```
 
-All routes are `@Public()`. `authorize` runs the trust gate (`policy.resolveClient`) FIRST, records the pending authorization (authority fixed here), and 302s `/login?authz=<handle>`. `token` consumes the single-use code, verifies PKCE, authenticates the client (Tier 2), and mints the access token and/or `id_token` — off the browser. `discovery` / `jwks` 404 when no signer is wired (Tier-1-only).
+All routes are `@Public()`. `authorize` runs the trust gate (`policy.resolveClient`) FIRST, records the pending authorization (authority fixed here, plus a per-request browser-binding secret), drops the `aooth_authz` binding cookie, and 302s `/login?authz=<handle>`. The login workflow's `authz-consent` step then re-verifies that cookie and requires the user to explicitly approve the client before `mint-authz-code` mints a code (see [Consent gate & browser binding](/moost/authorization-server#consent-gate-browser-binding)). `token` consumes the single-use code, verifies PKCE, authenticates the client (Tier 2), and mints the access token and/or `id_token` — off the browser. `discovery` / `jwks` 404 when no signer is wired (Tier-1-only).
 
 **The signer / claims resolver are getters, not DI tokens.** An optional `@Inject`/`@Optional` dependency panics in moost's `resolveMoost` route-table pass (triggered by `AuthController`'s `@MoostInit` refresh-cookie hook → _"Class is not Injectable and not Optional"_). A subclass overrides `getIdTokenSigner()` / `getOidcClaimsResolver()` and is registered in place of the base class (re-declare the ctor with the same three `@Inject` tokens — moost@0.6.x doesn't inherit `@Inject` across `extends`).
 
@@ -600,14 +600,26 @@ const AUTH_CODE_STORE_TOKEN = "aooth:AuthCodeStore";
 
 Provide the concrete `ClientRedirectPolicy` (a `LoopbackClientPolicy`, `RegisteredClientPolicy`, or `CompositeClientPolicy`) + the two stores under these strings — all three are abstract/interface deps with no class reference to inject by.
 
+### Browser-binding cookie
+
+```ts
+const AUTHZ_BINDING_COOKIE = "aooth_authz";
+function authzBindingCookieAttrs(opts: {
+  secure: boolean;
+  maxAgeSec: number;
+}): TCookieAttributesInput;
+```
+
+`AuthorizeController` sets this `httpOnly; SameSite=Lax` cookie at `/authorize` to the per-request `binding` secret; the `authz-consent` step constant-time-matches it before minting a code, so an `authz` handle phished into another browser is inert (parallel to the federated `OAUTH_CSRF_COOKIE` — the attrs delegate to `oauthCsrfCookieAttrs` with `path=/`). The controller passes `maxAgeSec` derived from the pending row's `expiresAt` (returned by `PendingAuthorizationStore.create`), so the cookie tracks the row's lifetime even for a store configured with a non-default `ttlMs`. Reference the name if a reverse proxy filters cookies by allowlist. Narrative: [Consent gate & browser binding](/moost/authorization-server#consent-gate-browser-binding).
+
 ## Subpath: `@aooth/auth-moost/atscript`
 
 ```ts
 import * as forms from "@aooth/auth-moost/atscript";
 ```
 
-Re-exports the **18** bundled form types from `src/atscript/models/forms.as`:
+Re-exports the **19** bundled form types from `src/atscript/models/forms.as`:
 
-`WithInlineConsentForm` (base), `LoginCredentialsForm`, `MfaCodeForm`, `EmailIdentifierForm`, `SetPasswordForm`, `InviteForm`, `Select2faForm`, `PincodeForm`, `AskEmailForm`, `AskPhoneForm`, `EnrollPickMethodForm`, `EnrollAddressForm`, `EnrollConfirmForm`, `TermsBumpForm`, `ConcurrencyLimitForm`, `MagicLinkRequestForm`, `RecoveryModeSelectForm`, `RecoveryFactorForm`.
+`WithInlineConsentForm` (base), `LoginCredentialsForm`, `MfaCodeForm`, `EmailIdentifierForm`, `SetPasswordForm`, `InviteForm`, `Select2faForm`, `PincodeForm`, `AskEmailForm`, `AskPhoneForm`, `EnrollPickMethodForm`, `EnrollAddressForm`, `EnrollConfirmForm`, `TermsBumpForm`, `ConcurrencyLimitForm`, `MagicLinkRequestForm`, `RecoveryModeSelectForm`, `RecoveryFactorForm`, `AuthorizeConsentForm` (the authorization-server consent prompt — [Consent gate](/moost/authorization-server#consent-gate-browser-binding)).
 
 Several forms carry `@ui.form.component` annotations pointing at SPA components from `@atscript/vue-aooth`: `WithInlineConsentForm.consents → AsConsentArray`, `SetPasswordForm.passwordRules → AsPasswordRules`, `EnrollConfirmForm.qrCode → AsQrCode`. Replace any form per-workflow via `opts.forms.<field>` (typically `extends` the bundled one). See [Atscript Models](/moost/atscript) and [SPA Components](/moost/spa-components).

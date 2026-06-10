@@ -36,6 +36,15 @@ export interface AoothPendingAuthorization {
      */
     tokenPolicy: string
 
+    /**
+     * High-entropy browser-binding secret (AUTH-SERVER.md §6). Mirrored into the
+     * `aooth_authz` cookie at `/authorize`; the code-minting terminal accepts the
+     * handle only when the request carries a cookie that constant-time-matches
+     * this — so the opaque handle can't be redeemed in a browser it was phished
+     * into.
+     */
+    binding: string
+
     createdAt: number.timestamp
     /** Lazy-GC'd on read once past. */
     expiresAt: number.timestamp

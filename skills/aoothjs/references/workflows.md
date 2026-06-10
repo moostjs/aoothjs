@@ -104,9 +104,9 @@ app.setReplaceRegistry(createReplaceRegistry([WfTriggerProvider, MyWfTriggerProv
 
 `finishWf(opts)` / `abortWf(reason, opts)` from `@atscript/moost-wf` (envelope shape — `next:{trigger,action?,primary?,options?}` — owned by that package; load the `atscript-ui-wf` skill for it). Login attaches cookies via `useAuth().buildFinishedCookies(issue)`.
 
-## Bundled forms (19)
+## Bundled forms (20)
 
-`WithInlineConsentForm` (base), `LoginCredentialsForm`, `Select2faForm`, `MfaCodeForm`, `PincodeForm`, `EmailIdentifierForm`, `SetPasswordForm`, `EnrollPickMethodForm`, `EnrollAddressForm`, `EnrollConfirmForm`, `AskEmailForm`, `AskPhoneForm`, `TermsBumpForm`, `ConcurrencyLimitForm`, `InviteForm`, `MagicLinkRequestForm`, `RecoveryModeSelectForm`, `RecoveryFactorForm`, `ChangePasswordForm` (current + new + confirm, with live `AsPasswordRules` readout — the change-password flow's only pause). Replace any per-slot via `opts.forms.<slot>`. Forms carrying `@ui.form.component` → `@atscript/vue-aooth` (`AsConsentArray`/`AsPasswordRules`/`AsQrCode`) — see [spa-components.md](spa-components.md).
+`WithInlineConsentForm` (base), `LoginCredentialsForm`, `Select2faForm`, `MfaCodeForm`, `PincodeForm`, `EmailIdentifierForm`, `SetPasswordForm`, `EnrollPickMethodForm`, `EnrollAddressForm`, `EnrollConfirmForm`, `AskEmailForm`, `AskPhoneForm`, `TermsBumpForm`, `ConcurrencyLimitForm`, `InviteForm`, `MagicLinkRequestForm`, `RecoveryModeSelectForm`, `RecoveryFactorForm`, `ChangePasswordForm` (current + new + confirm, with live `AsPasswordRules` readout — the change-password flow's only pause), `AuthorizeConsentForm` (the `authzConsent` slot — authorization-server consent prompt before `mint-authz-code`; binding + Approve/Deny detail in [authorization-server.md](authorization-server.md) invariant 13). Replace any per-slot via `opts.forms.<slot>`. Forms carrying `@ui.form.component` → `@atscript/vue-aooth` (`AsConsentArray`/`AsPasswordRules`/`AsQrCode`) — see [spa-components.md](spa-components.md).
 
 ## Key imports
 

@@ -40,6 +40,7 @@ export { NoopOidcClaimsResolver, OidcClaimsResolver, scopeGrants } from "./oidc-
 
 // In-flight authorization store (abstract + in-memory reference impl).
 export {
+  DEFAULT_PENDING_TTL_MS,
   PendingAuthorizationStore,
   PendingAuthorizationStoreMemory,
   type NewPendingAuthorization,
