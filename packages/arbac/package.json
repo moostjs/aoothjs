@@ -1,6 +1,6 @@
 {
   "name": "@aooth/arbac",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "description": "Batteries-included RBAC: builder API, privilege factories, scope merge utilities",
   "keywords": [
     "access-control",
