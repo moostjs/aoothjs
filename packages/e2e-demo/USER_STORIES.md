@@ -281,7 +281,7 @@ Default invite process:
 | ID                   | Tier | Variant                    | Story                                                                       | Assertions                                                  |
 | -------------------- | ---- | -------------------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | WF-INVITE-001        | P0   | `email-no-roles`           | Admin invites new email, invitee redeems, tokens issued                     | No roles field; invite email/link captured; activated user  |
-| WF-INVITE-002        | P1   | `email-no-roles`           | Admin invites existing user                                                 | Inline duplicate error                                      |
+| WF-INVITE-002        | P1   | `email-no-roles`           | Admin invites existing (accepted) user                                      | Inline duplicate error                                      |
 | WF-INVITE-005        | P0   | `roles-profile`            | Role picker accepts whitelisted role                                        | Role field visible; selected role persisted                 |
 | WF-INVITE-006        | P1   | `roles-profile`            | Invalid role is rejected                                                    | Inline role error                                           |
 | WF-INVITE-010        | P2   | `idempotent-redirect`      | Already-accepted link shows idempotent finish                               | Sign-in / request-new-invite actions visible                |
@@ -289,6 +289,7 @@ Default invite process:
 | WF-INVITE-020        | P2   | `confirmation-message`     | Confirmation message renders after activation                               | “Your account has been created.” visible                    |
 | WF-INVITE-021        | P1   | `invite-mfa-optional-full` | Invite-tail optional MFA enrolment skip activates user                      | No MFA method persisted; account activated                  |
 | WF-INVITE-022        | P1   | `invite-mfa-optional-full` | Invite-tail method switch cleans unconfirmed method and completes enrolment | TOTP cleanup; SMS enrolment succeeds                        |
+| WF-INVITE-023        | P1   | `email-no-roles`           | Re-invite of a pending invitee issues a fresh link (`'reuse'` verdict)      | Second `{sent}`; second link differs from first and redeems |
 | WF-INVITE-CONSENT-01 | P0   | `invite-terms`             | Invite password form carries required terms consent                         | Consent log has `{id:"terms", version:"v1", accepted:true}` |
 
 Removed legacy invite rows:
@@ -302,7 +303,7 @@ Removed legacy invite rows:
 - `@Workflow("auth/invite/cancel")` + `@Workflow("auth/invite/resend")` (WF-INVITE-015, -016, -017). Dropped in `6ff3efb` — invite is single-path email-only now.
 - `magicLinkTtlMs` opt + `short-ttl-confirmation` variant (WF-INVITE-004, -019). Magic-link TTL is now owned by `@StepTTL(...)` on the workflow's `send-email` @Step; customers override the step and re-decorate. Tests dropped because they were verifying engine TTL behavior, already covered upstream in `@prostojs/wf`.
 - `autoLoginOnInvite=false` finish-without-tokens (WF-INVITE-012). The opt still exists on `AuthWorkflowOpts`; no Playwright coverage planned (vitest covers the opts-merge contract).
-- Invitee-abandons-password-form (WF-INVITE-003) and re-invite paths (WF-INVITE-013, -014). No active spec; pending-invitation persistence is exercised structurally via WF-INVITE-001 + WF-INVITE-010 (idempotent redirect), and the re-invite flow shares the same `auth/invite/start` workflow as the happy path — WF-INVITE-002 already covers the duplicate-detection branch.
+- Invitee-abandons-password-form (WF-INVITE-003) and the legacy re-invite sub-workflows (WF-INVITE-013, -014). No dedicated resend workflow exists; re-inviting a pending user is now a first-class path THROUGH `auth/invite/start` itself — the default `duplicateInviteCheck` returns `'reuse'` for pending rows, covered by WF-INVITE-023. WF-INVITE-002 covers the reject branch for accepted users.
 
 ---
 

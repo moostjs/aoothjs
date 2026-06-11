@@ -53,6 +53,10 @@ class TestableAuthWorkflow extends AuthWorkflow {
   public exposeRecoveryUrl = (u: string | undefined, alt: AuthWfAltCredsPolicy) =>
     this.resolveRecoveryUrl(u, alt);
   public exposeAdminForm = (ctx: AuthWfCtx) => this.resolveAdminForm(ctx);
+  public exposeDuplicateInviteCheck = (input: {
+    email: string;
+    existingUser: UserCredentials | null;
+  }) => this.duplicateInviteCheck(input);
   public exposeAccept = (ctx: AuthWfCtx) => this.resolveAccept(ctx);
   public exposePostReset = (ctx: AuthWfCtx) => this.resolvePostReset(ctx);
   public exposeRecoveryAltActions = (ctx: AuthWfCtx) => this.resolveRecoveryAltActions(ctx);
@@ -98,11 +102,15 @@ function makeWorkflow(opts: Partial<AuthWorkflowOpts> = {}): TestableAuthWorkflo
   return new TestableAuthWorkflow(opts, users, auth, consentStore);
 }
 
-/** Like `makeWorkflow` but surfaces the same `auth` the workflow holds, so a
- * test can seed real sessions into the store the session hooks read back. */
-function makeWorkflowWithAuth(): { wf: TestableAuthWorkflow; auth: AuthCredential } {
+/** Like `makeWorkflow` but surfaces the same `users` + `auth` deps the workflow
+ * holds, so a test can seed real rows/sessions into the stores the hooks read back. */
+function makeWorkflowWithDeps(): {
+  wf: TestableAuthWorkflow;
+  users: UserService;
+  auth: AuthCredential;
+} {
   const { users, auth, consentStore } = makeDeps();
-  return { wf: new TestableAuthWorkflow({}, users, auth, consentStore), auth };
+  return { wf: new TestableAuthWorkflow({}, users, auth, consentStore), users, auth };
 }
 
 /**
@@ -409,7 +417,7 @@ describe("AuthWorkflow resolver defaults", () => {
     // Pin that the default now reports the store's REAL active-session count, so
     // `resolveSessionPolicy({ concurrencyLimit })` enforces with no override on any
     // store that can enumerate. A regression back to a constant re-breaks the gate.
-    const { wf, auth } = makeWorkflowWithAuth();
+    const { wf, auth } = makeWorkflowWithDeps();
     expect(await wf.exposeLoadActiveSessionsCount("alice")).toBe(0);
     await auth.issue("alice");
     await auth.issue("alice");
@@ -425,7 +433,7 @@ describe("AuthWorkflow resolver defaults", () => {
     // override. Pin that the default revokes via `auth.revokeAllForUser` (mandatory
     // on every store) and stays scoped to the target user — the kick must not nuke
     // other users' sessions.
-    const { wf, auth } = makeWorkflowWithAuth();
+    const { wf, auth } = makeWorkflowWithDeps();
     await auth.issue("alice");
     await auth.issue("alice");
     await auth.issue("bob");
@@ -719,6 +727,82 @@ describe("AuthWorkflow deliver dispatch (WF-AUTH-UNIFIED-004)", () => {
         }),
       ),
     ).resolves.toBeUndefined();
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// 3b. Invite re-invite — `duplicateInviteCheck` 'reuse' default + the
+//     `create-user` refresh branch
+// WHY: a pending invitee whose magic link expired used to be a dead end
+// (delete the user, invite from scratch). The default verdict now routes
+// pending rows to 'reuse' and `create-user` refreshes the row in place — the
+// fresh-read guard must keep a 'reuse' verdict from ever re-pending an
+// ACCEPTED account, and a vanished row must fall through to a normal create.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("AuthWorkflow invite re-invite ('reuse' verdict)", () => {
+  it("duplicateInviteCheck — pending row → 'reuse', accepted row → 'reject', no row → 'allow'", async () => {
+    const wf = makeWorkflow();
+    const pending = { account: { pendingInvitation: true } } as UserCredentials;
+    const accepted = { account: { pendingInvitation: false } } as UserCredentials;
+    const check = (existingUser: UserCredentials | null) =>
+      settle(wf.exposeDuplicateInviteCheck({ email: "a@example.com", existingUser }));
+    expect(await check(pending)).toBe("reuse");
+    expect(await check(accepted)).toBe("reject");
+    expect(await check(null)).toBe("allow");
+  });
+
+  it("create-user reuse — refreshes the pending row in place: roles replaced, extras merged, pending re-asserted, subject = existing id", async () => {
+    const { wf, users } = makeWorkflowWithDeps();
+    const row = await users.createUser("invitee@example.com", undefined, {
+      roles: ["admin", "editor"],
+      tenantId: "t1",
+    });
+    await users.update(row.id, {
+      account: { pendingInvitation: true },
+    } as Partial<UserCredentials>);
+
+    const ctx = {
+      email: "invitee@example.com",
+      admin: { reuseExisting: true, roles: ["viewer"], userExtras: { tenantId: "t2" } },
+    } as AuthWfCtx;
+    await wf.createUser(ctx);
+
+    expect(ctx.subject).toBe(row.id);
+    const updated = (await users.findByHandle("invitee@example.com"))!;
+    // Same row refreshed, not a new one. Roles narrow correctly — the
+    // deep-merge replaces arrays wholesale (no stale-privilege union).
+    expect(updated.id).toBe(row.id);
+    expect((updated as { roles?: string[] }).roles).toEqual(["viewer"]);
+    expect((updated as { tenantId?: string }).tenantId).toBe("t2");
+    expect(updated.account.pendingInvitation).toBe(true);
+    // Credentials untouched: a pending record never had a usable password.
+    expect(updated.password).toEqual(row.password);
+  });
+
+  it("create-user reuse guard — 'reuse' stamped for an ACCEPTED account → 409, row untouched", async () => {
+    const { wf, users } = makeWorkflowWithDeps();
+    await users.createUser("done@example.com", undefined, { roles: ["member"] });
+    const ctx = { email: "done@example.com", admin: { reuseExisting: true } } as AuthWfCtx;
+    await expect(wf.createUser(ctx)).rejects.toThrow(/User already exists/);
+    const after = (await users.findByHandle("done@example.com"))!;
+    expect(after.account.pendingInvitation).toBeFalsy();
+    expect((after as { roles?: string[] }).roles).toEqual(["member"]);
+    expect(ctx.subject).toBeUndefined();
+  });
+
+  it("create-user reuse fall-through — row vanished since admin-form → normal create path", async () => {
+    const { wf, users } = makeWorkflowWithDeps();
+    const ctx = {
+      email: "ghost@example.com",
+      admin: { reuseExisting: true, roles: ["member"] },
+    } as AuthWfCtx;
+    await wf.createUser(ctx);
+    const created = (await users.findByHandle("ghost@example.com"))!;
+    expect(created).toBeTruthy();
+    expect(ctx.subject).toBe(created.id);
+    expect(created.account.pendingInvitation).toBe(true);
+    expect((created as { roles?: string[] }).roles).toEqual(["member"]);
   });
 });
 

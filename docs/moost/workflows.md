@@ -141,16 +141,16 @@ Every `protected` member below is an override seam — change behavior by subcla
 
 ### Lifecycle hooks
 
-| Hook                                             | Override to                                                                                                                             | Default               |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
-| `deliver(payload)`                               | route MFA / recovery / enrollment pincodes + new-device notices by `kind` + `channel` — see [below](#outbound-delivery-deliver-payload) | no-op                 |
-| `prepareUser(input)`                             | supply required app columns on a freshly-created row (shared by invite + signup)                                                        | `{}`                  |
-| `inferAdminRoles(input)`                         | derive roles server-side from the admin invite payload                                                                                  | `[]`                  |
-| `getAvailableRoles()`                            | whitelist selectable roles on the admin invite form                                                                                     | none                  |
-| `duplicateInviteCheck(input)`                    | override the duplicate-invitee rule                                                                                                     | reject if user exists |
-| `logoutOtherSessions(username)`                  | customize the concurrency-limit eviction                                                                                                | revoke all            |
-| `loadActiveSessionsCount(username)`              | count active sessions for the concurrency prompt                                                                                        | store-backed          |
-| `beginSso` / `oauthRuntime` / `authorizeRuntime` | federated-login wiring — see [Federated Login](./oauth)                                                                                 | runtime-resolved      |
+| Hook                                             | Override to                                                                                                                             | Default                            |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| `deliver(payload)`                               | route MFA / recovery / enrollment pincodes + new-device notices by `kind` + `channel` — see [below](#outbound-delivery-deliver-payload) | no-op                              |
+| `prepareUser(input)`                             | supply required app columns on a freshly-created row (shared by invite + signup)                                                        | `{}`                               |
+| `inferAdminRoles(input)`                         | derive roles server-side from the admin invite payload                                                                                  | `[]`                               |
+| `getAvailableRoles()`                            | whitelist selectable roles on the admin invite form                                                                                     | none                               |
+| `duplicateInviteCheck(input)`                    | override the duplicate-invitee rule (`'allow' \| 'reject' \| 'reuse'`)                                                                  | re-invite pending; reject accepted |
+| `logoutOtherSessions(username)`                  | customize the concurrency-limit eviction                                                                                                | revoke all                         |
+| `loadActiveSessionsCount(username)`              | count active sessions for the concurrency prompt                                                                                        | store-backed                       |
+| `beginSso` / `oauthRuntime` / `authorizeRuntime` | federated-login wiring — see [Federated Login](./oauth)                                                                                 | runtime-resolved                   |
 
 [`ConsentStore`](#consent-collection-consentstore) (`getPendingConsents` / `save` / `read` / `recordOtpChannelConsent`) and the [`WfTriggerProvider`](#wf-trigger-workflow-trigger-machinery) overrides (`storeStrategy` / `wfStateSecret` / `wfStateEncapsulatedTtlMs` / `stateRegistry`) are separate provider classes, documented in their own sections below.
 
@@ -174,6 +174,8 @@ The run finishes by issuing tokens (or a fresh-login redirect) — or, for an au
 ### Invite (`auth/invite/start`)
 
 **Admin phase** (ARBAC-gated by the `invite` permission): the admin fills the invite form (email, optional name, optional roles — server-validated against `getAvailableRoles()`), then a magic link is emitted (idempotent — re-entry never double-sends) or a shareable link is returned.
+
+**Re-inviting a pending user just works.** When the submitted email resolves to a row still parked on `account.pendingInvitation`, the default `duplicateInviteCheck` verdict is `'reuse'`: instead of erroring, `create-user` refreshes the existing record in place (freshly-picked roles, current `prepareUser` extras, pending re-asserted; password/MFA untouched) and `send-email` mints a brand-new full-TTL magic link — so an expired or lost invite is fixed by simply inviting the same email again. An email that resolves to an **accepted** account still rejects (`"User already exists"`); a `'reuse'` verdict forced onto an accepted account 409s as a logic error (`create-user` re-validates against a fresh read). Override the hook to return `'reject'` for pending rows if you want the strict legacy "Invite already pending" error, or `'allow'` for multi-tenant re-invites of the same email into a different tenant. Note the previous run's magic link (if unexpired) stays valid until its own TTL — consumers projecting a `subject` shadow column on the wf-state store (`@wf.store.fromContext 'subject'`) can delete the stale row in their `duplicateInviteCheck` override for an exactly-one-valid-link guarantee.
 
 **Invitee phase** (anonymous magic-link resume): already-accepted / cancelled notices where applicable → set initial password → optional profile → optional confirmation banner → finish (auto-login when `autoLoginOnInvite`, else redirect to `loginUrl`). A re-clicked link whose state row was already evicted falls through to `GET /auth/invite/post-redemption`, which rebuilds the same idempotent "already accepted" envelope from the `uid` in the URL.
 

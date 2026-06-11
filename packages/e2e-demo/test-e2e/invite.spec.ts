@@ -152,6 +152,7 @@ test.describe("WF-INVITE — auth.invite family (P0)", () => {
  *
  *   WF-INVITE-002  variant `email-no-roles`     — invite existing user → 409
  *   WF-INVITE-006  variant `roles-profile`      — role not in whitelist → form error
+ *   WF-INVITE-023  variant `email-no-roles`     — re-invite pending invitee → fresh link
  *
  * The `t1_redeemed` seed has `username = email = t1_redeemed@example.com`,
  * which is the structural prerequisite for `findByIdentifier(email)` to find
@@ -269,6 +270,69 @@ test.describe("WF-INVITE — auth.invite family (P1)", () => {
     expect(errs.roles).toMatch(/Invalid role/i);
     // The `requireInput` envelope keeps the form mounted — re-prompt for input.
     await expect(page.locator('[name="email"]')).toBeVisible();
+  });
+
+  // ── WF-INVITE-023 ────────────────────────────────────────────────────────
+  // BRANCH: default `duplicateInviteCheck` returns `'reuse'` for a row still
+  // parked on `account.pendingInvitation` → `admin-form` stamps
+  // `ctx.admin.reuseExisting`, `create-user` REFRESHES the existing row
+  // instead of creating (fresh roles/extras, pending re-asserted), and
+  // `send-email` mints a brand-new durable handle — a fresh full-TTL magic
+  // link. Previously this path dead-ended: the only "resend" was deleting
+  // the invitee and inviting from scratch.
+  test("WF-INVITE-023 re-invite of a pending invitee → fresh link dispatched and redeemable", async ({
+    page,
+    request,
+    baseURL,
+  }) => {
+    await loginViaUi(page, USERS.admin_inviter);
+
+    // First invite — parks the user on pendingInvitation, captures link #1.
+    await page.goto(wfUrl("auth/invite/start", "email-no-roles"));
+    await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
+    const inviteeEmail = uniqueEmail("invite-023");
+    await fillField(page, "email", inviteeEmail);
+    const firstSentPromise = nextTriggerResponse(page, (b) => b.sent === true, 10_000);
+    await submitForm(page);
+    await firstSentPromise;
+    const firstMagic = await waitForEmail(
+      request,
+      (e) => e.kind === "invite.magicLink" && e.recipient === inviteeEmail,
+    );
+
+    // Re-invite the SAME (still-pending) email through a brand-new wf run.
+    // The 'reuse' default means NO "Invite already pending" error — the run
+    // sails through to the email outlet and dispatches a second link.
+    await page.goto(wfUrl("auth/invite/start", "email-no-roles"));
+    await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
+    await fillField(page, "email", inviteeEmail);
+    const secondSentPromise = nextTriggerResponse(page, (b) => b.sent === true, 10_000);
+    await submitForm(page);
+    const envelope = await secondSentPromise;
+    expect(envelope.outlet).toBe("email");
+
+    // The second dispatch carries a DIFFERENT resume url — a fresh durable
+    // handle minted by the new run's `send-email` pause, not a re-send of
+    // the original link.
+    const secondMagic = await waitForEmail(
+      request,
+      (e) =>
+        e.kind === "invite.magicLink" && e.recipient === inviteeEmail && e.url !== firstMagic.url,
+    );
+    expect(secondMagic.url).toContain("wfs=");
+
+    // Link #2 redeems end-to-end: set password → activate → auto-login tokens.
+    const resumeUrl = rewriteToBaseUrl(secondMagic.url as string, baseURL ?? "");
+    const ctx = await page.context().browser()!.newContext();
+    const inviteePage = await ctx.newPage();
+    await inviteePage.goto(resumeUrl);
+    await expect(inviteePage.locator('[name="newPassword"]')).toBeVisible({ timeout: 15_000 });
+    await inviteePage.locator('[name="newPassword"]').fill("InviteePass-2!");
+    await inviteePage.locator('[name="confirmPassword"]').fill("InviteePass-2!");
+    await inviteePage.locator("button.as-submit-btn, button[type=submit]").first().click();
+    await expect(inviteePage.locator("text=Workflow finished")).toBeVisible({ timeout: 15_000 });
+    await expect(inviteePage.locator("pre").first()).toContainText("accessToken");
+    await ctx.close();
   });
 });
 

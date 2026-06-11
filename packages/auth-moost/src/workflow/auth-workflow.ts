@@ -448,14 +448,22 @@ export class AuthWorkflow {
   }
 
   /**
-   * Override the structural duplicate rule for `admin-form`. Default: any
-   * existing row → `'reject'`; nothing → `'allow'`. Multi-tenant apps that
-   * allow re-inviting the same email into a different tenant override.
+   * Override the structural duplicate rule for `admin-form`. Default: a row
+   * still parked on `account.pendingInvitation` → `'reuse'` (re-invite:
+   * `create-user` refreshes the existing record in place and `send-email`
+   * mints a fresh magic link — see `createUser`); any other existing row →
+   * `'reject'`; nothing → `'allow'`.
+   *
+   * Multi-tenant apps that allow re-inviting the same email into a different
+   * tenant override to `'allow'`. Apps that want the strict legacy behavior
+   * ("Invite already pending" error on a duplicate invite of a pending user)
+   * return `'reject'` for pending rows.
    */
   protected duplicateInviteCheck(input: {
     email: string;
     existingUser: UserCredentials | null;
-  }): Promise<"allow" | "reject"> | "allow" | "reject" {
+  }): Promise<"allow" | "reject" | "reuse"> | "allow" | "reject" | "reuse" {
+    if (input.existingUser?.account?.pendingInvitation) return "reuse";
     return input.existingUser ? "reject" : "allow";
   }
 
@@ -2214,6 +2222,12 @@ export class AuthWorkflow {
       if (existing) throw this.throwPublic(ctx, wf, { errors: { email: "User already exists" } });
       throw this.throwPublic(ctx, wf, { errors: { email: "Duplicate invite rejected" } });
     }
+    if (action === "reuse") {
+      // Decision stamp only — `create-user` re-validates against a fresh read
+      // (pending-invitation guard + vanished-row fall-through), so a stale or
+      // wrong verdict can't silently re-pend an accepted account.
+      (ctx.admin ??= {}).reuseExisting = true;
+    }
     ctx.email = email;
     if (parsed.length > 0) (ctx.admin ??= {}).roles = parsed;
     return undefined;
@@ -2261,6 +2275,19 @@ export class AuthWorkflow {
    * Create the user row from `ctx.admin.userExtras` (plus the admin-supplied
    * `ctx.admin.roles`), then stamp `pendingInvitation = true` via a follow-up
    * deep-merge update so `createUser`-applied account defaults survive.
+   *
+   * Re-invite (`ctx.admin.reuseExisting`, stamped by `admin-form` on a
+   * `'reuse'` verdict): REFRESH the existing row instead of creating — apply
+   * the freshly-picked roles + `prepareUser` extras, re-assert
+   * `pendingInvitation`, and leave password/MFA state untouched (a pending
+   * record never had usable credentials). `send-email` downstream then mints
+   * a fresh durable handle, i.e. a new full-TTL magic link. Guarded by a
+   * FRESH `pendingInvitation` read: a `'reuse'` verdict for an accepted
+   * account 409s as a logic error rather than silently re-pending a live
+   * user; a row that vanished since `admin-form` falls through to the normal
+   * create path. The refresh is a deep-merge update: arrays (`roles`)
+   * replace wholesale, but extras keys the current `prepareUser` no longer
+   * returns linger from the original invite.
    */
   @Step("create-user")
   @ArbacResource("auth.invite")
@@ -2272,6 +2299,20 @@ export class AuthWorkflow {
       ...ctx.admin?.userExtras,
       ...(adminRoles && adminRoles.length > 0 && { roles: adminRoles }),
     };
+    if (ctx.admin?.reuseExisting) {
+      const existing = await this.users.findByHandle(ctx.email);
+      if (existing) {
+        if (!existing.account?.pendingInvitation) {
+          throw new HttpError(409, "User already exists");
+        }
+        await this.users.update(existing.id, {
+          ...fields,
+          account: { pendingInvitation: true },
+        } as Partial<UserCredentials>);
+        ctx.subject = existing.id;
+        return undefined;
+      }
+    }
     let created: UserCredentials;
     try {
       created = await this.users.createUser(ctx.email, undefined, fields);

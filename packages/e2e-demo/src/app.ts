@@ -795,12 +795,13 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
 
     // WF-INVITE-018: when the test-only flag is flipped (via
     // POST /__test/allow-duplicate-invites), bypass the workflow-level
-    // duplicate reject so the create-user step's store-level 409 catch
-    // becomes reachable. Default behaviour (delegates to base) otherwise.
+    // duplicate handling (incl. the base's 'reuse' verdict for pending rows)
+    // so the create-user step's store-level 409 catch becomes reachable.
+    // Default behaviour (delegates to base) otherwise.
     protected override duplicateInviteCheck(input: {
       email: string;
       existingUser: UserCredentials | null;
-    }): Promise<"allow" | "reject"> | "allow" | "reject" {
+    }): Promise<"allow" | "reject" | "reuse"> | "allow" | "reject" | "reuse" {
       if (g.__aoothE2eAllowDuplicateInvites) return "allow";
       return super.duplicateInviteCheck(input);
     }
