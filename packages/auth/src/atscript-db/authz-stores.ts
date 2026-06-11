@@ -324,28 +324,18 @@ export class DynamicClientStoreAtscriptDb extends DynamicClientStore {
   }
 
   async create(rec: NewDynamicClient): Promise<DynamicClient> {
-    const clientId = randomUUID();
-    const createdAt = this.clock.now();
-    await this.table.insertOne({
-      clientId,
+    const row: DynamicClientRow = {
+      clientId: randomUUID(),
       redirectUris: JSON.stringify(rec.redirectUris),
       tokenEndpointAuthMethod: rec.tokenEndpointAuthMethod,
       grantTypes: JSON.stringify(rec.grantTypes),
       responseTypes: JSON.stringify(rec.responseTypes),
-      createdAt,
-      ...(rec.clientName !== undefined && { clientName: rec.clientName }),
-      ...(rec.scope !== undefined && { scope: rec.scope }),
-    });
-    return {
-      clientId,
-      redirectUris: [...rec.redirectUris],
-      tokenEndpointAuthMethod: rec.tokenEndpointAuthMethod,
-      grantTypes: [...rec.grantTypes],
-      responseTypes: [...rec.responseTypes],
-      createdAt,
+      createdAt: this.clock.now(),
       ...(rec.clientName !== undefined && { clientName: rec.clientName }),
       ...(rec.scope !== undefined && { scope: rec.scope }),
     };
+    await this.table.insertOne(row);
+    return rowToDynamicClient(row);
   }
 
   async get(clientId: string): Promise<DynamicClient | null> {
