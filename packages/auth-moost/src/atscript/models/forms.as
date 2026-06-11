@@ -258,7 +258,7 @@ export interface SignupForm {
  * wants to abandon the flow closes / refreshes the page (the wf state token
  * expires per the engine's TTL).
  */
-@ui.form.fn.title '(_, _d, ctx) => ctx.public?.password?.heading || "Set your password"'
+@ui.form.fn.title '(_, ctx) => ctx.public?.password?.heading || "Set your password"'
 @wf.context.pass 'public'
 export interface SetPasswordForm extends WithInlineConsentForm {
     /**
@@ -537,7 +537,7 @@ export interface EnrollPickMethodForm {
  * forbids backing out mid-flow). `useDifferentMethod` is hidden when the
  * consumer has only one transport configured (nothing to switch to).
  */
-@ui.form.fn.title '(_, _d, ctx) => ctx.public?.mfaEnroll?.method === "sms" ? "Add your phone number" : "Add your email"'
+@ui.form.fn.title '(_, ctx) => ctx.public?.mfaEnroll?.method === "sms" ? "Add your phone number" : "Add your email"'
 @meta.description 'We will send you a one-time code to confirm.'
 @wf.context.pass 'public'
 @ui.form.submit.text 'Send code'
@@ -849,7 +849,7 @@ export interface RecoveryFactorForm {
  * `SetPasswordForm`, so the live `AsPasswordRules` renderer and dynamic copy
  * work identically. Heading/intro are staged by `change-password-form`.
  */
-@ui.form.fn.title '(_, _d, ctx) => ctx.public?.password?.heading || "Change your password"'
+@ui.form.fn.title '(_, ctx) => ctx.public?.password?.heading || "Change your password"'
 @ui.form.submit.text 'Change password'
 @wf.context.pass 'public'
 export interface ChangePasswordForm {
