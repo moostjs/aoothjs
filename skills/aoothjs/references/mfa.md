@@ -38,7 +38,7 @@ import { generateTotpSecret, generateTotpUri, generateTotpCode, verifyTotpCode }
 const secret = generateTotpSecret(); // 20-byte base32-encoded, padding stripped, uppercased
 const uri = generateTotpUri(secret, "MyApp", "alice@example.com");
 const code = generateTotpCode(secret); // current step's 6-digit code
-const ok = verifyTotpCode(secret, "123456");
+const matched = verifyTotpCode(secret, "123456"); // matched counter | null — check !== null
 ```
 
 ### `generateTotpSecret(bytes = 20) → string`
@@ -49,18 +49,20 @@ Cryptographically-random `randomBytes`, base32-encoded with `=` padding stripped
 
 RFC-4226 HOTP at the current TOTP step. `TotpConfig`:
 
-```ts
-interface TotpConfig {
-  period?: number; // seconds per step — default 30
-  digits?: number; // code length — default 6
-  window?: number; // verify-only — default 1 (verify ±1 step)
-  clock?: () => number;
-}
-```
+| Field     | Type           | Default              | Meaning                                   |
+| --------- | -------------- | -------------------- | ----------------------------------------- |
+| `period?` | `number`       | `30`                 | Seconds per step.                         |
+| `digits?` | `number`       | `6`                  | Code length.                              |
+| `window?` | `number`       | `1` (verify ±1 step) | Verify-only.                              |
+| `clock?`  | `() => number` | —                    | Injectable clock for deterministic tests. |
+
+Exact shape: [docs api](https://aoothjs.dev/api/user#mfa-types).
 
 Counter is `Math.floor((clock() / 1000) / period)`. Dynamic truncation per RFC 4226 §5.3. Output is zero-padded to `digits`.
 
-### `verifyTotpCode(secret, code, config?) → boolean`
+### `verifyTotpCode(secret, code, config?) → number | null`
+
+Returns the **matched HOTP counter** on success, `null` on failure — check `!== null`, never truthiness (counter `0` is valid). `UserService.verifyMfa` persists the counter as the method's `lastUsedWindow` and rejects `<=` replays (RFC 6238 §5.2).
 
 - Decodes the base32 secret once and reuses the key across window checks.
 - **Rejects mismatched-length submissions** (`code.length !== digits`) before reaching `timingSafeEqual`, which requires equal-length buffers. This also closes a length-probe side channel.
@@ -130,7 +132,7 @@ These power the challenge-ticket pattern used by `@aooth/auth` (the package stor
 
 ## Backup codes
 
-**Not bundled.** There is no `generateBackupCodePlaintext` export and no `UserService.generateBackupCodes` / `consumeBackupCode` method, and the base `UserCredentials` has **no** `backupCodes` field — it is an app-composed column you declare on your own user model (hash with `hashMfaCode`, store via `users.update(...)`, verify with `verifyMfaCode`).
+**Not bundled.** See [invariants.md](invariants.md) #18.
 
 Compose recovery codes from the primitives above: generate random codes yourself, hash each with `hashMfaCode`, store the hashes via `users.update(id, { backupCodes })`, and verify a submitted code with `verifyMfaCode` against the stored hashes (removing the matched hash). Wrap consume in a store-layer transaction if you need strict one-shot semantics.
 

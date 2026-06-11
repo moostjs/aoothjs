@@ -13,18 +13,20 @@ Reference for the two stateless stores (`CredentialStoreJwt`, `CredentialStoreEn
 
 ## `CredentialStoreJwt` options
 
-```ts
-interface CredentialStoreJwtOptions {
-  algorithm?: JwtAlgorithm; // default 'HS256'
-  secret?: string | Uint8Array | CryptoKey; // HS*: required
-  privateKey?: CryptoKey | Uint8Array; // asymmetric: required
-  publicKey?: CryptoKey | Uint8Array; // asymmetric: required
-  issuer?: string; // 'iss' claim
-  audience?: string; // 'aud' claim
-  denylist?: DenylistStore; // required for revoke/consume/update
-  clock?: Clock; // testability
-}
-```
+`CredentialStoreJwtOptions`:
+
+| Field         | Type                                | Default   | Meaning                                        |
+| ------------- | ----------------------------------- | --------- | ---------------------------------------------- |
+| `algorithm?`  | `JwtAlgorithm`                      | `'HS256'` | See the [algorithm matrix](#algorithm-matrix). |
+| `secret?`     | `string \| Uint8Array \| CryptoKey` | unset     | HS\*: required.                                |
+| `privateKey?` | `CryptoKey \| Uint8Array`           | unset     | Asymmetric: required.                          |
+| `publicKey?`  | `CryptoKey \| Uint8Array`           | unset     | Asymmetric: required.                          |
+| `issuer?`     | `string`                            | unset     | `'iss'` claim.                                 |
+| `audience?`   | `string`                            | unset     | `'aud'` claim.                                 |
+| `denylist?`   | `DenylistStore`                     | unset     | Required for `revoke` / `consume` / `update`.  |
+| `clock?`      | `Clock`                             | unset     | Testability.                                   |
+
+Exact shape: [docs api](https://aoothjs.dev/api/auth#credentialstorejwt-tpayload).
 
 Missing HS `secret` → `AuthError('INVALID_CONFIG')`. Missing asymmetric `privateKey` or `publicKey` → `AuthError('INVALID_CONFIG')`. `clock` propagates from `AuthCredential` only if you wire it explicitly — pass the same instance to both for deterministic tests.
 
@@ -84,7 +86,7 @@ The ms-mirror fallback to `iat * 1000` lets externally minted tokens (no `state.
 }
 ```
 
-- **Algorithm pinning** — `jose` infers a set from key shape by default; pinning blocks the algorithm-confusion attack.
+- **Algorithm pinning** — `jose` infers a set from key shape by default; pinning blocks the algorithm-confusion attack. See [invariants.md](invariants.md) #17.
 - **Clock injection** — every "is this expired" decision reads from the same `Clock`. Fake the clock to test expiry.
 - **Errors collapse to `null`** — bad signature, expired, malformed, wrong `iss`/`aud`, non-string input all return `null` from `retrieve`. The store **never throws** during validation. The orchestrator throws `AuthError` only on `refresh` reuse, concurrency limits, or config issues.
 
@@ -92,13 +94,15 @@ The ms-mirror fallback to `iat * 1000` lets externally minted tokens (no `state.
 
 AES-256-GCM. Token = `base64url(iv(12) || ciphertext || authTag(16))` of `JSON.stringify({ ...state, jti })`. Opaque to clients — there is no JWT structure to inspect.
 
-```ts
-interface CredentialStoreEncapsulatedOptions {
-  secret: string | Buffer | Uint8Array; // 32B buffer = direct key; else scrypt KDF
-  denylist?: DenylistStore;
-  clock?: Clock;
-}
-```
+`CredentialStoreEncapsulatedOptions`:
+
+| Field       | Type                             | Default      | Meaning                                                 |
+| ----------- | -------------------------------- | ------------ | ------------------------------------------------------- |
+| `secret`    | `string \| Buffer \| Uint8Array` | — (required) | 32B buffer = direct key; else scrypt KDF (rules below). |
+| `denylist?` | `DenylistStore`                  | unset        | —                                                       |
+| `clock?`    | `Clock`                          | unset        | —                                                       |
+
+Exact shape: [docs api](https://aoothjs.dev/api/auth#credentialstoreencapsulated-tpayload).
 
 KDF rules:
 

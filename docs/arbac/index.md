@@ -27,14 +27,15 @@ Almost every consumer installs `@aooth/arbac` only — it re-exports the core AP
 
 ## Where to start
 
-| If you want to…                                                | Read                                |
-| -------------------------------------------------------------- | ----------------------------------- |
-| Understand the vocabulary and the allow/deny algorithm         | [Mental Model](./concepts)          |
-| Use the engine directly with hand-rolled `TArbacRole` literals | [Core Engine](./core)               |
-| Build roles with a chainable, generic-aware API                | [Builder API](./builder)            |
-| Bundle related rules into reusable named units                 | [Privilege Factories](./privileges) |
-| UNION scopes from multiple roles at query time                 | [Scope Merging](./scopes)           |
-| Generate TypeScript types from a roles array                   | [Codegen](./codegen)                |
+| If you want to…                                                | Read                                    |
+| -------------------------------------------------------------- | --------------------------------------- |
+| Understand the vocabulary and the allow/deny algorithm         | [Mental Model](./concepts)              |
+| Use the engine directly with hand-rolled `TArbacRole` literals | [Core Engine](./core)                   |
+| Build roles with a chainable, generic-aware API                | [Builder API](./builder)                |
+| Bundle related rules into reusable named units                 | [Privilege Factories](./privileges)     |
+| UNION scopes from multiple roles at query time                 | [Scope Merging](./scopes)               |
+| Mint scoped tokens (PAT / CI) that can only narrow authority   | [Credential Attenuation](./attenuation) |
+| Generate TypeScript types from a roles array                   | [Codegen](./codegen)                    |
 
 ## Where the framework glue lives
 

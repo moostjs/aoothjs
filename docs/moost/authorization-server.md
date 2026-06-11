@@ -70,7 +70,7 @@ app.setProvideRegistry(
 app.registerControllers(AuthorizeController /* + AuthController, your AuthWorkflow subclass */);
 ```
 
-The memory stores are single-process; a multi-pod deployment swaps the durable `PendingAuthorizationStoreAtscriptDb` / `AuthCodeStoreAtscriptDb` (from `@aooth/auth/atscript-db`, backed by the `@aooth/auth/atscript-db/pending-authorization` + `…/auth-code` models) under the **same** tokens — no controller change. `AuthorizeController.loginPath()` defaults to `/login` — override it in a subclass for a custom login route. The CLI side is a minimal-dependency browser+loopback helper (generate `state` + PKCE → open the browser → await the one-shot loopback callback → verify `state` → `POST /auth/token`).
+The memory stores are single-process; a multi-pod deployment swaps the durable `PendingAuthorizationStoreAtscriptDb` / `AuthCodeStoreAtscriptDb` (from `@aooth/auth/atscript-db`, backed by the `@aooth/auth/atscript-db/pending-authorization` + `…/auth-code` models) under the **same** tokens — no controller change. `AuthorizeController.loginPath()` defaults to `/login` — override it in a subclass for a custom login route. The CLI side ships ready-made as [`@aooth/login-client`](/api/login-client) — a zero-dependency `authorize()` helper that does the whole round-trip (generate `state` + PKCE → open the browser → await the one-shot loopback callback → verify `state` → `POST /auth/token`), with headless/SSH support via `openBrowser: false` + `onUrl` and typed `AuthorizeError` codes.
 
 ## Wiring — Tier 2 (first-party OIDC)
 

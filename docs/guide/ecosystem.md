@@ -1,18 +1,19 @@
 # Ecosystem & Packages
 
-`aoothjs` is seven packages. This page lists what each owns, what it depends on, and where to read more.
+`aoothjs` is eight packages. This page lists what each owns, what it depends on, and where to read more.
 
 ## Package map
 
-| Package                                          | Role                                                                                                                                                           |
-| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`@aooth/user`](../user/)                        | User credential record + password hashing + MFA primitives + lockout + pluggable `UserStore`.                                                                  |
-| [`@aooth/auth`](../auth/)                        | Issue / validate / refresh / revoke bearer credentials (sessions or JWT). Magic-link tokens. Email/SMS transport contracts.                                    |
-| [`@aooth/idp`](../idp/)                          | Federated-login core: OAuth2/OIDC provider clients (discovery + JWKS + ID-token verification), PKCE/state, `OAuthProviderRegistry`, `FederatedLoginService`.   |
-| [`@aooth/arbac-core`](../arbac/core)             | Zero-dep RBAC engine — `Arbac`, `TArbacRole`, `TArbacRule`, deny-wins evaluator, wildcard matcher.                                                             |
-| [`@aooth/arbac`](../arbac/)                      | Fluent `defineRole()` builder + `definePrivilege()` factories + scope-merge helpers + type codegen. Re-exports `arbac-core`.                                   |
-| [`@aooth/auth-moost`](../moost/)                 | moost glue: `AuthController`, `authGuardInterceptor`, the unified `AuthWorkflow` (login / invite / recovery), `ConsentStore`, `@Public`, `@UserId`, `useAuth`. |
-| [`@aooth/arbac-moost`](../moost/arbac-authorize) | moost glue: `arbacAuthorizeInterceptor`, `@ArbacResource` / `@ArbacAction`, `useArbac`, `AsArbacDbController`, atscript-driven `AtscriptArbacUserProvider`.    |
+| Package                                          | Role                                                                                                                                                                                                  |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`@aooth/user`](../user/)                        | User credential record + password hashing + MFA primitives + lockout + pluggable `UserStore`.                                                                                                         |
+| [`@aooth/auth`](../auth/)                        | Issue / validate / refresh / revoke bearer credentials (sessions or JWT). Magic-link tokens. Email/SMS transport contracts.                                                                           |
+| [`@aooth/idp`](../idp/)                          | Federated-login core: OAuth2/OIDC provider clients (discovery + JWKS + ID-token verification), PKCE/state, `OAuthProviderRegistry`, `FederatedLoginService`.                                          |
+| [`@aooth/arbac-core`](../arbac/core)             | Zero-dep RBAC engine — `Arbac`, `TArbacRole`, `TArbacRule`, deny-wins evaluator, wildcard matcher.                                                                                                    |
+| [`@aooth/arbac`](../arbac/)                      | Fluent `defineRole()` builder + `definePrivilege()` factories + scope-merge helpers + type codegen. Re-exports `arbac-core`.                                                                          |
+| [`@aooth/auth-moost`](../moost/)                 | moost glue: `AuthController`, `authGuardInterceptor`, the unified `AuthWorkflow` (login / invite / recovery), `ConsentStore`, `@Public`, `@UserId`, `useAuth`.                                        |
+| [`@aooth/arbac-moost`](../moost/arbac-authorize) | moost glue: `arbacAuthorizeInterceptor`, `@ArbacResource` / `@ArbacAction`, `useArbac`, `AsArbacDbController`, atscript-driven `AtscriptArbacUserProvider`.                                           |
+| [`@aooth/login-client`](/api/login-client)       | Zero-dependency CLI/loopback login helper — one `authorize()` call drives the browser + PKCE round-trip against an aoothjs [authorization server](../moost/authorization-server) and returns a token. |
 
 ## Dependency graph
 
@@ -51,6 +52,7 @@
 - `@aooth/auth-moost` depends on both `@aooth/user` and `@aooth/auth` — workflows orchestrate `UserService` calls and store tokens via `AuthCredential`.
 - `@aooth/arbac-moost` depends on `@aooth/arbac-core`, `@aooth/arbac` (re-exports `ControlGate`, scope-merge helpers used by the DB controllers), and `@aooth/user` (for `UserCredentials` typing on the atscript provider) — all as runtime workspace deps.
 - `@aooth/arbac-moost` and `@aooth/auth-moost` have **no dependency on each other**. They are bound only at the app's `Moost.applyGlobalInterceptors(...)` boundary. You can use either independently.
+- `@aooth/login-client` depends on **nothing** — not even other `@aooth/*` packages (Node built-ins + global `fetch`). It is the client half of the [authorization server](../moost/authorization-server); the server half lives in `@aooth/auth-moost`.
 
 ## What each package owns vs. delegates
 

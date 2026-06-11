@@ -15,66 +15,49 @@ Reference for the `CredentialStore<TPayload>` + `DenylistStore` contracts, every
 
 ## `CredentialStore` contract
 
-```ts
-interface CredentialStore<TPayload extends object = object> {
-  persist(state: CredentialState & TPayload, ttl?: number): Promise<string>;
-  retrieve(token: string): Promise<(CredentialState & TPayload) | null>;
-  consume(token: string): Promise<(CredentialState & TPayload) | null>;
-  update(token: string, state: CredentialState & TPayload): Promise<string>;
-  revoke(token: string): Promise<void>;
-  revokeAllForUser(userId: string): Promise<number>;
-  listForUser?(userId: string): Promise<Array<CredentialState & TPayload & { token: string }>>;
-  touch?(token: string, at: number): Promise<void>; // sessions: trackLastSeen 'validate'
-  listSessions?(userId: string): Promise<Array<CredentialState & TPayload & { token: string }>>; // optional native grouping
-}
-```
+Every member deals in `CredentialState & TPayload` (envelope below). Behavioural contract every implementation MUST satisfy:
 
-Behavioural contract every implementation MUST satisfy:
+| Member             | Signature                                                                            | Notes                                                                                                                                                                                                   |
+| ------------------ | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `persist`          | `(state: CredentialState & TPayload, ttl?: number) => Promise<string>`               | Generates a fresh token id. If `ttl` is supplied it overrides `state.expiresAt`. Fail-loud on already-dead state (`ttl <= 0` or `expiresAt <= now`).                                                    |
+| `retrieve`         | `(token: string) => Promise<(CredentialState & TPayload) \| null>`                   | Returns `null` for unknown / expired / wrong-kind / denied tokens. Never throws on bad input. Opportunistically GCs expired rows.                                                                       |
+| `consume`          | `(token: string) => Promise<(CredentialState & TPayload) \| null>`                   | Atomic `retrieve` + `revoke`. Single-use guarantee. Stateless stores require a `DenylistStore` — otherwise throw `STATELESS_OPERATION_UNSUPPORTED`.                                                     |
+| `update`           | `(token: string, state: CredentialState & TPayload) => Promise<string>`              | Idempotent for unknown tokens (returns input token, no-op). Returned token may differ from input — stateless stores re-issue. Pushing `state.expiresAt` past `now` is treated as a revoke, not a write. |
+| `revoke`           | `(token: string) => Promise<void>`                                                   | Unknown token is a no-op. Idempotent.                                                                                                                                                                   |
+| `revokeAllForUser` | `(userId: string) => Promise<number>`                                                | Cascade across `kind: 'access'` AND `kind: 'refresh'`. Stateful returns deletion count; stateless returns sentinel `1` ("epoch bumped, count unknown").                                                 |
+| `listForUser?`     | `(userId: string) => Promise<Array<CredentialState & TPayload & { token: string }>>` | Optional. When implemented, returns all live entries (access + refresh). The orchestrator filters refresh entries before returning to user code.                                                        |
+| `touch?`           | `(token: string, at: number) => Promise<void>`                                       | Optional. Set `lastSeenAt = at` on the token if live; no-op otherwise. Backs sessions' `trackLastSeen: 'validate'`. Stateless omit (token immutable). See [sessions.md](sessions.md).                   |
+| `listSessions?`    | `(userId: string) => Promise<Array<CredentialState & TPayload & { token: string }>>` | Optional native session grouping — reserved/unused (the orchestrator groups `listForUser` by `sessionId`). See [sessions.md](sessions.md).                                                              |
 
-| Method             | Contract                                                                                                                                                                                                |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `persist`          | Generates a fresh token id. If `ttl` is supplied it overrides `state.expiresAt`. Fail-loud on already-dead state (`ttl <= 0` or `expiresAt <= now`).                                                    |
-| `retrieve`         | Returns `null` for unknown / expired / wrong-kind / denied tokens. Never throws on bad input. Opportunistically GCs expired rows.                                                                       |
-| `consume`          | Atomic `retrieve` + `revoke`. Single-use guarantee. Stateless stores require a `DenylistStore` — otherwise throw `STATELESS_OPERATION_UNSUPPORTED`.                                                     |
-| `update`           | Idempotent for unknown tokens (returns input token, no-op). Returned token may differ from input — stateless stores re-issue. Pushing `state.expiresAt` past `now` is treated as a revoke, not a write. |
-| `revoke`           | Unknown token is a no-op. Idempotent.                                                                                                                                                                   |
-| `revokeAllForUser` | Cascade across `kind: 'access'` AND `kind: 'refresh'`. Stateful returns deletion count; stateless returns sentinel `1` ("epoch bumped, count unknown").                                                 |
-| `listForUser`      | Optional. When implemented, returns all live entries (access + refresh). The orchestrator filters refresh entries before returning to user code.                                                        |
-| `touch`            | Optional. Set `lastSeenAt = at` on the token if live; no-op otherwise. Backs `trackLastSeen: 'validate'`. Stateless omit (token immutable). See [sessions.md](sessions.md).                             |
-| `listSessions`     | Optional native session grouping — reserved/unused (the orchestrator groups `listForUser` by `sessionId`). See [sessions.md](sessions.md).                                                              |
+Exact shape: [docs api](https://aoothjs.dev/api/auth#credentialstore-tpayload).
 
 `CredentialState & TPayload` — fixed envelope intersected with the consumer's typed payload (flat root fields; no `claims` container):
 
-```ts
-interface CredentialState {
-  userId: string;
-  issuedAt: number; // ms
-  expiresAt: number; // ms
-  metadata?: CredentialMetadata;
-  kind?: "access" | "refresh"; // default treated as 'access'
-  parentCredentialId?: string; // rotated refresh: id of predecessor
-  rotatedAt?: number; // set by sliding rotation
-  sessionId?: string; // token-family id, stable across rotation — see sessions.md
-  lastSeenAt?: number; // activity time; only written under trackLastSeen
-}
-// stores deal in `CredentialState & TPayload`; payload fields ride flat and
-// round-trip automatically (Memory/Redis serialize the whole state; atscript-db
-// persists the typed columns the consumer added to their model).
-```
+| Field                 | Type                    | Default                       | Meaning                                                                   |
+| --------------------- | ----------------------- | ----------------------------- | ------------------------------------------------------------------------- |
+| `userId`              | `string`                | — (required)                  | —                                                                         |
+| `issuedAt`            | `number`                | — (required)                  | ms                                                                        |
+| `expiresAt`           | `number`                | — (required)                  | ms                                                                        |
+| `metadata?`           | `CredentialMetadata`    | unset                         | —                                                                         |
+| `kind?`               | `'access' \| 'refresh'` | unset → treated as `'access'` | —                                                                         |
+| `parentCredentialId?` | `string`                | unset                         | Rotated refresh: id of predecessor.                                       |
+| `rotatedAt?`          | `number`                | unset                         | Set by sliding rotation.                                                  |
+| `sessionId?`          | `string`                | unset                         | Token-family id, stable across rotation — see [sessions.md](sessions.md). |
+| `lastSeenAt?`         | `number`                | unset                         | Activity time; only written under `trackLastSeen`.                        |
+
+Payload fields ride flat on the same object and round-trip automatically — Memory/Redis serialize the whole state; atscript-db persists the typed columns the consumer added to their model.
+
+Exact shape: [docs api](https://aoothjs.dev/api/auth#credentialstate).
 
 ## `DenylistStore` contract
 
-```ts
-interface DenylistStore {
-  add(jti: string, expiresAt: number): Promise<void>;
-  has(jti: string): Promise<boolean>;
-  cleanup(): Promise<number>;
-}
-```
+| Member    | Signature                                           | Notes                                                                                                           |
+| --------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `add`     | `(jti: string, expiresAt: number) => Promise<void>` | Idempotent — adding a `jti` twice with different `expiresAt` is unspecified; pick the larger value if you care. |
+| `has`     | `(jti: string) => Promise<boolean>`                 | Returns `false` once `expiresAt` has passed (lazy expiry on memory / TTL-eviction on Redis).                    |
+| `cleanup` | `() => Promise<number>`                             | Returns count of removed entries. No-op on Redis (server self-evicts).                                          |
 
-- `add` is idempotent — adding a `jti` twice with different `expiresAt` is unspecified; pick the larger value if you care.
-- `has` returns `false` once `expiresAt` has passed (lazy expiry on memory / TTL-eviction on Redis).
-- `cleanup()` returns count of removed entries. No-op on Redis (server self-evicts).
+Exact shape: [docs api](https://aoothjs.dev/api/auth#denyliststore).
 
 ## `CredentialStoreMemory`
 
@@ -115,18 +98,18 @@ Defaults: `prefix: 'aooth:cred'`. Token id = `randomUUID()`.
 
 `RedisLike` is structural — exactly 8 methods consumed:
 
-```ts
-interface RedisLike {
-  set(key: string, value: string, mode?: "PX", ttlMs?: number): Promise<string | null>;
-  get(key: string): Promise<string | null>;
-  del(...keys: string[]): Promise<number>;
-  exists(key: string): Promise<number>;
-  expire(key: string, ttlMs: number): Promise<number>; // PEXPIRE
-  sadd(key: string, ...members: string[]): Promise<number>;
-  srem(key: string, ...members: string[]): Promise<number>;
-  smembers(key: string): Promise<string[]>;
-}
-```
+| Member     | Signature                                                                              | Notes                            |
+| ---------- | -------------------------------------------------------------------------------------- | -------------------------------- |
+| `set`      | `(key: string, value: string, mode?: 'PX', ttlMs?: number) => Promise<string \| null>` | —                                |
+| `get`      | `(key: string) => Promise<string \| null>`                                             | —                                |
+| `del`      | `(...keys: string[]) => Promise<number>`                                               | —                                |
+| `exists`   | `(key: string) => Promise<number>`                                                     | —                                |
+| `expire`   | `(key: string, ttlMs: number) => Promise<number>`                                      | `PEXPIRE` semantics (ttl in ms). |
+| `sadd`     | `(key: string, ...members: string[]) => Promise<number>`                               | —                                |
+| `srem`     | `(key: string, ...members: string[]) => Promise<number>`                               | —                                |
+| `smembers` | `(key: string) => Promise<string[]>`                                                   | —                                |
+
+Exact shape: [docs api](https://aoothjs.dev/api/auth#redislike).
 
 - `ioredis`, `redis@4+`, `@redis/client`, `ioredis-mock`, ad-hoc test doubles — all match by shape.
 - TTL is **always milliseconds via `PX`**, never `EX`. The package does not translate seconds.
@@ -156,21 +139,16 @@ const store = new CredentialStoreAtscriptDb({
 
 `AuthCredentialTable<TPayload>` is structural — only the methods the adapter calls are required:
 
-```ts
-interface AuthCredentialTable<TPayload extends object = object> {
-  insertOne(row: AuthCredentialRow<TPayload>): Promise<{ insertedId: unknown }>;
-  findOne(q: { filter: Record<string, unknown> }): Promise<AuthCredentialRow<TPayload> | null>;
-  findMany(q: {
-    filter?: Record<string, unknown>;
-    controls?: Record<string, unknown>;
-  }): Promise<AuthCredentialRow<TPayload>[]>;
-  replaceOne(
-    row: AuthCredentialRow<TPayload>,
-  ): Promise<{ matchedCount: number; modifiedCount: number }>;
-  deleteOne(idOrPk: unknown): Promise<{ deletedCount: number }>;
-  deleteMany(filter: Record<string, unknown>): Promise<{ deletedCount: number }>;
-}
-```
+| Member       | Signature                                                                                                                 | Notes |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------- | ----- |
+| `insertOne`  | `(row: AuthCredentialRow<TPayload>) => Promise<{ insertedId: unknown }>`                                                  | —     |
+| `findOne`    | `(q: { filter: Record<string, unknown> }) => Promise<AuthCredentialRow<TPayload> \| null>`                                | —     |
+| `findMany`   | `(q: { filter?: Record<string, unknown>; controls?: Record<string, unknown> }) => Promise<AuthCredentialRow<TPayload>[]>` | —     |
+| `replaceOne` | `(row: AuthCredentialRow<TPayload>) => Promise<{ matchedCount: number; modifiedCount: number }>`                          | —     |
+| `deleteOne`  | `(idOrPk: unknown) => Promise<{ deletedCount: number }>`                                                                  | —     |
+| `deleteMany` | `(filter: Record<string, unknown>) => Promise<{ deletedCount: number }>`                                                  | —     |
+
+Exact shape: [docs api](https://aoothjs.dev/api/auth#authcredentialtable-tpayload).
 
 `AuthCredentialRow<TPayload>` mirrors the `.as` model field-for-field as a plain TS interface — re-declared so the auth package builds without `@atscript/typescript`. Shapes match by construction.
 

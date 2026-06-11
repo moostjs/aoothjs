@@ -21,16 +21,18 @@ class AuthWorkflow {
 }
 ```
 
-The single unified workflow class. Replaces the former `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow` quartet. Declares **three** `@Workflow` methods, each `@Public()`:
+The single unified workflow class. Replaces the former `LoginWorkflow` / `RecoveryWorkflow` / `InviteWorkflow` quartet. Declares **six** `@Workflow` methods — four `@Public()`, two ARBAC-gated authenticated self-service flows (no `@Public()`; guarded by `@ArbacResource("auth.change-password" | "auth.add-mfa") @ArbacAction("self")` and excluded from `DEFAULT_AUTH_WORKFLOWS`):
 
-| Method         | Workflow id          | Covers                                               |
-| -------------- | -------------------- | ---------------------------------------------------- |
-| `loginFlow`    | `auth/login/flow`    | login + MFA + enrollment + finalize                  |
-| `inviteFlow`   | `auth/invite/start`  | admin invite → anonymous magic-link accept           |
-| `recoveryFlow` | `auth/recovery/flow` | magic-link **or** OTP password reset                 |
-| `signupFlow`   | `auth/signup/flow`   | verify-first self-signup → set password → auto-login |
+| Method               | Workflow id                 | Covers                                                          |
+| -------------------- | --------------------------- | --------------------------------------------------------------- |
+| `loginFlow`          | `auth/login/flow`           | login + MFA + enrollment + finalize                             |
+| `inviteFlow`         | `auth/invite/start`         | admin invite → anonymous magic-link accept                      |
+| `recoveryFlow`       | `auth/recovery/flow`        | magic-link **or** OTP password reset                            |
+| `signupFlow`         | `auth/signup/flow`          | verify-first self-signup → set password → auto-login            |
+| `changePasswordFlow` | `auth/change-password/flow` | signed-in password change (gated, `POST /auth/change-password`) |
+| `addMfaFlow`         | `auth/add-mfa/flow`         | signed-in MFA management (gated, `POST /auth/add-mfa`)          |
 
-`AuthWorkflowOpts` is **infrastructure-only**; policy lives on `protected resolveXxx(ctx)` getters (each paired with a `@Step("prepare-<group>")`). Per-flow code discriminates by ctx-slot presence (`ctx.admin` / `ctx.accept` / `ctx.postReset` / `ctx.signup`), never a flow-name field. Subclass with `@Inherit() @Controller()`, re-declare the 4-arg constructor (so TS emits `design:paramtypes`), override the hooks you need, and bind via `setReplaceRegistry([AuthWorkflow, MyAuth])`. See [Workflows](/moost/workflows) and [packages/auth-moost/CLAUDE.md](https://github.com/moostjs/aoothjs/blob/main/packages/auth-moost/CLAUDE.md).
+`AuthWorkflowOpts` is **infrastructure-only**; policy lives on `protected resolveXxx(ctx)` getters (each paired with a `@Step("prepare-<group>")`). Per-flow code discriminates by ctx-slot presence (`ctx.admin` / `ctx.accept` / `ctx.postReset` / `ctx.signup` / `ctx.changePassword` / `ctx.addMfa`), never a flow-name field. Subclass with `@Inherit() @Controller()`, re-declare the 4-arg constructor (so TS emits `design:paramtypes`), override the hooks you need, and bind via `setReplaceRegistry([AuthWorkflow, MyAuth])`. See [Workflows](/moost/workflows) and [packages/auth-moost/CLAUDE.md](https://github.com/moostjs/aoothjs/blob/main/packages/auth-moost/CLAUDE.md).
 
 **Protected override surface** (defaults are no-ops or hardcoded policy):
 

@@ -46,7 +46,7 @@ Hashes are self-describing: the scrypt parameters (N, r, p, keyLength) are baked
 
 ## Pepper
 
-`PasswordConfig.pepper` is a static, app-wide secret mixed into every password before scrypt. Store it in env / secret manager — never in the DB. Invariants: lose the pepper and every hash becomes unverifiable; two services that share a user store MUST share the same pepper; rotation requires app-level dual-write (verify with old, write with new) and is not built in.
+`PasswordConfig.pepper` is a static, app-wide secret mixed into every password before scrypt. See [invariants.md](invariants.md) #14. Two services that share a user store MUST share the same pepper; rotation requires app-level dual-write (verify with old, write with new) and is not built in.
 
 ## History rotation
 
@@ -89,21 +89,20 @@ p.transferable; // true
 
 `PasswordPolicyDef`:
 
-```ts
-{
-  rule: string | PasswordPolicyEvalFn;
-  description?: string;
-  errorMessage?: string;
-}
+| Field           | Type                             | Default  | Meaning                                         |
+| --------------- | -------------------------------- | -------- | ----------------------------------------------- |
+| `rule`          | `string \| PasswordPolicyEvalFn` | required | String rule (ftring-compiled) or function rule. |
+| `description?`  | `string`                         | —        | —                                               |
+| `errorMessage?` | `string`                         | —        | —                                               |
 
-type PasswordPolicyEvalFn =
-  (password: string, context?: PasswordPolicyContext) => boolean | Promise<boolean>;
+`PasswordPolicyEvalFn` is `(password: string, context?: PasswordPolicyContext) => boolean | Promise<boolean>`. `PasswordPolicyContext`:
 
-interface PasswordPolicyContext {
-  passwordData?: PasswordData;       // user's current password row (history, lastChanged, ...)
-  passwordConfig?: PasswordConfig;   // the resolved password config
-}
-```
+| Field             | Type             | Default | Meaning                                                  |
+| ----------------- | ---------------- | ------- | -------------------------------------------------------- |
+| `passwordData?`   | `PasswordData`   | —       | User's current password row (history, lastChanged, ...). |
+| `passwordConfig?` | `PasswordConfig` | —       | The resolved password config.                            |
+
+Exact shapes: [docs api](https://aoothjs.dev/api/user#policy-types).
 
 **String rules** are compiled once per process via a shared `FtringsPool<boolean, { v, context? }>` from `@prostojs/ftring`:
 
@@ -171,15 +170,15 @@ const noBreached: PasswordPolicyDef = {
 
 ## `getTransferablePolicies` + client-side pre-validation
 
-`UserService.getTransferablePolicies(): TransferablePolicy[]` returns:
+`UserService.getTransferablePolicies(): TransferablePolicy[]` returns an array of `TransferablePolicy`:
 
-```ts
-interface TransferablePolicy {
-  rule: string; // the same `v`/`context` namespace
-  description?: string;
-  errorMessage?: string;
-}
-```
+| Field           | Type     | Default  | Meaning                           |
+| --------------- | -------- | -------- | --------------------------------- |
+| `rule`          | `string` | required | The same `v`/`context` namespace. |
+| `description?`  | `string` | —        | —                                 |
+| `errorMessage?` | `string` | —        | —                                 |
+
+Exact shape: [docs api](https://aoothjs.dev/api/user#policy-types).
 
 Ship the array to the client and evaluate against `{ v: typedPassword, context }` using the same `@prostojs/ftring` machinery — the rule strings are identical to the ones the server compiles. The client preview is advisory; the server runs the full policy set again on `changePassword` / `setPassword`.
 
@@ -187,12 +186,12 @@ Ship the array to the client and evaluate against `{ v: typedPassword, context }
 
 `UserService.checkPolicies(password, passwordData?) → Promise<PolicyCheckResult>` returns:
 
-```ts
-{
-  passed: boolean,                                       // AND across all policies
-  policies: { description: string, passed: boolean }[],  // one entry per configured policy, in order
-  errors: string[],                                      // `errorMessage` of each failed policy
-}
-```
+| Field      | Type                                         | Default | Meaning                                    |
+| ---------- | -------------------------------------------- | ------- | ------------------------------------------ |
+| `passed`   | `boolean`                                    | —       | AND across all policies.                   |
+| `policies` | `{ description: string, passed: boolean }[]` | —       | One entry per configured policy, in order. |
+| `errors`   | `string[]`                                   | —       | `errorMessage` of each failed policy.      |
+
+Exact shape: [docs api](https://aoothjs.dev/api/user#policy-types).
 
 `changePassword` / `setPassword` throw `UserAuthError("POLICY_VIOLATION", errors.join("; "), { policies })` when `passed === false`. The structured `details.policies` lets a UI render per-rule checkmarks without re-running the policy engine.

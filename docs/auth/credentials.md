@@ -103,7 +103,7 @@ const { accessToken, refreshToken, accessExpiresAt } = await auth.issue("alice",
 });
 ```
 
-TTLs are pinned at construction (`accessTtl`, `refresh.ttl`). There is no per-call TTL override on `issue()` — workflows that need "remember me" must construct a second `AuthCredential` with a longer-lived `refresh.ttl`.
+The instance-level `accessTtl` can be overridden per mint: `issue()` accepts `ttl` (relative ms, `> 0`) or `expiresAt` (absolute ms instant) — mutually exclusive — so one `AuthCredential` can mint a 30-minute browser session and a long-lived PAT/CLI token without a second instance. Pair with `kind: "pat"` (stored as `metadata.credentialKind`, carried across rotation) so `listSessions({ kind })` can keep non-browser credentials out of the default "active sessions" view. The **refresh** TTL has no per-call override — it keeps `refresh.ttl`; workflows that need "remember me" must construct a second `AuthCredential` with a longer-lived `refresh.ttl`.
 
 ### `maxConcurrent` and `onLimit`
 

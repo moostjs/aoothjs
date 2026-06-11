@@ -14,18 +14,20 @@
 
 ## `UserStore<T>` contract
 
-```ts
-abstract class UserStore<T extends object = object> {
-  abstract exists(handle: string): Promise<boolean>; // by username
-  abstract findById(id: string): Promise<(UserCredentials & T) | null>;
-  abstract findByHandle(handle: string): Promise<(UserCredentials & T) | null>;
-  abstract findByIdentifier(value: string): Promise<(UserCredentials & T) | null>;
-  abstract create(data: UserCredentials & T): Promise<void>;
-  abstract update(id: string, update: UserStoreUpdate): Promise<boolean>;
-  abstract delete(id: string): Promise<boolean>;
-  abstract withCas(id, mutator, opts?): Promise<void>; // read-modify-write under OCC
-}
-```
+Abstract class — every member below is `abstract`:
+
+| Member             | Signature                                                    | Notes                        |
+| ------------------ | ------------------------------------------------------------ | ---------------------------- |
+| `exists`           | `(handle: string) => Promise<boolean>`                       | By `username`.               |
+| `findById`         | `(id: string) => Promise<(UserCredentials & T) \| null>`     | —                            |
+| `findByHandle`     | `(handle: string) => Promise<(UserCredentials & T) \| null>` | —                            |
+| `findByIdentifier` | `(value: string) => Promise<(UserCredentials & T) \| null>`  | —                            |
+| `create`           | `(data: UserCredentials & T) => Promise<void>`               | —                            |
+| `update`           | `(id: string, update: UserStoreUpdate) => Promise<boolean>`  | —                            |
+| `delete`           | `(id: string) => Promise<boolean>`                           | —                            |
+| `withCas`          | `(id, mutator, opts?) => Promise<void>`                      | Read-modify-write under OCC. |
+
+Exact shape: [docs api](https://aoothjs.dev/api/user#userstore-t-extends-object-object-abstract).
 
 **All reads-by-identity and ALL writes key on the surrogate `id`** (the token subject, `getUserId()`). The three reads differ by resolution:
 
@@ -44,12 +46,12 @@ The secondary handle fields are the consumer-declared, `@db.index.unique` column
 
 ## `UserStoreUpdate` shape
 
-```ts
-interface UserStoreUpdate {
-  set?: DeepPartial<UserCredentials>; // deep-merge target
-  inc?: Record<string, number>; // dot-path → increment
-}
-```
+| Field  | Type                           | Default | Meaning               |
+| ------ | ------------------------------ | ------- | --------------------- |
+| `set?` | `DeepPartial<UserCredentials>` | unset   | Deep-merge target.    |
+| `inc?` | `Record<string, number>`       | unset   | Dot-path → increment. |
+
+Exact shape: [docs api](https://aoothjs.dev/api/user#store-update-payload).
 
 Examples actually emitted by `UserService`:
 
@@ -203,21 +205,17 @@ How it maps the contract:
 
 `AuthUserTable<TUserCustom>` is the minimal structural surface of `AtscriptDbTable` that the adapter uses:
 
-```ts
-interface AuthUserTable<TUserCustom extends object = object> {
-  count(query: { filter: Record<string, unknown> }): Promise<number>;
-  findOne(query: {
-    filter: Record<string, unknown>;
-  }): Promise<UserCredentialsRow<TUserCustom> | null>;
-  insertOne(row: Record<string, unknown>): Promise<{ insertedId: unknown }>;
-  updateOne(
-    patch: Record<string, unknown>,
-  ): Promise<{ matchedCount: number; modifiedCount: number }>;
-  deleteMany(filter: Record<string, unknown>): Promise<{ deletedCount: number }>;
-}
+| Member       | Signature                                                                                          | Notes |
+| ------------ | -------------------------------------------------------------------------------------------------- | ----- |
+| `count`      | `(query: { filter: Record<string, unknown> }) => Promise<number>`                                  | —     |
+| `findOne`    | `(query: { filter: Record<string, unknown> }) => Promise<UserCredentialsRow<TUserCustom> \| null>` | —     |
+| `insertOne`  | `(row: Record<string, unknown>) => Promise<{ insertedId: unknown }>`                               | —     |
+| `updateOne`  | `(patch: Record<string, unknown>) => Promise<{ matchedCount: number; modifiedCount: number }>`     | —     |
+| `deleteMany` | `(filter: Record<string, unknown>) => Promise<{ deletedCount: number }>`                           | —     |
 
-type UserCredentialsRow<TUserCustom extends object = object> = UserCredentials & TUserCustom;
-```
+`UserCredentialsRow<TUserCustom>` is the alias `UserCredentials & TUserCustom`.
+
+Exact shapes: [docs api](https://aoothjs.dev/api/user#authusertable-tusercustom-usercredentialsrow-tusercustom).
 
 `db.getTable(AppUser)` returns `AtscriptDbTable<Record<string, unknown>>` — TypeScript doesn't know the row shape carries `UserCredentials`. The `as unknown as AuthUserTable<CustomFields>` cast is intentional and load-bearing: it tells the adapter "trust me, the row shape matches `UserCredentials & CustomFields`" — which holds by construction because `AppUser extends AoothUserCredentials`.
 
@@ -260,8 +258,8 @@ export interface AoothUserCredentials {
 Notably:
 
 - **Ships `@meta.id` (`id`, the token subject), the unique `username` handle (the one base login handle), and `@db.column.version`.** The base has **no `email` and no `phone`** — do NOT redeclare `id`/`username`/`version` (redundant; risks flipping the unique-index/merge semantics). Add `@db.table` on your extending interface, plus any secondary login/recovery handle YOURSELF: declare your own `email` / `phone` field, give it `@db.index.unique`, and tag it `@aooth.user.email` / `@aooth.user.phone` (the unique index is the account-takeover guard; without it the handle is warn-and-disabled at boot). See [recovery-and-handles.md](recovery-and-handles.md).
-- `@db.patch.strategy 'merge'` propagates through `extends`. If you re-declare any of these sub-objects in your extending interface, the annotation does NOT carry over to the redeclaration — re-add it explicitly or you'll switch to wholesale replace.
-- `backupCodes?: string[]` is NOT declared in the shipped `.as` model (nor on the `UserCredentials` type) — add it on your extending interface if you store backup codes (the type is `string[]`, no per-element annotations needed).
+- `@db.patch.strategy 'merge'` propagates through `extends` — but NOT to sub-objects you re-declare in your extending interface (re-add it explicitly). See [invariants.md](invariants.md) #13.
+- `backupCodes?: string[]` is NOT declared in the shipped `.as` model (nor on the `UserCredentials` type) — see [invariants.md](invariants.md) #18; add it on your extending interface if you store backup codes (plain `string[]`, no per-element annotations needed).
 
 ## Federated identity store (account linking)
 

@@ -79,6 +79,17 @@ function mergeScopeFilters(scopes: TScopeFilter[]): TScopeFilter | undefined;
 
 OR-style merge under additive RBAC. Empty input or any empty `{}` → `undefined` (no constraint). Single-key collapses to `$in`. Fallback → `{ $or: scopes }`. See [Scope Merging](/arbac/scopes).
 
+### `conjoinScopeFilters`
+
+```ts
+function conjoinScopeFilters(
+  a: TScopeFilter | undefined,
+  b: TScopeFilter | undefined,
+): TScopeFilter | undefined;
+```
+
+AND-merge of two ALREADY-UNIONED filters (each a `mergeScopeFilters` output for one authority pass) — the credential-attenuation combiner: a row survives only if BOTH sides admit it. Polarity is the **opposite** of `mergeScopeFilters`: empty/`undefined` is the identity (contributes no constraint), never the absorbing "unrestricted wins". Never object-spread the two filters instead — credential keys could overwrite user keys and silently widen. See [Scope Merging](/arbac/scopes).
+
 ### `unionProjections`
 
 ```ts
@@ -120,6 +131,17 @@ function unionControlsPolicy(
 ```
 
 Specific to `ArbacDbScope.controls` — gates Uniquery URL controls per role. If any input omits `controls` entirely, returns `{}` (silent = full grant). `string[]` whitelists union additively. See [Scope Merging](/arbac/scopes).
+
+### `intersectControlsPolicy`
+
+```ts
+function intersectControlsPolicy(
+  a: Record<string, ControlGate>,
+  b: Record<string, ControlGate>,
+): Record<string, ControlGate>;
+```
+
+AND-merge of two controls policies (each a `unionControlsPolicy` output) — the restrictive counterpart used by credential attenuation. Per key (absent ≡ allowed): `false` on either side wins; `true` defers to the other side; whitelist ∧ whitelist → set **intersection** (possibly empty = nothing permitted). See [Scope Merging](/arbac/scopes).
 
 ## Functions — Codegen
 

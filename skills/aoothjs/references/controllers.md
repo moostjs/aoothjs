@@ -30,24 +30,18 @@ Class-decorated `@Controller("auth") @ArbacResource("auth")`. Constructor `(auth
 
 ### DTOs
 
-```ts
-interface AuthLogoutBody {
-  refreshToken?: string;
-}
-interface AuthRefreshBody {
-  refreshToken?: string;
-}
-interface AuthLoginResponse {
-  userId: string;
-  accessExpiresAt: number;
-  refreshExpiresAt?: number;
-  accessToken?: string; // omitted when enableBearer === false
-  refreshToken?: string; // omitted when enableBearer === false
-}
-interface AuthOkResponse {
-  ok: true;
-}
-```
+| DTO                 | Field               | Type     | Notes                                  |
+| ------------------- | ------------------- | -------- | -------------------------------------- |
+| `AuthLogoutBody`    | `refreshToken?`     | `string` | —                                      |
+| `AuthRefreshBody`   | `refreshToken?`     | `string` | —                                      |
+| `AuthLoginResponse` | `userId`            | `string` | —                                      |
+| `AuthLoginResponse` | `accessExpiresAt`   | `number` | —                                      |
+| `AuthLoginResponse` | `refreshExpiresAt?` | `number` | —                                      |
+| `AuthLoginResponse` | `accessToken?`      | `string` | Omitted when `enableBearer === false`. |
+| `AuthLoginResponse` | `refreshToken?`     | `string` | Omitted when `enableBearer === false`. |
+| `AuthOkResponse`    | `ok`                | `true`   | Literal `true`.                        |
+
+Exact shapes: [docs api](https://aoothjs.dev/api/auth-moost#dtos).
 
 ## Subclassing `AuthController.triggerWf()`
 
@@ -78,19 +72,19 @@ Factory — returns a `defineBeforeInterceptor` at `TInterceptorPriority.GUARD`.
 
 `AuthOptions` fields:
 
-| Field                | Default                            | Notes                                                                                                                                                                                                                                                   |
-| -------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cookie.name`        | `'aooth_session'`                  | Access cookie name.                                                                                                                                                                                                                                     |
-| `cookie.secure`      | `true`                             | HTTPS-only — flip to `false` for local HTTP dev.                                                                                                                                                                                                        |
-| `cookie.sameSite`    | `'lax'`                            | `'lax' \| 'strict' \| 'none'`.                                                                                                                                                                                                                          |
-| `cookie.httpOnly`    | `true`                             | —                                                                                                                                                                                                                                                       |
-| `cookie.path`        | `'/'`                              | —                                                                                                                                                                                                                                                       |
-| `cookie.domain`      | undefined                          | —                                                                                                                                                                                                                                                       |
-| `refreshCookie.name` | `'aooth_refresh'`                  | —                                                                                                                                                                                                                                                       |
-| `refreshCookie.path` | _auto-derived_ (`'/auth/refresh'`) | **Narrow path** so refresh isn't sent to other endpoints. Auto-derived at boot from `AuthController`'s actual mounted route (follows any mount prefix, e.g. `/api/auth/refresh`); set explicitly to override; ambiguous → keeps default + boot warning. |
-| `refreshCookie.*`    | inherit from `cookie`              | `secure`, `sameSite`, `httpOnly`, `domain` defaults inherited.                                                                                                                                                                                          |
-| `enableCookie`       | `true`                             | Disable to suppress cookie writes/reads entirely.                                                                                                                                                                                                       |
-| `enableBearer`       | `true`                             | Bearer wins over cookie. Also gates `accessToken`/`refreshToken` fields in `AuthLoginResponse`.                                                                                                                                                         |
+| Field                | Default                            | Notes                                                                                                                                                                                     |
+| -------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cookie.name`        | `'aooth_session'`                  | Access cookie name.                                                                                                                                                                       |
+| `cookie.secure`      | `true`                             | HTTPS-only — flip to `false` for local HTTP dev.                                                                                                                                          |
+| `cookie.sameSite`    | `'lax'`                            | `'lax' \| 'strict' \| 'none'`.                                                                                                                                                            |
+| `cookie.httpOnly`    | `true`                             | —                                                                                                                                                                                         |
+| `cookie.path`        | `'/'`                              | —                                                                                                                                                                                         |
+| `cookie.domain`      | undefined                          | —                                                                                                                                                                                         |
+| `refreshCookie.name` | `'aooth_refresh'`                  | —                                                                                                                                                                                         |
+| `refreshCookie.path` | _auto-derived_ (`'/auth/refresh'`) | **Narrow path** so refresh isn't sent to other endpoints — auto-derived at boot from `AuthController`'s mounted route; set explicitly to override. See [invariants.md](invariants.md) #5. |
+| `refreshCookie.*`    | inherit from `cookie`              | `secure`, `sameSite`, `httpOnly`, `domain` defaults inherited.                                                                                                                            |
+| `enableCookie`       | `true`                             | Disable to suppress cookie writes/reads entirely.                                                                                                                                         |
+| `enableBearer`       | `true`                             | Bearer wins over cookie ([invariants.md](invariants.md) #6). Also gates `accessToken`/`refreshToken` fields in `AuthLoginResponse`.                                                       |
 
 Algorithm:
 
@@ -132,7 +126,7 @@ Internal helper `setAuthContext(ctx, value)` is the **only** writer — exported
 
 ## `useArbac()` API
 
-Returns `ArbacBindings`. **Not** a `defineWook` — re-resolves metadata per call. See invariant #4 in `SKILL.md`.
+Returns `ArbacBindings`. **Not** a `defineWook` — re-resolves metadata per call. See [invariants.md](invariants.md) #3.
 
 | Field / Method                      | Type                                    | Notes                                                                                                                                                                                                                            |
 | ----------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -150,7 +144,7 @@ Returns `ArbacBindings`. **Not** a `defineWook` — re-resolves metadata per cal
 
 | Decorator              | Target             | Writes                                   | Notes                                                                                                    |
 | ---------------------- | ------------------ | ---------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `@Public()`            | class \| method    | `authPublic=true` + `arbacPublic=true`   | Dual-purpose. Imported from `@aooth/auth-moost`.                                                         |
+| `@Public()`            | class \| method    | `authPublic=true` + `arbacPublic=true`   | Dual-purpose — see [invariants.md](invariants.md) #1.                                                    |
 | `@UserId()`            | parameter          | `Resolve(() => useAuth().getUserId())`   | No `@User()` counterpart — `AuthContext` is credential context only.                                     |
 | `@AuthGuarded(opts)`   | class \| method    | `@Intercept(authGuardInterceptor(opts))` | Per-controller mounting sugar — use when you don't want the guard globally.                              |
 | `@ArbacResource(name)` | class \| method    | `arbacResourceId`                        | —                                                                                                        |

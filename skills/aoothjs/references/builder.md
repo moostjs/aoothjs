@@ -12,20 +12,15 @@
 
 ## The `Arbac` class
 
-```ts
-class Arbac<TUserAttrs extends object, TScope extends object> {
-  registerRole(role: TArbacRole<TUserAttrs, TScope>): this;
-  registerResource(resource: string): this;
-  evaluate<T extends string | undefined>(
-    res: { resource: string; action: string },
-    user: {
-      id: T;
-      roles: string[];
-      attrs: TUserAttrs | ((id: T) => TUserAttrs | Promise<TUserAttrs>);
-    },
-  ): Promise<TArbacEvalResult<TScope>>;
-}
-```
+`Arbac<TUserAttrs extends object, TScope extends object>` exposes three members:
+
+| Member             | Signature                                                                                                                                                                                                                | Notes                                                                  |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| `registerRole`     | `(role: TArbacRole<TUserAttrs, TScope>) => this`                                                                                                                                                                         | Chainable.                                                             |
+| `registerResource` | `(resource: string) => this`                                                                                                                                                                                             | Chainable.                                                             |
+| `evaluate`         | `<T extends string \| undefined>(res: { resource: string; action: string }, user: { id: T; roles: string[]; attrs: TUserAttrs \| ((id: T) => TUserAttrs \| Promise<TUserAttrs>) }) => Promise<TArbacEvalResult<TScope>>` | `user.attrs` is eager or a lazy `(id) => attrs` resolver (sync/async). |
+
+Exact shape: [docs api](https://aoothjs.dev/api/arbac-core#arbac-tuserattrs-extends-object-tscope-extends-object).
 
 **`registerRole(role)`** — stores under `roles[id]` (idempotent overwrite by `id`), then re-evaluates the role against every already-registered resource. Pre-compiles allow/deny lists per `(resource, role)` pair into the internal cache `resources[resourceId][roleId]`.
 
@@ -78,10 +73,7 @@ Rules are emitted in call order. `.deny()` and a subsequent `.allow()` for the s
 
 ### Generics
 
-```ts
-defineRole<TUserAttrs extends object = object, TScope extends object = object>()
-  : RoleBuilder<TUserAttrs, TScope>
-```
+Signature: `defineRole<TUserAttrs extends object = object, TScope extends object = object>(): RoleBuilder<TUserAttrs, TScope>`. Exact shape: [docs api](https://aoothjs.dev/api/arbac#definerole).
 
 The generics are pinned at builder construction. Every subsequent `.allow(...)` / `.use(...)` / privilege carries them through. Set the generics once at `defineRole<Attrs, Scope>()` and the rest type-checks for free.
 

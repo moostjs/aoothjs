@@ -40,6 +40,7 @@ const arbacSidebar = [
       { text: "Builder API", link: "/arbac/builder" },
       { text: "Privilege Factories", link: "/arbac/privileges" },
       { text: "Scope Merging", link: "/arbac/scopes" },
+      { text: "Credential Attenuation", link: "/arbac/attenuation" },
       { text: "Codegen", link: "/arbac/codegen" },
     ],
   },
@@ -110,6 +111,7 @@ const apiSidebar = [
       { text: "@aooth/idp", link: "/api/idp" },
       { text: "@aooth/arbac-moost", link: "/api/arbac-moost" },
       { text: "@aooth/auth-moost", link: "/api/auth-moost" },
+      { text: "@aooth/login-client", link: "/api/login-client" },
     ],
   },
 ];

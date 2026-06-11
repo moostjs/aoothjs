@@ -36,13 +36,15 @@ class MyAuth extends AuthWorkflow {
 
 `AuthWfCtx` has **no `flow` field**. A resolver or step body that must branch reads which slot is populated:
 
-| Slot present      | Flow                  |
-| ----------------- | --------------------- |
-| `ctx.admin`       | invite (admin phase)  |
-| `ctx.accept`      | invite (accept phase) |
-| `ctx.postReset`   | recovery              |
-| `ctx.signup`      | self-signup           |
-| _(none of these)_ | login                 |
+| Slot present         | Flow                  |
+| -------------------- | --------------------- |
+| `ctx.admin`          | invite (admin phase)  |
+| `ctx.accept`         | invite (accept phase) |
+| `ctx.postReset`      | recovery              |
+| `ctx.signup`         | self-signup           |
+| `ctx.changePassword` | change-password       |
+| `ctx.addMfa`         | add-mfa               |
+| _(none of these)_    | login                 |
 
 ```ts
 protected resolveRedirect(ctx: AuthWfCtx): string | undefined {

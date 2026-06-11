@@ -35,16 +35,18 @@ The read-only controller exposes only `transformFilter`, `transformProjection`, 
 
 ## `ArbacDbScope<T>` contract
 
-```ts
-interface ArbacDbScope<T = unknown> {
-  filter?: TScopeFilter;
-  projection?: ProjectionOf<T>;
-  set?: Partial<Record<OwnFieldKey<T>, unknown>>;
-  allowedFields?: Array<OwnFieldKey<T>>;
-  controls?: ControlsOf<T>;
-  with?: WithOf<T>; // per-relation sub-scope, recursive
-}
-```
+`ArbacDbScope<T = unknown>` — every field optional:
+
+| Field            | Type                                       | Default | Meaning                                      |
+| ---------------- | ------------------------------------------ | ------- | -------------------------------------------- |
+| `filter?`        | `TScopeFilter`                             | —       | Row-level predicate (semantics table below). |
+| `projection?`    | `ProjectionOf<T>`                          | —       | Read-side field whitelist.                   |
+| `set?`           | `Partial<Record<OwnFieldKey<T>, unknown>>` | —       | Write-side field defaults.                   |
+| `allowedFields?` | `Array<OwnFieldKey<T>>`                    | —       | Write-side field whitelist.                  |
+| `controls?`      | `ControlsOf<T>`                            | —       | Per-control gate map.                        |
+| `with?`          | `WithOf<T>`                                | —       | Per-relation sub-scope, recursive.           |
+
+Exact shape: [docs api](https://aoothjs.dev/api/arbac-moost#arbacdbscope-t).
 
 Pass an `.as` model as `T` (e.g. `ArbacDbScope<Task>`) to get autocomplete on `projection` / `with` / `controls` / `set` / `allowedFields` against the model's own and navigation fields. `T = unknown` (the default) keeps the legacy untyped `Record<string, ...>` shape for back-compat.
 

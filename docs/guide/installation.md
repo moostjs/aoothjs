@@ -1,20 +1,21 @@
 # Installation
 
-`aoothjs` is shipped as seven independent packages — install only the ones you need. This page maps common use cases to package sets and lists the peer-dependencies for each.
+`aoothjs` is shipped as eight independent packages — install only the ones you need. This page maps common use cases to package sets and lists the peer-dependencies for each.
 
 ## Decision table
 
-| Use case                                                                  | aoothjs packages                                                     | Required peer deps                                                                     |
-| ------------------------------------------------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Hash passwords / manage credentials, no HTTP                              | `@aooth/user`                                                        | —                                                                                      |
-| Above + issue/validate JWT tokens, no HTTP                                | `@aooth/user`, `@aooth/auth`                                         | — (`jose` is a regular dep of `@aooth/auth`, auto-installed)                           |
-| Full HTTP auth stack on moost (sessions, login/recovery/invite workflows) | `@aooth/user`, `@aooth/auth`, `@aooth/auth-moost`                    | `moost`, `@moostjs/event-http`, `@moostjs/event-wf`, `@atscript/moost-wf`              |
-| Above + "Sign in with Google / OIDC" federated login                      | + `@aooth/idp` (on the moost stack)                                  | — (no new peers; `jose` ships with `@aooth/auth`; HTTP wiring via `@aooth/auth-moost`) |
-| RBAC only — no auth, no HTTP                                              | `@aooth/arbac` (re-exports `arbac-core`)                             | —                                                                                      |
-| RBAC + moost integration                                                  | `@aooth/arbac`, `@aooth/arbac-moost`                                 | `moost`                                                                                |
-| atscript-first user model + auto-derived ARBAC                            | above + `@aooth/arbac-moost/atscript`                                | `@atscript/db`, `@atscript/typescript`, `unplugin-atscript`                            |
-| Persist users + tokens + workflow state in a database                     | add `@aooth/user/atscript-db` and `@aooth/auth/atscript-db` subpaths | `@atscript/db` and one driver (`@atscript/db-sqlite`, `@atscript/db-postgres`, ...)    |
-| Persist tokens in Redis                                                   | use `@aooth/auth/redis` subpath                                      | a `RedisLike` client (`ioredis`, `redis`, ...)                                         |
+| Use case                                                                  | aoothjs packages                                                     | Required peer deps                                                                        |
+| ------------------------------------------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Hash passwords / manage credentials, no HTTP                              | `@aooth/user`                                                        | —                                                                                         |
+| Above + issue/validate JWT tokens, no HTTP                                | `@aooth/user`, `@aooth/auth`                                         | — (`jose` is a regular dep of `@aooth/auth`, auto-installed)                              |
+| Full HTTP auth stack on moost (sessions, login/recovery/invite workflows) | `@aooth/user`, `@aooth/auth`, `@aooth/auth-moost`                    | `moost`, `@moostjs/event-http`, `@moostjs/event-wf`, `@atscript/moost-wf`                 |
+| Above + "Sign in with Google / OIDC" federated login                      | + `@aooth/idp` (on the moost stack)                                  | — (no new peers; `jose` ships with `@aooth/auth`; HTTP wiring via `@aooth/auth-moost`)    |
+| RBAC only — no auth, no HTTP                                              | `@aooth/arbac` (re-exports `arbac-core`)                             | —                                                                                         |
+| RBAC + moost integration                                                  | `@aooth/arbac`, `@aooth/arbac-moost`                                 | `moost`                                                                                   |
+| atscript-first user model + auto-derived ARBAC                            | above + `@aooth/arbac-moost/atscript`                                | `@atscript/db`, `@atscript/typescript`, `unplugin-atscript`                               |
+| Persist users + tokens + workflow state in a database                     | add `@aooth/user/atscript-db` and `@aooth/auth/atscript-db` subpaths | `@atscript/db` and one driver (`@atscript/db-sqlite`, `@atscript/db-postgres`, ...)       |
+| Persist tokens in Redis                                                   | use `@aooth/auth/redis` subpath                                      | a `RedisLike` client (`ioredis`, `redis`, ...)                                            |
+| CLI tool that logs in against an aoothjs authorization server             | `@aooth/login-client` (client side only — zero deps)                 | — (Node built-ins + global `fetch`; server side is `@aooth/auth-moost`'s authorize stack) |
 
 ## Recommended starting point
 

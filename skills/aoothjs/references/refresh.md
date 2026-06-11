@@ -14,15 +14,15 @@ Reference for `RefreshConfig`, the three rotation modes, refresh-reuse detection
 
 ## `RefreshConfig`
 
-```ts
-interface RefreshConfig {
-  ttl: number; // ms; >0 required
-  rotation?: "none" | "always" | "sliding"; // default 'sliding'
-  rotationGraceMs?: number; // default 30_000 — sliding AND always
-  reuseResponse?: "session" | "user"; // default 'session'
-  onRotationReuse?: (state: CredentialState) => void;
-}
-```
+| Field              | Type                               | Default      | Meaning                                  |
+| ------------------ | ---------------------------------- | ------------ | ---------------------------------------- |
+| `ttl`              | `number`                           | — (required) | ms; `> 0` required.                      |
+| `rotation?`        | `'none' \| 'always' \| 'sliding'`  | `'sliding'`  | See [Rotation modes](#rotation-modes).   |
+| `rotationGraceMs?` | `number`                           | `30_000`     | Applies to `'sliding'` AND `'always'`.   |
+| `reuseResponse?`   | `'session' \| 'user'`              | `'session'`  | Theft-response blast radius — see below. |
+| `onRotationReuse?` | `(state: CredentialState) => void` | unset        | Reuse hook — see below.                  |
+
+Exact shape: [docs api](https://aoothjs.dev/api/auth#refreshconfig).
 
 Omitting `refresh` from `AuthCredentialOptions` disables refresh entirely — `auth.refresh()` throws `AuthError('INVALID_CONFIG', 'Refresh not enabled')`. `refresh.ttl <= 0` throws `INVALID_CONFIG` at construction.
 
@@ -98,7 +98,7 @@ t=200 refresh R1  →  store.retrieve(R1) returns null (denylist hit)
                    →  AuthError('INVALID_TOKEN')   — NOT REUSE_DETECTED
 ```
 
-The store-backed grace window is unreachable on stateless stores, and the reuse signal is lost under sliding (no `consumedRefreshes` entry). **Use `rotation: 'always'` explicitly for stateless deployments.** `'always'` keeps the `consumedRefreshes` map populated and detects theft — but that map is **process-local**, so on a multi-instance deployment a replay that lands on a different instance returns `INVALID_TOKEN` rather than `REFRESH_REUSE_DETECTED`. Cross-instance grace + theft detection requires a stateful store (Memory/Redis/AtscriptDb), where `rotatedAt` lives in the shared store.
+The store-backed grace window is unreachable on stateless stores, and the reuse signal is lost under sliding (no `consumedRefreshes` entry). **Use `rotation: 'always'` explicitly for stateless deployments** ([invariants.md](invariants.md) #9). `'always'` keeps the `consumedRefreshes` map populated and detects theft — but that map is **process-local**, so on a multi-instance deployment a replay that lands on a different instance returns `INVALID_TOKEN` rather than `REFRESH_REUSE_DETECTED`. Cross-instance grace + theft detection requires a stateful store (Memory/Redis/AtscriptDb), where `rotatedAt` lives in the shared store.
 
 ## Concurrency limits
 
@@ -144,7 +144,7 @@ Critical detail: **the gate is `>=`, not `>`**. A `revokeAllForUser` followed by
 
 Caveats:
 
-- **Resets on process restart.** Multi-pod deployments lose the epoch on rollout. For durable per-user revocation, back the same machinery with `CredentialStoreRedis` / `CredentialStoreAtscriptDb` — both implement `revokeAllForUser` via real deletion, not an in-memory map.
+- **Resets on process restart** — see [invariants.md](invariants.md) #10. For durable per-user revocation, back the same machinery with `CredentialStoreRedis` / `CredentialStoreAtscriptDb` — both implement `revokeAllForUser` via real deletion, not an in-memory map.
 - **Not shared across instances.** A `revokeAllForUser` call on pod A doesn't propagate to pod B's `epochs` map. Mitigation: keep `accessTtl` short (≤15 min) so re-issue on the new pod re-anchors above the old token's `iat`.
 - **`'>'` would break recovery flows.** If you ever need stronger semantics (post-password-change tokens must be strictly newer), use a stateful store — the `>=` choice is intentional, not a bug.
 

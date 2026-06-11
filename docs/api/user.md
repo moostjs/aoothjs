@@ -101,13 +101,13 @@ function generateTotpUri(
   opts?: { period?: number; digits?: number },
 ): string;
 function generateTotpCode(secret: string, config?: TotpConfig): string;
-function verifyTotpCode(secret: string, code: string, config?: TotpConfig): boolean;
+function verifyTotpCode(secret: string, code: string, config?: TotpConfig): number | null;
 function generateMfaCode(length?: number): string;
 function hashMfaCode(code: string): string;
 function verifyMfaCode(submitted: string, expectedHash: string): boolean;
 ```
 
-RFC-4226/6238 TOTP and generic MFA-code hash helpers. `verifyTotpCode` is constant-time and walks the full `[-window..window]`. See [MFA Primitives](/user/mfa).
+RFC-4226/6238 TOTP and generic MFA-code hash helpers. `verifyTotpCode` is constant-time and walks the full `[-window..window]`; it returns the **matched HOTP counter** on success (consumed by `verifyMfa`'s replay guard against `lastUsedWindow`, RFC 6238 §5.2) or `null` on failure — treat any `number` as success, never `if (result)` (counter `0` is falsy). See [MFA Primitives](/user/mfa).
 
 ### Masking & path utilities
 
@@ -311,7 +311,8 @@ type UserAuthErrorType =
   | "MFA_REQUIRED"
   | "POLICY_VIOLATION"
   | "PASSWORDS_MISMATCH"
-  | "PASSWORD_IN_HISTORY";
+  | "PASSWORD_IN_HISTORY"
+  | "CAS_EXHAUSTED";
 ```
 
 See [Errors](/user/errors).

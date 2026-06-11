@@ -52,12 +52,12 @@ Render it through any QR encoder (`qrcode`, `qrcode-svg`) on enrollment. The alg
 import { generateTotpCode, verifyTotpCode } from "@aooth/user";
 
 const code = generateTotpCode(secret); // RFC-4226 HOTP at the current TOTP step
-verifyTotpCode(secret, code); // → true
+verifyTotpCode(secret, code); // → matched HOTP counter (number), or null on failure
 verifyTotpCode(secret, code, { window: 1 }); // ± 1 step (≈ ±30 s) for clock drift
 verifyTotpCode(secret, code, { period: 60 }); // 60 s steps
 ```
 
-`verifyTotpCode` walks the full `[-window..+window]` range; verification is constant-time and length-checked, so a mismatched-length code returns `false` without leaking timing or step information.
+`verifyTotpCode` walks the full `[-window..+window]` range; verification is constant-time and length-checked, so a mismatched-length code returns `null` without leaking timing or step information. On success it returns the **matched HOTP counter** — `UserService.verifyMfa` persists it (`lastUsedWindow`) and rejects any code whose counter is `<=` the last accepted one, so a sniffed code can't be replayed inside the validity window (RFC 6238 §5.2). Check `!== null`, not truthiness — counter `0` is a valid match.
 
 ### Wiring into a user
 

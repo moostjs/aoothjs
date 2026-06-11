@@ -13,19 +13,7 @@ The engine returns `scopes: TScope[]` — a UNION the caller has to fold. Three 
 
 ## The `ArbacDbScope` shape
 
-`ArbacDbScope` is the conventional scope shape consumed by `AsArbacDbController` (which lives in `@aooth/arbac-moost`, not here). The merge utilities in this package operate on its fields:
-
-```ts
-type ArbacDbScope = {
-  filter?: TScopeFilter; // row-level WHERE — UNION via mergeScopeFilters
-  projection?: TProjection; // Mongo-style — UNION via unionProjections
-  set?: Record<string, unknown>; // forced fields on insert/update (caller-handled)
-  allowedFields?: readonly string[]; // writable field whitelist (caller-handled)
-  controls?: Record<string, ControlGate>; // URL control gates — UNION via unionControlsPolicy
-};
-
-type ControlGate = boolean | readonly string[];
-```
+`ArbacDbScope` is the conventional scope shape consumed by `AsArbacDbController` (which lives in `@aooth/arbac-moost`, not here) — full field table in [db-controllers.md](db-controllers.md). The merge utilities in this package each operate on one of its fields: `filter` (row-level WHERE — UNION via `mergeScopeFilters`), `projection` (Mongo-style — UNION via `unionProjections`), `controls` (URL control gates, `ControlGate = boolean | readonly string[]` — UNION via `unionControlsPolicy`); `set` and `allowedFields` are caller-handled.
 
 `@aooth/arbac` only exports the merge utilities; `ArbacDbScope` itself is owned by `@aooth/arbac-moost`. If you're writing roles that target the AsDb controller, type `TScope` as `ArbacDbScope`.
 
@@ -201,3 +189,23 @@ unionControlsPolicy([
 ```
 
 The "back door" semantic in (1) is intentional: roles that don't care about controls shouldn't constrain other roles' grants. If you want a role to enforce a control gate, every role must opt into `controls`.
+
+## Attenuation conjunction — the restrictive mirror
+
+Everything above UNIONS (additive RBAC: more roles = more access). Credential attenuation (scoped tokens / PATs — see the [attenuation docs page](https://aoothjs.dev/arbac/attenuation)) needs the OPPOSITE: `assigned ∩ presented`. Dedicated combiners, exported from `@aooth/arbac` + `@aooth/arbac-moost`:
+
+```ts
+import { conjoinScopeFilters, intersectControlsPolicy } from "@aooth/arbac";
+import { conjoinArbacDbScopes } from "@aooth/arbac-moost"; // facet-by-facet composite
+import { extractAttenuation, validateAttenuationTargets } from "@aooth/arbac-moost/atscript";
+```
+
+| #   | Rule                                                                                                                                                                                                  |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | NEVER combine user + credential scopes with `mergeScopeFilters` / `unionControlsPolicy` — they widen (empty `{}` = "unrestricted" erases the narrowing). Use the conjoin/intersect pair.              |
+| 2   | `conjoinScopeFilters(a, b)` → `{ $and: [a, b] }`; empty/`undefined` side is the IDENTITY (no constraint), the polar opposite of `mergeScopeFilters`' "empty wins as unrestricted".                    |
+| 3   | `intersectControlsPolicy(a, b)`: `false` either side wins; `true` defers; whitelist ∧ whitelist = set INTERSECTION (may be empty = nothing).                                                          |
+| 4   | `conjoinArbacDbScopes(userScopes, credScopes)` does the whole composite (filter `$and`, projection `restrictProjection`, controls intersect, `allowedFields` ∩, recursive `with`) → one-element list. |
+| 5   | `Arbac.evaluate` with `user.attenuate` runs the policy TWICE and intersects OUTCOMES — attenuated scopes return as `credScopes`, separate from `scopes`.                                              |
+| 6   | `extractAttenuation` treats `null` AND `undefined` as ABSENT (no narrowing) — a stateful store returns unset optional columns as SQL `null`; only present non-null values narrow.                     |
+| 7   | Unusable role values extract to `[]` = deny-all (fail-closed), never fall back to full authority. Boot-validate attr targets with `validateAttenuationTargets`.                                       |

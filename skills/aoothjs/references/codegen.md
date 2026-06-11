@@ -21,40 +21,30 @@ import type { TResourceActionMap, TCodegenOptions } from "@aooth/arbac";
 
 ### `extractResourceActions(roles, options?)`
 
-Walks every role's `rules` and produces:
+Signature: `extractResourceActions(roles: TArbacRole<unknown, unknown>[], options?: { includeWildcards?: boolean }): TResourceActionMap`. Walks every role's `rules` and produces a `TResourceActionMap`:
 
-```ts
-interface TResourceActionMap {
-  resources: Map<string, Set<string>>;  // resource → set of actions seen on it
-  allResources: Set<string>;
-  allActions: Set<string>;
-}
+| Field          | Type                       | Default | Meaning                               |
+| -------------- | -------------------------- | ------- | ------------------------------------- |
+| `resources`    | `Map<string, Set<string>>` | —       | resource → set of actions seen on it. |
+| `allResources` | `Set<string>`              | —       | —                                     |
+| `allActions`   | `Set<string>`              | —       | —                                     |
 
-extractResourceActions(
-  roles: TArbacRole<unknown, unknown>[],
-  options?: { includeWildcards?: boolean },
-): TResourceActionMap;
-```
+Exact shapes: [extractResourceActions](https://aoothjs.dev/api/arbac#extractresourceactions) · [TResourceActionMap](https://aoothjs.dev/api/arbac#tresourceactionmap).
 
 **By default it skips any rule whose `resource` OR `action` contains `*`.** Wildcards aren't sound literal types — `com.resource.db.*` doesn't enumerate to a fixed set. Pass `{ includeWildcards: true }` to include them verbatim.
 
 ### `generateResourceTypes(map, options?)`
 
-Emits a TypeScript source string from the map.
+Emits a TypeScript source string from the map. Signature: `generateResourceTypes(map: TResourceActionMap, options?: TCodegenOptions): string`. `TCodegenOptions`:
 
-```ts
-generateResourceTypes(
-  map: TResourceActionMap,
-  options?: TCodegenOptions,
-): string;
+| Field                | Type      | Default      | Meaning                                                         |
+| -------------------- | --------- | ------------ | --------------------------------------------------------------- |
+| `resourceTypeName?`  | `string`  | `"Resource"` | —                                                               |
+| `actionTypeName?`    | `string`  | `"Action"`   | —                                                               |
+| `resourceActionMap?` | `boolean` | `true`       | Emit the `ResourceActionMap` type.                              |
+| `header?`            | `string`  | —            | Prepended to the file (e.g. `// AUTO-GENERATED — do not edit`). |
 
-type TCodegenOptions = {
-  resourceTypeName?: string;     // default: "Resource"
-  actionTypeName?: string;       // default: "Action"
-  resourceActionMap?: boolean;   // default: true — emit ResourceActionMap type
-  header?: string;               // prepended to the file (e.g. "// AUTO-GENERATED — do not edit")
-};
-```
+Exact shapes: [generateResourceTypes](https://aoothjs.dev/api/arbac#generateresourcetypes) · [TCodegenOptions](https://aoothjs.dev/api/arbac#tcodegenoptions).
 
 Inline usage:
 

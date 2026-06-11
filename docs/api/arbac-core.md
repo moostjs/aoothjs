@@ -16,12 +16,13 @@ class Arbac<TUserAttrs extends object, TScope extends object> {
       id: T;
       roles: string[];
       attrs: TUserAttrs | ((id: T) => TUserAttrs | Promise<TUserAttrs>);
+      attenuate?: { roles?: string[]; attrs?: Partial<TUserAttrs> };
     },
   ): Promise<TArbacEvalResult<TScope>>;
 }
 ```
 
-Per-resource pre-compiled ARBAC evaluator. Deny rules win absolutely; allow scopes are unioned into `scopes: TScope[]`. The empty-object `{}` element is the "universe sentinel" — interpret as "no restriction". `evaluate` auto-registers the resource. See [Core Engine](/arbac/core) and [Mental Model](/arbac/concepts).
+Per-resource pre-compiled ARBAC evaluator. Deny rules win absolutely; allow scopes are unioned into `scopes: TScope[]`. The empty-object `{}` element is the "universe sentinel" — interpret as "no restriction". `evaluate` auto-registers the resource. When `user.attenuate` is supplied (the credential-claims bridge), the policy is evaluated **twice** — once with the user's full authority, once with the attenuated roles/attrs — and the OUTCOMES are intersected: `allowed` only if both passes allow, with the attenuated pass's scopes returned as `credScopes` for restrictive conjunction downstream. Omitting `attenuate` is a single evaluation, byte-for-byte the non-attenuated behavior. See [Core Engine](/arbac/core), [Mental Model](/arbac/concepts), and [Scopes](/arbac/scopes) for the conjunction helpers.
 
 ## Functions
 
@@ -41,10 +42,11 @@ Glob-to-regex compiler. `**` → `.*` (cross-dot), `*` → `[^.]*` (within-segme
 interface TArbacEvalResult<TScope> {
   allowed: boolean;
   scopes?: TScope[]; // present only when allowed === true
+  credScopes?: TScope[]; // attenuated evaluations only — the credential-side scope union
 }
 ```
 
-Result of `Arbac.evaluate`. `scopes` is a UNION — callers OR-merge the array. `allowed: false` never carries `scopes`. See [Core Engine](/arbac/core).
+Result of `Arbac.evaluate`. `scopes` is a UNION — callers OR-merge the array. `allowed: false` never carries `scopes`. `credScopes` appears only when `evaluate` ran with `user.attenuate`: it is the attenuated pass's own scope union, to be **conjoined** (ANDed) with `scopes` — never additively merged. See [Core Engine](/arbac/core).
 
 ### `TArbacRole<TUserAttrs, TScope>`
 

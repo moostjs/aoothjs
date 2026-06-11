@@ -121,11 +121,9 @@ The denylist key for stateless stores is the `jti` (random UUID per token), not 
 
 ## `BuildMagicLinkUrl`
 
-The package does not assume your domain, scheme, or route shape. Consumers supply a builder:
+The package does not assume your domain, scheme, or route shape. Consumers supply a builder — `BuildMagicLinkUrl = (kind: AuthEmailKind, token: string, ctx?: { userId?: string }) => string`. Exact shape: [docs api](https://aoothjs.dev/api/auth#buildmagiclinkurl).
 
 ```ts
-type BuildMagicLinkUrl = (kind: AuthEmailKind, token: string, ctx?: { userId?: string }) => string;
-
 // Convention used by `@aooth/auth-moost` + `@atscript/vue-wf`:
 const buildMagicLinkUrl: BuildMagicLinkUrl = (kind, token, ctx) => {
   switch (kind) {
@@ -206,7 +204,7 @@ async function redeemRecovery(token: string, newPassword: string) {
 }
 ```
 
-Three invariants in this recipe map to SKILL.md:
+Three invariants in this recipe map to [auth.md](auth.md)'s invariants table:
 
 - `revokeAllForUser` before auto-login (#15) — every other session is killed.
 - `issue` immediately after `revokeAllForUser` in the same ms (#4) — the `>=` epoch gate accepts the fresh token.
@@ -214,30 +212,23 @@ Three invariants in this recipe map to SKILL.md:
 
 ## Transport contract
 
-```ts
-type AuthEmailKind =
-  | "recovery.magicLink"
-  | "invite.magicLink"
-  | "mfa.code"
-  | "login.pincode"
-  | "recovery.pincode"
-  | "invite.pincode"
-  | "notifyNewDevice";
+`AuthEmailKind` is the string union `'recovery.magicLink' | 'invite.magicLink' | 'mfa.code' | 'login.pincode' | 'recovery.pincode' | 'invite.pincode' | 'notifyNewDevice'`.
 
-interface AuthEmailEvent {
-  kind: AuthEmailKind;
-  recipient: string;
-  url?: string; // present for magic links; absent for codes / notify
-  code?: string; // present for pincode / mfa.code
-  expiresAt: number; // ms — convenient for templating
-  username?: string;
-  metadata?: Record<string, unknown>;
-}
+`AuthEmailEvent`:
 
-interface EmailSender {
-  send(event: AuthEmailEvent): Promise<void>;
-}
-```
+| Field       | Type                      | Default      | Meaning                                             |
+| ----------- | ------------------------- | ------------ | --------------------------------------------------- |
+| `kind`      | `AuthEmailKind`           | — (required) | —                                                   |
+| `recipient` | `string`                  | — (required) | —                                                   |
+| `url?`      | `string`                  | unset        | Present for magic links; absent for codes / notify. |
+| `code?`     | `string`                  | unset        | Present for pincode / `mfa.code`.                   |
+| `expiresAt` | `number`                  | — (required) | ms — convenient for templating.                     |
+| `username?` | `string`                  | unset        | —                                                   |
+| `metadata?` | `Record<string, unknown>` | unset        | —                                                   |
+
+`EmailSender` is the single-method contract `send(event: AuthEmailEvent): Promise<void>`.
+
+Exact shapes: [AuthEmailKind](https://aoothjs.dev/api/auth#authemailkind) · [AuthEmailEvent](https://aoothjs.dev/api/auth#authemailevent) · [EmailSender](https://aoothjs.dev/api/auth#emailsender).
 
 SMS uses the parallel `AuthSmsKind` + `AuthSmsEvent` + `SmsSender` triple. No `url` field on SMS — SMS magic-link delivery isn't supported; use pincode kinds for SMS.
 

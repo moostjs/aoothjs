@@ -17,7 +17,7 @@ class AuthCredential<TPayload extends object = object> {
   listForUser(userId: string): Promise<AuthContext<TPayload>[]>;
   listSessions(
     userId: string,
-    opts?: { enrich?: SessionEnricher },
+    opts?: { enrich?: SessionEnricher; kind?: string | string[] },
   ): Promise<SessionInfo[] | EnrichedSession[]>;
   revokeSession(userId: string, sessionId: string): Promise<void>;
   revokeOtherSessions(userId: string, keepSessionId: string): Promise<number>;
@@ -199,16 +199,19 @@ The persisted envelope stores hold. `sessionId` / `lastSeenAt` back the [Session
 ### `IssueOptions<TPayload>`
 
 ```ts
-// The typed payload `TPayload` is spread FLAT alongside the two framework
-// hints; reserved keys `metadata`/`sessionId` (and the envelope keys) must not
-// be reused as payload field names.
+// The typed payload `TPayload` is spread FLAT alongside the framework
+// hints; reserved keys `metadata`/`sessionId`/`ttl`/`expiresAt`/`kind` (and
+// the envelope keys) must not be reused as payload field names.
 type IssueOptions<TPayload extends object = object> = TPayload & {
   metadata?: CredentialMetadata;
   sessionId?: string; // omit → issue() mints a random opaque one
+  ttl?: number; // per-mint access TTL (ms, > 0) — overrides accessTtl; excl. with expiresAt
+  expiresAt?: number; // absolute access expiry instant (ms) — overrides ttl + accessTtl
+  kind?: string; // semantic credential kind ("cli-session" / "pat") → metadata.credentialKind
 };
 ```
 
-Options for `issue`. Pass the credential's typed root fields directly (e.g. `issue(userId, { tenantId: "t-1" })`); supply `sessionId` to join an existing session family. See [Sessions](/auth/sessions).
+Options for `issue`. Pass the credential's typed root fields directly (e.g. `issue(userId, { tenantId: "t-1" })`); supply `sessionId` to join an existing session family. `ttl` / `expiresAt` override the access-token lifetime for THIS mint only (refresh keeps `refresh.ttl`); `kind` labels the whole session family and feeds the `listSessions({ kind })` filter. See [Sessions](/auth/sessions) and [Credentials](/auth/credentials).
 
 ### `IssueResult`
 

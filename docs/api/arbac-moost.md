@@ -136,6 +136,17 @@ function applyAllowedFieldsAndSet(
 
 Strips fields outside the union of `allowedFields` and overlays `set` defaults. Auto-preserves keys in `identifierFields` (PK + unique-index columns). Used by `AsArbacDbController.onWrite`.
 
+### `conjoinArbacDbScopes`
+
+```ts
+function conjoinArbacDbScopes(
+  userScopes: ArbacDbScope[],
+  credScopes: ArbacDbScope[],
+): ArbacDbScope[];
+```
+
+Credential-attenuation combiner: UNIONs each side with the additive helpers, then CONJOINS the two results facet-by-facet (`conjoinScopeFilters` `$and`, `restrictProjection` field ∩, `intersectControlsPolicy` deny-wins, `allowedFields` intersection, recursive `with`) — never the additive union helpers, which would silently widen. Returns a single-element list so downstream scope-application sites (which union the scope list per facet) see the conjunction unchanged. Consumes `credScopes` from an attenuated [`Arbac.evaluate`](/api/arbac-core#arbac-tuserattrs-tscope). See [Scope Merging](/arbac/scopes).
+
 ## Decorators
 
 ### `@ArbacResource`
@@ -179,9 +190,12 @@ interface ArbacDbScope<T = unknown> {
   controls?: ControlsOf<T>;
   /** Per-relation sub-scopes applied when the request expands a relation via
    *  `?$with=<name>`. Recursive — each sub-scope has the same shape and can
-   *  declare its own `with` for nested expansions. Parent-authority model:
-   *  arbac-moost does NOT re-evaluate ARBAC against the joined resource. */
-  with?: WithOf<T>;
+   *  declare its own `with` for nested expansions: keys are the model's nav
+   *  relations, values are `ArbacDbScope<NavTarget>` (untyped `T` falls back to
+   *  `Record<string, ArbacDbScope>`; the mapped type is internal, not an
+   *  exported symbol). Parent-authority model: arbac-moost does NOT
+   *  re-evaluate ARBAC against the joined resource. */
+  with?: Record<string, ArbacDbScope>;
 }
 ```
 
@@ -191,6 +205,17 @@ The scope shape `AsArbacDbController` understands. Pass an `.as` model as `T` (e
 arbac-moost does not apply the joined-resource projection mask to `$with` expansions when the request uses exclude-mode `$select` for the relation loader. Include-mode `$select` works end-to-end. Track via the e2e-demo's `PROJ_COMMENT_VIEWER_EXPANDED` notes.
 :::
 
+### `AoothArbacClaims`
+
+```ts
+interface AoothArbacClaims {
+  roles?: string[];
+  attrs?: Record<string, unknown>;
+}
+```
+
+Restrict-only attenuation claims carried by a credential (extracted via `extractAttenuation`). `roles` = assume a SUBSET of the user's roles — `[]` means no roles (deny-all, fail-closed), an omitted key keeps all the user's roles; a role the user lacks is dropped by the intersection. `attrs` are merged into the credential pass only and clipped by the scope conjunction, so they can never widen beyond the user's own authority. Feeds `Arbac.evaluate`'s `attenuate` option.
+
 ## Subpath: `@aooth/arbac-moost/atscript`
 
 ```ts
@@ -198,6 +223,10 @@ import {
   AtscriptArbacUserProvider,
   ArbacUserTable,
   AoothArbacUserCredentials,
+  extractAttenuation,
+  getArbacAttenuationSpec,
+  validateAttenuationTargets,
+  getAoothUserHandleSpec,
 } from "@aooth/arbac-moost/atscript";
 ```
 
@@ -231,6 +260,37 @@ super(MyUser, db.getTable(MyUser) as unknown as ArbacUserTable<MyUser>);
 
 See [Atscript Models](/moost/).
 
+### `extractAttenuation`
+
+```ts
+function extractAttenuation(
+  credType: TAtscriptAnnotatedType,
+  record: object | null | undefined,
+): AoothArbacClaims | undefined;
+```
+
+Reads a validated credential record's `@arbac.attenuate.role` / `@arbac.attenuate.attr` fields into the `AoothArbacClaims` shape consumed by `Arbac.evaluate`'s `attenuate` option. Returns `undefined` when the model declares no attenuation fields or the record is absent (→ plain non-attenuated evaluation). See [Atscript Models](/moost/).
+
+### `getArbacAttenuationSpec` / `validateAttenuationTargets`
+
+```ts
+function getArbacAttenuationSpec(credType: TAtscriptAnnotatedType): ArbacAttenuationSpec;
+function validateAttenuationTargets(
+  credType: TAtscriptAnnotatedType,
+  validUserAttrs: Iterable<string>,
+): void;
+```
+
+`getArbacAttenuationSpec` walks (and caches per type) the credential model's `@arbac.attenuate.*` annotations into `ArbacAttenuationSpec` (`{ roleField, attrFields: [{ field, userAttr }] }`). `validateAttenuationTargets` throws at boot when an `@arbac.attenuate.attr` target names a user attribute that doesn't exist in the user model's `@arbac.attribute` keyspace — call it once at startup, fail fast.
+
+### `getAoothUserHandleSpec`
+
+```ts
+function getAoothUserHandleSpec(userType: TAtscriptAnnotatedType): AoothUserHandleSpec;
+```
+
+Resolves (and caches per type) the user model's `@aooth.user.email` / `@aooth.user.phone` identity-handle fields into `AoothUserHandleSpec` (`{ emailField, phoneField, handleFields, warnings }`). A handle field missing `@db.index.unique` is dropped with a warning (warn-and-disable contract) — surface `warnings` in your boot log. See [Recovery & Handles](/moost/recovery-and-handles).
+
 ### `AoothArbacUserCredentials`
 
 Re-exported from `@aooth/arbac-moost/atscript/models[.as]`. Extends `AoothUserCredentials` with `@arbac.role roles: string[]`. See [Atscript Models](/moost/).
@@ -247,4 +307,4 @@ import arbacPlugin from "@aooth/arbac-moost/plugin";
 export default function arbacPlugin(): TAtscriptPlugin;
 ```
 
-Atscript compile-time plugin registering three `AnnotationSpec`s under the `arbac` namespace: `role`, `attribute`, `userId` — all `nodeType: ['prop']`, `multiple: false`. Pull into `atscript.config.ts`. **No runtime DI surface**. See [Atscript Models](/moost/).
+Atscript compile-time plugin registering seven prop-level `AnnotationSpec`s across two namespaces: `@arbac.role`, `@arbac.attribute`, `@arbac.userId`, `@arbac.attenuate.role`, `@arbac.attenuate.attr "userAttrName"` (credential-attenuation field markers — see `extractAttenuation`), plus the identity-handle pair `@aooth.user.email` / `@aooth.user.phone` (login/recovery handle discovery — each requires `@db.index.unique`, warn-and-disable otherwise; at most one field per type). Pull into `atscript.config.ts`. **No runtime DI surface**. See [Atscript Models](/moost/) and [Recovery & Handles](/moost/recovery-and-handles).
