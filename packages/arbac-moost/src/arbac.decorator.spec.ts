@@ -148,7 +148,9 @@ describe("arbacAuthorizeInterceptor (auth-guard primitive)", () => {
     const meta = getMoostMate().read(Probe.prototype, "a") as
       | (Record<string, unknown> & { interceptors?: { handler: unknown }[] })
       | undefined;
-    expect(meta?.authTransports).toEqual({});
+    // moost ≥0.6.26 accumulates authTransports into an array so multiple
+    // Authenticate decorators can stack (mate.decorate(..., true)).
+    expect(meta?.authTransports).toEqual([{}]);
     const found = meta?.interceptors?.find((i) => i.handler === arbacAuthorizeInterceptor);
     expect(found).toBeDefined();
   });
