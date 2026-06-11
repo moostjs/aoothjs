@@ -1497,6 +1497,17 @@ const newDeviceNoticeCount = async (request: APIRequestContext, recipient: strin
     (e) => e.kind === "notifyNewDevice" && e.recipient === recipient,
   ).length;
 
+// Plain (no-MFA, no-remember-me) login on the notify-new-device variant —
+// shared by WF-LOGIN-038/-040.
+const plainNotifyLogin = async (p: Page, username: string, password: string) => {
+  await p.goto(wfUrl(LOGIN_WF, "notify-new-device"));
+  await waitForFormInput(p, "username");
+  await fillField(p, "username", username);
+  await fillField(p, "password", password);
+  await p.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(p.getByText("Workflow finished")).toBeVisible({ timeout: 15_000 });
+};
+
 test.describe("LoginWorkflow / variant=notify-new-device (P1)", () => {
   // BRANCH: `device-recognition` (always-on ledger) + the `notify-new-device`
   // gate `!ctx.isFirstLogin && !!ctx.finalize?.notifyNewDevice &&
@@ -1528,14 +1539,7 @@ test.describe("LoginWorkflow / variant=notify-new-device (P1)", () => {
   }) => {
     const baseURL = test.info().project.use.baseURL;
     const noticeCount = () => newDeviceNoticeCount(request, "henry@acme.test");
-    const plainLogin = async (page: Page) => {
-      await page.goto(wfUrl(LOGIN_WF, "notify-new-device"));
-      await waitForFormInput(page, "username");
-      await fillField(page, "username", USERS.henry.username);
-      await fillField(page, "password", USERS.henry.password);
-      await page.getByRole("button", { name: "Sign in", exact: true }).click();
-      await expect(page.getByText("Workflow finished")).toBeVisible({ timeout: 15_000 });
-    };
+    const plainLogin = (p: Page) => plainNotifyLogin(p, USERS.henry.username, USERS.henry.password);
 
     // Login 1 — browser/"device" #1, fresh context, no recognition cookie →
     // exactly one new-device-notice (MFA never pauses: mode is disabled on
@@ -1717,14 +1721,7 @@ test.describe("LoginWorkflow / variant=notify-new-device — invited user, no MF
     // ── Leg 2: log in as the invitee under notify-new-device (trust + MFA
     // both disabled — `finalize.notifyNewDevice: true` is the only extra).
     const noticeCount = () => newDeviceNoticeCount(request, inviteeEmail);
-    const plainLogin = async (p: Page) => {
-      await p.goto(wfUrl(LOGIN_WF, "notify-new-device"));
-      await waitForFormInput(p, "username");
-      await fillField(p, "username", inviteeEmail);
-      await fillField(p, "password", inviteePassword);
-      await p.getByRole("button", { name: "Sign in", exact: true }).click();
-      await expect(p.getByText("Workflow finished")).toBeVisible({ timeout: 15_000 });
-    };
+    const plainLogin = (p: Page) => plainNotifyLogin(p, inviteeEmail, inviteePassword);
 
     // Login 1 — fresh context, no recognition cookie → exactly one
     // new-device notice TO THE INVITED ADDRESS (the headline assertion).

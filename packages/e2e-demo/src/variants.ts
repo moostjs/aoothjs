@@ -141,6 +141,16 @@ const ALT_DEFAULTS: NonNullable<AuthWfCtx["alternateCredentials"]> = {
   embedRecovery: false,
 };
 
+/**
+ * Shared trust profile for `device-trust-short-ttl` and its `-notify` clone
+ * (WF-LOGIN-020 / WF-LOGIN-039) — one source so the clones can't drift.
+ */
+const SHORT_TTL_TRUST: LoginVariant = {
+  opts: { deviceTrust: { ttlMs: 1 } },
+  policy: { deviceTrust: { enabled: true, optIn: true, skipsMfa: true } },
+  mfaCtx: { mfaMode: "optional", availableMfaTransports: ["email"] },
+};
+
 export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
   minimal: {
     // Explicit false on signup/magicLink so the variant clears the demo
@@ -252,11 +262,7 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
   // 1ms TTL so the cookie minted on the first login is already past `exp`
   // by the time the second login resumes (WF-LOGIN-020). MFA email forces the
   // `device-trust` step to mint a fresh cookie on the first pass.
-  "device-trust-short-ttl": {
-    opts: { deviceTrust: { ttlMs: 1 } },
-    policy: { deviceTrust: { enabled: true, optIn: true, skipsMfa: true } },
-    mfaCtx: { mfaMode: "optional", availableMfaTransports: ["email"] },
-  },
+  "device-trust-short-ttl": SHORT_TTL_TRUST,
   // Like `device-trust`, but the login FINISHES with a server-driven redirect
   // (`finalize.redirect: "home"`) instead of the demo's default data envelope.
   // This is the path where the trusted-device cookie MUST ride the finish
@@ -289,12 +295,11 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
   // email, because the always-on recognition cookie (180d default TTL) still
   // marks the browser as seen.
   "device-trust-short-ttl-notify": {
-    opts: { deviceTrust: { ttlMs: 1 } },
+    ...SHORT_TTL_TRUST,
     policy: {
-      deviceTrust: { enabled: true, optIn: true, skipsMfa: true },
+      ...SHORT_TTL_TRUST.policy,
       finalize: { notifyNewDevice: true, redirect: false },
     },
-    mfaCtx: { mfaMode: "optional", availableMfaTransports: ["email"] },
   },
   // Same as `concurrency` but rejects with HTTP 429 instead of pausing on
   // kickPrompt (WF-LOGIN-030).

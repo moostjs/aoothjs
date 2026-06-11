@@ -1061,6 +1061,16 @@ describe("UserService", () => {
     });
   });
 
+  /** Shared fixture for the trust + recognition suites: secret-configured
+   * service over `store` with a test-controlled clock. */
+  function makeDeviceSvc(store: UserStoreMemory, clock: () => number): UserService {
+    return new UserService(store, {
+      password: { ...FAST_SCRYPT },
+      clock,
+      deviceTrust: { secret: "unit-test-secret" },
+    });
+  }
+
   describe("trustedDevices", () => {
     let dtNow: number;
     let dtStore: UserStoreMemory;
@@ -1070,11 +1080,7 @@ describe("UserService", () => {
     beforeEach(async () => {
       dtNow = 1000000;
       dtStore = new UserStoreMemory();
-      dtSvc = new UserService(dtStore, {
-        password: { ...FAST_SCRYPT },
-        clock: () => dtNow,
-        deviceTrust: { secret: "unit-test-secret" },
-      });
+      dtSvc = makeDeviceSvc(dtStore, () => dtNow);
       const alice = await createActiveUser(dtSvc, "alice", "Password1!");
       aliceId = alice.id;
     });
@@ -1193,11 +1199,7 @@ describe("UserService", () => {
     beforeEach(async () => {
       dtNow = 1000000;
       dtStore = new UserStoreMemory();
-      dtSvc = new UserService(dtStore, {
-        password: { ...FAST_SCRYPT },
-        clock: () => dtNow,
-        deviceTrust: { secret: "unit-test-secret" },
-      });
+      dtSvc = makeDeviceSvc(dtStore, () => dtNow);
       const alice = await createActiveUser(dtSvc, "alice", "Password1!");
       aliceId = alice.id;
     });

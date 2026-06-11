@@ -877,14 +877,18 @@ describe("verified correspondence email capture", () => {
     expect(after.account.active).toBe(true);
   });
 
-  it("signup-create-user — stamps verifiedEmail on the freshly-created row (pre-create OTP proof)", async () => {
+  it("signup — the reused activate-user step stamps verifiedEmail after signup-create-user (pre-create OTP proof)", async () => {
     const { wf, users } = makeWorkflowWithDeps();
     const ctx = { email: "fresh@example.com", otp: { verified: true } } as AuthWfCtx;
     await wf.signupCreateUser(ctx);
     const created = (await users.findByHandle("fresh@example.com"))!;
     expect(ctx.subject).toBe(created.id);
-    expect(created.account.verifiedEmail).toBe("fresh@example.com");
     expect(ctx.newPasswordRequired).toBe(true);
+    // The capture happens at activate-user (shared with invite), not at create.
+    expect(created.account.verifiedEmail).toBeUndefined();
+    await wf.activateUser(ctx);
+    const after = await users.getUser(created.id);
+    expect(after.account.verifiedEmail).toBe("fresh@example.com");
   });
 });
 
@@ -912,6 +916,14 @@ function collectStepIds(schema: SchemaNode[] | undefined): Set<string> {
   }
   walk(schema);
   return ids;
+}
+
+function readSchemaFor(method: string): SchemaNode[] {
+  const meta = getMoostMate().read(AuthWorkflow.prototype as object, method) as
+    | { wfSchema?: SchemaNode[] }
+    | undefined;
+  if (!meta?.wfSchema) throw new Error(`No wfSchema metadata on ${method}`);
+  return meta.wfSchema;
 }
 
 function collectStepIdsFromHandlers(): Set<string> {
@@ -951,14 +963,6 @@ describe("AuthWorkflow schema integrity", () => {
       else out.add(id);
     }
     return out;
-  }
-
-  function readSchemaFor(method: string): SchemaNode[] {
-    const meta = getMoostMate().read(AuthWorkflow.prototype as object, method) as
-      | { wfSchema?: SchemaNode[] }
-      | undefined;
-    if (!meta?.wfSchema) throw new Error(`No wfSchema metadata on ${method}`);
-    return meta.wfSchema;
   }
 
   it.each([
@@ -1065,11 +1069,7 @@ function findNode(nodes: SchemaNode[] | undefined, id: string): SchemaNode | und
 }
 
 describe("Device recognition — notify-new-device gate (login schema)", () => {
-  const loginSchema = (
-    getMoostMate().read(AuthWorkflow.prototype as object, "loginFlow") as {
-      wfSchema?: SchemaNode[];
-    }
-  ).wfSchema;
+  const loginSchema = readSchemaFor("loginFlow");
   const notify = findNode(loginSchema, "notify-new-device")!;
 
   it("gates on NOT-recognized, not on trust.newDevice", () => {

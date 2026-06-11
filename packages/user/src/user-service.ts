@@ -61,8 +61,9 @@ function resolveConfig(config?: UserServiceConfig): ResolvedConfig {
 const DEVICE_TRUST_TOKEN_BYTES = 32;
 const DEVICE_TRUST_SEPARATOR = ".";
 // Recognition ledger cap — beyond this, least-recently-verified records
-// (smallest `expiresAt`) are evicted on `addSeenDevice`.
-const SEEN_DEVICES_DEFAULT_CAP = 5;
+// (smallest `expiresAt`) are evicted on `addSeenDevice`. Exported so callers
+// that pass an explicit cap (e.g. the auth-moost opts merge) share one default.
+export const SEEN_DEVICES_DEFAULT_CAP = 5;
 
 function signDeviceTrust(secret: string, payload: string): string {
   return createHmac("sha256", secret).update(payload).digest("hex");
@@ -288,9 +289,16 @@ export class UserService<T extends object = object> {
     return this.getUser(id);
   }
 
-  async activateAccount(id: string): Promise<void> {
+  /**
+   * Flip the account active. `opts.verifiedEmail` lets callers that just
+   * proved an inbox (invite magic link, signup OTP) record the correspondence
+   * address in the same store write — see {@link setVerifiedEmail}.
+   */
+  async activateAccount(id: string, opts?: { verifiedEmail?: string }): Promise<void> {
+    const account: Record<string, unknown> = { active: true };
+    if (opts?.verifiedEmail !== undefined) account.verifiedEmail = opts.verifiedEmail;
     const found = await this.store.update(id, {
-      set: { account: { active: true } } as DeepPartial<UserCredentials>,
+      set: { account } as DeepPartial<UserCredentials>,
     });
     if (!found) throw new UserAuthError("NOT_FOUND");
   }
@@ -539,17 +547,7 @@ export class UserService<T extends object = object> {
     userId: string,
     opts: { ip?: string; ttlMs: number; name?: string },
   ): TrustedDeviceRecord {
-    const secret = this.requireDeviceTrustSecret();
-    const raw = randomBytes(DEVICE_TRUST_TOKEN_BYTES).toString("hex");
-    const sig = signDeviceTrust(secret, trustedDevicePayload(userId, raw, opts.ip));
-    const now = this.config.clock();
-    return {
-      token: `${raw}${DEVICE_TRUST_SEPARATOR}${sig}`,
-      ...(opts.ip !== undefined && { ip: opts.ip }),
-      issuedAt: now,
-      expiresAt: now + opts.ttlMs,
-      ...(opts.name !== undefined && { name: opts.name }),
-    };
+    return this.mintDeviceRecord((raw) => trustedDevicePayload(userId, raw, opts.ip), opts);
   }
 
   /**
@@ -570,12 +568,9 @@ export class UserService<T extends object = object> {
    * within its expiry window and whose bound IP (if any) matches.
    */
   async verifyTrustedDevice(userId: string, token: string, ip?: string): Promise<boolean> {
-    const secret = this.requireDeviceTrustSecret();
-    const parsed = parseDeviceTrustToken(token);
-    if (!parsed) return false;
-    const expectedSig = signDeviceTrust(secret, trustedDevicePayload(userId, parsed.raw, ip));
-    if (!deviceTrustSafeEqual(parsed.sig, expectedSig)) return false;
-
+    if (!this.checkDeviceTokenSig(token, (raw) => trustedDevicePayload(userId, raw, ip))) {
+      return false;
+    }
     const user = await this.store.findById(userId);
     if (!user) return false;
     const list = user.trustedDevices ?? [];
@@ -614,6 +609,39 @@ export class UserService<T extends object = object> {
     return secret;
   }
 
+  /**
+   * Shared mint core for trust + recognition records — the HMAC domain is set
+   * by `payloadFor` (see `trustedDevicePayload` / `seenDevicePayload`).
+   */
+  private mintDeviceRecord(
+    payloadFor: (raw: string) => string,
+    opts: { ttlMs: number; name?: string; ip?: string },
+  ): TrustedDeviceRecord {
+    const secret = this.requireDeviceTrustSecret();
+    const raw = randomBytes(DEVICE_TRUST_TOKEN_BYTES).toString("hex");
+    const sig = signDeviceTrust(secret, payloadFor(raw));
+    const now = this.config.clock();
+    return {
+      token: `${raw}${DEVICE_TRUST_SEPARATOR}${sig}`,
+      ...(opts.ip !== undefined && { ip: opts.ip }),
+      issuedAt: now,
+      expiresAt: now + opts.ttlMs,
+      ...(opts.name !== undefined && { name: opts.name }),
+    };
+  }
+
+  /**
+   * Parse + constant-time HMAC check of a device token. Only the stateless
+   * half of verification — the persisted-record (expiry/IP) check stays with
+   * the caller. Throws only on a missing secret.
+   */
+  private checkDeviceTokenSig(token: string, payloadFor: (raw: string) => string): boolean {
+    const secret = this.requireDeviceTrustSecret();
+    const parsed = parseDeviceTrustToken(token);
+    if (!parsed) return false;
+    return deviceTrustSafeEqual(parsed.sig, signDeviceTrust(secret, payloadFor(parsed.raw)));
+  }
+
   // ---- seen devices (recognition ledger) ----
   // Same token format and signing secret as trust; domain separation lives in
   // `seenDevicePayload` vs `trustedDevicePayload` above.
@@ -624,16 +652,7 @@ export class UserService<T extends object = object> {
    * Throws when `deviceTrust.secret` is unset.
    */
   issueSeenDevice(userId: string, opts: { ttlMs: number; name?: string }): TrustedDeviceRecord {
-    const secret = this.requireDeviceTrustSecret();
-    const raw = randomBytes(DEVICE_TRUST_TOKEN_BYTES).toString("hex");
-    const sig = signDeviceTrust(secret, seenDevicePayload(userId, raw));
-    const now = this.config.clock();
-    return {
-      token: `${raw}${DEVICE_TRUST_SEPARATOR}${sig}`,
-      issuedAt: now,
-      expiresAt: now + opts.ttlMs,
-      ...(opts.name !== undefined && { name: opts.name }),
-    };
+    return this.mintDeviceRecord((raw) => seenDevicePayload(userId, raw), opts);
   }
 
   /**
@@ -678,30 +697,37 @@ export class UserService<T extends object = object> {
     token: string,
     opts?: { slideTtlMs?: number },
   ): Promise<boolean> {
-    const secret = this.requireDeviceTrustSecret();
-    const parsed = parseDeviceTrustToken(token);
-    if (!parsed) return false;
-    const expectedSig = signDeviceTrust(secret, seenDevicePayload(userId, parsed.raw));
-    if (!deviceTrustSafeEqual(parsed.sig, expectedSig)) return false;
-
-    const user = await this.store.findById(userId);
-    if (!user) return false;
-    const now = this.config.clock();
-    const found = (user.seenDevices ?? []).find((r) => r.token === token && r.expiresAt > now);
-    if (!found) return false;
+    if (!this.checkDeviceTokenSig(token, (raw) => seenDevicePayload(userId, raw))) return false;
 
     const slideTtlMs = opts?.slideTtlMs;
-    if (slideTtlMs !== undefined) {
+    if (slideTtlMs === undefined) {
+      const user = await this.store.findById(userId);
+      if (!user) return false;
+      const now = this.config.clock();
+      return (user.seenDevices ?? []).some((r) => r.token === token && r.expiresAt > now);
+    }
+
+    // Find + slide in one CAS cycle — a single read (+ write on the hit path)
+    // instead of a standalone find followed by the CAS re-read.
+    let matched = false;
+    try {
       await this.store.withCas(userId, (current) => {
+        matched = false; // re-evaluated on every CAS retry
         const list = current.seenDevices ?? [];
-        const idx = list.findIndex((r) => r.token === token);
+        const now = this.config.clock();
+        const idx = list.findIndex((r) => r.token === token && r.expiresAt > now);
         if (idx === -1) return null;
+        matched = true;
         const next = [...list];
-        next[idx] = { ...next[idx], expiresAt: this.config.clock() + slideTtlMs };
+        next[idx] = { ...next[idx], expiresAt: now + slideTtlMs };
         return { set: { seenDevices: next } as DeepPartial<UserCredentials> };
       });
+    } catch (error) {
+      // Unknown user is a clean "not recognized", same as the no-slide branch.
+      if (error instanceof UserAuthError && error.type === "NOT_FOUND") return false;
+      throw error;
     }
-    return true;
+    return matched;
   }
 
   async listSeenDevices(id: string): Promise<TrustedDeviceRecord[]> {
@@ -710,12 +736,11 @@ export class UserService<T extends object = object> {
   }
 
   /**
-   * Clear the whole recognition ledger. No-op safe when the ledger is absent
-   * or already empty.
+   * Clear the whole recognition ledger. Unconditional single write — `update`
+   * already no-ops on a missing row, and an empty `seenDevices` is equivalent
+   * to an absent one everywhere it is read.
    */
   async revokeSeenDevices(id: string): Promise<void> {
-    const user = await this.store.findById(id);
-    if (!user || (user.seenDevices ?? []).length === 0) return;
     await this.store.update(id, {
       set: { seenDevices: [] } as DeepPartial<UserCredentials>,
     });

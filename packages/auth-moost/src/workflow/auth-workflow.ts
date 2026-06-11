@@ -32,6 +32,7 @@ import {
   type MfaMethod,
   type MfaMethodInfo,
   pickDefinedProfile,
+  SEEN_DEVICES_DEFAULT_CAP,
   type TrustedDeviceRecord,
   UserAuthError,
   type UserCredentials,
@@ -223,7 +224,7 @@ function mergeAuthWorkflowOpts(opts: Partial<AuthWorkflowOpts>): ResolvedAuthWor
     deviceRecognition: {
       cookieName: opts.deviceRecognition?.cookieName ?? `${deviceTrust.cookieName}_seen`,
       ttlMs: opts.deviceRecognition?.ttlMs ?? 180 * 24 * 60 * 60_000,
-      maxDevices: opts.deviceRecognition?.maxDevices ?? 5,
+      maxDevices: opts.deviceRecognition?.maxDevices ?? SEEN_DEVICES_DEFAULT_CAP,
     },
     forms: { ...DEFAULT_FORMS, ...opts.forms },
   };
@@ -2490,9 +2491,9 @@ export class AuthWorkflow {
   async activateUser(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     this.requireSubject(ctx);
     // The invite magic-link click (or signup's pre-create OTP — this step is
-    // reused there) proved this inbox — record the correspondence address.
-    if (ctx.email) await this.users.setVerifiedEmail(ctx.subject, ctx.email);
-    await this.users.activateAccount(ctx.subject);
+    // reused there) proved this inbox — record the correspondence address in
+    // the same write that flips the account active.
+    await this.users.activateAccount(ctx.subject, ctx.email ? { verifiedEmail: ctx.email } : {});
     return undefined;
   }
 
@@ -3974,17 +3975,17 @@ export class AuthWorkflow {
     const currentSessionId = ctx.changePassword?.revokeOtherSessions
       ? useAuth().getSessionId()
       : undefined;
-    if (currentSessionId) {
-      await this.auth.revokeOtherSessions(ctx.subject, currentSessionId);
-    } else {
-      await this.auth.revokeAllForUser(ctx.subject);
-    }
-    // Clear the recognition ledger too — a recognition cookie is a long-lived
-    // identifier, and password change / revoke-all are its designed clearing
-    // points (each device re-mints on its next login, and the single "new
-    // sign-in" email after a password change is desirable signal).
-    // Unconditional — a no-op on an empty ledger.
-    await this.users.revokeSeenDevices(ctx.subject);
+    // Clear the recognition ledger alongside the sessions — a recognition
+    // cookie is a long-lived identifier, and password change / revoke-all are
+    // its designed clearing points (each device re-mints on its next login,
+    // and the single "new sign-in" email after a password change is desirable
+    // signal). Independent stores, so the two revocations run concurrently.
+    await Promise.all([
+      currentSessionId
+        ? this.auth.revokeOtherSessions(ctx.subject, currentSessionId)
+        : this.auth.revokeAllForUser(ctx.subject),
+      this.users.revokeSeenDevices(ctx.subject),
+    ]);
     return undefined;
   }
 
@@ -4031,24 +4032,23 @@ export class AuthWorkflow {
     // even when the arriving one was valid — re-issuing refreshes its maxAge
     // in step with the server-side TTL slide.
     let cookies = auth.buildFinishedCookies(issue);
-    if (ctx.trust?.deviceTrustToken) {
+    const attachDeviceCookie = (name: string, value: string | undefined, ttlMs: number) => {
+      if (!value) return;
       cookies = {
         ...cookies,
-        [this.opts.deviceTrust.cookieName]: {
-          value: ctx.trust.deviceTrustToken,
-          options: auth.cookieAttrs({ maxAge: this.opts.deviceTrust.ttlMs / 1000 }),
-        },
+        [name]: { value, options: auth.cookieAttrs({ maxAge: ttlMs / 1000 }) },
       };
-    }
-    if (ctx.trust?.seenDeviceToken) {
-      cookies = {
-        ...cookies,
-        [this.opts.deviceRecognition.cookieName]: {
-          value: ctx.trust.seenDeviceToken,
-          options: auth.cookieAttrs({ maxAge: this.opts.deviceRecognition.ttlMs / 1000 }),
-        },
-      };
-    }
+    };
+    attachDeviceCookie(
+      this.opts.deviceTrust.cookieName,
+      ctx.trust?.deviceTrustToken,
+      this.opts.deviceTrust.ttlMs,
+    );
+    attachDeviceCookie(
+      this.opts.deviceRecognition.cookieName,
+      ctx.trust?.seenDeviceToken,
+      this.opts.deviceRecognition.ttlMs,
+    );
     useWfFinished().set({
       type: "data",
       value: envelope,
@@ -4494,8 +4494,8 @@ export class AuthWorkflow {
       throw err;
     }
     ctx.subject = created.id;
-    // The pre-create OTP loop proved this inbox — record the correspondence address.
-    await this.users.setVerifiedEmail(created.id, email);
+    // No verifiedEmail write here — the reused `activate-user` step captures
+    // the OTP-proven inbox from `ctx.email` once the password is set.
     ctx.newPasswordRequired = true;
     (ctx.password ??= {}).changeReason = "initial";
     return undefined;

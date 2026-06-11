@@ -28,7 +28,7 @@ export type {
 export { UserAuthError } from "./errors";
 
 // Service
-export { UserService } from "./user-service";
+export { UserService, SEEN_DEVICES_DEFAULT_CAP } from "./user-service";
 
 // Store
 export { UserStore } from "./store/user-store";
