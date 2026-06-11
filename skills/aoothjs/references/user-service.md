@@ -11,6 +11,8 @@
 - [Password policy methods](#password-policy-methods)
 - [MFA methods](#mfa-methods)
 - [Trusted-device methods](#trusted-device-methods)
+- [Seen-device (recognition) methods](#seen-device-recognition-methods)
+- [Correspondence email](#correspondence-email)
 - [Escape hatches](#escape-hatches)
 - [The login sequence](#the-login-sequence)
 
@@ -18,19 +20,20 @@
 
 `UserServiceConfig` resolves with these defaults (`user-service.ts:36`):
 
-| Key                      | Default    | Notes                                                                          |
-| ------------------------ | ---------- | ------------------------------------------------------------------------------ |
-| `password.pepper`        | `""`       | Prefixed to every password before scrypt. Irrecoverable if lost.               |
-| `password.historyLength` | `0`        | `0` disables password-history check.                                           |
-| `password.scryptN`       | `16384`    | Stored on the hash string; per-hash forward compat on `verify`.                |
-| `password.scryptR`       | `8`        |                                                                                |
-| `password.scryptP`       | `1`        |                                                                                |
-| `password.keyLength`     | `64`       | Hash output bytes.                                                             |
-| `password.policies`      | `[]`       | Array of `PasswordPolicyDef` or `PasswordPolicyInstance` — normalized on init. |
-| `lockout.threshold`      | `0`        | `0` disables lockout.                                                          |
-| `lockout.duration`       | `0`        | `0` produces permanent locks when the threshold trips.                         |
-| `clock`                  | `Date.now` | Injectable for tests.                                                          |
-| `deviceTrust.secret`     | _(unset)_  | Required for `issueTrustedDevice` / `verifyTrustedDevice` — throws if absent.  |
+| Key                      | Default    | Notes                                                                                                                                                              |
+| ------------------------ | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `password.pepper`        | `""`       | Prefixed to every password before scrypt. Irrecoverable if lost.                                                                                                   |
+| `password.historyLength` | `0`        | `0` disables password-history check.                                                                                                                               |
+| `password.scryptN`       | `16384`    | Stored on the hash string; per-hash forward compat on `verify`.                                                                                                    |
+| `password.scryptR`       | `8`        |                                                                                                                                                                    |
+| `password.scryptP`       | `1`        |                                                                                                                                                                    |
+| `password.keyLength`     | `64`       | Hash output bytes.                                                                                                                                                 |
+| `password.policies`      | `[]`       | Array of `PasswordPolicyDef` or `PasswordPolicyInstance` — normalized on init.                                                                                     |
+| `lockout.threshold`      | `0`        | `0` disables lockout.                                                                                                                                              |
+| `lockout.duration`       | `0`        | `0` produces permanent locks when the threshold trips.                                                                                                             |
+| `clock`                  | `Date.now` | Injectable for tests.                                                                                                                                              |
+| `deviceTrust.secret`     | _(unset)_  | Required for trusted-device AND seen-device APIs — those throw if absent; `hasDeviceTrustSecret()` is the non-throwing probe.                                      |
+| `emailField`             | _(unset)_  | Name of the `@aooth.user.email`-annotated column — first link in `getCorrespondenceEmail`'s chain. Thread from `getAoothUserHandleSpec(Model).emailField` at boot. |
 
 `getConfig()` returns the resolved config as `Readonly<ResolvedConfig>`; `getPasswordHasher()` exposes the constructed `PasswordHasher` for escape-hatch use.
 
@@ -160,6 +163,29 @@ Filters out by `token`. No-op when absent.
 ### `listTrustedDevices(id) → Promise<TrustedDeviceRecord[]>`
 
 Returns `user.trustedDevices ?? []`. Throws `NOT_FOUND` if the user is missing.
+
+## Seen-device (recognition) methods
+
+The `seenDevices` ledger backs device RECOGNITION — suppressing the "new sign-in" notice — NOT MFA skip (that's trusted devices above; the decoupling rationale + workflow wiring: [workflows.md](workflows.md) invariant 18). Same `config.deviceTrust.secret`, same `<raw>.<sig>` token format, but a DOMAIN-SEPARATED HMAC payload (`seen|userId|raw` vs trust's `userId|raw|ip`) — trust and recognition tokens are never interchangeable. No IP binding, ever. `seenDevices` records reuse `TrustedDeviceRecord`.
+
+| Method                                           | Behavior                                                                                                                                                   |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `issueSeenDevice(userId, {ttlMs, name?})` (sync) | Mint only — does NOT persist; pair with `addSeenDevice`. An `undefined` `name` is dropped.                                                                 |
+| `addSeenDevice(id, record, {cap?})`              | CAS read-modify-write append. Default cap **5**: drops expired rows first, then evicts least-recently-verified (smallest `expiresAt`).                     |
+| `verifySeenDevice(userId, token, {slideTtlMs?})` | Timing-safe; `true` iff sig verifies AND a persisted record matches AND `expiresAt > now`. `slideTtlMs` extends expiry on hit — the slide IS the LRU bump. |
+| `listSeenDevices(id)`                            | `user.seenDevices ?? []`. Throws `NOT_FOUND` on missing user.                                                                                              |
+| `revokeSeenDevices(id)`                          | Drops ALL records (no per-token revoke). Call on password change / recovery.                                                                               |
+| `hasDeviceTrustSecret()` (sync)                  | `true` iff `deviceTrust.secret` is configured — graceful-degrade predicate; never throws.                                                                  |
+
+## Correspondence email
+
+### `setVerifiedEmail(id, email) → Promise<void>`
+
+Writes `account.verifiedEmail` — the inbox-proven correspondence address. Deliberately NOT a login handle: no uniqueness, never used for account resolution. Throws `NOT_FOUND` on no row.
+
+### `getCorrespondenceEmail(user) → string | undefined | Promise<string | undefined>`
+
+Where security notices go. Chain: the `config.emailField` column on the row → `account.verifiedEmail` → first confirmed email-MFA method's value. Sync by default, but the Promise-admitting return type is an explicit OVERRIDE SEAM — subclass to source the address from anywhere (profile table, CRM), async ok. Capture points in the moost workflow: [workflows.md](workflows.md) invariant 19.
 
 ## Escape hatches
 

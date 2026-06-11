@@ -166,3 +166,5 @@ const trusted = await svc.verifyTrustedDevice("alice", req.cookies.dt, req.ip);
 4. `record.ip === undefined || record.ip === ip` (IP-binding when the record carries an `ip`).
 
 IP-binding is opt-in per-token: omit `ip` on `issue` and `verify` accepts any IP on subsequent calls for that record. Pin to an IP only when you want strict device-per-network semantics.
+
+Trusted devices drive MFA skip ONLY. The separate always-on device-RECOGNITION ledger (`issueSeenDevice` / `verifySeenDevice`, domain-separated HMAC on the same secret) suppresses the "new sign-in" notice — see [user-service.md § Seen-device methods](./user-service.md#seen-device-recognition-methods) and [workflows.md](./workflows.md) invariant 18.
