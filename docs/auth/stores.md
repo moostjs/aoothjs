@@ -284,13 +284,7 @@ export interface AoothAuthCredential {
 
     kind?: string
 
-    @db.json
-    metadata?: {
-        ip?: string
-        userAgent?: string
-        fingerprint?: string
-        label?: string
-    }
+    // no metadata column — consumer-declared, see below
 
     parentCredentialId?: string
     rotatedAt?: number.timestamp
@@ -309,14 +303,22 @@ The base model is the **envelope only** — there is no free-form `claims` colum
 | `@db.index.plain userId`          | Index for `revokeAllForUser` / `listForUser` scans.                                                       |
 | `issuedAt`, `expiresAt`           | Both `number.timestamp` — ms since epoch.                                                                 |
 | `kind`                            | Free string. Workflows use `'access'`, `'refresh'`, or magic-link discriminators like `'magic.recovery'`. |
-| `claims`                          | `@db.json` — opaque JSON column.                                                                          |
-| `metadata`                        | `@db.json` — IP / UA / fingerprint / label. Augment via `CredentialMetadata` declaration merging.         |
 | `parentCredentialId`, `rotatedAt` | Set by refresh-token rotation.                                                                            |
 
 The `@db.depth.limit 0` annotation prevents joins / projections from cascading through this model — credentials are an opaque storage detail, not a relational entity.
 
-::: tip Augmenting metadata
-Augment `CredentialMetadata` via declaration merging (see [Credentials](./credentials#credentialmetadata-declaration-merging)). The `.as` model accepts any JSON shape because of `@db.json`; the TypeScript surface narrows it for you.
+::: tip Credential metadata is consumer-declared
+The base model ships **no `metadata` column**. Declare a fully-typed `@db.json` field on your extending model — the runtime/validation twin of your `CredentialMetadata` declaration merge (see [Credentials](./credentials#credentialmetadata-declaration-merging)) — and mark it `@aooth.auth.metadata`. Build the shape by intersecting the exported `AoothCredentialMetadataBase` (the framework-written envelope keys: `ip`, `userAgent`, `fingerprint`, `label`, `credentialKind`) with your own extension keys, so the framework keys stay single-sourced — a future aooth envelope key flows into your schema on upgrade instead of being rejected by a hand-mirrored closed shape:
+
+```as
+import { AoothAuthCredential, AoothCredentialMetadataBase } from '@aooth/auth/atscript-db/model'
+
+@aooth.auth.metadata
+@db.json
+metadata?: AoothCredentialMetadataBase & { geoLat?: number, geoLon?: number }
+```
+
+Resolve the column name at boot with `getAoothCredentialMetadataSpec(YourCredential)` from `@aooth/arbac-moost/atscript` and pass it as the store's `metadataField` option (log `warnings`). At most one annotated field per type (throws); a field without `@db.json` is warn-and-disabled. Without a configured `metadataField`, the atscript-db store persists no metadata — memory/JWT stores are unaffected.
 :::
 
 ### `AuthCredentialTable<TPayload>` — structural interface

@@ -15,7 +15,9 @@ import {
   AuthCredential,
   type AuthEmailEvent,
   type AuthSmsEvent,
+  type CredentialMetadata,
   type EmailSender,
+  type SessionInfo,
   type SmsSender,
 } from "@aooth/auth";
 import {
@@ -53,6 +55,7 @@ import {
   createAuthEmailOutlet,
   DEFAULT_AUTH_WORKFLOWS,
   deriveWfStateSecret,
+  haversineKm,
   type MfaTransport,
   AUTH_CODE_STORE_TOKEN,
   AuthorizeController,
@@ -75,6 +78,7 @@ import {
   type FederatedIdentityTable,
 } from "@aooth/user/atscript-db";
 import { MoostHttp, Post } from "@moostjs/event-http";
+import { useHeaders } from "@wooksjs/event-http";
 import { MoostWf } from "@moostjs/event-wf";
 import {
   Controller,
@@ -202,6 +206,58 @@ function mergeWfOpts<T>(base: T, over?: T): T {
   return out as T;
 }
 
+// ── Per-session geo metadata (impossible-travel detection, WF-LOGIN-041) ──
+//
+// `CredentialMetadata` is declaration-merge extensible: the demo adds the geo
+// fields its `resolveIssueMetadata` override captures from the CloudFront
+// viewer-location headers. This merge is the COMPILE-TIME half; the runtime
+// half is the demo's own `@aooth.auth.metadata @db.json metadata` column on
+// `DemoAuthCredential` (`models/auth-credential.as`) — the base model ships
+// NO metadata column, and the consumer-declared one is CLOSED-schema
+// validated, so the geo fields must be declared there too or `issue()` 500s
+// with "Unexpected property".
+declare module "@aooth/auth" {
+  interface CredentialMetadata {
+    geoLat?: number;
+    geoLon?: number;
+    geoCity?: string;
+  }
+}
+
+/**
+ * Parse the real CloudFront viewer-location headers off the active request.
+ * Numbers are parsed defensively (non-numeric → field omitted); absent
+ * headers → fields omitted; no HTTP context (or no geo headers at all) →
+ * `undefined`. This is the demo's stand-in for whatever geo source a real
+ * deployment has at the edge — aooth itself ships NO geo resolution.
+ */
+const firstHeader = (v: string | string[] | undefined): string | undefined =>
+  Array.isArray(v) ? v[0] : v;
+const numHeader = (v: string | string[] | undefined): number | undefined => {
+  const s = firstHeader(v);
+  if (s === undefined || s.trim() === "") return undefined;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : undefined;
+};
+
+function readViewerGeo(): Pick<CredentialMetadata, "geoLat" | "geoLon" | "geoCity"> | undefined {
+  let headers: Record<string, string | string[] | undefined>;
+  try {
+    headers = useHeaders();
+  } catch {
+    return undefined;
+  }
+  const geoLat = numHeader(headers["cloudfront-viewer-latitude"]);
+  const geoLon = numHeader(headers["cloudfront-viewer-longitude"]);
+  const city = firstHeader(headers["cloudfront-viewer-city"]);
+  const out = {
+    ...(geoLat !== undefined && { geoLat }),
+    ...(geoLon !== undefined && { geoLon }),
+    ...(typeof city === "string" && city.length > 0 && { geoCity: city }),
+  };
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 // Map the workflow-side payload `kind` discriminator to the demo's
 // EmailSender / SmsSender union. The workflow side uses purpose-grained
 // kinds (`mfa-pincode` / `enroll-pincode` / …); the senders use
@@ -215,6 +271,8 @@ function toEmailKind(kind: AuthDeliveryPayload["kind"]): import("@aooth/auth").A
       return "recovery.pincode";
     case "new-device-notice":
       return "notifyNewDevice";
+    case "security-alert":
+      return "securityAlert";
     default:
       return "login.pincode";
   }
@@ -494,6 +552,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
         recipient: payload.recipient,
         ...("code" in payload && { code: payload.code }),
         ...("url" in payload && { url: payload.url }),
+        // Surface the security-alert trigger + template data on the event's
+        // free-form metadata so the test mailbox (and a real templated
+        // mailer) can read the reason / distance / cities.
+        ...(payload.kind === "security-alert" && {
+          metadata: { reason: payload.reason, ...payload.context },
+        }),
         expiresAt: expiresInMs !== undefined ? Date.now() + expiresInMs : Date.now(),
       });
       return;
@@ -665,6 +729,51 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       const variant = pickVariant(LOGIN_VARIANTS, readVariantHeader());
       if (variant?.policy?.deviceTrust) return variant.policy.deviceTrust;
       return super.resolveDeviceTrust(ctx);
+    }
+
+    // Stamp the CloudFront viewer geo onto every issued credential's
+    // metadata, on top of the base IP + User-Agent capture. The geo fields
+    // are declaration-merged onto `CredentialMetadata` above AND declared on
+    // the `metadata` sub-shape in `models/auth-credential.as` (closed-schema
+    // `@db.json` column). Feeds the impossible-travel check below.
+    protected override resolveIssueMetadata(ctx: AuthWfCtx): CredentialMetadata | undefined {
+      const base = super.resolveIssueMetadata(ctx);
+      const geo = readViewerGeo();
+      if (!geo) return base;
+      return { ...base, ...geo };
+    }
+
+    // Impossible-travel risk step-up (WF-LOGIN-041) — demo policy gated on
+    // the `geo-risk` variant. Compares the request's viewer geo against the
+    // most recent PRIOR session's persisted geo metadata; past the threshold
+    // it emits the blessed `sendSecurityAlert` and asks the MFA loop to
+    // re-arm. `risk-step-up` runs inside login's MFA loop, BEFORE `issue`
+    // mints the current session, so every listed session is a prior login.
+    // `listSessions` (NOT `listForUser` — that strips envelope metadata)
+    // returns rows newest-first by lastSeenAt/createdAt.
+    protected override async resolveRiskStepUp(
+      ctx: AuthWfCtx,
+    ): Promise<{ require: boolean; reason?: string }> {
+      const geoPolicy = pickVariant(LOGIN_VARIANTS, readVariantHeader())?.policy?.geoRisk;
+      if (!geoPolicy?.enabled || !ctx.subject) return super.resolveRiskStepUp(ctx);
+      const here = readViewerGeo();
+      if (here?.geoLat === undefined || here.geoLon === undefined) return { require: false };
+      const sessions = (await this.auth.listSessions(ctx.subject)) as SessionInfo[];
+      const prior = sessions.find(
+        (s) => s.metadata?.geoLat !== undefined && s.metadata.geoLon !== undefined,
+      )?.metadata;
+      if (prior?.geoLat === undefined || prior.geoLon === undefined) return { require: false };
+      const distanceKm = haversineKm(
+        { lat: prior.geoLat, lon: prior.geoLon },
+        { lat: here.geoLat, lon: here.geoLon },
+      );
+      if (distanceKm <= (geoPolicy.thresholdKm ?? 500)) return { require: false };
+      await this.sendSecurityAlert(ctx, "impossible-travel", {
+        distanceKm: Math.round(distanceKm),
+        ...(prior.geoCity && { fromCity: prior.geoCity }),
+        ...(here.geoCity && { toCity: here.geoCity }),
+      });
+      return { require: true, reason: "impossible-travel" };
     }
 
     protected override resolveEnrollment(

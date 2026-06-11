@@ -160,6 +160,22 @@ export type AuthDeliveryPayload =
       recipient: string;
       deviceLabel?: string;
       loginAt: number;
+    }
+  /**
+   * Consumer-triggered security notice (e.g. impossible-travel detected by a
+   * `resolveRiskStepUp` override) — routed through the same `deliver()` as
+   * every other notice. `reason` is the machine-readable trigger
+   * (e.g. `"impossible-travel"`); `context` is free-form template data
+   * (distances, cities). NEVER auto-sent by the base class — only a consumer
+   * call to `sendSecurityAlert` emits it.
+   */
+  | {
+      kind: "security-alert";
+      channel: "email";
+      recipient: string;
+      reason: string;
+      loginAt: number;
+      context?: Record<string, unknown>;
     };
 
 /**
@@ -296,6 +312,29 @@ export function humanizeUserAgent(ua: string | undefined): string | undefined {
   const os = UA_OSES.find(([pattern]) => pattern.test(ua))?.[1];
   if (browser && os) return `${browser} on ${os}`;
   return browser ?? os;
+}
+
+/**
+ * Great-circle distance in kilometres between two coordinates (haversine,
+ * WGS84 mean radius 6371 km) — for impossible-travel thresholds against
+ * per-session geo metadata captured via `resolveIssueMetadata`. Pure and
+ * dependency-free; aooth ships no geo resolution or default thresholds —
+ * feeding coordinates in (and deciding what distance is "impossible") is
+ * consumer policy.
+ */
+const toRad = (deg: number): number => (deg * Math.PI) / 180;
+
+export function haversineKm(
+  a: { lat: number; lon: number },
+  b: { lat: number; lon: number },
+): number {
+  const R = 6371; // WGS84 mean radius, km
+  const dLat = toRad(b.lat - a.lat);
+  const dLon = toRad(b.lon - a.lon);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
 }
 
 /** Trim + de-duplicate role identifiers submitted via the admin invite form. */
@@ -454,6 +493,32 @@ export class AuthWorkflow {
    */
   protected deliver(_payload: AuthDeliveryPayload): void | Promise<void> {
     return undefined;
+  }
+
+  /**
+   * The blessed one-call alert path for risk overrides — emit a
+   * `security-alert` delivery (e.g. from an impossible-travel
+   * `resolveRiskStepUp` override). Recipient comes from `ctx.notice.email`,
+   * the proven-first correspondence chain seeded by `credentials` /
+   * `seedChannelState` and refreshed by `verify/email`. No recipient →
+   * SILENT no-op (a user with no provable inbox simply can't be alerted —
+   * mirrors `notifyNewDevice`'s posture). Never called by the base class.
+   */
+  protected async sendSecurityAlert(
+    ctx: AuthWfCtx,
+    reason: string,
+    context?: Record<string, unknown>,
+  ): Promise<void> {
+    const recipient = ctx.notice?.email;
+    if (!recipient) return;
+    await this.deliver({
+      kind: "security-alert",
+      channel: "email",
+      recipient,
+      reason,
+      loginAt: Date.now(),
+      ...(context && { context }),
+    });
   }
 
   /**

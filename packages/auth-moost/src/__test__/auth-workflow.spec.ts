@@ -11,7 +11,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { ConsentStore } from "../consent.store";
 import type { AuthWfAltCredsPolicy, AuthWfCtx, MfaTransport } from "../workflow/auth-workflow.ctx";
 import type { AuthDeliveryPayload } from "../workflow/auth-workflow";
-import { AuthWorkflow, humanizeUserAgent } from "../workflow/auth-workflow";
+import { AuthWorkflow, haversineKm, humanizeUserAgent } from "../workflow/auth-workflow";
 import { enrollTrioSteps, mfaStepUpLoop } from "../workflow/auth-workflow.schemas";
 import type { AuthWorkflowOpts } from "../workflow/auth-workflow.opts";
 
@@ -83,6 +83,8 @@ class TestableAuthWorkflow extends AuthWorkflow {
     return ctx.public;
   };
   public exposeDeliver = (payload: AuthDeliveryPayload) => this.deliver(payload);
+  public exposeSendSecurityAlert = (ctx: AuthWfCtx, reason: string, c?: Record<string, unknown>) =>
+    this.sendSecurityAlert(ctx, reason, c);
   public exposeLoadActiveSessionsCount = (u: string) => this.loadActiveSessionsCount(u);
   public exposeLogoutOtherSessions = (u: string) => this.logoutOtherSessions(u);
   // `opts` is `protected readonly` — surfaced for the construction tests.
@@ -722,6 +724,7 @@ describe("AuthWorkflow deliver dispatch (WF-AUTH-UNIFIED-004)", () => {
         expiresInMs: 1,
       },
       { kind: "new-device-notice", channel: "email", recipient: "e@x", loginAt: 1 },
+      { kind: "security-alert", channel: "email", recipient: "f@x", reason: "r", loginAt: 1 },
     ];
 
     for (const p of payloads) await wf.exposeDeliver(p);
@@ -760,6 +763,75 @@ describe("AuthWorkflow deliver dispatch (WF-AUTH-UNIFIED-004)", () => {
         }),
       ),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("AuthWorkflow sendSecurityAlert", () => {
+  // WHY: this is the blessed one-call alert path for risk overrides
+  // (impossible-travel etc.) — it must route through the same deliver() as
+  // every other notice, with the recipient sourced from the proven-first
+  // correspondence chain (`ctx.notice.email`), and must NEVER throw or emit
+  // when no provable inbox exists (mirrors notifyNewDevice's posture).
+  it("delivers a security-alert payload to ctx.notice.email with reason + context", async () => {
+    const wf = makeWorkflow();
+    const ctx = { notice: { email: "owner@x" } } as AuthWfCtx;
+    await wf.exposeSendSecurityAlert(ctx, "impossible-travel", {
+      distanceKm: 9712,
+      fromCity: "Paris",
+      toCity: "Tokyo",
+    });
+    expect(wf.deliveries).toHaveLength(1);
+    expect(wf.deliveries[0]).toMatchObject({
+      kind: "security-alert",
+      channel: "email",
+      recipient: "owner@x",
+      reason: "impossible-travel",
+      context: { distanceKm: 9712, fromCity: "Paris", toCity: "Tokyo" },
+    });
+    expect(typeof (wf.deliveries[0] as { loginAt: number }).loginAt).toBe("number");
+  });
+
+  it("omits the context key entirely when none is passed", async () => {
+    const wf = makeWorkflow();
+    await wf.exposeSendSecurityAlert({ notice: { email: "owner@x" } } as AuthWfCtx, "reauth");
+    expect(wf.deliveries).toHaveLength(1);
+    expect("context" in wf.deliveries[0]).toBe(false);
+  });
+
+  it("is a SILENT no-op when ctx.notice.email is absent", async () => {
+    const wf = makeWorkflow();
+    await expect(
+      wf.exposeSendSecurityAlert({} as AuthWfCtx, "impossible-travel"),
+    ).resolves.toBeUndefined();
+    await expect(
+      wf.exposeSendSecurityAlert({ notice: {} } as AuthWfCtx, "impossible-travel"),
+    ).resolves.toBeUndefined();
+    expect(wf.deliveries).toHaveLength(0);
+  });
+});
+
+describe("haversineKm", () => {
+  // WHY: the published distance util consumers feed impossible-travel
+  // thresholds with — a broken radian conversion or radius constant would
+  // silently re-arm (or never arm) MFA for every geo-aware deployment.
+  it("returns ~0 for identical points", () => {
+    expect(haversineKm({ lat: 48.8566, lon: 2.3522 }, { lat: 48.8566, lon: 2.3522 })).toBeCloseTo(
+      0,
+      6,
+    );
+    expect(haversineKm({ lat: 0, lon: 0 }, { lat: 0, lon: 0 })).toBe(0);
+  });
+
+  it("Paris ↔ Tokyo is ≈ 9715 km (±50 km)", () => {
+    const d = haversineKm({ lat: 48.8566, lon: 2.3522 }, { lat: 35.6764, lon: 139.65 });
+    expect(d).toBeGreaterThan(9665);
+    expect(d).toBeLessThan(9765);
+  });
+
+  it("is symmetric (a↔b)", () => {
+    const a = { lat: 48.8566, lon: 2.3522 };
+    const b = { lat: 35.6764, lon: 139.65 };
+    expect(haversineKm(a, b)).toBeCloseTo(haversineKm(b, a), 9);
   });
 });
 

@@ -3,7 +3,9 @@
  *
  * `mfa.code` is reserved for v2 — v1 is TOTP only. `login.pincode`,
  * `recovery.pincode`, `invite.pincode` and `notifyNewDevice` are added with
- * BIG 3.1 (login workflow re-implementation).
+ * BIG 3.1 (login workflow re-implementation). `securityAlert` is the
+ * consumer-triggered security notice (e.g. impossible-travel from a
+ * `resolveRiskStepUp` override) — never auto-sent by the framework.
  */
 export type AuthEmailKind =
   | "recovery.magicLink"
@@ -12,7 +14,8 @@ export type AuthEmailKind =
   | "login.pincode"
   | "recovery.pincode"
   | "invite.pincode"
-  | "notifyNewDevice";
+  | "notifyNewDevice"
+  | "securityAlert";
 
 /**
  * Structured event passed to `EmailSender.send()` from inside the auth

@@ -227,6 +227,7 @@ import {
   getArbacAttenuationSpec,
   validateAttenuationTargets,
   getAoothUserHandleSpec,
+  getAoothCredentialMetadataSpec,
 } from "@aooth/arbac-moost/atscript";
 ```
 
@@ -291,6 +292,16 @@ function getAoothUserHandleSpec(userType: TAtscriptAnnotatedType): AoothUserHand
 
 Resolves (and caches per type) the user model's `@aooth.user.email` / `@aooth.user.phone` identity-handle fields into `AoothUserHandleSpec` (`{ emailField, phoneField, handleFields, warnings }`). A handle field missing `@db.index.unique` is dropped with a warning (warn-and-disable contract) — surface `warnings` in your boot log. See [Recovery & Handles](/moost/recovery-and-handles).
 
+### `getAoothCredentialMetadataSpec`
+
+```ts
+function getAoothCredentialMetadataSpec(
+  credentialType: TAtscriptAnnotatedType,
+): AoothCredentialMetadataSpec;
+```
+
+Resolves (and caches per type) the credential model's `@aooth.auth.metadata` column into `AoothCredentialMetadataSpec` (`{ metadataField, warnings }`). Thread `metadataField` into `CredentialStoreAtscriptDb` (`@aooth/auth/atscript-db`) so the store maps the envelope's `metadata` through your fully-typed `@db.json` column (shape it as `AoothCredentialMetadataBase & { ...your keys }` — the type exported from `@aooth/auth/atscript-db/model` single-sources the framework envelope keys). At most one annotated field per type (throws on ambiguity); a field without `@db.json` is dropped with a warning (warn-and-disable contract) — surface `warnings` in your boot log. No annotated field → `metadataField: undefined`, and the atscript-db credential store persists no metadata.
+
 ### `AoothArbacUserCredentials`
 
 Re-exported from `@aooth/arbac-moost/atscript/models[.as]`. Extends `AoothUserCredentials` with `@arbac.role roles: string[]`. See [Atscript Models](/moost/).
@@ -307,4 +318,4 @@ import arbacPlugin from "@aooth/arbac-moost/plugin";
 export default function arbacPlugin(): TAtscriptPlugin;
 ```
 
-Atscript compile-time plugin registering seven prop-level `AnnotationSpec`s across two namespaces: `@arbac.role`, `@arbac.attribute`, `@arbac.userId`, `@arbac.attenuate.role`, `@arbac.attenuate.attr "userAttrName"` (credential-attenuation field markers — see `extractAttenuation`), plus the identity-handle pair `@aooth.user.email` / `@aooth.user.phone` (login/recovery handle discovery — each requires `@db.index.unique`, warn-and-disable otherwise; at most one field per type). Pull into `atscript.config.ts`. **No runtime DI surface**. See [Atscript Models](/moost/) and [Recovery & Handles](/moost/recovery-and-handles).
+Atscript compile-time plugin registering eight prop-level `AnnotationSpec`s across two namespaces: `@arbac.role`, `@arbac.attribute`, `@arbac.userId`, `@arbac.attenuate.role`, `@arbac.attenuate.attr "userAttrName"` (credential-attenuation field markers — see `extractAttenuation`), the identity-handle pair `@aooth.user.email` / `@aooth.user.phone` (login/recovery handle discovery — each requires `@db.index.unique`, warn-and-disable otherwise; at most one field per type), plus `@aooth.auth.metadata` (the consumer's fully-typed credential-metadata column — requires `@db.json`, warn-and-disable otherwise; at most one field per type; resolved by `getAoothCredentialMetadataSpec`). Pull into `atscript.config.ts`. **No runtime DI surface**. See [Atscript Models](/moost/) and [Recovery & Handles](/moost/recovery-and-handles).

@@ -122,6 +122,21 @@ export default function arbacPlugin(): TAtscriptPlugin {
                 multiple: false,
               }),
             },
+            auth: {
+              metadata: new AnnotationSpec({
+                description:
+                  "Marks the consumer's fully-typed credential-metadata column (@db.json) on their " +
+                  "`extends AoothAuthCredential` model — the runtime/validation twin of the " +
+                  "`CredentialMetadata` declaration merge. Resolved by `getAoothCredentialMetadataSpec` " +
+                  "and threaded to `CredentialStoreAtscriptDb` as `metadataField`. The field MUST carry " +
+                  "@db.json (a structured metadata object needs a json column — without it, metadata " +
+                  "persistence is DISABLED with a warning). At most one @aooth.auth.metadata field per " +
+                  "type — multiple declarations throw at boot. Absent → the atscript-db credential " +
+                  "store persists no metadata (non-fatal, warned at boot by the wiring).",
+                nodeType: ["prop"],
+                multiple: false,
+              }),
+            },
           },
         },
       };

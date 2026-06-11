@@ -361,6 +361,7 @@ import {
   parseInviteRoles,
   stripReservedUserKeys,
   RESERVED_USER_KEYS,
+  haversineKm,
   humanizeUserAgent,
 } from "@aooth/auth-moost";
 import type {

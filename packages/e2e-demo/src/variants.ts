@@ -69,6 +69,15 @@ export interface LoginPolicyOverrides {
   lockout?: NonNullable<AuthWfCtx["lockout"]>;
   sessionPolicy?: NonNullable<AuthWfCtx["sessionPolicy"]>;
   mfaPolicy?: NonNullable<AuthWfCtx["mfaPolicy"]>;
+  /**
+   * Demo-only geo-anomaly policy read by `DemoAuthWorkflow.resolveRiskStepUp`
+   * — when `enabled`, the override compares the request's CloudFront viewer
+   * geo headers against the most recent prior session's persisted geo
+   * metadata and arms an impossible-travel step-up + security alert past
+   * `thresholdKm` (default 500). Consumer policy by design: the framework
+   * ships no geo resolution or thresholds.
+   */
+  geoRisk?: { enabled: boolean; thresholdKm?: number };
 }
 
 /**
@@ -252,6 +261,19 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
   "mfa-fast-resend": {
     authOpts: { mfa: { pincodeResendTimeoutMs: 1000 } },
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["sms", "email", "totp"] },
+  },
+  // Clone of `device-trust` (trust enabled + optIn + email MFA — so the
+  // trusted-device MFA skip exists to be overridden) + the geo-anomaly
+  // policy flag read by `DemoAuthWorkflow.resolveRiskStepUp`.
+  // `finalize.notifyNewDevice: false` keeps the mailbox clean so the
+  // WF-LOGIN-041 assertion can count `securityAlert` events alone.
+  "geo-risk": {
+    policy: {
+      deviceTrust: { enabled: true, optIn: true, skipsMfa: true },
+      finalize: { notifyNewDevice: false, redirect: false },
+      geoRisk: { enabled: true },
+    },
+    mfaCtx: { mfaMode: "optional", availableMfaTransports: ["email"] },
   },
   // Like `device-trust` but with `optIn: false` so the workflow does NOT render
   // the `rememberDevice` checkbox on `PincodeForm` (WF-LOGIN-019).

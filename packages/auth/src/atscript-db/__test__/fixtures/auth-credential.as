@@ -1,3 +1,5 @@
+import { AoothCredentialMetadataBase } from '../../auth-credential'
+
 @db.table 'aooth_credentials'
 @db.depth.limit 0
 export interface AoothAuthCredential {
@@ -22,15 +24,6 @@ export interface AoothAuthCredential {
      * literal unions to strings anyway.
      */
     kind?: string
-
-    /** Display metadata: ip, userAgent, fingerprint, label. */
-    @db.json
-    metadata?: {
-        ip?: string
-        userAgent?: string
-        fingerprint?: string
-        label?: string
-    }
 
     /** Set by refresh-token rotation. */
     parentCredentialId?: string
@@ -60,4 +53,17 @@ export interface AoothAuthCredential {
         roles?: string[]
         tenantId?: string
     }
+
+    /**
+     * Consumer-declared credential-metadata column (the envelope no longer
+     * ships one) — fully typed `@db.json`, mapped through the store's
+     * `metadataField` option. In a real app this field carries
+     * `@aooth.auth.metadata` and is resolved at boot by
+     * `getAoothCredentialMetadataSpec`; the fixture build has no arbac-moost
+     * plugin, so the spec threads `metadataField: 'metadata'` manually.
+     * Shape comes from the exported `AoothCredentialMetadataBase` — the
+     * single-sourced framework envelope keys (the recommended consumer form).
+     */
+    @db.json
+    metadata?: AoothCredentialMetadataBase
 }

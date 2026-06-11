@@ -62,8 +62,13 @@ describe("CredentialStoreAtscriptDb — integration against real SQLite", () => 
     // user's spec: AtscriptDbTable returns Record<string, unknown> from
     // structural reads; the adapter's typed surface needs an explicit
     // cast at the boundary.
+    // `metadataField` maps the envelope's `metadata` through the fixture's
+    // consumer-declared `@db.json metadata` column (the shipped model has no
+    // metadata column anymore). Real apps resolve the name at boot via
+    // `getAoothCredentialMetadataSpec` (`@aooth/arbac-moost/atscript`).
     store = new CredentialStoreAtscriptDb<DemoClaims>({
       table: table as unknown as AuthCredentialTable<DemoClaims>,
+      metadataField: "metadata",
     });
   });
 

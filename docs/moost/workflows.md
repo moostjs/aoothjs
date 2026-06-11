@@ -208,6 +208,57 @@ Two override seams:
 
 One note for subclass authors: the three email slots are separately owned — `ctx.notice.email` is the security-notice recipient (server-only; may be seeded without any code sent), `ctx.channel.email` is the enrollment target, and `ctx.email` is the flow-subject address recovery/invite/signup use (the login flow never writes it). The email channel-enrollment gates key on `ctx.channel.email` — the ask→verify progress marker, mirroring `channel.phone` — never on `ctx.email`. Full signatures: [`setVerifiedEmail` / `getCorrespondenceEmail`](/api/user#userservice-t-extends-object-object) and the [resolver set](/api/auth-moost#authworkflow).
 
+### Geo anomalies & impossible travel (recipe) {#geo-anomalies}
+
+aooth ships **no geo resolution and no default thresholds** — detection is consumer policy. What the framework provides is the three outlets the policy composes from: per-session metadata persistence, the MFA re-arm hook, and the alert path.
+
+1. **Capture geo per session.** `CredentialMetadata` is declaration-merge extensible; add your geo fields and stamp them in a `resolveIssueMetadata` override (the default already records IP + User-Agent). With CloudFront in front, the viewer-location headers are already on the request:
+
+   ```ts
+   declare module "@aooth/auth" {
+     interface CredentialMetadata {
+       geoLat?: number;
+       geoLon?: number;
+       geoCity?: string;
+     }
+   }
+
+   protected override resolveIssueMetadata(ctx: AuthWfCtx): CredentialMetadata | undefined {
+     const headers = useHeaders(); // cloudfront-viewer-latitude / -longitude / -city
+     const lat = Number(headers["cloudfront-viewer-latitude"]);
+     const lon = Number(headers["cloudfront-viewer-longitude"]);
+     return {
+       ...super.resolveIssueMetadata(ctx),
+       ...(Number.isFinite(lat) && { geoLat: lat }),
+       ...(Number.isFinite(lon) && { geoLon: lon }),
+     };
+   }
+   ```
+
+2. **Detect in `resolveRiskStepUp`.** The `risk-step-up` step runs inside login's MFA loop — _before_ `issue` mints the current session — so `auth.listSessions(ctx.subject)` returns prior logins only, newest first. Compare the request's geo against the most recent prior session's metadata with `haversineKm` and return `{ require: true, reason: "impossible-travel" }` past your threshold to clear `otp.verified` and re-arm the loop. One ordering caveat: re-arming cannot out-rank a **valid trust cookie** — `check-trusted-device` sits in the same loop and re-verifies on the next iteration, so a trusted device still skips the repeat challenge. If geo must out-rank device trust, also suppress the skip (e.g. return `skipsMfa: false` from `resolveDeviceTrust` when the anomaly fires).
+
+3. **Alert with `sendSecurityAlert(ctx, reason, context?)`.** The blessed one-call alert path: it emits a `security-alert` payload through the same `deliver()` as every other notice. The recipient is `ctx.notice.email` — the proven-first correspondence chain above — and when no provable inbox exists the call is a silent no-op (same posture as the new-device notice). `reason` is the machine-readable trigger; `context` is free-form template data (distances, cities). The base class never sends one on its own.
+
+```ts
+protected override async resolveRiskStepUp(ctx: AuthWfCtx) {
+  if (!ctx.subject) return { require: false };
+  const here = this.readRequestGeo(); // your header/db lookup
+  if (!here) return { require: false };
+  const [prior] = (await this.auth.listSessions(ctx.subject)) // prior sessions only here
+    .filter((s) => s.metadata?.geoLat !== undefined && s.metadata.geoLon !== undefined);
+  if (!prior?.metadata) return { require: false };
+  const km = haversineKm(
+    { lat: prior.metadata.geoLat!, lon: prior.metadata.geoLon! },
+    { lat: here.lat, lon: here.lon },
+  );
+  if (km <= 500) return { require: false }; // your threshold — aooth has no default
+  await this.sendSecurityAlert(ctx, "impossible-travel", { distanceKm: Math.round(km) });
+  return { require: true, reason: "impossible-travel" };
+}
+```
+
+If you persist credentials through the atscript-db store, note the credential-metadata column is **consumer-declared**: the shipped `AoothAuthCredential` carries no `metadata` column. Declare a `@db.json` field on your extending model shaped as `AoothCredentialMetadataBase & { geoLat?: number, geoLon?: number, geoCity?: string }` (the exported `.as` type single-sources the framework-written envelope keys), mark it `@aooth.auth.metadata`, and thread `getAoothCredentialMetadataSpec(YourCredential).metadataField` into `CredentialStoreAtscriptDb` — the closed schema then validates your exact shape (the `.as` field is the runtime twin of the `CredentialMetadata` declaration merge above).
+
 ### Invite (`auth/invite/start`)
 
 **Admin phase** (ARBAC-gated by the `invite` permission): the admin fills the invite form (email, optional name, optional roles — server-validated against `getAvailableRoles()`), then a magic link is emitted (idempotent — re-entry never double-sends) or a shareable link is returned.

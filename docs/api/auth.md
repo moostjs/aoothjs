@@ -492,7 +492,7 @@ import {
   AuthCodeStoreAtscriptDb,
   AuthCodeTable,
 } from "@aooth/auth/atscript-db";
-import { AoothAuthCredential } from "@aooth/auth/atscript-db/model.as";
+import { AoothAuthCredential, AoothCredentialMetadataBase } from "@aooth/auth/atscript-db/model.as";
 import { AoothPendingAuthorization } from "@aooth/auth/atscript-db/pending-authorization";
 import { AoothAuthCode } from "@aooth/auth/atscript-db/auth-code";
 ```
@@ -502,10 +502,13 @@ import { AoothAuthCode } from "@aooth/auth/atscript-db/auth-code";
 ```ts
 new CredentialStoreAtscriptDb<TPayload>(opts: {
   table: AuthCredentialTable<TPayload>
+  metadataField?: string // name of your @aooth.auth.metadata-annotated column
 })
 ```
 
-The adapter takes only `{ table }` — there is no `clock` option. Time-sensitive bookkeeping (TTL checks, opportunistic GC) reads `Date.now()` directly.
+There is no `clock` option — time-sensitive bookkeeping (TTL checks, opportunistic GC) reads `Date.now()` directly.
+
+`metadataField` is the name of the consumer-declared credential-metadata column: the fully-typed `@db.json` field on your `extends AoothAuthCredential` model, marked `@aooth.auth.metadata` and resolved at boot by [`getAoothCredentialMetadataSpec`](/api/arbac-moost#getaoothcredentialmetadataspec) (threaded here as plain config — same pattern as `UserStore.handleFields`). Shape the column as `AoothCredentialMetadataBase & { ...your keys }` — the exported `.as` type single-sources the framework-written envelope keys (see [Stores](/auth/stores)). The store maps the envelope's `metadata` through that column on every write/read. Absent → metadata is not persisted/read (memory/JWT stores are unaffected).
 
 Single-table stateful store. `revokeAllForUser` uses `deleteMany({ userId })` — one round trip. `retrieve` GCs expired rows opportunistically. See [Stores](/auth/).
 
@@ -544,12 +547,6 @@ type AuthCredentialRow<TPayload extends object = object> = {
   issuedAt: number;
   expiresAt: number;
   kind?: string;
-  metadata?: {
-    ip?: string;
-    userAgent?: string;
-    fingerprint?: string;
-    label?: string;
-  };
   parentCredentialId?: string;
   rotatedAt?: number;
   sessionId?: string;
@@ -557,7 +554,7 @@ type AuthCredentialRow<TPayload extends object = object> = {
 } & TPayload; // consumer's typed columns persist flat (replaces the dropped `claims` blob)
 ```
 
-Plain TS mirror of `AoothAuthCredential.as` (envelope columns) intersected with the consumer's typed payload columns. `kind` is a free-form `string` (the `.as` model intentionally does not narrow it) so the row can carry magic-link discriminators like `'magic.recovery'` alongside the orchestrator's `'access'` / `'refresh'`. See [Stores](/auth/).
+Plain TS mirror of `AoothAuthCredential.as` (envelope columns) intersected with the consumer's typed payload columns. There is **no `metadata` envelope column** — credential metadata is consumer-declared (a fully-typed `@db.json` field on the extending model, marked `@aooth.auth.metadata`) and mapped dynamically through the store's `metadataField` option. `kind` is a free-form `string` (the `.as` model intentionally does not narrow it) so the row can carry magic-link discriminators like `'magic.recovery'` alongside the orchestrator's `'access'` / `'refresh'`. See [Stores](/auth/).
 
 ### `AuthCredentialTable<TPayload>`
 

@@ -1487,6 +1487,111 @@ test.describe("LoginWorkflow / variant=device-trust-short-ttl (P2)", () => {
   });
 });
 
+// Recipient-scoped count of captured `securityAlert` mailbox events
+// (consumer-triggered security notices — WF-LOGIN-041's impossible-travel
+// alert emitted by `DemoAuthWorkflow.resolveRiskStepUp` via the blessed
+// `sendSecurityAlert` path).
+const securityAlertCount = async (request: APIRequestContext, recipient: string) =>
+  (await getEmails(request)).filter((e) => e.kind === "securityAlert" && e.recipient === recipient)
+    .length;
+
+test.describe("LoginWorkflow / variant=geo-risk (P2)", () => {
+  // Paris CloudFront viewer-location headers ride EVERY request of this
+  // context — the demo's `resolveIssueMetadata` override parses them and
+  // persists per-session geo metadata at `issue` time.
+  test.use({
+    extraHTTPHeaders: {
+      "cloudfront-viewer-latitude": "48.8566",
+      "cloudfront-viewer-longitude": "2.3522",
+      "cloudfront-viewer-city": "Paris",
+    },
+  });
+
+  // BRANCH: the `risk-step-up` @Step (inside login's MFA while-loop, gated on
+  // `otp.verified && !riskStepUpEvaluated`) awaits the demo's
+  // `resolveRiskStepUp` override: it compares the request's viewer geo
+  // against the most recent PRIOR session's persisted geo (risk-step-up runs
+  // BEFORE `issue` mints the current session, so `listSessions` returns
+  // prior logins only). Paris ↔ Tokyo ≈ 9712 km > the 500 km threshold →
+  // `sendSecurityAlert(ctx, "impossible-travel", …)` (recipient = the proven
+  // `ctx.notice.email` chain → henry's confirmed email-MFA address) and
+  // `{ require: true }` clears `otp.verified` to re-arm the loop.
+  //
+  // ORDERING NOTE: re-arming cannot out-rank a VALID trust cookie —
+  // `check-trusted-device` sits inside the same while-loop gated only on
+  // `!otp.verified && deviceTrust.enabled && skipsMfa`, so the next
+  // iteration re-verifies the still-valid cookie and re-sets `otp.verified`
+  // (with `riskStepUpEvaluated` already true the loop then exits). The
+  // login therefore completes WITHOUT a second MFA challenge; the alert
+  // email is the geo-anomaly signal that does fire. A consumer who wants
+  // geo to out-rank device trust must also suppress the skip (e.g. return
+  // `skipsMfa: false` from `resolveDeviceTrust` on anomaly).
+  test("WF-LOGIN-041: Paris login mints trust cookie; Tokyo re-login fires exactly one impossible-travel alert", async ({
+    page,
+    context,
+    request,
+  }) => {
+    // 1. First login (Paris): email MFA + rememberDevice → trust cookie
+    // minted, session persisted with Paris geo metadata.
+    await page.goto(wfUrl(LOGIN_WF, "geo-risk"));
+    await fillField(page, "username", USERS.henry.username);
+    await fillField(page, "password", USERS.henry.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    await waitForFormInput(page, "code");
+    const otp = await waitForEmail(
+      request,
+      (e) => e.kind === "login.pincode" && e.recipient === "henry@acme.test",
+    );
+    await fillField(page, "code", otp.code as string);
+    await page.locator('[name="rememberDevice"]').first().check();
+    await page.getByRole("button", { name: "Verify", exact: true }).click();
+    await expect(page.getByText("Workflow finished")).toBeVisible({ timeout: 15_000 });
+    const cookies = await context.cookies();
+    expect(cookies.some((c) => c.name === "aooth_trusted_device")).toBe(true);
+    // Fresh DB after reset → no prior session existed → no alert on login 1.
+    expect(await securityAlertCount(request, "henry@acme.test")).toBe(0);
+
+    // 2. Second login from "Tokyo". A context's `extraHTTPHeaders` can't
+    // change after creation, so rewrite the geo headers per-request via
+    // route interception (same idiom as WF-INVITE-006's payload intercept).
+    await page.route("**/*", (route) =>
+      route.continue({
+        headers: {
+          ...route.request().headers(),
+          "cloudfront-viewer-latitude": "35.6764",
+          "cloudfront-viewer-longitude": "139.65",
+          "cloudfront-viewer-city": "Tokyo",
+        },
+      }),
+    );
+    await page.goto(wfUrl(LOGIN_WF, "geo-risk"));
+    await fillField(page, "username", USERS.henry.username);
+    await fillField(page, "password", USERS.henry.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    // The still-valid trust cookie re-skips MFA (see ORDERING NOTE) — the
+    // login completes without a second PincodeForm pause…
+    await expect(page.getByText("Workflow finished")).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator('[name="code"]')).toHaveCount(0);
+
+    // …but the geo anomaly was detected and alerted: exactly one
+    // `securityAlert` event to henry with the impossible-travel reason +
+    // the distance/cities template context.
+    const alert = await waitForEmail(
+      request,
+      (e) => e.kind === "securityAlert" && e.recipient === "henry@acme.test",
+    );
+    expect(alert.metadata).toMatchObject({
+      reason: "impossible-travel",
+      fromCity: "Paris",
+      toCity: "Tokyo",
+    });
+    expect(alert.metadata?.distanceKm as number).toBeGreaterThan(9000);
+    expect(await securityAlertCount(request, "henry@acme.test")).toBe(1);
+  });
+});
+
 // Shared by the notify-new-device suites below (WF-LOGIN-038/039/040):
 // recipient-scoped count of captured `notifyNewDevice` mailbox events.
 // -038/-039 log in as henry, whose confirmed email-MFA method resolves the

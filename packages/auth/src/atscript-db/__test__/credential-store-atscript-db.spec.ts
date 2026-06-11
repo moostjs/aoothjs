@@ -130,11 +130,17 @@ describe("CredentialStoreAtscriptDb — sessionId / lastSeenAt", () => {
 describe("CredentialStoreAtscriptDb — typed payload + metadata round-trip", () => {
   // Intent: a consumer's typed payload (the flat root fields added to their
   // `extends AoothAuthCredential` model) and metadata persist as real columns.
-  // The adapter must round-trip them byte-for-byte through persist → retrieve;
-  // a regression here means per-token data silently drops on the wire.
+  // Metadata is CONSUMER-DECLARED — the store maps the envelope's `metadata`
+  // through the configured `metadataField` (the consumer's
+  // `@aooth.auth.metadata`-annotated column). The adapter must round-trip them
+  // byte-for-byte through persist → retrieve; a regression here means
+  // per-token data silently drops on the wire.
   it("persists typed payload + metadata and returns them on retrieve", async () => {
     const table = new MockTable<{ scope: string; roles: string[] }>();
-    const store = new CredentialStoreAtscriptDb<{ scope: string; roles: string[] }>({ table });
+    const store = new CredentialStoreAtscriptDb<{ scope: string; roles: string[] }>({
+      table,
+      metadataField: "metadata",
+    });
     const metadata = {
       ip: "10.0.0.1",
       userAgent: "Mozilla/5.0",
@@ -172,7 +178,10 @@ describe("CredentialStoreAtscriptDb — typed payload + metadata round-trip", ()
     // refresh-token rotation path relies on this — a stale fingerprint or an
     // old payload value MUST NOT survive a rotation.
     const table = new MockTable<{ scope: string }>();
-    const store = new CredentialStoreAtscriptDb<{ scope: string }>({ table });
+    const store = new CredentialStoreAtscriptDb<{ scope: string }>({
+      table,
+      metadataField: "metadata",
+    });
     const token = await store.persist({
       userId: "alice",
       issuedAt: Date.now(),
@@ -190,6 +199,35 @@ describe("CredentialStoreAtscriptDb — typed payload + metadata round-trip", ()
     const got = await store.retrieve(token);
     expect(got?.scope).toBe("write:tasks");
     expect(got?.metadata).toEqual({ ip: "10.0.0.2" });
+  });
+
+  it("does NOT persist metadata when no metadataField is configured", async () => {
+    // No consumer-declared @aooth.auth.metadata column → the store has no
+    // place to put the envelope's metadata. It must drop it silently (the
+    // warn happens at boot, in the spec resolver) — not write a phantom
+    // column the schema would reject.
+    const table = new MockTable();
+    const store = new CredentialStoreAtscriptDb({ table });
+    const token = await store.persist(makeState("alice", { metadata: { ip: "10.0.0.1" } }));
+    const row = table.rows.get(token) as Record<string, unknown> | undefined;
+    expect(row?.metadata).toBeUndefined();
+    expect((await store.retrieve(token))?.metadata).toBeUndefined();
+  });
+
+  it("maps metadata through a consumer-chosen column name without leaking it into the payload", async () => {
+    // The consumer's column need not be named "metadata". The store writes the
+    // envelope's metadata under the configured name and, on read, maps it BACK
+    // onto `state.metadata` — never surfacing the raw column as a typed
+    // payload field.
+    const table = new MockTable();
+    const store = new CredentialStoreAtscriptDb({ table, metadataField: "sessionMeta" });
+    const metadata = { ip: "10.0.0.1", label: "iPhone" };
+    const token = await store.persist(makeState("alice", { metadata }));
+    const row = table.rows.get(token) as Record<string, unknown> | undefined;
+    expect(row?.sessionMeta).toEqual(metadata);
+    const got = await store.retrieve(token);
+    expect(got?.metadata).toEqual(metadata);
+    expect((got as Record<string, unknown> | null)?.sessionMeta).toBeUndefined();
   });
 });
 

@@ -17,6 +17,11 @@ export * from "./authz-stores";
  * The consumer's typed payload `TPayload` (the root fields they add to their
  * `extends AoothAuthCredential` model) is intersected flat — those become real
  * typed columns, replacing the dropped free-form `claims` blob.
+ *
+ * There is NO `metadata` envelope column: credential metadata is
+ * consumer-declared (a fully-typed `@db.json` field on the extending model,
+ * marked `@aooth.auth.metadata`) and mapped dynamically through the
+ * `metadataField` option below.
  */
 export type AuthCredentialRow<TPayload extends object = object> = {
   token: string;
@@ -24,12 +29,6 @@ export type AuthCredentialRow<TPayload extends object = object> = {
   issuedAt: number;
   expiresAt: number;
   kind?: string;
-  metadata?: {
-    ip?: string;
-    userAgent?: string;
-    fingerprint?: string;
-    label?: string;
-  };
   parentCredentialId?: string;
   rotatedAt?: number;
   sessionId?: string;
@@ -58,6 +57,15 @@ export interface AuthCredentialTable<TPayload extends object = object> {
 
 interface CredentialStoreAtscriptDbOptions<TPayload extends object> {
   table: AuthCredentialTable<TPayload>;
+  /**
+   * Name of the consumer's `@aooth.auth.metadata`-annotated column — the
+   * fully-typed `@db.json` field declared on their `extends AoothAuthCredential`
+   * model that persists the envelope's `metadata`. Resolved at boot by
+   * `getAoothCredentialMetadataSpec` (`@aooth/arbac-moost/atscript`) and
+   * threaded here as plain config — same pattern as `UserStore.handleFields`.
+   * Absent → metadata is not persisted/read by this store.
+   */
+  metadataField?: string;
 }
 
 /**
@@ -77,15 +85,17 @@ export class CredentialStoreAtscriptDb<
   TPayload extends object = object,
 > implements CredentialStore<TPayload> {
   private readonly table: AuthCredentialTable<TPayload>;
+  private readonly metadataField: string | undefined;
 
   constructor(opts: CredentialStoreAtscriptDbOptions<TPayload>) {
     this.table = opts.table;
+    this.metadataField = opts.metadataField;
   }
 
   async persist(state: CredentialState & TPayload, ttl?: number): Promise<string> {
     const token = randomUUID();
     const expiresAt = typeof ttl === "number" ? Date.now() + ttl : state.expiresAt;
-    await this.table.insertOne(stateToRow(state, token, expiresAt));
+    await this.table.insertOne(stateToRow(state, token, expiresAt, this.metadataField));
     return token;
   }
 
@@ -97,7 +107,7 @@ export class CredentialStoreAtscriptDb<
       await this.table.deleteOne(token).catch(() => {});
       return null;
     }
-    return rowToState(row);
+    return rowToState(row, this.metadataField);
   }
 
   async consume(token: string): Promise<(CredentialState & TPayload) | null> {
@@ -119,7 +129,7 @@ export class CredentialStoreAtscriptDb<
       await this.revoke(token);
       return token;
     }
-    await this.table.replaceOne(stateToRow(state, token, state.expiresAt));
+    await this.table.replaceOne(stateToRow(state, token, state.expiresAt, this.metadataField));
     return token;
   }
 
@@ -152,7 +162,7 @@ export class CredentialStoreAtscriptDb<
         expired.push(row.token);
         continue;
       }
-      out.push({ ...rowToState(row), token: row.token });
+      out.push({ ...rowToState(row, this.metadataField), token: row.token });
     }
     if (expired.length > 0) {
       await this.table.deleteMany({ token: { $in: expired } }).catch(() => {});
@@ -166,29 +176,44 @@ export class CredentialStoreAtscriptDb<
  * (so an envelope field wins a name clash), then the fixed envelope fields and
  * the resolved `token` + `expiresAt`. Shared by `persist` and `update`, which
  * differ only in the `expiresAt` they resolve.
+ *
+ * The envelope's `metadata` is written to the consumer's `metadataField`
+ * column (a dynamic key the static row type can't carry) — only when the
+ * field is configured; otherwise metadata is silently not persisted.
  */
 function stateToRow<TPayload extends object>(
   state: CredentialState & TPayload,
   token: string,
   expiresAt: number,
+  metadataField: string | undefined,
 ): AuthCredentialRow<TPayload> {
-  return {
+  const row = {
     ...credentialPayloadOf<TPayload>(state),
     token,
     userId: state.userId,
     issuedAt: state.issuedAt,
     expiresAt,
     kind: state.kind,
-    metadata: state.metadata,
     parentCredentialId: state.parentCredentialId,
     rotatedAt: state.rotatedAt,
     sessionId: state.sessionId,
     lastSeenAt: state.lastSeenAt,
   } as AuthCredentialRow<TPayload>;
+  if (metadataField !== undefined && state.metadata !== undefined) {
+    (row as Record<string, unknown>)[metadataField] = state.metadata;
+  }
+  return row;
 }
 
+/**
+ * Inverse of {@link stateToRow}. The consumer's `metadataField` column maps
+ * back onto the envelope's `metadata` — and is excluded from the extracted
+ * payload (it is envelope data riding under a consumer-chosen name, not a
+ * typed payload field).
+ */
 function rowToState<TPayload extends object>(
   row: AuthCredentialRow<TPayload>,
+  metadataField: string | undefined,
 ): CredentialState & TPayload {
   // Typed payload columns first (excludes envelope keys + `token`); the
   // explicit envelope assignments below win any clash.
@@ -198,7 +223,11 @@ function rowToState<TPayload extends object>(
     issuedAt: row.issuedAt,
     expiresAt: row.expiresAt,
   };
-  if (row.metadata !== undefined) state.metadata = row.metadata;
+  if (metadataField !== undefined) {
+    delete (state as unknown as Record<string, unknown>)[metadataField];
+    const metadata = (row as Record<string, unknown>)[metadataField];
+    if (metadata !== undefined) state.metadata = metadata as CredentialState["metadata"];
+  }
   if (row.kind === "access" || row.kind === "refresh") state.kind = row.kind;
   if (row.parentCredentialId !== undefined) state.parentCredentialId = row.parentCredentialId;
   if (row.rotatedAt !== undefined) state.rotatedAt = row.rotatedAt;

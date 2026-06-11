@@ -95,6 +95,7 @@ export {
   AuthWorkflow,
   type AuthDeliveryPayload,
   buildInviteAlreadyAcceptedEnvelope,
+  haversineKm,
   humanizeUserAgent,
   parseInviteRoles,
   RESERVED_USER_KEYS,

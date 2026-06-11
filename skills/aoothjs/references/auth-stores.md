@@ -134,6 +134,10 @@ await syncSchema(db, [AoothAuthCredential]);
 
 const store = new CredentialStoreAtscriptDb({
   table: db.getTable(AoothAuthCredential),
+  // Optional: name of YOUR @aooth.auth.metadata-annotated @db.json column
+  // (resolve at boot via getAoothCredentialMetadataSpec from
+  // @aooth/arbac-moost/atscript). Absent -> metadata is not persisted/read.
+  metadataField: undefined,
 });
 ```
 
@@ -159,6 +163,7 @@ Implementation specifics:
 - `retrieve` opportunistically GCs the row when `expiresAt <= now`.
 - `listForUser` GCs dead rows in a background `deleteMany({ token: { $in: expired } })`.
 - `update` with `state.expiresAt <= now` calls `deleteOne`, not `replaceOne` — parity with Redis fail-loud posture.
+- The envelope's `metadata` is mapped through the configured `metadataField` column on every write/read (and excluded from the extracted typed payload). No `metadataField` → metadata silently not persisted (memory/JWT stores unaffected — they carry `metadata` natively).
 
 ## `AoothAuthCredential` `.as` model
 
@@ -173,7 +178,6 @@ export interface AoothAuthCredential {
                           issuedAt: number.timestamp
                           expiresAt: number.timestamp
                           kind?: string
-    @db.json              metadata?: { ip?: string, userAgent?: string, fingerprint?: string, label?: string }
                           parentCredentialId?: string
                           rotatedAt?: number.timestamp
     @db.index.plain       sessionId?: string
@@ -181,18 +185,29 @@ export interface AoothAuthCredential {
 }
 ```
 
-Envelope only — NO free-form `claims` column. Carry per-token payload by `extends AoothAuthCredential` + your own typed columns (the adapter round-trips them); `@aooth/arbac-moost` consumers annotate them `@arbac.attenuate.role` / `@arbac.attenuate.attr "userAttr"` for restrict-only credential attenuation.
+Envelope only — NO free-form `claims` column. Carry per-token payload by `extends AoothAuthCredential` + your own typed columns (the adapter round-trips them); `@aooth/arbac-moost` consumers annotate them `@arbac.attenuate.role` / `@arbac.attenuate.attr "userAttr"` for restrict-only credential attenuation. NO `metadata` column either — credential metadata is consumer-declared: a fully-typed `@db.json` field on your extending model (the runtime/validation twin of your `CredentialMetadata` declaration merge), tagged `@aooth.auth.metadata`; resolve the name at boot with `getAoothCredentialMetadataSpec(Model)` (`@aooth/arbac-moost/atscript`, WeakMap-cached) and thread it as the store's `metadataField`, logging `warnings`. At most one annotated field per type (throws); without `@db.json` it is warn-and-disabled; absent → the atscript-db store persists no metadata.
+
+Shape the column by INTERSECTING the exported `AoothCredentialMetadataBase` (same `model[.as]` subpath — the single source of the framework-written envelope keys `ip` / `userAgent` / `fingerprint` / `label` / `credentialKind`; the `.as` twin of `CredentialMetadata`, keep the two in sync) with your extension keys — never hand-mirror the base keys, or a future aooth envelope key gets rejected by your closed schema on upgrade:
+
+```atscript
+import { AoothAuthCredential, AoothCredentialMetadataBase } from '@aooth/auth/atscript-db/model'
+
+@aooth.auth.metadata
+@db.json
+metadata?: AoothCredentialMetadataBase & { geoLat?: number, geoLon?: number }
+```
 
 Annotations explained:
 
-| Annotation                          | Effect                                                                                           |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `@db.table 'aooth_credentials'`     | Physical table name. Override if it collides in your schema.                                     |
-| `@db.depth.limit 0`                 | Refuses nested writes via the moost-db REST layer. This table is auth-internal — no FK fan-out.  |
-| `@meta.id` on `token`               | Token is the PK. `findOne({ filter: { token } })` and `deleteOne(token)` are O(1).               |
-| `@db.index.plain` on `userId`       | Indexed for `revokeAllForUser` / `listForUser` scans. Required for production load.              |
-| `@db.json` on `claims` / `metadata` | Stored as JSON. Caveat: `@db.json` columns are not filterable / sortable on SQL adapters.        |
-| `kind?: string` (not enum)          | Adapter-portable — engines without a native enum type collapse literal unions to strings anyway. |
+| Annotation                        | Effect                                                                                                                                                                                                             |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `@db.table 'aooth_credentials'`   | Physical table name. Override if it collides in your schema.                                                                                                                                                       |
+| `@db.depth.limit 0`               | Refuses nested writes via the moost-db REST layer. This table is auth-internal — no FK fan-out.                                                                                                                    |
+| `@meta.id` on `token`             | Token is the PK. `findOne({ filter: { token } })` and `deleteOne(token)` are O(1).                                                                                                                                 |
+| `@db.index.plain` on `userId`     | Indexed for `revokeAllForUser` / `listForUser` scans. Required for production load.                                                                                                                                |
+| `@db.json` (consumer columns)     | Stored as JSON — required on the `@aooth.auth.metadata` column and any structured payload column. Caveat: `@db.json` columns are not filterable / sortable on SQL adapters.                                        |
+| `@aooth.auth.metadata` (consumer) | Marks YOUR fully-typed credential-metadata column (`@db.json` required, warn-and-disable otherwise; at most one per type, multiple throw). Resolved by `getAoothCredentialMetadataSpec` → store's `metadataField`. |
+| `kind?: string` (not enum)        | Adapter-portable — engines without a native enum type collapse literal unions to strings anyway.                                                                                                                   |
 
 Wiring requires `@atscript/db` (peer dep, optional). For consumers that use a different ORM, re-implement `AuthCredentialTable` against your own table — the structural type is the only contract.
 
