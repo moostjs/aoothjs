@@ -65,7 +65,7 @@
     "dev": "vp pack --watch",
     "test": "vp test",
     "check": "vp check",
-    "postinstall": "asc"
+    "prepare": "asc"
   },
   "dependencies": {
     "@aooth/arbac": "workspace:*",

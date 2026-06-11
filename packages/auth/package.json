@@ -98,7 +98,7 @@
     "test": "vp test",
     "check": "vp check",
     "gen:atscript": "asc",
-    "postinstall": "asc"
+    "prepare": "asc"
   },
   "dependencies": {
     "@aooth/user": "workspace:*",

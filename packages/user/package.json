@@ -65,7 +65,7 @@
     "test": "vp test",
     "check": "vp check",
     "gen:atscript": "asc",
-    "postinstall": "asc"
+    "prepare": "asc"
   },
   "devDependencies": {
     "@atscript/core": "catalog:",
