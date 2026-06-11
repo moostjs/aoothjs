@@ -1,6 +1,6 @@
 {
   "name": "@aooth/idp",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "description": "Framework-agnostic OAuth2 / OIDC federated-login core for aoothjs (provider registry, PKCE/state, ID-token verification, account resolution)",
   "keywords": [
     "aoothjs",
