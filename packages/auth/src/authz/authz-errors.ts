@@ -16,6 +16,11 @@ export type AuthorizeErrorCode =
   | "invalid_client"
   /** A known client used a grant/response it is not allowed (Tier 2). */
   | "unauthorized_client"
+  /**
+   * RFC 8707: more than one `resource` value on a leg, or the `/token`
+   * `resource` differs from the one recorded at `/authorize`.
+   */
+  | "invalid_target"
   /** The user declined the authorization (consent). */
   | "access_denied"
   /** An unexpected server-side failure. */

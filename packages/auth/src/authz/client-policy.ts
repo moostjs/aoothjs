@@ -8,6 +8,13 @@ import type { TokenPolicy } from "./token-policy";
 export interface ResolvedClient {
   /** Registered client id (Tier 2), absent for a public/loopback client. */
   clientId?: string;
+  /**
+   * Display name for the consent prompt. For a dynamically-registered client
+   * this is the (sanitized) DCR `client_name` — UNTRUSTED text supplied by the
+   * registrant: render it as a text node, never as markup/links, and show the
+   * validated redirect host next to it as the trustworthy identity.
+   */
+  clientName?: string;
   /** The validated `redirect_uri` the code will be delivered to. */
   redirectUri: string;
   /** What the grant mints (fixed here, recorded on the pending authorization). */
@@ -56,6 +63,14 @@ export interface ClientRedirectPolicy {
    * a public-only policy (loopback) omits it.
    */
   authenticateClient?(args: { clientId?: string; clientSecret?: string }): void | Promise<void>;
+  /**
+   * Known-ness probe: does this policy recognize `clientId`? Optional in
+   * general, but REQUIRED on the `registered` slot when a
+   * `CompositeClientPolicy` composes it WITH a `dynamic` slot — the composite
+   * dispatches a presented `client_id` to whichever policy owns it (static
+   * registry first), for `resolveClient` and `authenticateClient` alike.
+   */
+  hasClient?(clientId: string): boolean | Promise<boolean>;
 }
 
 /**

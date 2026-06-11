@@ -13,6 +13,8 @@ import type { TokenPolicy } from "./token-policy";
 export interface RegisteredClient {
   /** Stable client identifier; the `id_token` `aud`. */
   clientId: string;
+  /** Display name for the consent prompt (rendered as text). Falls back to `clientId`. */
+  clientName?: string;
   /** Exact-match `redirect_uri` allowlist (the safe default). */
   redirectUris?: string[];
   /**
@@ -71,8 +73,14 @@ export class RegisteredClientPolicy implements ClientRedirectPolicy {
       idToken,
       accessToken: client.accessToken === true,
       tokenPolicy: client.tokenPolicy ? structuredClone(client.tokenPolicy) : {},
+      ...(client.clientName !== undefined && { clientName: client.clientName }),
       ...(scope !== undefined && { scope }),
     };
+  }
+
+  /** Known-ness probe for `CompositeClientPolicy` dispatch (static registry, sync). */
+  hasClient(clientId: string): boolean {
+    return this.clients.has(clientId);
   }
 
   authenticateClient(args: { clientId?: string; clientSecret?: string }): void {

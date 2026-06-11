@@ -29,6 +29,26 @@ export {
   type CompositeClientPolicyOptions,
 } from "./composite-client-policy";
 
+// RFC 7591 dynamic client registration (connector-style public clients):
+// store seam + registration operation + the policy slotting into the
+// `CompositeClientPolicy` `dynamic` slot.
+export {
+  DynamicClientStore,
+  DynamicClientStoreMemory,
+  type DynamicClient,
+  type DynamicClientStoreMemoryOptions,
+  type NewDynamicClient,
+} from "./dynamic-client-store";
+export {
+  ClientRegistrationError,
+  DynamicClientRegistration,
+  validateClientRegistration,
+  type ClientRegistrationErrorCode,
+  type ClientRegistrationValidationOptions,
+  type DynamicClientRegistrationOptions,
+} from "./client-registration";
+export { DynamicClientPolicy, type DynamicClientPolicyOptions } from "./dynamic-client-policy";
+
 // Tier-2 OIDC: id_token signing + JWKS, and the pluggable profile-claims seam.
 export {
   IdTokenSigner,
