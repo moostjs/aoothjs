@@ -1738,7 +1738,7 @@ export class AuthWorkflow {
       // when the user already has a confirmed channel.
       const email = result.user.mfa.methods.find((m) => m.name === "email" && m.confirmed);
       if (email) {
-        ctx.email = email.value;
+        (ctx.notice ??= {}).email = email.value;
         (ctx.channel ??= {}).emailConfirmed = true;
       }
       const phone = result.user.mfa.methods.find((m) => m.name === "sms" && m.confirmed);
@@ -1750,7 +1750,7 @@ export class AuthWorkflow {
       // Correspondence fallback — users who proved an inbox WITHOUT enrolling
       // email MFA (invite magic-link, signup / recovery OTP, trusted federated
       // claim) still get security notices.
-      if (!ctx.email) await this.seedCorrespondenceEmail(ctx, result.user);
+      if (!ctx.notice?.email) await this.seedCorrespondenceEmail(ctx, result.user);
     } catch (err) {
       if (err instanceof UserAuthError) {
         if (err.type === "LOCKED") {
@@ -2954,10 +2954,9 @@ export class AuthWorkflow {
       this.users.addMfaMethod(username, { name: methodName, value, confirmed: false }),
     );
     if (isEmail) {
-      // `channel.email` is the ask→verify progress marker (mirrors `phone`);
-      // `ctx.email` doubles as the notice/correspondence recipient and may be
-      // pre-seeded without any code sent, so the gates key on `channel.email`.
-      ctx.email = value;
+      // `channel.email` is the sole enrollment ask→verify target (mirrors
+      // `phone`) — the gates key on it. The security-notice recipient lives on
+      // `notice.email`, refreshed only once `verify/email` proves the inbox.
       (ctx.channel ??= {}).email = value;
     } else {
       (ctx.channel ??= {}).phone = value;
@@ -3014,7 +3013,7 @@ export class AuthWorkflow {
           formMessage: `Please wait ${remainingSec}s before requesting a new code.`,
         });
       }
-      const recipient = (isEmail ? ctx.email : ctx.channel?.phone) as string;
+      const recipient = (isEmail ? ctx.channel?.email : ctx.channel?.phone) as string;
       const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
       await this.deliver({
         kind: "enroll-pincode",
@@ -3038,16 +3037,20 @@ export class AuthWorkflow {
     const channelState = (ctx.channel ??= {});
     if (isEmail) {
       channelState.emailConfirmed = true;
-      // The pincode just verified delivery to `ctx.email` (the address
-      // `ask/email` collected) — record the inbox proof.
-      if (ctx.email) await this.users.setVerifiedEmail(ctx.subject, ctx.email);
+      // The pincode just verified delivery to `channel.email` (the address
+      // `ask/email` collected) — record the inbox proof, and promote the
+      // freshly-proven inbox to the security-notice recipient.
+      if (channelState.email) {
+        await this.users.setVerifiedEmail(ctx.subject, channelState.email);
+        (ctx.notice ??= {}).email = channelState.email;
+      }
     } else {
       channelState.phoneConfirmed = true;
     }
     // Record the OTP-channel disclosure AFTER channel ownership is confirmed.
     if (channelState.otpDisclosure) {
       const channelArg: "email" | "sms" = isEmail ? "email" : "sms";
-      const target = (isEmail ? ctx.email : channelState.phone) as string;
+      const target = (isEmail ? channelState.email : channelState.phone) as string;
       await this.consentStore.recordOtpChannelConsent(
         ctx.subject,
         channelArg,
@@ -3309,13 +3312,14 @@ export class AuthWorkflow {
         code,
         expiresInMs: this.opts.mfa.pincodeTtlMs,
       });
-      // Stash the REAL delivery target (M2 may differ from the typed
-      // identifier) so `pincode-check` can record the inbox proof against the
-      // address the code actually went to.
-      const postReset = (ctx.postReset ??= {});
-      postReset.deliveredTo = target.address;
-      postReset.deliveredChannel = target.channel;
     }
+    // Stash the REAL delivery target (recovery M2 may differ from the typed
+    // identifier) on every branch so `pincode-check` can record the
+    // email-channel inbox proof against the address the code actually went
+    // to. `ctx.otp` is server-only — an unmasked address never hits the wire.
+    const otp = (ctx.otp ??= {});
+    otp.deliveredTo = target.address;
+    otp.deliveredChannel = target.channel;
     const pincode = (ctx.pincode ??= {});
     pincode.sentTo = this.maskAddress(target.address, target.channel);
     pincode.codeLength = this.opts.mfa.pincodeLength;
@@ -3394,11 +3398,15 @@ export class AuthWorkflow {
     }
     const pinErr = this.verifyPin(ctx, input.code);
     if (pinErr) throw this.throwPublic(ctx, wf, { errors: pinErr });
-    (ctx.otp ??= {}).verified = true;
-    // Recovery OTP verified over an EMAIL delivery — the user just proved the
-    // inbox the code went to; record it as the correspondence address.
-    if (ctx.subject && ctx.postReset?.deliveredChannel === "email" && ctx.postReset.deliveredTo) {
-      await this.users.setVerifiedEmail(ctx.subject, ctx.postReset.deliveredTo);
+    const otp = (ctx.otp ??= {});
+    otp.verified = true;
+    // Verified pin DELIVERED to an email address — the user just proved that
+    // inbox; record it as the correspondence address. One uniform rule for
+    // every pincode surface (login email-MFA challenge, recovery M1/M2).
+    // Signup's OTP verifies pre-create (no `ctx.subject`) so it naturally
+    // skips here — its capture stays at `activate-user`.
+    if (ctx.subject && otp.deliveredChannel === "email" && otp.deliveredTo) {
+      await this.users.setVerifiedEmail(ctx.subject, otp.deliveredTo);
     }
     // Re-arm risk step-up so it re-evaluates after this verification.
     (ctx.session ??= {}).riskStepUpEvaluated = false;
@@ -4065,15 +4073,20 @@ export class AuthWorkflow {
    * cookie expired / failed IP binding, must not get the email on every
    * login. Recognition is the loose always-on ledger minted by
    * `device-recognition`; trust stays strict and drives MFA skip only.
+   *
+   * Recipient is `notice.email` — the security-notice slot owned by the
+   * `credentials` / `seedChannelState` seeding and refreshed by
+   * `verify/email`. No recipient seeded → silently skips.
    */
   @Step("notify-new-device")
   @Public()
   async notifyNewDevice(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
-    if (!ctx.email) return undefined;
+    const recipient = ctx.notice?.email;
+    if (!recipient) return undefined;
     await this.deliver({
       kind: "new-device-notice",
       channel: "email",
-      recipient: ctx.email,
+      recipient,
       loginAt: Date.now(),
     });
     return undefined;
@@ -4752,7 +4765,7 @@ export class AuthWorkflow {
   }
 
   /**
-   * Seed `ctx.email` / `ctx.channel` from a resolved user's confirmed channels —
+   * Seed `ctx.notice.email` / `ctx.channel` from a resolved user's confirmed channels —
    * shared by `ssoCallback` (linked / created / auto-linked) and `proveControl`
    * (interactively-linked) so the post-success channel shape can't drift between
    * the two federated entry points. Mirrors `credentials`' post-login seeding,
@@ -4788,7 +4801,7 @@ export class AuthWorkflow {
     }
     const email = user.mfa.methods.find((m) => m.name === "email" && m.confirmed);
     if (email) {
-      ctx.email = email.value;
+      (ctx.notice ??= {}).email = email.value;
       (ctx.channel ??= {}).emailConfirmed = true;
     } else {
       await this.seedCorrespondenceEmail(ctx, user, profile?.email);
@@ -4802,12 +4815,12 @@ export class AuthWorkflow {
   }
 
   /**
-   * Correspondence tail of the `ctx.email` seeding — shared by `credentials`
-   * (post-login) and `seedChannelState` (federated) so the fallback chain
-   * (`users.getCorrespondenceEmail` → optional display email) can't drift
-   * between the two. Does NOT set `channel.emailConfirmed` — that flag means
-   * "confirmed email-MFA channel" and gates enrolment; a correspondence
-   * address is a notice recipient, not a proven OTP channel.
+   * Correspondence tail of the `ctx.notice.email` seeding — shared by
+   * `credentials` (post-login) and `seedChannelState` (federated) so the
+   * fallback chain (`users.getCorrespondenceEmail` → optional display email)
+   * can't drift between the two. Does NOT set `channel.emailConfirmed` — that
+   * flag means "confirmed email-MFA channel" and gates enrolment; a
+   * correspondence address is a notice recipient, not a proven OTP channel.
    */
   private async seedCorrespondenceEmail(
     ctx: AuthWfCtx,
@@ -4815,8 +4828,8 @@ export class AuthWorkflow {
     displayEmail?: string,
   ): Promise<void> {
     const correspondence = await this.users.getCorrespondenceEmail(user);
-    if (correspondence) ctx.email = correspondence;
-    else if (displayEmail) ctx.email = displayEmail;
+    if (correspondence) (ctx.notice ??= {}).email = correspondence;
+    else if (displayEmail) (ctx.notice ??= {}).email = displayEmail;
   }
 
   /**
@@ -5106,13 +5119,13 @@ export class AuthWorkflow {
 
     // Forced channel enrolment. The email pair keys on `channel.email` — the
     // address `ask/email` actually collected and sent a code to — mirroring
-    // the phone pair's `channel.phone`. NEVER on `ctx.email`: that slot
-    // doubles as the notice/correspondence recipient and may be pre-seeded
-    // (verifiedEmail capture, provider display email) without any code sent —
-    // keying on it either skips the ask (pausing on a code form no code was
-    // sent for) or, inverted, breaks the ask→verify resume (`askChannel`
-    // pauses INSIDE `ask/email`; the resume skips past it only because the
-    // stash flips this gate false).
+    // the phone pair's `channel.phone`. NEVER on `notice.email`: that slot is
+    // the security-notice recipient and may be pre-seeded (verifiedEmail
+    // capture, provider display email) without any code sent — keying on it
+    // either skips the ask (pausing on a code form no code was sent for) or,
+    // inverted, breaks the ask→verify resume (`askChannel` pauses INSIDE
+    // `ask/email`; the resume skips past it only because the stash flips this
+    // gate false).
     {
       id: "ask/email",
       condition: (ctx) =>

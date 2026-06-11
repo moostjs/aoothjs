@@ -157,16 +157,31 @@ export interface AuthWfMfaState {
 export interface AuthWfChannelState {
   /**
    * The email address `ask/email` collected and sent the enrollment code to —
-   * the ask→verify progress marker, mirroring `phone`. Deliberately SEPARATE
-   * from `ctx.email` (the notice/correspondence recipient): `ctx.email` may be
-   * seeded from `getCorrespondenceEmail` / a federated profile without any
-   * code ever being sent, so the enrollment gates must never key on it.
+   * the sole enrollment ask→verify target, mirroring `phone`. The enrollment
+   * gates key on it. Deliberately SEPARATE from `notice.email` (the
+   * security-notice recipient): that slot may be seeded from
+   * `getCorrespondenceEmail` / a federated profile without any code ever
+   * being sent, so the enrollment gates must never key on it.
    */
   email?: string;
   emailConfirmed?: boolean;
   phone?: string;
   phoneConfirmed?: boolean;
   otpDisclosure?: string;
+}
+
+/**
+ * Security-notice recipient state (login flow). `email` is the address
+ * `notify-new-device` (and any future security notice) delivers to — owned
+ * by the `credentials` / `seedChannelState` seeding (confirmed email-MFA →
+ * `getCorrespondenceEmail` → provider display email) and refreshed by
+ * `verify/email` once a freshly-proven inbox confirms. Server-only — never
+ * `@wf.context.pass`'d, not mirrored into `ctx.public`. Deliberately
+ * distinct from `channel.email` (the enrollment ask→verify target) and from
+ * the flow-subject `ctx.email` that recovery / invite / signup use.
+ */
+export interface AuthWfNoticeState {
+  email?: string;
 }
 
 /** Device-trust state (login). */
@@ -320,16 +335,6 @@ export interface AuthWfAcceptState {
 export interface AuthWfPostResetState {
   revokeAllSessions?: boolean;
   loginUrl?: string;
-  /**
-   * The address the recovery OTP was ACTUALLY delivered to — the typed
-   * identifier (M1) or the registered confirmed-method value (M2). Stashed by
-   * `pincode-send`'s recovery branch so `pincode-check` can record the inbox
-   * proof (`users.setVerifiedEmail`) against the real destination, never
-   * blindly `ctx.email`. Server-only — never `@wf.context.pass`'d.
-   */
-  deliveredTo?: string;
-  /** Wire channel of that delivery — only `email` constitutes an inbox proof. */
-  deliveredChannel?: "email" | "sms";
 }
 
 /** Recovery alt-actions policy. */
@@ -343,6 +348,16 @@ export interface AuthWfRecoveryAltActions {
  */
 export interface AuthWfOtpState {
   verified?: boolean;
+  /**
+   * The address the last `pincode-send` ACTUALLY delivered to — login MFA
+   * email/SMS challenge, recovery M1 (typed identifier) / M2 (registered
+   * method), and signup's reuse of the recovery pair. Server-only — never
+   * `@wf.context.pass`'d. The email-channel case is consumed by
+   * `pincode-check` as inbox proof (`users.setVerifiedEmail`).
+   */
+  deliveredTo?: string;
+  /** Wire channel of that delivery — only `email` constitutes an inbox proof. */
+  deliveredChannel?: "email" | "sms";
 }
 
 /** Invite admin-side (Phase A) state. */
@@ -639,6 +654,12 @@ export interface AuthWfCtx {
   // ── Identity ── `subject` is the stable user id (the token subject), set by
   // the credentials/change-password/invite steps and passed to `auth.issue`.
   subject?: string;
+  /**
+   * Flow-subject address — the typed recovery identifier, the invite target,
+   * or the signup email. The LOGIN flow does NOT use this slot: its
+   * security-notice recipient is `notice.email` and its enrollment
+   * ask→verify target is `channel.email`.
+   */
   email?: string;
   defaults?: AuthWfDefaults;
 
@@ -696,6 +717,7 @@ export interface AuthWfCtx {
   // ── Per-event state groups ──
   mfa?: AuthWfMfaState; // [login + invite]
   channel?: AuthWfChannelState; // [login]
+  notice?: AuthWfNoticeState; // [login] — server-only security-notice recipient
   trust?: AuthWfTrustState; // [login]
   session?: AuthWfSessionState; // [login]
   altActions?: AuthWfAltActionsState; // [login]

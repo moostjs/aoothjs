@@ -877,6 +877,66 @@ describe("verified correspondence email capture", () => {
     expect(after.account.active).toBe(true);
   });
 
+  it("notify-new-device — recipient comes from notice.email, never the flow-subject ctx.email", async () => {
+    // WHY: the security-notice recipient has its OWN ctx slot (`notice.email`,
+    // owned by the credentials/seedChannelState seeding) — deliberately
+    // distinct from the flow-subject `ctx.email` recovery/invite/signup use
+    // and from `channel.email` (the enrollment ask→verify target). A
+    // regression that reads `ctx.email` again would mail security notices to
+    // an enrollment-typed (yet unproven) address.
+    const wf = makeWorkflow();
+    // Flow-subject email alone → no recipient seeded → silently skips.
+    await wf.notifyNewDevice({ email: "subject@example.com" } as AuthWfCtx);
+    expect(wf.deliveries).toEqual([]);
+    await wf.notifyNewDevice({ notice: { email: "inbox@example.com" } } as AuthWfCtx);
+    expect(wf.deliveries).toEqual([
+      expect.objectContaining({
+        kind: "new-device-notice",
+        channel: "email",
+        recipient: "inbox@example.com",
+      }),
+    ]);
+  });
+
+  it("pincode-send — stashes the ACTUAL delivery target on ctx.otp (every branch, replaces the recovery-only postReset stash)", async () => {
+    // WHY: `ctx.otp.deliveredTo`/`deliveredChannel` is the uniform inbox-proof
+    // input `pincode-check` consumes (`users.setVerifiedEmail`) — for login
+    // email-MFA challenges AND recovery, not just recovery as before. It must
+    // record what the code was actually DELIVERED to (recovery M2 may differ
+    // from the typed identifier), and it lives on server-only `ctx.otp` so an
+    // unmasked address never rides the wire-passed `pincode` group.
+    // Recovery/signup branch (no ctx.mfa.method): the typed identifier.
+    const wf = makeWorkflow();
+    const recoveryCtx = { email: "typed@example.com" } as AuthWfCtx;
+    await wf.pincodeSend(recoveryCtx);
+    expect(recoveryCtx.otp?.deliveredTo).toBe("typed@example.com");
+    expect(recoveryCtx.otp?.deliveredChannel).toBe("email");
+    // The old recovery-only stash is gone — nothing writes postReset here.
+    expect(recoveryCtx.postReset).toBeUndefined();
+    expect(wf.deliveries).toEqual([
+      expect.objectContaining({ kind: "recovery-pincode", recipient: "typed@example.com" }),
+    ]);
+
+    // Login MFA email-challenge branch: the enrolled method's RAW value.
+    const { wf: mfaWf, users } = makeWorkflowWithDeps();
+    const row = await users.createUser("bob@example.com", undefined, {});
+    await users.addMfaMethod(row.id, { name: "email", value: "mfa@example.com", confirmed: true });
+    const mfaCtx = {
+      subject: row.id,
+      mfa: {
+        method: "email",
+        enrolledMethods: [{ kind: "email", methodName: "email", masked: "m***", isDefault: true }],
+      },
+    } as AuthWfCtx;
+    await mfaWf.pincodeSend(mfaCtx);
+    expect(mfaCtx.otp?.deliveredTo).toBe("mfa@example.com");
+    expect(mfaCtx.otp?.deliveredChannel).toBe("email");
+    // NOTE: the consuming half (`pincode-check` → `users.setVerifiedEmail`
+    // when deliveredChannel === "email") and `verify/email`'s notice.email
+    // refresh both sit behind wf composables (`useAtscriptWfPublic`), so
+    // they're covered integration-level by the Playwright suite, not here.
+  });
+
   it("signup — the reused activate-user step stamps verifiedEmail after signup-create-user (pre-create OTP proof)", async () => {
     const { wf, users } = makeWorkflowWithDeps();
     const ctx = { email: "fresh@example.com", otp: { verified: true } } as AuthWfCtx;
