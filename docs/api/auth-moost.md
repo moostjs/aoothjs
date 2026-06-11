@@ -561,22 +561,27 @@ class AuthorizeController {
   //        @Inject(PENDING_AUTHORIZATION_STORE_TOKEN) pending,
   //        @Inject(AUTH_CODE_STORE_TOKEN) codes)
   authorize(/* @Query response_type, client_id?, redirect_uri, state?, code_challenge,
-                code_challenge_method, scope?, nonce? */): Promise<string>; // GET authorize  → 302
-  token(/* @Body { grant_type, code, code_verifier, client_id?, client_secret? } */): Promise<
+                code_challenge_method, scope?, nonce?, resource? */): Promise<string>; // GET authorize → 302
+  token(/* @Body { grant_type, code, code_verifier, client_id?, client_secret?, resource? } */): Promise<
     TokenSuccess | TokenError
   >; //                                     POST token
   discovery(): OidcDiscoveryDocument | TokenError; //   GET .well-known/openid-configuration (Tier 2)
   jwks(): Promise<{ keys: JWK[] }> | TokenError; //     GET jwks                             (Tier 2)
-  // override seams (Tier 2 — getters, NOT DI; see below):
+  oauthServerMetadata(): AuthorizationServerMetadata | TokenError; // GET .well-known/oauth-authorization-server
+  register(/* @Body RFC 7591 metadata */): Promise<unknown>; //      POST register (404 unless DCR wired)
+  // override seams (getters, NOT DI; see below):
   protected getIdTokenSigner(): IdTokenSigner | undefined; //      default: undefined → 404 / no id_token
   protected getOidcClaimsResolver(): OidcClaimsResolver; //        default: NoopOidcClaimsResolver
   protected loginPath(): string; //                               default: "/login"
+  protected getIssuer(): string | undefined; //                   default: signer?.issuer — override for signer-less RFC 8414
+  protected getDynamicClientRegistration(): DynamicClientRegistration | undefined; // default: undefined → DCR off
+  protected scopesSupported(): string[] | undefined; //           default: undefined (RFC 8414 scopes_supported)
 }
 ```
 
-All routes are `@Public()`. `authorize` runs the trust gate (`policy.resolveClient`) FIRST, records the pending authorization (authority fixed here, plus a per-request browser-binding secret), drops the `aooth_authz` binding cookie, and 302s `/login?authz=<handle>`. The login workflow's `authz-consent` step then re-verifies that cookie and requires the user to explicitly approve the client before `mint-authz-code` mints a code (see [Consent gate & browser binding](/moost/authorization-server#consent-gate-browser-binding)). `token` consumes the single-use code, verifies PKCE, authenticates the client (Tier 2), and mints the access token and/or `id_token` — off the browser. `discovery` / `jwks` 404 when no signer is wired (Tier-1-only).
+All routes are `@Public()`. `authorize` runs the trust gate (`policy.resolveClient`) FIRST, records the pending authorization (authority fixed here — incl. the resolved `clientName` for consent and the RFC 8707 `resource`, plus a per-request browser-binding secret), drops the `aooth_authz` binding cookie, and 302s `/login?authz=<handle>`. A repeated or oversized `resource` fails soft with `error=invalid_target`; the trust-gate 400 body is deliberately generic (with self-registered clients, distinguishing `invalid_client` from `invalid_redirect` is a client_id-existence oracle). The login workflow's `authz-consent` step then re-verifies the cookie and requires the user to explicitly approve the client before `mint-authz-code` mints a code (see [Consent gate & browser binding](/moost/authorization-server#consent-gate-browser-binding)). `token` consumes the single-use code, verifies PKCE, authenticates the client, checks `resource` consistency (both legs present and different → `400 invalid_target`), and mints the access token and/or `id_token` — off the browser. `discovery` / `jwks` 404 when no signer is wired; `oauthServerMetadata` is **signer-independent** (404 only when `getIssuer()` is undefined) and advertises `registration_endpoint` when DCR is wired — as does `discovery` in a combined deployment. `register` is the RFC 7591 endpoint: JSON-only, 201 echoes all registered (server-narrowed) metadata with `client_id_issued_at` in seconds and **no secret fields**; `ClientRegistrationError` → `400 { error, error_description }`. See [Wiring — MCP connectors](/moost/authorization-server#wiring-mcp-connectors).
 
-**The signer / claims resolver are getters, not DI tokens.** An optional `@Inject`/`@Optional` dependency panics in moost's `resolveMoost` route-table pass (triggered by `AuthController`'s `@MoostInit` refresh-cookie hook → _"Class is not Injectable and not Optional"_). A subclass overrides `getIdTokenSigner()` / `getOidcClaimsResolver()` and is registered in place of the base class (re-declare the ctor with the same three `@Inject` tokens — moost@0.6.x doesn't inherit `@Inject` across `extends`).
+**The optional dependencies are getters, not DI tokens.** An optional `@Inject`/`@Optional` dependency panics in moost's `resolveMoost` route-table pass (triggered by `AuthController`'s `@MoostInit` refresh-cookie hook → _"Class is not Injectable and not Optional"_). A subclass overrides `getIdTokenSigner()` / `getOidcClaimsResolver()` / `getIssuer()` / `getDynamicClientRegistration()` / `scopesSupported()` and is registered in place of the base class (re-declare the ctor with the same `@Inject` tokens — moost@0.6.x doesn't inherit `@Inject` across `extends`). Never derive `getIssuer()` from the Host header — the metadata document is cacheable.
 
 ### `AuthorizeRuntime`
 
@@ -598,9 +603,14 @@ DI holder bundling the two stores the login-wf `mint-authz-code` terminal needs 
 const CLIENT_REDIRECT_POLICY_TOKEN = "aooth:ClientRedirectPolicy";
 const PENDING_AUTHORIZATION_STORE_TOKEN = "aooth:PendingAuthorizationStore";
 const AUTH_CODE_STORE_TOKEN = "aooth:AuthCodeStore";
+const DYNAMIC_CLIENT_STORE_TOKEN = "aooth:DynamicClientStore";
 ```
 
-Provide the concrete `ClientRedirectPolicy` (a `LoopbackClientPolicy`, `RegisteredClientPolicy`, or `CompositeClientPolicy`) + the two stores under these strings — all three are abstract/interface deps with no class reference to inject by.
+Provide the concrete `ClientRedirectPolicy` (a `LoopbackClientPolicy`, `RegisteredClientPolicy`, or `CompositeClientPolicy`) + the two stores under these strings — all abstract/interface deps with no class reference to inject by. `DYNAMIC_CLIENT_STORE_TOKEN` is for a DCR-enabling subclass: the **base** controller never injects it (DCR is optional, and an optional `@Inject` panics — see above); the subclass adds it as a required ctor param, builds a `DynamicClientRegistration` around it, and overrides the getter.
+
+### Discovery / DCR re-exports
+
+`buildAuthorizationServerMetadata`, `buildProtectedResourceMetadata`, `buildWwwAuthenticateBearerChallenge`, `canonicalizeIssuer`, and `DynamicClientRegistration` (+ their option/document types) are re-exported from [`@aooth/auth/authz`](/api/auth#authz-subpath) so a consumer can mount the root-level discovery documents (the RFC 8414 path-insertion form + the RFC 9728 PRM) and the 401 challenge from one import. See [Root-mounted discovery](/moost/authorization-server#wiring-mcp-connectors).
 
 ### Browser-binding cookie
 

@@ -522,7 +522,18 @@ new AuthCodeStoreAtscriptDb(opts: {
 })
 ```
 
-Durable (multi-pod) implementations of the two authorization-server stores from [`@aooth/auth/authz`](#authz-subpath) — drop-in under the same `PENDING_AUTHORIZATION_STORE_TOKEN` / `AUTH_CODE_STORE_TOKEN`. Back them with the raw `.as` models (`@aooth/auth/atscript-db/pending-authorization` + `…/auth-code`). The grant's `tokenPolicy` persists as a JSON string (its `payload` is an open record a closed `@db.json` would reject). `AuthCodeStoreAtscriptDb.consume` is an atomic check-and-delete — it reads the row, then `deleteOne(code)`, and only the caller whose delete reports `deletedCount === 1` wins the row (single-use under a concurrent double-redeem / back-button replay), so no version column is needed. See [Authorization Server](/moost/authorization-server).
+Durable (multi-pod) implementations of the two authorization-server stores from [`@aooth/auth/authz`](#authz-subpath) — drop-in under the same `PENDING_AUTHORIZATION_STORE_TOKEN` / `AUTH_CODE_STORE_TOKEN`. Back them with the raw `.as` models (`@aooth/auth/atscript-db/pending-authorization` + `…/auth-code`). The grant's `tokenPolicy` persists as a JSON string (its `payload` is an open record a closed `@db.json` would reject). `AuthCodeStoreAtscriptDb.consume` is an atomic check-and-delete — it reads the row, then `deleteOne(code)`, and only the caller whose delete reports `deletedCount === 1` wins the row (single-use under a concurrent double-redeem / back-button replay), so no version column is needed. Both models carry nullable `resource` (RFC 8707) — and pending also `clientName` (consent display) — so **run your schema sync after upgrading**: connector clients always send `resource`, and an un-synced column fails at the `/authorize` insert. See [Authorization Server](/moost/authorization-server).
+
+### `DynamicClientStoreAtscriptDb`
+
+```ts
+new DynamicClientStoreAtscriptDb(opts: {
+  table: DynamicClientTable; // db.getTable(AoothDynamicClient)
+  clock?: Clock;
+})
+```
+
+Durable `DynamicClientStore` (RFC 7591 registrations) over the `@aooth/auth/atscript-db/dynamic-client` model (`AoothDynamicClient`, table `aooth_dynamic_clients`) — long-lived rows, since a connector caches its `client_id` across grants. `redirectUris`/`grantTypes`/`responseTypes` persist as JSON-string columns (the `tokenPolicy` precedent — engine-portable; matching happens in `DynamicClientPolicy` after parse). `deleteUnusedBefore` is one mass delete over `createdAt < cutoff && lastUsedAt unset` (never-used GC); `touch` is a portable `findOne` + `replaceOne`. See [Wiring — MCP connectors](/moost/authorization-server#wiring-mcp-connectors).
 
 ### `AuthCredentialRow<TPayload>`
 
@@ -615,11 +626,66 @@ Tier-2 policy: a static registry of first-party clients. Authorizes the client +
 
 ```ts
 class CompositeClientPolicy implements ClientRedirectPolicy {
-  constructor(opts: { loopback: ClientRedirectPolicy; registered: ClientRedirectPolicy });
+  constructor(opts: {
+    loopback: ClientRedirectPolicy;
+    registered?: ClientRedirectPolicy;
+    dynamic?: ClientRedirectPolicy;
+  });
 }
 ```
 
-Runs Tier 1 + Tier 2 side by side, dispatching on the **presence of `client_id`** (a request with one → `registered`, without → `loopback`). Each sub-policy still owns its own redirect validation.
+Runs the tiers side by side, dispatching on the **presence and ownership of `client_id`**: absent → `loopback`; present → `registered` when its `hasClient()` knows the id (static-first — a dynamic registration can never shadow a static client), else `dynamic`. `authenticateClient` routes through the same picker. At least one of `registered`/`dynamic` is required; with both, `registered` must implement `hasClient` (validated at construction). Each sub-policy still owns its own redirect validation.
+
+### `DynamicClientPolicy`
+
+```ts
+class DynamicClientPolicy implements ClientRedirectPolicy {
+  constructor(opts: {
+    store: DynamicClientStore;
+    tokenPolicy?: TokenPolicy; // default { kind: 'dynamic-session', ttl: 30d }
+    allowedScopes?: string[]; // server-side bound: granted = requested ∩ this ∩ registration scope
+    clock?: Clock;
+  });
+  resolveClient(args: { clientId?; redirectUri; scope? }): Promise<ResolvedClient>;
+  authenticateClient(args: { clientId?; clientSecret? }): Promise<void>; // existence re-check; PKCE binds
+  hasClient(clientId: string): Promise<boolean>;
+}
+```
+
+Policy for RFC 7591 dynamically-registered public clients (MCP connectors) — the `dynamic` slot of `CompositeClientPolicy`. `https` redirects are exact-matched; loopback entries are port-agnostic (RFC 8252). Mints an access token only — **no `id_token`**. A registration deleted/GC'd between authorize and redemption fails closed at `/token`. See [Wiring — MCP connectors](/moost/authorization-server#wiring-mcp-connectors).
+
+### `DynamicClientRegistration`
+
+```ts
+class DynamicClientRegistration {
+  constructor(opts: {
+    store: DynamicClientStore;
+    maxClients?: number; // default 1000 — reject-when-full, never evicts
+    unusedClientTtlMs?: number; // lazy GC of never-used registrations; omit = off
+    guard?: (args: { metadata: NewDynamicClient }) => void | Promise<void>;
+    validation?: ClientRegistrationValidationOptions;
+    clock?: Clock;
+  });
+  register(body: unknown): Promise<DynamicClient>; // validate → guard → GC → cap → persist
+}
+```
+
+The RFC 7591 registration operation behind `POST {issuer}/register` — `@aooth/auth-moost`'s endpoint is a thin HTTP adapter over `register()`, and non-moost servers call it directly. Throws `ClientRegistrationError` on invalid metadata; the guard throws one to reject with a custom reason (any other throw is a server fault). `validateClientRegistration(body, opts?)` is also exported standalone.
+
+### Discovery / challenge builders
+
+```ts
+function buildAuthorizationServerMetadata(
+  opts: BuildAuthorizationServerMetadataOptions,
+): AuthorizationServerMetadata;
+function buildProtectedResourceMetadata(
+  opts: BuildProtectedResourceMetadataOptions,
+): ProtectedResourceMetadata;
+function buildWwwAuthenticateBearerChallenge(opts?: WwwAuthenticateBearerChallengeOptions): string;
+function canonicalizeIssuer(issuer: string): string; // trailing-slash strip (RFC 8414 exactness)
+```
+
+Pure, framework-free builders for the RFC 8414 AS-metadata document, the RFC 9728 protected-resource document, and the RFC 6750 `WWW-Authenticate: Bearer …` header **value** (every value sanitized — control characters stripped, quotes escaped). Re-exported by `@aooth/auth-moost`; consumers use them to mount the root-level discovery forms a prefix-mounted controller can't serve. See [Root-mounted discovery](/moost/authorization-server#wiring-mcp-connectors).
 
 ### `OidcClaimsResolver` / `NoopOidcClaimsResolver`
 
@@ -635,14 +701,15 @@ class NoopOidcClaimsResolver extends OidcClaimsResolver {} // emits {} → sub-o
 
 Supplies the **profile** claims (`email`/`email_verified`/`name`/…) for an `id_token` — the part that depends on the consumer's user shape. The registered claims (`iss`/`aud`/`sub`/`iat`/`exp`/`nonce`) are owned by the controller. Honour the granted `scope` with `scopeGrants`.
 
-### `PendingAuthorizationStoreMemory` / `AuthCodeStoreMemory`
+### `PendingAuthorizationStoreMemory` / `AuthCodeStoreMemory` / `DynamicClientStoreMemory`
 
 ```ts
 class PendingAuthorizationStoreMemory extends PendingAuthorizationStore {}
 class AuthCodeStoreMemory extends AuthCodeStore {}
+class DynamicClientStoreMemory extends DynamicClientStore {}
 ```
 
-In-memory implementations of the two short-lived server-side stores (for tests / single-process). `AuthCodeStore.consume()` is single-use + atomic. A multi-pod deployment swaps the durable `PendingAuthorizationStoreAtscriptDb` / `AuthCodeStoreAtscriptDb` (see the [`@aooth/auth/atscript-db` subpath](#subpath-aooth-auth-atscript-db)) under the same DI tokens.
+In-memory implementations of the server-side stores (for tests / single-process). `AuthCodeStore.consume()` is single-use + atomic. `DynamicClientStore` is the long-lived RFC 7591 registration store (`create`/`get`/`delete`/`count`/`touch`/`deleteUnusedBefore` — GC targets **never-used** rows only). A multi-pod deployment swaps the durable `…AtscriptDb` adapters (see the [`@aooth/auth/atscript-db` subpath](#subpath-aooth-auth-atscript-db)) under the same DI tokens.
 
 ### Functions
 
@@ -652,13 +719,17 @@ In-memory implementations of the two short-lived server-side stores (for tests /
 ### Types
 
 - `TokenPolicy` — `{ kind?, ttl?, payload? }`. What the grant mints, decided by the policy (never the client request) and recorded at `/authorize` time. `payload` carries `@arbac.attenuate.*` fields for a scoped token; omit for full authority.
-- `ResolvedClient` — the policy's verdict: `{ clientId?, redirectUri, tokenPolicy, scope?, idToken?, accessToken?, audience? }`.
-- `RegisteredClient` — `{ clientId, redirectUris?, redirectPrefixes?, type?='public', clientSecret?, idToken?=true, accessToken?=false, scopes?, tokenPolicy? }`.
+- `ResolvedClient` — the policy's verdict: `{ clientId?, clientName?, redirectUri, tokenPolicy, scope?, idToken?, accessToken?, audience? }`. `clientName` is untrusted display text for the consent prompt (rendered as text, paired with the validated redirect host).
+- `RegisteredClient` — `{ clientId, clientName?, redirectUris?, redirectPrefixes?, type?='public', clientSecret?, idToken?=true, accessToken?=false, scopes?, tokenPolicy? }`.
+- `DynamicClient` / `NewDynamicClient` — a stored RFC 7591 registration: `{ clientId, clientName?, redirectUris, tokenEndpointAuthMethod: 'none', grantTypes, responseTypes, scope?, createdAt, lastUsedAt? }` (`lastUsedAt` unset = never used, the GC target).
+- `ClientRegistrationValidationOptions` — registration caps: `{ maxRedirectUris?=5, maxRedirectUriLength?=512, maxClientNameLength?=128, maxScopeLength?=256, allowedScopes? }`.
 - `IdTokenClaims` — `{ sub, aud, nonce?, ttlSec?, extra? }` (the `extra` map is the resolver's profile claims).
 - `IdTokenAlg` — `'RS256' | 'ES256'`.
-- `ClientRedirectPolicy` — the policy interface (`resolveClient` + optional `authenticateClient`).
-- `PendingAuthorizationStore` / `AuthCodeStore` — the abstract store contracts. A pending-authorization record carries a `binding` secret (the value of the `aooth_authz` browser-binding cookie) alongside the request fields — a custom durable store **must** round-trip it, or the consent gate's binding check fails closed. See [Consent gate & browser binding](/moost/authorization-server#consent-gate-browser-binding).
+- `ClientRedirectPolicy` — the policy interface (`resolveClient` + optional `authenticateClient` + optional `hasClient` — the known-ness probe `CompositeClientPolicy` dispatches by).
+- `PendingAuthorizationStore` / `AuthCodeStore` / `DynamicClientStore` — the abstract store contracts. A pending-authorization record carries a `binding` secret (the value of the `aooth_authz` browser-binding cookie), plus `clientName?` (consent display, snapshot at authorize) and `resource?` (RFC 8707, consistency-checked at `/token`); the auth-code record carries `resource?` too. A custom durable store **must** round-trip `binding`, or the consent gate's binding check fails closed. See [Consent gate & browser binding](/moost/authorization-server#consent-gate-browser-binding).
+- `AuthorizationServerMetadata` / `ProtectedResourceMetadata` (+ the `Build…Options` inputs) and `WwwAuthenticateBearerChallengeOptions` — the builders' wire-document / option shapes.
 
 ### Errors
 
-- `AuthorizeError` (`code: AuthorizeErrorCode`) — `'invalid_request' | 'invalid_client' | 'invalid_grant' | 'invalid_redirect' | 'access_denied' | 'unauthorized_client' | 'server_error'`. Thrown by the policies; mapped to the OAuth error responses by the controller.
+- `AuthorizeError` (`code: AuthorizeErrorCode`) — `'invalid_request' | 'invalid_client' | 'invalid_grant' | 'invalid_redirect' | 'access_denied' | 'unauthorized_client' | 'invalid_target' | 'server_error'`. Thrown by the policies; mapped to the OAuth error responses by the controller. `invalid_target` is RFC 8707's code (repeated/oversized `resource`, or a `/token`-leg mismatch).
+- `ClientRegistrationError` (`code: ClientRegistrationErrorCode`) — `'invalid_redirect_uri' | 'invalid_client_metadata'`, the RFC 7591 §3.2.2 vocabulary; `message` becomes the response's `error_description`. Thrown by `validateClientRegistration` / `DynamicClientRegistration.register` (and by a `guard` to reject a registration).
