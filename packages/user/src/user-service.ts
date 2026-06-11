@@ -58,9 +58,29 @@ function resolveConfig(config?: UserServiceConfig): ResolvedConfig {
 // record enforces expiry + IP binding on top.
 const DEVICE_TRUST_TOKEN_BYTES = 32;
 const DEVICE_TRUST_SEPARATOR = ".";
+// Recognition ledger cap — beyond this, least-recently-verified records
+// (smallest `expiresAt`) are evicted on `addSeenDevice`.
+const SEEN_DEVICES_DEFAULT_CAP = 5;
 
 function signDeviceTrust(secret: string, payload: string): string {
   return createHmac("sha256", secret).update(payload).digest("hex");
+}
+
+// Domain-separated HMAC payloads — kept adjacent so it stays obvious the two
+// token kinds can never be interchangeable (trust skips MFA; seen only
+// suppresses the new-sign-in notification).
+function trustedDevicePayload(userId: string, raw: string, ip?: string): string {
+  return `${userId}|${raw}|${ip ?? ""}`;
+}
+
+function seenDevicePayload(userId: string, raw: string): string {
+  return `seen|${userId}|${raw}`;
+}
+
+function parseDeviceTrustToken(token: string): { raw: string; sig: string } | undefined {
+  const sepIdx = token.lastIndexOf(DEVICE_TRUST_SEPARATOR);
+  if (sepIdx <= 0) return undefined;
+  return { raw: token.slice(0, sepIdx), sig: token.slice(sepIdx + 1) };
 }
 
 function deviceTrustSafeEqual(a: string, b: string): boolean {
@@ -519,7 +539,7 @@ export class UserService<T extends object = object> {
   ): TrustedDeviceRecord {
     const secret = this.requireDeviceTrustSecret();
     const raw = randomBytes(DEVICE_TRUST_TOKEN_BYTES).toString("hex");
-    const sig = signDeviceTrust(secret, `${userId}|${raw}|${opts.ip ?? ""}`);
+    const sig = signDeviceTrust(secret, trustedDevicePayload(userId, raw, opts.ip));
     const now = this.config.clock();
     return {
       token: `${raw}${DEVICE_TRUST_SEPARATOR}${sig}`,
@@ -549,12 +569,10 @@ export class UserService<T extends object = object> {
    */
   async verifyTrustedDevice(userId: string, token: string, ip?: string): Promise<boolean> {
     const secret = this.requireDeviceTrustSecret();
-    const sepIdx = token.lastIndexOf(DEVICE_TRUST_SEPARATOR);
-    if (sepIdx <= 0) return false;
-    const raw = token.slice(0, sepIdx);
-    const sig = token.slice(sepIdx + 1);
-    const expectedSig = signDeviceTrust(secret, `${userId}|${raw}|${ip ?? ""}`);
-    if (!deviceTrustSafeEqual(sig, expectedSig)) return false;
+    const parsed = parseDeviceTrustToken(token);
+    if (!parsed) return false;
+    const expectedSig = signDeviceTrust(secret, trustedDevicePayload(userId, parsed.raw, ip));
+    if (!deviceTrustSafeEqual(parsed.sig, expectedSig)) return false;
 
     const user = await this.store.findById(userId);
     if (!user) return false;
@@ -592,6 +610,121 @@ export class UserService<T extends object = object> {
       throw new Error("UserService: deviceTrust.secret is required to use trusted-device APIs");
     }
     return secret;
+  }
+
+  // ---- seen devices (recognition ledger) ----
+  // Same token format and signing secret as trust; domain separation lives in
+  // `seenDevicePayload` vs `trustedDevicePayload` above.
+
+  /**
+   * Mint a freshly-signed recognition record (does NOT persist — pair with
+   * `addSeenDevice`). No IP binding — recognition is pure noise control.
+   * Throws when `deviceTrust.secret` is unset.
+   */
+  issueSeenDevice(userId: string, opts: { ttlMs: number; name?: string }): TrustedDeviceRecord {
+    const secret = this.requireDeviceTrustSecret();
+    const raw = randomBytes(DEVICE_TRUST_TOKEN_BYTES).toString("hex");
+    const sig = signDeviceTrust(secret, seenDevicePayload(userId, raw));
+    const now = this.config.clock();
+    return {
+      token: `${raw}${DEVICE_TRUST_SEPARATOR}${sig}`,
+      issuedAt: now,
+      expiresAt: now + opts.ttlMs,
+      ...(opts.name !== undefined && { name: opts.name }),
+    };
+  }
+
+  /**
+   * Append a recognition record to the user's `seenDevices` ledger and enforce
+   * the cap (default 5): expired records are dropped first, then the
+   * least-recently-verified records (smallest `expiresAt` — verification
+   * slides it, so it doubles as the LRU key) are evicted until at cap.
+   * Read-modify-write under CAS — the array shape is preserved end-to-end so
+   * DB adapters with a merge strategy replace the whole array.
+   */
+  async addSeenDevice(
+    id: string,
+    record: TrustedDeviceRecord,
+    opts?: { cap?: number },
+  ): Promise<void> {
+    const cap = opts?.cap ?? SEEN_DEVICES_DEFAULT_CAP;
+    await this.store.withCas(id, (user) => {
+      let next = [...(user.seenDevices ?? []), record];
+      if (next.length > cap) {
+        const now = this.config.clock();
+        next = next.filter((r) => r.expiresAt > now);
+        if (next.length > cap) {
+          // `next` is already a fresh copy — sort in place, keep the cap newest.
+          next.sort((a, b) => a.expiresAt - b.expiresAt);
+          next = next.slice(next.length - cap);
+        }
+      }
+      return { set: { seenDevices: next } as DeepPartial<UserCredentials> };
+    });
+  }
+
+  /**
+   * Returns true when the supplied token signs against the user with the
+   * configured secret (recognition domain) AND matches a persisted
+   * `seenDevices` record still within its expiry window. On a valid hit with
+   * `opts.slideTtlMs` set, the record's `expiresAt` is slid to
+   * `clock() + slideTtlMs` under CAS — the LRU bump. Never throws on a bad
+   * token (only on a missing secret, mirroring `verifyTrustedDevice`).
+   */
+  async verifySeenDevice(
+    userId: string,
+    token: string,
+    opts?: { slideTtlMs?: number },
+  ): Promise<boolean> {
+    const secret = this.requireDeviceTrustSecret();
+    const parsed = parseDeviceTrustToken(token);
+    if (!parsed) return false;
+    const expectedSig = signDeviceTrust(secret, seenDevicePayload(userId, parsed.raw));
+    if (!deviceTrustSafeEqual(parsed.sig, expectedSig)) return false;
+
+    const user = await this.store.findById(userId);
+    if (!user) return false;
+    const now = this.config.clock();
+    const found = (user.seenDevices ?? []).find((r) => r.token === token && r.expiresAt > now);
+    if (!found) return false;
+
+    const slideTtlMs = opts?.slideTtlMs;
+    if (slideTtlMs !== undefined) {
+      await this.store.withCas(userId, (current) => {
+        const list = current.seenDevices ?? [];
+        const idx = list.findIndex((r) => r.token === token);
+        if (idx === -1) return null;
+        const next = [...list];
+        next[idx] = { ...next[idx], expiresAt: this.config.clock() + slideTtlMs };
+        return { set: { seenDevices: next } as DeepPartial<UserCredentials> };
+      });
+    }
+    return true;
+  }
+
+  async listSeenDevices(id: string): Promise<TrustedDeviceRecord[]> {
+    const user = await this.getUser(id);
+    return user.seenDevices ?? [];
+  }
+
+  /**
+   * Clear the whole recognition ledger. No-op safe when the ledger is absent
+   * or already empty.
+   */
+  async revokeSeenDevices(id: string): Promise<void> {
+    const user = await this.store.findById(id);
+    if (!user || (user.seenDevices ?? []).length === 0) return;
+    await this.store.update(id, {
+      set: { seenDevices: [] } as DeepPartial<UserCredentials>,
+    });
+  }
+
+  /**
+   * True when `deviceTrust.secret` is configured — lets the workflow layer
+   * skip device recognition entirely (degrade gracefully) instead of throwing.
+   */
+  hasDeviceTrustSecret(): boolean {
+    return !!this.config.deviceTrust?.secret;
   }
 
   // ---- private helpers ----

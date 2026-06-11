@@ -18,6 +18,16 @@ export interface UserCredentials {
    * Absent when the user has never opted in.
    */
   trustedDevices?: TrustedDeviceRecord[];
+  /**
+   * Recognition ledger — devices that completed a login. Used purely to
+   * suppress the "new sign-in" notification; carries NO security bypass
+   * (unlike `trustedDevices`, which skips MFA). Same record shape as trust
+   * (`ip` stays unused for recognition). Capped + LRU-evicted by most-recent
+   * verification — `expiresAt` is the LRU key, since verification slides it.
+   * Managed by `UserService.{issue,add,verify,list}SeenDevice` /
+   * `revokeSeenDevices`.
+   */
+  seenDevices?: TrustedDeviceRecord[];
 }
 
 export interface TrustedDeviceRecord {
@@ -92,11 +102,12 @@ export interface UserServiceConfig {
   clock?: () => number;
   /**
    * Device-trust config. Required (with a non-empty `secret`) when any
-   * `issueTrustedDevice` / `verifyTrustedDevice` API is called; the methods
-   * throw clearly when invoked without it.
+   * `issueTrustedDevice` / `verifyTrustedDevice` API — or any `*SeenDevice`
+   * recognition API, which reuses the same secret with a domain-separated
+   * payload — is called; the methods throw clearly when invoked without it.
    */
   deviceTrust?: {
-    /** HMAC-SHA256 signing secret for trust-device tokens. */
+    /** HMAC-SHA256 signing secret for trust-device and seen-device (recognition) tokens. */
     secret: string;
   };
 }

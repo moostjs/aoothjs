@@ -197,6 +197,15 @@ const DEFAULT_FORMS: ResolvedAuthWorkflowOpts["forms"] = {
 };
 
 function mergeAuthWorkflowOpts(opts: Partial<AuthWorkflowOpts>): ResolvedAuthWorkflowOpts {
+  // Merge deviceTrust FIRST — the recognition cookie name is derived from the
+  // MERGED trust cookie name (`<trustCookie>_seen`), so a consumer renaming
+  // the trust cookie gets a matching recognition name without a second knob.
+  const deviceTrust = {
+    cookieName: "aooth_trusted_device",
+    ttlMs: 24 * 60 * 60_000,
+    bindsTo: "cookie" as const,
+    ...opts.deviceTrust,
+  };
   return {
     autoLoginOnInvite: opts.autoLoginOnInvite ?? true,
     autoLoginOnRecover: opts.autoLoginOnRecover ?? false,
@@ -209,11 +218,11 @@ function mergeAuthWorkflowOpts(opts: Partial<AuthWorkflowOpts>): ResolvedAuthWor
     recoveryStateTtlMs: opts.recoveryStateTtlMs ?? 60 * 60 * 1000,
     loginUrl: opts.loginUrl ?? "/login",
     totpIssuer: opts.totpIssuer ?? "aooth",
-    deviceTrust: {
-      cookieName: "aooth_trusted_device",
-      ttlMs: 24 * 60 * 60_000,
-      bindsTo: "cookie",
-      ...opts.deviceTrust,
+    deviceTrust,
+    deviceRecognition: {
+      cookieName: opts.deviceRecognition?.cookieName ?? `${deviceTrust.cookieName}_seen`,
+      ttlMs: opts.deviceRecognition?.ttlMs ?? 180 * 24 * 60 * 60_000,
+      maxDevices: opts.deviceRecognition?.maxDevices ?? 5,
     },
     forms: { ...DEFAULT_FORMS, ...opts.forms },
   };
@@ -237,6 +246,7 @@ export const RESERVED_USER_KEYS: ReadonlySet<string> = new Set<string>([
   "passwordHistory",
   "mfa",
   "trustedDevices",
+  "seenDevices",
   "pendingInvitation",
 ]);
 
@@ -250,6 +260,40 @@ export function stripReservedUserKeys(profile: Record<string, unknown>): Record<
     if (!RESERVED_USER_KEYS.has(key)) out[key] = profile[key];
   }
   return out;
+}
+
+// Ordered match→label tables for `humanizeUserAgent` — first hit wins, so
+// order matters: Edge ships a `Chrome/` token (check `Edg` first) and Chrome
+// ships `Safari/` (check Chrome before Safari); Android UAs carry a `Linux`
+// token and iOS UAs a `Mac OS X` token (check the mobile platforms first).
+const UA_BROWSERS: readonly (readonly [token: string, label: string])[] = [
+  ["Edg", "Edge"],
+  ["Chrome", "Chrome"],
+  ["Firefox", "Firefox"],
+  ["Safari", "Safari"],
+];
+const UA_OSES: readonly (readonly [pattern: RegExp, label: string])[] = [
+  [/iPhone|iPad|iPod/, "iOS"],
+  [/Android/, "Android"],
+  [/Mac OS X|Macintosh/, "macOS"],
+  [/Windows/, "Windows"],
+  [/Linux/, "Linux"],
+];
+
+/**
+ * Best-effort "Browser on OS" label from a raw User-Agent string — feeds the
+ * `name` field of `seenDevices` records so a device list reads "Chrome on
+ * Windows" instead of a token. Deliberately tiny (no UA-parser dependency);
+ * detection order lives in the `UA_BROWSERS` / `UA_OSES` tables above.
+ * Returns just the browser or just the OS when only one side is detected;
+ * `undefined` for empty / fully unrecognized input.
+ */
+export function humanizeUserAgent(ua: string | undefined): string | undefined {
+  if (!ua) return undefined;
+  const browser = UA_BROWSERS.find(([token]) => ua.includes(token))?.[1];
+  const os = UA_OSES.find(([pattern]) => pattern.test(ua))?.[1];
+  if (browser && os) return `${browser} on ${os}`;
+  return browser ?? os;
 }
 
 /** Trim + de-duplicate role identifiers submitted via the admin invite form. */
@@ -3718,6 +3762,57 @@ export class AuthWorkflow {
   }
 
   /**
+   * Always-on device RECOGNITION — verify-or-mint the long-lived recognition
+   * cookie against the `seenDevices` ledger. Recognition is a notification
+   * suppressor ONLY (the notify-new-device gate reads `trust.recognized`); it
+   * never skips MFA — that is `deviceTrust`, which stays opt-in and strict.
+   *
+   * Deliberately a SEPARATE step from `check-trusted-device`: that step is
+   * schema-gated on `deviceTrust.enabled && skipsMfa`, so recognition must
+   * not piggyback on it or recognition dies whenever trust is disabled —
+   * exactly the consumers who get the noisiest notify behaviour today.
+   * Verify-or-mint lives in ONE step so `trust.recognized` captures the
+   * PRE-MINT arrival state the notify gate needs (a freshly minted token
+   * must not mark the current login as recognized).
+   *
+   * A valid arriving cookie is verified with `slideTtlMs` (LRU bump) and
+   * re-stashed on `trust.seenDeviceToken` so `issue` re-sets it with a fresh
+   * maxAge. An unrecognized arrival mints + persists a new record (capped at
+   * `deviceRecognition.maxDevices`) and stashes the new token — `recognized`
+   * stays unset so the notification still fires for this login. Degrades
+   * gracefully to a no-op when no `deviceTrust.secret` is configured,
+   * preserving the legacy notify behaviour for those consumers.
+   */
+  @Step("device-recognition")
+  @Public()
+  async deviceRecognition(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    if (!ctx.subject) return undefined;
+    if (!this.users.hasDeviceTrustSecret()) return undefined;
+    const cookieValue = useCookies(current()).getCookie(this.opts.deviceRecognition.cookieName);
+    const trust = (ctx.trust ??= {});
+    if (cookieValue) {
+      const ok = await this.users.verifySeenDevice(ctx.subject, cookieValue, {
+        slideTtlMs: this.opts.deviceRecognition.ttlMs,
+      });
+      if (ok) {
+        trust.recognized = true;
+        trust.seenDeviceToken = cookieValue;
+        return undefined;
+      }
+    }
+    // `issueSeenDevice` drops an `undefined` name itself — pass it through.
+    const record = this.users.issueSeenDevice(ctx.subject, {
+      ttlMs: this.opts.deviceRecognition.ttlMs,
+      name: humanizeUserAgent(this.resolveUserAgent()),
+    });
+    await this.users.addSeenDevice(ctx.subject, record, {
+      cap: this.opts.deviceRecognition.maxDevices,
+    });
+    trust.seenDeviceToken = record.token;
+    return undefined;
+  }
+
+  /**
    * Standalone terms-bump prompt for returning users whose accepted terms
    * version is stale and no carrier form ran. Delegates to
    * `processInlineConsent` for validation + ctx writes.
@@ -3825,14 +3920,20 @@ export class AuthWorkflow {
   @Public()
   async revokeSessions(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     if (!ctx.subject) return undefined;
-    if (ctx.changePassword?.revokeOtherSessions) {
-      const currentSessionId = useAuth().getSessionId();
-      if (currentSessionId) {
-        await this.auth.revokeOtherSessions(ctx.subject, currentSessionId);
-        return undefined;
-      }
+    const currentSessionId = ctx.changePassword?.revokeOtherSessions
+      ? useAuth().getSessionId()
+      : undefined;
+    if (currentSessionId) {
+      await this.auth.revokeOtherSessions(ctx.subject, currentSessionId);
+    } else {
+      await this.auth.revokeAllForUser(ctx.subject);
     }
-    await this.auth.revokeAllForUser(ctx.subject);
+    // Clear the recognition ledger too — a recognition cookie is a long-lived
+    // identifier, and password change / revoke-all are its designed clearing
+    // points (each device re-mints on its next login, and the single "new
+    // sign-in" email after a password change is desirable signal).
+    // Unconditional — a no-op on an empty ledger.
+    await this.users.revokeSeenDevices(ctx.subject);
     return undefined;
   }
 
@@ -3868,22 +3969,35 @@ export class AuthWorkflow {
       finished: true,
       data: auth.buildLoginResponse(ctx.subject, issue),
     };
-    // Attach the trusted-device cookie (minted by `device-trust`) to the finish
-    // envelope alongside the session cookies, so it survives a server `redirect`
-    // finish (where the `redirect` step preserves only `existing.cookies`,
-    // never response-context `setCookie`). Independent of `enableCookie` —
-    // device trust is a separate concern from token transport — so it's added
-    // even when `buildFinishedCookies` returns undefined (cookieless deploys).
-    const sessionCookies = auth.buildFinishedCookies(issue);
-    const cookies = ctx.trust?.deviceTrustToken
-      ? {
-          ...sessionCookies,
-          [this.opts.deviceTrust.cookieName]: {
-            value: ctx.trust.deviceTrustToken,
-            options: auth.cookieAttrs({ maxAge: this.opts.deviceTrust.ttlMs / 1000 }),
-          },
-        }
-      : sessionCookies;
+    // Attach the trusted-device cookie (minted by `device-trust`) and the
+    // recognition cookie (verified-or-minted by `device-recognition`) to the
+    // finish envelope alongside the session cookies, so they survive a server
+    // `redirect` finish (where the `redirect` step preserves only
+    // `existing.cookies`, never response-context `setCookie`). Independent of
+    // `enableCookie` — device trust/recognition are separate concerns from
+    // token transport — so they're added even when `buildFinishedCookies`
+    // returns undefined (cookieless deploys). The recognition cookie is set
+    // even when the arriving one was valid — re-issuing refreshes its maxAge
+    // in step with the server-side TTL slide.
+    let cookies = auth.buildFinishedCookies(issue);
+    if (ctx.trust?.deviceTrustToken) {
+      cookies = {
+        ...cookies,
+        [this.opts.deviceTrust.cookieName]: {
+          value: ctx.trust.deviceTrustToken,
+          options: auth.cookieAttrs({ maxAge: this.opts.deviceTrust.ttlMs / 1000 }),
+        },
+      };
+    }
+    if (ctx.trust?.seenDeviceToken) {
+      cookies = {
+        ...cookies,
+        [this.opts.deviceRecognition.cookieName]: {
+          value: ctx.trust.seenDeviceToken,
+          options: auth.cookieAttrs({ maxAge: this.opts.deviceRecognition.ttlMs / 1000 }),
+        },
+      };
+    }
     useWfFinished().set({
       type: "data",
       value: envelope,
@@ -3894,7 +4008,12 @@ export class AuthWorkflow {
   /**
    * Notify the user of a login from a new device via the unified `deliver`
    * hook. Gated upstream by
-   * `!ctx.isFirstLogin && !!ctx.finalize.notifyNewDevice && !!ctx.trust.newDevice`.
+   * `!ctx.isFirstLogin && !!ctx.finalize.notifyNewDevice && !ctx.trust.recognized`
+   * — "not recognized" (no valid recognition cookie on arrival), NOT "no
+   * valid trust cookie": users who decline remember-me, or whose strict trust
+   * cookie expired / failed IP binding, must not get the email on every
+   * login. Recognition is the loose always-on ledger minted by
+   * `device-recognition`; trust stays strict and drives MFA skip only.
    */
   @Step("notify-new-device")
   @Public()
@@ -4955,11 +5074,16 @@ export class AuthWorkflow {
     {
       condition: (ctx) => !ctx.authz,
       steps: [
+        // Recognition runs BEFORE `issue` so the token lands on the finish
+        // envelope's cookies, and unconditioned — the body self-gates on
+        // subject + configured secret. The notify gate below reads the
+        // pre-mint `recognized` flag it stamps.
+        { id: "device-recognition" },
         { id: "issue" },
         {
           id: "notify-new-device",
           condition: (ctx) =>
-            !ctx.isFirstLogin && !!ctx.finalize?.notifyNewDevice && !!ctx.trust?.newDevice,
+            !ctx.isFirstLogin && !!ctx.finalize?.notifyNewDevice && !ctx.trust?.recognized,
         },
         { id: "redirect" },
       ],

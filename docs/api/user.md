@@ -18,6 +18,19 @@ Async methods (selected): `createUser`, `getUser(id)`, `findByHandle(handle)`, `
 
 Sync helpers: `getLockStatus`, `isPasswordExpired`, `getTransferablePolicies`, `getAvailableMfaMethods`, `issueTrustedDevice`, `getPasswordHasher`, `getConfig`.
 
+**Device recognition (`seenDevices` ledger)** — the always-on counterpart to trusted devices: recognition records suppress "new sign-in" notifications and never skip MFA. Tokens reuse `deviceTrust.secret` with a **domain-separated** HMAC payload, so trust and recognition tokens are not interchangeable; recognition records never bind to IP.
+
+```ts
+service.issueSeenDevice(userId: string, opts: { ttlMs: number; name?: string }): TrustedDeviceRecord; // sync — mints, does NOT persist; pair with addSeenDevice
+service.addSeenDevice(id: string, record: TrustedDeviceRecord, opts?: { cap?: number }): Promise<void>; // cap default 5 — drops expired first, then evicts least-recently-verified (smallest expiresAt)
+service.verifySeenDevice(userId: string, token: string, opts?: { slideTtlMs?: number }): Promise<boolean>; // on a valid hit with slideTtlMs, slides expiresAt to clock() + slideTtlMs (the LRU bump)
+service.listSeenDevices(id: string): Promise<TrustedDeviceRecord[]>;
+service.revokeSeenDevices(id: string): Promise<void>; // clear the whole ledger (no-op when empty)
+service.hasDeviceTrustSecret(): boolean; // sync — true when deviceTrust.secret is configured; gate recognition instead of catching the throw
+```
+
+Like the `*TrustedDevice` methods, `issueSeenDevice` / `verifySeenDevice` throw a plain `Error` when `deviceTrust.secret` is unset — call `hasDeviceTrustSecret()` first to degrade gracefully. See [Device recognition](/moost/workflows#device-recognition) for how the workflow layer drives these.
+
 > There are **no** `generateBackupCodes` / `consumeBackupCode` service methods, and the base `UserCredentials` carries no `backupCodes` field — wire your own (a consumer-declared column + service) if you need recovery codes.
 
 ### `UserStore<T extends object = object>` (abstract)
@@ -135,6 +148,8 @@ interface UserCredentials {
   account: AccountData;
   mfa: MfaData;
   trustedDevices?: TrustedDeviceRecord[];
+  /** Recognition ledger — suppresses "new sign-in" notices; never skips MFA */
+  seenDevices?: TrustedDeviceRecord[];
 }
 interface PasswordData {
   hash: string;
@@ -178,7 +193,7 @@ interface UserServiceConfig {
   lockout?: LockoutConfig;
   /** Injectable clock for testability. Defaults to Date.now */
   clock?: () => number;
-  /** HMAC-SHA256 signing secret for trust-device tokens. */
+  /** HMAC-SHA256 signing secret for trusted-device AND seen-device (recognition) tokens — domain-separated payloads. */
   deviceTrust?: { secret: string };
 }
 interface LockoutConfig {
@@ -286,7 +301,7 @@ interface TotpConfig {
 interface TrustedDeviceRecord {
   /** `<raw>.<sig>` — opaque token round-tripped by the consumer */
   token: string;
-  /** Bound IP — set when `deviceTrust.bindsTo === 'cookie+ip'` */
+  /** Bound IP — set when `deviceTrust.bindsTo === 'cookie+ip'`; never set on `seenDevices` records */
   ip?: string;
   issuedAt: number;
   expiresAt: number;
@@ -426,4 +441,4 @@ new FederatedIdentityStoreAtscriptDb(opts: { table: FederatedIdentityTable; cloc
 
 ## Subpath: `@aooth/user/atscript-db/model.as`
 
-Raw `.as` file export. Defines `AoothUserCredentials` — the surrogate `id` (`@meta.id` + `@db.default.uuid`), the unique `username` index (the one base login handle), the `@db.column.version` counter, plus `@db.patch.strategy 'merge'` sub-objects for `password` / `account` / `mfa` / `trustedDevices`. The base carries **no** `email`/`phone` — a secondary login/recovery handle is **consumer-declared**: add your own field, index it `@db.index.unique`, and tag it `@aooth.user.email` / `@aooth.user.phone`. Consumers extend the model to add `@db.table` and any custom columns; `id`/`username` are inherited. See [Credentials Model](/user/credentials) and [Phone, Recovery Channels & Handles](/moost/recovery-and-handles).
+Raw `.as` file export. Defines `AoothUserCredentials` — the surrogate `id` (`@meta.id` + `@db.default.uuid`), the unique `username` index (the one base login handle), the `@db.column.version` counter, plus `@db.patch.strategy 'merge'` sub-objects for `password` / `account` / `mfa` / `trustedDevices` / `seenDevices`. The base carries **no** `email`/`phone` — a secondary login/recovery handle is **consumer-declared**: add your own field, index it `@db.index.unique`, and tag it `@aooth.user.email` / `@aooth.user.phone`. Consumers extend the model to add `@db.table` and any custom columns; `id`/`username` are inherited. See [Credentials Model](/user/credentials) and [Phone, Recovery Channels & Handles](/moost/recovery-and-handles).

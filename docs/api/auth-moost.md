@@ -218,6 +218,7 @@ Builds the email outlet that delivers the invite magic link. Wraps `@atscript/mo
 function parseInviteRoles(input?: string[]): string[]; // trim + dedupe role ids
 function stripReservedUserKeys(profile: Record<string, unknown>): Record<string, unknown>;
 const RESERVED_USER_KEYS: ReadonlySet<string>; // keys profile forms must never carry
+function humanizeUserAgent(ua: string | undefined): string | undefined; // "Safari on macOS" — seen-device labels
 function buildInviteAlreadyAcceptedEnvelope(opts: {
   loginUrl: string;
   alreadyAcceptedRedirectUrl: string;
@@ -369,6 +370,11 @@ interface AuthWorkflowOpts {
   loginUrl?: string; // '/login'
   totpIssuer?: string; // 'aooth'
   deviceTrust?: { cookieName?: string; ttlMs?: number; bindsTo?: "cookie" | "cookie+ip" };
+  deviceRecognition?: {
+    cookieName?: string; // `${deviceTrust.cookieName}_seen` → 'aooth_trusted_device_seen'
+    ttlMs?: number; // 180 days
+    maxDevices?: number; // 5 — `seenDevices` ledger cap, LRU-evicted beyond it
+  };
   forms?: {
     /* one TAtscriptAnnotatedType slot per bundled form — see the form list below */
   };
@@ -376,6 +382,8 @@ interface AuthWorkflowOpts {
 ```
 
 **Infrastructure-only.** Every field is optional; the constructor runs `mergeAuthWorkflowOpts(opts)` to produce a fully-populated `ResolvedAuthWorkflowOpts` read as `this.opts.<group>.<field>` without optional chaining. Policy NEVER lives here — if a knob varies by request/tenant/user it belongs on a `resolveXxx(ctx)` getter. Replace any bundled form per-slot via `opts.forms.<field>`. See [Workflows](/moost/workflows) and [Config Reference](/moost/config).
+
+`deviceRecognition` configures the always-on recognition cookie + `seenDevices` ledger — a notification suppressor only, never an MFA bypass (that is `deviceTrust`, which stays opt-in and strict). Recognition is cookie-only by design (never IP-bound) and requires `deviceTrust.secret` on the `UserService` — without it the `device-recognition` step silently no-ops. See [Device recognition](/moost/workflows#device-recognition).
 
 ### `AuthDeliveryPayload`
 

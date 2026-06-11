@@ -37,6 +37,25 @@ export interface AuthWorkflowOpts {
     ttlMs?: number;
     bindsTo?: "cookie" | "cookie+ip";
   };
+  /**
+   * Device RECOGNITION infra — the always-on `seenDevices` ledger + cookie
+   * that suppress the "new sign-in" notification on devices the user has
+   * already logged in from. Strictly a notification suppressor, NOT an MFA
+   * bypass (that is `deviceTrust`, which stays opt-in and strict).
+   * Cookie-only binding by design — recognition is pure noise control, so it
+   * never binds to IP (IP churn must not re-trigger the email).
+   *
+   * `cookieName` defaults to `<deviceTrust.cookieName>_seen` so a consumer
+   * renaming the trust cookie gets a matching recognition name for free.
+   * No policy flags here — the on/off gate is the existing
+   * `resolveFinalize().notifyNewDevice` policy.
+   */
+  deviceRecognition?: {
+    cookieName?: string;
+    ttlMs?: number;
+    /** Cap on the per-user `seenDevices` ledger — LRU-evicted beyond it. */
+    maxDevices?: number;
+  };
 
   // ── Form schemas ──
   forms?: {
@@ -121,6 +140,11 @@ export interface ResolvedAuthWorkflowOpts {
     cookieName: string;
     ttlMs: number;
     bindsTo: "cookie" | "cookie+ip";
+  };
+  deviceRecognition: {
+    cookieName: string;
+    ttlMs: number;
+    maxDevices: number;
   };
   forms: {
     loginCredentials: TAtscriptAnnotatedType;

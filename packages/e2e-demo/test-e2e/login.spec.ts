@@ -12,6 +12,7 @@
  * leaves it running at :3002 in this branch). Override `BASE_URL` to match.
  */
 import { expect, test } from "@playwright/test";
+import type { APIRequestContext, Page } from "@playwright/test";
 
 import {
   clickAction,
@@ -1479,6 +1480,156 @@ test.describe("LoginWorkflow / variant=device-trust-short-ttl (P2)", () => {
       request,
       (e) => e.kind === "login.pincode" && e.recipient === "henry@acme.test",
       8000,
+    );
+  });
+});
+
+// Shared by the two notify-new-device suites below (WF-LOGIN-038/039). Both
+// log in as henry — the only seeded user whose confirmed email-MFA method lets
+// the notice step resolve `ctx.email` (see WF-LOGIN-038's empirical notes).
+const newDeviceNoticeCount = async (request: APIRequestContext) =>
+  (await getEmails(request)).filter(
+    (e) => e.kind === "notifyNewDevice" && e.recipient === "henry@acme.test",
+  ).length;
+
+test.describe("LoginWorkflow / variant=notify-new-device (P1)", () => {
+  // BRANCH: `device-recognition` (always-on ledger) + the `notify-new-device`
+  // gate `!ctx.isFirstLogin && !!ctx.finalize?.notifyNewDevice &&
+  // !ctx.trust?.recognized`. Device TRUST is fully disabled on this variant
+  // (resolveDeviceTrust default `enabled:false`, MFA disabled, no
+  // rememberDevice checkbox anywhere) — proving recognition is independent of
+  // the opt-in trusted-device machinery: the recognition cookie
+  // (`aooth_trusted_device_seen`) is minted on EVERY successful login because
+  // the step self-gates only on `ctx.subject` + `users.hasDeviceTrustSecret()`
+  // (the demo wires `deviceTrust.secret: env.JWT_SECRET` in `aooth.ts`).
+  //
+  // The delivery rides `deliver({kind:'new-device-notice'})` which the demo's
+  // `toEmailKind` maps to the mailbox kind `notifyNewDevice`.
+  //
+  // Empirical notes (probed against the running demo):
+  //   - The notice needs `ctx.email`, which the `credentials` step populates
+  //     ONLY from a confirmed email-MFA method on the row — so the test user
+  //     must be henry (`mfaEmail: true` in seed.ts), not alice (no email
+  //     method → the notify step silently no-ops on `!ctx.email`).
+  //   - `isFirstLogin` is FALSE even on the literal first login after reset:
+  //     `UserService.verifyPassword` stamps `account.lastLogin = now` on
+  //     success BEFORE `prepare-semantic-flags` re-reads the user and
+  //     computes `isFirstLogin = !account.lastLogin`. So login #1 from a
+  //     fresh context DOES email — the suppression under test is purely the
+  //     recognition-cookie leg.
+  test("WF-LOGIN-038: new-device email fires once per unrecognized browser, suppressed on repeat logins (no remember-me, trust disabled)", async ({
+    browser,
+    request,
+  }) => {
+    const baseURL = test.info().project.use.baseURL;
+    const noticeCount = () => newDeviceNoticeCount(request);
+    const plainLogin = async (page: Page) => {
+      await page.goto(wfUrl(LOGIN_WF, "notify-new-device"));
+      await waitForFormInput(page, "username");
+      await fillField(page, "username", USERS.henry.username);
+      await fillField(page, "password", USERS.henry.password);
+      await page.getByRole("button", { name: "Sign in", exact: true }).click();
+      await expect(page.getByText("Workflow finished")).toBeVisible({ timeout: 15_000 });
+    };
+
+    // Login 1 — browser/"device" #1, fresh context, no recognition cookie →
+    // exactly one new-device-notice (MFA never pauses: mode is disabled on
+    // this variant, despite henry's confirmed email method).
+    const ctx1 = await browser.newContext({ baseURL });
+    const page1 = await ctx1.newPage();
+    await plainLogin(page1);
+    await expect.poll(noticeCount, { timeout: 8000 }).toBe(1);
+    await ctx1.close();
+
+    // Login 2 — a genuinely NEW device (second fresh context) → one more.
+    const ctx2 = await browser.newContext({ baseURL });
+    const page2 = await ctx2.newPage();
+    await plainLogin(page2);
+    await expect.poll(noticeCount, { timeout: 8000 }).toBe(2);
+    // The recognition cookie was minted WITHOUT any remember-me opt-in —
+    // device trust is disabled on this variant, so only the always-on
+    // `device-recognition` step can have set it.
+    const cookies = await ctx2.cookies();
+    expect(
+      cookies.some((c) => c.name === "aooth_trusted_device_seen"),
+      "always-on recognition cookie set with deviceTrust disabled",
+    ).toBe(true);
+
+    // Login 3 — SAME context: the recognition cookie rides the request,
+    // `ctx.trust.recognized` flips true → notice suppressed. Complete the
+    // login, then poll briefly and assert the count did not grow.
+    await plainLogin(page2);
+    await page2.waitForTimeout(1500);
+    expect(await noticeCount(), "recognized browser → no third notice").toBe(2);
+    await ctx2.close();
+  });
+});
+
+test.describe("LoginWorkflow / variant=device-trust-short-ttl-notify (P1)", () => {
+  // BRANCH (headline regression): the new-sign-in notification gate flipped
+  // from "no valid TRUST cookie" to "this device is not RECOGNIZED"
+  // (`!ctx.trust?.recognized`). With trust enabled + ttlMs:1, the trust
+  // cookie minted on login #1 is already expired by login #2, so MFA IS
+  // re-required (same proof as WF-LOGIN-020) — but the always-on recognition
+  // cookie (180d default TTL) still marks the browser as seen, so the
+  // new-device email must NOT be re-sent. Under the OLD gate ("no valid
+  // trust cookie") login #2 would have emailed — that's the regression this
+  // test locks.
+  test("WF-LOGIN-039: expired trust cookie re-requires MFA on 2nd login but does NOT re-send the new-device email", async ({
+    page,
+    request,
+  }) => {
+    const VARIANT = "device-trust-short-ttl-notify";
+    const noticeCount = () => newDeviceNoticeCount(request);
+    const pincodes = async () =>
+      (await getEmails(request)).filter(
+        (e) => e.kind === "login.pincode" && e.recipient === "henry@acme.test",
+      );
+    // One full MFA login. The pincode buffer accumulates across logins inside
+    // this test (reset is per-test), so we count before submitting and wait
+    // for a FRESH pincode email instead of trusting "most recent match".
+    const mfaLogin = async (p: Page, remember: boolean) => {
+      const before = (await pincodes()).length;
+      await p.goto(wfUrl(LOGIN_WF, VARIANT));
+      await waitForFormInput(p, "username");
+      await fillField(p, "username", USERS.henry.username);
+      await fillField(p, "password", USERS.henry.password);
+      await p.getByRole("button", { name: "Sign in", exact: true }).click();
+      // MFA pause — `PincodeForm` (email transport carries rememberDevice).
+      await waitForFormInput(p, "code");
+      await expect
+        .poll(async () => (await pincodes()).length, { timeout: 8000 })
+        .toBeGreaterThan(before);
+      const otp = (await pincodes()).at(-1)!;
+      await fillField(p, "code", otp.code as string);
+      if (remember) await p.locator('[name="rememberDevice"]').first().check();
+      await p.getByRole("button", { name: "Verify", exact: true }).click();
+      await expect(p.getByText("Workflow finished")).toBeVisible({ timeout: 15_000 });
+    };
+
+    // Login 1 (fresh context): MFA + rememberDevice → 1ms trust cookie
+    // minted, recognition cookie minted alongside. Exactly ONE new-device
+    // notice fires — `isFirstLogin` is empirically FALSE even on the literal
+    // first login (verifyPassword stamps `account.lastLogin` before
+    // `prepare-semantic-flags` re-reads it — see WF-LOGIN-038's notes), and
+    // the fresh jar has no recognition cookie. This doubles as the positive
+    // control proving the variant's notification wiring is live.
+    await mfaLogin(page, true);
+    await expect.poll(noticeCount, { timeout: 8000 }).toBe(1);
+
+    // Be confidently past the trust cookie's 1ms `exp` (mirrors WF-LOGIN-020).
+    await page.waitForTimeout(1500);
+
+    // Login 2 — SAME context. Trust cookie is in the jar but expired →
+    // `mfaLogin` proves the MFA branch re-ran (code pause + a FRESH pincode
+    // email). The recognition cookie is still valid → NO additional
+    // new-device email even though the trust cookie failed verification.
+    // Under the old "no valid trust cookie" gate this login would have
+    // emailed — the count staying at 1 is the headline assertion.
+    await mfaLogin(page, false);
+    await page.waitForTimeout(1500);
+    expect(await noticeCount(), "expired trust but recognized browser → no additional notice").toBe(
+      1,
     );
   });
 });

@@ -270,6 +270,32 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
     },
     mfaCtx: { mfaMode: "optional", availableMfaTransports: ["email"] },
   },
+  // Always-on device-RECOGNITION notification with the opt-in device-TRUST
+  // machinery fully OFF (resolveDeviceTrust default `enabled:false`) and MFA
+  // disabled — the leanest profile that can fire `new-device-notice`. Proves
+  // recognition is independent of trust: the `device-recognition` step
+  // self-gates only on `ctx.subject` + `users.hasDeviceTrustSecret()` (the
+  // demo wires `deviceTrust.secret` in `aooth.ts`), and the email gate is
+  // `!isFirstLogin && finalize.notifyNewDevice && !trust.recognized`.
+  // Drives WF-LOGIN-038.
+  "notify-new-device": {
+    policy: { finalize: { notifyNewDevice: true, redirect: false } },
+    mfaCtx: { mfaMode: "disabled" },
+  },
+  // Clone of `device-trust-short-ttl` (trust enabled + optIn + email-MFA +
+  // 1ms trust-cookie TTL) with `finalize.notifyNewDevice: true` layered on.
+  // Drives WF-LOGIN-039 — the headline regression: an EXPIRED trust cookie
+  // re-requires MFA on the next login but must NOT re-send the new-device
+  // email, because the always-on recognition cookie (180d default TTL) still
+  // marks the browser as seen.
+  "device-trust-short-ttl-notify": {
+    opts: { deviceTrust: { ttlMs: 1 } },
+    policy: {
+      deviceTrust: { enabled: true, optIn: true, skipsMfa: true },
+      finalize: { notifyNewDevice: true, redirect: false },
+    },
+    mfaCtx: { mfaMode: "optional", availableMfaTransports: ["email"] },
+  },
   // Same as `concurrency` but rejects with HTTP 429 instead of pausing on
   // kickPrompt (WF-LOGIN-030).
   "concurrency-reject": {

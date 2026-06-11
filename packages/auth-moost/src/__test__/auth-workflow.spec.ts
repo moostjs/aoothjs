@@ -6,7 +6,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { ConsentStore } from "../consent.store";
 import type { AuthWfAltCredsPolicy, AuthWfCtx, MfaTransport } from "../workflow/auth-workflow.ctx";
 import type { AuthDeliveryPayload } from "../workflow/auth-workflow";
-import { AuthWorkflow } from "../workflow/auth-workflow";
+import { AuthWorkflow, humanizeUserAgent } from "../workflow/auth-workflow";
 import { enrollTrioSteps, mfaStepUpLoop } from "../workflow/auth-workflow.schemas";
 import type { AuthWorkflowOpts } from "../workflow/auth-workflow.opts";
 
@@ -191,6 +191,14 @@ describe("AuthWorkflow construction (WF-AUTH-UNIFIED-002)", () => {
     expect(opts.deviceTrust.ttlMs).toBe(24 * 60 * 60_000);
     expect(opts.deviceTrust.bindsTo).toBe("cookie");
 
+    // Device-recognition infra — the always-on notification-suppression
+    // ledger. Cookie name DERIVES from the merged trust cookie name
+    // (`<trust>_seen`); TTL is deliberately long (180 days — recognition is
+    // noise control, not an MFA bypass) and the ledger is LRU-capped.
+    expect(opts.deviceRecognition.cookieName).toBe("aooth_trusted_device_seen");
+    expect(opts.deviceRecognition.ttlMs).toBe(180 * 24 * 60 * 60_000);
+    expect(opts.deviceRecognition.maxDevices).toBe(5);
+
     // forms — defaulted to the bundled `forms.as` models so step bodies
     // (`useAtscriptWf(this.opts.forms.X)`) hit real annotated types out of
     // the box. Consumer override via `opts.forms.<field>` swaps any slot.
@@ -263,6 +271,24 @@ describe("AuthWorkflow construction (WF-AUTH-UNIFIED-002)", () => {
     expect(opts2.deviceTrust.cookieName).toBe("tenant_cookie");
     expect(opts2.deviceTrust.bindsTo).toBe("cookie+ip");
     expect(opts2.deviceTrust.ttlMs).toBe(24 * 60 * 60_000);
+  });
+
+  it("derives the recognition cookie name from the MERGED trust cookie name", () => {
+    // WHY: a consumer renaming the trust cookie should get a matching
+    // recognition cookie for free — derivation must read the merged trust
+    // name, not the default. An explicit deviceRecognition.cookieName wins
+    // over the derivation (it's still an independent knob).
+    const derived = makeWorkflow({ deviceTrust: { cookieName: "custom_td" } }).exposeOpts();
+    expect(derived.deviceRecognition.cookieName).toBe("custom_td_seen");
+    // Other recognition defaults survive the partial trust override.
+    expect(derived.deviceRecognition.ttlMs).toBe(180 * 24 * 60 * 60_000);
+    expect(derived.deviceRecognition.maxDevices).toBe(5);
+
+    const explicit = makeWorkflow({
+      deviceTrust: { cookieName: "custom_td" },
+      deviceRecognition: { cookieName: "my_seen_cookie" },
+    }).exposeOpts();
+    expect(explicit.deviceRecognition.cookieName).toBe("my_seen_cookie");
   });
 
   it("MFA-policy issuer flows through opts.totpIssuer (single knob)", async () => {
@@ -924,6 +950,108 @@ describe("AuthWorkflow schema integrity", () => {
       "auth/recovery/flow",
       "auth/signup/flow",
     ]);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Device recognition — humanizeUserAgent + the notify-new-device gate flip.
+// WHY: the gate moved from "no valid trust cookie" (`!!ctx.trust?.newDevice`)
+// to "not recognized" (`!ctx.trust?.recognized`) so users who decline
+// remember-me — or whose strict trust cookie expired / failed IP binding —
+// stop getting the "new sign-in" email on every login. These tests pin the
+// gate's source of truth (the schema node itself) and the UA label helper
+// that names seen-device records.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("humanizeUserAgent", () => {
+  it.each([
+    [
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+      "Safari on macOS",
+    ],
+    [
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      "Chrome on Windows",
+    ],
+    // Edge ships a `Chrome/` token — the `Edg` check must win.
+    [
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0",
+      "Edge on Windows",
+    ],
+    ["Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0", "Firefox on Linux"],
+    // iPhone UAs carry `like Mac OS X` — the iOS check must win over macOS.
+    [
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+      "Safari on iOS",
+    ],
+  ])("maps %s", (ua: string, expected: string) => {
+    expect(humanizeUserAgent(ua)).toBe(expected);
+  });
+
+  it("returns undefined for empty input and degrades to one side when only one is detected", () => {
+    expect(humanizeUserAgent(undefined)).toBeUndefined();
+    expect(humanizeUserAgent("")).toBeUndefined();
+    expect(humanizeUserAgent("some-unknown-bot/1.0")).toBeUndefined();
+    // Only a browser token → just the browser; only an OS token → just the OS.
+    expect(humanizeUserAgent("Firefox/125.0")).toBe("Firefox");
+    expect(humanizeUserAgent("something (Windows NT 10.0)")).toBe("Windows");
+  });
+});
+
+/** Find the schema node with the given id, recursing into nested `steps`. */
+function findNode(nodes: SchemaNode[] | undefined, id: string): SchemaNode | undefined {
+  for (const n of nodes ?? []) {
+    if (n.id === id) return n;
+    const nested = findNode(n.steps, id);
+    if (nested) return nested;
+  }
+  return undefined;
+}
+
+describe("Device recognition — notify-new-device gate (login schema)", () => {
+  const loginSchema = (
+    getMoostMate().read(AuthWorkflow.prototype as object, "loginFlow") as {
+      wfSchema?: SchemaNode[];
+    }
+  ).wfSchema;
+  const notify = findNode(loginSchema, "notify-new-device")!;
+
+  it("gates on NOT-recognized, not on trust.newDevice", () => {
+    // Partial ctx samples — `finalize.redirect` is irrelevant to the gate.
+    const base = { isFirstLogin: false, finalize: { notifyNewDevice: true } } as AuthWfCtx;
+    // Recognized arrival → suppressed.
+    expect(evalCondition(notify, { ...base, trust: { recognized: true } })).toBe(false);
+    // Unrecognized arrival (empty trust state) → notify.
+    expect(evalCondition(notify, { ...base, trust: {} })).toBe(true);
+    // Recognition WINS over trust's newDevice flag — a declined remember-me
+    // (newDevice stays true forever) must not re-trigger the email once the
+    // device is recognized.
+    expect(evalCondition(notify, { ...base, trust: { newDevice: true, recognized: true } })).toBe(
+      false,
+    );
+    // Existing gates still apply: first login + policy off both suppress.
+    expect(evalCondition(notify, { ...base, isFirstLogin: true, trust: {} })).toBe(false);
+    expect(
+      evalCondition(notify, {
+        isFirstLogin: false,
+        finalize: { notifyNewDevice: false },
+        trust: {},
+      } as AuthWfCtx),
+    ).toBe(false);
+  });
+
+  it("device-recognition runs inside the non-authz finalize subflow, before issue", () => {
+    // WHY: the recognition token must be stamped onto ctx BEFORE `issue`
+    // builds the finish-envelope cookie map, and the step must be
+    // unconditioned (the body self-gates on subject + configured secret).
+    const finalize = (loginSchema ?? []).find(
+      (n) => !n.id && Array.isArray(n.steps) && n.steps.some((s) => s.id === "issue"),
+    )!;
+    const ids = (finalize.steps ?? []).map((s) => s.id);
+    expect(ids.indexOf("device-recognition")).toBeGreaterThanOrEqual(0);
+    expect(ids.indexOf("device-recognition")).toBeLessThan(ids.indexOf("issue"));
+    const node = findNode(finalize.steps, "device-recognition")!;
+    expect((node as { condition?: unknown }).condition).toBeUndefined();
   });
 });
 

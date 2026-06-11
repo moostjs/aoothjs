@@ -167,6 +167,19 @@ export interface AuthWfTrustState {
   newDevice?: boolean;
   rememberDevice?: boolean;
   optIn?: boolean;
+  /**
+   * The ARRIVING request presented a valid recognition cookie (stamped by
+   * `device-recognition` BEFORE any mint — pre-mint arrival state). This is
+   * what the notify-new-device gate reads: recognition suppresses the
+   * notification; it never affects MFA (that's `newDevice` / trust).
+   */
+  recognized?: boolean;
+  /**
+   * Recognition token `issue` must set as a cookie on the finish envelope —
+   * either the re-validated arriving cookie (re-issued with a fresh maxAge)
+   * or a freshly minted one.
+   */
+  seenDeviceToken?: string;
 }
 
 /** Session-policy state (login). */

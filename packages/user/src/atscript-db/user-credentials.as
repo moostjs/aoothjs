@@ -46,4 +46,14 @@ export interface AoothUserCredentials {
         expiresAt: number.timestamp
         name?: string
     }[]
+
+    // Recognition ledger — devices that completed a login (suppresses the new-sign-in notification; no security bypass)
+    @db.patch.strategy 'merge'
+    seenDevices?: {
+        token: string
+        ip?: string
+        issuedAt: number.timestamp
+        expiresAt: number.timestamp
+        name?: string
+    }[]
 }

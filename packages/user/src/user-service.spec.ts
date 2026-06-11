@@ -1183,4 +1183,155 @@ describe("UserService", () => {
       expect(await otherSvc.verifyTrustedDevice(aliceId, recA.token)).toBe(false);
     });
   });
+
+  describe("seenDevices", () => {
+    let dtNow: number;
+    let dtStore: UserStoreMemory;
+    let dtSvc: UserService;
+    let aliceId: string;
+
+    beforeEach(async () => {
+      dtNow = 1000000;
+      dtStore = new UserStoreMemory();
+      dtSvc = new UserService(dtStore, {
+        password: { ...FAST_SCRYPT },
+        clock: () => dtNow,
+        deviceTrust: { secret: "unit-test-secret" },
+      });
+      const alice = await createActiveUser(dtSvc, "alice", "Password1!");
+      aliceId = alice.id;
+    });
+
+    it("issueSeenDevice + addSeenDevice + verifySeenDevice round-trips (no slide)", async () => {
+      const rec = dtSvc.issueSeenDevice(aliceId, { ttlMs: 60_000 });
+      await dtSvc.addSeenDevice(aliceId, rec);
+      expect(await dtSvc.verifySeenDevice(aliceId, rec.token)).toBe(true);
+    });
+
+    it("verifySeenDevice returns false for a forged signature", async () => {
+      const rec = dtSvc.issueSeenDevice(aliceId, { ttlMs: 60_000 });
+      await dtSvc.addSeenDevice(aliceId, rec);
+      const [raw] = rec.token.split(".");
+      const fake = `${raw}.${"0".repeat(64)}`;
+      expect(await dtSvc.verifySeenDevice(aliceId, fake)).toBe(false);
+    });
+
+    it("verifySeenDevice returns false when token signature is valid but no record persisted", async () => {
+      const rec = dtSvc.issueSeenDevice(aliceId, { ttlMs: 60_000 });
+      // NB: NOT calling addSeenDevice — signature would verify but record is absent.
+      expect(await dtSvc.verifySeenDevice(aliceId, rec.token)).toBe(false);
+    });
+
+    it("domain separation — a TRUST token never verifies as a SEEN token, and vice versa", async () => {
+      // The two ledgers carry different stakes (MFA bypass vs notification
+      // suppression); a leaked recognition cookie must never unlock trust.
+      const trustRec = dtSvc.issueTrustedDevice(aliceId, { ttlMs: 60_000 });
+      await dtSvc.addTrustedDevice(aliceId, trustRec);
+      expect(await dtSvc.verifySeenDevice(aliceId, trustRec.token)).toBe(false);
+
+      const seenRec = dtSvc.issueSeenDevice(aliceId, { ttlMs: 60_000 });
+      await dtSvc.addSeenDevice(aliceId, seenRec);
+      expect(await dtSvc.verifyTrustedDevice(aliceId, seenRec.token)).toBe(false);
+    });
+
+    it("verifySeenDevice returns false after expiry (clock advanced past expiresAt)", async () => {
+      const rec = dtSvc.issueSeenDevice(aliceId, { ttlMs: 60_000 });
+      await dtSvc.addSeenDevice(aliceId, rec);
+      dtNow += 60_001;
+      expect(await dtSvc.verifySeenDevice(aliceId, rec.token)).toBe(false);
+    });
+
+    it("slideTtlMs slides expiry — token outlives its ORIGINAL expiresAt after a verified hit", async () => {
+      const rec = dtSvc.issueSeenDevice(aliceId, { ttlMs: 60_000 });
+      await dtSvc.addSeenDevice(aliceId, rec);
+      expect(await dtSvc.verifySeenDevice(aliceId, rec.token, { slideTtlMs: 120_000 })).toBe(true);
+      // Past the original window (issuedAt + 60s) but inside the slid one.
+      dtNow += 90_000;
+      expect(await dtSvc.verifySeenDevice(aliceId, rec.token)).toBe(true);
+    });
+
+    it("cap + LRU eviction — 6th add evicts the smallest-expiresAt record, 5 most-recent survive", async () => {
+      const records = [];
+      for (let i = 0; i < 6; i++) {
+        // Distinct expiresAt per record: each later add expires later.
+        const rec = dtSvc.issueSeenDevice(aliceId, { ttlMs: 60_000 + i * 1000, name: `dev-${i}` });
+        records.push(rec);
+        await dtSvc.addSeenDevice(aliceId, rec);
+      }
+      const list = await dtSvc.listSeenDevices(aliceId);
+      expect(list.length).toBe(5);
+      const names = list.map((r) => r.name);
+      expect(names).not.toContain("dev-0"); // least-recently-verified evicted
+      for (let i = 1; i < 6; i++) expect(names).toContain(`dev-${i}`);
+    });
+
+    it("cap enforcement drops EXPIRED records before evicting healthy ones", async () => {
+      // 5 healthy + 1 expired = over cap; the expired one must go first,
+      // leaving all 5 healthy records intact.
+      const shortLived = dtSvc.issueSeenDevice(aliceId, { ttlMs: 1000, name: "stale" });
+      await dtSvc.addSeenDevice(aliceId, shortLived);
+      dtNow += 2000; // shortLived is now expired
+      for (let i = 0; i < 5; i++) {
+        const rec = dtSvc.issueSeenDevice(aliceId, { ttlMs: 60_000 + i * 1000, name: `dev-${i}` });
+        await dtSvc.addSeenDevice(aliceId, rec);
+      }
+      const list = await dtSvc.listSeenDevices(aliceId);
+      expect(list.length).toBe(5);
+      const names = list.map((r) => r.name);
+      expect(names).not.toContain("stale");
+      for (let i = 0; i < 5; i++) expect(names).toContain(`dev-${i}`);
+    });
+
+    it("revokeSeenDevices clears the whole ledger — subsequent verify false", async () => {
+      const rec = dtSvc.issueSeenDevice(aliceId, { ttlMs: 60_000 });
+      await dtSvc.addSeenDevice(aliceId, rec);
+      expect(await dtSvc.verifySeenDevice(aliceId, rec.token)).toBe(true);
+      await dtSvc.revokeSeenDevices(aliceId);
+      expect(await dtSvc.verifySeenDevice(aliceId, rec.token)).toBe(false);
+      expect(await dtSvc.listSeenDevices(aliceId)).toEqual([]);
+    });
+
+    it("revokeSeenDevices is a no-op on a user with no ledger (does not throw)", async () => {
+      await dtSvc.revokeSeenDevices(aliceId);
+      expect(await dtSvc.listSeenDevices(aliceId)).toEqual([]);
+    });
+
+    it("issueSeenDevice throws clearly when deviceTrust.secret is not configured", () => {
+      const noSecretSvc = new UserService(new UserStoreMemory(), {
+        password: { ...FAST_SCRYPT },
+      });
+      expect(() => noSecretSvc.issueSeenDevice("alice", { ttlMs: 60_000 })).toThrow(
+        /deviceTrust\.secret/,
+      );
+    });
+
+    it("verifySeenDevice throws clearly when deviceTrust.secret is not configured", async () => {
+      const noSecretSvc = new UserService(new UserStoreMemory(), {
+        password: { ...FAST_SCRYPT },
+      });
+      await expect(noSecretSvc.verifySeenDevice("alice", "x.y")).rejects.toThrow(
+        /deviceTrust\.secret/,
+      );
+    });
+
+    it("hasDeviceTrustSecret lets the workflow layer degrade gracefully (false without, true with)", () => {
+      const noSecretSvc = new UserService(new UserStoreMemory(), {
+        password: { ...FAST_SCRYPT },
+      });
+      expect(noSecretSvc.hasDeviceTrustSecret()).toBe(false);
+      expect(dtSvc.hasDeviceTrustSecret()).toBe(true);
+    });
+
+    it("REGRESSION — concurrent addSeenDevice must not lose a record (CAS)", async () => {
+      // Two logins from different devices at the same instant: both
+      // recognition records must land despite the read-modify-write.
+      const r1 = dtSvc.issueSeenDevice(aliceId, { ttlMs: 60_000, name: "macbook" });
+      const r2 = dtSvc.issueSeenDevice(aliceId, { ttlMs: 61_000, name: "phone" });
+      await Promise.all([dtSvc.addSeenDevice(aliceId, r1), dtSvc.addSeenDevice(aliceId, r2)]);
+      const names = (await dtSvc.listSeenDevices(aliceId)).map((r) => r.name);
+      expect(names).toHaveLength(2);
+      expect(names).toContain("macbook");
+      expect(names).toContain("phone");
+    });
+  });
 });
