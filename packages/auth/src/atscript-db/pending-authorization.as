@@ -15,8 +15,15 @@ export interface AoothPendingAuthorization {
 
     /** Registered client id (Tier 2); absent for a public/loopback client. */
     clientId?: string
+    /**
+     * Display name resolved at /authorize (DCR `client_name` or a registered
+     * client's label) — untrusted text staged for the consent prompt.
+     */
+    clientName?: string
     /** The client's `state`, echoed back on the redirect so it can correlate. */
     clientState?: string
+    /** RFC 8707 `resource` indicator (recorded; consistency-checked at /token). */
+    resource?: string
     /** Granted scope (space-joined). */
     scope?: string
     /** OIDC `nonce`, echoed into the `id_token` (Tier 2). */

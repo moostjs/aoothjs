@@ -30,7 +30,9 @@
     "src/atscript-db/pending-authorization.as",
     "src/atscript-db/pending-authorization.as.d.ts",
     "src/atscript-db/auth-code.as",
-    "src/atscript-db/auth-code.as.d.ts"
+    "src/atscript-db/auth-code.as.d.ts",
+    "src/atscript-db/dynamic-client.as",
+    "src/atscript-db/dynamic-client.as.d.ts"
   ],
   "type": "module",
   "sideEffects": false,
@@ -86,6 +88,14 @@
     "./atscript-db/auth-code.as": {
       "types": "./src/atscript-db/auth-code.as.d.ts",
       "default": "./src/atscript-db/auth-code.as"
+    },
+    "./atscript-db/dynamic-client": {
+      "types": "./src/atscript-db/dynamic-client.as.d.ts",
+      "default": "./src/atscript-db/dynamic-client.as"
+    },
+    "./atscript-db/dynamic-client.as": {
+      "types": "./src/atscript-db/dynamic-client.as.d.ts",
+      "default": "./src/atscript-db/dynamic-client.as"
     },
     "./package.json": "./package.json"
   },

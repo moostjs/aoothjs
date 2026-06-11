@@ -15,12 +15,25 @@ export interface PendingAuthorization {
   handle: string;
   /** Registered client id (Tier 2), absent for a public/loopback client. */
   clientId?: string;
+  /**
+   * Display name resolved at `/authorize` (DCR `client_name` or a registered
+   * client's label) — UNTRUSTED text staged for the consent prompt; render as
+   * a text node only. Snapshot-at-authorize: a later rename/GC of the
+   * registration doesn't change what consent shows for this grant.
+   */
+  clientName?: string;
   /** The client's validated `redirect_uri` — where the code is delivered. */
   redirectUri: string;
   /** PKCE S256 challenge (client-generated); verified against the verifier at `/token`. */
   codeChallenge: string;
   /** The client's `state`, echoed back on the redirect so the client can correlate. */
   clientState?: string;
+  /**
+   * RFC 8707 `resource` indicator from the authorize request. v1 records it
+   * (and checks `/token`-leg consistency) without audience enforcement — see
+   * OAUTH.md R4.
+   */
+  resource?: string;
   /** Granted scope (space-joined) — `requested ∩ allowed`; drives the `id_token` profile claims. */
   scope?: string;
   /** OIDC `nonce` from the authorize request — echoed into the `id_token` (Tier 2). */
@@ -49,9 +62,11 @@ export interface PendingAuthorization {
 /** Input to {@link PendingAuthorizationStore.create} — `handle`/timestamps are store-assigned. */
 export interface NewPendingAuthorization {
   clientId?: string;
+  clientName?: string;
   redirectUri: string;
   codeChallenge: string;
   clientState?: string;
+  resource?: string;
   scope?: string;
   nonce?: string;
   idToken?: boolean;
@@ -119,7 +134,9 @@ export class PendingAuthorizationStoreMemory extends PendingAuthorizationStore {
       createdAt: now,
       expiresAt: now + this.ttlMs,
       ...(rec.clientId !== undefined && { clientId: rec.clientId }),
+      ...(rec.clientName !== undefined && { clientName: rec.clientName }),
       ...(rec.clientState !== undefined && { clientState: rec.clientState }),
+      ...(rec.resource !== undefined && { resource: rec.resource }),
       ...(rec.scope !== undefined && { scope: rec.scope }),
       ...(rec.nonce !== undefined && { nonce: rec.nonce }),
       ...(rec.idToken !== undefined && { idToken: rec.idToken }),

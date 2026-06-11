@@ -21,6 +21,8 @@ export interface AoothAuthCode {
     clientId?: string
     /** Granted scope (space-joined). */
     scope?: string
+    /** RFC 8707 `resource` indicator (recorded; consistency-checked at /token). */
+    resource?: string
     /** OIDC `nonce`, echoed into the `id_token` (Tier 2). */
     nonce?: string
     /** Mint an `id_token` at `/token` (Tier 2). */

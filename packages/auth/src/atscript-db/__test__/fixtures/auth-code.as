@@ -12,6 +12,7 @@ export interface AoothAuthCode {
 
     clientId?: string
     scope?: string
+    resource?: string
     nonce?: string
     idToken?: boolean
     accessToken?: boolean

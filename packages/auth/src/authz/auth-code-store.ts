@@ -22,6 +22,12 @@ export interface AuthCode {
   clientId?: string;
   /** Granted scope (space-joined) — drives the `id_token` profile claims. */
   scope?: string;
+  /**
+   * RFC 8707 `resource` indicator recorded at `/authorize`. The token endpoint
+   * checks consistency (a `/token`-leg `resource` must match) — no audience
+   * enforcement in v1 (OAUTH.md R4).
+   */
+  resource?: string;
   /** OIDC `nonce` from the authorize request — echoed into the `id_token` (Tier 2). */
   nonce?: string;
   /** Mint an `id_token` at `/token` (Tier 2). */
@@ -42,6 +48,7 @@ export interface NewAuthCode {
   redirectUri: string;
   clientId?: string;
   scope?: string;
+  resource?: string;
   nonce?: string;
   idToken?: boolean;
   accessToken?: boolean;
@@ -102,6 +109,7 @@ export class AuthCodeStoreMemory extends AuthCodeStore {
       expiresAt: this.clock.now() + this.ttlMs,
       ...(rec.clientId !== undefined && { clientId: rec.clientId }),
       ...(rec.scope !== undefined && { scope: rec.scope }),
+      ...(rec.resource !== undefined && { resource: rec.resource }),
       ...(rec.nonce !== undefined && { nonce: rec.nonce }),
       ...(rec.idToken !== undefined && { idToken: rec.idToken }),
       ...(rec.accessToken !== undefined && { accessToken: rec.accessToken }),

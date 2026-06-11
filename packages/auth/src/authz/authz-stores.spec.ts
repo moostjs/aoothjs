@@ -33,6 +33,31 @@ describe("PendingAuthorizationStoreMemory", () => {
     expect(await store.get(handle)).toBeNull();
   });
 
+  it("round-trips the consent display name + RFC 8707 resource (and omits them when absent)", async () => {
+    const store = new PendingAuthorizationStoreMemory();
+    const { handle } = await store.create({
+      redirectUri: "https://connector.example/cb",
+      codeChallenge: "c",
+      clientId: "dyn-1",
+      clientName: "Test Connector",
+      resource: "https://api.example/mcp",
+      tokenPolicy: {},
+      binding: "b",
+    });
+    const row = await store.get(handle);
+    expect(row?.clientName).toBe("Test Connector");
+    expect(row?.resource).toBe("https://api.example/mcp");
+    const { handle: bare } = await store.create({
+      redirectUri: "http://127.0.0.1/cb",
+      codeChallenge: "c",
+      tokenPolicy: {},
+      binding: "b",
+    });
+    const bareRow = await store.get(bare);
+    expect("clientName" in (bareRow ?? {})).toBe(false);
+    expect("resource" in (bareRow ?? {})).toBe(false);
+  });
+
   it("expires after the ttl", async () => {
     const clock = new FakeClock();
     const store = new PendingAuthorizationStoreMemory({ clock, ttlMs: 1000 });
@@ -75,6 +100,28 @@ describe("AuthCodeStoreMemory", () => {
     expect(first?.codeChallenge).toBe("chal");
     // Reuse / back-button replay → miss.
     expect(await store.consume(code)).toBeNull();
+  });
+
+  it("round-trips the RFC 8707 resource (and omits it when absent)", async () => {
+    const store = new AuthCodeStoreMemory();
+    const { code } = await store.mint({
+      userId: "u-1",
+      codeChallenge: "c",
+      redirectUri: "https://connector.example/cb",
+      clientId: "dyn-1",
+      resource: "https://api.example/mcp",
+      tokenPolicy: {},
+    });
+    const row = await store.consume(code);
+    expect(row?.resource).toBe("https://api.example/mcp");
+    const { code: bare } = await store.mint({
+      userId: "u-1",
+      codeChallenge: "c",
+      redirectUri: "http://127.0.0.1/cb",
+      tokenPolicy: {},
+    });
+    const bareRow = await store.consume(bare);
+    expect("resource" in (bareRow ?? {})).toBe(false);
   });
 
   it("a concurrent double-redeem yields the code to exactly one caller", async () => {

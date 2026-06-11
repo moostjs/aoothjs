@@ -3,11 +3,14 @@ import { BetterSqlite3Driver, SqliteAdapter } from "@atscript/db-sqlite";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 
 import type { NewAuthCode } from "../../authz/auth-code-store";
+import type { NewDynamicClient } from "../../authz/dynamic-client-store";
 import type { NewPendingAuthorization } from "../../authz/pending-authorization-store";
 import type { TokenPolicy } from "../../authz/token-policy";
 import {
   AuthCodeStoreAtscriptDb,
   type AuthCodeTable,
+  DynamicClientStoreAtscriptDb,
+  type DynamicClientTable,
   PendingAuthorizationStoreAtscriptDb,
   type PendingAuthorizationTable,
 } from "../index";
@@ -17,6 +20,7 @@ import { prepareFixtures } from "./test-utils";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 let AoothPendingAuthorization: any;
 let AoothAuthCode: any;
+let AoothDynamicClient: any;
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 /** Mutable fake clock for deterministic expiry without real timers. */
@@ -64,15 +68,19 @@ describe("authz durable stores — integration against real SQLite", () => {
   // use separate in-memory DBs (mirrors the one-table-per-adapter test pattern).
   let pendingDriver: BetterSqlite3Driver;
   let codeDriver: BetterSqlite3Driver;
+  let clientDriver: BetterSqlite3Driver;
   let pendingTable: AtscriptDbTable;
   let codeTable: AtscriptDbTable;
+  let clientTable: AtscriptDbTable;
 
   beforeAll(async () => {
     await prepareFixtures();
     const pending = await import("./fixtures/pending-authorization.as");
     const code = await import("./fixtures/auth-code.as");
+    const client = await import("./fixtures/dynamic-client.as");
     AoothPendingAuthorization = pending.AoothPendingAuthorization;
     AoothAuthCode = code.AoothAuthCode;
+    AoothDynamicClient = client.AoothDynamicClient;
   });
 
   beforeEach(async () => {
@@ -80,7 +88,9 @@ describe("authz durable stores — integration against real SQLite", () => {
     pendingTable = new AtscriptDbTable(AoothPendingAuthorization, new SqliteAdapter(pendingDriver));
     codeDriver = new BetterSqlite3Driver(":memory:");
     codeTable = new AtscriptDbTable(AoothAuthCode, new SqliteAdapter(codeDriver));
-    for (const t of [pendingTable, codeTable]) {
+    clientDriver = new BetterSqlite3Driver(":memory:");
+    clientTable = new AtscriptDbTable(AoothDynamicClient, new SqliteAdapter(clientDriver));
+    for (const t of [pendingTable, codeTable, clientTable]) {
       await t.ensureTable();
       await t.syncIndexes();
     }
@@ -89,6 +99,7 @@ describe("authz durable stores — integration against real SQLite", () => {
   afterEach(() => {
     pendingDriver.close();
     codeDriver.close();
+    clientDriver.close();
   });
 
   function pendingStore(clock?: ReturnType<typeof fakeClock>): PendingAuthorizationStoreAtscriptDb {
@@ -100,6 +111,12 @@ describe("authz durable stores — integration against real SQLite", () => {
   function codeStore(clock?: ReturnType<typeof fakeClock>): AuthCodeStoreAtscriptDb {
     return new AuthCodeStoreAtscriptDb({
       table: codeTable as unknown as AuthCodeTable,
+      ...(clock && { clock }),
+    });
+  }
+  function clientStore(clock?: ReturnType<typeof fakeClock>): DynamicClientStoreAtscriptDb {
+    return new DynamicClientStoreAtscriptDb({
+      table: clientTable as unknown as DynamicClientTable,
       ...(clock && { clock }),
     });
   }
@@ -132,6 +149,25 @@ describe("authz durable stores — integration against real SQLite", () => {
       expect(got?.audience).toBe("client-123");
       expect(got?.nonce).toBe("n-1");
       expect("clientId" in (got ?? {})).toBe(false); // never set → absent, not null
+    });
+
+    it("round-trips the consent display name + RFC 8707 resource", async () => {
+      const store = pendingStore();
+      const { handle } = await store.create(
+        newPending({
+          clientId: "dyn-1",
+          clientName: "Test Connector",
+          resource: "https://api.example/mcp",
+        }),
+      );
+      const got = await store.get(handle);
+      expect(got?.clientName).toBe("Test Connector");
+      expect(got?.resource).toBe("https://api.example/mcp");
+      // Absent on a plain row — null from the DB must map back to "absent".
+      const { handle: bare } = await store.create(newPending());
+      const bareGot = await store.get(bare);
+      expect("clientName" in (bareGot ?? {})).toBe(false);
+      expect("resource" in (bareGot ?? {})).toBe(false);
     });
 
     it("get returns null for an unknown handle", async () => {
@@ -200,6 +236,85 @@ describe("authz durable stores — integration against real SQLite", () => {
 
     it("consume returns null for an unknown code", async () => {
       expect(await codeStore().consume("nope")).toBeNull();
+    });
+
+    it("round-trips the RFC 8707 resource", async () => {
+      const store = codeStore();
+      const { code } = await store.mint(
+        newCode({ clientId: "dyn-1", resource: "https://api.example/mcp" }),
+      );
+      const got = await store.consume(code);
+      expect(got?.clientId).toBe("dyn-1");
+      expect(got?.resource).toBe("https://api.example/mcp");
+    });
+  });
+
+  describe("DynamicClientStoreAtscriptDb", () => {
+    function newClient(overrides?: Partial<NewDynamicClient>): NewDynamicClient {
+      return {
+        clientName: "Test Connector",
+        redirectUris: ["https://connector.example/cb", "http://127.0.0.1:33418/cb"],
+        tokenEndpointAuthMethod: "none",
+        grantTypes: ["authorization_code"],
+        responseTypes: ["code"],
+        scope: "read write",
+        ...overrides,
+      };
+    }
+
+    it("create + get round-trips every field incl. the JSON-string arrays", async () => {
+      const store = clientStore();
+      const created = await store.create(newClient());
+      expect(created.clientId).toMatch(/^[0-9a-f-]{36}$/i);
+      const got = await store.get(created.clientId);
+      expect(got).toEqual(created);
+      expect(got?.redirectUris).toEqual([
+        "https://connector.example/cb",
+        "http://127.0.0.1:33418/cb",
+      ]);
+      expect(got?.grantTypes).toEqual(["authorization_code"]);
+      expect(got?.responseTypes).toEqual(["code"]);
+      expect("lastUsedAt" in (got ?? {})).toBe(false); // never used → absent, not null
+    });
+
+    it("omits absent optionals (clientName / scope)", async () => {
+      const store = clientStore();
+      const { clientId } = await store.create(
+        newClient({ clientName: undefined, scope: undefined }),
+      );
+      const got = await store.get(clientId);
+      expect("clientName" in (got ?? {})).toBe(false);
+      expect("scope" in (got ?? {})).toBe(false);
+    });
+
+    it("count reflects stored registrations; delete reports removal", async () => {
+      const store = clientStore();
+      expect(await store.count()).toBe(0);
+      const a = await store.create(newClient());
+      await store.create(newClient());
+      expect(await store.count()).toBe(2);
+      expect(await store.delete(a.clientId)).toBe(true);
+      expect(await store.delete(a.clientId)).toBe(false);
+      expect(await store.count()).toBe(1);
+    });
+
+    it("touch stamps lastUsedAt; deleteUnusedBefore GCs only never-used rows older than the cutoff", async () => {
+      const clock = fakeClock();
+      const store = clientStore(clock);
+      const used = await store.create(newClient());
+      const stale = await store.create(newClient());
+      clock.advance(10_000);
+      await store.touch(used.clientId, clock.now());
+      expect((await store.get(used.clientId))?.lastUsedAt).toBe(clock.now());
+      clock.advance(10_000);
+      const fresh = await store.create(newClient());
+      const removed = await store.deleteUnusedBefore(clock.now() - 5_000);
+      expect(removed).toBe(1);
+      expect(await store.get(stale.clientId)).toBeNull();
+      expect(await store.get(used.clientId)).not.toBeNull();
+      expect(await store.get(fresh.clientId)).not.toBeNull();
+      // The GC'd row is gone from the table itself.
+      expect(await clientTable.findOne({ filter: { clientId: stale.clientId } })).toBeNull();
     });
   });
 });

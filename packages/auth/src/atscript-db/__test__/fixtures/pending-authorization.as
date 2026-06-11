@@ -11,7 +11,9 @@ export interface AoothPendingAuthorization {
     codeChallenge: string
 
     clientId?: string
+    clientName?: string
     clientState?: string
+    resource?: string
     scope?: string
     nonce?: string
     idToken?: boolean
