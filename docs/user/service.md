@@ -56,6 +56,7 @@ user.id; // ← base field, the token subject
 | `lockout.threshold`      | `number`              | `0`        | Failed-login attempts before auto-locking. `0` disables lockout.                                              |
 | `lockout.duration`       | `number`              | `0`        | Lock duration in ms. `0` ⇒ permanent.                                                                         |
 | `deviceTrust.secret`     | `string`              | —          | HMAC key for trusted-device tokens. Required to call any `*TrustedDevice` method.                             |
+| `emailField`             | `string`              | —          | Name of the consumer-declared `@aooth.user.email` column — level 1 of `getCorrespondenceEmail`'s chain.       |
 | `clock`                  | `() => number`        | `Date.now` | Time source. Override in tests for deterministic lockout/expiry.                                              |
 
 ::: warning Pepper is irrecoverable

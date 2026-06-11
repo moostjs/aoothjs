@@ -55,15 +55,16 @@ The service emits partial `set` patches like `{ account: { failedLoginAttempts: 
 
 The account state machine — active, locked, login counters.
 
-| Field                 | Type                | Meaning                                                                                   |
-| --------------------- | ------------------- | ----------------------------------------------------------------------------------------- |
-| `active`              | `boolean`           | `false` ⇒ `INACTIVE` on login/verifyMfa. Set via `activateAccount` / `deactivateAccount`. |
-| `locked`              | `boolean`           | `true` ⇒ `LOCKED` on login/verifyMfa (unless auto-unlock kicks in).                       |
-| `lockReason`          | `string`            | Human-readable reason; surfaced in `LOCKED` error `details.reason`.                       |
-| `lockEnds`            | `number` (ms epoch) | `0` ⇒ permanent lock. `> 0 && < now` ⇒ expired (auto-unlock).                             |
-| `failedLoginAttempts` | `number`            | Shared counter across `login` and `verifyMfa`. Atomically `$inc`'d on failure.            |
-| `lastLogin`           | `number` (ms epoch) | Set on successful login.                                                                  |
-| `pendingInvitation`   | `boolean?`          | Reserved for the auth/invite layer; this package doesn't read it.                         |
+| Field                 | Type                | Meaning                                                                                                                                     |
+| --------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `active`              | `boolean`           | `false` ⇒ `INACTIVE` on login/verifyMfa. Set via `activateAccount` / `deactivateAccount`.                                                   |
+| `locked`              | `boolean`           | `true` ⇒ `LOCKED` on login/verifyMfa (unless auto-unlock kicks in).                                                                         |
+| `lockReason`          | `string`            | Human-readable reason; surfaced in `LOCKED` error `details.reason`.                                                                         |
+| `lockEnds`            | `number` (ms epoch) | `0` ⇒ permanent lock. `> 0 && < now` ⇒ expired (auto-unlock).                                                                               |
+| `failedLoginAttempts` | `number`            | Shared counter across `login` and `verifyMfa`. Atomically `$inc`'d on failure.                                                              |
+| `lastLogin`           | `number` (ms epoch) | Set on successful login.                                                                                                                    |
+| `pendingInvitation`   | `boolean?`          | Reserved for the auth/invite layer; this package doesn't read it.                                                                           |
+| `verifiedEmail`       | `string?`           | Correspondence address whose inbox the user proved — written by `setVerifiedEmail`, read by `getCorrespondenceEmail`. Never a login handle. |
 
 ::: warning `lockEnds: 0` is permanent, not "no lock"
 The expiration check is `lockEnds > 0 && lockEnds < now`. Use `lockAccount(u, reason, duration)` and let `duration=0` mean permanent. Reaching for `lockEnds: 0` manually does the same thing.

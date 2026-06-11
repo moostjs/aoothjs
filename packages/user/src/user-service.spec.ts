@@ -1334,4 +1334,119 @@ describe("UserService", () => {
       expect(names).toContain("phone");
     });
   });
+
+  describe("correspondence email", () => {
+    describe("setVerifiedEmail", () => {
+      it("round-trips through getUser and survives alongside other account fields", async () => {
+        const alice = await createActiveUser(svc, "alice", "pass123");
+        await svc.login("alice", "pass123"); // stamps account.lastLogin
+        await svc.setVerifiedEmail(alice.id, "proved@example.com");
+        const user = await svc.getUser(alice.id);
+        expect(user.account.verifiedEmail).toBe("proved@example.com");
+        // Deep-merge: sibling account fields untouched.
+        expect(user.account.active).toBe(true);
+        expect(user.account.lastLogin).toBe(now);
+      });
+
+      it("overwrites the previous address on a later inbox proof", async () => {
+        const alice = await createActiveUser(svc, "alice", "pass123");
+        await svc.setVerifiedEmail(alice.id, "first@example.com");
+        await svc.setVerifiedEmail(alice.id, "second@example.com");
+        const user = await svc.getUser(alice.id);
+        expect(user.account.verifiedEmail).toBe("second@example.com");
+      });
+
+      it("should throw NOT_FOUND for unknown user", async () => {
+        try {
+          await svc.setVerifiedEmail("unknown", "x@example.com");
+          expect.unreachable();
+        } catch (e) {
+          expect((e as UserAuthError).type).toBe("NOT_FOUND");
+        }
+      });
+    });
+
+    describe("getCorrespondenceEmail", () => {
+      type Extras = { contactEmail?: string };
+      let emailStore: UserStoreMemory<Extras>;
+      let emailSvc: UserService<Extras>;
+
+      beforeEach(() => {
+        emailStore = new UserStoreMemory<Extras>();
+        emailSvc = new UserService<Extras>(emailStore, {
+          password: { ...FAST_SCRYPT },
+          clock: () => now,
+          emailField: "contactEmail",
+        });
+      });
+
+      it("prefers the consumer's emailField column over verifiedEmail and the MFA method", async () => {
+        const alice = await emailSvc.createUser("alice", "pass123", {
+          contactEmail: "column@example.com",
+        });
+        await emailSvc.setVerifiedEmail(alice.id, "proved@example.com");
+        await emailSvc.addMfaMethod(alice.id, {
+          name: "email",
+          confirmed: true,
+          value: "mfa@example.com",
+        });
+        const user = await emailSvc.getUser(alice.id);
+        expect(await emailSvc.getCorrespondenceEmail(user)).toBe("column@example.com");
+      });
+
+      it("falls back to account.verifiedEmail when the column is empty/absent — and it beats the MFA method", async () => {
+        const alice = await emailSvc.createUser("alice", "pass123", { contactEmail: "" });
+        await emailSvc.setVerifiedEmail(alice.id, "proved@example.com");
+        await emailSvc.addMfaMethod(alice.id, {
+          name: "email",
+          confirmed: true,
+          value: "mfa@example.com",
+        });
+        const user = await emailSvc.getUser(alice.id);
+        expect(await emailSvc.getCorrespondenceEmail(user)).toBe("proved@example.com");
+      });
+
+      it("falls back to the confirmed email MFA method as the last resort", async () => {
+        const alice = await emailSvc.createUser("alice", "pass123");
+        await emailSvc.addMfaMethod(alice.id, {
+          name: "email",
+          confirmed: true,
+          value: "mfa@example.com",
+        });
+        const user = await emailSvc.getUser(alice.id);
+        expect(await emailSvc.getCorrespondenceEmail(user)).toBe("mfa@example.com");
+      });
+
+      it("ignores an UNCONFIRMED email MFA method (confirmed-only) — undefined", async () => {
+        const alice = await emailSvc.createUser("alice", "pass123");
+        await emailSvc.addMfaMethod(alice.id, {
+          name: "email",
+          confirmed: false,
+          value: "unconfirmed@example.com",
+        });
+        const user = await emailSvc.getUser(alice.id);
+        expect(await emailSvc.getCorrespondenceEmail(user)).toBeUndefined();
+      });
+
+      it("returns undefined when no source yields an address", async () => {
+        const alice = await emailSvc.createUser("alice", "pass123");
+        const user = await emailSvc.getUser(alice.id);
+        expect(await emailSvc.getCorrespondenceEmail(user)).toBeUndefined();
+      });
+
+      it("never reads the column without emailField config — even when the row carries it", async () => {
+        // `svc` (outer scope) has NO emailField; the column value must be invisible.
+        const plainSvc = new UserService<Extras>(new UserStoreMemory<Extras>(), {
+          password: { ...FAST_SCRYPT },
+          clock: () => now,
+        });
+        const alice = await plainSvc.createUser("alice", "pass123", {
+          contactEmail: "column@example.com",
+        });
+        await plainSvc.setVerifiedEmail(alice.id, "proved@example.com");
+        const user = await plainSvc.getUser(alice.id);
+        expect(await plainSvc.getCorrespondenceEmail(user)).toBe("proved@example.com");
+      });
+    });
+  });
 });

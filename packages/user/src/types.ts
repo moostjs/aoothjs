@@ -67,6 +67,14 @@ export interface AccountData {
    * the invite has been accepted.
    */
   pendingInvitation?: boolean;
+  /**
+   * Correspondence address whose inbox the user PROVED ownership of — written
+   * at every inbox-proof moment (invite magic-link click, signup / recovery
+   * OTP, email-channel confirm, trusted federated profile). Auth-owned; NOT a
+   * login handle (no uniqueness, never used for account resolution). Read
+   * through `UserService.getCorrespondenceEmail`.
+   */
+  verifiedEmail?: string;
 }
 
 export interface MfaData {
@@ -110,6 +118,13 @@ export interface UserServiceConfig {
     /** HMAC-SHA256 signing secret for trust-device and seen-device (recognition) tokens. */
     secret: string;
   };
+  /**
+   * Name of the consumer's `@aooth.user.email`-annotated column (resolved at
+   * boot by `getAoothUserHandleSpec` in arbac-moost and threaded here as
+   * plain config). When set, `getCorrespondenceEmail` prefers that column's
+   * value over `account.verifiedEmail` and the confirmed email MFA method.
+   */
+  emailField?: string;
 }
 
 export interface PasswordConfig {

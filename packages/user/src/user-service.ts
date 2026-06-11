@@ -29,6 +29,7 @@ interface ResolvedConfig {
   lockout: Required<LockoutConfig>;
   clock: () => number;
   deviceTrust?: { secret: string };
+  emailField?: string;
 }
 
 function resolveConfig(config?: UserServiceConfig): ResolvedConfig {
@@ -49,6 +50,7 @@ function resolveConfig(config?: UserServiceConfig): ResolvedConfig {
     },
     clock: config?.clock ?? Date.now,
     ...(config?.deviceTrust && { deviceTrust: config.deviceTrust }),
+    ...(config?.emailField && { emailField: config.emailField }),
   };
 }
 
@@ -725,6 +727,53 @@ export class UserService<T extends object = object> {
    */
   hasDeviceTrustSecret(): boolean {
     return !!this.config.deviceTrust?.secret;
+  }
+
+  // ---- correspondence email ----
+
+  /**
+   * Record `account.verifiedEmail` — the correspondence address whose inbox
+   * the user just PROVED (invite magic-link click, signup / recovery OTP,
+   * email-channel confirm, trusted federated profile). Plain write — a later
+   * proof for a different address overwrites the previous one. Throws
+   * `UserAuthError("NOT_FOUND")` when no row matches, like the other account
+   * mutators.
+   */
+  async setVerifiedEmail(id: string, email: string): Promise<void> {
+    const found = await this.store.update(id, {
+      set: { account: { verifiedEmail: email } } as DeepPartial<UserCredentials>,
+    });
+    if (!found) throw new UserAuthError("NOT_FOUND");
+  }
+
+  /**
+   * Resolve the address security notices should go to — a pure accessor over
+   * a row the caller already holds (no store round-trip). Three-level
+   * trust/ownership chain, most authoritative first:
+   *   1. the consumer's canonical email column (`config.emailField`, the
+   *      `@aooth.user.email`-annotated handle) when configured and non-empty;
+   *   2. `account.verifiedEmail` — the auth-proven capture written by
+   *      {@link setVerifiedEmail};
+   *   3. the first CONFIRMED `email` MFA method's value — inbox ownership as
+   *      an enrollment side effect.
+   * Returns `undefined` when none yields a non-empty address.
+   *
+   * OVERRIDE SEAM: subclasses may source the address from anywhere (a profile
+   * table, a tenant directory, an external CRM) — the return type admits
+   * `Promise` so an override can hit a store; the default stays sync (no
+   * Promise allocation). Callers `await` the result.
+   */
+  getCorrespondenceEmail(
+    user: UserCredentials & T,
+  ): string | undefined | Promise<string | undefined> {
+    const emailField = this.config.emailField;
+    if (emailField) {
+      const value = (user as Record<string, unknown>)[emailField];
+      if (typeof value === "string" && value) return value;
+    }
+    if (user.account.verifiedEmail) return user.account.verifiedEmail;
+    const mfaEmail = user.mfa.methods.find((m) => m.name === "email" && m.confirmed && m.value);
+    return mfaEmail?.value;
   }
 
   // ---- private helpers ----

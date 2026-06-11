@@ -246,6 +246,7 @@ export function createTestMailboxController(
         locked: boolean;
         lockEnds: number;
         pendingInvitation?: boolean;
+        verifiedEmail?: string;
       };
     }> {
       const user = await resolveUser(username);
@@ -283,6 +284,13 @@ export function createTestMailboxController(
           lockEnds: user.account.lockEnds,
           ...(user.account.pendingInvitation !== undefined && {
             pendingInvitation: user.account.pendingInvitation,
+          }),
+          // Auth-proven correspondence address (invite magic-link click,
+          // signup/recovery OTP, federated trusted claim). Surfaced so the
+          // verified-correspondence-email e2e (WF-LOGIN-040) can pin the
+          // `activate-user` write directly on the record.
+          ...(user.account.verifiedEmail !== undefined && {
+            verifiedEmail: user.account.verifiedEmail,
           }),
         },
       };

@@ -123,6 +123,7 @@ Every `protected` member below is an override seam — change behavior by subcla
 | `resolveLockedMfaTransports`                                                     | factors the user may NOT change/remove (e.g. a handle-bound email/phone)                | `[]` (none locked)          | add-mfa                                                                                          |
 | `resolveRedirect`                                                                | post-login redirect URL                                                                 | per `resolveFinalize`       | login                                                                                            |
 | `resolveOAuthErrorRedirect`                                                      | federated-login failure redirect target                                                 | error page                  | login (SSO)                                                                                      |
+| `resolveFederatedEmailTrust`                                                     | whether a provider's email claim counts as correspondence inbox proof                   | `email_verified === true`   | login (SSO) → [guide](#security-notices)                                                         |
 | `resolvePincodeForm` / `resolvePincodeTarget` / `resolvePincodeAltAction`        | which OTP form, recipient+channel, alt-action mapping for the shared pincode pair       | MFA-vs-recovery by ctx slot | login, recovery                                                                                  |
 | `resolveRecoveryUrl` _(sync helper)_                                             | URL the `forgotPassword` alt-action targets                                             | `loginUrl`-derived          | login                                                                                            |
 | `resolveClientIp` / `resolveUserAgent` / `resolveIssueMetadata` _(sync helpers)_ | device-trust + audit metadata at issue time                                             | request headers             | login                                                                                            |
@@ -193,6 +194,19 @@ Infrastructure knobs live on the `deviceRecognition` opts group: `cookieName` (d
 **Configure `deviceTrust.secret` or recognition is silently off.** Recognition tokens are signed with the same `UserService` `deviceTrust.secret` as trust tokens (domain-separated payloads — the two token kinds are not interchangeable), and without the secret the step no-ops, leaving the legacy notify-on-every-unrecognized-login behavior. Recognition does **not** require `resolveDeviceTrust` to be enabled — it works with device trust fully disabled.
 
 **Hygiene:** the `revoke-sessions` step (change-password + recovery reset) clears the whole ledger. Each device re-mints on its next login, so the single fresh "new sign-in" notice after a password change is deliberate signal, not a regression.
+
+### Where security notices go {#security-notices}
+
+The notice needs an email recipient, and not every account has email MFA. The recipient is resolved by [`UserService.getCorrespondenceEmail`](/api/user#userservice-t-extends-object-object) — a three-level chain, most authoritative first: your `@aooth.user.email`-annotated column (when `UserServiceConfig.emailField` names it), then `account.verifiedEmail`, then the first confirmed email-MFA method. The login flow falls back to this chain whenever no confirmed email-MFA method set the recipient — so invited or self-signed-up users with **zero MFA** still receive new-device notices.
+
+`account.verifiedEmail` is captured automatically wherever a flow proves inbox ownership: invite acceptance (the magic-link click), signup (the pre-create OTP), recovery (only when the reset code was actually delivered over email — recorded against the address it went to), email channel/MFA confirmation, and federated logins. The capture is correspondence-only — it never becomes a login handle and never resolves accounts.
+
+Two override seams:
+
+- **`UserService.getCorrespondenceEmail(user)`** — replace the chain to source the address from anywhere (a profile table, a tenant directory, a CRM). The default is sync, but the return type admits a `Promise`, so an `async` override just works.
+- **`resolveFederatedEmailTrust(ctx, profile)`** — should a federated provider's email claim count as inbox proof? The default trusts exactly the provider's `email_verified === true` claim: a provider trusted to _authenticate_ the user is strictly more trusted than its email claim. Override to exclude a provider whose claim shouldn't be taken at face value (e.g. an internal OIDC issuer that stamps `email_verified` on unverified directory entries). The capture is idempotent — an already-current address skips the write.
+
+One note for subclass authors: a correspondence-seeded `ctx.email` does **not** mean a code was ever sent. The email channel-enrollment gates key on `ctx.channel.email` — the ask→verify progress marker, mirroring `channel.phone` — never on `ctx.email`. Full signatures: [`setVerifiedEmail` / `getCorrespondenceEmail`](/api/user#userservice-t-extends-object-object) and the [resolver set](/api/auth-moost#authworkflow).
 
 ### Invite (`auth/invite/start`)
 

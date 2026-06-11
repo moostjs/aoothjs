@@ -1,5 +1,10 @@
 import { AuthCredential, CredentialStoreMemory } from "@aooth/auth";
-import { type UserCredentials, UserService, UserStoreMemory } from "@aooth/user";
+import {
+  type FederatedProfileSnapshot,
+  type UserCredentials,
+  UserService,
+  UserStoreMemory,
+} from "@aooth/user";
 import { getMoostMate } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -67,6 +72,8 @@ class TestableAuthWorkflow extends AuthWorkflow {
     this.selectRecoveryRegisteredMethod(user);
   public exposePincodeAltAction = (ctx: AuthWfCtx, a: string) =>
     this.resolvePincodeAltAction(ctx, a);
+  public exposeFederatedEmailTrust = (ctx: AuthWfCtx, profile: FederatedProfileSnapshot) =>
+    this.resolveFederatedEmailTrust(ctx, profile);
   public exposeRedirect = (ctx: AuthWfCtx) => this.resolveRedirect(ctx);
   public exposeClientIp = () => this.resolveClientIp();
   public exposeUserAgent = () => this.resolveUserAgent();
@@ -829,6 +836,55 @@ describe("AuthWorkflow invite re-invite ('reuse' verdict)", () => {
     expect(ctx.subject).toBe(created.id);
     expect(created.account.pendingInvitation).toBe(true);
     expect((created as { roles?: string[] }).roles).toEqual(["member"]);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// 3b. Verified correspondence email — trust resolver + capture steps
+// WHY: the "new sign-in" notice recipient resolves through
+// `users.getCorrespondenceEmail`, whose middle level is `account.verifiedEmail`
+// — populated ONLY by the inbox-proof captures. A capture that silently stops
+// firing reverts invited / OTP-signup users (no email-MFA enrolled) to
+// receiving no security notices at all.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("verified correspondence email capture", () => {
+  it("resolveFederatedEmailTrust default — trusts exactly the provider's email_verified claim", async () => {
+    const wf = makeWorkflow();
+    const ctx = {} as AuthWfCtx;
+    expect(await settle(wf.exposeFederatedEmailTrust(ctx, { emailVerified: true }))).toBe(true);
+    expect(await settle(wf.exposeFederatedEmailTrust(ctx, { emailVerified: false }))).toBe(false);
+    expect(await settle(wf.exposeFederatedEmailTrust(ctx, {}))).toBe(false);
+  });
+
+  it("activate-user — records ctx.email as account.verifiedEmail (magic-link proof) and still activates", async () => {
+    const { wf, users } = makeWorkflowWithDeps();
+    const row = await users.createUser("invitee@example.com", undefined, {});
+    const ctx = { subject: row.id, email: "invitee@example.com" } as AuthWfCtx;
+    await wf.activateUser(ctx);
+    const after = await users.getUser(row.id);
+    expect(after.account.verifiedEmail).toBe("invitee@example.com");
+    expect(after.account.active).toBe(true);
+  });
+
+  it("activate-user — no ctx.email → activates without touching verifiedEmail", async () => {
+    const { wf, users } = makeWorkflowWithDeps();
+    const row = await users.createUser("plain@example.com", undefined, {});
+    const ctx = { subject: row.id } as AuthWfCtx;
+    await wf.activateUser(ctx);
+    const after = await users.getUser(row.id);
+    expect(after.account.verifiedEmail).toBeUndefined();
+    expect(after.account.active).toBe(true);
+  });
+
+  it("signup-create-user — stamps verifiedEmail on the freshly-created row (pre-create OTP proof)", async () => {
+    const { wf, users } = makeWorkflowWithDeps();
+    const ctx = { email: "fresh@example.com", otp: { verified: true } } as AuthWfCtx;
+    await wf.signupCreateUser(ctx);
+    const created = (await users.findByHandle("fresh@example.com"))!;
+    expect(ctx.subject).toBe(created.id);
+    expect(created.account.verifiedEmail).toBe("fresh@example.com");
+    expect(ctx.newPasswordRequired).toBe(true);
   });
 });
 

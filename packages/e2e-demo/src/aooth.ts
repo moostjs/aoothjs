@@ -73,6 +73,11 @@ export function createAooth({ tables, env }: AppAuthOptions): AppAuth {
   });
 
   const userService = new UserService<DemoUser>(userStore, {
+    // Canonical correspondence column for `getCorrespondenceEmail` — the same
+    // `@aooth.user.email`-annotated field the store uses for handle lookups.
+    // Resolution order: this column → `account.verifiedEmail` (written by the
+    // invite accept tail) → confirmed email-MFA method.
+    emailField: handles.emailField,
     password: {
       historyLength: 5,
       // 1-year rotation policy (a typical B2B compliance requirement that

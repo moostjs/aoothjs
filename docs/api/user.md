@@ -31,6 +31,15 @@ service.hasDeviceTrustSecret(): boolean; // sync — true when deviceTrust.secre
 
 Like the `*TrustedDevice` methods, `issueSeenDevice` / `verifySeenDevice` throw a plain `Error` when `deviceTrust.secret` is unset — call `hasDeviceTrustSecret()` first to degrade gracefully. See [Device recognition](/moost/workflows#device-recognition) for how the workflow layer drives these.
 
+**Correspondence email** — recipient resolution for security notices ("new sign-in" email) plus its auth-proven capture:
+
+```ts
+service.setVerifiedEmail(id: string, email: string): Promise<void>; // record account.verifiedEmail — an inbox the user just PROVED (invite click, signup/recovery OTP, email confirm, trusted federated claim); plain overwrite; throws UserAuthError('NOT_FOUND') on a missing row
+service.getCorrespondenceEmail(user: UserCredentials & T): string | undefined | Promise<string | undefined>; // sync default — config.emailField column → account.verifiedEmail → first confirmed email-MFA method
+```
+
+`getCorrespondenceEmail` is an **override seam**: subclass `UserService` to source the address from anywhere (a profile table, a CRM) — the return type admits a `Promise`, so async overrides are supported (callers `await` the result). The address is correspondence-only, never a login handle. See [Where security notices go](/moost/workflows#security-notices) for the workflow capture points.
+
 > There are **no** `generateBackupCodes` / `consumeBackupCode` service methods, and the base `UserCredentials` carries no `backupCodes` field — wire your own (a consumer-declared column + service) if you need recovery codes.
 
 ### `UserStore<T extends object = object>` (abstract)
@@ -167,6 +176,8 @@ interface AccountData {
   lastLogin: number;
   /** Set by the invite workflow; cleared once the invite is accepted. */
   pendingInvitation?: boolean;
+  /** Correspondence address whose inbox the user proved — written by setVerifiedEmail; never a login handle */
+  verifiedEmail?: string;
 }
 interface MfaData {
   methods: MfaMethod[];
@@ -195,6 +206,8 @@ interface UserServiceConfig {
   clock?: () => number;
   /** HMAC-SHA256 signing secret for trusted-device AND seen-device (recognition) tokens — domain-separated payloads. */
   deviceTrust?: { secret: string };
+  /** Name of the consumer-declared `@aooth.user.email` column — level 1 of getCorrespondenceEmail's chain. Thread it from getAoothUserHandleSpec at boot. */
+  emailField?: string;
 }
 interface LockoutConfig {
   /** Lock after this many failed attempts (0 = disabled, default) */
@@ -441,4 +454,4 @@ new FederatedIdentityStoreAtscriptDb(opts: { table: FederatedIdentityTable; cloc
 
 ## Subpath: `@aooth/user/atscript-db/model.as`
 
-Raw `.as` file export. Defines `AoothUserCredentials` — the surrogate `id` (`@meta.id` + `@db.default.uuid`), the unique `username` index (the one base login handle), the `@db.column.version` counter, plus `@db.patch.strategy 'merge'` sub-objects for `password` / `account` / `mfa` / `trustedDevices` / `seenDevices`. The base carries **no** `email`/`phone` — a secondary login/recovery handle is **consumer-declared**: add your own field, index it `@db.index.unique`, and tag it `@aooth.user.email` / `@aooth.user.phone`. Consumers extend the model to add `@db.table` and any custom columns; `id`/`username` are inherited. See [Credentials Model](/user/credentials) and [Phone, Recovery Channels & Handles](/moost/recovery-and-handles).
+Raw `.as` file export. Defines `AoothUserCredentials` — the surrogate `id` (`@meta.id` + `@db.default.uuid`), the unique `username` index (the one base login handle), the `@db.column.version` counter, plus `@db.patch.strategy 'merge'` sub-objects for `password` / `account` / `mfa` / `trustedDevices` / `seenDevices`. The base carries **no** `email`/`phone` — a secondary login/recovery handle is **consumer-declared**: add your own field, index it `@db.index.unique`, and tag it `@aooth.user.email` / `@aooth.user.phone`. (`account.verifiedEmail` is not a handle — it's the auth-owned correspondence capture; see [Where security notices go](/moost/workflows#security-notices).) Consumers extend the model to add `@db.table` and any custom columns; `id`/`username` are inherited. See [Credentials Model](/user/credentials) and [Phone, Recovery Channels & Handles](/moost/recovery-and-handles).

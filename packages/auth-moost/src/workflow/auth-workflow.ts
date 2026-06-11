@@ -23,6 +23,7 @@
 import { AuthCredential, type CredentialMetadata } from "@aooth/auth";
 import type { NormalizedProfile } from "@aooth/idp";
 import {
+  type FederatedProfileSnapshot,
   generateMfaCode,
   generateTotpSecret,
   generateTotpUri,
@@ -1088,6 +1089,23 @@ export class AuthWorkflow {
   }
 
   /**
+   * Decide whether a verified federated profile's email claim counts as inbox
+   * proof for the CORRESPONDENCE address (`users.setVerifiedEmail`). Default
+   * trusts the provider's `email_verified` claim — a provider trusted to
+   * AUTHENTICATE the user is strictly more trusted than its email claim. The
+   * capture is correspondence-only: it never promotes the address to a login
+   * handle and never resolves accounts by it. Override to exclude providers
+   * whose claim should not be taken at face value (e.g. an internal OIDC
+   * issuer that stamps `email_verified` on unverified directory entries).
+   */
+  protected resolveFederatedEmailTrust(
+    _ctx: AuthWfCtx,
+    profile: FederatedProfileSnapshot,
+  ): boolean | Promise<boolean> {
+    return profile.emailVerified === true;
+  }
+
+  /**
    * Route a form alt-action click to a canonical outcome. Defaults match the
    * action ids the bundled `PincodeForm` declares; customers override per
    * form when adding new actions or remapping the canonical ones.
@@ -1728,6 +1746,10 @@ export class AuthWorkflow {
         channel.phone = phone.value;
         channel.phoneConfirmed = true;
       }
+      // Correspondence fallback — users who proved an inbox WITHOUT enrolling
+      // email MFA (invite magic-link, signup / recovery OTP, trusted federated
+      // claim) still get security notices.
+      if (!ctx.email) await this.seedCorrespondenceEmail(ctx, result.user);
     } catch (err) {
       if (err instanceof UserAuthError) {
         if (err.type === "LOCKED") {
@@ -2467,6 +2489,9 @@ export class AuthWorkflow {
   @Public()
   async activateUser(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     this.requireSubject(ctx);
+    // The invite magic-link click (or signup's pre-create OTP — this step is
+    // reused there) proved this inbox — record the correspondence address.
+    if (ctx.email) await this.users.setVerifiedEmail(ctx.subject, ctx.email);
     await this.users.activateAccount(ctx.subject);
     return undefined;
   }
@@ -2927,8 +2952,13 @@ export class AuthWorkflow {
     await this.withStoreErrorTranslation(() =>
       this.users.addMfaMethod(username, { name: methodName, value, confirmed: false }),
     );
-    if (isEmail) ctx.email = value;
-    else {
+    if (isEmail) {
+      // `channel.email` is the ask→verify progress marker (mirrors `phone`);
+      // `ctx.email` doubles as the notice/correspondence recipient and may be
+      // pre-seeded without any code sent, so the gates key on `channel.email`.
+      ctx.email = value;
+      (ctx.channel ??= {}).email = value;
+    } else {
       (ctx.channel ??= {}).phone = value;
     }
     const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
@@ -3005,8 +3035,14 @@ export class AuthWorkflow {
       this.users.confirmMfaMethod(ctx.subject, isEmail ? "email" : "sms"),
     );
     const channelState = (ctx.channel ??= {});
-    if (isEmail) channelState.emailConfirmed = true;
-    else channelState.phoneConfirmed = true;
+    if (isEmail) {
+      channelState.emailConfirmed = true;
+      // The pincode just verified delivery to `ctx.email` (the address
+      // `ask/email` collected) — record the inbox proof.
+      if (ctx.email) await this.users.setVerifiedEmail(ctx.subject, ctx.email);
+    } else {
+      channelState.phoneConfirmed = true;
+    }
     // Record the OTP-channel disclosure AFTER channel ownership is confirmed.
     if (channelState.otpDisclosure) {
       const channelArg: "email" | "sms" = isEmail ? "email" : "sms";
@@ -3272,6 +3308,12 @@ export class AuthWorkflow {
         code,
         expiresInMs: this.opts.mfa.pincodeTtlMs,
       });
+      // Stash the REAL delivery target (M2 may differ from the typed
+      // identifier) so `pincode-check` can record the inbox proof against the
+      // address the code actually went to.
+      const postReset = (ctx.postReset ??= {});
+      postReset.deliveredTo = target.address;
+      postReset.deliveredChannel = target.channel;
     }
     const pincode = (ctx.pincode ??= {});
     pincode.sentTo = this.maskAddress(target.address, target.channel);
@@ -3352,6 +3394,11 @@ export class AuthWorkflow {
     const pinErr = this.verifyPin(ctx, input.code);
     if (pinErr) throw this.throwPublic(ctx, wf, { errors: pinErr });
     (ctx.otp ??= {}).verified = true;
+    // Recovery OTP verified over an EMAIL delivery — the user just proved the
+    // inbox the code went to; record it as the correspondence address.
+    if (ctx.subject && ctx.postReset?.deliveredChannel === "email" && ctx.postReset.deliveredTo) {
+      await this.users.setVerifiedEmail(ctx.subject, ctx.postReset.deliveredTo);
+    }
     // Re-arm risk step-up so it re-evaluates after this verification.
     (ctx.session ??= {}).riskStepUpEvaluated = false;
     if (ctx.deviceTrust?.enabled && ctx.deviceTrust?.optIn) {
@@ -3623,6 +3670,10 @@ export class AuthWorkflow {
     await this.withStoreErrorTranslation(() =>
       this.users.addMfaMethod(username, { name: methodName, value, confirmed: true }),
     );
+    // A freshly-confirmed email factor is an inbox proof — record the
+    // correspondence address. Unconditional sibling of the policy-gated
+    // `promote-to-handle` write that follows this step.
+    if (methodName === "email") await this.users.setVerifiedEmail(username, value);
     // Make this the default UNLESS the flow asked to keep the existing one (the
     // user is adding/replacing a secondary factor, not setting their first). On
     // the login/invite forced-enrolment path `keepExistingDefault` is unset and
@@ -4443,6 +4494,8 @@ export class AuthWorkflow {
       throw err;
     }
     ctx.subject = created.id;
+    // The pre-create OTP loop proved this inbox — record the correspondence address.
+    await this.users.setVerifiedEmail(created.id, email);
     ctx.newPasswordRequired = true;
     (ctx.password ??= {}).changeReason = "initial";
     return undefined;
@@ -4662,8 +4715,9 @@ export class AuthWorkflow {
     }
 
     // Seed channel state from the resolved user so the shared enrolment / MFA /
-    // notify-new-device gates behave. The provider email is a display fallback.
-    this.seedChannelState(ctx, user, profile.email);
+    // notify-new-device gates behave; also captures a trusted provider email
+    // claim as the proven correspondence address (`setVerifiedEmail`).
+    await this.seedChannelState(ctx, user, profile);
 
     // Real subject resolved → durable store for any MFA / consent pause to come.
     swapStrategy("store");
@@ -4701,17 +4755,43 @@ export class AuthWorkflow {
    * Seed `ctx.email` / `ctx.channel` from a resolved user's confirmed channels —
    * shared by `ssoCallback` (linked / created / auto-linked) and `proveControl`
    * (interactively-linked) so the post-success channel shape can't drift between
-   * the two federated entry points. Mirrors `credentials`' post-login seeding.
-   * `fallbackEmail` (the provider / snapshot email) is a DISPLAY fallback only —
-   * never promoted to the unique login handle (a gated, later-phase concern).
+   * the two federated entry points. Mirrors `credentials`' post-login seeding,
+   * including the correspondence fallback (confirmed email-MFA →
+   * `users.getCorrespondenceEmail` → provider display email).
+   *
+   * Also the single federated capture point for `users.setVerifiedEmail`: a
+   * trusted `profile.email` (per `resolveFederatedEmailTrust`) is recorded as
+   * the proven correspondence address on EVERY federated login — first-time
+   * create, returning link, and interactive link alike (the store write is
+   * skipped when the capture is already current). The profile email is
+   * otherwise a DISPLAY fallback only — never promoted to the unique login
+   * handle (a gated, later-phase concern).
    */
-  private seedChannelState(ctx: AuthWfCtx, user: UserCredentials, fallbackEmail?: string): void {
+  private async seedChannelState(
+    ctx: AuthWfCtx,
+    user: UserCredentials,
+    profile?: FederatedProfileSnapshot,
+  ): Promise<void> {
+    // The provider authenticated this user AND attests the address — inbox
+    // proof for correspondence purposes (policy-gated, default: email_verified).
+    // An already-current capture skips the gate + store write — every federated
+    // login (first-time AND returning) lands here.
+    if (
+      profile?.email &&
+      user.account.verifiedEmail !== profile.email &&
+      (await this.resolveFederatedEmailTrust(ctx, profile))
+    ) {
+      await this.users.setVerifiedEmail(user.id, profile.email);
+      // Keep the in-hand row current so the correspondence chain below reads
+      // the fresh capture, not the pre-write snapshot.
+      user.account.verifiedEmail = profile.email;
+    }
     const email = user.mfa.methods.find((m) => m.name === "email" && m.confirmed);
     if (email) {
       ctx.email = email.value;
       (ctx.channel ??= {}).emailConfirmed = true;
-    } else if (fallbackEmail) {
-      ctx.email = fallbackEmail;
+    } else {
+      await this.seedCorrespondenceEmail(ctx, user, profile?.email);
     }
     const phone = user.mfa.methods.find((m) => m.name === "sms" && m.confirmed);
     if (phone) {
@@ -4719,6 +4799,24 @@ export class AuthWorkflow {
       channel.phone = phone.value;
       channel.phoneConfirmed = true;
     }
+  }
+
+  /**
+   * Correspondence tail of the `ctx.email` seeding — shared by `credentials`
+   * (post-login) and `seedChannelState` (federated) so the fallback chain
+   * (`users.getCorrespondenceEmail` → optional display email) can't drift
+   * between the two. Does NOT set `channel.emailConfirmed` — that flag means
+   * "confirmed email-MFA channel" and gates enrolment; a correspondence
+   * address is a notice recipient, not a proven OTP channel.
+   */
+  private async seedCorrespondenceEmail(
+    ctx: AuthWfCtx,
+    user: UserCredentials,
+    displayEmail?: string,
+  ): Promise<void> {
+    const correspondence = await this.users.getCorrespondenceEmail(user);
+    if (correspondence) ctx.email = correspondence;
+    else if (displayEmail) ctx.email = displayEmail;
   }
 
   /**
@@ -4941,7 +5039,7 @@ export class AuthWorkflow {
       isNew: false,
       ...(pending.redirect ? { redirect: pending.redirect } : {}),
     };
-    this.seedChannelState(ctx, candidate, pending.snapshot?.email);
+    await this.seedChannelState(ctx, candidate, pending.snapshot);
 
     delete ctx.pendingLink;
     swapStrategy("store");
@@ -5006,17 +5104,27 @@ export class AuthWorkflow {
       ],
     },
 
-    // Forced channel enrolment
+    // Forced channel enrolment. The email pair keys on `channel.email` — the
+    // address `ask/email` actually collected and sent a code to — mirroring
+    // the phone pair's `channel.phone`. NEVER on `ctx.email`: that slot
+    // doubles as the notice/correspondence recipient and may be pre-seeded
+    // (verifiedEmail capture, provider display email) without any code sent —
+    // keying on it either skips the ask (pausing on a code form no code was
+    // sent for) or, inverted, breaks the ask→verify resume (`askChannel`
+    // pauses INSIDE `ask/email`; the resume skips past it only because the
+    // stash flips this gate false).
     {
       id: "ask/email",
       condition: (ctx) =>
-        (!!ctx.enrollment?.ensureEmail || !!ctx.guards?.emailVerifiedRequired) && !ctx.email,
+        (!!ctx.enrollment?.ensureEmail || !!ctx.guards?.emailVerifiedRequired) &&
+        !ctx.channel?.email &&
+        !ctx.channel?.emailConfirmed,
     },
     {
       id: "verify/email",
       condition: (ctx) =>
         (!!ctx.enrollment?.ensureEmail || !!ctx.guards?.emailVerifiedRequired) &&
-        !!ctx.email &&
+        !!ctx.channel?.email &&
         !ctx.channel?.emailConfirmed,
     },
     {

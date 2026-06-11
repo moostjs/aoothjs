@@ -20,10 +20,13 @@ import {
   fillField,
   getEmails,
   getSms,
+  loginViaUi,
   readFinishEnvelope,
   resetApp,
+  rewriteToBaseUrl,
   submitForm,
   totp,
+  uniqueEmail,
   USERS,
   waitForEmail,
   waitForFormInput,
@@ -1484,12 +1487,14 @@ test.describe("LoginWorkflow / variant=device-trust-short-ttl (P2)", () => {
   });
 });
 
-// Shared by the two notify-new-device suites below (WF-LOGIN-038/039). Both
-// log in as henry — the only seeded user whose confirmed email-MFA method lets
-// the notice step resolve `ctx.email` (see WF-LOGIN-038's empirical notes).
-const newDeviceNoticeCount = async (request: APIRequestContext) =>
+// Shared by the notify-new-device suites below (WF-LOGIN-038/039/040):
+// recipient-scoped count of captured `notifyNewDevice` mailbox events.
+// -038/-039 log in as henry, whose confirmed email-MFA method resolves the
+// recipient (see WF-LOGIN-038's empirical notes); -040 uses a freshly-invited
+// MFA-less user whose recipient resolves via `getCorrespondenceEmail` instead.
+const newDeviceNoticeCount = async (request: APIRequestContext, recipient: string) =>
   (await getEmails(request)).filter(
-    (e) => e.kind === "notifyNewDevice" && e.recipient === "henry@acme.test",
+    (e) => e.kind === "notifyNewDevice" && e.recipient === recipient,
   ).length;
 
 test.describe("LoginWorkflow / variant=notify-new-device (P1)", () => {
@@ -1522,7 +1527,7 @@ test.describe("LoginWorkflow / variant=notify-new-device (P1)", () => {
     request,
   }) => {
     const baseURL = test.info().project.use.baseURL;
-    const noticeCount = () => newDeviceNoticeCount(request);
+    const noticeCount = () => newDeviceNoticeCount(request, "henry@acme.test");
     const plainLogin = async (page: Page) => {
       await page.goto(wfUrl(LOGIN_WF, "notify-new-device"));
       await waitForFormInput(page, "username");
@@ -1580,7 +1585,7 @@ test.describe("LoginWorkflow / variant=device-trust-short-ttl-notify (P1)", () =
     request,
   }) => {
     const VARIANT = "device-trust-short-ttl-notify";
-    const noticeCount = () => newDeviceNoticeCount(request);
+    const noticeCount = () => newDeviceNoticeCount(request, "henry@acme.test");
     const pincodes = async () =>
       (await getEmails(request)).filter(
         (e) => e.kind === "login.pincode" && e.recipient === "henry@acme.test",
@@ -1631,6 +1636,110 @@ test.describe("LoginWorkflow / variant=device-trust-short-ttl-notify (P1)", () =
     expect(await noticeCount(), "expired trust but recognized browser → no additional notice").toBe(
       1,
     );
+  });
+});
+
+test.describe("LoginWorkflow / variant=notify-new-device — invited user, no MFA (P1)", () => {
+  // BRANCH (verified correspondence email): the invite accept tail
+  // (`activate-user`) now writes `account.verifiedEmail` — the magic-link
+  // click + password-set proved control of the inbox — and the login flow's
+  // `credentials` step resolves the notice recipient through
+  // `users.getCorrespondenceEmail(user)` (annotated `@aooth.user.email`
+  // column → `account.verifiedEmail` → confirmed email-MFA method).
+  // Previously the recipient came ONLY from a confirmed email-MFA method, so
+  // a user invited by email with NO MFA anywhere (the `email-no-roles` invite
+  // tail enrolls nothing; this login variant has MFA disabled) could NEVER
+  // receive the new-sign-in notice — this test is the end-to-end proof of the
+  // unblocked branch.
+  //
+  // Demo-specific note: the demo model annotates `email` with
+  // `@aooth.user.email` and `aooth.ts` threads `emailField` into UserService,
+  // so tier 1 of the chain also resolves the invited address (the invite flow
+  // mirrors username → email). The `account.verifiedEmail` assertion on the
+  // record below pins the new accept-tail write directly, independent of
+  // which tier serves the recipient.
+  //
+  // Cross-spec note: this test drives the WF-INVITE-001 sequence first, but
+  // ALL of it lives inside this one test — the suite-level beforeEach reset
+  // isolates it from invite.spec.ts and from its login.spec.ts neighbours.
+  test("WF-LOGIN-040: invited user (no MFA) → new-device notice arrives at the invited address once, suppressed on repeat login", async ({
+    page,
+    browser,
+    request,
+    baseURL,
+  }) => {
+    // ── Leg 1: admin invites, invitee redeems (verbatim WF-INVITE-001 drive).
+    await loginViaUi(page, USERS.admin_inviter);
+    await page.goto(wfUrl("auth/invite/start", "email-no-roles"));
+    await expect(page.locator('[name="email"]')).toBeVisible({ timeout: 5000 });
+
+    const inviteeEmail = uniqueEmail("login-040");
+    const inviteePassword = "InviteePass-1!";
+    await fillField(page, "email", inviteeEmail);
+    await submitForm(page);
+
+    const magic = await waitForEmail(
+      request,
+      (e) => e.kind === "invite.magicLink" && e.recipient === inviteeEmail,
+      8000,
+    );
+    expect(magic.url, "magic-link email must carry a resume url").toBeTruthy();
+
+    // Fresh context — the invitee is anonymous, the admin cookies must not leak.
+    const resumeUrl = rewriteToBaseUrl(magic.url as string, baseURL ?? "");
+    const inviteCtx = await browser.newContext({ baseURL });
+    const inviteePage = await inviteCtx.newPage();
+    await inviteePage.goto(resumeUrl);
+
+    await expect(inviteePage.locator('[name="newPassword"]')).toBeVisible({ timeout: 15_000 });
+    await inviteePage.locator('[name="newPassword"]').fill(inviteePassword);
+    await inviteePage.locator('[name="confirmPassword"]').fill(inviteePassword);
+    await inviteePage.locator("button.as-submit-btn, button[type=submit]").first().click();
+    await expect(inviteePage.locator("text=Workflow finished")).toBeVisible({ timeout: 15_000 });
+    await inviteCtx.close();
+
+    // The accept tail activated the user, wrote the auth-proven correspondence
+    // address, and enrolled ZERO MFA methods — the exact pre-fix dead-end
+    // (no email-MFA row → no notice recipient).
+    const userRes = await request.get(`/__test/user/${encodeURIComponent(inviteeEmail)}`);
+    expect(userRes.status()).toBe(200);
+    const userRec = (await userRes.json()) as {
+      mfa: { methods: unknown[] };
+      account: { active: boolean; verifiedEmail?: string };
+    };
+    expect(userRec.account.active).toBe(true);
+    expect(userRec.mfa.methods, "email-no-roles invite tail enrolls no MFA").toHaveLength(0);
+    expect(
+      userRec.account.verifiedEmail,
+      "activate-user captured the magic-link-proven inbox",
+    ).toBe(inviteeEmail);
+
+    // ── Leg 2: log in as the invitee under notify-new-device (trust + MFA
+    // both disabled — `finalize.notifyNewDevice: true` is the only extra).
+    const noticeCount = () => newDeviceNoticeCount(request, inviteeEmail);
+    const plainLogin = async (p: Page) => {
+      await p.goto(wfUrl(LOGIN_WF, "notify-new-device"));
+      await waitForFormInput(p, "username");
+      await fillField(p, "username", inviteeEmail);
+      await fillField(p, "password", inviteePassword);
+      await p.getByRole("button", { name: "Sign in", exact: true }).click();
+      await expect(p.getByText("Workflow finished")).toBeVisible({ timeout: 15_000 });
+    };
+
+    // Login 1 — fresh context, no recognition cookie → exactly one
+    // new-device notice TO THE INVITED ADDRESS (the headline assertion).
+    const loginCtx = await browser.newContext({ baseURL });
+    const loginPage = await loginCtx.newPage();
+    await plainLogin(loginPage);
+    await expect.poll(noticeCount, { timeout: 8000 }).toBe(1);
+
+    // Login 2 — SAME context: the always-on recognition cookie rides the
+    // request → `ctx.trust.recognized` → notice suppressed. Recognition
+    // suppression works for getCorrespondenceEmail-resolved recipients too.
+    await plainLogin(loginPage);
+    await loginPage.waitForTimeout(1500);
+    expect(await noticeCount(), "recognized browser → no second notice").toBe(1);
+    await loginCtx.close();
   });
 });
 

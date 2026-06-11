@@ -28,6 +28,8 @@ export interface AoothUserCredentials {
         failedLoginAttempts: number
         lastLogin: number.timestamp
         pendingInvitation?: boolean
+        // Correspondence address whose inbox the user proved (invite click, OTP, email confirm); auth-owned, not a login handle
+        verifiedEmail?: string
     }
 
     @db.patch.strategy 'merge'
