@@ -1155,9 +1155,10 @@ export class AuthWorkflow {
       pub.newPasswordRequired = ctx.newPasswordRequired;
     }
     if (ctx.authz) {
-      // Display-only — `handle`/`approved` stay server-only. `clientName`/`scope`
-      // are staged by `authz-consent` from the pending authorization.
-      const sub = pickDefined(ctx.authz, ["clientName", "scope"] as const);
+      // Display-only — `handle`/`approved` stay server-only. `clientName`/
+      // `scope`/`redirectHost` are staged by `authz-consent` from the pending
+      // authorization.
+      const sub = pickDefined(ctx.authz, ["clientName", "scope", "redirectHost"] as const);
       if (sub) pub.authz = sub as AuthWfPublicState["authz"];
     }
     ctx.public = pub;
@@ -3937,10 +3938,21 @@ export class AuthWorkflow {
       });
       return undefined;
     }
-    // Stage the display copy (client + scope) for the consent form. `clientId`
-    // is absent for a public/loopback client → the form reads "A local application".
-    if (req.clientId !== undefined) authz.clientName = req.clientId;
+    // Stage the display copy for the consent form. `clientName` is the
+    // registered display name (DCR `client_name` — UNTRUSTED text, the form
+    // renders it as text only), falling back to the raw `clientId`; both absent
+    // (public/loopback client) → the form reads "A local application". The
+    // VALIDATED redirect host rides along as the trustworthy identity — it is
+    // where the code is actually delivered, which a self-chosen name can't fake.
+    const clientName = req.clientName ?? req.clientId;
+    if (clientName !== undefined) authz.clientName = clientName;
     if (req.scope !== undefined) authz.scope = req.scope;
+    try {
+      authz.redirectHost = new URL(req.redirectUri).host;
+    } catch {
+      // Display-only — an unparsable URI (can't happen for a policy-validated
+      // redirect) just leaves the host line off the consent copy.
+    }
 
     // (2) Explicit consent — pause, then branch on Deny vs the Authorize submit.
     const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.authzConsent);
@@ -4023,6 +4035,7 @@ export class AuthWorkflow {
       redirectUri: req.redirectUri,
       ...(req.clientId !== undefined && { clientId: req.clientId }),
       ...(req.scope !== undefined && { scope: req.scope }),
+      ...(req.resource !== undefined && { resource: req.resource }),
       ...(req.nonce !== undefined && { nonce: req.nonce }),
       ...(req.idToken !== undefined && { idToken: req.idToken }),
       ...(req.accessToken !== undefined && { accessToken: req.accessToken }),

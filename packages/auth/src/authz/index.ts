@@ -63,6 +63,7 @@ export { NoopOidcClaimsResolver, OidcClaimsResolver, scopeGrants } from "./oidc-
 // what MCP connector clients use to find this server from a 401.
 export {
   buildAuthorizationServerMetadata,
+  canonicalizeIssuer,
   type AuthorizationServerMetadata,
   type BuildAuthorizationServerMetadataOptions,
 } from "./server-metadata";

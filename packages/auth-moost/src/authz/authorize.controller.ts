@@ -2,9 +2,13 @@ import { randomBytes } from "node:crypto";
 
 import { AuthCredential, type IssueOptions } from "@aooth/auth";
 import {
-  AuthorizeError,
+  buildAuthorizationServerMetadata,
+  canonicalizeIssuer,
+  ClientRegistrationError,
   type AuthCodeStore,
+  type AuthorizationServerMetadata,
   type ClientRedirectPolicy,
+  type DynamicClientRegistration,
   type IdTokenSigner,
   NoopOidcClaimsResolver,
   type OidcClaimsResolver,
@@ -14,7 +18,7 @@ import {
 import { pkceChallengeFor } from "@aooth/idp";
 import { Body, Get, Post, Query } from "@moostjs/event-http";
 import { current } from "@wooksjs/event-core";
-import { useResponse } from "@wooksjs/event-http";
+import { useHeaders, useResponse, useUrlParams } from "@wooksjs/event-http";
 import { Controller, Inject } from "moost";
 
 import { useAuth } from "../auth.composables";
@@ -48,6 +52,7 @@ interface OidcDiscoveryDocument {
   authorization_endpoint: string;
   token_endpoint: string;
   jwks_uri: string;
+  registration_endpoint?: string;
   response_types_supported: string[];
   grant_types_supported: string[];
   subject_types_supported: string[];
@@ -55,6 +60,25 @@ interface OidcDiscoveryDocument {
   scopes_supported: string[];
   code_challenge_methods_supported: string[];
   token_endpoint_auth_methods_supported: string[];
+}
+
+/** RFC 7591 §3.2.1 registration response — public client, so no secret fields. */
+interface ClientRegistrationSuccess {
+  client_id: string;
+  /** Seconds since epoch (the RFC's unit — NOT ms). */
+  client_id_issued_at: number;
+  redirect_uris: string[];
+  token_endpoint_auth_method: string;
+  grant_types: string[];
+  response_types: string[];
+  client_name?: string;
+  scope?: string;
+}
+
+/** RFC 7591 §3.2.2 registration error response. */
+interface ClientRegistrationFailure {
+  error: string;
+  error_description?: string;
 }
 
 /** Shared default claims resolver — stateless, so one instance is reused across requests. */
@@ -122,6 +146,42 @@ export class AuthorizeController {
     return "/login";
   }
 
+  /**
+   * The issuer identifier for the RFC 8414 metadata document. Defaults to the
+   * Tier-2 signer's issuer; a SIGNER-LESS deployment that serves MCP connector
+   * clients must **override** this (return `{origin}/auth`-style, byte-exact —
+   * never derived from the Host header, which would let a request inject its
+   * host into a cacheable discovery document). `undefined` ⇒ the
+   * `oauth-authorization-server` endpoint 404s.
+   */
+  protected getIssuer(): string | undefined {
+    return this.getIdTokenSigner()?.issuer;
+  }
+
+  /**
+   * The RFC 7591 dynamic-client-registration operation, or `undefined` (the
+   * default) to disable DCR — then `POST /auth/register` 404s and neither
+   * discovery document advertises a `registration_endpoint`. **Override** in a
+   * subclass: inject a `DynamicClientStore` (the `DYNAMIC_CLIENT_STORE_TOKEN`
+   * provider) as a required ctor param, build one `DynamicClientRegistration`
+   * around it, and return it here. Same plain-getter pattern as
+   * {@link getIdTokenSigner} (an optional `@Inject` panics in moost's
+   * route-table pass).
+   */
+  protected getDynamicClientRegistration(): DynamicClientRegistration | undefined {
+    return undefined;
+  }
+
+  /**
+   * `scopes_supported` for the RFC 8414 document (optional per the RFC; omitted
+   * by default — deliberately NOT inheriting the OIDC document's hardcoded
+   * list, which describes Tier-2 sign-in scopes). Override to advertise what
+   * connector clients may request.
+   */
+  protected scopesSupported(): string[] | undefined {
+    return undefined;
+  }
+
   @Get("authorize")
   @Public()
   async authorize(
@@ -133,6 +193,7 @@ export class AuthorizeController {
     @Query("code_challenge_method") codeChallengeMethod: string | undefined,
     @Query("scope") scope: string | undefined,
     @Query("nonce") nonce: string | undefined,
+    @Query("resource") resource: string | undefined,
   ): Promise<string> {
     const res = useResponse(current());
 
@@ -143,7 +204,10 @@ export class AuthorizeController {
 
     // 1. The trust gate FIRST — resolve + authorize the client/redirect (+ scope).
     //    Until it passes we have no validated target to redirect errors to, so a
-    //    failure is a benign 400 (never a reflected redirect).
+    //    failure is a benign 400 (never a reflected redirect). ONE generic body
+    //    for every policy miss: with self-registered (DCR) clients, telling
+    //    `invalid_client` apart from `invalid_redirect` is a client_id-existence
+    //    oracle (AUTH-SERVER.md §7).
     let resolved;
     try {
       resolved = await this.policy.resolveClient({
@@ -151,15 +215,27 @@ export class AuthorizeController {
         redirectUri,
         ...(scope !== undefined && { scope }),
       });
-    } catch (e) {
+    } catch {
       res.status = 400;
-      return e instanceof AuthorizeError ? `invalid request: ${e.code}` : "invalid request";
+      return "invalid request";
     }
 
     // 2. Param checks — now we CAN fail soft to the validated client redirect so
     //    the client fails fast instead of waiting out its timeout.
     if (responseType !== "code" || !codeChallenge || codeChallengeMethod !== "S256") {
       return this.redirectError(resolved.redirectUri, "invalid_request", state);
+    }
+    // RFC 8707: presence alone never errors — the single value is RECORDED on
+    // the grant (consistency-checked at /token, no audience enforcement in v1,
+    // OAUTH.md R4). Multiple values and oversized values are rejected rather
+    // than silently truncated — `@Query` resolves only the FIRST occurrence of
+    // a repeated param, so multiplicity is probed on the raw search params; a
+    // future audience-enforcement pass must never enforce a partial record.
+    if (resource !== undefined) {
+      const repeated = useUrlParams(current()).params().getAll("resource").length > 1;
+      if (repeated || resource.length > 2000) {
+        return this.redirectError(resolved.redirectUri, "invalid_target", state);
+      }
     }
 
     // 3. Mint the browser-binding secret (AUTH-SERVER.md §6). It is recorded on
@@ -174,9 +250,11 @@ export class AuthorizeController {
     //    intent, audience, granted scope) is fixed here, copied from the policy.
     const { handle, expiresAt } = await this.pending.create({
       ...(resolved.clientId !== undefined && { clientId: resolved.clientId }),
+      ...(resolved.clientName !== undefined && { clientName: resolved.clientName }),
       redirectUri: resolved.redirectUri,
       codeChallenge,
       ...(state !== undefined && { clientState: state }),
+      ...(resource !== undefined && { resource }),
       ...(resolved.scope !== undefined && { scope: resolved.scope }),
       ...(nonce !== undefined && { nonce }),
       ...(resolved.idToken !== undefined && { idToken: resolved.idToken }),
@@ -215,6 +293,7 @@ export class AuthorizeController {
           code_verifier?: string;
           client_id?: string;
           client_secret?: string;
+          resource?: string | string[];
         }
       | undefined,
   ): Promise<TokenSuccess | TokenError> {
@@ -263,6 +342,23 @@ export class AuthorizeController {
     } else if (body.client_id !== undefined) {
       res.status = 401;
       return { error: "invalid_client" };
+    }
+
+    // RFC 8707 consistency (OAUTH.md R4): when BOTH legs carry `resource`, they
+    // must match; one-sided presence is accepted (the recorded value stays on
+    // the grant for a future audience-enforcement pass). Multi-valued is
+    // rejected like at /authorize.
+    if (Array.isArray(body.resource)) {
+      res.status = 400;
+      return { error: "invalid_target" };
+    }
+    if (
+      row.resource !== undefined &&
+      body.resource !== undefined &&
+      row.resource !== body.resource
+    ) {
+      res.status = 400;
+      return { error: "invalid_target" };
     }
 
     const wantIdToken = row.idToken === true;
@@ -319,7 +415,10 @@ export class AuthorizeController {
    * OIDC discovery (Tier 2). Derives every endpoint from the signer's `issuer`
    * (configured as `{origin}/auth`), so a relying `OidcProvider` configured with
    * the same `issuer` resolves `/authorize`, `/token`, and `/jwks` automatically.
-   * 404 when no signer is wired (Tier-1-only deployment).
+   * 404 when no signer is wired (Tier-1-only deployment). When DCR is also
+   * wired, `registration_endpoint` is advertised here too — in a combined
+   * deployment a client that prefers `openid-configuration` over the RFC 8414
+   * document must see the same capability set.
    */
   @Get(".well-known/openid-configuration")
   @Public()
@@ -337,6 +436,7 @@ export class AuthorizeController {
       authorization_endpoint: `${iss}/authorize`,
       token_endpoint: `${iss}/token`,
       jwks_uri: `${iss}/jwks`,
+      ...(this.getDynamicClientRegistration() && { registration_endpoint: `${iss}/register` }),
       response_types_supported: ["code"],
       grant_types_supported: ["authorization_code"],
       subject_types_supported: ["public"],
@@ -345,6 +445,94 @@ export class AuthorizeController {
       code_challenge_methods_supported: ["S256"],
       token_endpoint_auth_methods_supported: ["none", "client_secret_post"],
     };
+  }
+
+  /**
+   * RFC 8414 Authorization Server Metadata — the OAuth-flavored discovery MCP
+   * connector clients fetch (OAUTH.md R1). Served signer-INDEPENDENTLY: it
+   * needs only an issuer ({@link getIssuer} — overridable for a Tier-1-style
+   * deployment with no `IdTokenSigner`). Mounted under the controller this is
+   * the suffix form `{issuer}/.well-known/oauth-authorization-server`; the
+   * RFC-correct path-insertion form at the HTTP-server ROOT
+   * (`/.well-known/oauth-authorization-server/<issuer-path>`) cannot be
+   * registered by a prefix-mounted controller — consumers mount it themselves
+   * from the exported `buildAuthorizationServerMetadata` (re-exported by this
+   * package).
+   */
+  @Get(".well-known/oauth-authorization-server")
+  @Public()
+  oauthServerMetadata(): AuthorizationServerMetadata | TokenError {
+    const res = useResponse(current());
+    const rawIssuer = this.getIssuer();
+    if (!rawIssuer) {
+      res.status = 404;
+      return { error: "not_found" };
+    }
+    const issuer = canonicalizeIssuer(rawIssuer);
+    return buildAuthorizationServerMetadata({
+      issuer,
+      ...(this.getDynamicClientRegistration() && {
+        registrationEndpoint: `${issuer}/register`,
+      }),
+      ...(this.getIdTokenSigner() && { jwksUri: `${issuer}/jwks` }),
+      ...(this.scopesSupported() && { scopesSupported: this.scopesSupported() }),
+    });
+  }
+
+  /**
+   * RFC 7591 Dynamic Client Registration (OAUTH.md R2) — anonymous by spec;
+   * 404 unless a registration operation is wired ({@link
+   * getDynamicClientRegistration}). A thin HTTP adapter: validation, abuse
+   * knobs (guard / cap / never-used GC) and persistence live in
+   * `DynamicClientRegistration` (`@aooth/auth`). Public clients only — the
+   * response carries NO `client_secret` and NO `client_secret_expires_at`
+   * (RFC 7591 §3.2.1 requires them only when a secret is issued).
+   */
+  @Post("register")
+  @Public()
+  async register(
+    @Body() body: unknown,
+  ): Promise<ClientRegistrationSuccess | ClientRegistrationFailure | TokenError> {
+    const res = useResponse(current());
+    const registration = this.getDynamicClientRegistration();
+    if (!registration) {
+      res.status = 404;
+      return { error: "not_found" };
+    }
+    // RFC 7591 §3.1: the registration request is a JSON document.
+    const contentType = useHeaders(current())["content-type"] ?? "";
+    if (!contentType.includes("application/json")) {
+      res.status = 400;
+      return {
+        error: "invalid_client_metadata",
+        error_description: "registration requests must be application/json",
+      };
+    }
+    try {
+      const client = await registration.register(body);
+      // §3.2.1: echo ALL registered metadata, including server-narrowed values
+      // (e.g. a requested refresh_token grant that was intersected away) — the
+      // echo of the narrowed set IS the contract the client must honor.
+      res.status = 201;
+      return {
+        client_id: client.clientId,
+        client_id_issued_at: Math.floor(client.createdAt / 1000),
+        redirect_uris: client.redirectUris,
+        token_endpoint_auth_method: client.tokenEndpointAuthMethod,
+        grant_types: client.grantTypes,
+        response_types: client.responseTypes,
+        ...(client.clientName !== undefined && { client_name: client.clientName }),
+        ...(client.scope !== undefined && { scope: client.scope }),
+      };
+    } catch (e) {
+      if (e instanceof ClientRegistrationError) {
+        res.status = 400;
+        return { error: e.code, error_description: e.message };
+      }
+      // A guard/store fault is a server problem, never a metadata problem.
+      res.status = 500;
+      return { error: "server_error" };
+    }
   }
 
   /** The signer's public JWKS (Tier 2). 404 when no signer is wired. */

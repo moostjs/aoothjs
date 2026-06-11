@@ -18,6 +18,12 @@ import {
   type AuthCodeStore,
   AuthCodeStoreMemory,
   type ClientRedirectPolicy,
+  ClientRegistrationError,
+  CompositeClientPolicy,
+  type DynamicClient,
+  DynamicClientPolicy,
+  DynamicClientRegistration,
+  DynamicClientStoreMemory,
   IdTokenSigner,
   LoopbackClientPolicy,
   OidcClaimsResolver,
@@ -191,6 +197,35 @@ describe("AuthorizeController GET /auth/authorize", () => {
     expect(res.status).toBe(302);
     expect(new URL(res.location!).searchParams.get("error")).toBe("invalid_request");
   });
+
+  it("records a single RFC 8707 resource on the pending authorization (presence never errors)", async () => {
+    const res = await h.request(
+      `/auth/authorize?response_type=code&redirect_uri=${encodeURIComponent(LOOPBACK)}` +
+        `&code_challenge=chal&code_challenge_method=S256&resource=${encodeURIComponent("https://api.example/mcp")}`,
+    );
+    expect(res.status).toBe(302);
+    const handle = new URLSearchParams(res.location!.split("?")[1]).get("authz")!;
+    expect((await h.pending.get(handle))?.resource).toBe("https://api.example/mcp");
+  });
+
+  it("fails soft with invalid_target on a REPEATED resource param (never silently truncated)", async () => {
+    const res = await h.request(
+      `/auth/authorize?response_type=code&redirect_uri=${encodeURIComponent(LOOPBACK)}` +
+        `&code_challenge=chal&code_challenge_method=S256&resource=a&resource=b`,
+    );
+    expect(res.status).toBe(302);
+    expect(new URL(res.location!).searchParams.get("error")).toBe("invalid_target");
+  });
+
+  it("does not disclose WHY the trust gate rejected (client-enumeration defense)", async () => {
+    // Unknown-client and bad-redirect failures must be indistinguishable.
+    const badRedirect = await h.request(
+      `/auth/authorize?response_type=code&redirect_uri=${encodeURIComponent("https://evil.com/cb")}` +
+        `&code_challenge=x&code_challenge_method=S256`,
+    );
+    expect(badRedirect.status).toBe(400);
+    expect(badRedirect.body).toBe("invalid request");
+  });
 });
 
 describe("AuthorizeController POST /auth/token", () => {
@@ -287,6 +322,67 @@ describe("AuthorizeController POST /auth/token", () => {
     expect(res.status).toBe(401);
     expect((res.body as { error: string }).error).toBe("invalid_client");
   });
+
+  it("RFC 8707: both-legs resource mismatch → invalid_target; matching or one-sided presence is fine", async () => {
+    const mintWithResource = async (verifier: string) =>
+      (
+        await h.codes.mint({
+          userId: "u-1",
+          codeChallenge: pkce(verifier),
+          redirectUri: LOOPBACK,
+          resource: "https://api.example/mcp",
+          tokenPolicy: { kind: "cli-session", ttl: 60_000 },
+        })
+      ).code;
+
+    // Mismatch — the recorded grant binds the resource.
+    const mismatch = await h.request(
+      "/auth/token",
+      form({
+        grant_type: "authorization_code",
+        code: await mintWithResource("v1"),
+        code_verifier: "v1",
+        resource: "https://other.example/mcp",
+      }),
+    );
+    expect(mismatch.status).toBe(400);
+    expect((mismatch.body as { error: string }).error).toBe("invalid_target");
+
+    // Match — accepted.
+    const match = await h.request(
+      "/auth/token",
+      form({
+        grant_type: "authorization_code",
+        code: await mintWithResource("v2"),
+        code_verifier: "v2",
+        resource: "https://api.example/mcp",
+      }),
+    );
+    expect(match.status).toBe(200);
+
+    // Token-leg-only presence (code recorded none) — accepted, never an error.
+    const oneSided = await h.request(
+      "/auth/token",
+      form({
+        grant_type: "authorization_code",
+        code: await mintCode("v3"),
+        code_verifier: "v3",
+        resource: "https://api.example/mcp",
+      }),
+    );
+    expect(oneSided.status).toBe(200);
+  });
+
+  it("404s the RFC 8414 metadata + /register when neither an issuer nor DCR is wired", async () => {
+    const meta = await h.request("/auth/.well-known/oauth-authorization-server");
+    expect(meta.status).toBe(404);
+    const reg = await h.request("/auth/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ redirect_uris: ["https://c.example/cb"] }),
+    });
+    expect(reg.status).toBe(404);
+  });
 });
 
 // ── Tier 2 (OIDC) — registered clients, id_token minting, discovery + JWKS ──
@@ -329,7 +425,7 @@ interface OidcHarness extends Harness {
   signer: IdTokenSigner;
 }
 
-async function buildOidcApp(): Promise<OidcHarness> {
+async function buildOidcApp(opts?: { dcr?: boolean }): Promise<OidcHarness> {
   (getMoostInfact() as unknown as { _cleanup?: () => void })._cleanup?.();
 
   const moost = new Moost();
@@ -365,6 +461,10 @@ async function buildOidcApp(): Promise<OidcHarness> {
     publicKey: TEST_KEYS.publicKey,
   });
 
+  const registration = opts?.dcr
+    ? new DynamicClientRegistration({ store: new DynamicClientStoreMemory() })
+    : undefined;
+
   // OIDC signer + claims are supplied by OVERRIDING the getters — not DI tokens
   // (an optional `@Inject` dep panics in moost's `resolveMoost` route pass).
   @Inherit()
@@ -383,6 +483,9 @@ async function buildOidcApp(): Promise<OidcHarness> {
     }
     protected override getOidcClaimsResolver(): OidcClaimsResolver {
       return new TestClaims();
+    }
+    protected override getDynamicClientRegistration(): DynamicClientRegistration | undefined {
+      return registration;
     }
   }
 
@@ -521,5 +624,361 @@ describe("AuthorizeController Tier 2 — OIDC", () => {
     );
     expect(ok.status).toBe(200);
     expect((ok.body as { id_token?: string }).id_token).toBeDefined();
+  });
+
+  it("serves the RFC 8414 document off the signer issuer, with jwks but WITHOUT registration_endpoint (no DCR)", async () => {
+    const res = await h.request("/auth/.well-known/oauth-authorization-server");
+    expect(res.status).toBe(200);
+    const doc = res.body as Record<string, unknown>;
+    expect(doc.issuer).toBe(ISSUER);
+    expect(doc.authorization_endpoint).toBe(`${ISSUER}/authorize`);
+    expect(doc.token_endpoint).toBe(`${ISSUER}/token`);
+    expect(doc.jwks_uri).toBe(`${ISSUER}/jwks`);
+    expect(doc).not.toHaveProperty("registration_endpoint");
+    expect(doc.token_endpoint_auth_methods_supported).toContain("none");
+    // openid-configuration stays free of registration_endpoint too.
+    const oidc = await h.request("/auth/.well-known/openid-configuration");
+    expect(oidc.body as object).not.toHaveProperty("registration_endpoint");
+  });
+
+  it("combined deployment (signer + DCR): BOTH discovery documents advertise registration_endpoint", async () => {
+    const combined = await buildOidcApp({ dcr: true });
+    const rfc8414 = await combined.request("/auth/.well-known/oauth-authorization-server");
+    expect((rfc8414.body as Record<string, unknown>).registration_endpoint).toBe(
+      `${ISSUER}/register`,
+    );
+    const oidc = await combined.request("/auth/.well-known/openid-configuration");
+    expect((oidc.body as Record<string, unknown>).registration_endpoint).toBe(`${ISSUER}/register`);
+    // Everything else in the OIDC doc is unchanged by the DCR wiring.
+    expect((oidc.body as Record<string, unknown>).issuer).toBe(ISSUER);
+    expect((oidc.body as Record<string, unknown>).jwks_uri).toBe(`${ISSUER}/jwks`);
+  });
+});
+
+// ── MCP connectors (OAUTH.md) — RFC 8414 metadata without a signer, RFC 7591
+//    dynamic registration, dynamic-client grant round-trip + symmetry ──
+
+const DCR_ISSUER = "http://localhost/auth";
+const DYN_REDIRECT = "https://connector.example/cb";
+
+interface DcrHarness extends Harness {
+  clients: DynamicClientStoreMemory;
+}
+
+async function buildDcrApp(opts?: {
+  guard?: (args: { metadata: unknown }) => void;
+  maxClients?: number;
+}): Promise<DcrHarness> {
+  (getMoostInfact() as unknown as { _cleanup?: () => void })._cleanup?.();
+
+  const moost = new Moost();
+  const http = moost.adapter(new MoostHttp(createHttpApp(undefined, new Wooks())));
+
+  const auth = new AuthCredential({
+    store: new CredentialStoreMemory(),
+    method: "token",
+    accessTtl: 60_000,
+  });
+  const pending = new PendingAuthorizationStoreMemory();
+  const codes = new AuthCodeStoreMemory();
+  const clients = new DynamicClientStoreMemory();
+  // The OAUTH.md §6 composition: loopback CLI + dynamic connectors, NO static
+  // registry — `registered` is optional on the composite now.
+  const policy = new CompositeClientPolicy({
+    loopback: new LoopbackClientPolicy(),
+    dynamic: new DynamicClientPolicy({
+      store: clients,
+      tokenPolicy: { kind: "mcp-session", ttl: 30 * 24 * 60 * 60_000 },
+      allowedScopes: ["read", "write"],
+    }),
+  });
+  const registration = new DynamicClientRegistration({
+    store: clients,
+    ...(opts?.maxClients !== undefined && { maxClients: opts.maxClients }),
+    ...(opts?.guard && { guard: opts.guard }),
+  });
+
+  // SIGNER-LESS deployment (the R1 acceptance case): no IdTokenSigner override —
+  // only `getIssuer()` + the registration getter.
+  @Inherit()
+  @Controller("auth")
+  class DcrAuthorizeController extends AuthorizeController {
+    constructor(
+      a: AuthCredential,
+      @Inject(CLIENT_REDIRECT_POLICY_TOKEN) p: ClientRedirectPolicy,
+      @Inject(PENDING_AUTHORIZATION_STORE_TOKEN) pe: PendingAuthorizationStore,
+      @Inject(AUTH_CODE_STORE_TOKEN) c: AuthCodeStore,
+    ) {
+      super(a, p, pe, c);
+    }
+    protected override getIssuer(): string {
+      return DCR_ISSUER;
+    }
+    protected override getDynamicClientRegistration(): DynamicClientRegistration {
+      return registration;
+    }
+    protected override scopesSupported(): string[] {
+      return ["read", "write"];
+    }
+  }
+
+  moost.setProvideRegistry(
+    createProvideRegistry(
+      [AuthCredential, () => auth],
+      [CLIENT_REDIRECT_POLICY_TOKEN, () => policy],
+      [PENDING_AUTHORIZATION_STORE_TOKEN, () => pending],
+      [AUTH_CODE_STORE_TOKEN, () => codes],
+    ),
+  );
+  moost.applyGlobalInterceptors(authGuardInterceptor({ cookie: { secure: false } }));
+  // biome-ignore lint/suspicious/noExplicitAny: registerControllers' prefixed-tuple shape.
+  moost.registerControllers(DcrAuthorizeController as any);
+  await moost.init();
+
+  return { request: makeRequester(http), auth, pending, codes, clients };
+}
+
+const registerJson = (body: unknown): RequestInit => ({
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify(body),
+});
+
+describe("AuthorizeController — MCP connectors (RFC 8414 + RFC 7591 + dynamic grant)", () => {
+  let h: DcrHarness;
+  beforeEach(async () => {
+    h = await buildDcrApp();
+  });
+
+  it("serves RFC 8414 metadata with NO signer configured (the R1 core case)", async () => {
+    const res = await h.request("/auth/.well-known/oauth-authorization-server");
+    expect(res.status).toBe(200);
+    const doc = res.body as Record<string, unknown>;
+    expect(doc.issuer).toBe(DCR_ISSUER);
+    expect(doc.authorization_endpoint).toBe(`${DCR_ISSUER}/authorize`);
+    expect(doc.token_endpoint).toBe(`${DCR_ISSUER}/token`);
+    expect(doc.registration_endpoint).toBe(`${DCR_ISSUER}/register`);
+    expect(doc.response_types_supported).toEqual(["code"]);
+    expect(doc.grant_types_supported).toEqual(["authorization_code"]);
+    expect(doc.code_challenge_methods_supported).toEqual(["S256"]);
+    expect(doc.token_endpoint_auth_methods_supported).toContain("none");
+    expect(doc.scopes_supported).toEqual(["read", "write"]);
+    expect(doc).not.toHaveProperty("jwks_uri"); // no signer ⇒ no JWKS
+    // The OIDC discovery stays signer-gated: 404 here.
+    const oidc = await h.request("/auth/.well-known/openid-configuration");
+    expect(oidc.status).toBe(404);
+  });
+
+  it("DCR round-trip: 201 with client_id, issued_at in SECONDS, narrowed echo, no secret fields", async () => {
+    const res = await h.request(
+      "/auth/register",
+      registerJson({
+        client_name: "Test Connector",
+        redirect_uris: [DYN_REDIRECT],
+        token_endpoint_auth_method: "none",
+        // A real connector asks for refresh_token too — the echo of the
+        // NARROWED set is the contract (RFC 7591 §2).
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+        scope: "read write",
+      }),
+    );
+    expect(res.status).toBe(201);
+    const body = res.body as Record<string, unknown>;
+    expect(body.client_id).toBeTruthy();
+    expect(body.client_id_issued_at).toBeLessThan(Date.now() / 100); // seconds, not ms
+    expect(body.redirect_uris).toEqual([DYN_REDIRECT]);
+    expect(body.token_endpoint_auth_method).toBe("none");
+    expect(body.grant_types).toEqual(["authorization_code"]); // refresh_token narrowed away
+    expect(body.response_types).toEqual(["code"]);
+    expect(body.client_name).toBe("Test Connector");
+    expect(body).not.toHaveProperty("client_secret");
+    expect(body).not.toHaveProperty("client_secret_expires_at");
+    expect(await h.clients.get(body.client_id as string)).not.toBeNull();
+  });
+
+  it("rejects non-JSON registration requests and RFC 7591 metadata violations with the 7591 error shape", async () => {
+    const formEncoded = await h.request("/auth/register", form({ redirect_uris: DYN_REDIRECT }));
+    expect(formEncoded.status).toBe(400);
+    expect((formEncoded.body as { error: string }).error).toBe("invalid_client_metadata");
+
+    const badRedirect = await h.request(
+      "/auth/register",
+      registerJson({ redirect_uris: ["myapp://callback"] }),
+    );
+    expect(badRedirect.status).toBe(400);
+    const err = badRedirect.body as { error: string; error_description?: string };
+    expect(err.error).toBe("invalid_redirect_uri");
+    expect(err.error_description).toBeTruthy();
+
+    const wantsSecret = await h.request(
+      "/auth/register",
+      registerJson({
+        redirect_uris: [DYN_REDIRECT],
+        token_endpoint_auth_method: "client_secret_basic",
+      }),
+    );
+    expect(wantsSecret.status).toBe(400);
+    expect((wantsSecret.body as { error: string }).error).toBe("invalid_client_metadata");
+  });
+
+  it("guard rejections surface as 7591 errors; the cap rejects-when-full", async () => {
+    const guarded = await buildDcrApp({
+      guard: () => {
+        throw new ClientRegistrationError("invalid_client_metadata", "not today");
+      },
+    });
+    const denied = await guarded.request(
+      "/auth/register",
+      registerJson({ redirect_uris: [DYN_REDIRECT] }),
+    );
+    expect(denied.status).toBe(400);
+    expect(denied.body).toEqual({
+      error: "invalid_client_metadata",
+      error_description: "not today",
+    });
+
+    const capped = await buildDcrApp({ maxClients: 1 });
+    const first = await capped.request(
+      "/auth/register",
+      registerJson({ redirect_uris: [DYN_REDIRECT] }),
+    );
+    expect(first.status).toBe(201);
+    const second = await capped.request(
+      "/auth/register",
+      registerJson({ redirect_uris: [DYN_REDIRECT] }),
+    );
+    expect(second.status).toBe(400);
+    expect((second.body as { error: string }).error).toBe("invalid_client_metadata");
+  });
+
+  async function registerClient(): Promise<DynamicClient> {
+    const res = await h.request(
+      "/auth/register",
+      registerJson({
+        client_name: "Test Connector",
+        redirect_uris: [DYN_REDIRECT],
+        scope: "read write",
+      }),
+    );
+    expect(res.status).toBe(201);
+    return (await h.clients.get((res.body as { client_id: string }).client_id))!;
+  }
+
+  it("dynamic authorize: pending row records clientId + clientName + resource; scope is allow-list-bounded", async () => {
+    const client = await registerClient();
+    const res = await h.request(
+      `/auth/authorize?response_type=code&client_id=${client.clientId}` +
+        `&redirect_uri=${encodeURIComponent(DYN_REDIRECT)}&state=cs` +
+        `&code_challenge=chal&code_challenge_method=S256&scope=${encodeURIComponent("read admin")}` +
+        `&resource=${encodeURIComponent("https://api.example/mcp")}`,
+    );
+    expect(res.status).toBe(302);
+    expect(res.location).toMatch(/^\/login\?authz=/);
+    const handle = new URLSearchParams(res.location!.split("?")[1]).get("authz")!;
+    const row = await h.pending.get(handle);
+    expect(row?.clientId).toBe(client.clientId);
+    expect(row?.clientName).toBe("Test Connector"); // consent display, snapshot here
+    expect(row?.resource).toBe("https://api.example/mcp");
+    expect(row?.scope).toBe("read"); // requested ∩ allowedScopes ∩ registration
+    expect(row?.tokenPolicy.kind).toBe("mcp-session");
+  });
+
+  it("an unregistered redirect_uri for a dynamic client is a benign 400, never a redirect", async () => {
+    const client = await registerClient();
+    const res = await h.request(
+      `/auth/authorize?response_type=code&client_id=${client.clientId}` +
+        `&redirect_uri=${encodeURIComponent("https://evil.example/cb")}` +
+        `&code_challenge=x&code_challenge_method=S256`,
+    );
+    expect(res.status).toBe(400);
+    expect(res.location).toBeNull();
+    expect(res.body).toBe("invalid request");
+  });
+
+  async function mintDynamicCode(
+    client: DynamicClient,
+    verifier: string,
+    extra: { resource?: string } = {},
+  ): Promise<string> {
+    const { code } = await h.codes.mint({
+      userId: "u-1",
+      codeChallenge: pkce(verifier),
+      redirectUri: DYN_REDIRECT,
+      clientId: client.clientId,
+      scope: "read",
+      ...(extra.resource !== undefined && { resource: extra.resource }),
+      tokenPolicy: { kind: "mcp-session", ttl: 30 * 24 * 60 * 60_000 },
+    });
+    return code;
+  }
+
+  it("redeems a dynamic code with client_id + verifier (+ matching resource) for a working mcp-session token", async () => {
+    const client = await registerClient();
+    const code = await mintDynamicCode(client, "ver-dyn", {
+      resource: "https://api.example/mcp",
+    });
+    const res = await h.request(
+      "/auth/token",
+      form({
+        grant_type: "authorization_code",
+        code,
+        code_verifier: "ver-dyn",
+        client_id: client.clientId,
+        resource: "https://api.example/mcp",
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = res.body as { access_token: string; id_token?: string };
+    expect(body.id_token).toBeUndefined(); // NO id_token for dynamic clients (v1)
+    const ctx = await h.auth.validate(body.access_token);
+    expect(ctx?.userId).toBe("u-1");
+    const sessions = (await h.auth.listSessions("u-1", { kind: "mcp-session" })) as SessionInfo[];
+    expect(sessions[0]?.kind).toBe("mcp-session");
+  });
+
+  it("SYMMETRY: a dynamic code without client_id, or with another client's id, is 401 invalid_client", async () => {
+    const client = await registerClient();
+
+    const missing = await h.request(
+      "/auth/token",
+      form({
+        grant_type: "authorization_code",
+        code: await mintDynamicCode(client, "v1"),
+        code_verifier: "v1",
+      }),
+    );
+    expect(missing.status).toBe(401);
+    expect((missing.body as { error: string }).error).toBe("invalid_client");
+
+    const other = await registerClient();
+    const swapped = await h.request(
+      "/auth/token",
+      form({
+        grant_type: "authorization_code",
+        code: await mintDynamicCode(client, "v2"),
+        code_verifier: "v2",
+        client_id: other.clientId,
+      }),
+    );
+    expect(swapped.status).toBe(401);
+    expect((swapped.body as { error: string }).error).toBe("invalid_client");
+  });
+
+  it("fails closed when the registration was deleted between authorize and redemption (GC race)", async () => {
+    const client = await registerClient();
+    const code = await mintDynamicCode(client, "v-gone");
+    await h.clients.delete(client.clientId);
+    const res = await h.request(
+      "/auth/token",
+      form({
+        grant_type: "authorization_code",
+        code,
+        code_verifier: "v-gone",
+        client_id: client.clientId,
+      }),
+    );
+    expect(res.status).toBe(401);
+    expect((res.body as { error: string }).error).toBe("invalid_client");
   });
 });

@@ -33,6 +33,18 @@ export const AUTH_CODE_STORE_TOKEN = "aooth:AuthCodeStore";
  */
 export const CLIENT_REDIRECT_POLICY_TOKEN = "aooth:ClientRedirectPolicy";
 
+/**
+ * DI token for the {@link import("@aooth/auth/authz").DynamicClientStore}
+ * (RFC 7591 dynamic registrations) — an abstract class, same auto-instantiation
+ * hazard as the store tokens above. The BASE `AuthorizeController` never
+ * injects it (DCR is optional, and an optional `@Inject` panics in moost's
+ * route-table pass): a consumer subclass that enables DCR adds it as a
+ * REQUIRED ctor param, builds a `DynamicClientRegistration` around it, and
+ * overrides `getDynamicClientRegistration()`. The same store instance also
+ * backs the `DynamicClientPolicy` composed into the redirect policy.
+ */
+export const DYNAMIC_CLIENT_STORE_TOKEN = "aooth:DynamicClientStore";
+
 // NOTE: the Tier-2 OIDC `id_token` signer + claims resolver are NOT DI tokens —
 // they are optional, and an optional `@Inject`/`@Optional` dependency panics in
 // moost's `resolveMoost` route-table pass (`useHandlerPaths`). They are supplied

@@ -585,11 +585,12 @@ export interface AuthWfPublicState {
   newPasswordRequired?: boolean;
   /**
    * Mirrors the display-only fields of `ctx.authz` — the requesting client's
-   * id/name and granted scope, shown on the authorize-consent form. The
-   * `handle` and the `approved` gate stay server-only (never whitelisted onto
-   * the wire).
+   * id/name, granted scope, and the VALIDATED redirect host (the trustworthy
+   * identity shown next to the attacker-choosable `clientName`), shown on the
+   * authorize-consent form. The `handle` and the `approved` gate stay
+   * server-only (never whitelisted onto the wire).
    */
-  authz?: { clientName?: string; scope?: string };
+  authz?: { clientName?: string; scope?: string; redirectHost?: string };
 }
 
 /** Unified workflow context shape — one type for all three flows. */
@@ -680,11 +681,19 @@ export interface AuthWfCtx {
    * "Continue with <provider>" detour mid-authorize. Presence routes the login
    * tail to the `authz-consent` → `mint-authz-code` terminal (deliver an auth
    * code to the client) INSTEAD of `issue`/`redirect` — no browser session is
-   * minted. `clientName`/`scope` are staged by `authz-consent` for the consent
-   * form's display copy; `approved` is the explicit user-consent gate the
-   * `mint-authz-code` terminal requires before it will mint a code.
+   * minted. `clientName`/`scope`/`redirectHost` are staged by `authz-consent`
+   * for the consent form's display copy (`redirectHost` is parsed from the
+   * VALIDATED redirect — the trustworthy identity next to the registrant-chosen
+   * name); `approved` is the explicit user-consent gate the `mint-authz-code`
+   * terminal requires before it will mint a code.
    */
-  authz?: { handle: string; clientName?: string; scope?: string; approved?: boolean }; // [login — authorization-server grant]
+  authz?: {
+    handle: string;
+    clientName?: string;
+    scope?: string;
+    redirectHost?: string;
+    approved?: boolean;
+  }; // [login — authorization-server grant]
 
   /**
    * FE-facing surface — the ONLY top-level ctx key whitelisted on form

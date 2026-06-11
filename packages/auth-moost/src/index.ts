@@ -54,8 +54,28 @@ export { AUTHZ_BINDING_COOKIE, authzBindingCookieAttrs } from "./authz/authz-bin
 export {
   AUTH_CODE_STORE_TOKEN,
   CLIENT_REDIRECT_POLICY_TOKEN,
+  DYNAMIC_CLIENT_STORE_TOKEN,
   PENDING_AUTHORIZATION_STORE_TOKEN,
 } from "./authz/authz-tokens";
+
+// Re-exported from @aooth/auth/authz (OAUTH.md R1/R3) — the pure discovery /
+// challenge builders a consumer mounts at the HTTP-server ROOT (the RFC 8414
+// path-insertion form + the RFC 9728 protected-resource document), which a
+// prefix-mounted controller cannot register itself, plus the DCR primitives
+// the AuthorizeController subclass wires up.
+export {
+  buildAuthorizationServerMetadata,
+  buildProtectedResourceMetadata,
+  buildWwwAuthenticateBearerChallenge,
+  canonicalizeIssuer,
+  DynamicClientRegistration,
+  type AuthorizationServerMetadata,
+  type BuildAuthorizationServerMetadataOptions,
+  type BuildProtectedResourceMetadataOptions,
+  type DynamicClientRegistrationOptions,
+  type ProtectedResourceMetadata,
+  type WwwAuthenticateBearerChallengeOptions,
+} from "@aooth/auth/authz";
 
 // Re-exported from @aooth/auth for ergonomic single-import setup; the
 // definitions are framework-agnostic and live in the core package.

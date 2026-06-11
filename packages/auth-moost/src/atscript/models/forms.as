@@ -991,15 +991,20 @@ export interface ProveControlOtpForm {
  * client it never approved. Fieldless apart from the explanatory paragraph; the
  * primary submit ('Authorize') records consent and proceeds to the mint, the
  * 'Deny' action 302s the client back with `error=access_denied`. The requesting
- * client + scope ride the `@wf.context.pass 'public'` `ctx.public.authz`
- * whitelist (display-only — the handle / approval gate stay server-side).
+ * client + scope + validated redirect host ride the `@wf.context.pass 'public'`
+ * `ctx.public.authz` whitelist (display-only — the handle / approval gate stay
+ * server-side). `clientName` is REGISTRANT-SUPPLIED text (a DCR client names
+ * itself), so the copy pairs it with the validated redirect host — where the
+ * code is actually delivered, which a self-chosen name can't fake — and the
+ * `ui.paragraph` renderer emits a TEXT node (never markup/links), so a
+ * malicious name can't become a clickable phish.
  */
 @meta.label 'Authorize access'
 @wf.context.pass 'public'
 @ui.form.submit.text 'Authorize'
 export interface AuthorizeConsentForm {
     @ui.form.order 1
-    @ui.form.fn.value '(_, _d, ctx) => { const a = ctx.public?.authz; const who = a?.clientName ? "“" + a.clientName + "”" : "A local application"; const sc = a?.scope ? " It is requesting access to: " + a.scope + "." : ""; return who + " wants to sign in to your account." + sc + " Authorize this only if you started it."; }'
+    @ui.form.fn.value '(_, _d, ctx) => { const a = ctx.public?.authz; const host = a?.clientName && a?.redirectHost ? " (" + a.redirectHost + ")" : ""; const who = a?.clientName ? "“" + a.clientName + "”" + host : "A local application"; const sc = a?.scope ? " It is requesting access to: " + a.scope + "." : ""; return who + " wants to sign in to your account." + sc + " Authorize this only if you started it."; }'
     notice: ui.paragraph
 
     @ui.form.order 10

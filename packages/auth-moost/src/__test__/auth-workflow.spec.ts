@@ -1053,12 +1053,23 @@ describe("authorize-consent public projection (AUTH-SERVER.md §6)", () => {
     const wf = new TestableAuthWorkflow({}, users, auth, consentStore);
     const ctx: AuthWfCtx = {
       subject: "u-1",
-      authz: { handle: "h-secret", clientName: "svc", scope: "openid email", approved: true },
+      authz: {
+        handle: "h-secret",
+        clientName: "svc",
+        scope: "openid email",
+        redirectHost: "svc.example",
+        approved: true,
+      },
     };
     const pub = wf.exposePopulatePublic(ctx);
     const projected = pub?.authz as Record<string, unknown> | undefined;
-    // Display copy reaches the consent form …
-    expect(projected).toEqual({ clientName: "svc", scope: "openid email" });
+    // Display copy reaches the consent form — incl. the validated redirect host
+    // (the trustworthy identity next to the registrant-chosen clientName) …
+    expect(projected).toEqual({
+      clientName: "svc",
+      scope: "openid email",
+      redirectHost: "svc.example",
+    });
     // … but the opaque handle and the approval gate must NEVER ride the wire
     // (the exact `toEqual` above already forbids extra keys; asserted explicitly
     // here as a regression guard against the whitelist widening).
