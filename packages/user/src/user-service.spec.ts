@@ -1382,7 +1382,7 @@ describe("UserService", () => {
         });
       });
 
-      it("prefers the consumer's emailField column over verifiedEmail and the MFA method", async () => {
+      it("PROVEN-first: verifiedEmail beats both the MFA method and the emailField column", async () => {
         const alice = await emailSvc.createUser("alice", "pass123", {
           contactEmail: "column@example.com",
         });
@@ -1393,23 +1393,13 @@ describe("UserService", () => {
           value: "mfa@example.com",
         });
         const user = await emailSvc.getUser(alice.id);
-        expect(await emailSvc.getCorrespondenceEmail(user)).toBe("column@example.com");
-      });
-
-      it("falls back to account.verifiedEmail when the column is empty/absent — and it beats the MFA method", async () => {
-        const alice = await emailSvc.createUser("alice", "pass123", { contactEmail: "" });
-        await emailSvc.setVerifiedEmail(alice.id, "proved@example.com");
-        await emailSvc.addMfaMethod(alice.id, {
-          name: "email",
-          confirmed: true,
-          value: "mfa@example.com",
-        });
-        const user = await emailSvc.getUser(alice.id);
         expect(await emailSvc.getCorrespondenceEmail(user)).toBe("proved@example.com");
       });
 
-      it("falls back to the confirmed email MFA method as the last resort", async () => {
-        const alice = await emailSvc.createUser("alice", "pass123");
+      it("confirmed email MFA (also proven) beats the UNPROVEN column when verifiedEmail is absent", async () => {
+        const alice = await emailSvc.createUser("alice", "pass123", {
+          contactEmail: "column@example.com",
+        });
         await emailSvc.addMfaMethod(alice.id, {
           name: "email",
           confirmed: true,
@@ -1417,6 +1407,20 @@ describe("UserService", () => {
         });
         const user = await emailSvc.getUser(alice.id);
         expect(await emailSvc.getCorrespondenceEmail(user)).toBe("mfa@example.com");
+      });
+
+      it("falls back to the emailField column as the last resort (app-canonical, unproven)", async () => {
+        const alice = await emailSvc.createUser("alice", "pass123", {
+          contactEmail: "column@example.com",
+        });
+        const user = await emailSvc.getUser(alice.id);
+        expect(await emailSvc.getCorrespondenceEmail(user)).toBe("column@example.com");
+      });
+
+      it("empty-string column never satisfies the chain", async () => {
+        const alice = await emailSvc.createUser("alice", "pass123", { contactEmail: "" });
+        const user = await emailSvc.getUser(alice.id);
+        expect(await emailSvc.getCorrespondenceEmail(user)).toBeUndefined();
       });
 
       it("ignores an UNCONFIRMED email MFA method (confirmed-only) — undefined", async () => {

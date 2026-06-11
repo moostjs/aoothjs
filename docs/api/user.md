@@ -35,7 +35,7 @@ Like the `*TrustedDevice` methods, `issueSeenDevice` / `verifySeenDevice` throw 
 
 ```ts
 service.setVerifiedEmail(id: string, email: string): Promise<void>; // record account.verifiedEmail — an inbox the user just PROVED (invite click, signup/recovery OTP, email confirm, trusted federated claim); plain overwrite; throws UserAuthError('NOT_FOUND') on a missing row
-service.getCorrespondenceEmail(user: UserCredentials & T): string | undefined | Promise<string | undefined>; // sync default — config.emailField column → account.verifiedEmail → first confirmed email-MFA method
+service.getCorrespondenceEmail(user: UserCredentials & T): string | undefined | Promise<string | undefined>; // sync default, PROVEN-first — account.verifiedEmail → first confirmed email-MFA method → config.emailField column (app-canonical, unproven)
 ```
 
 `getCorrespondenceEmail` is an **override seam**: subclass `UserService` to source the address from anywhere (a profile table, a CRM) — the return type admits a `Promise`, so async overrides are supported (callers `await` the result). The address is correspondence-only, never a login handle. See [Where security notices go](/moost/workflows#security-notices) for the workflow capture points.
@@ -206,7 +206,7 @@ interface UserServiceConfig {
   clock?: () => number;
   /** HMAC-SHA256 signing secret for trusted-device AND seen-device (recognition) tokens — domain-separated payloads. */
   deviceTrust?: { secret: string };
-  /** Name of the consumer-declared `@aooth.user.email` column — level 1 of getCorrespondenceEmail's chain. Thread it from getAoothUserHandleSpec at boot. */
+  /** Name of the consumer-declared `@aooth.user.email` column — the unproven last level of getCorrespondenceEmail's chain. Thread it from getAoothUserHandleSpec at boot. */
   emailField?: string;
 }
 interface LockoutConfig {

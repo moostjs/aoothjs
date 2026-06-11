@@ -773,15 +773,22 @@ export class UserService<T extends object = object> {
 
   /**
    * Resolve the address security notices should go to — a pure accessor over
-   * a row the caller already holds (no store round-trip). Three-level
-   * trust/ownership chain, most authoritative first:
-   *   1. the consumer's canonical email column (`config.emailField`, the
-   *      `@aooth.user.email`-annotated handle) when configured and non-empty;
-   *   2. `account.verifiedEmail` — the auth-proven capture written by
-   *      {@link setVerifiedEmail};
-   *   3. the first CONFIRMED `email` MFA method's value — inbox ownership as
-   *      an enrollment side effect.
+   * a row the caller already holds (no store round-trip). PROVEN-first chain:
+   *   1. `account.verifiedEmail` — the auth-proven capture written by
+   *      {@link setVerifiedEmail} at inbox-proof moments;
+   *   2. the first CONFIRMED `email` MFA method's value — also a proven inbox
+   *      (pre-capture legacy rows; going forward the confirm step writes
+   *      `verifiedEmail` too, so this level fades to a fallback);
+   *   3. the consumer's email column (`config.emailField`, the
+   *      `@aooth.user.email`-annotated handle) — app-canonical but UNPROVEN
+   *      (an admin-typed address proves nothing about the inbox).
    * Returns `undefined` when none yields a non-empty address.
+   *
+   * Proven-first is deliberate for SECURITY notices: when an email changes,
+   * the notice should reach the previously-proven inbox, not an address
+   * nobody has demonstrated control of (mirrors the standard
+   * "your-email-was-changed goes to the OLD address" posture). Deployments
+   * that want app-canonical-first override this method.
    *
    * OVERRIDE SEAM: subclasses may source the address from anywhere (a profile
    * table, a tenant directory, an external CRM) — the return type admits
@@ -791,14 +798,15 @@ export class UserService<T extends object = object> {
   getCorrespondenceEmail(
     user: UserCredentials & T,
   ): string | undefined | Promise<string | undefined> {
+    if (user.account.verifiedEmail) return user.account.verifiedEmail;
+    const mfaEmail = user.mfa.methods.find((m) => m.name === "email" && m.confirmed && m.value);
+    if (mfaEmail) return mfaEmail.value;
     const emailField = this.config.emailField;
     if (emailField) {
       const value = (user as Record<string, unknown>)[emailField];
       if (typeof value === "string" && value) return value;
     }
-    if (user.account.verifiedEmail) return user.account.verifiedEmail;
-    const mfaEmail = user.mfa.methods.find((m) => m.name === "email" && m.confirmed && m.value);
-    return mfaEmail?.value;
+    return undefined;
   }
 
   // ---- private helpers ----

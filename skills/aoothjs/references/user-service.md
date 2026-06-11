@@ -20,20 +20,20 @@
 
 `UserServiceConfig` resolves with these defaults (`user-service.ts:36`):
 
-| Key                      | Default    | Notes                                                                                                                                                              |
-| ------------------------ | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `password.pepper`        | `""`       | Prefixed to every password before scrypt. Irrecoverable if lost.                                                                                                   |
-| `password.historyLength` | `0`        | `0` disables password-history check.                                                                                                                               |
-| `password.scryptN`       | `16384`    | Stored on the hash string; per-hash forward compat on `verify`.                                                                                                    |
-| `password.scryptR`       | `8`        |                                                                                                                                                                    |
-| `password.scryptP`       | `1`        |                                                                                                                                                                    |
-| `password.keyLength`     | `64`       | Hash output bytes.                                                                                                                                                 |
-| `password.policies`      | `[]`       | Array of `PasswordPolicyDef` or `PasswordPolicyInstance` — normalized on init.                                                                                     |
-| `lockout.threshold`      | `0`        | `0` disables lockout.                                                                                                                                              |
-| `lockout.duration`       | `0`        | `0` produces permanent locks when the threshold trips.                                                                                                             |
-| `clock`                  | `Date.now` | Injectable for tests.                                                                                                                                              |
-| `deviceTrust.secret`     | _(unset)_  | Required for trusted-device AND seen-device APIs — those throw if absent; `hasDeviceTrustSecret()` is the non-throwing probe.                                      |
-| `emailField`             | _(unset)_  | Name of the `@aooth.user.email`-annotated column — first link in `getCorrespondenceEmail`'s chain. Thread from `getAoothUserHandleSpec(Model).emailField` at boot. |
+| Key                      | Default    | Notes                                                                                                                                                                          |
+| ------------------------ | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `password.pepper`        | `""`       | Prefixed to every password before scrypt. Irrecoverable if lost.                                                                                                               |
+| `password.historyLength` | `0`        | `0` disables password-history check.                                                                                                                                           |
+| `password.scryptN`       | `16384`    | Stored on the hash string; per-hash forward compat on `verify`.                                                                                                                |
+| `password.scryptR`       | `8`        |                                                                                                                                                                                |
+| `password.scryptP`       | `1`        |                                                                                                                                                                                |
+| `password.keyLength`     | `64`       | Hash output bytes.                                                                                                                                                             |
+| `password.policies`      | `[]`       | Array of `PasswordPolicyDef` or `PasswordPolicyInstance` — normalized on init.                                                                                                 |
+| `lockout.threshold`      | `0`        | `0` disables lockout.                                                                                                                                                          |
+| `lockout.duration`       | `0`        | `0` produces permanent locks when the threshold trips.                                                                                                                         |
+| `clock`                  | `Date.now` | Injectable for tests.                                                                                                                                                          |
+| `deviceTrust.secret`     | _(unset)_  | Required for trusted-device AND seen-device APIs — those throw if absent; `hasDeviceTrustSecret()` is the non-throwing probe.                                                  |
+| `emailField`             | _(unset)_  | Name of the `@aooth.user.email`-annotated column — the UNPROVEN last link in `getCorrespondenceEmail`'s chain. Thread from `getAoothUserHandleSpec(Model).emailField` at boot. |
 
 `getConfig()` returns the resolved config as `Readonly<ResolvedConfig>`; `getPasswordHasher()` exposes the constructed `PasswordHasher` for escape-hatch use.
 
@@ -185,7 +185,7 @@ Writes `account.verifiedEmail` — the inbox-proven correspondence address. Deli
 
 ### `getCorrespondenceEmail(user) → string | undefined | Promise<string | undefined>`
 
-Where security notices go. Chain: the `config.emailField` column on the row → `account.verifiedEmail` → first confirmed email-MFA method's value. Sync by default, but the Promise-admitting return type is an explicit OVERRIDE SEAM — subclass to source the address from anywhere (profile table, CRM), async ok. Capture points in the moost workflow: [workflows.md](workflows.md) invariant 19.
+Where security notices go. PROVEN-first chain: `account.verifiedEmail` → first confirmed email-MFA method's value → the `config.emailField` column (app-canonical, UNPROVEN — last). Security rationale: a changed address gets noticed at the previously-proven inbox. Sync by default, but the Promise-admitting return type is an explicit OVERRIDE SEAM — subclass to source the address from anywhere (profile table, CRM) or to restore app-canonical-first, async ok. Capture points in the moost workflow: [workflows.md](workflows.md) invariant 19.
 
 ## Escape hatches
 
