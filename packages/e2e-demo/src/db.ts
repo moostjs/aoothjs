@@ -7,6 +7,7 @@ import path from "node:path";
 import { AuditEntry } from "./models/audit.as";
 import { DemoAuthCode } from "./models/auth-code.as";
 import { DemoAuthCredential } from "./models/auth-credential.as";
+import { DemoDynamicClient } from "./models/dynamic-client.as";
 import { DemoPendingAuthorization } from "./models/pending-authorization.as";
 import { Comment } from "./models/comment.as";
 import { Department } from "./models/department.as";
@@ -32,6 +33,7 @@ export const ALL_MODELS = [
   DemoFederatedIdentity,
   DemoPendingAuthorization,
   DemoAuthCode,
+  DemoDynamicClient,
 ] as const;
 
 export interface AppDb {
@@ -50,6 +52,7 @@ export interface AppDb {
     federatedIdentities: AtscriptDbTable<typeof DemoFederatedIdentity>;
     pendingAuthorizations: AtscriptDbTable<typeof DemoPendingAuthorization>;
     authCodes: AtscriptDbTable<typeof DemoAuthCode>;
+    dynamicClients: AtscriptDbTable<typeof DemoDynamicClient>;
   };
   close: () => void;
 }
@@ -83,6 +86,7 @@ export function createAppDb(dbPath: string): AppDb {
     federatedIdentities: db.getTable(DemoFederatedIdentity),
     pendingAuthorizations: db.getTable(DemoPendingAuthorization),
     authCodes: db.getTable(DemoAuthCode),
+    dynamicClients: db.getTable(DemoDynamicClient),
   };
 
   return {

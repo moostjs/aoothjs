@@ -22,6 +22,8 @@ import {
   type AuthCodeStore,
   type ClientRedirectPolicy,
   CompositeClientPolicy,
+  DynamicClientPolicy,
+  DynamicClientRegistration,
   IdTokenSigner,
   LoopbackClientPolicy,
   OidcClaimsResolver,
@@ -32,6 +34,8 @@ import {
 import {
   AuthCodeStoreAtscriptDb,
   type AuthCodeTable,
+  DynamicClientStoreAtscriptDb,
+  type DynamicClientTable,
   PendingAuthorizationStoreAtscriptDb,
   type PendingAuthorizationTable,
 } from "@aooth/auth/atscript-db";
@@ -53,6 +57,7 @@ import {
   AUTH_CODE_STORE_TOKEN,
   AuthorizeController,
   CLIENT_REDIRECT_POLICY_TOKEN,
+  DYNAMIC_CLIENT_STORE_TOKEN,
   FEDERATED_IDENTITY_STORE_TOKEN,
   OAuthController,
   PENDING_AUTHORIZATION_STORE_TOKEN,
@@ -92,6 +97,7 @@ import { type AppEnv, ENV } from "./env";
 import {
   HealthController,
   makeAuditController,
+  makeMcpDemoController,
   makeCommentsController,
   makeDepartmentsController,
   makeDocumentsController,
@@ -891,10 +897,26 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   const oidcClaimsResolver = new DemoOidcClaimsResolver();
 
   // The Tier-1 loopback policy (any localhost redirect → full-authority CLI
-  // session) and a Tier-2 registry of ONE first-party OIDC client run side by
-  // side via CompositeClientPolicy, dispatched on the presence of `client_id`.
-  // `demo-oidc` is a PUBLIC client (PKCE-bound, no secret), sign-in only
-  // (`id_token`, no access token), redirecting to the test-harness landing.
+  // session), a Tier-2 registry of ONE first-party OIDC client, and the dynamic
+  // (RFC 7591) connector policy run side by side via CompositeClientPolicy —
+  // no `client_id` → loopback; a `client_id` → the static registry when it
+  // KNOWS the id, else the dynamic store. `demo-oidc` is a PUBLIC client
+  // (PKCE-bound, no secret), sign-in only (`id_token`, no access token),
+  // redirecting to the test-harness landing.
+  // RFC 7591 dynamic registrations (MCP connector clients) — durable store on
+  // the same SQLite DB, a registration op with small demo knobs (cap + a short
+  // never-used GC TTL so the abuse posture is exercised end-to-end), and the
+  // DynamicClientPolicy minting 30-day `mcp-session` tokens bounded by the
+  // server-side scope allow-list.
+  const dynamicClientStore = new DynamicClientStoreAtscriptDb({
+    table: appDb.tables.dynamicClients as unknown as DynamicClientTable,
+  });
+  const dynamicClientRegistration = new DynamicClientRegistration({
+    store: dynamicClientStore,
+    maxClients: 100,
+    unusedClientTtlMs: 60 * 60_000, // 1 h — never-used spam registrations get GC'd
+  });
+  const MCP_SCOPES = ["read", "write"];
   const clientRedirectPolicy = new CompositeClientPolicy({
     loopback: new LoopbackClientPolicy(),
     registered: new RegisteredClientPolicy({
@@ -905,6 +927,11 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
           scopes: ["openid", "email", "profile"],
         },
       ],
+    }),
+    dynamic: new DynamicClientPolicy({
+      store: dynamicClientStore,
+      tokenPolicy: { kind: "mcp-session", ttl: 30 * 24 * 60 * 60_000 },
+      allowedScopes: MCP_SCOPES,
     }),
   });
 
@@ -929,6 +956,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     [CLIENT_REDIRECT_POLICY_TOKEN, () => clientRedirectPolicy],
     [PENDING_AUTHORIZATION_STORE_TOKEN, () => pendingAuthStore],
     [AUTH_CODE_STORE_TOKEN, () => authCodeStore],
+    [DYNAMIC_CLIENT_STORE_TOKEN, () => dynamicClientStore],
   ];
   app.setProvideRegistry(createProvideRegistry(...authProviders));
   app.applyGlobalInterceptors(authGuardInterceptor({ cookie: { secure: false } }));
@@ -1017,6 +1045,16 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     protected override getOidcClaimsResolver(): OidcClaimsResolver {
       return oidcClaimsResolver;
     }
+    // DCR for MCP connector clients (OAUTH.md): enables `POST /auth/register`
+    // and advertises `registration_endpoint` in BOTH discovery documents.
+    // The issuer comes from the signer (combined Tier-2 + DCR deployment) —
+    // a signer-less deployment would override `getIssuer()` instead.
+    protected override getDynamicClientRegistration(): DynamicClientRegistration {
+      return dynamicClientRegistration;
+    }
+    protected override scopesSupported(): string[] {
+      return MCP_SCOPES;
+    }
   }
 
   app.setReplaceRegistry(createReplaceRegistry([WfTriggerProvider, DemoWfTriggerProvider]));
@@ -1031,6 +1069,16 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     SessionsController,
     OAuthController,
     DemoAuthorizeController,
+    // ROOT-mounted well-knowns + the /mcp-shaped protected resource — the
+    // acceptance proof for the exported builders (R1 path-insertion form, R3
+    // PRM + WWW-Authenticate challenge). A prefix-mounted AuthorizeController
+    // cannot register these itself.
+    makeMcpDemoController({
+      issuer: oidcIssuer,
+      resource: `http://localhost:${port}/mcp`,
+      scopes: MCP_SCOPES,
+      auth: aooth.authCredential,
+    }),
   );
 
   // `@Injectable()` (SINGLETON) — moost@0.6.x does NOT inherit injectable
@@ -1103,6 +1151,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       t.credentials,
       t.authCodes,
       t.pendingAuthorizations,
+      t.dynamicClients,
       t.users,
       t.departments,
       t.tenants,

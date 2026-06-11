@@ -1,6 +1,6 @@
-# Authorization Server (CLI login + service SSO)
+# Authorization Server (CLI login, service SSO, MCP connectors)
 
-The **inbound twin** of [Federated Login](./oauth). There, aoothjs is the OAuth **client** of an external IdP ("Continue with Google"). Here, aoothjs is the OAuth/OIDC **authorization server** for its OWN clients — a local **CLI** on a loopback redirect, or a registered **first-party service** ("Sign in with the main app"). One authorization-code + PKCE flow drives a real interactive login (password, MFA, consent, even a mid-flow "Continue with Google"); the only thing that varies between the two cases is the injected **client/redirect policy** (and, for service SSO, whether an `id_token` is signed).
+The **inbound twin** of [Federated Login](./oauth). There, aoothjs is the OAuth **client** of an external IdP ("Continue with Google"). Here, aoothjs is the OAuth/OIDC **authorization server** for its OWN clients — a local **CLI** on a loopback redirect, a registered **first-party service** ("Sign in with the main app"), or a **self-registered connector** (an MCP client like a claude.ai custom connector that discovers the server, registers itself, and drives the user through login + consent). One authorization-code + PKCE flow drives a real interactive login (password, MFA, consent, even a mid-flow "Continue with Google"); the only thing that varies between the cases is the injected **client/redirect policy** (and, for service SSO, whether an `id_token` is signed).
 
 The framework-agnostic pieces — the two short-lived stores, the client/redirect policies, the `id_token` signer, the claims resolver, the token policy, and the error taxonomy — live in [`@aooth/auth/authz`](../api/auth#authz-subpath). This page is the moost HTTP layer: the `AuthorizeController` endpoints and the DI wiring.
 
@@ -28,18 +28,23 @@ client opens browser →
 # Tier 2 only:
 GET /auth/.well-known/openid-configuration   → OIDC discovery (derived from the signer's issuer)
 GET /auth/jwks                               → the signer's public JWKS
+
+# Discovery + registration (MCP connectors; signer NOT required):
+GET  /auth/.well-known/oauth-authorization-server → RFC 8414 AS metadata (needs only getIssuer())
+POST /auth/register                               → RFC 7591 dynamic client registration (when wired)
 ```
 
 The grant's authority is **fixed at `/authorize` time** (the policy's [`TokenPolicy`](../api/auth#authz-subpath), `id_token` intent, `aud`, and granted scope are recorded on the pending authorization and copied onto the issued code), **never inferred at `/token`**. Nothing long-lived ever rides a redirect URL — only the single-use `code` does.
 
 ## Two tiers, one flow
 
-|                          | Client / redirect policy                                                                                                                                                                          | What the token endpoint mints                                                                                                                |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Tier 1 — CLI**         | `LoopbackClientPolicy` — any `127.0.0.1` / `[::1]` / `localhost` redirect, any port (RFC 8252); public client, PKCE is the binding; no `client_id`.                                               | A full-authority `cli-session` **access token** for the main API (no `id_token`).                                                            |
-| **Tier 2 — service SSO** | `RegisteredClientPolicy` — a static registry; each client has a `client_id`, an exact-match (or strict-prefix) `redirect_uri` allowlist, a `public`/`confidential` type, and what it may receive. | An **`id_token`** (RS256/ES256, `aud` = `client_id`), optionally also an access token. Consumable by the existing [`OidcProvider`](../idp/). |
+|                          | Client / redirect policy                                                                                                                                                                                                                                      | What the token endpoint mints                                                                                                                     |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Tier 1 — CLI**         | `LoopbackClientPolicy` — any `127.0.0.1` / `[::1]` / `localhost` redirect, any port (RFC 8252); public client, PKCE is the binding; no `client_id`.                                                                                                           | A full-authority `cli-session` **access token** for the main API (no `id_token`).                                                                 |
+| **Tier 2 — service SSO** | `RegisteredClientPolicy` — a static registry; each client has a `client_id`, an exact-match (or strict-prefix) `redirect_uri` allowlist, a `public`/`confidential` type, and what it may receive.                                                             | An **`id_token`** (RS256/ES256, `aud` = `client_id`), optionally also an access token. Consumable by the existing [`OidcProvider`](../idp/).      |
+| **MCP connectors — DCR** | `DynamicClientPolicy` — RFC 7591 self-registered public clients from a `DynamicClientStore`; exact-match `https` redirects (loopback entries are port-agnostic per RFC 8252); granted scope = requested ∩ a **server** allow-list ∩ the registration's scope. | An **access token** with the configured `tokenPolicy` (e.g. `{ kind: "mcp-session", ttl: 30d }`). **No `id_token`** — connectors are plain OAuth. |
 
-Run both side by side with `CompositeClientPolicy`, which dispatches on the **presence of `client_id`** — a request with one is a registered client, one without is a loopback CLI.
+Run them side by side with `CompositeClientPolicy`, which dispatches on the **presence and ownership of `client_id`** — no `client_id` is a loopback CLI; a `client_id` belongs to the static registry when it knows the id (`hasClient`, static-first so a dynamic registration can never shadow a static client), else to the dynamic policy. The same picker drives `authenticateClient` at `/token`.
 
 ## Wiring — Tier 1 (CLI loopback)
 
@@ -167,6 +172,131 @@ app.setProvideRegistry(
 app.registerControllers(OidcAuthorizeController);
 ```
 
+## Wiring — MCP connectors (dynamic client registration) {#wiring-mcp-connectors}
+
+Connector-style MCP clients (claude.ai custom connectors and anything implementing the MCP authorization spec) **cannot set headers** — the user pastes a resource URL and the client expects to _discover_ the authorization server (RFC 9728 + RFC 8414), _register itself_ (RFC 7591), and run the standard code + PKCE grant. Four pieces on top of the Tier-1 wiring:
+
+```ts
+import {
+  CompositeClientPolicy,
+  DynamicClientPolicy,
+  DynamicClientRegistration,
+  LoopbackClientPolicy,
+} from "@aooth/auth/authz";
+import { DynamicClientStoreAtscriptDb } from "@aooth/auth/atscript-db";
+import { AuthorizeController, DYNAMIC_CLIENT_STORE_TOKEN /* …tokens… */ } from "@aooth/auth-moost";
+
+// 1. The client store — durable (model: @aooth/auth/atscript-db/dynamic-client,
+//    an empty-extension consumer model + syncSchema), or DynamicClientStoreMemory
+//    for tests. One instance backs BOTH the policy and the registration op.
+const dynamicClients = new DynamicClientStoreAtscriptDb({ table: db.getTable(MyDynamicClient) });
+
+// 2. The registration operation behind POST /auth/register, with the abuse knobs:
+//    a reject-when-full cap (used registrations are NEVER evicted — a connector
+//    caches its client_id), lazy GC of never-used registrations, and an optional
+//    guard hook (throw ClientRegistrationError to reject). Rate limiting stays
+//    at your ingress.
+const registration = new DynamicClientRegistration({
+  store: dynamicClients,
+  maxClients: 1000,
+  unusedClientTtlMs: 24 * 60 * 60_000,
+});
+
+// 3. The policy — what a dynamic grant mints, and the SERVER-side scope bound
+//    (never trust the registration's self-declared scope as the allow-set).
+const policy = new CompositeClientPolicy({
+  loopback: new LoopbackClientPolicy(),
+  dynamic: new DynamicClientPolicy({
+    store: dynamicClients,
+    tokenPolicy: { kind: "mcp-session", ttl: 30 * 24 * 60 * 60_000 },
+    allowedScopes: ["read", "write"],
+  }),
+  // registered: …  ← add the Tier-2 registry too; static ids win the dispatch.
+});
+
+// 4. The controller subclass: the issuer (RFC 8414 works WITHOUT a signer) and
+//    the registration getter. Inject the store under DYNAMIC_CLIENT_STORE_TOKEN
+//    if you prefer DI; the BASE controller never injects it (optional @Inject
+//    panics in moost's route pass — same seam as the signer).
+@Inherit()
+@Controller("auth")
+class McpAuthorizeController extends AuthorizeController {
+  constructor(/* …same 4 ctor params + super() as Tier 2… */) {
+    /* … */
+  }
+  protected override getIssuer() {
+    return `${PUBLIC_ORIGIN}/auth`; // byte-exact; NEVER derive from the Host header
+  }
+  protected override getDynamicClientRegistration() {
+    return registration;
+  }
+  protected override scopesSupported() {
+    return ["read", "write"];
+  }
+}
+```
+
+With that, `GET /auth/.well-known/oauth-authorization-server` serves RFC 8414 metadata (no signer needed — `getIssuer()` is the only requirement; with a Tier-2 signer wired it defaults to the signer's issuer and also advertises `jwks_uri`), `POST /auth/register` accepts registrations, and **both** discovery documents advertise `registration_endpoint` when a signer is also present. Registration normalizes per RFC 7591 §2: `grant_types: ["authorization_code", "refresh_token"]` registers as `["authorization_code"]` and the 201 echo of the **narrowed** set is the contract; `token_endpoint_auth_method` defaults to `"none"` (public clients only — an explicit ask for a secret method is rejected, never silently downgraded); `client_name` is sanitized (control/format/bidi characters stripped) and rendered on the consent prompt **as text, next to the validated redirect host** — the host is where the code is actually delivered, which a self-chosen name can't fake.
+
+### Root-mounted discovery (what the controller cannot serve)
+
+Two documents belong at the **HTTP-server root**, which a prefix-mounted controller can't register — mount them yourself from the exported builders (re-exported by `@aooth/auth-moost`):
+
+```ts
+import {
+  buildAuthorizationServerMetadata, // RFC 8414 — the path-insertion form
+  buildProtectedResourceMetadata, // RFC 9728 PRM (resource-server side)
+  buildWwwAuthenticateBearerChallenge, // the 401 challenge header VALUE
+} from "@aooth/auth-moost";
+
+@Controller()
+class WellKnownController {
+  // RFC 8414 path-insertion form for an issuer mounted at /auth — clients try
+  // this BEFORE the {issuer}/.well-known suffix form the controller serves.
+  // Same builder + issuer ⇒ byte-identical documents.
+  @Get(".well-known/oauth-authorization-server/auth")
+  @Public()
+  meta() {
+    return buildAuthorizationServerMetadata({
+      issuer: `${PUBLIC_ORIGIN}/auth`,
+      registrationEndpoint: `${PUBLIC_ORIGIN}/auth/register`,
+    });
+  }
+
+  // RFC 9728 — which authorization server guards this resource.
+  @Get(".well-known/oauth-protected-resource")
+  @Public()
+  prm() {
+    return buildProtectedResourceMetadata({
+      resource: `${PUBLIC_ORIGIN}/mcp`,
+      authorizationServers: [`${PUBLIC_ORIGIN}/auth`],
+    });
+  }
+}
+
+// And on the protected resource's 401 (this header starts the whole discovery):
+res.setHeader(
+  "WWW-Authenticate",
+  buildWwwAuthenticateBearerChallenge({
+    resourceMetadataUrl: `${PUBLIC_ORIGIN}/.well-known/oauth-protected-resource`,
+  }),
+);
+```
+
+The challenge builder is framework-light (a header-value string) and sanitizes every value (control characters stripped, quotes escaped) so attacker-influenced strings can't split the response. The demo's `makeMcpDemoController` (packages/e2e-demo) is the working reference for all three mounts.
+
+### The `resource` parameter (RFC 8707)
+
+`/authorize` and `/token` accept `resource`. v1 **records + consistency-checks** it: a repeated or oversized value fails with `invalid_target` (never silently truncated), a mismatch between the two legs is `400 invalid_target`, and one-sided presence is accepted. There is **no audience enforcement** — access tokens are opaque credentials consumed by the same origin that minted them, so cross-resource confusion doesn't arise; the recorded value stays on the grant so a future multi-resource deployment can enforce it without re-minting.
+
+### Connector token lifecycle
+
+Dynamic grants mint plain bearer access tokens with your `tokenPolicy` TTL (e.g. 30 days) — **no refresh tokens, no RFC 7009 revocation endpoint** in v1. At expiry the connector re-runs authorize + consent. The only revocation path is your own sessions surface: pick a dedicated `kind` (e.g. `mcp-session`) so connector grants show up under `listSessions(userId, { kind: "mcp-session" })` and users can revoke them — without that, a stolen 30-day bearer has no user-visible kill switch. Operators MAY disable DCR entirely (don't wire the getter) and fall back to a statically pre-registered connector via `RegisteredClientPolicy` — its callback URL is fixed and the connector UI accepts a manually-entered client id — at the cost of "paste URL and it works" UX.
+
+::: warning Schema migration
+The `aooth_pending_authorizations` / `aooth_auth_codes` models gained nullable `clientName` / `resource` columns. Run your schema sync before serving connector traffic — connector clients **always** send `resource`, so an un-synced column fails at the `/authorize` insert.
+:::
+
 ## Consuming it — "the inbound grant and the outbound provider are two ends of the same wire"
 
 A first-party sibling service signs in against the main app with the **existing** [`OidcProvider`](../idp/) — no new client code. Point it at the same `issuer`; discovery resolves `/authorize`, `/token`, and `/jwks` automatically:
@@ -225,8 +355,11 @@ The mint step runs **only** after consent stamps approval on the run, so a deny 
 - **DON'T** wire an `id_token` client without a signer — the token endpoint returns `500 server_error` (a misconfiguration, not a client error) rather than mint an unsigned identity assertion.
 - **DON'T** send a `client_id` on a loopback (Tier 1) `/token` request — a code minted for a public loopback client must carry **no** `client_id`; a spurious one is rejected `401` to keep the binding symmetric.
 - **DO** mount the `AuthorizeController` subclass (not the base) when you override the getters — registering the base class would mint `sub`-only tokens with no signer.
-- **DO** serve `loginPath()` on the **same origin** as `/auth/authorize` — the `aooth_authz` binding cookie is host-scoped; a cross-origin login route never receives it, so `authz-consent` fails closed and no code is ever minted. ([Consent gate](#consent-gate-browser-binding).)
+- **DO** serve `loginPath()` on the **same origin** as `/auth/authorize` — the `aooth_authz` binding cookie is host-scoped; a cross-origin login route never receives it, so `authz-consent` fails closed and no code is ever minted. ([Consent gate](#consent-gate-browser-binding).) The same applies to connector flows: the binding cookie is `SameSite=Lax`, so a login UI on a different registrable domain than the issuer fails closed — that needs a deliberate, separately-reviewed cookie change, not a quiet flip.
 - **DO** persist the `binding` field in any custom durable `PendingAuthorizationStore` — the consent gate matches the cookie against it; drop it and every authorize request fails the binding check.
+- **DON'T** derive `getIssuer()` from the request's Host header — the metadata document is cacheable, and a request-controlled host would be injected into every client's view of your endpoints. Configure it.
+- **DON'T** treat a DCR registration's `scope` as the allow-set — it is attacker-supplied (it also feeds the consent copy). The grant is bounded by `DynamicClientPolicyOptions.allowedScopes`, the server-side list.
+- **DO** size `maxClients` and keep `unusedClientTtlMs` on — `/register` is anonymous by spec. The cap rejects-when-full; never evict used registrations (a connector caches its `client_id`, and evicting it strands the user's connector).
 
 ## See also
 

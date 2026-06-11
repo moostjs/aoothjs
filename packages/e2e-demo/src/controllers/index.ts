@@ -3,6 +3,7 @@ export { makeCommentsController } from "./comments.controller";
 export { makeDepartmentsController } from "./departments.controller";
 export { makeDocumentsController } from "./documents.controller";
 export { HealthController } from "./health.controller";
+export { makeMcpDemoController } from "./mcp-demo.controller";
 export { makeProjectsController } from "./projects.controller";
 export { makeTasksController } from "./tasks.controller";
 export { makeTenantsController } from "./tenants.controller";
