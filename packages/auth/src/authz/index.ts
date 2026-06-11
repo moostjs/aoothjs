@@ -38,6 +38,22 @@ export {
 } from "./id-token-signer";
 export { NoopOidcClaimsResolver, OidcClaimsResolver, scopeGrants } from "./oidc-claims-resolver";
 
+// Discovery documents + bearer challenge: RFC 8414 AS metadata, RFC 9728
+// protected-resource metadata, RFC 6750 `WWW-Authenticate` header value —
+// what MCP connector clients use to find this server from a 401.
+export {
+  buildAuthorizationServerMetadata,
+  type AuthorizationServerMetadata,
+  type BuildAuthorizationServerMetadataOptions,
+} from "./server-metadata";
+export {
+  buildProtectedResourceMetadata,
+  buildWwwAuthenticateBearerChallenge,
+  type BuildProtectedResourceMetadataOptions,
+  type ProtectedResourceMetadata,
+  type WwwAuthenticateBearerChallengeOptions,
+} from "./resource-metadata";
+
 // In-flight authorization store (abstract + in-memory reference impl).
 export {
   DEFAULT_PENDING_TTL_MS,
