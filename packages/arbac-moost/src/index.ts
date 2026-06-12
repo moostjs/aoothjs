@@ -14,6 +14,7 @@ export * from "./arbac.mate";
 export { type AoothArbacClaims, conjoinArbacDbScopes } from "./attenuation";
 export * from "./db/as-arbac-db-controller";
 export * from "./db/as-arbac-db-readable-controller";
+export * from "./db/meta-projection";
 export type {
   ControlsOf,
   NavRelationKey,

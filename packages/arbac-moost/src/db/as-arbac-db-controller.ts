@@ -1,13 +1,11 @@
 import { mergeScopeFilters } from "@aooth/arbac";
 import type { ControlGate, TProjection, TScopeFilter } from "@aooth/arbac";
-import type { TCrudOp, TMetaResponse } from "@atscript/db";
+import type { TMetaResponse } from "@atscript/db";
 import { AsDbController } from "@atscript/moost-db";
 import type { NavPropsOf, TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { HttpError } from "@moostjs/event-http";
-import { getConstructor, getInstanceOwnMethods, Inherit, useControllerContext } from "moost";
+import { Inherit } from "moost";
 
-import { useArbac } from "../arbac.composables";
-import type { TArbacMeta } from "../arbac.mate";
 import type {
   ControlsOf,
   NavRelationKey,
@@ -15,6 +13,11 @@ import type {
   OwnFieldKey,
   ProjectionOf,
 } from "./scope-types";
+import {
+  applyArbacMetaOverlay,
+  isScopedFieldVisible,
+  metaAlwaysVisibleFields,
+} from "./meta-projection";
 import {
   applyArbacControls,
   applyArbacProjection,
@@ -178,36 +181,29 @@ export class AsArbacDbController<
     return undefined;
   }
 
-  protected async applyMetaOverlay(meta: TMetaResponse): Promise<TMetaResponse> {
-    const arbac = useArbac();
-    const actionToMethodMeta = collectActionMetaByName();
+  protected applyMetaOverlay(meta: TMetaResponse): Promise<TMetaResponse> {
+    return applyArbacMetaOverlay(meta, metaAlwaysVisibleFields(this, this.table));
+  }
 
-    // Evaluate all gates in parallel: ARBAC evaluate is in-memory + idempotent
-    // and reads from the per-event scope cache, so contention is bounded; the
-    // win is killing N sequential round-trips through the user provider.
-    const crudKeys = Object.keys(meta.crud) as TCrudOp[];
-    const [actionResults, crudResults] = await Promise.all([
-      Promise.all(
-        meta.actions.map((entry) => {
-          const methodMeta = actionToMethodMeta.get(entry.name);
-          const arbacAction = methodMeta?.arbacActionId ?? methodMeta?.id ?? entry.name;
-          return arbac.evaluate({ action: arbacAction });
-        }),
-      ),
-      Promise.all(crudKeys.map((key) => arbac.evaluate({ action: key }))),
-    ]);
-
-    const filteredActions: TMetaResponse["actions"] = [];
-    for (let i = 0; i < meta.actions.length; i++) {
-      if (actionResults[i].allowed) filteredActions.push(meta.actions[i]);
-    }
-
-    const filteredCrud: TMetaResponse["crud"] = {};
-    for (let i = 0; i < crudKeys.length; i++) {
-      if (crudResults[i].allowed) filteredCrud[crudKeys[i]] = meta.crud[crudKeys[i]];
-    }
-
-    return { ...meta, actions: filteredActions, crud: filteredCrud };
+  /**
+   * Field-existence check, scope-aware (BUG-3 twin of the `/meta` pruning
+   * above): a field outside the read-scope projection union must be
+   * indistinguishable from a field that does not exist. The base controller's
+   * ONLY call site is `validateInsights`, which turns a `false` here into the
+   * same `Unknown field "x"` HTTP 400 a truly nonexistent field gets — so
+   * `$select`, filter, and sort references to a hidden field cannot be used
+   * as an existence/value oracle. Identifier fields stay visible (reads
+   * always return them — see {@link MetaVisibility.alwaysVisible}), and paths
+   * under a `with`-granted relation pass through to the sub-scope's own
+   * enforcement. Scopes were cached by the route-level authorize interceptor
+   * before validation runs (`useArbac` setScopes), so the union reflects the
+   * exact action being executed.
+   */
+  protected hasField(path: string): boolean {
+    return (
+      super.hasField(path) &&
+      isScopedFieldVisible(readCachedScopes(), path, metaAlwaysVisibleFields(this, this.table))
+    );
   }
 
   protected async onWrite(
@@ -265,45 +261,6 @@ export class AsArbacDbController<
 // `table.identifications` is derived from atscript decorations on that class,
 // so the resolved field list cannot change without a new class.
 const identifierFieldsCache = new WeakMap<new (...args: never[]) => unknown, readonly string[]>();
-
-type ActionResolutionMeta = { arbacActionId?: string; id?: string };
-
-// Per-class memoization: controller and method decorator metadata are bound to
-// the class at registration time and never mutate per-request. Caching avoids
-// re-walking `getInstanceOwnMethods` + N `getMethodMeta` calls on every meta
-// overlay (one per GET `/<resource>/meta` request).
-const actionMetaByClassCache = new WeakMap<
-  new (...args: never[]) => unknown,
-  Map<string, ActionResolutionMeta>
->();
-
-function collectActionMetaByName(): Map<string, ActionResolutionMeta> {
-  const cc = useControllerContext();
-  const instance = cc.getController();
-  const ctor = getConstructor(instance) as new (...args: never[]) => unknown;
-  const cached = actionMetaByClassCache.get(ctor);
-  if (cached) return cached;
-
-  const map = new Map<string, ActionResolutionMeta>();
-  const ctrlMeta = cc.getControllerMeta<TArbacMeta>();
-
-  for (const entry of ctrlMeta?.atscript_db_actions ?? []) {
-    map.set(entry.name, {});
-  }
-
-  for (const methodName of getInstanceOwnMethods(instance)) {
-    if (typeof methodName !== "string") continue;
-    const m = cc.getMethodMeta<TArbacMeta>(methodName);
-    if (!m) continue;
-    const actionMeta = m.atscript_db_action;
-    if (actionMeta?.name) {
-      map.set(actionMeta.name, { arbacActionId: m.arbacActionId, id: m.id });
-    }
-  }
-
-  actionMetaByClassCache.set(ctor, map);
-  return map;
-}
 
 /**
  * Test-friendly internal helper — exported for unit tests and helper

@@ -42,7 +42,12 @@ DI key used to look up the user provider. The abstract class itself does not sat
 class AsArbacDbController<T> extends AsDbController<T> {}
 ```
 
-`@atscript/moost-db` controller subclass that wires ARBAC into every CRUD seam: `transformFilter`, `transformProjection`, `validateControls`, `applyMetaOverlay`, `onWrite`, `onRemove`, `assertInScope`. Scopes auto-applied — no explicit `getScopes()` call needed in handlers. See [DB Controllers](/moost/).
+`@atscript/moost-db` controller subclass that wires ARBAC into every CRUD seam: `transformFilter`, `transformProjection`, `validateControls`, `applyMetaOverlay`, `hasField`, `onWrite`, `onRemove`, `assertInScope`. Scopes auto-applied — no explicit `getScopes()` call needed in handlers. See [DB Controllers](/moost/).
+
+Two seams enforce that a scope `projection` removes fields from existence, not just from row payloads:
+
+- **`applyMetaOverlay`** prunes the `/meta` envelope — `fields`, the serialized `type`, `relations`, `versionColumn` — down to the union of the allowed read ops' scope projections (PK + `preferredId` always survive; reads always return them). A scoped UI can no longer offer columns that would never populate, and secret-bearing column names stop leaking. Unscoped read grants keep the full envelope; write-only principals keep `type` for their insert/update forms.
+- **`hasField`** answers `false` for paths outside that union, so `validateInsights` rejects a `$select` / filter / sort reference to a hidden field with the **identical** `Unknown field "x"` 400 a nonexistent field gets — no existence or value oracle. Paths under a `with`-granted relation pass through to the sub-scope's own enforcement.
 
 ### `AsArbacDbReadableController<T>`
 
@@ -50,7 +55,7 @@ class AsArbacDbController<T> extends AsDbController<T> {}
 class AsArbacDbReadableController<T> extends AsDbReadableController<T> {}
 ```
 
-Read-only mirror of `AsArbacDbController` for view controllers. See [DB Controllers](/moost/).
+Read-only mirror of `AsArbacDbController` for view controllers — including the same `/meta` pruning + `hasField` parity. See [DB Controllers](/moost/).
 
 ## Functions
 
@@ -135,6 +140,30 @@ function applyAllowedFieldsAndSet(
 ```
 
 Strips fields outside the union of `allowedFields` and overlays `set` defaults. Auto-preserves keys in `identifierFields` (PK + unique-index columns). Used by `AsArbacDbController.onWrite`.
+
+### `applyArbacMetaOverlay` / `pruneMetaByVisibility` / `unionScopeProjection` / `collectWithGrantNames` / `isMetaFieldVisible`
+
+```ts
+function applyArbacMetaOverlay(
+  meta: TMetaResponse,
+  alwaysVisible: ReadonlySet<string>,
+): Promise<TMetaResponse>;
+function pruneMetaByVisibility(meta: TMetaResponse, vis: MetaVisibility): TMetaResponse;
+function unionScopeProjection(scopes: ArbacDbScope[]): TProjection | undefined;
+function collectWithGrantNames(scopes: ArbacDbScope[]): ReadonlySet<string>;
+function isMetaFieldVisible(path: string, vis: MetaVisibility): boolean;
+function isScopedFieldVisible(
+  scopes: ArbacDbScope[],
+  path: string,
+  alwaysVisible: ReadonlySet<string>,
+): boolean;
+function metaAlwaysVisibleFields(
+  controller: object,
+  source: { primaryKeys: readonly string[]; preferredId: readonly string[] },
+): ReadonlySet<string>;
+```
+
+The `/meta` field-visibility machinery behind both ARBAC controllers (see [`AsArbacDbController`](#asarbacdbcontroller-t)). `applyArbacMetaOverlay` is the full per-request overlay (actions/crud filtering + field pruning; needs the moost event context); the rest are pure and composable from custom `applyMetaOverlay` / `hasField` overrides — `isScopedFieldVisible` is the shared `hasField` body (memoizes the projection union + with-grant set per event-stable scopes array), and `metaAlwaysVisibleFields` builds the per-controller-class PK + `preferredId` set both seams take. `MetaVisibility` is `{ allowed: TProjection; alwaysVisible: ReadonlySet<string>; withGrants: ReadonlySet<string> }`. `pruneMetaByVisibility` never mutates its input (the base controller caches the static envelope).
 
 ### `conjoinArbacDbScopes`
 

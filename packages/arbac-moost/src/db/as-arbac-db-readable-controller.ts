@@ -3,6 +3,13 @@ import { AsDbReadableController } from "@atscript/moost-db";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { Inherit } from "moost";
 
+import type { TMetaResponse } from "@atscript/db";
+
+import {
+  applyArbacMetaOverlay,
+  isScopedFieldVisible,
+  metaAlwaysVisibleFields,
+} from "./meta-projection";
 import {
   applyArbacControls,
   applyArbacProjection,
@@ -44,5 +51,28 @@ export class AsArbacDbReadableController<
     applyArbacControls(controls, scopes);
     applyArbacRelationScopes(controls, scopes);
     return undefined;
+  }
+
+  /**
+   * Same ARBAC `/meta` overlay as the writable controller (actions/crud
+   * filtering + BUG-3 field-surface pruning by the read scopes' projection
+   * union) — view-style metas leak hidden field names identically.
+   */
+  protected applyMetaOverlay(meta: TMetaResponse): Promise<TMetaResponse> {
+    return applyArbacMetaOverlay(meta, metaAlwaysVisibleFields(this, this.readable));
+  }
+
+  /**
+   * Scope-aware field-existence check — same contract as
+   * {@link AsArbacDbController.hasField} (BUG-3): a field outside the
+   * read-scope projection union answers `false`, so `validateInsights` rejects
+   * `$select` / filter / sort references to it with the identical
+   * `Unknown field "x"` 400 a nonexistent field gets.
+   */
+  protected hasField(path: string): boolean {
+    return (
+      super.hasField(path) &&
+      isScopedFieldVisible(readCachedScopes(), path, metaAlwaysVisibleFields(this, this.readable))
+    );
   }
 }

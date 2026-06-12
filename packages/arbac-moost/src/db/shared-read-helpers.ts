@@ -1,14 +1,10 @@
-import {
-  mergeScopeFilters,
-  restrictProjection,
-  unionControlsPolicy,
-  unionProjections,
-} from "@aooth/arbac";
+import { mergeScopeFilters, restrictProjection, unionControlsPolicy } from "@aooth/arbac";
 import type { TProjection } from "@aooth/arbac";
 
 import { useArbac } from "../arbac.composables";
 import { enforceControlsPolicy } from "./as-arbac-db-controller";
 import type { ArbacDbScope } from "./as-arbac-db-controller";
+import { unionScopeProjection } from "./meta-projection";
 
 /** Filter that matches no rows; used when ARBAC denies the request. */
 const DENY_FILTER: Record<string, unknown> = { $or: [] };
@@ -50,14 +46,15 @@ export async function transformArbacFilter(
  * Union the per-scope `projection` whitelists and restrict the user-supplied
  * projection to that union. Returns the original projection untouched when
  * no scope declares a projection (so caller sees the unrestricted shape).
+ * Uses the same `unionScopeProjection` the field-visibility seams (`hasField`
+ * / `/meta` pruning) use, so value stripping and name hiding cannot drift.
  */
 export function applyArbacProjection(
   projection: TProjection | undefined,
   scopes: ArbacDbScope[],
 ): TProjection | undefined {
-  if (scopes.length === 0) return projection;
-  const allowed = unionProjections(...scopes.map((s) => s.projection ?? {}));
-  if (Object.keys(allowed).length === 0) return projection;
+  const allowed = unionScopeProjection(scopes);
+  if (!allowed) return projection;
   return restrictProjection(projection ?? {}, allowed);
 }
 
