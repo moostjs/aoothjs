@@ -54,6 +54,23 @@ export const enrollTrioSteps: TWorkflowSchema<AuthWfCtx> = [
     id: "enroll-totp-qr",
     condition: (ctx) => ctx.mfaEnroll?.method === "totp" && !ctx.mfaEnroll.qrSeen,
   },
+  // The ONLY sms/email pincode dispatch of the trio — its own step (the
+  // canonical "send if no pin" gate, mirroring `pincodeSendCheckPair`) so BOTH
+  // address paths flow through it: collected by `enroll-address` on the previous
+  // engine pass, or pre-seeded by a consumer (e.g. `resolveAccept` staging the
+  // invited email), which skips `enroll-address` entirely — collection AND
+  // dispatch — and previously stranded the user on a code form no code was ever
+  // sent for. `!ctx.pin` makes re-pauses send-once; `resolveEnrollPreConfirmed`
+  // may skip the dispatch altogether (verified-by-construction address).
+  {
+    id: "enroll-send",
+    condition: (ctx) =>
+      (ctx.mfaEnroll?.method === "sms" || ctx.mfaEnroll?.method === "email") &&
+      !!ctx.mfaEnroll.address &&
+      !ctx.mfaEnroll.done &&
+      !ctx.mfaEnroll.preConfirmed &&
+      !ctx.pin,
+  },
   {
     id: "enroll-confirm",
     condition: (ctx) =>

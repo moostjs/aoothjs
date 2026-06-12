@@ -1,4 +1,5 @@
 import { AuthCredential, CredentialStoreMemory } from "@aooth/auth";
+import type { useAtscriptWf } from "@atscript/moost-wf";
 import {
   type FederatedProfileSnapshot,
   type UserCredentials,
@@ -52,6 +53,8 @@ class TestableAuthWorkflow extends AuthWorkflow {
   public exposeNormalizeMfaAddress = (m: MfaTransport, v: string) => this.normalizeMfaAddress(m, v);
   public exposeHandleEnrollExit = (ctx: AuthWfCtx, action: string | undefined) =>
     this.handleEnrollExit(ctx, action);
+  public exposeEnrollPreConfirmed = (ctx: AuthWfCtx, m: MfaTransport, a: string) =>
+    this.resolveEnrollPreConfirmed(ctx, m, a);
   public exposeOtpDisclosure = (ctx: AuthWfCtx, ch: "email" | "phone") =>
     this.resolveOtpDisclosure(ctx, ch);
   public exposeRiskStepUp = (ctx: AuthWfCtx) => this.resolveRiskStepUp(ctx);
@@ -1483,5 +1486,185 @@ describe("authorize-consent public projection (AUTH-SERVER.md §6)", () => {
     // init-login sets only the handle; authz-consent stages clientName/scope later.
     const pub = wf.exposePopulatePublic({ subject: "u-1", authz: { handle: "h" } });
     expect(pub?.authz).toBeUndefined();
+  });
+});
+
+describe("Enroll-send dispatch (pre-seeded address must still get exactly one code)", () => {
+  const cond = evalCondition;
+  const sendNode = enrollTrioSteps.find((s) => (s as { id?: string }).id === "enroll-send")!;
+  const addressNode = enrollTrioSteps.find((s) => (s as { id?: string }).id === "enroll-address")!;
+
+  it("schema: enroll-send sits between collection and confirm as the trio's only dispatch", () => {
+    const ids = enrollTrioSteps.map((s) => (s as { id?: string }).id);
+    expect(ids.indexOf("enroll-send")).toBeGreaterThan(ids.indexOf("enroll-address"));
+    expect(ids.indexOf("enroll-send")).toBeLessThan(ids.indexOf("enroll-confirm"));
+  });
+
+  it("schema: a PRE-SEEDED address skips collection but NOT the dispatch (the field-tested bug)", () => {
+    // Consumer pre-staged the invited email in `resolveAccept` → `enroll-address`
+    // self-skips (intended)…
+    const preSeeded: AuthWfCtx = { mfaEnroll: { method: "email", address: "a@x.co" } };
+    expect(cond(addressNode, preSeeded)).toBe(false);
+    // …but the dispatch must STILL fire — before the fix it was welded to the
+    // skipped collect step, pausing the user on a code form with no code sent.
+    expect(cond(sendNode, preSeeded)).toBe(true);
+  });
+
+  it("schema: enroll-send is send-once and never fires for totp / done / pre-confirmed", () => {
+    // `!ctx.pin` — a re-pause (wrong code typed, resume) must not re-send.
+    expect(cond(sendNode, { mfaEnroll: { method: "email", address: "a@x.co" }, pin: "h" })).toBe(
+      false,
+    );
+    // sms is a dispatch transport too; totp has nothing to send.
+    expect(cond(sendNode, { mfaEnroll: { method: "sms", address: "+15550100" } })).toBe(true);
+    expect(cond(sendNode, { mfaEnroll: { method: "totp", address: "x" } })).toBe(false);
+    // After confirm (`done`) and for a vouched address (`preConfirmed`) nothing sends.
+    expect(cond(sendNode, { mfaEnroll: { method: "email", address: "a@x.co", done: true } })).toBe(
+      false,
+    );
+    expect(
+      cond(sendNode, { mfaEnroll: { method: "email", address: "a@x.co", preConfirmed: true } }),
+    ).toBe(false);
+    // No address staged yet (picker path, enroll-address about to pause) → not yet.
+    expect(cond(sendNode, { mfaEnroll: { method: "email" } })).toBe(false);
+  });
+
+  it("enrollSend mints + delivers exactly one enroll-pincode to the staged address", async () => {
+    const wf = makeWorkflow();
+    const ctx: AuthWfCtx = { subject: "u1", mfaEnroll: { method: "email", address: "a@x.co" } };
+    await wf.enrollSend(ctx);
+    expect(wf.deliveries).toEqual([
+      expect.objectContaining({ kind: "enroll-pincode", channel: "email", recipient: "a@x.co" }),
+    ]);
+    // The pin + resend cooldown + form hint are armed exactly like the
+    // collected-address path used to arm them inside `enroll-address`.
+    expect(typeof ctx.pin).toBe("string");
+    expect(ctx.pincode?.resendAllowedAt).toBeGreaterThan(Date.now() - 1);
+    expect(ctx.pincode?.codeLength).toBeGreaterThan(0);
+    expect(ctx.mfaEnroll?.preConfirmed).toBeUndefined();
+  });
+
+  it("enrollAddress STAGES only — nothing dispatches from the collect step", () => {
+    // Regression guard for the single-dispatch-site contract: if a send is
+    // re-welded into the collect step, the collected path would mint here and
+    // the `!ctx.pin` schema gate would then mask the drift by suppressing
+    // `enroll-send`. Drive the step with a stubbed form round-trip (a unit
+    // test has no wf event context) and assert it ONLY stages the address —
+    // the sole dispatch is `enrollSend`'s, asserted above.
+    class CollectOnlyWorkflow extends TestableAuthWorkflow {
+      protected override useAtscriptWfPublic(
+        _ctx: AuthWfCtx,
+        _type: Parameters<typeof useAtscriptWf>[0],
+      ): ReturnType<typeof useAtscriptWf> {
+        return {
+          resolveAction: () => undefined,
+          resolveInput: () => ({ address: "a@x.co" }),
+        } as unknown as ReturnType<typeof useAtscriptWf>;
+      }
+    }
+    const { users, auth, consentStore } = makeDeps();
+    const wf = new CollectOnlyWorkflow({}, users, auth, consentStore);
+    const ctx: AuthWfCtx = { subject: "u1", mfaEnroll: { method: "email" } };
+    wf.enrollAddress(ctx);
+    expect(ctx.mfaEnroll?.address).toBe("a@x.co");
+    expect(wf.deliveries).toEqual([]);
+    expect(ctx.pin).toBeUndefined();
+    expect(ctx.pincode).toBeUndefined();
+  });
+});
+
+describe("resolveEnrollPreConfirmed (verified-by-construction enrolment)", () => {
+  it("default is false for every transport — every enrolment proves its address", async () => {
+    const wf = makeWorkflow();
+    const ctx: AuthWfCtx = { accept: {}, email: "a@x.co" };
+    expect(await settle(wf.exposeEnrollPreConfirmed(ctx, "email", "a@x.co"))).toBe(false);
+    expect(await settle(wf.exposeEnrollPreConfirmed(ctx, "sms", "+15550100"))).toBe(false);
+  });
+
+  it("vouched address: enroll-send skips the dispatch and enroll-confirm writes the factor with NO pause", async () => {
+    // The canonical override from the resolver's docs: invite-accept, where the
+    // user redeemed a magic link delivered to exactly this address minutes ago.
+    class PreConfirmingWorkflow extends TestableAuthWorkflow {
+      protected override resolveEnrollPreConfirmed(
+        ctx: AuthWfCtx,
+        method: MfaTransport,
+        address: string,
+      ): boolean {
+        return !!ctx.accept && method === "email" && address === ctx.email;
+      }
+    }
+    const users = new UserService(new UserStoreMemory());
+    const auth = new AuthCredential({
+      store: new CredentialStoreMemory(),
+      method: "token",
+      accessTtl: 60_000,
+    });
+    const wf = new PreConfirmingWorkflow({}, users, auth, new ConsentStore());
+    const row = await users.createUser("invitee@x.co", undefined, {});
+    const ctx: AuthWfCtx = {
+      subject: row.id,
+      accept: {},
+      email: "invitee@x.co",
+      mfaEnroll: { method: "email", address: "invitee@x.co", mode: "required" },
+    };
+
+    await wf.enrollSend(ctx);
+    // Nothing dispatched, no pin minted — the proof transfers from the magic link.
+    expect(wf.deliveries).toEqual([]);
+    expect(ctx.pin).toBeUndefined();
+    expect(ctx.mfaEnroll?.preConfirmed).toBe(true);
+
+    // enroll-confirm then runs its write-on-confirm tail in the SAME engine
+    // pass — confirmed factor + verifiedEmail + default method + loop exit —
+    // without ever building the code-entry form.
+    await wf.enrollConfirm(ctx);
+    const after = await users.getUser(row.id);
+    expect(after.mfa.methods).toEqual([
+      expect.objectContaining({ name: "email", value: "invitee@x.co", confirmed: true }),
+    ]);
+    expect(after.mfa.defaultMethod).toBe("email");
+    expect(after.account.verifiedEmail).toBe("invitee@x.co");
+    expect(ctx.mfaEnroll?.done).toBe(true);
+    expect(ctx.otp?.verified).toBe(true);
+  });
+
+  it("a DIFFERENT address than vouched still goes through the pincode round-trip", async () => {
+    // The equality check in the recommended override is load-bearing: the
+    // magic-link proof transfers ONLY to the address it was delivered to.
+    class PreConfirmingWorkflow extends TestableAuthWorkflow {
+      protected override resolveEnrollPreConfirmed(
+        ctx: AuthWfCtx,
+        method: MfaTransport,
+        address: string,
+      ): boolean {
+        return !!ctx.accept && method === "email" && address === ctx.email;
+      }
+    }
+    const { users, auth, consentStore } = makeDeps();
+    const wf = new PreConfirmingWorkflow({}, users, auth, consentStore);
+    const ctx: AuthWfCtx = {
+      subject: "u1",
+      accept: {},
+      email: "invitee@x.co",
+      mfaEnroll: { method: "email", address: "other@x.co" },
+    };
+    await wf.enrollSend(ctx);
+    expect(ctx.mfaEnroll?.preConfirmed).toBeUndefined();
+    expect(wf.deliveries).toEqual([
+      expect.objectContaining({ kind: "enroll-pincode", recipient: "other@x.co" }),
+    ]);
+  });
+
+  it("clearEnrollScratch drops preConfirmed — a vouch never outlives its address", () => {
+    const wf = makeWorkflow();
+    const ctx: AuthWfCtx = {
+      mfaEnroll: { method: "email", address: "a@x.co", preConfirmed: true, mode: "optional" },
+    };
+    // `useDifferentMethod` routes through clearEnrollScratch; a later, freshly
+    // typed address must NOT inherit the vouch (it would be written confirmed
+    // without any proof).
+    wf.exposeHandleEnrollExit(ctx, "useDifferentMethod");
+    expect(ctx.mfaEnroll?.preConfirmed).toBeUndefined();
+    expect(ctx.mfaEnroll?.address).toBeUndefined();
   });
 });

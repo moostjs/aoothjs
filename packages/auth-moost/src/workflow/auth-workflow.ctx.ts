@@ -97,6 +97,16 @@ export interface AuthWfMfaEnrollState {
   mode?: "required" | "optional" | "manage";
   done?: boolean;
   /**
+   * Set by `enroll-send` when `resolveEnrollPreConfirmed` vouches that the
+   * staged sms/email address is verified-by-construction (e.g. the invited
+   * email the user just proved by redeeming the magic link delivered to it).
+   * `enroll-send` then skips the pincode dispatch and `enroll-confirm` runs
+   * its write-on-confirm tail with no code-entry pause. Server-only (decided
+   * by the resolver, never read from the wire); never set for TOTP —
+   * possession of an authenticator cannot be proven by construction.
+   */
+  preConfirmed?: boolean;
+  /**
    * Gates the standalone `enroll-totp-qr` step (TOTP only). Set once the user
    * has been shown the QR/secret and clicked Continue, so the QR pause fires
    * before — not alongside — the code-entry step. Shared by both surfaces.

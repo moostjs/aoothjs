@@ -767,6 +767,38 @@ export class AuthWorkflow {
   }
 
   /**
+   * Vouch that an MFA-enrolment address is verified-by-construction, skipping
+   * the pincode round-trip: `enroll-send` sends nothing and `enroll-confirm`
+   * writes the confirmed factor (+ `verifiedEmail` for email) with no
+   * code-entry pause. Asked once per dispatch with the staged transport +
+   * normalized address (ctx-first, extra positional args — same convention as
+   * `resolveOtpDisclosure`).
+   *
+   * Default `false` — every enrolment proves its address. The canonical
+   * override is the invite-accept case, where the user is inside the flow
+   * only because they redeemed a magic link delivered to that exact address
+   * minutes earlier (the same proof `activate-user` trusts to write
+   * `account.verifiedEmail`):
+   *
+   * ```ts
+   * protected resolveEnrollPreConfirmed(ctx: AuthWfCtx, method: MfaTransport, address: string) {
+   *   return !!ctx.accept && method === "email" && address === ctx.email;
+   * }
+   * ```
+   *
+   * Keep the equality check — the proof transfers ONLY to the address the
+   * magic link was delivered to; vouching for a different address the user
+   * typed would confirm an unproven inbox. Never asked for TOTP.
+   */
+  protected resolveEnrollPreConfirmed(
+    _ctx: AuthWfCtx,
+    _method: MfaTransport,
+    _address: string,
+  ): boolean | Promise<boolean> {
+    return false;
+  }
+
+  /**
    * Resolve the finalize policy. Reached from login.flow. `auditLogin` is
    * dropped from the shape per §2 — audit moved out of the workflow layer.
    */
@@ -1447,8 +1479,8 @@ export class AuthWorkflow {
 
   /**
    * Send an enrolment pincode and stamp `ctx.pincode.sentTo` with the masked
-   * recipient. Shared by `enrollAddress` (initial dispatch) and the resend
-   * path inside `enrollConfirm`.
+   * recipient. Reached only through {@link mintAndSendEnrollPincode}; kept
+   * separate as the delivery-only override seam.
    */
   protected async sendEnrollPincode(ctx: AuthWfCtx, address: string, code: string): Promise<void> {
     const pincode = (ctx.pincode ??= {});
@@ -1461,6 +1493,21 @@ export class AuthWorkflow {
       code,
       expiresInMs: this.opts.mfa.pincodeTtlMs,
     });
+  }
+
+  /**
+   * The single enrol-dispatch implementation: mint a fresh pin, arm the
+   * resend cooldown + the code-length form hint, and deliver the code.
+   * Shared by `enrollSend` (initial dispatch) and the resend arm inside
+   * `enrollConfirm`, so the arming policy cannot drift between first send
+   * and resend.
+   */
+  private async mintAndSendEnrollPincode(ctx: AuthWfCtx, address: string): Promise<void> {
+    const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
+    const pincode = (ctx.pincode ??= {});
+    pincode.resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
+    pincode.codeLength = this.opts.mfa.pincodeLength;
+    await this.sendEnrollPincode(ctx, address, code);
   }
 
   /**
@@ -1480,6 +1527,10 @@ export class AuthWorkflow {
       delete m.secret;
       delete m.uri;
       delete m.qrSeen;
+      // A vouched address must never outlive the address it was vouched FOR —
+      // a stale flag would let `enroll-confirm` write a later, unproven
+      // address as confirmed without any pincode round-trip.
+      delete m.preConfirmed;
     }
     delete ctx.pin;
     delete ctx.pinExpire;
@@ -3611,17 +3662,20 @@ export class AuthWorkflow {
   }
 
   /**
-   * Unified MFA-enrol phase 2 (collect sms/email address + send pincode).
-   * Not invoked for totp. Handles `skip` (opt-in) / `cancel` (manage) /
-   * `useDifferentMethod`. Validates the address server-side (the client
-   * `@ui.form.validate` hint is advisory), then STAGES the candidate value in
-   * wf-state (`m.address`) — the user record is written only on confirm
-   * (write-on-confirm), so an ADD leaves no partial row and a REPLACE keeps the
-   * old confirmed value live until the new code verifies in `enroll-confirm`.
+   * Unified MFA-enrol phase 2 (collect sms/email address). Not invoked for
+   * totp. Handles `skip` (opt-in) / `cancel` (manage) / `useDifferentMethod`.
+   * Validates the address server-side (the client `@ui.form.validate` hint is
+   * advisory), then STAGES the candidate value in wf-state (`m.address`) — the
+   * user record is written only on confirm (write-on-confirm), so an ADD
+   * leaves no partial row and a REPLACE keeps the old confirmed value live
+   * until the new code verifies in `enroll-confirm`. Collection ONLY: the
+   * pincode dispatch lives in `enroll-send` (same engine pass, no extra
+   * round-trip), so a consumer pre-seeding `mfaEnroll.address` — which skips
+   * this whole step via its schema condition — still gets exactly one code.
    */
   @Step("enroll-address")
   @Public()
-  async enrollAddress(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+  enrollAddress(@WorkflowParam("context") ctx: AuthWfCtx): undefined {
     this.requireSubject(ctx);
     const m = (ctx.mfaEnroll ??= {});
     const mode = m.mode ?? "optional";
@@ -3644,15 +3698,35 @@ export class AuthWorkflow {
     const methodName = m.method as MfaTransport;
     const addrErr = this.validateMfaAddress(methodName, input.address);
     if (addrErr) throw this.throwPublic(ctx, wf, { errors: { address: addrErr } });
-    const address = this.normalizeMfaAddress(methodName, input.address);
     // Stage the candidate value in wf-state ONLY (write-on-confirm) — nothing is
     // written to the user record until the pincode verifies in enroll-confirm.
-    m.address = address;
-    const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
-    const pincode = (ctx.pincode ??= {});
-    pincode.resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
-    pincode.codeLength = this.opts.mfa.pincodeLength;
-    await this.sendEnrollPincode(ctx, address, code);
+    m.address = this.normalizeMfaAddress(methodName, input.address);
+    return undefined;
+  }
+
+  /**
+   * Unified MFA-enrol dispatch (sms/email only) — the trio's ONLY pincode
+   * send. A separate step (the canonical "send if no pin" gate, mirroring
+   * `pincode-send`) so both address paths share one dispatch site: collected
+   * by `enroll-address`, or pre-seeded by a consumer (which skips
+   * `enroll-address` entirely — previously skipping the dispatch with it and
+   * stranding the user on a code form no code was sent for). Asks
+   * `resolveEnrollPreConfirmed` first: a verified-by-construction address
+   * (e.g. the invite email the magic link just proved) skips the round-trip —
+   * `enroll-confirm` then writes the factor without pausing.
+   */
+  @Step("enroll-send")
+  @Public()
+  async enrollSend(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    this.requireSubject(ctx);
+    const m = (ctx.mfaEnroll ??= {});
+    const method = m.method as MfaTransport;
+    const address = m.address as string;
+    if (await this.resolveEnrollPreConfirmed(ctx, method, address)) {
+      m.preConfirmed = true;
+      return undefined;
+    }
+    await this.mintAndSendEnrollPincode(ctx, address);
     return undefined;
   }
 
@@ -3701,8 +3775,16 @@ export class AuthWorkflow {
   @Public()
   async enrollConfirm(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     this.requireSubject(ctx);
-    const username = ctx.subject;
     const m = (ctx.mfaEnroll ??= {});
+    // Verified-by-construction address (`enroll-send` set `preConfirmed` per
+    // `resolveEnrollPreConfirmed`): the inbox/number was proven by the very
+    // channel that brought the user here, so re-proving it with a pincode to
+    // the same destination adds nothing — run the write-on-confirm tail
+    // directly, no code-entry pause. Server-only flag; TOTP never sets it.
+    if (m.preConfirmed && m.method !== "totp" && m.address) {
+      await this.confirmEnrolledFactor(ctx);
+      return undefined;
+    }
     const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.enrollConfirm);
     const action = wf.resolveAction();
     if (this.handleEnrollExit(ctx, action)) return undefined;
@@ -3717,11 +3799,7 @@ export class AuthWorkflow {
           formMessage: `Please wait ${waitSec}s before requesting another code`,
         });
       }
-      const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
-      const pincode = (ctx.pincode ??= {});
-      pincode.resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
-      pincode.codeLength = this.opts.mfa.pincodeLength;
-      await this.sendEnrollPincode(ctx, m.address as string, code);
+      await this.mintAndSendEnrollPincode(ctx, m.address as string);
       return undefined;
     }
     const input = wf.resolveInput() as { code: string };
@@ -3735,12 +3813,25 @@ export class AuthWorkflow {
       const pinErr = this.verifyPin(ctx, input.code);
       if (pinErr) throw this.throwPublic(ctx, wf, { errors: pinErr });
     }
+    await this.confirmEnrolledFactor(ctx);
+    return undefined;
+  }
+
+  /**
+   * `enroll-confirm`'s write-on-confirm tail (uniform for ADD and REPLACE, all
+   * transports): the staged value (sms/email `address`, totp `secret`) is now
+   * proven — by a verified pincode/TOTP code, or vouched by
+   * `resolveEnrollPreConfirmed` — so upsert it as confirmed. `addMfaMethod`
+   * replaces any row of the same name, so a REPLACE atomically swaps in the
+   * new value with no pre-confirm clobber window, and an ADD creates the row
+   * fresh.
+   */
+  private async confirmEnrolledFactor(ctx: AuthWfCtx): Promise<void> {
+    this.requireSubject(ctx);
+    const username = ctx.subject;
+    const m = (ctx.mfaEnroll ??= {});
     const methodName = m.method as MfaTransport;
-    // Write-on-confirm (uniform for ADD and REPLACE, all transports): the value
-    // is now proven, so upsert it as confirmed. addMfaMethod replaces any row of
-    // the same name, so a REPLACE atomically swaps in the new value with no
-    // pre-confirm clobber window, and an ADD creates the row fresh.
-    const value = (m.method === "totp" ? m.secret : m.address) as string;
+    const value = (methodName === "totp" ? m.secret : m.address) as string;
     await this.withStoreErrorTranslation(() =>
       this.users.addMfaMethod(username, { name: methodName, value, confirmed: true }),
     );
@@ -3757,7 +3848,6 @@ export class AuthWorkflow {
     (ctx.otp ??= {}).verified = true;
     delete ctx.pin;
     delete ctx.pinExpire;
-    return undefined;
   }
 
   /**
