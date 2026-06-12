@@ -94,21 +94,26 @@ export const enrollTrioSteps: TWorkflowSchema<AuthWfCtx> = [
  * Reuses the login challenge steps verbatim, but DELIBERATELY omits
  * `check-trusted-device` and `risk-step-up`: in a management context a trusted
  * device must NOT be allowed to bypass the step-up (that is the whole point of
- * re-verifying before letting the user change/remove a factor). Loop exits when
+ * re-verifying before letting the user change/remove a factor). It ADDS one
+ * manage-only step the login loop doesn't have: `manage-stepup-confirm`, the
+ * explicit-consent notice before the sms/email pincode dispatch (login is
+ * mid-authentication, so its zero-click dispatch stays). Loop exits when
  * a challenge step flips `ctx.otp.verified`. Used by the standalone add/manage-
  * MFA flow, guarded by `ctx.addMfa.stepUpRequired` (set only when the user has
  * ≥1 confirmed method).
  *
  * The `while` also breaks on `ctx.aborted` so a cancel/exit on the challenge
- * form (e.g. `pincode-check`'s `exit` alt-action, or a customer-added Back on
- * the MFA challenge) terminates the loop instead of spinning the engine's
- * guardless inner loop forever. The paired `{ break: !!aborted }` after this
- * sub-schema in `addMfaFlow` then routes an aborted step-up straight to
- * `finish-add-mfa` (the cancelled terminal) — fail CLOSED: the user reaches no
- * management write without a fresh challenge. (Note: login's `mfaLoopSchema`
- * intentionally does NOT carry this guard — exiting login's challenge loop
- * without a paired failure terminal would risk issuing a session, so that one
- * stays fail-closed via the engine's no-progress stall instead.)
+ * form (the `manage-stepup-confirm` consent cancel, `pincode-check`'s `exit`
+ * alt-action, or a customer-added Back on the MFA challenge) terminates the
+ * loop instead of spinning the engine's guardless inner loop forever. Every
+ * `addMfaFlow` step after this sub-schema is gated off `ctx.aborted` (or on
+ * `otp.verified`, which an aborted step-up never set), so the run falls
+ * through to `finish-add-mfa` (the cancelled terminal) — fail CLOSED: the
+ * user reaches no management write without a fresh challenge. (Note: login's
+ * `mfaLoopSchema` intentionally does NOT carry this guard — exiting login's
+ * challenge loop without a paired failure terminal would risk issuing a
+ * session, so that one stays fail-closed via the engine's no-progress stall
+ * instead.)
  */
 export const mfaStepUpLoop: TWorkflowSchema<AuthWfCtx> = [
   {
@@ -121,6 +126,26 @@ export const mfaStepUpLoop: TWorkflowSchema<AuthWfCtx> = [
         condition: (ctx) =>
           !ctx.otp?.verified && !ctx.mfa?.method && (ctx.mfa?.enrolledMethods?.length ?? 0) > 1,
       },
+      // Explicit-consent pause BEFORE the sms/email dispatch — opening the
+      // manage dialog must not email/text the user as a side effect (the
+      // auto-picked single-factor / default-factor paths reach `pincode-send`
+      // with zero user interaction otherwise). Skipped once consent exists:
+      // a `select-2fa` pick counts (choosing "Email (ma•••@x)" IS consent),
+      // and `resolveStepUpConfirmBeforeSend` can opt the deployment out.
+      // `!ctx.pin` keeps it from re-firing once a code is already in flight.
+      // TOTP needs no consent — its challenge dispatches nothing.
+      {
+        id: "manage-stepup-confirm",
+        condition: (ctx) =>
+          !ctx.otp?.verified &&
+          (ctx.mfa?.method === "sms" || ctx.mfa?.method === "email") &&
+          !ctx.addMfa?.stepUpConfirmed &&
+          !ctx.pin,
+      },
+      // A consent-form `cancel` sets `aborted` with `mfa.method` still bound —
+      // without this break the pincode pair below would dispatch the very code
+      // the user just declined, in the same engine pass.
+      { break: (ctx) => !!ctx.aborted },
       {
         condition: (ctx) =>
           !ctx.otp?.verified && (ctx.mfa?.method === "sms" || ctx.mfa?.method === "email"),

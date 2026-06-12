@@ -49,7 +49,13 @@ class TestableAuthWorkflow extends AuthWorkflow {
   public exposeSignupPolicy = (ctx: AuthWfCtx) => this.resolveSignupPolicy(ctx);
   public exposeMfaPolicy = (ctx: AuthWfCtx) => this.resolveMfaPolicy(ctx);
   public exposeLockedMfaTransports = (ctx: AuthWfCtx) => this.resolveLockedMfaTransports(ctx);
-  public exposeValidateMfaAddress = (m: MfaTransport, v: string) => this.validateMfaAddress(m, v);
+  public exposeValidateMfaAddress = (m: MfaTransport, v: string) =>
+    this.validateMfaAddress({}, m, v);
+  public exposeEnrollAddress = (ctx: AuthWfCtx, m: MfaTransport) =>
+    this.resolveEnrollAddress(ctx, m);
+  public exposeStepUpConfirmBeforeSend = (ctx: AuthWfCtx) =>
+    this.resolveStepUpConfirmBeforeSend(ctx);
+  public exposeTotpAccountLabel = (ctx: AuthWfCtx) => this.resolveTotpAccountLabel(ctx);
   public exposeNormalizeMfaAddress = (m: MfaTransport, v: string) => this.normalizeMfaAddress(m, v);
   public exposeHandleEnrollExit = (ctx: AuthWfCtx, action: string | undefined) =>
     this.handleEnrollExit(ctx, action);
@@ -85,6 +91,7 @@ class TestableAuthWorkflow extends AuthWorkflow {
     this.populatePublic(ctx);
     return ctx.public;
   };
+  public exposeAddMfaFinishEnvelope = (ctx: AuthWfCtx) => this.buildAddMfaFinishEnvelope(ctx);
   public exposeDeliver = (payload: AuthDeliveryPayload) => this.deliver(payload);
   public exposeSendSecurityAlert = (ctx: AuthWfCtx, reason: string, c?: Record<string, unknown>) =>
     this.sendSecurityAlert(ctx, reason, c);
@@ -216,12 +223,14 @@ describe("AuthWorkflow construction (WF-AUTH-UNIFIED-002)", () => {
     // the box. Consumer override via `opts.forms.<field>` swaps any slot.
     // Pin a representative field-count + a key slot so a regression that
     // drops the default map is caught.
-    expect(Object.keys(opts.forms).length).toBe(24);
+    expect(Object.keys(opts.forms).length).toBe(25);
     expect(opts.forms.loginCredentials).toBeTruthy();
     expect(opts.forms.recoveryEmailIdentifier).toBeTruthy();
     // Authorization-server consent gate (AUTH-SERVER.md §6).
     expect(opts.forms.authzConsent).toBeTruthy();
-    // Manage-MFA additions: QR step + menu + remove-confirm + password re-auth.
+    // Manage-MFA additions: QR step + menu + remove-confirm + password
+    // re-auth + the step-up dispatch-consent notice.
+    expect(opts.forms.stepUpConfirm).toBeTruthy();
     expect(opts.forms.enrollTotpQr).toBeTruthy();
     expect(opts.forms.manageMfa).toBeTruthy();
     expect(opts.forms.removeMfaConfirm).toBeTruthy();
@@ -1544,7 +1553,7 @@ describe("Enroll-send dispatch (pre-seeded address must still get exactly one co
     expect(ctx.mfaEnroll?.preConfirmed).toBeUndefined();
   });
 
-  it("enrollAddress STAGES only — nothing dispatches from the collect step", () => {
+  it("enrollAddress STAGES only — nothing dispatches from the collect step", async () => {
     // Regression guard for the single-dispatch-site contract: if a send is
     // re-welded into the collect step, the collected path would mint here and
     // the `!ctx.pin` schema gate would then mask the drift by suppressing
@@ -1565,7 +1574,7 @@ describe("Enroll-send dispatch (pre-seeded address must still get exactly one co
     const { users, auth, consentStore } = makeDeps();
     const wf = new CollectOnlyWorkflow({}, users, auth, consentStore);
     const ctx: AuthWfCtx = { subject: "u1", mfaEnroll: { method: "email" } };
-    wf.enrollAddress(ctx);
+    await wf.enrollAddress(ctx);
     expect(ctx.mfaEnroll?.address).toBe("a@x.co");
     expect(wf.deliveries).toEqual([]);
     expect(ctx.pin).toBeUndefined();
@@ -1666,5 +1675,472 @@ describe("resolveEnrollPreConfirmed (verified-by-construction enrolment)", () =>
     wf.exposeHandleEnrollExit(ctx, "useDifferentMethod");
     expect(ctx.mfaEnroll?.preConfirmed).toBeUndefined();
     expect(ctx.mfaEnroll?.address).toBeUndefined();
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Manage-MFA step-up consent (BUG-4 item 1) — opening the manage dialog must
+// never dispatch a pincode as a side effect. `manage-stepup-confirm` pauses
+// BEFORE `pincode-send`; an explicit `select-2fa` pick counts as consent.
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Form-stub workflow for driving pause-style steps without a wf event
+ * context: `useAtscriptWfPublic` returns a canned action/input and a
+ * `requireInput` that RETURNS its opts (the step then `throw`s that value,
+ * which the assertions catch as the pause payload). `formBuilt` counts how
+ * many times a step reached for the form at all — the no-pause paths assert
+ * it stays 0.
+ */
+class StubFormWorkflow extends TestableAuthWorkflow {
+  public stubAction: string | undefined;
+  public stubInput: Record<string, unknown> = {};
+  public formBuilt = 0;
+
+  protected override useAtscriptWfPublic(
+    _ctx: AuthWfCtx,
+    _type: Parameters<typeof useAtscriptWf>[0],
+  ): ReturnType<typeof useAtscriptWf> {
+    this.formBuilt++;
+    return {
+      resolveAction: () => this.stubAction,
+      resolveInput: () => this.stubInput,
+      requireInput: (opts: unknown) => opts,
+    } as unknown as ReturnType<typeof useAtscriptWf>;
+  }
+}
+
+function makeStubFormWorkflow(): { wf: StubFormWorkflow; users: UserService } {
+  const { users, auth, consentStore } = makeDeps();
+  return { wf: new StubFormWorkflow({}, users, auth, consentStore), users };
+}
+
+describe("Manage-MFA step-up consent (manage-stepup-confirm)", () => {
+  const cond = evalCondition;
+  const loop = mfaStepUpLoop[0] as { steps: Array<Record<string, unknown>> };
+  const confirmNode = loop.steps.find((s) => s.id === "manage-stepup-confirm")!;
+
+  it("schema: sits between method selection and the pincode dispatch", () => {
+    const ids = collectSchemaStepIds(mfaStepUpLoop);
+    const confirmIdx = ids.indexOf("manage-stepup-confirm");
+    expect(confirmIdx).toBeGreaterThan(ids.indexOf("select-2fa"));
+    expect(confirmIdx).toBeLessThan(ids.indexOf("pincode-send"));
+  });
+
+  it("schema: fires only for an unconsented sms/email step-up with no code in flight", () => {
+    // The auto-picked single-factor path — the zero-click dispatch the pause exists for.
+    expect(cond(confirmNode, { mfa: { method: "email" }, addMfa: {} })).toBe(true);
+    expect(cond(confirmNode, { mfa: { method: "sms" }, addMfa: {} })).toBe(true);
+    // TOTP dispatches nothing — no consent to collect.
+    expect(cond(confirmNode, { mfa: { method: "totp" }, addMfa: {} })).toBe(false);
+    // Consent already given (Continue submit or a select-2fa pick).
+    expect(cond(confirmNode, { mfa: { method: "email" }, addMfa: { stepUpConfirmed: true } })).toBe(
+      false,
+    );
+    // Code already in flight (re-pause on a wrong code) — never re-ask.
+    expect(cond(confirmNode, { mfa: { method: "email" }, addMfa: {}, pin: "123456" })).toBe(false);
+    // Step-up already verified.
+    expect(
+      cond(confirmNode, { mfa: { method: "email" }, addMfa: {}, otp: { verified: true } }),
+    ).toBe(false);
+  });
+
+  it("schema: a consent-form cancel breaks BEFORE the pincode pair (declined code never sends)", () => {
+    // `cancel` sets `aborted` with `mfa.method` still bound — the very next
+    // node must be a `break` that fires on it, or the pair would dispatch the
+    // code the user just declined in the same engine pass.
+    const confirmIdx = loop.steps.indexOf(confirmNode);
+    const next = loop.steps[confirmIdx + 1] as { break?: (ctx: AuthWfCtx) => boolean };
+    expect(typeof next.break).toBe("function");
+    expect(next.break!({ aborted: true })).toBe(true);
+    expect(next.break!({})).toBe(false);
+  });
+
+  it("default pauses on the notice; Continue consents and falls through to the dispatch", async () => {
+    const { wf } = makeStubFormWorkflow();
+    // Continue submit = no action, empty input — the step resumes past
+    // resolveInput and records consent. (The stub collapses pause + resume
+    // into one call; the pause itself is the resolveInput contract.)
+    const ctx: AuthWfCtx = { subject: "u1", mfa: { method: "email" }, addMfa: {} };
+    await wf.manageStepUpConfirm(ctx);
+    expect(wf.formBuilt).toBe(1);
+    expect(ctx.addMfa?.stepUpConfirmed).toBe(true);
+    expect(ctx.aborted).toBeUndefined();
+    // Crucially: the consent step itself dispatched NOTHING.
+    expect(wf.deliveries).toEqual([]);
+    expect(ctx.pin).toBeUndefined();
+  });
+
+  it("cancel aborts with nothing dispatched and no consent recorded", async () => {
+    const { wf } = makeStubFormWorkflow();
+    wf.stubAction = "cancel";
+    const ctx: AuthWfCtx = { subject: "u1", mfa: { method: "email" }, addMfa: {} };
+    await wf.manageStepUpConfirm(ctx);
+    expect(ctx.aborted).toBe(true);
+    expect(ctx.addMfa?.stepUpConfirmed).toBeUndefined();
+    expect(wf.deliveries).toEqual([]);
+  });
+
+  it("useDifferentMethod re-opens the picker (ignoreDefault + method cleared)", async () => {
+    const { wf } = makeStubFormWorkflow();
+    wf.stubAction = "useDifferentMethod";
+    const ctx: AuthWfCtx = { subject: "u1", mfa: { method: "email" }, addMfa: {} };
+    await wf.manageStepUpConfirm(ctx);
+    expect(ctx.mfa?.method).toBeUndefined();
+    expect(ctx.mfa?.ignoreDefault).toBe(true);
+    expect(ctx.addMfa?.stepUpConfirmed).toBeUndefined();
+    expect(ctx.aborted).toBeUndefined();
+  });
+
+  it("resolveStepUpConfirmBeforeSend=false opts out — consent auto-marked, no form built", async () => {
+    class ZeroClickWorkflow extends StubFormWorkflow {
+      protected override resolveStepUpConfirmBeforeSend(_ctx: AuthWfCtx): Promise<boolean> {
+        return Promise.resolve(false); // async override — the step must await it
+      }
+    }
+    const { users, auth, consentStore } = makeDeps();
+    const wf = new ZeroClickWorkflow({}, users, auth, consentStore);
+    const ctx: AuthWfCtx = { subject: "u1", mfa: { method: "email" }, addMfa: {} };
+    await wf.manageStepUpConfirm(ctx);
+    expect(wf.formBuilt).toBe(0);
+    expect(ctx.addMfa?.stepUpConfirmed).toBe(true);
+  });
+
+  it("an explicit select-2fa pick records consent (no double pause)", async () => {
+    const { wf } = makeStubFormWorkflow();
+    wf.stubInput = { methodName: "email" };
+    const ctx: AuthWfCtx = {
+      subject: "u1",
+      mfa: {
+        enrolledMethods: [
+          { kind: "email", methodName: "email", masked: "a***@x.co", isDefault: true },
+          { kind: "totp", methodName: "totp", masked: "", isDefault: false },
+        ],
+      },
+      addMfa: {},
+    };
+    await wf.select2fa(ctx);
+    expect(ctx.mfa?.method).toBe("email");
+    expect(ctx.addMfa?.stepUpConfirmed).toBe(true);
+  });
+
+  it("select-2fa does NOT touch consent on the login flow (no ctx.addMfa)", async () => {
+    const { wf } = makeStubFormWorkflow();
+    wf.stubInput = { methodName: "email" };
+    const ctx: AuthWfCtx = {
+      subject: "u1",
+      mfa: {
+        enrolledMethods: [
+          { kind: "email", methodName: "email", masked: "a***@x.co", isDefault: true },
+          { kind: "totp", methodName: "totp", masked: "", isDefault: false },
+        ],
+      },
+    };
+    await wf.select2fa(ctx);
+    expect(ctx.mfa?.method).toBe("email");
+    expect(ctx.addMfa).toBeUndefined();
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Remove-last-factor dead-end (BUG-4 item 2) — an operation that can never
+// succeed must not be offered, and if it arrives anyway it aborts to the
+// finish terminal instead of pausing on a form whose only submit re-throws.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("Manage-MFA remove-last-factor dead-end (removeBlocked + abort-to-finish)", () => {
+  const oneEmail = [
+    { kind: "email" as const, methodName: "email", masked: "a***", isDefault: true },
+  ];
+  const emailPlusTotp = [
+    { kind: "email" as const, methodName: "email", masked: "a***", isDefault: true },
+    { kind: "totp" as const, methodName: "totp", masked: "", isDefault: false },
+  ];
+
+  it("manage-menu computes removeBlocked for the last factor under a required policy", async () => {
+    const { wf } = makeStubFormWorkflow();
+    wf.stubAction = "cancel"; // bail right after the flag is computed
+    const ctx: AuthWfCtx = {
+      subject: "u1",
+      mfa: { enrolledMethods: oneEmail },
+      mfaPolicy: { mode: "required", availableTransports: ["email", "totp"], issuer: "x" },
+      addMfa: { candidates: ["totp"] },
+    };
+    await wf.manageMenu(ctx);
+    expect(ctx.addMfa?.removeBlocked).toBe(true);
+    // …and the projection ships it to the menu form (option filtering + hint).
+    expect(wf.exposePopulatePublic(ctx)?.manage?.removeBlocked).toBe(true);
+  });
+
+  it("manage-menu leaves removeBlocked unset under optional policy or with >1 factors", async () => {
+    const { wf } = makeStubFormWorkflow();
+    wf.stubAction = "cancel";
+    const optional: AuthWfCtx = {
+      subject: "u1",
+      mfa: { enrolledMethods: oneEmail },
+      mfaPolicy: { mode: "optional", availableTransports: ["email", "totp"], issuer: "x" },
+      addMfa: { candidates: ["totp"], removeBlocked: true }, // stale flag must be dropped
+    };
+    await wf.manageMenu(optional);
+    expect(optional.addMfa?.removeBlocked).toBeUndefined();
+    const twoFactors: AuthWfCtx = {
+      subject: "u1",
+      mfa: { enrolledMethods: emailPlusTotp },
+      mfaPolicy: { mode: "required", availableTransports: ["email", "totp", "sms"], issuer: "x" },
+      addMfa: { candidates: ["sms"] },
+    };
+    await wf.manageMenu(twoFactors);
+    expect(twoFactors.addMfa?.removeBlocked).toBeUndefined();
+  });
+
+  it("manage-menu rejects a crafted remove of the blocked factor (option was filtered)", async () => {
+    const { wf } = makeStubFormWorkflow();
+    wf.stubInput = { operation: "remove:email" };
+    const ctx: AuthWfCtx = {
+      subject: "u1",
+      mfa: { enrolledMethods: oneEmail },
+      mfaPolicy: { mode: "required", availableTransports: ["email", "totp"], issuer: "x" },
+      addMfa: { candidates: ["totp"] },
+    };
+    await expect(wf.manageMenu(ctx)).rejects.toMatchObject({
+      formMessage: "You must keep at least one two-factor method.",
+    });
+    expect(ctx.addMfa?.action).toBeUndefined(); // never routed to confirm-remove-mfa
+  });
+
+  it("confirm-remove-mfa aborts to the finish terminal for the last required factor (no dead-end form)", async () => {
+    const { wf, users } = makeStubFormWorkflow();
+    const { id } = await users.createUser("last-factor", "pw");
+    await users.addMfaMethod(id, { name: "email", value: "a@x.co", confirmed: true });
+    const ctx: AuthWfCtx = {
+      subject: id,
+      mfa: { enrolledMethods: oneEmail },
+      mfaPolicy: { mode: "required", availableTransports: ["email", "totp"], issuer: "x" },
+      addMfa: { action: "remove", target: "email" },
+    };
+    await wf.confirmRemoveMfa(ctx);
+    // No pause, no retryable error — straight to the cancelled-with-reason terminal.
+    expect(wf.formBuilt).toBe(0);
+    expect(ctx.aborted).toBe(true);
+    expect(ctx.addMfa?.blocked).toBe("last-required-factor");
+    // The factor survives untouched.
+    const after = await users.getUser(id);
+    expect(after.mfa.methods.find((m) => m.name === "email")).toMatchObject({ confirmed: true });
+  });
+
+  it("confirm-remove-mfa aborts likewise for a locked transport", async () => {
+    const { wf } = makeStubFormWorkflow();
+    const ctx: AuthWfCtx = {
+      subject: "u1",
+      mfa: { enrolledMethods: emailPlusTotp },
+      mfaPolicy: { mode: "required", availableTransports: ["email", "totp"], issuer: "x" },
+      addMfa: { action: "remove", target: "email", locked: ["email"] },
+    };
+    await wf.confirmRemoveMfa(ctx);
+    expect(wf.formBuilt).toBe(0);
+    expect(ctx.aborted).toBe(true);
+    expect(ctx.addMfa?.blocked).toBe("method-locked");
+  });
+
+  it("a removable factor still pauses + removes exactly as before", async () => {
+    const { wf, users } = makeStubFormWorkflow();
+    const { id } = await users.createUser("two-factors", "pw");
+    await users.addMfaMethod(id, { name: "email", value: "a@x.co", confirmed: true });
+    await users.addMfaMethod(id, { name: "totp", value: "SECRET", confirmed: true });
+    const ctx: AuthWfCtx = {
+      subject: id,
+      mfa: { enrolledMethods: emailPlusTotp },
+      mfaPolicy: { mode: "required", availableTransports: ["email", "totp"], issuer: "x" },
+      addMfa: { action: "remove", target: "email" },
+    };
+    await wf.confirmRemoveMfa(ctx);
+    expect(ctx.addMfa?.removed).toBe("email");
+    expect(ctx.addMfa?.blocked).toBeUndefined();
+    const after = await users.getUser(id);
+    expect(after.mfa.methods.find((m) => m.name === "email")).toBeUndefined();
+    expect(after.mfa.methods.find((m) => m.name === "totp")).toMatchObject({ confirmed: true });
+  });
+
+  it("finish-add-mfa maps blocked reasons to specific copy (not the generic cancel)", () => {
+    const wf = makeWorkflow();
+    const lastFactor = wf.exposeAddMfaFinishEnvelope({
+      aborted: true,
+      addMfa: { blocked: "last-required-factor", action: "remove", target: "email" },
+    });
+    expect(lastFactor.data).toMatchObject({ added: false, reason: "last-required-factor" });
+    expect(lastFactor.message?.text).toContain("at least one two-factor method");
+    const locked = wf.exposeAddMfaFinishEnvelope({
+      aborted: true,
+      addMfa: { blocked: "method-locked", action: "remove", target: "email" },
+    });
+    expect(locked.data).toMatchObject({ added: false, reason: "method-locked" });
+    // A successful removal still outranks any stale blocked flag…
+    const removed = wf.exposeAddMfaFinishEnvelope({ addMfa: { removed: "email" } });
+    expect(removed.data).toMatchObject({ removed: true, method: "email" });
+    // …and a plain cancel keeps the generic copy.
+    const cancelled = wf.exposeAddMfaFinishEnvelope({
+      aborted: true,
+      addMfa: { stepUpRequired: true },
+    });
+    expect(cancelled.data).toMatchObject({ added: false, reason: "cancelled" });
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Enrolment address pinning + ctx-first validation (BUG-4 item 3)
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("resolveEnrollAddress (pin / restrict the enrolment channel)", () => {
+  it("default is 'collect' — the free-text form path is unchanged", async () => {
+    const wf = makeWorkflow();
+    expect(await settle(wf.exposeEnrollAddress({}, "email"))).toBe("collect");
+    expect(await settle(wf.exposeEnrollAddress({}, "sms"))).toBe("collect");
+  });
+
+  it("a pinned address is staged (normalized) and the address form never renders", async () => {
+    class PinningWorkflow extends StubFormWorkflow {
+      protected override resolveEnrollAddress(
+        _ctx: AuthWfCtx,
+        method: MfaTransport,
+      ): Promise<string> {
+        // Async on purpose — record-based pins load the account row.
+        return Promise.resolve(method === "email" ? "  Staff@Corp.Example " : "collect");
+      }
+    }
+    const { users, auth, consentStore } = makeDeps();
+    const wf = new PinningWorkflow({}, users, auth, consentStore);
+    const ctx: AuthWfCtx = { subject: "u1", mfaEnroll: { method: "email", mode: "manage" } };
+    await wf.enrollAddress(ctx);
+    expect(ctx.mfaEnroll?.address).toBe("Staff@Corp.Example");
+    expect(wf.formBuilt).toBe(0); // the user is never shown the free-text form
+    expect(wf.deliveries).toEqual([]); // dispatch still belongs to enroll-send
+  });
+
+  it("a blank pin falls back to collect (consumer bug must not strand the trio)", async () => {
+    class BlankPinWorkflow extends StubFormWorkflow {
+      protected override resolveEnrollAddress(_ctx: AuthWfCtx, _m: MfaTransport): string {
+        return "   ";
+      }
+    }
+    const { users, auth, consentStore } = makeDeps();
+    const wf = new BlankPinWorkflow({}, users, auth, consentStore);
+    wf.stubInput = { address: "typed@x.co" };
+    const ctx: AuthWfCtx = { subject: "u1", mfaEnroll: { method: "email" } };
+    await wf.enrollAddress(ctx);
+    expect(wf.formBuilt).toBe(1);
+    expect(ctx.mfaEnroll?.address).toBe("typed@x.co");
+  });
+
+  it("validateMfaAddress is ctx-first + async-capable — record-based rules need no ctx-stash", async () => {
+    class CorpOnlyWorkflow extends StubFormWorkflow {
+      protected override async validateMfaAddress(
+        ctx: AuthWfCtx,
+        method: MfaTransport,
+        value: string,
+      ): Promise<string | undefined> {
+        if (method === "email" && !value.trim().toLowerCase().endsWith("@corp.example")) {
+          return "Use your corporate email address";
+        }
+        return super.validateMfaAddress(ctx, method, value);
+      }
+    }
+    const { users, auth, consentStore } = makeDeps();
+    const wf = new CorpOnlyWorkflow({}, users, auth, consentStore);
+    wf.stubInput = { address: "user@gmail.com" };
+    const rejected: AuthWfCtx = { subject: "u1", mfaEnroll: { method: "email" } };
+    await expect(wf.enrollAddress(rejected)).rejects.toMatchObject({
+      errors: { address: "Use your corporate email address" },
+    });
+    expect(rejected.mfaEnroll?.address).toBeUndefined();
+    wf.stubInput = { address: "user@corp.example" };
+    const accepted: AuthWfCtx = { subject: "u1", mfaEnroll: { method: "email" } };
+    await wf.enrollAddress(accepted);
+    expect(accepted.mfaEnroll?.address).toBe("user@corp.example");
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// TOTP account label (BUG-4 item 4) — the authenticator shows
+// "issuer: account"; the account half must be human-readable, not the
+// subject uuid, because it is baked into the otpauth URI forever.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("resolveTotpAccountLabel (authenticator account label)", () => {
+  it("default prefers ctx.email, then the stored username, then the subject", async () => {
+    const { wf, users } = makeWorkflowWithDeps();
+    expect(await settle(wf.exposeTotpAccountLabel({ email: "inv@x.co", subject: "u-1" }))).toBe(
+      "inv@x.co",
+    );
+    const { id } = await users.createUser("alice@corp.example", "pw");
+    expect(await settle(wf.exposeTotpAccountLabel({ subject: id }))).toBe("alice@corp.example");
+    expect(await settle(wf.exposeTotpAccountLabel({}))).toBe("");
+  });
+
+  it("enroll-pick-method bakes the label into the otpauth URI (auto-pick path)", async () => {
+    const { wf, users } = makeStubFormWorkflow();
+    const { id } = await users.createUser("alice@corp.example", "pw");
+    const ctx: AuthWfCtx = {
+      subject: id,
+      mfaPolicy: { mode: "optional", availableTransports: ["totp"], issuer: "MyApp" },
+    };
+    await wf.enrollPickMethod(ctx);
+    expect(ctx.mfaEnroll?.method).toBe("totp");
+    expect(ctx.mfaEnroll?.uri).toContain("otpauth://totp/MyApp:alice%40corp.example?");
+    expect(ctx.mfaEnroll?.uri).not.toContain(id);
+  });
+
+  it("enroll-totp-qr provisions with the same label (manage pre-seeded path)", async () => {
+    const { wf, users } = makeStubFormWorkflow();
+    const { id } = await users.createUser("bob@corp.example", "pw");
+    const ctx: AuthWfCtx = {
+      subject: id,
+      mfaPolicy: { mode: "optional", availableTransports: ["totp", "email"], issuer: "MyApp" },
+      mfaEnroll: { method: "totp", mode: "manage" },
+    };
+    await wf.enrollTotpQr(ctx);
+    expect(ctx.mfaEnroll?.uri).toContain("MyApp:bob%40corp.example");
+    expect(ctx.mfaEnroll?.qrSeen).toBe(true);
+  });
+
+  it("an override wins at both provisioning sites; blank falls back to the subject", async () => {
+    class LabelledWorkflow extends StubFormWorkflow {
+      public label = "Alice (Sales)";
+      protected override resolveTotpAccountLabel(_ctx: AuthWfCtx): string {
+        return this.label;
+      }
+    }
+    const { users, auth, consentStore } = makeDeps();
+    const wf = new LabelledWorkflow({}, users, auth, consentStore);
+    const ctx: AuthWfCtx = {
+      subject: "u-1",
+      mfaPolicy: { mode: "optional", availableTransports: ["totp"], issuer: "MyApp" },
+    };
+    await wf.enrollPickMethod(ctx);
+    expect(ctx.mfaEnroll?.uri).toContain(encodeURIComponent("Alice (Sales)"));
+    // Blank label → the URI still carries SOME account discriminator.
+    wf.label = "   ";
+    const ctx2: AuthWfCtx = {
+      subject: "u-2",
+      mfaPolicy: { mode: "optional", availableTransports: ["totp"], issuer: "MyApp" },
+    };
+    await wf.enrollPickMethod(ctx2);
+    expect(ctx2.mfaEnroll?.uri).toContain("MyApp:u-2?");
+  });
+
+  it("provisioning stays idempotent — a re-pause never rotates the staged secret", async () => {
+    const { wf, users } = makeStubFormWorkflow();
+    const { id } = await users.createUser("carol@corp.example", "pw");
+    const ctx: AuthWfCtx = {
+      subject: id,
+      mfaPolicy: { mode: "optional", availableTransports: ["totp", "email"], issuer: "MyApp" },
+      mfaEnroll: { method: "totp", mode: "manage" },
+    };
+    await wf.enrollTotpQr(ctx);
+    const secret = ctx.mfaEnroll?.secret;
+    const uri = ctx.mfaEnroll?.uri;
+    delete ctx.mfaEnroll?.qrSeen;
+    await wf.enrollTotpQr(ctx);
+    expect(ctx.mfaEnroll?.secret).toBe(secret);
+    expect(ctx.mfaEnroll?.uri).toBe(uri);
   });
 });

@@ -82,6 +82,8 @@ export interface AuthWorkflowOpts {
     removeMfaConfirm?: TAtscriptAnnotatedType;
     /** Password re-auth — step-up fallback when no factor is MFA-challengeable. */
     passwordReauth?: TAtscriptAnnotatedType;
+    /** Step-up dispatch consent — "we'll send a code to ma•••@x" notice before the step-up pincode send. */
+    stepUpConfirm?: TAtscriptAnnotatedType;
 
     // MFA challenge
     select2fa?: TAtscriptAnnotatedType;
@@ -159,6 +161,7 @@ export interface ResolvedAuthWorkflowOpts {
     manageMfa: TAtscriptAnnotatedType;
     removeMfaConfirm: TAtscriptAnnotatedType;
     passwordReauth: TAtscriptAnnotatedType;
+    stepUpConfirm: TAtscriptAnnotatedType;
     select2fa: TAtscriptAnnotatedType;
     mfaCode: TAtscriptAnnotatedType;
     pincode: TAtscriptAnnotatedType;

@@ -369,9 +369,13 @@ export interface InviteForm {
 @meta.description 'Pick how you would like to verify your identity.'
 @wf.context.pass 'public'
 export interface Select2faForm {
+    // sms/email options append the masked destination ("Email (ma•••@x.com)")
+    // so picking a method doubles as informed consent for the code dispatch —
+    // the user sees WHERE the code goes before it is sent (totp `masked` is
+    // always the empty string, so authenticator entries render bare).
     @ui.form.order 10
     @ui.form.type 'radio'
-    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.public?.mfa?.enrolledMethods) ? ctx.public.mfa.enrolledMethods.map(m => ({ key: m.methodName, label: m.kind === "totp" ? "TOTP (Authenticator app)" : m.kind === "email" ? "Email" : m.kind === "sms" ? "SMS" : m.kind })) : []'
+    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.public?.mfa?.enrolledMethods) ? ctx.public.mfa.enrolledMethods.map(m => ({ key: m.methodName, label: (m.kind === "totp" ? "TOTP (Authenticator app)" : m.kind === "email" ? "Email" : m.kind === "sms" ? "SMS" : m.kind) + (m.masked && (m.kind === "email" || m.kind === "sms") ? " (" + m.masked + ")" : "") })) : []'
     @meta.label 'MFA method'
     @meta.required
     methodName: string
@@ -668,6 +672,10 @@ export interface EnrollTotpQrForm {
  * - **Change / Remove** options come from `ctx.public.mfa.enrolledMethods`,
  *   with any transport in `ctx.public.manage.locked` omitted (a handle-bound
  *   factor the consumer forbids changing here — `lockedNote` explains why).
+ * - **Remove** options are also omitted when `ctx.public.manage.removeBlocked`
+ *   — the last confirmed factor under a `required` policy can never be
+ *   removed, so offering the operation would dead-end on a guard error
+ *   (`requiredNote` explains; Change stays available).
  *
  * A zero-MFA user never sees this form — the flow routes straight to the
  * enrol picker (first-time opt-in).
@@ -682,9 +690,14 @@ export interface ManageMfaForm {
     @ui.form.fn.hidden '(_, _d, ctx) => (ctx.public?.manage?.locked?.length ?? 0) === 0'
     lockedNote: ui.paragraph
 
+    @ui.form.order 6
+    @ui.form.fn.value '(_, _d, ctx) => ctx.public?.manage?.removeBlocked ? "Two-factor authentication is required for your account, so your last method can be changed but not removed." : ""'
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.public?.manage?.removeBlocked'
+    requiredNote: ui.paragraph
+
     @ui.form.order 10
     @ui.form.type 'radio'
-    @ui.form.fn.options '(_, _d, ctx) => { const lbl = (t) => t === "totp" ? "authenticator app" : t === "sms" ? "SMS" : t === "email" ? "email" : t; const locked = ctx.public?.manage?.locked ?? []; const out = []; for (const t of (ctx.public?.manage?.candidates ?? [])) out.push({ key: "add:" + t, label: "Add " + lbl(t) }); for (const m of (ctx.public?.mfa?.enrolledMethods ?? [])) { if (locked.includes(m.kind)) continue; out.push({ key: "replace:" + m.kind, label: "Change " + lbl(m.kind) + (m.masked ? " (" + m.masked + ")" : "") }); out.push({ key: "remove:" + m.kind, label: "Remove " + lbl(m.kind) }); } return out; }'
+    @ui.form.fn.options '(_, _d, ctx) => { const lbl = (t) => t === "totp" ? "authenticator app" : t === "sms" ? "SMS" : t === "email" ? "email" : t; const locked = ctx.public?.manage?.locked ?? []; const out = []; for (const t of (ctx.public?.manage?.candidates ?? [])) out.push({ key: "add:" + t, label: "Add " + lbl(t) }); for (const m of (ctx.public?.mfa?.enrolledMethods ?? [])) { if (locked.includes(m.kind)) continue; out.push({ key: "replace:" + m.kind, label: "Change " + lbl(m.kind) + (m.masked ? " (" + m.masked + ")" : "") }); if (!ctx.public?.manage?.removeBlocked) out.push({ key: "remove:" + m.kind, label: "Remove " + lbl(m.kind) }); } return out; }'
     @meta.label 'What would you like to do?'
     @meta.required
     operation: string
@@ -737,6 +750,36 @@ export interface PasswordReauthForm {
     @meta.required
     @expect.minLength 1
     password: string
+
+    // Hidden built-in cancel — host renders its own and fires `cancel` on
+    // abandon (so the durable wf-state row is cleaned, not left to expire).
+    @ui.form.action 'cancel', 'Cancel'
+    @ui.form.fn.hidden '() => true'
+    cancel?: ui.action
+}
+
+/**
+ * Manage-MFA step-up consent — the `manage-stepup-confirm` pause shown BEFORE
+ * the step-up pincode dispatch, so opening the manage dialog never emails /
+ * texts the user as a side effect (a user who opened it by mistake closes it
+ * with zero codes consumed). Fieldless apart from the notice: the primary
+ * submit ('Continue') consents and the SAME engine pass mints + sends the
+ * code; `useDifferentMethod` re-opens the factor picker (`select-2fa`, whose
+ * masked-destination options make the pick itself the consent); the hidden
+ * `cancel` aborts with nothing dispatched. Not rendered for TOTP step-up
+ * (nothing to send) or when `resolveStepUpConfirmBeforeSend` opts out.
+ */
+@meta.label 'Verify your identity'
+@wf.context.pass 'public'
+@ui.form.submit.text 'Continue'
+export interface StepUpConfirmForm {
+    @ui.form.order 1
+    @ui.form.fn.value '(_, _d, ctx) => { const kind = ctx.public?.mfa?.method; const m = (ctx.public?.mfa?.enrolledMethods ?? []).find(e => e.kind === kind); const to = m && m.masked ? " to " + m.masked : kind === "sms" ? " to your phone" : " to your email"; return "To continue, we will send a verification code" + to + "."; }'
+    notice: ui.paragraph
+
+    @ui.form.action 'useDifferentMethod', 'Use a different method'
+    @ui.form.fn.hidden '(_, _d, ctx) => (ctx.public?.mfa?.methodCount ?? 0) < 2'
+    useDifferentMethod?: ui.action
 
     // Hidden built-in cancel — host renders its own and fires `cancel` on
     // abandon (so the durable wf-state row is cleaned, not left to expire).

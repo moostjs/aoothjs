@@ -537,12 +537,40 @@ export interface AuthWfAddMfaState {
    * replay-resistant). Gates the one-time swap + the management menu.
    */
   stepUpDone?: boolean;
+  /**
+   * The user has explicitly consented to the step-up pincode dispatch —
+   * either by submitting `manage-stepup-confirm`'s "we'll send a code to
+   * ma•••@x" notice, or by picking a factor on `select-2fa` (choosing
+   * "Email (ma•••@x)" and submitting IS the consent). Gates the
+   * `manage-stepup-confirm` pause so opening the manage dialog never
+   * dispatches a code as a side effect. Also set when
+   * `resolveStepUpConfirmBeforeSend` opts the deployment out of the pause.
+   * Server-only; sms/email step-up only (TOTP dispatches nothing).
+   */
+  stepUpConfirmed?: boolean;
   /** The management action the user picked on the menu. */
   action?: "add" | "replace" | "remove";
   /** The transport the chosen `action` applies to. */
   target?: MfaTransport;
   /** Set by `confirm-remove-mfa` so `finish-add-mfa` can report which factor was removed. */
   removed?: MfaTransport;
+  /**
+   * Removing a factor is currently impossible: the user has exactly one
+   * confirmed (policy-allowed) factor and `mfaPolicy.mode === 'required'`.
+   * Computed by `manage-menu` before its pause and mirrored to
+   * `public.manage.removeBlocked` so `ManageMfaForm` omits the Remove option
+   * (and explains why) instead of offering an operation that can never
+   * succeed. Re-checked server-side in `manage-menu` + `confirm-remove-mfa`.
+   */
+  removeBlocked?: boolean;
+  /**
+   * Set by `confirm-remove-mfa` when it arrives in an un-removable state
+   * (stale/crafted route — the menu filters these): the step aborts to the
+   * `finish-add-mfa` terminal with a reason-specific message instead of
+   * pausing on a form whose only submit re-throws the same guard error
+   * (a dead-end loop, since the manage forms hide their built-in cancel).
+   */
+  blocked?: "last-required-factor" | "method-locked";
 }
 
 /**
@@ -625,10 +653,12 @@ export interface AuthWfPublicState {
   >;
   /**
    * Mirrors the manage-MFA menu inputs — the un-enrolled transports the user
-   * can Add and the locked transports to omit from Change/Remove. The enrolled
-   * method list the menu cross-references is `public.mfa.enrolledMethods`.
+   * can Add, the locked transports to omit from Change/Remove, and the
+   * `removeBlocked` flag that omits the Remove option for the last confirmed
+   * factor under a `required` policy. The enrolled method list the menu
+   * cross-references is `public.mfa.enrolledMethods`.
    */
-  manage?: { candidates?: MfaTransport[]; locked?: MfaTransport[] };
+  manage?: { candidates?: MfaTransport[]; locked?: MfaTransport[]; removeBlocked?: boolean };
   /** Mirrors `ctx.defaults` — prefill source for the recovery email field. */
   defaults?: { email?: string };
   /**

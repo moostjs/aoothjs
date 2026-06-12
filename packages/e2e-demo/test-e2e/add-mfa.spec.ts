@@ -5,6 +5,7 @@ import {
   clickAction,
   continuePastTotpQr,
   fillField,
+  getEmails,
   loginViaUi,
   readFinishEnvelope,
   resetApp,
@@ -28,6 +29,10 @@ const ENROLL_EMAIL = "alice-2fa@test.example";
 // tests pin the MANAGE-SPECIFIC guarantees:
 //   - STEP-UP first: a user who already has a factor must verify an EXISTING one
 //     before any add/change/remove (security — the menu never renders first).
+//   - the sms/email step-up asks for EXPLICIT consent before dispatching its
+//     code ("we will send a verification code to ma•••@x") — opening the manage
+//     dialog must never email/text the user as a side effect, and a Cancel on
+//     the notice consumes no code send.
 //   - a zero-MFA user skips step-up + menu and lands on the enrol picker (the
 //     first-time opt-in path), in `manage` mode (Cancel, never "Skip for now").
 //   - the menu offers add (un-enrolled) + change/remove (enrolled), OMITTING any
@@ -69,12 +74,23 @@ async function stepUpTotp(page: Page, request: APIRequestContext, username: stri
 
 /** Step-up by verifying an existing email factor → lands on the manage menu. */
 async function stepUpEmail(page: Page, request: APIRequestContext, email: string): Promise<void> {
+  // The email step-up opens on the dispatch-consent notice — nothing has been
+  // sent yet; the Continue submit triggers the (single) code send.
+  await passStepUpConsent(page);
   await waitForFormInput(page, "code");
   const code = (await waitForEmail(request, (e) => e.recipient === email && !!e.code)).code;
   expect(code).toBeTruthy();
   await fillField(page, "code", code as string);
   await submitForm(page);
   await waitForFormInput(page, "operation");
+}
+
+/** Wait for the step-up dispatch-consent notice, then Continue past it. */
+async function passStepUpConsent(page: Page): Promise<void> {
+  await page
+    .getByText(/we will send a verification code to/i)
+    .waitFor({ state: "visible", timeout: 5000 });
+  await submitForm(page);
 }
 
 /** Drive EnrollAddressForm → EnrollConfirmForm for an email factor (on the address form). */
@@ -351,6 +367,38 @@ test.describe("Manage-MFA workflow (WF-MANAGE-MFA / MME)", () => {
       data: { schemaId: MANAGE_WF, input: {} },
     });
     expect(res.status()).toBe(401);
+  });
+
+  test("MME-11 (step-up consent): opening Manage MFA dispatches NOTHING until Continue; Cancel consumes no code", async ({
+    page,
+    request,
+  }) => {
+    await loginViaUi(page, USERS.henry); // single Email-OTP factor
+    const henry = await readUser(request, USERS.henry.username);
+    const codeEmails = async () =>
+      (await getEmails(request)).filter((e) => e.recipient === henry.email && !!e.code).length;
+
+    // Opening the manage dialog pauses on the consent NOTICE — masked target
+    // shown, no code field, and crucially no email in flight yet.
+    await page.goto(wfUrl(MANAGE_WF));
+    await page
+      .getByText(/we will send a verification code to/i)
+      .waitFor({ state: "visible", timeout: 5000 });
+    await expect(page.locator('[name="code"]')).toHaveCount(0);
+    const before = await codeEmails();
+
+    // Opened by mistake → host Cancel: clean cancelled terminal, zero sends,
+    // no resend cooldown burnt.
+    await clickAction(page, "Cancel");
+    const env = (await readFinishEnvelope(page)) as { data?: { added?: boolean } };
+    expect(env.data?.added).toBe(false);
+    expect(await codeEmails(), "cancel on the notice consumed no code send").toBe(before);
+
+    // Re-open and Continue: exactly one code dispatches, then the challenge.
+    await page.goto(wfUrl(MANAGE_WF));
+    await passStepUpConsent(page);
+    await waitForFormInput(page, "code");
+    expect(await codeEmails(), "Continue dispatched exactly one code").toBe(before + 1);
   });
 
   test("MME-10 (cancel): grace verifies TOTP → host Cancel aborts → no change + wf-state cleaned", async ({
