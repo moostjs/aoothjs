@@ -160,6 +160,32 @@ Every `protected` member below is an override seam — change behavior by subcla
 
 [`ConsentStore`](#consent-collection-consentstore) (`getPendingConsents` / `save` / `read` / `recordOtpChannelConsent`) and the [`WfTriggerProvider`](#wf-trigger-workflow-trigger-machinery) overrides (`storeStrategy` / `wfStateSecret` / `wfStateEncapsulatedTtlMs` / `stateRegistry`) are separate provider classes, documented in their own sections below.
 
+### Event hooks
+
+Six `after*` seams fire **once** at the single completion point of each flow — the place to provision a tenant, send a welcome email, push analytics, or sync an external directory. Each is `protected`, defaults to a **no-op**, receives the live `AuthWfCtx` (`ctx.subject` set; read `ctx.isFirstLogin`, `ctx.oauth`, `ctx.accept`, … for context), and is **`async`-capable**. They are **awaited and a throw propagates** — a failing hook aborts the run (the login hooks fire _before_ the session/code is delivered, so a throw fails the login atomically, with no half-issued session); wrap your own body in `try/catch` for best-effort behaviour.
+
+| Hook                           | Fires when                                                                                                       | Also fires `afterLogin`?                |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| `afterLogin(ctx)`              | an authenticated **session** is established — interactive, federated (SSO), or invite/signup/recovery auto-login | —                                       |
+| `afterInvitationAccepted(ctx)` | an invitee finished accepting (account activated), auto-login **or** fresh-login                                 | only on the auto-login path             |
+| `afterSignup(ctx)`             | a self-signup account was created + activated                                                                    | yes (signup auto-logins)                |
+| `afterPasswordReset(ctx)`      | a recovery reset completed — **even if** an `admin-only` lock survived                                           | only on the auto-login path             |
+| `afterPasswordChanged(ctx)`    | an authenticated user changed their own password (change-password)                                               | no — it's a rotation, not a login       |
+| `afterMfaChanged(ctx)`         | a factor was added / changed / removed (add-mfa) — **not** on cancel/no-change                                   | no — the session is kept, not re-issued |
+
+**`afterLogin` is the login funnel.** It fires at the one `record-login` step every login flow routes through, right after `account.lastLogin` is stamped and before the terminal that issues the session (`issue`) or auth code (`mint-authz-code`). Because the funnel — not the delivery terminals — owns the stamp + hook, a login can't reach delivery without firing `afterLogin` exactly once, regardless of credential type (password / SSO / passwordless). It does **not** fire for finalize paths that establish no session: the invite/recovery _fresh-login_ redirect (the user signs in separately afterwards), nor for change-password's token rotation. Stamp-at-authenticated: an authorization-server login the user later **denies** at the consent screen still counts (they proved identity at the AS).
+
+```ts
+class AppAuthWorkflow extends AuthWorkflow {
+  protected override async afterLogin(ctx: AuthWfCtx): Promise<void> {
+    await analytics.track("login", { userId: ctx.subject, firstLogin: !!ctx.isFirstLogin });
+  }
+  protected override async afterInvitationAccepted(ctx: AuthWfCtx): Promise<void> {
+    await provisionWorkspace(ctx.subject!); // an auto-login invite ALSO fires afterLogin
+  }
+}
+```
+
 ## What the user sees
 
 ### Login (`auth/login/flow`)

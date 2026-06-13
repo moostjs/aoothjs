@@ -822,6 +822,69 @@ describe("AuthWorkflow sendSecurityAlert", () => {
   });
 });
 
+// ───────────────────────────────────────────────────────────────────────────
+// record-login funnel + afterLogin lifecycle hook.
+// WHY: this single step is the sole workflow writer of `account.lastLogin` AND
+// the uniform firing point for `afterLogin`, reached by every login flow before
+// its delivery terminal. Its idempotency latch (`ctx.loginRecorded`) must skip a
+// redundant stamp on the password path (which stamped via `users.login()`) yet
+// STILL fire the hook, and a federated / auto-login path must get its sole stamp
+// here. recovery-lock-check is the guard extracted out of the (now-pure)
+// finalize terminals.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("record-login funnel + afterLogin hook (WF-AUTH-LASTLOGIN)", () => {
+  class HookWorkflow extends TestableAuthWorkflow {
+    public afterLoginCalls = 0;
+    protected override afterLogin(): void {
+      this.afterLoginCalls++;
+    }
+  }
+  function make(): { wf: HookWorkflow; users: UserService } {
+    const { users, auth, consentStore } = makeDeps();
+    return { wf: new HookWorkflow({}, users, auth, consentStore), users };
+  }
+
+  it("stamps account.lastLogin once, fires afterLogin, and latches loginRecorded", async () => {
+    const { wf, users } = make();
+    const { id } = await users.createUser("alice", "pw");
+    expect((await users.getUser(id)).account.lastLogin).toBe(0);
+    const ctx: AuthWfCtx = { subject: id };
+    await wf.recordLogin(ctx);
+    expect((await users.getUser(id)).account.lastLogin).toBeGreaterThan(0);
+    expect(ctx.loginRecorded).toBe(true);
+    expect(wf.afterLoginCalls).toBe(1);
+  });
+
+  it("does NOT re-stamp when loginRecorded is already set (password path), but STILL fires afterLogin", async () => {
+    const { wf, users } = make();
+    const { id } = await users.createUser("bob", "pw");
+    // Simulate the `credentials` step having already stamped + latched.
+    const ctx: AuthWfCtx = { subject: id, loginRecorded: true };
+    await wf.recordLogin(ctx);
+    expect((await users.getUser(id)).account.lastLogin).toBe(0); // no second write
+    expect(wf.afterLoginCalls).toBe(1); // hook still fires exactly once
+  });
+
+  it("no-ops with neither stamp nor hook when there is no subject", async () => {
+    const { wf } = make();
+    const ctx: AuthWfCtx = {};
+    await wf.recordLogin(ctx);
+    expect(wf.afterLoginCalls).toBe(0);
+  });
+
+  it("recovery-lock-check leaves an unlocked account alone (no abort, no stamp)", async () => {
+    const { wf, users } = make();
+    const { id } = await users.createUser("carol", "pw"); // account.locked defaults false
+    const ctx: AuthWfCtx = {
+      subject: id,
+      lockout: { mode: "admin-only" } as AuthWfCtx["lockout"],
+    };
+    await wf.recoveryLockCheck(ctx);
+    expect(ctx.aborted).toBeFalsy();
+  });
+});
+
 describe("haversineKm", () => {
   // WHY: the published distance util consumers feed impossible-travel
   // thresholds with — a broken radian conversion or radius constant would

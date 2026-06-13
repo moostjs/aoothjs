@@ -87,6 +87,7 @@ All methods are `async` unless explicitly marked `(sync)`.
 | `findByHandle`                                                                            | `(UserCredentials & T) \| null` | —                                                                                         | Login resolver: `username` then the configured handle fields.                                                                  |
 | `findByIdentifier`                                                                        | `(UserCredentials & T) \| null` | —                                                                                         | Permissive: `id` → `username` → the configured handle fields.                                                                  |
 | `login`                                                                                   | `LoginResult<T>`                | `NOT_FOUND` / `INACTIVE` / `LOCKED` / `INVALID_CREDENTIALS`                               | Arg is a **handle** (`username` or a configured handle field).                                                                 |
+| `recordLogin`                                                                             | `number`                        | —                                                                                         | Stamps `lastLogin` + resets `failedLoginAttempts`; by **`id`**. The single login-stamp writer. Returns the timestamp.          |
 | `verifyPassword`                                                                          | `boolean`                       | `NOT_FOUND`                                                                               | No side effects, bypasses lockout.                                                                                             |
 | `changePassword`                                                                          | `void`                          | `INVALID_CREDENTIALS` / `PASSWORDS_MISMATCH` / `POLICY_VIOLATION` / `PASSWORD_IN_HISTORY` |                                                                                                                                |
 | `setPassword`                                                                             | `void`                          | `POLICY_VIOLATION` / `PASSWORD_IN_HISTORY`                                                | Admin-style — no current password required.                                                                                    |
@@ -185,6 +186,16 @@ try {
   throw e;
 }
 ```
+
+### `recordLogin`
+
+```ts
+recordLogin(id: string): Promise<number> // returns the stamped timestamp
+```
+
+Stamps `account.lastLogin = clock()` and resets `account.failedLoginAttempts = 0` — the **single writer** of `lastLogin`. `login()` calls it internally on a valid verify; call it yourself for any login that bypasses `login()` (e.g. a passwordless / SSO sign-in you mint a session for directly). Returns the timestamp written so a caller holding an in-memory row can patch it without re-reading.
+
+> **Passwordless logins must call this — otherwise `lastLogin` stays `0`.** Any sign-in that establishes a session without going through `login()` (federated, magic-link, invite/signup auto-login) won't stamp `lastLogin` on its own, and a stale `lastLogin` corrupts anything keyed on it (e.g. a derived `isFirstLogin = !lastLogin` re-fires first-login UX on every subsequent sign-in). `@aooth/auth-moost` already routes **every** workflow login through this via its `record-login` funnel step (see [Workflows — Event hooks](/moost/workflows#event-hooks)); call `recordLogin` directly only for a bespoke login path outside that workflow.
 
 ### `verifyPassword`
 

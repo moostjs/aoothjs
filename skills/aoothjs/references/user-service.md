@@ -76,6 +76,10 @@ Hard-delete by `id`. Throws `NOT_FOUND` when no row matched (`store.delete` retu
 
 `handle` = `username` OR any configured secondary handle field (resolved via `store.findByHandle`). `LoginResult<T> = { user: UserCredentials & T; mfaRequired: boolean }`. `mfaRequired` is `true` iff at least one MFA method on the user is `confirmed`. See [the login sequence](#the-login-sequence).
 
+### `recordLogin(id) → Promise<number>`
+
+The SINGLE writer of `lastLogin`: stamps `account.lastLogin = clock()` + resets `account.failedLoginAttempts = 0`, by `id`; returns the timestamp. `login()` calls it internally on a valid verify. **A passwordless login that bypasses `login()` (federated / magic-link / invite-signup auto-login) MUST call it — else `lastLogin` stays `0`** and anything keyed on it breaks (e.g. a derived `isFirstLogin = !lastLogin` re-fires first-login UX every sign-in). In `@aooth/auth-moost` this is already handled: every workflow login routes through the `record-login` funnel step (see [workflows](./workflows.md) invariant 25) — call `recordLogin` directly only for a bespoke login OUTSIDE that workflow.
+
 ### `verifyPassword(id, password) → Promise<boolean>`
 
 No side effects, bypasses lockout. Useful for re-auth confirmations (e.g. "confirm to change password" UI flows).

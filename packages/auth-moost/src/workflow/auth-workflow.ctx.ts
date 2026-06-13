@@ -713,6 +713,14 @@ export interface AuthWfCtx {
   // ── Semantic flags ──
   isFirstLogin?: boolean;
   newPasswordRequired?: boolean;
+  /**
+   * Idempotency latch for the single `record-login` funnel step. Set true once
+   * a login has been stamped this run — by the `credentials` step (the password
+   * path stamps eagerly via `users.login()`) or by `record-login` itself — so
+   * the funnel never double-writes `account.lastLogin`. Server-only flow
+   * control; never `@wf.context.pass`-ed to the client.
+   */
+  loginRecorded?: boolean;
   // Mirrors `AuthWorkflowOpts.autoLoginOn{Invite|Recover}` onto ctx so the
   // finalize-* schema conditions can read it — wf engine invokes condition
   // closures as plain functions, so `this.opts` is not reachable from inside

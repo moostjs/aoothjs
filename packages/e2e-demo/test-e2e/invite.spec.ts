@@ -127,6 +127,31 @@ test.describe("WF-INVITE — auth.invite family (P0)", () => {
     await expect(inviteePage.locator("text=Workflow finished")).toBeVisible({ timeout: 15_000 });
     await expect(inviteePage.locator("pre").first()).toContainText("accessToken");
     await ctx.close();
+
+    // The accept auto-login IS the user's first login, so it must stamp
+    // `account.lastLogin` (via `finalize-auto-login` → `UserService.recordLogin`).
+    // Without it the login flow's derived `isFirstLogin = !lastLogin` re-fires
+    // first-login-only steps on the user's first *credentialed* sign-in.
+    const userRes = await request.get(`/__test/user/${encodeURIComponent(inviteeEmail)}`);
+    expect(userRes.ok()).toBe(true);
+    const body = (await userRes.json()) as { id: string; account: { lastLogin: number } };
+    expect(body.account.lastLogin, "invite-accept must stamp lastLogin").toBeGreaterThan(0);
+
+    // Lifecycle hooks: acceptance fires `afterInvitationAccepted`, and because
+    // `email-no-roles` auto-logs-in, the `record-login` funnel also fires
+    // `afterLogin` for the invitee (the buffer was reset before this test).
+    const events = (await (await request.get("/__test/lifecycle")).json()) as {
+      event: string;
+      userId?: string;
+    }[];
+    const names = events.map((e) => e.event);
+    expect(names, "invite-accept fires afterInvitationAccepted").toContain(
+      "afterInvitationAccepted",
+    );
+    expect(names, "auto-login invite also fires afterLogin").toContain("afterLogin");
+    expect(events, "afterInvitationAccepted carries the invitee subject").toContainEqual(
+      expect.objectContaining({ event: "afterInvitationAccepted", userId: body.id }),
+    );
   });
 
   // ── WF-INVITE-005 ────────────────────────────────────────────────────────

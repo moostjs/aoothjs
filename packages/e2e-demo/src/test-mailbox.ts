@@ -67,6 +67,13 @@ export interface TestMailboxDeps {
    */
   otpConsentLog: Map<string, OtpConsentRecord[]>;
   /**
+   * Ordered `{event,userId}` rows recorded by `DemoAuthWorkflow`'s lifecycle
+   * hook overrides. `GET /__test/lifecycle` returns the array so the suite can
+   * prove each `after*` hook fired (and `afterLogin` fired for the right flows).
+   * Cleared by `reseed()` on `POST /__test/reset`.
+   */
+  lifecycle: { event: string; userId?: string }[];
+  /**
    * The `wf_states` table (the durable store `AsWfStore` wraps). Drives the
    * workflow state-strategy spec: `GET /__test/wf-states/count` proves the
    * encapsulated START persists ZERO server rows and that a post-validation
@@ -99,6 +106,7 @@ export function createTestMailboxController(
     auditEvents,
     consentLog,
     otpConsentLog,
+    lifecycle,
     wfStates,
   } = deps;
 
@@ -196,6 +204,16 @@ export function createTestMailboxController(
     }
 
     /**
+     * Lifecycle-hook firings recorded by `DemoAuthWorkflow`'s `after*`
+     * overrides — drives the WF-HOOKS specs proving each hook fires once at its
+     * single uniform point (and that `afterLogin` fires for the right flows).
+     */
+    @Get("lifecycle")
+    listLifecycle(): { event: string; userId?: string }[] {
+      return lifecycle;
+    }
+
+    /**
      * Auth-guarded probe so Playwright specs can prove that a previously
      * issued access token has been invalidated by a password reset
      * (WF-RECOVERY old-token rejection). Returns the resolved `userId` from
@@ -245,6 +263,7 @@ export function createTestMailboxController(
         active: boolean;
         locked: boolean;
         lockEnds: number;
+        lastLogin: number;
         pendingInvitation?: boolean;
         verifiedEmail?: string;
       };
@@ -282,6 +301,11 @@ export function createTestMailboxController(
           // (temporary). Lets lockout specs distinguish the modes without
           // waiting out a timeout.
           lockEnds: user.account.lockEnds,
+          // Stamped by `UserService.recordLogin` — written by `login()` AND the
+          // passwordless auto-login terminals (invite-accept / signup). Surfaced
+          // so the invite / signup specs can prove the first login is recorded
+          // (else the first credentialed sign-in re-derives `isFirstLogin`).
+          lastLogin: user.account.lastLogin,
           ...(user.account.pendingInvitation !== undefined && {
             pendingInvitation: user.account.pendingInvitation,
           }),

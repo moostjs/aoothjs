@@ -77,6 +77,14 @@ test.describe("recovery — default (OTP-via-email)", () => {
     expect(envelope.next?.action?.type).toBe("redirect");
     expect(envelope.next?.action?.target).toMatch(/\/login/);
     expect(envelope.data?.accessToken, "fresh-login finish must NOT issue tokens").toBeFalsy();
+
+    // Lifecycle: the reset happened, so `afterPasswordReset` fires — but this is
+    // the FRESH-login finalize (no session issued), so `afterLogin` must NOT
+    // fire. Proves the funnel correctly treats no-session finalize as a non-login.
+    const events = (await (await request.get("/__test/lifecycle")).json()) as { event: string }[];
+    const names = events.map((e) => e.event);
+    expect(names, "recovery reset fires afterPasswordReset").toContain("afterPasswordReset");
+    expect(names, "fresh-login recovery is not a login (no session)").not.toContain("afterLogin");
   });
 
   test("WF-RECOVERY-002: unknown email → generic finish, no mailbox event", async ({

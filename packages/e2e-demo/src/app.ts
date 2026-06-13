@@ -166,6 +166,11 @@ const g = globalThis as {
   // `__aoothE2eConsentLog` because the record shape doesn't fit
   // `ConsentEvent`. Drives WF-LOGIN-OTP-DISCLOSURE-01.
   __aoothE2eOtpConsentLog?: Map<string, OtpConsentRecord[]>;
+  // Ordered list of `{event,userId}` rows pushed by `DemoAuthWorkflow`'s
+  // lifecycle-hook overrides (afterLogin / afterInvitationAccepted / afterSignup
+  // / afterPasswordReset / afterPasswordChanged / afterMfaChanged). Proves each
+  // hook fires at its single uniform point in real flows. Cleared on reset.
+  __aoothE2eLifecycle?: { event: string; userId?: string }[];
 };
 g.__aoothE2eEmails ??= [];
 g.__aoothE2eSms ??= [];
@@ -174,12 +179,14 @@ g.__aoothE2eAuditEvents ??= [];
 g.__aoothE2eAllowDuplicateInvites ??= false;
 g.__aoothE2eConsentLog ??= new Map();
 g.__aoothE2eOtpConsentLog ??= new Map();
+g.__aoothE2eLifecycle ??= [];
 const sharedEmailsBuffer: AuthEmailEvent[] = g.__aoothE2eEmails;
 const sharedSmsBuffer: AuthSmsEvent[] = g.__aoothE2eSms;
 const sharedActiveSessionsBuffer: Map<string, number> = g.__aoothE2eActiveSessions;
 const sharedAuditEventsBuffer: AuditEvent[] = g.__aoothE2eAuditEvents;
 const sharedConsentLogBuffer: Map<string, ConsentEvent[]> = g.__aoothE2eConsentLog;
 const sharedOtpConsentLogBuffer: Map<string, OtpConsentRecord[]> = g.__aoothE2eOtpConsentLog;
+const sharedLifecycleBuffer: { event: string; userId?: string }[] = g.__aoothE2eLifecycle;
 /* eslint-enable no-underscore-dangle */
 
 /** Two-level deep merge — sufficient for the nested-pojo workflow opts. */
@@ -607,6 +614,29 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
 
     protected override deliver(payload: AuthDeliveryPayload): Promise<void> {
       return forwardDeliver(payload);
+    }
+
+    // Lifecycle-hook overrides — record each firing into the shared buffer so the
+    // e2e suite can prove every `after*` hook fires at its single uniform point
+    // (and that `afterLogin` fires for interactive / federated / auto-login but
+    // NOT for the no-session fresh-login or for rotation-only change-password).
+    protected override afterLogin(ctx: AuthWfCtx): void {
+      sharedLifecycleBuffer.push({ event: "afterLogin", userId: ctx.subject });
+    }
+    protected override afterInvitationAccepted(ctx: AuthWfCtx): void {
+      sharedLifecycleBuffer.push({ event: "afterInvitationAccepted", userId: ctx.subject });
+    }
+    protected override afterSignup(ctx: AuthWfCtx): void {
+      sharedLifecycleBuffer.push({ event: "afterSignup", userId: ctx.subject });
+    }
+    protected override afterPasswordReset(ctx: AuthWfCtx): void {
+      sharedLifecycleBuffer.push({ event: "afterPasswordReset", userId: ctx.subject });
+    }
+    protected override afterPasswordChanged(ctx: AuthWfCtx): void {
+      sharedLifecycleBuffer.push({ event: "afterPasswordChanged", userId: ctx.subject });
+    }
+    protected override afterMfaChanged(ctx: AuthWfCtx): void {
+      sharedLifecycleBuffer.push({ event: "afterMfaChanged", userId: ctx.subject });
     }
 
     // Recovery channel inference (M1): the address is always the typed
@@ -1241,6 +1271,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     // Captured OTP-channel disclosure records — same lifecycle as
     // `sharedConsentLogBuffer`.
     sharedOtpConsentLogBuffer.clear();
+    // Captured lifecycle-hook firings — cleared so each test asserts only its
+    // own flow's events.
+    sharedLifecycleBuffer.length = 0;
     // WF-INVITE-018 toggle — reset between tests so a flipped flag in one
     // spec doesn't leak into the next.
     g.__aoothE2eAllowDuplicateInvites = false;
@@ -1293,6 +1326,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       auditEvents: sharedAuditEventsBuffer,
       consentLog: sharedConsentLogBuffer,
       otpConsentLog: sharedOtpConsentLogBuffer,
+      lifecycle: sharedLifecycleBuffer,
       wfStates: appDb.tables.wfStates,
     });
     app.registerControllers(TestMailboxController);

@@ -214,13 +214,7 @@ export class UserService<T extends object = object> {
     const valid = await this.hasher.verify(password, user.password.hash);
 
     if (valid) {
-      const now = this.config.clock();
-      await this.store.update(user.id, {
-        set: {
-          account: { lastLogin: now, failedLoginAttempts: 0 },
-        } as DeepPartial<UserCredentials>,
-      });
-
+      const now = await this.recordLogin(user.id);
       // Patch in-memory instead of re-reading from store
       user.account.lastLogin = now;
       user.account.failedLoginAttempts = 0;
@@ -234,6 +228,29 @@ export class UserService<T extends object = object> {
       "INVALID_CREDENTIALS",
       lockoutOverride,
     );
+  }
+
+  /**
+   * Stamp a successful login on the user record: `account.lastLogin = now` and
+   * reset `account.failedLoginAttempts = 0`. The single writer of `lastLogin`.
+   *
+   * Called by {@link login} on a valid password verify, AND by passwordless
+   * auto-login terminals (invite-accept / signup) which issue a session without
+   * going through `login()`. Stamping there closes out that first login so the
+   * derived `isFirstLogin = !lastLogin` check stops re-classifying the user's
+   * first *credentialed* sign-in as a first login.
+   *
+   * Returns the timestamp written, so callers holding an in-memory row can patch
+   * it without re-reading the store.
+   */
+  async recordLogin(id: string): Promise<number> {
+    const now = this.config.clock();
+    await this.store.update(id, {
+      set: {
+        account: { lastLogin: now, failedLoginAttempts: 0 },
+      } as DeepPartial<UserCredentials>,
+    });
+    return now;
   }
 
   async verifyPassword(id: string, password: string): Promise<boolean> {

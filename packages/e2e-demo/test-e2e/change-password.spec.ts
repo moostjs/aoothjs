@@ -32,6 +32,7 @@ test.describe("Change-password workflow (WF-CHPWD)", () => {
 
   test("WF-CHPWD-001: signed-in user changes password → tokens rotate, new password takes effect", async ({
     page,
+    request,
   }) => {
     await loginViaUi(page, USERS.alice);
 
@@ -53,6 +54,18 @@ test.describe("Change-password workflow (WF-CHPWD)", () => {
     expect(typeof envelope.data?.accessToken).toBe("string");
     expect((envelope.data?.accessToken ?? "").length).toBeGreaterThan(0);
     expect(envelope.message?.level).toBe("success");
+
+    // Lifecycle: change-password is a ROTATION, not a login — it fires
+    // `afterPasswordChanged` but must NOT fire `afterLogin`. Checked HERE (before
+    // the re-login probes below add their own `afterLogin`), so the only
+    // `afterLogin` in the buffer is the initial `loginViaUi` sign-in.
+    const events = (await (await request.get("/__test/lifecycle")).json()) as { event: string }[];
+    const names = events.map((e) => e.event);
+    expect(names, "change-password fires afterPasswordChanged").toContain("afterPasswordChanged");
+    expect(
+      names.filter((n) => n === "afterLogin"),
+      "change-password must NOT fire afterLogin (it is a rotation, not a login)",
+    ).toHaveLength(1);
 
     // The change actually took effect: the OLD password no longer authenticates…
     await page.goto(wfUrl(LOGIN_WF, "minimal"));

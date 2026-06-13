@@ -80,6 +80,27 @@ test.describe("signup — verify-first self-signup (auth/signup/flow)", () => {
     // userId is the new stable surrogate id (the token subject), not the email.
     expect(envelope.data?.userId, "subject must be a stable id, not the email").toBeTruthy();
     expect(envelope.data?.userId).not.toBe(email);
+
+    // The signup auto-login IS the first login → `finalize-auto-login` stamps
+    // `account.lastLogin` (via `UserService.recordLogin`). Without it the first
+    // password sign-in afterwards re-derives `isFirstLogin = !lastLogin = true`.
+    const userRes = await request.get(`/__test/user/${encodeURIComponent(email)}`);
+    expect(userRes.ok()).toBe(true);
+    const stored = (await userRes.json()) as { id: string; account: { lastLogin: number } };
+    expect(stored.account.lastLogin, "signup auto-login must stamp lastLogin").toBeGreaterThan(0);
+
+    // Lifecycle hooks: signup fires `afterSignup`, and (always auto-logins) the
+    // `record-login` funnel fires `afterLogin` too — both for the new subject.
+    const events = (await (await request.get("/__test/lifecycle")).json()) as {
+      event: string;
+      userId?: string;
+    }[];
+    expect(events, "signup fires afterSignup for the new account").toContainEqual(
+      expect.objectContaining({ event: "afterSignup", userId: stored.id }),
+    );
+    expect(events, "signup auto-login fires afterLogin").toContainEqual(
+      expect.objectContaining({ event: "afterLogin", userId: stored.id }),
+    );
   });
 
   test("WF-SIGNUP-002: existing email → identical OTP pause (no enumeration) → post-OTP 'already registered', no tokens", async ({

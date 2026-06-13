@@ -148,6 +148,17 @@ test.describe("Manage-MFA workflow (WF-MANAGE-MFA / MME)", () => {
     const rec = await readUser(request, USERS.alice.username);
     expect(rec.mfa.methods.find((m) => m.name === "email")?.confirmed).toBe(true);
     expect(rec.mfa.defaultMethod).toBe("email"); // first factor becomes default
+
+    // Lifecycle: a real factor add fires `afterMfaChanged`. The user keeps their
+    // session (no re-issue), so the add-mfa flow adds NO `afterLogin` — the only
+    // one in the buffer is the initial `loginViaUi` sign-in.
+    const events = (await (await request.get("/__test/lifecycle")).json()) as { event: string }[];
+    const names = events.map((e) => e.event);
+    expect(names, "an MFA add fires afterMfaChanged").toContain("afterMfaChanged");
+    expect(
+      names.filter((n) => n === "afterLogin"),
+      "managing MFA is not a login (only the initial sign-in fired afterLogin)",
+    ).toHaveLength(1);
   });
 
   test("MME-02 (step-up gate): a user WITH a factor must verify it BEFORE the menu renders", async ({

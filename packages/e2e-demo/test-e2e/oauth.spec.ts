@@ -88,6 +88,32 @@ test.describe("OAuth / federated login (merged into auth/login/flow)", () => {
     expect(second.userId, "linked to the same user, not a new one").toBe(first.userId);
   });
 
+  test("OAUTH-LASTLOGIN-01: federated login stamps account.lastLogin (issue terminal)", async ({
+    page,
+    request,
+  }) => {
+    // Federated login enters via `sso-callback`, which resolves the subject
+    // WITHOUT calling `users.login()` — so unless the `issue` terminal records
+    // the login, `lastLogin` stays 0 and the derived `isFirstLogin = !lastLogin`
+    // re-fires first-login-only steps on every subsequent SSO sign-in. Prove the
+    // first login now stamps it (which is what makes the next login NOT a first).
+    await signInWithGoogle(page);
+    const res = await request.get("/__test/user/oauth.user@acme.test");
+    expect(res.status()).toBe(200);
+    const user = (await res.json()) as { id: string; account: { lastLogin: number } };
+    expect(user.account.lastLogin, "federated login must stamp lastLogin").toBeGreaterThan(0);
+
+    // The federated login routes through the SAME `record-login` funnel, so the
+    // `afterLogin` hook fires for the federated subject too (not just password).
+    const events = (await (await request.get("/__test/lifecycle")).json()) as {
+      event: string;
+      userId?: string;
+    }[];
+    expect(events, "federated login fires afterLogin").toContainEqual(
+      expect.objectContaining({ event: "afterLogin", userId: user.id }),
+    );
+  });
+
   test("OAUTH-PROVISION-01: a first-time federated account is provisioned via prepareUser (baseline roles seeded)", async ({
     page,
     request,

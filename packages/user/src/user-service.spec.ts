@@ -221,6 +221,26 @@ describe("UserService", () => {
     });
   });
 
+  describe("recordLogin", () => {
+    it("should stamp lastLogin and return the timestamp", async () => {
+      const alice = await createActiveUser(svc, "alice", "pass123");
+      const stamped = await svc.recordLogin(alice.id);
+      expect(stamped).toBe(now);
+      const user = await svc.getUser(alice.id);
+      expect(user.account.lastLogin).toBe(now);
+    });
+
+    it("should reset failedLoginAttempts to 0", async () => {
+      const alice = await createActiveUser(svc, "alice", "pass123");
+      try {
+        await svc.login("alice", "wrong");
+      } catch {}
+      await svc.recordLogin(alice.id);
+      const user = await svc.getUser(alice.id);
+      expect(user.account.failedLoginAttempts).toBe(0);
+    });
+  });
+
   describe("lockout", () => {
     let lockSvc: UserService;
 

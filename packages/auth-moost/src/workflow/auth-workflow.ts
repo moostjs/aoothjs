@@ -523,6 +523,76 @@ export class AuthWorkflow {
     });
   }
 
+  // ── Lifecycle hooks ───────────────────────────────────────────────────────
+  // Overridable side-effect seams fired at a SINGLE uniform point per event
+  // (provision a tenant, send a welcome email, push analytics, sync an external
+  // directory, …). All default to a no-op and are maybe-async (`void |
+  // Promise<void>`) so the engine keeps its sync fast path when unimplemented.
+  // They are AWAITED and a throw PROPAGATES — i.e. a failing hook aborts the
+  // flow; wrap your own body in try/catch for best-effort behaviour. Each
+  // receives the live `AuthWfCtx` (subject + all resolved flow state). The
+  // firing points are the schema's `after-*` steps and the flow-exclusive
+  // finish terminals — never call these directly.
+
+  /**
+   * A user just authenticated and a session is being established — interactive
+   * login, federated (SSO) login, OR invite/signup/recovery auto-login. Fired
+   * from the single `record-login` funnel, AFTER `account.lastLogin` is stamped
+   * and BEFORE the session/code is delivered, so a throw aborts the login
+   * atomically (no half-issued session). `ctx.subject` is set; read
+   * `ctx.isFirstLogin` to distinguish the very first sign-in, `ctx.oauth` for
+   * federated context. Does NOT fire for the no-session "fresh-login" finalize
+   * (where the user is redirected to sign in separately).
+   */
+  protected afterLogin(_ctx: AuthWfCtx): void | Promise<void> {
+    return undefined;
+  }
+
+  /**
+   * An invitee finished accepting their invite — account activated — whether or
+   * not the flow auto-logged-them-in. Fires once, before the finalize terminal.
+   * (An auto-login invite ALSO fires {@link afterLogin}.)
+   */
+  protected afterInvitationAccepted(_ctx: AuthWfCtx): void | Promise<void> {
+    return undefined;
+  }
+
+  /**
+   * A self-signup account was created + activated (post password-set, post
+   * activate). Fires once, before the auto-login finalize. (Signup always
+   * auto-logins, so {@link afterLogin} fires too.)
+   */
+  protected afterSignup(_ctx: AuthWfCtx): void | Promise<void> {
+    return undefined;
+  }
+
+  /**
+   * A recovery password reset completed. Fires once even when an `admin-only`
+   * lock survived the reset (the password DID change) — so it runs ahead of the
+   * still-locked guard. An auto-login recovery ALSO fires {@link afterLogin}.
+   */
+  protected afterPasswordReset(_ctx: AuthWfCtx): void | Promise<void> {
+    return undefined;
+  }
+
+  /**
+   * An already-authenticated user changed their own password (change-password
+   * flow). NOT a login — the session is rotated, not established — so
+   * {@link afterLogin} does NOT fire.
+   */
+  protected afterPasswordChanged(_ctx: AuthWfCtx): void | Promise<void> {
+    return undefined;
+  }
+
+  /**
+   * A user added, changed, or removed an MFA factor (add-mfa flow). NOT fired
+   * on a cancel / nothing-to-do finish. The user KEEPS their session (no
+   * re-issue), so {@link afterLogin} does NOT fire.
+   */
+  protected afterMfaChanged(_ctx: AuthWfCtx): void | Promise<void> {
+    return undefined;
+  }
+
   /**
    * Return the list of selectable role identifiers for the admin invite form.
    * Mirrors the prior `InviteWorkflow.getAvailableRoles()` consumer hook —
@@ -1957,6 +2027,13 @@ export class AuthWorkflow {
         this.lockoutOverride(ctx),
       );
       ctx.subject = result.user.id;
+      // `users.login()` already stamped `account.lastLogin` on this valid verify,
+      // so latch the `record-login` funnel to a no-op stamp (it still fires
+      // `afterLogin`) — no redundant second write. Federated / auto-login paths
+      // never call `login()`, so they leave this unset and `record-login` does
+      // the stamp. Stamping here (before `prepare-semantic-flags`) also keeps
+      // the password path's `isFirstLogin` derivation byte-identical to before.
+      ctx.loginRecorded = true;
       // First validated input passed → move off the cheap encapsulated start to
       // the durable store strategy, so the MFA / enrollment / password-change
       // pauses survive restarts. Pre-validation stays encapsulated (no server row),
@@ -2932,6 +3009,12 @@ export class AuthWorkflow {
       value: envelope,
       cookies: auth.buildFinishedCookies(issue),
     });
+    // Single firing point for the password-changed lifecycle hook. This is a
+    // ROTATION, not a login (the user was already authenticated), so `afterLogin`
+    // is deliberately NOT fired — only `afterPasswordChanged`. In-terminal (not a
+    // dedicated `after-*` step) because `finish-change-password` is exclusive to
+    // this flow, so there's no shared terminal to disambiguate.
+    await this.afterPasswordChanged(ctx);
     return undefined;
   }
 
@@ -2945,9 +3028,20 @@ export class AuthWorkflow {
   @Step("finish-add-mfa")
   @ArbacResource("auth.add-mfa")
   @ArbacAction("self")
-  finishAddMfa(@WorkflowParam("context") ctx: AuthWfCtx): undefined {
+  finishAddMfa(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
     useWfFinished().set({ type: "data", value: this.buildAddMfaFinishEnvelope(ctx) });
-    return undefined;
+    // Single firing point for the mfa-changed lifecycle hook — only on a real
+    // mutation (removed / added / changed), never on blocked / nothing-available
+    // / cancelled (those leave both flags unset, see `buildAddMfaFinishEnvelope`).
+    // The user keeps their session, so `afterLogin` does NOT fire. In-terminal
+    // (not an `after-*` step) because this terminal is exclusive to add-mfa.
+    // Mirror `buildAddMfaFinishEnvelope`'s "a change happened" condition exactly:
+    // removed, or a confirmed enrol (done + method). `done && !method` can't
+    // happen today, but gating on both keeps the hook firing iff the envelope
+    // reports a mutation.
+    if (!ctx.addMfa?.removed && !(ctx.mfaEnroll?.done && ctx.mfaEnroll?.method)) return undefined;
+    const hook = this.afterMfaChanged(ctx);
+    return hook instanceof Promise ? hook.then(() => undefined) : undefined;
   }
 
   /**
@@ -4427,6 +4521,95 @@ export class AuthWorkflow {
   // ── Finalize (5) ──
 
   /**
+   * The SINGLE login-completion funnel. Every flow that establishes an
+   * authenticated session routes through here — placed in each login schema
+   * right after the guards and BEFORE the delivery terminal (`issue` /
+   * `mint-authz-code` / `finalize-auto-login`) — so a login can never be
+   * delivered without passing this point. Two uniform jobs:
+   *   1. Stamp `account.lastLogin` exactly once (the sole workflow writer of it).
+   *   2. Fire the `afterLogin` customer hook.
+   *
+   * Idempotent per run via `ctx.loginRecorded`: the password `credentials` path
+   * already stamped eagerly through `users.login()` and latched the flag, so the
+   * stamp NO-OPS there (no double write) — but `afterLogin` still fires, so the
+   * hook runs exactly once for password logins too. Federated (`sso-callback`)
+   * and auto-login (invite/signup/recovery) paths never call `login()`, so this
+   * is their sole stamp. Self-gates on `ctx.subject`. Runs AFTER
+   * `prepare-semantic-flags` derived `isFirstLogin`, so a genuine first
+   * federated login still observes `isFirstLogin === true`.
+   *
+   * A throw (from the stamp or the hook) aborts the flow BEFORE delivery, so the
+   * login fails atomically — no half-issued session.
+   */
+  @Step("record-login")
+  @Public()
+  recordLogin(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
+    if (!ctx.subject) return undefined;
+    if (!ctx.loginRecorded) {
+      ctx.loginRecorded = true;
+      // Stamp branch (federated / auto-login): genuinely async (store write).
+      return this.users
+        .recordLogin(ctx.subject)
+        .then(() => this.afterLogin(ctx))
+        .then(() => undefined);
+    }
+    // Password path: `credentials` already stamped + latched, so the hook is the
+    // only work left — stay on the sync fast path when afterLogin is the default
+    // no-op (house "no async on a sync-default @Step body" rule; mirrors the
+    // fire* dispatcher steps below).
+    const hook = this.afterLogin(ctx);
+    return hook instanceof Promise ? hook.then(() => undefined) : undefined;
+  }
+
+  /**
+   * Recovery-only guard, extracted from the finalize terminals so they stay pure
+   * delivery. An `admin-only` lockout never self-unlocks, so a reset that left
+   * the account frozen must NOT be confirmed-as-success OR auto-logged-in
+   * (minting tokens would defeat the very freeze). When still locked it emits the
+   * warn terminal and sets `ctx.aborted`, so the schema's following `{ break }`
+   * skips BOTH the `record-login` funnel and the finalize terminals — a frozen
+   * account is never stamped or logged in. The schema gates this on
+   * `ctx.lockout?.mode === "admin-only"` (the only mode that can reach finalize
+   * still locked: self-service ran `unlock-account`; temporary auto-expires).
+   */
+  @Step("recovery-lock-check")
+  @Public()
+  async recoveryLockCheck(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    if (await this.recoveryLeftAccountLocked(ctx)) {
+      this.finishRecoveryReset(ctx, true);
+      ctx.aborted = true;
+    }
+    return undefined;
+  }
+
+  /**
+   * Thin dispatcher steps for the flow-specific lifecycle hooks. Each is its own
+   * schema step (rather than an in-terminal call) because its flow's finalize
+   * terminals are SHARED across flows (`finalize-auto-login` serves invite +
+   * recovery + signup; `finalize-fresh-login` serves invite + recovery), so a
+   * dedicated step in the flow-specific schema fires the right hook without
+   * ctx-discrimination inside a shared terminal. Named `fire*` so the overridable
+   * `after*` hooks keep the clean public name.
+   */
+  @Step("after-invitation-accepted")
+  @Public()
+  fireInvitationAccepted(@WorkflowParam("context") ctx: AuthWfCtx): void | Promise<void> {
+    return this.afterInvitationAccepted(ctx);
+  }
+
+  @Step("after-signup")
+  @Public()
+  fireSignup(@WorkflowParam("context") ctx: AuthWfCtx): void | Promise<void> {
+    return this.afterSignup(ctx);
+  }
+
+  @Step("after-password-reset")
+  @Public()
+  firePasswordReset(@WorkflowParam("context") ctx: AuthWfCtx): void | Promise<void> {
+    return this.afterPasswordReset(ctx);
+  }
+
+  /**
    * Issue access + refresh tokens via `auth.issue`. Stashes the login
    * response envelope on `useWfFinished` so downstream `redirect` can
    * override with a redirect envelope while preserving the cookies.
@@ -4702,7 +4885,7 @@ export class AuthWorkflow {
    */
   @Step("finalize-fresh-login")
   @Public()
-  finalizeFreshLogin(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
+  finalizeFreshLogin(@WorkflowParam("context") ctx: AuthWfCtx): undefined {
     // Invite — immediate redirect to login (no confirmation dwell).
     if (!ctx.postReset) {
       const target = ctx.accept!.loginUrl!;
@@ -4715,18 +4898,10 @@ export class AuthWorkflow {
       (ctx.completion ??= {}).redirectUrl = target;
       return undefined;
     }
-    // Recovery — `admin-only` lockout never self-unlocks, so a reset that left
-    // the account locked must NOT pretend success. Only this mode can reach
-    // finalize still locked (self-service ran `unlock-account`; temporary
-    // auto-expires), so read the post-reset lock state and warn accordingly. A
-    // user who simply forgot their password (never tripped the lock) is not
-    // locked and still gets the normal success even under `admin-only`.
-    if (ctx.lockout?.mode === "admin-only") {
-      return this.recoveryLeftAccountLocked(ctx).then((locked) => {
-        this.finishRecoveryReset(ctx, locked);
-        return undefined;
-      });
-    }
+    // Recovery — confirm success + auto-redirect to sign-in. The still-locked
+    // case (an `admin-only` lock that survived the reset) is caught UPSTREAM by
+    // `recovery-lock-check`, which emits its own warn terminal and `{ break }`s
+    // before reaching here, so this terminal only ever sees an unlocked reset.
     this.finishRecoveryReset(ctx, false);
     return undefined;
   }
@@ -4784,25 +4959,22 @@ export class AuthWorkflow {
   }
 
   /**
-   * Auto-login finalize — invite + recovery. Issues access + refresh tokens
-   * and stashes the login response envelope on `useWfFinished`. Invite
-   * preserves any `message` set by an earlier terminal (`confirmation`) so
-   * the SPA paints the confirmation text alongside the tokens (WF-INVITE-020).
+   * Auto-login finalize — invite + recovery + signup. PURE delivery: issues
+   * access + refresh tokens and stashes the login response envelope on
+   * `useWfFinished`. Invite preserves any `message` set by an earlier terminal
+   * (`confirmation`) so the SPA paints the confirmation text alongside the
+   * tokens (WF-INVITE-020).
+   *
+   * It records NOTHING and guards NOTHING: `account.lastLogin` + the
+   * `afterLogin` hook are owned by the upstream `record-login` funnel step, and
+   * the admin-only-survived-lock guard by the upstream `recovery-lock-check`
+   * step — both of which `{ break }`/gate this step out when they apply, so a
+   * still-frozen account never reaches here.
    */
   @Step("finalize-auto-login")
   @Public()
   async finalizeAutoLogin(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     this.requireSubject(ctx);
-    // An `admin-only` lockout that survived the reset must NOT be auto-logged-in
-    // — minting tokens would defeat the very freeze the fresh-login terminal
-    // warns about. Emit that same warn terminal (no tokens) instead. Only
-    // `admin-only` can reach here still locked (self-service unlocked,
-    // temporary auto-expires), and only recovery resolves `ctx.lockout`, so
-    // invite auto-login is unaffected.
-    if (ctx.lockout?.mode === "admin-only" && (await this.recoveryLeftAccountLocked(ctx))) {
-      this.finishRecoveryReset(ctx, true);
-      return undefined;
-    }
     const issue = await this.issueForContext(ctx);
     const auth = useAuth();
     const previousMessage = (useWfFinished().get()?.value as WfFinished | undefined)?.message;
@@ -5598,6 +5770,13 @@ export class AuthWorkflow {
     },
     { break: (ctx) => !!ctx.aborted },
 
+    // Login funnel — stamp `account.lastLogin` + fire `afterLogin`, ONCE, for
+    // BOTH delivery modalities below (browser-session AND authz-code), since the
+    // user has authenticated and cleared every guard by here. Stamp-at-
+    // authenticated: an authz login that the user later DENIES at `authz-consent`
+    // still counts (they proved identity at the AS).
+    { id: "record-login", condition: (ctx) => !!ctx.subject },
+
     // Finalize — EXACTLY ONE terminal. An authorization-server login (started
     // from /auth/authorize, `ctx.authz` set) mints an auth code and delivers it
     // to the client WITHOUT issuing a browser session; every other login takes
@@ -5682,11 +5861,18 @@ export class AuthWorkflow {
 
         { id: "unset-pending-invitation" },
         { id: "activate-user" },
+        // Acceptance is complete (account activated) regardless of whether it
+        // auto-logs-in — fire `afterInvitationAccepted` here, ahead of the
+        // finalize split. An auto-login invite ALSO hits `record-login` below.
+        { id: "after-invitation-accepted" },
         { id: "confirmation", condition: (ctx) => !!ctx.accept?.showConfirmation },
 
         // Finalize (invite tail — gated by ctx.autoLogin, mirrored from
         // `opts.autoLoginOnInvite` by init-invite-admin / init-invite-accept).
+        // `record-login` runs only on the auto-login path (the fresh-login path
+        // establishes no session, so it is not a login).
         { id: "finalize-fresh-login", condition: (ctx) => !ctx.autoLogin },
+        { id: "record-login", condition: (ctx) => !!ctx.autoLogin },
         { id: "finalize-auto-login", condition: (ctx) => !!ctx.autoLogin },
       ],
     },
@@ -5733,9 +5919,20 @@ export class AuthWorkflow {
     { id: "revoke-sessions", condition: (ctx) => !!ctx.postReset?.revokeAllSessions },
     { id: "unlock-account", condition: (ctx) => ctx.lockout?.mode === "self-service" },
     ...consentsPersistTailSchema,
+    // The password WAS reset by here (past the password subflow break), so fire
+    // `afterPasswordReset` BEFORE the still-locked guard — the reset happened
+    // even if an admin-only lock survives.
+    { id: "after-password-reset" },
+    // Admin-only-survived-lock guard (extracted from the finalize terminals so
+    // they stay pure delivery): emits the warn terminal + sets `ctx.aborted`,
+    // and the break then skips BOTH `record-login` and the finalize terminals.
+    { id: "recovery-lock-check", condition: (ctx) => ctx.lockout?.mode === "admin-only" },
+    { break: (ctx) => !!ctx.aborted },
     // Finalize (recovery tail — gated by ctx.autoLogin, mirrored from
-    // `opts.autoLoginOnRecover` by init-recovery).
+    // `opts.autoLoginOnRecover` by init-recovery). `record-login` runs only on
+    // the auto-login path (fresh-login establishes no session).
     { id: "finalize-fresh-login", condition: (ctx) => !ctx.autoLogin },
+    { id: "record-login", condition: (ctx) => !!ctx.autoLogin },
     { id: "finalize-auto-login", condition: (ctx) => !!ctx.autoLogin },
     // Note: notify-new-device is NOT fired here in this pass — see §13.
   ])
@@ -5929,6 +6126,8 @@ export class AuthWorkflow {
     { id: "activate-user" }, // flip active AFTER the password is set (reuse invite)
     ...consentsPersistTailSchema,
     { id: "signup-extra-step" }, // customer extension point
+    { id: "after-signup" }, // afterSignup hook (account created + activated)
+    { id: "record-login" }, // stamp lastLogin + afterLogin (signup always auto-logins)
     { id: "finalize-auto-login" }, // v1 always auto-logins
   ])
   signupFlow(): void {}
