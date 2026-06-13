@@ -3132,6 +3132,18 @@ export class AuthWorkflow {
   }
 
   /**
+   * The keep-at-least-one rule: removing the user's LAST confirmed factor under
+   * a `required` policy can never succeed. The single source for the predicate
+   * `manage-menu` mirrors into `addMfa.removeBlocked` (to drop the Remove option)
+   * AND `confirm-remove-mfa` re-checks before its pause (defence in depth) — so
+   * a policy change (e.g. "keep at least two", or a backup-codes exception)
+   * lands in one place, not two copies that can drift.
+   */
+  private isLastRequiredFactor(ctx: AuthWfCtx): boolean {
+    return (ctx.mfa?.enrolledMethods?.length ?? 0) <= 1 && ctx.mfaPolicy?.mode === "required";
+  }
+
+  /**
    * Manage-MFA menu — pauses on `ManageMfaForm` and routes the chosen
    * `operation` (`add:<t>` / `replace:<t>` / `remove:<t>`). Only reached when
    * the user has ≥1 confirmed factor (a zero-MFA user goes straight to the enrol
@@ -3158,9 +3170,8 @@ export class AuthWorkflow {
     // Removing the LAST confirmed factor under a `required` policy can never
     // succeed (`confirm-remove-mfa`'s keep-at-least-one guard) — compute the
     // flag BEFORE the pause so `ManageMfaForm` omits the Remove option (and
-    // explains why) instead of offering a dead-end. Same predicate the
-    // confirm step guards with.
-    if (enrolled.length <= 1 && ctx.mfaPolicy?.mode === "required") {
+    // explains why) instead of offering a dead-end.
+    if (this.isLastRequiredFactor(ctx)) {
       addMfa.removeBlocked = true;
     } else {
       delete addMfa.removeBlocked;
@@ -3243,7 +3254,7 @@ export class AuthWorkflow {
       ctx.aborted = true;
       return undefined;
     }
-    if (enrolled.length <= 1 && ctx.mfaPolicy?.mode === "required") {
+    if (this.isLastRequiredFactor(ctx)) {
       addMfa.blocked = "last-required-factor";
       ctx.aborted = true;
       return undefined;
@@ -3904,8 +3915,10 @@ export class AuthWorkflow {
     const m = (ctx.mfaEnroll ??= {});
     const methodName = m.method as MfaTransport;
     const pinned = this.resolveEnrollAddress(ctx, methodName);
-    if (pinned instanceof Promise) return pinned.then((p) => this.collectEnrollAddress(ctx, p));
-    return this.collectEnrollAddress(ctx, pinned);
+    if (pinned instanceof Promise) {
+      return pinned.then((p) => this.collectEnrollAddress(ctx, methodName, p));
+    }
+    return this.collectEnrollAddress(ctx, methodName, pinned);
   }
 
   /**
@@ -3913,9 +3926,12 @@ export class AuthWorkflow {
    * collect pause (skip/cancel/useDifferentMethod triage + ctx-first
    * validation + write-on-confirm staging).
    */
-  private collectEnrollAddress(ctx: AuthWfCtx, pinned: string): undefined | Promise<undefined> {
+  private collectEnrollAddress(
+    ctx: AuthWfCtx,
+    methodName: MfaTransport,
+    pinned: string,
+  ): undefined | Promise<undefined> {
     const m = (ctx.mfaEnroll ??= {});
-    const methodName = m.method as MfaTransport;
     // Pinned address — consumer-authoritative (no validateMfaAddress pass),
     // normalized like any typed one. Blank/'collect' falls through to the form.
     if (pinned !== "collect" && pinned.trim()) {
