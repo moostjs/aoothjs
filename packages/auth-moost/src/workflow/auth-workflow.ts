@@ -4639,7 +4639,11 @@ export class AuthWorkflow {
       if (!value) return;
       cookies = {
         ...cookies,
-        [name]: { value, options: auth.cookieAttrs({ maxAge: ttlMs / 1000 }) },
+        // wooks' setCookie `maxAge` is MILLISECONDS (it renders `Max-Age` in
+        // seconds via convertTime(_, "s")); pass `ttlMs` straight through — do
+        // NOT pre-divide. See the OAuth-CSRF path (`maxAgeSec * 1000`) for the
+        // same unit contract.
+        [name]: { value, options: auth.cookieAttrs({ maxAge: ttlMs }) },
       };
     };
     attachDeviceCookie(
