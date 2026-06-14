@@ -17,7 +17,6 @@ export interface Document {
     @expect.maxLength 200
     title: string
 
-    @meta.required
     @ui.form.options 'public', 'public'
     @ui.form.options 'internal', 'internal'
     @ui.form.options 'confidential', 'confidential'

@@ -24,7 +24,6 @@ export interface Project {
     @db.rel.FK
     departmentId?: Department.id
 
-    @meta.required
     @ui.form.options 'public', 'public'
     @ui.form.options 'team', 'team'
     @ui.form.options 'private', 'private'

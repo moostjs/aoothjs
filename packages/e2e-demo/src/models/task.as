@@ -27,7 +27,6 @@ export interface Task {
     @expect.maxLength 128
     creatorUsername: string
 
-    @meta.required
     @ui.form.options 'open', 'open'
     @ui.form.options 'in_progress', 'in_progress'
     @ui.form.options 'done', 'done'

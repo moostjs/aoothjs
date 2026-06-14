@@ -13,7 +13,6 @@ export interface Tenant {
     @expect.maxLength 128
     domain?: string
 
-    @meta.required
     @ui.form.options 'free', 'free'
     @ui.form.options 'pro', 'pro'
     @ui.form.options 'enterprise', 'enterprise'

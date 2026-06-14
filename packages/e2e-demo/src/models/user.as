@@ -34,7 +34,7 @@ export interface DemoUser extends AoothArbacUserCredentials {
 }
 
 export interface AssignRolesForm {
-    @meta.required
+    @expect.minLength 1
     roles: string[]
 }
 
