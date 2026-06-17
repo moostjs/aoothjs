@@ -1,6 +1,6 @@
 {
   "name": "@aooth/arbac-moost",
-  "version": "0.1.26",
+  "version": "0.1.27",
   "description": "Moost RBAC integration for aoothjs (migrated from @moostjs/arbac)",
   "keywords": [
     "abac",
