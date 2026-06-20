@@ -15,6 +15,30 @@ export interface AuthWorkflowOpts {
   autoLoginOnInvite?: boolean;
   autoLoginOnRecover?: boolean;
 
+  // ── Invite admin ──
+  /**
+   * Closed universe of role ids the admin invite form may assign. NOT policy
+   * (it does not vary per request) — it is static configuration, like `forms`.
+   * The base `getAvailableRoles()` intersects this list with the CURRENT
+   * inviter's ARBAC grants (`auth.invite` / `assign:<role>`) at request time,
+   * so each inviter is offered — and server-side limited to — only the roles
+   * they may actually delegate. If ARBAC is unreachable the list is used
+   * verbatim (still a CLOSED whitelist, never fail-open).
+   *
+   * Leave unset to keep the legacy behaviour (NO whitelist — any role can be
+   * assigned). When unset, `getAvailableRoles` is not overridden, and
+   * `allowAnyInviteRole` is not set, a one-time warning fires the first time
+   * the admin invite flow runs.
+   */
+  invitableRoles?: string[];
+  /**
+   * Acknowledge an intentionally-unrestricted invite form — silences the
+   * "invite role whitelist is OFF" warning when `invitableRoles` is unset and
+   * `getAvailableRoles` is not overridden. Records intent only; it does not by
+   * itself relax or tighten enforcement. Default `false`.
+   */
+  allowAnyInviteRole?: boolean;
+
   // ── Cross-workflow infra ──
   /** Pincode infrastructure shared by login MFA, invite MFA, and recovery OTP. */
   mfa?: {
@@ -129,6 +153,8 @@ export interface AuthWorkflowOpts {
 export interface ResolvedAuthWorkflowOpts {
   autoLoginOnInvite: boolean;
   autoLoginOnRecover: boolean;
+  invitableRoles: string[];
+  allowAnyInviteRole: boolean;
   mfa: {
     pincodeLength: number;
     pincodeTtlMs: number;

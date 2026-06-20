@@ -72,6 +72,11 @@ class TestableAuthWorkflow extends AuthWorkflow {
     existingUser: UserCredentials | null;
   }) => this.duplicateInviteCheck(input);
   public exposeAccept = (ctx: AuthWfCtx) => this.resolveAccept(ctx);
+  public exposeSetPasswordCopy = (ctx: AuthWfCtx) => this.resolveSetPasswordCopy(ctx);
+  public exposeGetAvailableRoles = () => this.getAvailableRoles();
+  public exposeInviteWhitelistIsOpen = () => this.inviteWhitelistIsOpen();
+  public exposeEffectiveInviteRoles = (ctx: AuthWfCtx, submitted: string[]) =>
+    this.effectiveInviteRoles(ctx, submitted);
   public exposePostReset = (ctx: AuthWfCtx) => this.resolvePostReset(ctx);
   public exposeRecoveryAltActions = (ctx: AuthWfCtx) => this.resolveRecoveryAltActions(ctx);
   public exposePincodeForm = (ctx: AuthWfCtx) => this.resolvePincodeForm(ctx);
@@ -180,6 +185,13 @@ describe("AuthWorkflow construction (WF-AUTH-UNIFIED-002)", () => {
     // default for password resets).
     expect(opts.autoLoginOnInvite).toBe(true);
     expect(opts.autoLoginOnRecover).toBe(false);
+
+    // Invite whitelist — empty universe + open default unacknowledged out of
+    // the box. This preserves the legacy "no whitelist" behaviour
+    // (getAvailableRoles returns undefined), with prepare-available-roles
+    // warning once so the fail-open default is never silent (TODO #1).
+    expect(opts.invitableRoles).toEqual([]);
+    expect(opts.allowAnyInviteRole).toBe(false);
 
     // Cross-flow pincode infra — defaults must match
     // `mergeAuthWorkflowOpts`. Schema conditions divide / compare by these
@@ -712,6 +724,139 @@ describe("AuthWorkflow resolver defaults", () => {
 // `channel`. This is dispatch-level only — content/templating belongs to
 // the customer override.
 // ───────────────────────────────────────────────────────────────────────────
+
+describe("AuthWorkflow set-password copy (TODO #3 — resolveSetPasswordCopy)", () => {
+  const wf = makeWorkflow({});
+
+  it("expired changeReason → expired copy", async () => {
+    const c = await settle(wf.exposeSetPasswordCopy({ password: { changeReason: "expired" } }));
+    expect(c.heading).toBe("Your password has expired");
+    expect(c.intro).toBe("Choose a new password to continue. The previous one is no longer valid.");
+  });
+
+  it("reset changeReason → reset copy", async () => {
+    const c = await settle(wf.exposeSetPasswordCopy({ password: { changeReason: "reset" } }));
+    expect(c.heading).toBe("Reset your password");
+    expect(c.intro).toBe("Choose a new password for your account.");
+  });
+
+  it("invite-accept (ctx.accept present) → welcome copy", async () => {
+    const c = await settle(wf.exposeSetPasswordCopy({ accept: {} }));
+    expect(c.heading).toBe("Welcome — set your password");
+    expect(c.intro).toBe("Choose a password to activate your account.");
+  });
+
+  it("no reason, no accept → initial-password fallback copy", async () => {
+    const c = await settle(wf.exposeSetPasswordCopy({}));
+    expect(c.heading).toBe("Set your initial password");
+    expect(c.intro).toBe("Your account was created without a password. Choose one to continue.");
+  });
+
+  it("changeReason takes precedence over ctx.accept (expired beats accept)", async () => {
+    const c = await settle(
+      wf.exposeSetPasswordCopy({ accept: {}, password: { changeReason: "expired" } }),
+    );
+    // Order matters: the reason branch is checked before the accept branch, so
+    // an expired/reset accept-phase set-password still shows the reason copy.
+    expect(c.heading).toBe("Your password has expired");
+  });
+
+  it("override can re-brand a single phase; partial return leaves the other field", async () => {
+    class BrandedAuth extends TestableAuthWorkflow {
+      protected override resolveSetPasswordCopy(ctx: AuthWfCtx) {
+        if (ctx.accept) return { heading: "Welcome to Acme!" };
+        return super.resolveSetPasswordCopy(ctx);
+      }
+    }
+    const { users, auth, consentStore } = makeDeps();
+    const branded = new BrandedAuth({}, users, auth, consentStore);
+    const c = await settle(branded.exposeSetPasswordCopy({ accept: {} }));
+    expect(c.heading).toBe("Welcome to Acme!");
+    // intro omitted by the partial override — createPasswordForm's guarded
+    // assign leaves any earlier-staged intro untouched (never writes undefined).
+    expect(c.intro).toBeUndefined();
+  });
+});
+
+describe("AuthWorkflow invite role whitelist (TODO #1 — getAvailableRoles default)", () => {
+  it("unset invitableRoles → getAvailableRoles() returns undefined (legacy no-whitelist)", async () => {
+    const roles = await settle(makeWorkflow({}).exposeGetAvailableRoles());
+    expect(roles).toBeUndefined();
+  });
+
+  it("invitableRoles set but ARBAC unreachable → universe verbatim (CLOSED, never fail-open)", async () => {
+    // Called outside any event context, so `useArbac()` throws inside
+    // filterInvitableRolesByArbac and the catch falls back to the configured
+    // universe — a closed whitelist, NOT an open allow-all.
+    const roles = await settle(
+      makeWorkflow({ invitableRoles: ["admin", "editor"] }).exposeGetAvailableRoles(),
+    );
+    expect(roles).toEqual(["admin", "editor"]);
+  });
+
+  it("inviteWhitelistIsOpen — TRUE on the bare default (unset + not overridden + unacknowledged)", () => {
+    expect(makeWorkflow({}).exposeInviteWhitelistIsOpen()).toBe(true);
+  });
+
+  it("inviteWhitelistIsOpen — FALSE when invitableRoles is configured", () => {
+    expect(makeWorkflow({ invitableRoles: ["admin"] }).exposeInviteWhitelistIsOpen()).toBe(false);
+  });
+
+  it("inviteWhitelistIsOpen — FALSE when allowAnyInviteRole acknowledges the open default", () => {
+    expect(makeWorkflow({ allowAnyInviteRole: true }).exposeInviteWhitelistIsOpen()).toBe(false);
+  });
+
+  it("inviteWhitelistIsOpen — FALSE when getAvailableRoles is overridden", () => {
+    class OverridingAuth extends TestableAuthWorkflow {
+      protected override getAvailableRoles(): string[] {
+        return ["admin"];
+      }
+    }
+    const { users, auth, consentStore } = makeDeps();
+    const wf = new OverridingAuth({}, users, auth, consentStore);
+    expect(wf.exposeInviteWhitelistIsOpen()).toBe(false);
+  });
+});
+
+describe("AuthWorkflow invite role gating under collectRoles (fail-open fix)", () => {
+  // WHY: `prepare-available-roles` (which populates the `availableRoles`
+  // whitelist the admin-form guard enforces) is schema-gated on
+  // `adminForm.collectRoles`. So when a consumer sets `collectRoles:false`
+  // (hide the role picker) the whitelist guard is skipped — yet admin-form
+  // still parses submitted roles. effectiveInviteRoles closes that fail-open:
+  // when role collection is OFF, client-submitted roles are IGNORED entirely,
+  // so a crafted POST cannot assign roles regardless of the whitelist.
+  const wf = makeWorkflow({});
+
+  it("collectRoles:true → submitted roles are parsed + honored", () => {
+    const r = wf.exposeEffectiveInviteRoles({ adminForm: { collectRoles: true } }, [
+      "admin",
+      "editor",
+    ]);
+    expect(r).toEqual(["admin", "editor"]);
+  });
+
+  it("collectRoles:false → submitted roles are IGNORED (crafted POST cannot assign roles)", () => {
+    const r = wf.exposeEffectiveInviteRoles({ adminForm: { collectRoles: false } }, [
+      "admin",
+      "superuser",
+    ]);
+    expect(r).toEqual([]);
+  });
+
+  it("adminForm unset → defaults to parsing (back-compat; whitelist guard still applies if set)", () => {
+    expect(wf.exposeEffectiveInviteRoles({}, ["editor"])).toEqual(["editor"]);
+  });
+
+  it("trims + de-dupes when collecting (delegates to parseInviteRoles)", () => {
+    const r = wf.exposeEffectiveInviteRoles({ adminForm: { collectRoles: true } }, [
+      " admin ",
+      "admin",
+      "",
+    ]);
+    expect(r).toEqual(["admin"]);
+  });
+});
 
 describe("AuthWorkflow deliver dispatch (WF-AUTH-UNIFIED-004)", () => {
   // WHY: every kind in the `AuthDeliveryPayload` union must reach the

@@ -56,8 +56,8 @@ import {
 } from "@moostjs/event-wf";
 import { current } from "@wooksjs/event-core";
 import { useCookies, useHeaders, useRequest, useUrlParams } from "@wooksjs/event-http";
-import { ArbacAction, ArbacResource } from "@aooth/arbac-moost";
-import { Controller, Inherit, Param, useControllerContext } from "moost";
+import { ArbacAction, ArbacResource, useArbac } from "@aooth/arbac-moost";
+import { Controller, Inherit, Param, useControllerContext, useLogger } from "moost";
 
 import { useAuth } from "../auth.composables";
 import { ConsentStore } from "../consent.store";
@@ -229,6 +229,8 @@ function mergeAuthWorkflowOpts(opts: Partial<AuthWorkflowOpts>): ResolvedAuthWor
   return {
     autoLoginOnInvite: opts.autoLoginOnInvite ?? true,
     autoLoginOnRecover: opts.autoLoginOnRecover ?? false,
+    invitableRoles: opts.invitableRoles ?? [],
+    allowAnyInviteRole: opts.allowAnyInviteRole ?? false,
     mfa: {
       pincodeLength: opts.mfa?.pincodeLength ?? 6,
       pincodeTtlMs: opts.mfa?.pincodeTtlMs ?? 5 * 60 * 1000,
@@ -470,6 +472,13 @@ export class AuthWorkflow {
   protected readonly auth: AuthCredential;
   protected readonly consentStore: ConsentStore;
 
+  /**
+   * Process-lifetime warn-once latch for the "invite role whitelist is OFF"
+   * notice. App-level (singleton) state, NOT per-event — keeps the warning from
+   * spamming on every invite while still surfacing the misconfig once.
+   */
+  private warnedOpenInviteWhitelist = false;
+
   constructor(
     opts: Partial<AuthWorkflowOpts>,
     users: UserService,
@@ -594,13 +603,62 @@ export class AuthWorkflow {
   }
 
   /**
-   * Return the list of selectable role identifiers for the admin invite form.
-   * Mirrors the prior `InviteWorkflow.getAvailableRoles()` consumer hook —
-   * `undefined` (default) means no whitelist is enforced. Read by
-   * `prepareAvailableRoles`.
+   * Selectable role ids for the admin invite form — ALSO enforced server-side
+   * (`admin-form` rejects any submitted role outside this set). Read by
+   * `prepareAvailableRoles`. Mirrors the prior `InviteWorkflow.getAvailableRoles()`
+   * consumer hook.
+   *
+   * Default behaviour is driven by {@link AuthWorkflowOpts.invitableRoles}:
+   * - **configured** → that universe intersected with the CURRENT inviter's
+   *   ARBAC grants (`auth.invite` / `assign:<role>`), so an inviter can only
+   *   delegate roles they may themselves assign. If ARBAC is unreachable the
+   *   universe is returned verbatim — still a CLOSED whitelist, never fail-open.
+   * - **unset** → `undefined`, preserving the legacy "no whitelist" behaviour;
+   *   `prepareAvailableRoles` warns once unless
+   *   {@link AuthWorkflowOpts.allowAnyInviteRole} acknowledges it.
+   *
+   * Override for fully custom sourcing — the override then owns the gate
+   * outright (no warning fires; `invitableRoles` is consulted only if the
+   * override reads it).
    */
   protected getAvailableRoles(): Promise<string[] | undefined> | string[] | undefined {
-    return undefined;
+    const universe = this.opts.invitableRoles;
+    if (universe.length === 0) return undefined;
+    return this.filterInvitableRolesByArbac(universe);
+  }
+
+  /**
+   * Intersect a role universe with the current inviter's ARBAC grants — keep
+   * only roles they hold `auth.invite` / `assign:<role>` for. Falls back to the
+   * universe verbatim when ARBAC is unreachable (no event context / not wired),
+   * which keeps the whitelist CLOSED rather than failing open.
+   */
+  protected async filterInvitableRolesByArbac(universe: string[]): Promise<string[]> {
+    try {
+      const arbac = useArbac();
+      const verdicts = await Promise.all(
+        universe.map((role) =>
+          arbac.evaluate({ resource: "auth.invite", action: `assign:${role}` }),
+        ),
+      );
+      return universe.filter((_, i) => verdicts[i].allowed);
+    } catch {
+      return [...universe];
+    }
+  }
+
+  /**
+   * True when the admin invite form would assign roles with NO server-side
+   * whitelist in effect: `invitableRoles` unset, `getAvailableRoles` not
+   * overridden, and the open default not acknowledged via `allowAnyInviteRole`.
+   * Drives the one-time `prepare-available-roles` warning.
+   */
+  protected inviteWhitelistIsOpen(): boolean {
+    return (
+      !this.opts.allowAnyInviteRole &&
+      this.opts.invitableRoles.length === 0 &&
+      this.getAvailableRoles === AuthWorkflow.prototype.getAvailableRoles
+    );
   }
 
   /**
@@ -1136,6 +1194,39 @@ export class AuthWorkflow {
       loginUrl: this.opts.loginUrl,
       showConfirmation: true,
       confirmationMessage: "Your account has been created.",
+    };
+  }
+
+  /**
+   * Copy (heading + intro) for the unified set-password screen, staged by
+   * `create-password-form` BEFORE the pause. Branches on the resolved
+   * `ctx.password.changeReason` (`expired` / `reset`), then invite-accept
+   * (`ctx.accept`), then the initial-password fallback. Override to re-brand any
+   * phase; return a partial (`{ heading }` only) to change one field and leave
+   * the other at whatever an earlier step staged, or `{}` to keep both as-is.
+   */
+  protected resolveSetPasswordCopy(
+    ctx: AuthWfCtx,
+  ): { heading?: string; intro?: string } | Promise<{ heading?: string; intro?: string }> {
+    const reason = ctx.password?.changeReason;
+    if (reason === "expired") {
+      return {
+        heading: "Your password has expired",
+        intro: "Choose a new password to continue. The previous one is no longer valid.",
+      };
+    }
+    if (reason === "reset") {
+      return { heading: "Reset your password", intro: "Choose a new password for your account." };
+    }
+    if (ctx.accept) {
+      return {
+        heading: "Welcome — set your password",
+        intro: "Choose a password to activate your account.",
+      };
+    }
+    return {
+      heading: "Set your initial password",
+      intro: "Your account was created without a password. Choose one to continue.",
     };
   }
 
@@ -2511,7 +2602,17 @@ export class AuthWorkflow {
   @ArbacAction("start")
   async prepareAvailableRoles(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     const roles = await this.getAvailableRoles();
-    if (roles) (ctx.admin ??= {}).availableRoles = roles;
+    if (roles) {
+      (ctx.admin ??= {}).availableRoles = roles;
+    } else if (!this.warnedOpenInviteWhitelist && this.inviteWhitelistIsOpen()) {
+      this.warnedOpenInviteWhitelist = true;
+      useLogger("aooth:auth", current()).warn(
+        "Invite role whitelist is OFF — the admin invite form can assign ANY role, " +
+          "including privileged ones. Set `invitableRoles` (intersected with the " +
+          "inviter's ARBAC grants), override `getAvailableRoles()`, or set " +
+          "`allowAnyInviteRole: true` to acknowledge the open default.",
+      );
+    }
     return undefined;
   }
 
@@ -2575,10 +2676,28 @@ export class AuthWorkflow {
   // ── Invite admin phase (5; arbac-evaluated except `send-email`) ──
 
   /**
+   * Roles the server will honor from the admin invite form. SECURITY boundary:
+   * when `resolveAdminForm` returned `collectRoles: false` the role picker is
+   * hidden, so any submitted `roles[]` is a crafted or buggy payload and is
+   * IGNORED — roles in that mode come from `inferAdminRoles` (server-side),
+   * never client input. This keeps role authorization independent of whether
+   * `prepare-available-roles` ran: that step populates the `availableRoles`
+   * whitelist the `admin-form` guard enforces against, but it is schema-gated on
+   * `collectRoles`, so WITHOUT this check a `collectRoles:false` deployment
+   * would let a crafted POST assign ANY role with no whitelist / per-role ARBAC
+   * `assign:<role>` check.
+   */
+  protected effectiveInviteRoles(ctx: AuthWfCtx, submitted: string[]): string[] {
+    if (ctx.adminForm?.collectRoles === false) return [];
+    return parseInviteRoles(submitted);
+  }
+
+  /**
    * Admin-side invite form. Pauses for `InviteForm`; binds `ctx.email` +
    * `ctx.admin.roles`. Server-side enforces the `availableRoles` whitelist
-   * (populated by `prepare-available-roles`). Calls `duplicateInviteCheck`
-   * to decide whether to reject duplicates.
+   * (populated by `prepare-available-roles`) and, via {@link effectiveInviteRoles},
+   * ignores any submitted roles when `resolveAdminForm` set `collectRoles:false`.
+   * Calls `duplicateInviteCheck` to decide whether to reject duplicates.
    */
   @Step("admin-form")
   @ArbacResource("auth.invite")
@@ -2590,7 +2709,7 @@ export class AuthWorkflow {
       roles: string[];
     };
     const email = input.email;
-    const parsed = parseInviteRoles(input.roles);
+    const parsed = this.effectiveInviteRoles(ctx, input.roles);
     if (Array.isArray(ctx.admin?.availableRoles)) {
       const allowed = new Set(ctx.admin.availableRoles);
       const bad = parsed.find((r) => !allowed.has(r));
@@ -2846,19 +2965,12 @@ export class AuthWorkflow {
     // Stage context-aware copy BEFORE the pause so the inputRequired envelope
     // carries the rendered heading/intro alongside the form schema.
     const password = (ctx.password ??= {});
-    if (password.changeReason === "expired") {
-      password.heading = "Your password has expired";
-      password.intro = "Choose a new password to continue. The previous one is no longer valid.";
-    } else if (password.changeReason === "reset") {
-      password.heading = "Reset your password";
-      password.intro = "Choose a new password for your account.";
-    } else if (ctx.accept) {
-      password.heading = "Welcome — set your password";
-      password.intro = "Choose a password to activate your account.";
-    } else {
-      password.heading = "Set your initial password";
-      password.intro = "Your account was created without a password. Choose one to continue.";
-    }
+    const copy = await this.resolveSetPasswordCopy(ctx);
+    // Guarded assigns — never write `undefined` (wf state-token persistence
+    // rejects it; see CLAUDE.md), so a partial override leaves the untouched
+    // field at whatever an earlier step staged.
+    if (copy.heading !== undefined) password.heading = copy.heading;
+    if (copy.intro !== undefined) password.intro = copy.intro;
     const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.setPassword);
     let input: { newPassword: string; confirmPassword: string; consents?: string[] };
     try {
