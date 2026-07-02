@@ -4,14 +4,26 @@ import { getMoostMate } from "moost";
 
 /**
  * Caller-identity strategy for a rate-limited route (RL.spec.md §5.3):
- *  - `'ip'` — client IP (the public-endpoint mode; honors `trustProxy`)
- *  - `'user'` / `'auto'` — authenticated user id, falling back to IP for
- *    anonymous callers (both spellings share one behavior; `'auto'` reads
- *    better on mixed public/authed routes)
- *  - custom function — runs inside the event context, so any composable is
- *    usable (tenant id, API key, `userId + ip`, …)
+ *  - `'ip'` — client IP (the public-endpoint mode; honors `trustProxy`).
+ *    Evaluated PRE-guard — floods rejected before credential work.
+ *  - any other string — a NAMED SUBJECT, looked up in the per-event
+ *    subjects slot (see `setRateLimitSubject`) and evaluated POST-guard so
+ *    GUARD-priority writers have run. When the slot is empty, `'user'` and
+ *    `'session'` (per login/device) derive from the auth context; anything
+ *    unresolved falls back to the IP budget. `'auto'` is an alias of
+ *    `'user'`. Apps supply their own kinds (`'tenant'`, `'apiKey'`, …) via
+ *    `setRateLimitSubject`.
+ *  - custom function — runs inside the event context PRE-guard; must be
+ *    self-sufficient (it cannot read what GUARD-priority code sets).
  */
-export type RateLimitKeyStrategy = "ip" | "user" | "auto" | (() => string | Promise<string>);
+export type RateLimitKeyStrategy =
+  | "ip"
+  | "user"
+  | "auto"
+  | "session"
+  // (string & {}) keeps literal autocomplete while accepting any subject kind
+  | (string & {})
+  | (() => string | Promise<string>);
 
 /** Trailing options object accepted by `@RateLimit(...rules, opts)`. */
 export interface RateLimitDecoratorOptions {

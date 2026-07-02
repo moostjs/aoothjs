@@ -1237,6 +1237,17 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     quota(@UserId() userId: string): { userId: string } {
       return { userId };
     }
+
+    // Named-subject keying beyond 'user': one budget per LOGIN — 'session'
+    // derives from the auth context when the subjects map is empty (the
+    // same map a custom IAM would write via `setRateLimitSubject`).
+    @RateLimit("1/1m", { key: "session" })
+    @ArbacResource("rl-demo")
+    @ArbacAction("quota")
+    @Get("per-session")
+    perSession(@UserId() userId: string): { userId: string } {
+      return { userId };
+    }
   }
 
   // Mount the bundled sessions endpoints (`GET/DELETE /auth/sessions`). The

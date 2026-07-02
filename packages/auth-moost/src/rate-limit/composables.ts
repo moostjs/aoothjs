@@ -11,6 +11,38 @@ import { current, key } from "@wooksjs/event-core";
  */
 export const rateLimitDecisionKey = key<RateLimitDecision>("aooth.rateLimit.decision");
 
+/**
+ * Internal: named rate-limit subjects for this event — subject kind
+ * (`'user'`, `'tenant'`, …) → resolved caller identity, written via
+ * {@link setRateLimitSubject} and read by the post-guard rate-limit phase.
+ */
+export const rateLimitSubjectsKey = key<Record<string, string>>("aooth.rateLimit.subjects");
+
+/**
+ * Supply the rate-limit subject for a named key strategy — the seam for
+ * custom IAMs / tenant resolvers. Call from GUARD-priority (or earlier)
+ * code; the value is used VERBATIM as the counter subject (include your own
+ * prefix, e.g. `iam:<sub>`) and always wins over the built-in `user` /
+ * `session` derivations. Full contract: docs `/moost/rate-limit`.
+ */
+export function setRateLimitSubject(
+  kind: string,
+  subject: string,
+  ctx: EventContext = current(),
+): void {
+  const subjects = ctx.has(rateLimitSubjectsKey) ? ctx.get(rateLimitSubjectsKey) : {};
+  subjects[kind] = subject;
+  ctx.set(rateLimitSubjectsKey, subjects);
+}
+
+/** Read a named rate-limit subject set for this event (or `undefined`). */
+export function getRateLimitSubject(
+  kind: string,
+  ctx: EventContext = current(),
+): string | undefined {
+  return ctx.has(rateLimitSubjectsKey) ? ctx.get(rateLimitSubjectsKey)[kind] : undefined;
+}
+
 export interface RateLimitBindings {
   /**
    * The decision the interceptor computed for this event, or `null` when the

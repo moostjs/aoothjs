@@ -40,7 +40,12 @@ export { deriveWfStateSecret, WfTriggerProvider } from "./wf-trigger/provider";
 //    ergonomic single-import setup.
 export { RateLimit, RateLimited } from "./rate-limit/decorator";
 export { rateLimitInterceptors, type RateLimitInterceptorOptions } from "./rate-limit/interceptor";
-export { useRateLimit, type RateLimitBindings } from "./rate-limit/composables";
+export {
+  getRateLimitSubject,
+  setRateLimitSubject,
+  useRateLimit,
+  type RateLimitBindings,
+} from "./rate-limit/composables";
 export {
   getRateLimitMate,
   type RateLimitDecoratorOptions,

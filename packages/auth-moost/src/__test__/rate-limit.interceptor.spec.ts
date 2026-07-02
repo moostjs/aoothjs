@@ -7,7 +7,7 @@ import { getMoostMate } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import { Public } from "../auth.decorator";
-import { useRateLimit } from "../rate-limit/composables";
+import { setRateLimitSubject, useRateLimit } from "../rate-limit/composables";
 import { RateLimit, RateLimited } from "../rate-limit/decorator";
 import { rateLimitInterceptors } from "../rate-limit/interceptor";
 import {
@@ -47,6 +47,19 @@ class RlController {
   @TestHandler()
   @RateLimit("2/1m", { key: "user" })
   userKeyed() {
+    return "ok";
+  }
+
+  @TestHandler()
+  @Public()
+  @RateLimit("1/1m", { key: "tenant" })
+  tenantKeyed() {
+    return "ok";
+  }
+
+  @TestHandler()
+  @RateLimit("1/1m", { key: "session" })
+  sessionKeyed() {
     return "ok";
   }
 
@@ -114,6 +127,8 @@ async function runChain(
   controllerName: string,
   method: string,
   httpOpts: { headers?: Record<string, string> } = {},
+  /** Simulated custom GUARD-priority interceptors (e.g. an external IAM). */
+  guards: { beforeAuthGuard?: () => void; afterAuthGuard?: () => void } = {},
 ): Promise<RunResult> {
   const validate = app.auth.validate.bind(app.auth);
   let validateCalls = 0;
@@ -128,7 +143,9 @@ async function runChain(
       const noop = (): void => undefined;
       try {
         await pair[0].before?.(noop);
+        guards.beforeAuthGuard?.();
         await app.guard.before?.(noop);
+        guards.afterAuthGuard?.();
         await pair[1].before?.(noop);
       } catch (err) {
         thrown = err as HttpError;
@@ -336,6 +353,90 @@ describe("rateLimitInterceptors", () => {
     tenant = "t2"; // new subject → fresh budget
     const fresh = await runChain(app, pair, "RlController", "plain");
     expect(fresh.thrown).toBeUndefined();
+  });
+
+  it("a custom IAM guard's 'user' subject wins over aooth's derivation, in either GUARD order", async () => {
+    const app = await prepareTestApp([RlController]);
+    const pair = rateLimitInterceptors({ limiter: new RateLimiter({ clock: fakeClock() }) });
+    const { accessToken: alice } = await app.auth.issue("alice");
+    const { accessToken: bob } = await app.auth.issue("bob");
+
+    const run = (token: string, iamSub: string, order: "beforeAuthGuard" | "afterAuthGuard") =>
+      runChain(
+        app,
+        pair,
+        "RlController",
+        "userKeyed",
+        { headers: { authorization: `Bearer ${token}` } },
+        { [order]: () => setRateLimitSubject("user", `iam:${iamSub}`) },
+      );
+
+    // Two different aooth users behind ONE IAM subject → one shared 2/1m
+    // budget (proves the slot beats the built-in `u:<userId>` derivation).
+    expect((await run(alice, "sub-1", "beforeAuthGuard")).thrown).toBeUndefined();
+    expect((await run(bob, "sub-1", "beforeAuthGuard")).thrown).toBeUndefined();
+    // The IAM guard registered AFTER aooth's guard still owns the subject —
+    // the slot is read FIRST by the resolver, so ordering is irrelevant.
+    const rejected = await run(bob, "sub-1", "afterAuthGuard");
+    expect(rejected.thrown?.body.statusCode).toBe(429);
+
+    // A fresh IAM subject gets a fresh budget, even for an exhausted token.
+    expect((await run(alice, "sub-2", "beforeAuthGuard")).thrown).toBeUndefined();
+  });
+
+  it("custom subject kinds ('tenant') budget post-guard by the supplied value, with IP fallback when unset", async () => {
+    const app = await prepareTestApp([RlController]);
+    const pair = rateLimitInterceptors({
+      limiter: new RateLimiter({ clock: fakeClock() }),
+      trustProxy: true,
+    });
+    const hit = (ip: string, tenant?: string) =>
+      runChain(
+        app,
+        pair,
+        "RlController",
+        "tenantKeyed",
+        { headers: { "x-forwarded-for": ip } },
+        tenant ? { beforeAuthGuard: () => setRateLimitSubject("tenant", `t:${tenant}`) } : {},
+      );
+
+    // Same tenant from different IPs → one shared 1/1m budget.
+    await hit("1.1.1.1", "acme");
+    expect((await hit("2.2.2.2", "acme")).thrown?.body.statusCode).toBe(429);
+    // Another tenant → own budget.
+    expect((await hit("2.2.2.2", "globex")).thrown).toBeUndefined();
+
+    // Nobody populated the kind → degrade to per-IP budgets, never one global bucket.
+    await hit("3.3.3.3");
+    expect((await hit("4.4.4.4")).thrown).toBeUndefined();
+    expect((await hit("4.4.4.4")).thrown?.body.statusCode).toBe(429);
+  });
+
+  it("named subject kinds are owned by the POST-guard phase (never evaluated pre-guard)", async () => {
+    const app = await prepareTestApp([RlController]);
+    const pair = rateLimitInterceptors({ limiter: new RateLimiter({ clock: fakeClock() }) });
+
+    const decision = await withHandlerContext(app, "RlController", "tenantKeyed", {}, async () => {
+      await pair[0].before?.(() => undefined); // pre-guard phase only
+      return useRateLimit(current()).decision;
+    });
+    expect(decision).toBeNull();
+  });
+
+  it("'session' keying gives each login of the same user its own budget", async () => {
+    const app = await prepareTestApp([RlController]);
+    const pair = rateLimitInterceptors({ limiter: new RateLimiter({ clock: fakeClock() }) });
+    const { accessToken: login1 } = await app.auth.issue("alice");
+    const { accessToken: login2 } = await app.auth.issue("alice");
+    const bearer = (token: string) => ({ headers: { authorization: `Bearer ${token}` } });
+
+    await runChain(app, pair, "RlController", "sessionKeyed", bearer(login1));
+    // Same session again → 1/1m exhausted.
+    const rejected = await runChain(app, pair, "RlController", "sessionKeyed", bearer(login1));
+    expect(rejected.thrown?.body.statusCode).toBe(429);
+    // Same USER, different login/device → untouched budget.
+    const other = await runChain(app, pair, "RlController", "sessionKeyed", bearer(login2));
+    expect(other.thrown).toBeUndefined();
   });
 
   it("suppresses RateLimit-* headers with headers:false but still throws 429", async () => {

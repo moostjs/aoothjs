@@ -15,7 +15,7 @@ import {
 } from "moost";
 
 import { useAuth } from "../auth.composables";
-import { rateLimitDecisionKey } from "./composables";
+import { getRateLimitSubject, rateLimitDecisionKey } from "./composables";
 import type { RateLimitKeyStrategy, TRateLimitMeta } from "./mate";
 
 export interface RateLimitInterceptorOptions {
@@ -50,8 +50,8 @@ interface RouteConfig {
   rules: RateLimitRule[];
   /** `'auto'` is normalized to `'user'` here — one comparison downstream. */
   keyStrategy: Exclude<RateLimitKeyStrategy, "auto">;
-  /** True for `'user'` keying — the route belongs to the post-guard phase. */
-  authKeyed: boolean;
+  /** True for any NAMED subject keying — the route belongs to the post-guard phase. */
+  postGuardKeyed: boolean;
   scope: string;
   defaultMessage?: string;
   /** Precomputed `RateLimit-Policy` value — constant per route. */
@@ -129,7 +129,7 @@ export function rateLimitInterceptors(opts?: RateLimitInterceptorOptions): TInte
       config = {
         rules,
         keyStrategy,
-        authKeyed: keyStrategy === "user",
+        postGuardKeyed: typeof keyStrategy === "string" && keyStrategy !== "ip",
         scope: metaOpts?.id ?? `${ctor.name}.${method}`,
         ...((metaOpts?.message ?? opts?.message) !== undefined && {
           defaultMessage: metaOpts?.message ?? opts?.message,
@@ -150,7 +150,7 @@ export function rateLimitInterceptors(opts?: RateLimitInterceptorOptions): TInte
 
     const config = resolveRouteConfig(useControllerContext(ctx));
     if (!config) return;
-    if (config.authKeyed !== (phase === "post")) return; // the other phase owns this route
+    if (config.postGuardKeyed !== (phase === "post")) return; // the other phase owns this route
 
     const subject = await resolveSubject(config.keyStrategy, ipOpts, ctx);
     const decision = await limiter.check(config.scope, subject, config.rules, {
@@ -184,11 +184,22 @@ async function resolveSubject(
   ctx: EventContext,
 ): Promise<string> {
   if (typeof strategy === "function") return await strategy();
-  if (strategy === "user") {
-    const userId = useAuth(ctx).getAuthContext()?.userId;
-    if (userId !== undefined) return `u:${userId}`;
-    // Anonymous caller on a user-keyed route (e.g. `@Public()` + `'user'`) —
-    // fall back to the IP budget rather than lumping everyone into one bucket.
+  if (strategy !== "ip") {
+    // Named subject — the slot (written via `setRateLimitSubject` by a
+    // custom IAM / tenant resolver at GUARD priority) is read FIRST, so an
+    // explicit write always wins over the built-in derivations below,
+    // regardless of guard registration order.
+    const subject = getRateLimitSubject(strategy, ctx);
+    if (subject !== undefined) return subject;
+    // Built-in kinds derive lazily from the auth context — only routes
+    // actually keyed by them pay this read.
+    const auth =
+      strategy === "user" || strategy === "session" ? useAuth(ctx).getAuthContext() : null;
+    if (strategy === "user" && auth?.userId !== undefined) return `u:${auth.userId}`;
+    if (strategy === "session" && auth?.sessionId !== undefined) return `s:${auth.sessionId}`;
+    // Nobody populated the subject (anonymous caller on `'user'`, or a
+    // misconfigured custom kind) — fall back to the per-IP budget rather
+    // than lumping everyone into one bucket.
   }
   return `ip:${useRequest(ctx).getIp(ipOpts)}`;
 }

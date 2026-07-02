@@ -7,6 +7,8 @@
  *            across users; anonymous callers are 401'd by the auth guard
  *            (never mistaken for a rate-limit rejection).
  *   RL-003 — undecorated routes are untouched (no default rules configured).
+ *   RL-004 — session-keyed route: the auth-context-derived sessionId subject
+ *            gives each login its own budget (named-subject keying end-to-end).
  */
 import { expect, test } from "@playwright/test";
 
@@ -76,5 +78,26 @@ test.describe("RL: HTTP rate limiting (@RateLimit)", () => {
     expect(res.status()).toBe(200);
     expect(res.headers()["ratelimit-limit"]).toBeUndefined();
     expect(res.headers()["ratelimit-policy"]).toBeUndefined();
+  });
+
+  test("RL-004: session-keyed route — each login of the same user has its own budget", async ({
+    request,
+  }) => {
+    // /rl-demo/per-session declares `1/1m` with `key: 'session'` — the
+    // subject derives from the auth context's sessionId, so two logins of
+    // ONE user must not share a budget.
+    const login1 = await mintToken(request, USERS.alice.username);
+    const login2 = await mintToken(request, USERS.alice.username);
+
+    expect((await request.get("/rl-demo/per-session", { headers: auth(login1) })).status()).toBe(
+      200,
+    );
+    // Same login again → exhausted.
+    const rejected = await request.get("/rl-demo/per-session", { headers: auth(login1) });
+    expect(rejected.status()).toBe(429);
+    // Same user, different login/device → untouched budget.
+    expect((await request.get("/rl-demo/per-session", { headers: auth(login2) })).status()).toBe(
+      200,
+    );
   });
 });
