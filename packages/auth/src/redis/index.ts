@@ -1,23 +1,43 @@
 import { randomUUID } from "node:crypto";
 import type { CredentialState } from "../credential/types";
+import type { RateLimitStore } from "../rate-limit/store";
 import type { CredentialStore, DenylistStore } from "../stores/store";
 
 /**
  * Structural Redis client. Covers the exact set of commands used by
- * `CredentialStoreRedis` and `DenylistStoreRedis` — no more.
+ * `CredentialStoreRedis`, `DenylistStoreRedis`, and `RateLimitStoreRedis` —
+ * no more.
  *
- * Compatible by-shape with `ioredis`, `redis@4+`, `@redis/client`, and ad-hoc
- * test doubles. Consumers are free to wrap whatever client they ship; we
- * deliberately do not declare a peer dep on any specific package.
+ * Compatible by-shape with `ioredis` and ad-hoc test doubles. Consumers are
+ * free to wrap whatever client they ship; we deliberately do not declare a
+ * peer dep on any specific package.
+ *
+ * ALL TTLs are MILLISECONDS. That is why the interface exposes `pexpire`
+ * rather than `expire` — redis's `EXPIRE` takes seconds, and a raw client
+ * passed by shape would otherwise satisfy the type while silently setting
+ * a 1000× TTL (a 5-minute counter becomes a ~3.5-day one). With `pexpire`
+ * a seconds-based double fails to typecheck instead of misbehaving.
+ * `node-redis` (`redis@4+`) users adapt the camelCase methods, e.g.:
+ *
+ * ```ts
+ * const redisLike: RedisLike = {
+ *   set: (k, v, _px, ttlMs) => client.set(k, v, ttlMs !== undefined ? { PX: ttlMs } : {}),
+ *   get: (k) => client.get(k),
+ *   del: (...k) => client.del(k),
+ *   exists: (k) => client.exists(k),
+ *   pexpire: (k, ms) => client.pExpire(k, ms).then((ok) => (ok ? 1 : 0)),
+ *   incr: (k) => client.incr(k),
+ *   sadd: (k, ...m) => client.sAdd(k, m),
+ *   srem: (k, ...m) => client.sRem(k, m),
+ *   smembers: (k) => client.sMembers(k),
+ * }
+ * ```
  *
  * Return types are widened to the union of what real clients return:
  *   - `set` returns `'OK' | string | null` (null on conditional sets that fail)
- *   - `del` / `expire` / `exists` / `sadd` / `srem` return `number`
+ *   - `del` / `pexpire` / `exists` / `incr` / `sadd` / `srem` return `number`
  *   - `get` returns `string | null`
  *   - `smembers` returns `string[]`
- *
- * The `ttl` arg passed to `set` is in MILLISECONDS — we always call with
- * `PX`, never `EX`, so callers don't have to translate.
  */
 export interface RedisLike {
   /** `SET key value [PX ms]` — accepts an optional ms TTL. */
@@ -26,7 +46,9 @@ export interface RedisLike {
   del(...keys: string[]): Promise<number>;
   exists(key: string): Promise<number>;
   /** `PEXPIRE key ttlMs` — ms TTL on an existing key. */
-  expire(key: string, ttlMs: number): Promise<number>;
+  pexpire(key: string, ttlMs: number): Promise<number>;
+  /** `INCR key` — atomic increment-and-get; creates the key at 1. */
+  incr(key: string): Promise<number>;
   sadd(key: string, ...members: string[]): Promise<number>;
   srem(key: string, ...members: string[]): Promise<number>;
   smembers(key: string): Promise<string[]>;
@@ -235,5 +257,45 @@ export class DenylistStoreRedis implements DenylistStore {
   async cleanup(): Promise<number> {
     // Redis evicts expired keys automatically via PX TTL — nothing to do.
     return 0;
+  }
+}
+
+interface RedisRateLimitStoreOptions {
+  redis: RedisLike;
+  /** Key prefix. Defaults to `aooth:rl`. Combined as `<prefix>:<limiter key>`. */
+  prefix?: string;
+}
+
+/**
+ * Redis-backed `RateLimitStore` (RL.spec.md §4.3) — one atomic `INCR` per
+ * hit, `PEXPIRE` on first increment for garbage collection.
+ *
+ * Correctness never depends on the TTL: the limiter embeds the window start
+ * in the key, so a new window is a new key. If the process dies between
+ * `incr` and `pexpire`, the TTL-less key leaks a few bytes but is never
+ * counted again.
+ */
+export class RateLimitStoreRedis implements RateLimitStore {
+  private readonly redis: RedisLike;
+  private readonly prefix: string;
+
+  constructor(opts: RedisRateLimitStoreOptions) {
+    this.redis = opts.redis;
+    this.prefix = opts.prefix ?? "aooth:rl";
+  }
+
+  private key(key: string): string {
+    return `${this.prefix}:${key}`;
+  }
+
+  async hit(key: string, ttlMs: number): Promise<number> {
+    const k = this.key(key);
+    const count = await this.redis.incr(k);
+    if (count === 1) await this.redis.pexpire(k, ttlMs);
+    return count;
+  }
+
+  async reset(key: string): Promise<void> {
+    await this.redis.del(this.key(key));
   }
 }

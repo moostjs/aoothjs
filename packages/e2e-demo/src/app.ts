@@ -1,5 +1,7 @@
 import {
   type AoothArbacClaims,
+  ArbacAction,
+  ArbacResource,
   arbacAuthorizeInterceptor,
   type ArbacDbScope,
   ArbacUserProviderToken,
@@ -65,8 +67,13 @@ import {
   OAuthController,
   PENDING_AUTHORIZATION_STORE_TOKEN,
   Public,
+  RateLimit,
+  RateLimiter,
+  rateLimitInterceptors,
+  RateLimitStoreMemory,
   SessionsController,
   useAuth,
+  UserId,
   WfTrigger,
   WfTriggerProvider,
 } from "@aooth/auth-moost";
@@ -77,7 +84,7 @@ import {
   FederatedIdentityStoreAtscriptDb,
   type FederatedIdentityTable,
 } from "@aooth/user/atscript-db";
-import { MoostHttp, Post } from "@moostjs/event-http";
+import { Get, MoostHttp, Post } from "@moostjs/event-http";
 import { useHeaders } from "@wooksjs/event-http";
 import { MoostWf } from "@moostjs/event-wf";
 import {
@@ -1099,7 +1106,17 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     [DYNAMIC_CLIENT_STORE_TOKEN, () => dynamicClientStore],
   ];
   app.setProvideRegistry(createProvideRegistry(...authProviders));
-  app.applyGlobalInterceptors(authGuardInterceptor({ cookie: { secure: false } }));
+  // Rate limiting (RL.spec.md): the memory store keeps the demo dependency-free
+  // (a real deployment passes `RateLimitStoreRedis` from `@aooth/auth/redis`).
+  // The store reference is held so `reseed()` can wipe counters between e2e
+  // tests. Only the two `/rl-demo/*` routes declare rules — no app-wide
+  // defaults — so every other endpoint is unaffected.
+  const rateLimitStore = new RateLimitStoreMemory();
+  const rateLimiter = new RateLimiter({ store: rateLimitStore });
+  app.applyGlobalInterceptors(
+    authGuardInterceptor({ cookie: { secure: false } }),
+    ...rateLimitInterceptors({ limiter: rateLimiter }),
+  );
 
   // AUTH-MOOST-5: `DemoWfTriggerProvider` is the consumer subclass of
   // `WfTriggerProvider` that wires this app's DB-backed wf state store and
@@ -1199,6 +1216,29 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
 
   app.setReplaceRegistry(createReplaceRegistry([WfTriggerProvider, DemoWfTriggerProvider]));
 
+  // Acceptance proof for RL.spec.md — one public IP-keyed route (the primary
+  // use case) and one guarded user-keyed route. Exercised by
+  // `test-e2e/rate-limit.spec.ts`. Registered ONLY in test mode (below, next
+  // to the `__test` controller) — a dev poking /rl-demo/ping 4× would
+  // otherwise lock themselves out for a minute.
+  @Controller("rl-demo")
+  class RateLimitDemoController {
+    @Public()
+    @RateLimit("3/1m | Demo limit hit, wait {{delta}}")
+    @Get("ping")
+    ping(): { ok: boolean } {
+      return { ok: true };
+    }
+
+    @RateLimit("2/1m", { key: "user" })
+    @ArbacResource("rl-demo")
+    @ArbacAction("quota")
+    @Get("quota")
+    quota(@UserId() userId: string): { userId: string } {
+      return { userId };
+    }
+  }
+
   // Mount the bundled sessions endpoints (`GET/DELETE /auth/sessions`). The
   // default `SessionEnricherProvider` (identity) is auto-resolved by DI; the
   // SPA's portal parses the raw `metadata.userAgent` client-side, so no
@@ -1277,6 +1317,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     // WF-INVITE-018 toggle — reset between tests so a flipped flag in one
     // spec doesn't leak into the next.
     g.__aoothE2eAllowDuplicateInvites = false;
+    // Rate-limit counters — wiped so one spec's 429s don't bleed into the next.
+    rateLimitStore.clear();
     // Order matters for FKs: drop dependent rows first. The model-typed
     // `AtscriptDbTable<T>` overloads produce a TS2590 union when combined in
     // one array — widen the whole array once to a plain `deleteMany` shape
@@ -1329,7 +1371,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       lifecycle: sharedLifecycleBuffer,
       wfStates: appDb.tables.wfStates,
     });
-    app.registerControllers(TestMailboxController);
+    app.registerControllers(TestMailboxController, RateLimitDemoController);
     // The fake OAuth provider's authorize endpoint — only meaningful in test
     // mode (it's the bounce target baked into `fakeGoogle`'s authorize URL).
     app.registerControllers(createFakeIdpController([fakeGoogle, fakeGithub, fakeApple]));

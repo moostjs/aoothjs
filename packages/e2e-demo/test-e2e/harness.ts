@@ -248,3 +248,24 @@ export async function loginViaUi(
 export function uniqueEmail(prefix: string): string {
   return `${prefix}-${Date.now()}@test.example`;
 }
+
+/**
+ * Mint an access token for `username` via `POST /__test/token-attenuated`.
+ * An empty `claims` body (the default) mints a FULL-authority token; pass
+ * typed `@arbac.attenuate.*` fields to mint a down-scoped one.
+ */
+export async function mintToken(
+  request: APIRequestContext,
+  username: string,
+  claims: { roles?: string[]; attrs?: Record<string, unknown> } = {},
+): Promise<string> {
+  // request.post({ data }) sends application/json — the @Body() parser needs it.
+  const res = await request.post(`/__test/token-attenuated/${username}`, { data: claims });
+  expect(res.ok()).toBeTruthy();
+  return ((await res.json()) as { accessToken: string }).accessToken;
+}
+
+/** Bearer header object for `request.get(url, { headers: bearerAuth(token) })`. */
+export function bearerAuth(token: string): { Authorization: string } {
+  return { Authorization: `Bearer ${token}` };
+}

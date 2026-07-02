@@ -1,7 +1,7 @@
 import type { RedisLike } from "../index";
 
 /**
- * In-memory `RedisLike` double. Implements the exact 8 commands the adapters
+ * In-memory `RedisLike` double. Implements the exact commands the adapters
  * use. We deliberately do NOT enforce PX-based eviction here — Redis itself
  * is responsible for that in production. Tests that need to simulate "the
  * key expired" can call `forceExpire(key)` to drop the K/V entry directly,
@@ -45,11 +45,18 @@ export class MockRedis implements RedisLike {
     return this.kv.has(key) ? 1 : 0;
   }
 
-  async expire(key: string, ttlMs: number): Promise<number> {
-    this.ops.push({ cmd: "expire", args: [key, ttlMs] });
+  async pexpire(key: string, ttlMs: number): Promise<number> {
+    this.ops.push({ cmd: "pexpire", args: [key, ttlMs] });
     if (!this.kv.has(key)) return 0;
     this.ttls.set(key, ttlMs);
     return 1;
+  }
+
+  async incr(key: string): Promise<number> {
+    this.ops.push({ cmd: "incr", args: [key] });
+    const next = Number(this.kv.get(key) ?? "0") + 1;
+    this.kv.set(key, String(next));
+    return next;
   }
 
   async sadd(key: string, ...members: string[]): Promise<number> {

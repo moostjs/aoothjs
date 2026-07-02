@@ -34,6 +34,28 @@ export type {
 export { WfTrigger, type WfTriggerOpts } from "./wf-trigger/decorator";
 export { deriveWfStateSecret, WfTriggerProvider } from "./wf-trigger/provider";
 
+// ── Rate limiting (RL.spec.md) — @RateLimit metadata + enforcing interceptor
+//    pair + composable. The limiter/stores are framework-agnostic and live in
+//    @aooth/auth (redis store under `@aooth/auth/redis`); re-exported here for
+//    ergonomic single-import setup.
+export { RateLimit, RateLimited } from "./rate-limit/decorator";
+export { rateLimitInterceptors, type RateLimitInterceptorOptions } from "./rate-limit/interceptor";
+export { useRateLimit, type RateLimitBindings } from "./rate-limit/composables";
+export {
+  getRateLimitMate,
+  type RateLimitDecoratorOptions,
+  type RateLimitKeyStrategy,
+  type TRateLimitMeta,
+} from "./rate-limit/mate";
+export { RateLimiter, RateLimitStoreMemory } from "@aooth/auth";
+export type {
+  RateLimitDecision,
+  RateLimiterOptions,
+  RateLimitRule,
+  RateLimitRuleInput,
+  RateLimitStore,
+} from "@aooth/auth";
+
 // ── Federated login (OAuth2 / OIDC) — moost integration of @aooth/idp ──
 export { type ConnectedAccount, OAuthController } from "./oauth/oauth.controller";
 export { OAUTH_CSRF_COOKIE, oauthCsrfCookieAttrs } from "./oauth/oauth-csrf";

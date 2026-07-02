@@ -1,6 +1,6 @@
 import { type APIRequestContext, expect, test } from "@playwright/test";
 
-import { resetApp, USERS } from "./harness";
+import { bearerAuth as auth, mintToken, resetApp, USERS } from "./harness";
 
 /**
  * End-to-end proof of the credential → ARBAC attenuation bridge: a down-scoped
@@ -14,18 +14,11 @@ import { resetApp, USERS } from "./harness";
  */
 const ALICE = USERS.alice.username;
 
-async function mint(
+function mint(
   request: APIRequestContext,
   claims: { roles?: string[]; attrs?: Record<string, unknown> },
 ): Promise<string> {
-  // request.post({ data }) sends application/json — the @Body() parser needs it.
-  const res = await request.post(`/__test/token-attenuated/${ALICE}`, { data: claims });
-  expect(res.ok()).toBeTruthy();
-  return ((await res.json()) as { accessToken: string }).accessToken;
-}
-
-function auth(token: string): { Authorization: string } {
-  return { Authorization: `Bearer ${token}` };
+  return mintToken(request, ALICE, claims);
 }
 
 test.describe("ARBAC-ATTN: credential-claims → ARBAC attenuation (down-scoped tokens)", () => {

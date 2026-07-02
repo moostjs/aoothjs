@@ -106,6 +106,36 @@ export interface GuardRunResult {
 }
 
 /**
+ * Runs `fn` inside an HTTP test context prepared with the requested
+ * headers/cookies, with the controller context set to the named
+ * controller.method handler — the shared scaffolding for exercising
+ * interceptors against bound test handlers.
+ */
+export async function withHandlerContext<T>(
+  app: PreparedTestApp,
+  controllerName: string,
+  method: string,
+  httpOpts: {
+    headers?: Record<string, string>;
+    cookies?: string;
+  },
+  fn: () => Promise<T>,
+): Promise<T> {
+  const entry = app.adapter.handlers.find(
+    (h) => h.controllerName === controllerName && h.method === method,
+  );
+  if (!entry) throw new Error(`No bound handler for ${controllerName}.${method}`);
+  const instance = await entry.getInstance();
+  const headers: Record<string, string> = { ...httpOpts.headers };
+  if (httpOpts.cookies) headers.cookie = httpOpts.cookies;
+  const run = prepareTestHttpContext({ url: "/test", method: "GET", headers });
+  return await run(async (): Promise<T> => {
+    setControllerContext(instance, entry.method as never, "/test", { prefix: "", ctx: current() });
+    return fn();
+  });
+}
+
+/**
  * Invokes the guard's `before` phase inside an HTTP test context with the
  * requested headers/cookies, against the named controller.method handler.
  */
@@ -118,22 +148,12 @@ export async function runGuardForHandler(
     cookies?: string;
   },
 ): Promise<GuardRunResult> {
-  const entry = app.adapter.handlers.find(
-    (h) => h.controllerName === controllerName && h.method === method,
-  );
-  if (!entry) throw new Error(`No bound handler for ${controllerName}.${method}`);
-  const instance = await entry.getInstance();
-  const headers: Record<string, string> = { ...httpOpts.headers };
-  if (httpOpts.cookies) headers.cookie = httpOpts.cookies;
-  const run = prepareTestHttpContext({ url: "/test", method: "GET", headers });
-  return await run(async (): Promise<GuardRunResult> => {
-    const ctx = current();
-    setControllerContext(instance, entry.method as never, "/test", { prefix: "", ctx });
+  return withHandlerContext(app, controllerName, method, httpOpts, async () => {
     try {
       // Functional interceptor's `before` may receive a `reply` arg in moost
       // pipelines; we pass a no-op since we only care about throw vs no-throw.
       await app.guard.before?.(() => {});
-      const auth = useAuth(ctx);
+      const auth = useAuth(current());
       return {
         ok: true,
         authContext: auth.getAuthContext<MyClaims>(),

@@ -96,4 +96,6 @@ export const memberRole = defineRole<UserAttrs, ArbacDbScope>()
   // (revoke). `readAny` (another user's sessions) is admin-only, omitted here.
   .allow("auth.sessions", "read")
   .allow("auth.sessions", "revoke")
+  // Rate-limit demo (RL.spec.md): the guarded user-keyed quota route.
+  .allow("rl-demo", "quota")
   .build();

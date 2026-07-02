@@ -35,6 +35,21 @@ export type { AuthCredentialOptions, IssueOptions } from "./credential/auth-cred
 export type { Clock } from "./utils/clock";
 export { defaultClock } from "./utils/clock";
 
+// Rate limiting (RL.spec.md) — fixed-window limiter + stores. The redis
+// store lives in the `@aooth/auth/redis` subpath next to the other adapters.
+export {
+  DEFAULT_RATE_LIMIT_MESSAGE,
+  formatDurationMs,
+  parseDurationMs,
+  parseRateLimitRule,
+  renderRateLimitMessage,
+} from "./rate-limit/rules";
+export type { RateLimitRule, RateLimitRuleInput } from "./rate-limit/rules";
+export { RateLimitStoreMemory } from "./rate-limit/store";
+export type { RateLimitStore } from "./rate-limit/store";
+export { RateLimiter } from "./rate-limit/rate-limiter";
+export type { RateLimitDecision, RateLimiterOptions } from "./rate-limit/rate-limiter";
+
 // Email transport interface (consumer provides the impl)
 export type { AuthEmailEvent, AuthEmailKind, EmailSender } from "./email";
 
