@@ -203,6 +203,48 @@ interface TAuthMeta {
 
 Shared moost `Mate` typed with `TAuthMeta`. Declaration-merged into `TMoostMetadata`. See [Decorators](/moost/decorators).
 
+### `rateLimitInterceptors`
+
+```ts
+function rateLimitInterceptors(opts?: RateLimitInterceptorOptions): TInterceptorDef[];
+
+interface RateLimitInterceptorOptions {
+  limiter?: RateLimiter; // default: memory-store limiter created once per factory call
+  rules?: RateLimitRuleInput[]; // app-wide defaults for routes without @RateLimit metadata
+  key?: RateLimitKeyStrategy; // default 'ip'
+  trustProxy?: boolean; // default false
+  headers?: boolean; // default true — draft RateLimit-* headers
+  message?: string; // app-wide default 429 template
+}
+```
+
+Factory returning the enforcement **pair** — a `BEFORE_GUARD` interceptor for `'ip'` / custom-keyed routes and an `AFTER_GUARD` one for `'user'` / `'auto'`-keyed routes. Register with a spread: `app.applyGlobalInterceptors(...rateLimitInterceptors(opts))`. HTTP-only; emits `RateLimit-*` (+ `Retry-After` on rejection) and throws `HttpError(429)`. See [Rate Limiting](/moost/rate-limit).
+
+### `useRateLimit`
+
+```ts
+function useRateLimit(): RateLimitBindings;
+
+interface RateLimitBindings {
+  decision: RateLimitDecision | null; // null: no rules on the route / interceptors absent
+}
+```
+
+Reads the decision the interceptor stored on the event slot. Plain function (not a cached wook); workflow child events inherit the HTTP parent's slot. See [Rate Limiting](/moost/rate-limit#useratelimit-reading-the-decision).
+
+### `getRateLimitMate`
+
+```ts
+function getRateLimitMate(): Mate<TRateLimitMeta>;
+interface TRateLimitMeta {
+  rateLimitRules?: RateLimitRule[]; // normalized at decoration time
+  rateLimitOptions?: RateLimitDecoratorOptions;
+  rateLimitDisabled?: boolean; // @RateLimit(false)
+}
+```
+
+Shared moost `Mate` typed with `TRateLimitMeta`. Declaration-merged into `TMoostMetadata`. See [Decorators](/moost/decorators).
+
 ### `createAuthEmailOutlet`
 
 ```ts
@@ -269,6 +311,31 @@ function AuthGuarded(opts?: AuthOptions): ClassDecorator & MethodDecorator;
 ```
 
 Sugar for `@Intercept(authGuardInterceptor(opts))`. Attaches the guard to a single controller instead of globally. See [AuthGuard & useAuth](/moost/auth-guard).
+
+### `@RateLimit`
+
+```ts
+function RateLimit(disabled: false): ClassDecorator & MethodDecorator;
+function RateLimit(
+  ...rulesAndOpts: [RateLimitRuleInput, ...Array<RateLimitRuleInput | RateLimitDecoratorOptions>]
+): ClassDecorator & MethodDecorator;
+
+interface RateLimitDecoratorOptions {
+  key?: RateLimitKeyStrategy; // 'ip' | 'user' | 'auto' | () => string | Promise<string>
+  message?: string; // default 429 template for rules without an inline one
+  id?: string; // shared bucket id; default scope '<ControllerClass>.<methodName>'
+}
+```
+
+Metadata-only rule declaration; variadic rules with an optional trailing options object (detected by the absence of a `limit` key). Method-level metadata replaces class-level. Rules parse eagerly — bad grammar throws at boot. Enforced by `rateLimitInterceptors` / `@RateLimited`. See [Rate Limiting](/moost/rate-limit#ratelimit-rules-options).
+
+### `@RateLimited`
+
+```ts
+function RateLimited(opts?: RateLimitInterceptorOptions): ClassDecorator & MethodDecorator;
+```
+
+Attaches the `rateLimitInterceptors(opts)` **pair** via two `@Intercept`s — the `AuthGuarded` counterpart. Safe alongside a global registration (the decision slot dedups). See [Rate Limiting](/moost/rate-limit#ratelimited-per-controller-sugar).
 
 ### `@WfTrigger`
 
@@ -454,6 +521,7 @@ Re-exported for convenience so consumers don't need a second import:
 - [`EmailSender`](./auth#emailsender), [`SmsSender`](./auth#smssender)
 - [`AuthEmailEvent`](./auth#authemailevent), [`AuthEmailKind`](./auth#authemailkind), [`AuthSmsEvent`](./auth#authsmsevent), [`AuthSmsKind`](./auth#authsmskind)
 - [`BuildMagicLinkUrl`](./auth#buildmagiclinkurl)
+- [`RateLimiter`](./auth#ratelimiter), [`RateLimitStoreMemory`](./auth#ratelimitstorememory) and the rate-limit types ([`RateLimitDecision`](./auth#ratelimitdecision), [`RateLimitRule` / `RateLimitRuleInput`](./auth#ratelimitrule-ratelimitruleinput), [`RateLimitStore`](./auth#ratelimitstore), `RateLimiterOptions`) — the Redis store stays on [`@aooth/auth/redis`](./auth#ratelimitstoreredis)
 
 ## Audit types
 

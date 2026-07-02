@@ -9,6 +9,8 @@ This page is the canonical reference for every decorator the two packages export
 | `@Public()`                      | class / method                    | `@aooth/auth-moost`  | Sets BOTH `authPublic=true` AND `arbacPublic=true` on the mate. Single decorator hides the route from both guards.                                                                   |
 | `@UserId()`                      | parameter                         | `@aooth/auth-moost`  | Resolves to `useAuth().getUserId()`. Throws `401` if no context.                                                                                                                     |
 | `@AuthGuarded(opts)`             | class / method                    | `@aooth/auth-moost`  | Sugar for `@Intercept(authGuardInterceptor(opts))`.                                                                                                                                  |
+| `@RateLimit(...rules, opts?)`    | class / method                    | `@aooth/auth-moost`  | Metadata-only: declares rate-limit rules (`'6/5m \| msg'`) + key strategy / bucket id. Enforced by `rateLimitInterceptors`. `@RateLimit(false)` opts out of app-wide default rules.  |
+| `@RateLimited(opts)`             | class / method                    | `@aooth/auth-moost`  | Sugar attaching the `rateLimitInterceptors(opts)` PAIR (pre-guard + post-guard) via two `@Intercept`s — the `AuthGuarded` counterpart.                                               |
 | `@ArbacResource(name)`           | class / method                    | `@aooth/arbac-moost` | Sets `arbacResourceId` on the mate.                                                                                                                                                  |
 | `@ArbacAction(name)`             | class / method (typically method) | `@aooth/arbac-moost` | Sets `arbacActionId` on the mate.                                                                                                                                                    |
 | `@ArbacAuthorize()`              | class / method                    | `@aooth/arbac-moost` | Wraps `arbacAuthorizeInterceptor` via `Authenticate()` so swagger picks up auth-guard metadata.                                                                                      |
@@ -61,6 +63,24 @@ class AdminController {
   /* ... */
 }
 ```
+
+## `@RateLimit(...rules, opts?)` and `@RateLimited(opts)`
+
+`@RateLimit` declares rate-limit rules on a route (metadata-only, the `@Public()` pattern); `@RateLimited` is the per-controller enforcement sugar — it attaches the `rateLimitInterceptors(opts)` **pair** the way `@AuthGuarded` attaches the auth guard:
+
+```ts
+@RateLimited({ limiter })
+@Controller("reports")
+class ReportsController {
+  @RateLimit("10/1m", { key: "user" })
+  @Get("heavy")
+  heavy() {
+    /* ... */
+  }
+}
+```
+
+Rules, key strategies, headers, and the two-phase enforcement design are covered on the dedicated [Rate Limiting](./rate-limit) page.
 
 ## `@ArbacResource(name)` and `@ArbacAction(name)`
 

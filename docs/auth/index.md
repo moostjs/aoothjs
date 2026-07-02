@@ -74,6 +74,7 @@ That's the whole API on the hot path: `issue`, `validate`, plus `refresh` / `rev
 - [Password Reset](./password-reset) — How the primitives in this package compose into a recovery flow. The same-millisecond epoch gate that enables auto-login after reset. The full workflow lives in [`@aooth/auth-moost`](../moost/workflows).
 - [Email & SMS Senders](./delivery) — The `EmailSender` and `SmsSender` contracts. The kind unions for templated delivery (`recovery.magicLink`, `mfa.code`, `login.pincode`, etc).
 - [Stores](./stores) — Implementation matrix for `CredentialStore<TPayload>` and `DenylistStore`: `Memory`, `Redis` adapter, atscript-db adapter (with the shipped `.as` model), and how to write your own.
+- [Rate Limiting (Core)](./rate-limit) — `RateLimiter` + `RateLimitStore` (memory / Redis): the rule grammar (`'6/5m | wait {{delta}}'`), the `RateLimitDecision` a transport turns into headers + 429, and the fixed-window/window-aligned-key semantics. The HTTP surface lives in [`@aooth/auth-moost`](../moost/rate-limit).
 - [Errors](./errors) — `AuthError` and every variant of `AuthErrorType` with trigger, payload and recommended HTTP mapping.
 
 ## Installation

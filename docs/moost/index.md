@@ -21,6 +21,7 @@ The auth guard and the ARBAC interceptor are both `defineBeforeInterceptor` at `
 | Understand `authGuardInterceptor` token extraction, public-route handling, 401 mapping                     | [AuthGuard & useAuth](./auth-guard)                          |
 | Understand `arbacAuthorizeInterceptor` resource/action resolution, scope plumbing, 403 mapping             | [ARBAC Authorize](./arbac-authorize)                         |
 | Look up every decorator and composable in one place                                                        | [Decorators](./decorators)                                   |
+| Throttle public / authed endpoints — `@RateLimit('6/5m')`, 429 + `RateLimit-*` headers                     | [Rate Limiting](./rate-limit)                                |
 | Wire up `/auth/logout` / `/auth/refresh` / `/auth/status` / `/auth/trigger`                                | [REST Controllers](./controllers)                            |
 | List a user's signed-in devices, revoke one / log out others, mount `SessionsController`                   | [Sessions](./sessions)                                       |
 | Configure the unified `AuthWorkflow`, subclass it, override `resolveXxx`, hook the email outlet            | [Workflows](./workflows)                                     |

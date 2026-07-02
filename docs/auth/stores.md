@@ -150,7 +150,7 @@ const auth = new AuthCredential({
 
 ### `RedisLike` — structural typing
 
-The adapter doesn't depend on any specific Redis client. It accepts anything that implements the eight methods it uses:
+The adapters don't depend on any specific Redis client. They accept anything that implements the nine methods they use (shared by `CredentialStoreRedis`, `DenylistStoreRedis`, and [`RateLimitStoreRedis`](./rate-limit#ratelimitstoreredis)):
 
 ```ts
 interface RedisLike {
@@ -159,15 +159,33 @@ interface RedisLike {
   get(key: string): Promise<string | null>;
   del(...keys: string[]): Promise<number>;
   exists(key: string): Promise<number>;
-  /** `PEXPIRE key ttlMs` — ttl is in **milliseconds**, not seconds. */
-  expire(key: string, ttlMs: number): Promise<number>;
+  /** `PEXPIRE key ttlMs` — ms TTL on an existing key. */
+  pexpire(key: string, ttlMs: number): Promise<number>;
+  /** `INCR key` — atomic increment-and-get; creates the key at 1. */
+  incr(key: string): Promise<number>;
   sadd(key: string, ...members: string[]): Promise<number>;
   srem(key: string, ...members: string[]): Promise<number>;
   smembers(key: string): Promise<string[]>;
 }
 ```
 
-`ioredis`, `redis@v4` (the official client), and `keydb` clients all satisfy this shape. Bring whichever you already have.
+All TTLs are **milliseconds** — that's why the interface exposes `pexpire` rather than `expire`: redis's `EXPIRE` takes seconds, and a raw client passed by shape would satisfy an `expire` signature while silently setting a 1000× TTL. With `pexpire`, a seconds-based double fails to typecheck instead of misbehaving.
+
+`ioredis` and `keydb` clients satisfy this shape as-is. `node-redis` (`redis@4+`) uses camelCase method names — wrap it:
+
+```ts
+const redisLike: RedisLike = {
+  set: (k, v, _px, ttlMs) => client.set(k, v, ttlMs !== undefined ? { PX: ttlMs } : {}),
+  get: (k) => client.get(k),
+  del: (...k) => client.del(k),
+  exists: (k) => client.exists(k),
+  pexpire: (k, ms) => client.pExpire(k, ms).then((ok) => (ok ? 1 : 0)),
+  incr: (k) => client.incr(k),
+  sadd: (k, ...m) => client.sAdd(k, m),
+  srem: (k, ...m) => client.sRem(k, m),
+  smembers: (k) => client.sMembers(k),
+};
+```
 
 ### Key namespaces
 

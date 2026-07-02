@@ -94,6 +94,34 @@ new DenylistStoreMemory();
 
 In-memory `Map<jti, expiresAt>` denylist with lazy expiry on `has` and explicit `cleanup()` sweep. Required by stateless stores if `revoke` / `consume` / `update` are used. See [Stores](/auth/).
 
+### `RateLimiter`
+
+```ts
+new RateLimiter(opts?: RateLimiterOptions)
+
+interface RateLimiterOptions {
+  store?: RateLimitStore   // default: new RateLimitStoreMemory (single process only)
+  clock?: Clock
+}
+
+check(
+  scope: string,           // bucket id
+  subject: string,         // caller identity
+  rules: RateLimitRuleInput[],
+  opts?: { defaultMessage?: string },
+): Promise<RateLimitDecision>
+```
+
+Fixed-window limiter with window-aligned keys — one atomic store increment per rule decides; correctness never depends on the TTL. See [Rate Limiting (Core)](/auth/rate-limit).
+
+### `RateLimitStoreMemory`
+
+```ts
+new RateLimitStoreMemory(opts?: { clock?: Clock })
+```
+
+In-memory `RateLimitStore` — lazy eviction on access, `cleanup(): Promise<number>` sweep, `clear()` for test resets. Single process only. See [Rate Limiting (Core)](/auth/rate-limit#ratelimitstorememory).
+
 ## Functions
 
 ### `generateMagicLinkToken`
@@ -111,6 +139,22 @@ const defaultClock: Clock; // { now: () => Date.now() }
 ```
 
 The default `Clock` implementation injected into stores when none is supplied. Override for deterministic tests or skew-corrected clocks. See [Credentials & Sessions](/auth/credentials).
+
+### Rate-limit rule helpers
+
+```ts
+function parseRateLimitRule(input: RateLimitRuleInput): RateLimitRule; // throws on bad grammar
+function parseDurationMs(input: string): number; // '5m' | '90s' | '500ms' | '1h' | '2d' → ms
+function formatDurationMs(ms: number): string; // 272_000 → '4 minutes 32 seconds'
+function renderRateLimitMessage(
+  template: string,
+  rule: RateLimitRule,
+  retryAfterMs: number,
+): string;
+const DEFAULT_RATE_LIMIT_MESSAGE: string; // 'Too many requests. Please try again in {{delta}}.'
+```
+
+The parsing/formatting layer behind the rule grammar and `{{limit}}` / `{{max}}` / `{{window}}` / `{{delta}}` message placeholders. All parsing is eager — invalid rules throw at config time. See [Rate Limiting (Core)](/auth/rate-limit#rules).
 
 ## Client
 
@@ -310,6 +354,52 @@ interface DenylistStore {
 
 Optional sidecar for stateless stores. See [Stores](/auth/).
 
+## Types — Rate Limiting
+
+### `RateLimitRule` / `RateLimitRuleInput`
+
+```ts
+interface RateLimitRule {
+  limit: number; // max hits per window
+  window: number; // window length, ms
+  message?: string; // 429 message template for THIS rule
+}
+
+type RateLimitRuleInput =
+  | string // '6/5m', '6 per 5m', '6/5m | wait {{delta}}'
+  | { limit: number; window: number | string; message?: string }; // window: ms or '5m'
+```
+
+Normalized rule vs. what decorators/options accept. See [Rate Limiting (Core)](/auth/rate-limit#rules).
+
+### `RateLimitDecision`
+
+```ts
+interface RateLimitDecision {
+  allowed: boolean;
+  limit: number; // governing rule = violated rule, else lowest-remaining rule
+  remaining: number;
+  resetAt: number; // ms epoch
+  resetAfterMs: number; // delta under the limiter's own clock — use for header math
+  retryAfterMs?: number; // present when !allowed
+  message?: string; // present when !allowed — rendered template
+  policies: RateLimitRule[]; // all evaluated rules (RateLimit-Policy header)
+}
+```
+
+The outcome of one `RateLimiter.check()` — everything a transport needs for headers + 429. See [Rate Limiting (Core)](/auth/rate-limit#check-and-the-decision).
+
+### `RateLimitStore`
+
+```ts
+interface RateLimitStore {
+  hit(key: string, ttlMs: number): Promise<number>; // atomic increment-and-get
+  reset?(key: string): Promise<void>; // optional: drop a counter
+}
+```
+
+Storage contract for the fixed-window limiter. Implementations: `RateLimitStoreMemory` (root entry), `RateLimitStoreRedis` (`@aooth/auth/redis`).
+
 ## Types — Transport
 
 ### `AuthEmailKind`
@@ -438,7 +528,12 @@ type AuthErrorType =
 ## Subpath: `@aooth/auth/redis`
 
 ```ts
-import { CredentialStoreRedis, DenylistStoreRedis, RedisLike } from "@aooth/auth/redis";
+import {
+  CredentialStoreRedis,
+  DenylistStoreRedis,
+  RateLimitStoreRedis,
+  RedisLike,
+} from "@aooth/auth/redis";
 ```
 
 ### `CredentialStoreRedis<TPayload>`
@@ -461,6 +556,14 @@ new DenylistStoreRedis(opts: { redis: RedisLike; prefix?: string })
 
 Backing key `aooth:dl:<jti>` with `PX` TTL. `cleanup()` is a no-op — Redis self-evicts. See [Stores](/auth/).
 
+### `RateLimitStoreRedis`
+
+```ts
+new RateLimitStoreRedis(opts: { redis: RedisLike; prefix?: string }) // default prefix 'aooth:rl'
+```
+
+Redis-backed `RateLimitStore` — `hit` is one `INCR` plus a `PEXPIRE` on a window's first increment. Correctness never depends on the TTL (the limiter's keys embed the window start). See [Rate Limiting (Core)](/auth/rate-limit#ratelimitstoreredis).
+
 ### `RedisLike`
 
 ```ts
@@ -470,14 +573,16 @@ interface RedisLike {
   del(...keys: string[]): Promise<number>;
   exists(key: string): Promise<number>;
   /** `PEXPIRE key ttlMs` — ttl is **milliseconds**, not seconds. */
-  expire(key: string, ttlMs: number): Promise<number>;
+  pexpire(key: string, ttlMs: number): Promise<number>;
+  /** `INCR key` — atomic increment-and-get; creates the key at 1. */
+  incr(key: string): Promise<number>;
   sadd(key: string, ...members: string[]): Promise<number>;
   srem(key: string, ...members: string[]): Promise<number>;
   smembers(key: string): Promise<string[]>;
 }
 ```
 
-Structural Redis interface — only the 8 methods the adapters use. Works with `ioredis`, `redis@4`, etc. See [Stores](/auth/).
+Structural Redis interface — only the 9 methods the adapters use. All TTLs are milliseconds (hence `pexpire`, not `expire` — a raw seconds-based client would silently set 1000× TTLs). `ioredis` matches by shape; `node-redis` (`redis@4+`) needs a small camelCase wrapper. See [Stores](/auth/stores#redislike-structural-typing).
 
 ## Subpath: `@aooth/auth/atscript-db`
 
