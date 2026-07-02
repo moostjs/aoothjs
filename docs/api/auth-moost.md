@@ -232,6 +232,15 @@ interface RateLimitBindings {
 
 Reads the decision the interceptor stored on the event slot. Plain function (not a cached wook); workflow child events inherit the HTTP parent's slot. See [Rate Limiting](/moost/rate-limit#useratelimit-reading-the-decision).
 
+### `setRateLimitSubject` / `getRateLimitSubject`
+
+```ts
+function setRateLimitSubject(kind: string, subject: string, ctx?: EventContext): void;
+function getRateLimitSubject(kind: string, ctx?: EventContext): string | undefined;
+```
+
+The named-subject seam: GUARD-priority code (a custom IAM, tenant resolver, API-key gateway) supplies the caller identity for routes keyed by `kind`; the post-guard rate-limit phase reads it. Values are used verbatim as the counter subject (include your own prefix). The map is read first, so an explicit write always wins over the built-in `user` (`u:<userId>`) / `session` (`s:<sessionId>`) kinds, which derive from the auth context when the map is empty. See [Rate Limiting — the subject seam](/moost/rate-limit#the-subject-seam-setratelimitsubject).
+
 ### `getRateLimitMate`
 
 ```ts
@@ -321,7 +330,8 @@ function RateLimit(
 ): ClassDecorator & MethodDecorator;
 
 interface RateLimitDecoratorOptions {
-  key?: RateLimitKeyStrategy; // 'ip' | 'user' | 'auto' | () => string | Promise<string>
+  // 'ip' | 'user' | 'auto' | 'session' | any named subject kind | () => string | Promise<string>
+  key?: RateLimitKeyStrategy;
   message?: string; // default 429 template for rules without an inline one
   id?: string; // shared bucket id; default scope '<ControllerClass>.<methodName>'
 }

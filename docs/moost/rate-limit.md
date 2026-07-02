@@ -70,10 +70,10 @@ Returns **two** interceptor definitions — register with a spread, globally or 
 
 `authGuardInterceptor` is **not free on public routes** — when any `Authorization` header is present (even garbage), it runs full credential validation (a credential-store lookup or JWT verification) before tolerating the failure on `@Public()` routes. A limiter running after the guard would let an attacker force that work on every flood request. So enforcement is split by the route's _effective key strategy_, decided statically from metadata:
 
-| Phase                                  | Owns routes keyed by     | Why there                                                                        |
-| -------------------------------------- | ------------------------ | -------------------------------------------------------------------------------- |
-| `BEFORE_GUARD` (before the auth guard) | `'ip'` / custom function | Floods are rejected before any token/credential work.                            |
-| `AFTER_GUARD` (after the auth guard)   | `'user'` / `'auto'`      | Needs `useAuth()` populated; targets authed traffic where the guard runs anyway. |
+| Phase                                  | Owns routes keyed by                                     | Why there                                                                                            |
+| -------------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `BEFORE_GUARD` (before the auth guard) | `'ip'` / custom function                                 | Floods are rejected before any token/credential work.                                                |
+| `AFTER_GUARD` (after the auth guard)   | any named subject (`'user'`, `'session'`, `'tenant'`, …) | Needs the [subjects map](#the-subject-seam-setratelimitsubject) / auth context the guards establish. |
 
 Exactly one phase evaluates each request, and the decision slot doubles as a dedup marker — registering the pair both globally and per-controller never double-counts.
 
@@ -88,17 +88,59 @@ Pass one `limiter` instance and reuse it everywhere (global registration, `RateL
 ## Key strategies
 
 ```ts
-type RateLimitKeyStrategy = "ip" | "user" | "auto" | (() => string | Promise<string>);
+type RateLimitKeyStrategy =
+  | "ip"
+  | "user"
+  | "auto"
+  | "session"
+  | (string & {}) // any named subject kind — see the subject seam below
+  | (() => string | Promise<string>);
 ```
 
-| Strategy | Subject             | Use for                                                                                                           |
-| -------- | ------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `'ip'`   | `ip:<addr>`         | Public endpoints (the default). Honors `trustProxy`.                                                              |
-| `'user'` | `u:<userId>`        | Guarded endpoints — one budget per user regardless of source IP. Anonymous callers fall back to `ip:<addr>`.      |
-| `'auto'` | same as `'user'`    | Alias — reads better on mixed public/authed routes (the anonymous-fallback makes the two behaviorally identical). |
-| function | whatever it returns | Custom identity — runs inside the event context, so any composable works (tenant id, API key, `userId + ip`).     |
+| Strategy       | Subject                   | Use for                                                                                                                                        |
+| -------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `'ip'`         | `ip:<addr>`               | Public endpoints (the default). Honors `trustProxy`. Evaluated **pre-guard**.                                                                  |
+| `'user'`       | `u:<userId>`              | Guarded endpoints — one budget per user regardless of source IP. Anonymous callers fall back to `ip:<addr>`.                                   |
+| `'session'`    | `s:<sessionId>`           | One budget per **login/device** — a stolen refresh token can't burn the whole user's budget.                                                   |
+| `'auto'`       | same as `'user'`          | Alias — reads better on mixed public/authed routes (the anonymous-fallback makes the two behaviorally identical).                              |
+| any other name | whatever the app supplied | App-defined subject kinds (`'tenant'`, `'apiKey'`, plan tier, …) populated via [`setRateLimitSubject`](#the-subject-seam-setratelimitsubject). |
+| function       | whatever it returns       | Custom resolver — runs inside the event context **pre-guard**, so it must be self-sufficient (see below).                                      |
 
-Precedence: decorator `key` option → interceptor `key` option → `'ip'`.
+Precedence: decorator `key` option → interceptor `key` option → `'ip'`. Every **named** strategy is evaluated in the post-guard phase and falls back to the IP budget when nobody populated the subject — a misconfigured kind degrades to flood protection, never to one global bucket.
+
+### The subject seam — `setRateLimitSubject()`
+
+Named strategies read from a per-event **subjects map**: subject kind → resolved caller identity. Any GUARD-priority (or earlier) code writes into it; the post-guard rate-limit phase reads from it. The map is read **first** — when it's empty, the built-in kinds `user` (`u:<userId>`) and `session` (`s:<sessionId>`) derive from the auth context aooth's guard established, so with aooth auth alone nothing needs to write the map at all.
+
+A custom IAM, tenant resolver, or API-key gateway supplies its own subjects the same way:
+
+```ts
+import { setRateLimitSubject } from "@aooth/auth-moost";
+import { defineBeforeInterceptor, TInterceptorPriority } from "moost";
+
+const myIamGuard = defineBeforeInterceptor(async () => {
+  const principal = await resolveFromMyIam(); // your own validation
+  setRateLimitSubject("user", `iam:${principal.sub}`);
+  setRateLimitSubject("tenant", `t:${principal.org}`);
+}, TInterceptorPriority.GUARD);
+```
+
+Routes then key on those kinds with no custom functions anywhere:
+
+```ts
+@RateLimit('30/1m',  { key: 'user' })    // per IAM principal
+@RateLimit('100/1m', { key: 'tenant' })  // org-wide budget
+```
+
+Rules of the seam:
+
+- Values are used **verbatim** as the counter subject — include your own prefix (`iam:`, `t:`) so distinct kinds can't collide in a shared-`id` bucket.
+- An explicit write **wins** over aooth's built-in `user`/`session` derivation, regardless of guard ordering — the app knows better.
+- Writers must run at `GUARD` priority or earlier; the post-guard phase is the reader. A subject written later (e.g. inside the handler) is invisible to the limiter.
+
+### Custom key functions run pre-guard
+
+The function form is pinned to the **pre-guard** phase (that's its point — flood rejection before credential work), so it cannot read anything GUARD-priority code sets, including `useAuth()` and the subjects map. Use it only for identities derivable from the raw request (an API-key header, a route param). For anything resolved by a guard, use a named subject instead.
 
 ## Response headers — the full 429 contract
 
@@ -158,6 +200,7 @@ Returns the decision the interceptor computed for the current event, or `null` w
 - **DO** set `trustProxy: true` only when actually behind a trusted proxy — otherwise clients can rotate budgets by forging `x-forwarded-for`.
 - **DO** use `@RateLimit(false)` to exempt health checks / internal routes when app-wide default `rules` are configured.
 - **DO** give intentionally-shared budgets an explicit `id` — **not** rely on the default scope, which isolates per handler (`<ControllerClass>.<methodName>`).
+- **DO** supply app-defined subjects (`tenant`, `apiKey`, external-IAM principals) from a GUARD-priority interceptor via `setRateLimitSubject` — **not** from a custom key function, which runs pre-guard and can't see guard state.
 - **DON'T** expect `key: 'user'` to 429 anonymous floods _per user_ — anonymous callers share the IP fallback budget, and on guarded routes the auth guard 401s them before the post-guard phase runs (a missing token yields `401`, not `429`).
 - **DON'T** use this instead of account lockout — `UserService` lockout counts failed credential attempts per account; this counts requests per caller. Complementary layers.
 
