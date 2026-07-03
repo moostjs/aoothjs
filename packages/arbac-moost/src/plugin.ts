@@ -59,6 +59,9 @@ export default function arbacPlugin(): TAtscriptPlugin {
                 "Two shapes are supported: inline (string | string[]) or @db.rel.from nav prop. " +
                 "Exactly one @arbac.role field per type — multiple declarations throw at boot.",
               nodeType: ["prop"],
+              // Role/handle markers bind to the DECLARING type (one-per-type contracts)
+              // — they must not ride into referring models across field refs.
+              passedWhenReferred: false,
               multiple: false,
             }),
             attribute: new AnnotationSpec({
@@ -66,6 +69,9 @@ export default function arbacPlugin(): TAtscriptPlugin {
                 "Marks this field as a user attribute used by ARBAC scope evaluation. " +
                 "The field name becomes the attribute key. Multiple fields are merged.",
               nodeType: ["prop"],
+              // Role/handle markers bind to the DECLARING type (one-per-type contracts)
+              // — they must not ride into referring models across field refs.
+              passedWhenReferred: false,
               multiple: false,
             }),
             userId: new AnnotationSpec({
@@ -73,6 +79,9 @@ export default function arbacPlugin(): TAtscriptPlugin {
                 "Overrides which field provides the user identifier for ARBAC. " +
                 "Resolution chain: @arbac.userId → @db.table.preferredId.uniqueIndex field → @meta.id.",
               nodeType: ["prop"],
+              // Role/handle markers bind to the DECLARING type (one-per-type contracts)
+              // — they must not ride into referring models across field refs.
+              passedWhenReferred: false,
               multiple: false,
             }),
             attenuate: {
@@ -82,6 +91,9 @@ export default function arbacPlugin(): TAtscriptPlugin {
                   "restrict-only ARBAC attenuation. Intersected with the user's roles (fail-closed). " +
                   "Exactly one @arbac.attenuate.role field per type — multiple declarations throw at boot.",
                 nodeType: ["prop"],
+                // Role/handle markers bind to the DECLARING type (one-per-type contracts)
+                // — they must not ride into referring models across field refs.
+                passedWhenReferred: false,
                 multiple: false,
               }),
               attr: new AnnotationSpec({
@@ -91,6 +103,9 @@ export default function arbacPlugin(): TAtscriptPlugin {
                   "model's @arbac.attribute keyspace (validated to exist at boot). Multiple fields " +
                   "may each carry it, targeting different attrs.",
                 nodeType: ["prop"],
+                // Role/handle markers bind to the DECLARING type (one-per-type contracts)
+                // — they must not ride into referring models across field refs.
+                passedWhenReferred: false,
                 multiple: false,
                 argument: {
                   name: "userAttr",
@@ -111,6 +126,9 @@ export default function arbacPlugin(): TAtscriptPlugin {
                   "to at most one row; without a unique index the email handle is DISABLED with a warning. " +
                   "At most one @aooth.user.email field per type — multiple declarations throw at boot.",
                 nodeType: ["prop"],
+                // Role/handle markers bind to the DECLARING type (one-per-type contracts)
+                // — they must not ride into referring models across field refs.
+                passedWhenReferred: false,
                 multiple: false,
               }),
               phone: new AnnotationSpec({
@@ -119,6 +137,9 @@ export default function arbacPlugin(): TAtscriptPlugin {
                   "contract as @aooth.user.email (disabled with a warning when the field lacks " +
                   "@db.index.unique). At most one @aooth.user.phone field per type — multiple throw at boot.",
                 nodeType: ["prop"],
+                // Role/handle markers bind to the DECLARING type (one-per-type contracts)
+                // — they must not ride into referring models across field refs.
+                passedWhenReferred: false,
                 multiple: false,
               }),
             },
@@ -134,6 +155,9 @@ export default function arbacPlugin(): TAtscriptPlugin {
                   "type — multiple declarations throw at boot. Absent → the atscript-db credential " +
                   "store persists no metadata (non-fatal, warned at boot by the wiring).",
                 nodeType: ["prop"],
+                // Role/handle markers bind to the DECLARING type (one-per-type contracts)
+                // — they must not ride into referring models across field refs.
+                passedWhenReferred: false,
                 multiple: false,
               }),
             },
