@@ -33,15 +33,32 @@ import type { CredentialStore, DenylistStore } from "../stores/store";
  * }
  * ```
  *
- * Return types are widened to the union of what real clients return:
- *   - `set` returns `'OK' | string | null` (null on conditional sets that fail)
+ * Structural compatibility with `ioredis` hinges on two things, both load-
+ * bearing — a real `import('ioredis').Redis` is assignable to `RedisLike`
+ * with no cast (see `__test__/ioredis-compat.spec.ts`, which guards it):
+ *
+ *   1. Every member is declared as a **method shorthand**, not a
+ *      property-style arrow. Method signatures are checked bivariantly in
+ *      their parameters, so ioredis's overloaded, `Callback`-taking commands
+ *      match; property-style arrows are contravariant and never would.
+ *   2. `set`'s `mode`/`ttlMs` are a **required pair** (not independently
+ *      optional). ioredis exposes the ms-TTL form as one overload,
+ *      `set(key, value, "PX", ms, cb?)`, with `"PX"` and `ms` required
+ *      together — a `mode?`/`ttlMs?` shape matches *no* single ioredis
+ *      overload (it collides with the `set(key, value, cb?)` overload
+ *      instead), which is exactly what broke structural assignment before.
+ *      Every adapter call site already passes all four arguments.
+ *
+ * Return types are chosen as a supertype of what real clients resolve, so an
+ * ioredis client stays assignable while the types remain useful to callers:
+ *   - `set` returns `string | null` (ioredis resolves `"OK"`)
  *   - `del` / `pexpire` / `exists` / `incr` / `sadd` / `srem` return `number`
  *   - `get` returns `string | null`
  *   - `smembers` returns `string[]`
  */
 export interface RedisLike {
-  /** `SET key value [PX ms]` — accepts an optional ms TTL. */
-  set(key: string, value: string, mode?: "PX", ttlMs?: number): Promise<string | null>;
+  /** `SET key value PX ms` — `mode`/`ttlMs` are a required pair (see above). */
+  set(key: string, value: string, mode: "PX", ttlMs: number): Promise<string | null>;
   get(key: string): Promise<string | null>;
   del(...keys: string[]): Promise<number>;
   exists(key: string): Promise<number>;
