@@ -43,7 +43,7 @@
     "@moostjs/event-wf": "catalog:",
     "@moostjs/vite": "catalog:",
     "@types/better-sqlite3": "^7.6.13",
-    "@uniqu/core": "^0.1.6",
+    "@uniqu/core": "catalog:",
     "@unocss/preset-icons": "^66.6.8",
     "@unocss/reset": "^66.6.8",
     "@wooksjs/event-core": "catalog:",

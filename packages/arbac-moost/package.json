@@ -81,7 +81,7 @@
     "@atscript/typescript": "catalog:",
     "@moostjs/event-http": "catalog:",
     "@types/better-sqlite3": "^7.6.13",
-    "@uniqu/core": "^0.1.6",
+    "@uniqu/core": "catalog:",
     "better-sqlite3": "^12.6.2",
     "unplugin-atscript": "catalog:"
   },
