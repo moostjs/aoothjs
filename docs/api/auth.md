@@ -11,7 +11,7 @@ class AuthCredential<TPayload extends object = object> {
   constructor(opts: AuthCredentialOptions<TPayload>);
   issue(userId: string, options?: IssueOptions<TPayload>): Promise<IssueResult>;
   validate(accessToken: string): Promise<AuthContext<TPayload> | null>;
-  refresh(refreshToken: string): Promise<IssueResult>;
+  refresh(refreshToken: string, opts?: RefreshCallOptions<TPayload>): Promise<RefreshResult>;
   revoke(token: string): Promise<void>;
   revokeAllForUser(userId: string): Promise<number>;
   listForUser(userId: string): Promise<AuthContext<TPayload>[]>;
@@ -124,13 +124,14 @@ In-memory `RateLimitStore` — lazy eviction on access, `cleanup(): Promise<numb
 
 ## Functions
 
-### `generateMagicLinkToken`
+### `generateOpaqueToken` / `generateMagicLinkToken`
 
 ```ts
-function generateMagicLinkToken(): string;
+function generateOpaqueToken(): string;
+function generateMagicLinkToken(): string; // alias mint for magic links
 ```
 
-32 bytes CSPRNG → base64url → 43 chars. URL-safe (`[A-Za-z0-9_-]` only). See [Magic Links](/auth/magic-links).
+32 bytes CSPRNG → base64url → 43 chars. URL-safe (`[A-Za-z0-9_-]` only). `generateOpaqueToken` is the one shared mint for high-entropy opaque secrets (magic-link tokens, dynamic-client secrets, the authz binding cookie all delegate to it); use it for your own one-shot tokens instead of hand-rolling `randomBytes`. See [Magic Links](/auth/magic-links).
 
 ### `defaultClock`
 
@@ -213,10 +214,15 @@ interface CredentialMetadata {
   userAgent?: string;
   fingerprint?: string;
   label?: string;
+  // Framework-written keys (never set these directly):
+  credentialKind?: string; // from IssueOptions.kind — labels the session family
+  authzClientId?: string; // OAuth client binding, stamped by the authz token endpoint
+  accessTtl?: number; // per-mint access ttl, kept across refresh (mint-time authority)
+  refreshRotation?: "none" | "always" | "sliding"; // per-family rotation, wins over instance config
 }
 ```
 
-**Open to declaration merging** — augment via `declare module '@aooth/auth' { interface CredentialMetadata { ... } }`. See [Credentials & Sessions](/auth/credentials).
+**Open to declaration merging** — augment via `declare module '@aooth/auth' { interface CredentialMetadata { ... } }`. The framework-written keys are stamped by `issue()` / the authz tier and carried across rotation; when persisting metadata via the atscript-db store, build your column's shape on `AoothCredentialMetadataBase` so they round-trip (see [`@aooth/auth/atscript-db`](#subpath-aooth-auth-atscript-db)). See [Credentials & Sessions](/auth/credentials) and [Refresh & Rotation](/auth/refresh#per-mint-refresh-control-issueoptions-refresh).
 
 ### `CredentialState`
 
@@ -244,20 +250,21 @@ The persisted envelope stores hold. `sessionId` / `lastSeenAt` back the [Session
 
 ```ts
 // The typed payload `TPayload` is spread FLAT alongside the framework
-// hints; reserved keys `metadata`/`sessionId`/`ttl`/`expiresAt`/`kind` (and
-// the envelope keys) must not be reused as payload field names.
+// hints; reserved keys `metadata`/`sessionId`/`ttl`/`expiresAt`/`kind`/`refresh`
+// (and the envelope keys) must not be reused as payload field names.
 type IssueOptions<TPayload extends object = object> = TPayload & {
   metadata?: CredentialMetadata;
   sessionId?: string; // omit → issue() mints a random opaque one
   ttl?: number; // per-mint access TTL (ms, > 0) — overrides accessTtl; excl. with expiresAt
   expiresAt?: number; // absolute access expiry instant (ms) — overrides ttl + accessTtl
   kind?: string; // semantic credential kind ("cli-session" / "pat") → metadata.credentialKind
+  refresh?: false | { ttl?: number }; // per-mint refresh control — see Refresh & Rotation
 };
 ```
 
-Options for `issue`. Pass the credential's typed root fields directly (e.g. `issue(userId, { tenantId: "t-1" })`); supply `sessionId` to join an existing session family. `ttl` / `expiresAt` override the access-token lifetime for THIS mint only (refresh keeps `refresh.ttl`); `kind` labels the whole session family and feeds the `listSessions({ kind })` filter. See [Sessions](/auth/sessions) and [Credentials](/auth/credentials).
+Options for `issue`. Pass the credential's typed root fields directly (e.g. `issue(userId, { tenantId: "t-1" })`); supply `sessionId` to join an existing session family. `ttl` / `expiresAt` override the access-token lifetime for THIS mint only (refresh keeps `refresh.ttl`); `kind` labels the whole session family and feeds the `listSessions({ kind })` filter. `refresh: false` suppresses the refresh mint for this credential even when the instance config exists; a `refresh` object mints one with a per-mint lifetime (fixed-ceiling rotation, works without an instance config) — see [Per-mint refresh control](/auth/refresh#per-mint-refresh-control-issueoptions-refresh). See [Sessions](/auth/sessions) and [Credentials](/auth/credentials).
 
-### `IssueResult`
+### `IssueResult` / `RefreshResult`
 
 ```ts
 interface IssueResult {
@@ -266,9 +273,22 @@ interface IssueResult {
   accessExpiresAt: number;
   refreshExpiresAt?: number;
 }
+interface RefreshResult extends IssueResult {
+  userId: string; // the subject of the rotated family
+}
 ```
 
-Returned by `issue` and `refresh`. `refreshToken` is present iff `refresh: RefreshConfig` is configured. See [Credentials & Sessions](/auth/credentials).
+`IssueResult` is returned by `issue` — `refreshToken` is present iff a refresh token was minted (instance `refresh: RefreshConfig`, or a per-mint `IssueOptions.refresh` object). `refresh()` returns `RefreshResult`: the caller presented only an opaque token, so this is where it learns the subject (the OAuth `refresh_token` grant relies on it). See [Credentials & Sessions](/auth/credentials).
+
+### `RefreshCallOptions<TPayload>`
+
+```ts
+interface RefreshCallOptions<TPayload extends object = object> {
+  guard?: (state: CredentialState & TPayload) => void | Promise<void>;
+}
+```
+
+Options for `refresh`. The `guard` runs after the token resolved to a live refresh credential but **before any rotation or state change** — throwing aborts with the family untouched. The seam for caller-level binding checks (the authz token endpoint verifies `metadata.authzClientId` here). See [Refresh & Rotation](/auth/refresh#per-mint-refresh-control-issueoptions-refresh).
 
 ### `RefreshConfig`
 
@@ -749,12 +769,12 @@ class DynamicClientPolicy implements ClientRedirectPolicy {
     clock?: Clock;
   });
   resolveClient(args: { clientId?; redirectUri; scope? }): Promise<ResolvedClient>;
-  authenticateClient(args: { clientId?; clientSecret? }): Promise<void>; // existence re-check; PKCE binds
+  authenticateClient(args: { clientId?; clientSecret? }): Promise<void>; // existence + secret (confidential)
   hasClient(clientId: string): Promise<boolean>;
 }
 ```
 
-Policy for RFC 7591 dynamically-registered public clients (MCP connectors) — the `dynamic` slot of `CompositeClientPolicy`. `https` redirects are exact-matched; loopback entries are port-agnostic (RFC 8252). Mints an access token only — **no `id_token`**. A registration deleted/GC'd between authorize and redemption fails closed at `/token`. See [Wiring — MCP connectors](/moost/authorization-server#wiring-mcp-connectors).
+Policy for RFC 7591 dynamically-registered clients (MCP connectors) — the `dynamic` slot of `CompositeClientPolicy`. `https` redirects are exact-matched; loopback entries are port-agnostic (RFC 8252). Mints an access token only — **no `id_token`** — plus a rotating refresh token when `tokenPolicy.refresh` is set. `authenticateClient` re-checks existence (a registration deleted/GC'd between authorize and redemption fails closed at `/token`) and, for a `client_secret_post` registration, constant-time-verifies the presented secret against the stored digest; public (`"none"`) clients keep PKCE-only. See [Wiring — MCP connectors](/moost/authorization-server#wiring-mcp-connectors).
 
 ### `DynamicClientRegistration`
 
@@ -768,11 +788,11 @@ class DynamicClientRegistration {
     validation?: ClientRegistrationValidationOptions;
     clock?: Clock;
   });
-  register(body: unknown): Promise<DynamicClient>; // validate → guard → GC → cap → persist
+  register(body: unknown): Promise<RegisteredDynamicClient>; // validate → guard → GC → cap → mint secret → persist
 }
 ```
 
-The RFC 7591 registration operation behind `POST {issuer}/register` — `@aooth/auth-moost`'s endpoint is a thin HTTP adapter over `register()`, and non-moost servers call it directly. Throws `ClientRegistrationError` on invalid metadata; the guard throws one to reject with a custom reason (any other throw is a server fault). `validateClientRegistration(body, opts?)` is also exported standalone.
+The RFC 7591 registration operation behind `POST {issuer}/register` — `@aooth/auth-moost`'s endpoint is a thin HTTP adapter over `register()`, and non-moost servers call it directly. For a `client_secret_post` registration the returned `RegisteredDynamicClient` additionally carries the plaintext `clientSecret` + `clientSecretExpiresAt: 0` — the ONE disclosure; only the SHA-256 digest is persisted. Throws `ClientRegistrationError` on invalid metadata; the guard throws one to reject with a custom reason (any other throw is a server fault). `validateClientRegistration(body, opts?)` is also exported standalone.
 
 ### Discovery / challenge builders
 
@@ -817,14 +837,18 @@ In-memory implementations of the server-side stores (for tests / single-process)
 
 - `scopeGrants(scope: string | undefined, claim: string): boolean` — `true` when the space-joined `scope` grants `claim` (`"email"` / `"profile"` / …).
 - `isLoopbackRedirectUri(uri: string): boolean` — the host check `LoopbackClientPolicy` uses.
+- `tokenPolicyToIssueOptions(policy: TokenPolicy, clientId: string | undefined): IssueOptions` — flattens a grant's policy into `AuthCredential.issue()` options, applying the refresh-dimension rules (client binding stamp, loopback ignores `refresh`, the 30-day default). The mapping every token endpoint should use — `@aooth/auth-moost`'s does.
+- `mintClientSecret(): string` / `hashClientSecret(secret): string` / `verifyClientSecret(secret, hash): boolean` — the confidential-client secret lifecycle: CSPRNG mint, SHA-256 hex digest (no KDF — the secret is high-entropy server-minted material), constant-time verify. Used by `DynamicClientRegistration` / `DynamicClientPolicy`; exported for custom stores and probes.
 
 ### Types
 
-- `TokenPolicy` — `{ kind?, ttl?, payload? }`. What the grant mints, decided by the policy (never the client request) and recorded at `/authorize` time. `payload` carries `@arbac.attenuate.*` fields for a scoped token; omit for full authority.
+- `TokenPolicy` — `{ kind?, ttl?, payload?, refresh? }`. What the grant mints, decided by the policy (never the client request) and recorded at `/authorize` time. `payload` carries `@arbac.attenuate.*` fields for a scoped token; omit for full authority. `refresh?: { ttl? }` opts the grant into the OAuth 2.1 `refresh_token` grant (default lifetime `DEFAULT_AUTHZ_REFRESH_TTL_MS` = 30 days); honored only for client-bound grants — see [the refresh grant](/moost/authorization-server#refresh-token-grant).
 - `ResolvedClient` — the policy's verdict: `{ clientId?, clientName?, redirectUri, tokenPolicy, scope?, idToken?, accessToken?, audience? }`. `clientName` is untrusted display text for the consent prompt (rendered as text, paired with the validated redirect host).
 - `RegisteredClient` — `{ clientId, clientName?, redirectUris?, redirectPrefixes?, type?='public', clientSecret?, idToken?=true, accessToken?=false, scopes?, tokenPolicy? }`.
-- `DynamicClient` / `NewDynamicClient` — a stored RFC 7591 registration: `{ clientId, clientName?, redirectUris, tokenEndpointAuthMethod: 'none', grantTypes, responseTypes, scope?, createdAt, lastUsedAt? }` (`lastUsedAt` unset = never used, the GC target).
-- `ClientRegistrationValidationOptions` — registration caps: `{ maxRedirectUris?=5, maxRedirectUriLength?=512, maxClientNameLength?=128, maxScopeLength?=256, allowedScopes? }`.
+- `DynamicClient` / `NewDynamicClient` — a stored RFC 7591 registration: `{ clientId, clientName?, redirectUris, tokenEndpointAuthMethod, clientSecretHash?, grantTypes, responseTypes, scope?, createdAt, lastUsedAt? }` (`lastUsedAt` unset = never used, the GC target). `clientSecretHash` is set iff the auth method is `"client_secret_post"` — the plaintext is never stored.
+- `DynamicClientAuthMethod` — `'none' | 'client_secret_post'`.
+- `RegisteredDynamicClient` — `DynamicClient & { clientSecret?, clientSecretExpiresAt? }`: `register()`'s return shape; the plaintext secret appears HERE and only here (`clientSecretExpiresAt: 0` ⇒ never expires).
+- `ClientRegistrationValidationOptions` — registration caps: `{ maxRedirectUris?=5, maxRedirectUriLength?=512, maxClientNameLength?=128, maxScopeLength?=256, allowedScopes?, allowedTokenEndpointAuthMethods? }`. The last narrows which auth methods registrations may use (default both; `["none"]` = public-only deployment — an explicit disallowed ask is rejected, never downgraded).
 - `IdTokenClaims` — `{ sub, aud, nonce?, ttlSec?, extra? }` (the `extra` map is the resolver's profile claims).
 - `IdTokenAlg` — `'RS256' | 'ES256'`.
 - `ClientRedirectPolicy` — the policy interface (`resolveClient` + optional `authenticateClient` + optional `hasClient` — the known-ness probe `CompositeClientPolicy` dispatches by).
