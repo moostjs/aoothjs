@@ -79,6 +79,30 @@ export interface CredentialMetadata {
    * sessions are unaffected).
    */
   refreshRotation?: "none" | "always" | "sliding";
+  /**
+   * Per-family rotation grace window in ms — stamped by `issue()` when a
+   * refresh token is minted with a per-mint `graceMs` (e.g. an authz grant's
+   * `TokenPolicy.refresh.graceMs`), and honored by `refresh()` OVER the
+   * instance {@link RefreshConfig.rotationGraceMs}. Same mint-time-authority
+   * mechanism as {@link accessTtl} / {@link refreshRotation}. Absent ⇒ the
+   * instance window (or its 30 s default) applies.
+   */
+  rotationGraceMs?: number;
+}
+
+/**
+ * The successor pair persisted on a rotated refresh row (see
+ * {@link CredentialState.successor}) so a within-grace re-presentation of the
+ * consumed token re-delivers the SAME tokens the original rotation produced.
+ * Raw token material in a store column matches the store contract's existing
+ * posture: stateful stores already key rows on the raw token, and
+ * {@link CredentialState.parentCredentialId} already carries one.
+ */
+export interface CredentialSuccessorRef {
+  accessToken: string;
+  accessExpiresAt: number;
+  refreshToken: string;
+  refreshExpiresAt: number;
 }
 
 /**
@@ -101,8 +125,17 @@ export interface CredentialState {
   kind?: "access" | "refresh";
   /** For rotated refresh tokens — id of the parent credential this one replaced */
   parentCredentialId?: string;
-  /** Timestamp of rotation; used by sliding rotation grace period */
+  /** Timestamp of rotation; used by the sliding/always rotation grace window */
   rotatedAt?: number;
+  /**
+   * Set alongside {@link rotatedAt} on the OLD refresh row when it is rotated:
+   * the successor pair the rotation produced, re-delivered VERBATIM on a
+   * within-grace re-presentation of this token (idempotent re-delivery — a
+   * grace hit mints nothing, so it grants an attacker no capability beyond
+   * capturing the original rotation response). Dies with the row; only the
+   * family's latest rotation carries a live grace record.
+   */
+  successor?: CredentialSuccessorRef;
   /**
    * Stable id of the session (token family) this credential belongs to. Minted
    * once by `issue()` and copied forward onto every rotation (access + refresh),
@@ -205,11 +238,17 @@ export interface RefreshConfig {
    *   activity.
    *
    * Both `'sliding'` and `'always'` are **grace-tolerant** on stateful stores:
-   * a benign concurrent refresh (multi-tab / parallel requests presenting the
-   * just-rotated token) within {@link rotationGraceMs} re-issues a fresh pair
-   * instead of being mistaken for token theft. Because the grace window is
-   * tracked in the store (via {@link CredentialState.rotatedAt}), it is correct
-   * across multiple app instances.
+   * a benign re-presentation of the just-rotated token (multi-tab race, a
+   * rotation response lost to a rolling deploy) within {@link rotationGraceMs}
+   * **re-delivers the SAME successor pair the rotation produced** — idempotent,
+   * minting nothing — instead of being mistaken for token theft. A grace hit
+   * has no liveness side effects: it never slides the refresh expiry and never
+   * stamps `lastSeenAt`, so a captured stale token cannot be used as a
+   * keep-alive. Because the grace window is tracked in the store (via
+   * {@link CredentialState.rotatedAt} + {@link CredentialState.successor}), it
+   * is correct across multiple app instances — and the moment the successor is
+   * itself rotated (or revoked), the old token is dead regardless of the
+   * window (superseded ⇒ the strict theft path).
    *
    * Note: the grace window needs a stateful store (one with `listForUser`).
    * Stateless stores (JWT, Encapsulated) cannot mutate an issued token in place;
@@ -218,7 +257,14 @@ export interface RefreshConfig {
    * with a process-local reuse signal (no cross-instance grace).
    */
   rotation?: "none" | "always" | "sliding";
-  /** Grace period for sliding/always rotation, in milliseconds. Defaults to 30_000. */
+  /**
+   * Grace window for sliding/always rotation, in milliseconds. Defaults to
+   * 30_000. Size it to survive a rolling-deploy drain + client retry (30–60 s);
+   * it stays meaningless for offline token theft. An explicit `0` is strict
+   * mode: every re-presentation of a rotated token is treated as theft.
+   * Overridden per family by a per-mint `graceMs`
+   * ({@link CredentialMetadata.rotationGraceMs}).
+   */
   rotationGraceMs?: number;
   /**
    * Revocation scope when refresh-token reuse is detected (replay after grace,
@@ -233,4 +279,14 @@ export interface RefreshConfig {
   reuseResponse?: "session" | "user";
   /** Theft detection hook — invoked when a previously-rotated refresh is reused. */
   onRotationReuse?: (state: CredentialState) => void;
+  /**
+   * Audit hook for within-grace re-presentations — invoked with the OLD
+   * (rotated) refresh credential's envelope just before its successor pair is
+   * re-delivered. The benign twin of {@link onRotationReuse}: a trickle of
+   * grace hits correlated with deploys is expected (a rotation response died
+   * with a drained task and the client retried); a spike is someone replaying
+   * tokens. Wire it to the same sink as `onRotationReuse` (e.g. a
+   * `refresh-grace-hit` audit event) to tell the two apart.
+   */
+  onRotationGraceHit?: (state: CredentialState) => void;
 }

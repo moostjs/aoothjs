@@ -45,6 +45,12 @@ export type AoothCredentialMetadataBase = {
      * slides. Stored as a plain string (same portability rule as `kind`).
      */
     refreshRotation?: string
+    /**
+     * Per-family rotation grace window (ms) — stamped when a refresh token
+     * is minted with a per-mint `graceMs` (e.g. `TokenPolicy.refresh.graceMs`),
+     * honored over the instance `rotationGraceMs`. 0 = strict single-use.
+     */
+    rotationGraceMs?: number
 }
 
 @db.table 'aooth_credentials'
@@ -83,6 +89,19 @@ export interface AoothAuthCredential {
     /** Set by refresh-token rotation. */
     parentCredentialId?: string
     rotatedAt?: number.timestamp
+
+    /**
+     * Set alongside `rotatedAt` on a rotated refresh row: the successor pair
+     * the rotation produced, re-delivered verbatim on a within-grace
+     * re-presentation of this token (idempotent grace hits mint nothing).
+     */
+    @db.json
+    successor?: {
+        accessToken: string
+        accessExpiresAt: number.timestamp
+        refreshToken: string
+        refreshExpiresAt: number.timestamp
+    }
 
     /**
      * Stable session-family id. Minted once at login, copied forward on every

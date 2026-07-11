@@ -219,6 +219,7 @@ interface CredentialMetadata {
   authzClientId?: string; // OAuth client binding, stamped by the authz token endpoint
   accessTtl?: number; // per-mint access ttl, kept across refresh (mint-time authority)
   refreshRotation?: "none" | "always" | "sliding"; // per-family rotation, wins over instance config
+  rotationGraceMs?: number; // per-family grace window from a per-mint graceMs, wins over instance config
 }
 ```
 
@@ -239,12 +240,20 @@ interface CredentialState {
   kind?: "access" | "refresh";
   parentCredentialId?: string;
   rotatedAt?: number;
+  successor?: CredentialSuccessorRef; // pinned on a rotated refresh row — the pair a grace hit re-delivers
   sessionId?: string; // token-family id, stable across rotation
   lastSeenAt?: number; // activity time; only written under trackLastSeen
 }
+
+interface CredentialSuccessorRef {
+  accessToken: string;
+  accessExpiresAt: number;
+  refreshToken: string;
+  refreshExpiresAt: number;
+}
 ```
 
-The persisted envelope stores hold. `sessionId` / `lastSeenAt` back the [Sessions](/auth/sessions) APIs. See [Stores](/auth/).
+The persisted envelope stores hold. `sessionId` / `lastSeenAt` back the [Sessions](/auth/sessions) APIs; `rotatedAt` + `successor` back the rotation [grace window](/auth/refresh#the-grace-window-and-concurrency) (framework-written — never set them directly). See [Stores](/auth/).
 
 ### `IssueOptions<TPayload>`
 
@@ -258,11 +267,11 @@ type IssueOptions<TPayload extends object = object> = TPayload & {
   ttl?: number; // per-mint access TTL (ms, > 0) — overrides accessTtl; excl. with expiresAt
   expiresAt?: number; // absolute access expiry instant (ms) — overrides ttl + accessTtl
   kind?: string; // semantic credential kind ("cli-session" / "pat") → metadata.credentialKind
-  refresh?: false | { ttl?: number }; // per-mint refresh control — see Refresh & Rotation
+  refresh?: false | { ttl?: number; graceMs?: number }; // per-mint refresh control — see Refresh & Rotation
 };
 ```
 
-Options for `issue`. Pass the credential's typed root fields directly (e.g. `issue(userId, { tenantId: "t-1" })`); supply `sessionId` to join an existing session family. `ttl` / `expiresAt` override the access-token lifetime for THIS mint only (refresh keeps `refresh.ttl`); `kind` labels the whole session family and feeds the `listSessions({ kind })` filter. `refresh: false` suppresses the refresh mint for this credential even when the instance config exists; a `refresh` object mints one with a per-mint lifetime (fixed-ceiling rotation, works without an instance config) — see [Per-mint refresh control](/auth/refresh#per-mint-refresh-control-issueoptions-refresh). See [Sessions](/auth/sessions) and [Credentials](/auth/credentials).
+Options for `issue`. Pass the credential's typed root fields directly (e.g. `issue(userId, { tenantId: "t-1" })`); supply `sessionId` to join an existing session family. `ttl` / `expiresAt` override the access-token lifetime for THIS mint only (refresh keeps `refresh.ttl`); `kind` labels the whole session family and feeds the `listSessions({ kind })` filter. `refresh: false` suppresses the refresh mint for this credential even when the instance config exists; a `refresh` object mints one with a per-mint lifetime (fixed-ceiling rotation, works without an instance config) and an optional per-family grace window (`graceMs`, ≥ 0; `0` = strict single-use; wins over the instance `rotationGraceMs`) — see [Per-mint refresh control](/auth/refresh#per-mint-refresh-control-issueoptions-refresh). See [Sessions](/auth/sessions) and [Credentials](/auth/credentials).
 
 ### `IssueResult` / `RefreshResult`
 
@@ -296,13 +305,14 @@ Options for `refresh`. The `guard` runs after the token resolved to a live refre
 interface RefreshConfig {
   ttl: number;
   rotation?: "none" | "always" | "sliding"; // default 'sliding'
-  rotationGraceMs?: number; // default 30_000 — sliding AND always
+  rotationGraceMs?: number; // default 30_000 — sliding AND always; 0 = strict single-use
   reuseResponse?: "session" | "user"; // default 'session'
   onRotationReuse?: (state: CredentialState) => void;
+  onRotationGraceHit?: (state: CredentialState) => void; // audit hook — benign within-grace re-delivery
 }
 ```
 
-Rotation policy. Both `'sliding'` (rolling expiry) and `'always'` (fixed session ceiling) rotate every refresh, mark `rotatedAt`, and tolerate reuse within `rotationGraceMs` on stateful stores (store-backed, so the grace holds across instances); reuse after the grace fires the theft response. `reuseResponse` selects the blast radius: `'session'` (default — the compromised token family via `revokeSession`) or `'user'` (every session via `revokeAllForUser`). See [Refresh & Rotation](/auth/refresh).
+Rotation policy. Both `'sliding'` (rolling expiry) and `'always'` (fixed session ceiling) rotate every refresh, mark `rotatedAt` + pin the successor pair on the old row, and tolerate a re-presentation within `rotationGraceMs` on stateful stores by **idempotently re-delivering that same pair** — nothing minted, no expiry slide, no `lastSeenAt` (store-backed, so the grace holds across instances). Re-presentation after the grace — or of a superseded token whose successor already rotated/was revoked — fires the theft response. `reuseResponse` selects the blast radius: `'session'` (default — the compromised token family via `revokeSession`) or `'user'` (every session via `revokeAllForUser`). `onRotationGraceHit` is the benign twin of `onRotationReuse` — wire both to your audit sink to tell deploy-clipped clients from token replay. See [Refresh & Rotation](/auth/refresh).
 
 ## Types — Stores
 
@@ -842,7 +852,7 @@ In-memory implementations of the server-side stores (for tests / single-process)
 
 ### Types
 
-- `TokenPolicy` — `{ kind?, ttl?, payload?, refresh? }`. What the grant mints, decided by the policy (never the client request) and recorded at `/authorize` time. `payload` carries `@arbac.attenuate.*` fields for a scoped token; omit for full authority. `refresh?: { ttl? }` opts the grant into the OAuth 2.1 `refresh_token` grant (default lifetime `DEFAULT_AUTHZ_REFRESH_TTL_MS` = 30 days); honored only for client-bound grants — see [the refresh grant](/moost/authorization-server#refresh-token-grant).
+- `TokenPolicy` — `{ kind?, ttl?, payload?, refresh? }`. What the grant mints, decided by the policy (never the client request) and recorded at `/authorize` time. `payload` carries `@arbac.attenuate.*` fields for a scoped token; omit for full authority. `refresh?: { ttl?, graceMs? }` opts the grant into the OAuth 2.1 `refresh_token` grant (default lifetime `DEFAULT_AUTHZ_REFRESH_TTL_MS` = 30 days); `graceMs` fixes the family's rotation grace window (lost-response tolerance for connectors; `0` = strict; wins over the credential instance's `rotationGraceMs`). Honored only for client-bound grants — see [the refresh grant](/moost/authorization-server#refresh-token-grant).
 - `ResolvedClient` — the policy's verdict: `{ clientId?, clientName?, redirectUri, tokenPolicy, scope?, idToken?, accessToken?, audience? }`. `clientName` is untrusted display text for the consent prompt (rendered as text, paired with the validated redirect host).
 - `RegisteredClient` — `{ clientId, clientName?, redirectUris?, redirectPrefixes?, type?='public', clientSecret?, idToken?=true, accessToken?=false, scopes?, tokenPolicy? }`.
 - `DynamicClient` / `NewDynamicClient` — a stored RFC 7591 registration: `{ clientId, clientName?, redirectUris, tokenEndpointAuthMethod, clientSecretHash?, grantTypes, responseTypes, scope?, createdAt, lastUsedAt? }` (`lastUsedAt` unset = never used, the GC target). `clientSecretHash` is set iff the auth method is `"client_secret_post"` — the plaintext is never stored.

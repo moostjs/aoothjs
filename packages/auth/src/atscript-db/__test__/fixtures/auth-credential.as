@@ -30,6 +30,19 @@ export interface AoothAuthCredential {
     rotatedAt?: number.timestamp
 
     /**
+     * Set alongside `rotatedAt` on a rotated refresh row: the successor pair
+     * the rotation produced, re-delivered verbatim on a within-grace
+     * re-presentation of this token (idempotent grace hits mint nothing).
+     */
+    @db.json
+    successor?: {
+        accessToken: string
+        accessExpiresAt: number.timestamp
+        refreshToken: string
+        refreshExpiresAt: number.timestamp
+    }
+
+    /**
      * Stable session-family id. Minted once at login, copied forward on every
      * rotation. Indexed so a store could group/revoke a family natively.
      */

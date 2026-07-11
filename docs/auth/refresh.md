@@ -8,19 +8,21 @@
 interface RefreshConfig {
   ttl: number; // ms
   rotation?: "none" | "always" | "sliding"; // default 'sliding'
-  rotationGraceMs?: number; // default 30_000
+  rotationGraceMs?: number; // default 30_000; 0 = strict single-use
   reuseResponse?: "session" | "user"; // default 'session'
   onRotationReuse?: (state: CredentialState) => void;
+  onRotationGraceHit?: (state: CredentialState) => void;
 }
 ```
 
-| Option            | Default     | Purpose                                                                                                              |
-| ----------------- | ----------- | -------------------------------------------------------------------------------------------------------------------- |
-| `ttl`             | (required)  | Lifetime of refresh tokens, ms.                                                                                      |
-| `rotation`        | `'sliding'` | Rotation strategy — see [the three modes](#the-three-modes).                                                         |
-| `rotationGraceMs` | `30_000`    | `sliding` **and** `always` — window after rotation during which the old refresh stays replay-valid.                  |
-| `reuseResponse`   | `'session'` | Blast radius on detected reuse: the compromised token family (`'session'`) or every session for the user (`'user'`). |
-| `onRotationReuse` | `undefined` | Hook called when reuse is detected. Fires _before_ the revoke.                                                       |
+| Option               | Default     | Purpose                                                                                                                                                         |
+| -------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ttl`                | (required)  | Lifetime of refresh tokens, ms.                                                                                                                                 |
+| `rotation`           | `'sliding'` | Rotation strategy — see [the three modes](#the-three-modes).                                                                                                    |
+| `rotationGraceMs`    | `30_000`    | `sliding` **and** `always` — window after rotation during which re-presenting the old refresh **re-delivers the same successor pair**. `0` = strict single-use. |
+| `reuseResponse`      | `'session'` | Blast radius on detected reuse: the compromised token family (`'session'`) or every session for the user (`'user'`).                                            |
+| `onRotationReuse`    | `undefined` | Hook called when reuse is detected. Fires _before_ the revoke.                                                                                                  |
+| `onRotationGraceHit` | `undefined` | Audit hook called on a within-grace re-presentation, just before the successor pair is re-delivered. See [the grace window](#the-grace-window-and-concurrency). |
 
 The minimum opt-in:
 
@@ -40,7 +42,7 @@ const auth = new AuthCredential({
 | `'always'`            | **fixed** ceiling        | Valid for `rotationGraceMs`, then dead | Reuse _after grace_ → `REFRESH_REUSE_DETECTED` + family revoke | Rotation with an absolute session cap   |
 | `'sliding'` (default) | **slides** (`now + ttl`) | Valid for `rotationGraceMs`, then dead | Reuse _after grace_ → `REFRESH_REUSE_DETECTED` + family revoke | Browsers with parallel tabs / retries   |
 
-`'always'` and `'sliding'` differ only in **expiry**: `'sliding'` is a rolling session (each refresh pushes the expiry to `now + ttl`); `'always'` keeps the family's original expiry as a fixed ceiling, so the session has an absolute maximum lifetime regardless of activity. Both rotate the token on every refresh and **both are grace-tolerant** on stateful stores (a benign concurrent refresh within `rotationGraceMs` is not mistaken for theft — see [the grace window](#the-grace-window-and-concurrency)). On stateless stores neither can keep the old token valid, so both fall back to single-use semantics with a process-local reuse signal.
+`'always'` and `'sliding'` differ only in **expiry**: `'sliding'` is a rolling session (each refresh pushes the expiry to `now + ttl`); `'always'` keeps the family's original expiry as a fixed ceiling, so the session has an absolute maximum lifetime regardless of activity. Both rotate the token on every refresh and **both are grace-tolerant** on stateful stores (a benign re-presentation of the just-rotated token within `rotationGraceMs` idempotently re-delivers the same successor pair instead of being mistaken for theft — see [the grace window](#the-grace-window-and-concurrency)). On stateless stores neither can keep the old token valid, so both fall back to single-use semantics with a process-local reuse signal.
 
 ### `'none'` — no rotation
 
@@ -74,8 +76,8 @@ Every successful `refresh()` rotates the refresh token, but each rotated token i
 
 ```
   t=0      issue()  →  access_a, refresh_r1
-  t=10m    refresh(refresh_r1)  →  access_b, refresh_r2   (r1.rotatedAt set)
-  t=10m+5s refresh(refresh_r1)  →  access_b', refresh_r2'   (within grace — OK)
+  t=10m    refresh(refresh_r1)  →  access_b, refresh_r2   (r1.rotatedAt + successor set)
+  t=10m+5s refresh(refresh_r1)  →  access_b, refresh_r2   (grace hit — SAME pair, nothing minted)
   t=10m+35s refresh(refresh_r1) →  AuthError('REFRESH_REUSE_DETECTED')
                                  → onRotationReuse(state) called
                                  → revokeSession(userId, sessionId)   (family only, by default)
@@ -85,22 +87,41 @@ Every successful `refresh()` rotates the refresh token, but each rotated token i
 
 ### `'sliding'` — rotate with grace window
 
-The default. The first `refresh()` marks the old token's `rotatedAt`; the old token remains valid for `rotationGraceMs`. After that window, presenting it is treated as reuse.
+The default. The first `refresh()` marks the old token's `rotatedAt` and pins the successor pair on it; the old token remains presentable for `rotationGraceMs`, and presenting it re-delivers that same pair. After the window, presenting it is treated as reuse.
 
 **Timeline (happy path)**:
 
 ```
   t=0      issue()  →  access_a, refresh_r1
   t=10m    refresh(refresh_r1)  →  access_b, refresh_r2
-                                 → r1.rotatedAt = clock.now()
-  t=10m+5s refresh(refresh_r1)  →  access_b', refresh_r2'   (within grace — OK)
+                                 → r1.rotatedAt = clock.now(), r1.successor = (access_b, refresh_r2)
+  t=10m+5s refresh(refresh_r1)  →  access_b, refresh_r2   (grace hit — SAME pair, nothing minted)
   t=10m+35s refresh(refresh_r1) →  AuthError('REFRESH_REUSE_DETECTED')
                                  → revokeSession(userId, sessionId)   (family only, by default)
 ```
 
 #### The grace window and concurrency
 
-**Why the grace window** — real browsers race. A user double-taps "refresh", a service worker retries, two tabs both notice the access token is stale and call `refresh()` simultaneously. Both `'sliding'` and `'always'` keep the just-rotated token replay-valid for `rotationGraceMs`, so the second call succeeds with a fresh pair instead of being mistaken for theft. The window is tracked in the store (`rotatedAt`), so it holds **across multiple app instances** — a refresh on instance A and a concurrent replay on instance B both land inside the window. Without it, any concurrency on a multi-instance deployment would trip the theft response and log the user out of every device on a benign race.
+**Why the grace window** — real browsers race, and real deploys drop responses. A user double-taps "refresh", two tabs both notice the access token is stale and call `refresh()` simultaneously, or a rolling deploy drains the task after the store rotated but before the response (carrying the successor) reached the client — the client's next perfectly legitimate attempt presents the just-consumed token. Both `'sliding'` and `'always'` keep that token presentable for `rotationGraceMs`. The window is tracked in the store (`rotatedAt` + the pinned successor), so it holds **across multiple app instances** — a refresh on instance A and a concurrent replay on instance B both land inside the window. Without it, any concurrency on a multi-instance deployment would trip the theft response and log the user out of every device on a benign race. Size it to your redeploy/retry window (30–60 s); it stays meaningless for offline token theft.
+
+**A grace hit is an idempotent re-delivery, not a second rotation.** Within the window the orchestrator returns the **same** successor pair the original rotation produced — N grace hits return N identical responses, and nothing is minted. This is the security-critical property: an attacker who captures the old token inside the window learns only what capturing the original rotation response would have taught them — zero new minting capability — and the multi-tab race converges on a single live refresh token instead of forking the family. A grace hit also has **no liveness side effects**: the sliding expiry does not extend and `lastSeenAt` is not stamped, so a captured stale token cannot be used as a keep-alive.
+
+**Supersession ends the window early.** The moment the successor itself rotates (or is revoked — e.g. logout), the old token is dead regardless of the window: presenting it then is the strict theft path, never a resurrection.
+
+**Strict mode** — an explicit `rotationGraceMs: 0` disables the window entirely: every re-presentation of a rotated token is treated as theft.
+
+**Observability** — wire `onRotationGraceHit` to the same sink as `onRotationReuse` (e.g. a `refresh-grace-hit` audit event). A trickle of grace hits correlated with deploys is expected; a spike means someone is replaying tokens:
+
+```ts
+refresh: {
+  ttl: 30 * 24 * 3600 * 1000,
+  rotationGraceMs: 60_000, // sized to the redeploy window
+  onRotationGraceHit: (s) =>
+    audit.record({ kind: "refresh-grace-hit", userId: s.userId, sessionId: s.sessionId }),
+  onRotationReuse: (s) =>
+    audit.record({ kind: "refresh-reuse", userId: s.userId, sessionId: s.sessionId }),
+},
+```
 
 **Choose when** — browsers are involved. Default for a reason.
 
@@ -126,7 +147,7 @@ const auth = new AuthCredential({
 
 Each rotated pair inherits the previous credential's `claims`, `metadata`, **and `sessionId`** — so a login stays **one session** across N refreshes (the session-family invariant the [Sessions](./sessions) APIs rely on). `parentCredentialId` chains each rotation to its predecessor for reuse detection (below); `sessionId` is the durable id that survives the whole chain.
 
-With `trackLastSeen: 'refresh'`, each `refresh()` also stamps `lastSeenAt` on the newly-minted credentials — cheap activity tracking that piggybacks the rotation write. See [Sessions](./sessions#activity-tracking-lastseenat).
+With `trackLastSeen: 'refresh'`, each `refresh()` also stamps `lastSeenAt` on the newly-minted credentials — cheap activity tracking that piggybacks the rotation write. Grace hits are excluded: a re-delivery is not user activity, so it never stamps `lastSeenAt`. See [Sessions](./sessions#activity-tracking-lastseenat).
 
 ## Reuse detection
 
@@ -220,12 +241,18 @@ await auth.issue("alice", { refresh: false });
 // rotates its sessions 'sliding' — so the family's lifetime is capped at the
 // minted expiry and rotation never extends it.
 await auth.issue("alice", { ttl: 60 * 60_000, refresh: { ttl: 30 * 24 * 3600 * 1000 } });
+
+// A per-mint grace window (ms) fixes the family's rotation grace the same
+// mint-time-authority way, honored over the instance `rotationGraceMs`;
+// 0 = strict single-use for this family only.
+await auth.issue("alice", { refresh: { ttl: 30 * 24 * 3600 * 1000, graceMs: 60_000 } });
 ```
 
-Three related seams, all used by the authorization server's [`refresh_token` grant](../moost/authorization-server#refresh-token-grant):
+Four related seams, all used by the authorization server's [`refresh_token` grant](../moost/authorization-server#refresh-token-grant):
 
 - When a refresh token is minted alongside a per-mint access `ttl`, the ttl is stamped on the family (`metadata.accessTtl`) so every refreshed access token keeps the mint-time lifetime instead of reverting to the instance `accessTtl`.
 - A per-mint family's rotation semantics are stamped the same way (`metadata.refreshRotation: "always"`) and honored over the instance config on every redemption — mint-time authority, like `accessTtl`.
+- A per-mint `graceMs` stamps the family's grace window (`metadata.rotationGraceMs`) the same way — the seam behind [`TokenPolicy.refresh.graceMs`](../moost/authorization-server#refresh-token-grant), so an OAuth grant's lost-response tolerance is the policy's decision, not the session posture's.
 - `auth.refresh(token, { guard })` accepts a pre-rotation **guard**: it sees the stored refresh credential before anything rotates, and throwing aborts the refresh with the family untouched — the seam for caller-level binding checks.
 
 ## `maxConcurrent` and refresh tokens

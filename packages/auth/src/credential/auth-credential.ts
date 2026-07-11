@@ -140,15 +140,19 @@ export type IssueOptions<TPayload extends object = object> = TPayload & {
    * - `false` — mint NO refresh token even when the instance config exists
    *   (e.g. the authz token endpoint suppressing the paired refresh for a
    *   policy that didn't opt in — no orphaned refresh row).
-   * - `{ ttl? }` — mint a refresh token for this credential; `ttl` (ms)
-   *   overrides the instance `refresh.ttl`. Works WITHOUT an instance config
-   *   (then `ttl` is required). Per-mint families ALWAYS redeem with
+   * - `{ ttl?, graceMs? }` — mint a refresh token for this credential; `ttl`
+   *   (ms) overrides the instance `refresh.ttl`. Works WITHOUT an instance
+   *   config (then `ttl` is required). Per-mint families ALWAYS redeem with
    *   fixed-ceiling (`'always'`) rotation semantics — the family is stamped
    *   `metadata.refreshRotation: "always"` at mint, which `refresh()` honors
    *   over the instance rotation, so rotation never extends the family's
    *   lifetime even on an instance whose sessions rotate `'sliding'`.
+   *   `graceMs` (ms, ≥ 0) fixes the family's rotation grace window the same
+   *   mint-time-authority way (stamped `metadata.rotationGraceMs`, honored
+   *   over the instance `rotationGraceMs`); `0` is strict single-use. Omit to
+   *   inherit the instance window (or its 30 s default).
    */
-  refresh?: false | { ttl?: number };
+  refresh?: false | { ttl?: number; graceMs?: number };
 };
 
 /** Options for {@link AuthCredential.refresh}. */
@@ -226,6 +230,14 @@ export class AuthCredential<TPayload extends object = object> {
         `refresh.ttl must be > 0 (got ${this.refreshConfig.ttl})`,
       );
     }
+    // 0 is meaningful (strict single-use); only a negative window is nonsense.
+    const graceMs = this.refreshConfig?.rotationGraceMs;
+    if (graceMs !== undefined && graceMs < 0) {
+      throw new AuthError(
+        "INVALID_CONFIG",
+        `refresh.rotationGraceMs must be >= 0 (got ${graceMs})`,
+      );
+    }
   }
 
   async issue(userId: string, options?: IssueOptions<TPayload>): Promise<IssueResult> {
@@ -265,6 +277,13 @@ export class AuthCredential<TPayload extends object = object> {
       if (refreshTtl <= 0) {
         throw new AuthError("INVALID_CONFIG", `issue: refresh.ttl must be > 0 (got ${refreshTtl})`);
       }
+      // 0 is meaningful (strict single-use); only a negative window is nonsense.
+      if (refresh.graceMs !== undefined && refresh.graceMs < 0) {
+        throw new AuthError(
+          "INVALID_CONFIG",
+          `issue: refresh.graceMs must be >= 0 (got ${refresh.graceMs})`,
+        );
+      }
     }
 
     // Fold the semantic `kind` into the persisted metadata bag — it rides every
@@ -273,8 +292,9 @@ export class AuthCredential<TPayload extends object = object> {
     // envelope `kind` free for the internal access/refresh discriminator.
     // A per-mint refresh family additionally stamps its mint-time authority:
     // the per-mint access `ttl` (so refreshes never revert to the instance
-    // `accessTtl`) and fixed-ceiling `"always"` rotation (so an instance-level
-    // 'sliding' config can never extend the family's lifetime).
+    // `accessTtl`), fixed-ceiling `"always"` rotation (so an instance-level
+    // 'sliding' config can never extend the family's lifetime), and — when
+    // given — the family's own rotation grace window.
     const perMintRefresh = refresh !== undefined && refresh !== false;
     const stampAccessTtl = refreshTtl !== undefined && ttl !== undefined;
     const effectiveMetadata: CredentialMetadata | undefined =
@@ -284,6 +304,8 @@ export class AuthCredential<TPayload extends object = object> {
             ...(kind !== undefined && { credentialKind: kind }),
             ...(stampAccessTtl && { accessTtl: ttl }),
             ...(perMintRefresh && { refreshRotation: "always" as const }),
+            ...(perMintRefresh &&
+              refresh.graceMs !== undefined && { rotationGraceMs: refresh.graceMs }),
           }
         : metadata;
 
@@ -484,11 +506,18 @@ export class AuthCredential<TPayload extends object = object> {
 
   /**
    * Shared rotation-with-grace mechanism for `sliding` and `always` on stateful
-   * stores. Keeps the old refresh valid + stamps `rotatedAt` on first rotation;
-   * within `rotationGraceMs` of that stamp it re-issues a fresh pair WITHOUT
-   * re-rotating (replay-tolerant); beyond grace it treats the re-presentation
-   * as theft. `preserveExpiry` selects fixed-ceiling (`always`) vs sliding
-   * (`sliding`) expiry for the new refresh token.
+   * stores. The first rotation keeps the old refresh valid and stamps
+   * `rotatedAt` + the {@link CredentialState.successor} pair on it; within the
+   * grace window a re-presentation **re-delivers that same pair verbatim** —
+   * idempotent, minting nothing, with no liveness side effects (no expiry
+   * slide, no `lastSeenAt`) — so a captured stale token teaches an attacker
+   * nothing beyond capturing the original rotation response, and a multi-tab
+   * race converges on one successor. Beyond grace — or once the successor has
+   * itself been rotated or revoked (superseded) — the re-presentation is
+   * treated as theft. `preserveExpiry` selects fixed-ceiling (`always`) vs
+   * sliding (`sliding`) expiry for the new refresh token; the family's
+   * mint-time `metadata.rotationGraceMs` (when stamped) wins over the instance
+   * window, and a window of `0` is strict single-use.
    */
   private async rotateWithGrace(
     oldState: CredentialState & TPayload,
@@ -496,7 +525,10 @@ export class AuthCredential<TPayload extends object = object> {
     now: number,
     preserveExpiry: boolean,
   ): Promise<RefreshResult> {
-    const graceMs = this.refreshConfig?.rotationGraceMs ?? DEFAULT_ROTATION_GRACE_MS;
+    const graceMs =
+      oldState.metadata?.rotationGraceMs ??
+      this.refreshConfig?.rotationGraceMs ??
+      DEFAULT_ROTATION_GRACE_MS;
 
     // First rotation: nothing to validate against the grace window yet.
     if (typeof oldState.rotatedAt !== "number") {
@@ -509,26 +541,57 @@ export class AuthCredential<TPayload extends object = object> {
       );
     }
 
-    // Subsequent presentation of an already-rotated refresh.
-    if (now - oldState.rotatedAt > graceMs) {
-      // Reuse-after-grace: theft suspected.
-      await this.respondToRefreshReuse({
-        userId: oldState.userId,
-        sessionId: oldState.sessionId,
-        issuedAt: oldState.issuedAt,
-        expiresAt: oldState.expiresAt,
-        rotatedAt: oldState.rotatedAt,
-      });
+    // Both theft paths below (out-of-window, and superseded successor) respond
+    // to the same reuse of the same rotated token — one envelope, two guards.
+    const reuse = {
+      userId: oldState.userId,
+      sessionId: oldState.sessionId,
+      issuedAt: oldState.issuedAt,
+      expiresAt: oldState.expiresAt,
+      rotatedAt: oldState.rotatedAt,
+    };
+
+    // Re-presentation of an already-rotated refresh. Outside the window — or
+    // under a strict `0` window — it is indistinguishable from an attacker
+    // replay: theft suspected.
+    if (graceMs <= 0 || now - oldState.rotatedAt > graceMs) {
+      return await this.respondToRefreshReuse(reuse);
     }
 
-    // Within grace: replay-tolerant. Issue new tokens but don't re-rotate.
-    return await this.issueRotatedPair(
-      oldState,
-      refreshToken,
-      /* rotateOld */ false,
-      now,
-      preserveExpiry,
-    );
+    // Within grace — but only while the family is still parked on the
+    // successor this rotation minted. A missing or itself-rotated successor
+    // means the client already moved on (or the row predates successor
+    // tracking): the presented token is superseded and dead regardless of the
+    // window, so a re-presentation can only be a replay.
+    const successor = oldState.successor;
+    const successorState =
+      successor === undefined ? null : await this.store.retrieve(successor.refreshToken);
+    if (
+      successor === undefined ||
+      successorState === null ||
+      typeof successorState.rotatedAt === "number"
+    ) {
+      return await this.respondToRefreshReuse(reuse);
+    }
+
+    // Grace hit: idempotent re-delivery of the successor pair. A re-delivery
+    // is not user activity — nothing is minted, no state changes, the sliding
+    // window does not extend and `lastSeenAt` is not stamped.
+    this.refreshConfig?.onRotationGraceHit?.({
+      userId: oldState.userId,
+      issuedAt: oldState.issuedAt,
+      expiresAt: oldState.expiresAt,
+      kind: "refresh",
+      rotatedAt: oldState.rotatedAt,
+      ...(oldState.sessionId !== undefined && { sessionId: oldState.sessionId }),
+    });
+    return {
+      accessToken: successor.accessToken,
+      accessExpiresAt: successor.accessExpiresAt,
+      refreshToken: successor.refreshToken,
+      refreshExpiresAt: successor.refreshExpiresAt,
+      userId: oldState.userId,
+    };
   }
 
   async revoke(token: string): Promise<void> {
@@ -793,11 +856,19 @@ export class AuthCredential<TPayload extends object = object> {
     const newRefreshToken = await this.store.persist(newRefreshState, refreshTtl);
 
     if (rotateOld) {
-      // Mark the old refresh as rotated; keep it valid until grace expires
-      // (its expiresAt remains as originally set; grace logic uses rotatedAt).
+      // Mark the old refresh as rotated and pin the successor pair on it; it
+      // stays valid until grace expires (its expiresAt remains as originally
+      // set; grace logic uses rotatedAt) and a within-grace re-presentation
+      // re-delivers EXACTLY this pair — grace hits mint nothing.
       const rotatedState: CredentialState & TPayload = {
         ...oldRefreshState,
         rotatedAt: now,
+        successor: {
+          accessToken: access.token,
+          accessExpiresAt: access.expiresAt,
+          refreshToken: newRefreshToken,
+          refreshExpiresAt,
+        },
       };
       await this.store.update(oldRefreshToken, rotatedState);
     }

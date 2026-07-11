@@ -1098,7 +1098,7 @@ describe("AuthorizeController — refresh_token grant", () => {
   async function mintCode(
     client: DynamicClient | undefined,
     verifier: string,
-    refresh: { ttl?: number } | null = { ttl: 100_000 },
+    refresh: { ttl?: number; graceMs?: number } | null = { ttl: 100_000 },
   ): Promise<string> {
     const { code } = await h.codes.mint({
       userId: "u-1",
@@ -1218,6 +1218,47 @@ describe("AuthorizeController — refresh_token grant", () => {
     );
     expect(reuse.status).toBe(400);
     expect((reuse.body as { error: string }).error).toBe("invalid_grant");
+  });
+
+  it("tokenPolicy.refresh.graceMs rides the family: a within-grace re-presentation re-delivers the SAME pair; graceMs 0 is strict", async () => {
+    // Lost-response resilience for connectors: the policy's own grace window
+    // (60s here) wins over the instance default (30s), so a retry landing
+    // between the two still succeeds — idempotently, with the identical pair.
+    const client = await registerClient();
+    const refreshCall = (token: string) =>
+      h.request(
+        "/auth/token",
+        form({ grant_type: "refresh_token", refresh_token: token, client_id: client.clientId }),
+      );
+
+    const first = await redeemCode(
+      client,
+      "v-grace",
+      await mintCode(client, "v-grace", { ttl: 100_000, graceMs: 60_000 }),
+    );
+    const rotated = await refreshCall(first.refresh_token!);
+    expect(rotated.status).toBe(200);
+    const pair = rotated.body as { access_token: string; refresh_token: string };
+
+    clock.advance(45_000); // beyond the 30s default, inside the policy's 60s window
+    const retry = await refreshCall(first.refresh_token!);
+    expect(retry.status).toBe(200);
+    const retried = retry.body as { access_token: string; refresh_token: string };
+    expect(retried.refresh_token).toBe(pair.refresh_token);
+    expect(retried.access_token).toBe(pair.access_token);
+    // The family is alive and converged — the successor still rotates normally.
+    expect((await refreshCall(pair.refresh_token)).status).toBe(200);
+
+    // graceMs: 0 — strict single-use: an immediate replay is already theft.
+    const strict = await redeemCode(
+      client,
+      "v-grace0",
+      await mintCode(client, "v-grace0", { ttl: 100_000, graceMs: 0 }),
+    );
+    expect((await refreshCall(strict.refresh_token!)).status).toBe(200);
+    const replay = await refreshCall(strict.refresh_token!);
+    expect(replay.status).toBe(400);
+    expect((replay.body as { error: string }).error).toBe("invalid_grant");
   });
 
   it("client binding: another client's id ⇒ invalid_grant; unknown client ⇒ invalid_client; missing params rejected", async () => {

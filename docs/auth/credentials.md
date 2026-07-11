@@ -180,16 +180,18 @@ refresh(refreshToken: string): Promise<IssueResult>;
 
 **Behavior summary**
 
-| `refresh.rotation`    | What happens on success                                                                                                                                      |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `'none'`              | New access token issued. Old refresh stays valid until its own TTL.                                                                                          |
-| `'always'`            | Old refresh is `consume`d. New access + new refresh issued. Reuse → `REFRESH_REUSE_DETECTED`.                                                                |
-| `'sliding'` (default) | First call marks `rotatedAt`. Old refresh stays usable for `rotationGraceMs` (default 30s). Reuse after grace → `REFRESH_REUSE_DETECTED` + user-wide revoke. |
+| `refresh.rotation`    | What happens on success                                                                                                                                                                   |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `'none'`              | New access token issued. Old refresh stays valid until its own TTL.                                                                                                                       |
+| `'always'`            | New access + new refresh issued with a **fixed** family ceiling; old refresh grace-tolerant on stateful stores (consumed on stateless). Reuse after grace → `REFRESH_REUSE_DETECTED`.     |
+| `'sliding'` (default) | First call marks `rotatedAt` + pins the successor pair. Within `rotationGraceMs` (default 30s) re-presenting the old refresh re-delivers the same pair; after → `REFRESH_REUSE_DETECTED`. |
+
+See [Refresh & Rotation](./refresh) for the grace-window semantics (idempotent re-delivery, supersession, strict `rotationGraceMs: 0`).
 
 **Errors**
 
 - `INVALID_TOKEN` — unknown / malformed token, or an access token presented as a refresh.
-- `REFRESH_REUSE_DETECTED` — reuse outside the grace window. Triggers `revokeAllForUser`.
+- `REFRESH_REUSE_DETECTED` — reuse outside the grace window (or a superseded token). Revokes per `reuseResponse` — session family by default.
 - `STATELESS_OPERATION_UNSUPPORTED` — `'always'` / `'sliding'` rotation on a stateless store without a `denylist`.
 
 **Example**

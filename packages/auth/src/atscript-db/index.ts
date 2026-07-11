@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { credentialPayloadOf } from "../credential/payload";
-import type { CredentialState } from "../credential/types";
+import type { CredentialState, CredentialSuccessorRef } from "../credential/types";
 import type { CredentialStore } from "../stores/store";
 
 // Durable authorization-server stores (AUTH-SERVER.md §4.3) — same atscript-db
@@ -31,6 +31,7 @@ export type AuthCredentialRow<TPayload extends object = object> = {
   kind?: string;
   parentCredentialId?: string;
   rotatedAt?: number;
+  successor?: CredentialSuccessorRef;
   sessionId?: string;
   lastSeenAt?: number;
 } & TPayload;
@@ -196,6 +197,7 @@ function stateToRow<TPayload extends object>(
     kind: state.kind,
     parentCredentialId: state.parentCredentialId,
     rotatedAt: state.rotatedAt,
+    successor: state.successor,
     sessionId: state.sessionId,
     lastSeenAt: state.lastSeenAt,
   } as AuthCredentialRow<TPayload>;
@@ -231,6 +233,7 @@ function rowToState<TPayload extends object>(
   if (row.kind === "access" || row.kind === "refresh") state.kind = row.kind;
   if (row.parentCredentialId !== undefined) state.parentCredentialId = row.parentCredentialId;
   if (row.rotatedAt !== undefined) state.rotatedAt = row.rotatedAt;
+  if (row.successor !== undefined && row.successor !== null) state.successor = row.successor;
   if (row.sessionId !== undefined) state.sessionId = row.sessionId;
   if (row.lastSeenAt !== undefined) state.lastSeenAt = row.lastSeenAt;
   return state as CredentialState & TPayload;

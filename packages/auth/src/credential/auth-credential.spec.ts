@@ -331,10 +331,12 @@ describe("AuthCredential", () => {
       expect(r2.refreshExpiresAt).toBe(ceiling);
     });
 
-    it("benign concurrent refresh within grace re-issues a pair — no theft", async () => {
+    it("benign concurrent refresh within grace re-delivers the SAME pair — no theft, both tabs converge", async () => {
       // The bug this guards: two tabs present the same just-rotated token at
       // ~the same instant. Within grace the second presentation must succeed,
-      // NOT be mistaken for token theft.
+      // NOT be mistaken for token theft — and it must re-deliver the SAME
+      // successor pair (idempotent), so both tabs end up holding one refresh
+      // token instead of forking the family.
       let reuseFired = 0;
       const { auth, clock } = makeAuth({
         accessTtl: 1000,
@@ -352,9 +354,10 @@ describe("AuthCredential", () => {
       const first = await auth.refresh(initial.refreshToken!);
       clock.advance(10); // second tab, still inside grace
       const second = await auth.refresh(initial.refreshToken!);
-      expect(second.accessToken).toBeTruthy();
-      expect(second.refreshToken).toBeTruthy();
-      expect(second.refreshToken).not.toBe(initial.refreshToken);
+      expect(second.accessToken).toBe(first.accessToken);
+      expect(second.refreshToken).toBe(first.refreshToken);
+      expect(second.accessExpiresAt).toBe(first.accessExpiresAt);
+      expect(second.refreshExpiresAt).toBe(first.refreshExpiresAt);
       expect(reuseFired).toBe(0);
       // No theft → neither the sibling session nor the freshly-issued tokens die.
       expect(await auth.validate(sibling.accessToken)).not.toBeNull();
@@ -447,7 +450,7 @@ describe("AuthCredential", () => {
       expect(oldRefreshState?.rotatedAt).toBe(clock.now());
     });
 
-    it("race within grace period accepts the old refresh again", async () => {
+    it("race within grace period re-delivers the same pair", async () => {
       const { auth, clock } = makeAuth({
         accessTtl: 1000,
         refresh: { ttl: 60_000, rotation: "sliding", rotationGraceMs: 5000 },
@@ -457,8 +460,11 @@ describe("AuthCredential", () => {
       const first = await auth.refresh(initial.refreshToken!);
       clock.advance(10); // still inside the 5s grace
       const second = await auth.refresh(initial.refreshToken!);
-      expect(second.accessToken).toBeTruthy();
-      expect(second.refreshToken).toBeTruthy();
+      expect(second.accessToken).toBe(first.accessToken);
+      expect(second.refreshToken).toBe(first.refreshToken);
+      // A grace hit is a re-delivery, not activity: the sliding expiry the
+      // original rotation set must NOT be extended by the re-presentation.
+      expect(second.refreshExpiresAt).toBe(first.refreshExpiresAt);
       // The newest refresh should also work.
       const third = await auth.refresh(first.refreshToken!);
       expect(third.accessToken).toBeTruthy();
@@ -509,6 +515,165 @@ describe("AuthCredential", () => {
       await expect(auth.refresh(issued.accessToken)).rejects.toMatchObject({
         type: "INVALID_TOKEN",
       });
+    });
+  });
+
+  describe("rotation grace window: idempotent re-delivery", () => {
+    it("N grace hits return N identical responses and mint NOTHING (store row count frozen)", async () => {
+      const { auth, store, clock } = makeAuth({
+        accessTtl: 60_000,
+        refresh: { ttl: 600_000, rotation: "sliding", rotationGraceMs: 5000 },
+      });
+      const initial = await auth.issue("alice");
+      clock.advance(10);
+      const first = await auth.refresh(initial.refreshToken!);
+      const rowsAfterRotation = (await store.listForUser!("alice")).length;
+      for (let i = 0; i < 3; i++) {
+        clock.advance(100);
+        const hit = await auth.refresh(initial.refreshToken!);
+        expect(hit).toEqual(first);
+      }
+      // Idempotent: no new access or refresh rows appeared.
+      expect((await store.listForUser!("alice")).length).toBe(rowsAfterRotation);
+    });
+
+    it("fires onRotationGraceHit (not onRotationReuse) with the rotated credential's envelope", async () => {
+      const reuse: unknown[] = [];
+      const graceHits: Array<{ userId: string; sessionId?: string; rotatedAt?: number }> = [];
+      const { auth, clock } = makeAuth({
+        accessTtl: 60_000,
+        refresh: {
+          ttl: 600_000,
+          rotation: "sliding",
+          rotationGraceMs: 5000,
+          onRotationReuse: (s) => reuse.push(s),
+          onRotationGraceHit: (s) =>
+            graceHits.push({ userId: s.userId, sessionId: s.sessionId, rotatedAt: s.rotatedAt }),
+        },
+      });
+      const initial = await auth.issue("alice");
+      clock.advance(10);
+      await auth.refresh(initial.refreshToken!);
+      const rotationTime = clock.now();
+      clock.advance(10);
+      await auth.refresh(initial.refreshToken!); // grace hit
+      expect(reuse).toHaveLength(0);
+      expect(graceHits).toHaveLength(1);
+      expect(graceHits[0].userId).toBe("alice");
+      expect(graceHits[0].sessionId).toBeTruthy();
+      expect(graceHits[0].rotatedAt).toBe(rotationTime);
+    });
+
+    it("does NOT stamp lastSeenAt on a grace hit (re-delivery is not activity)", async () => {
+      const { auth, store, clock } = makeAuth({
+        accessTtl: 60_000,
+        trackLastSeen: "refresh",
+        refresh: { ttl: 600_000, rotation: "sliding", rotationGraceMs: 5000 },
+      });
+      const initial = await auth.issue("alice");
+      clock.advance(10);
+      const first = await auth.refresh(initial.refreshToken!);
+      const rotationTime = clock.now();
+      clock.advance(1000);
+      await auth.refresh(initial.refreshToken!); // grace hit
+      // The successor rows keep the ROTATION-time stamp; the grace hit did not
+      // touch them (a captured stale token must not act as a keep-alive).
+      const successorRefresh = await store.retrieve(first.refreshToken!);
+      expect(successorRefresh?.lastSeenAt).toBe(rotationTime);
+    });
+
+    it("supersession: once the successor rotates, the old token is theft regardless of the window", async () => {
+      // Acceptance 3: R1 -> R2 (rotate), R2 -> R3 (rotate); presenting R1
+      // within R1's own grace window must NOT re-deliver the consumed R2 —
+      // the family moved on, so it is a replay.
+      let reuseFired = 0;
+      const { auth, clock } = makeAuth({
+        accessTtl: 60_000,
+        refresh: {
+          ttl: 600_000,
+          rotation: "sliding",
+          rotationGraceMs: 60_000,
+          onRotationReuse: () => {
+            reuseFired++;
+          },
+        },
+      });
+      const initial = await auth.issue("alice");
+      clock.advance(10);
+      const r2 = await auth.refresh(initial.refreshToken!); // R1 -> R2
+      clock.advance(10);
+      await auth.refresh(r2.refreshToken!); // R2 -> R3
+      clock.advance(10); // still deep inside R1's 60s window
+      await expect(auth.refresh(initial.refreshToken!)).rejects.toMatchObject({
+        type: "REFRESH_REUSE_DETECTED",
+      });
+      expect(reuseFired).toBe(1);
+    });
+
+    it("supersession: a revoked successor (e.g. logout) also makes the old token theft, never a resurrection", async () => {
+      const { auth, clock } = makeAuth({
+        accessTtl: 60_000,
+        refresh: { ttl: 600_000, rotation: "sliding", rotationGraceMs: 60_000 },
+      });
+      const initial = await auth.issue("alice");
+      clock.advance(10);
+      const r2 = await auth.refresh(initial.refreshToken!);
+      await auth.revoke(r2.refreshToken!);
+      clock.advance(10);
+      await expect(auth.refresh(initial.refreshToken!)).rejects.toMatchObject({
+        type: "REFRESH_REUSE_DETECTED",
+      });
+    });
+
+    it("rotationGraceMs: 0 is strict single-use — an immediate replay is theft", async () => {
+      const { auth } = makeAuth({
+        accessTtl: 60_000,
+        refresh: { ttl: 600_000, rotation: "sliding", rotationGraceMs: 0 },
+      });
+      const initial = await auth.issue("alice");
+      await auth.refresh(initial.refreshToken!);
+      // Same clock instant — even a zero-latency replay is rejected.
+      await expect(auth.refresh(initial.refreshToken!)).rejects.toMatchObject({
+        type: "REFRESH_REUSE_DETECTED",
+      });
+    });
+
+    it("per-mint graceMs is the family's mint-time authority over the instance window", async () => {
+      // A strict (graceMs 0) per-mint family on a lenient instance...
+      const lenient = makeAuth({
+        accessTtl: 60_000,
+        refresh: { ttl: 600_000, rotation: "sliding", rotationGraceMs: 60_000 },
+      });
+      const strictGrant = await lenient.auth.issue("alice", {
+        refresh: { ttl: 100_000, graceMs: 0 },
+      });
+      await lenient.auth.refresh(strictGrant.refreshToken!);
+      await expect(lenient.auth.refresh(strictGrant.refreshToken!)).rejects.toMatchObject({
+        type: "REFRESH_REUSE_DETECTED",
+      });
+
+      // ...and a lenient per-mint family on a strict instance.
+      const strict = makeAuth({
+        accessTtl: 60_000,
+        refresh: { ttl: 600_000, rotation: "sliding", rotationGraceMs: 0 },
+      });
+      const lenientGrant = await strict.auth.issue("alice", {
+        refresh: { ttl: 100_000, graceMs: 5000 },
+      });
+      const first = await strict.auth.refresh(lenientGrant.refreshToken!);
+      strict.clock.advance(10);
+      const second = await strict.auth.refresh(lenientGrant.refreshToken!);
+      expect(second.refreshToken).toBe(first.refreshToken);
+    });
+
+    it("rejects a negative grace window at boot and at issue", async () => {
+      expect(() => makeAuth({ refresh: { ttl: 600_000, rotationGraceMs: -1 } })).toThrowError(
+        AuthError,
+      );
+      const { auth } = makeAuth();
+      await expect(
+        auth.issue("alice", { refresh: { ttl: 100_000, graceMs: -1 } }),
+      ).rejects.toMatchObject({ type: "INVALID_CONFIG" });
     });
   });
 

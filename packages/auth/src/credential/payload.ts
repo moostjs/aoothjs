@@ -19,6 +19,7 @@ const ENVELOPE_KEY_FLAGS: Record<keyof CredentialState | "token", true> = {
   kind: true,
   parentCredentialId: true,
   rotatedAt: true,
+  successor: true,
   sessionId: true,
   lastSeenAt: true,
   token: true,

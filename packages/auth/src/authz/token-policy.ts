@@ -35,8 +35,17 @@ export interface TokenPolicy {
    * dynamic clients) — the family is stamped with `metadata.authzClientId` and
    * a refresh token redeems only for that client. A clientless (Tier-1
    * loopback) grant has nothing to bind to, so the flag is IGNORED there.
+   *
+   * `graceMs` (ms, ≥ 0) fixes the family's rotation grace window — the window
+   * within which re-presenting a just-rotated refresh token idempotently
+   * re-delivers the same successor pair instead of tripping theft detection
+   * (a connector refreshing against a redeploying server survives the lost
+   * response instead of bricking until re-consent). Stamped at mint
+   * (`metadata.rotationGraceMs`) and honored over the credential instance's
+   * `rotationGraceMs`; `0` is strict single-use. Absent ⇒ the instance window
+   * (or its 30 s default).
    */
-  refresh?: { ttl?: number };
+  refresh?: { ttl?: number; graceMs?: number };
 }
 
 /**
@@ -66,7 +75,12 @@ export function tokenPolicyToIssueOptions(
     ...policy.payload,
     ...(policy.kind !== undefined && { kind: policy.kind }),
     ...(policy.ttl !== undefined && { ttl: policy.ttl }),
-    refresh: withRefresh ? { ttl: policy.refresh?.ttl ?? DEFAULT_AUTHZ_REFRESH_TTL_MS } : false,
+    refresh: withRefresh
+      ? {
+          ttl: policy.refresh?.ttl ?? DEFAULT_AUTHZ_REFRESH_TTL_MS,
+          ...(policy.refresh?.graceMs !== undefined && { graceMs: policy.refresh.graceMs }),
+        }
+      : false,
     ...(withRefresh && { metadata: { authzClientId: clientId } }),
   };
 }

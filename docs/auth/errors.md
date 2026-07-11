@@ -56,15 +56,15 @@ Always check `e instanceof AuthError` first. The package never throws plain `Err
 
 ## Full type table
 
-| `type`                                                                | Trigger                                                                           | `details`                   | Suggested HTTP                                    |
-| --------------------------------------------------------------------- | --------------------------------------------------------------------------------- | --------------------------- | ------------------------------------------------- |
-| [`INVALID_TOKEN`](#invalid_token)                                     | Unknown / malformed token, or access token presented to `refresh()`               | none (message only)         | `401 Unauthorized`                                |
-| [`TOKEN_EXPIRED`](#token_expired)                                     | Reserved (not currently thrown — `validate` collapses to `null` instead)          | —                           | `401 Unauthorized`                                |
-| [`TOKEN_REVOKED`](#token_revoked)                                     | Reserved (not currently thrown — `validate` collapses to `null` instead)          | —                           | `401 Unauthorized`                                |
-| [`REFRESH_REUSE_DETECTED`](#refresh_reuse_detected)                   | Refresh-token reuse after grace (sliding) or any reuse (always)                   | `{ userId, rotatedAt? }`    | `401 Unauthorized`, clear cookies, force re-login |
-| [`STATELESS_OPERATION_UNSUPPORTED`](#stateless_operation_unsupported) | `revoke` / `consume` / `update` on JWT or Encapsulated store without a `denylist` | none (message only)         | `500 Internal Server Error`                       |
-| [`MAX_CONCURRENT_REACHED`](#max_concurrent_reached)                   | `issue()` past `maxConcurrent`                                                    | `{ userId, limit, active }` | `409 Conflict` or `429 Too Many Requests`         |
-| [`INVALID_CONFIG`](#invalid_config)                                   | Construction-time misconfiguration                                                | none (message only)         | `500 Internal Server Error`                       |
+| `type`                                                                | Trigger                                                                           | `details`                            | Suggested HTTP                                    |
+| --------------------------------------------------------------------- | --------------------------------------------------------------------------------- | ------------------------------------ | ------------------------------------------------- |
+| [`INVALID_TOKEN`](#invalid_token)                                     | Unknown / malformed token, or access token presented to `refresh()`               | none (message only)                  | `401 Unauthorized`                                |
+| [`TOKEN_EXPIRED`](#token_expired)                                     | Reserved (not currently thrown — `validate` collapses to `null` instead)          | —                                    | `401 Unauthorized`                                |
+| [`TOKEN_REVOKED`](#token_revoked)                                     | Reserved (not currently thrown — `validate` collapses to `null` instead)          | —                                    | `401 Unauthorized`                                |
+| [`REFRESH_REUSE_DETECTED`](#refresh_reuse_detected)                   | Rotated-refresh re-presentation outside grace / strict `0` window / superseded    | `{ userId, sessionId?, rotatedAt? }` | `401 Unauthorized`, clear cookies, force re-login |
+| [`STATELESS_OPERATION_UNSUPPORTED`](#stateless_operation_unsupported) | `revoke` / `consume` / `update` on JWT or Encapsulated store without a `denylist` | none (message only)                  | `500 Internal Server Error`                       |
+| [`MAX_CONCURRENT_REACHED`](#max_concurrent_reached)                   | `issue()` past `maxConcurrent`                                                    | `{ userId, limit, active }`          | `409 Conflict` or `429 Too Many Requests`         |
+| [`INVALID_CONFIG`](#invalid_config)                                   | Construction-time misconfiguration                                                | none (message only)                  | `500 Internal Server Error`                       |
 
 The rest of this page details each type.
 
@@ -107,32 +107,36 @@ Reserved. Same status as `TOKEN_EXPIRED` — `validate()` returns `null`, `refre
 
 ## `REFRESH_REUSE_DETECTED`
 
-A refresh token was reused after its grace window (sliding mode) or after any prior use (always mode). The orchestrator interprets this as either token theft or a client bug; either way, the entire user is logged out.
+A rotated refresh token was re-presented outside the tolerated grace window. The orchestrator interprets this as either token theft or a client bug and revokes per `reuseResponse` — the compromised session family by default, or every session for the user with `reuseResponse: 'user'`.
 
-**Triggers**
+**Triggers** (`'sliding'` and `'always'` alike on stateful stores)
 
-- `rotation: 'always'`: any second call with the same refresh token.
-- `rotation: 'sliding'`: a second call outside `rotationGraceMs`.
+- Re-presentation more than `rotationGraceMs` after the rotation.
+- Any re-presentation under strict mode (`rotationGraceMs: 0`).
+- Re-presentation of a **superseded** token — its successor has itself rotated or been revoked — even inside the window. (A within-grace hit on a live successor is NOT this error: it idempotently re-delivers the successor pair — see [the grace window](./refresh#the-grace-window-and-concurrency).)
+- On stateless stores: any same-process replay of a consumed refresh token (no store-backed window is possible there).
 
 **Side effects that fire _before_ the throw**
 
 1. `onRotationReuse(state)` hook is called with the offending `CredentialState`.
-2. `revokeAllForUser(state.userId)` is invoked. Every access and refresh credential for that user is dead.
+2. Revocation per `reuseResponse`: `revokeSession(userId, sessionId)` (default `'session'`) or `revokeAllForUser(userId)` (`'user'` — also the fallback when the session can't be targeted).
 
 **`details`**
 
 Two shapes, depending on which code path fires the throw:
 
 ```ts
-// Sliding mode, reuse after grace (auth-credential.ts refreshSliding)
+// Stateful stores — after grace / strict mode / superseded (rotateWithGrace)
 {
   userId: string;
+  sessionId?: string;
   rotatedAt: number; // ms timestamp of the original rotation
 }
 
-// 'always' mode, replay of a consumed refresh (fireRefreshReuseTheftResponse)
+// Stateless stores — replay of a consumed refresh (fireRefreshReuseTheftResponse)
 {
   userId: string;
+  sessionId?: string;
 }
 ```
 
@@ -144,7 +148,7 @@ There is no `parentCredentialId` on this error — the orchestrator never attach
 401 Unauthorized
 ```
 
-Clear all cookies for the auth domain. Redirect to login. Surface a clear message — "for your security, all sessions were ended" — and **don't blame the user**. The most common cause is a token leak; the second is a buggy retry on the client.
+Clear all cookies for the auth domain. Redirect to login. Surface a clear message — "for your security, this session was ended" — and **don't blame the user**. The most common cause is a token leak; the second is a client retrying with a stale token long after a lost response (within-window retries are absorbed by the grace re-delivery).
 
 ```ts
 catch (e) {

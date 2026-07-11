@@ -71,9 +71,19 @@ describe("CredentialStoreAtscriptDb — contract", () => {
       const table = new MockTable();
       const store = new CredentialStoreAtscriptDb({ table });
       const token = await store.persist(makeState("alice"));
-      const returned = await store.update(token, makeState("alice", { rotatedAt: 7 }));
+      // rotatedAt + successor is exactly what the rotation-with-grace path
+      // writes onto the old refresh row — both must round-trip.
+      const successor = {
+        accessToken: "a-2",
+        accessExpiresAt: Date.now() + 60_000,
+        refreshToken: "r-2",
+        refreshExpiresAt: Date.now() + 600_000,
+      };
+      const returned = await store.update(token, makeState("alice", { rotatedAt: 7, successor }));
       expect(returned).toBe(token);
-      expect((await store.retrieve(token))?.rotatedAt).toBe(7);
+      const retrieved = await store.retrieve(token);
+      expect(retrieved?.rotatedAt).toBe(7);
+      expect(retrieved?.successor).toEqual(successor);
     });
 
     it("is a no-op for unknown tokens (does not insert a resurrected row)", async () => {
