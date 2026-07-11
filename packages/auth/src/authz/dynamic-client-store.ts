@@ -2,13 +2,16 @@ import { randomUUID } from "node:crypto";
 
 import { type Clock, defaultClock } from "../utils/clock";
 
+/** Token-endpoint auth methods a dynamic client may register with. */
+export type DynamicClientAuthMethod = "none" | "client_secret_post";
+
 /**
  * One dynamically-registered OAuth client (RFC 7591) — the record behind a
- * connector-style public client that self-registered at `POST /register`.
+ * connector-style client that self-registered at `POST /register`.
  * Everything here is **registrant-supplied** (post-validation) except
- * `clientId` and the timestamps: treat `clientName` as untrusted display text
- * and `redirectUris` as the exact-match delivery allowlist that
- * `DynamicClientPolicy` enforces at `/authorize`.
+ * `clientId`, `clientSecretHash` and the timestamps: treat `clientName` as
+ * untrusted display text and `redirectUris` as the exact-match delivery
+ * allowlist that `DynamicClientPolicy` enforces at `/authorize`.
  */
 export interface DynamicClient {
   /** Store-minted opaque client identifier (the DCR response `client_id`). */
@@ -17,8 +20,18 @@ export interface DynamicClient {
   clientName?: string;
   /** Validated redirect allowlist — https exact-match entries and/or loopback literals. */
   redirectUris: string[];
-  /** v1 supports public clients only — PKCE is the binding, no secret exists. */
-  tokenEndpointAuthMethod: "none";
+  /**
+   * `"none"` (public — PKCE is the binding) or `"client_secret_post"`
+   * (confidential — a server-minted secret is additionally checked at `/token`).
+   */
+  tokenEndpointAuthMethod: DynamicClientAuthMethod;
+  /**
+   * SHA-256 hex digest of the minted `client_secret` — present iff
+   * `tokenEndpointAuthMethod` is `"client_secret_post"`. The plaintext secret
+   * is returned ONCE in the registration response and never stored; see
+   * `hashClientSecret` / `verifyClientSecret`.
+   */
+  clientSecretHash?: string;
   /** Registered grant types (narrowed to what the server supports). */
   grantTypes: string[];
   /** Registered response types (narrowed to what the server supports). */
@@ -39,7 +52,9 @@ export interface DynamicClient {
 export interface NewDynamicClient {
   clientName?: string;
   redirectUris: string[];
-  tokenEndpointAuthMethod: "none";
+  tokenEndpointAuthMethod: DynamicClientAuthMethod;
+  /** Digest of the minted secret (confidential clients) — see {@link DynamicClient.clientSecretHash}. */
+  clientSecretHash?: string;
   grantTypes: string[];
   responseTypes: string[];
   scope?: string;
@@ -100,6 +115,7 @@ export class DynamicClientStoreMemory extends DynamicClientStore {
       responseTypes: [...rec.responseTypes],
       createdAt: this.clock.now(),
       ...(rec.clientName !== undefined && { clientName: rec.clientName }),
+      ...(rec.clientSecretHash !== undefined && { clientSecretHash: rec.clientSecretHash }),
       ...(rec.scope !== undefined && { scope: rec.scope }),
     };
     this.store.set(row.clientId, structuredClone(row));

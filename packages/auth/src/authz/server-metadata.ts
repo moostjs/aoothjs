@@ -62,7 +62,9 @@ export interface BuildAuthorizationServerMetadataOptions {
  *
  * Capability fields are fixed to what the server actually implements:
  * `response_types_supported` `["code"]`, `grant_types_supported`
- * `["authorization_code"]`, `code_challenge_methods_supported` `["S256"]`
+ * `["authorization_code", "refresh_token"]` (the grant is implemented server-
+ * wide; whether a given client's grant mints a refresh token is per-policy —
+ * `TokenPolicy.refresh`), `code_challenge_methods_supported` `["S256"]`
  * (PKCE is mandatory — it is the binding for public clients). Optional fields
  * are omitted entirely (no `undefined` keys) so the serialized JSON carries
  * only what was configured.
@@ -83,7 +85,7 @@ export function buildAuthorizationServerMetadata(
     }),
     ...(opts.jwksUri !== undefined && { jwks_uri: opts.jwksUri }),
     response_types_supported: ["code"],
-    grant_types_supported: ["authorization_code"],
+    grant_types_supported: ["authorization_code", "refresh_token"],
     code_challenge_methods_supported: ["S256"],
     // Public clients require "none" — prepend it rather than trust the caller.
     token_endpoint_auth_methods_supported: authMethods.includes("none")

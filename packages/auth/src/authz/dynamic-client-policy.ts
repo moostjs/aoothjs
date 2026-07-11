@@ -4,6 +4,7 @@ import {
   isLoopbackRedirectUri,
   type ResolvedClient,
 } from "./client-policy";
+import { verifyClientSecret } from "./client-secret";
 import { type DynamicClient, type DynamicClientStore } from "./dynamic-client-store";
 import type { TokenPolicy } from "./token-policy";
 import { type Clock, defaultClock } from "../utils/clock";
@@ -34,13 +35,14 @@ const DEFAULT_DYNAMIC_TOKEN_POLICY: TokenPolicy = {
 };
 
 /**
- * Policy for RFC 7591 dynamically-registered public clients (OAUTH.md R2) on
- * the `ClientRedirectPolicy` seam. `resolveClient` authorizes the client +
+ * Policy for RFC 7591 dynamically-registered clients (OAUTH.md R2) on the
+ * `ClientRedirectPolicy` seam. `resolveClient` authorizes the client +
  * `redirect_uri` against ITS registered allowlist and resolves the granted
  * scope + token policy; `authenticateClient` re-checks existence at `/token`
- * (`token_endpoint_auth_method: "none"` ⇒ no secret — PKCE is the binding, and
- * a registration garbage-collected mid-flight fails closed). Dynamic clients
- * receive an access token only — NO `id_token` in v1 (OAUTH.md R6).
+ * (a registration garbage-collected mid-flight fails closed) and, for a
+ * `client_secret_post` registration, validates the presented secret against
+ * the stored digest (public `"none"` clients: PKCE is the binding). Dynamic
+ * clients receive an access token only — NO `id_token` in v1 (OAUTH.md R6).
  *
  * INVARIANT: the returned {@link ResolvedClient} always carries `clientId`, so
  * the minted code records it and the token endpoint's symmetric client binding
@@ -92,12 +94,22 @@ export class DynamicClientPolicy implements ClientRedirectPolicy {
 
   /**
    * `/token`-side check: the client must still exist (fail closed when the
-   * registration was deleted/GC'd between authorize and redemption). No secret
-   * is checked — public client, PKCE is the binding; a spurious
-   * `client_secret` is ignored.
+   * registration was deleted/GC'd between authorize and redemption). A client
+   * registered with `token_endpoint_auth_method: "client_secret_post"` must
+   * additionally present its minted `client_secret` (constant-time check
+   * against the stored digest). For a public (`"none"`) client no secret is
+   * checked — PKCE is the binding; a spurious `client_secret` is ignored.
    */
   async authenticateClient(args: { clientId?: string; clientSecret?: string }): Promise<void> {
-    await this.requireClient(args.clientId);
+    const client = await this.requireClient(args.clientId);
+    if (client.tokenEndpointAuthMethod !== "client_secret_post") return;
+    if (
+      client.clientSecretHash === undefined ||
+      args.clientSecret === undefined ||
+      !verifyClientSecret(args.clientSecret, client.clientSecretHash)
+    ) {
+      throw new AuthorizeError("invalid_client", "client authentication failed");
+    }
   }
 
   /** Known-ness probe for `CompositeClientPolicy` dispatch. */

@@ -23,8 +23,18 @@ export interface AoothDynamicClient {
      */
     redirectUris: string
 
-    /** v1 supports public clients only ("none") — PKCE is the binding. */
+    /**
+     * "none" (public — PKCE is the binding) or "client_secret_post"
+     * (confidential — a server-minted secret is checked at the token endpoint).
+     */
     tokenEndpointAuthMethod: string
+
+    /**
+     * SHA-256 hex digest of the minted client_secret — set iff
+     * tokenEndpointAuthMethod is "client_secret_post". The plaintext is
+     * returned once in the registration response and never stored.
+     */
+    clientSecretHash?: string
 
     /** Registered grant types (narrowed to supported), JSON string array. */
     grantTypes: string

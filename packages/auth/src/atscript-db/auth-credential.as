@@ -29,6 +29,22 @@ export type AoothCredentialMetadataBase = {
      * the internal access/refresh `kind` column on the row.
      */
     credentialKind?: string
+    /**
+     * OAuth client_id the authz token endpoint minted this family for — the
+     * refresh_token grant's client binding (written by @aooth/auth-moost).
+     */
+    authzClientId?: string
+    /**
+     * Per-family access-token ttl (ms) — stamped when a refresh token is
+     * minted with a per-mint ttl, so refreshes keep the mint-time authority.
+     */
+    accessTtl?: number
+    /**
+     * Per-family rotation semantics ("always" for per-mint refresh families)
+     * — honored over the instance rotation so a fixed-ceiling grant never
+     * slides. Stored as a plain string (same portability rule as `kind`).
+     */
+    refreshRotation?: string
 }
 
 @db.table 'aooth_credentials'

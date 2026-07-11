@@ -1,7 +1,9 @@
 import { type Clock, defaultClock } from "../utils/clock";
 import { isLoopbackRedirectUri } from "./client-policy";
+import { hashClientSecret, mintClientSecret } from "./client-secret";
 import {
   type DynamicClient,
+  type DynamicClientAuthMethod,
   type DynamicClientStore,
   type NewDynamicClient,
 } from "./dynamic-client-store";
@@ -23,9 +25,14 @@ export class ClientRegistrationError extends Error {
   }
 }
 
-/** Grant/response types the v1 authorization server supports (auth-code + PKCE only). */
-const SUPPORTED_GRANT_TYPES = ["authorization_code"];
+/** Grant/response types the authorization server supports (auth-code + PKCE, plus refresh). */
+const SUPPORTED_GRANT_TYPES = ["authorization_code", "refresh_token"];
 const SUPPORTED_RESPONSE_TYPES = ["code"];
+/** Token-endpoint auth methods DCR accepts (both advertised in the RFC 8414 document). */
+const SUPPORTED_TOKEN_ENDPOINT_AUTH_METHODS: DynamicClientAuthMethod[] = [
+  "none",
+  "client_secret_post",
+];
 
 /** RFC 6749 §3.3 scope-token charset: printable ASCII minus space, `"` and `\`. */
 const SCOPE_TOKEN_RE = /^[\x21\x23-\x5B\x5D-\x7E]+$/u;
@@ -47,6 +54,15 @@ export interface ClientRegistrationValidationOptions {
    * `DynamicClientPolicyOptions.allowedScopes` (the server allow-list).
    */
   allowedScopes?: string[];
+  /**
+   * Which `token_endpoint_auth_method` values registrations may use. Default:
+   * both supported methods (`["none", "client_secret_post"]` — matching what
+   * the RFC 8414 document advertises). Narrow to `["none"]` for a
+   * public-clients-only deployment. An explicit ask outside this list is
+   * REJECTED, never silently downgraded — a client that asked for a secret
+   * must not end up public without noticing.
+   */
+  allowedTokenEndpointAuthMethods?: DynamicClientAuthMethod[];
 }
 
 const DEFAULT_MAX_REDIRECT_URIS = 5;
@@ -107,13 +123,14 @@ function isAcceptableRedirectUri(uri: string): boolean {
  * Normalization is allowed by RFC 7591 §2 (the server MAY replace requested
  * metadata with its own values) and is load-bearing for real connectors:
  * `grant_types` / `response_types` are INTERSECTED with what the server
- * supports (a connector requesting `["authorization_code", "refresh_token"]`
- * registers with `["authorization_code"]` — the 201 echo of the narrowed set
- * is the contract) rather than rejected. `token_endpoint_auth_method` defaults
- * to `"none"` when absent (v1 is public-clients-only, so the RFC's
- * `client_secret_basic` default is unsupported), but an EXPLICIT non-`"none"`
- * ask is rejected — never silently downgrade a client that asked for a secret.
- * Unknown fields are ignored and never echoed.
+ * supports (an unsupported grant is dropped from the echo — the 201 echo of
+ * the narrowed set is the contract) rather than rejected, but the result must
+ * still include `authorization_code` (it is the only way to establish a grant;
+ * `refresh_token` alone mints nothing). `token_endpoint_auth_method` defaults
+ * to `"none"` when absent (the RFC's `client_secret_basic` default is
+ * unsupported — secrets travel in the POST form body); an EXPLICIT ask outside
+ * the allowed set is rejected — never silently downgrade a client that asked
+ * for a secret. Unknown fields are ignored and never echoed.
  */
 export function validateClientRegistration(
   body: unknown,
@@ -152,23 +169,33 @@ export function validateClientRegistration(
     }
   }
 
-  // token_endpoint_auth_method — "none" only in v1 (public clients; PKCE is the binding).
+  // token_endpoint_auth_method — "none" (public; PKCE is the binding) or
+  // "client_secret_post" (confidential; a secret is minted at registration).
+  // Intersected with the supported set so an untyped (JS) caller can't allow a
+  // method the token endpoint would never accept — fail closed, one check below.
+  const allowedAuthMethods = (
+    opts?.allowedTokenEndpointAuthMethods ?? SUPPORTED_TOKEN_ENDPOINT_AUTH_METHODS
+  ).filter((m) => SUPPORTED_TOKEN_ENDPOINT_AUTH_METHODS.includes(m));
   const authMethod = req.token_endpoint_auth_method ?? "none";
-  if (authMethod !== "none") {
+  if (
+    typeof authMethod !== "string" ||
+    !allowedAuthMethods.includes(authMethod as DynamicClientAuthMethod)
+  ) {
     throw new ClientRegistrationError(
       "invalid_client_metadata",
-      'only token_endpoint_auth_method "none" is supported',
+      `only token_endpoint_auth_method ${allowedAuthMethods.map((m) => `"${m}"`).join(" / ")} is supported`,
     );
   }
 
-  // grant_types / response_types — intersect with supported, require a usable result.
+  // grant_types / response_types — intersect with supported; the result must
+  // still carry authorization_code (refresh_token alone can't establish a grant).
   const grantTypes =
     req.grant_types === undefined
       ? [...SUPPORTED_GRANT_TYPES]
       : asStringArray(req.grant_types, "grant_types").filter((g) =>
           SUPPORTED_GRANT_TYPES.includes(g),
         );
-  if (grantTypes.length === 0) {
+  if (!grantTypes.includes("authorization_code")) {
     throw new ClientRegistrationError(
       "invalid_client_metadata",
       "grant_types must include authorization_code",
@@ -223,7 +250,7 @@ export function validateClientRegistration(
 
   return {
     redirectUris,
-    tokenEndpointAuthMethod: "none",
+    tokenEndpointAuthMethod: authMethod as DynamicClientAuthMethod,
     grantTypes,
     responseTypes,
     ...(clientName !== undefined && { clientName }),
@@ -260,11 +287,28 @@ export interface DynamicClientRegistrationOptions {
 const DEFAULT_MAX_CLIENTS = 1000;
 
 /**
+ * What {@link DynamicClientRegistration.register} returns: the persisted
+ * record plus — for a `client_secret_post` registration — the plaintext
+ * `clientSecret`, surfaced HERE and ONLY here (RFC 7591 §3.2.1: the secret is
+ * disclosed once in the registration response; the store keeps only its hash).
+ */
+export type RegisteredDynamicClient = DynamicClient & {
+  clientSecret?: string;
+  /**
+   * Expiry of the minted secret in seconds since epoch (RFC 7591 §3.2.1's
+   * unit); `0` ⇒ the secret never expires. Present iff {@link clientSecret}
+   * is — decided HERE, where the secret is minted, so HTTP adapters echo the
+   * lifecycle instead of asserting their own.
+   */
+  clientSecretExpiresAt?: number;
+};
+
+/**
  * The RFC 7591 registration operation behind `POST {issuer}/register`
  * (OAUTH.md R2): validate → guard → lazy GC of never-used rows → hard cap →
- * persist. Framework-free — `@aooth/auth-moost`'s controller endpoint is a
- * thin HTTP adapter over `register()`, and non-moost servers can call it
- * directly.
+ * mint secret (confidential) → persist. Framework-free — `@aooth/auth-moost`'s
+ * controller endpoint is a thin HTTP adapter over `register()`, and non-moost
+ * servers can call it directly.
  */
 export class DynamicClientRegistration {
   private readonly store: DynamicClientStore;
@@ -283,8 +327,13 @@ export class DynamicClientRegistration {
     this.clock = opts.clock ?? defaultClock;
   }
 
-  /** Validate and persist a registration request body; returns the minted client. */
-  async register(body: unknown): Promise<DynamicClient> {
+  /**
+   * Validate and persist a registration request body; returns the minted
+   * client. For a `client_secret_post` registration the returned record
+   * additionally carries the plaintext `clientSecret` (the ONE disclosure —
+   * only its SHA-256 digest is stored).
+   */
+  async register(body: unknown): Promise<RegisteredDynamicClient> {
     const metadata = validateClientRegistration(body, this.validation);
     await this.guard?.({ metadata });
     if (this.unusedClientTtlMs !== undefined) {
@@ -292,6 +341,14 @@ export class DynamicClientRegistration {
     }
     if ((await this.store.count()) >= this.maxClients) {
       throw new ClientRegistrationError("invalid_client_metadata", "registration limit reached");
+    }
+    if (metadata.tokenEndpointAuthMethod === "client_secret_post") {
+      const clientSecret = mintClientSecret();
+      const client = await this.store.create({
+        ...metadata,
+        clientSecretHash: hashClientSecret(clientSecret),
+      });
+      return { ...client, clientSecret, clientSecretExpiresAt: 0 };
     }
     return this.store.create(metadata);
   }

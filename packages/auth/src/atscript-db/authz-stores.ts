@@ -281,6 +281,8 @@ export interface DynamicClientRow {
   /** `JSON.stringify(string[])`. */
   redirectUris: string;
   tokenEndpointAuthMethod: string;
+  /** SHA-256 hex digest of the minted secret (confidential clients only). */
+  clientSecretHash?: string;
   /** `JSON.stringify(string[])`. */
   grantTypes: string;
   /** `JSON.stringify(string[])`. */
@@ -332,6 +334,7 @@ export class DynamicClientStoreAtscriptDb extends DynamicClientStore {
       responseTypes: JSON.stringify(rec.responseTypes),
       createdAt: this.clock.now(),
       ...(rec.clientName !== undefined && { clientName: rec.clientName }),
+      ...(rec.clientSecretHash !== undefined && { clientSecretHash: rec.clientSecretHash }),
       ...(rec.scope !== undefined && { scope: rec.scope }),
     };
     await this.table.insertOne(row);
@@ -379,6 +382,7 @@ function rowToDynamicClient(row: DynamicClientRow): DynamicClient {
     createdAt: row.createdAt,
   };
   if (row.clientName != null) out.clientName = row.clientName;
+  if (row.clientSecretHash != null) out.clientSecretHash = row.clientSecretHash;
   if (row.scope != null) out.scope = row.scope;
   if (row.lastUsedAt != null) out.lastUsedAt = row.lastUsedAt;
   return out;

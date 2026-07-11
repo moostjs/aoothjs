@@ -205,6 +205,29 @@ async function resetPassword(userId, newPassword) {
 The `>=` is the minimum width needed for same-ms re-issue. Do not change this to `>` in custom store implementations — recovery, password reset, and "kick other devices then log in here" all depend on the equality.
 :::
 
+## Per-mint refresh control (`IssueOptions.refresh`)
+
+The instance-level `refresh` config decides the **default**; individual mints can override it:
+
+```ts
+// Suppress the pair for this mint only (no orphaned refresh row) —
+// e.g. a one-shot token on an instance that refreshes browser sessions.
+await auth.issue("alice", { refresh: false });
+
+// Mint a refresh token with a per-mint lifetime — works even on an instance
+// with NO refresh config (then `ttl` is required). Per-mint families ALWAYS
+// redeem with fixed-ceiling ('always') rotation — even when the instance
+// rotates its sessions 'sliding' — so the family's lifetime is capped at the
+// minted expiry and rotation never extends it.
+await auth.issue("alice", { ttl: 60 * 60_000, refresh: { ttl: 30 * 24 * 3600 * 1000 } });
+```
+
+Three related seams, all used by the authorization server's [`refresh_token` grant](../moost/authorization-server#refresh-token-grant):
+
+- When a refresh token is minted alongside a per-mint access `ttl`, the ttl is stamped on the family (`metadata.accessTtl`) so every refreshed access token keeps the mint-time lifetime instead of reverting to the instance `accessTtl`.
+- A per-mint family's rotation semantics are stamped the same way (`metadata.refreshRotation: "always"`) and honored over the instance config on every redemption — mint-time authority, like `accessTtl`.
+- `auth.refresh(token, { guard })` accepts a pre-rotation **guard**: it sees the stored refresh credential before anything rotates, and throwing aborts the refresh with the family untouched — the seam for caller-level binding checks.
+
 ## `maxConcurrent` and refresh tokens
 
 `maxConcurrent` enforces a cap on **access** credentials only. Refresh tokens never count toward the limit.

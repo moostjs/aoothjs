@@ -487,10 +487,10 @@ describe("AuthCredential", () => {
       expect(reuseFired).toBe(1);
     });
 
-    it("throws if refresh is not configured", async () => {
+    it("an unknown token without instance config is INVALID_TOKEN (no-config redemption exists for per-mint families)", async () => {
       const { auth } = makeAuth();
       await expect(auth.refresh("anything")).rejects.toMatchObject({
-        type: "INVALID_CONFIG",
+        type: "INVALID_TOKEN",
       });
     });
 
@@ -509,6 +509,124 @@ describe("AuthCredential", () => {
       await expect(auth.refresh(issued.accessToken)).rejects.toMatchObject({
         type: "INVALID_TOKEN",
       });
+    });
+  });
+
+  describe("issue: per-mint refresh (IssueOptions.refresh) + no-config redemption", () => {
+    it("refresh: false suppresses the refresh mint even when the instance config exists", async () => {
+      const { auth, store } = makeAuth({ refresh: { ttl: 60_000 } });
+      const issued = await auth.issue("alice", { refresh: false });
+      expect(issued.refreshToken).toBeUndefined();
+      expect(issued.refreshExpiresAt).toBeUndefined();
+      // No orphaned refresh row either.
+      const rows = await store.listForUser!("alice");
+      expect(rows.every((r) => r.kind !== "refresh")).toBe(true);
+    });
+
+    it("refresh: { ttl } mints WITHOUT an instance config, with the per-mint lifetime", async () => {
+      const { auth, clock } = makeAuth(); // no instance refresh
+      const issued = await auth.issue("alice", { refresh: { ttl: 100_000 } });
+      expect(issued.refreshToken).toBeTruthy();
+      expect(issued.refreshExpiresAt).toBe(clock.now() + 100_000);
+    });
+
+    it("refresh: {} falls back to the instance ttl; without one it is INVALID_CONFIG", async () => {
+      const withInstance = makeAuth({ refresh: { ttl: 42_000 } });
+      const issued = await withInstance.auth.issue("alice", { refresh: {} });
+      expect(issued.refreshExpiresAt).toBe(withInstance.clock.now() + 42_000);
+
+      const { auth } = makeAuth();
+      await expect(auth.issue("alice", { refresh: {} })).rejects.toMatchObject({
+        type: "INVALID_CONFIG",
+      });
+    });
+
+    it("a per-mint family keeps its FIXED ceiling even on an instance with 'sliding' rotation (metadata.refreshRotation stamp)", async () => {
+      // The demo's shape: browser sessions rotate 'sliding' on the SAME
+      // AuthCredential that mints per-mint (authz) refresh families.
+      const { auth, clock } = makeAuth({
+        refresh: { ttl: 7 * 24 * 60 * 60_000, rotation: "sliding" },
+      });
+      const grant = await auth.issue("alice", { refresh: { ttl: 100_000 } });
+      const ceiling = grant.refreshExpiresAt!;
+
+      clock.advance(10_000);
+      const rotated = await auth.refresh(grant.refreshToken!);
+      // Fixed ceiling — NOT slid to now + the instance's 7d ttl.
+      expect(rotated.refreshExpiresAt).toBe(ceiling);
+
+      // Ordinary sessions on the same instance still slide.
+      const session = await auth.issue("bob");
+      clock.advance(10_000);
+      const sessionRotated = await auth.refresh(session.refreshToken!);
+      expect(sessionRotated.refreshExpiresAt).toBe(clock.now() + 7 * 24 * 60 * 60_000);
+    });
+
+    it("no-config redemption rotates with a FIXED family ceiling; replay after grace revokes the family", async () => {
+      const { auth, clock } = makeAuth(); // no instance refresh config
+      const initial = await auth.issue("alice", { refresh: { ttl: 100_000 } });
+      const ceiling = initial.refreshExpiresAt!;
+
+      clock.advance(10_000);
+      const rotated = await auth.refresh(initial.refreshToken!);
+      expect(rotated.refreshToken).toBeTruthy();
+      expect(rotated.refreshToken).not.toBe(initial.refreshToken);
+      // 'always'-style: the ceiling never slides.
+      expect(rotated.refreshExpiresAt).toBe(ceiling);
+
+      // Replay of the already-rotated token beyond the 30s default grace ⇒
+      // theft response: the whole family is revoked.
+      clock.advance(40_000);
+      await expect(auth.refresh(initial.refreshToken!)).rejects.toMatchObject({
+        type: "REFRESH_REUSE_DETECTED",
+      });
+      expect(await auth.validate(rotated.accessToken)).toBeNull();
+      await expect(auth.refresh(rotated.refreshToken!)).rejects.toMatchObject({
+        type: "INVALID_TOKEN",
+      });
+    });
+
+    it("guard runs before any rotation: a throwing guard aborts with the family untouched", async () => {
+      const { auth, store } = makeAuth();
+      const issued = await auth.issue("alice", {
+        refresh: { ttl: 100_000 },
+        metadata: { authzClientId: "client-1" },
+      });
+
+      const seen: Array<{ userId: string; authzClientId?: string }> = [];
+      await expect(
+        auth.refresh(issued.refreshToken!, {
+          guard: (state) => {
+            seen.push({ userId: state.userId, authzClientId: state.metadata?.authzClientId });
+            throw new Error("wrong client");
+          },
+        }),
+      ).rejects.toThrow("wrong client");
+      expect(seen).toEqual([{ userId: "alice", authzClientId: "client-1" }]);
+
+      // Nothing rotated or consumed — the row has no rotatedAt stamp and the
+      // token still redeems normally.
+      const row = await store.retrieve(issued.refreshToken!);
+      expect(row?.rotatedAt).toBeUndefined();
+      const rotated = await auth.refresh(issued.refreshToken!, {
+        guard: (state) => {
+          expect(state.metadata?.authzClientId).toBe("client-1");
+        },
+      });
+      expect(rotated.refreshToken).toBeTruthy();
+    });
+
+    it("a per-mint access ttl is stamped on the family and survives refresh (metadata.accessTtl)", async () => {
+      const { auth, clock } = makeAuth({ accessTtl: 60_000 });
+      const issued = await auth.issue("alice", { ttl: 5_000, refresh: { ttl: 100_000 } });
+      expect(issued.accessExpiresAt).toBe(clock.now() + 5_000);
+
+      clock.advance(1_000);
+      const rotated = await auth.refresh(issued.refreshToken!);
+      // The mint-time ttl, NOT the instance accessTtl.
+      expect(rotated.accessExpiresAt).toBe(clock.now() + 5_000);
+      const ctx = await auth.validate(rotated.accessToken);
+      expect(ctx?.userId).toBe("alice");
     });
   });
 

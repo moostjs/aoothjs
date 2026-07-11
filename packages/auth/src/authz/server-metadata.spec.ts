@@ -9,7 +9,7 @@ describe("buildAuthorizationServerMetadata", () => {
     expect(doc.authorization_endpoint).toBe("https://x/auth/authorize");
     expect(doc.token_endpoint).toBe("https://x/auth/token");
     expect(doc.response_types_supported).toEqual(["code"]);
-    expect(doc.grant_types_supported).toEqual(["authorization_code"]);
+    expect(doc.grant_types_supported).toEqual(["authorization_code", "refresh_token"]);
     expect(doc.code_challenge_methods_supported).toEqual(["S256"]);
     expect(doc.token_endpoint_auth_methods_supported).toEqual(["none", "client_secret_post"]);
   });

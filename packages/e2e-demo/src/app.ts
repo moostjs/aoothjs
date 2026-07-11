@@ -1054,7 +1054,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // the same SQLite DB, a registration op with small demo knobs (cap + a short
   // never-used GC TTL so the abuse posture is exercised end-to-end), and the
   // DynamicClientPolicy minting 30-day `mcp-session` tokens bounded by the
-  // server-side scope allow-list.
+  // server-side scope allow-list, PAIRED with a 60-day rotating refresh token
+  // (the OAuth 2.1 refresh_token grant — a connector silently refreshes at
+  // access expiry instead of re-running browser consent).
   const dynamicClientStore = new DynamicClientStoreAtscriptDb({
     table: appDb.tables.dynamicClients as unknown as DynamicClientTable,
   });
@@ -1077,7 +1079,11 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     }),
     dynamic: new DynamicClientPolicy({
       store: dynamicClientStore,
-      tokenPolicy: { kind: "mcp-session", ttl: 30 * 24 * 60 * 60_000 },
+      tokenPolicy: {
+        kind: "mcp-session",
+        ttl: 30 * 24 * 60 * 60_000,
+        refresh: { ttl: 60 * 24 * 60 * 60_000 },
+      },
       allowedScopes: MCP_SCOPES,
     }),
   });

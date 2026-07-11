@@ -6,6 +6,7 @@ import {
   DynamicClientRegistration,
   validateClientRegistration,
 } from "./client-registration";
+import { hashClientSecret, verifyClientSecret } from "./client-secret";
 import { DynamicClientStoreMemory } from "./dynamic-client-store";
 
 function fakeClock(start = 1_000_000): Clock & { advance: (ms: number) => void } {
@@ -36,7 +37,7 @@ describe("validateClientRegistration", () => {
     expect(rec).toEqual({
       redirectUris: ["https://connector.example/cb"],
       tokenEndpointAuthMethod: "none",
-      grantTypes: ["authorization_code"],
+      grantTypes: ["authorization_code", "refresh_token"],
       responseTypes: ["code"],
     });
   });
@@ -92,12 +93,16 @@ describe("validateClientRegistration", () => {
     );
   });
 
-  it('token_endpoint_auth_method: absent defaults to "none"; an explicit non-"none" ask is rejected, never downgraded', () => {
+  it('token_endpoint_auth_method: absent defaults to "none"; both supported methods accepted; an unsupported ask is rejected, never downgraded', () => {
     expect(validateClientRegistration(MINIMAL).tokenEndpointAuthMethod).toBe("none");
     expect(
       validateClientRegistration({ ...MINIMAL, token_endpoint_auth_method: "none" })
         .tokenEndpointAuthMethod,
     ).toBe("none");
+    expect(
+      validateClientRegistration({ ...MINIMAL, token_endpoint_auth_method: "client_secret_post" })
+        .tokenEndpointAuthMethod,
+    ).toBe("client_secret_post");
     expect(
       codeOf(() =>
         validateClientRegistration({
@@ -108,19 +113,35 @@ describe("validateClientRegistration", () => {
     ).toBe("invalid_client_metadata");
   });
 
+  it("allowedTokenEndpointAuthMethods narrows what registrations may use — an explicit disallowed ask is rejected, never downgraded", () => {
+    const publicOnly = { allowedTokenEndpointAuthMethods: ["none" as const] };
+    expect(validateClientRegistration(MINIMAL, publicOnly).tokenEndpointAuthMethod).toBe("none");
+    expect(
+      codeOf(() =>
+        validateClientRegistration(
+          { ...MINIMAL, token_endpoint_auth_method: "client_secret_post" },
+          publicOnly,
+        ),
+      ),
+    ).toBe("invalid_client_metadata");
+  });
+
   it("grant_types / response_types are INTERSECTED with supported (RFC 7591 §2 narrowing), not rejected", () => {
     const rec = validateClientRegistration({
       ...MINIMAL,
-      grant_types: ["authorization_code", "refresh_token"],
+      grant_types: ["authorization_code", "refresh_token", "client_credentials"],
       response_types: ["code"],
     });
-    expect(rec.grantTypes).toEqual(["authorization_code"]);
+    expect(rec.grantTypes).toEqual(["authorization_code", "refresh_token"]);
     expect(rec.responseTypes).toEqual(["code"]);
   });
 
-  it("an empty intersection is rejected (the client cannot use this server at all)", () => {
+  it("an intersection without authorization_code is rejected (refresh_token alone can't establish a grant)", () => {
     expect(
       codeOf(() => validateClientRegistration({ ...MINIMAL, grant_types: ["implicit"] })),
+    ).toBe("invalid_client_metadata");
+    expect(
+      codeOf(() => validateClientRegistration({ ...MINIMAL, grant_types: ["refresh_token"] })),
     ).toBe("invalid_client_metadata");
     expect(
       codeOf(() => validateClientRegistration({ ...MINIMAL, response_types: ["token"] })),
@@ -204,6 +225,32 @@ describe("DynamicClientRegistration", () => {
       code: "invalid_client_metadata",
     });
     expect(await store.get(first.clientId)).not.toBeNull();
+  });
+
+  it("client_secret_post: mints a secret, returns it ONCE, stores only the hash", async () => {
+    const store = new DynamicClientStoreMemory();
+    const reg = new DynamicClientRegistration({ store });
+    const client = await reg.register({
+      ...MINIMAL,
+      token_endpoint_auth_method: "client_secret_post",
+    });
+    expect(client.tokenEndpointAuthMethod).toBe("client_secret_post");
+    expect(client.clientSecret).toMatch(/^[\w-]{43}$/u); // 32 bytes base64url
+    expect(client.clientSecretHash).toBe(hashClientSecret(client.clientSecret!));
+    // The store carries the hash, never the plaintext.
+    const stored = await store.get(client.clientId);
+    expect(stored?.clientSecretHash).toBe(client.clientSecretHash);
+    expect(JSON.stringify(stored)).not.toContain(client.clientSecret!);
+    expect(verifyClientSecret(client.clientSecret!, stored!.clientSecretHash!)).toBe(true);
+    expect(verifyClientSecret("wrong", stored!.clientSecretHash!)).toBe(false);
+  });
+
+  it('a public ("none") registration mints no secret', async () => {
+    const store = new DynamicClientStoreMemory();
+    const reg = new DynamicClientRegistration({ store });
+    const client = await reg.register(MINIMAL);
+    expect(client.clientSecret).toBeUndefined();
+    expect(client.clientSecretHash).toBeUndefined();
   });
 
   it("lazy GC frees never-used capacity on the next register; touched rows survive", async () => {

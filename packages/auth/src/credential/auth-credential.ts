@@ -10,6 +10,7 @@ import type {
   EnrichedSession,
   IssueResult,
   RefreshConfig,
+  RefreshResult,
   SessionEnricher,
   SessionInfo,
 } from "./types";
@@ -96,8 +97,8 @@ export interface AuthCredentialOptions<TPayload extends object = object> {
  * `TPayload` (the root fields a consumer added to their credential model — e.g.
  * `@arbac.attenuate.*`-annotated fields) is spread flat alongside the
  * framework-level hints below. Reserved keys `metadata`, `sessionId`, `ttl`,
- * `expiresAt`, `kind` (and the {@link CredentialState} envelope keys) must not be
- * reused as payload field names.
+ * `expiresAt`, `kind`, `refresh` (and the {@link CredentialState} envelope keys)
+ * must not be reused as payload field names.
  */
 export type IssueOptions<TPayload extends object = object> = TPayload & {
   metadata?: CredentialMetadata;
@@ -131,7 +132,36 @@ export type IssueOptions<TPayload extends object = object> = TPayload & {
    * default "active sessions" view. Omit for an ordinary interactive session.
    */
   kind?: string;
+  /**
+   * Per-mint refresh-token control, overriding the instance-level
+   * `AuthCredentialOptions.refresh` for THIS credential only:
+   * - omitted — instance default: a refresh token is minted iff the instance
+   *   `refresh` config exists (today's behavior).
+   * - `false` — mint NO refresh token even when the instance config exists
+   *   (e.g. the authz token endpoint suppressing the paired refresh for a
+   *   policy that didn't opt in — no orphaned refresh row).
+   * - `{ ttl? }` — mint a refresh token for this credential; `ttl` (ms)
+   *   overrides the instance `refresh.ttl`. Works WITHOUT an instance config
+   *   (then `ttl` is required). Per-mint families ALWAYS redeem with
+   *   fixed-ceiling (`'always'`) rotation semantics — the family is stamped
+   *   `metadata.refreshRotation: "always"` at mint, which `refresh()` honors
+   *   over the instance rotation, so rotation never extends the family's
+   *   lifetime even on an instance whose sessions rotate `'sliding'`.
+   */
+  refresh?: false | { ttl?: number };
 };
+
+/** Options for {@link AuthCredential.refresh}. */
+export interface RefreshCallOptions<TPayload extends object = object> {
+  /**
+   * Pre-rotation gate: invoked with the stored refresh credential AFTER it
+   * resolved to a live refresh-kind row but BEFORE any rotation or state
+   * change. Throwing aborts the refresh with nothing consumed or rotated —
+   * the seam for caller-level binding checks (e.g. the OAuth token endpoint
+   * verifying `metadata.authzClientId` against the presenting client).
+   */
+  guard?: (state: CredentialState & TPayload) => void | Promise<void>;
+}
 
 /**
  * Orchestrates credential issuance, validation, refresh, and revocation
@@ -208,14 +238,54 @@ export class AuthCredential<TPayload extends object = object> {
     // remaining keys (`...payload`) are the credential's root fields and ride
     // flat on the persisted state (no `claims` container).
     const opts = options ?? ({} as IssueOptions<TPayload>);
-    const { metadata, sessionId: providedSessionId, ttl, expiresAt, kind, ...payload } = opts;
+    const {
+      metadata,
+      sessionId: providedSessionId,
+      ttl,
+      expiresAt,
+      kind,
+      refresh,
+      ...payload
+    } = opts;
+
+    // Resolve THIS mint's refresh-token lifetime (undefined ⇒ no refresh):
+    // per-mint `refresh` wins over the instance config; a per-mint object
+    // without `ttl` falls back to the instance `refresh.ttl`.
+    let refreshTtl: number | undefined;
+    if (refresh === undefined) {
+      refreshTtl = this.refreshConfig?.ttl;
+    } else if (refresh !== false) {
+      refreshTtl = refresh.ttl ?? this.refreshConfig?.ttl;
+      if (refreshTtl === undefined) {
+        throw new AuthError(
+          "INVALID_CONFIG",
+          "issue: per-mint refresh needs a ttl when no instance refresh config exists",
+        );
+      }
+      if (refreshTtl <= 0) {
+        throw new AuthError("INVALID_CONFIG", `issue: refresh.ttl must be > 0 (got ${refreshTtl})`);
+      }
+    }
 
     // Fold the semantic `kind` into the persisted metadata bag — it rides every
     // store losslessly and is carried forward across rotation with the rest of
     // `metadata`, so the whole session family is labelled. This keeps the
     // envelope `kind` free for the internal access/refresh discriminator.
+    // A per-mint refresh family additionally stamps its mint-time authority:
+    // the per-mint access `ttl` (so refreshes never revert to the instance
+    // `accessTtl`) and fixed-ceiling `"always"` rotation (so an instance-level
+    // 'sliding' config can never extend the family's lifetime).
+    const perMintRefresh = refresh !== undefined && refresh !== false;
+    const stampAccessTtl = refreshTtl !== undefined && ttl !== undefined;
     const effectiveMetadata: CredentialMetadata | undefined =
-      kind !== undefined ? { ...metadata, credentialKind: kind } : metadata;
+      kind !== undefined || stampAccessTtl || perMintRefresh
+        ? {
+            ...metadata,
+            ...(kind !== undefined && { credentialKind: kind }),
+            ...(stampAccessTtl && { accessTtl: ttl }),
+            ...(perMintRefresh && { refreshRotation: "always" as const }),
+          }
+        : metadata;
 
     // Resolve THIS mint's access-token expiry: an explicit `expiresAt` wins, else
     // a per-mint `ttl` override, else the instance `accessTtl`. Omitting both
@@ -245,21 +315,26 @@ export class AuthCredential<TPayload extends object = object> {
       metadata: effectiveMetadata,
       sessionId,
     });
+
+    // The two persists stay SEQUENTIAL on purpose: stores are not required to
+    // support concurrent writes on one connection (the sqlite adapter runs
+    // each insert in a transaction on a single connection — overlapping them
+    // nests transactions and throws).
     const accessToken = await this.store.persist(accessState, accessStoreTtl);
 
     let refreshToken: string | undefined;
     let refreshExpiresAt: number | undefined;
-    if (this.refreshConfig) {
+    if (refreshTtl !== undefined) {
       const refreshState = stateWithPayload<TPayload>(payload, {
         userId,
         issuedAt: now,
-        expiresAt: now + this.refreshConfig.ttl,
+        expiresAt: now + refreshTtl,
         kind: "refresh",
         metadata: effectiveMetadata,
         sessionId,
       });
-      refreshToken = await this.store.persist(refreshState, this.refreshConfig.ttl);
-      refreshExpiresAt = now + this.refreshConfig.ttl;
+      refreshToken = await this.store.persist(refreshState, refreshTtl);
+      refreshExpiresAt = now + refreshTtl;
     }
 
     return {
@@ -300,11 +375,7 @@ export class AuthCredential<TPayload extends object = object> {
     } as AuthContext<TPayload>;
   }
 
-  async refresh(refreshToken: string): Promise<IssueResult> {
-    if (!this.refreshConfig) {
-      throw new AuthError("INVALID_CONFIG", "Refresh not enabled");
-    }
-    const rotation = this.refreshConfig.rotation ?? "sliding";
+  async refresh(refreshToken: string, opts?: RefreshCallOptions<TPayload>): Promise<RefreshResult> {
     const now = this.clock.now();
 
     const oldState = await this.store.retrieve(refreshToken);
@@ -321,6 +392,19 @@ export class AuthCredential<TPayload extends object = object> {
     if (oldState.kind !== "refresh") {
       throw new AuthError("INVALID_TOKEN", "Token is not a refresh credential");
     }
+
+    // Caller-level gate (e.g. authz client binding) — before ANY rotation or
+    // reuse response, so a rejected caller leaves the family untouched.
+    await opts?.guard?.(oldState);
+
+    // The family's mint-time stamp wins over the instance config (per-mint
+    // families are stamped `"always"` — their ceiling must never slide).
+    // Without either, only per-mint families can exist in the store, so the
+    // no-config fallback is the same fixed-ceiling semantics — there is no
+    // instance ttl to slide by anyway.
+    const rotation =
+      oldState.metadata?.refreshRotation ??
+      (this.refreshConfig ? (this.refreshConfig.rotation ?? "sliding") : "always");
 
     switch (rotation) {
       case "none":
@@ -343,13 +427,14 @@ export class AuthCredential<TPayload extends object = object> {
     oldState: CredentialState & TPayload,
     refreshToken: string,
     now: number,
-  ): Promise<IssueResult> {
+  ): Promise<RefreshResult> {
     const newAccess = await this.issueAccessFromRefresh(oldState, now);
     return {
       accessToken: newAccess.token,
       accessExpiresAt: newAccess.expiresAt,
       refreshToken,
       refreshExpiresAt: oldState.expiresAt,
+      userId: oldState.userId,
     };
   }
 
@@ -362,7 +447,7 @@ export class AuthCredential<TPayload extends object = object> {
     oldState: CredentialState & TPayload,
     refreshToken: string,
     now: number,
-  ): Promise<IssueResult> {
+  ): Promise<RefreshResult> {
     return await this.rotateWithGrace(oldState, refreshToken, now, /* preserveExpiry */ false);
   }
 
@@ -380,7 +465,7 @@ export class AuthCredential<TPayload extends object = object> {
     oldState: CredentialState & TPayload,
     refreshToken: string,
     now: number,
-  ): Promise<IssueResult> {
+  ): Promise<RefreshResult> {
     if (!this.store.listForUser) {
       // Stateless store: no in-place mutation → no store-backed grace. Consume
       // the old token and record the reuse signal in the process-local map so
@@ -410,11 +495,8 @@ export class AuthCredential<TPayload extends object = object> {
     refreshToken: string,
     now: number,
     preserveExpiry: boolean,
-  ): Promise<IssueResult> {
-    if (!this.refreshConfig) {
-      throw new AuthError("INVALID_CONFIG", "Refresh not enabled");
-    }
-    const graceMs = this.refreshConfig.rotationGraceMs ?? DEFAULT_ROTATION_GRACE_MS;
+  ): Promise<RefreshResult> {
+    const graceMs = this.refreshConfig?.rotationGraceMs ?? DEFAULT_ROTATION_GRACE_MS;
 
     // First rotation: nothing to validate against the grace window yet.
     if (typeof oldState.rotatedAt !== "number") {
@@ -645,18 +727,22 @@ export class AuthCredential<TPayload extends object = object> {
     refreshState: CredentialState & TPayload,
     now: number,
   ): Promise<{ token: string; expiresAt: number }> {
+    // A family stamped with a per-mint access ttl (metadata.accessTtl) keeps
+    // it across every refresh — the authority fixed at mint time, never the
+    // instance default.
+    const accessTtl = refreshState.metadata?.accessTtl ?? this.accessTtl;
     // Carry the credential's typed payload + session forward across rotation.
     const accessState = stateWithPayload<TPayload>(credentialPayloadOf<TPayload>(refreshState), {
       userId: refreshState.userId,
       issuedAt: now,
-      expiresAt: now + this.accessTtl,
+      expiresAt: now + accessTtl,
       kind: "access",
       metadata: refreshState.metadata,
       sessionId: refreshState.sessionId,
       ...(this.trackLastSeen === "refresh" && { lastSeenAt: now }),
     });
-    const token = await this.store.persist(accessState, this.accessTtl);
-    return { token, expiresAt: now + this.accessTtl };
+    const token = await this.store.persist(accessState, accessTtl);
+    return { token, expiresAt: now + accessTtl };
   }
 
   /**
@@ -672,21 +758,19 @@ export class AuthCredential<TPayload extends object = object> {
     rotateOld: boolean,
     now: number,
     preserveExpiry = false,
-  ): Promise<IssueResult> {
-    if (!this.refreshConfig) {
+  ): Promise<RefreshResult> {
+    // Sliding needs an instance ttl to slide by; fixed-ceiling (`always` — and
+    // every no-instance-config redemption) derives everything from the family.
+    const slidingTtl = this.refreshConfig?.ttl;
+    if (!preserveExpiry && slidingTtl === undefined) {
       throw new AuthError("INVALID_CONFIG", "Refresh not enabled");
     }
-    const access = await this.issueAccessFromRefresh(oldRefreshState, now);
 
     // Fixed-ceiling (`always`) carries the family's original expiry forward;
     // sliding extends to now + ttl. Persist with the *remaining* lifetime so a
     // TTL-evicting store (Redis PX) never resurrects the token past its ceiling.
-    const refreshExpiresAt = preserveExpiry
-      ? oldRefreshState.expiresAt
-      : now + this.refreshConfig.ttl;
-    const refreshTtl = preserveExpiry
-      ? Math.max(0, oldRefreshState.expiresAt - now)
-      : this.refreshConfig.ttl;
+    const refreshExpiresAt = preserveExpiry ? oldRefreshState.expiresAt : now + slidingTtl!;
+    const refreshTtl = preserveExpiry ? Math.max(0, oldRefreshState.expiresAt - now) : slidingTtl!;
 
     // Carry the credential's typed payload + session forward across rotation.
     const newRefreshState = stateWithPayload<TPayload>(
@@ -702,6 +786,10 @@ export class AuthCredential<TPayload extends object = object> {
         ...(this.trackLastSeen === "refresh" && { lastSeenAt: now }),
       },
     );
+    // SEQUENTIAL like issue(): stores need not support concurrent writes on
+    // one connection (see the note there). The old-row rotation stamp comes
+    // last so the new refresh is durable before the old enters grace.
+    const access = await this.issueAccessFromRefresh(oldRefreshState, now);
     const newRefreshToken = await this.store.persist(newRefreshState, refreshTtl);
 
     if (rotateOld) {
@@ -719,6 +807,7 @@ export class AuthCredential<TPayload extends object = object> {
       accessExpiresAt: access.expiresAt,
       refreshToken: newRefreshToken,
       refreshExpiresAt,
+      userId: oldRefreshState.userId,
     };
   }
 

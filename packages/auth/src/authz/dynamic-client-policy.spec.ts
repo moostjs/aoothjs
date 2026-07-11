@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { AuthorizeError } from "./authz-errors";
+import { hashClientSecret, mintClientSecret } from "./client-secret";
 import { DynamicClientPolicy } from "./dynamic-client-policy";
 import { DynamicClientStoreMemory, type NewDynamicClient } from "./dynamic-client-store";
 
@@ -185,6 +186,23 @@ describe("DynamicClientPolicy", () => {
       policy.authenticateClient({ clientId: client.clientId, clientSecret: "spurious" }),
     ).resolves.toBeUndefined();
     await store.delete(client.clientId);
+    expect(await codeOf(policy.authenticateClient({ clientId: client.clientId }))).toBe(
+      "invalid_client",
+    );
+  });
+
+  it("authenticateClient: a client_secret_post client must present its minted secret", async () => {
+    const secret = mintClientSecret();
+    const { client, policy } = await setup({
+      tokenEndpointAuthMethod: "client_secret_post",
+      clientSecretHash: hashClientSecret(secret),
+    });
+    await expect(
+      policy.authenticateClient({ clientId: client.clientId, clientSecret: secret }),
+    ).resolves.toBeUndefined();
+    expect(
+      await codeOf(policy.authenticateClient({ clientId: client.clientId, clientSecret: "wrong" })),
+    ).toBe("invalid_client");
     expect(await codeOf(policy.authenticateClient({ clientId: client.clientId }))).toBe(
       "invalid_client",
     );

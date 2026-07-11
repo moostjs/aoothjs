@@ -24,6 +24,7 @@ import {
   DynamicClientPolicy,
   DynamicClientRegistration,
   DynamicClientStoreMemory,
+  hashClientSecret,
   IdTokenSigner,
   LoopbackClientPolicy,
   OidcClaimsResolver,
@@ -665,9 +666,21 @@ interface DcrHarness extends Harness {
   clients: DynamicClientStoreMemory;
 }
 
+/** Injectable clock for the refresh-grant rotation/grace tests. */
+class FakeClock {
+  time = 1_000_000;
+  now(): number {
+    return this.time;
+  }
+  advance(ms: number): void {
+    this.time += ms;
+  }
+}
+
 async function buildDcrApp(opts?: {
   guard?: (args: { metadata: unknown }) => void;
   maxClients?: number;
+  clock?: FakeClock;
 }): Promise<DcrHarness> {
   (getMoostInfact() as unknown as { _cleanup?: () => void })._cleanup?.();
 
@@ -675,9 +688,10 @@ async function buildDcrApp(opts?: {
   const http = moost.adapter(new MoostHttp(createHttpApp(undefined, new Wooks())));
 
   const auth = new AuthCredential({
-    store: new CredentialStoreMemory(),
+    store: new CredentialStoreMemory(opts?.clock ? { clock: opts.clock } : undefined),
     method: "token",
     accessTtl: 60_000,
+    ...(opts?.clock && { clock: opts.clock }),
   });
   const pending = new PendingAuthorizationStoreMemory();
   const codes = new AuthCodeStoreMemory();
@@ -759,7 +773,7 @@ describe("AuthorizeController — MCP connectors (RFC 8414 + RFC 7591 + dynamic 
     expect(doc.token_endpoint).toBe(`${DCR_ISSUER}/token`);
     expect(doc.registration_endpoint).toBe(`${DCR_ISSUER}/register`);
     expect(doc.response_types_supported).toEqual(["code"]);
-    expect(doc.grant_types_supported).toEqual(["authorization_code"]);
+    expect(doc.grant_types_supported).toEqual(["authorization_code", "refresh_token"]);
     expect(doc.code_challenge_methods_supported).toEqual(["S256"]);
     expect(doc.token_endpoint_auth_methods_supported).toContain("none");
     expect(doc.scopes_supported).toEqual(["read", "write"]);
@@ -769,16 +783,17 @@ describe("AuthorizeController — MCP connectors (RFC 8414 + RFC 7591 + dynamic 
     expect(oidc.status).toBe(404);
   });
 
-  it("DCR round-trip: 201 with client_id, issued_at in SECONDS, narrowed echo, no secret fields", async () => {
+  it("DCR round-trip: 201 with client_id, issued_at in SECONDS, narrowed echo, no secret fields for a public client", async () => {
     const res = await h.request(
       "/auth/register",
       registerJson({
         client_name: "Test Connector",
         redirect_uris: [DYN_REDIRECT],
         token_endpoint_auth_method: "none",
-        // A real connector asks for refresh_token too — the echo of the
-        // NARROWED set is the contract (RFC 7591 §2).
-        grant_types: ["authorization_code", "refresh_token"],
+        // The connector's refresh_token ask registers with it echoed; an
+        // unsupported grant is narrowed away (RFC 7591 §2 — the echo of the
+        // narrowed set is the contract).
+        grant_types: ["authorization_code", "refresh_token", "client_credentials"],
         response_types: ["code"],
         scope: "read write",
       }),
@@ -789,12 +804,88 @@ describe("AuthorizeController — MCP connectors (RFC 8414 + RFC 7591 + dynamic 
     expect(body.client_id_issued_at).toBeLessThan(Date.now() / 100); // seconds, not ms
     expect(body.redirect_uris).toEqual([DYN_REDIRECT]);
     expect(body.token_endpoint_auth_method).toBe("none");
-    expect(body.grant_types).toEqual(["authorization_code"]); // refresh_token narrowed away
+    expect(body.grant_types).toEqual(["authorization_code", "refresh_token"]);
     expect(body.response_types).toEqual(["code"]);
     expect(body.client_name).toBe("Test Connector");
     expect(body).not.toHaveProperty("client_secret");
     expect(body).not.toHaveProperty("client_secret_expires_at");
     expect(await h.clients.get(body.client_id as string)).not.toBeNull();
+  });
+
+  it("confidential DCR (the claude.ai payload): client_secret_post registers 201 with a one-time secret; only the hash is stored", async () => {
+    // Verbatim claude.ai connector-platform registration shape (REFRESH_TOKEN.md §1a).
+    const res = await h.request(
+      "/auth/register",
+      registerJson({
+        redirect_uris: [DYN_REDIRECT],
+        token_endpoint_auth_method: "client_secret_post",
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+        client_name: "Claude",
+        application_type: "web", // unknown field — ignored, never echoed
+      }),
+    );
+    expect(res.status).toBe(201);
+    const body = res.body as Record<string, unknown>;
+    expect(body.token_endpoint_auth_method).toBe("client_secret_post");
+    expect(body.client_secret).toMatch(/^[\w-]{43}$/u); // 32 bytes base64url
+    expect(body.client_secret_expires_at).toBe(0); // §3.2.1: 0 ⇒ never expires
+    expect(body.grant_types).toEqual(["authorization_code", "refresh_token"]);
+    expect(body).not.toHaveProperty("application_type");
+    // The store holds a digest, never the plaintext.
+    const stored = await h.clients.get(body.client_id as string);
+    expect(stored?.clientSecretHash).toBe(hashClientSecret(body.client_secret as string));
+    expect(JSON.stringify(stored)).not.toContain(body.client_secret as string);
+  });
+
+  it("a confidential dynamic code redeems only WITH the minted secret (client_secret_post at /token)", async () => {
+    const reg = await h.request(
+      "/auth/register",
+      registerJson({
+        redirect_uris: [DYN_REDIRECT],
+        token_endpoint_auth_method: "client_secret_post",
+      }),
+    );
+    const { client_id, client_secret } = reg.body as { client_id: string; client_secret: string };
+    const client = (await h.clients.get(client_id))!;
+
+    const denied = await h.request(
+      "/auth/token",
+      form({
+        grant_type: "authorization_code",
+        code: await mintDynamicCode(client, "v-conf-1"),
+        code_verifier: "v-conf-1",
+        client_id,
+      }),
+    );
+    expect(denied.status).toBe(401);
+    expect((denied.body as { error: string }).error).toBe("invalid_client");
+
+    const wrong = await h.request(
+      "/auth/token",
+      form({
+        grant_type: "authorization_code",
+        code: await mintDynamicCode(client, "v-conf-2"),
+        code_verifier: "v-conf-2",
+        client_id,
+        client_secret: "wrong",
+      }),
+    );
+    expect(wrong.status).toBe(401);
+
+    const ok = await h.request(
+      "/auth/token",
+      form({
+        grant_type: "authorization_code",
+        code: await mintDynamicCode(client, "v-conf-3"),
+        code_verifier: "v-conf-3",
+        client_id,
+        client_secret,
+      }),
+    );
+    expect(ok.status).toBe(200);
+    const ctx = await h.auth.validate((ok.body as { access_token: string }).access_token);
+    expect(ctx?.userId).toBe("u-1");
   });
 
   it("rejects non-JSON registration requests and RFC 7591 metadata violations with the 7591 error shape", async () => {
@@ -980,5 +1071,271 @@ describe("AuthorizeController — MCP connectors (RFC 8414 + RFC 7591 + dynamic 
     );
     expect(res.status).toBe(401);
     expect((res.body as { error: string }).error).toBe("invalid_client");
+  });
+});
+
+// ── refresh_token grant (OAuth 2.1 §4.3) — mint on code redemption (opt-in per
+//    TokenPolicy), rotate on redemption, family revocation on replay ──
+
+describe("AuthorizeController — refresh_token grant", () => {
+  let h: DcrHarness;
+  let clock: FakeClock;
+  beforeEach(async () => {
+    clock = new FakeClock();
+    h = await buildDcrApp({ clock });
+  });
+
+  async function registerClient(): Promise<DynamicClient> {
+    const res = await h.request(
+      "/auth/register",
+      registerJson({ client_name: "Refresh Connector", redirect_uris: [DYN_REDIRECT] }),
+    );
+    expect(res.status).toBe(201);
+    return (await h.clients.get((res.body as { client_id: string }).client_id))!;
+  }
+
+  /** Mint a code whose policy opts into refresh (unless `refresh` is null). */
+  async function mintCode(
+    client: DynamicClient | undefined,
+    verifier: string,
+    refresh: { ttl?: number } | null = { ttl: 100_000 },
+  ): Promise<string> {
+    const { code } = await h.codes.mint({
+      userId: "u-1",
+      codeChallenge: pkce(verifier),
+      redirectUri: client ? DYN_REDIRECT : LOOPBACK,
+      ...(client && { clientId: client.clientId }),
+      tokenPolicy: {
+        kind: "mcp-session",
+        ttl: 60_000,
+        ...(refresh !== null && { refresh }),
+      },
+    });
+    return code;
+  }
+
+  async function redeemCode(client: DynamicClient | undefined, verifier: string, code: string) {
+    const res = await h.request(
+      "/auth/token",
+      form({
+        grant_type: "authorization_code",
+        code,
+        code_verifier: verifier,
+        ...(client && { client_id: client.clientId }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    return res.body as { access_token: string; refresh_token?: string };
+  }
+
+  it("policy.refresh mints a refresh_token on code redemption; a policy WITHOUT it behaves exactly as today", async () => {
+    const client = await registerClient();
+
+    const withRefresh = await redeemCode(client, "v-r1", await mintCode(client, "v-r1"));
+    expect(withRefresh.refresh_token).toBeTruthy();
+    expect(await h.auth.validate(withRefresh.access_token)).toMatchObject({ userId: "u-1" });
+
+    // Policy-off: no refresh_token even though the client registered the grant.
+    const without = await redeemCode(client, "v-r2", await mintCode(client, "v-r2", null));
+    expect(without.refresh_token).toBeUndefined();
+  });
+
+  it("a clientless (loopback) grant IGNORES policy.refresh — nothing to bind the family to", async () => {
+    const body = await redeemCode(undefined, "v-loop", await mintCode(undefined, "v-loop"));
+    expect(body.refresh_token).toBeUndefined();
+    expect(await h.auth.validate(body.access_token)).toMatchObject({ userId: "u-1" });
+  });
+
+  it("redeems grant_type=refresh_token with rotation; the grant's authority (kind, per-mint ttl) rides the family", async () => {
+    const client = await registerClient();
+    const first = await redeemCode(client, "v-rot", await mintCode(client, "v-rot"));
+
+    clock.advance(5_000);
+    const res = await h.request(
+      "/auth/token",
+      form({
+        grant_type: "refresh_token",
+        refresh_token: first.refresh_token!,
+        client_id: client.clientId,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = res.body as {
+      token_type: string;
+      access_token: string;
+      refresh_token?: string;
+      userId: string;
+    };
+    expect(body.token_type).toBe("Bearer");
+    expect(body.userId).toBe("u-1");
+    expect(body.refresh_token).toBeTruthy();
+    expect(body.refresh_token).not.toBe(first.refresh_token);
+
+    const ctx = await h.auth.validate(body.access_token);
+    expect(ctx?.userId).toBe("u-1");
+    // Authority fixed at authorize time: the policy's 60s access ttl (stamped
+    // as metadata.accessTtl), never the instance default.
+    expect(ctx?.expiresAt).toBe(clock.now() + 60_000);
+    const sessions = (await h.auth.listSessions("u-1", { kind: "mcp-session" })) as SessionInfo[];
+    expect(sessions[0]?.kind).toBe("mcp-session");
+  });
+
+  it("replaying a rotated refresh token beyond grace revokes the whole family (theft response)", async () => {
+    const client = await registerClient();
+    const first = await redeemCode(client, "v-theft", await mintCode(client, "v-theft"));
+
+    const rotated = await h.request(
+      "/auth/token",
+      form({
+        grant_type: "refresh_token",
+        refresh_token: first.refresh_token!,
+        client_id: client.clientId,
+      }),
+    );
+    expect(rotated.status).toBe(200);
+    const fresh = rotated.body as { access_token: string; refresh_token: string };
+
+    clock.advance(31_000); // beyond the 30s rotation grace
+    const replay = await h.request(
+      "/auth/token",
+      form({
+        grant_type: "refresh_token",
+        refresh_token: first.refresh_token!,
+        client_id: client.clientId,
+      }),
+    );
+    expect(replay.status).toBe(400);
+    expect((replay.body as { error: string }).error).toBe("invalid_grant");
+    // The whole family died with it — rotated access AND refresh included.
+    expect(await h.auth.validate(fresh.access_token)).toBeNull();
+    const reuse = await h.request(
+      "/auth/token",
+      form({
+        grant_type: "refresh_token",
+        refresh_token: fresh.refresh_token,
+        client_id: client.clientId,
+      }),
+    );
+    expect(reuse.status).toBe(400);
+    expect((reuse.body as { error: string }).error).toBe("invalid_grant");
+  });
+
+  it("client binding: another client's id ⇒ invalid_grant; unknown client ⇒ invalid_client; missing params rejected", async () => {
+    const client = await registerClient();
+    const other = await registerClient();
+    const first = await redeemCode(client, "v-bind", await mintCode(client, "v-bind"));
+
+    const swapped = await h.request(
+      "/auth/token",
+      form({
+        grant_type: "refresh_token",
+        refresh_token: first.refresh_token!,
+        client_id: other.clientId,
+      }),
+    );
+    expect(swapped.status).toBe(400);
+    expect((swapped.body as { error: string }).error).toBe("invalid_grant");
+    // The mismatch left the family untouched — the rightful client still refreshes.
+    const rightful = await h.request(
+      "/auth/token",
+      form({
+        grant_type: "refresh_token",
+        refresh_token: first.refresh_token!,
+        client_id: client.clientId,
+      }),
+    );
+    expect(rightful.status).toBe(200);
+
+    const unknown = await h.request(
+      "/auth/token",
+      form({ grant_type: "refresh_token", refresh_token: "whatever", client_id: "nope" }),
+    );
+    expect(unknown.status).toBe(401);
+    expect((unknown.body as { error: string }).error).toBe("invalid_client");
+
+    const noClient = await h.request(
+      "/auth/token",
+      form({ grant_type: "refresh_token", refresh_token: first.refresh_token! }),
+    );
+    expect(noClient.status).toBe(401);
+    expect((noClient.body as { error: string }).error).toBe("invalid_client");
+
+    const noToken = await h.request(
+      "/auth/token",
+      form({ grant_type: "refresh_token", client_id: client.clientId }),
+    );
+    expect(noToken.status).toBe(400);
+    expect((noToken.body as { error: string }).error).toBe("invalid_request");
+  });
+
+  it("a session-tier refresh token (no authz stamp) is NOT redeemable at the OAuth token endpoint", async () => {
+    const client = await registerClient();
+    // Minted by the session tier directly — no metadata.authzClientId.
+    const session = await h.auth.issue("u-1", { refresh: { ttl: 100_000 } });
+    const res = await h.request(
+      "/auth/token",
+      form({
+        grant_type: "refresh_token",
+        refresh_token: session.refreshToken!,
+        client_id: client.clientId,
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect((res.body as { error: string }).error).toBe("invalid_grant");
+    // And it was NOT rotated/revoked by the attempt.
+    const still = await h.auth.refresh(session.refreshToken!);
+    expect(still.accessToken).toBeTruthy();
+  });
+
+  it("a confidential client must authenticate to refresh (client_secret_post)", async () => {
+    const reg = await h.request(
+      "/auth/register",
+      registerJson({
+        redirect_uris: [DYN_REDIRECT],
+        token_endpoint_auth_method: "client_secret_post",
+      }),
+    );
+    const { client_id, client_secret } = reg.body as { client_id: string; client_secret: string };
+    const client = (await h.clients.get(client_id))!;
+
+    const code = await mintCode(client, "v-conf-r");
+    const first = await h.request(
+      "/auth/token",
+      form({
+        grant_type: "authorization_code",
+        code,
+        code_verifier: "v-conf-r",
+        client_id,
+        client_secret,
+      }),
+    );
+    expect(first.status).toBe(200);
+    const refreshToken = (first.body as { refresh_token: string }).refresh_token;
+    expect(refreshToken).toBeTruthy();
+
+    const noSecret = await h.request(
+      "/auth/token",
+      form({ grant_type: "refresh_token", refresh_token: refreshToken, client_id }),
+    );
+    expect(noSecret.status).toBe(401);
+    expect((noSecret.body as { error: string }).error).toBe("invalid_client");
+
+    const ok = await h.request(
+      "/auth/token",
+      form({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+        client_id,
+        client_secret,
+      }),
+    );
+    expect(ok.status).toBe(200);
+    expect((ok.body as { refresh_token?: string }).refresh_token).toBeTruthy();
+  });
+
+  it("unknown grant_type still answers unsupported_grant_type", async () => {
+    const res = await h.request("/auth/token", form({ grant_type: "client_credentials" }));
+    expect(res.status).toBe(400);
+    expect((res.body as { error: string }).error).toBe("unsupported_grant_type");
   });
 });

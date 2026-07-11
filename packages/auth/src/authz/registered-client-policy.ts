@@ -1,5 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
-
+import { timingSafeEqualStr } from "../utils/timing-safe";
 import { AuthorizeError } from "./authz-errors";
 import type { ClientRedirectPolicy, ResolvedClient } from "./client-policy";
 import { scopeGrants } from "./oidc-claims-resolver";
@@ -131,12 +130,4 @@ export class RegisteredClientPolicy implements ClientRedirectPolicy {
     const granted = client.scopes ? req.filter((s) => client.scopes!.includes(s)) : req;
     return granted.length > 0 ? granted.join(" ") : undefined;
   }
-}
-
-/** Constant-time string compare that also fails closed on a length mismatch. */
-function timingSafeEqualStr(a: string, b: string): boolean {
-  const ab = Buffer.from(a, "utf8");
-  const bb = Buffer.from(b, "utf8");
-  if (ab.length !== bb.length) return false;
-  return timingSafeEqual(ab, bb);
 }

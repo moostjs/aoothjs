@@ -6,7 +6,11 @@
 // `@aooth/auth-moost`.
 
 // Token policy — what a completed grant mints (fixed at authorize time).
-export type { TokenPolicy } from "./token-policy";
+export {
+  DEFAULT_AUTHZ_REFRESH_TTL_MS,
+  tokenPolicyToIssueOptions,
+  type TokenPolicy,
+} from "./token-policy";
 
 // Failure taxonomy.
 export { AuthorizeError, type AuthorizeErrorCode } from "./authz-errors";
@@ -36,6 +40,7 @@ export {
   DynamicClientStore,
   DynamicClientStoreMemory,
   type DynamicClient,
+  type DynamicClientAuthMethod,
   type DynamicClientStoreMemoryOptions,
   type NewDynamicClient,
 } from "./dynamic-client-store";
@@ -46,7 +51,9 @@ export {
   type ClientRegistrationErrorCode,
   type ClientRegistrationValidationOptions,
   type DynamicClientRegistrationOptions,
+  type RegisteredDynamicClient,
 } from "./client-registration";
+export { hashClientSecret, mintClientSecret, verifyClientSecret } from "./client-secret";
 export { DynamicClientPolicy, type DynamicClientPolicyOptions } from "./dynamic-client-policy";
 
 // Tier-2 OIDC: id_token signing + JWKS, and the pluggable profile-claims seam.

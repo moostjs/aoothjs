@@ -51,6 +51,34 @@ export interface CredentialMetadata {
    * the `listSessions({ kind })` filter. Absent ⇒ an ordinary interactive session.
    */
   credentialKind?: string;
+  /**
+   * OAuth `client_id` this token family was minted for by the authorization
+   * server's token endpoint (`@aooth/auth-moost`'s `AuthorizeController`) —
+   * the binding the `refresh_token` grant enforces: a refresh token redeems
+   * only for the client it was issued to, and a family WITHOUT this stamp
+   * (e.g. a browser session) is never redeemable at the OAuth token endpoint.
+   * Written by the authz tier, carried across rotation like all metadata.
+   */
+  authzClientId?: string;
+  /**
+   * Per-family access-token lifetime in ms — stamped by `issue()` when a
+   * refresh token is minted with a per-mint `ttl` override, and consulted on
+   * every refresh so rotated access tokens keep the authority fixed at mint
+   * time (a 15-min-policy token must not come back as the instance default
+   * after a refresh). Absent ⇒ refresh mints with the instance `accessTtl`.
+   */
+  accessTtl?: number;
+  /**
+   * Per-family rotation semantics — stamped `"always"` by `issue()` whenever a
+   * refresh token is minted via the per-mint `IssueOptions.refresh` object, and
+   * honored by `refresh()` OVER the instance config. Same mint-time-authority
+   * mechanism as {@link accessTtl}: a per-mint family (e.g. an OAuth grant with
+   * a 60-day ceiling) keeps its fixed ceiling even on an instance whose
+   * browser sessions rotate `'sliding'` — rotation must never extend the
+   * grant's lifetime. Absent ⇒ the instance rotation applies (ordinary
+   * sessions are unaffected).
+   */
+  refreshRotation?: "none" | "always" | "sliding";
 }
 
 /**
@@ -147,6 +175,15 @@ export interface IssueResult {
   refreshToken?: string;
   accessExpiresAt: number;
   refreshExpiresAt?: number;
+}
+
+/**
+ * Result of redeeming a refresh token: the fresh pair plus the id of the user
+ * whose family was rotated — the caller (e.g. the OAuth `refresh_token` grant)
+ * presented only an opaque token, so this is where it learns the subject.
+ */
+export interface RefreshResult extends IssueResult {
+  userId: string;
 }
 
 /**

@@ -1,10 +1,9 @@
-import { randomBytes } from "node:crypto";
-
-import { AuthCredential, type IssueOptions } from "@aooth/auth";
+import { AuthCredential, generateOpaqueToken, type RefreshResult } from "@aooth/auth";
 import {
   buildAuthorizationServerMetadata,
   canonicalizeIssuer,
   ClientRegistrationError,
+  tokenPolicyToIssueOptions,
   type AuthCodeStore,
   type AuthorizationServerMetadata,
   type ClientRedirectPolicy,
@@ -13,7 +12,6 @@ import {
   NoopOidcClaimsResolver,
   type OidcClaimsResolver,
   type PendingAuthorizationStore,
-  type TokenPolicy,
 } from "@aooth/auth/authz";
 import { pkceChallengeFor } from "@aooth/idp";
 import { Body, Get, Post, Query } from "@moostjs/event-http";
@@ -42,8 +40,21 @@ interface TokenSuccess {
   access_token?: string;
   id_token?: string;
   expires_in?: number;
+  /** Rotating refresh token — minted iff the grant's `TokenPolicy.refresh` opted in. */
+  refresh_token?: string;
   /** The authenticated user id (`sub`) — convenience for a CLI; not part of the OIDC token response. */
   userId: string;
+}
+
+/** The `POST /auth/token` request body (RFC 6749 §4.1.3 / §6, form- or JSON-shaped). */
+interface TokenRequestBody {
+  grant_type?: string;
+  code?: string;
+  code_verifier?: string;
+  client_id?: string;
+  client_secret?: string;
+  refresh_token?: string;
+  resource?: string | string[];
 }
 
 /** A minimal OIDC discovery document (`/.well-known/openid-configuration`). */
@@ -62,11 +73,15 @@ interface OidcDiscoveryDocument {
   token_endpoint_auth_methods_supported: string[];
 }
 
-/** RFC 7591 §3.2.1 registration response — public client, so no secret fields. */
+/** RFC 7591 §3.2.1 registration response. Secret fields present iff a secret was issued. */
 interface ClientRegistrationSuccess {
   client_id: string;
   /** Seconds since epoch (the RFC's unit — NOT ms). */
   client_id_issued_at: number;
+  /** The minted secret (`client_secret_post` registrations) — disclosed HERE and only here. */
+  client_secret?: string;
+  /** REQUIRED when a secret is issued; `0` ⇒ the secret does not expire. */
+  client_secret_expires_at?: number;
   redirect_uris: string[];
   token_endpoint_auth_method: string;
   grant_types: string[];
@@ -244,7 +259,7 @@ export class AuthorizeController {
     //    carries a cookie that constant-time-matches this. So a handle phished
     //    into a VICTIM's browser is inert — the secret lives only in the browser
     //    that initiated this request (the attacker's, in the takeover scenario).
-    const binding = randomBytes(32).toString("base64url");
+    const binding = generateOpaqueToken();
 
     // 4. Record the in-flight request; ALL authority (token policy, id_token
     //    intent, audience, granted scope) is fixed here, copied from the policy.
@@ -284,21 +299,11 @@ export class AuthorizeController {
 
   @Post("token")
   @Public()
-  async token(
-    @Body()
-    body:
-      | {
-          grant_type?: string;
-          code?: string;
-          code_verifier?: string;
-          client_id?: string;
-          client_secret?: string;
-          resource?: string | string[];
-        }
-      | undefined,
-  ): Promise<TokenSuccess | TokenError> {
+  async token(@Body() body: TokenRequestBody | undefined): Promise<TokenSuccess | TokenError> {
+    if (body?.grant_type === "refresh_token") {
+      return await this.refreshTokenGrant(body);
+    }
     const res = useResponse(current());
-
     if (body?.grant_type !== "authorization_code") {
       res.status = 400;
       return { error: "unsupported_grant_type" };
@@ -330,12 +335,7 @@ export class AuthorizeController {
         res.status = 401;
         return { error: "invalid_client" };
       }
-      try {
-        await this.policy.authenticateClient?.({
-          clientId: row.clientId,
-          ...(body.client_secret !== undefined && { clientSecret: body.client_secret }),
-        });
-      } catch {
+      if (!(await this.clientAuthenticates(row.clientId, body.client_secret))) {
         res.status = 401;
         return { error: "invalid_client" };
       }
@@ -385,10 +385,15 @@ export class AuthorizeController {
 
     let accessToken: string | undefined;
     let expiresIn: number | undefined;
+    let refreshToken: string | undefined;
     if (wantAccessToken) {
-      const issued = await this.auth.issue(row.userId, tokenPolicyToIssueOptions(row.tokenPolicy));
+      const issued = await this.auth.issue(
+        row.userId,
+        tokenPolicyToIssueOptions(row.tokenPolicy, row.clientId),
+      );
       accessToken = issued.accessToken;
-      expiresIn = Math.max(0, Math.floor((issued.accessExpiresAt - Date.now()) / 1000));
+      expiresIn = expiresInSeconds(issued.accessExpiresAt);
+      refreshToken = issued.refreshToken;
     }
 
     let idToken: string | undefined;
@@ -406,9 +411,88 @@ export class AuthorizeController {
     return {
       token_type: "Bearer",
       ...(accessToken !== undefined && { access_token: accessToken, expires_in: expiresIn }),
+      ...(refreshToken !== undefined && { refresh_token: refreshToken }),
       ...(idToken !== undefined && { id_token: idToken }),
       userId: row.userId,
     };
+  }
+
+  /**
+   * `grant_type=refresh_token` (OAuth 2.1 §4.3): rotate the presented refresh
+   * token into a fresh access + refresh pair. Only a family minted BY this
+   * token endpoint for a registered client redeems here — the
+   * `metadata.authzClientId` stamp is the binding, checked BEFORE any rotation
+   * (so a browser-session refresh token, or another client's, is a plain
+   * `invalid_grant` with the family untouched). Client authentication mirrors
+   * the code branch; the grant's authority (kind, payload, per-mint ttl) rides
+   * the credential family — nothing is re-derived here. Reuse of an
+   * already-rotated token revokes the whole family inside the session layer
+   * (the standard theft response) and surfaces as `invalid_grant`.
+   */
+  protected async refreshTokenGrant(body: TokenRequestBody): Promise<TokenSuccess | TokenError> {
+    const res = useResponse(current());
+
+    if (typeof body.refresh_token !== "string" || body.refresh_token.length === 0) {
+      res.status = 400;
+      return { error: "invalid_request" };
+    }
+    // Refresh families are always client-bound (TokenPolicy.refresh is ignored
+    // for clientless loopback grants), so a request without a client_id has
+    // nothing it could redeem.
+    const clientId = body.client_id;
+    if (typeof clientId !== "string" || clientId.length === 0) {
+      res.status = 401;
+      return { error: "invalid_client" };
+    }
+    if (!(await this.clientAuthenticates(clientId, body.client_secret))) {
+      res.status = 401;
+      return { error: "invalid_client" };
+    }
+
+    let issued: RefreshResult;
+    try {
+      issued = await this.auth.refresh(body.refresh_token, {
+        guard: (state) => {
+          // RFC 6749 §5.2: a refresh token issued to another client — or not
+          // by this endpoint at all (no stamp) — is an invalid grant.
+          if (state.metadata?.authzClientId !== clientId) {
+            throw new Error("refresh token was not issued to this client");
+          }
+        },
+      });
+    } catch {
+      res.status = 400;
+      return { error: "invalid_grant" };
+    }
+
+    res.status = 200;
+    return {
+      token_type: "Bearer",
+      access_token: issued.accessToken,
+      expires_in: expiresInSeconds(issued.accessExpiresAt),
+      ...(issued.refreshToken !== undefined && { refresh_token: issued.refreshToken }),
+      userId: issued.userId,
+    };
+  }
+
+  /**
+   * Client authentication shared by both grant branches (RFC 6749 §2.3):
+   * `true` iff the policy accepts the presented credentials (or defines no
+   * `authenticateClient` hook). Callers map `false` to `401 invalid_client`.
+   */
+  protected async clientAuthenticates(
+    clientId: string,
+    clientSecret: string | undefined,
+  ): Promise<boolean> {
+    try {
+      await this.policy.authenticateClient?.({
+        clientId,
+        ...(clientSecret !== undefined && { clientSecret }),
+      });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -438,7 +522,7 @@ export class AuthorizeController {
       jwks_uri: `${iss}/jwks`,
       ...(this.getDynamicClientRegistration() && { registration_endpoint: `${iss}/register` }),
       response_types_supported: ["code"],
-      grant_types_supported: ["authorization_code"],
+      grant_types_supported: ["authorization_code", "refresh_token"],
       subject_types_supported: ["public"],
       id_token_signing_alg_values_supported: [signer.alg],
       scopes_supported: ["openid", "email", "profile"],
@@ -483,10 +567,12 @@ export class AuthorizeController {
    * RFC 7591 Dynamic Client Registration (OAUTH.md R2) — anonymous by spec;
    * 404 unless a registration operation is wired ({@link
    * getDynamicClientRegistration}). A thin HTTP adapter: validation, abuse
-   * knobs (guard / cap / never-used GC) and persistence live in
-   * `DynamicClientRegistration` (`@aooth/auth`). Public clients only — the
-   * response carries NO `client_secret` and NO `client_secret_expires_at`
-   * (RFC 7591 §3.2.1 requires them only when a secret is issued).
+   * knobs (guard / cap / never-used GC), secret minting and persistence live
+   * in `DynamicClientRegistration` (`@aooth/auth`). A `client_secret_post`
+   * registration is echoed with its minted `client_secret` +
+   * `client_secret_expires_at` — the ONE disclosure (only the hash is stored);
+   * public (`"none"`) registrations carry neither field (RFC 7591 §3.2.1
+   * requires them only when a secret is issued).
    */
   @Post("register")
   @Public()
@@ -511,12 +597,18 @@ export class AuthorizeController {
     try {
       const client = await registration.register(body);
       // §3.2.1: echo ALL registered metadata, including server-narrowed values
-      // (e.g. a requested refresh_token grant that was intersected away) — the
+      // (e.g. an unsupported requested grant that was intersected away) — the
       // echo of the narrowed set IS the contract the client must honor.
       res.status = 201;
       return {
         client_id: client.clientId,
         client_id_issued_at: Math.floor(client.createdAt / 1000),
+        ...(client.clientSecret !== undefined && {
+          client_secret: client.clientSecret,
+          // §3.2.1: REQUIRED alongside client_secret — echoed from core, which
+          // owns the secret's lifecycle (0 ⇒ never expires).
+          client_secret_expires_at: client.clientSecretExpiresAt,
+        }),
         redirect_uris: client.redirectUris,
         token_endpoint_auth_method: client.tokenEndpointAuthMethod,
         grant_types: client.grantTypes,
@@ -557,11 +649,7 @@ export class AuthorizeController {
   }
 }
 
-/** Flatten a {@link TokenPolicy} into the `issue()` options it forwards. */
-function tokenPolicyToIssueOptions(policy: TokenPolicy): IssueOptions {
-  return {
-    ...policy.payload,
-    ...(policy.kind !== undefined && { kind: policy.kind }),
-    ...(policy.ttl !== undefined && { ttl: policy.ttl }),
-  };
+/** RFC 6749 `expires_in`: whole seconds from now until `expiresAt`, floored at 0. */
+function expiresInSeconds(expiresAt: number): number {
+  return Math.max(0, Math.floor((expiresAt - Date.now()) / 1000));
 }

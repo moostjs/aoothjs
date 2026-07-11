@@ -10,6 +10,7 @@ export type {
   EnrichedSession,
   IssueResult,
   RefreshConfig,
+  RefreshResult,
   SessionEnricher,
   SessionInfo,
 } from "./credential/types";
@@ -29,7 +30,11 @@ export type { CredentialStoreEncapsulatedOptions } from "./stores/encapsulated";
 
 // AuthCredential orchestrator
 export { AuthCredential } from "./credential/auth-credential";
-export type { AuthCredentialOptions, IssueOptions } from "./credential/auth-credential";
+export type {
+  AuthCredentialOptions,
+  IssueOptions,
+  RefreshCallOptions,
+} from "./credential/auth-credential";
 
 // Shared time abstraction
 export type { Clock } from "./utils/clock";
@@ -59,3 +64,6 @@ export type { AuthSmsEvent, AuthSmsKind, SmsSender } from "./sms";
 // Magic-link helpers (framework-agnostic — used by workflow integrations)
 export type { BuildMagicLinkUrl } from "./magic-link";
 export { generateMagicLinkToken } from "./magic-link";
+
+// Opaque-secret mint shared by magic links, client secrets, authz bindings.
+export { generateOpaqueToken } from "./utils/opaque-token";

@@ -21,9 +21,13 @@ client opens browser →
       `mint-authz-code` terminal mints a single-use CODE bound to ctx.subject + the recorded
           authority, and 302s redirect_uri?code=&state=
   → POST /auth/token { grant_type, code, code_verifier, client_id?, client_secret? }
-    → consume code (single-use) → verify PKCE → authenticate client (Tier 2) →
+    → consume code (single-use) → verify PKCE → authenticate client (Tier 2 / DCR) →
       mint access_token and/or id_token  ← minted HERE, off the browser
-    → { token_type, access_token?, expires_in?, id_token?, userId }
+      (+ refresh_token when the grant's TokenPolicy opted in)
+    → { token_type, access_token?, expires_in?, refresh_token?, id_token?, userId }
+  → POST /auth/token { grant_type: "refresh_token", refresh_token, client_id, client_secret? }
+    → authenticate client → verify the family's client binding → ROTATE
+    → { token_type, access_token, expires_in, refresh_token, userId }
 
 # Tier 2 only:
 GET /auth/.well-known/openid-configuration   → OIDC discovery (derived from the signer's issuer)
@@ -38,11 +42,11 @@ The grant's authority is **fixed at `/authorize` time** (the policy's [`TokenPol
 
 ## Two tiers, one flow
 
-|                          | Client / redirect policy                                                                                                                                                                                                                                      | What the token endpoint mints                                                                                                                     |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Tier 1 — CLI**         | `LoopbackClientPolicy` — any `127.0.0.1` / `[::1]` / `localhost` redirect, any port (RFC 8252); public client, PKCE is the binding; no `client_id`.                                                                                                           | A full-authority `cli-session` **access token** for the main API (no `id_token`).                                                                 |
-| **Tier 2 — service SSO** | `RegisteredClientPolicy` — a static registry; each client has a `client_id`, an exact-match (or strict-prefix) `redirect_uri` allowlist, a `public`/`confidential` type, and what it may receive.                                                             | An **`id_token`** (RS256/ES256, `aud` = `client_id`), optionally also an access token. Consumable by the existing [`OidcProvider`](../idp/).      |
-| **MCP connectors — DCR** | `DynamicClientPolicy` — RFC 7591 self-registered public clients from a `DynamicClientStore`; exact-match `https` redirects (loopback entries are port-agnostic per RFC 8252); granted scope = requested ∩ a **server** allow-list ∩ the registration's scope. | An **access token** with the configured `tokenPolicy` (e.g. `{ kind: "mcp-session", ttl: 30d }`). **No `id_token`** — connectors are plain OAuth. |
+|                          | Client / redirect policy                                                                                                                                                                                                                                                                                                                                                                                  | What the token endpoint mints                                                                                                                                                                                         |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Tier 1 — CLI**         | `LoopbackClientPolicy` — any `127.0.0.1` / `[::1]` / `localhost` redirect, any port (RFC 8252); public client, PKCE is the binding; no `client_id`.                                                                                                                                                                                                                                                       | A full-authority `cli-session` **access token** for the main API (no `id_token`).                                                                                                                                     |
+| **Tier 2 — service SSO** | `RegisteredClientPolicy` — a static registry; each client has a `client_id`, an exact-match (or strict-prefix) `redirect_uri` allowlist, a `public`/`confidential` type, and what it may receive.                                                                                                                                                                                                         | An **`id_token`** (RS256/ES256, `aud` = `client_id`), optionally also an access token. Consumable by the existing [`OidcProvider`](../idp/).                                                                          |
+| **MCP connectors — DCR** | `DynamicClientPolicy` — RFC 7591 self-registered clients from a `DynamicClientStore`, public (`"none"`, PKCE-bound) or confidential (`"client_secret_post"` — a server-minted secret, disclosed once, hash-stored, checked at `/token`); exact-match `https` redirects (loopback entries are port-agnostic per RFC 8252); granted scope = requested ∩ a **server** allow-list ∩ the registration's scope. | An **access token** with the configured `tokenPolicy` (e.g. `{ kind: "mcp-session", ttl: 30d }`), plus a **rotating `refresh_token`** when the policy sets `refresh`. **No `id_token`** — connectors are plain OAuth. |
 
 Run them side by side with `CompositeClientPolicy`, which dispatches on the **presence and ownership of `client_id`** — no `client_id` is a loopback CLI; a `client_id` belongs to the static registry when it knows the id (`hasClient`, static-first so a dynamic registration can never shadow a static client), else to the dynamic policy. The same picker drives `authenticateClient` at `/token`.
 
@@ -204,11 +208,18 @@ const registration = new DynamicClientRegistration({
 
 // 3. The policy — what a dynamic grant mints, and the SERVER-side scope bound
 //    (never trust the registration's self-declared scope as the allow-set).
+//    `refresh` opts the grant into the OAuth 2.1 refresh_token grant: the token
+//    endpoint pairs a rotating refresh token with the access token, so the
+//    connector silently refreshes at expiry instead of re-running consent.
 const policy = new CompositeClientPolicy({
   loopback: new LoopbackClientPolicy(),
   dynamic: new DynamicClientPolicy({
     store: dynamicClients,
-    tokenPolicy: { kind: "mcp-session", ttl: 30 * 24 * 60 * 60_000 },
+    tokenPolicy: {
+      kind: "mcp-session",
+      ttl: 60 * 60_000, // short access token …
+      refresh: { ttl: 60 * 24 * 60 * 60_000 }, // … long rotating grant (60 d)
+    },
     allowedScopes: ["read", "write"],
   }),
   // registered: …  ← add the Tier-2 registry too; static ids win the dispatch.
@@ -236,7 +247,7 @@ class McpAuthorizeController extends AuthorizeController {
 }
 ```
 
-With that, `GET /auth/.well-known/oauth-authorization-server` serves RFC 8414 metadata (no signer needed — `getIssuer()` is the only requirement; with a Tier-2 signer wired it defaults to the signer's issuer and also advertises `jwks_uri`), `POST /auth/register` accepts registrations, and **both** discovery documents advertise `registration_endpoint` when a signer is also present. Registration normalizes per RFC 7591 §2: `grant_types: ["authorization_code", "refresh_token"]` registers as `["authorization_code"]` and the 201 echo of the **narrowed** set is the contract; `token_endpoint_auth_method` defaults to `"none"` (public clients only — an explicit ask for a secret method is rejected, never silently downgraded); `client_name` is sanitized (control/format/bidi characters stripped) and rendered on the consent prompt **as text, next to the validated redirect host** — the host is where the code is actually delivered, which a self-chosen name can't fake.
+With that, `GET /auth/.well-known/oauth-authorization-server` serves RFC 8414 metadata (no signer needed — `getIssuer()` is the only requirement; with a Tier-2 signer wired it defaults to the signer's issuer and also advertises `jwks_uri`), `POST /auth/register` accepts registrations, and **both** discovery documents advertise `registration_endpoint` when a signer is also present. Registration normalizes per RFC 7591 §2: an unsupported grant is intersected away and the 201 echo of the **narrowed** set is the contract (the supported set is `authorization_code` + `refresh_token`, and the result must still include `authorization_code`); `token_endpoint_auth_method` defaults to `"none"` and also accepts `"client_secret_post"` — a **confidential** registration (what claude.ai's connector platform sends) is echoed once with the minted `client_secret` + `client_secret_expires_at: 0`, only the SHA-256 digest is stored, and the secret is then required on every token-endpoint call; an explicit ask for anything else (e.g. `client_secret_basic`) is rejected, never silently downgraded (narrow with `validation.allowedTokenEndpointAuthMethods: ["none"]` for a public-only deployment); `client_name` is sanitized (control/format/bidi characters stripped) and rendered on the consent prompt **as text, next to the validated redirect host** — the host is where the code is actually delivered, which a self-chosen name can't fake.
 
 ### Root-mounted discovery (what the controller cannot serve)
 
@@ -285,13 +296,27 @@ res.setHeader(
 
 The challenge builder is framework-light (a header-value string) and sanitizes every value (control characters stripped, quotes escaped) so attacker-influenced strings can't split the response. The demo's `makeMcpDemoController` (packages/e2e-demo) is the working reference for all three mounts.
 
+::: warning Two deployment pitfalls (both observed against real claude.ai traffic)
+
+**Bare-origin discovery + SPA catch-alls.** Connector clients also resolve `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource` at the **bare origin**, ignoring the issuer's path component. If an SPA catch-all answers those paths with `200 text/html`, the client parses the HTML as the metadata document and aborts — a poisoned discovery that looks like a client-side mystery. Every path-issuer deployment must serve **both root aliases** (same builders, same issuer) and hard-404 every other `/.well-known/*` path before the catch-all.
+
+**CORS.** Backend-side connectors (claude.ai) don't need it, but browser-based MCP clients (inspector-class) run discovery, DCR and the token exchange from the page. The metadata endpoints, `/register`, and `/token` need `Access-Control-Allow-Origin: *` plus OPTIONS preflight handling. `*` is correct there — they are public, credential-free surfaces (the "credential" is the request body, not a cookie) — and deliberately wrong for the cookie-carrying session endpoints; scope the header to the authz paths only.
+:::
+
 ### The `resource` parameter (RFC 8707)
 
 `/authorize` and `/token` accept `resource`. v1 **records + consistency-checks** it: a repeated or oversized value fails with `invalid_target` (never silently truncated), a mismatch between the two legs is `400 invalid_target`, and one-sided presence is accepted. There is **no audience enforcement** — access tokens are opaque credentials consumed by the same origin that minted them, so cross-resource confusion doesn't arise; the recorded value stays on the grant so a future multi-resource deployment can enforce it without re-minting.
 
-### Connector token lifecycle
+### Connector token lifecycle — the `refresh_token` grant {#refresh-token-grant}
 
-Dynamic grants mint plain bearer access tokens with your `tokenPolicy` TTL (e.g. 30 days) — **no refresh tokens, no RFC 7009 revocation endpoint** in v1. At expiry the connector re-runs authorize + consent. The only revocation path is your own sessions surface: pick a dedicated `kind` (e.g. `mcp-session`) so connector grants show up under `listSessions(userId, { kind: "mcp-session" })` and users can revoke them — without that, a stolen 30-day bearer has no user-visible kill switch. Operators MAY disable DCR entirely (don't wire the getter) and fall back to a statically pre-registered connector via `RegisteredClientPolicy` — its callback URL is fixed and the connector UI accepts a manually-entered client id — at the cost of "paste URL and it works" UX.
+Set `refresh: { ttl? }` on the grant's `TokenPolicy` (default grant lifetime 30 days — `DEFAULT_AUTHZ_REFRESH_TTL_MS`) and the token endpoint pairs the access token with a **rotating refresh token**; `POST /auth/token` with `{ grant_type: "refresh_token", refresh_token, client_id, client_secret? }` redeems it. Like everything else in the policy, the refresh dimension is fixed at `/authorize` time and recorded on the pending authorization + code — never inferred at `/token`. The semantics:
+
+- **Client-bound.** The family is stamped with the grant's `client_id` (`metadata.authzClientId`) and redeems only for that client, authenticated the same way as the code branch (a confidential client presents its secret). A browser-session refresh token — or another client's — is a plain `invalid_grant`, checked **before** anything rotates. Clientless Tier-1 loopback grants have nothing to bind to, so they **ignore** `refresh`.
+- **One-time use with rotation** (OAuth 2.1 §4.3.1): every redemption returns a fresh access + refresh pair; the family's lifetime is a **fixed ceiling** (the policy's `refresh.ttl` from the original grant — rotation never extends it). A short (30 s) grace window tolerates a benign concurrent double-refresh; **replay beyond it revokes the whole family** — the standard theft response, riding `AuthCredential`'s existing family revocation.
+- **Authority never widens.** `kind`, `payload`, and the policy's access-token `ttl` ride the credential family (the per-mint ttl is stamped as `metadata.accessTtl`), so a refreshed access token carries exactly the authority fixed at authorize time — with refresh available, set a **short** access `ttl` and let the refresh ttl carry the long-lived grant.
+- **Response shape:** `{ token_type, access_token, expires_in, refresh_token, userId }` in the JSON body — connectors are header-transport clients; no cookies. Failures are RFC 6749 §5.2: `invalid_request` (no token), `invalid_client` (401 — missing/unauthenticated client), `invalid_grant` (unknown/rotated/foreign token).
+
+There is still **no RFC 7009 revocation endpoint** — the revocation path is your own sessions surface: pick a dedicated `kind` (e.g. `mcp-session`) so connector grants show up under `listSessions(userId, { kind: "mcp-session" })` and users can revoke them (revocation kills the whole family, refresh included). Policies **without** `refresh` behave as before: access token only, re-consent at expiry. Operators MAY disable DCR entirely (don't wire the getter) and fall back to a statically pre-registered connector via `RegisteredClientPolicy` — its callback URL is fixed and the connector UI accepts a manually-entered client id — at the cost of "paste URL and it works" UX.
 
 ::: warning Schema migration
 The `aooth_pending_authorizations` / `aooth_auth_codes` models gained nullable `clientName` / `resource` columns. Run your schema sync before serving connector traffic — connector clients **always** send `resource`, so an un-synced column fails at the `/authorize` insert.

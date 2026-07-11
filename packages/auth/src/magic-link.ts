@@ -1,6 +1,5 @@
-import { randomBytes } from "node:crypto";
-
 import type { AuthEmailKind } from "./email";
+import { generateOpaqueToken } from "./utils/opaque-token";
 
 /**
  * Consumer-supplied URL builder. The consumer chooses route, query
@@ -21,10 +20,7 @@ export type BuildMagicLinkUrl = (
   ctx?: { userId?: string },
 ) => string;
 
-/**
- * 32 bytes of CSPRNG entropy (256 bits) encoded as base64url — 43 chars,
- * URL-safe. Strong enough to survive short TTLs against online guessing.
- */
+/** A magic-link token is a plain {@link generateOpaqueToken} mint. */
 export function generateMagicLinkToken(): string {
-  return randomBytes(32).toString("base64url");
+  return generateOpaqueToken();
 }
