@@ -20,6 +20,7 @@ import { expect, test } from "@playwright/test";
 
 import {
   clickAction,
+  DEMO_TOKEN_KEY,
   fillField,
   getEmails,
   getSms,
@@ -28,8 +29,6 @@ import {
   USERS,
   waitForSms,
 } from "./harness";
-
-const DEMO_TOKEN_KEY = "aooth_demo_access_token";
 
 /** Drive one full OAuth round-trip via the login form; return the authenticated session. */
 async function signInWithProvider(

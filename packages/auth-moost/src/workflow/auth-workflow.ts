@@ -2024,6 +2024,15 @@ export class AuthWorkflow {
    * account falls back to the credentials form (where `users.login` rejects
    * it) instead of silently reaching consent.
    */
+  /**
+   * Account-state gate shared by the three no-password entry paths — the
+   * silent-authorize probe, `sso-callback`'s success gate, and `prove-control`'s
+   * candidate gate. A blocked account must never bind a subject on any of them.
+   */
+  protected isAccountBlocked(user: UserCredentials): boolean {
+    return user.account.locked || !user.account.active;
+  }
+
   protected async probeSilentAuthz(ctx: AuthWfCtx, policy: AuthzReauthPolicy): Promise<boolean> {
     const session = useAuth().getAuthContext();
     if (!session) return false;
@@ -2044,7 +2053,7 @@ export class AuthWorkflow {
       // Session points at a deleted/unknown row — fall through to credentials.
       return false;
     }
-    if (user.account.locked || !user.account.active) return false;
+    if (this.isAccountBlocked(user)) return false;
     ctx.subject = session.userId;
     const authz = ctx.authz!;
     authz.silent = true;
@@ -5507,7 +5516,7 @@ export class AuthWorkflow {
     // `created` auto-activates in `resolveUser`, so only a `linked` login to a
     // disabled/locked account trips this — exactly what must be blocked.
     const user = await this.users.getUser(outcome.userId);
-    if (user.account.locked || !user.account.active) {
+    if (this.isAccountBlocked(user)) {
       return this.finishOAuth(ctx, "account-state");
     }
 
@@ -5829,7 +5838,7 @@ export class AuthWorkflow {
     // ── Account-state gate — BEFORE linking / setting subject (mirror the
     // sso-callback success gate; essential for the OTP path since verifyPin,
     // unlike users.login, does not itself reject a locked/inactive account). ──
-    if (candidate.account.locked || !candidate.account.active) {
+    if (this.isAccountBlocked(candidate)) {
       delete ctx.pendingLink;
       return this.finishOAuth(ctx, "account-state");
     }

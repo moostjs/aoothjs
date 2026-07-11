@@ -20,45 +20,20 @@
  * that the consent gate is mandatory, and that the browser-binding cookie
  * neutralises a phished `authz` handle (AUTH-SERVER.md §6).
  */
-import { authorize, type AuthorizeError, type AuthorizeResult } from "@aooth/login-client";
-import { expect, test, type Page } from "@playwright/test";
+import type { AuthorizeError } from "@aooth/login-client";
+import { expect, test } from "@playwright/test";
 
 import {
   approveConsent,
   clickAction,
   fillField,
+  mintPhishedHandle,
   resetApp,
+  runCliLogin,
   submitForm,
   USERS,
   waitForConsent,
 } from "./harness";
-
-/**
- * Run the loopback grant: kick off `authorize()` (which sets up the loopback and
- * surfaces the authorize URL via `onUrl`), drive the browser through it, and
- * resolve with the token. The loopback listener is up before `onUrl` fires, so
- * the browser can navigate immediately.
- */
-async function runCliLogin(
-  page: Page,
-  origin: string,
-  drive: (page: Page) => Promise<void>,
-): Promise<AuthorizeResult> {
-  let authUrl: string | undefined;
-  const pending = authorize({
-    authorizeUrl: `${origin}/auth/authorize`,
-    tokenUrl: `${origin}/auth/token`,
-    openBrowser: false,
-    onUrl: (u) => {
-      authUrl = u;
-    },
-    timeoutMs: 25_000,
-  });
-  await expect.poll(() => Boolean(authUrl), { timeout: 10_000 }).toBe(true);
-  await page.goto(authUrl!);
-  await drive(page);
-  return pending;
-}
 
 test.beforeEach(async ({ request }) => {
   await resetApp(request);
@@ -143,23 +118,10 @@ test("AUTHZ-CLI-04: an authz handle phished into a different browser cannot be r
   baseURL,
 }) => {
   const origin = baseURL ?? "http://localhost:3001";
-  const LOOPBACK = "http://127.0.0.1:5000/callback";
 
-  // ── Attacker browser: initiate the authorize to mint a pending handle. The
-  // browser-binding cookie (`aooth_authz`) is dropped HERE, in the attacker's
-  // context — never the victim's. The attacker reads the opaque handle off the
-  // /login?authz= bounce. (A real attacker injects their own client/redirect;
-  // a loopback redirect is enough to demonstrate the binding wall.)
-  const attacker = await browser.newContext();
-  const aPage = await attacker.newPage();
-  await aPage.goto(
-    `${origin}/auth/authorize?response_type=code` +
-      `&redirect_uri=${encodeURIComponent(LOOPBACK)}` +
-      `&code_challenge=phished-challenge&code_challenge_method=S256&state=atk`,
-  );
-  await aPage.waitForURL(/\/login\?authz=/, { timeout: 10_000 });
-  const handle = new URL(aPage.url()).searchParams.get("authz");
-  expect(handle, "the attacker captured the pending-auth handle").toBeTruthy();
+  // ── Attacker browser: mint the pending handle (and own the binding cookie —
+  // it is dropped in the attacker's context, never the victim's).
+  const { handle, attacker } = await mintPhishedHandle(browser, origin);
 
   // ── Victim browser: a FRESH context (no `aooth_authz` cookie) opens the
   // phished link and logs in for real. The `authz-consent` step's binding check

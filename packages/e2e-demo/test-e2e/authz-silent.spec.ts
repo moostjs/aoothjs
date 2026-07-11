@@ -16,12 +16,21 @@
  * full credentials path (every other authz spec runs in a fresh context, so
  * they double as always-behaved regression coverage).
  */
-import { authorize, type AuthorizeError, type AuthorizeResult } from "@aooth/login-client";
+import type { AuthorizeError } from "@aooth/login-client";
 import { expect, test, type Page } from "@playwright/test";
 
-import { clickAction, fillField, resetApp, submitForm, USERS, waitForConsent } from "./harness";
-
-const DEMO_TOKEN_KEY = "aooth_demo_access_token";
+import {
+  bearerAuth,
+  clickAction,
+  DEMO_TOKEN_KEY,
+  fillField,
+  mintPhishedHandle,
+  resetApp,
+  runCliLogin,
+  submitForm,
+  USERS,
+  waitForConsent,
+} from "./harness";
 
 /** Password-login through the SPA so the browser holds a live demo session. */
 async function loginViaSpa(page: Page): Promise<void> {
@@ -34,28 +43,6 @@ async function loginViaSpa(page: Page): Promise<void> {
   await page.waitForFunction((k) => sessionStorage.getItem(k) !== null, DEMO_TOKEN_KEY, {
     timeout: 15_000,
   });
-}
-
-/** Loopback grant runner (same shape as authz-cli.spec.ts). */
-async function runCliLogin(
-  page: Page,
-  origin: string,
-  drive: (page: Page) => Promise<void>,
-): Promise<AuthorizeResult> {
-  let authUrl: string | undefined;
-  const pending = authorize({
-    authorizeUrl: `${origin}/auth/authorize`,
-    tokenUrl: `${origin}/auth/token`,
-    openBrowser: false,
-    onUrl: (u) => {
-      authUrl = u;
-    },
-    timeoutMs: 25_000,
-  });
-  await expect.poll(() => Boolean(authUrl), { timeout: 10_000 }).toBe(true);
-  await page.goto(authUrl!);
-  await drive(page);
-  return pending;
 }
 
 test.beforeEach(async ({ request }) => {
@@ -83,7 +70,7 @@ test("AUTHZ-SILENT-01: a live session lands straight on consent (no credentials 
 
   expect(result.accessToken, "the client received an access token").toBeTruthy();
   const status = await page.request.get(`${origin}/auth/status`, {
-    headers: { authorization: `Bearer ${result.accessToken}` },
+    headers: bearerAuth(result.accessToken),
   });
   expect(status.status(), "the silently-minted token authenticates").toBe(200);
 
@@ -137,19 +124,9 @@ test("AUTHZ-SILENT-04: a phished handle in a session-holding browser still fails
   baseURL,
 }) => {
   const origin = baseURL ?? "http://localhost:3001";
-  const LOOPBACK = "http://127.0.0.1:5000/callback";
 
   // Attacker context mints the pending handle (and owns the binding cookie).
-  const attacker = await browser.newContext();
-  const aPage = await attacker.newPage();
-  await aPage.goto(
-    `${origin}/auth/authorize?response_type=code` +
-      `&redirect_uri=${encodeURIComponent(LOOPBACK)}` +
-      `&code_challenge=phished-challenge&code_challenge_method=S256&state=atk`,
-  );
-  await aPage.waitForURL(/\/login\?authz=/, { timeout: 10_000 });
-  const handle = new URL(aPage.url()).searchParams.get("authz");
-  expect(handle).toBeTruthy();
+  const { handle, attacker } = await mintPhishedHandle(browser, origin);
 
   // Victim context holds a LIVE session — the worst case for consent-only:
   // the probe binds the subject with zero keystrokes, so the binding check is

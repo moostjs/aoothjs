@@ -2397,14 +2397,12 @@ describe("Consent-only authorize (silent session → consent)", () => {
     auth?: AuthContext,
   ): Promise<boolean> {
     const run = prepareTestHttpContext({ url: "/auth/trigger" });
-    let result!: Promise<boolean>;
-    run(() => {
+    return run(() => {
       if (auth) setAuthContext(current(), auth);
       // `useAuth().getAuthContext()` is read synchronously before the first
       // await, so the probe promise can settle outside the context runner.
-      result = wf.exposeProbeSilentAuthz(ctx, policy);
+      return wf.exposeProbeSilentAuthz(ctx, policy);
     });
-    return result;
   }
 
   it("resolveAuthzReauthPolicy defaults to always-reauth (feature is opt-in)", async () => {
@@ -2509,9 +2507,7 @@ describe("Consent-only authorize (silent session → consent)", () => {
     // `users.login` rejects it — never silently reach consent.
     const locked = await users.createUser("locked", "pw");
     await users.activateAccount(locked.id);
-    await users.update(locked.id, {
-      account: { ...locked.account, active: true, locked: true },
-    } as Partial<UserCredentials>);
+    await users.lockAccount(locked.id, "test");
     ctx = { authz: { handle: "h" } };
     expect(await probe(wf, ctx, policy, liveSession(locked.id))).toBe(false);
     expect(ctx.subject).toBeUndefined();
