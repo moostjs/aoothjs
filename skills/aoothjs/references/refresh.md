@@ -6,6 +6,7 @@ Reference for `RefreshConfig`, the three rotation modes, refresh-reuse detection
 
 - [`RefreshConfig`](#refreshconfig)
 - [Rotation modes](#rotation-modes)
+- [Per-mint refresh (`IssueOptions.refresh`)](#per-mint-refresh-issueoptionsrefresh)
 - [Refresh reuse detection](#refresh-reuse-detection)
 - [Stateless degradation](#stateless-degradation)
 - [Concurrency limits](#concurrency-limits)
@@ -24,7 +25,7 @@ Reference for `RefreshConfig`, the three rotation modes, refresh-reuse detection
 
 Exact shape: [docs api](https://aoothjs.dev/api/auth#refreshconfig).
 
-Omitting `refresh` from `AuthCredentialOptions` disables refresh entirely — `auth.refresh()` throws `AuthError('INVALID_CONFIG', 'Refresh not enabled')`. `refresh.ttl <= 0` throws `INVALID_CONFIG` at construction.
+Omitting `refresh` from `AuthCredentialOptions` disables refresh for ordinary mints — but per-mint families ([below](#per-mint-refresh-issueoptionsrefresh)) still mint and redeem without it; an unknown token then throws `INVALID_TOKEN`, not `INVALID_CONFIG`. `refresh.ttl <= 0` throws `INVALID_CONFIG` at construction.
 
 `onRotationReuse` runs **before** the revoke. `reuseResponse` picks the blast radius: `'session'` (default) revokes only the compromised token family (`revokeSession`); `'user'` revokes every session (`revokeAllForUser`). When the session can't be targeted (no `sessionId`, or a store without `listForUser` such as stateless), `'session'` falls back to the user-wide cascade.
 
@@ -74,6 +75,23 @@ Tunables:
 - The grace window is anchored to the original rotation: replays within the window return a fresh access token but do not re-rotate or extend the window.
 
 Every rotated pair inherits `claims`, `metadata`, and **`sessionId`** from its predecessor — so N refreshes stay one session (the token-family invariant the [sessions.md](sessions.md) APIs rely on). With `trackLastSeen: 'refresh'`, rotation also stamps `lastSeenAt`.
+
+## Per-mint refresh (`IssueOptions.refresh`)
+
+Individual mints override the instance posture — the seam the [authorization server's `refresh_token` grant](authorization-server.md) rides:
+
+```ts
+await auth.issue("u1", { refresh: false }); // suppress the pair for THIS mint (no orphan refresh row)
+await auth.issue("u1", { ttl: 60 * 60_000, refresh: { ttl: 60 * 24 * 3600_000 } }); // per-mint grant
+```
+
+| #   | Rule                                                                                                                                                                                                                                                                                                              |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `refresh: false` mints NO refresh token even when the instance config exists. `refresh: { ttl? }` mints one — `ttl` falls back to the instance `refresh.ttl`; with NEITHER, `INVALID_CONFIG`. Works WITHOUT an instance config.                                                                                   |
+| 2   | Per-mint families ALWAYS redeem fixed-ceiling: `issue()` stamps `metadata.refreshRotation: "always"` and `refresh()` honors the stamp OVER the instance rotation — an instance whose sessions rotate `'sliding'` can never extend a per-mint grant's lifetime. Ordinary (unstamped) families keep instance modes. |
+| 3   | Mint-time authority rides `metadata` across every rotation: `accessTtl` (a per-mint access `ttl` minted alongside a refresh token — refreshed access tokens keep it, never the instance `accessTtl`) and `authzClientId` (the OAuth client binding). All three keys are in `AoothCredentialMetadataBase` (.as).   |
+| 4   | `refresh(token, { guard })` — the guard sees the stored refresh credential BEFORE any rotation/state change; throwing aborts with the family untouched (the binding-check seam). `refresh()` returns `RefreshResult` = `IssueResult` + `userId` (the caller held only an opaque token).                           |
+| 5   | `refresh` is a RESERVED `IssueOptions` key (like `ttl`/`kind`/`metadata`) — never a payload field name.                                                                                                                                                                                                           |
 
 ## Refresh reuse detection
 
@@ -153,3 +171,4 @@ Caveats:
 - [client.md](client.md) — `createAuthedFetch`, the browser-side wrapper that calls `/auth/refresh` on a 401 (single-flight + retry-once).
 - [sessions.md](sessions.md) — the `sessionId` token-family carried across rotation.
 - [controllers.md](controllers.md) — `POST /auth/refresh` HTTP surface + auto-derived refresh cookie path.
+- [authorization-server.md](authorization-server.md) — the OAuth 2.1 `refresh_token` grant built on the per-mint seams (invariant 21).
