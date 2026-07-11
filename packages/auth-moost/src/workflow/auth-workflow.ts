@@ -73,6 +73,7 @@ import type {
   AuthWfCtx,
   AuthWfAltCredsPolicy,
   AuthWfPublicState,
+  AuthzReauthPolicy,
   ConsentDescriptorLike,
   MfaSummary,
   MfaTransport,
@@ -996,6 +997,23 @@ export class AuthWorkflow {
   }
 
   /**
+   * Re-authentication policy for authorization-server logins (`ctx.authz`
+   * runs). Consulted inline by `init-login` — BEFORE `credentials`, like that
+   * step's own inline resolver calls — and only when the START input carried
+   * an `authz` handle; a plain login never consults it. Default keeps today's
+   * behavior: every authorize leg re-collects credentials. Override to
+   * `{ mode: 'consent-only' }` so a live browser session skips straight to
+   * the authorize-consent screen (browser binding + explicit approval still
+   * apply); see {@link AuthzReauthPolicy} for `maxSessionAgeMs` freshness and
+   * the `requireMfa` knob.
+   */
+  protected resolveAuthzReauthPolicy(
+    _ctx: AuthWfCtx,
+  ): AuthzReauthPolicy | Promise<AuthzReauthPolicy> {
+    return { mode: "always-reauth" };
+  }
+
+  /**
    * Resolve the session-policy (concurrency limit). Reached from login.flow.
    */
   protected resolveSessionPolicy(
@@ -1563,10 +1581,15 @@ export class AuthWorkflow {
       pub.newPasswordRequired = ctx.newPasswordRequired;
     }
     if (ctx.authz) {
-      // Display-only — `handle`/`approved` stay server-only. `clientName`/
-      // `scope`/`redirectHost` are staged by `authz-consent` from the pending
-      // authorization.
-      const sub = pickDefined(ctx.authz, ["clientName", "scope", "redirectHost"] as const);
+      // Display-only — `handle`/`approved`/`silent` stay server-only.
+      // `clientName`/`scope`/`redirectHost` are staged by `authz-consent` from
+      // the pending authorization; `signedInAs` by the silent-consent probe.
+      const sub = pickDefined(ctx.authz, [
+        "clientName",
+        "scope",
+        "redirectHost",
+        "signedInAs",
+      ] as const);
       if (sub) pub.authz = sub as AuthWfPublicState["authz"];
     }
     ctx.public = pub;
@@ -1921,7 +1944,7 @@ export class AuthWorkflow {
 
   @Step("init-login")
   @Public()
-  initLogin(@WorkflowParam("context") ctx: AuthWfCtx): void {
+  initLogin(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
     // Federated leg: a START whose input carries the OAuth callback `state`
     // routes the schema to `sso-callback` and skips the `credentials` form.
     // CAPTURE the inputs onto ctx NOW — the engine clears the step input after
@@ -1946,7 +1969,91 @@ export class AuthWorkflow {
     // bogus handle just dead-ends at that terminal's benign "expired" finish.
     const authz = getInputField("authz");
     if (authz) ctx.authz = { handle: authz };
+    // Consent-only authorize: on an authz START (never a federated re-entry —
+    // `sso-callback` owns that subject), consult the re-auth policy and, under
+    // `consent-only`, try to bind `ctx.subject` from a live browser session so
+    // the `credentials` form is skipped and the run pauses straight on
+    // `authz-consent`. Every probe failure (no/expired/garbage credential,
+    // stale session, locked account) falls through silently to the credentials
+    // path — the probe never throws. The default policy resolves sync to
+    // `always-reauth`, keeping the non-authz/default path on the engine's sync
+    // fast path.
+    if (authz && !ctx.idpInbound) {
+      const policyResult = this.resolveAuthzReauthPolicy(ctx);
+      if (policyResult instanceof Promise) {
+        return policyResult.then((policy) => this.maybeBindSilentAuthz(ctx, policy));
+      }
+      return this.maybeBindSilentAuthz(ctx, policyResult);
+    }
     return undefined;
+  }
+
+  /**
+   * `init-login`'s consent-only dispatch: run {@link probeSilentAuthz} and, on
+   * a successful bind, move to the durable store strategy (the run will pause
+   * on the consent form; mirrors `credentials` / `sso-callback` post-subject).
+   * Split from the probe so unit tests can exercise the probe without a live
+   * wf engine (`swapStrategy` requires one).
+   */
+  private maybeBindSilentAuthz(
+    ctx: AuthWfCtx,
+    policy: AuthzReauthPolicy,
+  ): undefined | Promise<undefined> {
+    if (policy.mode !== "consent-only") return undefined;
+    return this.probeSilentAuthz(ctx, policy).then((bound) => {
+      if (bound) swapStrategy("store");
+      return undefined;
+    });
+  }
+
+  /**
+   * Silent-authorize session probe (consent-only re-auth policy). Reads the
+   * auth context the guard interceptor stashed for THIS trigger request —
+   * `getAuthContext()` is `null` for a missing, expired, or invalid credential
+   * on a `@Public()` route, so the probe is non-throwing by construction (no
+   * 401 can leak out of the flow). Requires the trigger route to actually see
+   * the session credential (true for cookie-carried sessions on a same-origin
+   * SPA) and the guard interceptor to be mounted on it.
+   *
+   * Binds on success: `ctx.subject`, `ctx.authz.silent` (+ `signedInAs` for
+   * the consent copy), pre-sets `otp.verified` unless `policy.requireMfa`, and
+   * seeds channel state from the user row (same `seedChannelState` as the
+   * federated path) so the shared enrolment / notice gates behave exactly as
+   * after a fresh login. Fail-closed ordering mirrors `sso-callback`: the
+   * ACCOUNT-STATE GATE runs before the subject is bound, so a locked/inactive
+   * account falls back to the credentials form (where `users.login` rejects
+   * it) instead of silently reaching consent.
+   */
+  protected async probeSilentAuthz(ctx: AuthWfCtx, policy: AuthzReauthPolicy): Promise<boolean> {
+    const session = useAuth().getAuthContext();
+    if (!session) return false;
+    // Freshness ceiling — GitHub sudo-style: the SESSION ORIGIN (family
+    // `createdAt`, stable across refresh rotation) must be younger than the
+    // ceiling. A legacy token without a `sessionId` has no provable origin →
+    // treated as stale (fail toward credentials).
+    if (policy.maxSessionAgeMs !== undefined) {
+      if (!session.sessionId) return false;
+      const sessions = await this.auth.listSessions(session.userId);
+      const origin = sessions.find((s) => s.sessionId === session.sessionId);
+      if (!origin || Date.now() - origin.createdAt > policy.maxSessionAgeMs) return false;
+    }
+    let user: UserCredentials;
+    try {
+      user = await this.users.getUser(session.userId);
+    } catch {
+      // Session points at a deleted/unknown row — fall through to credentials.
+      return false;
+    }
+    if (user.account.locked || !user.account.active) return false;
+    ctx.subject = session.userId;
+    const authz = ctx.authz!;
+    authz.silent = true;
+    authz.signedInAs = user.username;
+    // The live session already proved its factors at login time; skip the MFA
+    // loop unless the deployment demands a fresh challenge for authorize legs.
+    if (!policy.requireMfa) (ctx.otp ??= {}).verified = true;
+    await this.seedChannelState(ctx, user);
+    return true;
   }
 
   @Step("init-invite-admin")
@@ -5772,9 +5879,12 @@ export class AuthWorkflow {
     { id: "init-login" },
     // Federated leg: an inbound OAuth callback (init-login set `idpInbound`)
     // runs the exchange and SKIPS the password form; a normal login runs
-    // `credentials` and skips the exchange. Exactly one sets `ctx.subject`.
+    // `credentials` and skips the exchange. Exactly one sets `ctx.subject` —
+    // unless `init-login` already bound it from a live browser session (the
+    // consent-only silent authorize path), in which case BOTH are skipped and
+    // the run flows straight through the shared gates to `authz-consent`.
     { id: "sso-callback", condition: (ctx) => !!ctx.idpInbound },
-    { id: "credentials", condition: (ctx) => !ctx.idpInbound },
+    { id: "credentials", condition: (ctx) => !ctx.idpInbound && !ctx.subject },
     // Federated `needs-link` interactive completion — runs only when
     // `sso-callback` matched the verified profile to an existing account and
     // stashed `ctx.pendingLink`. Must precede the `!ctx.subject` break because
@@ -5890,8 +6000,11 @@ export class AuthWorkflow {
     // BOTH delivery modalities below (browser-session AND authz-code), since the
     // user has authenticated and cleared every guard by here. Stamp-at-
     // authenticated: an authz login that the user later DENIES at `authz-consent`
-    // still counts (they proved identity at the AS).
-    { id: "record-login", condition: (ctx) => !!ctx.subject },
+    // still counts (they proved identity at the AS). A SILENT consent-only run
+    // is NOT a login event — nothing was proved on this leg (the session did
+    // the proving at its own login, which already stamped) — so it skips the
+    // funnel: no second `lastLogin` write, no `afterLogin` fire.
+    { id: "record-login", condition: (ctx) => !!ctx.subject && !ctx.authz?.silent },
 
     // Finalize — EXACTLY ONE terminal. An authorization-server login (started
     // from /auth/authorize, `ctx.authz` set) mints an auth code and delivers it

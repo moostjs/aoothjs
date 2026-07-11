@@ -137,6 +137,7 @@ export type {
   AuthWfOAuthState,
   AuthWfPasswordUiState,
   AuthWfPincodeUiState,
+  AuthzReauthPolicy,
   ConsentDescriptorLike,
   MfaSummary,
   MfaTransport,

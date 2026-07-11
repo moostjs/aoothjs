@@ -1036,7 +1036,9 @@ export interface ProveControlOtpForm {
  * 'Deny' action 302s the client back with `error=access_denied`. The requesting
  * client + scope + validated redirect host ride the `@wf.context.pass 'public'`
  * `ctx.public.authz` whitelist (display-only — the handle / approval gate stay
- * server-side). `clientName` is REGISTRANT-SUPPLIED text (a DCR client names
+ * server-side); on a silent (consent-only) run the acting identity rides the
+ * same whitelist (`signedInAs`) and renders as a "Signed in as …" line so the
+ * user can catch a wrong-account grant. `clientName` is REGISTRANT-SUPPLIED text (a DCR client names
  * itself), so the copy pairs it with the validated redirect host — where the
  * code is actually delivered, which a self-chosen name can't fake — and the
  * `ui.paragraph` renderer emits a TEXT node (never markup/links), so a
@@ -1049,6 +1051,11 @@ export interface AuthorizeConsentForm {
     @ui.form.order 1
     @ui.form.fn.value '(_, _d, ctx) => { const a = ctx.public?.authz; const host = a?.clientName && a?.redirectHost ? " (" + a.redirectHost + ")" : ""; const who = a?.clientName ? "“" + a.clientName + "”" + host : "A local application"; const sc = a?.scope ? " It is requesting access to: " + a.scope + "." : ""; return who + " wants to sign in to your account." + sc + " Authorize this only if you started it."; }'
     notice: ui.paragraph
+
+    @ui.form.order 2
+    @ui.form.fn.hidden '(_, _d, ctx) => !ctx.public?.authz?.signedInAs'
+    @ui.form.fn.value '(_, _d, ctx) => "Signed in as " + (ctx.public?.authz?.signedInAs || "") + "."'
+    signedIn: ui.paragraph
 
     @ui.form.order 10
     @ui.form.action 'deny', 'Deny'

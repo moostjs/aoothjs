@@ -263,6 +263,43 @@ export interface AuthWfFinalizePolicy {
   redirect: LoginRedirect;
 }
 
+/**
+ * Re-authentication policy for authorization-server logins (`ctx.authz` runs
+ * only — a plain login visit never consults it). Resolved by
+ * `resolveAuthzReauthPolicy(ctx)` and consumed once, inline in `init-login`
+ * (which runs BEFORE the prepare-* block, like `credentials`' inline
+ * resolver calls).
+ *
+ * - `'always-reauth'` (default) — today's behavior: every authorize leg
+ *   re-collects credentials, even with a live browser session.
+ * - `'consent-only'` — with a live session on the trigger route, `init-login`
+ *   binds `ctx.subject` from it and the run skips the credentials form,
+ *   pausing straight on the authorize-consent screen (browser binding +
+ *   explicit approval still apply — see `authz-consent`). No session ⇒
+ *   unchanged credentials path. Requires the flow trigger route to see the
+ *   session credential (true for cookie-carried sessions on a same-origin
+ *   SPA).
+ */
+export interface AuthzReauthPolicy {
+  mode: "consent-only" | "always-reauth";
+  /**
+   * `'consent-only'` only: maximum age of the SESSION ORIGIN (the
+   * `SessionInfo.createdAt` of the live session's family) for the silent
+   * path. An older session — or one whose origin can't be established
+   * (legacy token without a `sessionId`) — falls back to the credentials
+   * form (GitHub sudo-style freshness). Omit for no ceiling.
+   */
+  maxSessionAgeMs?: number;
+  /**
+   * `'consent-only'` only: when `true`, a silently-bound subject still runs
+   * the MFA challenge loop before consent (the session skips only the
+   * password form). Default (`false`/omitted) pre-sets `otp.verified` — the
+   * session already proved its factors at login time, so the whole loop
+   * (including `risk-step-up`) is skipped.
+   */
+  requireMfa?: boolean;
+}
+
 /** Login-time guards policy. */
 export interface AuthWfGuardsPolicy {
   passwordInitial: boolean;
@@ -681,12 +718,13 @@ export interface AuthWfPublicState {
   newPasswordRequired?: boolean;
   /**
    * Mirrors the display-only fields of `ctx.authz` — the requesting client's
-   * id/name, granted scope, and the VALIDATED redirect host (the trustworthy
-   * identity shown next to the attacker-choosable `clientName`), shown on the
-   * authorize-consent form. The `handle` and the `approved` gate stay
+   * id/name, granted scope, the VALIDATED redirect host (the trustworthy
+   * identity shown next to the attacker-choosable `clientName`), and — on a
+   * silent (consent-only) run — the acting identity (`signedInAs`), all shown
+   * on the authorize-consent form. The `handle` and the `approved` gate stay
    * server-only (never whitelisted onto the wire).
    */
-  authz?: { clientName?: string; scope?: string; redirectHost?: string };
+  authz?: { clientName?: string; scope?: string; redirectHost?: string; signedInAs?: string };
 }
 
 /** Unified workflow context shape — one type for all three flows. */
@@ -804,6 +842,20 @@ export interface AuthWfCtx {
     scope?: string;
     redirectHost?: string;
     approved?: boolean;
+    /**
+     * Consent-only marker: `init-login` bound `ctx.subject` from a live
+     * browser session (per {@link AuthzReauthPolicy} `mode: 'consent-only'`)
+     * instead of the credentials form. Gates `record-login` off (a silent
+     * consent is not a login event — no `lastLogin` stamp, no `afterLogin`,
+     * and `isFirstLogin`-gated steps never fire for it).
+     */
+    silent?: boolean;
+    /**
+     * Acting identity shown on the consent form when the run is silent
+     * ("Signed in as …") so the user can catch a wrong-account grant.
+     * Display-only; mirrored to `public.authz.signedInAs`.
+     */
+    signedInAs?: string;
   }; // [login — authorization-server grant]
 
   /**

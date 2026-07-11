@@ -51,6 +51,7 @@ import {
   type AuthWfCtx,
   AuthWorkflow,
   type AuthWorkflowOpts,
+  type AuthzReauthPolicy,
   type ConsentDescriptor,
   type ConsentEvent,
   ConsentStore,
@@ -644,6 +645,17 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     }
     protected override afterMfaChanged(ctx: AuthWfCtx): void {
       sharedLifecycleBuffer.push({ event: "afterMfaChanged", userId: ctx.subject });
+    }
+
+    // Consent-only authorize: a live browser session on the trigger route
+    // (the SPA replays the stashed access token as `Authorization: Bearer`
+    // on every flow trigger — see WfPage's `fetchOptions`) skips the
+    // credentials form and pauses straight on the authorize-consent screen.
+    // Anonymous authorize legs (fresh Playwright contexts) still run the
+    // full credentials path, so the pre-existing AUTHZ-CLI / AUTHZ-DCR specs
+    // double as the always-reauth regression coverage.
+    protected override resolveAuthzReauthPolicy(_ctx: AuthWfCtx): AuthzReauthPolicy {
+      return { mode: "consent-only" };
     }
 
     // Recovery channel inference (M1): the address is always the typed

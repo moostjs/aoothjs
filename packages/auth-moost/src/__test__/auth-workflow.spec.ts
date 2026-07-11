@@ -1,4 +1,4 @@
-import { AuthCredential, CredentialStoreMemory } from "@aooth/auth";
+import { type AuthContext, AuthCredential, CredentialStoreMemory } from "@aooth/auth";
 import type { useAtscriptWf } from "@atscript/moost-wf";
 import {
   type FederatedProfileSnapshot,
@@ -6,11 +6,19 @@ import {
   UserService,
   UserStoreMemory,
 } from "@aooth/user";
+import { current } from "@wooksjs/event-core";
+import { prepareTestHttpContext } from "@wooksjs/event-http";
 import { getMoostMate } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
+import { setAuthContext } from "../auth.composables";
 import { ConsentStore } from "../consent.store";
-import type { AuthWfAltCredsPolicy, AuthWfCtx, MfaTransport } from "../workflow/auth-workflow.ctx";
+import type {
+  AuthWfAltCredsPolicy,
+  AuthWfCtx,
+  AuthzReauthPolicy,
+  MfaTransport,
+} from "../workflow/auth-workflow.ctx";
 import type { AuthDeliveryPayload } from "../workflow/auth-workflow";
 import { AuthWorkflow, haversineKm, humanizeUserAgent } from "../workflow/auth-workflow";
 import { enrollTrioSteps, mfaStepUpLoop } from "../workflow/auth-workflow.schemas";
@@ -64,6 +72,9 @@ class TestableAuthWorkflow extends AuthWorkflow {
   public exposeOtpDisclosure = (ctx: AuthWfCtx, ch: "email" | "phone") =>
     this.resolveOtpDisclosure(ctx, ch);
   public exposeRiskStepUp = (ctx: AuthWfCtx) => this.resolveRiskStepUp(ctx);
+  public exposeAuthzReauthPolicy = (ctx: AuthWfCtx) => this.resolveAuthzReauthPolicy(ctx);
+  public exposeProbeSilentAuthz = (ctx: AuthWfCtx, policy: AuthzReauthPolicy) =>
+    this.probeSilentAuthz(ctx, policy);
   public exposeRecoveryUrl = (u: string | undefined, alt: AuthWfAltCredsPolicy) =>
     this.resolveRecoveryUrl(u, alt);
   public exposeAdminForm = (ctx: AuthWfCtx) => this.resolveAdminForm(ctx);
@@ -2350,5 +2361,239 @@ describe("resolveTotpAccountLabel (authenticator account label)", () => {
     await wf.enrollTotpQr(ctx);
     expect(ctx.mfaEnroll?.secret).toBe(secret);
     expect(ctx.mfaEnroll?.uri).toBe(uri);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Consent-only authorize (silent session → consent) — AUTHZ_CONSENT work order.
+// WHY: with `resolveAuthzReauthPolicy() → { mode: 'consent-only' }` a live
+// browser session must land straight on the authorize-consent screen (no
+// credentials form), while every probe failure — anonymous, stale, locked,
+// deleted — falls back to the credentials path with zero behavioral change.
+// The full happy path (session → consent → code → token) is exercised by the
+// Playwright suite; here we pin the probe's decision table, the two schema
+// gates it drives, and the public projection of the acting identity.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("Consent-only authorize (silent session → consent)", () => {
+  const loginSchema = readSchemaFor("loginFlow");
+
+  /** Auth context as the guard interceptor would stash it for a live session. */
+  function liveSession(userId: string, sessionId?: string): AuthContext {
+    return {
+      userId,
+      method: "token",
+      credentialId: "cred-1",
+      expiresAt: Date.now() + 60_000,
+      ...(sessionId !== undefined && { sessionId }),
+    };
+  }
+
+  /** Run the probe inside a test HTTP context carrying `auth` (or none). */
+  function probe(
+    wf: TestableAuthWorkflow,
+    ctx: AuthWfCtx,
+    policy: AuthzReauthPolicy,
+    auth?: AuthContext,
+  ): Promise<boolean> {
+    const run = prepareTestHttpContext({ url: "/auth/trigger" });
+    let result!: Promise<boolean>;
+    run(() => {
+      if (auth) setAuthContext(current(), auth);
+      // `useAuth().getAuthContext()` is read synchronously before the first
+      // await, so the probe promise can settle outside the context runner.
+      result = wf.exposeProbeSilentAuthz(ctx, policy);
+    });
+    return result;
+  }
+
+  it("resolveAuthzReauthPolicy defaults to always-reauth (feature is opt-in)", async () => {
+    const wf = makeWorkflow();
+    expect(await settle(wf.exposeAuthzReauthPolicy({} as AuthWfCtx))).toEqual({
+      mode: "always-reauth",
+    });
+  });
+
+  it("credentials gate: skipped only when a subject is pre-bound (silent or SSO), never for anonymous authz starts", () => {
+    const credentials = findNode(loginSchema, "credentials")!;
+    // Anonymous plain login + anonymous authz start → form renders (unchanged).
+    expect(evalCondition(credentials, {} as AuthWfCtx)).toBe(true);
+    expect(evalCondition(credentials, { authz: { handle: "h" } } as AuthWfCtx)).toBe(true);
+    // Silent bind → skipped; the `{ break: !ctx.subject }` gate still fails
+    // closed for anonymous runs because the subject is what flips this.
+    expect(
+      evalCondition(credentials, {
+        subject: "u-1",
+        authz: { handle: "h", silent: true },
+      } as AuthWfCtx),
+    ).toBe(false);
+    // Federated leg keeps its own skip.
+    expect(evalCondition(credentials, { idpInbound: { state: "s" } } as AuthWfCtx)).toBe(false);
+  });
+
+  it("record-login gate: silent runs are not login events; fresh authz logins still record", () => {
+    const recordLogin = findNode(loginSchema, "record-login")!;
+    expect(evalCondition(recordLogin, { subject: "u-1" } as AuthWfCtx)).toBe(true);
+    // Fresh credentials-based authorize → still stamps lastLogin + afterLogin.
+    expect(
+      evalCondition(recordLogin, { subject: "u-1", authz: { handle: "h" } } as AuthWfCtx),
+    ).toBe(true);
+    // Silent consent → no lastLogin stamp, no afterLogin fire.
+    expect(
+      evalCondition(recordLogin, {
+        subject: "u-1",
+        authz: { handle: "h", silent: true },
+      } as AuthWfCtx),
+    ).toBe(false);
+  });
+
+  it("probe binds subject + silent + signedInAs, pre-sets otp.verified, and seeds channel state", async () => {
+    const { wf, users } = makeWorkflowWithDeps();
+    const row = await users.createUser("alice", "pw");
+    await users.activateAccount(row.id);
+    await users.update(row.id, {
+      mfa: {
+        methods: [{ name: "email", confirmed: true, value: "alice@example.com" }],
+        defaultMethod: "email",
+        autoSend: false,
+      },
+    } as Partial<UserCredentials>);
+    const ctx: AuthWfCtx = { authz: { handle: "h" } };
+    const bound = await probe(wf, ctx, { mode: "consent-only" }, liveSession(row.id));
+    expect(bound).toBe(true);
+    expect(ctx.subject).toBe(row.id);
+    expect(ctx.authz?.silent).toBe(true);
+    expect(ctx.authz?.signedInAs).toBe("alice");
+    // MFA loop skipped by default — the session proved its factors at login.
+    expect(ctx.otp?.verified).toBe(true);
+    // Channel state seeded from the row (same shape as the federated path) so
+    // the shared enrolment / notice gates behave as after a fresh login.
+    expect(ctx.channel?.emailConfirmed).toBe(true);
+    expect(ctx.notice?.email).toBe("alice@example.com");
+  });
+
+  it("probe with requireMfa leaves otp unverified so the challenge loop still runs", async () => {
+    const { wf, users } = makeWorkflowWithDeps();
+    const row = await users.createUser("alice", "pw");
+    await users.activateAccount(row.id);
+    const ctx: AuthWfCtx = { authz: { handle: "h" } };
+    const bound = await probe(
+      wf,
+      ctx,
+      { mode: "consent-only", requireMfa: true },
+      liveSession(row.id),
+    );
+    expect(bound).toBe(true);
+    expect(ctx.subject).toBe(row.id);
+    expect(ctx.otp?.verified).toBeUndefined();
+  });
+
+  it("probe falls through on: no session, deleted user, locked account, inactive account", async () => {
+    const { wf, users } = makeWorkflowWithDeps();
+    const policy: AuthzReauthPolicy = { mode: "consent-only" };
+
+    // No auth context (anonymous / expired / garbage credential on the
+    // @Public trigger route → guard stashed null) — the probe never throws.
+    let ctx: AuthWfCtx = { authz: { handle: "h" } };
+    expect(await probe(wf, ctx, policy)).toBe(false);
+    expect(ctx.subject).toBeUndefined();
+    expect(ctx.authz?.silent).toBeUndefined();
+
+    // Session points at a row that no longer exists.
+    ctx = { authz: { handle: "h" } };
+    expect(await probe(wf, ctx, policy, liveSession("ghost"))).toBe(false);
+    expect(ctx.subject).toBeUndefined();
+
+    // ACCOUNT-STATE GATE runs BEFORE the bind (mirrors sso-callback): a
+    // locked or deactivated account must fall back to credentials, where
+    // `users.login` rejects it — never silently reach consent.
+    const locked = await users.createUser("locked", "pw");
+    await users.activateAccount(locked.id);
+    await users.update(locked.id, {
+      account: { ...locked.account, active: true, locked: true },
+    } as Partial<UserCredentials>);
+    ctx = { authz: { handle: "h" } };
+    expect(await probe(wf, ctx, policy, liveSession(locked.id))).toBe(false);
+    expect(ctx.subject).toBeUndefined();
+
+    // `createUser` rows stay inactive until activated — exactly the state the
+    // gate must reject.
+    const inactive = await users.createUser("inactive", "pw");
+    ctx = { authz: { handle: "h" } };
+    expect(await probe(wf, ctx, policy, liveSession(inactive.id))).toBe(false);
+    expect(ctx.subject).toBeUndefined();
+  });
+
+  it("maxSessionAgeMs: stale session origin (and origin-less legacy tokens) fall back; fresh origin binds", async () => {
+    const users = new UserService(new UserStoreMemory());
+    // Session ORIGIN minted 1h ago (injected clock), still live (2h ttl).
+    const originAt = Date.now() - 60 * 60_000;
+    const auth = new AuthCredential({
+      store: new CredentialStoreMemory(),
+      method: "token",
+      accessTtl: 2 * 60 * 60_000,
+      clock: { now: () => originAt },
+    });
+    const wf = new TestableAuthWorkflow({}, users, auth, new ConsentStore());
+    const row = await users.createUser("alice", "pw");
+    await users.activateAccount(row.id);
+    await auth.issue(row.id);
+    const [session] = await auth.listSessions(row.id);
+    const sessionId = session.sessionId;
+
+    // Ceiling below the origin age → stale → credentials.
+    let ctx: AuthWfCtx = { authz: { handle: "h" } };
+    expect(
+      await probe(
+        wf,
+        ctx,
+        { mode: "consent-only", maxSessionAgeMs: 30 * 60_000 },
+        liveSession(row.id, sessionId),
+      ),
+    ).toBe(false);
+    expect(ctx.subject).toBeUndefined();
+
+    // Ceiling above the origin age → binds.
+    ctx = { authz: { handle: "h" } };
+    expect(
+      await probe(
+        wf,
+        ctx,
+        { mode: "consent-only", maxSessionAgeMs: 2 * 60 * 60_000 },
+        liveSession(row.id, sessionId),
+      ),
+    ).toBe(true);
+    expect(ctx.subject).toBe(row.id);
+
+    // Legacy token without a sessionId — no provable origin → treated stale.
+    ctx = { authz: { handle: "h" } };
+    expect(
+      await probe(
+        wf,
+        ctx,
+        { mode: "consent-only", maxSessionAgeMs: 2 * 60 * 60_000 },
+        liveSession(row.id),
+      ),
+    ).toBe(false);
+    expect(ctx.subject).toBeUndefined();
+  });
+
+  it("projects signedInAs onto public.authz for the consent copy; silent stays server-only", () => {
+    const wf = makeWorkflow();
+    const pub = wf.exposePopulatePublic({
+      subject: "u-1",
+      authz: {
+        handle: "server-only",
+        silent: true,
+        signedInAs: "alice",
+        clientName: "Acme CLI",
+      },
+    });
+    const projected = pub?.authz as Record<string, unknown> | undefined;
+    expect(projected).toBeDefined();
+    expect(projected?.signedInAs).toBe("alice");
+    expect(projected?.clientName).toBe("Acme CLI");
+    expect(projected?.handle).toBeUndefined();
+    expect(projected?.silent).toBeUndefined();
   });
 });
