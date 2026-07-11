@@ -371,6 +371,29 @@ Two defenses run **before** `mint-authz-code` mints a code, so a logged-in (or s
 
 The mint step runs **only** after consent stamps approval on the run, so a deny / binding failure leaves its own finish intact (a benign error, or the `access_denied` redirect) — `mint-authz-code` never overwrites it. `AuthorizeController` sets the cookie via the package-exported [`AUTHZ_BINDING_COOKIE`](../api/auth-moost) name + `authzBindingCookieAttrs` (parallel to the federated `OAUTH_CSRF_COOKIE`); reference the name if a reverse proxy filters cookies by allowlist.
 
+### Consent-only for live sessions {#consent-only}
+
+By default every authorize leg re-collects credentials, even seconds after the user logged into your app (`mode: 'always-reauth'`). Opt into the GitHub/Google-style behavior — a live browser session goes **straight to the consent screen** — by overriding one policy getter on your workflow subclass:
+
+```ts
+import type { AuthWfCtx, AuthzReauthPolicy } from "@aooth/auth-moost";
+
+class AppAuthWorkflow extends AuthWorkflow {
+  protected override resolveAuthzReauthPolicy(_ctx: AuthWfCtx): AuthzReauthPolicy {
+    return { mode: "consent-only" };
+  }
+}
+```
+
+Under `consent-only`, `init-login` probes the trigger request's session (authz runs only — a plain login visit never probes): a valid credential binds the subject and the run skips the credentials form **and the MFA loop** (the session already proved its factors at login), pausing directly on `AuthorizeConsentForm` — which now names the acting identity ("Signed in as …") so a wrong-account grant is catchable. Every probe failure — no session, expired/garbage credential, deleted/locked/deactivated account — falls back silently to the credentials path with no 401 leak. Both consent-gate defenses above are untouched: the browser binding is checked before any prompt (a phished handle is inert even in a session-holding browser) and Authorize/Deny still gates the mint.
+
+Two optional knobs on the policy:
+
+- `maxSessionAgeMs` — GitHub-sudo-style freshness ceiling against the **session origin** (`SessionInfo.createdAt`, stable across refresh rotation). An older session — or a legacy token with no `sessionId` to prove its origin — falls back to credentials.
+- `requireMfa: true` — keep the MFA challenge loop on the silent path (only the password form is skipped).
+
+Silent-run semantics worth knowing: a silent consent is **not a login event** — `record-login` is skipped (no `lastLogin` stamp, no `afterLogin` hook, no `isFirstLogin`-gated steps), while account-hygiene gates (forced channel enrolment, terms bumps) still apply exactly as after a fresh login, seeded from the user row. Transport precondition: the flow trigger route must **see** the session credential — true for cookie-carried sessions on a same-origin SPA, or when your SPA replays the access token as a `Authorization: Bearer` header on trigger calls — and the [auth guard](./config) must be mounted on it.
+
 ## DOs / DON'Ts
 
 - **DO** keep the trust gate (`resolveClient`) first at `/authorize` — until it passes there is no validated redirect, so a failure is a benign `400`, never a reflected redirect.
@@ -385,6 +408,7 @@ The mint step runs **only** after consent stamps approval on the run, so a deny 
 - **DON'T** derive `getIssuer()` from the request's Host header — the metadata document is cacheable, and a request-controlled host would be injected into every client's view of your endpoints. Configure it.
 - **DON'T** treat a DCR registration's `scope` as the allow-set — it is attacker-supplied (it also feeds the consent copy). The grant is bounded by `DynamicClientPolicyOptions.allowedScopes`, the server-side list.
 - **DO** size `maxClients` and keep `unusedClientTtlMs` on — `/register` is anonymous by spec. The cap rejects-when-full; never evict used registrations (a connector caches its `client_id`, and evicting it strands the user's connector).
+- **DO** make the session credential reach the flow trigger route before flipping to `consent-only` — the probe reads the auth context the guard stashed for that request; a trigger the session cookie/bearer never reaches silently behaves like `always-reauth`. ([Consent-only](#consent-only).)
 
 ## See also
 
