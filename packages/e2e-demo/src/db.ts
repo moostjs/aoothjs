@@ -90,5 +90,5 @@ export function createAppDb(dbPath: string): AppDb {
  * boot is also safe.
  */
 export async function syncAppSchema(appDb: AppDb): Promise<void> {
-  await syncSchema(appDb.db, [...ALL_MODELS]);
+  await syncSchema(appDb.db, ALL_MODELS);
 }
