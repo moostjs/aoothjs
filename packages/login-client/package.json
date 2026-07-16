@@ -1,6 +1,6 @@
 {
   "name": "@aooth/login-client",
-  "version": "0.1.51",
+  "version": "0.1.52",
   "description": "Zero-dependency CLI/loopback login helper for an aoothjs authorization server (browser round-trip + PKCE, returns a token)",
   "keywords": [
     "aoothjs",
