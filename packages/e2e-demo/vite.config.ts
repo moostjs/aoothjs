@@ -10,9 +10,15 @@ import { defineConfig } from "vite-plus";
 // because the harness calls buildApp itself. Skip moost-vite under vitest.
 // Playwright gets the same escape hatch (PLAYWRIGHT=1) — defensive, in case
 // a future playwright run ever evaluates this file directly.
+// vite-node script runs (src/scripts/*) evaluate this config too — without a
+// guard, moost-vite's configureServer boots a SECOND app from `/src/main.ts`
+// alongside the script's own `buildApp`, loading a duplicate moost copy via
+// the dep optimizer (moost ≥ 0.6.32 warns about exactly this). The package
+// scripts set SKIP_MOOST_VITE=1.
 const isVitest = !!process.env.VITEST;
 const isPlaywright = process.env.PLAYWRIGHT === "1";
-const skipMoostVite = isVitest || isPlaywright;
+const isScriptRun = process.env.SKIP_MOOST_VITE === "1";
+const skipMoostVite = isVitest || isPlaywright || isScriptRun;
 
 export default defineConfig({
   server: { port: 3001 },

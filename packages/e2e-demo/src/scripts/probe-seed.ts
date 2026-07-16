@@ -10,19 +10,29 @@ async function main(): Promise<void> {
     // 2 real + 1 synthetic `_global` sentinel for the `_super` FK.
     ["tenants", await tables.tenants.count({ filter: {} }), 3],
     ["departments", await tables.departments.count({ filter: {} }), 6],
-    ["users", await tables.users.count({ filter: {} }), 10],
+    // 10 core t1_* users + 13 auth-scenario users (otplink, stale, iris,
+    // locked, multi_mfa, pending, redeemed, active_sessions, terms_old,
+    // _admin_inviter, t2_olivia, t2_oscar, _super).
+    ["users", await tables.users.count({ filter: {} }), 23],
     ["projects", await tables.projects.count({ filter: {} }), 10],
     ["tasks", await tables.tasks.count({ filter: {} }), 40],
     ["comments", await tables.comments.count({ filter: {} }), 60],
     ["documents", await tables.documents.count({ filter: {} }), 20],
   ];
 
+  const mismatches = checks.filter(([, actual, expected]) => actual !== expected);
   for (const [name, actual, expected] of checks) {
-    if (actual !== expected) {
-      throw new Error(`expected ${expected} ${name}, got ${actual}`);
+    if (actual === expected) {
+      // biome-ignore lint/suspicious/noConsole: probe script
+      console.log(`[probe-seed] ${name}: ${actual} OK`);
     }
-    // biome-ignore lint/suspicious/noConsole: probe script
-    console.log(`[probe-seed] ${name}: ${actual} OK`);
+  }
+  if (mismatches.length > 0) {
+    throw new Error(
+      mismatches
+        .map(([name, actual, expected]) => `expected ${expected} ${name}, got ${actual}`)
+        .join("; "),
+    );
   }
 
   // t1_grace must have a confirmed totp MFA method.

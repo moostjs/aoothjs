@@ -1,15 +1,8 @@
 import { ArbacResource, AsArbacDbController } from "@aooth/arbac-moost";
-import type { AtscriptDbTable } from "@atscript/db";
 import { TableController } from "@atscript/moost-db";
 
-import type { AuditEntry } from "../models/audit.as";
-import type { DbControllerCtor } from "./_helpers";
+import { AuditEntry } from "../models/audit.as";
 
-export function makeAuditController(
-  table: AtscriptDbTable<typeof AuditEntry>,
-): DbControllerCtor<typeof AuditEntry> {
-  @TableController(table)
-  @ArbacResource("audit")
-  class AuditController extends AsArbacDbController<typeof AuditEntry> {}
-  return AuditController as unknown as DbControllerCtor<typeof AuditEntry>;
-}
+@TableController(AuditEntry)
+@ArbacResource("audit")
+export class AuditController extends AsArbacDbController<typeof AuditEntry> {}

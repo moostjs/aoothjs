@@ -1,15 +1,8 @@
 import { ArbacResource, AsArbacDbController } from "@aooth/arbac-moost";
-import type { AtscriptDbTable } from "@atscript/db";
 import { TableController } from "@atscript/moost-db";
 
-import type { Document } from "../models/document.as";
-import type { DbControllerCtor } from "./_helpers";
+import { Document } from "../models/document.as";
 
-export function makeDocumentsController(
-  table: AtscriptDbTable<typeof Document>,
-): DbControllerCtor<typeof Document> {
-  @TableController(table)
-  @ArbacResource("documents")
-  class DocumentsController extends AsArbacDbController<typeof Document> {}
-  return DocumentsController as unknown as DbControllerCtor<typeof Document>;
-}
+@TableController(Document)
+@ArbacResource("documents")
+export class DocumentsController extends AsArbacDbController<typeof Document> {}

@@ -1,11 +1,6 @@
-import { type ArbacDbScope, type AsArbacDbController, useArbac } from "@aooth/arbac-moost";
+import { type ArbacDbScope, useArbac } from "@aooth/arbac-moost";
 import { mergeScopeFilters } from "@aooth/arbac";
-import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { HttpError } from "@moostjs/event-http";
-
-export type DbControllerCtor<M extends TAtscriptAnnotatedType> = new (
-  ...args: never[]
-) => AsArbacDbController<M>;
 
 export function scopedFilter(extra: Record<string, unknown>): Record<string, unknown> {
   const scopes = useArbac().getScopes<ArbacDbScope>() ?? [];

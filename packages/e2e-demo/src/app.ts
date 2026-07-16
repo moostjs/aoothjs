@@ -101,22 +101,24 @@ import {
 import { generateKeyPairSync } from "node:crypto";
 import type { AddressInfo } from "node:net";
 
+import { provideDbSpace } from "@atscript/moost-db";
+
 import { type AppAuth, createAooth } from "./aooth";
 import { type AppDb, createAppDb, syncAppSchema } from "./db";
 import { ConsoleEmailSender } from "./email/console-email-sender";
 import { ConsoleSmsSender } from "./sms/console-sms-sender";
 import { type AppEnv, ENV } from "./env";
 import {
+  AuditController,
+  CommentsController,
+  DepartmentsController,
+  DocumentsController,
   HealthController,
-  makeAuditController,
   makeMcpDemoController,
-  makeCommentsController,
-  makeDepartmentsController,
-  makeDocumentsController,
-  makeProjectsController,
-  makeTasksController,
-  makeTenantsController,
-  makeUsersController,
+  ProjectsController,
+  TasksController,
+  TenantsController,
+  UsersController,
 } from "./controllers";
 import { DemoAuthCredential } from "./models/auth-credential.as";
 import { DemoUser } from "./models/user.as";
@@ -467,6 +469,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
 
   const appDb = createAppDb(dbPath);
   await syncAppSchema(appDb);
+  // Token-bound controllers (@TableController(Model)) resolve their tables
+  // from this ambient registry lazily during app.init() — no import-order
+  // coupling between controller modules and the DbSpace.
+  provideDbSpace(appDb.db);
 
   // In test mode, route every outgoing email through the globalThis-anchored
   // shared buffer so the `__test/emails` controller and the workflow outlet
@@ -1430,14 +1436,16 @@ function buildAppControllers(appDb: AppDb): ReadonlyArray<new (...args: never[])
   const t = appDb.tables;
   return [
     HealthController,
-    makeTenantsController(t.tenants),
-    makeUsersController(t.users),
-    makeDepartmentsController(t.departments),
-    makeProjectsController(t.projects),
-    makeTasksController(t.tasks),
-    makeCommentsController(t.comments),
-    makeDocumentsController(t.documents),
-    makeAuditController(t.audit),
+    // Token-bound (@TableController(Model)) — each resolves its table lazily
+    // at init() from the DbSpace registered via provideDbSpace() in buildApp.
+    TenantsController,
+    UsersController,
+    DepartmentsController,
+    ProjectsController,
+    TasksController,
+    CommentsController,
+    DocumentsController,
+    AuditController,
     makeHandoverWorkflow({
       projectsTable: t.projects,
       usersTable: t.users,
