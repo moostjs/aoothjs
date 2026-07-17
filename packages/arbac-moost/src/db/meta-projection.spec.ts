@@ -204,3 +204,53 @@ describe("pruneMetaByVisibility", () => {
     expect(JSON.stringify(meta)).toBe(fieldsBefore);
   });
 });
+
+// ── writeOnly stamping (writable-but-unreadable fields) ────────────────────
+
+describe("pruneMetaByVisibility — writeOnly stamping", () => {
+  const READ_USERNAME_ONLY = { id: 1, username: 1 } as Record<string, 0 | 1>;
+
+  function visW(writable: MetaVisibility["writable"]): MetaVisibility {
+    return { allowed: READ_USERNAME_ONLY, alwaysVisible: NONE, withGrants: NONE, writable };
+  }
+
+  it("keeps a writable-but-unreadable field as writeOnly instead of pruning it", () => {
+    const out = pruneMetaByVisibility(usersMeta(), visW(new Set(["password"])));
+    expect(out.fields["password.hash"]).toEqual({
+      sortable: false,
+      filterable: false,
+      writeOnly: true,
+    });
+    const props = (out.type.type as unknown as { props: Record<string, TSerializedAnnotatedType> })
+      .props;
+    expect(props.password).toBeDefined();
+    expect(props.password.metadata["db.writeOnly"]).toBe(true);
+    // Subtree kept whole — clients need the full shape to write it.
+    expect((props.password.type as { props: Record<string, unknown> }).props.hash).toBeDefined();
+  });
+
+  it("still prunes fields outside both read and write grants", () => {
+    const out = pruneMetaByVisibility(usersMeta(), visW(new Set(["password"])));
+    expect(out.fields["account.lockReason"]).toBeUndefined();
+    const props = (out.type.type as unknown as { props: Record<string, TSerializedAnnotatedType> })
+      .props;
+    expect(props.account).toBeUndefined();
+  });
+
+  it('"all" writable stamps every unreadable field', () => {
+    const out = pruneMetaByVisibility(usersMeta(), visW("all"));
+    expect(out.fields["account.lockReason"]?.writeOnly).toBe(true);
+    expect(out.fields.username.writeOnly).toBeUndefined();
+  });
+
+  it("no writable set → identical to plain pruning", () => {
+    const plain = pruneMetaByVisibility(usersMeta(), visW(undefined));
+    expect(plain.fields["password.hash"]).toBeUndefined();
+  });
+
+  it("ancestor grants cover nested paths (credit.credentials covers .user)", () => {
+    const out = pruneMetaByVisibility(usersMeta(), visW(new Set(["password"])));
+    // "password.history" sits under the "password" grant.
+    expect(out.fields["password.history"]?.writeOnly).toBe(true);
+  });
+});

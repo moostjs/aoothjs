@@ -53,6 +53,51 @@ export interface MetaVisibility {
   alwaysVisible: ReadonlySet<string>;
   /** Relation names granted via `with.<name>` (see {@link collectWithGrantNames}). */
   withGrants: ReadonlySet<string>;
+  /**
+   * Fields the principal's WRITE scopes allow (union of `allowedFields`, or
+   * `"all"` for an unrestricted write grant). A field that is writable but not
+   * read-visible is NOT pruned from `/meta` — it survives with a `db.writeOnly`
+   * stamp (type only; rows/projections never carry it), so generic forms and
+   * client preflight validators can still SET sealed fields (e.g. credentials
+   * behind a read projection). Absent → nothing extra survives.
+   */
+  writable?: ReadonlySet<string> | "all";
+}
+
+/** Exact-or-ancestor membership: `credit.credentials.user` matches a `credit.credentials` grant. */
+function isPathWritable(path: string, writable: MetaVisibility["writable"]): boolean {
+  if (!writable) return false;
+  if (writable === "all") return true;
+  if (writable.has(path)) return true;
+  let pos = path.length;
+  while ((pos = path.lastIndexOf(".", pos - 1)) !== -1) {
+    if (writable.has(path.slice(0, pos))) return true;
+  }
+  return false;
+}
+
+/**
+ * Union of write-scope `allowedFields`; `"all"` for field-unrestricted write
+ * access. Mirrors `prepareScopeOverlay`: the whitelist exists only when at
+ * least one scope carries an `allowedFields` array — scoped-but-unlisted
+ * writes are field-unrestricted.
+ */
+export function collectWritableFields(
+  scopes: ArbacDbScope[],
+  unrestricted: boolean,
+): ReadonlySet<string> | "all" | undefined {
+  if (unrestricted) return "all";
+  if (scopes.length === 0) return undefined;
+  const out = new Set<string>();
+  let sawWhitelist = false;
+  for (const s of scopes) {
+    if (Array.isArray(s.allowedFields)) {
+      sawWhitelist = true;
+      for (const f of s.allowedFields) out.add(f);
+    }
+  }
+  if (!sawWhitelist) return "all";
+  return out.size > 0 ? out : undefined;
 }
 
 /**
@@ -88,7 +133,14 @@ export function isMetaFieldVisible(path: string, vis: MetaVisibility): boolean {
 export function pruneMetaByVisibility(meta: TMetaResponse, vis: MetaVisibility): TMetaResponse {
   const fields: TMetaResponse["fields"] = {};
   for (const [path, fieldMeta] of Object.entries(meta.fields)) {
-    if (isMetaFieldVisible(path, vis)) fields[path] = fieldMeta;
+    if (isMetaFieldVisible(path, vis)) {
+      fields[path] = fieldMeta;
+    } else if (isPathWritable(path, vis.writable)) {
+      // Writable-but-unreadable: keep the descriptor as write-only. Reads
+      // still never surface it (the read projection stands); filter/sort are
+      // off so it can't be probed.
+      fields[path] = { ...fieldMeta, writeOnly: true, filterable: false, sortable: false };
+    }
   }
 
   // `with`-granted relations survive via isMetaFieldVisible's head check —
@@ -132,7 +184,17 @@ function pruneSerializedType(
         if (isMetaFieldVisible(name, vis)) props[name] = prop;
         continue;
       }
-      if (!isMetaFieldVisible(path, vis)) continue;
+      if (!isMetaFieldVisible(path, vis)) {
+        if (isPathWritable(path, vis.writable)) {
+          // Keep the whole subtree (clients need the full shape to WRITE it),
+          // stamped write-only so forms render set-only inputs.
+          props[name] = {
+            ...prop,
+            metadata: { ...prop.metadata, "db.writeOnly": true },
+          };
+        }
+        continue;
+      }
       props[name] = pruneSerializedType(prop, path, vis, relationNames);
     }
     return { ...node, type: { ...def, props } };
@@ -292,10 +354,17 @@ export async function applyArbacMetaOverlay(
   let overlaid: TMetaResponse = { ...meta, actions: filteredActions, crud: filteredCrud };
 
   let readUnrestricted = false;
+  let writeUnrestricted = false;
   const readScopes: ArbacDbScope[] = [];
+  const writeScopes: ArbacDbScope[] = [];
   for (let i = 0; i < crudKeys.length; i++) {
-    if (!crudResults[i].allowed || WRITE_CRUD_OPS.has(crudKeys[i])) continue;
+    if (!crudResults[i].allowed) continue;
     const scopes = crudResults[i].scopes as ArbacDbScope[] | undefined;
+    if (WRITE_CRUD_OPS.has(crudKeys[i])) {
+      if (!scopes || scopes.length === 0) writeUnrestricted = true;
+      else writeScopes.push(...scopes);
+      continue;
+    }
     if (!scopes || scopes.length === 0) readUnrestricted = true;
     else readScopes.push(...scopes);
   }
@@ -306,6 +375,7 @@ export async function applyArbacMetaOverlay(
         allowed,
         alwaysVisible,
         withGrants: collectWithGrantNames(readScopes),
+        writable: collectWritableFields(writeScopes, writeUnrestricted),
       });
     }
   }
