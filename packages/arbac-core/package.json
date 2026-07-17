@@ -1,6 +1,6 @@
 {
   "name": "@aooth/arbac-core",
-  "version": "0.1.56",
+  "version": "0.1.57",
   "description": "Advanced Role-Based Access Control (ARBAC) engine",
   "keywords": [
     "access-control",
