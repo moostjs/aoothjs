@@ -5,6 +5,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   applyAllowedFieldsAndSet,
   type ArbacDbScope,
+  AsArbacDbController,
   enforceControlsPolicy,
   extractUsedControlValues,
 } from "./as-arbac-db-controller";
@@ -182,5 +183,61 @@ describe("enforceControlsPolicy", () => {
       }),
     ).not.toThrow();
     expect(() => enforceControlsPolicy(policy, { $with: [{ name: "tasks" }] })).toThrow(/tasks/);
+  });
+});
+
+describe("view-bound read surface (scope pre-check + identifier helpers must not touch .table)", () => {
+  // Mimics moost-db's view-bound posture (>= 0.1.122): `.readable` carries the
+  // full read surface for tables AND views, while the inherited `.table`
+  // getter throws for any non-table readable. Every read-side helper in
+  // AsArbacDbController must therefore go through `.readable` — a controller
+  // bound to a @db.view otherwise 500s on paths that never intended to write.
+  // The instance is built without the moost constructor on purpose: only the
+  // members under test may be touched, and any `.table` access fails loudly.
+  function viewBoundController(readable: object) {
+    // Fresh subclass per call: identifierFieldsCache is a WeakMap keyed by the
+    // controller constructor, so reusing AsArbacDbController.prototype would
+    // leak cached identifier fields between tests.
+    class ViewBoundController extends AsArbacDbController {}
+    const ctrl = Object.create(ViewBoundController.prototype);
+    ctrl.readable = readable;
+    Object.defineProperty(ctrl, "table", {
+      get() {
+        throw new Error("bound to a view — .table is only available for table-bound controllers.");
+      },
+    });
+    return ctrl;
+  }
+
+  it("identifierFields collects identifications from the readable surface", () => {
+    const ctrl = viewBoundController({
+      identifications: [{ fields: ["id"] }, { fields: ["tenantId", "slug"] }],
+    });
+    expect(ctrl.identifierFields()).toEqual(["id", "tenantId", "slug"]);
+  });
+
+  it("assertInScope resolves id filters and counts via the readable surface", async () => {
+    const countQueries: unknown[] = [];
+    const ctrl = viewBoundController({
+      resolveIdFilter: (id: unknown) => ({ id }),
+      count: (q: unknown) => {
+        countQueries.push(q);
+        return Promise.resolve(1);
+      },
+    });
+    await expect(
+      ctrl.assertInScope("row-1", [{ filter: { tenantId: "t1" } }] as ArbacDbScope[]),
+    ).resolves.toBeUndefined();
+    expect(countQueries).toEqual([{ filter: { $and: [{ id: "row-1" }, { tenantId: "t1" }] } }]);
+  });
+
+  it("assertInScope still 404s rows outside the scope filter", async () => {
+    const ctrl = viewBoundController({
+      resolveIdFilter: (id: unknown) => ({ id }),
+      count: () => Promise.resolve(0),
+    });
+    await expect(
+      ctrl.assertInScope("row-1", [{ filter: { tenantId: "t1" } }] as ArbacDbScope[]),
+    ).rejects.toThrow(HttpError);
   });
 });

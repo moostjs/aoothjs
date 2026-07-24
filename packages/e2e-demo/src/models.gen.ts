@@ -16,6 +16,7 @@ import { DemoDynamicClient } from "./models/dynamic-client.as";
 import { DemoFederatedIdentity } from "./models/federated-identity.as";
 import { DemoPendingAuthorization } from "./models/pending-authorization.as";
 import { Project } from "./models/project.as";
+import { TaskDict } from "./models/task-dict.as";
 import { Task } from "./models/task.as";
 import { Tenant } from "./models/tenant.as";
 import { DemoUser } from "./models/user.as";
@@ -37,7 +38,7 @@ export const dbTables = [
   DemoUser,
   DemoWfState,
 ] as const;
-export const dbViews = [] as const;
+export const dbViews = [TaskDict] as const;
 /** Every @db.table / @db.view model in this project. */
 export const atscriptModels = [...dbTables, ...dbViews] as const;
 /** Models grouped by @db.space (absent annotation → "default"). */

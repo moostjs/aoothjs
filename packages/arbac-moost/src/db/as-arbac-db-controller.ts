@@ -182,7 +182,7 @@ export class AsArbacDbController<
   }
 
   protected applyMetaOverlay(meta: TMetaResponse): Promise<TMetaResponse> {
-    return applyArbacMetaOverlay(meta, metaAlwaysVisibleFields(this, this.table));
+    return applyArbacMetaOverlay(meta, metaAlwaysVisibleFields(this, this.readable));
   }
 
   /**
@@ -202,7 +202,7 @@ export class AsArbacDbController<
   protected hasField(path: string): boolean {
     return (
       super.hasField(path) &&
-      isScopedFieldVisible(readCachedScopes(), path, metaAlwaysVisibleFields(this, this.table))
+      isScopedFieldVisible(readCachedScopes(), path, metaAlwaysVisibleFields(this, this.readable))
     );
   }
 
@@ -228,10 +228,10 @@ export class AsArbacDbController<
     const scopeFilter = mergeScopeFilters(scopes.map((s) => s.filter ?? {}));
     if (!scopeFilter) return;
     const ids = Array.isArray(idOrIds) ? idOrIds : [idOrIds];
-    const idFilters = ids.map((id) => this.table.resolveIdFilter(id));
+    const idFilters = ids.map((id) => this.readable.resolveIdFilter(id));
     if (idFilters.some((f) => !f)) throw new HttpError(404, "Not found");
     const idFilter = idFilters.length === 1 ? idFilters[0] : { $or: idFilters };
-    const count = await this.table.count({
+    const count = await this.readable.count({
       filter: { $and: [idFilter, scopeFilter] },
       // TScopeFilter is not parameterized over the table type; fixing properly requires a moost-db count overload or a full TScopeFilter refactor — not worth it for one call site.
     } as never);
@@ -240,14 +240,14 @@ export class AsArbacDbController<
 
   // Always preserve PK + unique-index fields so callers don't need to whitelist
   // server-derived metadata that update/replace requires to address the row.
-  // Memoized per controller class: `table.identifications` is decoration-derived
+  // Memoized per controller class: `readable.identifications` is decoration-derived
   // and stable for the class's lifetime.
   private identifierFields(): readonly string[] {
     const ctor = this.constructor as new (...args: never[]) => unknown;
     const cached = identifierFieldsCache.get(ctor);
     if (cached) return cached;
     const out = new Set<string>();
-    for (const ident of this.table.identifications) {
+    for (const ident of this.readable.identifications) {
       for (const f of ident.fields) out.add(f);
     }
     const arr = [...out];
@@ -258,7 +258,7 @@ export class AsArbacDbController<
 
 // WeakMap so test harnesses that throw away the controller class also throw
 // away the cache entry. Cache key is the controller subclass constructor —
-// `table.identifications` is derived from atscript decorations on that class,
+// `readable.identifications` is derived from atscript decorations on that class,
 // so the resolved field list cannot change without a new class.
 const identifierFieldsCache = new WeakMap<new (...args: never[]) => unknown, readonly string[]>();
 

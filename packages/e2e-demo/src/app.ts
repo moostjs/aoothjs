@@ -116,6 +116,7 @@ import {
   HealthController,
   makeMcpDemoController,
   ProjectsController,
+  TaskDictController,
   TasksController,
   TenantsController,
   UsersController,
@@ -1443,6 +1444,9 @@ function buildAppControllers(appDb: AppDb): ReadonlyArray<new (...args: never[])
     DepartmentsController,
     ProjectsController,
     TasksController,
+    // View-bound (@ReadableController over a @db.view) through the writable
+    // ARBAC controller chain — regression surface for the `.table` misuse.
+    TaskDictController,
     CommentsController,
     DocumentsController,
     AuditController,

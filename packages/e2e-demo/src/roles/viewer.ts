@@ -3,6 +3,7 @@ import { allowTableRead, type ControlGate, defineRole } from "@aooth/arbac";
 import { Comment } from "../models/comment.as";
 import { Document } from "../models/document.as";
 import { Project } from "../models/project.as";
+import { TaskDict } from "../models/task-dict.as";
 import { Task } from "../models/task.as";
 import { DemoUser } from "../models/user.as";
 import type { ArbacDbScope, UserAttrs } from "./attrs";
@@ -51,6 +52,14 @@ export const viewerRole = defineRole<UserAttrs, ArbacDbScope>()
         with: {
           comments: { projection: PROJ_COMMENT_VIEWER },
         },
+      }),
+    }),
+    // Dict view over tasks (task-dict.controller.ts): read-only value-help
+    // surface, tenant-scoped like the base table.
+    allowTableRead<UserAttrs, ArbacDbScope<TaskDict>>("task-dict", {
+      scope: (attrs) => ({
+        filter: tenantFilter(attrs),
+        controls: viewerControls,
       }),
     }),
     allowTableRead<UserAttrs, ArbacDbScope<Comment>>("comments", {

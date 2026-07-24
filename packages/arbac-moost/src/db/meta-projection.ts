@@ -5,7 +5,7 @@ import type {
   TSerializedAnnotatedType,
   TSerializedAnnotatedTypeInner,
 } from "@atscript/typescript/utils";
-import { getConstructor, getInstanceOwnMethods, useControllerContext } from "moost";
+import { getConstructor, useControllerContext } from "moost";
 
 import { useArbac } from "../arbac.composables";
 import type { TArbacMeta } from "../arbac.mate";
@@ -408,8 +408,7 @@ function collectActionMetaByName(): Map<string, ActionResolutionMeta> {
     map.set(entry.name, {});
   }
 
-  for (const methodName of getInstanceOwnMethods(instance)) {
-    if (typeof methodName !== "string") continue;
+  for (const methodName of collectMethodNames(instance)) {
     const m = cc.getMethodMeta<TArbacMeta>(methodName);
     if (!m) continue;
     const actionMeta = m.atscript_db_action;
@@ -420,4 +419,30 @@ function collectActionMetaByName(): Map<string, ActionResolutionMeta> {
 
   actionMetaByClassCache.set(ctor, map);
   return map;
+}
+
+/**
+ * Test-friendly internal helper — exported for unit tests and helper
+ * composition; regular consumers should not call this directly.
+ *
+ * Method names of an instance, walking the full prototype chain via property
+ * DESCRIPTORS. Deliberately NOT moost's `getInstanceOwnMethods`: that helper
+ * evaluates `instance[name]` for every property to test "is it a function",
+ * which fires accessors — and moost-db's inherited `.table` getter THROWS for
+ * view-bound controllers, turning every `/meta` request into a 500. Accessor
+ * properties are skipped entirely (a getter-valued property is not a method
+ * and can never carry `@DbAction` metadata).
+ */
+export function collectMethodNames(instance: object): string[] {
+  const names = new Set<string>();
+  let obj: object | null = instance;
+  while (obj && obj !== Object.prototype) {
+    for (const name of Object.getOwnPropertyNames(obj)) {
+      if (name === "constructor") continue;
+      const desc = Object.getOwnPropertyDescriptor(obj, name);
+      if (desc && typeof desc.value === "function") names.add(name);
+    }
+    obj = Object.getPrototypeOf(obj) as object | null;
+  }
+  return [...names];
 }

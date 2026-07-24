@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { ArbacDbScope } from "./as-arbac-db-controller";
 import {
+  collectMethodNames,
   collectWithGrantNames,
   isMetaFieldVisible,
   pruneMetaByVisibility,
@@ -252,5 +253,27 @@ describe("pruneMetaByVisibility — writeOnly stamping", () => {
     const out = pruneMetaByVisibility(usersMeta(), visW(new Set(["password"])));
     // "password.history" sits under the "password" grant.
     expect(out.fields["password.history"]?.writeOnly).toBe(true);
+  });
+});
+
+describe("collectMethodNames", () => {
+  it("collects methods across the prototype chain without firing accessors", () => {
+    class Base {
+      // Mimics moost-db's view-guarded `.table` getter.
+      get table(): never {
+        throw new Error(".table is only available for table-bound controllers.");
+      }
+      baseMethod(): void {}
+    }
+    class Derived extends Base {
+      derivedMethod(): void {}
+    }
+    const instance = new Derived() as Derived & { own?: () => void };
+    instance.own = () => {};
+
+    const names = collectMethodNames(instance);
+    expect(names).toEqual(expect.arrayContaining(["baseMethod", "derivedMethod", "own"]));
+    expect(names).not.toContain("table");
+    expect(names).not.toContain("constructor");
   });
 });

@@ -5,6 +5,7 @@ export { DocumentsController } from "./documents.controller";
 export { HealthController } from "./health.controller";
 export { makeMcpDemoController } from "./mcp-demo.controller";
 export { ProjectsController } from "./projects.controller";
+export { TaskDictController } from "./task-dict.controller";
 export { TasksController } from "./tasks.controller";
 export { TenantsController } from "./tenants.controller";
 export { UsersController } from "./users.controller";
