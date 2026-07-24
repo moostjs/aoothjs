@@ -66,9 +66,7 @@ const credentialStore = new CredentialStoreJwt({
   secret: process.env.JWT_SECRET!,
 });
 const authCredential = new AuthCredential({ store: credentialStore, method: "token" });
-const userService = new UserService(userStore, {
-  /* ... */
-});
+const userService = new UserService(userStore, {/* ... */});
 const emailSender = new MyEmailSender();
 
 // 2. AuthWorkflow subclass

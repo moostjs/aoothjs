@@ -179,12 +179,7 @@ unionControlsPolicy([{ controls: { $with: false } }, { controls: { $with: false 
 unionControlsPolicy([{ controls: { $with: true } }, { controls: { $with: false } }]);
 // {}   ← `true` drops the key (absent ≡ allowed)
 
-unionControlsPolicy([
-  { controls: { $with: ["tasks"] } },
-  {
-    /* no controls */
-  },
-]);
+unionControlsPolicy([{ controls: { $with: ["tasks"] } }, {/* no controls */}]);
 // {}   ← any omission = full grant
 ```
 

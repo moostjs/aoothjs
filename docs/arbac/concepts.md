@@ -4,18 +4,18 @@ This page answers: _what concepts does the ARBAC engine actually compute over, a
 
 ## Vocabulary
 
-| Term                  | Definition                                                                                                                                                                     |
+| Term | Definition |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------ |
-| **Role**              | A named container of rules, identified by `id` (e.g. `com.role.editor`). Stored on `Arbac` via `registerRole(role)`.                                                           |
-| **Rule**              | One of two shapes — `{ resource, action, scope? }` (allow, the default) or `{ resource, action, effect: 'deny' }` (deny).                                                      |
-| **Resource**          | A dotted string ID (e.g. `com.resource.db.user`, or just `articles`). Free-form; conventionally namespaced.                                                                    |
-| **Action**            | A verb string (`read`, `create`, `whatever-action`, `*`).                                                                                                                      |
-| **Effect**            | `'allow'` — implicit when `effect` is omitted — or `'deny'`. There is no explicit `'allow'` literal in the type; allow is the absence of `effect`.                             |
-| **Scope**             | An app-defined object returned by a rule's `scope()` callback. The engine **never inspects it** — it just pushes scopes into an array. Callers interpret them as data filters. |
-| **Universe sentinel** | An empty `{}` that the engine pushes into the scope array whenever an allow rule has _no_ scope function. Callers must read `{}` as "no restriction".                          |
-| **User attrs**        | A generic `TUserAttrs` object passed to the engine at evaluation time. Scope functions receive it as their first argument. Can be a value or a `(userId) => TUserAttrs         | Promise<TUserAttrs>` resolver. |
-| **Context**           | There is no separate context object. The only dynamic input scope functions receive is `(userAttrs, userId)`.                                                                  |
-| **Condition**         | Not a distinct concept. Conditional rules are expressed by writing logic inside a scope function or by splitting rules.                                                        |
+| **Role** | A named container of rules, identified by `id` (e.g. `com.role.editor`). Stored on `Arbac` via `registerRole(role)`. |
+| **Rule** | One of two shapes — `{ resource, action, scope? }` (allow, the default) or `{ resource, action, effect: 'deny' }` (deny). |
+| **Resource** | A dotted string ID (e.g. `com.resource.db.user`, or just `articles`). Free-form; conventionally namespaced. |
+| **Action** | A verb string (`read`, `create`, `whatever-action`, `*`). |
+| **Effect** | `'allow'` — implicit when `effect` is omitted — or `'deny'`. There is no explicit `'allow'` literal in the type; allow is the absence of `effect`. |
+| **Scope** | An app-defined object returned by a rule's `scope()` callback. The engine **never inspects it** — it just pushes scopes into an array. Callers interpret them as data filters. |
+| **Universe sentinel** | An empty `{}` that the engine pushes into the scope array whenever an allow rule has _no_ scope function. Callers must read `{}` as "no restriction". |
+| **User attrs** | A generic `TUserAttrs` object passed to the engine at evaluation time. Scope functions receive it as their first argument. Can be a value or a `(userId) => TUserAttrs         | Promise<TUserAttrs>` resolver. |
+| **Context** | There is no separate context object. The only dynamic input scope functions receive is `(userAttrs, userId)`. |
+| **Condition** | Not a distinct concept. Conditional rules are expressed by writing logic inside a scope function or by splitting rules. |
 
 ## The evaluation question
 

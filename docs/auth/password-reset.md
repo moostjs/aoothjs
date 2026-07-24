@@ -85,9 +85,7 @@ if (!state || state.kind !== "magic.recovery") {
 
 await users.changePassword(state.userId, newPassword);
 await auth.revokeAllForUser(state.userId); // log out everywhere
-const { accessToken } = await auth.issue(state.userId, {
-  /* claims */
-}); // auto-login
+const { accessToken } = await auth.issue(state.userId, {/* claims */}); // auto-login
 ```
 
 `consume` is **atomic** — retrieve and revoke in one operation. Two concurrent submissions of the same link cannot both succeed.

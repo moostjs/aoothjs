@@ -83,9 +83,7 @@ A privilege is a reusable bundle of rules. The factory is curried into TWO calls
 
 ```ts
 const def = definePrivilege<TUserAttrs, TScope>(); // 1st call — binds generics
-const factory = def((arg1, arg2) => [
-  /* TArbacRule[] */
-]); // 2nd call — provides rule factory
+const factory = def((arg1, arg2) => [/* TArbacRule[] */]); // 2nd call — provides rule factory
 // `factory` is now `(arg1, arg2) => TPrivilegeFunction<TUserAttrs, TScope>`
 // `TPrivilegeFunction` is `() => TArbacRule[]`, suitable for `.use(...)`.
 ```

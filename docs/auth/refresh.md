@@ -214,9 +214,7 @@ Concretely — password reset auto-login:
 async function resetPassword(userId, newPassword) {
   await users.password.changeFor(userId, newPassword);
   await auth.revokeAllForUser(userId); // bumps epoch to now
-  const { accessToken } = await auth.issue(userId, {
-    /* ... */
-  });
+  const { accessToken } = await auth.issue(userId, {/* ... */});
   // newly-issued token has iatMs >= epoch → survives the gate
   return accessToken;
 }
@@ -269,20 +267,12 @@ const auth = new AuthCredential({
 });
 
 // Three logins on three devices — fine.
-await auth.issue("alice", {
-  /* ... */
-});
-await auth.issue("alice", {
-  /* ... */
-});
-await auth.issue("alice", {
-  /* ... */
-});
+await auth.issue("alice", {/* ... */});
+await auth.issue("alice", {/* ... */});
+await auth.issue("alice", {/* ... */});
 
 // Fourth login on a fourth device — rejected.
-await auth.issue("alice", {
-  /* ... */
-});
+await auth.issue("alice", {/* ... */});
 // AuthError('MAX_CONCURRENT_REACHED', { userId: 'alice', limit: 3, active: 3 })
 ```
 

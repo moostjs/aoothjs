@@ -87,9 +87,7 @@ import { UserStoreMemory } from "@aooth/user";
 
 const store = new UserStoreMemory();
 const seeded = new UserStoreMemory({
-  alice: {
-    /* full UserCredentials & T row */
-  },
+  alice: {/* full UserCredentials & T row */},
 });
 ```
 
@@ -186,9 +184,7 @@ type CustomFields = { email?: string };
 const store = new UsersStoreAtscriptDb<CustomFields>({
   table: db.getTable(AppUser) as unknown as AuthUserTable<CustomFields>,
 });
-const svc = new UserService<CustomFields>(store, {
-  /* ... */
-});
+const svc = new UserService<CustomFields>(store, {/* ... */});
 ```
 
 How it maps the contract:

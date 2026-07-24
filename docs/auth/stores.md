@@ -269,9 +269,7 @@ import { AoothAuthCredential } from "@aooth/auth/atscript-db/model.as";
 // (`unplugin-atscript` for Vite/Rollup, or run `asc` ahead of time). Without
 // it, your bundler cannot resolve the `.as` extension.
 
-const db = new DbSpace({
-  /* adapter, models: [AoothAuthCredential] */
-});
+const db = new DbSpace({/* adapter, models: [AoothAuthCredential] */});
 await db.sync();
 
 const auth = new AuthCredential({

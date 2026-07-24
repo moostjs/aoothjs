@@ -185,9 +185,7 @@ const buildMagicLinkUrl: BuildMagicLinkUrl = (kind, token) =>
   `https://app.example.com/auth/${kind.split(".")[0]}/finish?t=${token}`;
 
 declare const emailSender: EmailSender;
-declare const users: {
-  /* @aooth/user UserService */
-};
+declare const users: {/* @aooth/user UserService */};
 
 // --- Step 1: user submits "I forgot my password" ---
 async function requestRecovery(email: string) {

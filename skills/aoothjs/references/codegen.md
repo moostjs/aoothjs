@@ -93,13 +93,9 @@ The `roles` module shape — any of these works:
 
 ```ts
 // dist/roles.mjs
-export const roles = [
-  /* TArbacRole[] */
-];
+export const roles = [/* TArbacRole[] */];
 // or
-export default [
-  /* TArbacRole[] */
-];
+export default [/* TArbacRole[] */];
 ```
 
 ## Build-step integration (`pretsc`)

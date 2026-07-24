@@ -457,9 +457,7 @@ interface AuthWorkflowOpts {
     ttlMs?: number; // 180 days
     maxDevices?: number; // 5 — `seenDevices` ledger cap, LRU-evicted beyond it
   };
-  forms?: {
-    /* one TAtscriptAnnotatedType slot per bundled form — see the form list below */
-  };
+  forms?: {/* one TAtscriptAnnotatedType slot per bundled form — see the form list below */};
 }
 ```
 
@@ -660,10 +658,14 @@ class AuthorizeController {
   // ctor: (auth, @Inject(CLIENT_REDIRECT_POLICY_TOKEN) policy,
   //        @Inject(PENDING_AUTHORIZATION_STORE_TOKEN) pending,
   //        @Inject(AUTH_CODE_STORE_TOKEN) codes)
-  authorize(/* @Query response_type, client_id?, redirect_uri, state?, code_challenge,
-                code_challenge_method, scope?, nonce?, resource? */): Promise<string>; // GET authorize → 302
-  token(/* @Body { grant_type, code?, code_verifier?, client_id?, client_secret?,
-                   refresh_token?, resource? } */): Promise<TokenSuccess | TokenError>; // POST token
+  authorize(
+    /* @Query response_type, client_id?, redirect_uri, state?, code_challenge,
+                code_challenge_method, scope?, nonce?, resource? */
+  ): Promise<string>; // GET authorize → 302
+  token(
+    /* @Body { grant_type, code?, code_verifier?, client_id?, client_secret?,
+                   refresh_token?, resource? } */
+  ): Promise<TokenSuccess | TokenError>; // POST token
   //   grant_type: "authorization_code" (code + PKCE) or "refresh_token" (rotate)
   discovery(): OidcDiscoveryDocument | TokenError; //   GET .well-known/openid-configuration (Tier 2)
   jwks(): Promise<{ keys: JWK[] }> | TokenError; //     GET jwks                             (Tier 2)
