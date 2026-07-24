@@ -55,7 +55,7 @@ Two seams enforce that a scope `projection` removes fields from existence, not j
 class AsArbacDbReadableController<T> extends AsDbReadableController<T> {}
 ```
 
-Read-only mirror of `AsArbacDbController` for view controllers — including the same `/meta` pruning + `hasField` parity. See [DB Controllers](/moost/).
+Read-only mirror of `AsArbacDbController` for view controllers — including the same `/meta` pruning + `hasField` parity. Both classes are view-safe on every read path (all read-side enforcement goes through the bound readable, never the view-guarded `.table` getter); bind `@db.view` models with `@ReadableController(ViewModel)`. See [DB Controllers](/moost/).
 
 ## Functions
 

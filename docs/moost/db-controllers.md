@@ -109,6 +109,10 @@ declare module "@aooth/arbac-moost" {
 
 Read-only mirror of `AsArbacDbController<T>`. Wires only the read hooks (`transformFilter`, `transformProjection`, `validateControls`, `applyMetaOverlay`, `hasField` — including the same `/meta` field pruning + `Unknown field` parity). Use it for view controllers and joined-table projections that should never accept writes.
 
+::: tip Binding a `@db.view`
+Bind view models with `@ReadableController(ViewModel)` from `@atscript/moost-db`. Both ARBAC controller classes are view-safe on every read path — the enforcement seams go through the bound readable surface, never the writable `.table` getter (which throws for view-bound controllers by moost-db design). Prefer `AsArbacDbReadableController` for pure dict/value-help views; a view bound through `AsArbacDbController` still serves all reads, and its write routes fail loudly at moost-db's `.table` guard.
+:::
+
 ## Subclassing
 
 The most common subclass overrides nothing and just plugs in a table — the table is bound by the `@TableController(table)` decorator from `@atscript/moost-db`, **not** by passing it through `super(...)`:
