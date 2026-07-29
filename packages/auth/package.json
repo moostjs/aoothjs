@@ -1,6 +1,6 @@
 {
   "name": "@aooth/auth",
-  "version": "0.1.59",
+  "version": "0.1.60",
   "description": "Auth method layer for aoothjs (sessions, tokens, password reset, MFA primitives)",
   "keywords": [
     "aoothjs",
