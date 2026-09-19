@@ -33,7 +33,11 @@ With a constrained read projection, `/meta` no longer advertises the hidden fiel
 :::
 
 ::: warning `$and: [scope, user]`, never object spread
-`@uniqu/core`'s `walkFilter` short-circuits on logical operators. Merging via `{ ...scope, ...userFilter }` would silently drop scope conditions when the user filter has the same top-level keys. Always wrap as `$and: [scope, user]`.
+A user filter may constrain the same field as the scope. Merging via `{ ...scope, ...userFilter }` lets the user's value **replace** the scope's — a reader scoped to `tenantId: 'a'` who asks for `tenantId: 'b'` would be served tenant b's rows. `$and` intersects instead, so the contradiction matches nothing.
+
+Prefer `conjoinScopeFilters(scope, userFilter)` from `@aooth/arbac` over hand-rolling the wrap: it owns this invariant and treats an empty side as the identity.
+
+Historically this was recorded as BUG-2 against `@uniqu/core`'s `walkFilter` dropping sibling field keys next to a logical operator. That short-circuit was fixed in `@uniqu/core` 0.1.8 (mixed field/logical nodes are an implicit AND) — **the rule still stands**, for the same-key reason above, which is independent of it.
 :::
 
 ::: warning `assertInScope` MUST run before `onWrite` strips data

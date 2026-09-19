@@ -128,6 +128,8 @@ producing `{ tenantId: 'A', $or: [...] }`. `@uniqu/core`'s `walkFilter` short-ci
 
 **Fix (cleaner):** wrap as `{ $and: [scopeFilter, userFilter] }` in `transformFilter`. Optional follow-up: make `walkFilter` visit sibling fields alongside logical operators.
 
+**Update (`@uniqu/core` 0.1.8):** the optional follow-up landed upstream — mixed field/logical nodes are now an implicit AND, so `walkFilter` no longer drops sibling keys. **The `$and` wrap stays regardless:** a user filter constraining the same field as the scope would still replace it under an object spread. `transformFilter` now delegates to `conjoinScopeFilters` from `@aooth/arbac`, which owns that invariant.
+
 **Status:** ✅ FIXED — `transformFilter` now wraps scope and user filters as `{ $and: [scopeFilter, userFilter] }` rather than spreading. CTRL-08 and SEC-01 flipped from BUG-SHAPE to passing.
 
 ### BUG-3 — No-scope `allow` rule contributes nothing to scopes (UNION-04)
