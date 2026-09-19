@@ -35,16 +35,24 @@ export function mergeScopeFilters(scopes: TScopeFilter[]): TScopeFilter | undefi
 }
 
 /**
- * Conjoin two ALREADY-UNIONED scope filters (each the output of
- * {@link mergeScopeFilters} for one authority pass) under `$and` semantics — a
- * row survives only if BOTH sides admit it. This is the credential-attenuation
- * combiner: it clips any widening the credential pass might introduce.
+ * Conjoin two filters under `$and` semantics — a row survives only if BOTH
+ * sides admit it. The restrict-only combiner, used wherever two independent
+ * constraints must both hold:
+ *
+ * - **credential attenuation** — assigned authority ∧ presented authority, so
+ *   a scoped token can only clip what the role grants (see
+ *   `conjoinArbacDbScopes`);
+ * - **scope ∧ request** — the caller's scope union ∧ the user-supplied query
+ *   filter, on both the top-level read and the per-relation `$with` overlay.
+ *
+ * Either side may be a {@link mergeScopeFilters} output or a raw filter.
  *
  * Polarity is the **opposite** of {@link mergeScopeFilters}: an empty `{}` /
  * `undefined` filter is the universe and acts as the **identity** here
  * (dropped from the `$and`, contributing NO constraint) — never the absorbing
- * "unrestricted wins". Never object-spreads the two filters (credential keys
- * could overwrite user keys and silently widen).
+ * "unrestricted wins". Never object-spreads the two filters: a key present on
+ * both sides would be overwritten rather than intersected, silently widening
+ * access (a caller scoped to `tenantId: 'a'` asking for `'b'` would get `'b'`).
  *
  * @returns the conjoined filter, or `undefined` when BOTH sides are unrestricted.
  */
