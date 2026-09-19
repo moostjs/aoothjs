@@ -15,13 +15,14 @@ import type { ArbacDbScope } from "./as-arbac-db-controller";
 import { applyArbacRelationScopes, transformArbacFilter } from "./shared-read-helpers";
 
 /**
- * Captures the result of `transformArbacFilter(undefined)` for the current
- * event context. Called with `undefined` (no user filter) so the response is
- * purely the scope-merge outcome — the value under test in this file.
+ * Captures the result of `transformArbacFilter(filter)` for the current event
+ * context. Defaults to `undefined` (no user filter) so the response is purely
+ * the scope-merge outcome — the value under test for most of this file; pass a
+ * filter to exercise the merge against a user-supplied one.
  */
-const ProbeTransform = () =>
+const ProbeTransform = (filter?: Record<string, unknown>) =>
   Resolve(async () => {
-    const result = await transformArbacFilter(undefined);
+    const result = await transformArbacFilter(filter);
     return { result };
   });
 
@@ -38,6 +39,14 @@ class ProbeController {
   @Get("a")
   @ArbacAction("read")
   handler(@ProbeTransform() out?: { result: Record<string, unknown> }) {
+    return { out };
+  }
+
+  // Same-key probe: the scope constrains `tenantId` too — see the test at the
+  // bottom of the file.
+  @Get("b")
+  @ArbacAction("read")
+  sameKey(@ProbeTransform({ tenantId: "b" }) out?: { result: Record<string, unknown> }) {
     return { out };
   }
 }
@@ -59,8 +68,11 @@ async function buildAndInit(
   return http;
 }
 
-async function readMergedFilter(http: MoostHttp): Promise<Record<string, unknown>> {
-  const res = await http.request("/probe/a");
+async function readMergedFilter(
+  http: MoostHttp,
+  path = "/probe/a",
+): Promise<Record<string, unknown>> {
+  const res = await http.request(path);
   expect(res?.status).toBe(200);
   const body = (await res!.json()) as { out: { result: Record<string, unknown> } };
   return body.out.result;
@@ -89,8 +101,10 @@ describe("applyArbacRelationScopes", () => {
     expect(entry.controls?.$select).toEqual({ body: 1, authorUsername: 1 });
   });
 
-  // WHY: confirms relation filter uses same $and overlay as parent filter
-  // (BUG-2 pattern) so a user-supplied logical operator can't drop scope siblings.
+  // WHY: confirms the relation filter goes through the same `conjoinScopeFilters`
+  // combiner as the parent filter, so a user-supplied filter is intersected with
+  // the scope's rather than spread over it (which could replace a same-key
+  // constraint and widen access).
   it("scope.with.X.filter → merged into entry.filter via $and", () => {
     const controls: Record<string, unknown> = {
       $with: [{ name: "comments", filter: { $or: [{ flagged: true }] } }],
@@ -300,7 +314,7 @@ describe("transformArbacFilter — empty vs undefined filter coercion", () => {
         {
           resource: "thing",
           action: "read",
-          scope: () => ({ filter: {} as Record<string, unknown> }),
+          scope: () => ({ filter: {} }),
         },
       ],
     });
@@ -370,7 +384,7 @@ describe("transformArbacFilter — empty vs undefined filter coercion", () => {
         {
           resource: "thing",
           action: "read",
-          scope: () => ({ filter: {} as Record<string, unknown> }),
+          scope: () => ({ filter: {} }),
         },
       ],
     });
@@ -415,5 +429,37 @@ describe("transformArbacFilter — empty vs undefined filter coercion", () => {
     // The two outcomes must be structurally distinct — one matches nothing,
     // one matches everything. Equality would mean the deny path is broken.
     expect(allowResult).not.toEqual(denyResult);
+  });
+
+  // WHY: pins the WIRING, not the algebra. `conjoinScopeFilters` owns the
+  // `$and`-never-spread rule and its own unit spec (arbac/src/scope/
+  // conjunction.spec.ts) already proves the same-key case; nothing there would
+  // notice if this function stopped calling it. Swapping the body back to
+  // `{ ...merged, ...filter }` fails this test and only this test — a tenant-a
+  // reader asking for tenantId 'b' would otherwise be handed tenant b's rows.
+  //
+  // Historical note: recorded as BUG-2 against @uniqu/core's `walkFilter`
+  // dropping sibling field keys next to a logical operator. That short-circuit
+  // was fixed in @uniqu/core 0.1.8 (mixed field/logical nodes are an implicit
+  // AND) — the same-key overwrite pinned here is independent of it and is why
+  // the spread stays unsafe regardless.
+  it("user filter on the same field as the scope → conjoined, not overwritten", async () => {
+    const arbac = new MoostArbac<Record<string, never>, ArbacDbScope>();
+    arbac.registerRole({
+      id: "tenant-a-reader",
+      rules: [
+        {
+          resource: "thing",
+          action: "read",
+          scope: () => ({ filter: { tenantId: "a" } }),
+        },
+      ],
+    });
+    const http = await buildAndInit(arbac, ["tenant-a-reader"]);
+    // Probe passes `{ tenantId: 'b' }` — the scope says 'a'.
+    const merged = await readMergedFilter(http, "/probe/b");
+
+    // The scope's constraint survives verbatim; it is not replaced by 'b'.
+    expect(merged).toEqual({ $and: [{ tenantId: "a" }, { tenantId: "b" }] });
   });
 });

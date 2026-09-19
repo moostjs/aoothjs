@@ -1,4 +1,9 @@
-import { mergeScopeFilters, restrictProjection, unionControlsPolicy } from "@aooth/arbac";
+import {
+  conjoinScopeFilters,
+  mergeScopeFilters,
+  restrictProjection,
+  unionControlsPolicy,
+} from "@aooth/arbac";
 import type { TProjection } from "@aooth/arbac";
 
 import { useArbac } from "../arbac.composables";
@@ -20,10 +25,10 @@ export function readCachedScopes(): ArbacDbScope[] {
  * (`transformProjection`, `validateControls`), and merge the user filter
  * with the union of scope filters.
  *
- * Wraps the merge with `$and` (not object spread) so a top-level
- * `$or`/`$and`/`$not` in `filter` cannot drop the scope's sibling field
- * keys when @uniqu/core's `walkFilter` short-circuits on logical
- * operators (see BUG-2). Returns a match-nothing filter on denial so the
+ * Combining is delegated to `conjoinScopeFilters`, which owns the
+ * `$and`-never-spread invariant (a user filter constraining the same field as
+ * the scope would otherwise replace it and widen access) and treats an empty
+ * side as the identity. Returns a match-nothing filter on denial so the
  * downstream pipeline returns an empty result set without leaking rows.
  */
 export async function transformArbacFilter(
@@ -33,13 +38,8 @@ export async function transformArbacFilter(
   const { allowed, scopes } = await arbac.evaluate<ArbacDbScope>();
   if (!allowed) return DENY_FILTER;
   arbac.setScopes(scopes);
-  const scopeList = scopes ?? [];
-  const merged =
-    scopeList.length > 0 ? mergeScopeFilters(scopeList.map((s) => s.filter ?? {})) : undefined;
-  const userFilter = filter && Object.keys(filter).length > 0 ? filter : undefined;
-  if (!merged) return userFilter ?? {};
-  if (!userFilter) return merged as Record<string, unknown>;
-  return { $and: [merged, userFilter] };
+  const merged = mergeScopeFilters((scopes ?? []).map((s) => s.filter ?? {}));
+  return conjoinScopeFilters(merged, filter) ?? {};
 }
 
 /**
@@ -107,13 +107,11 @@ export function applyArbacRelationScopes(
     const subScopes = collectSubScopes(scopes, entry.name);
     if (subScopes.length === 0) continue; // silence wins
 
-    // Filter overlay — same `$and` wrap as transformArbacFilter (BUG-2).
+    // Filter overlay — same combiner as transformArbacFilter, so the two sites
+    // cannot drift on the `$and`-never-spread invariant.
     const subFilter = mergeScopeFilters(subScopes.map((s) => s.filter ?? {}));
-    if (subFilter) {
-      const userFilter =
-        entry.filter && Object.keys(entry.filter).length > 0 ? entry.filter : undefined;
-      entry.filter = userFilter ? { $and: [subFilter, userFilter] } : subFilter;
-    }
+    const conjoined = conjoinScopeFilters(subFilter, entry.filter);
+    if (conjoined) entry.filter = conjoined;
 
     const entryControls = entry.controls ?? {};
     const restricted = applyArbacProjection(normalizeSelect(entryControls.$select), subScopes);
