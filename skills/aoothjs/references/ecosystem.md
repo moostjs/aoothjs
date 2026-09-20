@@ -53,7 +53,7 @@ Notable edges:
 
 - `@aooth/arbac` has exactly **one** runtime dep: `@aooth/arbac-core`. No moost, no atscript.
 - `@aooth/arbac-core` has **zero** runtime deps. Drop-in for non-moost stacks.
-- `@aooth/user` and `@aooth/auth` only **optionally** peer-depend on `@atscript/db ≥ 0.1.79` — the subpath `./atscript-db` is gated.
+- `@aooth/user` and `@aooth/auth` only **optionally** peer-depend on `@atscript/db` — the subpath `./atscript-db` is gated. Like every other ecosystem peer in the repo it is declared `catalog:`, so it publishes pinned to the version that release was built against (`^0.1.129` as of aooth 0.1.62), not an open floor.
 - `@aooth/auth-moost` and `@aooth/arbac-moost` both depend on `moost`, but neither depends on the other directly. They cooperate through the dual-purpose `@Public()` (which writes both `authPublic` and `arbacPublic` mate flags).
 
 ## Which sub-skill to load
@@ -75,18 +75,28 @@ Notable edges:
 
 ## Peer dependencies
 
-| Package              | peerDep                | Range             | Optional?                                                          |
-| -------------------- | ---------------------- | ----------------- | ------------------------------------------------------------------ |
-| `@aooth/user`        | `@atscript/db`         | `≥ 0.1.79`        | yes (only for `./atscript-db` subpath)                             |
-| `@aooth/auth`        | `@atscript/db`         | `≥ 0.1.79`        | yes (only for `./atscript-db` subpath)                             |
-| `@aooth/auth`        | `jose` (regular dep)   | `^6.2.3`          | n/a — bundled as a regular dependency, not a peer (auto-installed) |
-| `@aooth/auth-moost`  | `moost`                | matches workspace | no                                                                 |
-| `@aooth/auth-moost`  | `@moostjs/event-http`  | matches workspace | no                                                                 |
-| `@aooth/auth-moost`  | `@moostjs/event-wf`    | matches workspace | no                                                                 |
-| `@aooth/auth-moost`  | `@atscript/moost-wf`   | matches workspace | no (`formInputInterceptor`, `AsWfStore`)                           |
-| `@aooth/arbac-moost` | `moost`                | matches workspace | no                                                                 |
-| `@aooth/arbac-moost` | `@atscript/moost-db`   | matches workspace | yes (only for `AsArbacDbController` subclass)                      |
-| `@aooth/arbac-moost` | `@atscript/typescript` | matches workspace | yes (only for `./atscript` subpath)                                |
+Every ecosystem peer below is declared `catalog:` in the workspace, so each publishes pinned to the exact version that aooth release was built and tested against — one release line across `@atscript/*`, `@moostjs/*`, `@wooksjs/*` and `moost`. The concrete ranges are those published by aooth 0.1.62.
+
+| Package              | peerDep                | Range      | Optional?                                                          |
+| -------------------- | ---------------------- | ---------- | ------------------------------------------------------------------ |
+| `@aooth/user`        | `@atscript/db`         | `^0.1.129` | yes (only for `./atscript-db` subpath)                             |
+| `@aooth/auth`        | `@atscript/db`         | `^0.1.129` | yes (only for `./atscript-db` subpath)                             |
+| `@aooth/auth`        | `jose` (regular dep)   | `^6.2.3`   | n/a — bundled as a regular dependency, not a peer (auto-installed) |
+| `@aooth/auth-moost`  | `moost`                | `^0.6.37`  | no                                                                 |
+| `@aooth/auth-moost`  | `@moostjs/event-http`  | `^0.6.37`  | no                                                                 |
+| `@aooth/auth-moost`  | `@moostjs/event-wf`    | `^0.6.37`  | no                                                                 |
+| `@aooth/auth-moost`  | `@wooksjs/event-core`  | `^0.7.23`  | no                                                                 |
+| `@aooth/auth-moost`  | `@wooksjs/event-http`  | `^0.7.23`  | no                                                                 |
+| `@aooth/auth-moost`  | `@wooksjs/http-body`   | `^0.7.23`  | no                                                                 |
+| `@aooth/auth-moost`  | `@atscript/moost-wf`   | `^0.1.135` | no (`formInputInterceptor`, `AsWfStore`)                           |
+| `@aooth/auth-moost`  | `@atscript/typescript` | `^0.1.93`  | yes (only for `./atscript` subpath)                                |
+| `@aooth/arbac-moost` | `moost`                | `^0.6.37`  | no                                                                 |
+| `@aooth/arbac-moost` | `@moostjs/event-http`  | `^0.6.37`  | no                                                                 |
+| `@aooth/arbac-moost` | `@wooksjs/event-core`  | `^0.7.23`  | no                                                                 |
+| `@aooth/arbac-moost` | `@wooksjs/event-http`  | `^0.7.23`  | no                                                                 |
+| `@aooth/arbac-moost` | `@atscript/db`         | `^0.1.129` | yes (only for `AsArbacDbController` subclass)                      |
+| `@aooth/arbac-moost` | `@atscript/moost-db`   | `^0.1.129` | yes (only for `AsArbacDbController` subclass)                      |
+| `@aooth/arbac-moost` | `@atscript/typescript` | `^0.1.93`  | yes (only for `./atscript` subpath)                                |
 
 ## Build-step requirements
 

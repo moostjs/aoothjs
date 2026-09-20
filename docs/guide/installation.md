@@ -45,17 +45,19 @@ pnpm add @aooth/idp
 
 The list below names the `peerDependencies` each package declares (versions resolve from your `package.json`). Anything labelled `optional` is only required when you use the matching subpath.
 
+Every `@atscript/*`, `@moostjs/*`, `@wooksjs/*` and `moost` peer is pinned to the ecosystem version that aooth release was built and tested against — the ranges below are the ones published by aooth 0.1.62. Keep the whole stack on one release line rather than mixing versions across families.
+
 ### `@aooth/user`
 
-| Peer                   | Required when                              |
-| ---------------------- | ------------------------------------------ |
-| `@atscript/db ^0.1.79` | optional — using `@aooth/user/atscript-db` |
+| Peer                    | Required when                              |
+| ----------------------- | ------------------------------------------ |
+| `@atscript/db ^0.1.129` | optional — using `@aooth/user/atscript-db` |
 
 ### `@aooth/auth`
 
-| Peer                   | Required when                              |
-| ---------------------- | ------------------------------------------ |
-| `@atscript/db ^0.1.79` | optional — using `@aooth/auth/atscript-db` |
+| Peer                    | Required when                              |
+| ----------------------- | ------------------------------------------ |
+| `@atscript/db ^0.1.129` | optional — using `@aooth/auth/atscript-db` |
 
 `jose ^6.2.3` is shipped as a regular dependency (not a peer) since `CredentialStoreJwt` always uses it — no manual install required.
 
