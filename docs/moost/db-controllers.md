@@ -84,11 +84,11 @@ declare module "@aooth/arbac-moost" {
 
 `ControlGate` is `true | false | readonly string[]`. Semantics:
 
-| Value               | Effect                                                                                          |
-| ------------------- | ----------------------------------------------------------------------------------------------- |
-| `true`              | Allowed. Any value is acceptable.                                                               |
-| `false`             | Denied. Throws `HttpError(403, 'Control "${name}" is not allowed for your role')`.              |
-| `readonly string[]` | Whitelist. Values outside the list are rejected with 403. Supported for `$with` and `$groupBy`. |
+| Value               | Effect                                                                                                                                                                                                                                                                                                                |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `true`              | Allowed. Any value is acceptable.                                                                                                                                                                                                                                                                                     |
+| `false`             | Denied. Throws `HttpError(403, 'Control "${name}" is not allowed for your role')`.                                                                                                                                                                                                                                    |
+| `readonly string[]` | Whitelist. Values outside the list are rejected with 403. Supported for `$with` and `$groupBy`. A `$groupBy` whitelist lists **source fields**: a calendar-bucket alias (`$select=bucket(openedAt,week):week&$groupBy=week`) is checked as the field it buckets (`openedAt`), so whitelist `openedAt`, not the alias. |
 
 **Cross-role union**: when multiple roles match, the union is computed:
 

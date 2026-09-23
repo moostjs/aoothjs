@@ -70,7 +70,8 @@
   "dependencies": {
     "@aooth/arbac": "workspace:*",
     "@aooth/arbac-core": "workspace:*",
-    "@aooth/user": "workspace:*"
+    "@aooth/user": "workspace:*",
+    "@uniqu/core": "catalog:"
   },
   "devDependencies": {
     "@atscript/core": "catalog:",
@@ -81,7 +82,6 @@
     "@atscript/typescript": "catalog:",
     "@moostjs/event-http": "catalog:",
     "@types/better-sqlite3": "^7.6.13",
-    "@uniqu/core": "catalog:",
     "better-sqlite3": "^12.6.2",
     "unplugin-atscript": "catalog:"
   },

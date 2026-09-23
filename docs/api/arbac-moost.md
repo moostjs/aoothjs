@@ -127,7 +127,7 @@ Throws `HttpError(403, 'Control "$with" is not allowed for your role')` on viola
 function extractUsedControlValues(key: string, value: unknown): string[];
 ```
 
-Normalizes a control value into the list of names it references — used to feed `enforceControlsPolicy` for `$with` / `$groupBy` whitelist checks.
+Normalizes a control value into the list of names it references — used to feed `enforceControlsPolicy` for `$with` / `$groupBy` whitelist checks. Pass the query's `controls` as the third argument to map `$groupBy` calendar-bucket aliases to their source fields (`groupByFields` from `@uniqu/core`); `enforceControlsPolicy` does this.
 
 ### `applyAllowedFieldsAndSet`
 

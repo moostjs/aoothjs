@@ -4,6 +4,7 @@ import type { TMetaResponse } from "@atscript/db";
 import { AsDbController } from "@atscript/moost-db";
 import type { NavPropsOf, TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { HttpError } from "@moostjs/event-http";
+import { groupByFields } from "@uniqu/core";
 import { Inherit } from "moost";
 
 import type {
@@ -294,7 +295,7 @@ export function enforceControlsPolicy(
       throw new HttpError(403, `Control "${key}" is not allowed for your role`);
     }
     if (Array.isArray(gate)) {
-      const usedValues = extractUsedControlValues(key, used);
+      const usedValues = extractUsedControlValues(key, used, controls);
       for (const v of usedValues) {
         if (!gate.includes(v)) {
           throw new HttpError(403, `Control "${key}=${v}" is not allowed for your role`);
@@ -316,13 +317,20 @@ export function enforceControlsPolicy(
  *   - `$with` — array of `{ name, … }` objects (per `TypedWithRelation`,
  *     see `@uniqu/core` parser at `parseWithSegment`); we extract `name`.
  *     Bare strings are tolerated for forward compatibility.
- *   - `$groupBy` — array of column names (strings). Returned as-is.
+ *   - `$groupBy` — array of column names (strings). With `controls` given,
+ *     a calendar-bucket alias (`$select: [{ $bucket, $field, $as }]`) is
+ *     mapped to its source `$field` (`groupByFields` from `@uniqu/core`),
+ *     so the whitelist is checked against the column actually grouped on.
  *
  * For unknown controls we return an empty array; the caller then enforces
  * `false`-only semantics (controlled by `unionControlsPolicy`'s whitelist
  * gate, which throws if a non-whitelistable control receives a string[]).
  */
-export function extractUsedControlValues(key: string, value: unknown): string[] {
+export function extractUsedControlValues(
+  key: string,
+  value: unknown,
+  controls?: Record<string, unknown>,
+): string[] {
   if (!Array.isArray(value)) return [];
   if (key === "$with") {
     const out: string[] = [];
@@ -335,7 +343,9 @@ export function extractUsedControlValues(key: string, value: unknown): string[] 
     return out;
   }
   if (key === "$groupBy") {
-    return value.filter((x): x is string => typeof x === "string");
+    return controls
+      ? groupByFields({ $select: controls.$select, $groupBy: value })
+      : value.filter((x): x is string => typeof x === "string");
   }
   return [];
 }

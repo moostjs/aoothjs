@@ -144,6 +144,24 @@ describe("enforceControlsPolicy", () => {
     ).toThrow(/\$with=tasks.*not allowed/);
   });
 
+  it("$groupBy whitelist: a calendar-bucket alias is checked as its source field", () => {
+    const controls = {
+      $select: [{ $bucket: "week", $field: "openedAt", $as: "week" }, "status"],
+      $groupBy: ["week", "status"],
+    };
+    expect(() =>
+      enforceControlsPolicy({ $groupBy: ["openedAt", "status"] }, controls),
+    ).not.toThrow();
+    // The alias itself is not a whitelisted column name.
+    expect(() => enforceControlsPolicy({ $groupBy: ["week", "status"] }, controls)).toThrow(
+      /\$groupBy=openedAt/,
+    );
+    expect(extractUsedControlValues("$groupBy", controls.$groupBy, controls)).toEqual([
+      "openedAt",
+      "status",
+    ]);
+  });
+
   it("$groupBy whitelist: passes / rejects on column names", () => {
     expect(() =>
       enforceControlsPolicy({ $groupBy: ["status"] }, { $groupBy: ["status"] }),

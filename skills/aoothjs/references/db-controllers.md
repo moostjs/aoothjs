@@ -73,11 +73,11 @@ Apps can declaration-merge custom fields into `ArbacDbScope` — your scope pred
 
 `ControlGate` is `true | false | readonly string[]`. Used for query controls like `$with` and `$groupBy`.
 
-| Gate       | Effect                                                                                     |
-| ---------- | ------------------------------------------------------------------------------------------ |
-| `true`     | Allowed without restriction.                                                               |
-| `false`    | Denied. Throws `HttpError(403, 'Control "$with" is not allowed for your role')`.           |
-| `string[]` | Whitelist. Rejects values not in the list. Currently supported for `$with` and `$groupBy`. |
+| Gate       | Effect                                                                                                                                                                                                                                                                                              |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `true`     | Allowed without restriction.                                                                                                                                                                                                                                                                        |
+| `false`    | Denied. Throws `HttpError(403, 'Control "$with" is not allowed for your role')`.                                                                                                                                                                                                                    |
+| `string[]` | Whitelist. Rejects values not in the list. Currently supported for `$with` and `$groupBy`. `$groupBy` whitelist = SOURCE fields: a calendar-bucket alias is checked as its `$field` (whitelist `openedAt`, never the alias `week`); before 0.1.66 a bucket alias always failed the whitelist (403). |
 
 **Cross-role union semantics**: silence wins (a more permissive role lifts denial); whitelists union additively. So if Role A says `controls.$with = false` and Role B says `controls.$with = ['comments']`, the union is `['comments']` — allowing `comments` but not other joins.
 
