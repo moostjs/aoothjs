@@ -5,7 +5,6 @@ import { getConstructor, useControllerContext } from "moost";
 
 import type { TArbacMeta } from "./arbac.mate";
 import { conjoinArbacDbScopes } from "./attenuation";
-import type { ArbacDbScope } from "./db/as-arbac-db-controller";
 import { fieldChildrenOf } from "./db/field-children";
 import type { VisibilityTableSource } from "./db/meta-projection";
 import { MoostArbac } from "./moost-arbac";
