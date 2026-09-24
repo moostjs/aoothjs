@@ -238,8 +238,10 @@ import type { FinishWfOpts, WfFinished } from "@atscript/moost-wf";
 // NOTE: `expectFinished` / `expectRedirect` are **test-only helpers** that
 // live in `packages/auth-moost/src/__test__/workflow-utils.ts` and are NOT
 // exported from `@aooth/auth-moost`. Don't import them in app code.
-// NOTE: `DENY_FILTER` and the `ArbacBindings` interface are **internal**
-// to `@aooth/arbac-moost` and not re-exported from `./index.ts`.
+// NOTE: the `ArbacBindings` interface is **internal** to `@aooth/arbac-moost`
+// and not re-exported from `./index.ts`. (`DENY_FILTER` lives in `@aooth/arbac`.)
+// Hot paths (e.g. a custom `hasField`): `getArbacScopes<TScope>()` reads the
+// cached scopes without `useArbac()`'s metadata resolution.
 // Read the `useArbac()` return value via `ReturnType<typeof useArbac>`.
 
 // — Moost framework (re-stated for grep-friendliness)

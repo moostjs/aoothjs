@@ -103,6 +103,8 @@ A projection is "include-mode" if all its values are `1`, "exclude-mode" if all 
 | Mix of include + exclude (otherwise)                   | Exclude-mode = intersection of all exclude key-sets, minus any field granted by an include |
 | All exclude                                            | Exclude-mode = intersection of excluded keys                                               |
 
+Intersections are by **path**: a field stays excluded when every exclude role hides it or one of its parents, so `unionProjections({ a: 0 }, { "a.c": 0 })` → `{ "a.c": 0 }`. An include of a nested child under a parent that every exclude role hides (`{ "a.b": 1 }` ∪ `{ a: 0 }`) keeps the whole parent hidden: carving out the child would need the schema. The result is narrower, never wider.
+
 The intuition: **inclusions widen** (any role granting a field wins), **exclusions narrow** (a field must be excluded by _every_ role to stay excluded).
 
 ### Examples
@@ -158,16 +160,37 @@ Dot-path aware: `isFieldAllowed('address.city', { 'address.city': 1 })` returns 
 The mergers above answer _"what does this user's access policy allow?"_. At query time you also have a client-requested projection — "give me only `name` and `email`". `restrictProjection` is the intersection of _desired_ ∩ _access-control_.
 
 ```ts
-function restrictProjection(desired: TProjection, accessControl: TProjection): TProjection;
+function restrictProjection(
+  desired: TProjection,
+  accessControl: TProjection,
+  childrenOf?: TProjectionChildren,
+): TProjection;
+function intersectProjections(
+  a: TProjection,
+  b: TProjection,
+  childrenOf?: TProjectionChildren,
+): TProjection | null;
 ```
 
-| Modes                            | Semantics                                                       |
-| -------------------------------- | --------------------------------------------------------------- |
-| `desired` is `{}` or `undefined` | Use `accessControl` as-is.                                      |
-| `accessControl` is `{}`          | Use `desired` as-is.                                            |
-| Both include                     | Intersect the key sets.                                         |
-| Both exclude                     | Union the key sets.                                             |
-| Mixed                            | Filter through `isFieldAllowed` to drop fields the AC excludes. |
+Both work by path and are never wider than either side.
+
+| Modes                            | Semantics                                                                                                                                                                                       |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `desired` is `{}` or `undefined` | Use `accessControl` as-is.                                                                                                                                                                      |
+| `accessControl` is `{}`          | Use `desired` as-is.                                                                                                                                                                            |
+| Both include                     | Keep a key the other side includes (itself or a parent). If the other side only includes its children, keep those instead: `{ a: 1 }` ∩ `{ "a.b": 1 }` → `{ "a.b": 1 }`.                        |
+| Both exclude                     | Union the key sets.                                                                                                                                                                             |
+| Include ∩ exclude                | Drop included keys the exclusion hides (itself or a parent). An included parent with a hidden child (`{ a: 1 }` ∩ `{ "a.c": 0 }`) is split with `childrenOf`; without it the parent is dropped. |
+
+When no field survives (`{ a: 1 }` ∩ `{ a: 0 }`, or disjoint whitelists), `intersectProjections` returns `null` and `restrictProjection` returns `accessControl` itself. An empty `{}` would mean "every field".
+
+`expandExcludeToLeaves(projection, childrenOf)` rewrites an exclusion so each excluded nested-object parent is named by its leaves (`{ a: 0 }` → `{ "a.b": 0, "a.c": 0 }`). Use it before handing an exclusion to a storage adapter that flattens nested objects into columns.
+
+`childrenOf(path)` returns a nested-object path's direct child paths from your schema (`"a"` → `["a.b", "a.c"]`, `[]` for a leaf).
+
+::: warning Conjoining two ceilings
+`restrictProjection` falls back to `accessControl` because that side is the ceiling. To intersect two policies, for example a user's and a credential's, use `intersectProjections` and treat `null` as "no field": deny the rows. Never fall back to either side.
+:::
 
 Use this in your query handler **after** unioning per-role projections via `unionProjections`. The two-step recipe:
 

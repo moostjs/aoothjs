@@ -45,6 +45,8 @@ Call `validateAttenuationTargets(AppCredential, knownUserAttrKeys)` **once at bo
 
 Attenuation is the restrictive mirror of the additive [scope-merging helpers](./scopes), and confusing the two is the central footgun. The engine never _grants_ from a credential: with claims present, [`Arbac.evaluate`](/api/arbac-core) runs the policy **twice** — full roles, then attenuated roles — and intersects the OUTCOMES (`allowed` only if both passes allow; the attenuated scopes come back as `credScopes`). `useArbac` then conjoins the two scope sets with [`conjoinArbacDbScopes`](/api/arbac-moost#conjoinarbacdbscopes) — row filters via [`conjoinScopeFilters`](/api/arbac#conjoinscopefilters), controls via [`intersectControlsPolicy`](/api/arbac#intersectcontrolspolicy) — so the effective query policy is `assigned ∩ presented`, never the union.
 
+Projections intersect by path through [`intersectProjections`](/api/arbac#restrictprojection): `{ a: 1 }` ∩ `{ "a.b": 1 }` → `{ "a.b": 1 }`. For DB controllers `useArbac().evaluate` passes the table schema, so an included parent with a child hidden on the other side (`{ a: 1 }` ∩ `{ "a.c": 0 }`) keeps exactly the other children. The result is never wider than either side. When the two projections share no field, the request matches no rows. It never falls back to the unrestricted `{}`.
+
 ## DOs / DON'Ts
 
 - **DO** treat attenuation as restrict-only: claims with a role the user lacks simply drop it in the intersection — they never add it.

@@ -98,7 +98,7 @@ Every ecosystem peer below is declared `catalog:` in the workspace, so each publ
 | `@aooth/arbac-moost` | `@atscript/moost-db`   | `^0.1.129` | yes (only for `AsArbacDbController` subclass)                      |
 | `@aooth/arbac-moost` | `@atscript/typescript` | `^0.1.93`  | yes (only for `./atscript` subpath)                                |
 
-`@atscript/moost-db` is a security floor for `@aooth/arbac-moost` (`^0.1.133` from the release after 0.1.66) — see [column-scope security floor](https://aoothjs.dev/moost/db-controllers#column-scope-security-floor).
+`@atscript/moost-db` is a security floor for `@aooth/arbac-moost` (`^0.1.134` from 0.1.68; 0.1.67 peers on `^0.1.133`) — see [column-scope security floor](https://aoothjs.dev/moost/db-controllers#column-scope-security-floor).
 
 ## Build-step requirements
 

@@ -79,6 +79,14 @@ function mergeScopeFilters(scopes: TScopeFilter[]): TScopeFilter | undefined;
 
 OR-style merge under additive RBAC. Empty input or any empty `{}` → `undefined` (no constraint). Single-key collapses to `$in`. Fallback → `{ $or: scopes }`. See [Scope Merging](/arbac/scopes).
 
+### `DENY_FILTER`
+
+```ts
+const DENY_FILTER: Readonly<TScopeFilter>; // { $or: [] }
+```
+
+The match-nothing filter: what a denied read filters by, and what `conjoinArbacDbScopes` adds when a credential and its user share no visible field. Shared; never mutate it.
+
 ### `conjoinScopeFilters`
 
 ```ts
@@ -96,15 +104,36 @@ AND-merge of two ALREADY-UNIONED filters (each a `mergeScopeFilters` output for 
 function unionProjections(...projections: TProjection[]): TProjection;
 ```
 
-Field-level union under "field is allowed if any input grants it". Mixed include/exclude inputs reconcile to exclude-mode (intersection of exclude sets minus any include-granted field). See [Scope Merging](/arbac/scopes).
+Field-level union under "field is allowed if any input grants it". Mixed include/exclude inputs reconcile to exclude-mode (path-wise intersection of exclude sets minus any include-granted field). See [Scope Merging](/arbac/scopes).
 
 ### `restrictProjection`
 
 ```ts
-function restrictProjection(desired: TProjection, accessControl: TProjection): TProjection;
+function restrictProjection(
+  desired: TProjection,
+  accessControl: TProjection,
+  childrenOf?: TProjectionChildren,
+): TProjection;
+function intersectProjections(
+  a: TProjection,
+  b: TProjection,
+  childrenOf?: TProjectionChildren,
+): TProjection | null;
+type TProjectionChildren = (path: string) => readonly string[];
 ```
 
-Query-time intersection of a caller's desired projection with the AC-allowed projection. Both-include intersects; both-exclude unions; mixed modes filter through `isFieldAllowed`. See [Scope Merging](/arbac/scopes).
+Path-wise projection intersection, never wider than either side. `{a:1}` ∩ `{"a.b":1}` → `{"a.b":1}`. An included parent with an excluded child is split via the optional `childrenOf` schema lookup, or dropped without one. `intersectProjections` returns `null` when no field survives. `restrictProjection` (desired vs. the access-control ceiling) then returns `accessControl`, never `{}`. See [Scope Merging](/arbac/scopes).
+
+### `expandExcludeToLeaves`
+
+```ts
+function expandExcludeToLeaves(
+  projection: TProjection,
+  childrenOf: TProjectionChildren | undefined,
+): TProjection;
+```
+
+Rewrites an exclusion projection so each excluded nested-object parent is named by its leaf paths (`{ a: 0 }` → `{ "a.b": 0, "a.c": 0 }`), using the schema lookup. Flattening storage adapters strip excluded leaf columns only, so a parent key alone would strip nothing. Inclusion and empty projections, and calls without `childrenOf`, come back unchanged. See [Scope Merging](/arbac/scopes).
 
 ### `getProjectionMode`
 

@@ -17,19 +17,19 @@ Use `AsArbacDbReadableController<T>` when:
 
 The class wires four protected hooks of `@atscript/moost-db`'s base controller:
 
-| Hook                              | What it does                                                                                                                                                                                                                                                                                                                                                          |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `transformFilter(filter)`         | Calls `arbac.evaluate<ArbacDbScope>()` once per event, caches scopes via `arbac.setScopes`, merges user filter with the **UNION of scope filters** using `$and: [merged, userFilter]` (never object spread). On deny returns a match-nothing filter (`{ $or: [] }`).                                                                                                  |
-| `transformProjection(projection)` | Unions per-scope `projection` whitelists and `restrictProjection`s the user projection to that union.                                                                                                                                                                                                                                                                 |
-| `validateControls(controls, ...)` | Runs the parent validator; then invokes `enforceControlsPolicy(unionControlsPolicy(scopes), controls)`. Violations throw `HttpError(403)`.                                                                                                                                                                                                                            |
-| `applyMetaOverlay(meta)`          | For `/meta`, evaluates ARBAC in parallel for every declared action and CRUD op, filters `meta.actions` and `meta.crud` so the UI only sees ops the caller can invoke — then **prunes the field surface** (`fields`, the serialized `type`, `relations`, `versionColumn`) to the union of the allowed read ops' scope projections. Memoized per-class action-meta map. |
-| `hasField(path)`                  | Scope-aware field visibility — moost-db's visibility hook, consulted at every gated query position: paths outside the read-scope projection union answer `false`, so any reference to a hidden field gets the **identical** `Unknown field "x"` 400 a nonexistent field gets. See [Column-scope security floor](#column-scope-security-floor).                        |
-| `onWrite(action, data)`           | For non-insert writes: `assertInScope(data, scopes)` first; then `applyAllowedFieldsAndSet(data, scopes, identifierFields)` strips fields outside the union of `allowedFields` (**auto-preserving PK + unique-index columns**) and overlays `set` defaults.                                                                                                           |
-| `onRemove(id)`                    | `assertInScope(id, scopes)`.                                                                                                                                                                                                                                                                                                                                          |
-| `assertInScope(idOrIds, scopes)`  | Issues `table.count` with `{ $and: [resolveIdFilter(id), mergedScopeFilter] }` and throws `HttpError(404, "Not found")` if not every id is in scope.                                                                                                                                                                                                                  |
+| Hook                              | What it does                                                                                                                                                                                                                                                                                                                                                                                                               |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `transformFilter(filter)`         | Calls `arbac.evaluate<ArbacDbScope>()` once per event, caches scopes via `arbac.setScopes`, merges user filter with the **UNION of scope filters** using `$and: [merged, userFilter]` (never object spread). On deny returns a match-nothing filter (`{ $or: [] }`).                                                                                                                                                       |
+| `transformProjection(projection)` | Unions per-scope `projection` whitelists and narrows the user `$select` (array inclusion or object exclusion) to its intersection with that union: `$select=a` under a scope that shows only `a.b` (or hides `a.c`) returns just `a.b`. An excluded nested object is stripped leaf by leaf.                                                                                                                                |
+| `validateControls(controls, ...)` | Runs the parent validator; then invokes `enforceControlsPolicy(unionControlsPolicy(scopes), controls)`. Violations throw `HttpError(403)`.                                                                                                                                                                                                                                                                                 |
+| `applyMetaOverlay(meta)`          | For `/meta`, evaluates ARBAC in parallel for every declared action and CRUD op, filters `meta.actions` and `meta.crud` so the UI only sees ops the caller can invoke — then **prunes the field surface** (`fields`, the serialized `type`, `relations`, `versionColumn`) to the union of the allowed read ops' scope projections. Memoized per-class action-meta map.                                                      |
+| `hasField(path)`                  | Scope-aware field visibility — moost-db's visibility hook, consulted at every gated query position: paths outside the read-scope projection union — or, inside a `$with` sub-query, outside the relation's `with` sub-scope — answer `false`, so any reference to a hidden field gets the **identical** `Unknown field "x"` 400 a nonexistent field gets. See [Column-scope security floor](#column-scope-security-floor). |
+| `onWrite(action, data)`           | For non-insert writes: `assertInScope(data, scopes)` first; then `applyAllowedFieldsAndSet(data, scopes, identifierFields)` strips fields outside the union of `allowedFields` (**auto-preserving PK + unique-index columns**) and overlays `set` defaults.                                                                                                                                                                |
+| `onRemove(id)`                    | `assertInScope(id, scopes)`.                                                                                                                                                                                                                                                                                                                                                                                               |
+| `assertInScope(idOrIds, scopes)`  | Issues `table.count` with `{ $and: [resolveIdFilter(id), mergedScopeFilter] }` and throws `HttpError(404, "Not found")` if not every id is in scope. Ids resolve with the `hasField` predicate, so a unique key the read scope hides is no identification.                                                                                                                                                                 |
 
 ::: tip A scope projection removes fields from EXISTENCE, not just from rows
-With a constrained read projection, `/meta` no longer advertises the hidden fields (a table UI cannot even offer them as columns — previously they rendered as permanently-empty columns, and secret-bearing column NAMES leaked), and referencing one anywhere in a query (`$select`, a filter, a sort, a group, an aggregate) is indistinguishable from referencing a field that was never declared — see [Column-scope security floor](#column-scope-security-floor). PK + `preferredId` always stay visible — reads always return them (projection widening / id addressing). Unscoped read grants keep the full envelope; relations stay visible when projected **or** explicitly `with`-granted (their content is governed by the `with` sub-scope, not the projection).
+With a constrained read projection, `/meta` no longer advertises the hidden fields (a table UI cannot even offer them as columns — previously they rendered as permanently-empty columns, and secret-bearing column NAMES leaked), and referencing one anywhere in a query (`$select`, a filter, a sort, a group, an aggregate) is indistinguishable from referencing a field that was never declared — see [Column-scope security floor](#column-scope-security-floor). PK + `preferredId` always stay visible — reads always return them (projection widening / id addressing). Unscoped read grants keep the full envelope; relations stay visible when projected **or** explicitly `with`-granted. A `with`-granted relation's nav type in `/meta` is pruned by its `with` sub-scope, the same rule its `$with` sub-queries follow (see [Hidden related fields](#hidden-related-fields)).
 :::
 
 ::: warning `$and: [scope, user]`, never object spread
@@ -46,13 +46,66 @@ Without the pre-check, a caller knowing a row's primary key could mutate it past
 
 ### Column-scope security floor
 
-::: warning Column scopes need `@atscript/moost-db` ≥ 0.1.133 and the authorize interceptor
-moost-db consults `hasField` at every gated query position: filter keys at any depth (`$exists` included), `$sort`, `$select`, `$groupBy`, `$having`, aggregate and calendar-bucket `$field`s, navigation paths, `$with` relation names and the `$search` fallback fields. 0.1.128–0.1.132 skipped it for stored columns, so a projection-scoped caller could filter, sort, group and aggregate on hidden columns — a value oracle, even though `$select` values stayed stripped. `@aooth/arbac-moost` releases after 0.1.66 peer on `^0.1.133`. If you override `hasField`, keep the `super` call.
+::: warning Column scopes need `@atscript/moost-db` ≥ 0.1.134 and the authorize interceptor
+moost-db consults `hasField` at every gated query position: filter keys at any depth (`$exists` included), `$sort`, `$select`, `$groupBy`, `$having`, aggregate and calendar-bucket `$field`s, navigation paths, `$with` relation names and the `$search` fallback fields. 0.1.128–0.1.132 skipped it for stored columns, so a projection-scoped caller could filter, sort, group and aggregate on hidden columns — a value oracle, even though `$select` values stayed stripped. `@aooth/arbac-moost` 0.1.68 peers on `^0.1.134` (0.1.67 on `^0.1.133`). 0.1.134 adds two fixes. A unique index over a hidden column no longer identifies a row (see [Hidden unique keys](#hidden-unique-keys)). Excluding a nested object (`$select=-a`, or a scope's `{ a: 0 }`) now removes its whole subtree; before, the object's leaves came back. If you override `hasField`, keep the `super` call.
 
 `hasField` and `transformProjection`'s value stripping read the scopes [`arbacAuthorizeInterceptor`](./arbac-authorize) caches before the handler runs. Without it (globally or via `@ArbacAuthorize()`) column scopes fail open — hidden columns are queryable and returned. Guard every ARBAC DB controller with it.
 
 Native full-text search and vector search (`$vector` names an index) run inside the database over their indexes, outside `hasField`'s reach — keep hidden columns out of those indexes. The `$search` fallback used when a table has no search index only matches fields the caller can see.
 :::
+
+#### Hidden related fields
+
+The floor extends to joined rows. When a scope grants `with.<rel>`, a path under that relation is checked against the `with.<rel>` sub-scope, not the parent projection:
+
+```ts
+scope: () => ({
+  projection: { secret: 0 },
+  with: { author: { projection: { salary: 0 }, with: { org: { projection: { budget: 0 } } } } },
+});
+```
+
+| Request                                                    | Result                                                |
+| ---------------------------------------------------------- | ----------------------------------------------------- |
+| `?$with=author(salary>100)` / `$with=author($sort=salary)` | 400 `Unknown field "author.salary"`                   |
+| `?$with=author($select=salary)`                            | 400, identical to `$with=author($select=nope)`        |
+| `?$with=author($with=org(budget>1))`                       | 400 `Unknown field "author.org.budget"`               |
+| `?$with=author(name='b')`, `$with=author($select=id)`      | 200 (visible field; the related PK is always visible) |
+| `/one/2?$with=author(salary>100)`                          | 400, same rule on `/one`                              |
+
+- The sub-scopes **union across roles** like top-level projections: a field any role's `with.<rel>` shows is visible.
+- The related table's own PK / `preferredId` stay visible even when the sub-scope whitelist omits them. The parent's top-level rule works the same way.
+- **Silence wins**: with no `with.<rel>` grant in any role, joined rows and their paths are unrestricted. To hide a related column, declare the sub-scope.
+- `/meta` agrees: the nav type under `type` for a `with`-granted relation lists only the fields the sub-scope shows, recursively.
+- Row stripping (`transformProjection` / the `$with` sub-select) stays in place as the second layer.
+
+Before `@aooth/arbac-moost` 0.1.68, paths under a `with`-granted relation skipped the sub-scope check. A filter on a hidden related field then decided whether the relation populated (a value oracle), and `$select` / `$sort` on it were accepted (an existence oracle).
+
+#### `$select` narrowing and nested objects
+
+A client `$select` is narrowed to its intersection with the scope projection, by path. It can ask for less than the scope shows, never more. Both wire forms are handled: an inclusion (`$select=a,b`) and an exclusion (`$select=-a`). For a row `{ id: 1, title: "t", a: { b: "B", c: "C" } }`:
+
+| Scope projection                | Request          | Row returned               |
+| ------------------------------- | ---------------- | -------------------------- |
+| `{ id: 1, title: 1, "a.b": 1 }` | `$select=a`      | `{ id: 1, a: { b: "B" } }` |
+| `{ id: 1, title: 1, "a.b": 1 }` | `$select=-title` | `{ id: 1, a: { b: "B" } }` |
+| `{ "a.c": 0 }`                  | `$select=a`      | `{ id: 1, a: { b: "B" } }` |
+| `{ a: 0 }`                      | (none)           | `{ id: 1, title: "t" }`    |
+| `{ a: 0 }`                      | `$select=-title` | `{ id: 1 }`                |
+
+`/query`, `/pages` and `/one` return the same rows, and `$with` sub-selects follow the same rule against the relation's `with` sub-scope. A scope that excludes a parent (`{ a: 0 }`) hides the whole object. Across roles, projections [union by path](/arbac/scopes): `{ a: 0 }` from one role and `{ "a.c": 0 }` from another leave only `a.c` hidden. A [credential](/arbac/attenuation) narrows the same way and never widens the user's projection.
+
+#### Hidden unique keys
+
+A unique index over a column the read scope hides is not an identification. Addressing a row through it answers exactly like a value that matches no row, so the key cannot confirm that a value exists:
+
+| Request (scope hides the unique `code`)     | Hidden existing value vs. nonexistent value |
+| ------------------------------------------- | ------------------------------------------- |
+| `DELETE /<code>`                            | Identical response; nothing is deleted      |
+| `PATCH /` or `PUT /` keyed by `code`, no PK | Identical response; nothing is written      |
+| `GET /one/<code>`                           | Identical `404`                             |
+
+When the scope carries a row `filter`, `assertInScope` answers both with `404 "Not found"`. The primary key and `preferredId` stay addressable. Before `@aooth/arbac-moost` 0.1.68, a DELETE / PATCH / PUT by a hidden unique value that existed got a different 404 body than a value that did not.
 
 ## `ArbacDbScope<T>` contract
 
@@ -73,7 +126,7 @@ Pass an `.as` model as `T` (e.g. `ArbacDbScope<Task>`) to get autocomplete on `p
 
 `with[name]` is a sub-scope applied when the request expands the `name` relation via `?$with=<name>`. Recursive — each sub-scope has the same shape and can declare its own `with` for nested expansions (`tasks → comments → task`).
 
-**Parent-authority model**: the parent scope owns the policy for joined rows. arbac-moost does NOT re-evaluate ARBAC against the joined resource's own scopes — whatever the parent declares here is what surfaces from the expansion. Across roles, `with[name]` sub-scopes union additively at every nested level using the same primitives (`unionProjections` / `mergeScopeFilters` / `unionControlsPolicy`). **Silence wins**: if no role declares `with.<name>`, expansion is unrestricted (the `controls.$with` whitelist still applies if declared).
+**Parent-authority model**: the parent scope owns the policy for joined rows. arbac-moost does NOT re-evaluate ARBAC against the joined resource's own scopes — whatever the parent declares here is what surfaces from the expansion. Across roles, `with[name]` sub-scopes union additively at every nested level using the same primitives (`unionProjections` / `mergeScopeFilters` / `unionControlsPolicy`). **Silence wins**: if no role declares `with.<name>`, expansion is unrestricted (the `controls.$with` whitelist still applies if declared). A field a sub-scope hides is unknown in `$with` sub-queries and pruned from the `/meta` nav type — see [Hidden related fields](#hidden-related-fields).
 
 ::: warning Known gap — joined-resource projection in exclude mode
 arbac-moost does not apply the joined-resource projection mask to `$with` expansions when the request uses **exclude-mode** `$select` for the relation loader. Include-mode `$select` works end-to-end. Pin tight whitelists on the parent via `controls.$with` if exclude-mode masking is required.

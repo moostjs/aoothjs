@@ -81,7 +81,7 @@ Truth table:
 
 Mix resolution (includes cancel matching excludes):
 
-- Start from the intersection of all exclude key-sets.
+- Start from the PATH-wise intersection of all exclude key-sets (a field stays if every exclude role hides it or a parent: `{a:0}` ∪ `{"a.c":0}` → `{"a.c":0}`).
 - For each field present in any include projection, remove it from the exclude set.
 - If the result is empty → `{}` (universe).
 - Otherwise → exclude mode with the remaining keys.
@@ -111,16 +111,21 @@ unionProjections({ a: 1, b: 1 }, { b: 0 });
 ## `restrictProjection` — query-time intersection
 
 ```ts
-restrictProjection(desired: TProjection, accessControl: TProjection): TProjection
+restrictProjection(desired, accessControl, childrenOf?)   // never {} — falls back to accessControl
+intersectProjections(a, b, childrenOf?)                   // null = no common field
 ```
 
 This is the OPPOSITE of `unionProjections`. Where union is multi-role "broader wins", `restrictProjection` is "what the user asked for ∩ what they're allowed to see". Use it when applying a single merged AC projection to a caller's `$select`.
 
 Behavior:
 
-- Both include mode → intersection of keys, sorted.
-- Both exclude mode → union of keys, sorted.
-- Mixed → walks `desired`, keeps each key only if `isFieldAllowed(field, accessControl)` returns true.
+- Path-wise; NEVER wider than either side.
+- Both include → keys the other side covers (itself/parent); a parent whose children the other side lists narrows to those children (`{a:1}` ∩ `{"a.b":1}` → `{"a.b":1}`).
+- Both exclude → union of keys.
+- Include ∩ exclude → included keys minus hidden paths; an included parent with a hidden child (`{a:1}` ∩ `{"a.c":0}`) is split via `childrenOf` (schema: `path → direct child paths`), DROPPED without one (fail closed).
+- Nothing survives (`{a:1}` ∩ `{a:0}`, disjoint) → `intersectProjections` = `null`; `restrictProjection` = `accessControl` (safe only because it is the ceiling).
+- Conjoining two ceilings (user ∩ credential): use `intersectProjections`, treat `null` as deny-all rows (`DENY_FILTER`, `{ $or: [] }`) — NEVER fall back to either side or `{}`.
+- `expandExcludeToLeaves(projection, childrenOf)`: exclusion parents → their leaf paths (`{a:0}` → `{"a.b":0,"a.c":0}`). Needed before a flattening adapter — it strips only excluded LEAF columns, a bare parent key strips nothing.
 
 ## `getProjectionMode` / `isFieldAllowed`
 
@@ -195,12 +200,12 @@ import { conjoinArbacDbScopes } from "@aooth/arbac-moost"; // facet-by-facet com
 import { extractAttenuation, validateAttenuationTargets } from "@aooth/arbac-moost/atscript";
 ```
 
-| #   | Rule                                                                                                                                                                                                  |
-| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | NEVER combine user + credential scopes with `mergeScopeFilters` / `unionControlsPolicy` — they widen (empty `{}` = "unrestricted" erases the narrowing). Use the conjoin/intersect pair.              |
-| 2   | `conjoinScopeFilters(a, b)` → `{ $and: [a, b] }`; empty/`undefined` side is the IDENTITY (no constraint), the polar opposite of `mergeScopeFilters`' "empty wins as unrestricted".                    |
-| 3   | `intersectControlsPolicy(a, b)`: `false` either side wins; `true` defers; whitelist ∧ whitelist = set INTERSECTION (may be empty = nothing).                                                          |
-| 4   | `conjoinArbacDbScopes(userScopes, credScopes)` does the whole composite (filter `$and`, projection `restrictProjection`, controls intersect, `allowedFields` ∩, recursive `with`) → one-element list. |
-| 5   | `Arbac.evaluate` with `user.attenuate` runs the policy TWICE and intersects OUTCOMES — attenuated scopes return as `credScopes`, separate from `scopes`.                                              |
-| 6   | `extractAttenuation` treats `null` AND `undefined` as ABSENT (no narrowing) — a stateful store returns unset optional columns as SQL `null`; only present non-null values narrow.                     |
-| 7   | Unusable role values extract to `[]` = deny-all (fail-closed), never fall back to full authority. Boot-validate attr targets with `validateAttenuationTargets`.                                       |
+| #   | Rule                                                                                                                                                                                                                                                                                                                                                                                     |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | NEVER combine user + credential scopes with `mergeScopeFilters` / `unionControlsPolicy` — they widen (empty `{}` = "unrestricted" erases the narrowing). Use the conjoin/intersect pair.                                                                                                                                                                                                 |
+| 2   | `conjoinScopeFilters(a, b)` → `{ $and: [a, b] }`; empty/`undefined` side is the IDENTITY (no constraint), the polar opposite of `mergeScopeFilters`' "empty wins as unrestricted".                                                                                                                                                                                                       |
+| 3   | `intersectControlsPolicy(a, b)`: `false` either side wins; `true` defers; whitelist ∧ whitelist = set INTERSECTION (may be empty = nothing).                                                                                                                                                                                                                                             |
+| 4   | `conjoinArbacDbScopes(userScopes, credScopes)` does the whole composite (filter `$and`, projection `intersectProjections` (no common field → user projection + match-nothing filter; pass the table schema as the 3rd arg for exact nested subtraction — `useArbac().evaluate` does it for DB controllers), controls intersect, `allowedFields` ∩, recursive `with`) → one-element list. |
+| 5   | `Arbac.evaluate` with `user.attenuate` runs the policy TWICE and intersects OUTCOMES — attenuated scopes return as `credScopes`, separate from `scopes`.                                                                                                                                                                                                                                 |
+| 6   | `extractAttenuation` treats `null` AND `undefined` as ABSENT (no narrowing) — a stateful store returns unset optional columns as SQL `null`; only present non-null values narrow.                                                                                                                                                                                                        |
+| 7   | Unusable role values extract to `[]` = deny-all (fail-closed), never fall back to full authority. Boot-validate attr targets with `validateAttenuationTargets`.                                                                                                                                                                                                                          |
