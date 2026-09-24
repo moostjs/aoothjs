@@ -47,7 +47,7 @@ class AsArbacDbController<T> extends AsDbController<T> {}
 Two seams enforce that a scope `projection` removes fields from existence, not just from row payloads:
 
 - **`applyMetaOverlay`** prunes the `/meta` envelope — `fields`, the serialized `type`, `relations`, `versionColumn` — down to the union of the allowed read ops' scope projections (PK + `preferredId` always survive; reads always return them). A scoped UI can no longer offer columns that would never populate, and secret-bearing column names stop leaking. Unscoped read grants keep the full envelope; write-only principals keep `type` for their insert/update forms.
-- **`hasField`** answers `false` for paths outside that union, so `validateInsights` rejects a `$select` / filter / sort reference to a hidden field with the **identical** `Unknown field "x"` 400 a nonexistent field gets — no existence or value oracle. Paths under a `with`-granted relation pass through to the sub-scope's own enforcement.
+- **`hasField`** answers `false` for paths outside that union, so any query reference to a hidden field gets the **identical** `Unknown field "x"` 400 a nonexistent field gets — no existence or value oracle. Paths under a `with`-granted relation pass through to the sub-scope's own enforcement. Requirements (moost-db version, authorize interceptor, search indexes): [Column-scope security floor](/moost/db-controllers#column-scope-security-floor).
 
 ### `AsArbacDbReadableController<T>`
 
