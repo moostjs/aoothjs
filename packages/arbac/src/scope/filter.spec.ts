@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { mergeScopeFilters } from "./filter";
+import { DENY_FILTER, mergeScopeFilters } from "./filter";
 
 describe("mergeScopeFilters", () => {
   it("must return undefined for empty array", () => {
@@ -74,5 +74,11 @@ describe("mergeScopeFilters", () => {
   it("must use $or even when one of the filters is logically nested", () => {
     const filters = [{ department: "sales" }, { $and: [{ region: "west" }, { active: true }] }];
     expect(mergeScopeFilters(filters)).toStrictEqual({ $or: filters });
+  });
+});
+
+describe("DENY_FILTER", () => {
+  it("is the match-nothing filter", () => {
+    expect(DENY_FILTER).toEqual({ $or: [] });
   });
 });

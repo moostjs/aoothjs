@@ -32,31 +32,11 @@ export function getProjectionMode(proj: TProjection): TProjectionMode {
 export function isFieldAllowed(field: string, projection: TProjection): boolean {
   const mode = getProjectionMode(projection);
   if (mode === "empty") return true;
-
-  if (mode === "include") {
-    // Field is allowed if it or any of its parents is explicitly included
-    if (projection[field] === 1) return true;
-    // Check if a parent path is included
-    const parts = field.split(".");
-    for (let i = 1; i < parts.length; i++) {
-      const parent = parts.slice(0, i).join(".");
-      if (projection[parent] === 1) return true;
-    }
-    // Check if a child path is included (field "a" with projection {"a.b": 1} — allow "a" since it contains included children)
-    for (const key of Object.keys(projection)) {
-      if (key.startsWith(`${field}.`)) return true;
-    }
-    return false;
-  }
-
-  // Exclusion mode: field is allowed unless it or any of its parents is excluded
-  if (projection[field] === 0) return false;
-  const parts = field.split(".");
-  for (let i = 1; i < parts.length; i++) {
-    const parent = parts.slice(0, i).join(".");
-    if (projection[parent] === 0) return false;
-  }
-  return true;
+  // Exclusion: allowed unless the field or an ancestor is excluded.
+  if (mode === "exclude") return !coversPath(projection, field);
+  // Inclusion: the field or an ancestor is included — or a child is (field
+  // "a" with `{"a.b": 1}` is allowed since it contains included children).
+  return coversPath(projection, field) || descendantKeys(Object.keys(projection), field).length > 0;
 }
 
 /**
@@ -131,78 +111,180 @@ export function unionProjections(...projections: TProjection[]): TProjection {
     return Object.fromEntries([...includeKeys].toSorted().map((k) => [k, 1]));
   }
 
-  // Intersect all exclude-mode key sets — only fields denied by EVERY exclude role
-  let denyAcc = new Set(excludeKeys[0]);
-  for (let i = 1; i < excludeKeys.length; i++) {
-    denyAcc = new Set([...denyAcc].filter((k) => excludeKeys[i].has(k)));
-  }
+  // Intersect all exclude-mode key sets by PATH — a field stays denied only if
+  // EVERY exclude role denies it or one of its ancestors (`{a:0}` ∪ `{"a.c":0}`
+  // still denies `a.c`; exact-key matching would have widened to universe).
+  const candidates = new Set<string>();
+  for (const set of excludeKeys) for (const k of set) candidates.add(k);
+  const denyAcc = [...candidates].filter((k) => excludeKeys.every((set) => coversPath(set, k)));
 
-  // Subtract include keys (a field explicitly granted by some include is no longer denied)
-  const effectivelyExcluded = [...denyAcc].filter((k) => !includeKeys.has(k)).toSorted();
+  // Subtract include keys (a field granted by some include — itself or via an
+  // included ancestor — is no longer denied). An include of a DESCENDANT of a
+  // denied parent (`{"a.b":1}` ∪ `{a:0}`) cannot be carved out without a
+  // schema; the parent stays denied (narrower, never wider).
+  const effectivelyExcluded = denyAcc.filter((k) => !coversPath(includeKeys, k)).toSorted();
 
   if (effectivelyExcluded.length === 0) return {}; // universe — all denials covered by some include
   return Object.fromEntries(effectivelyExcluded.map((k) => [k, 0]));
 }
 
+/** `path` itself or one of its ancestors is a key of `keys` (own keys only). */
+function coversPath(keys: ReadonlySet<string> | TProjection, path: string): boolean {
+  const has =
+    keys instanceof Set ? (k: string) => keys.has(k) : (k: string) => Object.hasOwn(keys, k);
+  if (has(path)) return true;
+  let pos = path.length;
+  while ((pos = path.lastIndexOf(".", pos - 1)) !== -1) {
+    if (has(path.slice(0, pos))) return true;
+  }
+  return false;
+}
+
+/** The `keys` strictly below `path` (`a` → `a.b`, `a.b.c`). */
+function descendantKeys(keys: readonly string[], path: string): string[] {
+  const prefix = `${path}.`;
+  return keys.filter((k) => k.startsWith(prefix));
+}
+
+/**
+ * Direct child field paths of a nested-object path (`a` → `["a.b", "a.c"]`),
+ * from the model schema; `[]` for a leaf. Lets a projection intersection
+ * subtract a nested exclusion from an included parent exactly.
+ */
+export type TProjectionChildren = (path: string) => readonly string[];
+
+/** Schema recursion bound — a guard against a cyclic `childrenOf`. */
+const MAX_SCHEMA_DEPTH = 32;
+
+/**
+ * Depth-first walk from `root` through its schema children. `visit` gets each
+ * path with its children (`[]` for a leaf, an unknown schema, or past
+ * {@link MAX_SCHEMA_DEPTH}) and returns whether to descend into them.
+ */
+function walkSchema(
+  root: string,
+  childrenOf: TProjectionChildren | undefined,
+  visit: (path: string, children: readonly string[]) => boolean,
+): void {
+  const go = (path: string, depth: number): void => {
+    const children = depth < MAX_SCHEMA_DEPTH ? (childrenOf?.(path) ?? []) : [];
+    if (visit(path, children)) for (const child of children) go(child, depth + 1);
+  };
+  go(root, 0);
+}
+
+/** Include-mode `inc` minus exclude-mode `exc`, by path. */
+function includeMinusExclude(
+  inc: TProjection,
+  exc: TProjection,
+  childrenOf: TProjectionChildren | undefined,
+): TProjection {
+  const excKeys = Object.keys(exc);
+  const out: TProjection = {};
+  for (const key of Object.keys(inc)) {
+    walkSchema(key, childrenOf, (path) => {
+      if (coversPath(exc, path)) return false; // the path or an ancestor is excluded
+      if (descendantKeys(excKeys, path).length === 0) {
+        out[path] = 1;
+        return false;
+      }
+      // A descendant is excluded: split the parent into its children. Without
+      // a schema the remainder is not representable in one include projection
+      // — drop the parent (fail closed; never include the excluded part).
+      return true;
+    });
+  }
+  return out;
+}
+
+/**
+ * Rewrite an exclusion projection so every excluded nested-object parent is
+ * named by its LEAF paths (`{ a: 0 }` → `{ "a.b": 0, "a.c": 0 }`), via the
+ * schema. Flattening storage adapters invert an exclusion against their leaf
+ * columns, so a parent key alone would strip nothing. Without `childrenOf`,
+ * or for an inclusion / empty projection, the input is returned unchanged.
+ */
+export function expandExcludeToLeaves(
+  projection: TProjection,
+  childrenOf: TProjectionChildren | undefined,
+): TProjection {
+  if (!childrenOf || getProjectionMode(projection) !== "exclude") return projection;
+  const out: TProjection = {};
+  for (const key of Object.keys(projection)) {
+    walkSchema(key, childrenOf, (path, children) => {
+      if (children.length === 0) out[path] = 0;
+      return children.length > 0;
+    });
+  }
+  return out;
+}
+
+/**
+ * The exact field intersection of two projections, by PATH — never wider than
+ * either side. Returns `null` when no field survives (a disjoint pair, or
+ * `{a:1}` ∩ `{a:0}`); `{}` only when BOTH sides are unrestricted.
+ *
+ * - include ∩ include: a key survives when the other side includes it or an
+ *   ancestor; when the other side only includes DESCENDANTS of it, those
+ *   descendants survive instead (`{a:1}` ∩ `{"a.b":1}` → `{"a.b":1}`).
+ * - include ∩ exclude: include keys minus excluded paths. An include key with
+ *   an excluded DESCENDANT (`{a:1}` ∩ `{"a.c":0}`) is split via `childrenOf`
+ *   (→ `{"a.b":1}`); without a schema it is dropped (fail closed).
+ * - exclude ∩ exclude: union of the excluded keys.
+ *
+ * @param childrenOf - optional schema lookup for exact nested subtraction
+ */
+export function intersectProjections(
+  a: TProjection,
+  b: TProjection,
+  childrenOf?: TProjectionChildren,
+): TProjection | null {
+  const aMode = getProjectionMode(a);
+  const bMode = getProjectionMode(b);
+  if (aMode === "empty") return { ...b };
+  if (bMode === "empty") return { ...a };
+
+  let out: TProjection;
+  if (aMode === "include" && bMode === "include") {
+    out = {};
+    const bKeys = Object.keys(b);
+    for (const key of Object.keys(a)) {
+      if (coversPath(b, key)) out[key] = 1;
+      else for (const d of descendantKeys(bKeys, key)) out[d] = 1;
+    }
+  } else if (aMode === "exclude" && bMode === "exclude") {
+    out = {};
+    for (const key of [...Object.keys(a), ...Object.keys(b)]) out[key] = 0;
+  } else if (aMode === "include") {
+    out = includeMinusExclude(a, b, childrenOf);
+  } else {
+    out = includeMinusExclude(b, a, childrenOf);
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
 /**
  * Restrict a desired projection to only fields allowed by an access-control projection.
  *
- * The result is the intersection of the two projections: only fields that pass both
- * `desired` and `accessControl` survive. Either side may be empty (unrestricted), in
- * which case the other side is returned. Mixed include/exclude modes are normalized
- * to a single result projection.
+ * The result is the path-wise intersection ({@link intersectProjections}):
+ * only fields that pass both `desired` and `accessControl` survive, and a
+ * requested parent narrows to the access-controlled descendants
+ * (`{a:1}` against `{"a.b":1}` → `{"a.b":1}`). Either side may be empty
+ * (unrestricted), in which case the other side is returned.
+ *
+ * When NO field survives, the result is `accessControl` itself — never the
+ * empty (universe) projection. That fallback is safe only because
+ * `accessControl` is the ceiling; to conjoin two ceilings (attenuation), use
+ * {@link intersectProjections} and handle its `null`.
  *
  * @param desired - the projection the caller asked for
  * @param accessControl - the projection allowed by RBAC
+ * @param childrenOf - optional schema lookup for exact nested subtraction
  */
-export function restrictProjection(desired: TProjection, accessControl: TProjection): TProjection {
-  const desiredMode = getProjectionMode(desired);
-  const acMode = getProjectionMode(accessControl);
-
-  // If either is unrestricted, the other is the result
-  if (acMode === "empty") return { ...desired };
-  if (desiredMode === "empty") return { ...accessControl };
-
-  // Both include: intersection of keys
-  if (desiredMode === "include" && acMode === "include") {
-    const result: TProjection = {};
-    for (const key of Object.keys(desired)) {
-      if (isFieldAllowed(key, accessControl)) {
-        result[key] = 1;
-      }
-    }
-    return result;
-  }
-
-  // Both exclude: union of excluded keys (more restrictive)
-  if (desiredMode === "exclude" && acMode === "exclude") {
-    const result: TProjection = {};
-    for (const key of Object.keys(desired)) {
-      result[key] = 0;
-    }
-    for (const key of Object.keys(accessControl)) {
-      result[key] = 0;
-    }
-    return result;
-  }
-
-  // One include, one exclude: filter the include list by the exclude list
-  if (desiredMode === "include" && acMode === "exclude") {
-    const result: TProjection = {};
-    for (const key of Object.keys(desired)) {
-      if (isFieldAllowed(key, accessControl)) {
-        result[key] = 1;
-      }
-    }
-    return result;
-  }
-
-  // desired=exclude, ac=include: return the ac include list minus desired excludes
-  const result: TProjection = {};
-  for (const key of Object.keys(accessControl)) {
-    if (isFieldAllowed(key, desired)) {
-      result[key] = 1;
-    }
-  }
-  return result;
+export function restrictProjection(
+  desired: TProjection,
+  accessControl: TProjection,
+  childrenOf?: TProjectionChildren,
+): TProjection {
+  return intersectProjections(desired, accessControl, childrenOf) ?? { ...accessControl };
 }

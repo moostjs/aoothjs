@@ -3,6 +3,9 @@ import { describe, expect, it } from "vite-plus/test";
 import { conjoinArbacDbScopes } from "./attenuation";
 import type { ArbacDbScope } from "./db/as-arbac-db-controller";
 
+/** Schema lookup for a nested object `a: { b, c }`. */
+const childrenOf = (p: string) => (p === "a" ? ["a.b", "a.c"] : []);
+
 describe("conjoinArbacDbScopes — composite restrict-only conjunction", () => {
   it("filter: $and of the two unions ({} side is the identity)", () => {
     // user restricts by tenant; cred adds an owner restriction → both must hold.
@@ -32,6 +35,32 @@ describe("conjoinArbacDbScopes — composite restrict-only conjunction", () => {
   it("projection: field-set intersection (cred may see FEWER fields)", () => {
     const out = conjoinArbacDbScopes([{ projection: { a: 1, b: 1 } }], [{ projection: { a: 1 } }]);
     expect(out[0].projection).toStrictEqual({ a: 1 });
+  });
+
+  it("projection: a parent narrows to the other side's nested whitelist (never widens)", () => {
+    const out = conjoinArbacDbScopes([{ projection: { a: 1 } }], [{ projection: { "a.b": 1 } }]);
+    expect(out[0].projection).toStrictEqual({ "a.b": 1 });
+    const rev = conjoinArbacDbScopes([{ projection: { "a.b": 1 } }], [{ projection: { a: 1 } }]);
+    expect(rev[0].projection).toStrictEqual({ "a.b": 1 });
+  });
+
+  it("projection: a nested exclusion under an included parent — exact with a schema, fail-closed without", () => {
+    const user: ArbacDbScope[] = [{ projection: { a: 1, t: 1 } }];
+    const cred: ArbacDbScope[] = [{ projection: { "a.c": 0 } }];
+    expect(conjoinArbacDbScopes(user, cred, childrenOf)[0].projection).toStrictEqual({
+      "a.b": 1,
+      t: 1,
+    });
+    expect(conjoinArbacDbScopes(user, cred)[0].projection).toStrictEqual({ t: 1 });
+  });
+
+  it("projection: no common field → user projection + match-nothing filter (never {})", () => {
+    const out = conjoinArbacDbScopes(
+      [{ projection: { a: 1 }, filter: { tenant: "x" } }],
+      [{ projection: { a: 0 } }],
+    );
+    expect(out[0].projection).toStrictEqual({ a: 1 });
+    expect(out[0].filter).toStrictEqual({ $and: [{ tenant: "x" }, { $or: [] }] });
   });
 
   it("controls: deny-wins intersection", () => {

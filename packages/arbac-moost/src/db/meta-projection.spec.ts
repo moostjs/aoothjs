@@ -1,16 +1,19 @@
 import type { TMetaResponse } from "@atscript/db";
 import type { TSerializedAnnotatedType } from "@atscript/typescript/utils";
+import { isFieldAllowed } from "@aooth/arbac";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { ArbacDbScope } from "./as-arbac-db-controller";
 import {
+  buildScopeVisibility,
   collectMethodNames,
   collectWithGrantNames,
   isMetaFieldVisible,
+  isScopedFieldVisible,
   pruneMetaByVisibility,
   unionScopeProjection,
 } from "./meta-projection";
-import type { MetaVisibility } from "./meta-projection";
+import type { MetaVisibility, VisibilityTableSource } from "./meta-projection";
 
 // ── Fixtures ───────────────────────────────────────────────────────────────
 
@@ -122,11 +125,86 @@ describe("isMetaFieldVisible", () => {
     expect(isMetaFieldVisible("id", v)).toBe(true);
   });
 
-  it("paths under a with-granted relation pass through to the sub-scope's enforcement", () => {
+  it("hand-built visibility without `relation`: granted paths pass through (legacy)", () => {
     const v = vis({ username: 1 }, NONE, new Set(["department"]));
     expect(isMetaFieldVisible("department", v)).toBe(true);
     expect(isMetaFieldVisible("department.name", v)).toBe(true);
     expect(isMetaFieldVisible("auditEvents.kind", v)).toBe(false);
+  });
+});
+
+// ── buildScopeVisibility / isScopedFieldVisible (with sub-scopes) ─────────
+
+describe("buildScopeVisibility — with-granted relation paths", () => {
+  // department → org, each a table whose PK is `id` (org's preferredId: `code`).
+  const orgTable: VisibilityTableSource = { primaryKeys: ["id"], preferredId: ["code"] };
+  const deptTable: VisibilityTableSource = {
+    primaryKeys: ["id"],
+    preferredId: ["id"],
+    relatedTable: (nav) => (nav === "org" ? orgTable : undefined),
+  };
+  const usersTable: VisibilityTableSource = {
+    primaryKeys: ["id"],
+    preferredId: ["id"],
+    relatedTable: (nav) => (nav === "department" ? deptTable : undefined),
+  };
+
+  const scopes: ArbacDbScope[] = [
+    {
+      projection: { secret: 0 },
+      with: {
+        department: { projection: { name: 1 }, with: { org: { projection: { budget: 0 } } } },
+      },
+    },
+  ];
+
+  it("checks rel.x against the sub-scope union, recursively; related identifiers stay visible", () => {
+    const v = buildScopeVisibility(scopes, usersTable);
+    expect(isMetaFieldVisible("department", v)).toBe(true);
+    expect(isMetaFieldVisible("department.name", v)).toBe(true);
+    expect(isMetaFieldVisible("department.budgetCode", v)).toBe(false);
+    expect(isMetaFieldVisible("department.id", v)).toBe(true); // related PK
+    expect(isMetaFieldVisible("department.org", v)).toBe(true); // nested grant
+    expect(isMetaFieldVisible("department.org.name", v)).toBe(true);
+    expect(isMetaFieldVisible("department.org.budget", v)).toBe(false);
+    expect(isMetaFieldVisible("department.org.code", v)).toBe(true); // related preferredId
+    expect(isMetaFieldVisible("secret", v)).toBe(false);
+  });
+
+  it("sub-scopes union across roles like top-level projections (broader wins)", () => {
+    const v = buildScopeVisibility(
+      [
+        { with: { department: { projection: { name: 1 } } } },
+        { with: { department: { projection: { head: 1 } } } },
+      ],
+      usersTable,
+    );
+    expect(isMetaFieldVisible("department.name", v)).toBe(true);
+    expect(isMetaFieldVisible("department.head", v)).toBe(true);
+    expect(isMetaFieldVisible("department.budget", v)).toBe(false);
+    // A sub-scope without a projection is a universal grant for the relation.
+    const open = buildScopeVisibility(
+      [{ with: { department: { projection: { name: 1 } } } }, { with: { department: {} } }],
+      usersTable,
+    );
+    expect(isMetaFieldVisible("department.budget", open)).toBe(true);
+  });
+
+  it("restricts joined paths even when the own-field projection is unrestricted", () => {
+    const v = buildScopeVisibility(
+      [{ with: { department: { projection: { budget: 0 } } } }],
+      usersTable,
+    );
+    expect(v.allowed).toEqual({});
+    expect(isMetaFieldVisible("anything", v)).toBe(true);
+    expect(isMetaFieldVisible("department.budget", v)).toBe(false);
+  });
+
+  it("isScopedFieldVisible: no scopes → visible; legacy identifier-set arg still enforces sub-scopes", () => {
+    expect(isScopedFieldVisible([], "department.budget", new Set())).toBe(true);
+    const ids = new Set(["id"]);
+    expect(isScopedFieldVisible(scopes, "department.name", ids)).toBe(true);
+    expect(isScopedFieldVisible(scopes, "department.budget", ids)).toBe(false);
   });
 });
 
@@ -208,6 +286,29 @@ describe("pruneMetaByVisibility", () => {
 
 // ── writeOnly stamping (writable-but-unreadable fields) ────────────────────
 
+describe("pruneMetaByVisibility — with-granted nav types", () => {
+  it("prunes a granted relation's nav type by its sub-scope; ungranted visible ones stay whole", () => {
+    const meta = usersMeta();
+    (meta.type.type as { props: Record<string, unknown> }).props.department = obj({
+      id: leaf(),
+      name: leaf(),
+      budget: leaf(),
+    });
+    const v = buildScopeVisibility(
+      [{ projection: { password: 0 }, with: { department: { projection: { name: 1 } } } }],
+      { primaryKeys: ["id"], preferredId: ["id"] },
+    );
+    const out = pruneMetaByVisibility(meta, v);
+    type Node = { type: { props: Record<string, unknown> } };
+    const props = (out.type as unknown as Node).type.props as Record<string, Node>;
+    const dept = props.department.type.props;
+    // No `relatedTable`: the related PK is not exempt, only the sub-scope whitelist survives.
+    expect(Object.keys(dept)).toEqual(["name"]);
+    // Ungranted, projection-visible relation: whole.
+    expect(props.auditEvents).toEqual(arr(obj({ kind: leaf() })));
+  });
+});
+
 describe("pruneMetaByVisibility — writeOnly stamping", () => {
   const READ_USERNAME_ONLY = { id: 1, username: 1 } as Record<string, 0 | 1>;
 
@@ -275,5 +376,20 @@ describe("collectMethodNames", () => {
     expect(names).toEqual(expect.arrayContaining(["baseMethod", "derivedMethod", "own"]));
     expect(names).not.toContain("table");
     expect(names).not.toContain("constructor");
+  });
+});
+
+describe("buildScopeVisibility — precompiled isAllowed matches isFieldAllowed", () => {
+  const paths = ["a", "a.b", "a.b.c", "a.c", "ab", "b", "b.x", "constructor", "x.y.z"];
+  it.each([
+    [{ a: 1 }],
+    [{ "a.b": 1 }],
+    [{ "a.b.c": 1, b: 1 }],
+    [{ a: 0 }],
+    [{ "a.b": 0, "x.y": 0 }],
+    [{}],
+  ] as Array<[Record<string, 0 | 1>]>)("%j", (projection) => {
+    const v = buildScopeVisibility([{ projection }], undefined);
+    for (const p of paths) expect(v.isAllowed!(p), p).toBe(isFieldAllowed(p, projection));
   });
 });

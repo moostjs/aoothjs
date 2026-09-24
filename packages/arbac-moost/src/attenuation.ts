@@ -1,11 +1,13 @@
 import {
   conjoinScopeFilters,
+  DENY_FILTER,
   intersectControlsPolicy,
+  intersectProjections,
   mergeScopeFilters,
-  restrictProjection,
   unionControlsPolicy,
   unionProjections,
 } from "@aooth/arbac";
+import type { TProjectionChildren } from "@aooth/arbac";
 
 import type { ArbacDbScope } from "./db/as-arbac-db-controller";
 
@@ -39,25 +41,39 @@ export interface AoothArbacClaims {
  *
  * Each side is first UNIONed with the existing additive helpers (today's
  * machinery), then the two RESULTS are CONJOINED with the dedicated combiners
- * ({@link conjoinScopeFilters} `$and`, {@link restrictProjection} field ∩,
+ * ({@link conjoinScopeFilters} `$and`, {@link intersectProjections} field ∩,
  * {@link intersectControlsPolicy} deny-wins, `with` recursion) — never the
  * additive union helpers, which would silently widen.
  *
  * Returned as a single-element list so every downstream scope-application
  * site (which UNIONs the cached scope list per facet) sees the identity of a
  * one-element union — i.e. the conjunction — with no change to those sites.
+ *
+ * The projection conjunction is path-wise and never wider than either side
+ * (`{a:1}` ∩ `{"a.b":1}` → `{"a.b":1}`). A nested exclusion under an
+ * included parent (`{a:1}` ∩ `{"a.c":0}`) is subtracted exactly via
+ * `childrenOf` (the table schema); without it the parent is dropped (fail
+ * closed). When NO field survives (`{a:1}` ∩ `{a:0}`, disjoint whitelists),
+ * the composite keeps the user's projection and gets a match-nothing filter —
+ * an empty field set must never read as the unrestricted `{}`. `with`
+ * sub-scopes are conjoined without a schema.
  */
 export function conjoinArbacDbScopes(
   userScopes: ArbacDbScope[],
   credScopes: ArbacDbScope[],
+  childrenOf?: TProjectionChildren,
 ): ArbacDbScope[] {
+  const userProjection = unionProjections(...userScopes.map((s) => s.projection ?? {}));
+  const intersected = intersectProjections(
+    userProjection,
+    unionProjections(...credScopes.map((s) => s.projection ?? {})),
+    childrenOf,
+  );
+  const projection = intersected ?? userProjection;
+  const credFilter = mergeScopeFilters(credScopes.map((s) => s.filter ?? {}));
   const filter = conjoinScopeFilters(
     mergeScopeFilters(userScopes.map((s) => s.filter ?? {})),
-    mergeScopeFilters(credScopes.map((s) => s.filter ?? {})),
-  );
-  const projection = restrictProjection(
-    unionProjections(...userScopes.map((s) => s.projection ?? {})),
-    unionProjections(...credScopes.map((s) => s.projection ?? {})),
+    intersected ? credFilter : conjoinScopeFilters(credFilter, DENY_FILTER),
   );
   const controls = intersectControlsPolicy(
     unionControlsPolicy(userScopes),
@@ -69,11 +85,11 @@ export function conjoinArbacDbScopes(
 
   const s: ArbacDbScope = {};
   if (filter && Object.keys(filter).length > 0) s.filter = filter;
-  if (Object.keys(projection).length > 0) s.projection = projection as ArbacDbScope["projection"];
-  if (Object.keys(controls).length > 0) s.controls = controls as ArbacDbScope["controls"];
-  if (allowedFields) s.allowedFields = allowedFields as ArbacDbScope["allowedFields"];
-  if (set) s.set = set as ArbacDbScope["set"];
-  if (withMap) s.with = withMap as ArbacDbScope["with"];
+  if (Object.keys(projection).length > 0) s.projection = projection;
+  if (Object.keys(controls).length > 0) s.controls = controls;
+  if (allowedFields) s.allowedFields = allowedFields;
+  if (set) s.set = set;
+  if (withMap) s.with = withMap;
   return [s];
 }
 
@@ -147,12 +163,8 @@ function conjoinWith(
   if (relNames.size === 0) return undefined;
   const out: Record<string, ArbacDbScope> = {};
   for (const rel of relNames) {
-    const userSub = userScopes
-      .map((s) => (s.with as Record<string, ArbacDbScope> | undefined)?.[rel])
-      .filter(Boolean) as ArbacDbScope[];
-    const credSub = credScopes
-      .map((s) => (s.with as Record<string, ArbacDbScope> | undefined)?.[rel])
-      .filter(Boolean) as ArbacDbScope[];
+    const userSub = userScopes.map((s) => s.with?.[rel]).filter(Boolean) as ArbacDbScope[];
+    const credSub = credScopes.map((s) => s.with?.[rel]).filter(Boolean) as ArbacDbScope[];
     out[rel] = conjoinArbacDbScopes(userSub, credSub)[0];
   }
   return out;

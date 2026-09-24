@@ -6,6 +6,8 @@ import { getConstructor, useControllerContext } from "moost";
 import type { TArbacMeta } from "./arbac.mate";
 import { conjoinArbacDbScopes } from "./attenuation";
 import type { ArbacDbScope } from "./db/as-arbac-db-controller";
+import { fieldChildrenOf } from "./db/field-children";
+import type { VisibilityTableSource } from "./db/meta-projection";
 import { MoostArbac } from "./moost-arbac";
 import { ArbacUserProvider, ArbacUserProviderToken } from "./user.provider";
 
@@ -17,6 +19,20 @@ import { ArbacUserProvider, ArbacUserProviderToken } from "./user.provider";
  * downstream `@ArbacScopes()` resolvers read it back from the same event context.
  */
 const arbacScopesKey = key<unknown[] | undefined>("arbac.scopes");
+
+/**
+ * The scopes cached for the current event (`undefined` before the authorize
+ * interceptor / `setScopes` ran). A direct slot read — no controller
+ * metadata resolution — for per-field hot paths like `hasField`; use
+ * {@link useArbac} for `evaluate` / `setScopes`.
+ *
+ * `TScope` is a caller-side type witness (see `evaluate` below).
+ */
+// oxlint-disable-next-line typescript/no-unnecessary-type-parameters
+export function getArbacScopes<TScope extends object>(ctx?: EventContext): TScope[] | undefined {
+  const c = ctx ?? current();
+  return c.has(arbacScopesKey) ? (c.get(arbacScopesKey) as TScope[] | undefined) : undefined;
+}
 
 interface ArbacBindings {
   getScopes: <TScope extends object>() => TScope[] | undefined;
@@ -62,8 +78,7 @@ export const useArbac = (_ctx?: EventContext): ArbacBindings => {
   const ctx = _ctx ?? current();
   const cc = useControllerContext(ctx);
 
-  const getScopes = <TScope extends object>(): TScope[] | undefined =>
-    ctx.has(arbacScopesKey) ? (ctx.get(arbacScopesKey) as TScope[] | undefined) : undefined;
+  const getScopes = <TScope extends object>(): TScope[] | undefined => getArbacScopes<TScope>(ctx);
 
   const setScopes = <TScope extends object>(scope: TScope[] | undefined): void => {
     ctx.set(arbacScopesKey, scope);
@@ -146,8 +161,13 @@ export const useArbac = (_ctx?: EventContext): ArbacBindings => {
     // conjunction with no change to those sites.
     if (result.allowed && result.credScopes !== undefined) {
       const conjoined = conjoinArbacDbScopes(
-        (result.scopes ?? []) as ArbacDbScope[],
-        result.credScopes as ArbacDbScope[],
+        result.scopes ?? [],
+        result.credScopes,
+        // A DB controller's schema lets a nested exclusion be subtracted
+        // exactly; elsewhere the conjunction fails closed.
+        fieldChildrenOf(
+          (cc.getController() as { readable?: VisibilityTableSource } | undefined)?.readable,
+        ),
       );
       return { allowed: true, scopes: conjoined as unknown as TScope[], userId };
     }

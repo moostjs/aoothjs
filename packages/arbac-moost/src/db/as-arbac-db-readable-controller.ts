@@ -5,11 +5,7 @@ import { Inherit } from "moost";
 
 import type { TMetaResponse } from "@atscript/db";
 
-import {
-  applyArbacMetaOverlay,
-  isScopedFieldVisible,
-  metaAlwaysVisibleFields,
-} from "./meta-projection";
+import { applyArbacMetaOverlay, isScopedFieldVisible } from "./meta-projection";
 import {
   applyArbacControls,
   applyArbacProjection,
@@ -37,7 +33,7 @@ export class AsArbacDbReadableController<
   protected transformProjection(
     projection?: TProjection,
   ): TProjection | undefined | Promise<TProjection | undefined> {
-    return applyArbacProjection(projection, readCachedScopes());
+    return applyArbacProjection(projection, readCachedScopes(), this.readable);
   }
 
   protected validateControls(
@@ -49,7 +45,7 @@ export class AsArbacDbReadableController<
 
     const scopes = readCachedScopes();
     applyArbacControls(controls, scopes);
-    applyArbacRelationScopes(controls, scopes);
+    applyArbacRelationScopes(controls, scopes, this.readable);
     return undefined;
   }
 
@@ -59,7 +55,7 @@ export class AsArbacDbReadableController<
    * union) — view-style metas leak hidden field names identically.
    */
   protected applyMetaOverlay(meta: TMetaResponse): Promise<TMetaResponse> {
-    return applyArbacMetaOverlay(meta, metaAlwaysVisibleFields(this, this.readable));
+    return applyArbacMetaOverlay(meta, this.readable);
   }
 
   /**
@@ -67,9 +63,6 @@ export class AsArbacDbReadableController<
    * {@link AsArbacDbController.hasField}.
    */
   protected hasField(path: string): boolean {
-    return (
-      super.hasField(path) &&
-      isScopedFieldVisible(readCachedScopes(), path, metaAlwaysVisibleFields(this, this.readable))
-    );
+    return super.hasField(path) && isScopedFieldVisible(readCachedScopes(), path, this.readable);
   }
 }

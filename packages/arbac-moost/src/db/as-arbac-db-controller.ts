@@ -14,11 +14,7 @@ import type {
   OwnFieldKey,
   ProjectionOf,
 } from "./scope-types";
-import {
-  applyArbacMetaOverlay,
-  isScopedFieldVisible,
-  metaAlwaysVisibleFields,
-} from "./meta-projection";
+import { applyArbacMetaOverlay, isScopedFieldVisible } from "./meta-projection";
 import {
   applyArbacControls,
   applyArbacProjection,
@@ -118,7 +114,7 @@ export class AsArbacDbController<
   protected transformProjection(
     projection?: TProjection,
   ): TProjection | undefined | Promise<TProjection | undefined> {
-    return applyArbacProjection(projection, readCachedScopes());
+    return applyArbacProjection(projection, readCachedScopes(), this.readable);
   }
 
   /**
@@ -178,12 +174,12 @@ export class AsArbacDbController<
 
     const scopes = readCachedScopes();
     applyArbacControls(controls, scopes);
-    applyArbacRelationScopes(controls, scopes);
+    applyArbacRelationScopes(controls, scopes, this.readable);
     return undefined;
   }
 
   protected applyMetaOverlay(meta: TMetaResponse): Promise<TMetaResponse> {
-    return applyArbacMetaOverlay(meta, metaAlwaysVisibleFields(this, this.readable));
+    return applyArbacMetaOverlay(meta, this.readable);
   }
 
   /**
@@ -191,14 +187,14 @@ export class AsArbacDbController<
    * field outside the read-scope projection union answers `false`, which
    * moost-db's visibility hook turns into the same `Unknown field "x"` 400 a
    * nonexistent field gets at every gated query position — see the docs'
-   * "Column-scope security floor". Identifiers stay visible; paths under a
-   * `with`-granted relation pass through to the sub-scope's own enforcement.
+   * "Column-scope security floor". Identifiers stay visible. A `rel.x` path
+   * under a `with`-granted relation (`$with=rel(x>1)`, `$with=rel($sort=x)`,
+   * `$with=rel($select=x)`) is checked as `x` against the union of the
+   * `with.rel` sub-scopes, recursively; the related table's own PK /
+   * `preferredId` stay visible.
    */
   protected hasField(path: string): boolean {
-    return (
-      super.hasField(path) &&
-      isScopedFieldVisible(readCachedScopes(), path, metaAlwaysVisibleFields(this, this.readable))
-    );
+    return super.hasField(path) && isScopedFieldVisible(readCachedScopes(), path, this.readable);
   }
 
   protected async onWrite(
@@ -219,11 +215,14 @@ export class AsArbacDbController<
 
   // BUG-1: base update/remove key purely on payload.id, so without this
   // pre-check a caller could mutate a row outside their scope by knowing its PK.
+  // Ids resolve through moost-db's `_idOpts` (`isFieldVisible: hasField`): a
+  // unique index over a scope-hidden column is no identification, so a hidden
+  // existing value 404s exactly like a nonexistent one.
   private async assertInScope(idOrIds: unknown, scopes: ArbacDbScope[]): Promise<void> {
     const scopeFilter = mergeScopeFilters(scopes.map((s) => s.filter ?? {}));
     if (!scopeFilter) return;
     const ids = Array.isArray(idOrIds) ? idOrIds : [idOrIds];
-    const idFilters = ids.map((id) => this.readable.resolveIdFilter(id));
+    const idFilters = ids.map((id) => this.readable.resolveIdFilter(id, this._idOpts));
     if (idFilters.some((f) => !f)) throw new HttpError(404, "Not found");
     const idFilter = idFilters.length === 1 ? idFilters[0] : { $or: idFilters };
     const count = await this.readable.count({

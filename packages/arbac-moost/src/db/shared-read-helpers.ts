@@ -1,22 +1,27 @@
 import {
   conjoinScopeFilters,
+  DENY_FILTER,
+  expandExcludeToLeaves,
   mergeScopeFilters,
   restrictProjection,
   unionControlsPolicy,
 } from "@aooth/arbac";
 import type { TProjection } from "@aooth/arbac";
 
-import { useArbac } from "../arbac.composables";
+import { getArbacScopes, useArbac } from "../arbac.composables";
 import { enforceControlsPolicy } from "./as-arbac-db-controller";
 import type { ArbacDbScope } from "./as-arbac-db-controller";
-import { unionScopeProjection } from "./meta-projection";
+import { fieldChildrenOf } from "./field-children";
+import { scopeVisibility } from "./meta-projection";
+import type { MetaVisibility, VisibilityTableSource } from "./meta-projection";
 
-/** Filter that matches no rows; used when ARBAC denies the request. */
-const DENY_FILTER: Record<string, unknown> = { $or: [] };
-
-/** Single point of access to the per-event scope cache. */
+/**
+ * Single point of access to the per-event scope cache. Reads the slot
+ * directly — `hasField` calls this per referenced path, and `useArbac()`
+ * would resolve controller metadata on every call.
+ */
 export function readCachedScopes(): ArbacDbScope[] {
-  return useArbac().getScopes<ArbacDbScope>() ?? [];
+  return getArbacScopes<ArbacDbScope>() ?? [];
 }
 
 /**
@@ -43,19 +48,40 @@ export async function transformArbacFilter(
 }
 
 /**
- * Union the per-scope `projection` whitelists and restrict the user-supplied
- * projection to that union. Returns the original projection untouched when
- * no scope declares a projection (so caller sees the unrestricted shape).
- * Uses the same `unionScopeProjection` the field-visibility seams (`hasField`
- * / `/meta` pruning) use, so value stripping and name hiding cannot drift.
+ * Restrict the user-supplied `$select` to the scopes' projection union.
+ * Returns the original projection untouched when no scope declares a
+ * projection (so caller sees the unrestricted shape). Reads the same cached
+ * visibility (`vis.allowed`) `hasField` / `/meta` pruning use, so value
+ * stripping and name hiding cannot drift.
+ *
+ * `projection` is the `$select` as moost-db parsed it: an inclusion is an
+ * ARRAY of names, an exclusion an object — both are normalized first. A
+ * requested parent (`$select=a`) narrows to what the scope shows: to the
+ * whitelisted descendants (`a.b: 1`), or — for a hidden descendant
+ * (`a.c: 0`) — to its visible children via `childrenOf` (without a schema
+ * the parent is dropped). Never the whole object, and never the empty
+ * (universe) projection: when nothing survives, the scope's own projection
+ * applies (`restrictProjection`'s ceiling fallback).
+ *
+ * An exclusion result names nested-object parents by their leaves
+ * (`{ a: 0 }` → `{ "a.b": 0, "a.c": 0 }`): flattening adapters invert an
+ * exclusion against their leaf columns, so a parent key alone would strip
+ * nothing (a scope `{ a: 0 }` would otherwise return all of `a`).
  */
 export function applyArbacProjection(
-  projection: TProjection | undefined,
+  projection: unknown,
   scopes: ArbacDbScope[],
+  readable?: VisibilityTableSource,
 ): TProjection | undefined {
-  const allowed = unionScopeProjection(scopes);
-  if (!allowed) return projection;
-  return restrictProjection(projection ?? {}, allowed);
+  return restrictSelect(projection, scopeVisibility(scopes, readable));
+}
+
+/** {@link applyArbacProjection} over an already-built visibility level. */
+function restrictSelect(projection: unknown, vis: MetaVisibility): TProjection | undefined {
+  if (Object.keys(vis.allowed).length === 0) return projection as TProjection | undefined;
+  const childrenOf = fieldChildrenOf(vis.table);
+  const result = restrictProjection(normalizeSelect(projection) ?? {}, vis.allowed, childrenOf);
+  return expandExcludeToLeaves(result, childrenOf);
 }
 
 /**
@@ -92,20 +118,30 @@ interface WithEntry {
 export function applyArbacRelationScopes(
   controls: Record<string, unknown>,
   scopes: ArbacDbScope[],
+  readable?: VisibilityTableSource,
 ): void {
   if (scopes.length === 0) return;
-  const withArr = controls.$with;
-  if (!Array.isArray(withArr) || withArr.length === 0) return;
   // Hot-path bail: most reads have no `with`-declaring scope; skip per-entry work.
   if (!scopes.some((s) => s.with)) return;
+  applyRelationLevel(controls, scopeVisibility(scopes, readable));
+}
+
+/**
+ * One `$with` level of {@link applyArbacRelationScopes}: each granted
+ * relation's child visibility already carries its sub-scopes and target table.
+ */
+function applyRelationLevel(controls: Record<string, unknown>, vis: MetaVisibility): void {
+  const withArr = controls.$with;
+  if (!Array.isArray(withArr) || withArr.length === 0) return;
 
   for (const raw of withArr) {
     if (!raw || typeof raw !== "object") continue;
     const entry = raw as WithEntry;
     if (typeof entry.name !== "string") continue;
 
-    const subScopes = collectSubScopes(scopes, entry.name);
-    if (subScopes.length === 0) continue; // silence wins
+    const child = vis.relation?.(entry.name);
+    const subScopes = child?.scopes ?? [];
+    if (!child || subScopes.length === 0) continue; // silence wins
 
     // Filter overlay — same combiner as transformArbacFilter, so the two sites
     // cannot drift on the `$and`-never-spread invariant.
@@ -114,7 +150,7 @@ export function applyArbacRelationScopes(
     if (conjoined) entry.filter = conjoined;
 
     const entryControls = entry.controls ?? {};
-    const restricted = applyArbacProjection(normalizeSelect(entryControls.$select), subScopes);
+    const restricted = restrictSelect(entryControls.$select, child);
     if (restricted !== undefined) {
       entryControls.$select = restricted;
       entry.controls = entryControls;
@@ -123,25 +159,16 @@ export function applyArbacRelationScopes(
     // Enforce per-relation control gates (e.g. `with.X.controls.$with: false`)
     // then recurse — sub-scopes' own `with` trees gate the next level.
     enforceControlsPolicy(unionControlsPolicy(subScopes), entryControls);
-    applyArbacRelationScopes(entryControls, subScopes);
+    if (subScopes.some((s) => s.with)) applyRelationLevel(entryControls, child);
   }
-}
-
-/** Pick `scopes[i].with?.[name]`, dropping undefined. */
-function collectSubScopes(scopes: ArbacDbScope[], name: string): ArbacDbScope[] {
-  const out: ArbacDbScope[] = [];
-  for (const s of scopes) {
-    const sub = s.with?.[name];
-    if (sub) out.push(sub);
-  }
-  return out;
 }
 
 /**
  * `$select` may be an array of field names (uniquery inclusion list) or a
- * `TProjection` object. `applyArbacProjection` / `restrictProjection` operate
- * on the object form, so normalize the array to `{ field: 1 }` first. Returns
- * undefined if the input is empty (caller treats as "no projection set").
+ * `TProjection` object. `restrictProjection` operates on the object form
+ * (it would read `["a"]` as an exclusion keyed `"0"`), so normalize the array
+ * to `{ field: 1 }` first. Returns undefined if the input is empty (caller
+ * treats as "no projection set").
  */
 function normalizeSelect(value: unknown): TProjection | undefined {
   if (value === undefined || value === null) return undefined;

@@ -6,7 +6,12 @@ import { bootArbacHttp } from "../__testing__/arbac-http";
 import { FakeUserProvider } from "../__testing__/user-provider";
 import { ArbacAction, ArbacResource, MoostArbac } from "../index";
 import type { ArbacDbScope } from "./as-arbac-db-controller";
-import { applyArbacRelationScopes, transformArbacFilter } from "./shared-read-helpers";
+import { fieldChildrenOf } from "./field-children";
+import {
+  applyArbacProjection,
+  applyArbacRelationScopes,
+  transformArbacFilter,
+} from "./shared-read-helpers";
 
 /**
  * Captures the result of `transformArbacFilter(filter)` for the current event
@@ -449,5 +454,48 @@ describe("transformArbacFilter — empty vs undefined filter coercion", () => {
 
     // The scope's constraint survives verbatim; it is not replaced by 'b'.
     expect(merged).toEqual({ $and: [{ tenantId: "a" }, { tenantId: "b" }] });
+  });
+});
+
+describe("applyArbacProjection — $select ∩ scope projection", () => {
+  const table = {
+    primaryKeys: ["id"],
+    preferredId: ["id"],
+    flatMap: new Map<string, unknown>(
+      ["id", "title", "a", "a.b", "a.c", "owner", "owner.name"].map((k) => [k, {}]),
+    ),
+    navFields: new Set(["owner"]),
+  };
+  const children = fieldChildrenOf(table);
+  const inc: ArbacDbScope[] = [{ projection: { id: 1, title: 1, "a.b": 1 } }];
+  const exc: ArbacDbScope[] = [{ projection: { "a.c": 0 } }];
+
+  it('reads an array $select as an inclusion (not an exclusion keyed "0")', () => {
+    expect(applyArbacProjection(["title"], inc, table)).toEqual({ title: 1 });
+    expect(applyArbacProjection(["a"], exc, table)).toEqual({ "a.b": 1 });
+  });
+
+  it("splits a requested parent into the visible leaves", () => {
+    expect(applyArbacProjection(["a"], inc, table)).toEqual({ "a.b": 1 });
+    // No schema: an inclusion scope's own descendants; an exclusion scope fails closed.
+    expect(applyArbacProjection(["a"], inc)).toEqual({ "a.b": 1 });
+    expect(applyArbacProjection(["a", "title"], exc)).toEqual({ title: 1 });
+  });
+
+  it("never returns the universe for a non-empty $select", () => {
+    expect(applyArbacProjection(["a"], exc)).toEqual({ "a.c": 0 });
+  });
+
+  it("names excluded parents by their own leaves (never nav descendants)", () => {
+    expect(applyArbacProjection(undefined, [{ projection: { a: 0 } }], table)).toEqual({
+      "a.b": 0,
+      "a.c": 0,
+    });
+    expect(applyArbacProjection({ title: 0 }, exc, table)).toEqual({ title: 0, "a.c": 0 });
+    expect(children!("owner")).toEqual([]);
+  });
+
+  it("no scope projection: the $select passes through untouched", () => {
+    expect(applyArbacProjection(["a"], [{}], table)).toEqual(["a"]);
   });
 });

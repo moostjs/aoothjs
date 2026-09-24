@@ -1,6 +1,13 @@
 import type { TScopeFilter } from "./types";
 
 /**
+ * A filter that matches no rows (`{ $or: [] }`) — what a denied read, or a
+ * conjunction whose field intersection is empty, filters by. Shared; never
+ * mutate it.
+ */
+export const DENY_FILTER: Readonly<TScopeFilter> = { $or: [] };
+
+/**
  * Merge multiple scope filters into a single filter using `$or` semantics.
  *
  * In RBAC, if multiple roles grant access with different filters,

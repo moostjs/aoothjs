@@ -1,5 +1,6 @@
-import { isFieldAllowed, unionProjections } from "@aooth/arbac";
+import { getProjectionMode, isFieldAllowed, unionProjections } from "@aooth/arbac";
 import type { TProjection } from "@aooth/arbac";
+import { findAncestorInSet } from "@atscript/db";
 import type { TCrudOp, TMetaResponse } from "@atscript/db";
 import type {
   TSerializedAnnotatedType,
@@ -43,7 +44,10 @@ export function collectWithGrantNames(scopes: ArbacDbScope[]): ReadonlySet<strin
  * (or per `/meta` overlay) and threaded through the pruning walk.
  */
 export interface MetaVisibility {
-  /** Constrained projection union (never the empty/universe projection). */
+  /**
+   * Projection union for this level's own fields. `{}` (the universe) means
+   * unrestricted — possible when only a `with` sub-scope restricts anything.
+   */
   allowed: TProjection;
   /**
    * Identifier fields reads ALWAYS return regardless of projection (the read
@@ -53,6 +57,25 @@ export interface MetaVisibility {
   alwaysVisible: ReadonlySet<string>;
   /** Relation names granted via `with.<name>` (see {@link collectWithGrantNames}). */
   withGrants: ReadonlySet<string>;
+  /**
+   * Visibility of a `with`-granted relation's JOINED fields, built from the
+   * union of its `with.<name>` sub-scopes (with the related table's own
+   * identifiers always visible). A path `rel.x.y` is checked as `x.y`
+   * against it, recursively for nested relations. The scope-driven builders
+   * ({@link buildScopeVisibility}) always supply it; a hand-built visibility
+   * without it lets granted paths through unchecked (legacy behavior).
+   */
+  relation?: (name: string) => MetaVisibility | undefined;
+  /**
+   * Precompiled `isFieldAllowed(path, allowed)`. Supplied by
+   * {@link buildScopeVisibility}; a hand-built visibility falls back to
+   * `isFieldAllowed`.
+   */
+  isAllowed?: (path: string) => boolean;
+  /** The scopes this level was built from (set by {@link buildScopeVisibility}). */
+  scopes?: ArbacDbScope[];
+  /** The table this level describes, when known (set by {@link buildScopeVisibility}). */
+  table?: VisibilityTableSource;
   /**
    * Fields the principal's WRITE scopes allow (union of `allowedFields`, or
    * `"all"` for an unrestricted write grant). A field that is writable but not
@@ -67,13 +90,7 @@ export interface MetaVisibility {
 /** Exact-or-ancestor membership: `credit.credentials.user` matches a `credit.credentials` grant. */
 function isPathWritable(path: string, writable: MetaVisibility["writable"]): boolean {
   if (!writable) return false;
-  if (writable === "all") return true;
-  if (writable.has(path)) return true;
-  let pos = path.length;
-  while ((pos = path.lastIndexOf(".", pos - 1)) !== -1) {
-    if (writable.has(path.slice(0, pos))) return true;
-  }
-  return false;
+  return writable === "all" || hasSelfOrAncestor(writable, path);
 }
 
 /**
@@ -101,17 +118,23 @@ export function collectWritableFields(
 }
 
 /**
- * Whether a flattened dot-path field exists for this principal. A path under
- * a `with`-granted relation passes unconditionally — the sub-scope governs
- * the joined content, and rejecting the path here would break the very `$with`
- * expansion the grant permits.
+ * Whether a flattened dot-path field exists for this principal. A
+ * `with`-granted relation itself is always visible (the grant implies it);
+ * a path UNDER it (`rel.x.y`) is checked as `x.y` against the relation's
+ * sub-scope visibility ({@link MetaVisibility.relation}) — so a field the
+ * sub-scope hides is as unknown in a `$with` sub-query as a top-level hidden
+ * column is in the main query (no filter/sort value oracle).
  */
 export function isMetaFieldVisible(path: string, vis: MetaVisibility): boolean {
   if (vis.alwaysVisible.has(path)) return true;
   const dot = path.indexOf(".");
   const head = dot === -1 ? path : path.slice(0, dot);
-  if (vis.withGrants.has(head)) return true;
-  return isFieldAllowed(path, vis.allowed);
+  if (vis.withGrants.has(head)) {
+    if (dot === -1) return true;
+    const sub = vis.relation?.(head);
+    return sub ? isMetaFieldVisible(path.slice(dot + 1), sub) : true;
+  }
+  return vis.isAllowed ? vis.isAllowed(path) : isFieldAllowed(path, vis.allowed);
 }
 
 /**
@@ -122,8 +145,9 @@ export function isMetaFieldVisible(path: string, vis: MetaVisibility): boolean {
  *
  * - `fields` — the flat capability map (sortable/filterable flags).
  * - `type` — the serialized annotated type (what dynamic clients build
- *   tables/forms from); nested object props prune by dot-path, relation props
- *   survive whole when the relation itself is visible.
+ *   tables/forms from); nested object props prune by dot-path. A relation
+ *   prop visible through the projection survives whole; a `with`-granted
+ *   one is pruned by its sub-scope (recursively), matching `hasField`.
  * - `relations` — entries neither projected nor `with`-granted.
  * - `versionColumn` — dropped when the OCC column itself is hidden.
  *
@@ -162,12 +186,13 @@ export function pruneMetaByVisibility(meta: TMetaResponse, vis: MetaVisibility):
 
 /**
  * Copy-on-prune walk over a serialized type node. `basePath` is the flattened
- * dot-path prefix ("" at the root). Top-level relation props (nav props named
- * in `meta.relations`) are kept or dropped WHOLE — their internal shape is the
- * joined model's business (content scoping happens per-request through the
- * `with` sub-scopes), while own-field subtrees prune recursively so an
- * include-mode union like `{ "password.hash": 1 }` keeps `password` with only
- * `hash` inside.
+ * dot-path prefix ("" at the root). Relation props (nav props named in
+ * `meta.relations` at the root, or carrying a `db.rel.*` annotation inside a
+ * joined type) are dropped when invisible; a `with`-granted one is pruned by
+ * its sub-scope visibility (the same one `hasField` checks `rel.x` paths
+ * against), any other visible one survives whole. Own-field subtrees prune
+ * recursively so an include-mode union like `{ "password.hash": 1 }` keeps
+ * `password` with only `hash` inside.
  */
 function pruneSerializedType(
   node: TSerializedAnnotatedTypeInner,
@@ -180,8 +205,10 @@ function pruneSerializedType(
     const props: Record<string, TSerializedAnnotatedTypeInner> = {};
     for (const [name, prop] of Object.entries(def.props)) {
       const path = basePath ? `${basePath}.${name}` : name;
-      if (basePath === "" && relationNames.has(name)) {
-        if (isMetaFieldVisible(name, vis)) props[name] = prop;
+      if (basePath === "" && (relationNames.has(name) || isNavProp(prop))) {
+        if (!isMetaFieldVisible(name, vis)) continue;
+        const sub = vis.withGrants.has(name) ? vis.relation?.(name) : undefined;
+        props[name] = sub ? pruneSerializedType(prop, "", sub, NO_NAMES) : prop;
         continue;
       }
       if (!isMetaFieldVisible(path, vis)) {
@@ -217,72 +244,200 @@ function pruneSerializedType(
   return node;
 }
 
-/** The scopes-derived half of {@link MetaVisibility} (no `alwaysVisible`). */
-interface ScopeVisibility {
-  allowed: TProjection | undefined;
-  withGrants: ReadonlySet<string>;
+const NO_NAMES: ReadonlySet<string> = new Set();
+
+/** A nav prop inside a joined type: atscript-db stamps `db.rel.to` / `from` / `via`. */
+function isNavProp(prop: TSerializedAnnotatedTypeInner): boolean {
+  const meta = prop.metadata as Record<string, unknown> | undefined;
+  return !!meta && ("db.rel.to" in meta || "db.rel.from" in meta || "db.rel.via" in meta);
 }
 
-const UNRESTRICTED_VISIBILITY: ScopeVisibility = { allowed: undefined, withGrants: new Set() };
+/**
+ * The slice of an atscript-db readable (table / view) the visibility walk
+ * reads — a moost-db controller's `this.readable` satisfies it: identifiers
+ * (always visible), nav relations (to reach the joined table) and the
+ * flattened schema (to split `$select` parents by scope).
+ */
+export interface VisibilityTableSource {
+  primaryKeys: readonly string[];
+  preferredId: readonly string[];
+  relations?: ReadonlyMap<string, unknown>;
+  /**
+   * The target table of nav relation `navField` (atscript-db's
+   * `readable.relatedTable`); absent / `undefined` → the joined table's
+   * identifiers are not exempted.
+   */
+  relatedTable?(navField: string): VisibilityTableSource | undefined;
+  /** Flattened schema (dot-paths) — used to split `$select` parents by scope. */
+  flatMap?: ReadonlyMap<string, unknown>;
+  /** Navigation field paths — their joined descendants are not own columns. */
+  navFields?: ReadonlySet<string>;
+}
+
+// Identifiers per table object (decoration-derived, stable for its lifetime).
+const identifierSetCache = new WeakMap<VisibilityTableSource, ReadonlySet<string>>();
+
+/** PK + `preferredId` of a table — the identifiers reads always return. */
+function identifierSet(table: VisibilityTableSource | undefined): ReadonlySet<string> {
+  if (!table) return NO_NAMES;
+  let set = identifierSetCache.get(table);
+  if (!set) {
+    set = new Set([...table.primaryKeys, ...table.preferredId]);
+    identifierSetCache.set(table, set);
+  }
+  return set;
+}
+
+/** Pick `scopes[i].with?.[name]`, dropping undefined (silence wins when empty). */
+function collectSubScopes(scopes: ArbacDbScope[], name: string): ArbacDbScope[] {
+  const out: ArbacDbScope[] = [];
+  for (const s of scopes) {
+    const sub = s.with?.[name];
+    if (sub) out.push(sub);
+  }
+  return out;
+}
+
+/** `path` or one of its ancestors is in `set`. */
+function hasSelfOrAncestor(set: ReadonlySet<string>, path: string): boolean {
+  return set.has(path) || findAncestorInSet(path, set) !== undefined;
+}
+
+/**
+ * Precompiled {@link isFieldAllowed} for one projection: `hasField` asks it
+ * for every referenced path, so the mode and key sets are computed once.
+ * Inclusion: the path, an ancestor, or a descendant is listed. Exclusion: no
+ * listed key is the path or an ancestor.
+ */
+function compileProjection(projection: TProjection): (path: string) => boolean {
+  const keys = Object.keys(projection);
+  if (keys.length === 0) return () => true;
+  const listed = new Set(keys);
+  if (getProjectionMode(projection) === "exclude") {
+    return (path) => !hasSelfOrAncestor(listed, path);
+  }
+  // Every proper prefix of a listed key: a parent of an included child.
+  const parents = new Set<string>();
+  for (const key of keys) {
+    let pos = key.length;
+    while ((pos = key.lastIndexOf(".", pos - 1)) !== -1) parents.add(key.slice(0, pos));
+  }
+  return (path) => parents.has(path) || hasSelfOrAncestor(listed, path);
+}
+
+/**
+ * Build the {@link MetaVisibility} a set of read scopes implies — the single
+ * structure behind `hasField`, `/meta` pruning, `$select` value stripping
+ * and the `$with` overlay, so they cannot drift. Own fields: the projection
+ * union (`{}` when unrestricted), precompiled into `isAllowed`. A
+ * `with`-granted relation: a lazily built (memoized) child visibility over
+ * the union of its `with.<name>` sub-scopes — the same sub-scopes joined rows
+ * are stripped with — whose `alwaysVisible` is the related table's own PK /
+ * `preferredId` (reached through `table.relatedTable`; without it, no
+ * related identifier is exempt).
+ *
+ * @param alwaysVisible - identifiers exempt from the projection; defaults to
+ *   the table's PK + `preferredId`
+ */
+export function buildScopeVisibility(
+  scopes: ArbacDbScope[],
+  table: VisibilityTableSource | undefined,
+  alwaysVisible: ReadonlySet<string> = identifierSet(table),
+): MetaVisibility {
+  const withGrants = collectWithGrantNames(scopes);
+  const allowed = unionScopeProjection(scopes) ?? {};
+  const children = new Map<string, MetaVisibility>();
+  return {
+    allowed,
+    alwaysVisible,
+    withGrants,
+    scopes,
+    table,
+    isAllowed: compileProjection(allowed),
+    relation(name) {
+      if (!withGrants.has(name)) return undefined;
+      let child = children.get(name);
+      if (!child) {
+        child = buildScopeVisibility(collectSubScopes(scopes, name), table?.relatedTable?.(name));
+        children.set(name, child);
+      }
+      return child;
+    },
+  };
+}
 
 // `hasField` runs once per field a request references ($select / filter /
-// sort keys — client-controlled, so potentially many per request), and the
-// scopes array is identity-stable for the event once the authorize
-// interceptor / transformFilter calls `setScopes(...)` — memoize the union +
-// with-grant set per array instead of recomputing them per field.
-const scopeVisibilityCache = new WeakMap<ArbacDbScope[], ScopeVisibility>();
+// sort keys, `$with` sub-query paths — client-controlled, so potentially many
+// per request), and the scopes array is identity-stable for the event once
+// the authorize interceptor / transformFilter calls `setScopes(...)` —
+// memoize the visibility per (scopes array, readable) instead of rebuilding
+// the unions per field. A bare identifier set (the 0.1.67 `hasField`
+// argument) keys its own entry; `NO_TABLE` keys the table-less one.
+const scopeVisibilityCache = new WeakMap<
+  ArbacDbScope[],
+  WeakMap<VisibilityTableSource | ReadonlySet<string>, MetaVisibility>
+>();
+const NO_TABLE: VisibilityTableSource = { primaryKeys: [], preferredId: [] };
 
-function scopeVisibility(scopes: ArbacDbScope[]): ScopeVisibility {
-  if (scopes.length === 0) return UNRESTRICTED_VISIBILITY;
-  let vis = scopeVisibilityCache.get(scopes);
+/** `source` is an identifier set (the 0.1.67 signatures), not a readable. */
+function isIdentifierSet(
+  source: VisibilityTableSource | ReadonlySet<string>,
+): source is ReadonlySet<string> {
+  return !("primaryKeys" in source);
+}
+
+/**
+ * The event-cached {@link MetaVisibility} for `scopes` over `source` (a
+ * readable, or an `alwaysVisible` identifier set).
+ */
+export function scopeVisibility(
+  scopes: ArbacDbScope[],
+  source: VisibilityTableSource | ReadonlySet<string> = NO_TABLE,
+): MetaVisibility {
+  let perSource = scopeVisibilityCache.get(scopes);
+  if (!perSource) {
+    perSource = new WeakMap();
+    scopeVisibilityCache.set(scopes, perSource);
+  }
+  let vis = perSource.get(source);
   if (!vis) {
-    vis = { allowed: unionScopeProjection(scopes), withGrants: collectWithGrantNames(scopes) };
-    scopeVisibilityCache.set(scopes, vis);
+    vis = isIdentifierSet(source)
+      ? buildScopeVisibility(scopes, undefined, source)
+      : buildScopeVisibility(scopes, source === NO_TABLE ? undefined : source);
+    perSource.set(source, vis);
   }
   return vis;
 }
 
 /**
  * Shared body of both ARBAC controllers' `hasField` overrides (BUG-3 twin of
- * the `/meta` pruning): a field outside the read-scope projection union must
- * be indistinguishable from a field that does not exist. Returns `true` when
- * the scopes impose no projection restriction.
+ * the `/meta` pruning): a field outside the read-scope projection union —
+ * or, for a `rel.x` path under a `with`-granted relation, outside that
+ * relation's sub-scope union — must be indistinguishable from a field that
+ * does not exist. Returns `true` when there are no scopes (unscoped grant).
+ *
+ * @param source - the controller's `this.readable`; an identifier set (the
+ *   0.1.67 signature) still works, without related-table identifiers
  */
 export function isScopedFieldVisible(
   scopes: ArbacDbScope[],
   path: string,
-  alwaysVisible: ReadonlySet<string>,
+  source: VisibilityTableSource | ReadonlySet<string>,
 ): boolean {
-  const { allowed, withGrants } = scopeVisibility(scopes);
-  if (!allowed) return true;
-  return isMetaFieldVisible(path, { allowed, alwaysVisible, withGrants });
+  if (scopes.length === 0) return true;
+  return isMetaFieldVisible(path, scopeVisibility(scopes, source));
 }
-
-// Memoized per controller class (same rationale as the controller module's
-// identifierFieldsCache): `primaryKeys` / `preferredId` are decoration-derived
-// and stable for the class's lifetime, and the set is needed once per
-// `hasField` call.
-const alwaysVisibleFieldsCache = new WeakMap<
-  new (...args: never[]) => unknown,
-  ReadonlySet<string>
->();
 
 /**
  * PK + `preferredId` for a controller's table/readable — the
- * {@link MetaVisibility.alwaysVisible} set both `applyMetaOverlay` and
- * `hasField` pass into the visibility checks.
+ * {@link MetaVisibility.alwaysVisible} set. Kept for compatibility: the
+ * controllers now pass `this.readable` and it is derived there.
  */
 export function metaAlwaysVisibleFields(
-  controller: object,
+  _controller: object,
   source: { primaryKeys: readonly string[]; preferredId: readonly string[] },
 ): ReadonlySet<string> {
-  const ctor = controller.constructor as new (...args: never[]) => unknown;
-  let set = alwaysVisibleFieldsCache.get(ctor);
-  if (!set) {
-    set = new Set([...source.primaryKeys, ...source.preferredId]);
-    alwaysVisibleFieldsCache.set(ctor, set);
-  }
-  return set;
+  return identifierSet(source);
 }
 
 /**
@@ -315,13 +470,16 @@ const WRITE_CRUD_OPS: ReadonlySet<TCrudOp> = new Set<TCrudOp>([
  * universe, no pruning (unchanged behavior for unscoped roles). No read op
  * allowed → the projection union is empty → no pruning: `crud` already
  * advertises no read surface, and write-only principals still need `type`
- * for their insert/update forms. `alwaysVisible` (PK + preferredId) is never
- * pruned — reads always return those fields (projection widening / id
- * addressing).
+ * for their insert/update forms. PK + `preferredId` are never pruned —
+ * reads always return those fields (projection widening / id addressing).
+ *
+ * @param source - the controller's `this.readable` (identifiers and related
+ *   tables are derived from it); an identifier set (the 0.1.67 signature)
+ *   still works, without related-table identifiers
  */
 export async function applyArbacMetaOverlay(
   meta: TMetaResponse,
-  alwaysVisible: ReadonlySet<string>,
+  source: VisibilityTableSource | ReadonlySet<string>,
 ): Promise<TMetaResponse> {
   const arbac = useArbac();
   const actionToMethodMeta = collectActionMetaByName();
@@ -359,7 +517,7 @@ export async function applyArbacMetaOverlay(
   const writeScopes: ArbacDbScope[] = [];
   for (let i = 0; i < crudKeys.length; i++) {
     if (!crudResults[i].allowed) continue;
-    const scopes = crudResults[i].scopes as ArbacDbScope[] | undefined;
+    const scopes = crudResults[i].scopes;
     if (WRITE_CRUD_OPS.has(crudKeys[i])) {
       if (!scopes || scopes.length === 0) writeUnrestricted = true;
       else writeScopes.push(...scopes);
@@ -368,13 +526,15 @@ export async function applyArbacMetaOverlay(
     if (!scopes || scopes.length === 0) readUnrestricted = true;
     else readScopes.push(...scopes);
   }
-  if (!readUnrestricted) {
-    const allowed = unionScopeProjection(readScopes);
-    if (allowed) {
+  if (!readUnrestricted && readScopes.length > 0) {
+    const vis = isIdentifierSet(source)
+      ? buildScopeVisibility(readScopes, undefined, source)
+      : buildScopeVisibility(readScopes, source);
+    // Prune when the own-field union restricts OR a `with` grant may
+    // restrict a relation's joined fields (the nav type prunes by sub-scope).
+    if (Object.keys(vis.allowed).length > 0 || vis.withGrants.size > 0) {
       overlaid = pruneMetaByVisibility(overlaid, {
-        allowed,
-        alwaysVisible,
-        withGrants: collectWithGrantNames(readScopes),
+        ...vis,
         writable: collectWritableFields(writeScopes, writeUnrestricted),
       });
     }

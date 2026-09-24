@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  expandExcludeToLeaves,
   getProjectionMode,
   isFieldAllowed,
+  intersectProjections,
   restrictProjection,
   unionProjections,
 } from "./projection";
@@ -216,12 +218,11 @@ describe("restrictProjection", () => {
       });
     });
 
-    it("must keep parent desired key when access control includes a nested child", () => {
-      // desired wants `user`; access control allows it via the nested `user.email` entry
-      // (isFieldAllowed("user", {"user.email": 1}) is true). The result keeps the desired key
-      // as-is — narrowing further is the caller's responsibility.
+    it("must narrow a parent desired key to the access-controlled nested children", () => {
+      // desired wants `user`; access control allows only `user.email` — keeping `user`
+      // whole would return `user.*` fields the access control never granted.
       expect(restrictProjection({ user: 1 }, { "user.email": 1 })).toStrictEqual({
-        user: 1,
+        "user.email": 1,
       });
     });
 
@@ -230,5 +231,89 @@ describe("restrictProjection", () => {
         restrictProjection({ "user.email": 1, "user.name": 1 }, { "user.email": 1 }),
       ).toStrictEqual({ "user.email": 1 });
     });
+  });
+});
+
+describe("intersectProjections — never wider than either side", () => {
+  const schema: Record<string, string[]> = {
+    a: ["a.b", "a.c"],
+    "a.b": ["a.b.x", "a.b.y"],
+  };
+  const childrenOf = (p: string) => schema[p] ?? [];
+
+  it("include ∩ include narrows a parent to the other side's descendants (no schema)", () => {
+    expect(intersectProjections({ a: 1 }, { "a.b": 1 })).toEqual({ "a.b": 1 });
+    expect(intersectProjections({ "a.b": 1 }, { a: 1 })).toEqual({ "a.b": 1 });
+    expect(intersectProjections({ a: 1, t: 1 }, { "a.b.x": 1, t: 1 })).toEqual({
+      "a.b.x": 1,
+      t: 1,
+    });
+  });
+
+  it("include ∩ nested exclude: split by schema; without one, fail closed", () => {
+    expect(intersectProjections({ a: 1 }, { "a.c": 0 }, childrenOf)).toEqual({ "a.b": 1 });
+    expect(intersectProjections({ "a.c": 0 }, { a: 1 }, childrenOf)).toEqual({ "a.b": 1 });
+    expect(intersectProjections({ a: 1 }, { "a.b.y": 0 }, childrenOf)).toEqual({
+      "a.b.x": 1,
+      "a.c": 1,
+    });
+    expect(intersectProjections({ a: 1, t: 1 }, { "a.c": 0 })).toEqual({ t: 1 });
+    expect(intersectProjections({ a: 1 }, { "a.c": 0 })).toBeNull();
+  });
+
+  it("an empty intersection is null, never the universe", () => {
+    expect(intersectProjections({ a: 1 }, { a: 0 })).toBeNull();
+    expect(intersectProjections({ a: 1 }, { b: 1 })).toBeNull();
+    expect(intersectProjections({ "a.b": 1 }, { a: 0 })).toBeNull();
+    expect(intersectProjections({}, {})).toEqual({});
+  });
+
+  it("restrictProjection falls back to the access control (the ceiling) when nothing survives", () => {
+    expect(restrictProjection({ b: 1 }, { a: 1 })).toEqual({ a: 1 });
+    expect(restrictProjection({ a: 1 }, { "a.c": 0 })).toEqual({ "a.c": 0 });
+    expect(restrictProjection({ a: 1 }, { "a.c": 0 }, childrenOf)).toEqual({ "a.b": 1 });
+  });
+
+  it("exclude ∩ exclude unions the excluded paths", () => {
+    expect(intersectProjections({ a: 0 }, { "a.b.x": 0 })).toEqual({ a: 0, "a.b.x": 0 });
+  });
+});
+
+describe("unionProjections — nested exclusions stay denied", () => {
+  it("a child excluded by every role (directly or via a parent) stays excluded", () => {
+    expect(unionProjections({ a: 0 }, { "a.c": 0 })).toEqual({ "a.c": 0 });
+    expect(unionProjections({ a: 0 }, { "a.b.x": 0 }, { "a.b": 0 })).toEqual({ "a.b.x": 0 });
+  });
+
+  it("an include of the path or an ancestor lifts the denial", () => {
+    expect(unionProjections({ a: 0 }, { "a.c": 0 }, { a: 1 })).toEqual({});
+    expect(unionProjections({ "a.c": 0 }, { "a.c": 1 })).toEqual({});
+  });
+});
+
+describe("expandExcludeToLeaves", () => {
+  const schema: Record<string, string[]> = { a: ["a.b", "a.c"], "a.b": ["a.b.x", "a.b.y"] };
+  const childrenOf = (p: string) => schema[p] ?? [];
+
+  it("names excluded parents by their leaves, recursively", () => {
+    expect(expandExcludeToLeaves({ a: 0, t: 0 }, childrenOf)).toEqual({
+      "a.b.x": 0,
+      "a.b.y": 0,
+      "a.c": 0,
+      t: 0,
+    });
+  });
+
+  it("leaves inclusion / empty projections and schema-less calls unchanged", () => {
+    expect(expandExcludeToLeaves({ a: 1 }, childrenOf)).toEqual({ a: 1 });
+    expect(expandExcludeToLeaves({}, childrenOf)).toEqual({});
+    expect(expandExcludeToLeaves({ a: 0 }, undefined)).toEqual({ a: 0 });
+  });
+});
+
+describe("isFieldAllowed — own keys only", () => {
+  it("never treats an inherited object key as listed", () => {
+    expect(isFieldAllowed("constructor", { a: 1 })).toBe(false);
+    expect(isFieldAllowed("toString", { a: 0 })).toBe(true);
   });
 });
