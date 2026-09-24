@@ -1,16 +1,10 @@
-import { Get, HttpError, MoostHttp } from "@moostjs/event-http";
-import {
-  clearGlobalWooks,
-  Controller,
-  createProvideRegistry,
-  createReplaceRegistry,
-  Moost,
-  Resolve,
-} from "moost";
+import { Get, HttpError, type MoostHttp } from "@moostjs/event-http";
+import { clearGlobalWooks, Controller, Resolve } from "moost";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
+import { bootArbacHttp } from "../__testing__/arbac-http";
 import { FakeUserProvider } from "../__testing__/user-provider";
-import { ArbacAction, ArbacResource, ArbacUserProviderToken, MoostArbac } from "../index";
+import { ArbacAction, ArbacResource, MoostArbac } from "../index";
 import type { ArbacDbScope } from "./as-arbac-db-controller";
 import { applyArbacRelationScopes, transformArbacFilter } from "./shared-read-helpers";
 
@@ -51,21 +45,15 @@ class ProbeController {
   }
 }
 
-async function buildAndInit(
+function buildAndInit(
   arbac: MoostArbac<Record<string, never>, ArbacDbScope>,
   roles: string[],
 ): Promise<MoostHttp> {
-  const app = new Moost();
-  const user = new FakeUserProvider("u1", roles);
-  app.setReplaceRegistry(createReplaceRegistry([ArbacUserProviderToken, FakeUserProvider]));
-  app.setProvideRegistry(
-    createProvideRegistry([FakeUserProvider, () => user], [MoostArbac, () => arbac]),
-  );
-  const http = new MoostHttp();
-  app.adapter(http);
-  app.registerControllers(ProbeController);
-  await app.init();
-  return http;
+  return bootArbacHttp({
+    arbac,
+    user: new FakeUserProvider("u1", roles),
+    controllers: [ProbeController],
+  });
 }
 
 async function readMergedFilter(

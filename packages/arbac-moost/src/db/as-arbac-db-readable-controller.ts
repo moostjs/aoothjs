@@ -63,11 +63,8 @@ export class AsArbacDbReadableController<
   }
 
   /**
-   * Scope-aware field-existence check — same contract as
-   * {@link AsArbacDbController.hasField} (BUG-3): a field outside the
-   * read-scope projection union answers `false`, so `validateInsights` rejects
-   * `$select` / filter / sort references to it with the identical
-   * `Unknown field "x"` 400 a nonexistent field gets.
+   * Scope-aware field visibility — same contract as
+   * {@link AsArbacDbController.hasField}.
    */
   protected hasField(path: string): boolean {
     return (

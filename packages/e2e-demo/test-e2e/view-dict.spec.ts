@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { bearerAuth, mintToken, resetApp } from "./harness";
+import { bearerAuth, lazySuiteTokens } from "./harness";
 
 /**
  * Regression: a `@db.view` bound through the WRITABLE ARBAC controller chain
@@ -15,17 +15,9 @@ import { bearerAuth, mintToken, resetApp } from "./harness";
  * `task-dict` (roles/viewer.ts) with no projection mask.
  */
 test.describe("VIEW-DICT: view-bound ARBAC controller read surface", () => {
-  // Every test here is a pure read, so one reset + one token serves the whole
-  // suite (lazy because the `request` fixture is test-scoped). workers=1 keeps
-  // this race-free.
-  let eveToken: string | undefined;
-  async function viewerToken(request: Parameters<typeof mintToken>[0]): Promise<string> {
-    if (!eveToken) {
-      await resetApp(request);
-      eveToken = await mintToken(request, "t1_eve");
-    }
-    return eveToken;
-  }
+  // Every test here is a pure read — one reset + one token serves the suite.
+  const tokenFor = lazySuiteTokens();
+  const viewerToken = (request: Parameters<typeof tokenFor>[0]) => tokenFor(request, "t1_eve");
 
   test("VIEW-DICT-001: GET /task-dict/meta returns 200 with the view's field surface", async ({
     request,

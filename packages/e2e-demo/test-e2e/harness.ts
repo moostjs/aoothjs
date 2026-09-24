@@ -325,6 +325,32 @@ export async function mintToken(
   return ((await res.json()) as { accessToken: string }).accessToken;
 }
 
+/**
+ * Lazy per-suite token cache for read-only specs: the first call resets the
+ * demo once, then each username's token is minted on first use and reused
+ * (the `request` fixture is test-scoped, so this can't live in `beforeAll`).
+ * Safe under `workers: 1`.
+ */
+export function lazySuiteTokens(): (
+  request: APIRequestContext,
+  username: string,
+) => Promise<string> {
+  const tokens = new Map<string, string>();
+  let reset = false;
+  return async (request, username) => {
+    if (!reset) {
+      await resetApp(request);
+      reset = true;
+    }
+    let token = tokens.get(username);
+    if (!token) {
+      token = await mintToken(request, username);
+      tokens.set(username, token);
+    }
+    return token;
+  };
+}
+
 /** Bearer header object for `request.get(url, { headers: bearerAuth(token) })`. */
 export function bearerAuth(token: string): { Authorization: string } {
   return { Authorization: `Bearer ${token}` };

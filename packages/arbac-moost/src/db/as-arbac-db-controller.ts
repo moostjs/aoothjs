@@ -161,9 +161,9 @@ export class AsArbacDbController<
    * controls of a request. Runs after the base validator (which checks the
    * controls DTO shape) and BEFORE the query/aggregation pipeline executes.
    *
-   * `transformFilter` runs first on every read endpoint and caches the
-   * evaluated scopes via `arbac.setScopes(...)`, so we read those scopes
-   * directly here without re-evaluating ARBAC.
+   * Reads the scopes the route-level authorize interceptor cached via
+   * `arbac.setScopes(...)` — validation runs before `transformFilter`, so
+   * this hook never re-evaluates ARBAC.
    *
    * On a violation we throw `HttpError(403)`. moost-db's `query` / `pages` /
    * `getOne` handlers do NOT wrap `validateParsed` in try/catch, so the
@@ -187,18 +187,12 @@ export class AsArbacDbController<
   }
 
   /**
-   * Field-existence check, scope-aware (BUG-3 twin of the `/meta` pruning
-   * above): a field outside the read-scope projection union must be
-   * indistinguishable from a field that does not exist. The base controller's
-   * ONLY call site is `validateInsights`, which turns a `false` here into the
-   * same `Unknown field "x"` HTTP 400 a truly nonexistent field gets — so
-   * `$select`, filter, and sort references to a hidden field cannot be used
-   * as an existence/value oracle. Identifier fields stay visible (reads
-   * always return them — see {@link MetaVisibility.alwaysVisible}), and paths
-   * under a `with`-granted relation pass through to the sub-scope's own
-   * enforcement. Scopes were cached by the route-level authorize interceptor
-   * before validation runs (`useArbac` setScopes), so the union reflects the
-   * exact action being executed.
+   * Scope-aware field visibility (BUG-3 twin of the `/meta` pruning above): a
+   * field outside the read-scope projection union answers `false`, which
+   * moost-db's visibility hook turns into the same `Unknown field "x"` 400 a
+   * nonexistent field gets at every gated query position — see the docs'
+   * "Column-scope security floor". Identifiers stay visible; paths under a
+   * `with`-granted relation pass through to the sub-scope's own enforcement.
    */
   protected hasField(path: string): boolean {
     return (
