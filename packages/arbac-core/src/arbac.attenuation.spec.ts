@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { Arbac } from "./arbac";
 
@@ -126,5 +126,75 @@ describe("arbac attenuation — restrict-only outcome intersection", () => {
     );
     expect(res.scopes).toStrictEqual([{ docs: ["d1"] }]); // ceiling = user attrs only
     expect(res.credScopes).toStrictEqual([{ docs: ["d1", "d2"] }]); // cred pass merged
+  });
+});
+
+describe("arbac attenuation — allowUnheldRoles (view as)", () => {
+  it("evaluates an unheld claimed role; the outcome stays intersected with the user pass", async () => {
+    const arbac = makeArbac();
+    arbac.registerRole({ id: "root", rules: [{ action: "*", resource: "*" }] });
+    const user = { id: "u", roles: ["root"], attrs };
+    // Without the flag the unheld role is dropped → no roles → deny.
+    expect(
+      await arbac.evaluate(
+        { resource: "doc", action: "read" },
+        { ...user, attenuate: { roles: ["scoped-reader"] } },
+      ),
+    ).toStrictEqual({ allowed: false });
+    // With it, the credential pass IS scoped-reader.
+    expect(
+      await arbac.evaluate(
+        { resource: "doc", action: "read" },
+        { ...user, attenuate: { roles: ["scoped-reader"], allowUnheldRoles: true } },
+      ),
+    ).toStrictEqual({ allowed: true, scopes: [{}], credScopes: [{ docs: ["d1", "d2"] }] });
+    // …and nothing the previewed role lacks is allowed.
+    expect(
+      await arbac.evaluate(
+        { resource: "doc", action: "delete" },
+        { ...user, attenuate: { roles: ["scoped-reader"], allowUnheldRoles: true } },
+      ),
+    ).toStrictEqual({ allowed: false });
+  });
+
+  it("never widens: an action the user lacks stays denied even if the previewed role has it", async () => {
+    const arbac = makeArbac();
+    expect(
+      await arbac.evaluate(
+        { resource: "doc", action: "delete" },
+        {
+          id: "u",
+          roles: ["editor"],
+          attrs,
+          attenuate: { roles: ["admin"], allowUnheldRoles: true },
+        },
+      ),
+    ).toStrictEqual({ allowed: false });
+  });
+
+  it("a previewed deny still applies; unknown role ids contribute nothing", async () => {
+    const arbac = makeArbac();
+    const user = { id: "u", roles: ["editor"], attrs };
+    expect(
+      await arbac.evaluate(
+        { resource: "doc", action: "post" },
+        { ...user, attenuate: { roles: ["editor", "suspended"], allowUnheldRoles: true } },
+      ),
+    ).toStrictEqual({ allowed: false });
+    // Unknown claimed ids are dropped silently — untrusted claims never log.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      for (const id of ["no-such-role", "toString", "__proto__"]) {
+        expect(
+          await arbac.evaluate(
+            { resource: "doc", action: "post" },
+            { ...user, attenuate: { roles: [id], allowUnheldRoles: true } },
+          ),
+        ).toStrictEqual({ allowed: false });
+      }
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

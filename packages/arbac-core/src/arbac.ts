@@ -119,10 +119,14 @@ export class Arbac<TUserAttrs extends object, TScope extends object> {
        *
        * `roles: []` → no roles (deny-all, fail-closed). An OMITTED `roles` key
        * → keep all the user's roles (attrs-only narrowing). A claimed role the
-       * user lacks is dropped by the intersection (fail-closed). Absent
-       * `attenuate` → a single evaluation, byte-for-byte today's behavior.
+       * user lacks is dropped by the intersection (fail-closed) — unless
+       * `allowUnheldRoles` is set: then the claimed roles are evaluated as
+       * given ("view as" — an unknown role id still contributes nothing), and
+       * the outcome is still intersected with the full-authority pass, so an
+       * unheld role can never widen beyond the user. Absent `attenuate` → a
+       * single evaluation, byte-for-byte today's behavior.
        */
-      attenuate?: { roles?: string[]; attrs?: Partial<TUserAttrs> };
+      attenuate?: { roles?: string[]; attrs?: Partial<TUserAttrs>; allowUnheldRoles?: boolean };
     },
   ): Promise<TArbacEvalResult<TScope>> {
     this.registerResource(res.resource);
@@ -142,11 +146,17 @@ export class Arbac<TUserAttrs extends object, TScope extends object> {
 
     // Credential (narrowed) pass: a SUBSET of the user's roles (an OMITTED
     // `roles` key keeps them all; a claimed role the user lacks is absent —
-    // fail-closed), with the narrowing attrs merged LOCALLY so they cannot
-    // leak into the ceiling pass.
-    const claimRoles = user.attenuate.roles;
-    const claimAttrs = user.attenuate.attrs;
-    const credRoles = claimRoles ? user.roles.filter((r) => claimRoles.includes(r)) : user.roles;
+    // fail-closed — unless `allowUnheldRoles` evaluates the claim as given),
+    // with the narrowing attrs merged LOCALLY so they cannot leak into the
+    // ceiling pass.
+    const { roles: claimRoles, attrs: claimAttrs, allowUnheldRoles } = user.attenuate;
+    // Unheld claimed roles are UNTRUSTED input: unknown ids are dropped
+    // silently up front (no "does not exist" warning, no unbounded warn set).
+    const credRoles = !claimRoles
+      ? user.roles
+      : allowUnheldRoles
+        ? [...new Set(claimRoles)].filter((r) => Object.hasOwn(this.roles, r) && !!this.roles[r])
+        : user.roles.filter((r) => claimRoles.includes(r));
     const credAttrs: () => Promise<TUserAttrs> = claimAttrs
       ? async () => ({ ...(await userAttrs()), ...claimAttrs })
       : userAttrs;
