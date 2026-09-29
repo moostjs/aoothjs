@@ -69,7 +69,7 @@ When a user has multiple roles that each `allow` the same `(resource, action)`, 
 // A user with both roles sees ALL tasks (universe wins), not just their tenant.
 ```
 
-This is the natural `$or` semantic: union of "tenant rows" and "all rows" is "all rows". The takeaway: don't grant an unscoped allow on a resource that other roles are trying to filter. Pinned by the `transformArbacFilter` empty-vs-undefined coercion tests in `packages/arbac-moost/src/db/shared-read-helpers.spec.ts`.
+This is the natural `$or` semantic: union of "tenant rows" and "all rows" is "all rows". The takeaway: don't grant an unscoped allow on a resource that other roles are trying to filter. Pinned by the `arbacRowFilter` empty-vs-undefined coercion tests in `packages/arbac-moost/src/db/shared-read-helpers.spec.ts`.
 
 ## License
 

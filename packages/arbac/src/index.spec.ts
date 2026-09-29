@@ -44,4 +44,12 @@ describe("@aooth/arbac barrel — new API is present", () => {
   it("allowTableAction is exported", () => {
     expect(typeof mod.allowTableAction).toBe("function");
   });
+  it("allowTableOps / defineTableAccess + action-name constants are exported", () => {
+    expect(typeof mod.allowTableOps).toBe("function");
+    expect(typeof mod.defineTableAccess).toBe("function");
+    expect(mod.TABLE_READ_ACTIONS).toContain("geo");
+    expect(mod.TABLE_WRITE_ACTIONS).toContain("removeComposite");
+    expect(mod.TABLE_META_ACTIONS).toStrictEqual(["meta", "metaForm"]);
+    expect(Object.keys(mod.TABLE_OP_ACTIONS)).toContain("meta");
+  });
 });

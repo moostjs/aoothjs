@@ -2,14 +2,23 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { Arbac } from "@aooth/arbac-core";
 
-import { allowTableAction, allowTableRead, allowTableWrite } from "./db-privileges";
+import {
+  allowTableAction,
+  allowTableOps,
+  allowTableRead,
+  allowTableWrite,
+  defineTableAccess,
+  TABLE_OP_ACTIONS,
+  TABLE_READ_ACTIONS,
+  TABLE_WRITE_ACTIONS,
+} from "./db-privileges";
 import * as dbPrivilegesModule from "./db-privileges";
 import { defineRole } from "./define-role";
 
 type TestAttrs = { tenant: string };
 type TestScope = { tenant: string };
 
-const READ_ACTIONS = ["query", "pages", "getOne", "getOneComposite", "meta", "metaForm"];
+const READ_ACTIONS = ["query", "pages", "getOne", "getOneComposite", "geo", "meta", "metaForm"];
 const WRITE_ACTIONS = ["insert", "update", "replace", "remove", "removeComposite"];
 
 describe("allowTableRead", () => {
@@ -186,6 +195,251 @@ describe("composition with defineRole + end-to-end with Arbac", () => {
       scopes: [{}],
     });
     expect(await arbac.evaluate({ resource: "tasks", action: "archive" }, user)).toStrictEqual({
+      allowed: false,
+    });
+  });
+});
+
+describe("action-name constants", () => {
+  it("must match what allowTableRead / allowTableWrite grant", () => {
+    expect([...TABLE_READ_ACTIONS]).toStrictEqual(READ_ACTIONS);
+    expect([...TABLE_WRITE_ACTIONS]).toStrictEqual(WRITE_ACTIONS);
+    expect(TABLE_OP_ACTIONS.read).toStrictEqual(TABLE_READ_ACTIONS);
+    expect(TABLE_OP_ACTIONS.remove).toStrictEqual(["remove", "removeComposite"]);
+  });
+});
+
+const actionsOf = (rules: { action: string }[]) => rules.map((r) => r.action);
+const tenantScope = (attrs: TestAttrs) => ({ tenant: attrs.tenant });
+const titleOnlyScope = () => ({ allowedFields: ["title"] });
+
+describe("allowTableOps", () => {
+  it("must map read to every read action (geo included)", () => {
+    expect(actionsOf(allowTableOps("tasks", ["read"])())).toStrictEqual(READ_ACTIONS);
+  });
+
+  it("must map remove to remove + removeComposite and insert/update/replace 1:1", () => {
+    expect(
+      actionsOf(allowTableOps("tasks", ["insert", "update", "replace", "remove"])()),
+    ).toStrictEqual(WRITE_ACTIONS);
+    expect(actionsOf(allowTableOps("tasks", ["update"])())).toStrictEqual(["update"]);
+  });
+
+  it("must grant meta + metaForm (only) for the meta op — forms for write-only principals", () => {
+    expect(actionsOf(allowTableOps("leads", ["insert", "meta"])())).toStrictEqual([
+      "insert",
+      "meta",
+      "metaForm",
+    ]);
+  });
+
+  it("must not duplicate actions when ops overlap", () => {
+    expect(actionsOf(allowTableOps("tasks", ["read", "meta", "read"])())).toStrictEqual(
+      READ_ACTIONS,
+    );
+  });
+
+  it("must attach the scope to every rule", () => {
+    const rules = allowTableOps<TestAttrs, TestScope>("tasks", ["read", "remove"], {
+      scope: tenantScope,
+    })();
+    expect(rules).toHaveLength(READ_ACTIONS.length + 2);
+    for (const rule of rules) {
+      expect(rule).toStrictEqual({ resource: "tasks", action: rule.action, scope: tenantScope });
+    }
+  });
+
+  it("must throw on an unknown op", () => {
+    expect(() => allowTableOps("tasks", ["delete" as never])).toThrow(/Unknown table operation/);
+  });
+
+  it("must gate through Arbac exactly the granted ops", async () => {
+    const role = defineRole<TestAttrs, TestScope>()
+      .id("inserter")
+      .use(allowTableOps("leads", ["insert", "meta"]))
+      .build();
+    const arbac = new Arbac<TestAttrs, TestScope>();
+    arbac.registerRole(role);
+    const user = { id: "u1", roles: ["inserter"], attrs: { tenant: "acme" } };
+    for (const action of ["insert", "meta", "metaForm"]) {
+      expect((await arbac.evaluate({ resource: "leads", action }, user)).allowed).toBe(true);
+    }
+    for (const action of ["query", "getOne", "geo", "update", "remove"]) {
+      expect((await arbac.evaluate({ resource: "leads", action }, user)).allowed).toBe(false);
+    }
+  });
+});
+
+describe("defineTableAccess", () => {
+  type Scope = {
+    filter?: Record<string, unknown>;
+    check?: Record<string, unknown>;
+    projection?: Record<string, 0 | 1>;
+    allowedFields?: string[];
+  };
+  type Attrs = { tenant: string };
+  const attrs: Attrs = { tenant: "acme" };
+
+  function scopeOf(
+    rules: ReturnType<ReturnType<typeof defineTableAccess<Attrs, Scope>>>,
+    action: string,
+  ): Scope | undefined {
+    const rule = rules.find((r) => r.action === action);
+    expect(rule).toBeDefined();
+    return rule!.scope?.(attrs, "u1");
+  }
+
+  it("must emit read, write and action rules with the shared scope", () => {
+    const rules = defineTableAccess<Attrs, Scope>("tasks", {
+      scope: (a) => ({ filter: { tenant: a.tenant }, projection: { secret: 0 } }),
+      read: true,
+      write: true,
+      actions: ["markDone"],
+    })();
+    expect(rules.map((r) => r.action)).toStrictEqual([
+      ...READ_ACTIONS,
+      ...WRITE_ACTIONS,
+      "markDone",
+    ]);
+    for (const r of rules) {
+      expect(r.resource).toBe("tasks");
+      expect(r.scope?.(attrs, "u1")).toStrictEqual({
+        filter: { tenant: "acme" },
+        projection: { secret: 0 },
+      });
+    }
+  });
+
+  it("must omit parts that are not declared", () => {
+    const rules = defineTableAccess("tasks", { read: true })();
+    expect(rules.map((r) => r.action)).toStrictEqual(READ_ACTIONS);
+    for (const r of rules) expect(r).not.toHaveProperty("scope");
+    expect(defineTableAccess("tasks", { read: false, write: false })()).toStrictEqual([]);
+  });
+
+  it("must accept a write op list (meta included) and not repeat read actions", () => {
+    expect(
+      defineTableAccess("tasks", { write: ["insert", "meta"] })().map((r) => r.action),
+    ).toStrictEqual(["insert", "meta", "metaForm"]);
+    expect(
+      defineTableAccess("tasks", { read: true, write: ["update", "meta"] })().map((r) => r.action),
+    ).toStrictEqual([...READ_ACTIONS, "update"]);
+  });
+
+  it("must CONJOIN part filters with the shared filter — never spread", () => {
+    const rules = defineTableAccess<Attrs, Scope>("tasks", {
+      scope: (a) => ({ filter: { tenant: a.tenant } }),
+      read: true,
+      write: { ops: ["update"], scope: () => ({ filter: { tenant: "other" } }) },
+    })();
+    expect(scopeOf(rules, "query")).toStrictEqual({ filter: { tenant: "acme" } });
+    expect(scopeOf(rules, "update")).toStrictEqual({
+      filter: { $and: [{ tenant: "acme" }, { tenant: "other" }] },
+    });
+  });
+
+  it("must take other keys (allowedFields, projection) from the part over the shared scope", () => {
+    const rules = defineTableAccess<Attrs, Scope>("tasks", {
+      scope: (a) => ({
+        filter: { tenant: a.tenant },
+        projection: { secret: 0 },
+        allowedFields: ["a", "b"],
+      }),
+      read: true,
+      write: { ops: ["insert", "update"], scope: () => ({ allowedFields: ["title"] }) },
+      actions: { names: ["archive"], scope: () => ({ projection: { id: 1 } }) },
+    })();
+    expect(scopeOf(rules, "getOne")).toStrictEqual({
+      filter: { tenant: "acme" },
+      projection: { secret: 0 },
+      allowedFields: ["a", "b"],
+    });
+    expect(scopeOf(rules, "insert")).toStrictEqual({
+      filter: { tenant: "acme" },
+      projection: { secret: 0 },
+      allowedFields: ["title"],
+    });
+    expect(scopeOf(rules, "archive")).toStrictEqual({
+      filter: { tenant: "acme" },
+      projection: { id: 1 },
+      allowedFields: ["a", "b"],
+    });
+  });
+
+  it("must conjoin check filters; a check: {} with nothing to restrict is no check", () => {
+    const conjoined = defineTableAccess<Attrs, Scope>("tasks", {
+      scope: () => ({ check: { status: "open" } }),
+      write: { ops: ["update"], scope: () => ({ check: { owner: "u1" } }) },
+    })();
+    expect(scopeOf(conjoined, "update")).toStrictEqual({
+      check: { $and: [{ status: "open" }, { owner: "u1" }] },
+    });
+
+    const optOut = defineTableAccess<Attrs, Scope>("tasks", {
+      scope: () => ({ projection: { secret: 0 } }),
+      write: { ops: ["update"], scope: () => ({ check: {} }) },
+    })();
+    expect(scopeOf(optOut, "update")).toStrictEqual({ projection: { secret: 0 } });
+  });
+
+  it("must not let a part's check widen the shared filter's (default) check", () => {
+    // Regression: shared { filter F } + part { check C } used to yield check C
+    // alone — a written row only had to match C, not the shared tenant F.
+    const rules = defineTableAccess<Attrs, Scope>("tasks", {
+      scope: (a) => ({ filter: { tenant: a.tenant } }),
+      write: { ops: ["update"], scope: () => ({ check: { status: "open" } }) },
+    })();
+    expect(scopeOf(rules, "update")).toStrictEqual({
+      filter: { tenant: "acme" },
+      check: { $and: [{ tenant: "acme" }, { status: "open" }] },
+    });
+
+    // A part's `check: {}` cannot opt out of the shared filter's check either
+    // (parts only narrow): the check stays the filter (absent → defaults to it).
+    const optOut = defineTableAccess<Attrs, Scope>("tasks", {
+      scope: (a) => ({ filter: { tenant: a.tenant } }),
+      write: { ops: ["update"], scope: () => ({ check: {} }) },
+    })();
+    expect(scopeOf(optOut, "update")).toStrictEqual({ filter: { tenant: "acme" } });
+
+    // The symmetric case: the part's filter narrows the shared explicit check.
+    const shared = defineTableAccess<Attrs, Scope>("tasks", {
+      scope: () => ({ check: { status: "open" } }),
+      write: { ops: ["update"], scope: (a) => ({ filter: { tenant: a.tenant } }) },
+    })();
+    expect(scopeOf(shared, "update")).toStrictEqual({
+      filter: { tenant: "acme" },
+      check: { $and: [{ status: "open" }, { tenant: "acme" }] },
+    });
+  });
+
+  it("must use the part scope alone when there is no shared scope", () => {
+    const rules = defineTableAccess<Attrs, Scope>("tasks", {
+      write: { scope: titleOnlyScope },
+    })();
+    expect(rules.map((r) => r.action)).toStrictEqual(WRITE_ACTIONS);
+    for (const r of rules) expect(r.scope).toBe(titleOnlyScope);
+  });
+
+  it("must compose with defineRole + Arbac", async () => {
+    const role = defineRole<Attrs, Scope>()
+      .id("editor")
+      .use(
+        defineTableAccess("tasks", {
+          scope: (a) => ({ filter: { tenant: a.tenant } }),
+          read: true,
+          write: { ops: ["update"], scope: () => ({ allowedFields: ["title"] }) },
+        }),
+      )
+      .build();
+    const arbac = new Arbac<Attrs, Scope>();
+    arbac.registerRole(role);
+    const user = { id: "u1", roles: ["editor"], attrs };
+    expect(await arbac.evaluate({ resource: "tasks", action: "update" }, user)).toStrictEqual({
+      allowed: true,
+      scopes: [{ filter: { tenant: "acme" }, allowedFields: ["title"] }],
+    });
+    expect(await arbac.evaluate({ resource: "tasks", action: "insert" }, user)).toStrictEqual({
       allowed: false,
     });
   });
