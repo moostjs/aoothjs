@@ -8,7 +8,6 @@ import {
   MoostArbac,
 } from "@aooth/arbac-moost";
 import {
-  type ArbacUserTable,
   AtscriptArbacUserProvider,
   extractAttenuation,
   validateAttenuationTargets,

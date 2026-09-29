@@ -1,6 +1,6 @@
 import { current } from "@wooksjs/event-core";
 import type { EventContext } from "@wooksjs/event-core";
-import type { TAuthGuardDef, TAuthTransportDeclaration } from "@moostjs/event-http";
+import type { TAuthGuardDef } from "@moostjs/event-http";
 import { Authenticate, HttpError } from "@moostjs/event-http";
 import {
   defineBeforeInterceptor,

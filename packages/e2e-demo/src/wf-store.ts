@@ -1,4 +1,3 @@
-import type { AtscriptDbTable } from "@atscript/db";
 import { AsWfStore } from "@atscript/moost-wf/store";
 
 import type { AppDb } from "./db";
