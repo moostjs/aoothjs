@@ -56,6 +56,7 @@ unionProjections({ name: 1, email: 1 }, { secret: 0 });
 | 9   | **No `scope` key is emitted when scope is omitted.** `.allow(r, a)` produces `{ resource, action }` — `scope` is absent, not `undefined`. Code that checks `'scope' in rule` is meaningful.                                                                                                                                                                                                                   |
 | 10  | **`getProjectionMode` throws on mixed 1/0 in ONE projection.** A single projection `{a: 1, b: 0}` is rejected. ACROSS projections (`unionProjections({a:1}, {b:0})`) the mix is legal and well-defined.                                                                                                                                                                                                       |
 | 11  | **Empty filter / empty projection = universal grant.** In any merge, `{}` short-circuits: `mergeScopeFilters([..., {}, ...]) === undefined`, `unionProjections(..., {}, ...) === {}`. Treat `{}` as "no constraint", not "match nothing".                                                                                                                                                                     |
+| 11b | **Empty-scope rule (`normalizeScopes`, 0.1.72+).** Denied → `undefined`; allowed w/o `scopes` list → `[{}]`; a `scope` fn returning `undefined`/`null` contributes nothing; allowed but nothing left (`scopes: []`) → `undefined` (deny). Normalize before `effectiveScope` — its empty list is the union identity (unrestricted).                                                                            |
 | 12  | **`unionControlsPolicy` returns `{}` if ANY input scope omits `controls` entirely.** Silent-on-everything = full grant. Only when every scope opts into a `controls` map does per-key merging kick in.                                                                                                                                                                                                        |
 | 13  | **CLI codegen needs runnable JS, not TS, for `--roles`.** `aoothjs-arbac-codegen --roles dist/roles.mjs ...` — build your roles file first, then run codegen as a `pretsc` step or against `dist/`.                                                                                                                                                                                                           |
 | 14  | **`allowTableAction(r, 'x')` ≡ `allowTableAction(r, ['x'])`.** Single name and `[name]` are interchangeable; both emit one rule per name with the same shared scope.                                                                                                                                                                                                                                          |
@@ -80,7 +81,17 @@ import { defineRole } from "@aooth/arbac";
 import type { RoleBuilder } from "@aooth/arbac";
 
 // Privilege factories
-import { definePrivilege, allowTableRead, allowTableWrite, allowTableAction } from "@aooth/arbac";
+import {
+  definePrivilege,
+  allowTableRead,
+  allowTableWrite,
+  allowTableOps,
+  allowTableAction,
+  defineTableAccess,
+  TABLE_READ_ACTIONS,
+  TABLE_WRITE_ACTIONS,
+  TABLE_OP_ACTIONS,
+} from "@aooth/arbac";
 import type { TPrivilegeFunction } from "@aooth/arbac";
 
 // Scope merging
@@ -93,6 +104,18 @@ import {
   unionControlsPolicy,
 } from "@aooth/arbac";
 import type { ControlGate, TProjection, TProjectionMode, TScopeFilter } from "@aooth/arbac";
+
+// DB scope algebra (0.1.72+) — every facet's union / conjunction rule, once
+import {
+  effectiveScope, // additive union of a scope list (filter, check, projection, controls, …), memoized
+  conjoinScopes, // restrict-only conjunction (attenuation); { fields } = custom scope field rules
+  DB_SCOPE_KEYS, // built-in scope keys; any other key is custom and needs a TScopeFieldRule
+  applyScopeFieldFilters, // fold custom fields' rowFilter into each scope's filter (arbac-moost does it per evaluation)
+  ScopeFieldConfigError, // thrown by conjoinScopes for a custom field without a rule
+  conjoinRowPolicies, // { filter, check } conjunction (defineTableAccess parts)
+  normalizeScopes, // evaluation outcome → scopes | undefined (deny) — the empty-scope rule
+  unionOutcomes,
+} from "@aooth/arbac";
 
 // NOTE: `ArbacDbScope` (the shape consumed by `AsArbacDbController`) is exported from
 // `@aooth/arbac-moost`, not from this package. The merge utilities above operate on
@@ -107,12 +130,12 @@ import type { TCodegenOptions, TResourceActionMap } from "@aooth/arbac";
 
 ## References — load only what's needed
 
-| Domain           | File                                     | When                                                                                                                                                         |
-| ---------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| First contact    | [getting-started.md](getting-started.md) | Install, smallest end-to-end example, vocabulary table (role/rule/resource/scope/universe sentinel), `*` vs `**` wildcard matching with examples             |
-| Engine + builder | [builder.md](./builder.md)               | `Arbac` class lifecycle, `defineRole().id/.name/.describe/.allow/.deny/.use/.build`, `definePrivilege` double-call pattern, `allowTable*` action vocabulary  |
-| Scope merging    | [scopes.md](./scopes.md)                 | `mergeScopeFilters` (`$in` optimization + `$or` fallback), `unionProjections` truth table, `restrictProjection`, `unionControlsPolicy`, `ArbacDbScope` shape |
-| Codegen          | [codegen.md](./codegen.md)               | `extractResourceActions`, `generateResourceTypes`, the `aoothjs-arbac-codegen` CLI, build-step (`pretsc`) wiring, wildcard handling, sample output           |
+| Domain           | File                                     | When                                                                                                                                                                                                 |
+| ---------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| First contact    | [getting-started.md](getting-started.md) | Install, smallest end-to-end example, vocabulary table (role/rule/resource/scope/universe sentinel), `*` vs `**` wildcard matching with examples                                                     |
+| Engine + builder | [builder.md](./builder.md)               | `Arbac` class lifecycle, `defineRole().id/.name/.describe/.allow/.deny/.use/.build`, `definePrivilege` double-call pattern, `allowTable*` / `allowTableOps` / `defineTableAccess`, action vocabulary |
+| Scope merging    | [scopes.md](./scopes.md)                 | `mergeScopeFilters` (`$in` optimization + `$or` fallback), `unionProjections` truth table, `restrictProjection`, `unionControlsPolicy`, `ArbacDbScope` shape                                         |
+| Codegen          | [codegen.md](./codegen.md)               | `extractResourceActions`, `generateResourceTypes`, the `aoothjs-arbac-codegen` CLI, build-step (`pretsc`) wiring, wildcard handling, sample output                                                   |
 
 ## See also
 

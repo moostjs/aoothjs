@@ -6,17 +6,25 @@ All three utilities operate under **additive RBAC**: when a user has multiple ma
 
 ## The `ArbacDbScope` shape
 
-The Moost integration uses a conventional scope shape with five keys. The utilities on this page are designed around it, though each one operates on its own piece in isolation:
+The Moost integration uses a conventional scope shape. The utilities on this page are designed around it, though each one operates on its own piece in isolation:
 
 ```ts
 interface ArbacDbScope {
   filter?: TScopeFilter; // row filter (Uniquery-compatible)
+  check?: TScopeFilter; // WITH CHECK for written rows (default: filter; {} = off)
   projection?: TProjection; // field visibility map
-  set?: Record<string, unknown>; // forced field values on write
-  allowedFields?: readonly string[]; // additional whitelist
+  set?: Record<string, unknown>; // forced field values on write (dotted keys = nested paths)
+  allowedFields?: readonly string[]; // writable field paths
   controls?: Record<string, ControlGate>; // per-control Uniquery gate
+  with?: Record<string, ArbacDbScope>; // per-relation sub-scopes
+  nestedWrites?: readonly string[]; // nav relations writable through the parent (default: none)
+  checkRefs?: true | readonly string[]; // FKs whose target row must be readable by the caller
 }
 ```
+
+`check` merges across roles with `mergeScopeFilters`, exactly like `filter`. `checkRefs` is the one write facet that does **not** union additively: an FK is checked only when EVERY scope enables it — a role without the flag grants unconstrained writes of that FK, so adding it widens access like any other role. How the DB controllers enforce each key: [DB Controllers](/moost/db-controllers#write-pipeline).
+
+`with.<rel>` sub-scopes merge per relation with the same utilities, over the roles that declare it — a role silent on `with.<rel>` contributes nothing. When no role declares it, the DB controllers apply the caller's own grant on the related table instead (0.1.72+; no grant → the relation is unknown). See [Per-relation `with`](/moost/db-controllers#per-relation-with-recursive).
 
 Each merger below takes a homogeneous slice of `ArbacDbScope` (filters, projections, or controls) and produces a single merged value.
 
@@ -270,33 +278,87 @@ unionControlsPolicy([{ controls: { $with: false } }, { controls: { $with: ["auth
 
 ## Putting it together
 
-Typical query-time pipeline:
+`effectiveScope` applies every per-facet union above to a whole scope list at once (lazily, memoized per array), and `normalizeScopes` turns an evaluation outcome into that list with the empty-scope rule (denied or nothing left → `undefined`; allowed without a `scopes` list → unrestricted; a `scope` function returning nothing contributes nothing). Since 0.1.72:
 
 ```ts
 import {
   Arbac,
-  mergeScopeFilters,
-  unionProjections,
+  conjoinScopeFilters,
+  effectiveScope,
+  normalizeScopes,
   restrictProjection,
-  unionControlsPolicy,
 } from "@aooth/arbac";
 
-const r = await arbac.evaluate({ resource: "articles", action: "query" }, user);
-if (!r.allowed) throw new ForbiddenError();
+const scopes = normalizeScopes(
+  await arbac.evaluate({ resource: "articles", action: "query" }, user),
+);
+if (!scopes) throw new ForbiddenError();
 
-const filter = mergeScopeFilters(r.scopes.map((s) => s.filter).filter(Boolean));
-const acProjection = unionProjections(...r.scopes.map((s) => s.projection ?? {}));
-const projection = restrictProjection(req.query.fields, acProjection);
-const controls = unionControlsPolicy(r.scopes);
-
+const eff = effectiveScope(scopes);
 const rows = await db.find({
-  filter: { ...req.query.filter, ...filter },
-  fields: projection,
-  controls,
+  filter: conjoinScopeFilters(eff.filter, req.query.filter), // never spread
+  fields: restrictProjection(req.query.fields, eff.projection),
+  controls: eff.controls,
 });
 ```
 
-The three utilities run in parallel — they don't depend on each other. The order in the snippet is just readability.
+To combine two independent constraints restrict-only (a credential's narrowed view over the user's ceiling), use `conjoinScopes(userScopes, credScopes)` — never the unions. Signatures: [API reference](/api/arbac#functions-db-scope-algebra).
+
+## Custom scope fields
+
+Apps may add their own keys to the scope type by declaration merging and read them from `useArbac().getScopes()` / `evaluate()` with their own union rule — typically "a scope without the field is unrestricted". The framework never reads them unless you register a rule, and hands them over untouched.
+
+Where two scope lists are **conjoined** into one composite scope — credential [attenuation](./attenuation), and the `$with` conjunctions it triggers — the algebra cannot guess a custom field's meaning. Register its rule once per field (since 0.1.72):
+
+```ts
+declare module "@aooth/arbac-moost" {
+  interface ArbacDbScope {
+    regions?: string[]; // absent = every region
+  }
+}
+
+const regionsOf = (side: readonly ArbacDbScope[]) =>
+  side.some((s) => s.regions === undefined) ? undefined : new Set(side.flatMap((s) => s.regions!));
+
+arbac.registerScopeFields({
+  regions: {
+    // a = the user's full authority, b = the credential's view; return ONE value, never wider
+    conjoin(a, b) {
+      const ra = regionsOf(a);
+      const rb = regionsOf(b);
+      if (!ra) return rb && [...rb];
+      if (!rb) return [...ra];
+      return [...ra].filter((r) => rb.has(r));
+    },
+  },
+});
+```
+
+The composite carries the returned value (`undefined` = unrestricted, the key is omitted), in `with` sub-scopes too. A custom field present in a conjunction **without** a rule is a server configuration error: the request fails with a generic `500` (no field names in the response; the details are logged server-side once) — never served with the field dropped, which would read as unrestricted. Outside Moost, pass the rules as `conjoinScopes(a, b, { fields })`; it throws `ScopeFieldConfigError`. Signatures: [`registerScopeFields`](/api/arbac-moost#moostarbac-tuserattrs-tscope), [`TScopeFieldRule`](/api/arbac#tscopefieldrule-s-tscopefieldrules-s).
+
+### Fields that restrict rows — `rowFilter`
+
+When a custom field narrows which ROWS a scope reaches (a triage role may only act on its teams' rows), give its rule a `rowFilter`. The framework then enforces it on every row path: reads, the `@DbAction` gate, `/meta`, write USING and the default WITH CHECK, `checkRefs` targets and `$with` inherited grants.
+
+```ts
+arbac.registerScopeFields({
+  teams: {
+    conjoin: (a, b) => intersectTeams(a, b), // as above
+    rowFilter: (teams) => ({ teamId: { $in: teams as string[] } }), // undefined / {} = no restriction
+  },
+});
+
+defineRole<Attrs, ArbacDbScope>()
+  .id("triage")
+  .use(allowTableWrite("tickets", { scope: (a) => ({ teams: a.teams }) }));
+```
+
+Right after evaluation (inside `MoostArbac.evaluate`, so direct engine calls get it too), each scope that carries the field gets `filter = filter ∧ rowFilter(value, scope)`, also inside its `with` sub-scopes. This happens per scope, before the union across roles and before any attenuation conjunction. A role without the field stays unrestricted, so `leadership` (no `teams`) + `triage` (`teams: ["A"]`) reads leadership's rows plus team A's rows. The raw value stays on the scope for your own code.
+
+- An absent `check` follows the folded filter (the RLS default), so an update that moves a row out of the caller's teams is rejected with 403.
+- An explicit `check` is left **as written**. If you set one, include the team condition yourself (`check: {}` disables the check entirely).
+- `rowFilter` must depend **only** on `(value, scope)`, never on the request (current user, headers). Its result is cached process-wide per scope object. Put user-dependent data into the field's value from the role's scope function (`scope: (attrs) => ({ teams: attrs.teams })`).
+- `MoostArbac` warns once, at evaluation, about a custom scope key with no registered rule. Such a key would otherwise fail the first attenuated request with 500.
 
 ## Gotchas
 
@@ -304,7 +366,9 @@ The three utilities run in parallel — they don't depend on each other. The ord
 - **Mixed `1`/`0` in a single projection throws.** Choose include or exclude per projection. Across projections, mix freely.
 - **`unionControlsPolicy` returns `{}` if _any_ input is silent on `controls`.** To restrict, every role must declare a controls map.
 - **`string[]` whitelists are only valid for `$with` and `$groupBy`.** Other control keys must be `true` / `false`.
-- **`mergeScopeFilters` ignores `undefined` only for empty arrays.** Filter out the undefineds yourself (`.filter(Boolean)`) before passing — the function expects `TScopeFilter[]` shapes.
+- **Register a conjunction rule for every custom scope field** a role can return — an attenuated request that meets an unregistered one fails with 500. See [Custom scope fields](#custom-scope-fields).
+- **A custom field restricts rows only with a `rowFilter`.** Without one, reads, actions and writes ignore it; only your own code sees it.
+- **Map a missing filter to `{}`, don't drop it.** `mergeScopeFilters(scopes.map((s) => s.filter ?? {}))` — filtering out scopes without a filter would drop an unrestricted role and narrow the union (`effectiveScope` does this for you).
 
 ## Next
 

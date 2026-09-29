@@ -158,13 +158,17 @@ Returns `ArbacBindings`. **Not** a `defineWook` — re-resolves metadata per cal
 
 ## 401 vs 403
 
-| Status | Source                              | Trigger                                                                                                                                                      |
-| ------ | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 401    | `authGuardInterceptor`              | Protected route + no token / invalid token.                                                                                                                  |
-| 401    | `useAuth().getUserId()`             | Public route ran the handler with null context, then handler called `getUserId()`.                                                                           |
-| 401    | `arbacAuthorizeInterceptor`         | Any non-`HttpError` raised during `evaluate()` (e.g. user provider rejection) is rethrown as `HttpError(401)` preserving the original message.               |
-| 403    | `arbacAuthorizeInterceptor`         | `evaluate({...})` returned `{ allowed: false }`. Message: `Insufficient privileges for action "${action}" on resource "${resource}"`.                        |
-| 403    | `useArbac().evaluateOrThrow()`      | Manual deny path.                                                                                                                                            |
-| 404    | `AsArbacDbController.assertInScope` | Caller knows PK but row falls outside the union of role scope filters. Message: `Not found`. (Hides existence — see [db-controllers.md](db-controllers.md).) |
+| Status | Source                                           | Trigger                                                                                                                                                                                       |
+| ------ | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 401    | `authGuardInterceptor`                           | Protected route + no token / invalid token.                                                                                                                                                   |
+| 401    | `useAuth().getUserId()`                          | Public route ran the handler with null context, then handler called `getUserId()`.                                                                                                            |
+| 401    | `arbacAuthorizeInterceptor`                      | Any non-`HttpError` raised during `evaluate()` (e.g. user provider rejection) is rethrown as `HttpError(401)` preserving the original message.                                                |
+| 403    | `arbacAuthorizeInterceptor`                      | `evaluate({...})` returned `{ allowed: false }`. Message: `Insufficient privileges for action "${action}" on resource "${resource}"`.                                                         |
+| 403    | `useArbac().evaluateOrThrow()`                   | Manual deny path.                                                                                                                                                                             |
+| 404    | `AsArbacDbController.guardWrite` / `guardRemove` | Caller knows PK but the stored row falls outside the union of role scope filters — same response as a missing row. (Hides existence — see [db-controllers.md](db-controllers.md).)            |
+| 403    | ARBAC DB controller `prepareRequest`             | No grant for the endpoint's action — every route incl. `/meta`, even without the interceptor or under `@Public()`.                                                                            |
+| 403    | `AsArbacDbController.onWrite`                    | Payload carries a nav prop not listed in any scope's `nestedWrites`. Message: `Nested writes through "x" are not allowed`.                                                                    |
+| 403    | `AsArbacDbController.guardWrite` (`checkRefs`)   | An enforced FK the write sets points at a row the caller cannot read on the target table (or no grant / no registered controller there). Message: `Referenced row "x" is outside your scope`. |
+| 403    | `AsArbacDbController.checkWrite` / `guardWrite`  | A written row fails the scope `check` (default `filter`). Message: `Row outside your write scope`; the write is rolled back (or never runs on non-transactional adapters).                    |
 
 The auth guard never issues 403. The arbac interceptor never issues 401 from a "valid token, wrong role" path — that path is always 403.

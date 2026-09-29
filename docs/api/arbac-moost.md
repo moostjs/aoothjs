@@ -11,10 +11,16 @@ Complete export reference for `@aooth/arbac-moost`. See the [Moost Integration G
 class MoostArbac<TUserAttrs extends object, TScope extends object> extends Arbac<
   TUserAttrs,
   TScope
-> {}
+> {
+  registerScopeFields(rules: TScopeFieldRules<TScope>): this; // since 0.1.72
+  override evaluate(/* as Arbac.evaluate */): Promise<TArbacEvalResult<TScope>>; // folds rowFilter (since 0.1.72)
+  getScopeFields(): TScopeFieldRules<TScope>; // since 0.1.72
+}
 ```
 
 DI-injectable `Arbac` subclass. Register a singleton in the provide registry so `registerRole(...)` is reachable at boot. See [ARBAC Authorize](/moost/arbac-authorize).
+
+`registerScopeFields` registers the conjunction rule ([`TScopeFieldRule`](/api/arbac#tscopefieldrule-s-tscopefieldrules-s)) of each custom (declaration-merged) `ArbacDbScope` field, once per field — used by credential attenuation and the `$with` conjunctions it triggers. A rule's optional `rowFilter` folds the field into each evaluated scope's `filter`, so every row path enforces it. Validates every rule before registering any (atomic). Throws on a built-in key, a missing `conjoin`, a non-function `rowFilter`, or re-registering a name with a different rule. `evaluate` returns the engine's result with the `rowFilter`s folded into both passes' scopes, and warns once about a custom scope key with no rule. An attenuated evaluation that meets a custom field with no rule fails with a generic `HttpError(500)` instead of dropping it; the details are logged server-side once. See [Custom scope fields](/arbac/scopes#custom-scope-fields).
 
 ### `ArbacUserProvider<TUserAttrs>` (abstract)
 
@@ -42,12 +48,12 @@ DI key used to look up the user provider. The abstract class itself does not sat
 class AsArbacDbController<T> extends AsDbController<T> {}
 ```
 
-`@atscript/moost-db` controller subclass that wires ARBAC into every CRUD seam: `transformFilter`, `transformProjection`, `validateControls`, `applyMetaOverlay`, `hasField`, `onWrite`, `onRemove`, `assertInScope`. Scopes auto-applied — no explicit `getScopes()` call needed in handlers. See [DB Controllers](/moost/).
+`@atscript/moost-db` controller subclass that wires ARBAC into every CRUD seam: `prepareRequest` (fail-closed scope resolution), `transformFilter`, `transformProjection`, `validateControls`, `applyMetaOverlay`, `authorizeForm`, `hasField`, `actionRowScope` (each row action scoped by its own grant; since 0.1.72), `allowedActions` (the granted row-level actions for `$actions` / `meta/actions`, without building the `/meta` overlay; since 0.1.72), `onWrite` (nested writes + `allowedFields` / `set`), `guardWrite` / `guardRemove` (USING), `checkWrite` (WITH CHECK). `GET meta/actions/:id` / `meta/actions?…` are served iff the caller holds a grant on at least one row-level action; moost-db tags them as delegating authorization to `prepareRequest` (`getDbEndpoint`), so the authorize interceptor skips its own evaluation for them on this controller (it carries [`ARBAC_DELEGATED_AUTH`](#arbac-delegated-auth)). They need no read grant and are not public (since 0.1.72, moost-db ≥ 0.1.145; see [Row actions](/moost/db-controllers#row-actions-run-only-where-their-grant-reaches)). Scopes auto-applied — no explicit `getScopes()` call needed in handlers. See [DB Controllers](/moost/).
 
 Two seams enforce that a scope `projection` removes fields from existence, not just from row payloads:
 
 - **`applyMetaOverlay`** prunes the `/meta` envelope — `fields`, the serialized `type`, `relations`, `versionColumn` — down to the union of the allowed read ops' scope projections (PK + `preferredId` always survive; reads always return them). A scoped UI can no longer offer columns that would never populate, and secret-bearing column names stop leaking. Unscoped read grants keep the full envelope; write-only principals keep `type` for their insert/update forms.
-- **`hasField`** answers `false` for paths outside that union, so any query reference to a hidden field gets the **identical** `Unknown field "x"` 400 a nonexistent field gets — no existence or value oracle. A path under a `with`-granted relation (`$with=rel(x>1)`, `$with=rel($sort=x)`, `$with=rel($select=x)`) is checked as `x` against the union of the `with.rel` sub-scopes, recursively; the related table's PK / `preferredId` stay visible, and `/meta` prunes the relation's nav type the same way. Requirements (moost-db version, authorize interceptor, search indexes): [Column-scope security floor](/moost/db-controllers#column-scope-security-floor).
+- **`hasField`** answers `false` for paths outside that union, so any query reference to a hidden field gets the **identical** `Unknown field "x"` 400 a nonexistent field gets — no existence or value oracle. A path under a relation (`$with=rel(x>1)`, `$with=rel($sort=x)`, `$with=rel($select=x)`) is checked as `x` against the relation's policy — the union of declared `with.rel` sub-scopes, else (0.1.72+) the caller's own grant on the related table; no grant → the relation is unknown. Recursive; the related table's PK / `preferredId` stay visible, and `/meta` prunes the relation's nav type the same way. Derived columns follow their source; SQL `@db.json` columns are atomic. Requirements (moost-db version, authorize interceptor, search indexes): [Column-scope security floor](/moost/db-controllers#column-scope-security-floor).
 
 ### `AsArbacDbReadableController<T>`
 
@@ -56,6 +62,21 @@ class AsArbacDbReadableController<T> extends AsDbReadableController<T> {}
 ```
 
 Read-only mirror of `AsArbacDbController` for view controllers — including the same `/meta` pruning + `hasField` parity. Both classes are view-safe on every read path (all read-side enforcement goes through the bound readable, never the view-guarded `.table` getter); bind `@db.view` models with `@ReadableController(ViewModel)`. See [DB Controllers](/moost/).
+
+### `AsArbacValueHelpController<T>` / `AsArbacJsonValueHelpController<T>`
+
+```ts
+abstract class AsArbacValueHelpController<
+  T,
+  DataType = TAtscriptDataType<T>,
+> extends AsValueHelpController<T, DataType> {}
+class AsArbacJsonValueHelpController<
+  T,
+  DataType = TAtscriptDataType<T>,
+> extends AsJsonValueHelpController<T, DataType> {}
+```
+
+Since 0.1.72 (needs `@atscript/moost-db` ≥ 0.1.143). ARBAC mirrors of moost-db's value-help controllers (`/query`, `/pages`, `/one`, `/meta`): `prepareRequest` resolves the scopes on every route (evaluates when the interceptor didn't; deny → 403; `arbacPublic` does not bypass), `transformFilter` conjoins the scope filter (`/one` outside it → 404), `transformProjection` strips hidden columns (PK kept), `hasField` makes hidden fields unknown (filter / `$sort` / `$select`, never matched by `$search`), `validateControls` enforces `controls` gates, `applyMetaOverlay` prunes `/meta`. The data handlers carry the table read action ids (`query`, `pages`, `getOne`, `getOneComposite`), so `allowTableRead` grants them. See [Value-help controllers](/moost/db-controllers#value-help-controllers).
 
 ## Functions
 
@@ -80,16 +101,23 @@ interface ArbacBindings {
   readonly isPublic: boolean;
   getScopes<TScope>(): TScope[] | undefined;
   setScopes<TScope>(scopes: TScope[]): void;
-  evaluate<TScope>(over?: {
-    resource?: string;
-    action?: string;
-  }): Promise<{ allowed: boolean; scopes?: TScope[]; userId: string }>;
-  evaluateOrThrow<TScope>(over?: {
-    resource?: string;
-    action?: string;
-  }): Promise<{ allowed: true; scopes?: TScope[]; userId: string }>;
+  evaluate<TScope>(
+    over?: ArbacEvaluateOptions,
+  ): Promise<{ allowed: boolean; scopes?: TScope[]; userId: string }>;
+  evaluateOrThrow<TScope>(
+    over?: ArbacEvaluateOptions,
+  ): Promise<{ allowed: true; scopes?: TScope[]; userId: string }>;
+}
+
+interface ArbacEvaluateOptions {
+  resource?: string;
+  action?: string;
+  /** Readable whose schema an attenuation conjunction uses (0.1.72+); default: the controller's. */
+  table?: VisibilityTableSource;
 }
 ```
+
+Pass `table` when you evaluate a grant on a different table than the current controller's, so a credential-attenuated projection subtracts nested exclusions against that table's schema.
 
 ### `getArbacScopes`
 
@@ -100,6 +128,118 @@ function getArbacScopes<TScope extends object>(ctx?: EventContext): TScope[] | u
 Reads the scopes cached for the current event, the same slot `useArbac().getScopes()` reads, without resolving controller metadata. Use it in per-field hot paths such as a custom `hasField`. `undefined` before the authorize interceptor or `setScopes` ran.
 
 **`useArbac` is intentionally not a `defineWook`** — wook cache would replay parent HTTP resolution into WF child events. Resource/action resolution chain: `mMeta.arbacResourceId → cMeta.arbacResourceId → cMeta.id → constructor.name` and `mMeta.arbacActionId → mMeta.atscript_db_action.name → cMeta.arbacActionId → mMeta.id → cc.getMethod()`. See [ARBAC Authorize](/moost/arbac-authorize).
+
+### `useArbacDbScope`
+
+```ts
+function useArbacDbScope<T = unknown>(): Promise<ArbacDbScopeHelpers<T>>;
+
+interface ArbacDbScopeHelpers<T = unknown> {
+  scopes: ArbacDbScope<T>[];
+  filter(extra?: TScopeFilter): TScopeFilter;
+  set(): Record<string, unknown>;
+  check(): TScopeFilter;
+  assertRowsInScope(table: ArbacScopedTable, ids: readonly unknown[]): Promise<void>;
+  assertRefsInScope(
+    table: RefTableSource,
+    rows: ReadonlyArray<Record<string, unknown>>,
+  ): Promise<void>;
+  writeOptions<Row extends object = Record<string, unknown>>(
+    table: ArbacGuardedTable,
+  ): TWriteOptions<Row>;
+  removeOptions<Row extends object = Record<string, unknown>>(
+    table: ArbacGuardedTable,
+  ): TDeleteOptions<Row>;
+}
+
+interface ArbacScopedTable extends VisibilityTableSource {
+  resolveRowFilter(id: unknown, opts?: TRowResolveOptions): Promise<object | null | undefined>;
+  count(query: { filter: TScopeFilter; controls?: Record<string, never> }): Promise<number>;
+}
+
+interface ArbacGuardedTable extends ArbacScopedTable, ArbacWriteTable, RefTableSource {}
+```
+
+The current event's merged DB scope for custom routes and `@DbAction` handlers: scope filter `$and` an extra filter, merged `set`, effective WITH CHECK filter, one-count id verification (each id pinned to exactly one row, primary key first; 404 `Not found`), `assertRefsInScope` — the [`checkRefs`](/moost/db-controllers#fk-target-checks-checkrefs) FK target check (403) — and `writeOptions` / `removeOptions`: atscript-db write / delete options carrying the CRUD endpoints' in-transaction enforcement (nested writes, USING, `checkRefs`, WITH CHECK; `allowedFields` / `set` are not applied). Resolves the event's scopes once (the interceptor's cache, else an evaluation); a deny — including the [empty-scope rule](/moost/db-controllers#empty-scope-rule)'s "allowed but no scope left" — is a 403. `AtscriptDbTable` satisfies `ArbacGuardedTable`. Since 0.1.72. See [DB Controllers](/moost/db-controllers#custom-routes-usearbacdbscope).
+
+### Custom ARBAC controller building blocks
+
+```ts
+// Scope resolution — once per event at the entry point; the rest read it
+function resolveRequestScopes(): Promise<ArbacDbScope[]>; // 403 on deny
+function requireRequestScopes(): ArbacDbScope[]; // 403 when not resolved yet
+function cachedRequestScopes(): ArbacDbScope[] | undefined;
+
+// Controller hook bodies
+function prepareArbacRequest(
+  ctx: TDbRequestContext,
+  readable?: VisibilityTableSource,
+): Promise<void>;
+function arbacRowFilter(filter?: Record<string, unknown>): Record<string, unknown>;
+function requestFieldVisible(
+  path: string,
+  source: VisibilityTableSource | ReadonlySet<string>,
+): boolean;
+function authorizeArbacForm(actionNames: readonly string[]): Promise<boolean>;
+function arbacActionRowScope(name: string): Promise<Record<string, unknown> | undefined>; // since 0.1.72
+function arbacAllowedActions(names: readonly string[]): Promise<string[]>; // since 0.1.72
+function applyArbacProjection(
+  projection: unknown,
+  scopes: ArbacDbScope[],
+  readable?: VisibilityTableSource,
+): TProjection | undefined;
+function applyArbacControls(controls: Record<string, unknown>, scopes: ArbacDbScope[]): void;
+function applyArbacRelationScopes(
+  controls: Record<string, unknown>,
+  scopes: ArbacDbScope[],
+  readable?: VisibilityTableSource,
+): void;
+
+// Write guards (`guardWrite` / `checkWrite` / `guardRemove` bodies)
+function guardArbacWrite(
+  ctx: TDbWriteGuardContext,
+  scopes: readonly ArbacDbScope[],
+  table: ArbacWriteTable,
+  refs: RefTableSource,
+): Promise<void>;
+function checkArbacWrite(ctx: TDbWriteCheckContext, scopes: readonly ArbacDbScope[]): Promise<void>;
+function guardArbacRemove(
+  ctx: TDbRemoveGuardContext,
+  scopes: readonly ArbacDbScope[],
+  table: Pick<ArbacWriteTable, "count">,
+): Promise<void>;
+
+// `$with` inherit-target policy
+function registerArbacDbTarget(controller: object): true;
+function resolveHandlerArbacIds(
+  instance: object,
+  methodName: string,
+): { resource: string; action: string };
+```
+
+Since 0.1.72. The pieces `AsArbacDbController` / `AsArbacDbReadableController` are built from, for a controller on another moost-db base (or an overridden hook that must keep the ARBAC contract):
+
+- **Scopes** — resolved once per event by `resolveRequestScopes` (the `prepareRequest` / action-guard entry point, [empty-scope rule](/moost/db-controllers#empty-scope-rule) applied); every other hook reads them with `requireRequestScopes` (403 when unresolved) or `cachedRequestScopes`. Unresolved scopes are never "unrestricted".
+- **`@DbAction` handlers** — covered by `prepareRequest` (`endpoint: "action"`, moost-db ≥ 0.1.143): `prepareArbacRequest` resolves the scopes before any action id / row is read (403 on deny, `arbacPublic` does not bypass). Don't read action ids or rows inside `prepareRequest`.
+- **Hooks** — `prepareArbacRequest` is the `prepareRequest` body (resolve scopes, 403 on deny, resolve the `$with` policy on read endpoints); `arbacRowFilter` the `transformFilter` body; `requestFieldVisible` the `hasField` body; `authorizeArbacForm` the `authorizeForm` body; `arbacActionRowScope` the `actionRowScope` body (the action's grant filter; no grant → match-nothing; one object per equal filter per request); `prepareArbacRequest` also authorizes `endpoint: "availableActions"` (any row-level action grant, else 403; request scopes = the granted actions' scopes without `filter` / `check` — unrestricted row overlay, field visibility of the granted actions — to let the interceptor delegate the route, the controller must carry `ARBAC_DELEGATED_AUTH`; without it the route stays 403); `arbacAllowedActions` the `allowedActions` body; `applyArbacProjection` / `applyArbacControls` / `applyArbacRelationScopes` the `transformProjection` / `validateControls` bodies (pass `requireRequestScopes()` — the request's scopes carry its `$with` resolution).
+- **Write guards** — `guardArbacWrite` (USING, `checkRefs`, WITH CHECK on non-transactional adapters), `checkArbacWrite` (post-write WITH CHECK) and `guardArbacRemove` (USING for deletes) are the bodies of `guardWrite` / `checkWrite` / `guardRemove` — the same functions `useArbacDbScope().writeOptions()` uses.
+- **`$with` targets** — `registerArbacDbTarget(this)` (a field initializer) makes a controller the policy source for its table, so a `$with` from another controller applies the caller's grant on it; without a registered controller an undeclared relation is `Unknown relation`.
+- **`resolveHandlerArbacIds`** — the resource / action a handler is authorized as, with `useArbac()` precedence (method `@ArbacResource` → class → controller id → class name; method `@ArbacAction` → `@DbAction` name → class `@ArbacAction` → `@Id` → method name).
+
+Removed before release (0.1.72 pre-release names): `ensureRequestScopes` (use `resolveRequestScopes`, which now throws), `resolveRelationScopes`, `enforcedRefs` / `assertRefsInScope` (use the write guards or `useArbacDbScope().assertRefsInScope`), `arbacDbActionGuard` / `WithArbacDbActionGuard` (`prepareRequest` covers actions).
+
+A `$with` relation the scopes hide is left to moost-db: it answers `Unknown relation` through `hasField` at every level, like a nonexistent one. `VisibilityTableSource.jsonParents` / `RefTableSource.foreignKeyOf` are atscript-db's `readable.jsonParents` / `readable.foreignKeyOf`.
+
+### `ARBAC_DELEGATED_AUTH` {#arbac-delegated-auth}
+
+```ts
+const ARBAC_DELEGATED_AUTH: unique symbol;
+interface ArbacDelegatedAuth {
+  [ARBAC_DELEGATED_AUTH](method: string): boolean;
+}
+```
+
+Marks a controller whose `prepareRequest` authorizes moost-db's delegated handlers (`GET meta/actions/:id`) with ARBAC. The method answers whether `method` is such a handler. `AsArbacDbController` / `AsArbacDbReadableController` implement it as `getDbEndpoint(this, method) !== undefined`. For such a handler, `arbacAuthorizeInterceptor` skips its own evaluation. A custom controller built on another moost-db base, using `prepareArbacRequest`, adds the same method; without it the route stays 403. Since 0.1.72.
 
 ### `getArbacMate`
 
@@ -155,8 +295,13 @@ Strips fields outside the union of `allowedFields` and overlays `set` defaults. 
 function applyArbacMetaOverlay(
   meta: TMetaResponse,
   source: VisibilityTableSource | ReadonlySet<string>,
+  indexes?: readonly TDbIndexFieldPaths[], // default: the controller's indexFieldPaths()
 ): Promise<TMetaResponse>;
-function pruneMetaByVisibility(meta: TMetaResponse, vis: MetaVisibility): TMetaResponse;
+function pruneMetaByVisibility(
+  meta: TMetaResponse,
+  vis: MetaVisibility,
+  refTargets?: ReadonlyMap<object, MetaVisibility | null>, // foreign `ref` targets
+): TMetaResponse;
 function unionScopeProjection(scopes: ArbacDbScope[]): TProjection | undefined;
 function collectWithGrantNames(scopes: ArbacDbScope[]): ReadonlySet<string>;
 function isMetaFieldVisible(path: string, vis: MetaVisibility): boolean;
@@ -168,8 +313,13 @@ function isScopedFieldVisible(
 function buildScopeVisibility(
   scopes: ArbacDbScope[],
   table: VisibilityTableSource | undefined,
-  alwaysVisible?: ReadonlySet<string>,
+  opts?: ScopeVisibilityOptions | ReadonlySet<string>, // a Set = the 0.1.71 `alwaysVisible`
 ): MetaVisibility;
+
+interface ScopeVisibilityOptions {
+  alwaysVisible?: ReadonlySet<string>; // default: the table's PK + preferredId
+  relations?: ArbacRelationResolution; // undeclared relations resolved (name → visibility | null)
+}
 function metaAlwaysVisibleFields(
   controller: object,
   source: { primaryKeys: readonly string[]; preferredId: readonly string[] },
@@ -178,15 +328,18 @@ function metaAlwaysVisibleFields(
 
 The `/meta` field-visibility machinery behind both ARBAC controllers (see [`AsArbacDbController`](#asarbacdbcontroller-t)). `applyArbacMetaOverlay` is the full per-request overlay (actions/crud filtering + field pruning; needs the moost event context); the rest are pure and composable from custom `applyMetaOverlay` / `hasField` overrides. Pass the controller's `this.readable` as `source` (a `VisibilityTableSource`): identifiers (PK + `preferredId`) are derived from it, and its `relatedTable(navField)` reaches each joined table so that table's identifiers stay visible too.
 
-- `isScopedFieldVisible` is the shared `hasField` body. It memoizes the visibility per event-stable scopes array and readable.
+- `isScopedFieldVisible` checks a path against any scopes (memoized per scopes array and readable); for the current request's scopes it uses the request's `$with` resolution. The controllers' `hasField` body is `requestFieldVisible` (see the building blocks).
 - `buildScopeVisibility` is the single builder behind `hasField`, `/meta` pruning, `$select` value stripping and the `$with` overlay.
 - `metaAlwaysVisibleFields` returns the PK + `preferredId` set; it is kept for compatibility.
 
-`MetaVisibility` is `{ allowed: TProjection; alwaysVisible: ReadonlySet<string>; withGrants: ReadonlySet<string>; relation?: (name) => MetaVisibility | undefined; isAllowed?: (path) => boolean; scopes?; table?; writable?: … }`:
+`MetaVisibility` is `{ allowed: TProjection; alwaysVisible: ReadonlySet<string>; withGrants: ReadonlySet<string>; relation?: (name) => MetaVisibility | undefined; relationNames?: ReadonlySet<string>; isAllowed?: (path) => boolean; scopes?; table?; writable?: … }`:
 
-- `allowed` is `{}` when own fields are unrestricted.
-- `isAllowed` is `isFieldAllowed(path, allowed)` precompiled.
-- `relation(name)` is the `with.<name>` sub-scope visibility a `name.x` path is checked against.
+- `allowed` is `{}` when own fields are unrestricted. It is normalized for the table: an atomic (SQL) `@db.json` column is excluded whole, a derived field with a hidden source is excluded.
+- `isAllowed` is `isFieldAllowed(path, allowed)` precompiled, plus the derived-source rule.
+- `relation(name)` is the visibility a `name.x` path is checked against: the declared `with.<name>` sub-scopes, else the resolved grant on the related table (`undefined` = hidden).
+- `relationNames` are the table's relations; an undeclared one is visible only when resolved and its name passes the projection.
+
+`VisibilityTableSource` gained optional `type`, `fieldDescriptors`, `jsonParents` and `isSearchable()` in 0.1.72 — a moost-db `this.readable` (atscript-db ≥ 0.1.143) has them.
 
 A hand-built `MetaVisibility` without `relation` lets granted paths through unchecked, so build it with `buildScopeVisibility`. Passing a bare identifier set as `source` (the 0.1.67 signatures) still enforces sub-scopes, but does not exempt related identifiers. `pruneMetaByVisibility` never mutates its input (the base controller caches the static envelope).
 
@@ -196,11 +349,17 @@ A hand-built `MetaVisibility` without `relation` lets granted paths through unch
 function conjoinArbacDbScopes(
   userScopes: ArbacDbScope[],
   credScopes: ArbacDbScope[],
-  childrenOf?: TProjectionChildren,
+  opts?: TProjectionChildren | ConjoinArbacDbScopesOptions, // a bare function = childrenOf (legacy form)
 ): ArbacDbScope[];
+
+interface ConjoinArbacDbScopesOptions {
+  childrenOf?: TProjectionChildren; // the evaluated table's schema lookup
+  refTable?: RefTableSource; // resolves checkRefs names to its foreign keys
+  fields?: TScopeFieldRules<ArbacDbScope>; // custom scope field rules
+}
 ```
 
-Credential-attenuation combiner: UNIONs each side with the additive helpers, then CONJOINS the two results facet-by-facet (`conjoinScopeFilters` `$and`, `intersectProjections` path-wise field ∩ — a parent narrows to the other side's nested whitelist; the optional `childrenOf` schema lookup (supplied by `useArbac().evaluate` for DB controllers) splits an included parent with a hidden child exactly, otherwise it is dropped; no common field → the user's projection plus a match-nothing filter, never `{}` — `intersectControlsPolicy` deny-wins, `allowedFields` intersection, recursive `with`) — never the additive union helpers, which would silently widen. Returns a single-element list so downstream scope-application sites (which union the scope list per facet) see the conjunction unchanged. Consumes `credScopes` from an attenuated [`Arbac.evaluate`](/api/arbac-core#arbac-tuserattrs-tscope). See [Scope Merging](/arbac/scopes).
+Credential-attenuation combiner: UNIONs each side with the additive helpers, then CONJOINS the two results facet-by-facet (`conjoinScopeFilters` `$and`, `intersectProjections` path-wise field ∩ — a parent narrows to the other side's nested whitelist; the optional `childrenOf` schema lookup (supplied by `useArbac().evaluate` for DB controllers) splits an included parent with a hidden child exactly, otherwise it is dropped; no common field → the user's projection plus a match-nothing filter, never `{}` — `intersectControlsPolicy` deny-wins, `allowedFields` intersection, recursive `with` — a relation only ONE side declares is marked `INHERITED_CONJUNCTION` and conjoined, when the request resolves it, with the caller's own grant on the related table (no grant → hidden), so a credential's declared sub-scope never stands alone as parent authority —, `checkRefs` enforced when EITHER side enforces it — `refTable`, the evaluated table, resolves the names to its foreign keys; a custom field via its `fields` rule, no rule → throws) — never the additive union helpers, which would silently widen. Returns a single-element list so downstream scope-application sites (which union the scope list per facet) see the conjunction unchanged. Consumes `credScopes` from an attenuated [`Arbac.evaluate`](/api/arbac-core#arbac-tuserattrs-tscope). See [Scope Merging](/arbac/scopes).
 
 ## Decorators
 
@@ -239,26 +398,48 @@ Sugar for `Authenticate(arbacAuthorizeInterceptor)`. Use when you don't apply th
 ```ts
 interface ArbacDbScope<T = unknown> {
   filter?: TScopeFilter;
+  /** WITH CHECK filter a written row must match; defaults to `filter`, `{}` disables. */
+  check?: TScopeFilter;
   projection?: ProjectionOf<T>;
   set?: Partial<Record<OwnFieldKey<T>, unknown>>;
   allowedFields?: Array<OwnFieldKey<T>>;
   controls?: ControlsOf<T>;
+  /** Nav relations writable through the parent payload (default deny). */
+  nestedWrites?: Array<NavRelationKey<T>>;
+  /** FK target checks: `true` = every FK; else FK fields / the TO relations they back. */
+  checkRefs?: true | Array<OwnFieldKey<T> | NavRelationKey<T>>;
   /** Per-relation sub-scopes applied when the request expands a relation via
    *  `?$with=<name>`. Recursive — each sub-scope has the same shape and can
    *  declare its own `with` for nested expansions: keys are the model's nav
    *  relations, values are `ArbacDbScope<NavTarget>` (untyped `T` falls back to
    *  `Record<string, ArbacDbScope>`; the mapped type is internal, not an
-   *  exported symbol). Parent-authority model: arbac-moost does NOT
-   *  re-evaluate ARBAC against the joined resource. */
+   *  exported symbol). Declared in any role → those sub-scopes govern the
+   *  joined rows; otherwise (0.1.72+) the caller's own grant on the related
+   *  table does — no grant → `Unknown relation`. */
   with?: Record<string, ArbacDbScope>;
 }
 ```
 
-The scope shape `AsArbacDbController` understands. Pass an `.as` model as `T` (e.g. `ArbacDbScope<Task>`) to get autocomplete on `projection` / `with` / `controls` / `set` / `allowedFields` against the model's own and navigation fields. `T = unknown` (the default) keeps the legacy untyped shape for back-compat. **Open to declaration merging** — augment with custom fields if you extend the controller. See [DB Controllers](/moost/).
+The scope shape `AsArbacDbController` understands. `check`, `nestedWrites` and `checkRefs` are enforced from 0.1.72. Pass an `.as` model as `T` (e.g. `ArbacDbScope<Task>`) to get autocomplete on `projection` / `with` / `controls` / `set` / `allowedFields` against the model's own and navigation fields. `T = unknown` (the default) keeps the legacy untyped shape for back-compat. **Open to declaration merging** — augment with custom fields if you extend the controller. See [DB Controllers](/moost/).
 
-::: warning Known gap — joined-resource projection in exclude mode
-arbac-moost does not apply the joined-resource projection mask to `$with` expansions when the request uses exclude-mode `$select` for the relation loader. Include-mode `$select` works end-to-end. Track via the e2e-demo's `PROJ_COMMENT_VIEWER_EXPANDED` notes.
-:::
+### `RefTableSource` / `RefForeignKey`
+
+```ts
+interface RefForeignKey {
+  readonly fields: readonly string[];
+  readonly targetFields: readonly string[];
+  readonly targetTable?: string;
+  readonly alias?: string;
+  readonly targetTypeRef?: () => unknown;
+}
+
+interface RefTableSource {
+  readonly foreignKeys?: ReadonlyMap<string, RefForeignKey>;
+  readonly relations?: ReadonlyMap<string, unknown>;
+}
+```
+
+The table surface `checkRefs` resolves names against — `AtscriptDbTable` / a controller's `readable` satisfy it. Since 0.1.72.
 
 ### `AoothArbacClaims`
 
@@ -266,10 +447,11 @@ arbac-moost does not apply the joined-resource projection mask to `$with` expans
 interface AoothArbacClaims {
   roles?: string[];
   attrs?: Record<string, unknown>;
+  allowUnheldRoles?: boolean; // since 0.1.72
 }
 ```
 
-Restrict-only attenuation claims carried by a credential (extracted via `extractAttenuation`). `roles` = assume a SUBSET of the user's roles — `[]` means no roles (deny-all, fail-closed), an omitted key keeps all the user's roles; a role the user lacks is dropped by the intersection. `attrs` are merged into the credential pass only and clipped by the scope conjunction, so they can never widen beyond the user's own authority. Feeds `Arbac.evaluate`'s `attenuate` option.
+Restrict-only attenuation claims carried by a credential (extracted via `extractAttenuation`). `roles` = assume a SUBSET of the user's roles — `[]` means no roles (deny-all, fail-closed), an omitted key keeps all the user's roles; a role the user lacks is dropped by the intersection. `allowUnheldRoles: true` evaluates `roles` as given instead ("view as" a role the user does not hold) — still conjoined with the user's full authority, so never wider than the user; `extractAttenuation` never sets it, the app's `getAttenuation()` does. `attrs` are merged into the credential pass only and clipped by the scope conjunction, so they can never widen beyond the user's own authority. Feeds `Arbac.evaluate`'s `attenuate` option. See [View as](/arbac/attenuation#view-as-previewing-a-role-the-user-does-not-hold).
 
 ## Subpath: `@aooth/arbac-moost/atscript`
 

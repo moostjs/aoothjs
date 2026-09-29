@@ -44,7 +44,7 @@ function allowTableRead<TUserAttrs extends object, TScope extends object>(
 ): TPrivilegeFunction<TUserAttrs, TScope>;
 ```
 
-Emits 6 rules covering `AsDbController` read actions: `query`, `pages`, `getOne`, `getOneComposite`, `meta`, `metaForm`. See [Privilege Factories](/arbac/privileges).
+Emits 7 rules covering `AsDbController` read actions: `query`, `pages`, `getOne`, `getOneComposite`, `geo`, `meta`, `metaForm` (`geo` since 0.1.72). See [Privilege Factories](/arbac/privileges).
 
 ### `allowTableWrite`
 
@@ -55,7 +55,7 @@ function allowTableWrite<TUserAttrs extends object, TScope extends object>(
 ): TPrivilegeFunction<TUserAttrs, TScope>;
 ```
 
-Emits 11 rules covering reads + `insert`, `update`, `replace`, `remove`, `removeComposite`. See [Privilege Factories](/arbac/privileges).
+Emits 12 rules covering reads + `insert`, `update`, `replace`, `remove`, `removeComposite`. See [Privilege Factories](/arbac/privileges).
 
 ### `allowTableAction`
 
@@ -68,6 +68,51 @@ function allowTableAction<TUserAttrs extends object, TScope extends object>(
 ```
 
 Emits one rule per action name. `allowTableAction(r, 'x')` is equivalent to `allowTableAction(r, ['x'])`. See [Privilege Factories](/arbac/privileges).
+
+### `allowTableOps`
+
+```ts
+function allowTableOps<TUserAttrs extends object, TScope extends object>(
+  resource: string,
+  ops: readonly TTableOp[],
+  opts?: { scope?: (attrs: TUserAttrs, userId: string) => TScope },
+): TPrivilegeFunction<TUserAttrs, TScope>;
+```
+
+Emits one rule per handler action of the listed ops (see [`TABLE_OP_ACTIONS`](#table-action-constants)), deduplicated. Throws on an unknown op. Since 0.1.72. See [Privilege Factories](/arbac/privileges#allowtableops).
+
+### `defineTableAccess`
+
+```ts
+function defineTableAccess<
+  TUserAttrs extends object = object,
+  TScope extends TTableAccessScope = TTableAccessScope,
+>(
+  resource: string,
+  def: TTableAccessDef<TUserAttrs, TScope>,
+): TPrivilegeFunction<TUserAttrs, TScope>;
+```
+
+One table policy → read / write / action rules with a shared scope; a part scope merges over it (`filter` and the effective `check` conjoined via `conjoinRowPolicies`, other keys from the part). Scope callbacks are not inference sites — pin the generics or call it inside `defineRole<A, S>().use(...)`. Since 0.1.72. See [Privilege Factories](/arbac/privileges#definetableaccess-one-policy-per-table).
+
+### Table action constants
+
+```ts
+const TABLE_READ_ACTIONS: readonly [
+  "query",
+  "pages",
+  "getOne",
+  "getOneComposite",
+  "geo",
+  "meta",
+  "metaForm",
+];
+const TABLE_WRITE_ACTIONS: readonly ["insert", "update", "replace", "remove", "removeComposite"];
+const TABLE_META_ACTIONS: readonly ["meta", "metaForm"];
+const TABLE_OP_ACTIONS: Readonly<Record<TTableOp, readonly string[]>>;
+```
+
+The `AsDbController` handler-action vocabulary the `allowTable*` factories emit — for custom privileges and `deny(...)` loops. Since 0.1.72.
 
 ## Functions — Scope merging
 
@@ -172,6 +217,100 @@ function intersectControlsPolicy(
 
 AND-merge of two controls policies (each a `unionControlsPolicy` output) — the restrictive counterpart used by credential attenuation. Per key (absent ≡ allowed): `false` on either side wins; `true` defers to the other side; whitelist ∧ whitelist → set **intersection** (possibly empty = nothing permitted). See [Scope Merging](/arbac/scopes).
 
+## Functions — DB scope algebra
+
+The union / conjunction rules of a DB scope (`ArbacDbScope` in `@aooth/arbac-moost`), each facet defined once. Since 0.1.72. See [Scope Merging](/arbac/scopes).
+
+### `effectiveScope`
+
+```ts
+function effectiveScope<S extends TDbScope>(scopes: readonly S[]): TEffectiveDbScope<S>;
+```
+
+The additive union of a scope list (one scope per allowing rule), memoized per scopes array; facets compute lazily. `filter` / `check` (`check ?? filter`, `{}` = none) union via `mergeScopeFilters`, `projection` via `unionProjections`, `controls` via `unionControlsPolicy`, `allowedFields` / `nestedWrites` as set unions, `set` as an overlay (later wins), `checkRefs` as the entries EVERY scope enables, `withScopes(name)` as the declared `with.<name>` list. An empty list is the identity of every union — decide denial first with `normalizeScopes`.
+
+### `conjoinScopes`
+
+```ts
+function conjoinScopes<S extends TDbScope>(
+  a: readonly S[],
+  b: readonly S[],
+  opts?: TConjoinScopesOptions<S>, // { childrenOf?, checkRefs?(a, b), fields? }
+): S;
+```
+
+Restrict-only conjunction of two scope lists into one composite scope (credential attenuation): each side unioned, then conjoined facet by facet — `$and` filters / checks, path-wise projection ∩ (no common field → the first side's projection plus a match-nothing filter), deny-wins controls, intersected `allowedFields` / `nestedWrites`, `set` with the first side winning, `checkRefs` either side enforces, recursive `with`. A custom (non-built-in) key is combined by its `opts.fields` rule at every level; a custom key present with no rule throws `ScopeFieldConfigError` — it is never dropped (since 0.1.72). See [Custom scope fields](/arbac/scopes#custom-scope-fields).
+
+### `applyScopeFieldFilters`
+
+```ts
+function applyScopeFieldFilters<S extends TDbScope>(
+  scopes: readonly S[],
+  fields: TScopeFieldRules<S> | undefined,
+  opts?: TApplyScopeFieldFiltersOptions, // { onUnknownField?(field) }
+): readonly S[];
+```
+
+Folds each custom field's `rowFilter` into its scope's `filter` (`filter ∧ rowFilter(value, scope)`), recursively into `with` sub-scopes. Apply it to each evaluated scope list before any union or conjunction. An explicit `check` is left as written. Scopes are never mutated: a changed one is a copy, memoized process-wide per scope object, so `rowFilter` must be pure in `(value, scope)`. The fold is idempotent. The input list is returned when nothing changes. `onUnknownField` reports a non-built-in key that has no rule. `MoostArbac.evaluate` applies it to every evaluation. Since 0.1.72. See [Fields that restrict rows](/arbac/scopes#fields-that-restrict-rows-rowfilter).
+
+### `ScopeFieldConfigError`
+
+```ts
+class ScopeFieldConfigError extends Error {
+  readonly field: string;
+}
+```
+
+Thrown by `conjoinScopes` for a custom field without a rule. It is a server configuration error; `@aooth/arbac-moost` maps it to a generic 500. Since 0.1.72.
+
+### `DB_SCOPE_KEYS`
+
+```ts
+const DB_SCOPE_KEYS: readonly string[]; // filter, check, projection, controls, allowedFields, set, nestedWrites, checkRefs, with
+```
+
+The built-in scope keys the algebra combines itself; any other key is a custom field. Since 0.1.72.
+
+### `INHERITED_CONJUNCTION` / `needsInheritedConjunction`
+
+```ts
+const INHERITED_CONJUNCTION: unique symbol;
+function needsInheritedConjunction(scope: object): boolean;
+```
+
+`conjoinScopes` marks a `with.<rel>` sub-scope only ONE side declared: the silent side's policy for those joined rows is its inherited grant on the related table, so a resolver must conjoin the marked sub-scope with the caller's own grant there (unresolved → hidden) — never apply it alone as parent authority. `@aooth/arbac-moost`'s `$with` resolution does this.
+
+### `conjoinRowPolicies`
+
+```ts
+function conjoinRowPolicies(a: TRowPolicy, b: TRowPolicy): TRowPolicy; // { filter?, check? }
+```
+
+`filter = a.filter ∧ b.filter`, WITH CHECK `(a.check ?? a.filter) ∧ (b.check ?? b.filter)`; `check` is emitted only when it differs from the conjoined filter.
+
+### `normalizeScopes` / `unionOutcomes`
+
+```ts
+function normalizeScopes<S extends object>(outcome: {
+  allowed: boolean;
+  scopes?: ReadonlyArray<S | null | undefined>;
+}): S[] | undefined;
+function unionOutcomes<S extends object>(
+  outcomes: ReadonlyArray<{ allowed: boolean; scopes?: ReadonlyArray<S | null | undefined> }>,
+): S[] | undefined;
+```
+
+The empty-scope rule: denied → `undefined`; allowed without a `scopes` list → `[{}]` (unrestricted); a `null` / `undefined` scope (a scope function that returned nothing) is dropped; nothing left → `undefined` (deny). `unionOutcomes` concatenates several normalized outcomes (one surface served by several handlers).
+
+### `intersectEnabled` / `stableKey`
+
+```ts
+function intersectEnabled<K>(inputs: Iterable<true | ReadonlySet<K>>): true | Set<K>;
+function stableKey(value: unknown): string;
+```
+
+`intersectEnabled` — entries every input enables (`true` = all; no input → none). `stableKey` — a bigint-safe JSON key for de-duplicating filters / tuples.
+
 ## Functions — Codegen
 
 ### `extractResourceActions`
@@ -224,6 +363,68 @@ type TPrivilegeFunction<TUserAttrs, TScope> = () => TArbacRule<TUserAttrs, TScop
 ```
 
 Returned by `definePrivilege` / `allowTable*`. Invoked by `RoleBuilder.use()` to splice rules in place. See [Privilege Factories](/arbac/privileges).
+
+### `TTableOp` / `TTableWriteOp`
+
+```ts
+type TTableOp = "read" | "meta" | "insert" | "update" | "replace" | "remove";
+type TTableWriteOp = Exclude<TTableOp, "read">;
+```
+
+Operation names for `allowTableOps` and `defineTableAccess`'s `write` part. See [Privilege Factories](/arbac/privileges#allowtableops).
+
+### `TTableAccessDef<TUserAttrs, TScope>` / `TTableAccessScope`
+
+```ts
+interface TTableAccessScope {
+  filter?: TScopeFilter;
+  check?: TScopeFilter;
+}
+
+interface TTableAccessDef<TUserAttrs, TScope> {
+  scope?: (attrs: TUserAttrs, userId: string) => TScope;
+  read?: boolean | { scope?: (attrs: TUserAttrs, userId: string) => TScope };
+  write?:
+    | boolean
+    | readonly TTableWriteOp[]
+    | { ops?: readonly TTableWriteOp[]; scope?: (attrs: TUserAttrs, userId: string) => TScope };
+  actions?:
+    | readonly string[]
+    | { names: readonly string[]; scope?: (attrs: TUserAttrs, userId: string) => TScope };
+}
+```
+
+Input of `defineTableAccess`. `TTableAccessScope` is the minimum scope shape — the keys it conjoins. See [Privilege Factories](/arbac/privileges#definetableaccess-one-policy-per-table).
+
+### `TDbScope` / `TEffectiveDbScope<S>` / `TRowPolicy`
+
+```ts
+interface TDbScope {
+  filter?: TScopeFilter;
+  check?: TScopeFilter;
+  projection?: object;
+  controls?: object;
+  allowedFields?: readonly string[];
+  set?: object;
+  nestedWrites?: readonly string[];
+  checkRefs?: true | readonly string[];
+  with?: object;
+}
+```
+
+The structural DB scope shape the [scope algebra](#functions-db-scope-algebra) reads (`ArbacDbScope` satisfies it); `TEffectiveDbScope` is what `effectiveScope` returns; `TRowPolicy` is `{ filter?, check? }`. Since 0.1.72.
+
+### `TScopeFieldRule<S>` / `TScopeFieldRules<S>`
+
+```ts
+interface TScopeFieldRule<S extends object = TDbScope> {
+  conjoin(a: readonly S[], b: readonly S[]): unknown; // undefined = unrestricted (key omitted)
+  rowFilter?(value: unknown, scope: S): TScopeFilter | undefined; // undefined / {} = no row restriction
+}
+type TScopeFieldRules<S extends object = TDbScope> = Readonly<Record<string, TScopeFieldRule<S>>>;
+```
+
+The conjunction rule of one custom scope field, passed as `conjoinScopes`' `fields` option (in Moost: [`MoostArbac.registerScopeFields`](/api/arbac-moost#moostarbac-tuserattrs-tscope)). `conjoin` is called only when some scope on either side carries the field; each side is a scope list the app unions with its own rule. `rowFilter` makes the field a row restriction — see `applyScopeFieldFilters`. Since 0.1.72.
 
 ### `ControlGate`
 

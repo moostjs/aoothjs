@@ -15,21 +15,28 @@ Use `AsArbacDbReadableController<T>` when:
 
 ## `AsArbacDbController<T>` extends `AsDbController<T>`
 
-The class wires four protected hooks of `@atscript/moost-db`'s base controller:
+The class wires these protected hooks of `@atscript/moost-db`'s base controller (needs `@atscript/moost-db` ≥ 0.1.143):
 
-| Hook                              | What it does                                                                                                                                                                                                                                                                                                                                                                                                               |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `transformFilter(filter)`         | Calls `arbac.evaluate<ArbacDbScope>()` once per event, caches scopes via `arbac.setScopes`, merges user filter with the **UNION of scope filters** using `$and: [merged, userFilter]` (never object spread). On deny returns a match-nothing filter (`{ $or: [] }`).                                                                                                                                                       |
-| `transformProjection(projection)` | Unions per-scope `projection` whitelists and narrows the user `$select` (array inclusion or object exclusion) to its intersection with that union: `$select=a` under a scope that shows only `a.b` (or hides `a.c`) returns just `a.b`. An excluded nested object is stripped leaf by leaf.                                                                                                                                |
-| `validateControls(controls, ...)` | Runs the parent validator; then invokes `enforceControlsPolicy(unionControlsPolicy(scopes), controls)`. Violations throw `HttpError(403)`.                                                                                                                                                                                                                                                                                 |
-| `applyMetaOverlay(meta)`          | For `/meta`, evaluates ARBAC in parallel for every declared action and CRUD op, filters `meta.actions` and `meta.crud` so the UI only sees ops the caller can invoke — then **prunes the field surface** (`fields`, the serialized `type`, `relations`, `versionColumn`) to the union of the allowed read ops' scope projections. Memoized per-class action-meta map.                                                      |
-| `hasField(path)`                  | Scope-aware field visibility — moost-db's visibility hook, consulted at every gated query position: paths outside the read-scope projection union — or, inside a `$with` sub-query, outside the relation's `with` sub-scope — answer `false`, so any reference to a hidden field gets the **identical** `Unknown field "x"` 400 a nonexistent field gets. See [Column-scope security floor](#column-scope-security-floor). |
-| `onWrite(action, data)`           | For non-insert writes: `assertInScope(data, scopes)` first; then `applyAllowedFieldsAndSet(data, scopes, identifierFields)` strips fields outside the union of `allowedFields` (**auto-preserving PK + unique-index columns**) and overlays `set` defaults.                                                                                                                                                                |
-| `onRemove(id)`                    | `assertInScope(id, scopes)`.                                                                                                                                                                                                                                                                                                                                                                                               |
-| `assertInScope(idOrIds, scopes)`  | Issues `table.count` with `{ $and: [resolveIdFilter(id), mergedScopeFilter] }` and throws `HttpError(404, "Not found")` if not every id is in scope. Ids resolve with the `hasField` predicate, so a unique key the read scope hides is no identification.                                                                                                                                                                 |
+| Hook                              | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `prepareRequest(ctx)`             | Runs first on every endpoint. Reuses the scopes the authorize interceptor cached, else evaluates the handler's resource/action itself. A deny is a **403**. On reads it also resolves the `$with` relation policy. See [Fail-closed](#fail-closed-every-endpoint).                                                                                                                                                                               |
+| `transformFilter(filter)`         | Merges the user filter with the **UNION of scope filters** as `$and: [merged, userFilter]` (never object spread). Also the row overlay of `/one`, `DELETE` and `@DbAction` ids. On a route that skipped `prepareRequest`, evaluates lazily; a deny returns a match-nothing filter (`{ $or: [] }`).                                                                                                                                               |
+| `transformProjection(projection)` | Unions per-scope `projection` whitelists and narrows the user `$select` (array inclusion or object exclusion) to its intersection with that union: `$select=a` under a scope that shows only `a.b` (or hides `a.c`) returns just `a.b`. An excluded nested object is stripped leaf by leaf.                                                                                                                                                      |
+| `validateControls(controls, ...)` | Runs the parent validator; then invokes `enforceControlsPolicy(unionControlsPolicy(scopes), controls)`. Violations throw `HttpError(403)`.                                                                                                                                                                                                                                                                                                       |
+| `applyMetaOverlay(meta)`          | For `/meta`, evaluates ARBAC in parallel for every declared action and CRUD op, filters `meta.actions` and `meta.crud` so the UI only sees ops the caller can invoke — then **prunes the field surface** (`fields`, the serialized `type`, `relations`, `versionColumn`) to the union of the allowed read ops' scope projections. Memoized per-class action-meta map.                                                                            |
+| `authorizeForm(name, actions)`    | `GET /meta/form/:name` serves a form only if the caller may run at least one action that takes it as input. Otherwise the response is the unknown-form 404.                                                                                                                                                                                                                                                                                      |
+| `actionRowScope(name)`            | The rows the `@DbAction` `name` may run on: the filter of the caller's grant on that action. Enforced by the action gate, reflected in `$actions` and `GET /meta/actions/:id`. See [Row actions](#row-actions-run-only-where-their-grant-reaches). Since 0.1.72 (moost-db ≥ 0.1.145).                                                                                                                                                            |
+| `allowedActions(names)`           | The row-level actions `$actions` and `GET /meta/actions/:id` list: the ones the caller holds a grant on, by the `/meta` overlay's rule, without building the overlay. Since 0.1.72 (moost-db ≥ 0.1.145).                                                                                                                                                                                                                                         |
+| `hasField(path)`                  | Scope-aware field visibility — moost-db's visibility hook, consulted at every gated query position: paths outside the read-scope projection union — or, inside a `$with` sub-query, outside the [relation's policy](#per-relation-with-recursive) — answer `false`, so any reference to a hidden field gets the **identical** `Unknown field "x"` 400 a nonexistent field gets. See [Column-scope security floor](#column-scope-security-floor). |
+| `onWrite(action, data)`           | Rejects [nested writes](#nested-writes) the scopes don't opt in, then applies `allowedFields` / `set` (see [`allowedFields` and `set`](#allowedfields-and-set)).                                                                                                                                                                                                                                                                                 |
+| `guardWrite(ctx)`                 | Inside the write's transaction: **USING** — every update / replace target's pre-image must match the scope `filter`. Without a real transaction it also runs **WITH CHECK** before the write.                                                                                                                                                                                                                                                    |
+| `guardRemove(ctx)`                | Inside the delete's transaction: USING for the row being deleted.                                                                                                                                                                                                                                                                                                                                                                                |
+| `checkWrite(ctx)`                 | After the write, inside its transaction: **WITH CHECK** — every written row must match the scope `check`. A failure rolls the write back.                                                                                                                                                                                                                                                                                                        |
 
 ::: tip A scope projection removes fields from EXISTENCE, not just from rows
-With a constrained read projection, `/meta` no longer advertises the hidden fields (a table UI cannot even offer them as columns — previously they rendered as permanently-empty columns, and secret-bearing column NAMES leaked), and referencing one anywhere in a query (`$select`, a filter, a sort, a group, an aggregate) is indistinguishable from referencing a field that was never declared — see [Column-scope security floor](#column-scope-security-floor). PK + `preferredId` always stay visible — reads always return them (projection widening / id addressing). Unscoped read grants keep the full envelope; relations stay visible when projected **or** explicitly `with`-granted. A `with`-granted relation's nav type in `/meta` is pruned by its `with` sub-scope, the same rule its `$with` sub-queries follow (see [Hidden related fields](#hidden-related-fields)).
+With a constrained read projection, `/meta` no longer advertises the hidden fields (a table UI cannot even offer them as columns — previously they rendered as permanently-empty columns, and secret-bearing column NAMES leaked), and referencing one anywhere in a query (`$select`, a filter, a sort, a group, an aggregate) is indistinguishable from referencing a field that was never declared — see [Column-scope security floor](#column-scope-security-floor). PK + `preferredId` always stay visible — reads always return them (projection widening / id addressing). Unscoped read grants keep the full field envelope. Relations and their nav types follow the `$with` policy (see [Per-relation `with`](#per-relation-with-recursive)): a declared `with.<rel>` sub-scope, else the caller's own grant on the related table — none → the relation is dropped. A `ref` to a hidden field or an unreadable table is stripped.
+
+`/meta` also prunes the search surface: a `searchIndexes` entry that reads a hidden field is dropped; `searchable` / `vectorSearchable` / `geoSearchable` are recomputed over what is left; `crud.query` / `crud.pages` lose `search` / `index` / `vector` controls that became unusable; `crud.geo` goes with the last visible geo index. Each `crud` op is evaluated as the handler(s) serving it: `one` via `getOne` / `getOneComposite`, `remove` via `remove` / `removeComposite` (allowed when any is), the rest by name. An action is evaluated with the same id `useArbac` uses for its handler (`@ArbacAction`, else the `@DbAction` name, never the method `@Id`). If several methods declare it, it is allowed when any of them is. A class-level `@DbActions` / `@DbRowActions` entry has no handler method, so it is evaluated as the controller's resource plus the entry name. The same rule applies in `$actions`, `GET /meta/actions/:id` and `/meta/form/:name`.
 :::
 
 ::: warning `$and: [scope, user]`, never object spread
@@ -40,23 +47,110 @@ Prefer `conjoinScopeFilters(scope, userFilter)` from `@aooth/arbac` over hand-ro
 Historically this was recorded as BUG-2 against `@uniqu/core`'s `walkFilter` dropping sibling field keys next to a logical operator. That short-circuit was fixed in `@uniqu/core` 0.1.8 (mixed field/logical nodes are an implicit AND) — **the rule still stands**, for the same-key reason above, which is independent of it.
 :::
 
-::: warning `assertInScope` MUST run before `onWrite` strips data
-Without the pre-check, a caller knowing a row's primary key could mutate it past their scope filter (BUG-1). `AsArbacDbController.onWrite` calls `assertInScope(data, scopes)` first, then `applyAllowedFieldsAndSet(...)`. Custom subclasses MUST preserve this order.
+### Write pipeline
+
+From `@aooth/arbac-moost` 0.1.72 a write runs these checks, in order:
+
+| Step                         | Rule                                                                                                      | Failure                                         |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `prepareRequest`             | The caller holds a grant for the write action.                                                            | 403                                             |
+| `onWrite` — nested writes    | No nav-prop key unless a scope lists it in `nestedWrites`.                                                | 403 `Nested writes through "x" are not allowed` |
+| `onWrite` — fields           | `allowedFields` whitelist + `set` overlay.                                                                | Fields dropped silently                         |
+| `guardWrite` / `guardRemove` | **USING**: the stored row (by exact primary key, read inside the transaction) matches the scope `filter`. | 404, same as a missing row                      |
+| `guardWrite` — `checkRefs`   | Opt-in: every FK the write sets references a row the caller can read on the target table.                 | 403 `Referenced row "x" is outside your scope`  |
+| `checkWrite`                 | **WITH CHECK**: every written row matches `check` (default: `filter`; `{}` = off).                        | 403 `Row outside your write scope`, rolled back |
+
+- **Every targeted row must pass.** A bulk PATCH / PUT with one out-of-scope row is a 404, and nothing is written. Duplicate ids count once.
+- **USING and WITH CHECK are different questions.** USING asks "may you touch this row?"; WITH CHECK asks "is the result still yours?". A tenant-scoped writer can edit their rows but cannot insert into, or move a row to, another tenant.
+- **`check` overrides the default.** `{ filter: { tenant }, check: { status: { $ne: "archived" } } }` lets the writer move rows between tenants but never archive one. `check: {}` turns WITH CHECK off. Across roles, a row passing any role's check passes.
+- **Deletes** are scoped twice: moost-db pins the id among the rows the remove scope's `filter` admits, and `guardRemove` re-checks the stored row.
+
+::: warning Adapters without transactions (in-memory, standalone MongoDB)
+A post-write check cannot roll back there, so the controller checks **before** the write. It evaluates `check` in memory:
+
+- An insert / replace row is checked as sent.
+- An update patch is checked against the stored row plus the patch. Every field `check` references must be untouched or set to a plain value.
+
+Everything else is a **403** (fail closed): an operator (`$inc`, array ops) or a nested object over a checked field, or an operator outside `$eq` / `$ne` / `$in` / `$nin` / `$gt(e)` / `$lt(e)` / `$exists` / `$and` / `$or` / `$not` (e.g. `$regex`) in `check`.
 :::
+
+### Nested writes
+
+A write payload that carries a nav prop (`TO` / `FROM` / `VIA`) is a **403** unless a write scope lists that relation in `nestedWrites`. This covers `{ owner: {...} }`, `{ comments: [...] }` and patch operators like `{ tags: { $insert: [...] } }`. Bulk payloads are checked row by row.
+
+```ts
+allowTableWrite("projects", {
+  scope: () => ({ filter: { tenant: "a" }, nestedWrites: ["notes"] }),
+});
+```
+
+- **Opt-in only.** An unrestricted scope (`{}`) does not allow nested writes. Across roles the listed relations union; a [credential](/arbac/attenuation) can only narrow them.
+- **Parent authority.** The related rows are written under the PARENT scope. The related table's own ARBAC policy, `filter`, `set` and `check` are not applied to them. Opt a relation in only when the parent's policy is enough for its rows.
+- **`/meta` follows the same rule.** A relation is never offered as writable unless a write scope lists it: one the caller cannot read but may write through keeps its nav type in `/meta`, stamped `db.writeOnly`; any other hidden relation is dropped.
+
+### FK target checks (`checkRefs`)
+
+The row `filter` / `check` constrain the row being written, not the rows its foreign keys point at. A tenant-scoped writer can still set `projectId` to another tenant's project. `checkRefs` closes that: each listed FK must reference a row the caller can **read** on the target table.
+
+```ts
+allowTableWrite<UserAttrs, ArbacDbScope<Task>>("tasks", {
+  scope: (attrs) => ({
+    filter: { tenantId: attrs.tenantId },
+    set: { tenantId: attrs.tenantId },
+    checkRefs: ["projectId"], // or the TO relation name ("project"), or `true` for every FK
+  }),
+});
+```
+
+- **What is checked.** Insert and replace rows; update patches only when they touch the FK. A null or absent FK is skipped. A bulk write costs one `count` per FK, inside the write's transaction.
+- **"Can read" = the caller's own `query` grant on the target's ARBAC resource**, found through the target table's registered ARBAC DB controller (the same rule as [`$with`](#per-relation-with-recursive)). No registered controller, or no read grant there → 403. So is a missing target row.
+- **Union across roles: every scope must enable it.** Write scopes are additive, so a role without the flag grants unconstrained writes of that FK.
+
+  | Roles (each a write scope on `tasks`)     | `projectId` checked? |
+  | ----------------------------------------- | -------------------- |
+  | `member: { checkRefs: ["projectId"] }`    | yes                  |
+  | `member` + `auditor: { checkRefs: true }` | yes                  |
+  | `member` + `importer: {}` (no flag)       | **no**               |
+
+  A [credential](/arbac/attenuation) enforces what either side (user or credential) enforces.
+
+- **Handler-side writes** (a `@DbAction` that calls `this.table.insertOne`) skip `guardWrite`. Pass [`useArbacDbScope()`](#custom-routes-usearbacdbscope)`.writeOptions(this.table)` to the write — it runs the same check (with that action's scopes) inside the write's transaction. `scope.assertRefsInScope(this.table, [row])` is the standalone check.
+- **FK values that are class instances** (a Mongo `ObjectId`, a `Date`) are referenced values; a plain object or an array in an FK field (an operator shape) is a 403.
+- **A name that is neither an FK field nor a TO relation** throws on the first write (configuration error, 500).
+
+### `allowedFields` and `set`
+
+`allowedFields` entries are paths:
+
+| Entry          | Payload `{ profile: { name, tenant } }` keeps    |
+| -------------- | ------------------------------------------------ |
+| `profile`      | The whole `profile` object                       |
+| `profile.name` | `{ profile: { name } }` — other nested keys drop |
+
+- **PATCH replaces a nested object as a whole** unless the field is `@db.patch.strategy 'merge'`. So on PATCH, a dotted entry only works under a merge block. Under a replace block the partial object is dropped: writing it would clear the non-whitelisted leaves.
+- **Always kept:** the primary key, unique-index columns, the `@db.column.version` column and `$cas`. Optimistic concurrency works under any whitelist.
+- **A dotted `set` key** (`set: { "profile.tenant": "a" }`) sets the nested path and merges into the payload's object. On PATCH it never adds a replace block the payload doesn't carry, so the stored block is not cleared.
 
 ### Column-scope security floor
 
-::: warning Column scopes need `@atscript/moost-db` ≥ 0.1.134 and the authorize interceptor
+::: warning Column scopes need `@atscript/moost-db` ≥ 0.1.134
 moost-db consults `hasField` at every gated query position: filter keys at any depth (`$exists` included), `$sort`, `$select`, `$groupBy`, `$having`, aggregate and calendar-bucket `$field`s, navigation paths, `$with` relation names and the `$search` fallback fields. 0.1.128–0.1.132 skipped it for stored columns, so a projection-scoped caller could filter, sort, group and aggregate on hidden columns — a value oracle, even though `$select` values stayed stripped. `@aooth/arbac-moost` 0.1.68 peers on `^0.1.134` (0.1.67 on `^0.1.133`). 0.1.134 adds two fixes. A unique index over a hidden column no longer identifies a row (see [Hidden unique keys](#hidden-unique-keys)). Excluding a nested object (`$select=-a`, or a scope's `{ a: 0 }`) now removes its whole subtree; before, the object's leaves came back. If you override `hasField`, keep the `super` call.
 
-`hasField` and `transformProjection`'s value stripping read the scopes [`arbacAuthorizeInterceptor`](./arbac-authorize) caches before the handler runs. Without it (globally or via `@ArbacAuthorize()`) column scopes fail open — hidden columns are queryable and returned. Guard every ARBAC DB controller with it.
+`hasField` and `transformProjection`'s value stripping read the scopes `prepareRequest` resolves before anything else runs (reusing [`arbacAuthorizeInterceptor`](./arbac-authorize)'s cache). Before `@aooth/arbac-moost` 0.1.72 they read only that cache, so a controller without the interceptor served hidden columns. Now, if scopes are somehow unresolved, `hasField` hides every field and the other hooks answer 403.
 
-Native full-text search and vector search (`$vector` names an index) run inside the database over their indexes, outside `hasField`'s reach — keep hidden columns out of those indexes. The `$search` fallback used when a table has no search index only matches fields the caller can see.
+Native full-text, vector and geo search run inside the database over their indexes. From `@atscript/moost-db` 0.1.143 an index that reads a hidden field answers like a nonexistent one, and a hidden default text index falls back to the `$search` fallback over visible fields. The fallback only ever matches fields the caller can see.
 :::
+
+#### Derived columns and JSON columns
+
+From `@aooth/arbac-moost` 0.1.72:
+
+- **Derived columns follow their source.** A `@db.column.derived` field is visible only while its source path is. `{ settings: 0 }` also hides a `apiKeyCopy: Model.settings.apiKey` column: it is stripped from rows, unknown to filters and dropped from `/meta`.
+- **`@db.json` columns are atomic on SQL adapters** (SQLite, PostgreSQL, MySQL), which cannot address a JSON sub-path. A hidden leaf (`{ "settings.apiKey": 0 }`) hides the whole `settings` column. A whitelisted leaf alone (`{ id: 1, "settings.theme": 1 }`) does not reveal it. MongoDB and the memory adapter keep sub-path precision: only `settings.apiKey` is hidden.
 
 #### Hidden related fields
 
-The floor extends to joined rows. When a scope grants `with.<rel>`, a path under that relation is checked against the `with.<rel>` sub-scope, not the parent projection:
+The floor extends to joined rows. A path under a relation is checked against the policy of its joined rows (see [Per-relation `with`](#per-relation-with-recursive)), not the parent projection. With a declared `with.<rel>` sub-scope:
 
 ```ts
 scope: () => ({
@@ -75,8 +169,8 @@ scope: () => ({
 
 - The sub-scopes **union across roles** like top-level projections: a field any role's `with.<rel>` shows is visible.
 - The related table's own PK / `preferredId` stay visible even when the sub-scope whitelist omits them. The parent's top-level rule works the same way.
-- **Silence wins**: with no `with.<rel>` grant in any role, joined rows and their paths are unrestricted. To hide a related column, declare the sub-scope.
-- `/meta` agrees: the nav type under `type` for a `with`-granted relation lists only the fields the sub-scope shows, recursively.
+- **No sub-scope declared** (0.1.72+): joined rows and their paths follow the caller's own read grant on the related table. No grant there → `400 Unknown relation`, identical to a nonexistent relation.
+- `/meta` agrees: `relations` and the nav types under `type` list only what the same rule shows, recursively. A `ref` to a hidden field or to a table the caller cannot read is stripped.
 - Row stripping (`transformProjection` / the `$with` sub-select) stays in place as the second layer.
 
 Before `@aooth/arbac-moost` 0.1.68, paths under a `with`-granted relation skipped the sub-scope check. A filter on a hidden related field then decided whether the relation populated (a value oracle), and `$select` / `$sort` on it were accepted (an existence oracle).
@@ -93,7 +187,7 @@ A client `$select` is narrowed to its intersection with the scope projection, by
 | `{ a: 0 }`                      | (none)           | `{ id: 1, title: "t" }`    |
 | `{ a: 0 }`                      | `$select=-title` | `{ id: 1 }`                |
 
-`/query`, `/pages` and `/one` return the same rows, and `$with` sub-selects follow the same rule against the relation's `with` sub-scope. A scope that excludes a parent (`{ a: 0 }`) hides the whole object. Across roles, projections [union by path](/arbac/scopes): `{ a: 0 }` from one role and `{ "a.c": 0 }` from another leave only `a.c` hidden. A [credential](/arbac/attenuation) narrows the same way and never widens the user's projection.
+`/query`, `/pages` and `/one` return the same rows, and `$with` sub-selects follow the same rule against the [relation's policy](#per-relation-with-recursive). A scope that excludes a parent (`{ a: 0 }`) hides the whole object. Across roles, projections [union by path](/arbac/scopes): `{ a: 0 }` from one role and `{ "a.c": 0 }` from another leave only `a.c` hidden. A [credential](/arbac/attenuation) narrows the same way and never widens the user's projection.
 
 #### Hidden unique keys
 
@@ -105,20 +199,31 @@ A unique index over a column the read scope hides is not an identification. Addr
 | `PATCH /` or `PUT /` keyed by `code`, no PK | Identical response; nothing is written      |
 | `GET /one/<code>`                           | Identical `404`                             |
 
-When the scope carries a row `filter`, `assertInScope` answers both with `404 "Not found"`. The primary key and `preferredId` stay addressable. Before `@aooth/arbac-moost` 0.1.68, a DELETE / PATCH / PUT by a hidden unique value that existed got a different 404 body than a value that did not.
+DELETE and PATCH answer both with the same 404. A PUT is a full row, so without its primary key both get the same 400. The primary key and `preferredId` stay addressable. Before `@aooth/arbac-moost` 0.1.68, a DELETE / PATCH / PUT by a hidden unique value that existed got a different 404 body than a value that did not.
 
 ## `ArbacDbScope<T>` contract
 
 ```ts
 interface ArbacDbScope<T = unknown> {
   filter?: TScopeFilter; // a Mongo-style filter merged into the read/delete/update WHERE
+  check?: TScopeFilter; // WITH CHECK: a written row must match it (default: `filter`; `{}` = off)
   projection?: ProjectionOf<T>; // a field-whitelist applied to read responses
   set?: Partial<Record<OwnFieldKey<T>, unknown>>; // default values overlaid onto inserts/updates
   allowedFields?: Array<OwnFieldKey<T>>; // whitelist of writable field paths
   controls?: ControlsOf<T>; // gate `$with` / `$groupBy` / etc.
   with?: WithOf<T>; // per-relation sub-scopes for `?$with=<name>` expansion
+  nestedWrites?: Array<NavRelationKey<T>>; // nav relations writable through the parent payload
+  checkRefs?: true | Array<OwnFieldKey<T> | NavRelationKey<T>>; // FK targets must be readable
 }
 ```
+
+::: info `check`, `nestedWrites` and `checkRefs` are enforced from `@aooth/arbac-moost` 0.1.72
+
+- **`check`** — Postgres-RLS-style WITH CHECK. Every row an insert / replace / update writes must match it, or the write is rejected. Omitted → the scope's `filter` is the check, so a tenant-scoped writer cannot move a row out of their tenant. `check: {}` turns it off. Multiple roles: a row passing any role's check passes.
+- **`nestedWrites`** — nested writes through nav props (`{ title, comments: [...] }`) are **denied by default** (403). List a relation to allow it; the related rows are written under the PARENT scope, the related table's own ARBAC policy is not consulted.
+- **`checkRefs`** — FKs whose target row must be readable by the caller (403 otherwise). Enforced only when every write scope enables it. See [FK target checks](#fk-target-checks-checkrefs).
+
+:::
 
 Pass an `.as` model as `T` (e.g. `ArbacDbScope<Task>`) to get autocomplete on `projection` / `with` / `controls` / `set` / `allowedFields` against the model's own and navigation fields. `T = unknown` (the default) keeps the legacy untyped `Record<string, ...>` shape for back-compat. Dotted-path projections on nested own-objects (e.g. `'mfa.value'`) still type-check via a `keyof | (string & {})` escape hatch.
 
@@ -126,10 +231,15 @@ Pass an `.as` model as `T` (e.g. `ArbacDbScope<Task>`) to get autocomplete on `p
 
 `with[name]` is a sub-scope applied when the request expands the `name` relation via `?$with=<name>`. Recursive — each sub-scope has the same shape and can declare its own `with` for nested expansions (`tasks → comments → task`).
 
-**Parent-authority model**: the parent scope owns the policy for joined rows. arbac-moost does NOT re-evaluate ARBAC against the joined resource's own scopes — whatever the parent declares here is what surfaces from the expansion. Across roles, `with[name]` sub-scopes union additively at every nested level using the same primitives (`unionProjections` / `mergeScopeFilters` / `unionControlsPolicy`). **Silence wins**: if no role declares `with.<name>`, expansion is unrestricted (the `controls.$with` whitelist still applies if declared). A field a sub-scope hides is unknown in `$with` sub-queries and pruned from the `/meta` nav type — see [Hidden related fields](#hidden-related-fields).
+Which policy the joined rows of `?$with=<name>` obey, at every nesting level:
 
-::: warning Known gap — joined-resource projection in exclude mode
-arbac-moost does not apply the joined-resource projection mask to `$with` expansions when the request uses **exclude-mode** `$select` for the relation loader. Include-mode `$select` works end-to-end. Pin tight whitelists on the parent via `controls.$with` if exclude-mode masking is required.
+- **Declared** — some role's scope declares `with.<name>`: the union of the declared sub-scopes (parent authority). Across roles they union additively (`unionProjections` / `mergeScopeFilters` / `unionControlsPolicy`). Roles silent on `with.<name>` contribute nothing.
+- **Not declared** — the caller's OWN `query` grant on the related table's ARBAC resource: its `filter`, `projection`, `controls` and `with` apply. The resource comes from the ARBAC DB controller serving that table (`@ArbacResource`, else the controller id or class name). No such controller, or no grant → the relation is hidden: `400 Unknown relation`, absent from `/meta`. The 400's `Available relations: …` lists only the relations the caller may expand at that level (never a hidden one), so a hidden and a nonexistent name answer alike. An include-mode parent projection must also name the relation.
+
+The `controls.$with` whitelist applies either way. A field the policy hides is unknown in `$with` sub-queries and pruned from the `/meta` nav type — see [Hidden related fields](#hidden-related-fields).
+
+::: warning Breaking in `@aooth/arbac-moost` 0.1.72
+Before 0.1.72 an undeclared relation was expanded **unrestricted** ("silence wins"), bypassing the related table's own grant. Grant `query` on the related resources (e.g. `allowTableRead("users")`), or declare `with.<name>`, to keep existing `$with` requests working.
 :::
 
 Apps can **declaration-merge** custom fields into `ArbacDbScope` — for example, to add a `restrictRows: number` cap or an `auditTag: string` you read in a custom subclass.
@@ -142,6 +252,8 @@ declare module "@aooth/arbac-moost" {
   }
 }
 ```
+
+Credential attenuation conjoins scopes into one composite scope, so each custom field needs a conjunction rule registered with `MoostArbac.registerScopeFields` — see [Custom scope fields](/arbac/scopes#custom-scope-fields).
 
 ## Control gates
 
@@ -174,7 +286,7 @@ declare module "@aooth/arbac-moost" {
 
 ## `AsArbacDbReadableController<T>`
 
-Read-only mirror of `AsArbacDbController<T>`. Wires only the read hooks (`transformFilter`, `transformProjection`, `validateControls`, `applyMetaOverlay`, `hasField` — including the same `/meta` field pruning + `Unknown field` parity). Use it for view controllers and joined-table projections that should never accept writes.
+Read-only mirror of `AsArbacDbController<T>`. Wires only the read hooks (`prepareRequest`, `transformFilter`, `transformProjection`, `validateControls`, `applyMetaOverlay`, `authorizeForm`, `hasField` — including the same fail-closed `prepareRequest`, `/meta` field pruning + `Unknown field` parity). Use it for view controllers and joined-table projections that should never accept writes.
 
 ::: tip Binding a `@db.view`
 Bind view models with `@ReadableController(ViewModel)` from `@atscript/moost-db`. Both ARBAC controller classes are view-safe on every read path — the enforcement seams go through the bound readable surface, never the writable `.table` getter (which throws for view-bound controllers by moost-db design). Prefer `AsArbacDbReadableController` for pure dict/value-help views; a view bound through `AsArbacDbController` still serves all reads, and its write routes fail loudly at moost-db's `.table` guard.
@@ -198,14 +310,14 @@ export function makeArticlesController(table: AtscriptDbTable<typeof Article>) {
 }
 ```
 
-For a custom secondary check (e.g. enforce a tenant filter even when no scope is configured), override one of the hooks and call `super` first:
+For a custom secondary check (e.g. enforce a tenant filter even when no scope is configured), override one of the hooks and call `super` first. For a controller on another moost-db base class, compose the same hook bodies from the [building blocks](/api/arbac-moost#custom-arbac-controller-building-blocks) (`prepareArbacRequest`, `arbacRowFilter`, `registerArbacDbTarget`, …):
 
 ```ts
 @TableController(table)
 @ArbacResource("articles")
 class ArticlesController extends AsArbacDbController<typeof Article> {
   protected override async transformFilter(filter) {
-    const merged = await super.transformFilter(filter);
+    const merged = await super.transformFilter(filter); // sync since 0.1.72; await is harmless
     const tenantId = useAuth().getAuthContext<{ tenantId?: string }>()?.tenantId;
     if (!tenantId) throw new HttpError(403, "Missing tenant");
     return { $and: [merged, { tenantId }] };
@@ -213,23 +325,49 @@ class ArticlesController extends AsArbacDbController<typeof Article> {
 }
 ```
 
-## Cross-controller scope reads
+## Custom routes: `useArbacDbScope()`
 
-Inside a custom handler that's not a hook, read scopes via `useArbac().getScopes<ArbacDbScope>()`:
+A `@DbAction` handler or custom route that queries `this.table` directly bypasses the controller's hooks — it must apply the scope itself. `useArbacDbScope()` returns the current event's merged scope as ready-to-use helpers ([signature](/api/arbac-moost#usearbacdbscope)):
 
 ```ts
-@Controller("articles")
-class ArticlesController extends AsArbacDbController<Article> {
-  @Get("custom-summary")
-  @ArbacAction("read")
-  async customSummary() {
-    const scopes = useArbac().getScopes<ArbacDbScope>();
-    // hand-write a query using `scopes` directly
+import { ArbacResource, AsArbacDbController, useArbacDbScope } from "@aooth/arbac-moost";
+import { DbAction, DbActionID, TableController } from "@atscript/moost-db";
+import { HttpError, Post } from "@moostjs/event-http";
+import { Task } from "./task.as";
+
+@TableController(Task)
+@ArbacResource("tasks")
+export class TasksController extends AsArbacDbController<typeof Task> {
+  @Post("actions/markDone")
+  @DbAction<typeof Task>("markDone", { label: "Mark done" })
+  async markDone(@DbActionID() id: { id: string }) {
+    const scope = await useArbacDbScope<typeof Task>();
+    const r = await this.table.updateMany(scope.filter({ id: id.id }), {
+      status: "done",
+      ...scope.set(),
+    });
+    if (r.matchedCount === 0) throw new HttpError(404, "Not found");
+    return { ok: true };
   }
 }
 ```
 
-`useArbac().getScopes()` returns whatever the GUARD-priority interceptor previously set — including when this controller's own `transformFilter` ran a few microseconds earlier on the same event and cached scopes via `arbac.setScopes`.
+| Helper                           | Returns                                                                                                                                                                                                                                                                                       |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `filter(extra?)`                 | The union of the scopes' row filters, `$and` `extra`. `{}` when unrestricted.                                                                                                                                                                                                                 |
+| `set()`                          | The merged `set` overrides (later scopes win) — spread them LAST over your data.                                                                                                                                                                                                              |
+| `check()`                        | The effective WITH CHECK filter (`check`, else `filter`; unioned across roles). `{}` when unrestricted.                                                                                                                                                                                       |
+| `assertRowsInScope(table, ids)`  | Resolves every id to exactly one row (primary key first, else a unique key the scope shows), one `count`; 404 `Not found` if any is missing or out of scope. Duplicate ids count once.                                                                                                        |
+| `assertRefsInScope(table, rows)` | The [`checkRefs`](#fk-target-checks-checkrefs) FK target check for rows you insert: 403 `Referenced row "x" is outside your scope`. From 0.1.72.                                                                                                                                              |
+| `writeOptions(table)`            | Write options for `table.insertOne/Many`, `replaceOne` / `bulkReplace`, `updateOne` / `bulkUpdate`: the CRUD endpoints' in-transaction enforcement — nested writes (403), USING (404), `checkRefs` (403), WITH CHECK (403, rolled back). Does not apply `allowedFields` / `set`. From 0.1.72. |
+| `removeOptions(table)`           | Options for `table.deleteOne`: the id is pinned among in-scope rows and an out-of-scope row is a 404, like `DELETE`. From 0.1.72.                                                                                                                                                             |
+| `scopes`                         | The raw evaluated `ArbacDbScope[]`.                                                                                                                                                                                                                                                           |
+
+- **Fails closed.** Scopes come from the authorize interceptor's cache; when none are cached (a `@Public()` route, no interceptor) it evaluates ARBAC for the route's resource/action — a deny is a 403. The [empty-scope rule](#empty-scope-rule) applies: an allow left with no scope is a 403 too.
+- **Prefer `writeOptions` over hand-rolled checks** for inserts / updates through `this.table`: the checks run inside the write's transaction against the exact rows written.
+- **Never spread the scope filter.** `{ ...scopeFilter, id }` lets a key of your filter replace the scope's; pass your filter as `filter(extra)` (or combine with `conjoinScopeFilters`).
+- Use `assertRowsInScope` before a write that addresses rows by id but doesn't filter by the scope itself (a handler that takes ids and calls another service).
+- `useArbac().getScopes<ArbacDbScope>()` still returns the raw cached list (or `undefined`) when you need it without evaluation.
 
 ## Tuning ARBAC roles for DB controllers
 
@@ -258,26 +396,139 @@ const editor = defineRole<UserAttrs>()
 
 Note: typed scopes are passed **per-privilege** (the `ArbacDbScope<Article>` generic on `allowTable*`). Don't pin a single `ArbacDbScope<X>` at the `defineRole<UserAttrs, ArbacDbScope<X>>()` level — `ArbacDbScope<T>` is not assignable to `ArbacDbScope<unknown>` across `allowTable*` calls. The role-level generic stays as the untyped upper bound.
 
-| Scope field                            | What it does at runtime                                                                 |
-| -------------------------------------- | --------------------------------------------------------------------------------------- |
-| `filter: { tenantId: attrs.tenantId }` | Every read/update/delete is wrapped in `$and: [filter, userFilter]`.                    |
-| `set: { tenantId, ownerId }`           | Every insert/update has these defaults overlaid (caller can't fake `tenantId`).         |
-| `allowedFields: ["title", "body"]`     | Every update strips fields outside this list. PK + unique-index columns auto-preserved. |
-| `controls: { $with: false }`           | Caller can't expand joined relations on this resource.                                  |
-| `projection: ['id', 'title']`          | Read responses are whitelisted to these fields only.                                    |
+| Scope field                            | What it does at runtime                                                              |
+| -------------------------------------- | ------------------------------------------------------------------------------------ |
+| `filter: { tenantId: attrs.tenantId }` | Every read/update/delete is wrapped in `$and: [filter, userFilter]`.                 |
+| `set: { tenantId, ownerId }`           | Every insert/update has these defaults overlaid (caller can't fake `tenantId`).      |
+| `allowedFields: ["title", "body"]`     | Every write strips fields outside these paths. Identifiers + version auto-preserved. |
+| `controls: { $with: false }`           | Caller can't expand joined relations on this resource.                               |
+| `projection: ['id', 'title']`          | Read responses are whitelisted to these fields only.                                 |
+| `check: { status: "draft" }`           | Written rows must match (default: `filter`; `{}` = off). From 0.1.72.                |
+| `nestedWrites: ["comments"]`           | Allows nested writes through the `comments` nav prop (default: 403). From 0.1.72.    |
+| `checkRefs: ["projectId"]`             | A set `projectId` must reference a project the caller can read (403). From 0.1.72.   |
+
+To give reads, writes and actions of one table different scopes over a shared row filter, use [`defineTableAccess`](/arbac/privileges#definetableaccess-one-policy-per-table) instead of separate `allowTable*` calls.
 
 ## Identifier auto-preservation
 
-`applyAllowedFieldsAndSet` always preserves keys from `table.identifications` — your primary key, every column in a `@db.table.uniqueIndex` group, etc. This means a scope like `allowedFields: ["title"]` doesn't accidentally strip the `id` from an update payload, which would silently break the update.
+`applyAllowedFieldsAndSet` always preserves keys from `table.identifications` — your primary key, every column in a `@db.table.uniqueIndex` group, etc. — plus the `@db.column.version` column and `$cas`. This means a scope like `allowedFields: ["title"]` doesn't accidentally strip the `id` from an update payload (which would silently break the update) or the `version` (which would silently turn off optimistic concurrency — before 0.1.72 a stale PATCH then succeeded instead of answering 409).
 
-## Deny verdict (match-nothing)
+## Row actions run only where their grant reaches
 
-On a deny verdict, `transformFilter` returns a match-nothing filter (`{ $or: [] }`). The controller does this whenever:
+A caller may read many rows but act on only some of them. Each row-level `@DbAction` is scoped by the caller's grant **on that action**, not by the read grant (since 0.1.72, moost-db ≥ 0.1.145):
 
-- `arbac.evaluate()` returns `{ allowed: false }`.
-- The action resolution chain produces a name with no role grant.
+```ts
+defineRole<UserAttrs, ArbacDbScope<Ticket>>()
+  .id("triage")
+  .use(
+    allowTableRead("tickets"), // reads the whole table
+    allowTableAction("tickets", ["resolve"], { scope: (a) => ({ filter: { teamId: a.teamId } }) }),
+  );
+```
 
-Match-nothing produces an empty result set on read (200 with an empty array) and zero affected rows on write — fail-closed without surfacing a 403 to the caller for queries that legitimately return no rows. The constant itself is internal to the package — don't import it; the observable behavior is what's contracted.
+- **Action gate.** `POST /tickets/actions/resolve` on another team's ticket answers the missing-row 404.
+- **`$actions`.** `?$actions=true` lists `resolve` only on the team's rows.
+- **`GET /tickets/meta/actions/:id`** (and `meta/actions?k=v`). This answers which row-level actions the caller may run on one row, as `{ actions, disabledReasons? }`, with no row data. It needs no read grant. The caller must hold a grant on at least one row-level action of the controller, otherwise 403. An out-of-scope row and a missing one both answer `{ actions: [] }`. Field visibility on this route is the union of the granted actions' projections, so a `disabled` rule never sees a column that every granted action hides.
+
+The action's filter includes custom-field [`rowFilter`s](/arbac/scopes#fields-that-restrict-rows-rowfilter) and credential [attenuation](/arbac/attenuation). Actions with equal grants are checked with one query. How the route is authorized: it has no grant of its own. moost-db tags its handlers as delegating authorization to `prepareRequest` (`getDbEndpoint`, moost-db ≥ 0.1.145). The ARBAC authorize interceptor therefore skips its own evaluation for them on the ARBAC DB controllers, and `prepareRequest` authorizes them. Subclasses need nothing extra and the route is not public (`useArbac().isPublic` stays `false`). On a plain moost-db controller the interceptor still evaluates the handler, so the route answers 403.
+
+`$actions` and the route list only the actions the caller holds a grant on. The controllers' `allowedActions(names)` override answers this per action, with the same rule `/meta` uses, without building the `/meta` overlay on every read.
+
+## Fail-closed: every endpoint
+
+Every built-in route (`/query`, `/pages`, `/geo`, `/one`, `/meta`, `/meta/form`, and every write) resolves the caller's scopes in `prepareRequest` before anything else runs — `@DbAction` handlers too (moost-db ≥ 0.1.143 calls `prepareRequest` with `endpoint: "action"` before any action id is validated or row loaded, table-level actions included). It uses the ones [`arbacAuthorizeInterceptor`](./arbac-authorize) cached, otherwise the controller evaluates the handler's resource/action itself. So:
+
+- A principal with no grant gets **403** on every route.
+- A missing authorize interceptor does **not** open the table.
+- `@Public()` (`arbacPublic`) does **not** bypass an ARBAC DB controller. It only skips the interceptor. Grant the actions to a public role instead.
+- `GET /meta/actions/:id` is authorized by row-level action grants, not a read grant. See [Row actions](#row-actions-run-only-where-their-grant-reaches).
+
+Before 0.1.72, a controller without the interceptor ran writes unscoped, and reads returned rows with hidden columns.
+
+The scopes are resolved **once** per request at that entry point; every other hook (`transformFilter`, `hasField`, `validateControls`, the write guards) reads them and answers **403** when they are unresolved — never "unrestricted". A custom (non-action) route that wants the scope calls [`useArbacDbScope()`](#custom-routes-usearbacdbscope), which resolves them. A granted action is still bound to its own scope: an id outside it answers like a missing row (404).
+
+### Empty-scope rule
+
+How an evaluation outcome turns into scopes (0.1.72+, `normalizeScopes` in `@aooth/arbac`):
+
+| Outcome                                                | Result                                      |
+| ------------------------------------------------------ | ------------------------------------------- |
+| denied                                                 | 403                                         |
+| allowed, rule without `scope`                          | unrestricted (`{}`)                         |
+| allowed, no `scopes` list (a scope-agnostic evaluator) | unrestricted (`[{}]`)                       |
+| a `scope` function returns `undefined` / `null`        | that rule contributes nothing (fail closed) |
+| allowed, but no scope left (`scopes: []`)              | 403                                         |
+
+Every deny answers `Insufficient privileges for action "<action>" on resource "<resource>"`, the same message as the authorize interceptor. Before 0.1.72 an allow with an empty scope list matched nothing (200, no rows) in `useArbacDbScope`, and a `scope` returning `undefined` was treated as unrestricted.
+
+If you override `prepareRequest`, call `super.prepareRequest(ctx)` first.
+
+## Value-help controllers
+
+`AsArbacJsonValueHelpController<T>` and `AsArbacValueHelpController<T>` (since 0.1.72) are the ARBAC mirrors of `@atscript/moost-db`'s value-help controllers — the `/query`, `/pages`, `/one`, `/meta` surface behind FK pickers and dictionaries. Use the JSON variant for a static row set, the abstract one to plug your own source (implement `query` + `getOne`). Needs `@atscript/moost-db` ≥ 0.1.143.
+
+```ts
+import { allowTableRead, defineRole } from "@aooth/arbac";
+import { ArbacResource, AsArbacJsonValueHelpController } from "@aooth/arbac-moost";
+import { Controller, Moost } from "moost";
+
+@Controller("dicts/status")
+@ArbacResource("dict-status")
+export class StatusDictController extends AsArbacJsonValueHelpController<typeof StatusDict> {
+  constructor(app: Moost) {
+    super(StatusDict, STATUS_ROWS, app);
+  }
+}
+
+// Grant it like a table:
+export const staffRole = defineRole()
+  .id("staff")
+  .use(allowTableRead("dict-status", { scope: () => ({ filter: { active: true } }) }))
+  .build();
+```
+
+### Resource and action names
+
+The resource is the controller's `@ArbacResource(...)` (else the usual fallback: controller id, then class name). The data routes are re-tagged with the standard table **read** action ids, so `allowTableRead` / `allowTableOps(resource, ["read"])` / `defineTableAccess({ read })` grant a value-help source exactly like a table:
+
+| Route             | Handler              | ARBAC action      |
+| ----------------- | -------------------- | ----------------- |
+| `GET /query`      | `runQuery`           | `query`           |
+| `GET /pages`      | `runPages`           | `pages`           |
+| `GET /one/:id`    | `runGetOne`          | `getOne`          |
+| `GET /one?<pk>=…` | `runGetOneComposite` | `getOneComposite` |
+| `GET /meta`       | `meta`               | `meta`            |
+
+The plain moost-db value-help controllers keep the method names (`runQuery`, …) as action ids — `allowTableRead` grants only their `/meta`, and no scope is applied to their data routes. Put ARBAC-governed value-help sources on the ARBAC classes.
+
+### What the scope does
+
+The same [`ArbacDbScope`](#arbacdbscope-t-contract) contract as the DB controllers, through the value-help hooks:
+
+| Scope field     | Effect on value-help                                                                                                                    |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `filter`        | `$and`-ed with the request filter on `/query` / `/pages`; a row outside it answers **404** on `/one`.                                   |
+| `projection`    | Hidden columns are stripped from every row; the PK is always returned (unless an explicit `$select` leaves it out).                     |
+| (hidden fields) | A hidden field in a filter, `$sort` or `$select` is `400 Unknown field "x"`, and never matches `$search`.                               |
+| `controls`      | Gates such as `{ $search: false }` answer 403.                                                                                          |
+| — (`/meta`)     | `crud` filtered per action; `fields` / `type` pruned to the visible fields; `searchable: false` when no searchable field stays visible. |
+
+`with`, `set`, `allowedFields`, `check`, `nestedWrites` and `checkRefs` do not apply — value-help is read-only and has no relations.
+
+### Fail-closed
+
+Every route resolves the caller's scopes before anything else runs: the ones [`arbacAuthorizeInterceptor`](./arbac-authorize) cached, otherwise the controller evaluates the handler's resource/action itself. So:
+
+- A principal with no grant gets **403** on every route (`/meta` included).
+- A missing authorize interceptor does **not** open the data — the controller evaluates on its own.
+- `@Public()` (`arbacPublic`) does **not** bypass it — it only skips the interceptor.
+
+### DOs and DON'Ts
+
+- **Do** keep the `super` call when overriding `hasField`, `transformFilter`, `transformProjection`, `validateControls`, `applyMetaOverlay` or `prepareRequest`.
+- **Do**, in a custom `AsArbacValueHelpController.query`, skip fields `this.hasField(f)` rejects when you implement `$search` — the ARBAC layer can't see inside your search. `filter` and `$select` arrive already scoped.
+- **Don't** override `runQuery` / `runPages` / `runGetOne` / `runGetOneComposite` without re-applying `@ArbacAction(...)` — without it the action id reverts to the method name and `allowTableRead` stops granting the route.
+- **Don't** mark an ARBAC value-help controller `@Public()` expecting open access — grant the read actions to the public role instead.
 
 ## See also
 

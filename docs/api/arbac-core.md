@@ -16,13 +16,13 @@ class Arbac<TUserAttrs extends object, TScope extends object> {
       id: T;
       roles: string[];
       attrs: TUserAttrs | ((id: T) => TUserAttrs | Promise<TUserAttrs>);
-      attenuate?: { roles?: string[]; attrs?: Partial<TUserAttrs> };
+      attenuate?: { roles?: string[]; attrs?: Partial<TUserAttrs>; allowUnheldRoles?: boolean };
     },
   ): Promise<TArbacEvalResult<TScope>>;
 }
 ```
 
-Per-resource pre-compiled ARBAC evaluator. Deny rules win absolutely; allow scopes are unioned into `scopes: TScope[]`. The empty-object `{}` element is the "universe sentinel" — interpret as "no restriction". `evaluate` auto-registers the resource. When `user.attenuate` is supplied (the credential-claims bridge), the policy is evaluated **twice** — once with the user's full authority, once with the attenuated roles/attrs — and the OUTCOMES are intersected: `allowed` only if both passes allow, with the attenuated pass's scopes returned as `credScopes` for restrictive conjunction downstream. Omitting `attenuate` is a single evaluation, byte-for-byte the non-attenuated behavior. See [Core Engine](/arbac/core), [Mental Model](/arbac/concepts), and [Scopes](/arbac/scopes) for the conjunction helpers.
+Per-resource pre-compiled ARBAC evaluator. Deny rules win absolutely; allow scopes are unioned into `scopes: TScope[]`. The empty-object `{}` element is the "universe sentinel" — interpret as "no restriction". `evaluate` auto-registers the resource. When `user.attenuate` is supplied (the credential-claims bridge), the policy is evaluated **twice** — once with the user's full authority, once with the attenuated roles/attrs — and the OUTCOMES are intersected: `allowed` only if both passes allow, with the attenuated pass's scopes returned as `credScopes` for restrictive conjunction downstream. `attenuate.roles` is intersected with the user's roles; with `allowUnheldRoles: true` (since 0.1.72) it is evaluated as given ("view as" — the outcome is still intersected with the full-authority pass, so it never widens; unregistered role ids are dropped silently). Omitting `attenuate` is a single evaluation, byte-for-byte the non-attenuated behavior. See [Core Engine](/arbac/core), [Mental Model](/arbac/concepts), and [Scopes](/arbac/scopes) for the conjunction helpers.
 
 ## Functions
 

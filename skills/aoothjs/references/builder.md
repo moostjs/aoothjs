@@ -118,18 +118,39 @@ const broken = definePrivilege((scope) => [...]);
 
 These privileges bake in the action vocabulary exposed by `AsDbController` (from `@atscript/moost-db`) so app developers don't have to memorize action names.
 
+Exported constants: `TABLE_READ_ACTIONS` (`query`, `pages`, `getOne`, `getOneComposite`, `geo`, `meta`, `metaForm`), `TABLE_WRITE_ACTIONS` (`insert`, `update`, `replace`, `remove`, `removeComposite`), `TABLE_META_ACTIONS` (`meta`, `metaForm`), `TABLE_OP_ACTIONS` (op → actions map).
+
+| Helper                                                | Emits                                      | Notes                                                                                                                                                                  |
+| ----------------------------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `allowTableRead(resource, opts?)`                     | 7 allow rules — every `TABLE_READ_ACTIONS` | Read-side only. Includes `geo` since 0.1.72 — `.deny(r, "geo")` to block it.                                                                                           |
+| `allowTableWrite(resource, opts?)`                    | 12 allow rules — read + write actions      | Includes everything `allowTableRead` emits PLUS the 5 write actions.                                                                                                   |
+| `allowTableOps(resource, ops, opts?)`                 | Actions of the listed ops, deduped         | Ops: `read`, `meta` (`meta`+`metaForm`), `insert`, `update`, `replace`, `remove` (+`removeComposite`). Insert-only form role: `["insert", "meta"]`. Unknown op throws. |
+| `allowTableAction(resource, name \| string[], opts?)` | One allow rule per name                    | `allowTableAction(r, "x")` ≡ `allowTableAction(r, ["x"])`.                                                                                                             |
+| `defineTableAccess(resource, def)`                    | read / write / action rules, one policy    | See below.                                                                                                                                                             |
+
+All return `TPrivilegeFunction<TUserAttrs, TScope>` for `.use(...)`.
+
+### `defineTableAccess` — one table policy
+
+Use when reads, writes and actions of ONE table need different scopes over a shared row filter (instead of repeating the filter across several `allowTable*` calls):
+
 ```ts
-const TABLE_READ_ACTIONS = ["query", "pages", "getOne", "getOneComposite", "meta", "metaForm"];
-const TABLE_WRITE_ACTIONS = ["insert", "update", "replace", "remove", "removeComposite"];
+import { defineTableAccess } from "@aooth/arbac";
+
+defineTableAccess<Attrs, ArbacDbScope<typeof Task>>("tasks", {
+  scope: (a) => ({ filter: { tenantId: a.tenantId }, projection: { notes: 0 } }), // shared
+  read: true,
+  write: { ops: ["insert", "update"], scope: () => ({ allowedFields: ["title", "status"] }) },
+  actions: ["markDone"], // or { names, scope }
+});
 ```
 
-| Helper                                                | Emits                                      | Notes                                                                |
-| ----------------------------------------------------- | ------------------------------------------ | -------------------------------------------------------------------- |
-| `allowTableRead(resource, opts?)`                     | 6 allow rules — every `TABLE_READ_ACTIONS` | Read-side only.                                                      |
-| `allowTableWrite(resource, opts?)`                    | 11 allow rules — read + write actions      | Includes everything `allowTableRead` emits PLUS the 5 write actions. |
-| `allowTableAction(resource, name \| string[], opts?)` | One allow rule per name                    | `allowTableAction(r, "x")` ≡ `allowTableAction(r, ["x"])`.           |
-
-All three return `TPrivilegeFunction<TUserAttrs, TScope>` for `.use(...)`.
+| #   | Rule                                                                                                                                                                                                                                                                                            |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Part scope merges over the shared one: `filter` CONJOINED (`$and`); WITH CHECK = `(shared.check ?? shared.filter) ∧ (part.check ?? part.filter)` — a part only narrows (a part `check: {}` does not drop the shared filter's check; fixed in 0.1.72). Other keys: part wins, arrays not merged. |
+| 2   | `write: true` / no `ops` = insert + update + replace + remove. The op list may add `meta` (forms without `read`).                                                                                                                                                                               |
+| 3   | An action granted by an earlier part (`read` → `write` → `actions`) is not re-emitted by a later one.                                                                                                                                                                                           |
+| 4   | Scope callbacks are NOT inference sites — pass `<Attrs, Scope>` explicitly or call inside `defineRole<A, S>().use(...)`.                                                                                                                                                                        |
 
 `opts.scope` is `(attrs: TUserAttrs, userId: string) => TScope`. When present, it attaches to EVERY generated rule. Omit `opts.scope` to grant unrestricted access (each rule will push `{}` into the scopes array).
 
