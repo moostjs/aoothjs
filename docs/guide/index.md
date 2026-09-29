@@ -91,7 +91,8 @@ See [Using atscript-db Models](./atscript-db).
 - I need to **define roles and evaluate access**: [`@aooth/arbac`](../arbac/).
 - I want to **wire all of the above into a moost HTTP app**: add [`@aooth/auth-moost`](../moost/) and [`@aooth/arbac-moost`](../moost/arbac-authorize).
 - I want **`.as`-driven users with auto-derived role/attribute extraction**: add `@aooth/arbac-moost/atscript`.
-  :::
+
+:::
 
 ## Next steps
 

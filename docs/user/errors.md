@@ -116,7 +116,8 @@ Distinguish the two surfaces:
 - `lockEnds > 0 && lockEnds < now` ⇒ expired ⇒ auto-unlock (no `LOCKED` thrown).
 - `lockEnds === 0` ⇒ permanent ⇒ always throws `LOCKED`.
 - `lockEnds > now` ⇒ active temporary lock ⇒ throws `LOCKED` with `lockEnds` set.
-  :::
+
+:::
 
 ### `INVALID_CREDENTIALS` / `MFA_INVALID`
 
