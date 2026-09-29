@@ -10,7 +10,7 @@ import { Tenant } from "../models/tenant.as";
 import { DemoUser } from "../models/user.as";
 import type { ArbacDbScope, UserAttrs } from "./attrs";
 import { PROJ_USER_ADMIN } from "./projections";
-import { tenantFilter, tenantSet } from "./scopes";
+import { selfName, tenantFilter, tenantSet } from "./scopes";
 import { WRITEABLE_USER_FIELDS_ADMIN } from "./writeable-fields";
 
 export const adminRole = defineRole<UserAttrs, ArbacDbScope>()
@@ -41,13 +41,20 @@ export const adminRole = defineRole<UserAttrs, ArbacDbScope>()
     allowTableWrite<UserAttrs, ArbacDbScope<Project>>("projects", {
       scope: (attrs) => ({ filter: tenantFilter(attrs), set: tenantSet(attrs) }),
     }),
+    // `checkRefs`: a task's project must be one the admin can read (own
+    // tenant) — `set` pins the task's tenant, not the project's.
     allowTableWrite<UserAttrs, ArbacDbScope<Task>>("tasks", {
-      scope: (attrs) => ({ filter: tenantFilter(attrs), set: tenantSet(attrs) }),
+      scope: (attrs) => ({
+        filter: tenantFilter(attrs),
+        set: tenantSet(attrs),
+        checkRefs: ["projectId"],
+      }),
     }),
     allowTableAction<UserAttrs, ArbacDbScope<Task>>("tasks", "new", {
-      scope: (attrs, userId) => ({
+      scope: (attrs) => ({
         filter: tenantFilter(attrs),
-        set: { ...tenantSet(attrs), creatorUsername: userId },
+        set: { ...tenantSet(attrs), creatorUsername: selfName(attrs) },
+        checkRefs: ["projectId"],
       }),
     }),
     allowTableAction<UserAttrs, ArbacDbScope<Task>>(

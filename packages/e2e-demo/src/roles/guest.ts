@@ -3,6 +3,7 @@ import { allowTableRead, defineRole } from "@aooth/arbac";
 import { DemoUser } from "../models/user.as";
 import type { ArbacDbScope, UserAttrs } from "./attrs";
 import { PROJ_USER_SELF } from "./projections";
+import { selfName } from "./scopes";
 
 export const guestRole = defineRole<UserAttrs, ArbacDbScope>()
   .id("guest")
@@ -10,8 +11,8 @@ export const guestRole = defineRole<UserAttrs, ArbacDbScope>()
   .describe("Login only; read own user record")
   .use(
     allowTableRead<UserAttrs, ArbacDbScope<DemoUser>>("users", {
-      scope: (_attrs, userId) => ({
-        filter: { username: userId },
+      scope: (attrs) => ({
+        filter: { username: selfName(attrs) },
         projection: PROJ_USER_SELF,
       }),
     }),

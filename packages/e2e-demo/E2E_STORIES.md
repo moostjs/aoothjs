@@ -17,6 +17,7 @@ Story IDs follow `<DOMAIN>-<NN>`. Domains:
 - **META** — `/meta` overlay (action/CRUD visibility)
 - **SEC** — adversarial / attack vectors
 - **DX** — developer ergonomics
+- **ARBAC-HARD** — DB-controller hardening (action IDOR, WITH CHECK, FK target checks, role-assignment limit, nested writes, `$with` policy, form gating, fail-closed) — Playwright: `test-e2e/arbac-hardening.spec.ts`
 
 ---
 
@@ -258,7 +259,7 @@ _(or — if we add cascade — flip the assertion. For v1, assert current behavi
 ### ISO-05 — write filter enforced on `update`
 
 **Setup:** task `T_B` in tenant B; tenant A admin sends PATCH with `{ id: T_B, ... }`.
-**Acceptance:** `result.matchedCount === 0` (no rows updated). The implementation must AND the user filter with the scope filter; do NOT trust the body's `id` alone.
+**Acceptance:** 404 `Not found` (the pre-image is checked against the scope inside the write's transaction — same answer as a missing row); T_B unchanged. Do NOT trust the body's `id` alone. _(Was `matchedCount === 0`; since aoothjs 0.1.72 an out-of-scope target is a 404 — ARBAC-HARD-002.)_
 
 ### ISO-06 — write filter enforced on `delete`
 
@@ -374,11 +375,10 @@ _(post-ISSUE-4: arbac-only bypass no longer exists. A route with no `@ArbacResou
 
 **Note:** moost-db / @uniqu/core mechanics (operator semantics, pagination format, sort/select/count/groupBy correctness) are NOT tested here — they belong in those repos' test suites. This section asserts that aoothjs's ARBAC scope is preserved across user-supplied controls.
 
-### CTRL-05 — `$with` relation expansion (SKIPPED)
+### CTRL-05 — `$with` relation expansion
 
-**Setup:** task has `comments`. Member queries with `$with=[{path: "comments"}]`.
-**Acceptance:** rows include `comments: [...]` array; comments are subject to ARBAC on the `comments` resource (cross-cutting).
-**Skip rationale:** `$with` relation expansion against an actually-declared nav prop. Skipped because moost-db@0.1.75's `@TableController` typing rejects tables with non-empty NavType (variance issue). FK constraints landed in Phase 2 but the nav props (`@db.rel.to`/`@db.rel.from`) were dropped to keep the controllers compiling. Re-enable when moost-db typing accepts wider tables.
+**Setup:** task has `comments` (`@db.rel.from`) and `department` (`@db.rel.to`); comment has `task` (`@db.rel.to`).
+**Acceptance:** joined rows obey the caller's OWN read policy on the related table's ARBAC resource (filter + projection + controls) unless the parent scope declares a `with.<rel>` sub-scope (which then wins). No read grant on the target → 400 `Unknown relation` and the relation is pruned from `/meta`. Covered by ARBAC-HARD-030..033.
 
 ### CTRL-07 — scope holds across operator forms
 
@@ -400,11 +400,11 @@ _(post-ISSUE-4: arbac-only bypass no longer exists. A route with no `@ArbacResou
 
 ### CTRL-EX-03 — admin can use `$with` (silence wins union)
 
-**Acceptance:** `GET /tasks/query?$with=anything` as t1_dave → 200 OR 400-from-moost-db (relation not declared) — the key is it's NOT 403 from arbac.
+**Acceptance:** `GET /tasks/query?$with=anything` as t1_dave → 400 `Unknown relation` (not declared) — the key is it's NOT 403 from arbac. `$with=department` / `$with=comments` → 200 (admin holds read on both targets).
 
 ### CTRL-EX-04 — multi-role union: silence wins (alice = member+viewer; member silent on `$with` → allowed)
 
-**Acceptance:** `GET /tasks/query?$with=comments` as t1_alice → NOT 403 (member's silence overrides viewer's denial). May be 400 from moost-db (relation not declared) — that's a moost-db typing limitation, not an ARBAC failure.
+**Acceptance:** `GET /tasks/query?$with=comments` as t1_alice → NOT 403 (member's silence overrides viewer's denial); joined comments obey alice's own `comments` read scope.
 
 ### CTRL-EX-05 — multi-role union: both deny → 403 (SKIPPED — moost-db quirk)
 
@@ -418,7 +418,7 @@ _(post-ISSUE-4: arbac-only bypass no longer exists. A route with no `@ArbacResou
 
 ### CTRL-EX-07 — silence on a control means allowed (member uses `$with`)
 
-**Acceptance:** `GET /comments/query?$with=task` as t1_bob (member only) → NOT 403. May be 400 from moost-db (relation not declared).
+**Acceptance:** `GET /comments/query?$with=task` as t1_bob (member only) → 200; each joined `task` obeys bob's `tasks` read scope — `null` for tasks he neither created nor is assigned, `internalNotes` projected out (ARBAC-HARD-032).
 
 ### CTRL-EX-08 — denied on `/one` route too
 
@@ -448,7 +448,7 @@ _(post-ISSUE-4: arbac-only bypass no longer exists. A route with no `@ArbacResou
 
 ### WRITE-05 — bulk insert/update array path
 
-**Acceptance:** array body each item enforced; one item with bad data is per-item filtered (not silently included).
+**Acceptance:** array body each item enforced; one item outside the write scope (WITH CHECK) rejects the WHOLE batch with 403 and nothing is written (ARBAC-HARD-011).
 
 ### WRITE-06 — denied write returns 403, not 500
 
@@ -476,9 +476,9 @@ _(post-ISSUE-4: arbac-only bypass no longer exists. A route with no `@ArbacResou
 **Setup:** `allowTableRead` includes `meta`. Role without read.
 **Acceptance:** `GET /tasks/meta` → 403.
 
-### META-04 — `meta/form/:name` schema is unchanged regardless of role
+### META-04 — `meta/form/:name` requires an action rendering the form
 
-**Acceptance:** form schema is global (not user-scoped); but the action mounting it may not be visible in `meta.actions` for some roles.
+**Acceptance:** the schema itself is global (not user-scoped), but it is served only when the caller may run at least one action whose input form it is; otherwise the same 404 as an unknown form (no form-existence oracle). No `metaForm` grant → 403. _(Was "unchanged regardless of role"; since aoothjs 0.1.72 — ARBAC-HARD-040.)_
 
 ---
 
@@ -514,7 +514,7 @@ _(post-ISSUE-4: arbac-only bypass no longer exists. A route with no `@ArbacResou
 ### SEC-06 — mass-assignment via update (role escalation)
 
 **Attack:** member PATCHes own user `{ id: self, roles: ["admin"] }`.
-**Acceptance:** `roles` not persisted (allowedFields excludes it). Even via `users.assignRoles` action, only admin can call it.
+**Acceptance:** `roles` not persisted (allowedFields excludes it). Even via `users.assignRoles` action, only admin can call it — and a tenant admin cannot grant `superadmin` (ARBAC-HARD-014).
 
 ### SEC-07 — JWT with `alg: "none"`
 
@@ -651,6 +651,87 @@ _(documented: in-memory denylist grows; `cleanup()` purges expired. Test that ca
 
 ---
 
+## ARBAC-HARD — DB-Controller Hardening
+
+Playwright, API-level: `test-e2e/arbac-hardening.spec.ts`. Tasks carry `departmentId` (inherited from their project at seed); the manager (t1_carol, ops) reads the whole tenant but writes only own-department tasks.
+
+### ARBAC-HARD-001 — action IDOR across tenants
+
+**Acceptance:** t2_olivia (admin, tenant B) posting `markDone` / `markInProgress` / `archive` / `assign` / `delete` with a tenant-A task id → 404 `Row not found for action identifier`, byte-identical to a nonexistent id; the task is unchanged (status, assignee, still present).
+
+### ARBAC-HARD-002 — cross-tenant CRUD by id
+
+**Acceptance:** `/tasks/one/:id`, `PATCH /tasks`, `DELETE /tasks/:id` on a tenant-A task as tenant-B admin → 404; row unchanged.
+
+### ARBAC-HARD-003 — manager actions reach only own-department tasks
+
+**Acceptance:** `markDone` on an eng task (readable by the manager) → 404, unchanged; on an ops task → 201, status `done`.
+
+### ARBAC-HARD-004 — ungranted action is 403 before any id lookup
+
+**Acceptance:** t1_eve (viewer, no task actions) posting `markDone` with an existing OR a nonexistent id → 403 both times (no existence oracle); `new` → 403; nothing mutated or created.
+
+### ARBAC-HARD-010 — WITH CHECK on update (move out of department)
+
+**Acceptance:** manager PATCH of an own task: title-only → 202; with `departmentId` = another department or `null` (plus a title change) → 403 and the whole update rolls back (department AND title unchanged); PATCH of an eng task → 404 (USING), unchanged.
+
+### ARBAC-HARD-011 — WITH CHECK on insert (single + bulk)
+
+**Acceptance:** manager `POST /tasks` with another department or no department → 403, nothing written; a bulk insert with one out-of-department row → 403, NO row written; own department → 201.
+
+### ARBAC-HARD-012 — `new` action places the task in the manager's department
+
+**Acceptance:** `POST /tasks/actions/new` (form has no department) as the manager → 201; the row's `departmentId` is the manager's own (forced by the action scope's `set`), `creatorUsername` = `t1_carol`.
+
+### ARBAC-HARD-013 — admin cannot move a user to another tenant
+
+**Acceptance:** `PATCH /users { id, tenantId: <tenant B> }` as t1_dave (`tenantId` IS in his `allowedFields`) → 403; the user's tenant is unchanged.
+
+### ARBAC-HARD-014 — tenant admin assigns only tenant roles
+
+**Acceptance:** t1_dave (admin) `users.assignRoles` with `["superadmin"]` or `["member","superadmin"]` → 403 `Role "superadmin" cannot be assigned by your role`; an unknown role → 400 `Unknown role "root"`; roles unchanged. `["member","viewer"]` → 201. `_super` (holds `users/assignAnyRole`) assigning `["superadmin"]` → 201.
+
+### ARBAC-HARD-015 — a task's project must be readable by the caller (`checkRefs`)
+
+**Acceptance:** t1_dave `POST /tasks` with a tenant-B `projectId` → 403 `Referenced row "projectId" is outside your scope`; a bulk insert with one such row → 403, nothing written; `PATCH` moving a task to a tenant-B project → 403 (project + title unchanged), a title-only PATCH → 202. `POST /tasks/actions/new` with a tenant-B project → 403 for admin, manager and member; member with a private tenant-A project they cannot read → 403. No `hard-015` row written. In-scope projects → 201 (CRUD insert, and `new` for admin / manager / member).
+
+### ARBAC-HARD-020 — nested writes through nav props
+
+**Acceptance:** member `POST /comments` carrying `task: {...}` → 403 `Nested writes through "task" are not allowed`; admin `PATCH /tasks` / `POST /tasks` carrying `comments: [...]` → 403; no comment/task written, parent title unchanged; the flat comment insert → 201.
+
+### ARBAC-HARD-030 — `$with` without a grant on the target
+
+**Acceptance:** t1_bob (member, no `departments` grant) `GET /tasks/query?$with=department` → 400 `Unknown relation "department"`; `/tasks/meta` lists only the `comments` relation.
+
+### ARBAC-HARD-031 — `$with` with a grant on the target
+
+**Acceptance:** t1_carol (manager, tenant-scoped `departments` read) → 200, each joined `department` matches the row's `departmentId` and her tenant; `/meta` lists `comments` + `department`.
+
+### ARBAC-HARD-032 — joined rows filtered + projected by the caller's own target scope
+
+**Acceptance:** t1_bob `GET /comments/query?$with=task` → `task` present for his own tasks (without `internalNotes`, which the member projection hides although the seeded memo is on one of them) and `null` for every other task.
+
+### ARBAC-HARD-033 — a declared `with.<rel>` sub-scope governs the join
+
+**Acceptance:** t1_eve (viewer) `GET /tasks/query?$with=comments` → comments without `tenantId` (the declared `with.comments` projection); `$with=department` → 403 (outside the viewer's `$with` whitelist).
+
+### ARBAC-HARD-040 — form schema requires an action
+
+**Acceptance:** viewer `/tasks/meta/form/NewTaskForm` → 404 identical (modulo the name) to an unknown form; member → 200 for `NewTaskForm`, 404 for `AssignTaskForm`; manager → 200 for `AssignTaskForm`; guest (no grant) → 403.
+
+### ARBAC-HARD-050 — fail closed without a read grant
+
+**Acceptance:** guest (users-self only) → 403 on `/tasks/query`, `/tasks/pages`, `/tasks/meta`, `/documents/query` (not `200 []`); `/users/query` still returns only the guest's own row.
+
+### ARBAC-HARD-051 — `@Public()` does not open an ARBAC DB controller
+
+**Setup:** `PublicDocumentsController` — a deliberately misconfigured `@Public()` copy of the documents controller at `/public-documents`.
+**Acceptance:** anonymous reads (`query`, `pages`, `meta`) and insert → 401, nothing written; an authenticated viewer gets exactly her `/documents` scope (public documents only).
+
+**Not covered (no surface in the demo):** `/geo`, native search / vector indexes, derived columns, SQL JSON columns under scopes, value-help controllers, rows-level (`@DbActionIDs`) actions — the library suites cover them.
+
+---
+
 ## Coverage Matrix
 
 | Area                                              | Story IDs                                                                                                               |
@@ -660,6 +741,7 @@ _(documented: in-memory denylist grows; `cleanup()` purges expired. Test that ca
 | Multi-user/role + per-field/action/$controls (#1) | ISO-01..09, UNION-01..04, PROJ-01..06, ACT-01..07, CTRL-05, CTRL-07, CTRL-08, CTRL-EX-01..08, WRITE-01..07, META-01..04 |
 | Attack vectors (#2)                               | SEC-01..19, SEC-24..30, SEC-32                                                                                          |
 | DX (#3)                                           | DX-01..08                                                                                                               |
+| DB-controller hardening                           | ARBAC-HARD-001..004, 010..015, 020, 030..033, 040, 050..051                                                             |
 
 CTRL deletions (CTRL-01, 02, 03, 04, 06, 09, 10) and SEC deletions (SEC-20, 21, 22, 23, 31) cover concerns that belong to other repos (moost-db / @uniqu/core / @wooksjs/event-http / @atscript/db / consumer render layer) — see the per-section Notes above.
 

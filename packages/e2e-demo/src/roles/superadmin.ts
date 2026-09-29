@@ -8,6 +8,7 @@ import { Project } from "../models/project.as";
 import { Task } from "../models/task.as";
 import { Tenant } from "../models/tenant.as";
 import { DemoUser } from "../models/user.as";
+import { ASSIGN_ANY_ROLE_ACTION } from "./assignable-roles";
 import type { ArbacDbScope, UserAttrs } from "./attrs";
 
 export const superadminRole = defineRole<UserAttrs, ArbacDbScope>()
@@ -17,7 +18,13 @@ export const superadminRole = defineRole<UserAttrs, ArbacDbScope>()
   .use(
     allowTableWrite<UserAttrs, ArbacDbScope<Tenant>>("tenants"),
     allowTableWrite<UserAttrs, ArbacDbScope<DemoUser>>("users"),
-    allowTableAction<UserAttrs, ArbacDbScope<DemoUser>>("users", ["assignRoles", "lock", "unlock"]),
+    allowTableAction<UserAttrs, ArbacDbScope<DemoUser>>("users", [
+      "assignRoles",
+      // Lifts the tenant-admin limit on which roles `assignRoles` may grant.
+      ASSIGN_ANY_ROLE_ACTION,
+      "lock",
+      "unlock",
+    ]),
     allowTableWrite<UserAttrs, ArbacDbScope<Department>>("departments"),
     allowTableWrite<UserAttrs, ArbacDbScope<Project>>("projects"),
     allowTableWrite<UserAttrs, ArbacDbScope<Task>>("tasks"),

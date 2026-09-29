@@ -497,8 +497,8 @@ async function seedUser(handle: AppHandle, spec: UserSpec): Promise<SeededUser> 
       ...(spec.pendingInvitation && { pendingInvitation: true }),
     },
     mfa: { methods: [], defaultMethod: "", autoSend: false },
-  } as never);
-  const id = (insert as { insertedId: unknown }).insertedId;
+  });
+  const id = insert.insertedId;
   if (typeof id !== "string") {
     throw new Error(`seedUser ${spec.username}: expected string insertedId, got ${typeof id}`);
   }
@@ -702,6 +702,12 @@ interface TaskSeedSpec {
 async function seedTasks(handle: AppHandle, spec: TaskSeedSpec): Promise<string[]> {
   const { tables } = handle.appDb;
   const ids: string[] = [];
+  // A task inherits its project's department (the manager write scope keys on it).
+  const projectRows = await tables.projects.findMany({
+    filter: { id: { $in: spec.projectIds } },
+    controls: { $select: ["id", "departmentId"] },
+  });
+  const departmentOf = new Map(projectRows.map((p) => [p.id, p.departmentId]));
   for (let i = 0; i < 20; i++) {
     const status: "open" | "in_progress" | "done" =
       i < 10 ? "open" : i < 15 ? "in_progress" : "done";
@@ -710,6 +716,7 @@ async function seedTasks(handle: AppHandle, spec: TaskSeedSpec): Promise<string[
       i < 5 ? spec.memberAssignee : spec.otherAssignees[(i - 5) % spec.otherAssignees.length];
     const creator = spec.creators[i % spec.creators.length];
     const projectId = spec.projectIds[i % spec.projectIds.length];
+    const departmentId = departmentOf.get(projectId);
     // Tasks 0 and 10 carry internalNotes for projection tests.
     const internalNotes = i === 0 || i === 10 ? "Confidential project memo" : undefined;
 
@@ -717,6 +724,7 @@ async function seedTasks(handle: AppHandle, spec: TaskSeedSpec): Promise<string[
       tables.tasks.insertOne({
         tenantId: spec.tenantId,
         projectId,
+        departmentId,
         title: `Task ${i + 1}`,
         description: `Seeded task ${i + 1} in tenant ${spec.tenantId}`,
         creatorUsername: creator,

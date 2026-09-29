@@ -245,6 +245,8 @@ interface Task {
 
     @meta.required projectId: string
 
+    departmentId?: string        // FK → departments; seeded from the task's project
+
     @meta.required
     @expect.maxLength 200
     title: string
@@ -277,6 +279,9 @@ interface Task {
 
     @db.default.now createdAt: number.timestamp
     @db.default.now updatedAt: number.timestamp
+
+    @db.rel.from comments?: Comment[]
+    @db.rel.to department?: Department   // `$with` needs a read grant on `departments`
 }
 
 interface NewTaskForm {
@@ -370,10 +375,11 @@ The shape that flows into every scope function. Derived from `@arbac.attribute` 
 export interface UserAttrs {
   tenantId: string;
   departmentId?: string;
+  username?: string;
 }
 ```
 
-`AtscriptArbacUserProvider` (extended by the demo's `DemoArbacUserProvider`) builds this automatically by walking `DemoUser`'s annotated props. Scope functions receive `(attrs: UserAttrs, userId: string)` — `userId` is the **username** (JWT subject), not the UUID `id`.
+`AtscriptArbacUserProvider` (extended by the demo's `DemoArbacUserProvider`) builds this automatically by walking `DemoUser`'s annotated props. Scope functions receive `(attrs: UserAttrs, userId: string)` — `userId` is the session subject, i.e. the surrogate UUID `id`. The ownership columns (`creatorUsername`, `assigneeUsername`, `authorUsername`, `ownerUsername`) store usernames, so `DemoArbacUserProvider.getAttrs` adds `username` (inherited from the credentials base model, it can't carry `@arbac.attribute` itself) and owner-scoped roles compare against `attrs.username` (`selfName(attrs)` in `roles/scopes.ts`; unresolved → `""`, matching no row). In the legend below `uid` means that username.
 
 ---
 
@@ -414,7 +420,7 @@ Tenant-scoped god mode within own tenant; cannot touch other tenants; cannot mod
 | Resource     | Privilege                                                                                                                                          | Scope filter                                                                                                                                                           |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | tenants      | `allowTableRead("tenants", { scope: a => ({ filter: { id: a.tenantId } }) })`                                                                      | own tenant only                                                                                                                                                        |
-| users        | `allowTableWrite("users", { scope: a => ({ filter: tenantFilter(a), allowedFields: WRITEABLE_USER_FIELDS_ADMIN, projection: PROJ_USER_ADMIN }) })` | tenant + whitelist (excl. `roles`) + projection masking `password.history`/`mfa.value`                                                                                 |
+| users        | `allowTableWrite("users", { scope: a => ({ filter: tenantFilter(a), allowedFields: WRITEABLE_USER_FIELDS_ADMIN, projection: PROJ_USER_ADMIN }) })` | tenant + whitelist (excl. `roles`) + projection masking `password.history`/`mfa.value`; WITH CHECK keeps a `tenantId` edit inside the admin's tenant (403 otherwise)   |
 | departments  | `allowTableWrite("departments", { scope: a => ({ filter: tenantFilter(a), set: { tenantId: a.tenantId } }) })`                                     |                                                                                                                                                                        |
 | projects     | `allowTableWrite("projects", { scope: a => ({ filter: tenantFilter(a), set: { tenantId: a.tenantId } }) })`                                        |                                                                                                                                                                        |
 | tasks        | `allowTableWrite("tasks", { scope: a => ({ filter: tenantFilter(a) }) })` + `allowTableAction("tasks", ALL_TASK_ACTIONS, ...)`                     | per-action scopes force `tenantId`/`creatorUsername` on `new`                                                                                                          |
@@ -428,14 +434,14 @@ Tenant-scoped god mode within own tenant; cannot touch other tenants; cannot mod
 
 Read across own tenant; write within own department. Custom task actions on tasks in department.
 
-| Resource    | Privilege                                                                                                                                                                                                                                                                  | Scope                                                                |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| users       | `allowTableRead("users", { scope: a => ({ filter: tenantFilter(a), projection: PROJ_USER_MANAGER }) })`                                                                                                                                                                    | tenant + projection excluding `password.*`, `mfa.value`, `account.*` |
-| departments | `allowTableRead("departments", { scope: a => ({ filter: tenantFilter(a) }) })`                                                                                                                                                                                             |                                                                      |
-| projects    | `allowTableRead("projects", { scope: a => ({ filter: tenantFilter(a) }) })` + `allowTableAction("projects", ["update"], { scope: a => ({ filter: { ...tenantFilter(a), departmentId: a.departmentId } }) })`                                                               | read all in tenant; write own dept                                   |
-| tasks       | `allowTableRead("tasks", { scope: a => ({ filter: tenantFilter(a) }) })` + `allowTableAction("tasks", ["insert","update","markDone","markInProgress","archive","assign","new"], { scope: a => ({ filter: { ...tenantFilter(a), ... }, set: { tenantId: a.tenantId } }) })` | read all in tenant; write department-scoped tasks                    |
-| comments    | `allowTableRead("comments")` + `allowTableAction("comments", ["insert","update"], { scope: (a,u) => ({ filter: { ...tenantFilter(a), authorUsername: u }, set: { tenantId: a.tenantId, authorUsername: u } }) })`                                                          | read tenant; write own only                                          |
-| documents   | `allowTableRead("documents", { scope: a => ({ filter: { ...tenantFilter(a), classification: { $in: ["public","internal"] } } }) })`                                                                                                                                        | tenant + non-confidential                                            |
+| Resource    | Privilege                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Scope                                                                                                                                                                                                                                                                |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| users       | `allowTableRead("users", { scope: a => ({ filter: tenantFilter(a), projection: PROJ_USER_MANAGER }) })`                                                                                                                                                                                                                                                                                                                                                           | tenant + projection excluding `password.*`, `mfa.value`, `account.*`                                                                                                                                                                                                 |
+| departments | `allowTableRead("departments", { scope: a => ({ filter: tenantFilter(a) }) })`                                                                                                                                                                                                                                                                                                                                                                                    |                                                                                                                                                                                                                                                                      |
+| projects    | `defineTableAccess("projects", { scope: a => ({ filter: tenantFilter(a) }), read: true, write: { ops: ["update"], scope: a => ({ filter: deptFilter(a) }) } })`                                                                                                                                                                                                                                                                                                   | read all in tenant; update own dept (WITH CHECK: cannot move a project out)                                                                                                                                                                                          |
+| tasks       | `defineTableAccess("tasks", { scope: a => ({ filter: tenantFilter(a) }), read: true, write: { ops: ["insert","update"], scope: a => ({ filter: deptFilter(a), set: tenantSet(a) }) }, actions: { names: ["markDone","markInProgress","archive","assign"], scope: a => ({ filter: deptFilter(a) }) } })` + `allowTableAction("tasks", "new", { scope: a => ({ filter: tenantDeptFilter(a), set: { tenantId, departmentId: a.departmentId, creatorUsername } }) })` | read all in tenant; write own-dept tasks. `set` deliberately omits `departmentId` on insert/update so WITH CHECK 403s (and rolls back) a task placed in / moved to another department; the `new` form has no department field, so its `set` forces the manager's own |
+| comments    | `defineTableAccess("comments", { scope: a => ({ filter: tenantFilter(a) }), read: true, write: { ops: ["insert","update"], scope: (a) => ({ filter: { authorUsername: uid }, set: { tenantId: a.tenantId, authorUsername: uid } }) } })`                                                                                                                                                                                                                          | read tenant; write own only                                                                                                                                                                                                                                          |
+| documents   | `allowTableRead("documents", { scope: a => ({ filter: { ...tenantFilter(a), classification: { $in: ["public","internal"] } } }) })`                                                                                                                                                                                                                                                                                                                               | tenant + non-confidential                                                                                                                                                                                                                                            |
 
 ### 5.4 member
 
@@ -499,7 +505,9 @@ export const WRITEABLE_USER_FIELDS_ADMIN = [
 ];
 ```
 
-`roles` is NOT writeable via plain PATCH /users — only via `users.assignRoles` action.
+`roles` is NOT writeable via plain PATCH /users — only via `users.assignRoles` action. That action accepts only `TENANT_ASSIGNABLE_ROLES` (`admin`, `manager`, `member`, `viewer`, `guest` — `src/roles/assignable-roles.ts`; unknown role → 400, other → 403) unless the caller holds the privileged `users/assignAnyRole` ARBAC action (superadmin only).
+
+Task writes carry `checkRefs: ["projectId"]` on the admin / manager CRUD write scopes and on every role's `new` action scope: a task's `projectId` must name a project the caller can read (403 `Referenced row "projectId" is outside your scope`). The `new` handler inserts via `this.table` with `useArbacDbScope().writeOptions(this.table)`, which runs the CRUD endpoints' in-transaction enforcement (`checkRefs` included).
 
 ### 5.7b Per-role `controls` gating (Uniquery `$with` / `$groupBy` / `$having`)
 
@@ -538,7 +546,9 @@ To exercise union semantics, the seed creates:
 
 ## 6. Controllers
 
-All db-backed controllers are **empty subclasses** of `AsArbacDbController<typeof Model>` decorated `@TableController(table)` + `@ArbacResource("...")`. Custom actions live as methods on those classes (still relatively lean: a couple of lines wrapping `this.table.*` calls with `scopedFilter()`).
+All db-backed controllers are **empty subclasses** of `AsArbacDbController<typeof Model>` decorated `@TableController(table)` + `@ArbacResource("...")`. Custom actions live as methods on those classes (still relatively lean: a couple of lines wrapping `this.table.*` calls with `useArbacDbScope()` — `scope.filter({ id })` / `scope.set()`).
+
+Every endpoint of these controllers resolves the caller's scopes first and fails closed (no grant → 403; `@Public()` does not bypass it — `PublicDocumentsController` at `/public-documents` is a deliberately misconfigured `@Public()` copy of `DocumentsController` pinning that). Writes enforce USING (pre-image in the write scope's filter, else 404), WITH CHECK (the written row must match the scope's `check`, default = `filter`, else 403 + rollback) and refuse nested writes through nav props (no scope opts in via `nestedWrites`). `$with` on a relation without a declared `with.<rel>` sub-scope obeys the caller's own read policy on the related table's ARBAC resource (no grant → 400 `Unknown relation`). Row-level `@DbAction*` ids are checked against the action's scope before the handler runs (out of scope → the same 404 as a missing row), and `/meta/form/:name` answers only for forms of actions the caller may run.
 
 ### 6.1 `health.controller.ts`
 
@@ -620,7 +630,7 @@ export class TasksController extends AsArbacDbController<typeof Task> {
 }
 ```
 
-Each action body is ~5 lines: `scopedFilter`, `this.table.updateMany`, `if (matchedCount === 0) throw new HttpError(404, ...)`, return `{ ok, message }`. All scope/field gating is done by the base class + `applyAllowedFieldsAndSet` already; the body's only job is the actual mutation.
+Each action body is ~5 lines: `useArbacDbScope()`, `this.table.updateMany(scope.filter({ id }), …)`, `if (matchedCount === 0) throw new HttpError(404, ...)`, return `{ ok, message }`. The framework already 404s an out-of-scope id before the body runs; the scoped filter keeps the write itself bounded. All scope/field gating is done by the base class + `applyAllowedFieldsAndSet` already; the body's only job is the actual mutation.
 
 ### 6.7 `comments.controller.ts` — empty subclass
 

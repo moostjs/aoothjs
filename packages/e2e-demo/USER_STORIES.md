@@ -109,13 +109,13 @@ Login variants:
 
 Recovery variants:
 
-| Variant                | Purpose                                                                      |
-| ---------------------- | ---------------------------------------------------------------------------- |
-| default/no variant     | OTP-via-email recovery; fresh-login post-reset behaviour (redirect to login) |
-| `recovery-auto-login`  | `autoLoginOnRecover=true`; reset finishes with tokens                        |
-| `recovery-short-ttl`   | `recoveryStateTtlMs=1` — every recovery pause expires the persisted state    |
-| `recovery-fast-resend` | Recovery pincode resend cooldown                                             |
-| `recovery-terms-bump`  | Inline consent on recovery `SetPasswordForm`                                 |
+| Variant                | Purpose                                                                         |
+| ---------------------- | ------------------------------------------------------------------------------- |
+| default/no variant     | OTP-via-email recovery; fresh-login post-reset behaviour (redirect to login)    |
+| `recovery-auto-login`  | `autoLoginOnRecover=true`; reset finishes with tokens                           |
+| `recovery-short-ttl`   | `recoveryStateTtlMs=60000`; spec fast-forwards the wf-state store clock past it |
+| `recovery-fast-resend` | Recovery pincode resend cooldown                                                |
+| `recovery-terms-bump`  | Inline consent on recovery `SetPasswordForm`                                    |
 
 Invite variants:
 

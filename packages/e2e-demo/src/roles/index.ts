@@ -18,6 +18,7 @@ export const allRoles = [
   tasksWriteDeniedRole,
 ] as const;
 
+export { ASSIGN_ANY_ROLE_ACTION, TENANT_ASSIGNABLE_ROLES } from "./assignable-roles";
 export type { ArbacDbScope, UserAttrs } from "./attrs";
 export * from "./projections";
 export * from "./writeable-fields";

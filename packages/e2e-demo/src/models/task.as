@@ -1,6 +1,7 @@
 import { Tenant } from './tenant'
 import { Project } from './project'
 import { Comment } from './comment'
+import { Department } from './department'
 
 @db.table 'tasks'
 @db.http.path '/tasks'
@@ -18,6 +19,12 @@ export interface Task {
     @db.rel.FK
     @db.index.plain 'tasks_project_idx'
     projectId: Project.id
+
+    // Owning department — the manager role's write scope (tenant + department)
+    // filters on it, and its WITH CHECK keeps written rows inside it.
+    @db.rel.FK
+    @db.index.plain 'tasks_department_idx'
+    departmentId?: Department.id
 
     @meta.required
     @expect.maxLength 200
@@ -57,6 +64,11 @@ export interface Task {
 
     @db.rel.from
     comments?: Comment[]
+
+    // Only roles holding a read grant on `departments` may `$with` it (the
+    // joined rows obey their own `departments` scope); others get 400.
+    @db.rel.to
+    department?: Department
 }
 
 export interface NewTaskForm {

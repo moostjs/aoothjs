@@ -1,4 +1,4 @@
-import { ArbacResource, AsArbacDbController } from "@aooth/arbac-moost";
+import { ArbacResource, AsArbacDbController, useArbacDbScope } from "@aooth/arbac-moost";
 import {
   DbAction,
   DbActionID,
@@ -10,7 +10,7 @@ import {
 import { HttpError, Post } from "@moostjs/event-http";
 
 import { AssignTaskForm, NewTaskForm, Task } from "../models/task.as";
-import { assertWritten, scopedFilter, scopedSet } from "./_helpers";
+import { assertWritten } from "./_helpers";
 
 type Ack = { ok: true; message: string };
 
@@ -22,10 +22,11 @@ export class TasksController extends AsArbacDbController<typeof Task> {
     patch: Record<string, unknown>,
     message: string,
   ): Promise<Ack> {
-    const r = await this.table.updateMany(scopedFilter({ id }), {
+    const scope = await useArbacDbScope<typeof Task>();
+    const r = await this.table.updateMany(scope.filter({ id }), {
       ...patch,
       updatedAt: Date.now(),
-    } as never);
+    });
     assertWritten(r);
     return { ok: true, message };
   }
@@ -38,10 +39,15 @@ export class TasksController extends AsArbacDbController<typeof Task> {
     requiredFields: [],
   })
   async newTask(@InputForm(NewTaskForm) form: NewTaskForm): Promise<Ack & { insertedId: string }> {
+    const scope = await useArbacDbScope<typeof Task>();
     // NewTaskForm is a class instance; only its data fields are persisted, methods are unused.
     // oxlint-disable-next-line no-misused-spread
-    const r = await this.table.insertOne({ ...form, ...scopedSet(), status: "open" } as never);
-    const insertedId = (r as { insertedId: unknown }).insertedId;
+    const row: Record<string, unknown> = { ...form, ...scope.set(), status: "open" };
+    // The CRUD endpoints' write enforcement inside the insert's transaction —
+    // notably `checkRefs`: the form's `projectId` must name a project the
+    // caller can read (`set` pins the task's tenant, not its project's).
+    const r = await this.table.insertOne(row, scope.writeOptions(this.table));
+    const insertedId: unknown = r.insertedId;
     if (typeof insertedId !== "string") {
       throw new HttpError(500, "Insert succeeded but no insertedId returned");
     }
@@ -116,7 +122,8 @@ export class TasksController extends AsArbacDbController<typeof Task> {
     requiredFields: [],
   })
   async deleteTask(@DbActionID() id: { id: string }): Promise<Ack> {
-    const r = await this.table.deleteMany(scopedFilter({ id: id.id }));
+    const scope = await useArbacDbScope<typeof Task>();
+    const r = await this.table.deleteMany(scope.filter({ id: id.id }));
     assertWritten(r);
     return { ok: true, message: "Task deleted" };
   }

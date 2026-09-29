@@ -86,6 +86,7 @@ import {
   type FederatedIdentityTable,
 } from "@aooth/user/atscript-db";
 import { Get, MoostHttp, Post } from "@moostjs/event-http";
+import { cachedBy } from "@wooksjs/event-core";
 import { useHeaders } from "@wooksjs/event-http";
 import { MoostWf } from "@moostjs/event-wf";
 import {
@@ -116,6 +117,7 @@ import {
   HealthController,
   makeMcpDemoController,
   ProjectsController,
+  PublicDocumentsController,
   TaskDictController,
   TasksController,
   TenantsController,
@@ -136,7 +138,7 @@ import {
 } from "./variants";
 import { readVariantHeader } from "./variants-server";
 import { createFakeIdpController } from "./oauth-fake-idp";
-import { createWfStore } from "./wf-store";
+import { createWfStore, createWfStoreClock } from "./wf-store";
 import { makeHandoverWorkflow } from "./workflows/handover.workflow";
 
 export interface BuildAppOptions {
@@ -491,7 +493,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   const emailSender: EmailSender =
     opts.emailSender ?? testCaptureSender ?? new ConsoleEmailSender();
   const aooth = createAooth({ tables: appDb.tables, env });
-  const wfStateStore = createWfStore(appDb);
+  // Test mode hands the store a controllable clock so specs can fast-forward
+  // past a paused state's TTL (`POST /__test/wf-states/advance-clock`).
+  const wfStoreClock = createWfStoreClock();
+  const wfStateStore = createWfStore(appDb, isTestMode ? wfStoreClock : undefined);
 
   // ── Federated login (OAuth2 / OIDC) wiring ──────────────────────────────
   // A network-free fake Google provider whose authorize endpoint is the
@@ -1301,19 +1306,37 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // metadata across `extends`, so each consumer subclass must re-apply it.
   // Per-event memoization happens via a wooks-slot cache inside
   // `AtscriptArbacUserProvider`.
+  // The username behind a surrogate id — one lookup per event (every ARBAC
+  // evaluation of a request reads the same principal's attrs).
+  const usernameOf = cachedBy(async (id: string) => {
+    const row = await appDb.tables.users.findOne({
+      filter: { id },
+      controls: { $select: ["username"] },
+    });
+    return row?.username;
+  });
   @Injectable()
   class DemoArbacUserProvider extends AtscriptArbacUserProvider<DemoUser> {
     constructor() {
       // The session subject is now the stable surrogate `id`, so the provider
       // can query the REAL users table directly — its default
       // `findOne({ filter: { id } })` resolves the row by primary key.
-      super(DemoUser, appDb.tables.users as unknown as ArbacUserTable<DemoUser>);
+      super(DemoUser, appDb.tables.users);
       // Boot-time: every @arbac.attenuate.attr target on the credential model
       // must name a real @arbac.attribute on the user model — fail loud on a typo.
       validateAttenuationTargets(DemoAuthCredential, ["tenantId", "departmentId"]);
     }
     override getUserId(): string {
       return useAuth().getUserId();
+    }
+    // The session subject (`userId` in scope fns) is the surrogate `id`, but
+    // the ownership columns (creatorUsername, assigneeUsername, authorUsername,
+    // ownerUsername) hold usernames — so owner-scoped roles read
+    // `attrs.username`. `username` is inherited from the credentials base
+    // model, which is why it can't carry `@arbac.attribute` itself.
+    override async getAttrs(id: string): Promise<object> {
+      const [attrs, username] = await Promise.all([super.getAttrs(id), usernameOf(id)]);
+      return { ...attrs, username };
     }
     // Source the credential's restrict-only ARBAC attenuation from its TYPED
     // @arbac.attenuate.* root fields (surfaced flat on the auth context).
@@ -1406,6 +1429,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       otpConsentLog: sharedOtpConsentLogBuffer,
       lifecycle: sharedLifecycleBuffer,
       wfStates: appDb.tables.wfStates,
+      wfStoreClock,
     });
     app.registerControllers(TestMailboxController, RateLimitDemoController);
     // The fake OAuth provider's authorize endpoint — only meaningful in test
@@ -1449,6 +1473,9 @@ function buildAppControllers(appDb: AppDb): ReadonlyArray<new (...args: never[])
     TaskDictController,
     CommentsController,
     DocumentsController,
+    // `@Public()` over the same table — regression surface: an ARBAC DB
+    // controller fails closed even when the auth guard is skipped.
+    PublicDocumentsController,
     AuditController,
     makeHandoverWorkflow({
       projectsTable: t.projects,

@@ -1,4 +1,4 @@
-import { allowTableAction, allowTableRead, defineRole } from "@aooth/arbac";
+import { allowTableAction, allowTableRead, defineRole, defineTableAccess } from "@aooth/arbac";
 
 import { Comment } from "../models/comment.as";
 import { Department } from "../models/department.as";
@@ -8,7 +8,7 @@ import { Task } from "../models/task.as";
 import { DemoUser } from "../models/user.as";
 import type { ArbacDbScope, UserAttrs } from "./attrs";
 import { PROJ_USER_MANAGER } from "./projections";
-import { tenantDeptFilter, tenantFilter, tenantSet } from "./scopes";
+import { deptFilter, selfName, tenantDeptFilter, tenantFilter, tenantSet } from "./scopes";
 
 export const managerRole = defineRole<UserAttrs, ArbacDbScope>()
   .id("manager")
@@ -21,36 +21,58 @@ export const managerRole = defineRole<UserAttrs, ArbacDbScope>()
     allowTableRead<UserAttrs, ArbacDbScope<Department>>("departments", {
       scope: (attrs) => ({ filter: tenantFilter(attrs) }),
     }),
-    allowTableRead<UserAttrs, ArbacDbScope<Project>>("projects", {
+    // Read the whole tenant; update only own-department projects. WITH CHECK
+    // (defaults to the filter) keeps an update from moving a project out.
+    defineTableAccess<UserAttrs, ArbacDbScope<Project>>("projects", {
       scope: (attrs) => ({ filter: tenantFilter(attrs) }),
+      read: true,
+      write: { ops: ["update"], scope: (attrs) => ({ filter: deptFilter(attrs) }) },
     }),
-    allowTableAction<UserAttrs, ArbacDbScope<Project>>("projects", ["update"], {
-      scope: (attrs) => ({ filter: tenantDeptFilter(attrs) }),
-    }),
-    allowTableRead<UserAttrs, ArbacDbScope<Task>>("tasks", {
+    // Read the whole tenant; write (CRUD insert/update + row actions) only
+    // own-department tasks. `set` forces the tenant but deliberately NOT the
+    // department: the default WITH CHECK (= filter) answers 403 and rolls back
+    // an insert or PATCH that would place a task in another department (or in
+    // none) instead of silently rewriting it — the move is refused, not undone.
+    defineTableAccess<UserAttrs, ArbacDbScope<Task>>("tasks", {
       scope: (attrs) => ({ filter: tenantFilter(attrs) }),
-    }),
-    allowTableAction<UserAttrs, ArbacDbScope<Task>>(
-      "tasks",
-      ["insert", "update", "markDone", "markInProgress", "archive", "assign"],
-      {
-        scope: (attrs) => ({ filter: tenantDeptFilter(attrs), set: tenantSet(attrs) }),
+      read: true,
+      write: {
+        ops: ["insert", "update"],
+        // `checkRefs`: the task's project must be readable by the manager.
+        scope: (attrs) => ({
+          filter: deptFilter(attrs),
+          set: tenantSet(attrs),
+          checkRefs: ["projectId"],
+        }),
       },
-    ),
-    allowTableAction<UserAttrs, ArbacDbScope<Task>>("tasks", ["new"], {
-      scope: (attrs, userId) => ({
+      actions: {
+        names: ["markDone", "markInProgress", "archive", "assign"],
+        scope: (attrs) => ({ filter: deptFilter(attrs) }),
+      },
+    }),
+    // The "New task" form carries no department — the manager's tasks land in
+    // their own department (forced), so the created row is always in scope.
+    allowTableAction<UserAttrs, ArbacDbScope<Task>>("tasks", "new", {
+      scope: (attrs) => ({
         filter: tenantDeptFilter(attrs),
-        set: { ...tenantSet(attrs), creatorUsername: userId },
+        set: {
+          ...tenantSet(attrs),
+          departmentId: attrs.departmentId,
+          creatorUsername: selfName(attrs),
+        },
+        checkRefs: ["projectId"],
       }),
     }),
-    allowTableRead<UserAttrs, ArbacDbScope<Comment>>("comments", {
+    defineTableAccess<UserAttrs, ArbacDbScope<Comment>>("comments", {
       scope: (attrs) => ({ filter: tenantFilter(attrs) }),
-    }),
-    allowTableAction<UserAttrs, ArbacDbScope<Comment>>("comments", ["insert", "update"], {
-      scope: (attrs, userId) => ({
-        filter: { ...tenantFilter(attrs), authorUsername: userId },
-        set: { ...tenantSet(attrs), authorUsername: userId },
-      }),
+      read: true,
+      write: {
+        ops: ["insert", "update"],
+        scope: (attrs) => ({
+          filter: { authorUsername: selfName(attrs) },
+          set: { ...tenantSet(attrs), authorUsername: selfName(attrs) },
+        }),
+      },
     }),
     allowTableRead<UserAttrs, ArbacDbScope<Document>>("documents", {
       scope: (attrs) => ({

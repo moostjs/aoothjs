@@ -294,10 +294,13 @@ test.describe("recovery — recovery-short-ttl", () => {
     page,
     request,
   }) => {
-    // `recoveryStateTtlMs: 1` stamps every recovery-side pause with an
-    // immediate expiry. Waiting 50ms between OTP-mint and OTP-submit makes
-    // the resume hit @prostojs/wf's "Invalid or expired workflow state"
-    // branch; the SPA renders the failure in `.scope-error` / `.as-wf-form-error`.
+    // `recoveryStateTtlMs: 60_000` stamps every recovery-side pause with a
+    // 60s expiry (vs the 1h default). Instead of racing a tiny TTL, the spec
+    // proves the pincode pause carries the variant's TTL, then fast-forwards
+    // the wf-state store's clock past it so the resume deterministically hits
+    // @prostojs/wf's "Invalid or expired workflow state" branch; the SPA
+    // renders the failure in `.scope-error` / `.as-wf-form-error`.
+    const ttlMs = 60_000;
     await page.goto(wfUrl("auth/recovery/flow", "recovery-short-ttl"));
     await waitForFormInput(page, "email", 15_000);
     await fillField(page, "email", ALICE_EMAIL);
@@ -306,8 +309,23 @@ test.describe("recovery — recovery-short-ttl", () => {
     const email = await waitForEmail(request, (e) => e.kind === "recovery.pincode");
     await waitForFormInput(page, "code", 15_000);
 
-    // Wait past the 1ms TTL — 50ms is generous against clock jitter.
-    await page.waitForTimeout(50);
+    // The pincode pause is durable (swapped to `store`) and stamped with the
+    // variant's 60s TTL — not the 1h default, and not already expired.
+    const { now, expiresAt } = (await (await request.get("/__test/wf-states/expiries")).json()) as {
+      now: number;
+      expiresAt: (number | null)[];
+    };
+    expect(expiresAt, "pincode pause persisted as exactly one durable row").toHaveLength(1);
+    const stamped = expiresAt[0];
+    expect(stamped, "pincode pause carries an expiry").not.toBeNull();
+    expect(stamped!).toBeGreaterThan(now);
+    expect(stamped!).toBeLessThanOrEqual(now + ttlMs);
+
+    // Fast-forward the store past the TTL (only the store's expiry check moves).
+    const advanced = await request.post("/__test/wf-states/advance-clock", {
+      data: { ms: ttlMs + 1_000 },
+    });
+    expect(advanced.status()).toBe(201);
     await fillField(page, "code", email.code as string);
     await submitForm(page);
 

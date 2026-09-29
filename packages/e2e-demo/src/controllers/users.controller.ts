@@ -1,9 +1,12 @@
-import { ArbacResource, AsArbacDbController } from "@aooth/arbac-moost";
+import { ArbacResource, AsArbacDbController, useArbac, useArbacDbScope } from "@aooth/arbac-moost";
 import { DbAction, DbActionID, InputForm, TableController } from "@atscript/moost-db";
-import { Post } from "@moostjs/event-http";
+import { HttpError, Post } from "@moostjs/event-http";
 
 import { AssignRolesForm, DemoUser, LockForm } from "../models/user.as";
-import { assertWritten, scopedFilter } from "./_helpers";
+import { allRoles, ASSIGN_ANY_ROLE_ACTION, TENANT_ASSIGNABLE_ROLES } from "../roles";
+import { assertWritten } from "./_helpers";
+
+const KNOWN_ROLES: ReadonlySet<string> = new Set(allRoles.map((r) => r.id));
 
 type Ack = { ok: true; message: string };
 
@@ -15,7 +18,8 @@ export class UsersController extends AsArbacDbController<typeof DemoUser> {
     patch: Record<string, unknown>,
     message: string,
   ): Promise<Ack> {
-    const r = await this.table.updateMany(scopedFilter({ id }), patch as never);
+    const scope = await useArbacDbScope<typeof DemoUser>();
+    const r = await this.table.updateMany(scope.filter({ id }), patch);
     assertWritten(r);
     return { ok: true, message };
   }
@@ -27,10 +31,11 @@ export class UsersController extends AsArbacDbController<typeof DemoUser> {
     intent: "primary",
     requiredFields: [],
   })
-  assignRoles(
+  async assignRoles(
     @DbActionID() id: { id: string },
     @InputForm(AssignRolesForm) form: AssignRolesForm,
   ): Promise<Ack> {
+    await assertAssignableRoles(form.roles);
     return this.patchOne(id.id, { roles: form.roles }, "Roles assigned");
   }
 
@@ -72,5 +77,24 @@ export class UsersController extends AsArbacDbController<typeof DemoUser> {
       },
       "Account unlocked",
     );
+  }
+}
+
+/**
+ * Server-side limit on `assignRoles`: an unknown role is a 400; a role
+ * outside {@link TENANT_ASSIGNABLE_ROLES} (e.g. `superadmin`) is a 403 unless
+ * the caller holds the privileged `users/assignAnyRole` ARBAC action.
+ */
+async function assertAssignableRoles(roles: readonly string[]): Promise<void> {
+  const unknown = roles.find((r) => !KNOWN_ROLES.has(r));
+  if (unknown !== undefined) throw new HttpError(400, `Unknown role "${unknown}"`);
+  const restricted = roles.find((r) => !TENANT_ASSIGNABLE_ROLES.includes(r));
+  if (restricted === undefined) return;
+  const { allowed } = await useArbac().evaluate({
+    resource: "users",
+    action: ASSIGN_ANY_ROLE_ACTION,
+  });
+  if (!allowed) {
+    throw new HttpError(403, `Role "${restricted}" cannot be assigned by your role`);
   }
 }

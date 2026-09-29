@@ -5,6 +5,7 @@ import { Body, Delete, Get, Post } from "@moostjs/event-http";
 import { Controller, Param } from "moost";
 
 import type { AppDb } from "./db";
+import type { WfStoreClock } from "./wf-store";
 
 /**
  * Shape captured by `DemoConsentStore.recordOtpChannelConsent` (a sibling
@@ -84,6 +85,13 @@ export interface TestMailboxDeps {
    * needs a known-zero baseline regardless of reset ordering.
    */
   wfStates: AppDb["tables"]["wfStates"];
+  /**
+   * The durable wf-state store's clock. `POST /__test/wf-states/advance-clock`
+   * shifts it forward so a spec can expire a paused state deterministically
+   * (WF-RECOVERY-004) instead of racing a tiny TTL; `POST /__test/reset`
+   * rewinds it to real time.
+   */
+  wfStoreClock: WfStoreClock;
 }
 
 /**
@@ -108,6 +116,7 @@ export function createTestMailboxController(
     otpConsentLog,
     lifecycle,
     wfStates,
+    wfStoreClock,
   } = deps;
 
   // Test endpoints take a user-visible handle (`t1_grace`); internals are
@@ -145,6 +154,7 @@ export function createTestMailboxController(
       emails.length = 0;
       sms.length = 0;
       auditEvents.length = 0;
+      wfStoreClock.offsetMs = 0;
       const seeded = await reseed();
       return { ok: true, seeded };
     }
@@ -402,6 +412,29 @@ export function createTestMailboxController(
      * the pre-truncate count as `deleted` so the spec can assert it actually
      * cleared rows (vs. silently no-op'ing). `{}` matches every row.
      */
+    /**
+     * Durable wf-state rows' expiry stamps, plus the store clock's `now` —
+     * lets a spec prove a pause carries the TTL it expects before
+     * fast-forwarding past it.
+     */
+    @Get("wf-states/expiries")
+    async wfStatesExpiries(): Promise<{ now: number; expiresAt: (number | null)[] }> {
+      const rows = await wfStates.findMany({ filter: {}, controls: { $select: ["expiresAt"] } });
+      return { now: wfStoreClock.now(), expiresAt: rows.map((r) => r.expiresAt ?? null) };
+    }
+
+    /**
+     * Fast-forward the wf-state store's clock by `ms` so every paused state
+     * whose `expiresAt` falls inside the window reads as expired on its next
+     * resume. Only the store's expiry check moves — the rest of the app keeps
+     * real time. Rewound by `POST /__test/reset`.
+     */
+    @Post("wf-states/advance-clock")
+    advanceWfStoreClock(@Body() body: { ms: number }): { ok: true; offsetMs: number } {
+      wfStoreClock.offsetMs += Number(body.ms);
+      return { ok: true, offsetMs: wfStoreClock.offsetMs };
+    }
+
     @Delete("wf-states")
     async clearWfStates(): Promise<{ ok: true; deleted: number }> {
       const deleted = await wfStates.count();

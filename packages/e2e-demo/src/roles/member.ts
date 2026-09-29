@@ -7,7 +7,7 @@ import { Task } from "../models/task.as";
 import { DemoUser } from "../models/user.as";
 import type { ArbacDbScope, UserAttrs } from "./attrs";
 import { PROJ_TASK_MEMBER, PROJ_USER_MEMBER } from "./projections";
-import { tenantFilter, tenantSet } from "./scopes";
+import { selfName, tenantFilter, tenantSet } from "./scopes";
 
 const memberControls: Record<string, ControlGate> = {
   $groupBy: false,
@@ -28,49 +28,51 @@ export const memberRole = defineRole<UserAttrs, ArbacDbScope>()
     }),
     // Owner-self branch deliberately spans tenants so the UNION test can observe broadening.
     allowTableRead<UserAttrs, ArbacDbScope<Project>>("projects", {
-      scope: (attrs, userId) => ({
+      scope: (attrs) => ({
         filter: {
           $or: [
             { ...tenantFilter(attrs), visibility: { $in: ["public", "team"] } },
-            { ownerUsername: userId },
+            { ownerUsername: selfName(attrs) },
           ],
         },
         controls: memberControls,
       }),
     }),
     allowTableRead<UserAttrs, ArbacDbScope<Task>>("tasks", {
-      scope: (attrs, userId) => ({
+      scope: (attrs) => ({
         filter: {
           ...tenantFilter(attrs),
-          $or: [{ creatorUsername: userId }, { assigneeUsername: userId }],
+          $or: [{ creatorUsername: selfName(attrs) }, { assigneeUsername: selfName(attrs) }],
         },
         projection: PROJ_TASK_MEMBER,
         controls: memberControls,
       }),
     }),
     allowTableAction<UserAttrs, ArbacDbScope<Task>>("tasks", ["markDone", "markInProgress"], {
-      scope: (attrs, userId) => ({
-        filter: { ...tenantFilter(attrs), assigneeUsername: userId },
+      scope: (attrs) => ({
+        filter: { ...tenantFilter(attrs), assigneeUsername: selfName(attrs) },
       }),
     }),
     allowTableAction<UserAttrs, ArbacDbScope<Task>>("tasks", ["new"], {
-      scope: (attrs, userId) => ({
-        filter: { ...tenantFilter(attrs), assigneeUsername: userId },
+      scope: (attrs) => ({
+        filter: { ...tenantFilter(attrs), assigneeUsername: selfName(attrs) },
         set: {
           ...tenantSet(attrs),
-          creatorUsername: userId,
-          assigneeUsername: userId,
+          creatorUsername: selfName(attrs),
+          assigneeUsername: selfName(attrs),
           status: "open",
         },
+        // The form's `projectId` must be a project the member can read.
+        checkRefs: ["projectId"],
       }),
     }),
     allowTableRead<UserAttrs, ArbacDbScope<Comment>>("comments", {
       scope: (attrs) => ({ filter: tenantFilter(attrs), controls: memberControls }),
     }),
     allowTableAction<UserAttrs, ArbacDbScope<Comment>>("comments", ["insert", "update", "remove"], {
-      scope: (attrs, userId) => ({
-        filter: { ...tenantFilter(attrs), authorUsername: userId },
-        set: { ...tenantSet(attrs), authorUsername: userId },
+      scope: (attrs) => ({
+        filter: { ...tenantFilter(attrs), authorUsername: selfName(attrs) },
+        set: { ...tenantSet(attrs), authorUsername: selfName(attrs) },
       }),
     }),
     allowTableRead<UserAttrs, ArbacDbScope<Document>>("documents", {
