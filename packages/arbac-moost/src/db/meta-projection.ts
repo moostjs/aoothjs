@@ -1,141 +1,56 @@
-import { getProjectionMode, isFieldAllowed, unionProjections } from "@aooth/arbac";
-import type { TProjection } from "@aooth/arbac";
-import { findAncestorInSet } from "@atscript/db";
+import { effectiveScope } from "@aooth/arbac";
 import type { TCrudOp, TMetaResponse } from "@atscript/db";
+import { DB_CRUD_HANDLERS, resolveTerminalRef, VALUE_HELP_CRUD_HANDLERS } from "@atscript/moost-db";
+import type { TDbIndexFieldPaths } from "@atscript/moost-db";
 import type {
+  TAtscriptAnnotatedType,
   TSerializedAnnotatedType,
   TSerializedAnnotatedTypeInner,
 } from "@atscript/typescript/utils";
-import { getConstructor, useControllerContext } from "moost";
+import { getConstructor, getMoostMate, useControllerContext } from "moost";
 
-import { useArbac } from "../arbac.composables";
+import { arbacIdsFromMeta } from "../arbac.evaluate";
 import type { TArbacMeta } from "../arbac.mate";
 import type { ArbacDbScope } from "./as-arbac-db-controller";
+import { getOrCreate, hasSelfOrAncestor, navFieldsOf } from "./helpers";
+import {
+  evaluateHandlers,
+  evaluateTypeRead,
+  resolveHandlerArbacIds,
+  resolveRelationTree,
+} from "./relation-policy";
+import type { ArbacHandlerIds, RelationNameTree } from "./relation-policy";
+import {
+  buildScopeVisibility,
+  collectWritableFields,
+  isIdentifierSet,
+  isMetaFieldVisible,
+  tablePolicy,
+} from "./visibility";
+import type { MetaVisibility, VisibilityTableSource } from "./visibility";
 
 /**
- * Union the per-scope `projection` whitelists into the single access-control
- * projection used for FIELD-EXISTENCE decisions (`hasField` parity + `/meta`
- * pruning). Returns `undefined` when the union imposes no restriction — no
- * scopes at all, or any scope without a `projection` (a universal grant makes
- * `unionProjections` collapse to the universe `{}`).
+ * Exact-or-ancestor membership in the write whitelist: `credit.credentials.user`
+ * matches a `credit.credentials` grant. A path through a nav relation is
+ * writable only when the relation is opted into nested writes
+ * ({@link MetaVisibility.nestedWrites}); a `@db.column.derived` field never is
+ * (its payload value is dropped).
  */
-export function unionScopeProjection(scopes: ArbacDbScope[]): TProjection | undefined {
-  if (scopes.length === 0) return undefined;
-  const allowed = unionProjections(...scopes.map((s) => s.projection ?? {}));
-  return Object.keys(allowed).length === 0 ? undefined : allowed;
-}
-
-/**
- * Relation names any scope explicitly grants via `with.<name>` — an explicit
- * content grant implies the relation EXISTS for this principal even when the
- * projection union does not name it (the sub-scope, not the projection, owns
- * the joined rows' policy — see {@link ArbacDbScope.with}).
- */
-export function collectWithGrantNames(scopes: ArbacDbScope[]): ReadonlySet<string> {
-  const out = new Set<string>();
-  for (const s of scopes) {
-    if (s.with) for (const name of Object.keys(s.with)) out.add(name);
-  }
-  return out;
-}
-
-/**
- * The principal's field-visibility verdict set, assembled once per request
- * (or per `/meta` overlay) and threaded through the pruning walk.
- */
-export interface MetaVisibility {
-  /**
-   * Projection union for this level's own fields. `{}` (the universe) means
-   * unrestricted — possible when only a `with` sub-scope restricts anything.
-   */
-  allowed: TProjection;
-  /**
-   * Identifier fields reads ALWAYS return regardless of projection (the read
-   * path widens `preferredId` back in, and PK addressing requires the key) —
-   * hiding them would advertise less than reads deliver and break `/one/:id`.
-   */
-  alwaysVisible: ReadonlySet<string>;
-  /** Relation names granted via `with.<name>` (see {@link collectWithGrantNames}). */
-  withGrants: ReadonlySet<string>;
-  /**
-   * Visibility of a `with`-granted relation's JOINED fields, built from the
-   * union of its `with.<name>` sub-scopes (with the related table's own
-   * identifiers always visible). A path `rel.x.y` is checked as `x.y`
-   * against it, recursively for nested relations. The scope-driven builders
-   * ({@link buildScopeVisibility}) always supply it; a hand-built visibility
-   * without it lets granted paths through unchecked (legacy behavior).
-   */
-  relation?: (name: string) => MetaVisibility | undefined;
-  /**
-   * Precompiled `isFieldAllowed(path, allowed)`. Supplied by
-   * {@link buildScopeVisibility}; a hand-built visibility falls back to
-   * `isFieldAllowed`.
-   */
-  isAllowed?: (path: string) => boolean;
-  /** The scopes this level was built from (set by {@link buildScopeVisibility}). */
-  scopes?: ArbacDbScope[];
-  /** The table this level describes, when known (set by {@link buildScopeVisibility}). */
-  table?: VisibilityTableSource;
-  /**
-   * Fields the principal's WRITE scopes allow (union of `allowedFields`, or
-   * `"all"` for an unrestricted write grant). A field that is writable but not
-   * read-visible is NOT pruned from `/meta` — it survives with a `db.writeOnly`
-   * stamp (type only; rows/projections never carry it), so generic forms and
-   * client preflight validators can still SET sealed fields (e.g. credentials
-   * behind a read projection). Absent → nothing extra survives.
-   */
-  writable?: ReadonlySet<string> | "all";
-}
-
-/** Exact-or-ancestor membership: `credit.credentials.user` matches a `credit.credentials` grant. */
-function isPathWritable(path: string, writable: MetaVisibility["writable"]): boolean {
-  if (!writable) return false;
+function isPathWritable(path: string, vis: MetaVisibility): boolean {
+  const writable = vis.writable;
+  if (!writable || tablePolicy(vis.table).derived.has(path)) return false;
+  const dot = path.indexOf(".");
+  const head = dot === -1 ? path : path.slice(0, dot);
+  const isRelation = vis.relationNames?.has(head) || vis.table?.navFields?.has(head);
+  if (isRelation && !vis.nestedWrites?.has(head)) return false;
   return writable === "all" || hasSelfOrAncestor(writable, path);
 }
 
 /**
- * Union of write-scope `allowedFields`; `"all"` for field-unrestricted write
- * access. Mirrors `prepareScopeOverlay`: the whitelist exists only when at
- * least one scope carries an `allowedFields` array — scoped-but-unlisted
- * writes are field-unrestricted.
+ * Foreign `ref` targets for `/meta` pruning: annotated type → the caller's
+ * visibility on it, or `null` when the caller cannot read it.
  */
-export function collectWritableFields(
-  scopes: ArbacDbScope[],
-  unrestricted: boolean,
-): ReadonlySet<string> | "all" | undefined {
-  if (unrestricted) return "all";
-  if (scopes.length === 0) return undefined;
-  const out = new Set<string>();
-  let sawWhitelist = false;
-  for (const s of scopes) {
-    if (Array.isArray(s.allowedFields)) {
-      sawWhitelist = true;
-      for (const f of s.allowedFields) out.add(f);
-    }
-  }
-  if (!sawWhitelist) return "all";
-  return out.size > 0 ? out : undefined;
-}
-
-/**
- * Whether a flattened dot-path field exists for this principal. A
- * `with`-granted relation itself is always visible (the grant implies it);
- * a path UNDER it (`rel.x.y`) is checked as `x.y` against the relation's
- * sub-scope visibility ({@link MetaVisibility.relation}) — so a field the
- * sub-scope hides is as unknown in a `$with` sub-query as a top-level hidden
- * column is in the main query (no filter/sort value oracle).
- */
-export function isMetaFieldVisible(path: string, vis: MetaVisibility): boolean {
-  if (vis.alwaysVisible.has(path)) return true;
-  const dot = path.indexOf(".");
-  const head = dot === -1 ? path : path.slice(0, dot);
-  if (vis.withGrants.has(head)) {
-    if (dot === -1) return true;
-    const sub = vis.relation?.(head);
-    return sub ? isMetaFieldVisible(path.slice(dot + 1), sub) : true;
-  }
-  return vis.isAllowed ? vis.isAllowed(path) : isFieldAllowed(path, vis.allowed);
-}
+export type MetaRefTargets = ReadonlyMap<object, MetaVisibility | null>;
 
 /**
  * Prune a `/meta` envelope down to the fields the principal's read scopes can
@@ -145,21 +60,27 @@ export function isMetaFieldVisible(path: string, vis: MetaVisibility): boolean {
  *
  * - `fields` — the flat capability map (sortable/filterable flags).
  * - `type` — the serialized annotated type (what dynamic clients build
- *   tables/forms from); nested object props prune by dot-path. A relation
- *   prop visible through the projection survives whole; a `with`-granted
- *   one is pruned by its sub-scope (recursively), matching `hasField`.
- * - `relations` — entries neither projected nor `with`-granted.
+ *   tables/forms from); nested object props prune by dot-path. A visible
+ *   relation's nav prop is pruned by that relation's visibility (declared
+ *   sub-scope or the caller's own grant on the target), recursively. A
+ *   `ref` whose target field is hidden (own table) or whose target table the
+ *   caller cannot read (`refTargets`) is stripped.
+ * - `relations` — hidden relations dropped.
  * - `versionColumn` — dropped when the OCC column itself is hidden.
  *
  * NEVER mutates the input — the base controller caches the static envelope
  * (`applyMetaOverlay` contract); every pruned branch is a fresh object.
  */
-export function pruneMetaByVisibility(meta: TMetaResponse, vis: MetaVisibility): TMetaResponse {
+export function pruneMetaByVisibility(
+  meta: TMetaResponse,
+  vis: MetaVisibility,
+  refTargets?: MetaRefTargets,
+): TMetaResponse {
   const fields: TMetaResponse["fields"] = {};
   for (const [path, fieldMeta] of Object.entries(meta.fields)) {
     if (isMetaFieldVisible(path, vis)) {
       fields[path] = fieldMeta;
-    } else if (isPathWritable(path, vis.writable)) {
+    } else if (isPathWritable(path, vis)) {
       // Writable-but-unreadable: keep the descriptor as write-only. Reads
       // still never surface it (the read projection stands); filter/sort are
       // off so it can't be probed.
@@ -167,8 +88,7 @@ export function pruneMetaByVisibility(meta: TMetaResponse, vis: MetaVisibility):
     }
   }
 
-  // `with`-granted relations survive via isMetaFieldVisible's head check —
-  // a top-level relation name IS its own path head.
+  // A top-level relation name IS its own path head.
   const relationNames = new Set(meta.relations.map((r) => r.name));
   const relations = meta.relations.filter((r) => isMetaFieldVisible(r.name, vis));
 
@@ -176,7 +96,12 @@ export function pruneMetaByVisibility(meta: TMetaResponse, vis: MetaVisibility):
     ...meta,
     fields,
     relations,
-    type: pruneSerializedType(meta.type, "", vis, relationNames) as TSerializedAnnotatedType,
+    type: pruneSerializedType(meta.type, {
+      basePath: "",
+      vis,
+      relationNames,
+      refTargets,
+    }) as TSerializedAnnotatedType,
   };
   if (out.versionColumn !== undefined && !isMetaFieldVisible(out.versionColumn, vis)) {
     delete out.versionColumn;
@@ -188,60 +113,131 @@ export function pruneMetaByVisibility(meta: TMetaResponse, vis: MetaVisibility):
  * Copy-on-prune walk over a serialized type node. `basePath` is the flattened
  * dot-path prefix ("" at the root). Relation props (nav props named in
  * `meta.relations` at the root, or carrying a `db.rel.*` annotation inside a
- * joined type) are dropped when invisible; a `with`-granted one is pruned by
- * its sub-scope visibility (the same one `hasField` checks `rel.x` paths
- * against), any other visible one survives whole. Own-field subtrees prune
- * recursively so an include-mode union like `{ "password.hash": 1 }` keeps
- * `password` with only `hash` inside.
+ * joined type) are dropped when invisible and pruned by the relation's
+ * visibility otherwise (a hand-built visibility without one keeps them
+ * whole). Own-field subtrees prune recursively so an include-mode union like
+ * `{ "password.hash": 1 }` keeps `password` with only `hash` inside.
  */
+interface PruneLevel {
+  /** The flattened dot-path prefix (`""` at a table root). */
+  basePath: string;
+  vis: MetaVisibility;
+  /** The relation names of the level's table (nav props at its root). */
+  relationNames: ReadonlySet<string>;
+  refTargets: MetaRefTargets | undefined;
+}
+
 function pruneSerializedType(
   node: TSerializedAnnotatedTypeInner,
-  basePath: string,
-  vis: MetaVisibility,
-  relationNames: ReadonlySet<string>,
+  level: PruneLevel,
 ): TSerializedAnnotatedTypeInner {
+  const { basePath, vis, relationNames, refTargets } = level;
   const def = node.type;
   if (def.kind === "object") {
     const props: Record<string, TSerializedAnnotatedTypeInner> = {};
     for (const [name, prop] of Object.entries(def.props)) {
       const path = basePath ? `${basePath}.${name}` : name;
       if (basePath === "" && (relationNames.has(name) || isNavProp(prop))) {
-        if (!isMetaFieldVisible(name, vis)) continue;
-        const sub = vis.withGrants.has(name) ? vis.relation?.(name) : undefined;
-        props[name] = sub ? pruneSerializedType(prop, "", sub, NO_NAMES) : prop;
+        if (!isMetaFieldVisible(name, vis)) {
+          // Unreadable but opted into nested writes (`nestedWrites`): keep
+          // the shape, stamped write-only. Any other relation is no write
+          // affordance — its nested writes answer 403.
+          if (vis.nestedWrites?.has(name) && isPathWritable(name, vis)) {
+            props[name] = stampWriteOnly(prop);
+          }
+          continue;
+        }
+        const sub = vis.relation?.(name);
+        props[name] = sub
+          ? pruneSerializedType(prop, {
+              basePath: "",
+              vis: sub,
+              relationNames: sub.relationNames ?? NO_NAMES,
+              refTargets,
+            })
+          : prop;
         continue;
       }
+      const child = { ...level, basePath: path };
       if (!isMetaFieldVisible(path, vis)) {
-        if (isPathWritable(path, vis.writable)) {
+        if (isPathWritable(path, vis)) {
           // Keep the whole subtree (clients need the full shape to WRITE it),
           // stamped write-only so forms render set-only inputs.
-          props[name] = {
-            ...prop,
-            metadata: { ...prop.metadata, "db.writeOnly": true },
-          };
+          props[name] = stampWriteOnly(prop);
+        } else if (hasWritableDescendant(path, vis.writable)) {
+          // A hidden parent of writable leaves: keep only those (the walk
+          // below drops every other hidden child), stamped write-only.
+          props[name] = stampWriteOnly(pruneSerializedType(prop, child));
         }
         continue;
       }
-      props[name] = pruneSerializedType(prop, path, vis, relationNames);
+      const pruned = pruneSerializedType(prop, child);
+      props[name] =
+        pruned.ref && !isRefVisible(path, vis, refTargets) ? withoutRef(pruned) : pruned;
     }
     return { ...node, type: { ...def, props } };
   }
   if (def.kind === "array") {
-    return {
-      ...node,
-      type: { ...def, of: pruneSerializedType(def.of, basePath, vis, relationNames) },
-    };
+    return { ...node, type: { ...def, of: pruneSerializedType(def.of, level) } };
   }
   if (def.kind === "union" || def.kind === "intersection" || def.kind === "tuple") {
     return {
       ...node,
-      type: {
-        ...def,
-        items: def.items.map((item) => pruneSerializedType(item, basePath, vis, relationNames)),
-      },
+      type: { ...def, items: def.items.map((item) => pruneSerializedType(item, level)) },
     };
   }
   return node;
+}
+
+function stampWriteOnly(node: TSerializedAnnotatedTypeInner): TSerializedAnnotatedTypeInner {
+  return { ...node, metadata: { ...node.metadata, "db.writeOnly": true } };
+}
+
+/** A strict descendant of `path` is in the write whitelist. */
+function hasWritableDescendant(path: string, writable: MetaVisibility["writable"]): boolean {
+  if (!writable || writable === "all") return false;
+  const prefix = `${path}.`;
+  for (const f of writable) if (f.startsWith(prefix)) return true;
+  return false;
+}
+
+function withoutRef(node: TSerializedAnnotatedTypeInner): TSerializedAnnotatedTypeInner {
+  const { ref: _ref, ...rest } = node;
+  return rest;
+}
+
+/** The field a runtime prop's `ref` finally points at (the same terminal `/meta` serializes). */
+function refTargetOf(entry: unknown): { type: object; field: string } | undefined {
+  const def = entry as TAtscriptAnnotatedType | undefined;
+  if (!def?.ref) return undefined;
+  const terminal = resolveTerminalRef(def);
+  if (terminal) return terminal;
+  try {
+    return { type: def.ref.type(), field: def.ref.field };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A serialized `ref` at `path` survives when its target field is visible:
+ * a self-reference (e.g. a derived column's source) against this level's
+ * visibility; a foreign one against the caller's visibility on the target
+ * table (`refTargets`, stripped when the caller cannot read it). Without
+ * runtime schema info (`vis.table.flatMap`) or `refTargets`, refs are kept.
+ */
+function isRefVisible(
+  path: string,
+  vis: MetaVisibility,
+  refTargets: MetaRefTargets | undefined,
+): boolean {
+  const table = vis.table;
+  if (!table?.flatMap || !refTargets) return true;
+  const target = refTargetOf(table.flatMap.get(path));
+  if (!target || !target.field) return true;
+  if (target.type === table.type) return isMetaFieldVisible(target.field, vis);
+  const targetVis = refTargets.get(target.type);
+  return !!targetVis && isMetaFieldVisible(target.field, targetVis);
 }
 
 const NO_NAMES: ReadonlySet<string> = new Set();
@@ -250,194 +246,6 @@ const NO_NAMES: ReadonlySet<string> = new Set();
 function isNavProp(prop: TSerializedAnnotatedTypeInner): boolean {
   const meta = prop.metadata as Record<string, unknown> | undefined;
   return !!meta && ("db.rel.to" in meta || "db.rel.from" in meta || "db.rel.via" in meta);
-}
-
-/**
- * The slice of an atscript-db readable (table / view) the visibility walk
- * reads — a moost-db controller's `this.readable` satisfies it: identifiers
- * (always visible), nav relations (to reach the joined table) and the
- * flattened schema (to split `$select` parents by scope).
- */
-export interface VisibilityTableSource {
-  primaryKeys: readonly string[];
-  preferredId: readonly string[];
-  relations?: ReadonlyMap<string, unknown>;
-  /**
-   * The target table of nav relation `navField` (atscript-db's
-   * `readable.relatedTable`); absent / `undefined` → the joined table's
-   * identifiers are not exempted.
-   */
-  relatedTable?(navField: string): VisibilityTableSource | undefined;
-  /** Flattened schema (dot-paths) — used to split `$select` parents by scope. */
-  flatMap?: ReadonlyMap<string, unknown>;
-  /** Navigation field paths — their joined descendants are not own columns. */
-  navFields?: ReadonlySet<string>;
-}
-
-// Identifiers per table object (decoration-derived, stable for its lifetime).
-const identifierSetCache = new WeakMap<VisibilityTableSource, ReadonlySet<string>>();
-
-/** PK + `preferredId` of a table — the identifiers reads always return. */
-function identifierSet(table: VisibilityTableSource | undefined): ReadonlySet<string> {
-  if (!table) return NO_NAMES;
-  let set = identifierSetCache.get(table);
-  if (!set) {
-    set = new Set([...table.primaryKeys, ...table.preferredId]);
-    identifierSetCache.set(table, set);
-  }
-  return set;
-}
-
-/** Pick `scopes[i].with?.[name]`, dropping undefined (silence wins when empty). */
-function collectSubScopes(scopes: ArbacDbScope[], name: string): ArbacDbScope[] {
-  const out: ArbacDbScope[] = [];
-  for (const s of scopes) {
-    const sub = s.with?.[name];
-    if (sub) out.push(sub);
-  }
-  return out;
-}
-
-/** `path` or one of its ancestors is in `set`. */
-function hasSelfOrAncestor(set: ReadonlySet<string>, path: string): boolean {
-  return set.has(path) || findAncestorInSet(path, set) !== undefined;
-}
-
-/**
- * Precompiled {@link isFieldAllowed} for one projection: `hasField` asks it
- * for every referenced path, so the mode and key sets are computed once.
- * Inclusion: the path, an ancestor, or a descendant is listed. Exclusion: no
- * listed key is the path or an ancestor.
- */
-function compileProjection(projection: TProjection): (path: string) => boolean {
-  const keys = Object.keys(projection);
-  if (keys.length === 0) return () => true;
-  const listed = new Set(keys);
-  if (getProjectionMode(projection) === "exclude") {
-    return (path) => !hasSelfOrAncestor(listed, path);
-  }
-  // Every proper prefix of a listed key: a parent of an included child.
-  const parents = new Set<string>();
-  for (const key of keys) {
-    let pos = key.length;
-    while ((pos = key.lastIndexOf(".", pos - 1)) !== -1) parents.add(key.slice(0, pos));
-  }
-  return (path) => parents.has(path) || hasSelfOrAncestor(listed, path);
-}
-
-/**
- * Build the {@link MetaVisibility} a set of read scopes implies — the single
- * structure behind `hasField`, `/meta` pruning, `$select` value stripping
- * and the `$with` overlay, so they cannot drift. Own fields: the projection
- * union (`{}` when unrestricted), precompiled into `isAllowed`. A
- * `with`-granted relation: a lazily built (memoized) child visibility over
- * the union of its `with.<name>` sub-scopes — the same sub-scopes joined rows
- * are stripped with — whose `alwaysVisible` is the related table's own PK /
- * `preferredId` (reached through `table.relatedTable`; without it, no
- * related identifier is exempt).
- *
- * @param alwaysVisible - identifiers exempt from the projection; defaults to
- *   the table's PK + `preferredId`
- */
-export function buildScopeVisibility(
-  scopes: ArbacDbScope[],
-  table: VisibilityTableSource | undefined,
-  alwaysVisible: ReadonlySet<string> = identifierSet(table),
-): MetaVisibility {
-  const withGrants = collectWithGrantNames(scopes);
-  const allowed = unionScopeProjection(scopes) ?? {};
-  const children = new Map<string, MetaVisibility>();
-  return {
-    allowed,
-    alwaysVisible,
-    withGrants,
-    scopes,
-    table,
-    isAllowed: compileProjection(allowed),
-    relation(name) {
-      if (!withGrants.has(name)) return undefined;
-      let child = children.get(name);
-      if (!child) {
-        child = buildScopeVisibility(collectSubScopes(scopes, name), table?.relatedTable?.(name));
-        children.set(name, child);
-      }
-      return child;
-    },
-  };
-}
-
-// `hasField` runs once per field a request references ($select / filter /
-// sort keys, `$with` sub-query paths — client-controlled, so potentially many
-// per request), and the scopes array is identity-stable for the event once
-// the authorize interceptor / transformFilter calls `setScopes(...)` —
-// memoize the visibility per (scopes array, readable) instead of rebuilding
-// the unions per field. A bare identifier set (the 0.1.67 `hasField`
-// argument) keys its own entry; `NO_TABLE` keys the table-less one.
-const scopeVisibilityCache = new WeakMap<
-  ArbacDbScope[],
-  WeakMap<VisibilityTableSource | ReadonlySet<string>, MetaVisibility>
->();
-const NO_TABLE: VisibilityTableSource = { primaryKeys: [], preferredId: [] };
-
-/** `source` is an identifier set (the 0.1.67 signatures), not a readable. */
-function isIdentifierSet(
-  source: VisibilityTableSource | ReadonlySet<string>,
-): source is ReadonlySet<string> {
-  return !("primaryKeys" in source);
-}
-
-/**
- * The event-cached {@link MetaVisibility} for `scopes` over `source` (a
- * readable, or an `alwaysVisible` identifier set).
- */
-export function scopeVisibility(
-  scopes: ArbacDbScope[],
-  source: VisibilityTableSource | ReadonlySet<string> = NO_TABLE,
-): MetaVisibility {
-  let perSource = scopeVisibilityCache.get(scopes);
-  if (!perSource) {
-    perSource = new WeakMap();
-    scopeVisibilityCache.set(scopes, perSource);
-  }
-  let vis = perSource.get(source);
-  if (!vis) {
-    vis = isIdentifierSet(source)
-      ? buildScopeVisibility(scopes, undefined, source)
-      : buildScopeVisibility(scopes, source === NO_TABLE ? undefined : source);
-    perSource.set(source, vis);
-  }
-  return vis;
-}
-
-/**
- * Shared body of both ARBAC controllers' `hasField` overrides (BUG-3 twin of
- * the `/meta` pruning): a field outside the read-scope projection union —
- * or, for a `rel.x` path under a `with`-granted relation, outside that
- * relation's sub-scope union — must be indistinguishable from a field that
- * does not exist. Returns `true` when there are no scopes (unscoped grant).
- *
- * @param source - the controller's `this.readable`; an identifier set (the
- *   0.1.67 signature) still works, without related-table identifiers
- */
-export function isScopedFieldVisible(
-  scopes: ArbacDbScope[],
-  path: string,
-  source: VisibilityTableSource | ReadonlySet<string>,
-): boolean {
-  if (scopes.length === 0) return true;
-  return isMetaFieldVisible(path, scopeVisibility(scopes, source));
-}
-
-/**
- * PK + `preferredId` for a controller's table/readable — the
- * {@link MetaVisibility.alwaysVisible} set. Kept for compatibility: the
- * controllers now pass `this.readable` and it is derived there.
- */
-export function metaAlwaysVisibleFields(
-  _controller: object,
-  source: { primaryKeys: readonly string[]; preferredId: readonly string[] },
-): ReadonlySet<string> {
-  return identifierSet(source);
 }
 
 /**
@@ -455,130 +263,348 @@ const WRITE_CRUD_OPS: ReadonlySet<TCrudOp> = new Set<TCrudOp>([
 ]);
 
 /**
- * The full ARBAC `/meta` overlay, shared by `AsArbacDbController` and
- * `AsArbacDbReadableController`: filter `actions` + `crud` by per-action
- * evaluation, then prune the FIELD surface (`fields`, serialized `type`,
- * `relations`, `versionColumn`) by the read scopes' projection union.
+ * The handler methods serving a `/meta` crud op on this controller (a DB or
+ * value-help controller — moost-db's handler maps); an op is allowed when
+ * ANY of them is. An op no map lists is its own method name.
+ */
+function crudHandlers(op: TCrudOp, methods: ReadonlySet<string>): readonly string[] {
+  const found = [...(DB_CRUD_HANDLERS[op] ?? []), ...(VALUE_HELP_CRUD_HANDLERS[op] ?? [])].filter(
+    (m) => methods.has(m),
+  );
+  return found.length > 0 ? found : [op];
+}
+
+/**
+ * The full ARBAC `/meta` overlay, shared by the ARBAC DB and value-help
+ * controllers.
  *
- * Field pruning (BUG-3): a scope projection must remove fields from the META
- * entirely — `transformProjection` already strips their VALUES from every
- * read, but the envelope still advertised the full field map, so a scoped UI
- * offered columns that could never populate, and secret-bearing column NAMES
- * leaked. The pruning union comes from the read-op evaluations already
- * computed for the `crud` overlay (same `unionProjections` the read path
- * applies). An allowed read op WITHOUT scopes is an unscoped grant —
- * universe, no pruning (unchanged behavior for unscoped roles). No read op
- * allowed → the projection union is empty → no pruning: `crud` already
- * advertises no read surface, and write-only principals still need `type`
- * for their insert/update forms. PK + `preferredId` are never pruned —
- * reads always return those fields (projection widening / id addressing).
+ * 1. `actions` and `crud` are filtered by evaluating each one exactly as its
+ *    handler is authorized (`useArbac` precedence): a crud op through its
+ *    handler method(s) — `one` via `getOne` / `getOneComposite`, `remove`
+ *    via `remove` / `removeComposite` (allowed when any is) — and an action
+ *    through its method (`@ArbacAction` → `@DbAction` name → …).
+ * 2. The FIELD surface (`fields`, serialized `type`, `relations`,
+ *    `versionColumn`) is pruned by the read scopes' visibility: the
+ *    projection union, derived-column sources, atomic JSON columns, and the
+ *    `$with` relation policy (declared `with` sub-scopes, else the caller's
+ *    own grant on the related table — no grant → relation and nav type
+ *    dropped). `ref`s to hidden targets are stripped. An allowed read op
+ *    without scopes is an unscoped grant (no field restriction; relations
+ *    still follow the relation policy). No read op allowed → no pruning:
+ *    `crud` already advertises no read surface, and write-only principals
+ *    still need `type` for their insert/update forms. PK + `preferredId` are
+ *    never pruned.
+ * 3. The search surface: `searchIndexes` reading a hidden field are dropped,
+ *    `searchable` / `vectorSearchable` / `geoSearchable` recomputed, and the
+ *    `query` / `pages` control lists lose the controls that became unusable
+ *    (`crud.geo` goes when no geo index is left).
  *
- * @param source - the controller's `this.readable` (identifiers and related
- *   tables are derived from it); an identifier set (the 0.1.67 signature)
- *   still works, without related-table identifiers
+ * @param source - the controller's `this.readable` (identifiers, relations
+ *   and schema rules are derived from it); an identifier set (the 0.1.67
+ *   signature) still works, without them
+ * @param indexes - the controller's `indexFieldPaths()`; defaults to calling
+ *   it on the current controller when it has one
  */
 export async function applyArbacMetaOverlay(
   meta: TMetaResponse,
   source: VisibilityTableSource | ReadonlySet<string>,
+  indexes?: readonly TDbIndexFieldPaths[],
 ): Promise<TMetaResponse> {
-  const arbac = useArbac();
-  const actionToMethodMeta = collectActionMetaByName();
+  const instance = useControllerContext().getController();
+  const { methods } = controllerMethodIndex(instance);
 
-  // Evaluate all gates in parallel: ARBAC evaluate is in-memory + idempotent
-  // and reads from the per-event scope cache, so contention is bounded; the
-  // win is killing N sequential round-trips through the user provider.
   const crudKeys = Object.keys(meta.crud) as TCrudOp[];
-  const [actionResults, crudResults] = await Promise.all([
-    Promise.all(
-      meta.actions.map((entry) => {
-        const methodMeta = actionToMethodMeta.get(entry.name);
-        const arbacAction = methodMeta?.arbacActionId ?? methodMeta?.id ?? entry.name;
-        return arbac.evaluate({ action: arbacAction });
-      }),
+  const [allowedActions, crudScopes] = await Promise.all([
+    grantedActions(
+      instance,
+      meta.actions.map((entry) => entry.name),
     ),
-    Promise.all(crudKeys.map((key) => arbac.evaluate({ action: key }))),
+    Promise.all(
+      crudKeys.map((op) =>
+        evaluateHandlers(crudHandlers(op, methods).map((m) => resolveHandlerArbacIds(instance, m))),
+      ),
+    ),
   ]);
 
-  const filteredActions: TMetaResponse["actions"] = [];
-  for (let i = 0; i < meta.actions.length; i++) {
-    if (actionResults[i].allowed) filteredActions.push(meta.actions[i]);
-  }
-
-  const filteredCrud: TMetaResponse["crud"] = {};
-  for (let i = 0; i < crudKeys.length; i++) {
-    if (crudResults[i].allowed) filteredCrud[crudKeys[i]] = meta.crud[crudKeys[i]];
-  }
-
-  let overlaid: TMetaResponse = { ...meta, actions: filteredActions, crud: filteredCrud };
-
-  let readUnrestricted = false;
-  let writeUnrestricted = false;
+  const allowed = new Set(allowedActions);
+  const actions = meta.actions.filter((entry) => allowed.has(entry.name));
+  const crud: TMetaResponse["crud"] = {};
   const readScopes: ArbacDbScope[] = [];
   const writeScopes: ArbacDbScope[] = [];
   for (let i = 0; i < crudKeys.length; i++) {
-    if (!crudResults[i].allowed) continue;
-    const scopes = crudResults[i].scopes;
-    if (WRITE_CRUD_OPS.has(crudKeys[i])) {
-      if (!scopes || scopes.length === 0) writeUnrestricted = true;
-      else writeScopes.push(...scopes);
-      continue;
-    }
-    if (!scopes || scopes.length === 0) readUnrestricted = true;
-    else readScopes.push(...scopes);
+    const scopes = crudScopes[i];
+    if (!scopes) continue;
+    crud[crudKeys[i]] = meta.crud[crudKeys[i]];
+    (WRITE_CRUD_OPS.has(crudKeys[i]) ? writeScopes : readScopes).push(...scopes);
   }
-  if (!readUnrestricted && readScopes.length > 0) {
-    const vis = isIdentifierSet(source)
-      ? buildScopeVisibility(readScopes, undefined, source)
-      : buildScopeVisibility(readScopes, source);
-    // Prune when the own-field union restricts OR a `with` grant may
-    // restrict a relation's joined fields (the nav type prunes by sub-scope).
-    if (Object.keys(vis.allowed).length > 0 || vis.withGrants.size > 0) {
-      overlaid = pruneMetaByVisibility(overlaid, {
-        ...vis,
-        writable: collectWritableFields(writeScopes, writeUnrestricted),
-      });
-    }
+  const overlaid: TMetaResponse = { ...meta, actions, crud };
+  if (readScopes.length === 0) return overlaid;
+
+  const writable = collectWritableFields(writeScopes, false);
+  const nestedWrites = effectiveScope(writeScopes).nestedWrites;
+  if (isIdentifierSet(source)) {
+    const vis = buildScopeVisibility(readScopes, undefined, source);
+    return Object.keys(vis.allowed).length > 0 || vis.withGrants.size > 0
+      ? pruneMetaByVisibility(overlaid, { ...vis, writable, nestedWrites })
+      : overlaid;
   }
 
-  return overlaid;
+  const relations = await resolveRelationTree(readScopes, source, metaRelationNames(meta), {
+    listSiblings: false,
+  });
+  const vis = buildScopeVisibility(readScopes, source, { relations });
+  const refTargets = await resolveRefTargets(vis, meta);
+  return pruneSearchSurface(
+    pruneMetaByVisibility(overlaid, { ...vis, writable, nestedWrites }, refTargets),
+    meta,
+    vis,
+    indexes ?? controllerIndexes(instance),
+  );
 }
 
-type ActionResolutionMeta = { arbacActionId?: string; id?: string };
+// Per static envelope (the base controller caches it — identity-stable).
+const metaNamesCache = new WeakMap<TMetaResponse, RelationNameTree>();
+
+/** The relation names `/meta`'s serialized type reaches: root relations, then nav props of each nav body. */
+function metaRelationNames(meta: TMetaResponse): RelationNameTree {
+  return getOrCreate(metaNamesCache, meta, () => buildMetaRelationNames(meta));
+}
+
+function buildMetaRelationNames(meta: TMetaResponse): RelationNameTree {
+  const tree: RelationNameTree = new Map();
+  const rootProps = objectProps(meta.type);
+  for (const r of meta.relations) {
+    const nested = new Map() as RelationNameTree;
+    tree.set(r.name, nested);
+    const prop = rootProps?.[r.name];
+    if (prop) collectNavNames(prop, nested, 0);
+  }
+  return tree;
+}
+
+/** Nested-relation walk bound — serialized nav bodies are finite, this only guards pathological input. */
+const MAX_NAV_DEPTH = 8;
+
+function collectNavNames(
+  node: TSerializedAnnotatedTypeInner,
+  into: RelationNameTree,
+  depth: number,
+): void {
+  if (depth >= MAX_NAV_DEPTH) return;
+  const props = objectProps(node);
+  if (!props) return;
+  for (const [name, prop] of Object.entries(props)) {
+    if (!isNavProp(prop)) continue;
+    collectNavNames(
+      prop,
+      getOrCreate(into, name, () => new Map()),
+      depth + 1,
+    );
+  }
+}
+
+/** The props of an object node (through arrays). */
+function objectProps(
+  node: TSerializedAnnotatedTypeInner,
+): Record<string, TSerializedAnnotatedTypeInner> | undefined {
+  const def = node.type;
+  if (def.kind === "object") return def.props;
+  if (def.kind === "array") return objectProps(def.of);
+  return undefined;
+}
+
+/**
+ * Foreign `ref` targets of every level the pruned `/meta` shows (the root
+ * table and each visible relation's table): the caller's visibility on each
+ * target table, or `null` when they cannot read it.
+ */
+async function resolveRefTargets(
+  root: MetaVisibility,
+  meta: TMetaResponse,
+): Promise<MetaRefTargets> {
+  const types = new Set<object>();
+  const visit = (vis: MetaVisibility, node: TSerializedAnnotatedTypeInner, depth: number) => {
+    if (vis.table) for (const type of foreignRefTypes(vis.table)) types.add(type);
+    const props = objectProps(node);
+    if (!props || depth >= MAX_NAV_DEPTH) return;
+    for (const name of new Set([...(vis.relationNames ?? NO_NAMES), ...vis.withGrants])) {
+      const prop = props[name];
+      if (!prop || !isMetaFieldVisible(name, vis)) continue;
+      const sub = vis.relation?.(name);
+      if (sub) visit(sub, prop, depth + 1);
+    }
+  };
+  visit(root, meta.type, 0);
+  const out = new Map<object, MetaVisibility | null>();
+  await Promise.all(
+    [...types].map(async (type) => {
+      const read = await evaluateTypeRead(type);
+      out.set(type, read ? buildScopeVisibility(read.scopes, read.table) : null);
+    }),
+  );
+  return out;
+}
+
+// Per table: the annotated types its own (non-nav) fields `ref` into.
+const refTypesCache = new WeakMap<VisibilityTableSource, ReadonlySet<object>>();
+
+function foreignRefTypes(table: VisibilityTableSource): ReadonlySet<object> {
+  const flatMap = table.flatMap;
+  if (!flatMap) return NO_TYPES;
+  return getOrCreate(refTypesCache, table, () => {
+    const nav = navFieldsOf(table);
+    const out = new Set<object>();
+    for (const [path, entry] of flatMap) {
+      if (hasSelfOrAncestor(nav, path)) continue;
+      const target = refTargetOf(entry);
+      if (target && target.type !== table.type) out.add(target.type);
+    }
+    return out;
+  });
+}
+
+const NO_TYPES: ReadonlySet<object> = new Set();
+
+/** Controls a text / vector search needs, dropped from `crud.query` / `crud.pages` when unusable. */
+const TEXT_SEARCH_CONTROLS = ["search", "fuzzy"];
+const VECTOR_CONTROLS = ["vector", "threshold"];
+
+/**
+ * Drop `searchIndexes` reading a hidden field, recompute the search /
+ * vector / geo flags over what is left (native search, or the visible
+ * `@db.column.searchable` fallback), and remove the controls that became
+ * unusable from the `query` / `pages` control lists (`crud.geo` goes with
+ * the last visible geo index).
+ */
+function pruneSearchSurface(
+  meta: TMetaResponse,
+  original: TMetaResponse,
+  vis: MetaVisibility,
+  indexes: readonly TDbIndexFieldPaths[] | undefined,
+): TMetaResponse {
+  if (!indexes) return meta;
+  const shown = indexes.filter((e) => e.fields.every((f) => isMetaFieldVisible(f, vis)));
+  const shownOf = (type: TDbIndexFieldPaths["type"]) => shown.some((e) => e.type === type);
+  const hasText = indexes.some((e) => e.type === "text");
+  const native = vis.table?.isSearchable?.() ?? hasText;
+  const fallback = searchFallbackVisible(meta, vis.table);
+  const searchable = original.searchable && ((native && (!hasText || shownOf("text"))) || fallback);
+  const vectorSearchable = original.vectorSearchable && shownOf("vector");
+  const geoSearchable = original.geoSearchable === true ? shownOf("geo") : original.geoSearchable;
+
+  const out: TMetaResponse = {
+    ...meta,
+    searchIndexes: original.searchIndexes.filter((info) =>
+      shown.some((e) => e.name === info.name && e.type === (info.type ?? "text")),
+    ),
+    searchable,
+    vectorSearchable,
+  };
+  if (geoSearchable !== undefined) out.geoSearchable = geoSearchable;
+
+  const drop = new Set<string>();
+  if (original.searchable && !searchable && !vectorSearchable) {
+    for (const c of TEXT_SEARCH_CONTROLS) drop.add(c);
+  }
+  if (original.vectorSearchable && !vectorSearchable) for (const c of VECTOR_CONTROLS) drop.add(c);
+  if (hasText && !shownOf("text")) drop.add("index");
+  if (drop.size > 0 || (original.geoSearchable && !geoSearchable)) {
+    const crud = { ...meta.crud };
+    for (const op of ["query", "pages"] as const) {
+      const list = crud[op];
+      if (list && drop.size > 0) crud[op] = list.filter((c) => !drop.has(c));
+    }
+    if (original.geoSearchable && !geoSearchable) delete crud.geo;
+    out.crud = crud;
+  }
+  return out;
+}
+
+/** A `@db.column.searchable` field is still listed (visible) in the pruned `fields`. */
+function searchFallbackVisible(
+  meta: TMetaResponse,
+  table: VisibilityTableSource | undefined,
+): boolean {
+  if (!table?.flatMap) return false;
+  for (const path of Object.keys(meta.fields)) {
+    const entry = table.flatMap.get(path) as
+      | { metadata?: { has?: (key: string) => boolean } }
+      | undefined;
+    if (entry?.metadata?.has?.("db.column.searchable") && !meta.fields[path].writeOnly) return true;
+  }
+  return false;
+}
+
+/** The current controller's `indexFieldPaths()` (moost-db 0.1.143 DB readables), if it has one. */
+function controllerIndexes(instance: object): readonly TDbIndexFieldPaths[] | undefined {
+  const c = instance as { indexFieldPaths?: () => readonly TDbIndexFieldPaths[] };
+  return typeof c.indexFieldPaths === "function" ? c.indexFieldPaths() : undefined;
+}
+
+interface ControllerMethodIndex {
+  /** `@DbAction` name → the methods declaring it (absent for class-level action entries). */
+  actionMethods: ReadonlyMap<string, readonly string[]>;
+  /** Every method name on the instance's prototype chain. */
+  methods: ReadonlySet<string>;
+}
 
 // Per-class memoization: controller and method decorator metadata are bound to
-// the class at registration time and never mutate per-request. Caching avoids
-// re-walking `getInstanceOwnMethods` + N `getMethodMeta` calls on every meta
-// overlay (one per GET `/<resource>/meta` request).
-const actionMetaByClassCache = new WeakMap<
-  new (...args: never[]) => unknown,
-  Map<string, ActionResolutionMeta>
->();
+// the class at registration time and never mutate per-request.
+const methodIndexCache = new WeakMap<Function, ControllerMethodIndex>();
 
-function collectActionMetaByName(): Map<string, ActionResolutionMeta> {
-  const cc = useControllerContext();
-  const instance = cc.getController();
-  const ctor = getConstructor(instance) as new (...args: never[]) => unknown;
-  const cached = actionMetaByClassCache.get(ctor);
-  if (cached) return cached;
+/**
+ * THE ARBAC ids an action is authorized as — used by the `/meta` overlay,
+ * `authorizeForm`, `GET meta/actions` and `actionRowScope` alike: every
+ * method declaring the `@DbAction` (allowed when ANY is — a union), each
+ * with `useArbac()` precedence; a class-level `@DbActions` entry (no handler
+ * method) → `{ resource: defaultResource, action: name }`. `defaultResource`
+ * defaults to the controller's class-level resource.
+ *
+ * @since 0.1.72
+ */
+export function actionArbacIds(
+  instance: object,
+  name: string,
+  defaultResource: string = controllerArbacResource(instance),
+): ArbacHandlerIds[] {
+  const methods = controllerMethodIndex(instance).actionMethods.get(name);
+  return methods?.length
+    ? methods.map((m) => resolveHandlerArbacIds(instance, m))
+    : [{ resource: defaultResource, action: name }];
+}
 
-  const map = new Map<string, ActionResolutionMeta>();
-  const ctrlMeta = cc.getControllerMeta<TArbacMeta>();
+/**
+ * The action `names` the caller holds a grant on — each evaluated as
+ * {@link actionArbacIds} names it (memoized per event). THE action rule of
+ * the `/meta` overlay, `allowedActions` (`$actions`, `GET meta/actions`).
+ */
+export async function grantedActions(
+  instance: object,
+  names: readonly string[],
+): Promise<string[]> {
+  const granted = await Promise.all(
+    names.map((name) => evaluateHandlers(actionArbacIds(instance, name))),
+  );
+  return names.filter((_, i) => granted[i] !== undefined);
+}
 
-  for (const entry of ctrlMeta?.atscript_db_actions ?? []) {
-    map.set(entry.name, {});
-  }
+/** The controller's class-level ARBAC resource (`@ArbacResource` → controller id → class name). */
+function controllerArbacResource(instance: object): string {
+  return arbacIdsFromMeta(getMoostMate().read(instance), undefined, instance, "").resource;
+}
 
-  for (const methodName of collectMethodNames(instance)) {
-    const m = cc.getMethodMeta<TArbacMeta>(methodName);
-    if (!m) continue;
-    const actionMeta = m.atscript_db_action;
-    if (actionMeta?.name) {
-      map.set(actionMeta.name, { arbacActionId: m.arbacActionId, id: m.id });
+/** A controller class's methods and `@DbAction` name → methods map (memoized per class). */
+export function controllerMethodIndex(instance: object): ControllerMethodIndex {
+  return getOrCreate(methodIndexCache, getConstructor(instance), () => {
+    const cc = useControllerContext();
+    const methods = new Set(collectMethodNames(instance));
+    const actionMethods = new Map<string, string[]>();
+    for (const methodName of methods) {
+      const name = cc.getMethodMeta<TArbacMeta>(methodName)?.atscript_db_action?.name;
+      if (name) getOrCreate(actionMethods, name, () => []).push(methodName);
     }
-  }
-
-  actionMetaByClassCache.set(ctor, map);
-  return map;
+    return { actionMethods, methods };
+  });
 }
 
 /**

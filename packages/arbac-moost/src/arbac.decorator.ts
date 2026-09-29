@@ -1,10 +1,18 @@
 import { current } from "@wooksjs/event-core";
+import type { EventContext } from "@wooksjs/event-core";
 import type { TAuthGuardDef, TAuthTransportDeclaration } from "@moostjs/event-http";
 import { Authenticate, HttpError } from "@moostjs/event-http";
-import { defineBeforeInterceptor, TInterceptorPriority, useLogger } from "moost";
+import {
+  defineBeforeInterceptor,
+  TInterceptorPriority,
+  useControllerContext,
+  useLogger,
+} from "moost";
 
 import { useArbac } from "./arbac.composables";
-import { getArbacMate } from "./arbac.mate";
+import { insufficientPrivileges } from "./arbac.evaluate";
+import { ARBAC_DELEGATED_AUTH, getArbacMate } from "./arbac.mate";
+import type { ArbacDelegatedAuth } from "./arbac.mate";
 
 /**
  * ARBAC checks authorization, not authentication, so the transport
@@ -24,17 +32,15 @@ export const arbacAuthorizeInterceptor: TAuthGuardDef = Object.assign(
     if (!action || !resource || isPublic) {
       return;
     }
+    // A moost-db handler that delegates its authorization to the controller's
+    // ARBAC `prepareRequest` (no grant of its own) — it authorizes there.
+    if (delegatesToArbacPrepareRequest(ctx)) return;
 
     const logger = useLogger("arbac", ctx);
     try {
       const { allowed, scopes, userId } = await evaluate();
       logger.debug(`[${userId}] ${allowed ? "Authorized" : "Blocked"} "${resource}" : "${action}"`);
-      if (!allowed) {
-        throw new HttpError(
-          403,
-          `Insufficient privileges for action "${action}" on resource "${resource}"`,
-        );
-      }
+      if (!allowed) throw insufficientPrivileges(resource, action);
       setScopes(scopes);
     } catch (error) {
       if (error instanceof HttpError) {
@@ -45,8 +51,18 @@ export const arbacAuthorizeInterceptor: TAuthGuardDef = Object.assign(
       throw new HttpError(401, originalMessage);
     }
   }, TInterceptorPriority.GUARD),
-  { __authTransports: {} as TAuthTransportDeclaration },
+  { __authTransports: {} },
 );
+
+function delegatesToArbacPrepareRequest(ctx: EventContext): boolean {
+  const cc = useControllerContext(ctx);
+  const controller = cc.getController() as Partial<ArbacDelegatedAuth> | undefined;
+  const method = cc.getMethod();
+  const check = controller?.[ARBAC_DELEGATED_AUTH];
+  return (
+    typeof method === "string" && typeof check === "function" && check.call(controller, method)
+  );
+}
 
 /** Wrapped via `Authenticate` so `@moostjs/swagger` picks up the auth-guard metadata. */
 export const ArbacAuthorize = () => Authenticate(arbacAuthorizeInterceptor);

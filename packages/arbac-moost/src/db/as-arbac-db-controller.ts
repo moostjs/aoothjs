@@ -1,12 +1,34 @@
-import { mergeScopeFilters } from "@aooth/arbac";
 import type { ControlGate, TProjection, TScopeFilter } from "@aooth/arbac";
-import type { TMetaResponse } from "@atscript/db";
-import { AsDbController } from "@atscript/moost-db";
-import type { NavPropsOf, TAtscriptAnnotatedType } from "@atscript/typescript/utils";
+import type {
+  TDbRemoveGuardContext,
+  TDbWriteAction,
+  TDbWriteCheckContext,
+  TDbWriteGuardContext,
+  TMetaResponse,
+} from "@atscript/db";
+import { AsDbController, getDbEndpoint } from "@atscript/moost-db";
+import type { TDbControlsType, TDbRequestContext } from "@atscript/moost-db";
+import type {
+  NavPropsOf,
+  TAtscriptAnnotatedType,
+  TAtscriptDataType,
+} from "@atscript/typescript/utils";
 import { HttpError } from "@moostjs/event-http";
 import { groupByFields } from "@uniqu/core";
 import { Inherit } from "moost";
 
+import { ARBAC_DELEGATED_AUTH } from "../arbac.mate";
+import { isPatchAction } from "./helpers";
+import { registerArbacDbTarget } from "./relation-policy";
+import {
+  arbacActionRowScope,
+  arbacAllowedActions,
+  arbacRowFilter,
+  authorizeArbacForm,
+  prepareArbacRequest,
+  requestFieldVisible,
+  requireRequestScopes,
+} from "./request-scopes";
 import type {
   ControlsOf,
   NavRelationKey,
@@ -14,14 +36,23 @@ import type {
   OwnFieldKey,
   ProjectionOf,
 } from "./scope-types";
-import { applyArbacMetaOverlay, isScopedFieldVisible } from "./meta-projection";
 import {
   applyArbacControls,
   applyArbacProjection,
   applyArbacRelationScopes,
-  readCachedScopes,
-  transformArbacFilter,
 } from "./shared-read-helpers";
+import { applyArbacMetaOverlay } from "./meta-projection";
+import { applyAllowedFieldsAndSet } from "./write-fields";
+import {
+  assertNestedWritesAllowed,
+  checkArbacWrite,
+  guardArbacRemove,
+  guardArbacWrite,
+} from "./write-policy";
+import type { ArbacWriteTable } from "./write-policy";
+import { prefetchRefTargets } from "./write-refs";
+
+export { applyAllowedFieldsAndSet } from "./write-fields";
 
 /**
  * Contract returned by an ARBAC role's scope predicate on a DB-backed resource.
@@ -39,9 +70,23 @@ import {
  *   }
  * }
  * ```
+ *
+ * The framework never reads a custom field — the app unions it with its own
+ * rule. Where scope lists are CONJOINED (credential attenuation), each custom
+ * field needs a conjunction rule registered once with
+ * `MoostArbac.registerScopeFields`; a custom field without one fails the
+ * evaluation (it is never silently dropped). Since 0.1.72.
  */
 export interface ArbacDbScope<T = unknown> {
   filter?: TScopeFilter;
+  /**
+   * Post-write WITH CHECK filter: every row an insert / replace / update
+   * writes must match it (Postgres RLS semantics). Defaults to `filter`;
+   * `{}` disables the check. Conjoined (`$and`) like `filter` by
+   * `defineTableAccess` part scopes and credential attenuation; unioned
+   * across roles. Enforced by the ARBAC DB controllers from 0.1.72.
+   */
+  check?: TScopeFilter;
   projection?: ProjectionOf<T>;
   set?: Partial<Record<OwnFieldKey<T>, unknown>>;
   allowedFields?: Array<OwnFieldKey<T>>;
@@ -68,21 +113,47 @@ export interface ArbacDbScope<T = unknown> {
    * `?$with=<name>`. Recursive — each sub-scope has the same shape and can
    * declare its own `with` for nested expansions (e.g. tasks → comments → task).
    *
-   * **Authority model**: the PARENT scope owns the policy for joined rows.
-   * arbac-moost does NOT re-evaluate ARBAC against the joined resource's own
-   * scopes — that would be a confusing indirection and a perf hit. Whatever
-   * the parent declares here is what surfaces from the expansion.
+   * **Which policy the joined rows obey** (0.1.72+):
+   * - Declared in any role → the union of those sub-scopes governs the
+   *   joined rows (silent roles contribute nothing).
+   * - Not declared → the caller's own `query` grant on the related table's
+   *   ARBAC resource (its filter, projection, controls and `with`); no grant
+   *   → `Unknown relation` (400), identical to a nonexistent relation.
    *
-   * **Union across roles**: when multiple roles allow the same parent table,
+   * **Union across roles**: when multiple roles declare the same relation,
    * their `with[name]` sub-scopes are unioned at every nested level using the
    * existing `unionProjections` / `mergeScopeFilters` / `unionControlsPolicy`
    * primitives (additive: broader access wins, same rules as the parent).
-   *
-   * **Silence wins**: if no role declares `with.<name>`, expansion is
-   * unrestricted (matches `controls.$with` whitelist semantics; the gate
-   * still applies if declared).
+   * The `controls.$with` gate still applies either way.
    */
   with?: WithOf<T>;
+  /**
+   * Nav relations (`TO` / `FROM` / `VIA` props) this scope may write THROUGH
+   * — nested inserts / updates of related rows in the parent's payload.
+   * Default deny: a write payload carrying a nav key not listed by any of
+   * the caller's write scopes is rejected with 403. Parent authority — the
+   * related rows are written under the PARENT scope, the related table's
+   * own ARBAC policy is not consulted. Enforced by the ARBAC DB controllers
+   * from 0.1.72.
+   */
+  nestedWrites?: Array<NavRelationKey<T>>;
+  /**
+   * FK target checks (opt-in): a write that SETS one of these foreign keys
+   * (insert / replace rows; update patches touching it) must reference rows
+   * the caller can READ under its own `query` grant on the target table's
+   * ARBAC resource — else 403 `Referenced row "<field>" is outside your
+   * scope`. `true` = every FK of the table; a list names FK fields or the TO
+   * relations they back. A target without a registered ARBAC DB controller or
+   * without a read grant → 403. Null / absent FKs are not checked.
+   *
+   * **Union across roles**: enforced for an FK only when EVERY allowing write
+   * scope enables it — write scopes grant additively, so a role without the
+   * flag grants unconstrained writes of that FK. Credential attenuation
+   * enforces what either side enforces.
+   *
+   * @since 0.1.72
+   */
+  checkRefs?: true | Array<OwnFieldKey<T> | NavRelationKey<T>>;
 }
 
 /**
@@ -101,20 +172,54 @@ type WithOf<T> = unknown extends T
         : ArbacDbScope;
     };
 
+/**
+ * ARBAC-enforcing CRUD controller over an atscript-db table.
+ *
+ * Every endpoint — `@DbAction` handlers included — resolves the caller's
+ * scopes first in `prepareRequest` (fail closed: no grant → 403, `@Public()`
+ * does not bypass it); every other hook reads them. Reads apply
+ * the scopes' row filter, projection, controls and `with` sub-scopes. Writes
+ * enforce, per request:
+ *
+ * - **nested writes** — a payload key naming a nav relation → 403 unless a
+ *   write scope lists it in `nestedWrites`;
+ * - **`allowedFields` / `set`** — path-aware whitelist (identifiers, the
+ *   version column and `$cas` always kept) and forced values;
+ * - **USING** — update / replace / delete target only rows matching the
+ *   scope `filter`, checked on the exact pre-image inside the write's
+ *   transaction (missing or out of scope → the same 404);
+ * - **`checkRefs`** (opt-in) — an FK the write sets must reference a row
+ *   the caller can read on the target table (else 403);
+ * - **WITH CHECK** — every written row must match the scope `check`
+ *   (default: `filter`; `{}` opts out) after the write, inside the
+ *   transaction (→ 403, rolled back). On adapters without real transactions
+ *   the check runs in memory before the write and fails closed on anything
+ *   it cannot decide.
+ */
 @Inherit()
 export class AsArbacDbController<
   T extends TAtscriptAnnotatedType = TAtscriptAnnotatedType,
 > extends AsDbController<T> {
-  protected transformFilter(
-    filter: Record<string, unknown> | undefined,
-  ): Promise<Record<string, unknown>> {
-    return transformArbacFilter(filter);
+  /** Makes this controller the `$with` policy source for its table's ARBAC resource. */
+  protected readonly _arbacRelationTarget = registerArbacDbTarget(this);
+
+  /**
+   * Resolve the request's ARBAC scopes before anything else consults them:
+   * reuse the ones the authorize interceptor cached, else evaluate the
+   * handler's resource/action now — a deny is a 403 (`arbacPublic` never
+   * bypasses a DB controller). On read endpoints the `$with` relation policy
+   * is resolved for the requested relations.
+   */
+  protected prepareRequest(ctx: TDbRequestContext): Promise<void> {
+    return prepareArbacRequest(ctx, this.readable);
   }
 
-  protected transformProjection(
-    projection?: TProjection,
-  ): TProjection | undefined | Promise<TProjection | undefined> {
-    return applyArbacProjection(projection, readCachedScopes(), this.readable);
+  protected transformFilter(filter: Record<string, unknown> | undefined): Record<string, unknown> {
+    return arbacRowFilter(filter);
+  }
+
+  protected transformProjection(projection?: TProjection): TProjection | undefined {
+    return applyArbacProjection(projection, requireRequestScopes(), this.readable);
   }
 
   /**
@@ -157,22 +262,18 @@ export class AsArbacDbController<
    * controls of a request. Runs after the base validator (which checks the
    * controls DTO shape) and BEFORE the query/aggregation pipeline executes.
    *
-   * Reads the scopes the route-level authorize interceptor cached via
-   * `arbac.setScopes(...)` — validation runs before `transformFilter`, so
-   * this hook never re-evaluates ARBAC.
-   *
-   * On a violation we throw `HttpError(403)`. moost-db's `query` / `pages` /
-   * `getOne` handlers do NOT wrap `validateParsed` in try/catch, so the
-   * thrown error bubbles to moost which translates it to a 403 response.
+   * Reads the scopes `prepareRequest` resolved — unresolved scopes are a 403
+   * (never "unrestricted"). A violation throws `HttpError(403)`, which
+   * moost-db's read handlers let bubble.
    */
   protected validateControls(
     controls: Record<string, unknown>,
-    type: "query" | "pages" | "getOne",
+    type: TDbControlsType,
   ): string | undefined {
     const baseErr = super.validateControls(controls, type);
     if (baseErr) return baseErr;
 
-    const scopes = readCachedScopes();
+    const scopes = requireRequestScopes();
     applyArbacControls(controls, scopes);
     applyArbacRelationScopes(controls, scopes, this.readable);
     return undefined;
@@ -183,78 +284,141 @@ export class AsArbacDbController<
   }
 
   /**
-   * Scope-aware field visibility (BUG-3 twin of the `/meta` pruning above): a
+   * `GET /meta/form/:name` serves a form only when the caller may run at
+   * least one of the actions taking it as input (else the unknown-form 404).
+   */
+  protected authorizeForm(_name: string, actionNames: readonly string[]): Promise<boolean> {
+    return authorizeArbacForm(actionNames);
+  }
+
+  /**
+   * The rows each `@DbAction` may run on: the caller's grant on that action
+   * (see `arbacActionRowScope`). Enforced by the action gate and reflected
+   * in `$actions` and `GET /meta/actions/:id`. Since 0.1.72.
+   */
+  protected actionRowScope(name: string): Promise<Record<string, unknown> | undefined> {
+    return arbacActionRowScope(name);
+  }
+
+  /**
+   * The row-level actions `$actions` and `GET /meta/actions/:id` may list:
+   * those the caller holds a grant on (the `/meta` overlay's rule, without
+   * building the overlay). Since 0.1.72.
+   */
+  protected allowedActions(names: readonly string[]): Promise<string[]> {
+    return arbacAllowedActions(names);
+  }
+
+  /**
+   * moost-db handlers that delegate their authorization to `prepareRequest`
+   * (`getDbEndpoint` — `GET /meta/actions/:id`): the authorize interceptor
+   * skips them; `prepareRequest` serves them iff the caller may run at least
+   * one row-level action (else 403). Since 0.1.72.
+   */
+  [ARBAC_DELEGATED_AUTH](method: string): boolean {
+    return getDbEndpoint(this, method) !== undefined;
+  }
+
+  /**
+   * Scope-aware field visibility (the twin of the `/meta` pruning above): a
    * field outside the read-scope projection union answers `false`, which
    * moost-db's visibility hook turns into the same `Unknown field "x"` 400 a
    * nonexistent field gets at every gated query position — see the docs'
    * "Column-scope security floor". Identifiers stay visible. A `rel.x` path
-   * under a `with`-granted relation (`$with=rel(x>1)`, `$with=rel($sort=x)`,
-   * `$with=rel($select=x)`) is checked as `x` against the union of the
-   * `with.rel` sub-scopes, recursively; the related table's own PK /
-   * `preferredId` stay visible.
+   * (`$with=rel(x>1)`, `$with=rel($sort=x)`, `$with=rel($select=x)`) is
+   * checked as `x` against the relation's policy, recursively; the related
+   * table's own PK / `preferredId` stay visible. Unresolved scopes hide every
+   * field.
    */
   protected hasField(path: string): boolean {
-    return super.hasField(path) && isScopedFieldVisible(readCachedScopes(), path, this.readable);
+    return super.hasField(path) && requestFieldVisible(path, this.readable);
   }
 
-  protected async onWrite(
-    action: "insert" | "insertMany" | "replace" | "replaceMany" | "update" | "updateMany",
-    data: unknown,
-  ): Promise<unknown> {
-    const scopes = readCachedScopes();
-    if (action !== "insert" && action !== "insertMany") {
-      await this.assertInScope(data, scopes);
-    }
-    return applyAllowedFieldsAndSet(data, scopes, this.identifierFields());
+  /**
+   * Untrusted-body stage: reject nested writes the scopes do not opt in
+   * (`nestedWrites`), then apply the `allowedFields` whitelist and `set`.
+   */
+  protected onWrite(action: TDbWriteAction, data: unknown): unknown {
+    const scopes = requireRequestScopes();
+    assertNestedWritesAllowed(data, scopes, this.readable.navFields);
+    // Warm the `checkRefs` target evaluations outside the write's transaction.
+    prefetchRefTargets(scopes, this.readable);
+    return applyAllowedFieldsAndSet(
+      data,
+      scopes,
+      this.preservedWriteFields(),
+      isPatchAction(action) ? (path) => this.isMergeBlock(path) : undefined,
+    );
   }
 
-  protected async onRemove(id: unknown): Promise<unknown> {
-    await this.assertInScope(id, readCachedScopes());
-    return id;
+  /** `true` when a patch merges into the nested object at `path` (`@db.patch.strategy 'merge'`). */
+  private isMergeBlock(path: string): boolean {
+    return this.readable.flatMap.get(path)?.metadata.get("db.patch.strategy") === "merge";
   }
 
-  // BUG-1: base update/remove key purely on payload.id, so without this
-  // pre-check a caller could mutate a row outside their scope by knowing its PK.
-  // Ids resolve through moost-db's `_idOpts` (`isFieldVisible: hasField`): a
-  // unique index over a scope-hidden column is no identification, so a hidden
-  // existing value 404s exactly like a nonexistent one.
-  private async assertInScope(idOrIds: unknown, scopes: ArbacDbScope[]): Promise<void> {
-    const scopeFilter = mergeScopeFilters(scopes.map((s) => s.filter ?? {}));
-    if (!scopeFilter) return;
-    const ids = Array.isArray(idOrIds) ? idOrIds : [idOrIds];
-    const idFilters = ids.map((id) => this.readable.resolveIdFilter(id, this._idOpts));
-    if (idFilters.some((f) => !f)) throw new HttpError(404, "Not found");
-    const idFilter = idFilters.length === 1 ? idFilters[0] : { $or: idFilters };
-    const count = await this.readable.count({
-      filter: { $and: [idFilter, scopeFilter] },
-      // TScopeFilter is not parameterized over the table type; fixing properly requires a moost-db count overload or a full TScopeFilter refactor — not worth it for one call site.
-    } as never);
-    if (count < ids.length) throw new HttpError(404, "Not found");
+  /** In-transaction stage — USING, `checkRefs`, and WITH CHECK on non-transactional adapters. */
+  protected guardWrite(ctx: TDbWriteGuardContext<TAtscriptDataType<T>>): Promise<void> {
+    return guardArbacWrite(
+      ctx as unknown as TDbWriteGuardContext,
+      requireRequestScopes(),
+      this.guardedTable,
+      this.readable,
+    );
   }
 
-  // Always preserve PK + unique-index fields so callers don't need to whitelist
-  // server-derived metadata that update/replace requires to address the row.
-  // Memoized per controller class: `readable.identifications` is decoration-derived
+  /** USING for deletes: the exact row the delete targets must match the scope filter (else 404). */
+  protected guardRemove(ctx: TDbRemoveGuardContext<TAtscriptDataType<T>>): Promise<void> {
+    return guardArbacRemove(
+      ctx as TDbRemoveGuardContext,
+      requireRequestScopes(),
+      this.guardedTable,
+    );
+  }
+
+  /**
+   * WITH CHECK: after the write, inside its transaction, every written row
+   * must match the scopes' `check` (default `filter`) — else 403 and the
+   * write rolls back. Non-transactional adapters were checked in
+   * {@link guardWrite}.
+   */
+  protected checkWrite(ctx: TDbWriteCheckContext): Promise<void> {
+    return checkArbacWrite(ctx, requireRequestScopes());
+  }
+
+  /** `this.table` as the write guards see it (the generic `T` defeats structural matching). */
+  private get guardedTable(): ArbacWriteTable {
+    return this.table as unknown as ArbacWriteTable;
+  }
+
+  // Always preserve PK + unique-index fields (update/replace address the row
+  // by them), the version column and `$cas` (optimistic concurrency) so a
+  // whitelist never has to list server-side metadata. Memoized per controller
+  // class: `readable.identifications` / `versionColumn` are decoration-derived
   // and stable for the class's lifetime.
-  private identifierFields(): readonly string[] {
+  private preservedWriteFields(): readonly string[] {
     const ctor = this.constructor as new (...args: never[]) => unknown;
-    const cached = identifierFieldsCache.get(ctor);
+    const cached = preservedFieldsCache.get(ctor);
     if (cached) return cached;
     const out = new Set<string>();
     for (const ident of this.readable.identifications) {
       for (const f of ident.fields) out.add(f);
     }
+    const version = (this.readable as { versionColumn?: string }).versionColumn;
+    if (version) {
+      out.add(version);
+      out.add("$cas");
+    }
     const arr = [...out];
-    identifierFieldsCache.set(ctor, arr);
+    preservedFieldsCache.set(ctor, arr);
     return arr;
   }
 }
 
 // WeakMap so test harnesses that throw away the controller class also throw
 // away the cache entry. Cache key is the controller subclass constructor —
-// `readable.identifications` is derived from atscript decorations on that class,
-// so the resolved field list cannot change without a new class.
-const identifierFieldsCache = new WeakMap<new (...args: never[]) => unknown, readonly string[]>();
+// the preserved fields derive from atscript decorations on that class, so
+// they cannot change without a new class.
+const preservedFieldsCache = new WeakMap<new (...args: never[]) => unknown, readonly string[]>();
 
 /**
  * Test-friendly internal helper — exported for unit tests and helper
@@ -341,76 +505,6 @@ export function extractUsedControlValues(
       : value.filter((x): x is string => typeof x === "string");
   }
   return [];
-}
-
-/**
- * Test-friendly internal helper — exported for unit tests and helper
- * composition; regular consumers should not call this directly.
- *
- * Apply the union of `allowedFields` whitelists (with `preserveFields`
- * always preserved) and overlay each scope's `set` overrides. Returns a
- * shallow copy; original `data` is not mutated.
- */
-export function applyAllowedFieldsAndSet(
-  data: unknown,
-  scopes: ArbacDbScope[],
-  preserveFields: readonly string[] = [],
-): unknown {
-  if (scopes.length === 0) return data;
-
-  // Compute per-scope artefacts once — they're a pure function of `scopes` +
-  // `preserveFields`, so reusing them across every row in a batch insert /
-  // updateMany avoids O(rows × scopes) Set construction + flat() allocation.
-  const prepared = prepareScopeOverlay(scopes, preserveFields);
-
-  if (Array.isArray(data)) {
-    return data.map((row) => applyPreparedOverlay(row, prepared));
-  }
-  return applyPreparedOverlay(data, prepared);
-}
-
-interface PreparedScopeOverlay {
-  union: ReadonlySet<string> | null;
-  setOverrides: Record<string, unknown> | null;
-}
-
-function prepareScopeOverlay(
-  scopes: ArbacDbScope[],
-  preserveFields: readonly string[],
-): PreparedScopeOverlay {
-  let union: Set<string> | null = null;
-  for (const s of scopes) {
-    if (Array.isArray(s.allowedFields)) {
-      if (!union) union = new Set<string>();
-      for (const f of s.allowedFields) union.add(f);
-    }
-  }
-  if (union) {
-    for (const f of preserveFields) union.add(f);
-  }
-
-  let setOverrides: Record<string, unknown> | null = null;
-  for (const s of scopes) {
-    if (s.set) {
-      if (!setOverrides) setOverrides = {};
-      Object.assign(setOverrides, s.set);
-    }
-  }
-
-  return { union, setOverrides };
-}
-
-function applyPreparedOverlay(data: unknown, prepared: PreparedScopeOverlay): unknown {
-  if (Array.isArray(data)) return data.map((row) => applyPreparedOverlay(row, prepared));
-  if (!data || typeof data !== "object") return data;
-  const merged: Record<string, unknown> = { ...(data as Record<string, unknown>) };
-  if (prepared.union) {
-    for (const k of Object.keys(merged)) {
-      if (!prepared.union.has(k)) delete merged[k];
-    }
-  }
-  if (prepared.setOverrides) Object.assign(merged, prepared.setOverrides);
-  return merged;
 }
 
 /**

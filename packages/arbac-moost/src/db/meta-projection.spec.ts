@@ -4,16 +4,15 @@ import { isFieldAllowed } from "@aooth/arbac";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { ArbacDbScope } from "./as-arbac-db-controller";
+import { collectMethodNames, pruneMetaByVisibility } from "./meta-projection";
+import { isScopedFieldVisible } from "./request-scopes";
 import {
   buildScopeVisibility,
-  collectMethodNames,
   collectWithGrantNames,
   isMetaFieldVisible,
-  isScopedFieldVisible,
-  pruneMetaByVisibility,
   unionScopeProjection,
-} from "./meta-projection";
-import type { MetaVisibility, VisibilityTableSource } from "./meta-projection";
+} from "./visibility";
+import type { ArbacRelationResolution, MetaVisibility, VisibilityTableSource } from "./visibility";
 
 // ── Fixtures ───────────────────────────────────────────────────────────────
 
@@ -350,6 +349,47 @@ describe("pruneMetaByVisibility — writeOnly stamping", () => {
     expect(plain.fields["password.hash"]).toBeUndefined();
   });
 
+  it("an unreadable relation is a write affordance only when opted into nestedWrites", () => {
+    type Props = Record<string, TSerializedAnnotatedType>;
+    const propsOf = (out: TMetaResponse) => (out.type.type as unknown as { props: Props }).props;
+    // Unrestricted writes alone never make a relation writable.
+    const denied = propsOf(pruneMetaByVisibility(usersMeta(), visW("all")));
+    expect(denied.department).toBeUndefined();
+    expect(denied.auditEvents).toBeUndefined();
+
+    const out = propsOf(
+      pruneMetaByVisibility(usersMeta(), {
+        ...visW("all"),
+        nestedWrites: new Set(["department"]),
+      }),
+    );
+    expect(out.department.metadata["db.writeOnly"]).toBe(true);
+    expect(out.auditEvents).toBeUndefined();
+    // A write whitelist must still cover the relation.
+    const listed = propsOf(
+      pruneMetaByVisibility(usersMeta(), {
+        ...visW(new Set(["password"])),
+        nestedWrites: new Set(["department"]),
+      }),
+    );
+    expect(listed.department).toBeUndefined();
+  });
+
+  it("paths through a relation are never stamped writable without nestedWrites", () => {
+    const meta = usersMeta();
+    meta.fields["department.name"] = { sortable: false, filterable: false };
+    const relationNames = new Set(["department", "auditEvents"]);
+    const out = pruneMetaByVisibility(meta, { ...visW("all"), relationNames });
+    expect(out.fields["department.name"]).toBeUndefined();
+    expect(out.fields["account.lockReason"]?.writeOnly).toBe(true);
+    const opted = pruneMetaByVisibility(meta, {
+      ...visW("all"),
+      relationNames,
+      nestedWrites: new Set(["department"]),
+    });
+    expect(opted.fields["department.name"]?.writeOnly).toBe(true);
+  });
+
   it("ancestor grants cover nested paths (credit.credentials covers .user)", () => {
     const out = pruneMetaByVisibility(usersMeta(), visW(new Set(["password"])));
     // "password.history" sits under the "password" grant.
@@ -391,5 +431,128 @@ describe("buildScopeVisibility — precompiled isAllowed matches isFieldAllowed"
   ] as Array<[Record<string, 0 | 1>]>)("%j", (projection) => {
     const v = buildScopeVisibility([{ projection }], undefined);
     for (const p of paths) expect(v.isAllowed!(p), p).toBe(isFieldAllowed(p, projection));
+  });
+});
+
+// ── 0.1.72 read-side policy ────────────────────────────────────────────────
+
+describe("pruneMetaByVisibility — writable descendant under a hidden parent", () => {
+  it("keeps the hidden parent with ONLY its writable leaves, stamped writeOnly", () => {
+    const v: MetaVisibility = {
+      allowed: { id: 1, username: 1 },
+      alwaysVisible: NONE,
+      withGrants: NONE,
+      writable: new Set(["password.hash"]),
+    };
+    const out = pruneMetaByVisibility(usersMeta(), v);
+    expect(out.fields["password.hash"]?.writeOnly).toBe(true);
+    expect(out.fields["password.history"]).toBeUndefined();
+    const props = (out.type.type as unknown as { props: Record<string, TSerializedAnnotatedType> })
+      .props;
+    expect(props.password.metadata["db.writeOnly"]).toBe(true);
+    const inner = (
+      props.password.type as unknown as { props: Record<string, TSerializedAnnotatedType> }
+    ).props;
+    expect(Object.keys(inner)).toEqual(["hash"]);
+    expect(inner.hash.metadata["db.writeOnly"]).toBe(true);
+    expect(props.account).toBeUndefined();
+  });
+});
+
+// `settings` is a JSON column; `copy` is derived from `settings.key`.
+function jsonTable(storage: "json" | "column"): VisibilityTableSource {
+  return {
+    primaryKeys: ["id"],
+    preferredId: ["id"],
+    flatMap: new Map(
+      ["id", "title", "settings", "settings.key", "settings.theme", "copy"].map((p) => [p, {}]),
+    ),
+    fieldDescriptors: [{ path: "copy", derived: { sourcePath: "settings.key" } }],
+    jsonParents: new Set(storage === "json" ? ["settings"] : []),
+  };
+}
+
+describe("buildScopeVisibility — derived columns and atomic JSON columns", () => {
+  it("atomic JSON: an excluded leaf hides the whole column", () => {
+    const v = buildScopeVisibility([{ projection: { "settings.key": 0 } }], jsonTable("json"));
+    expect(v.allowed).toEqual({ settings: 0, copy: 0 });
+    for (const p of ["settings", "settings.theme", "settings.key", "copy"]) {
+      expect(isMetaFieldVisible(p, v), p).toBe(false);
+    }
+    expect(isMetaFieldVisible("title", v)).toBe(true);
+  });
+
+  it("atomic JSON: a whitelisted leaf alone does not reveal the column", () => {
+    const v = buildScopeVisibility([{ projection: { "settings.theme": 1 } }], jsonTable("json"));
+    expect(v.allowed).toEqual({ id: 1 });
+    expect(isMetaFieldVisible("settings", v)).toBe(false);
+    expect(isMetaFieldVisible("settings.theme", v)).toBe(false);
+  });
+
+  it("addressable JSON (document adapters) keeps sub-path precision", () => {
+    const v = buildScopeVisibility([{ projection: { "settings.key": 0 } }], jsonTable("column"));
+    expect(isMetaFieldVisible("settings", v)).toBe(true);
+    expect(isMetaFieldVisible("settings.theme", v)).toBe(true);
+    expect(isMetaFieldVisible("settings.key", v)).toBe(false);
+    // …and the derived copy follows its hidden source.
+    expect(isMetaFieldVisible("copy", v)).toBe(false);
+    expect(v.allowed).toEqual({ "settings.key": 0, copy: 0 });
+  });
+
+  it("derived: a whitelisted derived field whose source is not visible is dropped", () => {
+    const v = buildScopeVisibility([{ projection: { title: 1, copy: 1 } }], jsonTable("column"));
+    expect(v.allowed).toEqual({ title: 1 });
+    expect(isMetaFieldVisible("copy", v)).toBe(false);
+    const withSource = buildScopeVisibility(
+      [{ projection: { title: 1, copy: 1, "settings.key": 1 } }],
+      jsonTable("column"),
+    );
+    expect(isMetaFieldVisible("copy", withSource)).toBe(true);
+  });
+});
+
+describe("buildScopeVisibility — undeclared relations (inherit-target)", () => {
+  const userTable: VisibilityTableSource = { primaryKeys: ["id"], preferredId: ["id"] };
+  const taskTable: VisibilityTableSource = {
+    primaryKeys: ["id"],
+    preferredId: ["id"],
+    relations: new Map([["owner", {}]]),
+    relatedTable: (nav) => (nav === "owner" ? userTable : undefined),
+  };
+
+  it("unresolved → hidden, even for an unrestricted parent grant", () => {
+    const v = buildScopeVisibility([{}], taskTable);
+    expect(isMetaFieldVisible("owner", v)).toBe(false);
+    expect(isMetaFieldVisible("owner.name", v)).toBe(false);
+    expect(isMetaFieldVisible("title", v)).toBe(true);
+    expect(isScopedFieldVisible([], "owner", taskTable)).toBe(false);
+  });
+
+  it("resolved → the related grant's visibility; the parent projection still gates the name", () => {
+    const resolution: ArbacRelationResolution = new Map([
+      ["owner", buildScopeVisibility([{ projection: { salary: 0 } }], userTable)],
+    ]);
+    const v = buildScopeVisibility([{}], taskTable, { relations: resolution });
+    expect(isMetaFieldVisible("owner", v)).toBe(true);
+    expect(isMetaFieldVisible("owner.name", v)).toBe(true);
+    expect(isMetaFieldVisible("owner.salary", v)).toBe(false);
+    const gated = buildScopeVisibility([{ projection: { title: 1 } }], taskTable, {
+      relations: resolution,
+    });
+    expect(isMetaFieldVisible("owner", gated)).toBe(false);
+  });
+
+  it("hidden (null) → hidden; a declared with.<rel> ignores the resolution", () => {
+    const hidden: ArbacRelationResolution = new Map([["owner", null]]);
+    expect(
+      isMetaFieldVisible("owner", buildScopeVisibility([{}], taskTable, { relations: hidden })),
+    ).toBe(false);
+    const declared = buildScopeVisibility(
+      [{ with: { owner: { projection: { name: 1 } } } }, {}],
+      taskTable,
+      { relations: hidden },
+    );
+    expect(isMetaFieldVisible("owner.name", declared)).toBe(true);
+    expect(isMetaFieldVisible("owner.salary", declared)).toBe(false);
   });
 });

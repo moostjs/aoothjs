@@ -1,51 +1,17 @@
 import {
   conjoinScopeFilters,
-  DENY_FILTER,
+  effectiveScope,
   expandExcludeToLeaves,
-  mergeScopeFilters,
   restrictProjection,
-  unionControlsPolicy,
 } from "@aooth/arbac";
 import type { TProjection } from "@aooth/arbac";
 
-import { getArbacScopes, useArbac } from "../arbac.composables";
 import { enforceControlsPolicy } from "./as-arbac-db-controller";
 import type { ArbacDbScope } from "./as-arbac-db-controller";
 import { fieldChildrenOf } from "./field-children";
-import { scopeVisibility } from "./meta-projection";
-import type { MetaVisibility, VisibilityTableSource } from "./meta-projection";
-
-/**
- * Single point of access to the per-event scope cache. Reads the slot
- * directly — `hasField` calls this per referenced path, and `useArbac()`
- * would resolve controller metadata on every call.
- */
-export function readCachedScopes(): ArbacDbScope[] {
-  return getArbacScopes<ArbacDbScope>() ?? [];
-}
-
-/**
- * Full body of `transformFilter` for both ARBAC DB controllers: evaluate
- * ARBAC once, cache the scopes for the per-event hooks that follow
- * (`transformProjection`, `validateControls`), and merge the user filter
- * with the union of scope filters.
- *
- * Combining is delegated to `conjoinScopeFilters`, which owns the
- * `$and`-never-spread invariant (a user filter constraining the same field as
- * the scope would otherwise replace it and widen access) and treats an empty
- * side as the identity. Returns a match-nothing filter on denial so the
- * downstream pipeline returns an empty result set without leaking rows.
- */
-export async function transformArbacFilter(
-  filter: Record<string, unknown> | undefined,
-): Promise<Record<string, unknown>> {
-  const arbac = useArbac();
-  const { allowed, scopes } = await arbac.evaluate<ArbacDbScope>();
-  if (!allowed) return DENY_FILTER;
-  arbac.setScopes(scopes);
-  const merged = mergeScopeFilters((scopes ?? []).map((s) => s.filter ?? {}));
-  return conjoinScopeFilters(merged, filter) ?? {};
-}
+import { visibilityFor } from "./request-scopes";
+import { isMetaFieldVisible } from "./visibility";
+import type { MetaVisibility, VisibilityTableSource } from "./visibility";
 
 /**
  * Restrict the user-supplied `$select` to the scopes' projection union.
@@ -67,13 +33,15 @@ export async function transformArbacFilter(
  * (`{ a: 0 }` → `{ "a.b": 0, "a.c": 0 }`): flattening adapters invert an
  * exclusion against their leaf columns, so a parent key alone would strip
  * nothing (a scope `{ a: 0 }` would otherwise return all of `a`).
+ *
+ * @since 0.1.72
  */
 export function applyArbacProjection(
   projection: unknown,
   scopes: ArbacDbScope[],
   readable?: VisibilityTableSource,
 ): TProjection | undefined {
-  return restrictSelect(projection, scopeVisibility(scopes, readable));
+  return restrictSelect(projection, visibilityFor(scopes, readable));
 }
 
 /** {@link applyArbacProjection} over an already-built visibility level. */
@@ -87,13 +55,14 @@ function restrictSelect(projection: unknown, vis: MetaVisibility): TProjection |
 /**
  * Enforce the union of per-scope `controls` gates against the parsed
  * Uniquery controls. Throws `HttpError(403)` on the first violation.
+ *
+ * @since 0.1.72
  */
 export function applyArbacControls(
   controls: Record<string, unknown>,
   scopes: ArbacDbScope[],
 ): void {
-  if (scopes.length === 0) return;
-  enforceControlsPolicy(unionControlsPolicy(scopes), controls);
+  enforceControlsPolicy(effectiveScope(scopes).controls, controls);
 }
 
 /** A `$with` entry as parsed by uniquery: `{ name, filter?, controls? }`. */
@@ -104,32 +73,32 @@ interface WithEntry {
 }
 
 /**
- * Walk the user-supplied `$with` items in `controls` and inject per-relation
- * filter/projection/controls/nested-$with from the role scopes' `with` field.
+ * Walk the user-supplied `$with` items in `controls` and overlay each joined
+ * relation with the policy of its rows (the `$with` inherit-target policy):
+ * a relation some scope declares `with.<name>` for gets the union of those
+ * sub-scopes (parent authority — silent roles contribute nothing); any other
+ * gets the caller's OWN read scopes on the related table, as resolved in
+ * `prepareRequest` (for the request's own scopes). Filter conjoined, `$select`
+ * restricted, per-relation `controls` gates enforced, recursively.
  *
  * Mutates `controls` in place (matches the `validateControls` contract).
- * Throws `HttpError(403)` if a per-relation control policy is violated
- * (delegates to `enforceControlsPolicy` like top-level `applyArbacControls`).
+ * Throws `HttpError(403)` if a per-relation control policy is violated. A
+ * hidden relation is skipped: moost-db (≥ 0.1.143) rejects it at every
+ * level through `hasField`, byte-for-byte like a nonexistent one.
  *
- * Silence wins: if no role declares `with.<name>` for a relation, that entry
- * passes through unchanged. The outermost check skips the entire walk when no
- * scope declares `with` at all — this is the common case on every read.
+ * @since 0.1.72
  */
 export function applyArbacRelationScopes(
   controls: Record<string, unknown>,
   scopes: ArbacDbScope[],
   readable?: VisibilityTableSource,
 ): void {
-  if (scopes.length === 0) return;
-  // Hot-path bail: most reads have no `with`-declaring scope; skip per-entry work.
-  if (!scopes.some((s) => s.with)) return;
-  applyRelationLevel(controls, scopeVisibility(scopes, readable));
+  const withArr = controls.$with;
+  if (!Array.isArray(withArr) || withArr.length === 0) return;
+  applyRelationLevel(controls, visibilityFor(scopes, readable));
 }
 
-/**
- * One `$with` level of {@link applyArbacRelationScopes}: each granted
- * relation's child visibility already carries its sub-scopes and target table.
- */
+/** One `$with` level of {@link applyArbacRelationScopes}. */
 function applyRelationLevel(controls: Record<string, unknown>, vis: MetaVisibility): void {
   const withArr = controls.$with;
   if (!Array.isArray(withArr) || withArr.length === 0) return;
@@ -137,29 +106,33 @@ function applyRelationLevel(controls: Record<string, unknown>, vis: MetaVisibili
   for (const raw of withArr) {
     if (!raw || typeof raw !== "object") continue;
     const entry = raw as WithEntry;
-    if (typeof entry.name !== "string") continue;
+    // A dotted name is not loaded by the core — nothing to overlay.
+    if (typeof entry.name !== "string" || entry.name.includes(".")) continue;
+    // A hidden or nonexistent relation is left to moost-db, which answers
+    // `Unknown relation` through `hasField` — identical for both.
+    const known =
+      (!vis.relationNames || vis.relationNames.has(entry.name)) &&
+      isMetaFieldVisible(entry.name, vis);
+    const level = known ? vis.relation?.(entry.name) : undefined;
+    if (!level) continue;
 
-    const child = vis.relation?.(entry.name);
-    const subScopes = child?.scopes ?? [];
-    if (!child || subScopes.length === 0) continue; // silence wins
-
-    // Filter overlay — same combiner as transformArbacFilter, so the two sites
+    const sub = effectiveScope(level.scopes ?? []);
+    // Filter overlay — same combiner as the row filter, so the two sites
     // cannot drift on the `$and`-never-spread invariant.
-    const subFilter = mergeScopeFilters(subScopes.map((s) => s.filter ?? {}));
-    const conjoined = conjoinScopeFilters(subFilter, entry.filter);
+    const conjoined = conjoinScopeFilters(sub.filter, entry.filter);
     if (conjoined) entry.filter = conjoined;
 
     const entryControls = entry.controls ?? {};
-    const restricted = restrictSelect(entryControls.$select, child);
+    const restricted = restrictSelect(entryControls.$select, level);
     if (restricted !== undefined) {
       entryControls.$select = restricted;
       entry.controls = entryControls;
     }
 
-    // Enforce per-relation control gates (e.g. `with.X.controls.$with: false`)
-    // then recurse — sub-scopes' own `with` trees gate the next level.
-    enforceControlsPolicy(unionControlsPolicy(subScopes), entryControls);
-    if (subScopes.some((s) => s.with)) applyRelationLevel(entryControls, child);
+    // Per-relation control gates (e.g. `with.X.controls.$with: false`), then
+    // the next level.
+    enforceControlsPolicy(sub.controls, entryControls);
+    applyRelationLevel(entryControls, level);
   }
 }
 

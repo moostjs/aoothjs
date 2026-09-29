@@ -7,22 +7,21 @@ import { FakeUserProvider } from "../__testing__/user-provider";
 import { ArbacAction, ArbacResource, MoostArbac } from "../index";
 import type { ArbacDbScope } from "./as-arbac-db-controller";
 import { fieldChildrenOf } from "./field-children";
-import {
-  applyArbacProjection,
-  applyArbacRelationScopes,
-  transformArbacFilter,
-} from "./shared-read-helpers";
+import { arbacRowFilter, resolveRequestScopes } from "./request-scopes";
+import { applyArbacProjection, applyArbacRelationScopes } from "./shared-read-helpers";
 
 /**
- * Captures the result of `transformArbacFilter(filter)` for the current event
+ * Captures the result of `arbacRowFilter(filter)` for the current event
  * context. Defaults to `undefined` (no user filter) so the response is purely
  * the scope-merge outcome — the value under test for most of this file; pass a
  * filter to exercise the merge against a user-supplied one.
  */
 const ProbeTransform = (filter?: Record<string, unknown>) =>
   Resolve(async () => {
-    const result = await transformArbacFilter(filter);
-    return { result };
+    // The entry point resolves the event's scopes once (deny → 403); the
+    // row filter then reads them synchronously.
+    await resolveRequestScopes();
+    return { result: arbacRowFilter(filter) };
   });
 
 // Controller is declared at module scope, not inside async test functions —
@@ -72,9 +71,10 @@ async function readMergedFilter(
 }
 
 describe("applyArbacRelationScopes", () => {
-  // WHY: silence-wins default — pre-existing roles that don't opt into `with`
-  // must keep working, no projection/filter injection.
-  it("no scope declares `with` → user controls pass through unchanged", () => {
+  // WHY: without a table (legacy callers) an undeclared relation is not
+  // recognised as one — no projection/filter injection. With the readable,
+  // it follows the inherit-target policy (see relation-policy.spec.ts).
+  it("no scope declares `with`, no table → user controls pass through unchanged", () => {
     const controls = { $with: [{ name: "comments", controls: { $select: ["body"] } }] };
     const scopes: ArbacDbScope[] = [{ filter: { tenantId: "t1" } }];
     const before = JSON.parse(JSON.stringify(controls));
@@ -195,53 +195,32 @@ describe("applyArbacRelationScopes", () => {
 
   // WHY: round-2 audit (finding C) — `applyArbacRelationScopes` recurses without
   // a depth cap, so the bound has to come from somewhere else. It comes from
-  // the silence-wins guard at line 111: recursion only continues when at least
-  // one scope declares `with.<name>` for the current entry. The user controls
-  // a TREE (URL/JSON, no cycles possible at the wire level), so deeply-nested
-  // user `$with` against a shallow scope tree terminates immediately when the
-  // scope tree runs out — adversarial user depth alone CANNOT force unbounded
-  // recursion. Roles are admin-declared, not attacker-controlled, so the depth
-  // is bounded by the role catalogue, not the request. If this test ever fails
-  // (stack overflow, hang, or the inner `$select` getting injected), the
-  // silence-wins bound has been broken and an explicit depth cap is required.
-  it("deeply-nested user $with bounded by shallow scope tree (silence-wins at every depth)", () => {
+  // the relation policy: recursion only continues into a relation that is
+  // RESOLVED (declared `with.<name>`, or the caller's grant on the related
+  // table resolved in `prepareRequest`). A nested relation neither declared
+  // nor resolved is hidden → the walk stops there (moost-db then answers the
+  // 400 `Unknown relation` through `hasField`) — adversarial user depth alone
+  // CANNOT force unbounded recursion or reach a joined table unrestricted.
+  it("deeply-nested user $with stops at the first unresolved relation", () => {
     // Build user $with nested 50 levels deep — `comments` → `comments` → ...
     let entry: Record<string, unknown> = { name: "comments" };
     for (let i = 0; i < 49; i++) {
       entry = { name: "comments", controls: { $with: [entry] } };
     }
     const controls: Record<string, unknown> = { $with: [entry] };
-    // Scope declares `with.comments` ONE level deep, with a projection that
-    // would otherwise inject `$select` at every recursion level.
+    // Scope declares `with.comments` ONE level deep.
     const scopes: ArbacDbScope[] = [{ with: { comments: { projection: { body: 1 } } } }];
 
-    expect(() => applyArbacRelationScopes(controls, scopes)).not.toThrow();
+    applyArbacRelationScopes(controls, scopes);
 
     // Depth 1 (outer): scope hits, $select injected.
     const lvl1 = (
       controls.$with as Array<{ controls?: { $select?: unknown; $with?: unknown[] } }>
     )[0];
     expect(lvl1.controls?.$select).toEqual({ body: 1 });
-
-    // Depth 2: scope.with.comments has no further `with` → subScopes empty →
-    // silence-wins `continue` at line 111. The entry must pass through with
-    // its name intact and NO $select injected at this or any deeper level.
-    const lvl2 = (
-      lvl1.controls?.$with as Array<{ name: string; controls?: { $select?: unknown } }> | undefined
-    )?.[0];
-    expect(lvl2?.name).toBe("comments");
-    expect(lvl2?.controls?.$select).toBeUndefined();
-
-    // Spot-check depth 25 — well past any plausible scope depth — still untouched.
-    let cursor: { controls?: { $with?: unknown[] } } | undefined = lvl1;
-    for (let i = 0; i < 24 && cursor; i++) {
-      cursor = (
-        cursor.controls?.$with as Array<{ controls?: { $with?: unknown[] } }> | undefined
-      )?.[0];
-    }
-    expect(
-      (cursor as { controls?: { $select?: unknown } } | undefined)?.controls?.$select,
-    ).toBeUndefined();
+    // Depth 2: unresolved → not walked (left for moost-db's `Unknown relation`).
+    const lvl2 = lvl1.controls!.$with![0] as { controls?: { $select?: unknown } };
+    expect(lvl2.controls?.$select).toBeUndefined();
   });
 
   // WHY: guards against accidental injection when expansion isn't requested —
@@ -258,8 +237,8 @@ describe("applyArbacRelationScopes", () => {
 /**
  * WHY this block exists:
  *
- * `transformArbacFilter` does `scopes.map(s => s.filter ?? {})` (line 42 of
- * shared-read-helpers.ts), coercing a missing `filter` to `{}`. Both shapes
+ * `arbacRowFilter` does `scopes.map(s => s.filter ?? {})` (request-scopes.ts),
+ * coercing a missing `filter` to `{}`. Both shapes
  * mean "this scope adds no filter constraint", but `mergeScopeFilters` has a
  * specific contract for `{}` (treats it as universe → returns `undefined`
  * meaning unrestricted access). A future refactor of `mergeScopeFilters` that
@@ -271,16 +250,16 @@ describe("applyArbacRelationScopes", () => {
  * We bootstrap a real Moost app rather than mock `useArbac` because the
  * composable's evaluation pipeline (controller context, DI of `MoostArbac` +
  * `ArbacUserProvider`, then `arbac.evaluate`) is what actually produces the
- * `scopes` array `transformArbacFilter` consumes. Mocking it would test a
+ * `scopes` array `arbacRowFilter` consumes. Mocking it would test a
  * fiction; this is one rung above unit and one rung below e2e, matching the
  * style already established in `arbac.composables.spec.ts`.
  */
-describe("transformArbacFilter — empty vs undefined filter coercion", () => {
+describe("arbacRowFilter — empty vs undefined filter coercion", () => {
   beforeEach(() => {
     clearGlobalWooks();
   });
 
-  // WHY: pins the coercion at line 42 (`s.filter ?? {}`) — a single role whose
+  // WHY: pins the `s.filter ?? {}` coercion — a single role whose
   // rule has no `scope()` (engine pushes `{}` into scopes) must produce the
   // same merged filter as a single role whose `scope()` returns `{ filter: {} }`.
   // Both are "this role grants unrestricted access"; if they ever diverge, the
@@ -289,7 +268,7 @@ describe("transformArbacFilter — empty vs undefined filter coercion", () => {
   it("single scope with undefined filter ≡ single scope with {} filter (both → allow-all, returns {})", async () => {
     // Variant A: rule with no scope() — engine pushes `{} as TScope` into
     // scopes (arbac-core/src/arbac.ts:147), so s.filter is undefined and the
-    // `?? {}` coercion at shared-read-helpers.ts:42 kicks in.
+    // `?? {}` coercion kicks in.
     const arbacA = new MoostArbac<Record<string, never>, ArbacDbScope>();
     arbacA.registerRole({
       id: "r",
@@ -315,8 +294,8 @@ describe("transformArbacFilter — empty vs undefined filter coercion", () => {
     const resB = await readMergedFilter(httpB);
 
     // Pinned contract: both → mergeScopeFilters returns undefined (universe
-    // via filter.ts:22), transformArbacFilter then returns `userFilter ?? {}`
-    // = `{}` (shared-read-helpers.ts:44).
+    // via filter.ts:22), arbacRowFilter then returns `userFilter ?? {}`
+    // = `{}`.
     expect(resA).toEqual({});
     expect(resB).toEqual({});
     expect(resA).toEqual(resB);
@@ -350,7 +329,7 @@ describe("transformArbacFilter — empty vs undefined filter coercion", () => {
     const http = await buildAndInit(arbac, ["tenant-a-reader", "global-reader"]);
     const merged = await readMergedFilter(http);
     // mergeScopeFilters([{tenantId:'a'}, {}]) → undefined (universe) →
-    // transformArbacFilter returns userFilter ?? {} = {}.
+    // arbacRowFilter returns userFilter ?? {} = {}.
     expect(merged).toEqual({});
   });
 
@@ -386,14 +365,13 @@ describe("transformArbacFilter — empty vs undefined filter coercion", () => {
     expect(merged).toEqual({});
   });
 
-  // WHY: the deny path is structurally separate from the empty-scopes-allowed
-  // path. Both produce a "small" result, but their MEANING is opposite:
-  //   - `allowed: false`     → DENY_FILTER `{ $or: [] }` → matches NOTHING.
-  //   - `allowed: true, []`  → falls through to `userFilter ?? {}` → matches ALL.
-  // A refactor that collapses these two cases (e.g. "if scopeList empty, just
-  // return {}") would convert every deny into an allow-all, a critical
-  // tenant-leakage bug. This test pins the divergence at line 38 vs line 44.
-  it("allowed=false → DENY_FILTER ({$or:[]}); allowed=true with empty scopes → {} (allow-all)", async () => {
+  // WHY: the deny path is structurally separate from the scope-less-allowed
+  // path, and their MEANING is opposite:
+  //   - `allowed: false` → the resolver answers 403 before any row filter.
+  //   - `allowed: true, [{}]` (a rule without `scope()`) → `{}` → matches ALL.
+  // A refactor that collapses these two cases would convert every deny into
+  // an allow-all, a critical tenant-leakage bug. This test pins that divergence.
+  it("allowed=false → 403; allowed=true with a scope-less grant ([{}]) → {} (allow-all)", async () => {
     // Deny path: user holds no role granting `thing/read`.
     const arbacDeny = new MoostArbac<Record<string, never>, ArbacDbScope>();
     arbacDeny.registerRole({
@@ -401,27 +379,18 @@ describe("transformArbacFilter — empty vs undefined filter coercion", () => {
       rules: [{ resource: "other", action: "write" }],
     });
     const denyHttp = await buildAndInit(arbacDeny, ["unrelated"]);
-    const denyResult = await readMergedFilter(denyHttp);
-    expect(denyResult).toEqual({ $or: [] });
+    expect((await denyHttp.request("/probe/a"))?.status).toBe(403);
 
     // Allow-all path: rule exists, no scope() → scopes is `[{}]` (one empty
-    // scope). mergeScopeFilters short-circuits on the empty entry (filter.ts:22
-    // "any empty filter means unrestricted") and returns undefined, which
-    // transformArbacFilter then folds to `{}` (shared-read-helpers.ts:44).
-    // The result must be `{}` (allow-all), structurally distinct from the
-    // deny path's `{ $or: [] }` (match-nothing).
+    // scope). The filter union short-circuits on the empty entry ("any empty
+    // filter means unrestricted") and arbacRowFilter folds it to `{}`.
     const arbacAllow = new MoostArbac<Record<string, never>, ArbacDbScope>();
     arbacAllow.registerRole({
       id: "open-reader",
       rules: [{ resource: "thing", action: "read" }],
     });
     const allowHttp = await buildAndInit(arbacAllow, ["open-reader"]);
-    const allowResult = await readMergedFilter(allowHttp);
-    expect(allowResult).toEqual({});
-
-    // The two outcomes must be structurally distinct — one matches nothing,
-    // one matches everything. Equality would mean the deny path is broken.
-    expect(allowResult).not.toEqual(denyResult);
+    expect(await readMergedFilter(allowHttp)).toEqual({});
   });
 
   // WHY: pins the WIRING, not the algebra. `conjoinScopeFilters` owns the

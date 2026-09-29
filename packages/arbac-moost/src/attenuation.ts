@@ -1,15 +1,9 @@
-import {
-  conjoinScopeFilters,
-  DENY_FILTER,
-  intersectControlsPolicy,
-  intersectProjections,
-  mergeScopeFilters,
-  unionControlsPolicy,
-  unionProjections,
-} from "@aooth/arbac";
-import type { TProjectionChildren } from "@aooth/arbac";
+import { conjoinScopes } from "@aooth/arbac";
+import type { TProjectionChildren, TScopeFieldRules } from "@aooth/arbac";
 
 import type { ArbacDbScope } from "./db/as-arbac-db-controller";
+import { conjoinCheckRefs } from "./db/write-refs";
+import type { RefTableSource } from "./db/write-refs";
 
 /**
  * The restrict-only ARBAC attenuation carried by a credential — its assumed
@@ -22,15 +16,23 @@ import type { ArbacDbScope } from "./db/as-arbac-db-controller";
  *
  * - `roles` — assume a SUBSET of the user's roles. `[]` = no roles (deny-all,
  *   fail-closed); an OMITTED key = keep all the user's roles (attrs-only
- *   narrowing); a role the user lacks is dropped by the intersection.
+ *   narrowing); a role the user lacks is dropped by the intersection (unless
+ *   `allowUnheldRoles`).
  * - `attrs` — extra/overriding inputs to scope predicates, keyed by the target
  *   user-attribute name, intended to narrow scopes. They are merged LOCALLY
  *   into the credential pass only and clipped by the scope conjunction, so they
  *   can never widen beyond the user.
+ * - `allowUnheldRoles` — "view as": evaluate the claimed `roles` as given,
+ *   including roles the user does not hold (unknown role ids still grant
+ *   nothing). The result is still conjoined with the user's full authority,
+ *   so it never widens beyond the user — it previews the claimed roles'
+ *   surface CLIPPED to the user's own. Opt-in: the app decides who may issue
+ *   such a credential (e.g. gate it behind a privilege). Since 0.1.72.
  */
 export interface AoothArbacClaims {
   roles?: string[];
   attrs?: Record<string, unknown>;
+  allowUnheldRoles?: boolean;
 }
 
 /**
@@ -39,11 +41,12 @@ export interface AoothArbacClaims {
  * `ArbacDbScope`. A row/field/control is admitted only if BOTH passes admit
  * it — the normative restrict-only clip that closes the attr-widen hole.
  *
- * Each side is first UNIONed with the existing additive helpers (today's
- * machinery), then the two RESULTS are CONJOINED with the dedicated combiners
- * ({@link conjoinScopeFilters} `$and`, {@link intersectProjections} field ∩,
- * {@link intersectControlsPolicy} deny-wins, `with` recursion) — never the
- * additive union helpers, which would silently widen.
+ * Each side is first UNIONed, then the two results are CONJOINED facet by
+ * facet with `conjoinScopes` from `@aooth/arbac` (`$and` filters and WITH
+ * CHECK filters, path-wise projection ∩, deny-wins controls, `allowedFields`
+ * / `nestedWrites` intersection, `set` combined with the USER winning a key
+ * conflict, recursive `with`) — never the additive union helpers, which
+ * would silently widen.
  *
  * Returned as a single-element list so every downstream scope-application
  * site (which UNIONs the cached scope list per facet) sees the identity of a
@@ -56,116 +59,38 @@ export interface AoothArbacClaims {
  * closed). When NO field survives (`{a:1}` ∩ `{a:0}`, disjoint whitelists),
  * the composite keeps the user's projection and gets a match-nothing filter —
  * an empty field set must never read as the unrestricted `{}`. `with`
- * sub-scopes are conjoined without a schema.
+ * sub-scopes are conjoined without a schema. `checkRefs` enforces what either
+ * side enforces (resolved against `refTable`'s foreign keys when given — the
+ * evaluated table). A custom (declaration-merged) scope field is conjoined by
+ * its `fields` rule; without one this THROWS — never dropped (fail closed).
+ *
+ * The third argument is the options object, or (legacy form) `childrenOf`.
  */
 export function conjoinArbacDbScopes(
   userScopes: ArbacDbScope[],
   credScopes: ArbacDbScope[],
-  childrenOf?: TProjectionChildren,
+  opts?: TProjectionChildren | ConjoinArbacDbScopesOptions,
 ): ArbacDbScope[] {
-  const userProjection = unionProjections(...userScopes.map((s) => s.projection ?? {}));
-  const intersected = intersectProjections(
-    userProjection,
-    unionProjections(...credScopes.map((s) => s.projection ?? {})),
-    childrenOf,
-  );
-  const projection = intersected ?? userProjection;
-  const credFilter = mergeScopeFilters(credScopes.map((s) => s.filter ?? {}));
-  const filter = conjoinScopeFilters(
-    mergeScopeFilters(userScopes.map((s) => s.filter ?? {})),
-    intersected ? credFilter : conjoinScopeFilters(credFilter, DENY_FILTER),
-  );
-  const controls = intersectControlsPolicy(
-    unionControlsPolicy(userScopes),
-    unionControlsPolicy(credScopes),
-  );
-  const allowedFields = intersectAllowedFields(userScopes, credScopes);
-  const set = combineSet(userScopes, credScopes);
-  const withMap = conjoinWith(userScopes, credScopes);
-
-  const s: ArbacDbScope = {};
-  if (filter && Object.keys(filter).length > 0) s.filter = filter;
-  if (Object.keys(projection).length > 0) s.projection = projection;
-  if (Object.keys(controls).length > 0) s.controls = controls;
-  if (allowedFields) s.allowedFields = allowedFields;
-  if (set) s.set = set;
-  if (withMap) s.with = withMap;
-  return [s];
+  const { childrenOf, refTable, fields } =
+    typeof opts === "function" ? { childrenOf: opts } : (opts ?? {});
+  return [
+    conjoinScopes(userScopes, credScopes, {
+      childrenOf,
+      checkRefs: refTable?.foreignKeys ? (u, c) => conjoinCheckRefs(u, c, refTable) : undefined,
+      fields,
+    }),
+  ];
 }
 
-/**
- * Intersect the two sides' `allowedFields` write-whitelists (the credential
- * may write FEWER fields). A side with no whitelist is unrestricted (all
- * fields), so the other side wins; both restricting → set intersection.
- */
-function intersectAllowedFields(
-  userScopes: ArbacDbScope[],
-  credScopes: ArbacDbScope[],
-): string[] | undefined {
-  const u = unionAllowedFields(userScopes);
-  const c = unionAllowedFields(credScopes);
-  if (u === undefined) return c;
-  if (c === undefined) return u;
-  const cset = new Set(c);
-  return [...new Set(u)].filter((f) => cset.has(f)).toSorted();
-}
-
-function unionAllowedFields(scopes: ArbacDbScope[]): string[] | undefined {
-  let set: Set<string> | undefined;
-  for (const s of scopes) {
-    if (Array.isArray(s.allowedFields)) {
-      set ??= new Set<string>();
-      for (const f of s.allowedFields) set.add(f);
-    }
-  }
-  return set ? [...set] : undefined;
-}
-
-/**
- * Combine the two sides' `set` overlays. `set` forces field values on writes;
- * both sides' forced constraints apply, and on a key conflict the USER's value
- * wins so the credential can only ADD constraints, never override the owner's.
- */
-function combineSet(
-  userScopes: ArbacDbScope[],
-  credScopes: ArbacDbScope[],
-): Record<string, unknown> | undefined {
-  const u = unionSet(userScopes);
-  const c = unionSet(credScopes);
-  if (!u && !c) return undefined;
-  return { ...c, ...u };
-}
-
-function unionSet(scopes: ArbacDbScope[]): Record<string, unknown> | undefined {
-  let out: Record<string, unknown> | undefined;
-  for (const s of scopes) {
-    if (s.set) {
-      out ??= {};
-      Object.assign(out, s.set);
-    }
-  }
-  return out;
-}
-
-/**
- * Recurse the conjunction into joined-resource sub-scopes. A relation declared
- * on only one side is conjoined against the other side's silence (unrestricted
- * = identity), so a credential can narrow a relation the user left open but
- * never widen one the user restricted.
- */
-function conjoinWith(
-  userScopes: ArbacDbScope[],
-  credScopes: ArbacDbScope[],
-): Record<string, ArbacDbScope> | undefined {
-  const relNames = new Set<string>();
-  for (const s of userScopes) if (s.with) for (const k of Object.keys(s.with)) relNames.add(k);
-  for (const s of credScopes) if (s.with) for (const k of Object.keys(s.with)) relNames.add(k);
-  if (relNames.size === 0) return undefined;
-  const out: Record<string, ArbacDbScope> = {};
-  for (const rel of relNames) {
-    const userSub = userScopes.map((s) => s.with?.[rel]).filter(Boolean) as ArbacDbScope[];
-    const credSub = credScopes.map((s) => s.with?.[rel]).filter(Boolean) as ArbacDbScope[];
-    out[rel] = conjoinArbacDbScopes(userSub, credSub)[0];
-  }
-  return out;
+/** Options of {@link conjoinArbacDbScopes}. @since 0.1.72 */
+export interface ConjoinArbacDbScopesOptions {
+  /** The evaluated table's schema lookup — subtracts a nested exclusion exactly. */
+  childrenOf?: TProjectionChildren;
+  /** The evaluated table — resolves `checkRefs` names to its foreign keys. */
+  refTable?: RefTableSource;
+  /**
+   * Custom scope field rules (`MoostArbac.registerScopeFields`); a custom
+   * field without one throws.
+   */
+  fields?: TScopeFieldRules<ArbacDbScope>;
 }

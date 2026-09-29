@@ -1,7 +1,9 @@
+import type { AoothArbacClaims } from "../attenuation";
 import { ArbacUserProvider } from "../user.provider";
 
 /**
- * Test utility — concrete ArbacUserProvider with stored userId / roles / attrs.
+ * Test utility — concrete ArbacUserProvider with stored userId / roles / attrs,
+ * and a settable credential `attenuation`.
  *
  * `roles` is `public` (not `readonly`) so tests pinning the live-read invariant
  * of `useArbac().evaluate()` can mutate it between requests without re-instantiating.
@@ -28,5 +30,12 @@ export class FakeUserProvider<
   }
   override getAttrs(): TAttrs {
     return this.attrs;
+  }
+
+  /** The credential attenuation `getAttenuation()` answers (settable per test). */
+  attenuation: AoothArbacClaims | undefined;
+
+  override getAttenuation(): AoothArbacClaims | undefined {
+    return this.attenuation;
   }
 }

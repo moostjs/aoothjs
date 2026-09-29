@@ -112,4 +112,39 @@ describe("conjoinArbacDbScopes — composite restrict-only conjunction", () => {
   it("two fully-unrestricted passes → one empty composite scope", () => {
     expect(conjoinArbacDbScopes([{}], [{}])).toStrictEqual([{}]);
   });
+  it("check: conjoined like filter; omitted when it equals the composite filter", () => {
+    const same = conjoinArbacDbScopes([{ filter: { tenant: "a" } }], [{ filter: { owner: "u" } }]);
+    expect(same[0].check).toBeUndefined(); // defaults to the conjoined filter
+    const out = conjoinArbacDbScopes(
+      [{ filter: { tenant: "a" }, check: { status: "draft" } }],
+      [{ filter: { owner: "u" } }],
+    );
+    expect(out[0].check).toStrictEqual({ $and: [{ status: "draft" }, { owner: "u" }] });
+  });
+
+  it("check: `{}` on both sides stays an explicit opt-out next to a filter", () => {
+    const out = conjoinArbacDbScopes(
+      [{ filter: { tenant: "a" }, check: {} }],
+      [{ filter: { owner: "u" }, check: {} }],
+    );
+    expect(out[0].check).toStrictEqual({});
+  });
+
+  it("check: a cred `{}` opt-out cannot drop the user's check", () => {
+    const out = conjoinArbacDbScopes([{ filter: { tenant: "a" } }], [{ check: {} }]);
+    expect(out[0].filter).toStrictEqual({ tenant: "a" });
+    expect(out[0].check).toBeUndefined(); // = filter { tenant: "a" }
+  });
+
+  it("nestedWrites: intersected; a side without the key allows none", () => {
+    expect(
+      conjoinArbacDbScopes(
+        [{ nestedWrites: ["notes", "owner"] }],
+        [{ nestedWrites: ["owner", "tags"] }],
+      )[0].nestedWrites,
+    ).toStrictEqual(["owner"]);
+    expect(
+      conjoinArbacDbScopes([{ nestedWrites: ["notes"] }], [{}])[0].nestedWrites,
+    ).toBeUndefined();
+  });
 });

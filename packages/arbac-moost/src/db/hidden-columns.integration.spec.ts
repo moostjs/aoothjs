@@ -14,7 +14,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus
 import { bootArbacHttp } from "../__testing__/arbac-http";
 import { FakeUserProvider } from "../__testing__/user-provider";
 import { ArbacResource } from "../arbac.decorator";
-import type { AoothArbacClaims } from "../attenuation";
 import { MoostArbac } from "../moost-arbac";
 import { KeyedDoc } from "./__test__/fixtures/keyed-doc.as";
 import { NestedDoc } from "./__test__/fixtures/nested-doc.as";
@@ -125,14 +124,18 @@ const relIncludeRole = defineRole<object, ArbacDbScope>()
     }),
   )
   .build();
-// No `with` grant: silence wins — the joined rows are unrestricted.
+// No `with` grant and no grant on the authors table: since 0.1.72 the
+// relation is hidden (the joined rows follow the caller's own authors grant).
 const relSilentRole = defineRole<object, ArbacDbScope>()
   .id("rel-silent")
   .use(allowTableRead("rel-docs", { scope: () => ({ projection: { secret: 0 } }) }))
   .build();
+// Unscoped on docs AND on the joined tables — `$with` inherits those grants.
 const relAdminRole = defineRole<object, ArbacDbScope>()
   .id("rel-admin")
   .use(allowTableRead("rel-docs"))
+  .use(allowTableRead("rel-authors"))
+  .use(allowTableRead("rel-orgs"))
   .build();
 
 @TableController(RelDoc, "rel-docs")
@@ -142,6 +145,14 @@ class RelDocsController extends AsArbacDbController<typeof RelDoc> {}
 @ReadableController(RelDoc, "rel-docs-view")
 @ArbacResource("rel-docs")
 class RelDocsReadableController extends AsArbacDbReadableController<typeof RelDoc> {}
+
+@TableController(RelAuthor, "rel-authors")
+@ArbacResource("rel-authors")
+class RelAuthorsController extends AsArbacDbController<typeof RelAuthor> {}
+
+@TableController(RelOrg, "rel-orgs")
+@ArbacResource("rel-orgs")
+class RelOrgsController extends AsArbacDbController<typeof RelOrg> {}
 
 const HIDDEN_RELATED_CASES: Array<[query: string, field: string]> = [
   ["$with=author(salary>100)&$sort=id", "author.salary"],
@@ -254,13 +265,6 @@ const viewRole = defineRole<ViewAttrs, ArbacDbScope>()
     }),
   )
   .build();
-
-class AttenuatedUser extends FakeUserProvider<ViewAttrs> {
-  public attenuation: AoothArbacClaims | undefined;
-  override getAttenuation(): AoothArbacClaims | undefined {
-    return this.attenuation;
-  }
-}
 
 // One database for the file: token-bound controllers resolve their table from
 // the registered space once per class, so the space must outlive every app.
@@ -400,7 +404,12 @@ describe.each([
     http = await bootArbacHttp({
       arbac,
       user,
-      controllers: [RelDocsController, RelDocsReadableController],
+      controllers: [
+        RelDocsController,
+        RelDocsReadableController,
+        RelAuthorsController,
+        RelOrgsController,
+      ],
       authorize: true,
     });
   });
@@ -452,6 +461,16 @@ describe.each([
       expect(author.org).not.toHaveProperty("budget");
     });
 
+    it("an exclusion $select on the relation keeps hidden related values stripped", async () => {
+      const { status, body } = await get("query?$with=author($select=-name&$with=org)&$sort=id");
+      expect(status).toBe(200);
+      const author = (body as Array<Record<string, unknown>>)[1].author as Record<string, unknown>;
+      expect(author).toMatchObject({ id: 2 });
+      expect(author).not.toHaveProperty("name");
+      expect(author).not.toHaveProperty("salary");
+      expect(author.org).not.toHaveProperty("budget");
+    });
+
     it("/one/:id with $with: hidden related field → 400, visible → 200", async () => {
       const hidden = await get("one/2?$with=author(salary>100)");
       expect(hidden.status).toBe(400);
@@ -476,14 +495,20 @@ describe.each([
     });
   });
 
-  it("no with grant (silence wins): joined rows are unrestricted, so are their paths", async () => {
+  it("no with grant and no grant on the joined table: the relation is unknown", async () => {
     user.roles = ["rel-silent"];
-    const { status, body } = await get("query?$with=author(salary>100)&$sort=id");
-    expect(status).toBe(200);
-    expect((body as Array<{ author: unknown }>).map((r) => r.author === null)).toEqual([
-      true,
-      false,
-    ]);
+    const hidden = await get("query?$with=author(salary>100)&$sort=id");
+    const missing = await get("query?$with=nope&$sort=id");
+    expect(hidden.status).toBe(400);
+    expect(hidden.body).toMatchObject({
+      message: expect.stringContaining('Unknown relation "author"'),
+    });
+    expect(missing.status).toBe(400);
+    const meta = await get("meta");
+    expect((meta.body as { relations: unknown[] }).relations).toEqual([]);
+    expect((meta.body as { type: { type: { props: object } } }).type.type.props).not.toHaveProperty(
+      "author",
+    );
   });
 
   it("unscoped role: related columns filter, sort and select normally", async () => {
@@ -550,7 +575,7 @@ describe("credential attenuation never widens the projection (real gate)", () =>
     clearGlobalWooks();
     const arbac = new MoostArbac<ViewAttrs, ArbacDbScope>();
     arbac.registerRole(viewRole);
-    const user = new AttenuatedUser("u1", ["view"], { view: userView });
+    const user = new FakeUserProvider("u1", ["view"], { view: userView });
     user.attenuation = { attrs: { view: credView } };
     const http = await bootArbacHttp({
       arbac,
@@ -640,8 +665,9 @@ describe("writes by a scope-hidden unique key answer like a nonexistent key", ()
   it.each(WRITES)("%s: hidden existing key ≡ nonexistent key", async (method, path, body) => {
     const hidden = await send(method, path("K1"), body?.("K1"));
     const missing = await send(method, path("NOPE"), body?.("NOPE"));
-    expect(hidden.status, method).toBe(404);
-    expect(JSON.parse(hidden.body), method).toMatchObject({ message: "Not found" });
+    // PUT is a full row: without its (required) primary key the payload is a
+    // 400 before any lookup — the same for both keys.
+    expect(hidden.status, method).toBe(method === "PUT" ? 400 : 404);
     expect(hidden.body.replaceAll("K1", "NOPE"), method).toBe(missing.body);
   });
 

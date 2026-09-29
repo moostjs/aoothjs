@@ -30,5 +30,23 @@ type ArbacMate = Mate<
  * stay type-checked against `TArbacMeta`.
  */
 export function getArbacMate(): ArbacMate {
-  return getMoostMate<TArbacMeta, TArbacMeta>() as ArbacMate;
+  return getMoostMate<TArbacMeta, TArbacMeta>();
+}
+
+/**
+ * Marks a controller whose `prepareRequest` authorizes moost-db's delegated
+ * handlers (the ones `getDbEndpoint` tags, e.g. `GET meta/actions/:id`) with
+ * ARBAC: a method keyed by this symbol answers whether `method` is such a
+ * handler. The authorize interceptor then skips its own evaluation for that
+ * handler (the route has no grant of its own). `AsArbacDbController` /
+ * `AsArbacDbReadableController` carry it; a controller without it keeps the
+ * interceptor's normal (fail-closed) evaluation.
+ *
+ * @since 0.1.72
+ */
+export const ARBAC_DELEGATED_AUTH: unique symbol = Symbol.for("aooth.arbac.delegatedAuth");
+
+/** A controller carrying {@link ARBAC_DELEGATED_AUTH}. @since 0.1.72 */
+export interface ArbacDelegatedAuth {
+  [ARBAC_DELEGATED_AUTH](method: string): boolean;
 }

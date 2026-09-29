@@ -1,14 +1,11 @@
 import { HttpError } from "@moostjs/event-http";
 import type { EventContext } from "@wooksjs/event-core";
 import { current, key } from "@wooksjs/event-core";
-import { getConstructor, useControllerContext } from "moost";
+import { useControllerContext } from "moost";
 
+import { arbacIdsFromMeta, evaluateArbac } from "./arbac.evaluate";
 import type { TArbacMeta } from "./arbac.mate";
-import { conjoinArbacDbScopes } from "./attenuation";
-import { fieldChildrenOf } from "./db/field-children";
-import type { VisibilityTableSource } from "./db/meta-projection";
-import { MoostArbac } from "./moost-arbac";
-import { ArbacUserProvider, ArbacUserProviderToken } from "./user.provider";
+import type { VisibilityTableSource } from "./db/visibility";
 
 /**
  * Writable slot holding the evaluated scopes for the current event.
@@ -33,13 +30,33 @@ export function getArbacScopes<TScope extends object>(ctx?: EventContext): TScop
   return c.has(arbacScopesKey) ? (c.get(arbacScopesKey) as TScope[] | undefined) : undefined;
 }
 
+/** Options of `useArbac().evaluate()` / `evaluateOrThrow()`. */
+export interface ArbacEvaluateOptions {
+  /** Resource to evaluate; defaults to the current handler's. */
+  resource?: string;
+  /** Action to evaluate; defaults to the current handler's. */
+  action?: string;
+  /**
+   * The atscript-db readable whose schema a credential-attenuation
+   * conjunction uses to subtract nested exclusions exactly — pass the
+   * related table when evaluating a grant on it (e.g. a `$with` target).
+   * Defaults to the current controller's `readable`.
+   *
+   * @since 0.1.72
+   */
+  table?: VisibilityTableSource;
+}
+
 interface ArbacBindings {
   getScopes: <TScope extends object>() => TScope[] | undefined;
   setScopes: <TScope extends object>(scope: TScope[] | undefined) => void;
-  evaluate: <TScope extends object>(opts?: {
-    resource?: string;
-    action?: string;
-  }) => Promise<{ allowed: boolean; scopes?: TScope[]; userId: string }>;
+  evaluate: <TScope extends object>(
+    opts?: ArbacEvaluateOptions,
+  ) => Promise<{
+    allowed: boolean;
+    scopes?: TScope[];
+    userId: string;
+  }>;
   /**
    * Throw-on-deny variant of {@link evaluate}. Returns the same shape on
    * `allowed: true`; throws `HttpError(403)` otherwise.
@@ -49,10 +66,9 @@ interface ArbacBindings {
    * with another policy, to filter UI metadata, or to fall through to a
    * different authorization path).
    */
-  evaluateOrThrow: <TScope extends object>(opts?: {
-    resource?: string;
-    action?: string;
-  }) => Promise<{ allowed: true; scopes?: TScope[]; userId: string }>;
+  evaluateOrThrow: <TScope extends object>(
+    opts?: ArbacEvaluateOptions,
+  ) => Promise<{ allowed: true; scopes?: TScope[]; userId: string }>;
   resource: string;
   action: string;
   isPublic: boolean;
@@ -89,34 +105,25 @@ export const useArbac = (_ctx?: EventContext): ArbacBindings => {
   // Strict-by-default per ACT-04: undecorated controllers fall back to the
   // class name as resource and the method name as action, so a globally
   // wired `arbacAuthorizeInterceptor` denies access unless the user holds a
-  // matching grant (or the controller/method is `@Public()`).
-  const resource =
-    mMeta?.arbacResourceId ||
-    cMeta?.arbacResourceId ||
-    cMeta?.id ||
-    getConstructor(cc.getController()).name;
-  // Action resolution. Class-level `@ArbacAction` is honoured so a workflow
-  // consumer can pin a single action id for every step event (e.g.
-  // `@ArbacResource('auth') @ArbacAction('admin.invite')` on the workflow
-  // class evaluates every step against `auth/admin.invite`).
-  const action =
-    mMeta?.arbacActionId ||
-    // atscript_db_action is set by @atscript/moost-db on method metadata; TArbacMeta does not
-    // include it because arbac-moost doesn't depend on atscript-db — side-channel read only.
-    (mMeta as { atscript_db_action?: { name?: string } } | undefined)?.atscript_db_action?.name ||
-    cMeta?.arbacActionId ||
-    mMeta?.id ||
-    (cc.getMethod() ?? "");
+  // matching grant (or the controller/method is `@Public()`). Class-level
+  // `@ArbacAction` is honoured so a workflow consumer can pin a single action
+  // id for every step event (e.g. `@ArbacResource('auth')
+  // @ArbacAction('admin.invite')` on the workflow class).
+  const { resource, action } = arbacIdsFromMeta(
+    cMeta,
+    mMeta,
+    cc.getController(),
+    cc.getMethod() ?? "",
+  );
   const isPublic = mMeta?.arbacPublic || cMeta?.arbacPublic || false;
 
   // TScope is a deliberate caller-side type witness: it appears only in the
   // return type so callers (`arbac.evaluate<ArbacDbScope>()`) name the scope
   // shape they expect without having to cast `.scopes` at every use site.
   // oxlint-disable-next-line typescript/no-unnecessary-type-parameters
-  const evaluate = async <TScope extends object>(opts?: {
-    resource?: string;
-    action?: string;
-  }): Promise<{ allowed: boolean; scopes?: TScope[]; userId: string }> => {
+  const evaluate = async <TScope extends object>(
+    opts?: ArbacEvaluateOptions,
+  ): Promise<{ allowed: boolean; scopes?: TScope[]; userId: string }> => {
     const effectiveResource = opts?.resource || resource;
     const effectiveAction = opts?.action || action;
     if (!effectiveResource) {
@@ -129,56 +136,18 @@ export const useArbac = (_ctx?: EventContext): ArbacBindings => {
         "useArbac().evaluate(): `action` is required — could not be resolved from controller/method metadata. Pass it explicitly.",
       );
     }
-    const [user, arbac] = (await Promise.all([
-      cc.instantiate(ArbacUserProviderToken),
-      cc.instantiate(MoostArbac),
-    ])) as [ArbacUserProvider, MoostArbac<object, TScope>];
-    const userId = await user.getUserId();
-    // Restrict-only credential attenuation (the credential's typed
-    // `@arbac.attenuate.*` root fields), sourced through the optional provider
-    // hook so arbac-moost stays auth-agnostic. Only triggers the engine's
-    // dual-pass when the claim actually narrows (a present-but-empty `{}` is a
-    // no-op).
-    const att = user.getAttenuation ? await user.getAttenuation() : undefined;
-    const attenuate =
-      att && (att.roles !== undefined || att.attrs !== undefined)
-        ? { roles: att.roles, attrs: att.attrs }
-        : undefined;
-    const result = await arbac.evaluate(
-      { resource: effectiveResource, action: effectiveAction },
-      {
-        id: userId,
-        roles: await user.getRoles(userId),
-        attrs: (id: string) => user.getAttrs(id),
-        attenuate,
-      },
-    );
-    // Attenuated + allowed: conjoin the ceiling pass (`scopes`) with the
-    // narrowed pass (`credScopes`) into ONE composite scope. Every downstream
-    // application site unions the cached scope list per facet, and a
-    // single-element union is the identity — so they each apply the
-    // conjunction with no change to those sites.
-    if (result.allowed && result.credScopes !== undefined) {
-      const conjoined = conjoinArbacDbScopes(
-        result.scopes ?? [],
-        result.credScopes,
-        // A DB controller's schema lets a nested exclusion be subtracted
-        // exactly; elsewhere the conjunction fails closed.
-        fieldChildrenOf(
-          (cc.getController() as { readable?: VisibilityTableSource } | undefined)?.readable,
-        ),
-      );
-      return { allowed: true, scopes: conjoined as unknown as TScope[], userId };
-    }
-    return { allowed: result.allowed, scopes: result.scopes, userId };
+    return evaluateArbac<TScope>(ctx, {
+      resource: effectiveResource,
+      action: effectiveAction,
+      table: opts?.table,
+    });
   };
 
   // See `evaluate` above for the type-witness rationale.
   // oxlint-disable-next-line typescript/no-unnecessary-type-parameters
-  const evaluateOrThrow = async <TScope extends object>(opts?: {
-    resource?: string;
-    action?: string;
-  }): Promise<{ allowed: true; scopes?: TScope[]; userId: string }> => {
+  const evaluateOrThrow = async <TScope extends object>(
+    opts?: ArbacEvaluateOptions,
+  ): Promise<{ allowed: true; scopes?: TScope[]; userId: string }> => {
     const result = await evaluate<TScope>(opts);
     if (!result.allowed) {
       const r = opts?.resource || resource;
