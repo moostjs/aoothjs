@@ -234,10 +234,9 @@ function getArbacProjection(type: TAtscriptAnnotatedType): Record<string, 1> {
 // admin handlers that probe multiple user types in one event) get isolated
 // caches, while repeated `getRoles + getAttrs` for the same id share one
 // fetch. The provider class itself stays SINGLETON so it inherits the base
-// `ArbacUserProvider`'s scope metadata — making it FOR_EVENT would force a
-// scope-id lookup that fails when the interceptor resolves the provider in a
-// context where a different adapter's scope was the most recently registered
-// (multi-adapter apps observed this in e2e tests).
+// `ArbacUserProvider`'s scope metadata. (Before moost 0.6.42 a FOR_EVENT
+// provider also failed in HTTP + WF apps: a workflow run started with
+// `eventContext` released the request's DI scope when it ended.)
 // Cache holds heterogeneous provider types — erase to `unknown` at the slot
 // level and re-narrow per-instance inside `fetchRecord`.
 type FetchCache = WeakMap<object, Map<string, Promise<unknown>>>;
@@ -255,10 +254,8 @@ const useFetchCache = defineWook((ctx: EventContext): FetchCache => {
  * `@Injectable()` (SINGLETON) — moost@0.6.x's `Injectable` metadata is NOT
  * inherited from the base `ArbacUserProvider` by infact, so the decorator
  * must be re-applied here. SINGLETON is the right scope: there is no
- * per-instance state worth scoping per event, and FOR_EVENT trips a
- * scope-id mismatch when the interceptor resolves the provider in a
- * multi-adapter app (HTTP + WF). Per-event memoization is provided via
- * a wooks-slot cache keyed by `this` — see `useFetchCache` above.
+ * per-instance state worth scoping per event. Per-event memoization is
+ * provided via a wooks-slot cache keyed by `this` — see `useFetchCache` above.
  *
  * Consumers extend this class, implement `getUserId()` (typically reading
  * the JWT subject from the auth composable), inject their atscript-db
