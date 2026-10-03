@@ -5,50 +5,50 @@ packages:
   - docs
 
 catalog:
-  "@atscript/core": ^0.1.98
-  "@atscript/db": ^0.1.146
-  "@atscript/db-client": ^0.1.146
-  "@atscript/db-sql-tools": ^0.1.146
-  "@atscript/db-sqlite": ^0.1.146
-  "@atscript/moost-db": ^0.1.146
-  "@atscript/moost-ui-presets": ^0.1.146
-  "@atscript/moost-validator": ^0.1.98
-  "@atscript/moost-wf": ^0.1.146
-  "@atscript/typescript": ^0.1.98
-  "@atscript/ui": ^0.1.146
-  "@atscript/ui-fns": ^0.1.146
-  "@atscript/ui-styles": ^0.1.146
-  "@atscript/ui-table": ^0.1.146
-  "@atscript/vue-aooth": ^0.1.146
-  "@atscript/vue-form": ^0.1.146
-  "@atscript/vue-table": ^0.1.146
-  "@atscript/vue-wf": ^0.1.146
+  "@atscript/core": ^0.1.99
+  "@atscript/db": ^0.1.147
+  "@atscript/db-client": ^0.1.147
+  "@atscript/db-sql-tools": ^0.1.147
+  "@atscript/db-sqlite": ^0.1.147
+  "@atscript/moost-db": ^0.1.147
+  "@atscript/moost-ui-presets": ^0.1.147
+  "@atscript/moost-validator": ^0.1.99
+  "@atscript/moost-wf": ^0.1.147
+  "@atscript/typescript": ^0.1.99
+  "@atscript/ui": ^0.1.147
+  "@atscript/ui-fns": ^0.1.147
+  "@atscript/ui-styles": ^0.1.147
+  "@atscript/ui-table": ^0.1.147
+  "@atscript/vue-aooth": ^0.1.147
+  "@atscript/vue-form": ^0.1.147
+  "@atscript/vue-table": ^0.1.147
+  "@atscript/vue-wf": ^0.1.147
   "@iconify/utils": ^3.1.0
-  "@moostjs/event-http": ^0.6.42
-  "@moostjs/event-wf": ^0.6.42
-  "@moostjs/vite": ^0.6.42
+  "@moostjs/event-http": ^0.6.43
+  "@moostjs/event-wf": ^0.6.43
+  "@moostjs/vite": ^0.6.43
   "@swc/core": ^1.15.18
   "@tanstack/vue-virtual": ^3.13.23
   "@tsdown/css": ^0.21.4
   "@types/node": ^22
-  "@uniqu/core": ^0.1.11
-  "@uniqu/url": ^0.1.11
+  "@uniqu/core": ^0.1.12
+  "@uniqu/url": ^0.1.12
   "@unocss/preset-icons": ^66.6.0
   "@unocss/reset": ^66.6.8
   "@vitejs/plugin-vue": ^6
   "@vue/test-utils": ^2
   "@vueuse/core": ^14.2.1
-  "@wooksjs/event-core": ^0.7.25
-  "@wooksjs/event-http": ^0.7.25
-  "@wooksjs/event-wf": ^0.7.25
-  "@wooksjs/http-body": ^0.7.25
+  "@wooksjs/event-core": ^0.7.26
+  "@wooksjs/event-http": ^0.7.26
+  "@wooksjs/event-wf": ^0.7.26
+  "@wooksjs/http-body": ^0.7.26
   happy-dom: ^18
-  moost: ^0.6.42
+  moost: ^0.6.43
   reka-ui: ^2.9.2
   sirv: ^3.0.2
   typescript: ^5
   unocss: ^66.6.0
-  "unplugin-atscript": ^0.1.98
+  "unplugin-atscript": ^0.1.99
   "unplugin-swc": ^1.5.9
   vite: npm:@voidzero-dev/vite-plus-core@latest
   vite-plus: latest
@@ -57,7 +57,7 @@ catalog:
   vue-router: ^4
   vue-tsc: ^3.2.6
   vunor: ^0.3.2
-  wooks: ^0.7.25
+  wooks: ^0.7.26
 
 catalogMode: prefer
 peerDependencyRules:
