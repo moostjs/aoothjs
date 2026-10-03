@@ -358,6 +358,7 @@ Right after evaluation (inside `MoostArbac.evaluate`, so direct engine calls get
 - An absent `check` follows the folded filter (the RLS default), so an update that moves a row out of the caller's teams is rejected with 403.
 - An explicit `check` is left **as written**. If you set one, include the team condition yourself (`check: {}` disables the check entirely).
 - `rowFilter` must depend **only** on `(value, scope)`, never on the request (current user, headers). Its result is cached process-wide per scope object. Put user-dependent data into the field's value from the role's scope function (`scope: (attrs) => ({ teams: attrs.teams })`).
+- The result may be a [relational predicate](/moost/db-controllers#relational-filter-predicates-some-none) (atscript-db ≥ 0.1.147) — e.g. `(teams) => ({ ticket: { $some: { teamId: { $in: teams as string[] } } } })` bounds issues by their ticket's team. Unions (`$or`) and attenuation (`$and`) treat it like any filter. Since 0.1.74. On an adapter without real transactions the default WITH CHECK then fails closed (403) — see the linked section.
 - `MoostArbac` warns once, at evaluation, about a custom scope key with no registered rule. Such a key would otherwise fail the first attenuated request with 500.
 
 ## Gotchas

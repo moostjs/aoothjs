@@ -94,6 +94,22 @@ describe("applyArbacRelationScopes", () => {
     expect(entry.controls?.$select).toEqual({ body: 1, authorUsername: 1 });
   });
 
+  // WHY: moost-db (0.1.147) gates and overlays only the CLIENT's `$with`
+  // predicate maps, recorded before `validateControls`; it answers 500 when
+  // one is missing from the live tree. The scope must WRAP the client's
+  // filter object (never copy it) so its predicates stay findable, while the
+  // server-added predicate passes ungated.
+  it("keeps the client's entry.filter object inside the $and (identity)", () => {
+    const client = { team: { $some: { name: "x" } } };
+    const controls: Record<string, unknown> = { $with: [{ name: "ticket", filter: client }] };
+    const scopes: ArbacDbScope[] = [
+      { with: { ticket: { filter: { owner: { $some: { active: true } } } } } },
+    ];
+    applyArbacRelationScopes(controls, scopes);
+    const entry = (controls.$with as Array<{ filter: { $and: Array<typeof client> } }>)[0];
+    expect(entry.filter.$and[1]).toBe(client);
+  });
+
   // WHY: confirms the relation filter goes through the same `conjoinScopeFilters`
   // combiner as the parent filter, so a user-supplied filter is intersected with
   // the scope's rather than spread over it (which could replace a same-key

@@ -50,6 +50,24 @@ export function arbacIdsFromMeta(
   };
 }
 
+// Which handler (`resource\0action`) each cached scopes list was set for.
+const scopeOwners = new WeakMap<object, string>();
+
+/** Record that `scopes` were evaluated for `resource` / `action` (see {@link scopesOwnedBy}). */
+export function tagScopesOwner(scopes: object, resource: string, action: string): void {
+  scopeOwners.set(scopes, `${resource}\u0000${action}`);
+}
+
+/**
+ * `true` when the cached `scopes` were set for `resource` / `action`. An
+ * event slot read can fall through to a parent context (moost-db evaluates a
+ * `@DbActionsFrom` source in a child of the delegating event), so scopes
+ * cached for another handler are never taken as this handler's grant.
+ */
+export function scopesOwnedBy(scopes: object, resource: string, action: string): boolean {
+  return scopeOwners.get(scopes) === `${resource}\u0000${action}`;
+}
+
 /** The 403 every ARBAC deny answers. */
 export function insufficientPrivileges(resource: string, action: string): HttpError {
   return new HttpError(

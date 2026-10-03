@@ -158,13 +158,14 @@ export abstract class AsArbacValueHelpController<
     await resolveRequestScopes();
   }
 
-  protected transformFilter(filter: FilterExpr): FilterExpr {
+  /** Same contract as {@link AsArbacDbController.transformFilter}. */
+  protected transformFilter(filter: FilterExpr): FilterExpr | Promise<FilterExpr> {
     return arbacRowFilter(filter);
   }
 
   protected transformProjection(
     select: ValueHelpSelect<DataType> | undefined,
-  ): ValueHelpSelect<DataType> | undefined {
+  ): ValueHelpSelect<DataType> | undefined | Promise<ValueHelpSelect<DataType> | undefined> {
     return transformValueHelpProjection(this.arbacHost, select);
   }
 
@@ -187,22 +188,24 @@ export abstract class AsArbacValueHelpController<
   }
 
   @ArbacAction("query")
-  override runQuery(url: string) {
+  override runQuery(url: string): ReturnType<AsValueHelpController<T, DataType>["runQuery"]> {
     return super.runQuery(url);
   }
 
   @ArbacAction("pages")
-  override runPages(url: string) {
+  override runPages(url: string): ReturnType<AsValueHelpController<T, DataType>["runPages"]> {
     return super.runPages(url);
   }
 
   @ArbacAction("getOne")
-  override runGetOne(id: string) {
+  override runGetOne(id: string): ReturnType<AsValueHelpController<T, DataType>["runGetOne"]> {
     return super.runGetOne(id);
   }
 
   @ArbacAction("getOneComposite")
-  override runGetOneComposite(query: Record<string, string>) {
+  override runGetOneComposite(
+    query: Record<string, string>,
+  ): ReturnType<AsValueHelpController<T, DataType>["runGetOneComposite"]> {
     return super.runGetOneComposite(query);
   }
 }
@@ -244,13 +247,14 @@ export class AsArbacJsonValueHelpController<
     await resolveRequestScopes();
   }
 
-  protected transformFilter(filter: FilterExpr): FilterExpr {
+  /** Same contract as {@link AsArbacDbController.transformFilter}. */
+  protected transformFilter(filter: FilterExpr): FilterExpr | Promise<FilterExpr> {
     return arbacRowFilter(filter);
   }
 
   protected transformProjection(
     select: ValueHelpSelect<DataType> | undefined,
-  ): ValueHelpSelect<DataType> | undefined {
+  ): ValueHelpSelect<DataType> | undefined | Promise<ValueHelpSelect<DataType> | undefined> {
     return transformValueHelpProjection(this.arbacHost, select);
   }
 
@@ -273,22 +277,24 @@ export class AsArbacJsonValueHelpController<
   }
 
   @ArbacAction("query")
-  override runQuery(url: string) {
+  override runQuery(url: string): ReturnType<AsJsonValueHelpController<T, DataType>["runQuery"]> {
     return super.runQuery(url);
   }
 
   @ArbacAction("pages")
-  override runPages(url: string) {
+  override runPages(url: string): ReturnType<AsJsonValueHelpController<T, DataType>["runPages"]> {
     return super.runPages(url);
   }
 
   @ArbacAction("getOne")
-  override runGetOne(id: string) {
+  override runGetOne(id: string): ReturnType<AsJsonValueHelpController<T, DataType>["runGetOne"]> {
     return super.runGetOne(id);
   }
 
   @ArbacAction("getOneComposite")
-  override runGetOneComposite(query: Record<string, string>) {
+  override runGetOneComposite(
+    query: Record<string, string>,
+  ): ReturnType<AsJsonValueHelpController<T, DataType>["runGetOneComposite"]> {
     return super.runGetOneComposite(query);
   }
 }

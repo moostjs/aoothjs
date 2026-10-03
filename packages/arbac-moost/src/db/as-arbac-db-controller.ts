@@ -1,13 +1,15 @@
-import type { ControlGate, TProjection, TScopeFilter } from "@aooth/arbac";
+import type { ControlGate, TScopeFilter } from "@aooth/arbac";
 import type {
+  FilterExpr,
   TDbRemoveGuardContext,
   TDbWriteAction,
   TDbWriteCheckContext,
   TDbWriteGuardContext,
   TMetaResponse,
+  UniqueryControls,
 } from "@atscript/db";
 import { AsDbController, getDbEndpoint } from "@atscript/moost-db";
-import type { TDbControlsType, TDbRequestContext } from "@atscript/moost-db";
+import type { TDbActionScopeContext, TDbControlsType, TDbRequestContext } from "@atscript/moost-db";
 import type {
   NavPropsOf,
   TAtscriptAnnotatedType,
@@ -23,6 +25,7 @@ import { registerArbacDbTarget } from "./relation-policy";
 import {
   arbacActionRowScope,
   arbacAllowedActions,
+  arbacRelationFilter,
   arbacRowFilter,
   authorizeArbacForm,
   prepareArbacRequest,
@@ -53,6 +56,8 @@ import type { ArbacWriteTable } from "./write-policy";
 import { prefetchRefTargets } from "./write-refs";
 
 export { applyAllowedFieldsAndSet } from "./write-fields";
+
+type TSelect = UniqueryControls["$select"];
 
 /**
  * Contract returned by an ARBAC role's scope predicate on a DB-backed resource.
@@ -214,11 +219,33 @@ export class AsArbacDbController<
     return prepareArbacRequest(ctx, this.readable);
   }
 
-  protected transformFilter(filter: Record<string, unknown> | undefined): Record<string, unknown> {
+  /**
+   * The request filter ∧ the union of the scopes' `filter`s. Computed
+   * synchronously, but typed with moost-db's async-capable contract
+   * (`FilterExpr | Promise<FilterExpr>`) so a subclass may override it
+   * `async` — `await super.transformFilter(filter)` — and moost-db awaits it.
+   */
+  protected transformFilter(
+    filter: Record<string, unknown> | undefined,
+  ): FilterExpr | Promise<FilterExpr> {
     return arbacRowFilter(filter);
   }
 
-  protected transformProjection(projection?: TProjection): TProjection | undefined {
+  /** A client relational predicate's operand ∧ the related rows the caller may see ({@link arbacRelationFilter}). Since 0.1.74. */
+  protected transformRelationFilter(
+    path: string,
+    filter: FilterExpr,
+  ): FilterExpr | Promise<FilterExpr> {
+    return arbacRelationFilter(path, filter, this.readable);
+  }
+
+  /**
+   * `$select` restricted to the scopes' projection union. Synchronous, typed
+   * async-capable like {@link transformFilter}.
+   */
+  protected transformProjection(
+    projection?: TSelect,
+  ): TSelect | undefined | Promise<TSelect | undefined> {
     return applyArbacProjection(projection, requireRequestScopes(), this.readable);
   }
 
@@ -293,10 +320,25 @@ export class AsArbacDbController<
 
   /**
    * The rows each `@DbAction` may run on: the caller's grant on that action
-   * (see `arbacActionRowScope`). Enforced by the action gate and reflected
-   * in `$actions` and `GET /meta/actions/:id`. Since 0.1.72.
+   * ({@link arbacActionRowScope} — several grants union, attenuation
+   * intersects). Enforced by the action gate and reflected in `$actions` and
+   * `GET /meta/actions/:id`. Since 0.1.72.
+   *
+   * The grant does not depend on `ctx` (the candidate rows, since 0.1.74).
+   * To bound an action further by the candidates, override and AND your
+   * filter onto `super`'s — it must never replace it:
+   *
+   * ```ts
+   * protected async actionRowScope(name: string, ctx: TDbActionScopeContext) {
+   *   const grant = await super.actionRowScope(name, ctx);
+   *   return conjoinScopeFilters(grant, await myCandidateScope(name, ctx));
+   * }
+   * ```
    */
-  protected actionRowScope(name: string): Promise<Record<string, unknown> | undefined> {
+  protected actionRowScope(
+    name: string,
+    _ctx?: TDbActionScopeContext,
+  ): Promise<Record<string, unknown> | undefined> {
     return arbacActionRowScope(name);
   }
 

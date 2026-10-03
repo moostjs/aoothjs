@@ -26,6 +26,7 @@ import {
   isIdentifierSet,
   isMetaFieldVisible,
   tablePolicy,
+  visibleRelation,
 } from "./visibility";
 import type { MetaVisibility, VisibilityTableSource } from "./visibility";
 
@@ -294,21 +295,20 @@ function crudHandlers(op: TCrudOp, methods: ReadonlySet<string>): readonly strin
  *    `crud` already advertises no read surface, and write-only principals
  *    still need `type` for their insert/update forms. PK + `preferredId` are
  *    never pruned.
- * 3. The search surface: `searchIndexes` reading a hidden field are dropped,
- *    `searchable` / `vectorSearchable` / `geoSearchable` recomputed, and the
- *    `query` / `pages` control lists lose the controls that became unusable
- *    (`crud.geo` goes when no geo index is left).
+ *
+ * The search surface (`searchIndexes`, `searchable`, `vectorSearchable`,
+ * `geoSearchable`) is narrowed by moost-db itself (≥ 0.1.147, under the
+ * overridden `hasField`), after this overlay.
  *
  * @param source - the controller's `this.readable` (identifiers, relations
  *   and schema rules are derived from it); an identifier set (the 0.1.67
  *   signature) still works, without them
- * @param indexes - the controller's `indexFieldPaths()`; defaults to calling
- *   it on the current controller when it has one
+ * @param _indexes - @deprecated ignored since 0.1.74 (moost-db prunes the search surface)
  */
 export async function applyArbacMetaOverlay(
   meta: TMetaResponse,
   source: VisibilityTableSource | ReadonlySet<string>,
-  indexes?: readonly TDbIndexFieldPaths[],
+  _indexes?: readonly TDbIndexFieldPaths[],
 ): Promise<TMetaResponse> {
   const instance = useControllerContext().getController();
   const { methods } = controllerMethodIndex(instance);
@@ -319,11 +319,7 @@ export async function applyArbacMetaOverlay(
       instance,
       meta.actions.map((entry) => entry.name),
     ),
-    Promise.all(
-      crudKeys.map((op) =>
-        evaluateHandlers(crudHandlers(op, methods).map((m) => resolveHandlerArbacIds(instance, m))),
-      ),
-    ),
+    Promise.all(crudKeys.map((op) => evaluateHandlers(crudHandlerIds(instance, op, methods)))),
   ]);
 
   const allowed = new Set(allowedActions);
@@ -354,12 +350,7 @@ export async function applyArbacMetaOverlay(
   });
   const vis = buildScopeVisibility(readScopes, source, { relations });
   const refTargets = await resolveRefTargets(vis, meta);
-  return pruneSearchSurface(
-    pruneMetaByVisibility(overlaid, { ...vis, writable, nestedWrites }, refTargets),
-    meta,
-    vis,
-    indexes ?? controllerIndexes(instance),
-  );
+  return pruneMetaByVisibility(overlaid, { ...vis, writable, nestedWrites }, refTargets);
 }
 
 // Per static envelope (the base controller caches it — identity-stable).
@@ -429,8 +420,8 @@ async function resolveRefTargets(
     if (!props || depth >= MAX_NAV_DEPTH) return;
     for (const name of new Set([...(vis.relationNames ?? NO_NAMES), ...vis.withGrants])) {
       const prop = props[name];
-      if (!prop || !isMetaFieldVisible(name, vis)) continue;
-      const sub = vis.relation?.(name);
+      if (!prop) continue;
+      const sub = visibleRelation(name, vis);
       if (sub) visit(sub, prop, depth + 1);
     }
   };
@@ -464,82 +455,6 @@ function foreignRefTypes(table: VisibilityTableSource): ReadonlySet<object> {
 }
 
 const NO_TYPES: ReadonlySet<object> = new Set();
-
-/** Controls a text / vector search needs, dropped from `crud.query` / `crud.pages` when unusable. */
-const TEXT_SEARCH_CONTROLS = ["search", "fuzzy"];
-const VECTOR_CONTROLS = ["vector", "threshold"];
-
-/**
- * Drop `searchIndexes` reading a hidden field, recompute the search /
- * vector / geo flags over what is left (native search, or the visible
- * `@db.column.searchable` fallback), and remove the controls that became
- * unusable from the `query` / `pages` control lists (`crud.geo` goes with
- * the last visible geo index).
- */
-function pruneSearchSurface(
-  meta: TMetaResponse,
-  original: TMetaResponse,
-  vis: MetaVisibility,
-  indexes: readonly TDbIndexFieldPaths[] | undefined,
-): TMetaResponse {
-  if (!indexes) return meta;
-  const shown = indexes.filter((e) => e.fields.every((f) => isMetaFieldVisible(f, vis)));
-  const shownOf = (type: TDbIndexFieldPaths["type"]) => shown.some((e) => e.type === type);
-  const hasText = indexes.some((e) => e.type === "text");
-  const native = vis.table?.isSearchable?.() ?? hasText;
-  const fallback = searchFallbackVisible(meta, vis.table);
-  const searchable = original.searchable && ((native && (!hasText || shownOf("text"))) || fallback);
-  const vectorSearchable = original.vectorSearchable && shownOf("vector");
-  const geoSearchable = original.geoSearchable === true ? shownOf("geo") : original.geoSearchable;
-
-  const out: TMetaResponse = {
-    ...meta,
-    searchIndexes: original.searchIndexes.filter((info) =>
-      shown.some((e) => e.name === info.name && e.type === (info.type ?? "text")),
-    ),
-    searchable,
-    vectorSearchable,
-  };
-  if (geoSearchable !== undefined) out.geoSearchable = geoSearchable;
-
-  const drop = new Set<string>();
-  if (original.searchable && !searchable && !vectorSearchable) {
-    for (const c of TEXT_SEARCH_CONTROLS) drop.add(c);
-  }
-  if (original.vectorSearchable && !vectorSearchable) for (const c of VECTOR_CONTROLS) drop.add(c);
-  if (hasText && !shownOf("text")) drop.add("index");
-  if (drop.size > 0 || (original.geoSearchable && !geoSearchable)) {
-    const crud = { ...meta.crud };
-    for (const op of ["query", "pages"] as const) {
-      const list = crud[op];
-      if (list && drop.size > 0) crud[op] = list.filter((c) => !drop.has(c));
-    }
-    if (original.geoSearchable && !geoSearchable) delete crud.geo;
-    out.crud = crud;
-  }
-  return out;
-}
-
-/** A `@db.column.searchable` field is still listed (visible) in the pruned `fields`. */
-function searchFallbackVisible(
-  meta: TMetaResponse,
-  table: VisibilityTableSource | undefined,
-): boolean {
-  if (!table?.flatMap) return false;
-  for (const path of Object.keys(meta.fields)) {
-    const entry = table.flatMap.get(path) as
-      | { metadata?: { has?: (key: string) => boolean } }
-      | undefined;
-    if (entry?.metadata?.has?.("db.column.searchable") && !meta.fields[path].writeOnly) return true;
-  }
-  return false;
-}
-
-/** The current controller's `indexFieldPaths()` (moost-db 0.1.143 DB readables), if it has one. */
-function controllerIndexes(instance: object): readonly TDbIndexFieldPaths[] | undefined {
-  const c = instance as { indexFieldPaths?: () => readonly TDbIndexFieldPaths[] };
-  return typeof c.indexFieldPaths === "function" ? c.indexFieldPaths() : undefined;
-}
 
 interface ControllerMethodIndex {
   /** `@DbAction` name → the methods declaring it (absent for class-level action entries). */
@@ -593,18 +508,42 @@ function controllerArbacResource(instance: object): string {
   return arbacIdsFromMeta(getMoostMate().read(instance), undefined, instance, "").resource;
 }
 
-/** A controller class's methods and `@DbAction` name → methods map (memoized per class). */
+/**
+ * A controller class's methods and `@DbAction` name → methods map (memoized
+ * per class). The method metadata is read from `instance` itself — never from
+ * the event's current controller, which differs whenever another
+ * controller's actions are evaluated in this event (a view's
+ * `@DbActionsFrom` delegation).
+ */
 export function controllerMethodIndex(instance: object): ControllerMethodIndex {
   return getOrCreate(methodIndexCache, getConstructor(instance), () => {
-    const cc = useControllerContext();
+    const mate = getMoostMate<TArbacMeta, TArbacMeta>();
     const methods = new Set(collectMethodNames(instance));
     const actionMethods = new Map<string, string[]>();
     for (const methodName of methods) {
-      const name = cc.getMethodMeta<TArbacMeta>(methodName)?.atscript_db_action?.name;
+      const name = mate.read(instance, methodName)?.atscript_db_action?.name;
       if (name) getOrCreate(actionMethods, name, () => []).push(methodName);
     }
     return { actionMethods, methods };
   });
+}
+
+/** The ARBAC ids of the handler method(s) serving crud op `op` on `instance` (`useArbac()` precedence). */
+function crudHandlerIds(
+  instance: object,
+  op: TCrudOp,
+  methods: ReadonlySet<string> = controllerMethodIndex(instance).methods,
+): ArbacHandlerIds[] {
+  return crudHandlers(op, methods).map((m) => resolveHandlerArbacIds(instance, m));
+}
+
+/**
+ * The ARBAC ids of `instance`'s READ handler — the `query` crud op's
+ * handler method(s), exactly what the `/meta` overlay evaluates for
+ * `crud.query`.
+ */
+export function readHandlerIds(instance: object): ArbacHandlerIds[] {
+  return crudHandlerIds(instance, "query");
 }
 
 /**

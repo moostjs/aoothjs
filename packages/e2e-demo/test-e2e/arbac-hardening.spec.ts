@@ -1,6 +1,6 @@
 import { type APIRequestContext, expect, test } from "@playwright/test";
 
-import { bearerAuth as auth, mintToken, resetApp } from "./harness";
+import { bearerAuth as auth, departmentIds, mintToken, resetApp, type Row, rows } from "./harness";
 
 /**
  * ARBAC DB-controller hardening, end to end against the demo's real tables
@@ -23,26 +23,8 @@ import { bearerAuth as auth, mintToken, resetApp } from "./harness";
  * t2_olivia admin. Tasks inherit their project's department (proj-a-2 is ops).
  */
 
-type Row = Record<string, unknown> & { id: string };
-
 async function json<T>(res: { json(): Promise<unknown> }): Promise<T> {
   return (await res.json()) as T;
-}
-
-/** GET as `token`, asserting 200, returning the parsed rows. */
-async function rows(request: APIRequestContext, token: string, url: string): Promise<Row[]> {
-  const res = await request.get(url, { headers: auth(token) });
-  expect(res.status(), `GET ${url}`).toBe(200);
-  return json<Row[]>(res);
-}
-
-async function departmentIds(
-  request: APIRequestContext,
-  adminToken: string,
-): Promise<{ eng: string; ops: string }> {
-  const depts = await rows(request, adminToken, "/departments/query?$select=id,name");
-  const byName = (name: string) => depts.find((d) => d.name === name)!.id;
-  return { eng: byName("Engineering"), ops: byName("Operations") };
 }
 
 /** A tenant-A task in `departmentId`, read through the admin (full tenant view). */

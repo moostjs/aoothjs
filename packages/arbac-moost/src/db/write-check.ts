@@ -1,5 +1,5 @@
 import type { TScopeFilter } from "@aooth/arbac";
-import { computeInsights, getPath, isPlainObject } from "@atscript/db";
+import { computeInsights, containsRelationFilter, getPath, isPlainObject } from "@atscript/db";
 import { walkFilter } from "@uniqu/core";
 import type { FilterExpr, FilterVisitor } from "@uniqu/core";
 
@@ -15,15 +15,23 @@ export class UnsupportedCheckError extends Error {}
  * BEFORE the write. Deliberately a small subset of the filter language
  * (`$eq`/`$ne`/`$in`/`$nin`/ordering/`$exists` + `$and`/`$or`/`$not`) with the
  * database's null model (`$eq: null` matches null or missing, `$exists`
- * means "holds a non-null value"); any other operator (e.g. `$regex`) throws
- * {@link UnsupportedCheckError} — callers fail closed.
+ * means "holds a non-null value"); any other operator (e.g. `$regex`) and
+ * a relational predicate (`{ ticket: { $some: … } }` — it needs the related
+ * rows) throw {@link UnsupportedCheckError} — callers fail closed.
  */
 export function compileScopeCheck(filter: TScopeFilter): RowPredicate {
   return walkFilter(filter as FilterExpr, checkVisitor) ?? (() => true);
 }
 
-/** The field paths a filter references (dotted, as written). */
+/**
+ * The field paths a filter references (dotted, as written). A relational
+ * predicate throws {@link UnsupportedCheckError} (its fields live on the
+ * related table).
+ */
 export function checkFields(filter: TScopeFilter): Set<string> {
+  if (containsRelationFilter(filter)) {
+    throw new UnsupportedCheckError("relational predicate");
+  }
   return new Set(computeInsights(filter).keys());
 }
 
@@ -44,6 +52,9 @@ const checkVisitor: FilterVisitor<RowPredicate> = {
   and: (children) => (row) => children.every((c) => c(row)),
   or: (children) => (row) => children.some((c) => c(row)),
   not: (child) => (row) => !child(row),
+  relation(field, op) {
+    throw new UnsupportedCheckError(`${field}: ${op}`);
+  },
   comparison(field, op, value) {
     const read = (row: Record<string, unknown>) => getPath(row, field);
     const compare = (test: (a: number, b: number) => boolean) => (row: Record<string, unknown>) => {

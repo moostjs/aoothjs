@@ -46,7 +46,7 @@ export const managerRole = defineRole<UserAttrs, ArbacDbScope>()
         }),
       },
       actions: {
-        names: ["markDone", "markInProgress", "archive", "assign"],
+        names: ["markDone", "markDoneMany", "markInProgress", "archive", "assign"],
         scope: (attrs) => ({ filter: deptFilter(attrs) }),
       },
     }),

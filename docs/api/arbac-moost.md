@@ -48,7 +48,7 @@ DI key used to look up the user provider. The abstract class itself does not sat
 class AsArbacDbController<T> extends AsDbController<T> {}
 ```
 
-`@atscript/moost-db` controller subclass that wires ARBAC into every CRUD seam: `prepareRequest` (fail-closed scope resolution), `transformFilter`, `transformProjection`, `validateControls`, `applyMetaOverlay`, `authorizeForm`, `hasField`, `actionRowScope` (each row action scoped by its own grant; since 0.1.72), `allowedActions` (the granted row-level actions for `$actions` / `meta/actions`, without building the `/meta` overlay; since 0.1.72), `onWrite` (nested writes + `allowedFields` / `set`), `guardWrite` / `guardRemove` (USING), `checkWrite` (WITH CHECK). `GET meta/actions/:id` / `meta/actions?…` are served iff the caller holds a grant on at least one row-level action; moost-db tags them as delegating authorization to `prepareRequest` (`getDbEndpoint`), so the authorize interceptor skips its own evaluation for them on this controller (it carries [`ARBAC_DELEGATED_AUTH`](#arbac-delegated-auth)). They need no read grant and are not public (since 0.1.72, moost-db ≥ 0.1.145; see [Row actions](/moost/db-controllers#row-actions-run-only-where-their-grant-reaches)). Scopes auto-applied — no explicit `getScopes()` call needed in handlers. See [DB Controllers](/moost/).
+`@atscript/moost-db` controller subclass that wires ARBAC into every CRUD seam: `prepareRequest` (fail-closed scope resolution), `transformFilter`, `transformProjection`, `validateControls`, `applyMetaOverlay`, `authorizeForm`, `hasField`, `actionRowScope` (each row action scoped by its own grant; since 0.1.72 — takes moost-db's candidate `ctx` since 0.1.74, see [Bounding an action by its candidate rows](/moost/db-controllers#bounding-an-action-by-its-candidate-rows)), `transformRelationFilter` (a client relational predicate's operand ∧ the related rows the caller may see; since 0.1.74, moost-db ≥ 0.1.147), `allowedActions` (the granted row-level actions for `$actions` / `meta/actions`, without building the `/meta` overlay; since 0.1.72), `onWrite` (nested writes + `allowedFields` / `set`), `guardWrite` / `guardRemove` (USING), `checkWrite` (WITH CHECK). `GET meta/actions/:id` / `meta/actions?…` are served iff the caller holds a grant on at least one row-level action; moost-db tags them as delegating authorization to `prepareRequest` (`getDbEndpoint`), so the authorize interceptor skips its own evaluation for them on this controller (it carries [`ARBAC_DELEGATED_AUTH`](#arbac-delegated-auth)). They need no read grant and are not public (since 0.1.72, moost-db ≥ 0.1.145; see [Row actions](/moost/db-controllers#row-actions-run-only-where-their-grant-reaches)). On a `@DbActionsFrom` view they are served even without an own row-level grant (delegated actions answer per source), and the view's `POST delegated-actions/:name` is authorized by the read grant on the view (since 0.1.74; see [Actions listed on a view](/moost/db-controllers#actions-listed-on-a-view-dbactionsfrom)). Scopes auto-applied — no explicit `getScopes()` call needed in handlers. See [DB Controllers](/moost/).
 
 Two seams enforce that a scope `projection` removes fields from existence, not just from row payloads:
 
@@ -182,6 +182,11 @@ function requestFieldVisible(
 ): boolean;
 function authorizeArbacForm(actionNames: readonly string[]): Promise<boolean>;
 function arbacActionRowScope(name: string): Promise<Record<string, unknown> | undefined>; // since 0.1.72
+function arbacRelationFilter(
+  path: string,
+  filter: FilterExpr,
+  readable: VisibilityTableSource,
+): FilterExpr; // since 0.1.74
 function arbacAllowedActions(names: readonly string[]): Promise<string[]>; // since 0.1.72
 function applyArbacProjection(
   projection: unknown,
@@ -221,7 +226,7 @@ Since 0.1.72. The pieces `AsArbacDbController` / `AsArbacDbReadableController` a
 
 - **Scopes** — resolved once per event by `resolveRequestScopes` (the `prepareRequest` / action-guard entry point, [empty-scope rule](/moost/db-controllers#empty-scope-rule) applied); every other hook reads them with `requireRequestScopes` (403 when unresolved) or `cachedRequestScopes`. Unresolved scopes are never "unrestricted".
 - **`@DbAction` handlers** — covered by `prepareRequest` (`endpoint: "action"`, moost-db ≥ 0.1.143): `prepareArbacRequest` resolves the scopes before any action id / row is read (403 on deny, `arbacPublic` does not bypass). Don't read action ids or rows inside `prepareRequest`.
-- **Hooks** — `prepareArbacRequest` is the `prepareRequest` body (resolve scopes, 403 on deny, resolve the `$with` policy on read endpoints); `arbacRowFilter` the `transformFilter` body; `requestFieldVisible` the `hasField` body; `authorizeArbacForm` the `authorizeForm` body; `arbacActionRowScope` the `actionRowScope` body (the action's grant filter; no grant → match-nothing; one object per equal filter per request); `prepareArbacRequest` also authorizes `endpoint: "availableActions"` (any row-level action grant, else 403; request scopes = the granted actions' scopes without `filter` / `check` — unrestricted row overlay, field visibility of the granted actions — to let the interceptor delegate the route, the controller must carry `ARBAC_DELEGATED_AUTH`; without it the route stays 403); `arbacAllowedActions` the `allowedActions` body; `applyArbacProjection` / `applyArbacControls` / `applyArbacRelationScopes` the `transformProjection` / `validateControls` bodies (pass `requireRequestScopes()` — the request's scopes carry its `$with` resolution).
+- **Hooks** — `prepareArbacRequest` is the `prepareRequest` body (resolve scopes, 403 on deny, resolve the `$with` policy on read endpoints); `arbacRowFilter` the `transformFilter` body; `requestFieldVisible` the `hasField` body; `authorizeArbacForm` the `authorizeForm` body; `arbacActionRowScope` the `actionRowScope` body (the action's grant filter; no grant → match-nothing; one object per equal filter per request); `arbacRelationFilter` the `transformRelationFilter` body (the operand ∧ the row filter of the relation's policy at `path`; an unresolved relation → 400; since 0.1.74); `prepareArbacRequest` also resolves the relations the client filter's relational predicates name (`ctx.filter`) and applies the `controls.$with` gates to them (since 0.1.74), and authorizes `endpoint: "delegatedAction"` (a view's `POST /delegated-actions/:name`: the read grant, else 403; since 0.1.74); `prepareArbacRequest` also authorizes `endpoint: "availableActions"` (any row-level action grant, else 403; request scopes = the granted actions' scopes without `filter` / `check` — unrestricted row overlay, field visibility of the granted actions — to let the interceptor delegate the route, the controller must carry `ARBAC_DELEGATED_AUTH`; without it the route stays 403); `arbacAllowedActions` the `allowedActions` body; `applyArbacProjection` / `applyArbacControls` / `applyArbacRelationScopes` the `transformProjection` / `validateControls` bodies (pass `requireRequestScopes()` — the request's scopes carry its `$with` resolution).
 - **Write guards** — `guardArbacWrite` (USING, `checkRefs`, WITH CHECK on non-transactional adapters), `checkArbacWrite` (post-write WITH CHECK) and `guardArbacRemove` (USING for deletes) are the bodies of `guardWrite` / `checkWrite` / `guardRemove` — the same functions `useArbacDbScope().writeOptions()` uses.
 - **`$with` targets** — `registerArbacDbTarget(this)` (a field initializer) makes a controller the policy source for its table, so a `$with` from another controller applies the caller's grant on it; without a registered controller an undeclared relation is `Unknown relation`.
 - **`resolveHandlerArbacIds`** — the resource / action a handler is authorized as, with `useArbac()` precedence (method `@ArbacResource` → class → controller id → class name; method `@ArbacAction` → `@DbAction` name → class `@ArbacAction` → `@Id` → method name).
@@ -295,7 +300,7 @@ Strips fields outside the union of `allowedFields` and overlays `set` defaults. 
 function applyArbacMetaOverlay(
   meta: TMetaResponse,
   source: VisibilityTableSource | ReadonlySet<string>,
-  indexes?: readonly TDbIndexFieldPaths[], // default: the controller's indexFieldPaths()
+  _indexes?: readonly TDbIndexFieldPaths[], // ignored since 0.1.74 — moost-db ≥ 0.1.147 prunes the search surface
 ): Promise<TMetaResponse>;
 function pruneMetaByVisibility(
   meta: TMetaResponse,
@@ -342,6 +347,14 @@ The `/meta` field-visibility machinery behind both ARBAC controllers (see [`AsAr
 `VisibilityTableSource` gained optional `type`, `fieldDescriptors`, `jsonParents` and `isSearchable()` in 0.1.72 — a moost-db `this.readable` (atscript-db ≥ 0.1.143) has them.
 
 A hand-built `MetaVisibility` without `relation` lets granted paths through unchecked, so build it with `buildScopeVisibility`. Passing a bare identifier set as `source` (the 0.1.67 signatures) still enforces sub-scopes, but does not exempt related identifiers. `pruneMetaByVisibility` never mutates its input (the base controller caches the static envelope).
+
+### `conjoinScopeFilters` (re-export)
+
+```ts
+import { conjoinScopeFilters } from "@aooth/arbac-moost";
+```
+
+Re-export of [`@aooth/arbac`'s `conjoinScopeFilters`](/api/arbac#conjoinscopefilters) (since 0.1.74) — AND your own filter onto an ARBAC hook's result, e.g. a candidate-bounded `actionRowScope` ([recipe](/moost/db-controllers#bounding-an-action-by-its-candidate-rows)).
 
 ### `conjoinArbacDbScopes`
 

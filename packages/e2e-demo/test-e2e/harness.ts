@@ -355,3 +355,23 @@ export function lazySuiteTokens(): (
 export function bearerAuth(token: string): { Authorization: string } {
   return { Authorization: `Bearer ${token}` };
 }
+
+/** A row as the demo's JSON read routes answer it. */
+export type Row = Record<string, unknown> & { id: string };
+
+/** GET `url` as `token`, asserting 200, returning the parsed rows. */
+export async function rows(request: APIRequestContext, token: string, url: string): Promise<Row[]> {
+  const res = await request.get(url, { headers: bearerAuth(token) });
+  expect(res.status(), `GET ${url}`).toBe(200);
+  return (await res.json()) as Row[];
+}
+
+/** Tenant A's department ids by name, read through its admin. */
+export async function departmentIds(
+  request: APIRequestContext,
+  adminToken: string,
+): Promise<{ eng: string; ops: string }> {
+  const depts = await rows(request, adminToken, "/departments/query?$select=id,name");
+  const byName = (name: string) => depts.find((d) => d.name === name)!.id;
+  return { eng: byName("Engineering"), ops: byName("Operations") };
+}

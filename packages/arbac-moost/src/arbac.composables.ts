@@ -3,7 +3,7 @@ import type { EventContext } from "@wooksjs/event-core";
 import { current, key } from "@wooksjs/event-core";
 import { useControllerContext } from "moost";
 
-import { arbacIdsFromMeta, evaluateArbac } from "./arbac.evaluate";
+import { arbacIdsFromMeta, evaluateArbac, tagScopesOwner } from "./arbac.evaluate";
 import type { TArbacMeta } from "./arbac.mate";
 import type { VisibilityTableSource } from "./db/visibility";
 
@@ -96,6 +96,7 @@ export const useArbac = (_ctx?: EventContext): ArbacBindings => {
   const getScopes = <TScope extends object>(): TScope[] | undefined => getArbacScopes<TScope>(ctx);
 
   const setScopes = <TScope extends object>(scope: TScope[] | undefined): void => {
+    if (scope) tagScopesOwner(scope, resource, action);
     ctx.set(arbacScopesKey, scope);
   };
 

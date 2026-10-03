@@ -350,8 +350,9 @@ describe("SQL @db.json columns are atomic", () => {
   });
 });
 
+// Pruned by moost-db (≥ 0.1.147) under the ARBAC `hasField`: the rule of its index gate.
 describe("/meta search surface", () => {
-  it("drops indexes over hidden fields and recomputes the flags + control lists", async () => {
+  it("drops indexes over hidden fields and recomputes the flags", async () => {
     const full = (await (await boot([{ tasks: undefined }]))("/tasks/meta")).body;
     expect(full.searchIndexes.length).toBeGreaterThan(0);
     expect(full.crud.query).toContain("index");
@@ -363,10 +364,9 @@ describe("/meta search surface", () => {
     ).body;
     expect(noNote.searchIndexes).toEqual([]);
     expect(JSON.stringify(noNote)).not.toContain("secretNote");
-    // The @db.column.searchable fallback (tenant) still searches.
-    expect(noNote.searchable).toBe(true);
-    expect(noNote.crud.query).toContain("search");
-    expect(noNote.crud.query).not.toContain("index");
+    // The default index reads a hidden field: `$search` answers 400 — the
+    // @db.column.searchable fallback is for tables without native search.
+    expect(noNote.searchable).toBe(false);
 
     const nothing = (
       await (
@@ -374,20 +374,14 @@ describe("/meta search surface", () => {
       )("/tasks/meta")
     ).body;
     expect(nothing.searchable).toBe(false);
-    expect(nothing.crud.query).not.toContain("search");
-    expect(nothing.crud.pages).not.toContain("search");
   });
 
-  it("geo: a hidden geo column drops geoSearchable and crud.geo", async () => {
+  it("geo: a hidden geo column drops geoSearchable", async () => {
     const full = (await (await boot([{ tasks: undefined }]))("/tasks/meta")).body;
     const hidden = (await (await boot([{ tasks: { projection: { home: 0 } } }]))("/tasks/meta"))
       .body;
     expect(full.geoSearchable).toBe(true);
-    {
-      expect(full.crud).toHaveProperty("geo");
-      expect(hidden.geoSearchable).toBe(false);
-      expect(hidden.crud).not.toHaveProperty("geo");
-    }
+    expect(hidden.geoSearchable).toBe(false);
   });
 });
 

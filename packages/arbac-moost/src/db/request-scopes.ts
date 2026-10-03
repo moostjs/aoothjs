@@ -6,7 +6,8 @@ import {
   stableKey,
   unionOutcomes,
 } from "@aooth/arbac";
-import { discoverRowLevelActions } from "@atscript/moost-db";
+import type { FilterExpr } from "@atscript/db";
+import { badRequest, discoverRowLevelActions, hasActionDelegations } from "@atscript/moost-db";
 import type { TDbRequestContext } from "@atscript/moost-db";
 import { cached, current, key, tryGetCurrent } from "@wooksjs/event-core";
 import type { EventContext } from "@wooksjs/event-core";
@@ -14,10 +15,11 @@ import { getConstructor, useControllerContext } from "moost";
 import type { Moost, TConsoleBase } from "moost";
 
 import { useArbac } from "../arbac.composables";
-import { evaluateArbacCached, insufficientPrivileges } from "../arbac.evaluate";
+import { evaluateArbacCached, insufficientPrivileges, scopesOwnedBy } from "../arbac.evaluate";
 import type { ArbacDbScope } from "./as-arbac-db-controller";
 import { getOrCreate } from "./helpers";
-import { actionArbacIds, grantedActions } from "./meta-projection";
+import { actionArbacIds, grantedActions, readHandlerIds } from "./meta-projection";
+import { enforceRelationGates } from "./shared-read-helpers";
 import {
   evaluateHandlerOutcomes,
   evaluateHandlers,
@@ -30,6 +32,7 @@ import {
   isIdentifierSet,
   isMetaFieldVisible,
   scopeVisibility,
+  visibleRelation,
 } from "./visibility";
 import type { MetaVisibility, VisibilityTableSource } from "./visibility";
 
@@ -99,7 +102,13 @@ export function cachedRequestScopes(): ArbacDbScope[] | undefined {
 export async function resolveRequestScopes(): Promise<ArbacDbScope[]> {
   const ctx = current();
   const arbac = useArbac(ctx);
-  const fromInterceptor = arbac.getScopes<ArbacDbScope>();
+  // Only scopes cached for THIS handler (never ones read through from a
+  // delegating parent event — a `@DbActionsFrom` view's request).
+  const cachedScopes = arbac.getScopes<ArbacDbScope>();
+  const fromInterceptor =
+    cachedScopes && scopesOwnedBy(cachedScopes, arbac.resource, arbac.action)
+      ? cachedScopes
+      : undefined;
   // Reused while the handler (a WF event dispatches several steps) and the
   // interceptor's slot are the ones it was resolved for.
   const prior = resolved();
@@ -151,7 +160,7 @@ export function visibilityFor(
   const request = resolved();
   if (source && !isIdentifierSet(source) && request?.scopes === scopes) {
     return getOrCreate(request.visibility, source, () =>
-      buildScopeVisibility(scopes, source, { relations: requestRelations() }),
+      buildScopeVisibility(scopes, source, { relations: requestRelations(source) }),
     );
   }
   return scopeVisibility(scopes, source);
@@ -197,7 +206,18 @@ export function isScopedFieldVisible(
  * action id / row is read): resolve the request's scopes
  * ({@link resolveRequestScopes} — 403 on denial, `arbacPublic` does not
  * bypass) and, on read endpoints, the `$with` relation policy for the
- * requested relations.
+ * requested relations — the `$with` entries and, since 0.1.74, the
+ * relations the client filter's relational predicates name (`ctx.filter`):
+ * a predicate on a relation is allowed exactly when `$with` of it is (same
+ * visibility, same `controls.$with` gates).
+ *
+ * Delegated endpoints (no grant of their own): `"availableActions"`
+ * (`GET /meta/actions…`) — some row-level action grant (or, on a
+ * `@DbActionsFrom` controller, none: its own part lists nothing);
+ * `"delegatedAction"` (`POST /delegated-actions/:name`, since 0.1.74) — the
+ * controller's READ grant, since the route only resolves which of the
+ * caller's readable rows match the query; the action itself is authorized
+ * by its source controller on every batch.
  *
  * @since 0.1.72
  */
@@ -209,9 +229,14 @@ export async function prepareArbacRequest(
     await authorizeAvailableActions();
     return;
   }
+  if (ctx.endpoint === "delegatedAction") {
+    await authorizeDelegatedQueryTarget();
+    return;
+  }
   const scopes = await resolveRequestScopes();
-  if (ctx.controls && READ_ENDPOINTS.has(ctx.endpoint)) {
-    await resolveRequestRelations(scopes, ctx.controls, readable);
+  if (READ_ENDPOINTS.has(ctx.endpoint)) {
+    const names = await resolveRequestRelations(scopes, ctx.controls, readable, ctx.filter);
+    enforceRelationGates(names, visibilityFor(scopes, readable));
   }
 }
 
@@ -241,6 +266,11 @@ function actionsIds(names: readonly string[]): ArbacHandlerIds[] {
  * overlay stays unrestricted — each action's rows come from
  * `actionRowScope` ({@link arbacActionRowScope}) — while field visibility
  * is never wider than the widest granted action.
+ *
+ * A `@DbActionsFrom` controller without an own row-level grant is served
+ * too (since 0.1.74): its own part lists nothing (a match-nothing row
+ * overlay), and each delegated action is answered by its source controller,
+ * under the caller's grants THERE.
  */
 async function authorizeAvailableActions(): Promise<void> {
   const ctx = current();
@@ -248,15 +278,41 @@ async function authorizeAvailableActions(): Promise<void> {
     app: Moost;
     logger: TConsoleBase;
   };
-  const names = discoverRowLevelActions(
-    getConstructor(instance),
-    instance.app,
-    instance.logger,
-  ).map((e) => e.info.name);
+  const ctor = getConstructor(instance);
+  const names = discoverRowLevelActions(ctor, instance.app, instance.logger).map(
+    (e) => e.info.name,
+  );
   const granted = await evaluateHandlers(actionsIds(names));
   const arbac = useArbac(ctx);
-  if (!granted) throw insufficientPrivileges(arbac.resource, arbac.action);
-  storeResolved(ctx, arbac, undefined, granted.map(withoutRowPolicy));
+  if (granted) {
+    storeResolved(ctx, arbac, undefined, granted.map(withoutRowPolicy));
+  } else if (hasActionDelegations(ctor)) {
+    storeResolved(ctx, arbac, undefined, NO_OWN_ACTIONS);
+  } else {
+    throw insufficientPrivileges(arbac.resource, arbac.action);
+  }
+}
+
+/** The own scopes of a delegating controller's `GET /meta/actions` without an own grant. */
+const NO_OWN_ACTIONS: ArbacDbScope[] = [{ filter: DENY_FILTER, check: DENY_FILTER }];
+
+/**
+ * `POST /delegated-actions/:name` (endpoint `"delegatedAction"`): the route
+ * resolves which rows of THIS controller match the query — a read, so it
+ * is served under the caller's read grant (its `query` handler; none →
+ * 403), stored as the request's scopes (`transformFilter`, `hasField` and
+ * moost-db's default `queryTargetScope` read them). It grants nothing on
+ * the action: the source controller's route re-authorizes every batch.
+ */
+async function authorizeDelegatedQueryTarget(): Promise<void> {
+  const ctx = current();
+  const arbac = useArbac(ctx);
+  const ids = readHandlerIds(useControllerContext(ctx).getController());
+  const scopes = ids.length > 0 ? await evaluateHandlers(ids) : undefined;
+  if (!scopes)
+    throw insufficientPrivileges(ids[0]?.resource ?? arbac.resource, ids[0]?.action ?? "query");
+  // Stored for THIS handler, so a later `resolveRequestScopes()` in the event reuses it.
+  storeResolved(ctx, arbac, undefined, scopes);
 }
 
 /** A scope without its row policy (`filter` / `check`). */
@@ -287,11 +343,16 @@ const actionScopes = cached(() => new Map<string, Record<string, unknown>>());
  * `@DbAction` `name` may run on — the filter of the caller's grant on the
  * action ({@link actionArbacIds}: every handler method of the action, or a
  * class-level entry's fallback ids), including custom-field row filters and
- * credential attenuation. No grant → a match-nothing filter (fail closed);
- * an unrestricted grant → `undefined`. When the current request IS that
- * action (its resolved scopes are the same evaluation), the row overlay
+ * credential attenuation. Several grants union (`$or`); attenuation is
+ * already intersected into each. No grant → a match-nothing filter (fail
+ * closed); an unrestricted grant → `undefined`. When the current request IS
+ * that action (its resolved scopes are the same evaluation), the row overlay
  * already applies it → `undefined`. Equal filters are returned as ONE
  * object per request.
+ *
+ * Candidate-free on purpose (evaluated once per action per event) — see
+ * `AsArbacDbController.actionRowScope` to bound an action by its candidate
+ * rows.
  *
  * @since 0.1.72
  */
@@ -332,4 +393,28 @@ export function arbacRowFilter(
   filter: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
   return conjoinScopeFilters(effectiveScope(requireRequestScopes()).filter, filter) ?? {};
+}
+
+/**
+ * Body of the ARBAC DB controllers' `transformRelationFilter` (since 0.1.74):
+ * the operand of a CLIENT relational predicate at `path` (`ticket`,
+ * `ticket.team`, `tickets.issues` inside `$with=tickets(…)`) CONJOINED
+ * with the row filter of the related rows the caller may see there — the
+ * same policy `$with` of that relation applies: a declared `with.<rel>`
+ * sub-scope, else the caller's own read grant on the related table. So
+ * `$some` matches, and `$none` excludes, only on rows the caller could
+ * load. A relation the request did not resolve answers like an unknown
+ * field (400 — the request gate rejects it first).
+ *
+ * @since 0.1.74
+ */
+export function arbacRelationFilter(
+  path: string,
+  filter: FilterExpr,
+  readable: VisibilityTableSource,
+): FilterExpr {
+  let level: MetaVisibility | undefined = visibilityFor(requireRequestScopes(), readable);
+  for (const name of path.split(".")) level = level && visibleRelation(name, level);
+  if (!level?.scopes) throw badRequest(path, `Unknown field "${path}"`);
+  return conjoinScopeFilters(effectiveScope(level.scopes).filter, filter) ?? filter;
 }

@@ -155,7 +155,7 @@ class ActsBase extends AsArbacDbController<typeof ActDoc> {
     purgeRuns++;
     return {
       unscopedCount: await this.readable.count({ filter: {} }),
-      scopedCount: await this.readable.count({ filter: this.transformFilter({}) }),
+      scopedCount: await this.readable.count({ filter: await this.transformFilter({}) }),
     };
   }
 

@@ -52,8 +52,6 @@ export interface VisibilityTableSource {
    * @since 0.1.72
    */
   jsonParents?: ReadonlySet<string>;
-  /** Whether the adapter searches natively (`/meta` search-surface pruning). @since 0.1.72 */
-  isSearchable?(): boolean;
 }
 
 /** Relation name → the visibility its joined rows obey, or `null` when hidden. */
@@ -195,6 +193,11 @@ export function isMetaFieldVisible(path: string, vis: MetaVisibility): boolean {
     return dot === -1 || isMetaFieldVisible(path.slice(dot + 1), sub);
   }
   return allowed(path);
+}
+
+/** The level of relation `name` when it is visible at `vis` (see {@link isMetaFieldVisible}). */
+export function visibleRelation(name: string, vis: MetaVisibility): MetaVisibility | undefined {
+  return isMetaFieldVisible(name, vis) ? vis.relation?.(name) : undefined;
 }
 
 const NO_NAMES: ReadonlySet<string> = new Set();

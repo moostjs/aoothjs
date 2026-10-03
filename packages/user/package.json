@@ -74,6 +74,7 @@
     "@atscript/db-sqlite": "catalog:",
     "@atscript/typescript": "catalog:",
     "@types/better-sqlite3": "^7.6.13",
+    "@uniqu/core": "catalog:",
     "better-sqlite3": "^12.6.2",
     "unplugin-atscript": "catalog:"
   },

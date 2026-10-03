@@ -35,6 +35,16 @@ describe("compileScopeCheck", () => {
   it("an unsupported operator throws (callers fail closed)", () => {
     expect(() => compileScopeCheck({ title: { $regex: "^x" } })).toThrow(UnsupportedCheckError);
   });
+
+  it("a relational predicate throws — it needs the related rows", () => {
+    for (const check of [
+      { ticket: { $some: { status: "open" } } },
+      { $or: [{ tenant: "a" }, { ticket: { $none: {} } }] },
+    ]) {
+      expect(() => compileScopeCheck(check)).toThrow(UnsupportedCheckError);
+      expect(() => checkFields(check)).toThrow(UnsupportedCheckError);
+    }
+  });
 });
 
 describe("checkFields / patchPostImage", () => {

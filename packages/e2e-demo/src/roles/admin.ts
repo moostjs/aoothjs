@@ -59,7 +59,7 @@ export const adminRole = defineRole<UserAttrs, ArbacDbScope>()
     }),
     allowTableAction<UserAttrs, ArbacDbScope<Task>>(
       "tasks",
-      ["markDone", "markInProgress", "archive", "assign", "delete"],
+      ["markDone", "markDoneMany", "markInProgress", "archive", "assign", "delete"],
       { scope: (attrs) => ({ filter: tenantFilter(attrs) }) },
     ),
     allowTableWrite<UserAttrs, ArbacDbScope<Comment>>("comments", {

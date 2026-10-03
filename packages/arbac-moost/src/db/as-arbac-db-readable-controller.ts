@@ -1,10 +1,9 @@
-import type { TProjection } from "@aooth/arbac";
 import { AsDbReadableController, getDbEndpoint } from "@atscript/moost-db";
-import type { TDbControlsType, TDbRequestContext } from "@atscript/moost-db";
+import type { TDbActionScopeContext, TDbControlsType, TDbRequestContext } from "@atscript/moost-db";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { Inherit } from "moost";
 
-import type { TMetaResponse } from "@atscript/db";
+import type { FilterExpr, TMetaResponse, UniqueryControls } from "@atscript/db";
 
 import { ARBAC_DELEGATED_AUTH } from "../arbac.mate";
 import { applyArbacMetaOverlay } from "./meta-projection";
@@ -12,6 +11,7 @@ import { registerArbacDbTarget } from "./relation-policy";
 import {
   arbacActionRowScope,
   arbacAllowedActions,
+  arbacRelationFilter,
   arbacRowFilter,
   authorizeArbacForm,
   prepareArbacRequest,
@@ -23,6 +23,8 @@ import {
   applyArbacProjection,
   applyArbacRelationScopes,
 } from "./shared-read-helpers";
+
+type TSelect = UniqueryControls["$select"];
 
 /**
  * Read-only mirror of {@link AsArbacDbController} for view-style controllers
@@ -43,12 +45,24 @@ export class AsArbacDbReadableController<
   }
 
   /** Same contract as {@link AsArbacDbController.transformFilter}. */
-  protected transformFilter(filter: Record<string, unknown> | undefined): Record<string, unknown> {
+  protected transformFilter(
+    filter: Record<string, unknown> | undefined,
+  ): FilterExpr | Promise<FilterExpr> {
     return arbacRowFilter(filter);
   }
 
+  /** Same contract as {@link AsArbacDbController.transformRelationFilter}. Since 0.1.74. */
+  protected transformRelationFilter(
+    path: string,
+    filter: FilterExpr,
+  ): FilterExpr | Promise<FilterExpr> {
+    return arbacRelationFilter(path, filter, this.readable);
+  }
+
   /** Same contract as {@link AsArbacDbController.transformProjection}. */
-  protected transformProjection(projection?: TProjection): TProjection | undefined {
+  protected transformProjection(
+    projection?: TSelect,
+  ): TSelect | undefined | Promise<TSelect | undefined> {
     return applyArbacProjection(projection, requireRequestScopes(), this.readable);
   }
 
@@ -77,7 +91,10 @@ export class AsArbacDbReadableController<
   }
 
   /** Same contract as {@link AsArbacDbController.actionRowScope}. */
-  protected actionRowScope(name: string): Promise<Record<string, unknown> | undefined> {
+  protected actionRowScope(
+    name: string,
+    _ctx?: TDbActionScopeContext,
+  ): Promise<Record<string, unknown> | undefined> {
     return arbacActionRowScope(name);
   }
 

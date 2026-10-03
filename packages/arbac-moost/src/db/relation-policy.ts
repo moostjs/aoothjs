@@ -1,4 +1,5 @@
 import { effectiveScope, needsInheritedConjunction, unionOutcomes } from "@aooth/arbac";
+import { hasRelationOp, isRelationOp } from "@atscript/db";
 import { current, key } from "@wooksjs/event-core";
 import { getConstructor, getMoostMate, useControllerContext } from "moost";
 
@@ -148,7 +149,9 @@ const MAX_WITH_DEPTH = 16;
 
 /**
  * Relation names a parsed `$with` control reaches, per level. A dotted
- * name (`a.b`) nests like `a($with=b)`.
+ * name (`a.b`) nests like `a($with=b)`. The relational predicates of each
+ * entry's sub-filter (`$with=a(b=$some(…))`) join the entry's level
+ * ({@link relationFilterNameTree}).
  */
 export function withNameTree(
   withArr: unknown,
@@ -157,7 +160,12 @@ export function withNameTree(
 ): RelationNameTree {
   if (!Array.isArray(withArr) || depth >= MAX_WITH_DEPTH) return into;
   for (const raw of withArr) {
-    const entry = raw as { name?: unknown; controls?: { $with?: unknown }; $with?: unknown } | null;
+    const entry = raw as {
+      name?: unknown;
+      filter?: unknown;
+      controls?: { $with?: unknown };
+      $with?: unknown;
+    } | null;
     const name = typeof raw === "string" ? raw : entry?.name;
     if (typeof name !== "string" || !name) continue;
     const segments = name.split(".");
@@ -166,6 +174,36 @@ export function withNameTree(
     for (const segment of segments) level = getOrCreate(level, segment, () => new Map());
     if (entry && typeof entry === "object") {
       withNameTree(entry.controls?.$with ?? entry.$with, level, depth + segments.length);
+      relationFilterNameTree(entry.filter, level, depth + segments.length);
+    }
+  }
+  return into;
+}
+
+/**
+ * Relation names the relational predicates of a filter reach, per level
+ * (`ticket=$some(team=$some(…))` → `ticket → { team }`), through
+ * `$and` / `$or` / `$not` and nested predicate operands. Only reads
+ * `filter` (moost-db hands `prepareRequest` a deep-frozen copy).
+ *
+ * @since 0.1.74
+ */
+export function relationFilterNameTree(
+  filter: unknown,
+  into: RelationNameTree = new Map(),
+  depth = 0,
+): RelationNameTree {
+  if (!filter || typeof filter !== "object" || depth >= MAX_WITH_DEPTH) return into;
+  for (const [k, value] of Object.entries(filter as Record<string, unknown>)) {
+    if (k === "$and" || k === "$or") {
+      if (Array.isArray(value)) for (const c of value) relationFilterNameTree(c, into, depth);
+    } else if (k === "$not") {
+      relationFilterNameTree(value, into, depth);
+    } else if (!k.startsWith("$") && hasRelationOp(value)) {
+      const level = getOrCreate(into, k, () => new Map());
+      for (const [op, operand] of Object.entries(value)) {
+        if (isRelationOp(op)) relationFilterNameTree(operand, level, depth + 1);
+      }
     }
   }
   return into;
@@ -218,27 +256,47 @@ export async function resolveRelationTree(
   return out;
 }
 
-// The current request's `$with` resolution (set by `prepareRequest`).
-const requestRelationsKey = key<ArbacRelationResolution | undefined>("arbac.db.relations");
+// The current request's `$with` resolution (set by `prepareRequest`), with
+// the readable it was resolved for.
+const requestRelationsKey = key<
+  { readable: VisibilityTableSource | undefined; relations: ArbacRelationResolution } | undefined
+>("arbac.db.relations");
 
 /**
  * Per-request `$with` policy for the ARBAC DB controllers' `prepareRequest`:
- * resolves every relation `controls.$with` names (recursively) and stores
- * the resolution the request's visibility (`hasField`, `validateControls`,
- * `transformProjection`) reads.
+ * resolves every relation `controls.$with` names (recursively) and — since
+ * 0.1.74 — every relation the client `filter`'s relational predicates name
+ * (`ticket=$some(…)`, also inside `$with` sub-filters), and stores the
+ * resolution the request's visibility reads.
+ *
+ * @returns the relation names resolved, per level
  */
 export async function resolveRequestRelations(
   scopes: readonly ArbacDbScope[],
   controls: Record<string, unknown> | undefined,
   readable: VisibilityTableSource | undefined,
-): Promise<void> {
+  filter?: unknown,
+): Promise<RelationNameTree> {
   const names = withNameTree(controls?.$with);
-  if (names.size === 0) return;
-  current().set(requestRelationsKey, await resolveRelationTree(scopes, readable, names));
+  // Siblings are listed only for `$with`'s `Unknown relation` message.
+  const listSiblings = names.size > 0;
+  relationFilterNameTree(filter, names);
+  if (names.size === 0) return names;
+  const relations = await resolveRelationTree(scopes, readable, names, { listSiblings });
+  current().set(requestRelationsKey, { readable, relations });
+  return names;
 }
 
-/** The resolution {@link resolveRequestRelations} stored for the current event, if any. */
-export function requestRelations(): ArbacRelationResolution | undefined {
+/**
+ * The resolution {@link resolveRequestRelations} stored for the current
+ * event, if any — only for the readable it was resolved for: another
+ * controller evaluated in the same event (a `@DbActionsFrom` source) never
+ * sees the delegating request's `$with` resolution.
+ */
+export function requestRelations(
+  readable: VisibilityTableSource | undefined,
+): ArbacRelationResolution | undefined {
   const ctx = current();
-  return ctx.has(requestRelationsKey) ? ctx.get(requestRelationsKey) : undefined;
+  const stored = ctx.has(requestRelationsKey) ? ctx.get(requestRelationsKey) : undefined;
+  return stored && stored.readable === readable ? stored.relations : undefined;
 }

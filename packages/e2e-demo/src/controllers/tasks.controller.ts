@@ -2,6 +2,7 @@ import { ArbacResource, AsArbacDbController, useArbacDbScope } from "@aooth/arba
 import {
   DbAction,
   DbActionID,
+  DbActionIDs,
   DbActionRow,
   InputForm,
   TableController,
@@ -67,6 +68,29 @@ export class TasksController extends AsArbacDbController<typeof Task> {
     @DbActionRow() _row: Pick<Task, "id" | "status">,
   ): Promise<Ack> {
     return this.patchOne(id.id, { status: "done" }, "Task marked done");
+  }
+
+  // Bulk variant: selected rows, or every row matching the table's current
+  // query (`{ query }` body — a query target, under the caller's read ∧
+  // action scope). Rows already done are skipped, not refused.
+  @Post("actions/markDoneMany")
+  @DbAction<typeof Task, ["status"]>("markDoneMany", {
+    label: "Mark selected done",
+    icon: "i-as-check",
+    intent: "positive",
+    requiredFields: ["status"],
+    disabled: perRow((t) => t.status === "done"),
+    onDisabledRows: "skip",
+    queryTarget: { maxRows: 500, batchSize: 50 },
+  })
+  async markDoneMany(@DbActionIDs() ids: Array<{ id: string }>): Promise<Ack & { count: number }> {
+    const scope = await useArbacDbScope<typeof Task>();
+    const r = await this.table.updateMany(scope.filter({ id: { $in: ids.map((i) => i.id) } }), {
+      status: "done",
+      updatedAt: Date.now(),
+    });
+    const count = r.matchedCount ?? 0;
+    return { ok: true, message: `${count} task(s) marked done`, count };
   }
 
   @Post("actions/markInProgress")

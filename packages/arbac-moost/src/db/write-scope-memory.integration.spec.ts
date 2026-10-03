@@ -36,6 +36,7 @@ const ROLES = [
   }),
   writer("nested-check", { filter: { tenant: "a" }, check: { "settings.locked": { $ne: "yes" } } }),
   writer("regex-check", { filter: { tenant: "a" }, check: { title: { $regex: "^ok" } } }),
+  writer("rel-check", { filter: { tenant: "a" }, check: { owner: { $some: { tenant: "a" } } } }),
 ];
 
 @TableController(WrDoc, "mem-docs")
@@ -149,5 +150,13 @@ describe("non-transactional WITH CHECK (validated before the write)", () => {
     expect((await send("PATCH", { id: 1, title: "ok2" })).status).toBe(403);
     expect((await send("POST", { id: 14, title: "ok", tenant: "a" })).status).toBe(403);
     expect(await doc(14)).toBeNull();
+  });
+
+  it("a relational check needs the related rows — fails closed (403), nothing written", async () => {
+    await boot(["rel-check"]);
+    expect((await send("PATCH", { id: 1, title: "rel" })).status).toBe(403);
+    expect((await send("POST", { id: 15, title: "ok", tenant: "a" })).status).toBe(403);
+    expect(await doc(15)).toBeNull();
+    expect(await doc(1)).not.toMatchObject({ title: "rel" });
   });
 });

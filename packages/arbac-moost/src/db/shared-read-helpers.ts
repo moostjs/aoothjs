@@ -9,8 +9,9 @@ import type { TProjection } from "@aooth/arbac";
 import { enforceControlsPolicy } from "./as-arbac-db-controller";
 import type { ArbacDbScope } from "./as-arbac-db-controller";
 import { fieldChildrenOf } from "./field-children";
+import type { RelationNameTree } from "./relation-policy";
 import { visibilityFor } from "./request-scopes";
-import { isMetaFieldVisible } from "./visibility";
+import { isMetaFieldVisible, visibleRelation } from "./visibility";
 import type { MetaVisibility, VisibilityTableSource } from "./visibility";
 
 /**
@@ -63,6 +64,27 @@ export function applyArbacControls(
   scopes: ArbacDbScope[],
 ): void {
   enforceControlsPolicy(effectiveScope(scopes).controls, controls);
+}
+
+/**
+ * The per-role `controls.$with` gates over every relation a read reaches —
+ * its `$with` entries and its client relational predicates alike (see
+ * `prepareArbacRequest`) — each level against that level's scopes.
+ * Overlaps `validateControls`' gate for the `$with` entries on purpose: one
+ * rule for both. Throws `HttpError(403)` on the first violation; a hidden
+ * relation's nested names are left to moost-db (`Unknown field`).
+ *
+ * @since 0.1.74
+ */
+export function enforceRelationGates(
+  names: RelationNameTree,
+  vis: MetaVisibility | undefined,
+): void {
+  if (!vis?.scopes || names.size === 0) return;
+  enforceControlsPolicy(effectiveScope(vis.scopes).controls, { $with: [...names.keys()] });
+  for (const [name, nested] of names) {
+    if (nested.size > 0) enforceRelationGates(nested, visibleRelation(name, vis));
+  }
 }
 
 /** A `$with` entry as parsed by uniquery: `{ name, filter?, controls? }`. */

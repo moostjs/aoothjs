@@ -17,26 +17,27 @@ Use `AsArbacDbReadableController<T>` when:
 
 The class wires these protected hooks of `@atscript/moost-db`'s base controller (needs `@atscript/moost-db` ≥ 0.1.143):
 
-| Hook                              | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `prepareRequest(ctx)`             | Runs first on every endpoint. Reuses the scopes the authorize interceptor cached, else evaluates the handler's resource/action itself. A deny is a **403**. On reads it also resolves the `$with` relation policy. See [Fail-closed](#fail-closed-every-endpoint).                                                                                                                                                                               |
-| `transformFilter(filter)`         | Merges the user filter with the **UNION of scope filters** as `$and: [merged, userFilter]` (never object spread). Also the row overlay of `/one`, `DELETE` and `@DbAction` ids. On a route that skipped `prepareRequest`, evaluates lazily; a deny returns a match-nothing filter (`{ $or: [] }`).                                                                                                                                               |
-| `transformProjection(projection)` | Unions per-scope `projection` whitelists and narrows the user `$select` (array inclusion or object exclusion) to its intersection with that union: `$select=a` under a scope that shows only `a.b` (or hides `a.c`) returns just `a.b`. An excluded nested object is stripped leaf by leaf.                                                                                                                                                      |
-| `validateControls(controls, ...)` | Runs the parent validator; then invokes `enforceControlsPolicy(unionControlsPolicy(scopes), controls)`. Violations throw `HttpError(403)`.                                                                                                                                                                                                                                                                                                       |
-| `applyMetaOverlay(meta)`          | For `/meta`, evaluates ARBAC in parallel for every declared action and CRUD op, filters `meta.actions` and `meta.crud` so the UI only sees ops the caller can invoke — then **prunes the field surface** (`fields`, the serialized `type`, `relations`, `versionColumn`) to the union of the allowed read ops' scope projections. Memoized per-class action-meta map.                                                                            |
-| `authorizeForm(name, actions)`    | `GET /meta/form/:name` serves a form only if the caller may run at least one action that takes it as input. Otherwise the response is the unknown-form 404.                                                                                                                                                                                                                                                                                      |
-| `actionRowScope(name)`            | The rows the `@DbAction` `name` may run on: the filter of the caller's grant on that action. Enforced by the action gate, reflected in `$actions` and `GET /meta/actions/:id`. See [Row actions](#row-actions-run-only-where-their-grant-reaches). Since 0.1.72 (moost-db ≥ 0.1.145).                                                                                                                                                            |
-| `allowedActions(names)`           | The row-level actions `$actions` and `GET /meta/actions/:id` list: the ones the caller holds a grant on, by the `/meta` overlay's rule, without building the overlay. Since 0.1.72 (moost-db ≥ 0.1.145).                                                                                                                                                                                                                                         |
-| `hasField(path)`                  | Scope-aware field visibility — moost-db's visibility hook, consulted at every gated query position: paths outside the read-scope projection union — or, inside a `$with` sub-query, outside the [relation's policy](#per-relation-with-recursive) — answer `false`, so any reference to a hidden field gets the **identical** `Unknown field "x"` 400 a nonexistent field gets. See [Column-scope security floor](#column-scope-security-floor). |
-| `onWrite(action, data)`           | Rejects [nested writes](#nested-writes) the scopes don't opt in, then applies `allowedFields` / `set` (see [`allowedFields` and `set`](#allowedfields-and-set)).                                                                                                                                                                                                                                                                                 |
-| `guardWrite(ctx)`                 | Inside the write's transaction: **USING** — every update / replace target's pre-image must match the scope `filter`. Without a real transaction it also runs **WITH CHECK** before the write.                                                                                                                                                                                                                                                    |
-| `guardRemove(ctx)`                | Inside the delete's transaction: USING for the row being deleted.                                                                                                                                                                                                                                                                                                                                                                                |
-| `checkWrite(ctx)`                 | After the write, inside its transaction: **WITH CHECK** — every written row must match the scope `check`. A failure rolls the write back.                                                                                                                                                                                                                                                                                                        |
+| Hook                                    | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `prepareRequest(ctx)`                   | Runs first on every endpoint. Reuses the scopes the authorize interceptor cached, else evaluates the handler's resource/action itself. A deny is a **403**. On reads it also resolves the `$with` relation policy — for the `$with` entries and (since 0.1.74) the relations the client filter's [relational predicates](#relational-filter-predicates-some-none) name. See [Fail-closed](#fail-closed-every-endpoint).                          |
+| `transformFilter(filter)`               | Merges the user filter with the **UNION of scope filters** as `$and: [merged, userFilter]` (never object spread). Also the row overlay of `/one`, `DELETE` and `@DbAction` ids. On a route that skipped `prepareRequest`, evaluates lazily; a deny returns a match-nothing filter (`{ $or: [] }`).                                                                                                                                               |
+| `transformProjection(projection)`       | Unions per-scope `projection` whitelists and narrows the user `$select` (array inclusion or object exclusion) to its intersection with that union: `$select=a` under a scope that shows only `a.b` (or hides `a.c`) returns just `a.b`. An excluded nested object is stripped leaf by leaf.                                                                                                                                                      |
+| `transformRelationFilter(path, filter)` | The operand of a client [relational predicate](#relational-filter-predicates-some-none) (`ticket=$some(…)`) ∧ the row filter of the related rows the caller may see there — the same policy `$with` of that relation applies. Since 0.1.74 (moost-db ≥ 0.1.147).                                                                                                                                                                                 |
+| `validateControls(controls, ...)`       | Runs the parent validator; then invokes `enforceControlsPolicy(unionControlsPolicy(scopes), controls)`. Violations throw `HttpError(403)`.                                                                                                                                                                                                                                                                                                       |
+| `applyMetaOverlay(meta)`                | For `/meta`, evaluates ARBAC in parallel for every declared action and CRUD op, filters `meta.actions` and `meta.crud` so the UI only sees ops the caller can invoke — then **prunes the field surface** (`fields`, the serialized `type`, `relations`, `versionColumn`) to the union of the allowed read ops' scope projections. Memoized per-class action-meta map.                                                                            |
+| `authorizeForm(name, actions)`          | `GET /meta/form/:name` serves a form only if the caller may run at least one action that takes it as input. Otherwise the response is the unknown-form 404.                                                                                                                                                                                                                                                                                      |
+| `actionRowScope(name, ctx)`             | The rows the `@DbAction` `name` may run on: the filter of the caller's grant on that action. Enforced by the action gate, reflected in `$actions` and `GET /meta/actions/:id`. `ctx` (the candidate rows, since 0.1.74 with moost-db ≥ 0.1.147) is passed through but not consulted — see [Bounding an action by its candidate rows](#bounding-an-action-by-its-candidate-rows). Since 0.1.72 (moost-db ≥ 0.1.145).                              |
+| `allowedActions(names)`                 | The row-level actions `$actions` and `GET /meta/actions/:id` list: the ones the caller holds a grant on, by the `/meta` overlay's rule, without building the overlay. Since 0.1.72 (moost-db ≥ 0.1.145).                                                                                                                                                                                                                                         |
+| `hasField(path)`                        | Scope-aware field visibility — moost-db's visibility hook, consulted at every gated query position: paths outside the read-scope projection union — or, inside a `$with` sub-query, outside the [relation's policy](#per-relation-with-recursive) — answer `false`, so any reference to a hidden field gets the **identical** `Unknown field "x"` 400 a nonexistent field gets. See [Column-scope security floor](#column-scope-security-floor). |
+| `onWrite(action, data)`                 | Rejects [nested writes](#nested-writes) the scopes don't opt in, then applies `allowedFields` / `set` (see [`allowedFields` and `set`](#allowedfields-and-set)).                                                                                                                                                                                                                                                                                 |
+| `guardWrite(ctx)`                       | Inside the write's transaction: **USING** — every update / replace target's pre-image must match the scope `filter`. Without a real transaction it also runs **WITH CHECK** before the write.                                                                                                                                                                                                                                                    |
+| `guardRemove(ctx)`                      | Inside the delete's transaction: USING for the row being deleted.                                                                                                                                                                                                                                                                                                                                                                                |
+| `checkWrite(ctx)`                       | After the write, inside its transaction: **WITH CHECK** — every written row must match the scope `check`. A failure rolls the write back.                                                                                                                                                                                                                                                                                                        |
 
 ::: tip A scope projection removes fields from EXISTENCE, not just from rows
 With a constrained read projection, `/meta` no longer advertises the hidden fields (a table UI cannot even offer them as columns — previously they rendered as permanently-empty columns, and secret-bearing column NAMES leaked), and referencing one anywhere in a query (`$select`, a filter, a sort, a group, an aggregate) is indistinguishable from referencing a field that was never declared — see [Column-scope security floor](#column-scope-security-floor). PK + `preferredId` always stay visible — reads always return them (projection widening / id addressing). Unscoped read grants keep the full field envelope. Relations and their nav types follow the `$with` policy (see [Per-relation `with`](#per-relation-with-recursive)): a declared `with.<rel>` sub-scope, else the caller's own grant on the related table — none → the relation is dropped. A `ref` to a hidden field or an unreadable table is stripped.
 
-`/meta` also prunes the search surface: a `searchIndexes` entry that reads a hidden field is dropped; `searchable` / `vectorSearchable` / `geoSearchable` are recomputed over what is left; `crud.query` / `crud.pages` lose `search` / `index` / `vector` controls that became unusable; `crud.geo` goes with the last visible geo index. Each `crud` op is evaluated as the handler(s) serving it: `one` via `getOne` / `getOneComposite`, `remove` via `remove` / `removeComposite` (allowed when any is), the rest by name. An action is evaluated with the same id `useArbac` uses for its handler (`@ArbacAction`, else the `@DbAction` name, never the method `@Id`). If several methods declare it, it is allowed when any of them is. A class-level `@DbActions` / `@DbRowActions` entry has no handler method, so it is evaluated as the controller's resource plus the entry name. The same rule applies in `$actions`, `GET /meta/actions/:id` and `/meta/form/:name`.
+The search surface is pruned by moost-db itself (≥ 0.1.147, under the overridden `hasField`): a `searchIndexes` entry that reads a hidden field is dropped and `searchable` / `vectorSearchable` / `geoSearchable` turn off when the default index reads one. Since 0.1.74 the ARBAC overlay no longer prunes it a second time, and no longer strips `search` / `index` / `vector` from `crud.query` / `crud.pages` or drops `crud.geo` — read the flags. Each `crud` op is evaluated as the handler(s) serving it: `one` via `getOne` / `getOneComposite`, `remove` via `remove` / `removeComposite` (allowed when any is), the rest by name. An action is evaluated with the same id `useArbac` uses for its handler (`@ArbacAction`, else the `@DbAction` name, never the method `@Id`). If several methods declare it, it is allowed when any of them is. A class-level `@DbActions` / `@DbRowActions` entry has no handler method, so it is evaluated as the controller's resource plus the entry name. The same rule applies in `$actions`, `GET /meta/actions/:id` and `/meta/form/:name`.
 :::
 
 ::: warning `$and: [scope, user]`, never object spread
@@ -138,7 +139,7 @@ moost-db consults `hasField` at every gated query position: filter keys at any d
 
 `hasField` and `transformProjection`'s value stripping read the scopes `prepareRequest` resolves before anything else runs (reusing [`arbacAuthorizeInterceptor`](./arbac-authorize)'s cache). Before `@aooth/arbac-moost` 0.1.72 they read only that cache, so a controller without the interceptor served hidden columns. Now, if scopes are somehow unresolved, `hasField` hides every field and the other hooks answer 403.
 
-Native full-text, vector and geo search run inside the database over their indexes. From `@atscript/moost-db` 0.1.143 an index that reads a hidden field answers like a nonexistent one, and a hidden default text index falls back to the `$search` fallback over visible fields. The fallback only ever matches fields the caller can see.
+Native full-text, vector and geo search run inside the database over their indexes. From `@atscript/moost-db` 0.1.143 an index that reads a hidden field answers like a nonexistent one. Since moost-db 0.1.147, `$search` without `$index` whose DEFAULT text index reads a hidden field answers `400 No search index available` (before, it fell back to the visible `@db.column.searchable` fields); tables without native search keep that fallback, which only ever matches fields the caller can see.
 :::
 
 #### Derived columns and JSON columns
@@ -255,6 +256,26 @@ declare module "@aooth/arbac-moost" {
 
 Credential attenuation conjoins scopes into one composite scope, so each custom field needs a conjunction rule registered with `MoostArbac.registerScopeFields` — see [Custom scope fields](/arbac/scopes#custom-scope-fields).
 
+## Relational filter predicates (`$some` / `$none`)
+
+moost-db ≥ 0.1.147 filters rows by their related rows: `ticket=$some(status=open)` (has a matching related row), `ticket=$none()` (has none). Under the ARBAC controllers (since 0.1.74) both sides of the feature are covered.
+
+**In your scopes** — a scope `filter` (or a custom field's [`rowFilter`](/arbac/scopes#fields-that-restrict-rows-rowfilter)) may use a predicate on any relation, opted in or not. It is the rule itself, so it applies on every row path: reads, `$with` inherited grants, the action gate, `$actions`, `GET /meta/actions/:id`, query targets and write USING. Several grants union (`$or`), attenuation intersects:
+
+```ts
+allowTableAction<UserAttrs, ArbacDbScope<Issue>>("issues", ["resolve"], {
+  scope: (attrs) => ({
+    filter: { ticket: { $some: { teamId: { $in: attrs.teams }, status: "open" } } },
+  }),
+});
+```
+
+**From the client** — a predicate on a relation (it must also carry `@db.rel.filterable`) is allowed exactly when `$with` of that relation is for the caller: the same [relation policy](#per-relation-with-recursive) (a declared `with.<rel>` sub-scope, else the caller's own read grant on the related table; none → `Unknown field` 400) and the same `controls.$with` gate (`false` or a whitelist without the relation → 403). There is no separate per-role switch. Its operand is conjoined with the related rows the caller may see (`transformRelationFilter`), so `$some` only matches, and `$none` only excludes, on rows `$with` would show: a hidden related row never changes the answer. The same holds for predicates inside `$with` sub-filters (`$with=ticket(issues=$some(…))`).
+
+::: warning A relational `check` needs a transactional adapter
+WITH CHECK runs in the database inside the write's transaction, so a predicate works there. On an adapter without real transactions the check runs in memory before the write and cannot read related rows: a `check` (or a `filter` used as the default check) containing a predicate fails closed with 403 on every insert / update / replace. Use a transactional adapter, or give the scope an explicit non-relational `check`.
+:::
+
 ## Control gates
 
 `ControlGate` is `true | false | readonly string[]`. Semantics:
@@ -316,14 +337,16 @@ For a custom secondary check (e.g. enforce a tenant filter even when no scope is
 @TableController(table)
 @ArbacResource("articles")
 class ArticlesController extends AsArbacDbController<typeof Article> {
-  protected override async transformFilter(filter) {
-    const merged = await super.transformFilter(filter); // sync since 0.1.72; await is harmless
+  protected override async transformFilter(filter: FilterExpr): Promise<FilterExpr> {
+    const merged = await super.transformFilter(filter);
     const tenantId = useAuth().getAuthContext<{ tenantId?: string }>()?.tenantId;
     if (!tenantId) throw new HttpError(403, "Missing tenant");
     return { $and: [merged, { tenantId }] };
   }
 }
 ```
+
+`transformFilter` and `transformProjection` keep moost-db's async-capable signatures (`FilterExpr | Promise<FilterExpr>`, `$select | undefined | Promise<…>`) on every ARBAC controller — read-only and value-help included — so an override may be `async` (await a lookup, then `super`); moost-db awaits the result, on built-in reads, grouped reads and `/one` alike. A custom route that calls the hook itself must `await` it too. The ARBAC bodies still compute synchronously. Before 0.1.74 they were typed synchronous, and an `async` override failed TypeScript inheritance (TS2416).
 
 ## Custom routes: `useArbacDbScope()`
 
@@ -434,6 +457,51 @@ The action's filter includes custom-field [`rowFilter`s](/arbac/scopes#fields-th
 
 `$actions` and the route list only the actions the caller holds a grant on. The controllers' `allowedActions(names)` override answers this per action, with the same rule `/meta` uses, without building the `/meta` overlay on every read.
 
+### Bounding an action by its candidate rows
+
+Since moost-db 0.1.147 `actionRowScope(name, ctx)` receives the candidate rows (`ctx.purpose`, `ctx.ids`, `ctx.loadRows(fields)`), so an app can bound an action by data the grant cannot express — e.g. "resolve only issues whose **ticket** belongs to my team" (a related table). The ARBAC grant filter stays candidate-free (it is evaluated once per action per request): several grants on the action **union**, credential attenuation **intersects**. Add your bound on top with `conjoinScopeFilters` (re-exported from `@aooth/arbac-moost` since 0.1.74) — always AND it onto `super`'s filter, never return it instead:
+
+```ts
+import { AsArbacDbController, conjoinScopeFilters } from "@aooth/arbac-moost";
+import type { TDbActionScopeContext } from "@atscript/moost-db";
+
+class IssuesController extends AsArbacDbController<typeof Issue> {
+  protected async actionRowScope(name: string, ctx?: TDbActionScopeContext) {
+    const grant = await super.actionRowScope(name, ctx); // union of grants ∧ attenuation
+    if (name !== "resolve" || !ctx) return grant;
+    const issues = await ctx.loadRows(["ticketKey"]);
+    const own = await tickets.findMany({
+      filter: { key: { $in: issues.map((i) => i.ticketKey) }, teamId: currentTeamId() },
+      controls: { $select: ["key"] },
+    });
+    return conjoinScopeFilters(grant, { ticketKey: { $in: own.map((t) => t.key) } });
+  }
+}
+```
+
+The bound applies on every surface — `$actions`, `GET /meta/actions/:id` and the action gate (an id outside it answers the missing-row 404, a `'rows'` request fails like a disabled row). An action-only caller (an action grant, no read grant) keeps working: the action event's overlay is the action grant. Call `super.actionRowScope(name, ctx)` with `ctx` possibly `undefined` (a direct call from your own code passes none).
+
+### Actions listed on a view (`@DbActionsFrom`)
+
+A view controller decorated with moost-db's `@DbActionsFrom(() => SourceController)` (moost-db ≥ 0.1.147) lists the source's row actions on its rows. Under ARBAC (since 0.1.74):
+
+- Every delegated verdict — `/meta.actions`, `$actions` on the view's rows, `GET /meta/actions…` — is the SOURCE's, evaluated under the caller's grants on the source's resource (its row grants, `actionRowScope`, `disabled`). A grant on the view's own resource never adds a delegated action, even under the same action name.
+- The view's rows (and so the source ids) come only from what the caller may read on the view.
+- `GET {view}/meta/actions…` is served without any grant on the view when the view has no own row-level grant: its own part lists nothing; each delegated action is answered by the source (no source grant → `{ actions: [] }`).
+- Executing always goes through the source's own route (`info.value`), authorized there.
+
+### Query targets: read and action
+
+An action declaring moost-db's `queryTarget` accepts `{ query: { q, exclude?, expectCount?, dryRun? } }` instead of `{ ids }` — "every row matching this query". On the ARBAC controllers (since 0.1.74) the target reaches only rows the caller can **both act on** (the action's grant, as the row overlay) **and list**: moost-db re-checks the query as a READ of the controller (its `query` route), where `prepareRequest` resolves the caller's read grant (attenuation included) and its filter becomes the read overlay. Nothing to override:
+
+- A caller with an action grant but no read grant gets **403** (dry run included). It targets rows by id.
+- A region reader with an unrestricted action grant targets only its region; a whole-table reader with a team-scoped action grant targets only the team's rows; an attenuated credential narrows `matched`.
+- The query's filter is checked exactly like a `/query` filter, under the read grant's field visibility: a field the caller cannot read is `Unknown field` (400); a field only the action grant hides may filter the target (the caller can read it anyway).
+- A query that matches nothing never runs the handler (an empty summary).
+- A [relational predicate](#relational-filter-predicates-some-none) in the target's `q` works as on `/query`: it is allowed when the read-side `$with` policy allows the relation (else `Unknown field` 400), and the related table's row scope is conjoined into it.
+
+On a view, `POST {view}/delegated-actions/:name` is a READ of the view: it needs the caller's read grant on the view (else 403) and grants nothing on the action. The source must also list the action for the caller (any grant on it there) — else 403, dry runs included. The matching rows are run through the source's own route in batches, and that route re-authorizes every batch (guards, the action grant, `actionRowScope`, `disabled`): rows outside the caller's source grant are reported as `skipped` and never run.
+
 ## Fail-closed: every endpoint
 
 Every built-in route (`/query`, `/pages`, `/geo`, `/one`, `/meta`, `/meta/form`, and every write) resolves the caller's scopes in `prepareRequest` before anything else runs — `@DbAction` handlers too (moost-db ≥ 0.1.143 calls `prepareRequest` with `endpoint: "action"` before any action id is validated or row loaded, table-level actions included). It uses the ones [`arbacAuthorizeInterceptor`](./arbac-authorize) cached, otherwise the controller evaluates the handler's resource/action itself. So:
@@ -442,6 +510,7 @@ Every built-in route (`/query`, `/pages`, `/geo`, `/one`, `/meta`, `/meta/form`,
 - A missing authorize interceptor does **not** open the table.
 - `@Public()` (`arbacPublic`) does **not** bypass an ARBAC DB controller. It only skips the interceptor. Grant the actions to a public role instead.
 - `GET /meta/actions/:id` is authorized by row-level action grants, not a read grant. See [Row actions](#row-actions-run-only-where-their-grant-reaches).
+- `POST /delegated-actions/:name` (a view's delegated query target) is authorized by the read grant on the view; the source route authorizes each batch. See [Query targets](#query-targets-read-and-action).
 
 Before 0.1.72, a controller without the interceptor ran writes unscoped, and reads returned rows with hidden columns.
 

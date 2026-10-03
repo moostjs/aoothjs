@@ -7,6 +7,7 @@ export type {
 } from "@aooth/arbac-core";
 export { Arbac, arbacPatternToRegex } from "@aooth/arbac-core";
 export type { ControlGate } from "@aooth/arbac";
+export { conjoinScopeFilters } from "@aooth/arbac";
 
 export * from "./arbac.composables";
 export * from "./arbac.decorator";
@@ -45,6 +46,7 @@ export { registerArbacDbTarget, resolveHandlerArbacIds } from "./db/relation-pol
 export {
   arbacActionRowScope,
   arbacAllowedActions,
+  arbacRelationFilter,
   arbacRowFilter,
   authorizeArbacForm,
   cachedRequestScopes,

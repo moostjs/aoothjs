@@ -9,8 +9,8 @@ import { bootPlain, bootWith, ids, setupSpace, teardownSpace } from "./reads-har
  * `@db.writeOnly` seal. (`/meta`'s search surface under an exclusion scope is
  * pinned in read-policy.integration.spec.ts.)
  *
- * `read_accounts.txt_idx` covers title + secretNote; `status` is the
- * `@db.column.searchable` fallback; `home` carries the geo index "home".
+ * `read_accounts.txt_idx` (the default text index) covers title + secretNote;
+ * `home` carries the geo index "home".
  */
 
 beforeAll(() => setupSpace());
@@ -19,8 +19,13 @@ afterAll(teardownSpace);
 const NO_NOTE = { accounts: { projection: { secretNote: 0 } } } as const;
 const sortedIds = (body: unknown) => ids(body).toSorted((a, b) => a - b);
 
+// moost-db ≥ 0.1.147: `$search` naming no index is refused (400) when the
+// DEFAULT index reads a hidden field — no fallback on a native-search table,
+// so the answer never depends on the term.
+const NO_INDEX = { statusCode: 400, message: "No search index available" };
+
 describe("native full-text search over a hidden column", () => {
-  it("the default index falls back to the visible @db.column.searchable columns", async () => {
+  it("the default index over a hidden field refuses $search (400)", async () => {
     // Control: natively, "zebra" only occurs in secretNote (rows 1 and 3).
     const all = await bootWith({ accounts: undefined });
     expect(sortedIds((await all("/read-accounts/query?$search=zebra&$select=id")).body)).toEqual([
@@ -28,15 +33,12 @@ describe("native full-text search over a hidden column", () => {
     ]);
 
     const get = await bootWith(NO_NOTE);
-    expect((await get("/read-accounts/query?$search=zebra&$select=id")).body).toEqual([]);
-    expect((await get("/read-accounts/pages?$search=zebra&$select=id")).body).toMatchObject({
-      data: [],
-      count: 0,
-    });
-    // The fallback searches the visible `status` column.
-    expect(sortedIds((await get("/read-accounts/query?$search=open&$select=id")).body)).toEqual([
-      1, 2,
-    ]);
+    for (const endpoint of ["query", "pages"]) {
+      for (const term of ["zebra", "open"]) {
+        const r = await get(`/read-accounts/${endpoint}?$search=${term}&$select=id`);
+        expect(r.body, `${endpoint} ${term}`).toMatchObject(NO_INDEX);
+      }
+    }
   });
 
   it("a grouped $search counts only visible matches", async () => {
@@ -50,15 +52,12 @@ describe("native full-text search over a hidden column", () => {
     ]);
 
     const get = await bootWith(NO_NOTE);
-    const hidden = await get(
-      "/read-accounts/query?$search=zebra&$select=status,count(*):n&$groupBy=status",
-    );
-    expect(hidden.status).toBe(200);
-    expect(hidden.body).toEqual([]);
-    const visible = await get(
-      "/read-accounts/query?$search=open&$select=status,count(*):n&$groupBy=status",
-    );
-    expect(visible.body).toEqual([{ status: "open", n: 2 }]);
+    for (const term of ["zebra", "open"]) {
+      const hidden = await get(
+        `/read-accounts/query?$search=${term}&$select=status,count(*):n&$groupBy=status`,
+      );
+      expect(hidden.body, term).toMatchObject(NO_INDEX);
+    }
   });
 
   it("$index naming an index over a hidden field answers like a nonexistent index", async () => {
@@ -81,7 +80,7 @@ describe("native full-text search over a hidden column", () => {
     expect(grouped.status).toBe(400);
   });
 
-  it("without a visible fallback the term is ignored — results never depend on it", async () => {
+  it("without a visible default index the answer never depends on the term", async () => {
     const projections: Array<Record<string, 0 | 1>> = [
       { secretNote: 0, status: 0 },
       { id: 1, title: 1 },
@@ -92,7 +91,7 @@ describe("native full-text search over a hidden column", () => {
       expect(plain.body).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
       for (const term of ["zebra", "launch", "no-such-term"]) {
         const r = await get(`/read-accounts/query?$search=${term}&$select=id&$sort=id`);
-        expect(r.body, `${term} ${JSON.stringify(projection)}`).toEqual(plain.body);
+        expect(r.body, `${term} ${JSON.stringify(projection)}`).toMatchObject(NO_INDEX);
       }
       const meta = (await get("/read-accounts/meta")).body;
       expect(meta.searchable).toBe(false);
