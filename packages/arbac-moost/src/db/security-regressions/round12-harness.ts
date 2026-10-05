@@ -25,6 +25,9 @@ const ITEMS = [
 export async function createR12Space(): Promise<R12Space> {
   const h = await createSpace([R12Dict, R12Item, R12Code]);
   const { driver } = h;
+  // ensureTable creates no indexes: the unique `code` index must exist for the
+  // cross-tenant collision regression.
+  await h.table(R12Code).syncIndexes();
   let selects = 0;
   const count = (sql: string) => {
     if (/^\s*select/i.test(sql)) selects++;

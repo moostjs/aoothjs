@@ -130,6 +130,22 @@ describe("POST ?$onConflict=ignore under ARBAC", () => {
   });
 });
 
+describe("a permitted row colliding with another tenant's unique value", () => {
+  // Accepted disclosure: the unique index is global, so an in-scope row whose
+  // unique value matches ANOTHER tenant's row reports the conflict. Per-tenant
+  // uniqueness needs per-tenant unique indexes (atscript-db api/crud#insert-ignore).
+  it("answers conflict:true in ignore mode and 409 in plain mode, writing nothing", async () => {
+    await bootAs("insert-a");
+    const row = { id: 90, code: "T-OTHER", tenant: "a", title: "x" };
+    const ignored = await post("/codes?$onConflict=ignore", row);
+    expect(ignored.status, JSON.stringify(ignored.body)).toBeLessThan(300);
+    expect(ignored.body).toMatchObject({ conflict: true });
+    const plain = await post("/codes", row);
+    expect(plain.status).toBe(409);
+    expect(await ids()).toEqual([1, 2]);
+  });
+});
+
 describe("plain POST refuses a forbidden row before the write", () => {
   it("a forbidden duplicate answers 403, a permitted one still 409", async () => {
     await bootAs("insert-a");

@@ -234,6 +234,8 @@ Every field an expression reads (`sum(price*qty)`), every `first(field)` / `last
 
 Ignore mode is an insert like any other: it needs the insert grant, `prepareRequest` sees it as `ctx.onConflict`, and the [insert rule](#write-pipeline) applies to every submitted row, conflicting or not. Conflicting rows are skipped by the database and never reach the post-write check, so this mode closes the residual: a `check` that cannot be decided before the write is refused with 403. In a handler of your own, pass the mode to `useArbacDbScope().writeOptions(table, { onConflict: "ignore" })`.
 
+An in-scope row whose unique value collides with another tenant's row still reports the conflict (`conflict: true` in ignore mode, 409 in plain mode): a global unique index discloses existence. For per-tenant uniqueness use per-tenant unique indexes, see the insert-ignore note in atscript-db's `api/crud#insert-ignore`.
+
 ## `ArbacDbScope<T>` contract
 
 ```ts
