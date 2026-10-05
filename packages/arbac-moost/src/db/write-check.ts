@@ -35,6 +35,34 @@ export function checkFields(filter: TScopeFilter): Set<string> {
   return new Set(computeInsights(filter).keys());
 }
 
+/**
+ * The in-memory WITH CHECK verdict for rows about to be inserted: `false` when
+ * a row the evaluator can decide fails the check, `true` when every row passes,
+ * `undefined` when some row cannot be decided up front — the check is not
+ * modelled (relational, `$regex`, …) or reads a field the row omits (a database
+ * default or generated value).
+ */
+export function insertRowsVerdict(
+  rows: ReadonlyArray<Record<string, unknown>>,
+  check: TScopeFilter,
+): boolean | undefined {
+  let predicate: RowPredicate;
+  let fields: Set<string>;
+  try {
+    predicate = compileScopeCheck(check);
+    fields = checkFields(check);
+  } catch (error) {
+    if (error instanceof UnsupportedCheckError) return undefined;
+    throw error;
+  }
+  let verdict: true | undefined = true;
+  for (const row of rows) {
+    if ([...fields].some((f) => getPath(row, f) === undefined)) verdict = undefined;
+    else if (!predicate(row)) return false;
+  }
+  return verdict;
+}
+
 function same(a: unknown, b: unknown): boolean {
   if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
   return a === b;

@@ -28,6 +28,7 @@ import {
   arbacRelationFilter,
   arbacRowFilter,
   authorizeArbacForm,
+  isInsertIgnoreRequest,
   prepareArbacRequest,
   requestFieldVisible,
   requireRequestScopes,
@@ -405,6 +406,7 @@ export class AsArbacDbController<
       requireRequestScopes(),
       this.guardedTable,
       this.readable,
+      isInsertIgnoreRequest(),
     );
   }
 

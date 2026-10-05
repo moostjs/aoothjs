@@ -54,9 +54,23 @@ interface ResolvedScopes {
   scopes: ArbacDbScope[];
   /** The request's visibility per readable (with its `$with` resolution). */
   visibility: Map<VisibilityTableSource, MetaVisibility>;
+  /** An insert in ignore mode (`POST /?$onConflict=ignore`) — set by {@link prepareArbacRequest}. */
+  insertIgnore?: true;
 }
 
 const requestScopesKey = key<ResolvedScopes>("arbac.db.scopes");
+
+/**
+ * `true` while the current request is an insert in ignore mode
+ * (`?$onConflict=ignore`): conflicting rows are skipped, so the post-write
+ * WITH CHECK never sees them and the write guard must refuse what it cannot
+ * check up front.
+ *
+ * @since 0.1.75
+ */
+export function isInsertIgnoreRequest(): boolean {
+  return resolved()?.insertIgnore === true;
+}
 
 /** Store the event's resolved scopes (for the handler `ids` resolves to). */
 function storeResolved(
@@ -234,6 +248,7 @@ export async function prepareArbacRequest(
     return;
   }
   const scopes = await resolveRequestScopes();
+  if (ctx.endpoint === "insert" && ctx.onConflict === "ignore") resolved()!.insertIgnore = true;
   if (READ_ENDPOINTS.has(ctx.endpoint)) {
     const names = await resolveRequestRelations(scopes, ctx.controls, readable, ctx.filter);
     enforceRelationGates(names, visibilityFor(scopes, readable));

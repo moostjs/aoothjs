@@ -83,12 +83,16 @@ export interface ArbacDbScopeHelpers<T = unknown> {
    * enforcement the ARBAC DB controllers' CRUD writes get — nested writes
    * (`nestedWrites`, 403), USING (pre-image in scope, 404), `checkRefs` (403)
    * and WITH CHECK (403, rolled back). `allowedFields` / `set` are not applied
-   * — overlay {@link set} yourself.
+   * — overlay {@link set} yourself. For `insertMany(rows, { onConflict: "ignore" })`
+   * pass the same `{ onConflict: "ignore" }`: conflicting rows are skipped, so
+   * a check that cannot be evaluated before the write refuses the batch
+   * (since 0.1.75).
    *
    * @since 0.1.72
    */
   writeOptions<Row extends object = Record<string, unknown>>(
     table: ArbacGuardedTable,
+    opts?: { onConflict?: "ignore" },
   ): TWriteOptions<Row>;
   /**
    * `TDeleteOptions` for `table.deleteOne` in a handler: the id is pinned
@@ -158,12 +162,15 @@ export async function useArbacDbScope<T = unknown>(): Promise<ArbacDbScopeHelper
         scopes,
         table,
       ),
-    writeOptions: <Row extends object>(table: ArbacGuardedTable): TWriteOptions<Row> => ({
+    writeOptions: <Row extends object>(
+      table: ArbacGuardedTable,
+      opts?: { onConflict?: "ignore" },
+    ): TWriteOptions<Row> => ({
       isFieldVisible: visibleOn(table),
       guard: async (ctx) => {
         const rows = ctx as unknown as TDbWriteGuardContext;
         assertNestedWritesAllowed(rows.rows, scopes, navFieldsOf(table));
-        await guardArbacWrite(rows, scopes, table, table);
+        await guardArbacWrite(rows, scopes, table, table, opts?.onConflict === "ignore");
       },
       check: (ctx) => checkArbacWrite(ctx, scopes),
     }),

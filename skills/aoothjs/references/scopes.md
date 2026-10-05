@@ -167,7 +167,7 @@ Resolution per control key:
    - **Any scope contributes `undefined` or `true`** → key is dropped from the result (absent ≡ allowed).
    - **All scopes contribute `false`** → result is `false` (fully denied).
    - **Mix of `false` and `string[]`** → union of all whitelists, sorted and deduplicated.
-3. **`string[]` is ONLY legal for `$with` and `$groupBy`.** Any other key with a `string[]` gate throws.
+3. **`string[]` is ONLY legal for `$with` and `$groupBy`.** Any other key with a `string[]` gate throws (`$rowOrder`, like `$sort`, takes `true` / `false` only). `false` works for any key (since 0.1.75). `$groupBy` also decides `/meta.fields[*].groupable`: `false` drops the flag everywhere, a whitelist keeps it on the listed paths.
 
 Examples (single array arg):
 

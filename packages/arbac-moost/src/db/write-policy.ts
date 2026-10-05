@@ -12,6 +12,7 @@ import { hasPreImage, isPatchAction } from "./helpers";
 import {
   checkFields,
   compileScopeCheck,
+  insertRowsVerdict,
   patchPostImage,
   UnsupportedCheckError,
 } from "./write-check";
@@ -124,13 +125,19 @@ export async function assertWrittenRowsInCheck(
  * - `checkRefs` — every enforced FK the write sets must reference rows the
  *   caller can read on the target table (→ 403);
  * - WITH CHECK when the adapter cannot roll back — validated here, before
- *   the write (see {@link checkArbacWrite} for the transactional path).
+ *   the write (see {@link checkArbacWrite} for the transactional path);
+ * - WITH CHECK of an insert, even on a transactional adapter, evaluated on
+ *   the submitted rows before the write when the in-memory evaluator can
+ *   model it (a forbidden row → 403, never a duplicate-key 409; since
+ *   0.1.75) — and, with `ignoreConflicts` (`?$onConflict=ignore`), refused
+ *   whenever it cannot, since the post-write check never sees skipped rows.
  */
 export async function guardArbacWrite(
   ctx: TDbWriteGuardContext,
   scopes: readonly ArbacDbScope[],
   table: ArbacWriteTable,
   refs: RefTableSource,
+  ignoreConflicts = false,
 ): Promise<void> {
   const eff = effectiveScope(scopes);
   if (eff.filter && hasPreImage(ctx.action)) {
@@ -142,8 +149,19 @@ export async function guardArbacWrite(
     await assertIdFiltersInScope(table, targets, eff.filter);
   }
   await assertRefsInScope(ctx, scopes, refs);
-  if (eff.check && !table.getAdapter().isInTransaction()) {
+  if (!eff.check) return;
+  if (!table.getAdapter().isInTransaction()) {
     await assertCheckBeforeWrite(ctx, eff.check);
+  } else if (!hasPreImage(ctx.action)) {
+    // An insert: refuse a forbidden row BEFORE the write, so a duplicate
+    // never answers 409 where the same fresh row answers 403 (no existence
+    // probe). What cannot be decided in memory is left to the post-write
+    // check — except in ignore mode, which skips conflicting rows and so
+    // hides them from it: fail closed.
+    const verdict = insertRowsVerdict(ctx.rows, eff.check);
+    if (verdict === false || (verdict === undefined && ignoreConflicts)) {
+      throw new HttpError(403, OUT_OF_SCOPE);
+    }
   }
 }
 

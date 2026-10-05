@@ -227,7 +227,9 @@ type ControlGate = boolean | readonly string[];
 | `false`             | Control is denied.                                       |
 | `readonly string[]` | Only the listed values are allowed. Whitelist semantics. |
 
-`string[]` is **only** legal for `$with` and `$groupBy`. Using a whitelist for any other control throws.
+- A `string[]` whitelist is **only** legal for `$with` and `$groupBy`; any other control with a whitelist throws. `$rowOrder`, like `$sort`, takes `true` / `false` only.
+- `false` works for every control key, `$rowOrder` included (since 0.1.75).
+- `$groupBy` also decides which fields `/meta` advertises as `fields[*].groupable`: `false` removes the flag everywhere, a whitelist keeps it on the listed paths (since 0.1.75).
 
 ### Resolution per control key
 

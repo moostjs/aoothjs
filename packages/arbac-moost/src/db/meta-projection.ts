@@ -1,5 +1,7 @@
 import { effectiveScope } from "@aooth/arbac";
-import type { TCrudOp, TMetaResponse } from "@atscript/db";
+import type { ControlGate } from "@aooth/arbac";
+import { translateQueryTree } from "@atscript/db";
+import type { AtscriptQueryNode, TCrudOp, TMetaResponse } from "@atscript/db";
 import { DB_CRUD_HANDLERS, resolveTerminalRef, VALUE_HELP_CRUD_HANDLERS } from "@atscript/moost-db";
 import type { TDbIndexFieldPaths } from "@atscript/moost-db";
 import type {
@@ -173,8 +175,7 @@ function pruneSerializedType(
         continue;
       }
       const pruned = pruneSerializedType(prop, child);
-      props[name] =
-        pruned.ref && !isRefVisible(path, vis, refTargets) ? withoutRef(pruned) : pruned;
+      props[name] = withVisibleTargets(pruned, path, vis, refTargets);
     }
     return { ...node, type: { ...def, props } };
   }
@@ -207,38 +208,115 @@ function withoutRef(node: TSerializedAnnotatedTypeInner): TSerializedAnnotatedTy
   return rest;
 }
 
+/** The `/meta` annotation key of a dictionary value-help binding (`@ui.valueHelp`, since 0.1.75); a string constant — arbac-moost does not import `@atscript/ui`. */
+const UI_VALUE_HELP = "ui.valueHelp";
+
+/** A table a field points at, and the fields it names there. */
+interface Target {
+  type: object;
+  fields: string[];
+}
+
+function withoutBinding(node: TSerializedAnnotatedTypeInner): TSerializedAnnotatedTypeInner {
+  const { [UI_VALUE_HELP]: _binding, ...metadata } = node.metadata;
+  return { ...node, metadata };
+}
+
+// Per runtime flat-map entry: static, so resolved once (`null` = no binding).
+const bindingCache = new WeakMap<object, Target | null>();
+
+/**
+ * The runtime `ui.valueHelp` binding of a flat-map entry — the dictionary and
+ * the fields it names there: the committed `field` plus every field its
+ * static filter reads (`undefined` when absent or unresolvable).
+ */
+function bindingOf(entry: unknown): Target | undefined {
+  const raw = (entry as TAtscriptAnnotatedType | undefined)?.metadata?.get?.(UI_VALUE_HELP) as
+    | { target?: unknown; field?: unknown; filter?: AtscriptQueryNode }
+    | undefined;
+  if (!raw) return undefined;
+  let binding = bindingCache.get(entry as object);
+  if (binding === undefined) {
+    binding = resolveBinding(raw);
+    bindingCache.set(entry as object, binding);
+  }
+  return binding ?? undefined;
+}
+
+function resolveBinding(raw: {
+  target?: unknown;
+  field?: unknown;
+  filter?: AtscriptQueryNode;
+}): Target | null {
+  try {
+    const t = raw.target as (() => object) | { type: () => object } | undefined;
+    const type = typeof t === "function" ? t() : t?.type();
+    if (!type) return null;
+    const fields = typeof raw.field === "string" ? [raw.field] : [];
+    if (raw.filter) {
+      translateQueryTree(raw.filter, (ref) => {
+        fields.push(ref.field);
+        return ref.field;
+      });
+    }
+    return { type, fields };
+  } catch {
+    return null;
+  }
+}
+
+/** Every table a flat-map entry points at: its `ref` target and its value-help binding. */
+function targetsOf(entry: unknown): Target[] {
+  const ref = refTargetOf(entry);
+  const binding = bindingOf(entry);
+  return [ref, binding].filter((t): t is Target => t !== undefined);
+}
+
 /** The field a runtime prop's `ref` finally points at (the same terminal `/meta` serializes). */
-function refTargetOf(entry: unknown): { type: object; field: string } | undefined {
+function refTargetOf(entry: unknown): Target | undefined {
   const def = entry as TAtscriptAnnotatedType | undefined;
   if (!def?.ref) return undefined;
   const terminal = resolveTerminalRef(def);
-  if (terminal) return terminal;
+  if (terminal) return { type: terminal.type, fields: terminal.field ? [terminal.field] : [] };
   try {
-    return { type: def.ref.type(), field: def.ref.field };
+    const { type, field } = def.ref;
+    return { type: type(), fields: field ? [field] : [] };
   } catch {
     return undefined;
   }
 }
 
 /**
- * A serialized `ref` at `path` survives when its target field is visible:
- * a self-reference (e.g. a derived column's source) against this level's
- * visibility; a foreign one against the caller's visibility on the target
- * table (`refTargets`, stripped when the caller cannot read it). Without
- * runtime schema info (`vis.table.flatMap`) or `refTargets`, refs are kept.
+ * A target survives when the caller can see every field it names: a
+ * self-target against this level's visibility, a foreign one against the
+ * caller's visibility on that table (`refTargets`; unreadable → hidden).
  */
-function isRefVisible(
+function isTargetVisible(target: Target, vis: MetaVisibility, refTargets: MetaRefTargets): boolean {
+  if (target.fields.length === 0) return true;
+  const targetVis = target.type === vis.table?.type ? vis : refTargets.get(target.type);
+  return !!targetVis && target.fields.every((f) => isMetaFieldVisible(f, targetVis));
+}
+
+/**
+ * Strip a serialized `ref` / `ui.valueHelp` binding at `path` whose target is
+ * hidden from the caller. Without runtime schema info (`vis.table.flatMap`) or
+ * `refTargets`, both are kept.
+ */
+function withVisibleTargets(
+  node: TSerializedAnnotatedTypeInner,
   path: string,
   vis: MetaVisibility,
   refTargets: MetaRefTargets | undefined,
-): boolean {
-  const table = vis.table;
-  if (!table?.flatMap || !refTargets) return true;
-  const target = refTargetOf(table.flatMap.get(path));
-  if (!target || !target.field) return true;
-  if (target.type === table.type) return isMetaFieldVisible(target.field, vis);
-  const targetVis = refTargets.get(target.type);
-  return !!targetVis && isMetaFieldVisible(target.field, targetVis);
+): TSerializedAnnotatedTypeInner {
+  const flatMap = vis.table?.flatMap;
+  if (!flatMap || !refTargets) return node;
+  const entry = flatMap.get(path);
+  let out = node;
+  const ref = node.ref ? refTargetOf(entry) : undefined;
+  if (ref && !isTargetVisible(ref, vis, refTargets)) out = withoutRef(out);
+  const binding = node.metadata?.[UI_VALUE_HELP] !== undefined ? bindingOf(entry) : undefined;
+  if (binding && !isTargetVisible(binding, vis, refTargets)) out = withoutBinding(out);
+  return out;
 }
 
 const NO_NAMES: ReadonlySet<string> = new Set();
@@ -335,14 +413,17 @@ export async function applyArbacMetaOverlay(
   }
   const overlaid: TMetaResponse = { ...meta, actions, crud };
   if (readScopes.length === 0) return overlaid;
+  const groupBy = effectiveScope(readScopes).controls.$groupBy;
 
   const writable = collectWritableFields(writeScopes, false);
   const nestedWrites = effectiveScope(writeScopes).nestedWrites;
   if (isIdentifierSet(source)) {
     const vis = buildScopeVisibility(readScopes, undefined, source);
-    return Object.keys(vis.allowed).length > 0 || vis.withGrants.size > 0
-      ? pruneMetaByVisibility(overlaid, { ...vis, writable, nestedWrites })
-      : overlaid;
+    const visible = Object.keys(vis.allowed).length > 0 || vis.withGrants.size > 0;
+    return gateGroupable(
+      visible ? pruneMetaByVisibility(overlaid, { ...vis, writable, nestedWrites }) : overlaid,
+      groupBy,
+    );
   }
 
   const relations = await resolveRelationTree(readScopes, source, metaRelationNames(meta), {
@@ -350,7 +431,36 @@ export async function applyArbacMetaOverlay(
   });
   const vis = buildScopeVisibility(readScopes, source, { relations });
   const refTargets = await resolveRefTargets(vis, meta);
-  return pruneMetaByVisibility(overlaid, { ...vis, writable, nestedWrites }, refTargets);
+  return gateGroupable(
+    pruneMetaByVisibility(overlaid, { ...vis, writable, nestedWrites }, refTargets),
+    groupBy,
+  );
+}
+
+/**
+ * `fields[*].groupable` follows the `controls.$groupBy` policy, mirroring the
+ * 403 `applyArbacControls` raises: `false` drops the flag everywhere, a
+ * whitelist keeps it only on the listed paths. Returns `meta` itself when
+ * nothing is stripped.
+ *
+ * @since 0.1.75
+ */
+function gateGroupable(meta: TMetaResponse, gate: ControlGate | undefined): TMetaResponse {
+  if (gate === undefined || gate === true) return meta;
+  const stripped = (path: string, field: { groupable?: boolean }) =>
+    field.groupable && (gate === false || !gate.includes(path));
+  const entries = Object.entries(meta.fields);
+  if (!entries.some(([path, field]) => stripped(path, field))) return meta;
+  const fields: TMetaResponse["fields"] = {};
+  for (const [path, field] of entries) {
+    if (stripped(path, field)) {
+      const { groupable: _groupable, ...rest } = field;
+      fields[path] = rest;
+    } else {
+      fields[path] = field;
+    }
+  }
+  return { ...meta, fields };
 }
 
 // Per static envelope (the base controller caches it — identity-stable).
@@ -436,7 +546,7 @@ async function resolveRefTargets(
   return out;
 }
 
-// Per table: the annotated types its own (non-nav) fields `ref` into.
+// Per table: the annotated types its own (non-nav) fields `ref` into or bind value help to.
 const refTypesCache = new WeakMap<VisibilityTableSource, ReadonlySet<object>>();
 
 function foreignRefTypes(table: VisibilityTableSource): ReadonlySet<object> {
@@ -447,8 +557,9 @@ function foreignRefTypes(table: VisibilityTableSource): ReadonlySet<object> {
     const out = new Set<object>();
     for (const [path, entry] of flatMap) {
       if (hasSelfOrAncestor(nav, path)) continue;
-      const target = refTargetOf(entry);
-      if (target && target.type !== table.type) out.add(target.type);
+      for (const target of targetsOf(entry)) {
+        if (target.type !== table.type) out.add(target.type);
+      }
     }
     return out;
   });

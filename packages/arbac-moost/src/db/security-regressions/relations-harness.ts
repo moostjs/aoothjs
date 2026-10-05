@@ -33,10 +33,10 @@ export interface Harness {
   close: () => void;
 }
 
-export async function createSpace(): Promise<Harness> {
+export async function createSpace(types: readonly unknown[] = TYPES): Promise<Harness> {
   const driver = new BetterSqlite3Driver(":memory:");
   const space = new DbSpace(() => new SqliteAdapter(driver));
-  for (const t of TYPES) await space.getTable(t as never).ensureTable();
+  for (const t of types) await space.getTable(t as never).ensureTable();
   provideDbSpace(space);
   return {
     driver,

@@ -15,6 +15,7 @@
 - [Custom routes: `useArbacDbScope()`](#custom-routes-usearbacdbscope)
 - [Custom ARBAC controllers (other moost-db bases)](#custom-arbac-controllers-other-moost-db-bases)
 - [Value-help controllers](#value-help-controllers)
+- [arbac-moost 0.1.75 with moost-db 0.1.148](#arbac-moost-0175-with-moost-db-01148)
 
 ## `AsArbacDbController<T>` / `AsArbacDbReadableController<T>`
 
@@ -113,11 +114,11 @@ Apps can declaration-merge custom fields into `ArbacDbScope` — your scope pred
 
 `ControlGate` is `true | false | readonly string[]`. Used for query controls like `$with` and `$groupBy`.
 
-| Gate       | Effect                                                                                                                                                                                                                                                                                              |
-| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `true`     | Allowed without restriction.                                                                                                                                                                                                                                                                        |
-| `false`    | Denied. Throws `HttpError(403, 'Control "$with" is not allowed for your role')`.                                                                                                                                                                                                                    |
-| `string[]` | Whitelist. Rejects values not in the list. Currently supported for `$with` and `$groupBy`. `$groupBy` whitelist = SOURCE fields: a calendar-bucket alias is checked as its `$field` (whitelist `openedAt`, never the alias `week`); before 0.1.66 a bucket alias always failed the whitelist (403). |
+| Gate       | Effect                                                                                                                                                                                                                                                                                                                                           |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `true`     | Allowed without restriction.                                                                                                                                                                                                                                                                                                                     |
+| `false`    | Denied. Throws `HttpError(403, 'Control "$with" is not allowed for your role')`.                                                                                                                                                                                                                                                                 |
+| `string[]` | Whitelist. Rejects values not in the list. Currently supported for `$with` and `$groupBy` (`$rowOrder` / `$sort`: `true`/`false` only). `$groupBy` whitelist = SOURCE fields: a calendar-bucket alias is checked as its `$field` (whitelist `openedAt`, never the alias `week`); before 0.1.66 a bucket alias always failed the whitelist (403). |
 
 **Cross-role union semantics**: silence wins (a more permissive role lifts denial); whitelists union additively. So if Role A says `controls.$with = false` and Role B says `controls.$with = ['comments']`, the union is `['comments']` — allowing `comments` but not other joins.
 
@@ -278,3 +279,16 @@ class StatusDict extends AsArbacJsonValueHelpController<typeof Status> {
 | 8   | `with` / `set` / `allowedFields` / `check` / `nestedWrites` do not apply (read-only, no relations).                                                                                                    |
 | 9   | Custom `query` (abstract class): `filter` and `$select` arrive scoped; implement `$search` over fields `this.hasField(f)` accepts.                                                                     |
 | 10  | Overriding `runQuery`/`runPages`/`runGetOne`/`runGetOneComposite` → re-apply `@ArbacAction(...)`; overriding any hook → keep the `super` call.                                                         |
+
+## arbac-moost 0.1.75 with moost-db 0.1.148
+
+Needs `@atscript/moost-db` ≥ 0.1.148. No setup; the ARBAC controllers apply all of it.
+
+**Behaviour change (since 0.1.75): a forbidden duplicate now answers 403 instead of 409** (it answered 409 before). A forbidden row is refused before the write: an insert's rows are evaluated against `check` in memory when the evaluator can model it and the row carries every field `check` reads; a permitted duplicate still answers 409. Residual: a `check` it cannot model (relational, `$regex`) or that reads a column the row omits (DB default / generated) is decided only by the post-write check, so a forbidden duplicate of such a row can still answer 409.
+
+- **`@DbDecorations`**: a decoration follows the read scope of its `requires` columns. Hidden source → gone from `/meta.fields`, `$select=<decoration>` → 400 `Unknown field` (same answer as a nonexistent field), omitted from a no-`$select` read. Visible source → served; the source column is not in the row unless selected. List every column `decorateRows` reads under `requires`.
+- **`resolveRowIds(ids, ctx)`**: runs after `prepareRequest` (no grant → 403, hook not called). The resolved id is still read under the row scope (`ctx.overlay`), so an alias of an out-of-scope row answers like a nonexistent id on `/one`, `DELETE`, `/meta/actions/:id` and row actions. A `'rows'` refusal names the id the client sent. A hook output over a unique key the scope hides → 500 (server bug). Never throw for an unknown alias; never put the canonical id in an error.
+- **Action gate is scope-first**: an action grant without a row filter reaches the handler on a missing id (no query); with a row filter, out-of-scope and missing ids both 404 (one query); a scope differing from the read overlay costs one query.
+- **`/meta`**: `fields[*].groupable` follows `controls.$groupBy` (`false` drops it everywhere; a whitelist keeps it on the listed paths). `ui.valueHelp` bindings are dropped when the dictionary is unreadable, or the committed field / a filter field is hidden on it. Distinct pickers are `$groupBy` reads, so the same gate governs them.
+- **Expressions / `first` / `last` / `$rowOrder`**: every operand, first/last field and `$rowOrder` key passes the field gates (hidden → 400 `Unknown field`). `controls: { $rowOrder: false }` → 403 (whitelists: see the ControlGate table above).
+- **`POST /?$onConflict=ignore`**: needs the insert grant; `prepareRequest` sees `ctx.onConflict`. The insert rule above applies to every submitted row, conflicting or not; ignore mode skips conflicting rows, so it closes the residual: a `check` that cannot be decided before the write → 403. Handlers: `useArbacDbScope().writeOptions(table, { onConflict: "ignore" })`.

@@ -64,6 +64,7 @@ From `@aooth/arbac-moost` 0.1.72 a write runs these checks, in order:
 - **Every targeted row must pass.** A bulk PATCH / PUT with one out-of-scope row is a 404, and nothing is written. Duplicate ids count once.
 - **USING and WITH CHECK are different questions.** USING asks "may you touch this row?"; WITH CHECK asks "is the result still yours?". A tenant-scoped writer can edit their rows but cannot insert into, or move a row to, another tenant.
 - **`check` overrides the default.** `{ filter: { tenant }, check: { status: { $ne: "archived" } } }` lets the writer move rows between tenants but never archive one. `check: {}` turns WITH CHECK off. Across roles, a row passing any role's check passes.
+- **A forbidden row is refused before the write (since 0.1.75).** An insert's rows are evaluated against `check` in memory before the write whenever the evaluator can model it and the row carries every field `check` reads. A forbidden row then answers 403, including one whose key already exists: a forbidden duplicate answers 403, not 409, so the status is no existence probe. A permitted duplicate still answers 409. **Residual:** a `check` the evaluator cannot model (a relational predicate, `$regex`) or that reads a column the row omits (a database default or generated value) is decided only by the post-write check, so a forbidden duplicate of such a row can still answer 409.
 - **Deletes** are scoped twice: moost-db pins the id among the rows the remove scope's `filter` admits, and `guardRemove` re-checks the stored row.
 
 ::: warning Adapters without transactions (in-memory, standalone MongoDB)
@@ -202,6 +203,37 @@ A unique index over a column the read scope hides is not an identification. Addr
 
 DELETE and PATCH answer both with the same 404. A PUT is a full row, so without its primary key both get the same 400. The primary key and `preferredId` stay addressable. Before `@aooth/arbac-moost` 0.1.68, a DELETE / PATCH / PUT by a hidden unique value that existed got a different 404 body than a value that did not.
 
+### `@aooth/arbac-moost` 0.1.75 with `@atscript/moost-db` 0.1.148
+
+Needs `@atscript/moost-db` ≥ 0.1.148. No setup: the controllers apply every rule below on their own.
+
+**Behaviour change since 0.1.75:** a forbidden duplicate now answers 403 instead of 409. Before 0.1.75 an insert whose row the caller could not write, but whose key already existed, answered 409. See [insert rule](#write-pipeline).
+
+#### Decorations (`@DbDecorations`)
+
+A display-only column that `decorateRows` computes follows the read scope of the columns it `requires`. A scope that hides `ownerId` hides a decoration declared with `requires: { ownerName: ["ownerId"] }` everywhere: it is gone from `/meta.fields`, `$select=ownerName` answers `400 Unknown field "ownerName"` (the answer a nonexistent field gets), and a read without `$select` leaves it out. A scope that shows the source serves the decoration. The source column stays out of the row unless the client selected it. A decoration never reaches `transformProjection`, so a projection needs no entry for it. List every column your `decorateRows` reads under `requires`; a decoration that reveals a field's value without listing it would outlive the scope that hides the field.
+
+#### Row ids and aliases (`resolveRowIds`)
+
+`resolveRowIds(ids, ctx)` maps an alias to its canonical id before the row is read. It runs only after `prepareRequest`, so a caller with no grant gets the usual 403 and the hook is never called. The resolved id is never trusted for access: the endpoint still reads, deletes or runs the action under the caller's row scope, and `ctx.overlay` is that scope. An alias of an out-of-scope row therefore answers exactly like an id that names nothing, on `/one`, `DELETE`, `/meta/actions/:id` and row actions alike. A `'rows'` action that refuses an id names the id the client sent, never the canonical key. If the hook returns a unique key the caller's scope hides (`hasField` answers `false`), the request fails with 500: that is a server bug, not a client error. Resolve inside `ctx.overlay` when one alias could name several rows. Never throw for an unknown alias and never put the canonical id in an error message: either one is an oracle.
+
+#### Action gate: scope first
+
+The action gate asks `actionRowScope` before it loads any row. A grant on the action without a row filter runs the handler on any id, including one that names no row, with no query. A grant with a row filter answers the missing-row 404 for an out-of-scope and a missing id alike, with one query. An action whose scope differs from the request's read overlay also costs one query. Before moost-db 0.1.148 the gate loaded the row whenever `actionRowScope` was overridden, which every ARBAC controller does, so an unfiltered grant got a 404 on a missing id in 0.1.147.
+
+#### `/meta`: `groupable` and value-help bindings
+
+- **`fields[*].groupable`** follows `controls.$groupBy`, the same rule that gates the query with a 403. `$groupBy: false` drops the flag from every field. A whitelist keeps it only on the listed paths. The gate also governs distinct-value pickers, because they are `$groupBy` reads.
+- **`ui.valueHelp` bindings** (a dictionary binding on a field of the serialized `type`) are dropped when the caller cannot read the dictionary, or when the field the binding commits, or any field its filter names, is hidden on the dictionary. This is the rule `ref`s already follow. A readable binding is served unchanged.
+
+#### Aggregate expressions, `first` / `last` and `$rowOrder`
+
+Every field an expression reads (`sum(price*qty)`), every `first(field)` / `last(field)` field and every `$rowOrder` key goes through the same field gates as aggregates and `$sort`. A field the scope hides answers `400 Unknown field "x"`, and a group-level expression cannot reach a hidden column through an alias. `$rowOrder` is also a control: `controls: { $rowOrder: false }` answers 403 when a query uses it (whitelists: see the [`ControlGate` table](#control-gates)).
+
+#### Insert ignore (`POST /?$onConflict=ignore`)
+
+Ignore mode is an insert like any other: it needs the insert grant, `prepareRequest` sees it as `ctx.onConflict`, and the [insert rule](#write-pipeline) applies to every submitted row, conflicting or not. Conflicting rows are skipped by the database and never reach the post-write check, so this mode closes the residual: a `check` that cannot be decided before the write is refused with 403. In a handler of your own, pass the mode to `useArbacDbScope().writeOptions(table, { onConflict: "ignore" })`.
+
 ## `ArbacDbScope<T>` contract
 
 ```ts
@@ -280,11 +312,11 @@ WITH CHECK runs in the database inside the write's transaction, so a predicate w
 
 `ControlGate` is `true | false | readonly string[]`. Semantics:
 
-| Value               | Effect                                                                                                                                                                                                                                                                                                                |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `true`              | Allowed. Any value is acceptable.                                                                                                                                                                                                                                                                                     |
-| `false`             | Denied. Throws `HttpError(403, 'Control "${name}" is not allowed for your role')`.                                                                                                                                                                                                                                    |
-| `readonly string[]` | Whitelist. Values outside the list are rejected with 403. Supported for `$with` and `$groupBy`. A `$groupBy` whitelist lists **source fields**: a calendar-bucket alias (`$select=bucket(openedAt,week):week&$groupBy=week`) is checked as the field it buckets (`openedAt`), so whitelist `openedAt`, not the alias. |
+| Value               | Effect                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `true`              | Allowed. Any value is acceptable.                                                                                                                                                                                                                                                                                                                                              |
+| `false`             | Denied. Throws `HttpError(403, 'Control "${name}" is not allowed for your role')`.                                                                                                                                                                                                                                                                                             |
+| `readonly string[]` | Whitelist. Values outside the list are rejected with 403. Supported for `$with` and `$groupBy` (`$rowOrder`, like `$sort`, takes `true` / `false` only). A `$groupBy` whitelist lists **source fields**: a calendar-bucket alias (`$select=bucket(openedAt,week):week&$groupBy=week`) is checked as the field it buckets (`openedAt`), so whitelist `openedAt`, not the alias. |
 
 **Cross-role union**: when multiple roles match, the union is computed:
 
