@@ -4,7 +4,7 @@ import { isFieldAllowed } from "@aooth/arbac";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { ArbacDbScope } from "./as-arbac-db-controller";
-import { collectMethodNames, pruneMetaByVisibility } from "./meta-projection";
+import { MAX_INLINED_NODES, collectMethodNames, pruneMetaByVisibility } from "./meta-projection";
 import { isScopedFieldVisible } from "./request-scopes";
 import {
   buildScopeVisibility,
@@ -669,5 +669,134 @@ describe("pruneMetaByVisibility — $ref entries with own metadata", () => {
       }),
     });
     expect(() => pruneMetaByVisibility(meta, vis({ list: 1 }, new Set(["id"])))).not.toThrow();
+  });
+});
+
+// ── inlined copies: unique ids + bounded blow-up ───────────────────────────
+
+describe("pruneMetaByVisibility — inlined $ref copies", () => {
+  type Props = Record<string, TSerializedAnnotatedType>;
+  const propsOf = (n: TSerializedAnnotatedType) => (n.type as unknown as { props: Props }).props;
+  const refTo = (id: string, own = false): TSerializedAnnotatedType => ({
+    $v: 2,
+    type: { kind: "$ref", id, ...(own ? { own: true } : {}) },
+    metadata: {},
+  });
+  const ids = (n: unknown, out: string[] = []): string[] => {
+    if (Array.isArray(n)) n.forEach((x) => ids(x, out));
+    else if (n && typeof n === "object") {
+      const o = n as Record<string, unknown>;
+      if (typeof o.id === "string" && o.kind === undefined) out.push(o.id);
+      Object.values(o).forEach((x) => ids(x, out));
+    }
+    return out;
+  };
+  const refIds = (n: unknown, out: string[] = []): string[] => {
+    if (Array.isArray(n)) n.forEach((x) => refIds(x, out));
+    else if (n && typeof n === "object") {
+      const o = n as Record<string, unknown>;
+      if (o.kind === "$ref") out.push(o.id as string);
+      Object.values(o).forEach((x) => refIds(x, out));
+    }
+    return out;
+  };
+
+  it("gives each inlined copy a unique id and points its back-ref at its own copy", () => {
+    // Node = { name, secret, children: Node[] } used at `home` (body) and `work` ($ref).
+    const body: TSerializedAnnotatedType = {
+      ...obj({
+        name: { ...leaf(), metadata: { "meta.label": "Name" } },
+        secret: { ...leaf(), metadata: { "meta.label": "Secret" } },
+        children: arr(refTo("Node")),
+      }),
+      id: "Node",
+    };
+    const meta = usersMeta();
+    meta.relations = [];
+    meta.fields = { id: { sortable: true, filterable: true } };
+    meta.type = obj({ id: leaf(), home: body, work: refTo("Node") });
+    const out = pruneMetaByVisibility(
+      meta,
+      vis(
+        {
+          "home.name": 1,
+          "home.secret": 1,
+          "home.children": 1,
+          "work.name": 1,
+          "work.children": 1,
+        },
+        new Set(["id"]),
+      ),
+    );
+    const { home, work } = propsOf(out.type);
+    expect(home.id).toBeDefined();
+    expect(work.id).toBeDefined();
+    expect(home.id).not.toBe(work.id);
+    expect(new Set(ids(out.type)).size).toBe(ids(out.type).length);
+    const backRef = (n: TSerializedAnnotatedType) =>
+      (propsOf(n).children.type as unknown as { of: { type: { id: string } } }).of.type.id;
+    expect(backRef(home)).toBe(home.id);
+    expect(backRef(work)).toBe(work.id);
+    // Visibility differs per path.
+    expect(Object.keys(propsOf(home)).toSorted()).toEqual(["children", "name", "secret"]);
+    expect(Object.keys(propsOf(work)).toSorted()).toEqual(["children", "name"]);
+    // Every remaining $ref resolves to a retained id.
+    const known = new Set(ids(out.type));
+    for (const r of refIds(out.type)) expect(known.has(r)).toBe(true);
+  });
+
+  /** Each level is `{ a: [L(i+1) body, $ref L(i+1)] }` (a union, so the path stays `a.a.a…`); the bottom holds `secret`. */
+  function dagMeta(depth: number): TMetaResponse {
+    const level = (i: number): TSerializedAnnotatedType => {
+      if (i === depth) {
+        return {
+          ...obj({ secret: { ...leaf(), metadata: { "meta.label": "Secret" } }, v: leaf() }),
+          id: `L${i}`,
+        };
+      }
+      const union = {
+        $v: 2,
+        type: { kind: "union", items: [level(i + 1), refTo(`L${i + 1}`)], tags: [] },
+        metadata: {},
+      } as unknown as TSerializedAnnotatedType;
+      return { ...obj({ a: union }), id: `L${i}` };
+    };
+    const meta = usersMeta();
+    meta.relations = [];
+    meta.fields = { id: { sortable: true, filterable: true } };
+    meta.type = obj({ id: leaf(), root: level(0) });
+    return meta;
+  }
+  const secretPath = (depth: number) => `root${".a".repeat(depth)}.secret`;
+  const countNodes = (n: unknown): number =>
+    Array.isArray(n)
+      ? n.reduce((s: number, x) => s + countNodes(x), 0)
+      : n && typeof n === "object"
+        ? 1 + Object.values(n).reduce((s: number, x) => s + countNodes(x), 0)
+        : 0;
+
+  it("bounds a DAG schema that would inline exponentially", () => {
+    const t0 = Date.now();
+    const out = pruneMetaByVisibility(dagMeta(24), vis({ root: 1 }, new Set(["id"])));
+    expect(Date.now() - t0).toBeLessThan(5000);
+    expect(countNodes(out.type)).toBeLessThan(MAX_INLINED_NODES * 40);
+  });
+
+  it("fails closed past the budget: dropped regions carry no body, none unpruned", () => {
+    const depth = 24;
+    const out = pruneMetaByVisibility(
+      dagMeta(depth),
+      vis({ [secretPath(depth)]: 0 }, new Set(["id"])),
+    );
+    expect(JSON.stringify(out.type)).not.toContain("Secret");
+    // Budget really bit: the full 2^24 expansion is not there, and no dangling $ref.
+    const known = new Set(ids(out.type));
+    for (const r of refIds(out.type)) expect(known.has(r)).toBe(true);
+  });
+
+  it("a small DAG stays fully inlined (no stripping under the budget)", () => {
+    const out = pruneMetaByVisibility(dagMeta(3), vis({ root: 1 }, new Set(["id"])));
+    const json = JSON.stringify(out.type);
+    expect(json).not.toContain('"$ref"');
   });
 });

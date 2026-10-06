@@ -126,10 +126,24 @@ function inlineTypeRefs<T extends TSerializedAnnotatedTypeInner>(root: T): T {
   const bodies = new Map<string, TSerializedAnnotatedTypeInner>();
   collectBodies(root, bodies);
   if (bodies.size === 0) return root;
-  return inlineNode(root, bodies, new Set()) as T;
+  const ctx: InlineCtx = { bodies, budget: MAX_INLINED_NODES, n: 0 };
+  return (inlineNode(root, ctx, new Map(), false) ?? root) as T;
 }
 
 type TypeNode = TSerializedAnnotatedTypeInner;
+
+/**
+ * Total nodes that may be materialised by inlining `$ref` bodies. A DAG schema
+ * that reuses a type at several levels inlines exponentially; past the budget
+ * the affected fields are dropped (fail closed), never left unpruned.
+ */
+export const MAX_INLINED_NODES = 20_000;
+
+interface InlineCtx {
+  bodies: Map<string, TypeNode>;
+  budget: number;
+  n: number;
+}
 
 function childNodes(node: TypeNode): TypeNode[] {
   const def = node.type as unknown as Record<string, unknown>;
@@ -152,13 +166,21 @@ function collectBodies(node: TypeNode, bodies: Map<string, TypeNode>): void {
   for (const child of childNodes(node)) collectBodies(child, bodies);
 }
 
-function inlineNode(node: TypeNode, bodies: Map<string, TypeNode>, stack: Set<string>): TypeNode {
+function inlineNode(
+  node: TypeNode,
+  ctx: InlineCtx,
+  stack: ReadonlyMap<string, string>,
+  inlining: boolean,
+): TypeNode | undefined {
   const def = node.type;
   if (def.kind === "$ref") {
-    const body = bodies.get(def.id);
-    if (!body || stack.has(def.id)) return node;
-    const next = new Set(stack).add(def.id);
-    const inlined = inlineNode(body, bodies, next);
+    const ancestor = stack.get(def.id);
+    // Recursive back-reference: point it at THIS copy's own ancestor id.
+    if (ancestor !== undefined) return { ...node, type: { ...def, id: ancestor } };
+    const body = ctx.bodies.get(def.id);
+    if (!body) return node;
+    const inlined = inlineNode(body, ctx, stack, true);
+    if (!inlined) return undefined;
     if (!def.own) return inlined;
     const { ref: _ref, optional: _optional, ...rest } = inlined;
     return {
@@ -168,32 +190,57 @@ function inlineNode(node: TypeNode, bodies: Map<string, TypeNode>, stack: Set<st
       ...(node.ref ? { ref: node.ref } : {}),
     };
   }
-  const nextStack = node.id !== undefined ? new Set(stack).add(node.id) : stack;
+  if (inlining && --ctx.budget < 0) return undefined; // fail closed: drop, never keep unpruned
+  // Every id-bearing node gets a unique id, so a copy pruned for one path can
+  // never be what another copy's back-reference resolves to client-side.
+  let nextStack = stack;
   let out: TypeNode = node;
+  if (node.id !== undefined) {
+    const copyId = `${node.id}#${++ctx.n}`;
+    nextStack = new Map(stack).set(node.id, copyId);
+    out = { ...node, id: copyId };
+  }
   const d = def as unknown as Record<string, unknown>;
   if (d.kind === "object") {
     const props: Record<string, TypeNode> = {};
     for (const [k, v] of Object.entries(d.props as Record<string, TypeNode>)) {
-      props[k] = inlineNode(v, bodies, nextStack);
+      const r = inlineNode(v, ctx, nextStack, inlining);
+      if (r) props[k] = r;
     }
-    const propsPatterns = ((d.propsPatterns as Array<{ def: TypeNode }> | undefined) ?? []).map(
-      (p) => ({ ...p, def: inlineNode(p.def, bodies, nextStack) }),
-    );
-    out = { ...node, type: { ...def, props, propsPatterns } as typeof def };
+    const propsPatterns: Array<{ def: TypeNode }> = [];
+    for (const p of (d.propsPatterns as Array<{ def: TypeNode }> | undefined) ?? []) {
+      const r = inlineNode(p.def, ctx, nextStack, inlining);
+      if (r) propsPatterns.push({ ...p, def: r });
+    }
+    out = { ...out, type: { ...def, props, propsPatterns } as typeof def };
   } else if (d.kind === "array") {
-    out = {
-      ...node,
-      type: { ...def, of: inlineNode(d.of as TypeNode, bodies, nextStack) } as typeof def,
-    };
+    const of = inlineNode(d.of as TypeNode, ctx, nextStack, inlining) ?? emptyStub();
+    out = { ...out, type: { ...def, of } as typeof def };
   } else if (Array.isArray(d.items)) {
-    const items = (d.items as TypeNode[]).map((i) => inlineNode(i, bodies, nextStack));
-    out = { ...node, type: { ...def, items } as typeof def };
+    const items = (d.items as TypeNode[]).map(
+      (i) => inlineNode(i, ctx, nextStack, inlining) ?? emptyStub(),
+    );
+    out = { ...out, type: { ...def, items } as typeof def };
   }
   const refType = out.ref?.type as TypeNode | undefined;
   if (out.ref && refType && (refType as { type?: unknown }).type) {
-    out = { ...out, ref: { ...out.ref, type: inlineNode(refType, bodies, nextStack) } };
+    const r = inlineNode(refType, ctx, nextStack, inlining);
+    if (r) out = { ...out, ref: { ...out.ref, type: r } };
+    else {
+      const { ref: _r, ...noRef } = out;
+      out = noRef;
+    }
   }
   return out;
+}
+
+/** A body-less placeholder for a positional child dropped by the inline budget. */
+function emptyStub(): TypeNode {
+  return {
+    $v: 2,
+    type: { kind: "object", props: {}, propsPatterns: [], tags: [] },
+    metadata: {},
+  } as unknown as TypeNode;
 }
 
 /**
@@ -568,28 +615,37 @@ const formTargetsOf = (entry: TAtscriptAnnotatedType, node: TSerializedAnnotated
   return out;
 };
 
+/** Where a child sits in its parent: an object prop, the array element, or a union/intersection/tuple item. */
+type FormChildKey = { prop: string } | { of: true } | { item: number };
+type FormChild = [TAtscriptAnnotatedType, TSerializedAnnotatedTypeInner, FormChildKey];
+
+/** Pairs the runtime and serialized trees over EVERY child container (props, of, items). */
 function formChildren(
   runtime: TAtscriptAnnotatedType,
   node: TSerializedAnnotatedTypeInner,
-): Array<[TAtscriptAnnotatedType, TSerializedAnnotatedTypeInner, string | number]> {
+): FormChild[] {
   const rt = runtime.type as {
     kind: string;
     props?: Map<string, TAtscriptAnnotatedType>;
     of?: TAtscriptAnnotatedType | TAtscriptAnnotatedType[];
+    items?: TAtscriptAnnotatedType[];
   };
   const def = node.type as {
     props?: Record<string, TSerializedAnnotatedTypeInner>;
     of?: TSerializedAnnotatedTypeInner | TSerializedAnnotatedTypeInner[];
+    items?: TSerializedAnnotatedTypeInner[];
   };
-  const out: Array<[TAtscriptAnnotatedType, TSerializedAnnotatedTypeInner, string | number]> = [];
-  if (rt.kind === "object" && rt.props && def.props) {
+  const out: FormChild[] = [];
+  if (rt.props && def.props) {
     for (const [name, child] of rt.props) {
-      if (def.props[name]) out.push([child, def.props[name], name]);
+      if (def.props[name]) out.push([child, def.props[name], { prop: name }]);
     }
-  } else if (Array.isArray(rt.of) && Array.isArray(def.of)) {
-    rt.of.forEach((child, i) => def.of![i as never] && out.push([child, def.of![i as never], i]));
-  } else if (rt.of && !Array.isArray(rt.of) && def.of && !Array.isArray(def.of)) {
-    out.push([rt.of, def.of, 0]);
+  }
+  if (rt.of && !Array.isArray(rt.of) && def.of && !Array.isArray(def.of)) {
+    out.push([rt.of, def.of, { of: true }]);
+  }
+  if (Array.isArray(rt.items) && Array.isArray(def.items)) {
+    rt.items.forEach((child, i) => def.items![i] && out.push([child, def.items![i], { item: i }]));
   }
   return out;
 }
@@ -641,10 +697,13 @@ function stripFormTargets(
     const next = stripFormTargets(child, childNode, readable, depth + 1);
     if (next === childNode) continue;
     const base = (changed ?? out.type) as any;
-    if (typeof key === "string") {
-      changed = { ...base, props: { ...base.props, [key]: next } };
-    } else if (Array.isArray(base.of)) {
-      changed = { ...base, of: base.of.map((o: unknown, i: number) => (i === key ? next : o)) };
+    if ("prop" in key) {
+      changed = { ...base, props: { ...base.props, [key.prop]: next } };
+    } else if ("item" in key) {
+      changed = {
+        ...base,
+        items: base.items.map((o: unknown, i: number) => (i === key.item ? next : o)),
+      };
     } else {
       changed = { ...base, of: next };
     }

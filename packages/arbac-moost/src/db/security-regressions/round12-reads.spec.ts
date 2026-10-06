@@ -16,7 +16,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus
 
 import { ArbacResource } from "../../arbac.decorator";
 import { type ArbacDbScope, AsArbacDbController } from "../as-arbac-db-controller";
-import { R12Decorations, R12Dict, R12DictForm, R12Item } from "./fixtures/round12-fixtures.as";
+import {
+  R12Decorations,
+  R12Dict,
+  R12DictForm,
+  R12Item,
+  R12NestedForm,
+} from "./fixtures/round12-fixtures.as";
 import { readerRole, request } from "../../__testing__/http";
 import { boot } from "./relations-harness";
 import { createR12Space, type R12Space } from "./round12-harness";
@@ -45,6 +51,12 @@ class FormItemsController extends AsArbacDbController<typeof R12Item> {
   @Post("actions/tag")
   @DbAction("tag", { label: "tag" })
   tag(@DbActionID() _id: unknown, @InputForm(R12DictForm as never) _input: unknown) {
+    return { ok: true };
+  }
+
+  @Post("actions/nested")
+  @DbAction("nested", { label: "nested" })
+  nested(@DbActionID() _id: unknown, @InputForm(R12NestedForm as never) _input: unknown) {
     return { ok: true };
   }
 }
@@ -256,7 +268,7 @@ describe("/meta/form/:name applies the ref / ui.valueHelp overlay", () => {
         .id("reader")
         .use(
           allowTableRead("formitems"),
-          allowTableAction("formitems", ["tag"]),
+          allowTableAction("formitems", ["tag", "nested"]),
           ...(dicts === null
             ? []
             : [allowTableRead("dicts", dicts ? { scope: () => dicts } : undefined)]),
@@ -293,5 +305,22 @@ describe("/meta/form/:name applies the ref / ui.valueHelp overlay", () => {
     const r = await get("/form-items/meta/form/R12DictForm");
     expect(formBinding(r.body, "color")).toMatchObject({ field: "code" });
     expect(formBinding(r.body, "pinned")).toBeUndefined();
+  });
+
+  it("strips bindings nested in union and tuple members (was kept: only props/of walked)", async () => {
+    const pick = (form: any, path: Array<string | number>) =>
+      path.reduce((n: any, k) => (typeof k === "number" ? n.type.items[k] : n.type.props[k]), form)
+        .metadata?.["ui.valueHelp"];
+    await bootForm(undefined);
+    const open = await get("/form-items/meta/form/R12NestedForm");
+    expect(open.status, open.text).toBe(200);
+    expect(pick(open.body, ["either", 0, "pick"])).toBeDefined();
+    expect(pick(open.body, ["pair", 0, "pick"])).toBeDefined();
+    await bootForm(null);
+    const r = await get("/form-items/meta/form/R12NestedForm");
+    expect(r.status, r.text).toBe(200);
+    expect(pick(r.body, ["either", 0, "pick"])).toBeUndefined();
+    expect(pick(r.body, ["pair", 0, "pick"])).toBeUndefined();
+    expect(r.body.type.props.note).toBeDefined();
   });
 });
