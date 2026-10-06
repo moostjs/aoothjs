@@ -259,6 +259,8 @@ interface PruneLevel {
   /** The relation names of the level's table (nav props at its root). */
   relationNames: ReadonlySet<string>;
   refTargets: MetaRefTargets | undefined;
+  /** Inside a union / intersection / tuple branch (flat-map entries are merged across branches). */
+  inBranch?: boolean;
 }
 
 function pruneSerializedType(
@@ -306,7 +308,7 @@ function pruneSerializedType(
         continue;
       }
       const pruned = pruneSerializedType(prop, child);
-      props[name] = withVisibleTargets(pruned, path, vis, refTargets);
+      props[name] = withVisibleTargets(pruned, path, vis, refTargets, level.inBranch);
     }
     return { ...node, type: { ...def, props } };
   }
@@ -316,7 +318,10 @@ function pruneSerializedType(
   if (def.kind === "union" || def.kind === "intersection" || def.kind === "tuple") {
     return {
       ...node,
-      type: { ...def, items: def.items.map((item) => pruneSerializedType(item, level)) },
+      type: {
+        ...def,
+        items: def.items.map((item) => pruneSerializedType(item, { ...level, inBranch: true })),
+      },
     };
   }
   return node;
@@ -439,17 +444,25 @@ function withVisibleTargets(
   path: string,
   vis: MetaVisibility,
   refTargets: MetaRefTargets | undefined,
+  ambiguous = false,
 ): TSerializedAnnotatedTypeInner {
   const flatMap = vis.table?.flatMap;
   if (!flatMap || !refTargets) return node;
-  const entry = flatMap.get(path);
+  const hasBinding = node.metadata?.[UI_VALUE_HELP] !== undefined;
+  if (!node.ref && !hasBinding) return node;
+  // Fail closed: a union/intersection/tuple branch shares one merged flat
+  // entry with same-named props of its sibling branches, so the entry cannot
+  // be trusted to describe THIS node; and a flat-map miss describes nothing.
+  const entry = ambiguous ? undefined : flatMap.get(path);
   let out = node;
-  const ref = node.ref ? refTargetOf(entry) : undefined;
-  if (ref && !isTargetVisible(ref, vis, refTargets)) out = withoutRef(out);
-  const binding = node.metadata?.[UI_VALUE_HELP] !== undefined ? bindingOf(entry) : undefined;
-  // `null` = unresolvable target: fail closed.
-  if (binding === null || (binding && !isTargetVisible(binding, vis, refTargets))) {
-    out = withoutBinding(out);
+  if (node.ref) {
+    const ref = refTargetOf(entry);
+    if (!ref || !isTargetVisible(ref, vis, refTargets)) out = withoutRef(out);
+  }
+  if (hasBinding) {
+    const binding = bindingOf(entry);
+    // `undefined` (miss) / `null` (unresolvable target): strip.
+    if (!binding || !isTargetVisible(binding, vis, refTargets)) out = withoutBinding(out);
   }
   return out;
 }
@@ -650,13 +663,53 @@ function formChildren(
   return out;
 }
 
+/** Nested-relation walk bound — serialized nav bodies are finite, this only guards pathological input. */
+const MAX_NAV_DEPTH = 8;
+
+/** The form walk bound; past it every `ref` / binding is stripped (fail closed). */
+const MAX_FORM_DEPTH = MAX_NAV_DEPTH * 2;
+
+function serializedChildren(node: TSerializedAnnotatedTypeInner): TSerializedAnnotatedTypeInner[] {
+  const def = node.type as unknown as {
+    props?: Record<string, TSerializedAnnotatedTypeInner>;
+    of?: TSerializedAnnotatedTypeInner;
+    items?: TSerializedAnnotatedTypeInner[];
+  };
+  return [...Object.values(def.props ?? {}), ...(def.of ? [def.of] : []), ...(def.items ?? [])];
+}
+
+function serializedHasTarget(node: TSerializedAnnotatedTypeInner): boolean {
+  return (
+    !!node.ref ||
+    node.metadata?.[UI_VALUE_HELP] !== undefined ||
+    serializedChildren(node).some(serializedHasTarget)
+  );
+}
+
+function stripAllTargets(node: TSerializedAnnotatedTypeInner): TSerializedAnnotatedTypeInner {
+  if (!serializedHasTarget(node)) return node;
+  let out = node;
+  if (out.ref) out = withoutRef(out);
+  if (out.metadata?.[UI_VALUE_HELP] !== undefined) out = withoutBinding(out);
+  const def = out.type as any;
+  const next: any = { ...def };
+  if (def.props) {
+    next.props = Object.fromEntries(
+      Object.entries(def.props).map(([k, v]) => [k, stripAllTargets(v as never)]),
+    );
+  }
+  if (def.of) next.of = stripAllTargets(def.of);
+  if (def.items) next.items = def.items.map((i: never) => stripAllTargets(i));
+  return { ...out, type: next };
+}
+
 function collectFormTargets(
   runtime: TAtscriptAnnotatedType,
   node: TSerializedAnnotatedTypeInner,
   into: Set<object>,
   depth: number,
 ): void {
-  if (depth >= MAX_NAV_DEPTH * 2) return;
+  if (depth >= MAX_FORM_DEPTH) return;
   for (const t of formTargetsOf(runtime, node)) if (t) into.add(t.type);
   for (const [child, childNode] of formChildren(runtime, node)) {
     collectFormTargets(child, childNode, into, depth + 1);
@@ -668,7 +721,7 @@ function hasUnresolvedBinding(
   node: TSerializedAnnotatedTypeInner,
   depth: number,
 ): boolean {
-  if (depth >= MAX_NAV_DEPTH * 2) return false;
+  if (depth >= MAX_FORM_DEPTH) return serializedHasTarget(node); // past the cap everything is stripped
   if (formTargetsOf(runtime, node).includes(null)) return true;
   return formChildren(runtime, node).some(([c, n]) => hasUnresolvedBinding(c, n, depth + 1));
 }
@@ -679,7 +732,7 @@ function stripFormTargets(
   readable: ReadonlyMap<object, MetaVisibility | null>,
   depth: number,
 ): TSerializedAnnotatedTypeInner {
-  if (depth >= MAX_NAV_DEPTH * 2) return node;
+  if (depth >= MAX_FORM_DEPTH) return stripAllTargets(node);
   const visible = (t: Target | null | undefined) => {
     if (!t) return false;
     const targetVis = readable.get(t.type);
@@ -756,9 +809,6 @@ function buildMetaRelationNames(meta: TMetaResponse): RelationNameTree {
   }
   return tree;
 }
-
-/** Nested-relation walk bound — serialized nav bodies are finite, this only guards pathological input. */
-const MAX_NAV_DEPTH = 8;
 
 function collectNavNames(
   node: TSerializedAnnotatedTypeInner,

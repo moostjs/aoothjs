@@ -1,10 +1,16 @@
 import type { TMetaResponse } from "@atscript/db";
+import { deserializeAnnotatedType } from "@atscript/typescript/utils";
 import type { TSerializedAnnotatedType } from "@atscript/typescript/utils";
 import { isFieldAllowed } from "@aooth/arbac";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { ArbacDbScope } from "./as-arbac-db-controller";
-import { MAX_INLINED_NODES, collectMethodNames, pruneMetaByVisibility } from "./meta-projection";
+import {
+  MAX_INLINED_NODES,
+  applyArbacFormOverlay,
+  collectMethodNames,
+  pruneMetaByVisibility,
+} from "./meta-projection";
 import { isScopedFieldVisible } from "./request-scopes";
 import {
   buildScopeVisibility,
@@ -798,5 +804,180 @@ describe("pruneMetaByVisibility — inlined $ref copies", () => {
     const out = pruneMetaByVisibility(dagMeta(3), vis({ root: 1 }, new Set(["id"])));
     const json = JSON.stringify(out.type);
     expect(json).not.toContain('"$ref"');
+  });
+});
+
+// ── round trip: serialize → ARBAC overlay → real client deserializer ───────
+
+describe("pruneMetaByVisibility — client round trip (deserializeAnnotatedType)", () => {
+  const refTo = (id: string, extra: Partial<TSerializedAnnotatedType> = {}) => ({
+    $v: 2,
+    type: { kind: "$ref", id, own: true },
+    metadata: {},
+    ...extra,
+  });
+  const label = (l: string): TSerializedAnnotatedType => ({
+    ...leaf(),
+    metadata: { "meta.label": l },
+  });
+  const addr = (
+    extra: Record<string, TSerializedAnnotatedType> = {},
+  ): TSerializedAnnotatedType => ({
+    ...obj({ street: label("Street"), secret: label("Secret"), ...extra }),
+    id: "Addr",
+    metadata: { "meta.label": "Home" },
+  });
+  function metaOf(type: TSerializedAnnotatedType): TMetaResponse {
+    const m = usersMeta();
+    m.relations = [];
+    m.fields = { id: { sortable: true, filterable: true } };
+    m.type = type;
+    return m;
+  }
+  /** Project, then deserialize exactly as the client does (through JSON). */
+  function client(type: TSerializedAnnotatedType, v: MetaVisibility) {
+    const out = pruneMetaByVisibility(metaOf(type), v);
+    return deserializeAnnotatedType(JSON.parse(JSON.stringify(out.type))) as any;
+  }
+  const keys = (n: any) =>
+    [...n.type.props.keys()].toSorted((a: string, b: string) => a.localeCompare(b));
+
+  it("a named type used twice keeps each path's own visibility on the client", () => {
+    const t = obj({
+      id: leaf(),
+      home: addr(),
+      work: refTo("Addr", { metadata: { "meta.label": "Work" }, optional: true }),
+    });
+    // work.secret hidden, home.secret visible.
+    const a = client(t, vis({ "work.secret": 0 }, new Set(["id"])));
+    expect(keys(a.type.props.get("home"))).toEqual(["secret", "street"]);
+    expect(keys(a.type.props.get("work"))).toEqual(["street"]);
+    // home.secret hidden, work.secret visible (the reverse leak).
+    const b = client(t, vis({ "home.secret": 0 }, new Set(["id"])));
+    expect(keys(b.type.props.get("home"))).toEqual(["street"]);
+    expect(keys(b.type.props.get("work"))).toEqual(["secret", "street"]);
+  });
+
+  it("own-metadata label and optionality survive per path", () => {
+    const t = obj({
+      id: leaf(),
+      home: addr(),
+      work: refTo("Addr", { metadata: { "meta.label": "Work" }, optional: true }),
+    });
+    const c = client(t, vis({}, new Set(["id"])));
+    const home = c.type.props.get("home");
+    const work = c.type.props.get("work");
+    expect(home.metadata.get("meta.label")).toBe("Home");
+    expect(work.metadata.get("meta.label")).toBe("Work");
+    expect(home.optional).toBeFalsy();
+    expect(work.optional).toBe(true);
+  });
+
+  it("a recursive type on two paths resolves each back-ref to its own copy", () => {
+    const node: TSerializedAnnotatedType = {
+      ...obj({
+        name: label("Name"),
+        secret: label("Secret"),
+        children: { $v: 2, type: { kind: "array", of: refTo("Node"), tags: [] }, metadata: {} },
+      }),
+      id: "Node",
+    };
+    const t = obj({ id: leaf(), home: node, work: refTo("Node") });
+    const c = client(t, vis({ "work.secret": 0 }, new Set(["id"])));
+    const home = c.type.props.get("home");
+    const work = c.type.props.get("work");
+    expect(home.type.props.get("children").type.of.type).toBe(home.type);
+    expect(work.type.props.get("children").type.of.type).toBe(work.type);
+    expect(keys(home)).toEqual(["children", "name", "secret"]);
+    expect(keys(work)).toEqual(["children", "name"]);
+    // Walking down the recursion on `work` never reveals the hidden field.
+    const deep = work.type.props.get("children").type.of.type.props.get("children").type.of;
+    expect(deep.type.props.has("secret")).toBe(false);
+  });
+
+  it("a union-branch use is pruned by its own path", () => {
+    const union = {
+      $v: 2,
+      type: { kind: "union", items: [refTo("Addr"), leaf()], tags: [] },
+      metadata: {},
+    } as unknown as TSerializedAnnotatedType;
+    const t = obj({ id: leaf(), home: addr(), u: union });
+    const c = client(t, vis({ "u.secret": 0 }, new Set(["id"])));
+    expect(keys(c.type.props.get("home"))).toEqual(["secret", "street"]);
+    const branch = c.type.props.get("u").type.items[0];
+    expect(keys(branch)).toEqual(["street"]);
+  });
+});
+
+// ── fail-closed bindings ───────────────────────────────────────────────────
+
+describe("pruneMetaByVisibility — value-help binding resolution fails closed", () => {
+  const dictType = {};
+  const entry = {
+    metadata: {
+      get: (k: string) =>
+        k === "ui.valueHelp" ? { target: () => dictType, field: "code" } : undefined,
+    },
+  };
+  const bound = (): TSerializedAnnotatedType => ({
+    ...leaf(),
+    metadata: { "ui.valueHelp": { field: "code" } },
+  });
+  const run = (type: TSerializedAnnotatedType, flat: Map<string, unknown>) => {
+    const meta = { ...usersMeta(), type, relations: [] } as unknown as TMetaResponse;
+    const table = {
+      primaryKeys: ["id"],
+      preferredId: ["id"],
+      type: {},
+      flatMap: flat,
+    } as unknown as VisibilityTableSource;
+    const v = { ...buildScopeVisibility([{}], table), table };
+    return pruneMetaByVisibility(meta, v, new Map([[dictType, vis({})]])).type as any;
+  };
+
+  it("keeps a resolvable binding at an object path (control)", () => {
+    const out = run(obj({ id: leaf(), color: bound() }), new Map([["color", entry]]));
+    expect(out.type.props.color.metadata["ui.valueHelp"]).toBeDefined();
+  });
+
+  it("a flat-map miss strips the binding (was kept)", () => {
+    const out = run(obj({ id: leaf(), color: bound() }), new Map());
+    expect(out.type.props.color).toBeDefined();
+    expect(out.type.props.color.metadata["ui.valueHelp"]).toBeUndefined();
+  });
+
+  it("a binding inside a union branch is ambiguous and stripped", () => {
+    const union = {
+      $v: 2,
+      type: { kind: "union", items: [obj({ pick: bound() }), obj({ other: leaf() })], tags: [] },
+      metadata: {},
+    } as unknown as TSerializedAnnotatedType;
+    const out = run(obj({ id: leaf(), u: union }), new Map([["u.pick", entry]]));
+    expect(out.type.props.u.type.items[0].type.props.pick.metadata["ui.valueHelp"]).toBeUndefined();
+  });
+});
+
+describe("applyArbacFormOverlay — depth cap fails closed", () => {
+  it("strips a binding sitting beyond the walk bound (was kept)", async () => {
+    const depth = 20;
+    const binding = { target: () => ({}), field: "code" };
+    const rt = (child?: any, bind = false): any => ({
+      type: child
+        ? { kind: "object", props: new Map([["n", child]]) }
+        : { kind: "", designType: "string" },
+      metadata: { get: (k: string) => (bind && k === "ui.valueHelp" ? binding : undefined) },
+    });
+    const ser = (child?: TSerializedAnnotatedType, bind = false): TSerializedAnnotatedType =>
+      child
+        ? obj({ n: child })
+        : { ...leaf(), metadata: bind ? { "ui.valueHelp": { field: "code" } } : {} };
+    let r = rt(undefined, true);
+    let s = ser(undefined, true);
+    for (let i = 0; i < depth; i++) {
+      r = rt(r);
+      s = ser(s);
+    }
+    const out = JSON.stringify(await applyArbacFormOverlay(s, r));
+    expect(out).not.toContain("ui.valueHelp");
   });
 });
