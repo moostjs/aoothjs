@@ -1,12 +1,12 @@
-import { AsDbReadableController, getDbEndpoint } from "@atscript/moost-db";
+import { AsDbReadableController, getControllerFormType, getDbEndpoint } from "@atscript/moost-db";
 import type { TDbActionScopeContext, TDbControlsType, TDbRequestContext } from "@atscript/moost-db";
-import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
+import type { TAtscriptAnnotatedType, TSerializedAnnotatedType } from "@atscript/typescript/utils";
 import { Inherit } from "moost";
 
 import type { FilterExpr, TMetaResponse, UniqueryControls } from "@atscript/db";
 
 import { ARBAC_DELEGATED_AUTH } from "../arbac.mate";
-import { applyArbacMetaOverlay } from "./meta-projection";
+import { applyArbacFormOverlay, applyArbacMetaOverlay } from "./meta-projection";
 import { registerArbacDbTarget } from "./relation-policy";
 import {
   arbacActionRowScope,
@@ -83,6 +83,16 @@ export class AsArbacDbReadableController<
   /** Same contract as {@link AsArbacDbController.applyMetaOverlay}. */
   protected applyMetaOverlay(meta: TMetaResponse): Promise<TMetaResponse> {
     return applyArbacMetaOverlay(meta, this.readable);
+  }
+
+  /**
+   * `GET /meta/form/:name` under the `/meta` overlay's pointer rule: a form
+   * prop's `ref` / `ui.valueHelp` binding to a table the caller cannot read
+   * (or whose named fields they cannot see) is stripped.
+   */
+  async metaForm(name: string): Promise<TSerializedAnnotatedType> {
+    const schema = await super.metaForm(name);
+    return applyArbacFormOverlay(schema, getControllerFormType(this.constructor, name));
   }
 
   /** Same contract as {@link AsArbacDbController.authorizeForm}. */

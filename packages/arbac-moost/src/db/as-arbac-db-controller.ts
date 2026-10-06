@@ -8,12 +8,13 @@ import type {
   TMetaResponse,
   UniqueryControls,
 } from "@atscript/db";
-import { AsDbController, getDbEndpoint } from "@atscript/moost-db";
+import { AsDbController, getControllerFormType, getDbEndpoint } from "@atscript/moost-db";
 import type { TDbActionScopeContext, TDbControlsType, TDbRequestContext } from "@atscript/moost-db";
 import type {
   NavPropsOf,
   TAtscriptAnnotatedType,
   TAtscriptDataType,
+  TSerializedAnnotatedType,
 } from "@atscript/typescript/utils";
 import { HttpError } from "@moostjs/event-http";
 import { groupByFields } from "@uniqu/core";
@@ -45,7 +46,7 @@ import {
   applyArbacProjection,
   applyArbacRelationScopes,
 } from "./shared-read-helpers";
-import { applyArbacMetaOverlay } from "./meta-projection";
+import { applyArbacFormOverlay, applyArbacMetaOverlay } from "./meta-projection";
 import { applyAllowedFieldsAndSet } from "./write-fields";
 import {
   assertNestedWritesAllowed,
@@ -309,6 +310,16 @@ export class AsArbacDbController<
 
   protected applyMetaOverlay(meta: TMetaResponse): Promise<TMetaResponse> {
     return applyArbacMetaOverlay(meta, this.readable);
+  }
+
+  /**
+   * `GET /meta/form/:name` under the `/meta` overlay's pointer rule: a form
+   * prop's `ref` / `ui.valueHelp` binding to a table the caller cannot read
+   * (or whose named fields they cannot see) is stripped.
+   */
+  async metaForm(name: string): Promise<TSerializedAnnotatedType> {
+    const schema = await super.metaForm(name);
+    return applyArbacFormOverlay(schema, getControllerFormType(this.constructor, name));
   }
 
   /**

@@ -556,3 +556,40 @@ describe("buildScopeVisibility — undeclared relations (inherit-target)", () =>
     expect(isMetaFieldVisible("owner.salary", declared)).toBe(false);
   });
 });
+
+describe("pruneMetaByVisibility — an unresolvable ui.valueHelp binding fails closed", () => {
+  it("a binding whose target throws on resolution is stripped (was kept)", () => {
+    const entry = {
+      metadata: {
+        get: (key: string) =>
+          key === "ui.valueHelp"
+            ? {
+                target: () => {
+                  throw new Error("unresolved");
+                },
+                field: "code",
+              }
+            : undefined,
+      },
+    };
+    const bound = leaf();
+    bound.metadata = { "ui.valueHelp": { field: "code" } };
+    const meta = {
+      ...usersMeta(),
+      type: obj({ id: leaf(), color: bound }),
+      relations: [],
+    } as unknown as TMetaResponse;
+    const table = {
+      primaryKeys: ["id"],
+      preferredId: ["id"],
+      type: {},
+      flatMap: new Map([["color", entry]]),
+    } as unknown as VisibilityTableSource;
+    const v = { ...buildScopeVisibility([{}], table), table };
+    const out = pruneMetaByVisibility(meta, v, new Map());
+    const props = (out.type.type as unknown as { props: Record<string, TSerializedAnnotatedType> })
+      .props;
+    expect(props.color).toBeDefined();
+    expect(props.color.metadata["ui.valueHelp"]).toBeUndefined();
+  });
+});

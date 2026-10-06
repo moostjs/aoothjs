@@ -228,9 +228,10 @@ const bindingCache = new WeakMap<object, Target | null>();
 /**
  * The runtime `ui.valueHelp` binding of a flat-map entry — the dictionary and
  * the fields it names there: the committed `field` plus every field its
- * static filter reads (`undefined` when absent or unresolvable).
+ * static filter reads. `undefined` = no binding; `null` = a binding that
+ * cannot be resolved (callers fail closed and strip it).
  */
-function bindingOf(entry: unknown): Target | undefined {
+function bindingOf(entry: unknown): Target | null | undefined {
   const raw = (entry as TAtscriptAnnotatedType | undefined)?.metadata?.get?.(UI_VALUE_HELP) as
     | { target?: unknown; field?: unknown; filter?: AtscriptQueryNode }
     | undefined;
@@ -240,7 +241,7 @@ function bindingOf(entry: unknown): Target | undefined {
     binding = resolveBinding(raw);
     bindingCache.set(entry as object, binding);
   }
-  return binding ?? undefined;
+  return binding;
 }
 
 function resolveBinding(raw: {
@@ -269,7 +270,7 @@ function resolveBinding(raw: {
 function targetsOf(entry: unknown): Target[] {
   const ref = refTargetOf(entry);
   const binding = bindingOf(entry);
-  return [ref, binding].filter((t): t is Target => t !== undefined);
+  return [ref, binding].filter((t): t is Target => !!t);
 }
 
 /** The field a runtime prop's `ref` finally points at (the same terminal `/meta` serializes). */
@@ -315,7 +316,10 @@ function withVisibleTargets(
   const ref = node.ref ? refTargetOf(entry) : undefined;
   if (ref && !isTargetVisible(ref, vis, refTargets)) out = withoutRef(out);
   const binding = node.metadata?.[UI_VALUE_HELP] !== undefined ? bindingOf(entry) : undefined;
-  if (binding && !isTargetVisible(binding, vis, refTargets)) out = withoutBinding(out);
+  // `null` = unresolvable target: fail closed.
+  if (binding === null || (binding && !isTargetVisible(binding, vis, refTargets))) {
+    out = withoutBinding(out);
+  }
   return out;
 }
 
@@ -435,6 +439,133 @@ export async function applyArbacMetaOverlay(
     pruneMetaByVisibility(overlaid, { ...vis, writable, nestedWrites }, refTargets),
     groupBy,
   );
+}
+
+/**
+ * The `/meta/form/:name` overlay: a form is a plain annotated type (no table),
+ * so only its cross-table pointers are projected. Every prop's `ref` and
+ * `ui.valueHelp` binding is stripped when the caller cannot read the target
+ * table, or cannot see a field the pointer names there (the same rule as the
+ * `/meta` type); an unresolvable binding is stripped too. Never mutates
+ * `serialized` (the base controller caches it); returns it itself when
+ * nothing is stripped.
+ *
+ * @param serialized - the form's serialized schema as moost-db served it
+ * @param formType - the runtime form type the schema was serialized from
+ */
+export async function applyArbacFormOverlay(
+  serialized: TSerializedAnnotatedType,
+  formType: TAtscriptAnnotatedType | undefined,
+): Promise<TSerializedAnnotatedType> {
+  if (!formType) return serialized;
+  const types = new Set<object>();
+  collectFormTargets(formType, serialized, types, 0);
+  if (types.size === 0 && !hasUnresolvedBinding(formType, serialized, 0)) return serialized;
+  const readable = new Map<object, MetaVisibility | null>();
+  await Promise.all(
+    [...types].map(async (type) => {
+      const read = await evaluateTypeRead(type);
+      readable.set(type, read ? buildScopeVisibility(read.scopes, read.table) : null);
+    }),
+  );
+  return stripFormTargets(formType, serialized, readable, 0) as TSerializedAnnotatedType;
+}
+
+const formTargetsOf = (entry: TAtscriptAnnotatedType, node: TSerializedAnnotatedTypeInner) => {
+  const out: Array<Target | null> = [];
+  if (node.ref) {
+    const ref = refTargetOf(entry);
+    out.push(ref ?? null);
+  }
+  if (node.metadata?.[UI_VALUE_HELP] !== undefined) {
+    const binding = bindingOf(entry);
+    if (binding !== undefined) out.push(binding);
+  }
+  return out;
+};
+
+function formChildren(
+  runtime: TAtscriptAnnotatedType,
+  node: TSerializedAnnotatedTypeInner,
+): Array<[TAtscriptAnnotatedType, TSerializedAnnotatedTypeInner, string | number]> {
+  const rt = runtime.type as {
+    kind: string;
+    props?: Map<string, TAtscriptAnnotatedType>;
+    of?: TAtscriptAnnotatedType | TAtscriptAnnotatedType[];
+  };
+  const def = node.type as {
+    props?: Record<string, TSerializedAnnotatedTypeInner>;
+    of?: TSerializedAnnotatedTypeInner | TSerializedAnnotatedTypeInner[];
+  };
+  const out: Array<[TAtscriptAnnotatedType, TSerializedAnnotatedTypeInner, string | number]> = [];
+  if (rt.kind === "object" && rt.props && def.props) {
+    for (const [name, child] of rt.props) {
+      if (def.props[name]) out.push([child, def.props[name], name]);
+    }
+  } else if (Array.isArray(rt.of) && Array.isArray(def.of)) {
+    rt.of.forEach((child, i) => def.of![i as never] && out.push([child, def.of![i as never], i]));
+  } else if (rt.of && !Array.isArray(rt.of) && def.of && !Array.isArray(def.of)) {
+    out.push([rt.of, def.of, 0]);
+  }
+  return out;
+}
+
+function collectFormTargets(
+  runtime: TAtscriptAnnotatedType,
+  node: TSerializedAnnotatedTypeInner,
+  into: Set<object>,
+  depth: number,
+): void {
+  if (depth >= MAX_NAV_DEPTH * 2) return;
+  for (const t of formTargetsOf(runtime, node)) if (t) into.add(t.type);
+  for (const [child, childNode] of formChildren(runtime, node)) {
+    collectFormTargets(child, childNode, into, depth + 1);
+  }
+}
+
+function hasUnresolvedBinding(
+  runtime: TAtscriptAnnotatedType,
+  node: TSerializedAnnotatedTypeInner,
+  depth: number,
+): boolean {
+  if (depth >= MAX_NAV_DEPTH * 2) return false;
+  if (formTargetsOf(runtime, node).includes(null)) return true;
+  return formChildren(runtime, node).some(([c, n]) => hasUnresolvedBinding(c, n, depth + 1));
+}
+
+function stripFormTargets(
+  runtime: TAtscriptAnnotatedType,
+  node: TSerializedAnnotatedTypeInner,
+  readable: ReadonlyMap<object, MetaVisibility | null>,
+  depth: number,
+): TSerializedAnnotatedTypeInner {
+  if (depth >= MAX_NAV_DEPTH * 2) return node;
+  const visible = (t: Target | null | undefined) => {
+    if (!t) return false;
+    const targetVis = readable.get(t.type);
+    return !!targetVis && t.fields.every((f) => isMetaFieldVisible(f, targetVis));
+  };
+  let out = node;
+  if (node.ref && !visible(refTargetOf(runtime))) out = withoutRef(out);
+  if (node.metadata?.[UI_VALUE_HELP] !== undefined && !visible(bindingOf(runtime))) {
+    out = withoutBinding(out);
+  }
+  // Rebuild only the children that changed.
+  const children = formChildren(runtime, node);
+  let changed: TSerializedAnnotatedTypeInner["type"] | undefined;
+  for (const [child, childNode, key] of children) {
+    const next = stripFormTargets(child, childNode, readable, depth + 1);
+    if (next === childNode) continue;
+    const base = (changed ?? out.type) as any;
+    if (typeof key === "string") {
+      changed = { ...base, props: { ...base.props, [key]: next } };
+    } else if (Array.isArray(base.of)) {
+      changed = { ...base, of: base.of.map((o: unknown, i: number) => (i === key ? next : o)) };
+    } else {
+      changed = { ...base, of: next };
+    }
+  }
+  return changed ? { ...out, type: changed } : out;
 }
 
 /**

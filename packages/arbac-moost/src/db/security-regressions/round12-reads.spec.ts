@@ -1,14 +1,22 @@
 // Read-side features of atscript-db 0.1.148 under ARBAC: `/meta.fields[*].groupable`
 // and `ui.valueHelp` dictionary bindings in the `/meta` overlay, `@DbDecorations`
 // columns, aggregate expressions / first-last / `$rowOrder`.
-import { DbDecorations, TableController } from "@atscript/moost-db";
+import { allowTableAction, allowTableRead, defineRole } from "@aooth/arbac";
+import {
+  DbAction,
+  DbActionID,
+  DbDecorations,
+  InputForm,
+  TableController,
+} from "@atscript/moost-db";
 import type { TDbDecorateContext } from "@atscript/moost-db";
 import type { MoostHttp } from "@moostjs/event-http";
+import { Post } from "@moostjs/event-http";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { ArbacResource } from "../../arbac.decorator";
 import { type ArbacDbScope, AsArbacDbController } from "../as-arbac-db-controller";
-import { R12Decorations, R12Dict, R12Item } from "./fixtures/round12-fixtures.as";
+import { R12Decorations, R12Dict, R12DictForm, R12Item } from "./fixtures/round12-fixtures.as";
 import { readerRole, request } from "../../__testing__/http";
 import { boot } from "./relations-harness";
 import { createR12Space, type R12Space } from "./round12-harness";
@@ -31,6 +39,16 @@ class DecoratedController extends AsArbacDbController<typeof R12Item> {
   }
 }
 
+@TableController(R12Item as never, "form-items")
+@ArbacResource("formitems")
+class FormItemsController extends AsArbacDbController<typeof R12Item> {
+  @Post("actions/tag")
+  @DbAction("tag", { label: "tag" })
+  tag(@DbActionID() _id: unknown, @InputForm(R12DictForm as never) _input: unknown) {
+    return { ok: true };
+  }
+}
+
 type Grants = Record<string, ArbacDbScope | undefined>;
 let space: R12Space;
 let http: MoostHttp;
@@ -38,7 +56,7 @@ let http: MoostHttp;
 async function bootGrants(grants: Grants) {
   ({ http } = await boot(
     [readerRole("reader", grants)],
-    [DictsController, ItemsController, DecoratedController],
+    [DictsController, ItemsController, DecoratedController, FormItemsController],
     ["reader"],
   ));
 }
@@ -225,5 +243,55 @@ describe("aggregate expressions, first / last and $rowOrder obey the field gates
     expect(r.text).toContain("$rowOrder");
     // Other aggregates stay open.
     expect((await get("/items/query?$select=status,count(*):n&$groupBy=status")).status).toBe(200);
+  });
+});
+
+describe("/meta/form/:name applies the ref / ui.valueHelp overlay", () => {
+  const formBinding = (form: any, prop: string) =>
+    form.type.props[prop]?.metadata?.["ui.valueHelp"];
+
+  async function bootForm(dicts: ArbacDbScope | undefined | null) {
+    const roles = [
+      defineRole<object, ArbacDbScope>()
+        .id("reader")
+        .use(
+          allowTableRead("formitems"),
+          allowTableAction("formitems", ["tag"]),
+          ...(dicts === null
+            ? []
+            : [allowTableRead("dicts", dicts ? { scope: () => dicts } : undefined)]),
+        )
+        .build(),
+    ];
+    ({ http } = await boot(
+      roles,
+      [DictsController, ItemsController, DecoratedController, FormItemsController],
+      ["reader"],
+    ));
+  }
+
+  it("a readable dictionary keeps the form's bindings and ref", async () => {
+    await bootForm(undefined);
+    const r = await get("/form-items/meta/form/R12DictForm");
+    expect(r.status, r.text).toBe(200);
+    expect(formBinding(r.body, "color")).toMatchObject({ field: "code" });
+    expect(formBinding(r.body, "pinned")).toBeDefined();
+    expect(r.body.type.props.dictId.ref).toBeDefined();
+  });
+
+  it("an unreadable dictionary strips the form's bindings and ref", async () => {
+    await bootForm(null);
+    const r = await get("/form-items/meta/form/R12DictForm");
+    expect(r.status, r.text).toBe(200);
+    expect(r.body.type.props.color).toBeDefined();
+    for (const prop of ["color", "pinned"]) expect(formBinding(r.body, prop), prop).toBeUndefined();
+    expect(r.body.type.props.dictId.ref).toBeUndefined();
+  });
+
+  it("a binding naming a field hidden on the dictionary is stripped", async () => {
+    await bootForm({ projection: { secretCode: 0 } });
+    const r = await get("/form-items/meta/form/R12DictForm");
+    expect(formBinding(r.body, "color")).toMatchObject({ field: "code" });
+    expect(formBinding(r.body, "pinned")).toBeUndefined();
   });
 });
