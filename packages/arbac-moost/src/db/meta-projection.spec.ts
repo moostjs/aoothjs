@@ -810,7 +810,10 @@ describe("pruneMetaByVisibility — inlined $ref copies", () => {
 // ── round trip: serialize → ARBAC overlay → real client deserializer ───────
 
 describe("pruneMetaByVisibility — client round trip (deserializeAnnotatedType)", () => {
-  const refTo = (id: string, extra: Partial<TSerializedAnnotatedType> = {}) => ({
+  const refTo = (
+    id: string,
+    extra: Partial<TSerializedAnnotatedType> = {},
+  ): TSerializedAnnotatedType => ({
     $v: 2,
     type: { kind: "$ref", id, own: true },
     metadata: {},

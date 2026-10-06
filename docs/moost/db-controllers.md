@@ -226,6 +226,14 @@ The action gate asks `actionRowScope` before it loads any row. A grant on the ac
 - **`fields[*].groupable`** follows `controls.$groupBy`, the same rule that gates the query with a 403. `$groupBy: false` drops the flag from every field. A whitelist keeps it only on the listed paths. The gate also governs distinct-value pickers, because they are `$groupBy` reads.
 - **`ui.valueHelp` bindings** (a dictionary binding on a field of the serialized `type`) are dropped when the caller cannot read the dictionary, or when the field the binding commits, or any field its filter names, is hidden on the dictionary. This is the rule `ref`s already follow. A readable binding is served unchanged.
 
+#### The overlay fails closed
+
+The `/meta` and form overlay strips a `ref` or `ui.valueHelp` binding whenever it cannot prove the binding safe:
+
+- A binding inside a union, intersection or tuple branch is always stripped. The flat field map merges same-named props across branches, so no per-branch judgement is possible.
+- A binding whose target is unresolvable or unknown is stripped.
+- A form tree deeper than the cap is stripped below the cap.
+
 #### Aggregate expressions, `first` / `last` and `$rowOrder`
 
 Every field an expression reads (`sum(price*qty)`), every `first(field)` / `last(field)` field and every `$rowOrder` key goes through the same field gates as aggregates and `$sort`. A field the scope hides answers `400 Unknown field "x"`, and a group-level expression cannot reach a hidden column through an alias. `$rowOrder` is also a control: `controls: { $rowOrder: false }` answers 403 when a query uses it (whitelists: see the [`ControlGate` table](#control-gates)).
