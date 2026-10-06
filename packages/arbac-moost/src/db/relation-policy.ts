@@ -48,11 +48,30 @@ const registry = new WeakMap<object, WeakMap<object, Map<Function, object>>>();
  */
 export function registerArbacDbTarget(controller: object): true {
   const c = controller as { readable?: { type?: object }; app?: object };
-  const target = c.readable?.type ?? c.readable;
+  const target = valueHelpTargets.get(controller)?.source.type ?? c.readable?.type ?? c.readable;
   if (!target) return true;
   const perApp = getOrCreate(registry, c.app ?? NO_APP, () => new WeakMap());
   getOrCreate(perApp, target, () => new Map()).set(getConstructor(controller), controller);
   return true;
+}
+
+/** Value-help controllers have no `readable`: their visibility source and read handler method. */
+const valueHelpTargets = new WeakMap<object, { source: VisibilityTableSource; method: string }>();
+
+/**
+ * Register an ARBAC value-help controller as an owner of its bound type's
+ * ARBAC resource, so a `ui.valueHelp` binding (or `ref`) from another
+ * controller's `/meta` is kept for a caller who can read the dictionary
+ * through it (its `runQuery` grant, evaluated against `source`).
+ *
+ * @returns `true` (so it can initialize a field)
+ */
+export function registerArbacValueHelpTarget(
+  controller: object,
+  source: VisibilityTableSource,
+): true {
+  valueHelpTargets.set(controller, { source, method: "runQuery" });
+  return registerArbacDbTarget(controller);
 }
 
 function registeredControllers(target: object): object[] {
@@ -133,10 +152,15 @@ export async function evaluateTypeRead(
 ): Promise<{ scopes: ArbacDbScope[]; table: VisibilityTableSource | undefined } | null> {
   const controllers = registeredControllers(type) as Array<{ readable?: VisibilityTableSource }>;
   if (controllers.length === 0) return null;
+  const tableOf = (c: object) =>
+    valueHelpTargets.get(c)?.source ?? (c as { readable?: VisibilityTableSource }).readable;
   const scopes = await evaluateHandlers(
-    controllers.map((c) => ({ ...resolveHandlerArbacIds(c, "query"), table: c.readable })),
+    controllers.map((c) => ({
+      ...resolveHandlerArbacIds(c, valueHelpTargets.get(c)?.method ?? "query"),
+      table: tableOf(c),
+    })),
   );
-  return scopes ? { scopes, table: controllers[0].readable } : null;
+  return scopes ? { scopes, table: tableOf(controllers[0]) } : null;
 }
 
 // ── Resolution ──────────────────────────────────────────────────────────────

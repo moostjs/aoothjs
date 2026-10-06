@@ -983,4 +983,43 @@ describe("applyArbacFormOverlay — depth cap fails closed", () => {
     const out = JSON.stringify(await applyArbacFormOverlay(s, r));
     expect(out).not.toContain("ui.valueHelp");
   });
+
+  it("strips a wildcard prop's binding sitting beyond the walk bound", async () => {
+    const binding = { target: () => ({}), field: "code" };
+    const get = (bind: boolean) => (k: string) =>
+      bind && k === "ui.valueHelp" ? binding : undefined;
+    const leafRt = {
+      type: { kind: "", designType: "string" },
+      metadata: { get: get(true) },
+    };
+    const patternRt = (): any => ({
+      type: {
+        kind: "object",
+        props: new Map(),
+        propsPatterns: [{ pattern: /./, def: leafRt }],
+      },
+      metadata: { get: get(false) },
+    });
+    const patternSer = (): any => ({
+      ...obj({}),
+      type: {
+        kind: "object",
+        props: {},
+        propsPatterns: [
+          {
+            pattern: { source: ".", flags: "" },
+            def: { ...leaf(), metadata: { "ui.valueHelp": { field: "code" } } },
+          },
+        ],
+        tags: [],
+      },
+    });
+    let r: any = patternRt();
+    let s: any = patternSer();
+    for (let i = 0; i < 20; i++) {
+      r = { type: { kind: "object", props: new Map([["n", r]]) }, metadata: { get: get(false) } };
+      s = obj({ n: s });
+    }
+    expect(JSON.stringify(await applyArbacFormOverlay(s, r))).not.toContain("ui.valueHelp");
+  });
 });

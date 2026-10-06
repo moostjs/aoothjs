@@ -123,12 +123,18 @@ export function pruneMetaByVisibility(
  * itself retained). Never mutates the (cached) input.
  */
 function inlineTypeRefs<T extends TSerializedAnnotatedTypeInner>(root: T): T {
-  const bodies = new Map<string, TSerializedAnnotatedTypeInner>();
-  collectBodies(root, bodies);
-  if (bodies.size === 0) return root;
-  const ctx: InlineCtx = { bodies, budget: MAX_INLINED_NODES, n: 0 };
-  return (inlineNode(root, ctx, new Map(), false) ?? root) as T;
+  return getOrCreate(inlinedCache, root, () => {
+    const bodies = new Map<string, TSerializedAnnotatedTypeInner>();
+    collectBodies(root, bodies);
+    if (bodies.size === 0) return root;
+    const ctx: InlineCtx = { bodies, budget: MAX_INLINED_NODES, n: 0 };
+    return inlineNode(root, ctx, new Map(), false) ?? root;
+  }) as T;
 }
+
+// Per static envelope type (identity-stable): the relation names / ref targets
+// and the pruning must all walk the SAME inlined tree.
+const inlinedCache = new WeakMap<object, TSerializedAnnotatedTypeInner>();
 
 type TypeNode = TSerializedAnnotatedTypeInner;
 
@@ -299,18 +305,36 @@ function pruneSerializedType(
         if (isPathWritable(path, vis)) {
           // Keep the whole subtree (clients need the full shape to WRITE it),
           // stamped write-only so forms render set-only inputs.
-          props[name] = stampWriteOnly(prop);
+          props[name] = withVisibleTargets(
+            stampWriteOnly(prop),
+            path,
+            vis,
+            refTargets,
+            level.inBranch,
+          );
         } else if (hasWritableDescendant(path, vis.writable)) {
           // A hidden parent of writable leaves: keep only those (the walk
           // below drops every other hidden child), stamped write-only.
-          props[name] = stampWriteOnly(pruneSerializedType(prop, child));
+          props[name] = withVisibleTargets(
+            stampWriteOnly(pruneSerializedType(prop, child)),
+            path,
+            vis,
+            refTargets,
+            level.inBranch,
+          );
         }
         continue;
       }
       const pruned = pruneSerializedType(prop, child);
       props[name] = withVisibleTargets(pruned, path, vis, refTargets, level.inBranch);
     }
-    return { ...node, type: { ...def, props } };
+    const pruned = { ...node, type: { ...def, props } };
+    // Wildcard props of a table-level object (a nested object's patterns are gated with its prop).
+    if (basePath !== "" || !def.propsPatterns?.length || !vis.table?.flatMap || !refTargets) {
+      return pruned;
+    }
+    const runtime = level.inBranch ? undefined : (vis.table?.type as TAtscriptAnnotatedType);
+    return gateChildren(pruned, runtime, vis, refTargets, false);
   }
   if (def.kind === "array") {
     return { ...node, type: { ...def, of: pruneSerializedType(def.of, level) } };
@@ -423,21 +447,128 @@ function refTargetOf(entry: unknown): Target | undefined {
   }
 }
 
+/** A table-served type: any `db.*` annotation (`db.table`, `db.view`, `db.http.path`, …). */
+function isDbServed(type: object): boolean {
+  const meta = (type as TAtscriptAnnotatedType).metadata as
+    | ReadonlyMap<string, unknown>
+    | undefined;
+  if (!meta || typeof meta.keys !== "function") return false;
+  for (const key of meta.keys()) if (key.startsWith("db.")) return true;
+  return false;
+}
+
 /**
- * A target survives when the caller can see every field it names: a
- * self-target against this level's visibility, a foreign one against the
- * caller's visibility on that table (`refTargets`; unreadable → hidden).
+ * A target survives when the caller can read its table AND see every field it
+ * names: a self-target against this level's visibility, a foreign one against
+ * the caller's visibility on that table (`refTargets`; unreadable → hidden). A
+ * target naming no field (a prop typed as a table interface, `@db.json snap?:
+ * Dict`) still needs the table readable, unless the type is not table-served.
  */
 function isTargetVisible(target: Target, vis: MetaVisibility, refTargets: MetaRefTargets): boolean {
-  if (target.fields.length === 0) return true;
+  if (target.fields.length === 0 && !isDbServed(target.type)) return true;
   const targetVis = target.type === vis.table?.type ? vis : refTargets.get(target.type);
   return !!targetVis && target.fields.every((f) => isMetaFieldVisible(f, targetVis));
 }
 
+/** The binding on the TYPE a `ref` points at (an alias such as `@ui.valueHelp X type Code = string`). */
+function refTypeBindingOf(entry: unknown): Target | null | undefined {
+  try {
+    const type = (entry as TAtscriptAnnotatedType | undefined)?.ref?.type?.();
+    return type ? bindingOf(type) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Both targets of one node: stripped = hidden. The serialized `ref.type` carries its own metadata. */
+function gateOwn(
+  node: TSerializedAnnotatedTypeInner,
+  entry: unknown,
+  visible: (target: Target) => boolean,
+): TSerializedAnnotatedTypeInner {
+  let out = node;
+  if (out.ref) {
+    const ref = refTargetOf(entry);
+    if (!ref || !visible(ref)) out = withoutRef(out);
+  }
+  if (out.metadata?.[UI_VALUE_HELP] !== undefined) {
+    const binding = bindingOf(entry);
+    // `undefined` (miss) / `null` (unresolvable target): strip.
+    if (!binding || !visible(binding)) out = withoutBinding(out);
+  }
+  const refMeta = out.ref?.type?.metadata;
+  if (out.ref && refMeta?.[UI_VALUE_HELP] !== undefined) {
+    const binding = refTypeBindingOf(entry);
+    if (!binding || !visible(binding)) {
+      const { [UI_VALUE_HELP]: _b, ...metadata } = refMeta;
+      out = { ...out, ref: { ...out.ref, type: { ...out.ref.type, metadata } } };
+    }
+  }
+  return out;
+}
+
 /**
- * Strip a serialized `ref` / `ui.valueHelp` binding at `path` whose target is
+ * Gate the children of `node` a prop walk does not reach by flat path: array
+ * elements, union / intersection / tuple members and wildcard props — each
+ * paired with its runtime counterpart under `runtime` (a missing one fails
+ * closed). `deep` also descends object props (own-field subtrees only; a nav
+ * prop belongs to its own level).
+ */
+function gateChildren(
+  node: TSerializedAnnotatedTypeInner,
+  runtime: TAtscriptAnnotatedType | undefined,
+  vis: MetaVisibility,
+  refTargets: MetaRefTargets,
+  deep: boolean,
+): TSerializedAnnotatedTypeInner {
+  const visible = (t: Target) => isTargetVisible(t, vis, refTargets);
+  const gate = (child: TSerializedAnnotatedTypeInner, rt: TAtscriptAnnotatedType | undefined) =>
+    gateChildren(gateOwn(child, rt, visible), rt, vis, refTargets, true);
+  const rtType = runtime?.type as
+    | {
+        props?: Map<string, TAtscriptAnnotatedType>;
+        propsPatterns?: Array<{ pattern: RegExp; def: TAtscriptAnnotatedType }>;
+        of?: TAtscriptAnnotatedType;
+        items?: TAtscriptAnnotatedType[];
+      }
+    | undefined;
+  const def = node.type as any;
+  if (def.kind === "object") {
+    let next = def;
+    if (deep && def.props) {
+      const props: Record<string, TSerializedAnnotatedTypeInner> = {};
+      for (const [name, prop] of Object.entries(def.props as Record<string, any>)) {
+        props[name] = isNavProp(prop) ? prop : gate(prop, rtType?.props?.get?.(name));
+      }
+      next = { ...next, props };
+    }
+    if (def.propsPatterns?.length) {
+      const patterns = def.propsPatterns.map((p: any) => {
+        const rt = rtType?.propsPatterns?.find(
+          (r) => r.pattern?.source === p.pattern?.source && r.pattern?.flags === p.pattern?.flags,
+        )?.def;
+        return { ...p, def: gate(p.def, rt) };
+      });
+      next = { ...next, propsPatterns: patterns };
+    }
+    return next === def ? node : { ...node, type: next };
+  }
+  if (def.kind === "array") {
+    return { ...node, type: { ...def, of: gate(def.of, rtType?.of) } };
+  }
+  if (Array.isArray(def.items)) {
+    const items = def.items.map((item: any, i: number) => gate(item, rtType?.items?.[i]));
+    return { ...node, type: { ...def, items } };
+  }
+  return node;
+}
+
+/**
+ * Strip a serialized `ref` / `ui.valueHelp` binding at `path` — on the prop
+ * itself, on a `ref` target's own metadata, and on every array element, union
+ * / intersection / tuple member and wildcard prop below it — whose target is
  * hidden from the caller. Without runtime schema info (`vis.table.flatMap`) or
- * `refTargets`, both are kept.
+ * `refTargets`, all are kept.
  */
 function withVisibleTargets(
   node: TSerializedAnnotatedTypeInner,
@@ -447,24 +578,13 @@ function withVisibleTargets(
   ambiguous = false,
 ): TSerializedAnnotatedTypeInner {
   const flatMap = vis.table?.flatMap;
-  if (!flatMap || !refTargets) return node;
-  const hasBinding = node.metadata?.[UI_VALUE_HELP] !== undefined;
-  if (!node.ref && !hasBinding) return node;
+  if (!flatMap || !refTargets || !serializedHasTarget(node)) return node;
   // Fail closed: a union/intersection/tuple branch shares one merged flat
   // entry with same-named props of its sibling branches, so the entry cannot
   // be trusted to describe THIS node; and a flat-map miss describes nothing.
-  const entry = ambiguous ? undefined : flatMap.get(path);
-  let out = node;
-  if (node.ref) {
-    const ref = refTargetOf(entry);
-    if (!ref || !isTargetVisible(ref, vis, refTargets)) out = withoutRef(out);
-  }
-  if (hasBinding) {
-    const binding = bindingOf(entry);
-    // `undefined` (miss) / `null` (unresolvable target): strip.
-    if (!binding || !isTargetVisible(binding, vis, refTargets)) out = withoutBinding(out);
-  }
-  return out;
+  const entry = ambiguous ? undefined : (flatMap.get(path) as TAtscriptAnnotatedType | undefined);
+  const out = gateOwn(node, entry, (t) => isTargetVisible(t, vis, refTargets));
+  return gateChildren(out, entry, vis, refTargets, false);
 }
 
 const NO_NAMES: ReadonlySet<string> = new Set();
@@ -625,11 +745,14 @@ const formTargetsOf = (entry: TAtscriptAnnotatedType, node: TSerializedAnnotated
     const binding = bindingOf(entry);
     if (binding !== undefined) out.push(binding);
   }
+  if (node.ref && node.ref.type?.metadata?.[UI_VALUE_HELP] !== undefined) {
+    out.push(refTypeBindingOf(entry) ?? null);
+  }
   return out;
 };
 
 /** Where a child sits in its parent: an object prop, the array element, or a union/intersection/tuple item. */
-type FormChildKey = { prop: string } | { of: true } | { item: number };
+type FormChildKey = { prop: string } | { of: true } | { item: number } | { pattern: number };
 type FormChild = [TAtscriptAnnotatedType, TSerializedAnnotatedTypeInner, FormChildKey];
 
 /** Pairs the runtime and serialized trees over EVERY child container (props, of, items). */
@@ -642,11 +765,16 @@ function formChildren(
     props?: Map<string, TAtscriptAnnotatedType>;
     of?: TAtscriptAnnotatedType | TAtscriptAnnotatedType[];
     items?: TAtscriptAnnotatedType[];
+    propsPatterns?: Array<{ pattern: RegExp; def: TAtscriptAnnotatedType }>;
   };
   const def = node.type as {
     props?: Record<string, TSerializedAnnotatedTypeInner>;
     of?: TSerializedAnnotatedTypeInner | TSerializedAnnotatedTypeInner[];
     items?: TSerializedAnnotatedTypeInner[];
+    propsPatterns?: Array<{
+      pattern: { source: string; flags: string };
+      def: TSerializedAnnotatedTypeInner;
+    }>;
   };
   const out: FormChild[] = [];
   if (rt.props && def.props) {
@@ -660,6 +788,12 @@ function formChildren(
   if (Array.isArray(rt.items) && Array.isArray(def.items)) {
     rt.items.forEach((child, i) => def.items![i] && out.push([child, def.items![i], { item: i }]));
   }
+  def.propsPatterns?.forEach((p, i) => {
+    const match = rt.propsPatterns?.find(
+      (r) => r.pattern?.source === p.pattern?.source && r.pattern?.flags === p.pattern?.flags,
+    );
+    if (match) out.push([match.def, p.def, { pattern: i }]);
+  });
   return out;
 }
 
@@ -674,8 +808,14 @@ function serializedChildren(node: TSerializedAnnotatedTypeInner): TSerializedAnn
     props?: Record<string, TSerializedAnnotatedTypeInner>;
     of?: TSerializedAnnotatedTypeInner;
     items?: TSerializedAnnotatedTypeInner[];
+    propsPatterns?: Array<{ def: TSerializedAnnotatedTypeInner }>;
   };
-  return [...Object.values(def.props ?? {}), ...(def.of ? [def.of] : []), ...(def.items ?? [])];
+  return [
+    ...Object.values(def.props ?? {}),
+    ...(def.of ? [def.of] : []),
+    ...(def.items ?? []),
+    ...(def.propsPatterns ?? []).map((p) => p.def),
+  ];
 }
 
 function serializedHasTarget(node: TSerializedAnnotatedTypeInner): boolean {
@@ -700,6 +840,9 @@ function stripAllTargets(node: TSerializedAnnotatedTypeInner): TSerializedAnnota
   }
   if (def.of) next.of = stripAllTargets(def.of);
   if (def.items) next.items = def.items.map((i: never) => stripAllTargets(i));
+  if (def.propsPatterns) {
+    next.propsPatterns = def.propsPatterns.map((p: any) => ({ ...p, def: stripAllTargets(p.def) }));
+  }
   return { ...out, type: next };
 }
 
@@ -738,11 +881,7 @@ function stripFormTargets(
     const targetVis = readable.get(t.type);
     return !!targetVis && t.fields.every((f) => isMetaFieldVisible(f, targetVis));
   };
-  let out = node;
-  if (node.ref && !visible(refTargetOf(runtime))) out = withoutRef(out);
-  if (node.metadata?.[UI_VALUE_HELP] !== undefined && !visible(bindingOf(runtime))) {
-    out = withoutBinding(out);
-  }
+  const out = gateOwn(node, runtime, (t) => visible(t));
   // Rebuild only the children that changed.
   const children = formChildren(runtime, node);
   let changed: TSerializedAnnotatedTypeInner["type"] | undefined;
@@ -752,6 +891,13 @@ function stripFormTargets(
     const base = (changed ?? out.type) as any;
     if ("prop" in key) {
       changed = { ...base, props: { ...base.props, [key.prop]: next } };
+    } else if ("pattern" in key) {
+      changed = {
+        ...base,
+        propsPatterns: base.propsPatterns.map((o: any, i: number) =>
+          i === key.pattern ? { ...o, def: next } : o,
+        ),
+      };
     } else if ("item" in key) {
       changed = {
         ...base,
@@ -800,7 +946,7 @@ function metaRelationNames(meta: TMetaResponse): RelationNameTree {
 
 function buildMetaRelationNames(meta: TMetaResponse): RelationNameTree {
   const tree: RelationNameTree = new Map();
-  const rootProps = objectProps(meta.type);
+  const rootProps = objectProps(inlineTypeRefs(meta.type));
   for (const r of meta.relations) {
     const nested = new Map() as RelationNameTree;
     tree.set(r.name, nested);
@@ -859,7 +1005,7 @@ async function resolveRefTargets(
       if (sub) visit(sub, prop, depth + 1);
     }
   };
-  visit(root, meta.type, 0);
+  visit(root, inlineTypeRefs(meta.type), 0);
   const out = new Map<object, MetaVisibility | null>();
   await Promise.all(
     [...types].map(async (type) => {

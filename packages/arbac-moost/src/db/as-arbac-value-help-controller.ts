@@ -13,6 +13,7 @@ import { Inherit } from "moost";
 
 import { ArbacAction } from "../arbac.decorator";
 import { applyArbacMetaOverlay } from "./meta-projection";
+import { registerArbacValueHelpTarget } from "./relation-policy";
 import {
   arbacRowFilter,
   requestFieldVisible,
@@ -34,22 +35,29 @@ interface ValueHelpHost {
   readonly searchableFields: readonly string[];
   /**
    * The visibility source: the PK is the value-help identifier — always
-   * visible, like a table's PK / `preferredId` — and `flatMap` is the bound
-   * interface's own props (value-help fields are top-level names).
+   * visible, like a table's PK / `preferredId` — `type` is the bound interface
+   * and `flatMap` its own annotated props (value-help fields are top-level
+   * names).
    */
   readonly source: VisibilityTableSource;
 }
 
 function valueHelpHost(
-  fields: ReadonlyMap<string, unknown>,
+  boundType: TAtscriptAnnotatedType,
   primaryKey: string | undefined,
   searchableFields: readonly string[],
 ): ValueHelpHost {
   const ids = primaryKey ? [primaryKey] : [];
+  const props = (boundType.type as { props?: ReadonlyMap<string, unknown> }).props;
   return {
     primaryKey,
     searchableFields,
-    source: { primaryKeys: ids, preferredId: ids, flatMap: fields },
+    source: {
+      primaryKeys: ids,
+      preferredId: ids,
+      type: boundType,
+      flatMap: props ?? new Map(),
+    },
   };
 }
 
@@ -146,9 +154,15 @@ export abstract class AsArbacValueHelpController<
 > extends AsValueHelpController<T, DataType> {
   private _arbacHost?: ValueHelpHost;
 
+  /** Makes this controller the binding / `ref` policy source for its bound type's ARBAC resource. */
+  protected readonly _arbacValueHelpTarget = registerArbacValueHelpTarget(
+    this,
+    this.arbacHost.source,
+  );
+
   private get arbacHost(): ValueHelpHost {
     return (this._arbacHost ??= valueHelpHost(
-      this.fieldMeta,
+      this.boundType,
       this.primaryKey,
       this.searchableFields,
     ));
@@ -235,9 +249,15 @@ export class AsArbacJsonValueHelpController<
 > extends AsJsonValueHelpController<T, DataType> {
   private _arbacHost?: ValueHelpHost;
 
+  /** Makes this controller the binding / `ref` policy source for its bound type's ARBAC resource. */
+  protected readonly _arbacValueHelpTarget = registerArbacValueHelpTarget(
+    this,
+    this.arbacHost.source,
+  );
+
   private get arbacHost(): ValueHelpHost {
     return (this._arbacHost ??= valueHelpHost(
-      this.fieldMeta,
+      this.boundType,
       this.primaryKey,
       this.searchableFields,
     ));

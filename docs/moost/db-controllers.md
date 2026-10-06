@@ -228,11 +228,20 @@ The action gate asks `actionRowScope` before it loads any row. A grant on the ac
 
 #### The overlay fails closed
 
-The `/meta` and form overlay strips a `ref` or `ui.valueHelp` binding whenever it cannot prove the binding safe:
+The `/meta` and form overlay strips a `ref` or `ui.valueHelp` binding whenever it cannot prove the binding safe. One rule applies to every node of the serialized `type`: a binding or `ref` is kept only when the caller can read the target table and see every field it names.
 
-- A binding inside a union, intersection or tuple branch is always stripped. The flat field map merges same-named props across branches, so no per-branch judgement is possible.
+- **Every node kind is checked.** Object props, array elements (`codes?: DictCode[]`, `refs?: Dict.code[]`), union, intersection and tuple members (`either?: DictCode | number`), wildcard props (`[*]: string`) and the metadata of a `ref` target (a type alias that carries the binding) are all gated. A binding sitting directly on an element or member is stripped like one on a prop.
+- **Branches are judged per member.** A union or intersection member is checked against its own runtime type. A prop inside an object member is stripped, because the flat field map merges same-named props across branches.
+- **A ref that names no field is still checked.** A prop typed as a table interface (`@db.json snap?: Dict`) keeps its `ref` only when the caller can read that table. A ref to a type that is not table-served (a plain alias) is kept.
 - A binding whose target is unresolvable or unknown is stripped.
-- A form tree deeper than the cap is stripped below the cap.
+- A form tree deeper than the cap is stripped below the cap, wildcard props included.
+- Relations are resolved after `$ref` entries are inlined, so two relations to the same table (`author` and `editor`, both typed `User`) each keep their own nested relations (`editor.org`).
+- The overlay inlines every shared `$ref` body so each use is pruned by its own path. Inlining is bounded to 20,000 nodes per `/meta`. A schema that reuses types so heavily that it passes the budget loses the fields beyond it from `/meta` (fail closed, never served unpruned). Positional members (array elements, union members) become empty placeholders instead.
+- An inlined copy of a type gets a unique `id` (`Name#n`) and a recursive back-reference points at its own ancestor copy. The `id` on the back-reference entry itself still shows the original type name. Clients ignore it.
+
+#### Value-help targets
+
+A binding (or `ref`) to a dictionary served by an `AsArbacJsonValueHelpController` or `AsArbacValueHelpController` is kept for a caller who can read it: the controller registers itself as the owner of its bound type's ARBAC resource, so the overlay evaluates the caller's `query` grant on it (`allowTableRead("<its resource>")`) and applies the grant's projection to the fields the binding names. A caller without the grant gets the binding stripped. The value-help controller's own `/meta` follows the same rule for its refs and bindings.
 
 #### Aggregate expressions, `first` / `last` and `$rowOrder`
 
