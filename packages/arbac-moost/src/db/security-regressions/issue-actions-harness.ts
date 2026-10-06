@@ -24,14 +24,14 @@ import {
   TableController,
 } from "@atscript/moost-db";
 import type { TDbActionScopeContext, TDbRequestContext } from "@atscript/moost-db";
-import { Post } from "@moostjs/event-http";
-import { clearGlobalWooks, getMoostInfact } from "moost";
+import { Body, Post } from "@moostjs/event-http";
+import { clearGlobalWooks, Controller, getMoostInfact, useControllerContext } from "moost";
 
 import { bootArbacHttp } from "../../__testing__/arbac-http";
 import { request, type TestResponse } from "../../__testing__/http";
 import { FakeUserProvider } from "../../__testing__/user-provider";
 import { useArbac } from "../../arbac.composables";
-import { ArbacResource } from "../../arbac.decorator";
+import { ArbacAction, ArbacResource } from "../../arbac.decorator";
 import { MoostArbac } from "../../moost-arbac";
 import { type ArbacDbScope, AsArbacDbController } from "../as-arbac-db-controller";
 import { AsArbacDbReadableController } from "../as-arbac-db-readable-controller";
@@ -77,8 +77,29 @@ const ROLES: TArbacRole<object, ArbacDbScope>[] = [
     .id("closer-nosecret")
     .use(allowTableAction("issues", ["close"], { scope: () => ({ projection: { secret: 0 } }) }))
     .build(),
+  // Reads every issue, its rows seen without the searchable `title`.
+  defineRole<object, ArbacDbScope>()
+    .id("reader-notitle")
+    .use(allowTableRead("issues", { scope: () => ({ projection: { title: 0 } }) }))
+    .build(),
+  // `close` on every issue, its rows seen without the searchable `title`.
+  defineRole<object, ArbacDbScope>()
+    .id("closer-notitle")
+    .use(allowTableAction("issues", ["close"], { scope: () => ({ projection: { title: 0 } }) }))
+    .build(),
+  // May call the app's own `tools/pick` command (an unrelated command: no issue grant),
+  // under a scope of its own (region "us") that must never reach the read it makes.
+  defineRole<object, ArbacDbScope>()
+    .id("tooler")
+    .use(() => [{ resource: "tools", action: "pick", scope: region("us") }])
+    .build(),
   // The board view only.
   defineRole<object, ArbacDbScope>().id("board-reader").use(allowTableRead("board")).build(),
+  // The board view only, its rows seen without the searchable `title`.
+  defineRole<object, ArbacDbScope>()
+    .id("board-reader-notitle")
+    .use(allowTableRead("board", { scope: () => ({ projection: { title: 0 } }) }))
+    .build(),
   // Grants on the VIEW's resource under the source's action names.
   defineRole<object, ArbacDbScope>()
     .id("board-closer")
@@ -181,6 +202,35 @@ export class IssuesController extends AsArbacDbController<typeof IaIssue> {
   async close(@DbActionIDs() ids: Array<{ id: number }>) {
     for (const { id } of ids) await (this.table as any).updateOne({ id, status: "closed" });
     return { closed: ids.map((i) => i.id) };
+  }
+}
+
+/**
+ * An app command unrelated to issues that reads them through
+ * `IssuesController.resolveQuery` (moost-db 0.1.149).
+ */
+@Controller("tools")
+@ArbacResource("tools")
+export class ToolsController {
+  @Post("pick")
+  @ArbacAction("pick")
+  async pick(
+    @Body()
+    body: {
+      q: string | Record<string, unknown>;
+      select?: string[];
+      cap?: number;
+      scope?: Record<string, unknown>;
+    },
+  ) {
+    const issues = await useControllerContext().instantiate(IssuesController);
+    const before = useArbac().getScopes();
+    const rows = await issues.resolveQuery(body.q as never, {
+      select: body.select as never,
+      cap: body.cap,
+      scope: body.scope as never,
+    });
+    return { rows, before, after: useArbac().getScopes() };
   }
 }
 
@@ -310,6 +360,7 @@ export async function bootIssues(
     user,
     controllers: [
       IssuesController,
+      ToolsController,
       TicketsController,
       TeamsController,
       BoardController,

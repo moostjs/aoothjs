@@ -142,3 +142,61 @@ describe("delegated query targets (POST /board/delegated-actions/:name)", () => 
     expect(await closedIds()).toEqual([4]);
   });
 });
+
+// moost-db 0.1.149: the target's `$search` is resolved INSIDE the read (read
+// visibility), and an un-appliable `$search` on an act-on-rows surface is a
+// 400 TARGET_INVALID. Before, it was resolved in the action event: a field
+// hidden on READ was still searched (a hidden-field oracle through `dryRun`),
+// and a field hidden only on the ACTION grant made the term vanish (every row).
+describe("$search on a query target follows the READ grant", () => {
+  it("title hidden on read: $search dryRun is 400 TARGET_INVALID, not a hidden-field oracle", async () => {
+    const { send } = await bootIssues(["reader-notitle", "closer"]);
+    const dry = await send(
+      "POST",
+      "/issues/actions/close",
+      target("$search=alpha", { dryRun: true }),
+    );
+    expect(dry.status, JSON.stringify(dry.body)).toBe(400);
+    expect(JSON.stringify(dry.body)).toContain("TARGET_INVALID");
+    const run = await send("POST", "/issues/actions/close", target("$search=alpha"));
+    expect(run.status).toBe(400);
+    expect(await closedIds()).toEqual([4]);
+  });
+
+  it("title hidden only on the action grant: $search=zzz acts on 0 rows, not all of them", async () => {
+    const { send } = await bootIssues(["lead", "closer-notitle"]);
+    const dry = await send(
+      "POST",
+      "/issues/actions/close",
+      target("$search=zzz", { dryRun: true }),
+    );
+    expect(dry.status, JSON.stringify(dry.body)).toBe(201);
+    expect(dry.body).toEqual({ matched: 0 });
+    const run = await send("POST", "/issues/actions/close", target("$search=zzz"));
+    expect(run.status, JSON.stringify(run.body)).toBe(201);
+    expect(run.body).toEqual({ matched: 0, processed: 0, skipped: [], failed: [] });
+    expect(await closedIds()).toEqual([4]);
+  });
+
+  it("a visible searchable field still searches", async () => {
+    const { send } = await bootIssues(["lead", "closer"]);
+    const dry = await send(
+      "POST",
+      "/issues/actions/close",
+      target("$search=alpha", { dryRun: true }),
+    );
+    expect(dry.body).toEqual({ matched: 2 });
+  });
+
+  it("delegated view target: title hidden on the view read is 400 TARGET_INVALID", async () => {
+    const { send } = await bootIssues(["board-reader-notitle", "closer"]);
+    const dry = await send(
+      "POST",
+      "/board/delegated-actions/close",
+      target("$search=alpha", { dryRun: true }),
+    );
+    expect(dry.status, JSON.stringify(dry.body)).toBe(400);
+    expect(JSON.stringify(dry.body)).toContain("TARGET_INVALID");
+    expect(await closedIds()).toEqual([4]);
+  });
+});
