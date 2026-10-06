@@ -55,6 +55,17 @@ const voidRole = defineRole<object, ArbacDbScope>()
   .use(allowTableRead("keyed", { scope: () => undefined as unknown as ArbacDbScope }))
   .build();
 
+/** An insert whose check the in-memory evaluator decides (`owner`)… */
+const decidableRole = defineRole<object, ArbacDbScope>()
+  .id("decidable")
+  .use(allowTableWrite("keyed", { scope: () => ({ check: { owner: "u1" } }) }))
+  .build();
+/** …and one it cannot (`$regex` is not modelled) — ignore mode must refuse it. */
+const undecidableRole = defineRole<object, ArbacDbScope>()
+  .id("undecidable")
+  .use(allowTableWrite("keyed", { scope: () => ({ check: { title: { $regex: "^x" } } }) }))
+  .build();
+
 const slugRole = defineRole<object, ArbacDbScope>()
   .id("slugs")
   .use(allowTableWrite("slugs", { scope: () => ({ filter: { tenant: "t1" } }) }))
@@ -119,6 +130,17 @@ class CustomController {
     const scope = await useArbacDbScope<typeof KeyedDoc>();
     await table.insertOne(row, scope.writeOptions(table));
     return { ok: true };
+  }
+
+  @Post("write/insert-ignore")
+  @ArbacAction("insert")
+  async writeInsertIgnore(@Body() row: Record<string, unknown>) {
+    const scope = await useArbacDbScope<typeof KeyedDoc>();
+    const r = await table.insertOne(row, {
+      ...scope.writeOptions(table, { onConflict: "ignore" }),
+      onConflict: "ignore",
+    });
+    return { conflict: "conflict" in r ? r.conflict : false };
   }
 
   @Post("write/update")
@@ -190,7 +212,16 @@ describe("useArbacDbScope", () => {
 
   async function boot(authorize: boolean, arbac = new MoostArbac<object, ArbacDbScope>()) {
     clearGlobalWooks();
-    for (const role of [ownerRole, checkedRole, noCheckRole, adminRole, voidRole, slugRole]) {
+    for (const role of [
+      ownerRole,
+      checkedRole,
+      noCheckRole,
+      adminRole,
+      voidRole,
+      slugRole,
+      decidableRole,
+      undecidableRole,
+    ]) {
       arbac.registerRole(role);
     }
     user = new FakeUserProvider("u1", []);
@@ -313,6 +344,54 @@ describe("useArbacDbScope", () => {
       const ok = await post("write/insert", { id: 51, code: "K51", title: "x", owner: "u1" });
       expect(ok.status).toBe(201);
       await table.deleteOne(51);
+    });
+
+    it("writeOptions(table, { onConflict: 'ignore' }): a forbidden row is refused 403, conflicting or not", async () => {
+      user.roles = ["decidable"];
+      const fresh = await post("write/insert-ignore", {
+        id: 70,
+        code: "K70",
+        title: "x",
+        owner: "u2",
+      });
+      expect(fresh.status).toBe(403);
+      expect(await table.count({ filter: { id: 70 } })).toBe(0);
+      // Conflicts with row 2 (another owner's): still 403, no existence probe.
+      const dup = await post("write/insert-ignore", { id: 2, code: "K2", title: "x", owner: "u2" });
+      expect(dup.status).toBe(403);
+    });
+
+    it("writeOptions(table, { onConflict: 'ignore' }): an undecidable check is refused (the post-write check never sees skipped rows)", async () => {
+      user.roles = ["undecidable"];
+      const r = await post("write/insert-ignore", {
+        id: 71,
+        code: "K71",
+        title: "xy",
+        owner: "u1",
+      });
+      expect(r.status).toBe(403);
+      expect(await table.count({ filter: { id: 71 } })).toBe(0);
+    });
+
+    it("writeOptions(table, { onConflict: 'ignore' }): a permitted row is inserted, a permitted duplicate is skipped", async () => {
+      user.roles = ["decidable"];
+      const ok = await post("write/insert-ignore", {
+        id: 72,
+        code: "K72",
+        title: "x",
+        owner: "u1",
+      });
+      expect(ok.status).toBeLessThan(300);
+      expect(await table.count({ filter: { id: 72 } })).toBe(1);
+      const dup = await post("write/insert-ignore", {
+        id: 72,
+        code: "K72",
+        title: "y",
+        owner: "u1",
+      });
+      expect(dup.status).toBeLessThan(300);
+      expect(dup.body).toMatchObject({ conflict: true });
+      await table.deleteOne(72);
     });
 
     it("USING: an update of an out-of-scope row is a 404; an in-scope one passes", async () => {

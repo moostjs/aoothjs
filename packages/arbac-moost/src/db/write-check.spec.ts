@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   checkFields,
   compileScopeCheck,
+  insertRowsVerdict,
   patchPostImage,
   UnsupportedCheckError,
 } from "./write-check";
@@ -66,5 +67,37 @@ describe("checkFields / patchPostImage", () => {
     expect(patchPostImage(cur, { profile: { tenant: "b" } }, fields)).toBeUndefined();
     expect(patchPostImage(cur, { "profile.tenant.x": 1 }, fields)).toBeUndefined();
     expect(patchPostImage(cur, { tags: [1] }, fields)).toMatchObject({ n: 1 });
+  });
+});
+
+describe("insertRowsVerdict", () => {
+  const rows = [
+    { tenant: "a", n: 1 },
+    { tenant: "a", n: 2 },
+  ];
+
+  it("true when every row passes", () => {
+    expect(insertRowsVerdict(rows, { tenant: "a" })).toBe(true);
+    expect(insertRowsVerdict([], { tenant: "a" })).toBe(true);
+  });
+
+  it("false when a decidable row fails the check — even beside an undecidable one", () => {
+    expect(insertRowsVerdict([...rows, { tenant: "b", n: 3 }], { tenant: "a" })).toBe(false);
+    expect(insertRowsVerdict([{ n: 1 }, { tenant: "b", n: 2 }], { tenant: "a" })).toBe(false);
+  });
+
+  it("undefined when a row omits a field the check reads (a database default)", () => {
+    expect(insertRowsVerdict([{ n: 1 }], { tenant: "a" })).toBeUndefined();
+    expect(insertRowsVerdict([...rows, { n: 3 }], { tenant: "a" })).toBeUndefined();
+  });
+
+  it("undefined for a check the evaluator does not model ($regex, relational)", () => {
+    expect(insertRowsVerdict(rows, { tenant: { $regex: "^a" } })).toBeUndefined();
+    expect(insertRowsVerdict(rows, { ticket: { $some: { n: 1 } } })).toBeUndefined();
+  });
+
+  it("reads dotted paths and treats null as a present value", () => {
+    expect(insertRowsVerdict([{ nested: { k: "v" } }], { "nested.k": "v" })).toBe(true);
+    expect(insertRowsVerdict([{ s: null }], { s: null })).toBe(true);
   });
 });
