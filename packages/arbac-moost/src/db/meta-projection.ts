@@ -99,7 +99,7 @@ export function pruneMetaByVisibility(
     ...meta,
     fields,
     relations,
-    type: pruneSerializedType(meta.type, {
+    type: pruneSerializedType(inlineTypeRefs(meta.type), {
       basePath: "",
       vis,
       relationNames,
@@ -108,6 +108,90 @@ export function pruneMetaByVisibility(
   };
   if (out.versionColumn !== undefined && !isMetaFieldVisible(out.versionColumn, vis)) {
     delete out.versionColumn;
+  }
+  return out;
+}
+
+/**
+ * Replace every `$ref` entry with a copy of the body serialized under its `id`
+ * (the first node carrying that id), so each use is pruned by ITS OWN path's
+ * visibility. A shared body pruned once would resolve, on the client, to the
+ * first use's shape at every other use: hidden fields leak through a later
+ * `$ref`, and a hidden first use leaves later `$ref`s dangling. An `own`
+ * entry keeps its own metadata / optional / `ref`. Unknown ids and recursive
+ * back-references stay `$ref`s (a recursive one points at an ancestor that is
+ * itself retained). Never mutates the (cached) input.
+ */
+function inlineTypeRefs<T extends TSerializedAnnotatedTypeInner>(root: T): T {
+  const bodies = new Map<string, TSerializedAnnotatedTypeInner>();
+  collectBodies(root, bodies);
+  if (bodies.size === 0) return root;
+  return inlineNode(root, bodies, new Set()) as T;
+}
+
+type TypeNode = TSerializedAnnotatedTypeInner;
+
+function childNodes(node: TypeNode): TypeNode[] {
+  const def = node.type as unknown as Record<string, unknown>;
+  const out: TypeNode[] = [];
+  if (def.kind === "object") {
+    out.push(...Object.values(def.props as Record<string, TypeNode>));
+    for (const p of (def.propsPatterns as Array<{ def: TypeNode }> | undefined) ?? []) {
+      out.push(p.def);
+    }
+  } else if (def.kind === "array") out.push(def.of as TypeNode);
+  else if (Array.isArray(def.items)) out.push(...(def.items as TypeNode[]));
+  const refType = node.ref?.type as TypeNode | undefined;
+  if (refType && (refType as { type?: unknown }).type) out.push(refType);
+  return out;
+}
+
+function collectBodies(node: TypeNode, bodies: Map<string, TypeNode>): void {
+  if (node.type.kind === "$ref") return;
+  if (node.id !== undefined && !bodies.has(node.id)) bodies.set(node.id, node);
+  for (const child of childNodes(node)) collectBodies(child, bodies);
+}
+
+function inlineNode(node: TypeNode, bodies: Map<string, TypeNode>, stack: Set<string>): TypeNode {
+  const def = node.type;
+  if (def.kind === "$ref") {
+    const body = bodies.get(def.id);
+    if (!body || stack.has(def.id)) return node;
+    const next = new Set(stack).add(def.id);
+    const inlined = inlineNode(body, bodies, next);
+    if (!def.own) return inlined;
+    const { ref: _ref, optional: _optional, ...rest } = inlined;
+    return {
+      ...rest,
+      metadata: node.metadata,
+      ...(node.optional === undefined ? {} : { optional: node.optional }),
+      ...(node.ref ? { ref: node.ref } : {}),
+    };
+  }
+  const nextStack = node.id !== undefined ? new Set(stack).add(node.id) : stack;
+  let out: TypeNode = node;
+  const d = def as unknown as Record<string, unknown>;
+  if (d.kind === "object") {
+    const props: Record<string, TypeNode> = {};
+    for (const [k, v] of Object.entries(d.props as Record<string, TypeNode>)) {
+      props[k] = inlineNode(v, bodies, nextStack);
+    }
+    const propsPatterns = ((d.propsPatterns as Array<{ def: TypeNode }> | undefined) ?? []).map(
+      (p) => ({ ...p, def: inlineNode(p.def, bodies, nextStack) }),
+    );
+    out = { ...node, type: { ...def, props, propsPatterns } as typeof def };
+  } else if (d.kind === "array") {
+    out = {
+      ...node,
+      type: { ...def, of: inlineNode(d.of as TypeNode, bodies, nextStack) } as typeof def,
+    };
+  } else if (Array.isArray(d.items)) {
+    const items = (d.items as TypeNode[]).map((i) => inlineNode(i, bodies, nextStack));
+    out = { ...node, type: { ...def, items } as typeof def };
+  }
+  const refType = out.ref?.type as TypeNode | undefined;
+  if (out.ref && refType && (refType as { type?: unknown }).type) {
+    out = { ...out, ref: { ...out.ref, type: inlineNode(refType, bodies, nextStack) } };
   }
   return out;
 }

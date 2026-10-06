@@ -593,3 +593,81 @@ describe("pruneMetaByVisibility — an unresolvable ui.valueHelp binding fails c
     expect(props.color.metadata["ui.valueHelp"]).toBeUndefined();
   });
 });
+
+// ── $ref entries (a named type used more than once) ────────────────────────
+
+describe("pruneMetaByVisibility — $ref entries with own metadata", () => {
+  const addrBody = () =>
+    obj({
+      street: { ...leaf(), metadata: { "meta.label": "Street" } },
+      secret: { ...leaf(), metadata: { "meta.label": "Secret" } },
+    });
+  /** `home` carries the named type's body; `work` is an own-metadata `$ref` to it. */
+  function twiceUsedMeta(): TMetaResponse {
+    const meta = usersMeta();
+    meta.fields = {
+      id: { sortable: true, filterable: true },
+      "home.street": { sortable: false, filterable: true },
+      "home.secret": { sortable: false, filterable: true },
+      "work.street": { sortable: false, filterable: true },
+      "work.secret": { sortable: false, filterable: true },
+    };
+    meta.relations = [];
+    meta.type = obj({
+      id: leaf(),
+      home: { ...addrBody(), id: "Addr", metadata: { "meta.label": "Home" } },
+      work: {
+        $v: 2,
+        type: { kind: "$ref", id: "Addr", own: true },
+        metadata: { "meta.label": "Work", "ui.hint": "work-only" },
+        optional: true,
+      },
+    });
+    return meta;
+  }
+  type Props = Record<string, TSerializedAnnotatedType>;
+  const propsOf = (n: TSerializedAnnotatedType) => (n.type as unknown as { props: Props }).props;
+
+  it("does not leak a path hidden at the $ref position through the shared body", () => {
+    const out = pruneMetaByVisibility(
+      twiceUsedMeta(),
+      vis({ "home.street": 1, "home.secret": 1, "work.street": 1 }, new Set(["id"])),
+    );
+    const json = JSON.stringify(out.type);
+    const work = propsOf(out.type).work;
+    // work.secret is hidden: whichever way `work` is represented, no 'Secret' body may hang off it.
+    const workJson = JSON.stringify(work);
+    expect(workJson).not.toContain("Secret");
+    expect(Object.keys(propsOf(work))).toEqual(["street"]);
+    // The first use keeps both of its visible fields.
+    expect(Object.keys(propsOf(propsOf(out.type).home)).toSorted()).toEqual(["secret", "street"]);
+    expect(work.metadata["meta.label"]).toBe("Work");
+    expect(work.metadata["ui.hint"]).toBe("work-only");
+    expect(json).toContain("Street");
+  });
+
+  it("keeps a visible $ref resolvable when its first-use body is hidden", () => {
+    const out = pruneMetaByVisibility(twiceUsedMeta(), vis({ "work.street": 1 }, new Set(["id"])));
+    const props = propsOf(out.type);
+    expect(props.home).toBeUndefined();
+    const work = props.work;
+    expect(work.metadata["meta.label"]).toBe("Work");
+    // No dangling `$ref`: the body is present at the surviving use, minus hidden fields.
+    expect(work.type.kind).toBe("object");
+    expect(Object.keys(propsOf(work))).toEqual(["street"]);
+    expect(JSON.stringify(out.type)).not.toContain("Secret");
+  });
+
+  it("never throws on a $ref nested in arrays, unions, or an unknown id", () => {
+    const meta = twiceUsedMeta();
+    meta.type = obj({
+      id: leaf(),
+      list: arr({
+        $v: 2,
+        type: { kind: "$ref", id: "Missing", own: true },
+        metadata: {},
+      }),
+    });
+    expect(() => pruneMetaByVisibility(meta, vis({ list: 1 }, new Set(["id"])))).not.toThrow();
+  });
+});
