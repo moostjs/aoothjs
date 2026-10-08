@@ -11,6 +11,7 @@ import {
   collectMethodNames,
   pruneMetaByVisibility,
 } from "./meta-projection";
+import { registerArbacDbTarget } from "./relation-policy";
 import { isScopedFieldVisible } from "./request-scopes";
 import {
   buildScopeVisibility,
@@ -1021,5 +1022,51 @@ describe("applyArbacFormOverlay — depth cap fails closed", () => {
       s = obj({ n: s });
     }
     expect(JSON.stringify(await applyArbacFormOverlay(s, r))).not.toContain("ui.valueHelp");
+  });
+});
+
+// ── no-field target: "table-served" never depends on the db.http.path mirror ──
+
+describe("pruneMetaByVisibility — no-field ref target served-ness is stable", () => {
+  const run = (dictType: object) => {
+    const refNode = {
+      ...leaf(),
+      ref: { type: { $v: 2, type: { kind: "object", props: {}, tags: [] }, metadata: {} } },
+    } as unknown as TSerializedAnnotatedType;
+    const meta = {
+      ...usersMeta(),
+      type: obj({ id: leaf(), snap: refNode }),
+      relations: [],
+    } as unknown as TMetaResponse;
+    const table = {
+      primaryKeys: ["id"],
+      preferredId: ["id"],
+      type: {},
+      flatMap: new Map([["snap", { ref: { type: () => dictType } }]]),
+    } as unknown as VisibilityTableSource;
+    const v = { ...buildScopeVisibility([{}], table), table };
+    // The caller has no visibility on the target (unreadable / not resolved).
+    return (pruneMetaByVisibility(meta, v, new Map()).type as any).type.props.snap;
+  };
+  const typeWith = (keys: string[]) => ({ metadata: new Map(keys.map((k) => [k, "x"])) });
+
+  it("a pure dictionary stays visible whatever the mirrored db.http.path says", () => {
+    // mirror present, deleted (ambiguous) and republished by another app
+    // all leave the dictionary un-served for this app => same answer
+    expect(run(typeWith([])).ref).toBeDefined();
+    expect(run(typeWith(["db.http.path"])).ref).toBeDefined();
+  });
+
+  it("a dictionary guarded by an ARBAC controller of this app is checked, mirror or not", () => {
+    for (const keys of [[], ["db.http.path"]]) {
+      const dict = typeWith(keys);
+      registerArbacDbTarget({ readable: { type: dict } });
+      expect(run(dict).ref).toBeUndefined();
+    }
+  });
+
+  it("a schema-declared db.table / db.view type is checked (unchanged)", () => {
+    expect(run(typeWith(["db.table"])).ref).toBeUndefined();
+    expect(run(typeWith(["db.view", "db.http.path"])).ref).toBeUndefined();
   });
 });

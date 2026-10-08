@@ -86,6 +86,14 @@ function registeredControllers(target: object): object[] {
 }
 
 /**
+ * Whether an ARBAC DB / value-help controller of the current app serves
+ * `type` — stable per-app registration, unlike runtime metadata.
+ */
+export function isArbacServedType(type: object): boolean {
+  return registeredControllers(type).length > 0;
+}
+
+/**
  * The ARBAC resource + action a controller's handler is authorized as — the
  * precedence `useArbac()` applies while that handler serves a request.
  * Resource: method `@ArbacResource` → class `@ArbacResource` → controller id

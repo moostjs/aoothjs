@@ -232,7 +232,7 @@ The `/meta` and form overlay strips a `ref` or `ui.valueHelp` binding whenever i
 
 - **Every node kind is checked.** Object props, array elements (`codes?: DictCode[]`, `refs?: Dict.code[]`), union, intersection and tuple members (`either?: DictCode | number`), wildcard props (`[*]: string`) and the metadata of a `ref` target (a type alias that carries the binding) are all gated. A binding sitting directly on an element or member is stripped like one on a prop.
 - **Branches are judged per member.** A union or intersection member is checked against its own runtime type. A prop inside an object member is stripped, because the flat field map merges same-named props across branches.
-- **A ref that names no field is still checked.** A prop typed as a table interface (`@db.json snap?: Dict`) keeps its `ref` only when the caller can read that table. A ref to a type that is not table-served (a plain alias) is kept.
+- **A ref that names no field is still checked.** A prop typed as a table interface (`@db.json snap?: Dict`) keeps its `ref` only when the caller can read that table. A ref to a type that is not table-served (a plain alias) is kept. "Table-served" means an ARBAC controller of the same app serves the type, or the schema declares `@db.table` / `@db.view`; the runtime `db.http.path` mirror (which moost-db may delete or rewrite) is never consulted, so the answer does not change with it.
 - A binding whose target is unresolvable or unknown is stripped.
 - A form tree deeper than the cap is stripped below the cap, wildcard props included.
 - Relations are resolved after `$ref` entries are inlined, so two relations to the same table (`author` and `editor`, both typed `User`) each keep their own nested relations (`editor.org`).

@@ -18,6 +18,7 @@ import { getOrCreate, hasSelfOrAncestor, navFieldsOf } from "./helpers";
 import {
   evaluateHandlers,
   evaluateTypeRead,
+  isArbacServedType,
   resolveHandlerArbacIds,
   resolveRelationTree,
 } from "./relation-policy";
@@ -447,13 +448,24 @@ function refTargetOf(entry: unknown): Target | undefined {
   }
 }
 
-/** A table-served type: any `db.*` annotation (`db.table`, `db.view`, `db.http.path`, …). */
+/**
+ * Whether a no-field target type is table-served (so its read visibility must
+ * be checked). Decided from STABLE information only, never from the runtime
+ * `db.http.path` metadata: moost-db mirrors it after init, deletes it for an
+ * ambiguous model and rewrites it when another app publishes, so a pure
+ * value-help dictionary whose only `db.*` key is that mirror would flip.
+ * Served when (1) an ARBAC controller of THIS app is registered for the type
+ * (fail closed: guarded here => readability is checked), or (2) the schema
+ * declares a `db.*` annotation other than `db.http.path` (`db.table`,
+ * `db.view`, ...).
+ */
 function isDbServed(type: object): boolean {
+  if (isArbacServedType(type)) return true;
   const meta = (type as TAtscriptAnnotatedType).metadata as
     | ReadonlyMap<string, unknown>
     | undefined;
   if (!meta || typeof meta.keys !== "function") return false;
-  for (const key of meta.keys()) if (key.startsWith("db.")) return true;
+  for (const key of meta.keys()) if (key.startsWith("db.") && key !== "db.http.path") return true;
   return false;
 }
 
