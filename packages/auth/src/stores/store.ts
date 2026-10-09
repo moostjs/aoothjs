@@ -40,9 +40,10 @@ export interface CredentialStore<TPayload extends object = object> {
    * Optional last-activity stamp. Set `state.lastSeenAt = at` for the token if
    * it exists; no-op otherwise. Backs `AuthCredential`'s
    * `trackLastSeen: 'validate'` mode. Stateless stores omit it (the token is
-   * immutable once issued).
+   * immutable once issued). `state` (since 0.1.78) is the state `retrieve`
+   * just returned for the token — a store may use it instead of re-reading.
    */
-  touch?(token: string, at: number): Promise<void>;
+  touch?(token: string, at: number, state?: CredentialState & TPayload): Promise<void>;
   /**
    * Derive a stable, domain-separated 32-byte subkey from this store's
    * symmetric secret via HKDF-SHA256. Used so other subsystems (e.g. the

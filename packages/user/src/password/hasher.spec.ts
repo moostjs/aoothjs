@@ -87,3 +87,21 @@ describe("PasswordHasher.generatePassword", () => {
     expect(a).not.toBe(b);
   });
 });
+
+describe("PasswordHasher — memory-hard parameters (maxmem sized to N·r)", () => {
+  // Both need ≥ 32 MiB (128·N·r), which Node's default scrypt maxmem rejected.
+  for (const [N, r] of [
+    [2 ** 15, 8],
+    [2 ** 17, 2],
+  ] as const) {
+    it(`hashes and verifies with N=2^${Math.log2(N)}, r=${r}`, async () => {
+      const h = new PasswordHasher({ scryptN: N, scryptR: r, scryptP: 1, keyLength: 32 });
+      const encoded = await h.hash("Secret#1");
+      expect(encoded).toContain(`N=${N},r=${r},p=1`);
+      expect(await h.verify("Secret#1", encoded)).toBe(true);
+      expect(await h.verify("Secret#2", encoded)).toBe(false);
+      // a default-parameter hasher verifies it too (params ride the encoding)
+      expect(await new PasswordHasher().verify("Secret#1", encoded)).toBe(true);
+    });
+  }
+});

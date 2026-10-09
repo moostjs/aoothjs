@@ -11,10 +11,12 @@ import type {
 } from "@atscript/typescript/utils";
 import { getConstructor, getMoostMate, useControllerContext } from "moost";
 
-import { arbacIdsFromMeta } from "../arbac.evaluate";
+import { arbacIdsFromMeta, currentMoostArbac } from "../arbac.evaluate";
 import type { TArbacMeta } from "../arbac.mate";
 import type { ArbacDbScope } from "./as-arbac-db-controller";
 import { getOrCreate, hasSelfOrAncestor, navFieldsOf } from "./helpers";
+import { memoMetaProjection, metaDecisionKey } from "./meta-memo";
+import type { MetaRecordContext } from "./meta-memo";
 import {
   evaluateHandlers,
   evaluateTypeRead,
@@ -26,6 +28,7 @@ import type { ArbacHandlerIds, RelationNameTree } from "./relation-policy";
 import {
   buildScopeVisibility,
   collectWritableFields,
+  identifierSet,
   isIdentifierSet,
   isMetaFieldVisible,
   tablePolicy,
@@ -672,34 +675,52 @@ export async function applyArbacMetaOverlay(
   const { methods } = controllerMethodIndex(instance);
 
   const crudKeys = Object.keys(meta.crud) as TCrudOp[];
-  const [allowedActions, crudScopes] = await Promise.all([
+  const [allowedActions, crudScopes, arbac] = await Promise.all([
     grantedActions(
       instance,
       meta.actions.map((entry) => entry.name),
     ),
     Promise.all(crudKeys.map((op) => evaluateHandlers(crudHandlerIds(instance, op, methods)))),
+    currentMoostArbac(),
   ]);
+  const memoMax = arbac.getMetaMemoMax();
 
   const allowed = new Set(allowedActions);
-  const actions = meta.actions.filter((entry) => allowed.has(entry.name));
-  const crud: TMetaResponse["crud"] = {};
+  const actionBits = meta.actions.map((entry) => allowed.has(entry.name));
+  const crudBits = crudScopes.map((scopes) => scopes !== undefined);
   const readScopes: ArbacDbScope[] = [];
   const writeScopes: ArbacDbScope[] = [];
   for (let i = 0; i < crudKeys.length; i++) {
     const scopes = crudScopes[i];
     if (!scopes) continue;
-    crud[crudKeys[i]] = meta.crud[crudKeys[i]];
     (WRITE_CRUD_OPS.has(crudKeys[i]) ? writeScopes : readScopes).push(...scopes);
   }
-  const overlaid: TMetaResponse = { ...meta, actions, crud };
-  if (readScopes.length === 0) return overlaid;
+  const overlay = (): TMetaResponse => {
+    const crud: TMetaResponse["crud"] = {};
+    for (let i = 0; i < crudKeys.length; i++) {
+      if (crudBits[i]) crud[crudKeys[i]] = meta.crud[crudKeys[i]];
+    }
+    return { ...meta, actions: meta.actions.filter((_, i) => actionBits[i]), crud };
+  };
+  if (readScopes.length === 0) {
+    const key =
+      memoMax > 0
+        ? metaDecisionKey(
+            { actions: actionBits, crud: crudBits, readScopes, writeScopes },
+            RECORD_CTX,
+          )
+        : undefined;
+    return memoMetaProjection(meta, key, memoMax, overlay);
+  }
   const groupBy = effectiveScope(readScopes).controls.$groupBy;
 
   const writable = collectWritableFields(writeScopes, false);
   const nestedWrites = effectiveScope(writeScopes).nestedWrites;
   if (isIdentifierSet(source)) {
+    // The 0.1.67 identifier-set signature: no table to key on — not memoized.
     const vis = buildScopeVisibility(readScopes, undefined, source);
     const visible = Object.keys(vis.allowed).length > 0 || vis.withGrants.size > 0;
+    const overlaid = overlay();
     return gateGroupable(
       visible ? pruneMetaByVisibility(overlaid, { ...vis, writable, nestedWrites }) : overlaid,
       groupBy,
@@ -711,11 +732,36 @@ export async function applyArbacMetaOverlay(
   });
   const vis = buildScopeVisibility(readScopes, source, { relations });
   const refTargets = await resolveRefTargets(vis, meta);
-  return gateGroupable(
-    pruneMetaByVisibility(overlaid, { ...vis, writable, nestedWrites }, refTargets),
-    groupBy,
+  const key =
+    memoMax > 0
+      ? metaDecisionKey(
+          {
+            actions: actionBits,
+            crud: crudBits,
+            readScopes,
+            writeScopes,
+            projection: {
+              vis,
+              tree: metaRelationNames(meta),
+              writable,
+              nestedWrites,
+              groupBy,
+              refTargets,
+            },
+          },
+          RECORD_CTX,
+        )
+      : undefined;
+  return memoMetaProjection(meta, key, memoMax, () =>
+    gateGroupable(
+      pruneMetaByVisibility(overlay(), { ...vis, writable, nestedWrites }, refTargets),
+      groupBy,
+    ),
   );
 }
+
+/** What the `/meta` memo's decision record reads from the pruning rules. */
+const RECORD_CTX: MetaRecordContext = { isServed: isDbServed, identifiers: identifierSet };
 
 /**
  * The `/meta/form/:name` overlay: a form is a plain annotated type (no table),

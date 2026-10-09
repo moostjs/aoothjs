@@ -15,10 +15,12 @@ class MoostArbac<TUserAttrs extends object, TScope extends object> extends Arbac
   registerScopeFields(rules: TScopeFieldRules<TScope>): this; // since 0.1.72
   override evaluate(/* as Arbac.evaluate */): Promise<TArbacEvalResult<TScope>>; // folds rowFilter (since 0.1.72)
   getScopeFields(): TScopeFieldRules<TScope>; // since 0.1.72
+  setMetaMemo(options: false | { max?: number }): this; // since 0.1.78
+  getMetaMemoMax(): number; // since 0.1.78
 }
 ```
 
-DI-injectable `Arbac` subclass. Register a singleton in the provide registry so `registerRole(...)` is reachable at boot. See [ARBAC Authorize](/moost/arbac-authorize).
+DI-injectable `Arbac` subclass. Register a singleton in the provide registry so `registerRole(...)` is reachable at boot. See [ARBAC Authorize](/moost/arbac-authorize). `setMetaMemo` configures the `/meta` projection memo of the ARBAC DB / value-help controllers (on by default, 64 projections per envelope; `false` turns it off) — see [`/meta` projection memo](/moost/db-controllers#meta-projection-memo).
 
 `registerScopeFields` registers the conjunction rule ([`TScopeFieldRule`](/api/arbac#tscopefieldrule-s-tscopefieldrules-s)) of each custom (declaration-merged) `ArbacDbScope` field, once per field — used by credential attenuation and the `$with` conjunctions it triggers. A rule's optional `rowFilter` folds the field into each evaluated scope's `filter`, so every row path enforces it. Validates every rule before registering any (atomic). Throws on a built-in key, a missing `conjoin`, a non-function `rowFilter`, or re-registering a name with a different rule. `evaluate` returns the engine's result with the `rowFilter`s folded into both passes' scopes, and warns once about a custom scope key with no rule. An attenuated evaluation that meets a custom field with no rule fails with a generic `HttpError(500)` instead of dropping it; the details are logged server-side once. See [Custom scope fields](/arbac/scopes#custom-scope-fields).
 
@@ -471,6 +473,9 @@ Restrict-only attenuation claims carried by a credential (extracted via `extract
 ```ts
 import {
   AtscriptArbacUserProvider,
+  type AtscriptArbacUserProviderOptions, // since 0.1.78
+  ArbacUserRecordCache, // since 0.1.78
+  type ArbacUserRecordCacheOptions, // since 0.1.78
   ArbacUserTable,
   AoothArbacUserCredentials,
   extractAttenuation,
@@ -485,12 +490,32 @@ import {
 
 ```ts
 abstract class AtscriptArbacUserProvider<T extends object> extends ArbacUserProvider<T> {
-  constructor(userType: TAtscriptAnnotatedType, table: ArbacUserTable<T>);
+  constructor(
+    userType: TAtscriptAnnotatedType,
+    table: ArbacUserTable<T>,
+    options?: AtscriptArbacUserProviderOptions, // since 0.1.78
+  );
   abstract getUserId(): string | Promise<string>;
+}
+
+interface AtscriptArbacUserProviderOptions {
+  extraSelect?: readonly string[];
+  cache?: ArbacUserRecordCache;
 }
 ```
 
-Drop-in subclass driven by a `.as` user model. Only `getUserId()` remains abstract — typically reads from `useAuth()`. Caches `(EventContext, this, userId)` so `getRoles + getAttrs` collapse to one round-trip per request. Missing record → `getRoles: []`, `getAttrs: {}` (fail-closed). See [Atscript Models](/moost/).
+Drop-in subclass driven by a `.as` user model. Only `getUserId()` remains abstract — typically reads from `useAuth()`. Caches `(EventContext, this, userId)` so `getRoles + getAttrs` collapse to one round-trip per request. Missing record → `getRoles: []`, `getAttrs: {}` (fail-closed). `extraSelect` adds fields to that one fetch (read them in `extractAttrs`); `cache` opts into a cross-request record cache. See [Atscript Models](/moost/atscript#extraselect-read-extra-fields-from-the-same-fetch).
+
+### `ArbacUserRecordCache`
+
+```ts
+class ArbacUserRecordCache {
+  constructor(opts: { ttlMs: number; max?: number; now?: () => number });
+  invalidate(userId?: string): void;
+}
+```
+
+Opt-in, process-local `userId` → user-record cache shared across requests for `ttlMs` (default `max` 1000). Off unless passed as the provider's `cache` option. Changes made elsewhere are seen within `ttlMs`; `invalidate` evicts on this process. See [Opt-in cross-request cache](/moost/atscript#opt-in-cross-request-cache-arbacuserrecordcache).
 
 ### `ArbacUserTable<T>`
 

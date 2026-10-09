@@ -45,6 +45,7 @@ interface AuthCredentialOptions<TPayload extends object = object> {
   maxConcurrent?: number;
   onLimit?: "reject" | "evict-oldest"; // default 'reject'
   trackLastSeen?: "refresh" | "validate" | false; // default false — see Sessions
+  validateCache?: { ttlMs: number; max?: number }; // since 0.1.78 — opt-in, see Credentials
   clock?: Clock;
 }
 ```
@@ -92,7 +93,7 @@ AES-256-GCM token. Format: `base64url(iv ‖ ciphertext ‖ authTag)` of `JSON.s
 new DenylistStoreMemory();
 ```
 
-In-memory `Map<jti, expiresAt>` denylist with lazy expiry on `has` and explicit `cleanup()` sweep. Required by stateless stores if `revoke` / `consume` / `update` are used. See [Stores](/auth/).
+In-memory `Map<jti, expiresAt>` denylist with lazy expiry on `has`, an amortized sweep of expired entries as it grows (since 0.1.78) and an explicit `cleanup()` sweep. Required by stateless stores if `revoke` / `consume` / `update` are used. See [Stores](/auth/).
 
 ### `RateLimiter`
 
@@ -120,7 +121,7 @@ Fixed-window limiter with window-aligned keys — one atomic store increment per
 new RateLimitStoreMemory(opts?: { clock?: Clock })
 ```
 
-In-memory `RateLimitStore` — lazy eviction on access, `cleanup(): Promise<number>` sweep, `clear()` for test resets. Single process only. See [Rate Limiting (Core)](/auth/rate-limit#ratelimitstorememory).
+In-memory `RateLimitStore` — lazy eviction on access, an amortized sweep of dead window counters as it grows (since 0.1.78), `cleanup(): Promise<number>` sweep, `clear()` for test resets. Single process only. See [Rate Limiting (Core)](/auth/rate-limit#ratelimitstorememory).
 
 ## Functions
 
@@ -327,7 +328,7 @@ interface CredentialStore<TPayload extends object = object> {
   revoke(token: string): Promise<void>;
   revokeAllForUser(userId: string): Promise<number>;
   listForUser?(userId: string): Promise<Array<CredentialState & TPayload & { token: string }>>;
-  touch?(token: string, at: number): Promise<void>; // backs trackLastSeen: 'validate'
+  touch?(token: string, at: number, state?: CredentialState & TPayload): Promise<void>; // backs trackLastSeen: 'validate'; `state` (since 0.1.78) = what retrieve just returned
   listSessions?(userId: string): Promise<Array<CredentialState & TPayload & { token: string }>>; // optional native grouping
 }
 ```

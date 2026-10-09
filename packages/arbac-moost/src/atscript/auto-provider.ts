@@ -250,6 +250,99 @@ const useFetchCache = defineWook((ctx: EventContext): FetchCache => {
   return cache;
 });
 
+/** Options of {@link AtscriptArbacUserProvider}. @since 0.1.78 */
+export interface AtscriptArbacUserProviderOptions {
+  /**
+   * Extra user fields to select in the provider's single per-event user
+   * fetch, next to the id, `@arbac.role` and `@arbac.attribute` fields — read
+   * them in an `extractAttrs` / `extractRoles` override instead of fetching
+   * the user a second time (e.g. a `username` that scope functions need but
+   * that cannot carry `@arbac.attribute`).
+   */
+  extraSelect?: readonly string[];
+  /**
+   * OPT-IN cross-request cache of the fetched user record (roles + attrs),
+   * see {@link ArbacUserRecordCache}. Off by default: without it every
+   * request reads the user once.
+   */
+  cache?: ArbacUserRecordCache;
+}
+
+/** Options of {@link ArbacUserRecordCache}. @since 0.1.78 */
+export interface ArbacUserRecordCacheOptions {
+  /** How long a fetched record is reused, in ms (keep it short — seconds). */
+  ttlMs: number;
+  /** Most cached users; the oldest entry is dropped past it. Default 1000. */
+  max?: number;
+  /** Clock (ms) — for tests. Default `Date.now`. */
+  now?: () => number;
+}
+
+/**
+ * OPT-IN, process-local cache of the user records an
+ * {@link AtscriptArbacUserProvider} fetches for ARBAC (`userId` → roles +
+ * attributes), shared across requests for `ttlMs`. Pass it as the provider's
+ * `cache` option; off by default.
+ *
+ * Staleness: a role or attribute change reaches ARBAC within `ttlMs` — or
+ * immediately on THIS process when you call {@link invalidate} (wire it to
+ * your user writes, e.g. `userService.onUserWrite((id) => cache.invalidate(id))`).
+ * Other processes keep their entry until it expires, so the cross-node lag is
+ * at most `ttlMs`. Only the stored record is cached: credential attenuation
+ * (read from the token per request) and every policy evaluation still run
+ * per request. A missing user is never cached.
+ *
+ * @since 0.1.78
+ */
+export class ArbacUserRecordCache {
+  private readonly ttlMs: number;
+  private readonly max: number;
+  private readonly now: () => number;
+  private readonly entries = new Map<
+    string,
+    { owner: object; expiresAt: number; record: Promise<unknown> }
+  >();
+
+  constructor(opts: ArbacUserRecordCacheOptions) {
+    if (!(opts.ttlMs > 0)) throw new Error("ArbacUserRecordCache: ttlMs must be > 0");
+    this.ttlMs = opts.ttlMs;
+    this.max = opts.max ?? 1000;
+    this.now = opts.now ?? Date.now;
+  }
+
+  /** Drop the cached record of `userId` (all users when omitted). */
+  invalidate(userId?: string): void {
+    if (userId === undefined) this.entries.clear();
+    else this.entries.delete(userId);
+  }
+
+  /** @internal The live record cached for `owner` (a provider), if any. */
+  get(owner: object, userId: string): Promise<unknown> | undefined {
+    const entry = this.entries.get(userId);
+    if (!entry) return undefined;
+    if (entry.owner !== owner || entry.expiresAt <= this.now()) {
+      this.entries.delete(userId);
+      return undefined;
+    }
+    return entry.record;
+  }
+
+  /** @internal Cache `record` (dropped again if it rejects or resolves to `null`). */
+  set(owner: object, userId: string, record: Promise<unknown>): void {
+    this.entries.delete(userId);
+    if (this.entries.size >= this.max) {
+      const oldest = this.entries.keys().next();
+      if (!oldest.done) this.entries.delete(oldest.value);
+    }
+    const entry = { owner, expiresAt: this.now() + this.ttlMs, record };
+    this.entries.set(userId, entry);
+    const drop = () => {
+      if (this.entries.get(userId) === entry) this.entries.delete(userId);
+    };
+    record.then((r) => r === null && drop(), drop);
+  }
+}
+
 /**
  * `@Injectable()` (SINGLETON) — moost@0.6.x's `Injectable` metadata is NOT
  * inherited from the base `ArbacUserProvider` by infact, so the decorator
@@ -262,7 +355,9 @@ const useFetchCache = defineWook((ctx: EventContext): FetchCache => {
  * table, and register the subclass via `setReplaceRegistry`.
  *
  * `extractRoles` and `extractAttrs` are protected seams — override to
- * reshape roles/attrs without re-implementing the fetch path.
+ * reshape roles/attrs without re-implementing the fetch path; pass
+ * `extraSelect` (third constructor argument) to have the fetch include the
+ * extra fields they read.
  */
 @Injectable()
 export abstract class AtscriptArbacUserProvider<
@@ -271,10 +366,12 @@ export abstract class AtscriptArbacUserProvider<
   private readonly spec: ArbacExtractSpec;
   private readonly projection: Record<string, 1>;
   private readonly withClause: Array<{ name: string }> | undefined;
+  private readonly recordCache: ArbacUserRecordCache | undefined;
 
   constructor(
     protected readonly userType: TAtscriptAnnotatedType,
     protected readonly table: ArbacUserTable<T>,
+    options?: AtscriptArbacUserProviderOptions,
   ) {
     super();
     this.spec = getArbacExtractSpec(userType);
@@ -283,9 +380,15 @@ export abstract class AtscriptArbacUserProvider<
         "AtscriptArbacUserProvider: userType has no @arbac.userId, @db.table.preferredId.uniqueIndex field, or @meta.id — annotate one to identify users",
       );
     }
-    this.projection = getArbacProjection(userType);
+    const projection = getArbacProjection(userType);
+    const extra = options?.extraSelect?.filter((f) => !Object.hasOwn(projection, f)) ?? [];
+    this.projection =
+      extra.length > 0
+        ? { ...projection, ...Object.fromEntries(extra.map((f) => [f, 1 as const])) }
+        : projection;
     this.withClause =
       this.spec.roleField?.shape === "rel.from" ? [{ name: this.spec.roleField.name }] : undefined;
+    this.recordCache = options?.cache;
   }
 
   abstract override getUserId(): string | Promise<string>;
@@ -366,6 +469,11 @@ export abstract class AtscriptArbacUserProvider<
     }
     const cached = perProvider.get(userId);
     if (cached !== undefined) return cached;
+    const shared = this.recordCache?.get(this, userId) as Promise<T | null> | undefined;
+    if (shared !== undefined) {
+      perProvider.set(userId, shared);
+      return shared;
+    }
     // userIdField is guaranteed non-empty by the constructor check.
     const userIdField = this.spec.userIdField as string;
     const controls: { $select: Record<string, 1>; $with?: Array<{ name: string }> } = {
@@ -380,6 +488,7 @@ export abstract class AtscriptArbacUserProvider<
     // (otherwise concurrent getRoles/getAttrs would all see the same failure).
     promise.catch(() => perProvider?.delete(userId));
     perProvider.set(userId, promise);
+    this.recordCache?.set(this, userId, promise);
     return promise;
   }
 }

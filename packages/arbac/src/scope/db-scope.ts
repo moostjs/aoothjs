@@ -497,9 +497,10 @@ const NO_FIELDS: TScopeFieldRules<never> = Object.freeze({});
 /** Options of {@link applyScopeFieldFilters}. @since 0.1.72 */
 export interface TApplyScopeFieldFiltersOptions {
   /**
-   * Called for a non-built-in scope key with no rule in `fields` (once per
-   * scope object carrying it) — e.g. to warn about a field that will fail
-   * the first attenuated conjunction.
+   * Called for a non-built-in scope key with no rule in `fields` — e.g. to
+   * warn about a field that will fail the first attenuated conjunction. With
+   * row rules registered it fires once per scope object carrying the key
+   * (memoized fold); without any, on every call.
    */
   onUnknownField?: (field: string) => void;
 }
@@ -511,8 +512,8 @@ export interface TApplyScopeFieldFiltersOptions {
  * conjunction — so every row path sees the restriction. The custom value
  * stays on the scope. Scopes are never mutated: a changed scope is a copy.
  * Memoized per rule registry and scope object (process-wide), and
- * idempotent (a folded scope folds to itself); without row rules (and no
- * `onUnknownField`) the input list is returned as is.
+ * idempotent (a folded scope folds to itself); without row rules the input
+ * list is returned as is (after the `onUnknownField` report, if any).
  *
  * @since 0.1.72
  */
@@ -533,7 +534,13 @@ export function applyScopeFieldFilters<S extends TDbScope>(
   }
   const { rules, memo } = state;
   const { onUnknownField } = opts;
-  if (rules.length === 0 && !onUnknownField) return scopes;
+  if (rules.length === 0) {
+    // Nothing to fold: only report unknown fields (scopes stay as they are,
+    // so there is nothing to memoize).
+    if (onUnknownField)
+      for (const scope of scopes) reportUnknownFields(scope, registry, onUnknownField);
+    return scopes;
+  }
   const fold = (scope: S): S => {
     if (scope === null || typeof scope !== "object") return scope;
     const hit = memo.get(scope);
@@ -567,6 +574,25 @@ export function applyScopeFieldFilters<S extends TDbScope>(
   };
   const out = scopes.map(fold);
   return out.every((s, i) => s === scopes[i]) ? scopes : out;
+}
+
+/** {@link applyScopeFieldFilters}' unknown-field report without row rules, recursing into `with`. */
+function reportUnknownFields(
+  scope: TDbScope,
+  registry: object,
+  onUnknownField: (field: string) => void,
+): void {
+  if (scope === null || typeof scope !== "object") return;
+  const record = scope as Record<string, unknown>;
+  for (const key of Object.keys(scope)) {
+    if (BUILT_IN_KEYS.has(key) || Object.hasOwn(registry, key)) continue;
+    if (record[key] !== undefined) onUnknownField(key);
+  }
+  if (scope.with) {
+    for (const sub of Object.values(scope.with as Record<string, TDbScope>)) {
+      reportUnknownFields(sub, registry, onUnknownField);
+    }
+  }
 }
 
 /**

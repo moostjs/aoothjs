@@ -42,6 +42,8 @@ Defaults match `PasswordConfig` defaults: `N=16384, r=8, p=1, keyLength=64, salt
 
 ## Hash-string format
 
+Memory-hard costs work: the hasher sizes scrypt `maxmem` to `N × r` (cap 1 GiB), so `scryptN: 2 ** 17` (OWASP) hashes and verifies. Before 0.1.78 any `N × r ≥ 2^18` (e.g. `scryptN: 32768` with `r: 8`) threw `ERR_CRYPTO_INVALID_SCRYPT_PARAMS` — bump to ≥ 0.1.78 before raising cost.
+
 Hashes are self-describing: the scrypt parameters (N, r, p, keyLength) are baked into the stored value, so `verify` always re-runs scrypt with the parameters from the hash — not the current `hasher` config. You can raise cost without invalidating older hashes; `verify` returns `false` (never throws) for any malformed input.
 
 ## Pepper

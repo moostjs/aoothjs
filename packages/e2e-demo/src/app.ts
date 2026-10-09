@@ -85,7 +85,6 @@ import {
   type FederatedIdentityTable,
 } from "@aooth/user/atscript-db";
 import { Get, MoostHttp, Post } from "@moostjs/event-http";
-import { cachedBy } from "@wooksjs/event-core";
 import { useHeaders } from "@wooksjs/event-http";
 import { MoostWf } from "@moostjs/event-wf";
 import {
@@ -1305,22 +1304,14 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // metadata across `extends`, so each consumer subclass must re-apply it.
   // Per-event memoization happens via a wooks-slot cache inside
   // `AtscriptArbacUserProvider`.
-  // The username behind a surrogate id — one lookup per event (every ARBAC
-  // evaluation of a request reads the same principal's attrs).
-  const usernameOf = cachedBy(async (id: string) => {
-    const row = await appDb.tables.users.findOne({
-      filter: { id },
-      controls: { $select: ["username"] },
-    });
-    return row?.username;
-  });
   @Injectable()
   class DemoArbacUserProvider extends AtscriptArbacUserProvider<DemoUser> {
     constructor() {
       // The session subject is now the stable surrogate `id`, so the provider
       // can query the REAL users table directly — its default
       // `findOne({ filter: { id } })` resolves the row by primary key.
-      super(DemoUser, appDb.tables.users);
+      // `extraSelect` adds `username` to that single fetch (read below).
+      super(DemoUser, appDb.tables.users, { extraSelect: ["username"] });
       // Boot-time: every @arbac.attenuate.attr target on the credential model
       // must name a real @arbac.attribute on the user model — fail loud on a typo.
       validateAttenuationTargets(DemoAuthCredential, ["tenantId", "departmentId"]);
@@ -1333,9 +1324,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     // ownerUsername) hold usernames — so owner-scoped roles read
     // `attrs.username`. `username` is inherited from the credentials base
     // model, which is why it can't carry `@arbac.attribute` itself.
-    override async getAttrs(id: string): Promise<object> {
-      const [attrs, username] = await Promise.all([super.getAttrs(id), usernameOf(id)]);
-      return { ...attrs, username };
+    protected override extractAttrs(record: DemoUser): object {
+      return { ...super.extractAttrs(record), username: record.username };
     }
     // Source the credential's restrict-only ARBAC attenuation from its TYPED
     // @arbac.attenuate.* root fields (surfaced flat on the auth context).

@@ -31,6 +31,69 @@ function fingerprint(token: string): string {
 }
 
 /**
+ * Turn `ctx.credentialId` (already in place, so key order is kept) into a
+ * lazily computed, memoized, still writable property.
+ */
+function lazyCredentialId(ctx: { credentialId: string }, token: string): void {
+  let value: string | undefined;
+  Object.defineProperty(ctx, "credentialId", {
+    enumerable: true,
+    configurable: true,
+    get: () => (value ??= fingerprint(token)),
+    set: (next: string) => {
+      value = next;
+    },
+  });
+}
+
+/** Smallest map size an amortized expiry sweep runs at. */
+const MIN_SWEEP_SIZE = 1024;
+
+/**
+ * The opt-in `validateCache`: token → validated state for `ttlMs`, bounded
+ * (oldest dropped first). `epoch` moves on every eviction so a validation
+ * racing a revocation never re-caches the revoked token.
+ */
+class ValidateCache<S extends CredentialState> {
+  private readonly entries = new Map<string, { state: S; until: number }>();
+  epoch = 0;
+
+  constructor(
+    private readonly ttlMs: number,
+    private readonly max: number,
+  ) {}
+
+  get(token: string, now: number): S | undefined {
+    const entry = this.entries.get(token);
+    if (!entry) return undefined;
+    if (entry.until > now) return entry.state;
+    this.entries.delete(token);
+    return undefined;
+  }
+
+  set(token: string, state: S, now: number): void {
+    this.entries.delete(token);
+    if (this.entries.size >= this.max) {
+      const oldest = this.entries.keys().next();
+      if (!oldest.done) this.entries.delete(oldest.value);
+    }
+    this.entries.set(token, { state, until: now + this.ttlMs });
+  }
+
+  delete(token: string): void {
+    this.epoch++;
+    this.entries.delete(token);
+  }
+
+  deleteUser(userId: string): void {
+    this.epoch++;
+    for (const [token, entry] of this.entries) {
+      if (entry.state.userId === userId) this.entries.delete(token);
+    }
+  }
+}
+
+/**
  * Merge a credential's typed payload under the fixed {@link CredentialState}
  * envelope, asserting the `CredentialState & TPayload` shape in ONE place. The
  * payload is spread first so an envelope field always wins a name clash. Every
@@ -88,6 +151,19 @@ export interface AuthCredentialOptions<TPayload extends object = object> {
    *   store that implements `touch`; a no-op on stores that don't.
    */
   trackLastSeen?: "refresh" | "validate" | false;
+  /**
+   * OPT-IN process-local cache of validated access-token state (token →
+   * state), reused by `validate()` for `ttlMs` instead of a store / denylist
+   * round trip. Off by default. A hit still re-checks expiry and kind; this
+   * instance's `revoke`, `revokeAllForUser`, `revokeSession`,
+   * `revokeOtherSessions`, the concurrency eviction and refresh-reuse
+   * responses evict their tokens at once. A revocation made elsewhere (another
+   * process / instance, or a direct store / denylist write) is seen within
+   * `ttlMs` — keep it short (seconds).
+   *
+   * @since 0.1.78
+   */
+  validateCache?: { ttlMs: number; max?: number };
   /** Optional clock for testability. */
   clock?: Clock;
 }
@@ -207,6 +283,10 @@ export class AuthCredential<TPayload extends object = object> {
     string,
     { userId: string; iat: number; exp: number; sessionId?: string }
   >();
+  /** Map size at which `consumedRefreshes` next sweeps its expired entries. */
+  private consumedSweepAt = MIN_SWEEP_SIZE;
+  /** Opt-in validated-state cache (`validateCache`). */
+  private readonly validated?: ValidateCache<CredentialState & TPayload>;
 
   constructor(opts: AuthCredentialOptions<TPayload>) {
     this.store = opts.store;
@@ -218,6 +298,18 @@ export class AuthCredential<TPayload extends object = object> {
     this.onLimit = opts.onLimit ?? "reject";
     this.trackLastSeen = opts.trackLastSeen ?? false;
     this.clock = opts.clock ?? defaultClock;
+    if (opts.validateCache) {
+      if (!(opts.validateCache.ttlMs > 0)) {
+        throw new AuthError(
+          "INVALID_CONFIG",
+          `validateCache.ttlMs must be > 0 (got ${opts.validateCache.ttlMs})`,
+        );
+      }
+      this.validated = new ValidateCache(
+        opts.validateCache.ttlMs,
+        opts.validateCache.max ?? 10_000,
+      );
+    }
 
     // Catch the misconfiguration at boot rather than producing tokens that
     // fail validate() the moment they are issued.
@@ -368,33 +460,69 @@ export class AuthCredential<TPayload extends object = object> {
   }
 
   async validate(accessToken: string): Promise<AuthContext<TPayload> | null> {
-    if (this.denylist && (await this.denylist.has(accessToken))) {
+    let state: (CredentialState & TPayload) | null | undefined = this.validated?.get(
+      accessToken,
+      this.clock.now(),
+    );
+    // Only a state read by THIS call is handed to `touch`: a cached one may
+    // predate a revocation made elsewhere, and a store writing it back whole
+    // (Redis) would resurrect the token.
+    let fresh = false;
+    if (!state) {
+      fresh = true;
+      const epoch = this.validated?.epoch;
+      state = await this.retrieveUnlessDenied(accessToken);
+      if (!state) return null;
+      if (state.expiresAt <= this.clock.now()) return null;
+      if (state.kind === "refresh") return null;
+      // Not when a revocation ran while this one was reading.
+      if (this.validated && this.validated.epoch === epoch) {
+        this.validated.set(accessToken, state, this.clock.now());
+      }
+    } else if (state.expiresAt <= this.clock.now()) {
+      this.validated!.delete(accessToken);
       return null;
     }
-    const state = await this.store.retrieve(accessToken);
-    if (!state) return null;
-    if (state.expiresAt <= this.clock.now()) return null;
-    if (state.kind === "refresh") return null;
 
     if (this.trackLastSeen === "validate" && this.store.touch) {
       // Best-effort activity stamp — one write per authenticated request.
       // Fire-and-forget would race the response; await keeps lastSeenAt
-      // monotonic but adds a store round-trip (documented cost).
-      await this.store.touch(accessToken, this.clock.now());
+      // monotonic but adds a store round-trip (documented cost). A state
+      // just read is passed along so a store can skip re-reading it.
+      await this.store.touch(accessToken, this.clock.now(), fresh ? state : undefined);
     }
 
     // Surface the credential's typed payload fields by name (excludes envelope
     // internals like parentCredentialId); the base read-fields win any clash.
-    return {
+    // `credentialId` (a SHA-256 of the token) is computed on first read.
+    const ctx = {
       ...credentialPayloadOf<TPayload>(state),
       userId: state.userId,
       method: this.method,
-      credentialId: fingerprint(accessToken),
+      credentialId: "",
       // Legacy tokens predating sessionId fall back to the token fingerprint —
       // the SAME fallback listSessions uses, so "this device" matching holds.
       sessionId: this.sessionIdOf(state.sessionId, accessToken),
       expiresAt: state.expiresAt,
     } as AuthContext<TPayload>;
+    lazyCredentialId(ctx, accessToken);
+    return ctx;
+  }
+
+  /**
+   * The stored state of `accessToken` unless the orchestrator's denylist has
+   * it — both looked up concurrently (one round trip on remote stores).
+   */
+  private async retrieveUnlessDenied(
+    accessToken: string,
+  ): Promise<(CredentialState & TPayload) | null> {
+    const retrieving = this.store.retrieve(accessToken);
+    if (!this.denylist) return await retrieving;
+    // Handled at once: a store failure settling while the denylist is still
+    // awaited must not surface as an unhandled rejection.
+    retrieving.catch(() => {});
+    if (await this.denylist.has(accessToken)) return null;
+    return await retrieving;
   }
 
   async refresh(refreshToken: string, opts?: RefreshCallOptions<TPayload>): Promise<RefreshResult> {
@@ -493,6 +621,7 @@ export class AuthCredential<TPayload extends object = object> {
       // the old token and record the reuse signal in the process-local map so
       // a same-process replay still fires the theft response.
       await this.store.consume(refreshToken);
+      this.sweepConsumedRefreshes();
       this.consumedRefreshes.set(refreshToken, {
         userId: oldState.userId,
         iat: oldState.issuedAt,
@@ -594,12 +723,25 @@ export class AuthCredential<TPayload extends object = object> {
     };
   }
 
+  // The validate cache is evicted before AND after the store write: a
+  // validation that starts while the write is in flight can still read the
+  // old state, and must neither stay cached nor be cached after it.
   async revoke(token: string): Promise<void> {
-    await this.store.revoke(token);
+    this.validated?.delete(token);
+    try {
+      await this.store.revoke(token);
+    } finally {
+      this.validated?.delete(token);
+    }
   }
 
   async revokeAllForUser(userId: string): Promise<number> {
-    return await this.store.revokeAllForUser(userId);
+    this.validated?.deleteUser(userId);
+    try {
+      return await this.store.revokeAllForUser(userId);
+    } finally {
+      this.validated?.deleteUser(userId);
+    }
   }
 
   async listForUser(userId: string): Promise<Array<AuthContext<TPayload>>> {
@@ -607,17 +749,14 @@ export class AuthCredential<TPayload extends object = object> {
     const all = await this.store.listForUser(userId);
     return all
       .filter((entry) => entry.kind !== "refresh")
-      .map(
-        (entry) =>
-          ({
-            ...credentialPayloadOf<TPayload>(entry),
-            userId: entry.userId,
-            method: this.method,
-            credentialId: fingerprint(entry.token),
-            sessionId: this.sessionKeyOf(entry),
-            expiresAt: entry.expiresAt,
-          }) as AuthContext<TPayload>,
-      );
+      .map((entry) => ({
+        ...credentialPayloadOf<TPayload>(entry),
+        userId: entry.userId,
+        method: this.method,
+        credentialId: fingerprint(entry.token),
+        sessionId: this.sessionKeyOf(entry),
+        expiresAt: entry.expiresAt,
+      }));
   }
 
   /**
@@ -722,7 +861,7 @@ export class AuthCredential<TPayload extends object = object> {
     await Promise.all(
       all
         .filter((entry) => this.sessionKeyOf(entry) === sessionId)
-        .map((entry) => this.store.revoke(entry.token)),
+        .map((entry) => this.revoke(entry.token)),
     );
   }
 
@@ -742,7 +881,7 @@ export class AuthCredential<TPayload extends object = object> {
       const key = this.sessionKeyOf(entry);
       if (key === keepSessionId) continue;
       revokedSessions.add(key);
-      revokes.push(this.store.revoke(entry.token));
+      revokes.push(this.revoke(entry.token));
     }
     await Promise.all(revokes);
     return revokedSessions.size;
@@ -782,7 +921,7 @@ export class AuthCredential<TPayload extends object = object> {
     const sorted = accessOnly.toSorted((a, b) => a.issuedAt - b.issuedAt);
     const toEvict = accessOnly.length - this.maxConcurrent + 1;
     for (let i = 0; i < toEvict && i < sorted.length; i++) {
-      await this.store.revoke(sorted[i].token);
+      await this.revoke(sorted[i].token);
     }
   }
 
@@ -882,6 +1021,16 @@ export class AuthCredential<TPayload extends object = object> {
     };
   }
 
+  /** Amortized sweep of expired `consumedRefreshes` entries (each size doubling). */
+  private sweepConsumedRefreshes(): void {
+    if (this.consumedRefreshes.size < this.consumedSweepAt) return;
+    const now = this.clock.now();
+    for (const [token, entry] of this.consumedRefreshes) {
+      if (entry.exp <= now) this.consumedRefreshes.delete(token);
+    }
+    this.consumedSweepAt = Math.max(MIN_SWEEP_SIZE, this.consumedRefreshes.size * 2);
+  }
+
   private lookupConsumedRefresh(
     token: string,
   ): { userId: string; iat: number; exp: number; sessionId?: string } | null {
@@ -938,7 +1087,7 @@ export class AuthCredential<TPayload extends object = object> {
     if (scope === "session" && reuse.sessionId !== undefined && this.store.listForUser) {
       await this.revokeSession(reuse.userId, reuse.sessionId);
     } else {
-      await this.store.revokeAllForUser(reuse.userId);
+      await this.revokeAllForUser(reuse.userId);
     }
 
     throw new AuthError("REFRESH_REUSE_DETECTED", undefined, {

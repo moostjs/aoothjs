@@ -1,5 +1,5 @@
-import { generateKeyPair } from "jose";
-import { beforeEach, describe, expect, it } from "vite-plus/test";
+import { generateKeyPair, jwtVerify, SignJWT } from "jose";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { CredentialState } from "../credential/types";
 import { AuthError } from "../errors";
 import type { Clock } from "../utils/clock";
@@ -340,6 +340,42 @@ describe("CredentialStoreJwt", () => {
       const token = await store.persist(makeState("alice", clock.now()));
       expect(await store.retrieve(token)).not.toBeNull();
     });
+  });
+
+  describe("HS* key import (imported once, interoperable)", () => {
+    for (const algorithm of ["HS256", "HS384", "HS512"] as const) {
+      it(`${algorithm}: imports the HMAC key once; tokens interoperate with raw-secret jose`, async () => {
+        const clock = new FakeClock();
+        const spy = vi.spyOn(crypto.subtle, "importKey");
+        const store = new CredentialStoreJwt({ algorithm, secret: SECRET, clock });
+        const tokens = await Promise.all(
+          [1, 2, 3].map(() => store.persist(makeState("alice", clock.now()))),
+        );
+        for (const t of tokens) expect(await store.retrieve(t)).not.toBeNull();
+        expect(
+          spy.mock.calls.filter((c) => (c[2] as { name?: string }).name === "HMAC"),
+        ).toHaveLength(1);
+        spy.mockRestore();
+        // Same bytes through jose's own raw-secret path: verifies here, and ours verifies there.
+        const raw = new TextEncoder().encode(SECRET);
+        const foreign = await new SignJWT({
+          state: { iatMs: clock.now(), expMs: clock.now() + 60_000 },
+        })
+          .setProtectedHeader({ alg: algorithm })
+          .setSubject("bob")
+          .setIssuedAt(Math.floor(clock.now() / 1000))
+          .setExpirationTime(Math.floor(clock.now() / 1000) + 60)
+          .sign(raw);
+        expect((await store.retrieve(foreign))?.userId).toBe("bob");
+        const verified = await jwtVerify(tokens[0], raw, {
+          algorithms: [algorithm],
+          currentDate: new Date(clock.now()),
+        });
+        expect(verified.payload.sub).toBe("alice");
+        // deriveSubkey still works off the raw bytes
+        expect(store.deriveSubkey("wf").length).toBe(32);
+      });
+    }
   });
 
   describe("RS256", () => {

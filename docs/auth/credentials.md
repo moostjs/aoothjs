@@ -26,6 +26,8 @@ interface AuthCredentialOptions<TPayload extends object> {
   denylist?: DenylistStore;
   maxConcurrent?: number;
   onLimit?: "reject" | "evict-oldest";
+  trackLastSeen?: "refresh" | "validate" | false;
+  validateCache?: { ttlMs: number; max?: number }; // since 0.1.78, opt-in
   clock?: Clock;
 }
 ```
@@ -39,6 +41,8 @@ interface AuthCredentialOptions<TPayload extends object> {
 | `denylist`      | `undefined`                 | Required when using a stateless store for `revoke` / `consume` / `update`.                                                                                   |
 | `maxConcurrent` | `undefined`                 | Cap on live access credentials per user. Refresh tokens don't count.                                                                                         |
 | `onLimit`       | `'reject'`                  | What happens when `maxConcurrent` is reached on `issue()` — see [the limit policies](#maxconcurrent-and-onlimit).                                            |
+| `trackLastSeen` | `false`                     | Activity stamping — see [Sessions](./sessions#activity-tracking-lastseenat).                                                                                 |
+| `validateCache` | `undefined` (off)           | Opt-in cache of validated access-token state — see [Opt-in validate cache](#opt-in-validate-cache-validatecache).                                            |
 | `clock`         | `{ now: () => Date.now() }` | Injectable clock for tests. Used everywhere — TTL expiry, JWT `iat`/`exp`, the rotation grace window, the per-user revocation epoch.                         |
 
 ::: warning `accessTtl` must be positive
@@ -142,9 +146,9 @@ type AuthContext<TPayload extends object = object> = {
 
 **Behavior**
 
-1. `store.retrieve(token)` — returns `null` if missing, expired or epoch-shadowed.
+1. `store.retrieve(token)` — returns `null` if missing, expired or epoch-shadowed. When a `denylist` is configured it is checked at the same time (one round trip); a denied token returns `null`.
 2. Rejects tokens with `kind: 'refresh'` (return `null`).
-3. Builds `AuthContext` with `credentialId = sha256(token)`.
+3. Builds `AuthContext`; `credentialId = sha256(token)` is computed when first read.
 
 **Example**
 
@@ -156,6 +160,29 @@ if (!ctx) throw new HttpError(401);
 
 ::: warning Never throws
 `validate` collapses every failure mode to `null`. If you need to distinguish "expired" from "revoked" for UX, encode the reason at issue-time in metadata, not by inspecting the validation path.
+:::
+
+### Opt-in validate cache (`validateCache`)
+
+Every `validate()` reads the store (and the `denylist`). For a remote store on a hot API you can reuse a validated state for a few seconds instead:
+
+```ts
+const auth = new AuthCredential({
+  store,
+  validateCache: { ttlMs: 3_000, max: 10_000 }, // off unless set
+});
+```
+
+| Field   | Default    | Meaning                                                |
+| ------- | ---------- | ------------------------------------------------------ |
+| `ttlMs` | (required) | How long a validated state is reused. Must be `> 0`.   |
+| `max`   | `10000`    | Most cached tokens; the oldest entry is dropped first. |
+
+- A hit still re-checks expiry, and refresh tokens and unknown tokens are never cached.
+- This instance's `revoke`, `revokeAllForUser`, `revokeSession`, `revokeOtherSessions`, the `maxConcurrent` eviction and the refresh-reuse response evict their tokens at once.
+
+::: warning Revocation lag across processes
+A revocation made on **another process**, by another `AuthCredential` instance, or by writing to the store / `denylist` directly is seen only when the entry expires — at most `ttlMs` later. Keep `ttlMs` to seconds, and leave it off where an immediate cross-node logout is a requirement.
 :::
 
 ### The `credentialId` fingerprint

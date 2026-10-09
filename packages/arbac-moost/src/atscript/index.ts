@@ -1,4 +1,10 @@
-export { type ArbacUserTable, AtscriptArbacUserProvider } from "./auto-provider";
+export {
+  type ArbacUserTable,
+  AtscriptArbacUserProvider,
+  type AtscriptArbacUserProviderOptions,
+  ArbacUserRecordCache,
+  type ArbacUserRecordCacheOptions,
+} from "./auto-provider";
 export {
   type ArbacAttenuationSpec,
   extractAttenuation,

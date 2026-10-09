@@ -1509,7 +1509,7 @@ export class AuthWorkflow {
     const pub: AuthWfPublicState = {};
     if (ctx.consents) {
       const sub = pickDefined(ctx.consents, ["pending", "decidedAt"] as const);
-      if (sub) pub.consents = sub as AuthWfPublicState["consents"];
+      if (sub) pub.consents = sub;
     }
     if (ctx.altActions) {
       const sub = pickDefined(ctx.altActions, [
@@ -1518,31 +1518,31 @@ export class AuthWorkflow {
         "magicLink",
         "ssoProviders",
       ] as const);
-      if (sub) pub.altActions = sub as AuthWfPublicState["altActions"];
+      if (sub) pub.altActions = sub;
     }
     if (ctx.mfa) {
       const sub = pickDefined(ctx.mfa, ["method", "methodCount", "enrolledMethods"] as const);
-      if (sub) pub.mfa = sub as AuthWfPublicState["mfa"];
+      if (sub) pub.mfa = sub;
     }
     if (ctx.pincode) {
       const sub = pickDefined(ctx.pincode, ["sentTo", "codeLength", "resendAllowedAt"] as const);
-      if (sub) pub.pincode = sub as AuthWfPublicState["pincode"];
+      if (sub) pub.pincode = sub;
     }
     if (ctx.trust) {
       const sub = pickDefined(ctx.trust, ["optIn"] as const);
-      if (sub) pub.trust = sub as AuthWfPublicState["trust"];
+      if (sub) pub.trust = sub;
     }
     if (ctx.password) {
       const sub = pickDefined(ctx.password, ["heading", "intro", "policies"] as const);
-      if (sub) pub.password = sub as AuthWfPublicState["password"];
+      if (sub) pub.password = sub;
     }
     if (ctx.admin) {
       const sub = pickDefined(ctx.admin, ["availableRoles"] as const);
-      if (sub) pub.admin = sub as AuthWfPublicState["admin"];
+      if (sub) pub.admin = sub;
     }
     if (ctx.channel) {
       const sub = pickDefined(ctx.channel, ["otpDisclosure"] as const);
-      if (sub) pub.channel = sub as AuthWfPublicState["channel"];
+      if (sub) pub.channel = sub;
     }
     if (ctx.mfaEnroll) {
       const sub = pickDefined(ctx.mfaEnroll, [
@@ -1552,7 +1552,7 @@ export class AuthWorkflow {
         "secret",
         "uri",
       ] as const);
-      if (sub) pub.mfaEnroll = sub as AuthWfPublicState["mfaEnroll"];
+      if (sub) pub.mfaEnroll = sub;
     }
     if (ctx.addMfa) {
       // Manage-menu inputs only — `candidates` (Add options), `locked`
@@ -1560,11 +1560,11 @@ export class AuthWorkflow {
       // factor under a required policy). Internal manage fields (`action`,
       // `target`, `stepUp*`, `blocked`) stay server-only.
       const sub = pickDefined(ctx.addMfa, ["candidates", "locked", "removeBlocked"] as const);
-      if (sub) pub.manage = sub as AuthWfPublicState["manage"];
+      if (sub) pub.manage = sub;
     }
     if (ctx.defaults) {
       const sub = pickDefined(ctx.defaults, ["email"] as const);
-      if (sub) pub.defaults = sub as AuthWfPublicState["defaults"];
+      if (sub) pub.defaults = sub;
     }
     if (ctx.pendingLink) {
       // Only the masked/UX fields — `candidateUserId` / `subject` / proof `pin`
@@ -1575,7 +1575,7 @@ export class AuthWorkflow {
         "sentTo",
         "resendAllowedAt",
       ] as const);
-      if (sub) pub.proveControl = sub as AuthWfPublicState["proveControl"];
+      if (sub) pub.proveControl = sub;
     }
     if (ctx.newPasswordRequired !== undefined) {
       pub.newPasswordRequired = ctx.newPasswordRequired;
@@ -1590,7 +1590,7 @@ export class AuthWorkflow {
         "redirectHost",
         "signedInAs",
       ] as const);
-      if (sub) pub.authz = sub as AuthWfPublicState["authz"];
+      if (sub) pub.authz = sub;
     }
     ctx.public = pub;
   }
@@ -2489,7 +2489,7 @@ export class AuthWorkflow {
       ctx.isFirstLogin = false;
       return undefined;
     }
-    return this.users.getUser(ctx.subject).then(
+    return this.users.getUserSnapshot(ctx.subject, current()).then(
       (user) => {
         ctx.isFirstLogin = !user?.account?.lastLogin;
         return undefined;
@@ -2671,7 +2671,7 @@ export class AuthWorkflow {
         autoPickEnroll();
         return undefined;
       }
-      return this.users.getUser(ctx.subject).then(
+      return this.users.getUserSnapshot(ctx.subject, current()).then(
         (user) => {
           const allowed = new Set(transports);
           const confirmed = (user?.mfa?.methods ?? []).filter(
@@ -3838,7 +3838,7 @@ export class AuthWorkflow {
   @Public()
   async loadEnrolledMfaMethods(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     if (!ctx.subject) return undefined;
-    const user = await this.users.getUser(ctx.subject);
+    const user = await this.users.getUserSnapshot(ctx.subject, current());
     const mfa = (ctx.mfa ??= {});
     const allowed = new Set(ctx.mfaPolicy?.availableTransports ?? []);
     const methods = this.users.getAvailableMfaMethods(user.mfa);
@@ -4471,7 +4471,7 @@ export class AuthWorkflow {
     value: string,
   ): Promise<void> {
     try {
-      await this.users.update(subject, { [field]: value } as Partial<UserCredentials>);
+      await this.users.update(subject, { [field]: value });
     } catch (err) {
       if (err instanceof UserAuthError && err.type === "ALREADY_EXISTS") return;
       throw err;
@@ -5539,7 +5539,7 @@ export class AuthWorkflow {
       // federated profile may carry no email; `prepareUser.email` is optional.
       const extras = await this.prepareUser({ email: profile.email, roles: [] });
       if (Object.keys(extras).length > 0) {
-        await this.users.update(outcome.userId, extras as Partial<UserCredentials>);
+        await this.users.update(outcome.userId, extras);
       }
     }
 

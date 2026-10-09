@@ -135,6 +135,42 @@ describe("CredentialStoreAtscriptDb — sessionId / lastSeenAt", () => {
     await store.touch("nope", 1);
     expect(table.opsOf("replaceOne")).toHaveLength(replaceCountBefore);
   });
+
+  it("touch with the just-read state patches lastSeenAt via updateOne (no re-read); else falls back", async () => {
+    const table = new MockTable();
+    const patches: unknown[] = [];
+    const patching = Object.assign(table, {
+      async updateOne(patch: { token: string; lastSeenAt: number }) {
+        patches.push(patch);
+        const row = table.rows.get(patch.token);
+        if (row) table.rows.set(patch.token, { ...row, lastSeenAt: patch.lastSeenAt });
+        return { matchedCount: row ? 1 : 0, modifiedCount: row ? 1 : 0 };
+      },
+    });
+    const store = new CredentialStoreAtscriptDb({ table: patching });
+    const token = await store.persist(makeState("alice"));
+    const state = (await store.retrieve(token))!;
+    const reads = table.opsOf("findOne").length;
+    await store.touch(token, 4242, state);
+    expect(table.opsOf("findOne")).toHaveLength(reads);
+    expect(table.opsOf("replaceOne")).toHaveLength(0);
+    expect(patches).toEqual([{ token, lastSeenAt: 4242 }]);
+    expect((await store.retrieve(token))?.lastSeenAt).toBe(4242);
+    // a gone row is never resurrected
+    await store.revoke(token);
+    await store.touch(token, 5000, state);
+    expect(table.rows.has(token)).toBe(false);
+    // an expired state is not stamped
+    await store.touch(token, 6000, { ...state, expiresAt: 0 });
+    expect(patches).toHaveLength(2);
+    // without updateOne on the table: the read-then-replace path
+    const plain = new MockTable();
+    const s2 = new CredentialStoreAtscriptDb({ table: plain });
+    const t2 = await s2.persist(makeState("bob"));
+    await s2.touch(t2, 7, (await s2.retrieve(t2))!);
+    expect((await s2.retrieve(t2))?.lastSeenAt).toBe(7);
+    expect(plain.opsOf("replaceOne")).toHaveLength(1);
+  });
 });
 
 describe("CredentialStoreAtscriptDb — typed payload + metadata round-trip", () => {

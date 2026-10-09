@@ -58,6 +58,11 @@ await svc.activateAccount(u.id); // ← required outside the invite flow (by id)
 
 Strict read by the surrogate `id` (via `store.findById`). Throws `NOT_FOUND` if missing.
 
+### `getUserSnapshot(id, scope)` / `onUserWrite(listener)` (since 0.1.78)
+
+- `getUserSnapshot(id, current())` = `getUser` memoized per scope object (use the event context) until ANY write goes through this service; rejections not kept. Use it for repeated reads in one request / WF step chain; writes made around the service are NOT seen inside the scope.
+- `onUserWrite((id) => …)` fires after every settled write through the service (or its store) with the user id → evict cross-request caches (`arbacUserCache.invalidate(id)`). Returns unsubscribe.
+
 ### `findByHandle(handle)` / `findByIdentifier(value) → Promise<(UserCredentials & T) | null>`
 
 Passthroughs to the store. `findByHandle` = the deterministic LOGIN resolver (`username` then the configured secondary handle fields in order — never `$or`). `findByIdentifier` = permissive admin/recovery (`id` → `username` → the configured secondary handles). Both return `null` (don't throw) when missing. NEVER use `findByIdentifier` for login. The secondary handle fields (e.g. email then phone) are consumer-declared on the user model — see [recovery-and-handles.md](./recovery-and-handles.md).

@@ -121,6 +121,16 @@ async function loadPrincipal(user: ArbacUserProvider): Promise<Principal> {
   };
 }
 
+// Per (event, controller): the user provider + `MoostArbac` the controller's
+// DI resolves — one resolution per event instead of one per evaluation
+// (`/meta` evaluates every crud op, action and relation).
+const arbacDeps = cachedBy((_controller: object | undefined, ctx: EventContext) =>
+  Promise.all([
+    useControllerContext(ctx).instantiate(ArbacUserProviderToken),
+    useControllerContext(ctx).instantiate(MoostArbac),
+  ]),
+);
+
 // Per-event principal memo — only the DB layer opts in, and only on HTTP
 // events: a WF event spans steps whose principal may change, so neither the
 // general `evaluate()` nor a non-HTTP event ever reads it.
@@ -155,10 +165,10 @@ export function evaluateArbac<TScope extends object>(
     target.table ??
     (cc.getController() as { readable?: VisibilityTableSource } | undefined)?.readable;
   const pending = (async (): Promise<ArbacOutcome<TScope>> => {
-    const [user, arbac] = (await Promise.all([
-      cc.instantiate(ArbacUserProviderToken),
-      cc.instantiate(MoostArbac),
-    ])) as [ArbacUserProvider, MoostArbac<object, TScope>];
+    const [user, arbac] = (await arbacDeps(cc.getController(), ctx)) as [
+      ArbacUserProvider,
+      MoostArbac<object, TScope>,
+    ];
     let principal: Promise<Principal>;
     if (!memoPrincipal || !isHttpEvent(ctx)) principal = loadPrincipal(user);
     else if (ctx.has(principalKey)) principal = ctx.get(principalKey);
@@ -231,9 +241,18 @@ export function conjoinForTable(
 const scopeFieldsSlot = cached(
   async (ctx): Promise<TScopeFieldRules<ArbacDbScope>> =>
     (
-      (await useControllerContext(ctx).instantiate(MoostArbac)) as MoostArbac<object, ArbacDbScope>
+      (await arbacDeps(useControllerContext(ctx).getController(), ctx))[1] as MoostArbac<
+        object,
+        ArbacDbScope
+      >
     ).getScopeFields(),
 );
+
+/** The current controller's `MoostArbac` — resolved once per (event, controller). */
+export async function currentMoostArbac(): Promise<MoostArbac<object, object>> {
+  const ctx = current();
+  return (await arbacDeps(useControllerContext(ctx).getController(), ctx))[1];
+}
 
 /** The current app's custom scope field rules — resolved once per event. */
 export function currentScopeFields(): Promise<TScopeFieldRules<ArbacDbScope>> {

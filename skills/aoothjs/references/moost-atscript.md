@@ -21,7 +21,7 @@ Three subpath exports, three different audiences:
 | Subpath                                   | Compile/runtime       | Audience                                                                                                              |
 | ----------------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `@aooth/arbac-moost`                      | runtime               | `arbacAuthorizeInterceptor`, `useArbac`, `MoostArbac`, `ArbacUserProvider` (hand-rolled base), `AsArbacDbController`. |
-| `@aooth/arbac-moost/atscript`             | runtime               | `AtscriptArbacUserProvider`, `ArbacUserTable`, re-exported `AoothArbacUserCredentials`.                               |
+| `@aooth/arbac-moost/atscript`             | runtime               | `AtscriptArbacUserProvider`, `ArbacUserRecordCache`, `ArbacUserTable`, re-exported `AoothArbacUserCredentials`.       |
 | `@aooth/arbac-moost/plugin`               | **compile-time only** | atscript build-time plugin. Pull from `atscript.config.ts`. No runtime DI surface.                                    |
 | `@aooth/arbac-moost/atscript/models/user` | raw `.as`             | The `.as` source of `AoothArbacUserCredentials` for `extends` in your own models.                                     |
 
@@ -128,8 +128,9 @@ Inside `AtscriptArbacUserProvider`, `getRoles(id)` and `getAttrs(id)` both call 
 
 **Memoized per `(EventContext, this, userId)`** via a wooks slot — so `getRoles + getAttrs` for the same user inside one event collapse to **one** round-trip.
 
-- Two distinct events do **NOT** share the cache.
-- Cross-request caching is not provided. Role / attribute revocation takes effect on the **next** request.
+- Two distinct events do **NOT** share the cache by default — role / attribute revocation takes effect on the **next** request.
+- Need a field that is not `@arbac.attribute` (e.g. `username`)? Pass `{ extraSelect: ["username"] }` as the 3rd constructor arg and read it in `extractAttrs` — never fetch the user a second time in `getAttrs` (since 0.1.78).
+- OPT-IN cross-request cache: `{ cache: new ArbacUserRecordCache({ ttlMs, max? }) }` (from `@aooth/arbac-moost/atscript`, since 0.1.78). Off by default. Staleness ≤ `ttlMs` for changes on other processes or written around `UserService`; wire `userService.onUserWrite((id) => cache.invalidate(id))` for local eviction. Only the record is cached — attenuation + evaluations stay per request; missing users / failed fetches never cached. One cache per provider class.
 - Provider class stays SINGLETON (`@Injectable()` re-applied — moost@0.6.x does not inherit injectable metadata across `extends`).
 - Missing record → `getRoles` returns `[]`, `getAttrs` returns `{}`. **Fail-closed**, not fail-throw.
 

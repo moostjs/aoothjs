@@ -284,6 +284,22 @@ describe("CredentialStoreRedis — sessionId / lastSeenAt", () => {
     // Unknown token is a no-op (does not throw).
     await store.touch("nope", 999);
   });
+
+  it("touch with the just-read state skips the second GET and leaves the caller's state alone", async () => {
+    const redis = new MockRedis();
+    const store = new CredentialStoreRedis({ redis });
+    const token = await store.persist(makeState("alice"), 60_000);
+    const state = (await store.retrieve(token))!;
+    const gets = redis.ops.filter((o) => o.cmd === "get").length;
+    await store.touch(token, 12_345, state);
+    expect(redis.ops.filter((o) => o.cmd === "get")).toHaveLength(gets);
+    expect(state.lastSeenAt).toBeUndefined();
+    expect((await store.retrieve(token))?.lastSeenAt).toBe(12_345);
+    // an expired state is not written
+    const sets = redis.ops.filter((o) => o.cmd === "set").length;
+    await store.touch(token, 1, { ...state, expiresAt: 0 });
+    expect(redis.ops.filter((o) => o.cmd === "set")).toHaveLength(sets);
+  });
 });
 
 describe("CredentialStoreRedis — custom prefix", () => {

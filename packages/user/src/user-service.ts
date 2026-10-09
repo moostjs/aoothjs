@@ -105,6 +105,13 @@ function deviceTrustSafeEqual(a: string, b: string): boolean {
 export class UserService<T extends object = object> {
   protected readonly config: ResolvedConfig;
   protected readonly hasher: PasswordHasher;
+  /** Moves on every store write through this service (start and end). */
+  private writeEpoch = 0;
+  private readonly writeListeners = new Set<(id: string | undefined) => void>();
+  private readonly snapshots = new WeakMap<
+    object,
+    Map<string, { epoch: number; user: Promise<UserCredentials & T> }>
+  >();
 
   constructor(
     protected readonly store: UserStore<T>,
@@ -112,6 +119,67 @@ export class UserService<T extends object = object> {
   ) {
     this.config = resolveConfig(config);
     this.hasher = new PasswordHasher(this.config.password);
+    this.store = observeWrites(store, {
+      start: () => {
+        this.writeEpoch++;
+      },
+      end: (id) => {
+        this.writeEpoch++;
+        // Every listener runs (one throwing must not skip, say, a cache
+        // eviction); the first error is rethrown once all have run.
+        let failure: { error: unknown } | undefined;
+        for (const listener of this.writeListeners) {
+          try {
+            listener(id);
+          } catch (error) {
+            failure ??= { error };
+          }
+        }
+        if (failure) throw failure.error;
+      },
+    });
+  }
+
+  /**
+   * Subscribe to user writes made through this service (or its store): the
+   * listener gets the written user's id once the write settles (`undefined`
+   * when it cannot be told). E.g. evict a cross-request cache:
+   * `users.onUserWrite((id) => arbacUserCache.invalidate(id))`.
+   *
+   * @returns unsubscribe
+   * @since 0.1.78
+   */
+  onUserWrite(listener: (id: string | undefined) => void): () => void {
+    this.writeListeners.add(listener);
+    return () => {
+      this.writeListeners.delete(listener);
+    };
+  }
+
+  /**
+   * {@link getUser} memoized per `scope` — an object that lives as long as
+   * one unit of work (typically the current event context): repeated reads of
+   * the same user in that scope share one store read, until any write goes
+   * through this service (then the next read is fresh). Rejections are not
+   * kept. Writes made around this service are not seen — use `getUser` when
+   * that matters.
+   *
+   * @since 0.1.78
+   */
+  getUserSnapshot(id: string, scope: object): Promise<UserCredentials & T> {
+    let perScope = this.snapshots.get(scope);
+    if (!perScope) {
+      perScope = new Map();
+      this.snapshots.set(scope, perScope);
+    }
+    const hit = perScope.get(id);
+    if (hit && hit.epoch === this.writeEpoch) return hit.user;
+    const entry = { epoch: this.writeEpoch, user: this.getUser(id) };
+    perScope.set(id, entry);
+    entry.user.catch(() => {
+      if (perScope.get(id) === entry) perScope.delete(id);
+    });
+    return entry.user;
   }
 
   /**
@@ -248,7 +316,7 @@ export class UserService<T extends object = object> {
     await this.store.update(id, {
       set: {
         account: { lastLogin: now, failedLoginAttempts: 0 },
-      } as DeepPartial<UserCredentials>,
+      },
     });
     return now;
   }
@@ -300,7 +368,7 @@ export class UserService<T extends object = object> {
    */
   async update(id: string, patch: Partial<UserCredentials & T>): Promise<UserCredentials & T> {
     const found = await this.store.update(id, {
-      set: patch as DeepPartial<UserCredentials>,
+      set: patch,
     });
     if (!found) throw new UserAuthError("NOT_FOUND");
     return this.getUser(id);
@@ -315,14 +383,14 @@ export class UserService<T extends object = object> {
     const account: Record<string, unknown> = { active: true };
     if (opts?.verifiedEmail !== undefined) account.verifiedEmail = opts.verifiedEmail;
     const found = await this.store.update(id, {
-      set: { account } as DeepPartial<UserCredentials>,
+      set: { account },
     });
     if (!found) throw new UserAuthError("NOT_FOUND");
   }
 
   async deactivateAccount(id: string): Promise<void> {
     const found = await this.store.update(id, {
-      set: { account: { active: false } } as DeepPartial<UserCredentials>,
+      set: { account: { active: false } },
     });
     if (!found) throw new UserAuthError("NOT_FOUND");
   }
@@ -332,7 +400,7 @@ export class UserService<T extends object = object> {
     const found = await this.store.update(id, {
       set: {
         account: { locked: true, lockReason: reason, lockEnds },
-      } as DeepPartial<UserCredentials>,
+      },
     });
     if (!found) throw new UserAuthError("NOT_FOUND");
   }
@@ -341,7 +409,7 @@ export class UserService<T extends object = object> {
     const found = await this.store.update(id, {
       set: {
         account: { locked: false, lockReason: "", lockEnds: 0, failedLoginAttempts: 0 },
-      } as DeepPartial<UserCredentials>,
+      },
     });
     if (!found) throw new UserAuthError("NOT_FOUND");
   }
@@ -408,7 +476,7 @@ export class UserService<T extends object = object> {
   async addMfaMethod(id: string, method: MfaMethod): Promise<void> {
     await this.store.withCas(id, (user) => {
       const methods = [...user.mfa.methods.filter((m) => m.name !== method.name), method];
-      return { set: { mfa: { methods } } as DeepPartial<UserCredentials> };
+      return { set: { mfa: { methods } } };
     });
   }
 
@@ -423,7 +491,7 @@ export class UserService<T extends object = object> {
         return m;
       });
       if (!found) throw new UserAuthError("MFA_NOT_CONFIGURED");
-      return { set: { mfa: { methods } } as DeepPartial<UserCredentials> };
+      return { set: { mfa: { methods } } };
     });
   }
 
@@ -443,13 +511,13 @@ export class UserService<T extends object = object> {
       throw new UserAuthError("MFA_NOT_CONFIGURED");
     }
     await this.store.update(id, {
-      set: { mfa: { defaultMethod: name, autoSend: false } } as DeepPartial<UserCredentials>,
+      set: { mfa: { defaultMethod: name, autoSend: false } },
     });
   }
 
   async setMfaAutoSend(id: string, value: boolean): Promise<void> {
     const found = await this.store.update(id, {
-      set: { mfa: { autoSend: value } } as DeepPartial<UserCredentials>,
+      set: { mfa: { autoSend: value } },
     });
     if (!found) throw new UserAuthError("NOT_FOUND");
   }
@@ -515,7 +583,7 @@ export class UserService<T extends object = object> {
           m.name === "totp" && m.confirmed ? { ...m, lastUsedWindow: matchedCounter } : m,
         );
         const set: DeepPartial<UserCredentials> = {
-          mfa: { methods } as DeepPartial<MfaData>,
+          mfa: { methods },
         };
         if (current.account.failedLoginAttempts > 0) {
           set.account = { failedLoginAttempts: 0 };
@@ -575,7 +643,7 @@ export class UserService<T extends object = object> {
   async addTrustedDevice(id: string, record: TrustedDeviceRecord): Promise<void> {
     await this.store.withCas(id, (user) => {
       const next = [...(user.trustedDevices ?? []), record];
-      return { set: { trustedDevices: next } as DeepPartial<UserCredentials> };
+      return { set: { trustedDevices: next } };
     });
   }
 
@@ -609,7 +677,7 @@ export class UserService<T extends object = object> {
     const next = list.filter((r) => r.token !== token);
     if (next.length === list.length) return;
     await this.store.update(id, {
-      set: { trustedDevices: next } as DeepPartial<UserCredentials>,
+      set: { trustedDevices: next },
     });
   }
 
@@ -697,7 +765,7 @@ export class UserService<T extends object = object> {
           next = next.slice(next.length - cap);
         }
       }
-      return { set: { seenDevices: next } as DeepPartial<UserCredentials> };
+      return { set: { seenDevices: next } };
     });
   }
 
@@ -737,7 +805,7 @@ export class UserService<T extends object = object> {
         matched = true;
         const next = [...list];
         next[idx] = { ...next[idx], expiresAt: now + slideTtlMs };
-        return { set: { seenDevices: next } as DeepPartial<UserCredentials> };
+        return { set: { seenDevices: next } };
       });
     } catch (error) {
       // Unknown user is a clean "not recognized", same as the no-slide branch.
@@ -759,7 +827,7 @@ export class UserService<T extends object = object> {
    */
   async revokeSeenDevices(id: string): Promise<void> {
     await this.store.update(id, {
-      set: { seenDevices: [] } as DeepPartial<UserCredentials>,
+      set: { seenDevices: [] },
     });
   }
 
@@ -783,7 +851,7 @@ export class UserService<T extends object = object> {
    */
   async setVerifiedEmail(id: string, email: string): Promise<void> {
     const found = await this.store.update(id, {
-      set: { account: { verifiedEmail: email } } as DeepPartial<UserCredentials>,
+      set: { account: { verifiedEmail: email } },
     });
     if (!found) throw new UserAuthError("NOT_FOUND");
   }
@@ -866,7 +934,7 @@ export class UserService<T extends object = object> {
           lastChanged: this.config.clock(),
           isInitial: false,
         },
-      } as DeepPartial<UserCredentials>,
+      },
     });
   }
 
@@ -888,7 +956,7 @@ export class UserService<T extends object = object> {
       await this.store.update(id, {
         set: {
           account: { locked: false, lockReason: "", lockEnds: 0 },
-        } as DeepPartial<UserCredentials>,
+        },
       });
       account.locked = false;
       account.lockEnds = 0;
@@ -928,7 +996,7 @@ export class UserService<T extends object = object> {
         inc: { "account.failedLoginAttempts": 1 },
         set: {
           account: { locked: true, lockReason: "Too many login attempts", lockEnds },
-        } as DeepPartial<UserCredentials>,
+        },
       });
       throw new UserAuthError(errorCode, undefined, { lockEnds });
     }
@@ -938,4 +1006,48 @@ export class UserService<T extends object = object> {
     });
     throw new UserAuthError(errorCode);
   }
+}
+
+/** The store methods that write (keyed by the user id, or `create`'s row). */
+const WRITE_METHODS: ReadonlySet<PropertyKey> = new Set(["create", "update", "delete", "withCas"]);
+
+/**
+ * `store` with its write methods reporting to `hooks` (before the call and
+ * once it settles, with the user id); everything else passes through, bound
+ * to the store itself.
+ */
+function observeWrites<T extends object>(
+  store: UserStore<T>,
+  hooks: { start: () => void; end: (id: string | undefined) => void },
+): UserStore<T> {
+  const bound = new Map<PropertyKey, unknown>();
+  return new Proxy(store, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target) as unknown;
+      if (typeof value !== "function") return value;
+      let fn = bound.get(prop);
+      if (fn === undefined || (fn as { __of?: unknown }).__of !== value) {
+        const method = value as (...args: unknown[]) => unknown;
+        fn = WRITE_METHODS.has(prop)
+          ? Object.assign(
+              async (...args: unknown[]) => {
+                const id =
+                  typeof args[0] === "string"
+                    ? args[0]
+                    : ((args[0] as { id?: unknown } | undefined)?.id as string | undefined);
+                hooks.start();
+                try {
+                  return await method.apply(target, args);
+                } finally {
+                  hooks.end(typeof id === "string" ? id : undefined);
+                }
+              },
+              { __of: value },
+            )
+          : Object.assign(method.bind(target), { __of: value });
+        bound.set(prop, fn);
+      }
+      return fn;
+    },
+  });
 }

@@ -4,7 +4,11 @@ import { createLogger, createReplaceRegistry, getMoostInfact, Injectable, Moost 
 import { describe, expect, it } from "vite-plus/test";
 
 import { ArbacUserProvider, ArbacUserProviderToken } from "../../user.provider";
-import { type ArbacUserTable, AtscriptArbacUserProvider } from "../auto-provider";
+import {
+  ArbacUserRecordCache,
+  type ArbacUserTable,
+  AtscriptArbacUserProvider,
+} from "../auto-provider";
 
 // ISSUE-9: AtscriptArbacUserProvider replaces the deleted AutoArbacUserProvider
 // plus the loose setupArbacFromAtscript / useUserRecord / extract* helpers.
@@ -64,7 +68,7 @@ function makeAnnotatedType(propAnnotations: Record<string, string[]>): TAtscript
       props,
       propsPatterns: [],
       tags: new Set(),
-    } as TAtscriptAnnotatedType["type"],
+    },
     metadata: new Map() as TAtscriptAnnotatedType["metadata"],
     validator: () => ({}) as ReturnType<TAtscriptAnnotatedType["validator"]>,
   };
@@ -138,11 +142,9 @@ describe("AtscriptArbacUserProvider (ISSUE-9)", () => {
       constructor() {
         super(t, {
           async findOne(q) {
-            return (
-              q.filter.username === "alice"
-                ? { id: "u-1", username: "alice", roles: ["admin"], tenantId: "t-1" }
-                : null
-            ) as DemoUser | null;
+            return q.filter.username === "alice"
+              ? { id: "u-1", username: "alice", roles: ["admin"], tenantId: "t-1" }
+              : null;
           },
         });
       }
@@ -330,7 +332,7 @@ function makeAnnotatedTypeRich(
       props: propMap,
       propsPatterns: [],
       tags: new Set(),
-    } as TAtscriptAnnotatedType["type"],
+    },
     metadata: md as TAtscriptAnnotatedType["metadata"],
     validator: () => ({}) as ReturnType<TAtscriptAnnotatedType["validator"]>,
   };
@@ -629,5 +631,114 @@ describe("AtscriptArbacUserProvider (ISSUE-18)", () => {
       region: 1,
       plan: 1,
     });
+  });
+});
+
+describe("AtscriptArbacUserProvider extraSelect + record cache (0.1.78)", () => {
+  type Query = Parameters<ArbacUserTable<DemoUser>["findOne"]>[0];
+  const records: Record<string, DemoUser> = {
+    u1: { id: "u1", username: "alice", roles: ["member"], tenantId: "t1" },
+  };
+  function recordingTable(store: Record<string, DemoUser> = records) {
+    const queries: Query[] = [];
+    const table: ArbacUserTable<DemoUser> = {
+      async findOne(query) {
+        queries.push(query);
+        return store[query.filter.id as string] ?? null;
+      },
+    };
+    return { table, queries };
+  }
+
+  class UsernameProvider extends AtscriptArbacUserProvider<DemoUser> {
+    constructor(table: ArbacUserTable<DemoUser>, cache?: ArbacUserRecordCache) {
+      super(DemoUserType, table, { extraSelect: ["username", "tenantId"], cache });
+    }
+    override getUserId(): string {
+      return "u1";
+    }
+    protected override extractAttrs(record: DemoUser): object {
+      return { ...super.extractAttrs(record), username: record.username };
+    }
+  }
+
+  it("selects the extra fields in the single fetch; extractAttrs reads them", async () => {
+    const { table, queries } = recordingTable();
+    const provider = new UsernameProvider(table);
+    const [roles, attrs] = await inEvent(() =>
+      Promise.all([provider.getRoles("u1"), provider.getAttrs("u1")]),
+    );
+    expect(roles).toEqual(["member"]);
+    expect(attrs).toEqual({ tenantId: "t1", username: "alice" });
+    expect(queries).toHaveLength(1);
+    expect(queries[0].controls?.$select).toEqual({ id: 1, roles: 1, tenantId: 1, username: 1 });
+    // the per-type projection is not mutated by the extra fields
+    const plain = recordingTable();
+    await inEvent(() => new FixedIdProvider(plain.table, "u1").getRoles("u1"));
+    expect(plain.queries[0].controls?.$select).toEqual({ id: 1, roles: 1, tenantId: 1 });
+  });
+
+  it("without a cache every event fetches (default)", async () => {
+    const { table, queries } = recordingTable();
+    const provider = new UsernameProvider(table);
+    await inEvent(() => provider.getRoles("u1"));
+    await inEvent(() => provider.getRoles("u1"));
+    expect(queries).toHaveLength(2);
+  });
+
+  it("an opt-in cache shares the record across events until ttl / invalidate", async () => {
+    let now = 1000;
+    const store = { u1: { ...records.u1 } };
+    const { table, queries } = recordingTable(store);
+    const cache = new ArbacUserRecordCache({ ttlMs: 5000, now: () => now });
+    const provider = new UsernameProvider(table, cache);
+    expect(await inEvent(() => provider.getRoles("u1"))).toEqual(["member"]);
+    store.u1 = { ...store.u1, roles: ["admin"] };
+    expect(await inEvent(() => provider.getRoles("u1"))).toEqual(["member"]); // cached
+    expect(queries).toHaveLength(1);
+    cache.invalidate("u1");
+    expect(await inEvent(() => provider.getRoles("u1"))).toEqual(["admin"]);
+    expect(queries).toHaveLength(2);
+    store.u1 = { ...store.u1, roles: ["viewer"] };
+    now += 5000; // expired
+    expect(await inEvent(() => provider.getRoles("u1"))).toEqual(["viewer"]);
+    expect(queries).toHaveLength(3);
+    cache.invalidate();
+    expect(await inEvent(() => provider.getRoles("u1"))).toEqual(["viewer"]);
+    expect(queries).toHaveLength(4);
+  });
+
+  it("never caches a missing user or a failed fetch; is bounded; is per provider", async () => {
+    const store: Record<string, DemoUser> = {};
+    let fail = true;
+    const queries: Query[] = [];
+    const table: ArbacUserTable<DemoUser> = {
+      async findOne(query) {
+        queries.push(query);
+        if (fail) throw new Error("db down");
+        return store[query.filter.id as string] ?? null;
+      },
+    };
+    const cache = new ArbacUserRecordCache({ ttlMs: 60_000, max: 2 });
+    const provider = new UsernameProvider(table, cache);
+    await expect(inEvent(() => provider.getRoles("u1"))).rejects.toThrow("db down");
+    fail = false;
+    expect(await inEvent(() => provider.getRoles("u1"))).toEqual([]); // null → not cached
+    store.u1 = { ...records.u1 };
+    expect(await inEvent(() => provider.getRoles("u1"))).toEqual(["member"]);
+    expect(queries).toHaveLength(3);
+    await inEvent(() => provider.getRoles("u1"));
+    expect(queries).toHaveLength(3); // cached now
+    // bound: u2 + u3 push u1 out
+    store.u2 = { ...records.u1, id: "u2" };
+    store.u3 = { ...records.u1, id: "u3" };
+    await inEvent(() => provider.getRoles("u2"));
+    await inEvent(() => provider.getRoles("u3"));
+    await inEvent(() => provider.getRoles("u1"));
+    expect(queries).toHaveLength(6);
+    // another provider (other projection) never reads this provider's entry
+    const other = new UsernameProvider(table, cache);
+    await inEvent(() => other.getRoles("u1"));
+    expect(queries).toHaveLength(7);
   });
 });

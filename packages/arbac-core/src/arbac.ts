@@ -1,5 +1,20 @@
-import type { TArbacEvalResult, TArbacRole, TArbacRoleForResource, TArbacRule } from "./types";
+import type {
+  TArbacCompiledRule,
+  TArbacEvalResult,
+  TArbacRole,
+  TArbacRoleForResource,
+  TArbacRule,
+} from "./types";
 import { arbacPatternToRegex } from "./utils";
+
+/** The rules of a compiled (role, resource) matching one action. */
+interface ActionMatch<TUserAttrs, TScope> {
+  deny: boolean;
+  allow: Array<TArbacCompiledRule<TUserAttrs, TScope>>;
+}
+
+/** Most memoized action matches per compiled (role, resource); past it, matched per call. */
+const MAX_MEMOIZED_ACTIONS = 512;
 
 /**
  * Implements Advanced Role-Based Access Control (ARBAC) system.
@@ -17,6 +32,11 @@ export class Arbac<TUserAttrs extends object, TScope extends object> {
   > = {};
 
   private warnedRoles = new Set<string>();
+
+  private actionMatches = new WeakMap<
+    TArbacRoleForResource<TUserAttrs, TScope>,
+    Map<string, ActionMatch<TUserAttrs, TScope>>
+  >();
 
   /**
    * Registers a new role with the ARBAC system.
@@ -179,41 +199,69 @@ export class Arbac<TUserAttrs extends object, TScope extends object> {
     getAttrs: () => Promise<TUserAttrs>,
     id: string | undefined,
   ): Promise<TArbacEvalResult<TScope>> {
-    const roles = roleIds
-      .map((r) => {
-        const role = this.resources[res.resource]![r];
-        if (!role && !this.roles[r] && !this.warnedRoles.has(r)) {
-          this.warnedRoles.add(r);
-          console.warn(`Role "${r}" assigned to user "${id}" does not exist.`);
-        }
-        return role;
-      })
-      .filter(Boolean) as Array<TArbacRoleForResource<TUserAttrs, TScope>>;
+    const perResource = this.resources[res.resource]!;
+    const roles: Array<TArbacRoleForResource<TUserAttrs, TScope>> = [];
+    for (const r of roleIds) {
+      const role = perResource[r];
+      if (role) {
+        roles.push(role);
+      } else if (!this.roles[r] && !this.warnedRoles.has(r)) {
+        this.warnedRoles.add(r);
+        console.warn(`Role "${r}" assigned to user "${id}" does not exist.`);
+      }
+    }
     if (roles.length === 0) {
       return { allowed: false };
     }
-    for (const role of roles) {
-      for (const rule of role.deny) {
-        if (rule._actionRegex.test(res.action)) {
-          return { allowed: false };
-        }
-      }
+    const matches = roles.map((role) => this.matchAction(role, res.action));
+    for (const match of matches) {
+      if (match.deny) return { allowed: false };
     }
     const scopes: TScope[] = [];
     let allowed = false;
-    for (const role of roles) {
-      for (const rule of role.allow) {
-        if (rule._actionRegex.test(res.action)) {
-          allowed = true;
-          if (rule.scope) {
-            scopes.push(rule.scope(await getAttrs(), String(id)));
-          } else {
-            // Universe sentinel — preserves "no restriction" grant under multi-role union.
-            scopes.push({} as TScope);
+    let attrs: TUserAttrs | undefined;
+    let haveAttrs = false;
+    for (const match of matches) {
+      for (const rule of match.allow) {
+        allowed = true;
+        if (rule.scope) {
+          if (!haveAttrs) {
+            attrs = await getAttrs();
+            haveAttrs = true;
           }
+          scopes.push(rule.scope(attrs as TUserAttrs, String(id)));
+        } else {
+          // Universe sentinel — preserves "no restriction" grant under multi-role union.
+          scopes.push({} as TScope);
         }
       }
     }
     return allowed ? { allowed, scopes } : { allowed };
+  }
+
+  /**
+   * The rules of one compiled (role, resource) that match `action`: whether
+   * any deny rule does, and the matching allow rules in declaration order.
+   * Memoized per compiled object (a re-registered role or resource compiles
+   * a fresh one, so the memo resets with it), bounded per object.
+   */
+  private matchAction(
+    role: TArbacRoleForResource<TUserAttrs, TScope>,
+    action: string,
+  ): ActionMatch<TUserAttrs, TScope> {
+    let perAction = this.actionMatches.get(role);
+    if (!perAction) {
+      perAction = new Map();
+      this.actionMatches.set(role, perAction);
+    }
+    let match = perAction.get(action);
+    if (!match) {
+      match = {
+        deny: role.deny.some((rule) => rule._actionRegex.test(action)),
+        allow: role.allow.filter((rule) => rule._actionRegex.test(action)),
+      };
+      if (perAction.size < MAX_MEMOIZED_ACTIONS) perAction.set(action, match);
+    }
+    return match;
   }
 }

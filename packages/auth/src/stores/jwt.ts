@@ -82,6 +82,12 @@ export class CredentialStoreJwt<
   private readonly algorithm: JwtAlgorithm;
   private readonly signingKey: CryptoKey | Uint8Array;
   private readonly verifyingKey: CryptoKey | Uint8Array;
+  /**
+   * HS* with raw secret bytes: the HMAC `CryptoKey` imported once (lazily) and
+   * reused for every sign / verify — jose would otherwise re-import the raw
+   * bytes per call. `signingKey` keeps the bytes for `deriveSubkey`.
+   */
+  private hmacKey?: Promise<CryptoKey>;
   private readonly issuer?: string;
   private readonly audience?: string;
   private readonly denylist?: DenylistStore;
@@ -153,7 +159,7 @@ export class CredentialStoreJwt<
     if (this.issuer) builder.setIssuer(this.issuer);
     if (this.audience) builder.setAudience(this.audience);
 
-    return builder.sign(this.signingKey);
+    return builder.sign(await this.keyFor(this.signingKey));
   }
 
   async retrieve(token: string): Promise<(CredentialState & TPayload) | null> {
@@ -252,7 +258,7 @@ export class CredentialStoreJwt<
 
   private async verify(token: string): Promise<{ payload: JWTPayload } | null> {
     try {
-      const result = await jwtVerify(token, this.verifyingKey, {
+      const result = await jwtVerify(token, await this.keyFor(this.verifyingKey), {
         // Restrict to the configured algorithm so an attacker who shares the
         // HMAC secret cannot cross-sign with HS384/HS512 and still verify
         // (jose's default infers a set of algs from the key, which would
@@ -268,6 +274,23 @@ export class CredentialStoreJwt<
       // non-string input — collapses to null. Callers never receive throws.
       return null;
     }
+  }
+
+  /**
+   * The key jose gets: raw HS* secret bytes as their HMAC `CryptoKey`
+   * (imported once — usable for both sign and verify, its hash pinned to the
+   * configured algorithm), anything else as given.
+   */
+  private keyFor(key: CryptoKey | Uint8Array): CryptoKey | Uint8Array | Promise<CryptoKey> {
+    if (!(key instanceof Uint8Array) || !HS_ALGS.has(this.algorithm)) return key;
+    this.hmacKey ??= crypto.subtle.importKey(
+      "raw",
+      key as Uint8Array<ArrayBuffer>,
+      { name: "HMAC", hash: `SHA-${this.algorithm.slice(2)}` },
+      false,
+      ["sign", "verify"],
+    );
+    return this.hmacKey;
   }
 
   private payloadToState(payload: JWTPayload): (CredentialState & TPayload) | null {

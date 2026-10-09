@@ -97,7 +97,7 @@ interface RateLimitStore {
 
 ### `RateLimitStoreMemory`
 
-The zero-config default (`new RateLimiter()` creates one). In-process `Map` with lazy eviction on access, a `cleanup()` sweep for long-lived processes (same pattern as `DenylistStoreMemory`), and `clear()` for test-harness resets. **Single process only** — each instance/pod counts independently.
+The zero-config default (`new RateLimiter()` creates one). In-process `Map` with lazy eviction on access, an automatic amortized sweep of dead window counters as the map grows (since 0.1.78 — no timer needed), a `cleanup()` sweep on demand (same pattern as `DenylistStoreMemory`), and `clear()` for test-harness resets. **Single process only** — each instance/pod counts independently.
 
 ### `RateLimitStoreRedis`
 

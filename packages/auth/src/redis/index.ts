@@ -182,10 +182,16 @@ export class CredentialStoreRedis<
     await this.redis.srem(this.userKey(state.userId), token);
   }
 
-  async touch(token: string, at: number): Promise<void> {
-    const raw = await this.redis.get(this.tokenKey(token));
-    if (raw === null) return;
-    const state = JSON.parse(raw) as CredentialState & TPayload;
+  async touch(token: string, at: number, current?: CredentialState & TPayload): Promise<void> {
+    // `current` is the state `retrieve` just read (no second GET); otherwise read it.
+    let state: CredentialState & TPayload;
+    if (current) {
+      state = { ...current };
+    } else {
+      const raw = await this.redis.get(this.tokenKey(token));
+      if (raw === null) return;
+      state = JSON.parse(raw) as CredentialState & TPayload;
+    }
     state.lastSeenAt = at;
     // Preserve the remaining TTL — re-derive from the (unchanged) expiresAt so
     // touching never resurrects or extends a credential past its expiry.

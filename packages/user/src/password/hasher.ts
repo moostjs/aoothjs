@@ -13,14 +13,27 @@ interface ParsedHash {
   hash: Buffer;
 }
 
+/** Node's default scrypt memory cap (32 MiB) — kept as the floor. */
+const DEFAULT_MAXMEM = 32 * 1024 * 1024;
+/** Upper bound for the memory a (possibly stored, untrusted) parameter set may ask for. */
+const MAX_MAXMEM = 1024 * 1024 * 1024;
+
 function scryptAsync(
   password: string,
   salt: Buffer,
   keyLength: number,
   options: { N: number; r: number; p: number },
 ): Promise<Buffer> {
+  // scrypt needs ~128·N·r bytes; Node rejects anything at or above `maxmem`
+  // (default 32 MiB), which made N ≥ 2^15 (r = 8) unusable. Size the cap to
+  // the parameters, with headroom, bounded so a stored hash cannot demand
+  // unbounded memory.
+  const maxmem = Math.min(
+    MAX_MAXMEM,
+    Math.max(DEFAULT_MAXMEM, 2 * 128 * options.N * options.r + 1024 * 1024),
+  );
   return new Promise((resolve, reject) => {
-    scrypt(password, salt, keyLength, options, (err, derived) => {
+    scrypt(password, salt, keyLength, { ...options, maxmem }, (err, derived) => {
       if (err) reject(err);
       else resolve(derived);
     });

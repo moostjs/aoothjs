@@ -78,7 +78,7 @@ export class CredentialStoreMemory<
     this.indexRemove(state.userId, token);
   }
 
-  async touch(token: string, at: number): Promise<void> {
+  async touch(token: string, at: number, _state?: CredentialState & TPayload): Promise<void> {
     const state = this.states.get(token);
     if (!state) return;
     state.lastSeenAt = at;

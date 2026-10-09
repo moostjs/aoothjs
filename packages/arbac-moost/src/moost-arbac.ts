@@ -4,6 +4,9 @@ import type { TArbacEvalResult } from "@aooth/arbac-core";
 import { Arbac } from "@aooth/arbac-core";
 import { Injectable } from "moost";
 
+/** Default number of memoized `/meta` projections per envelope. */
+const DEFAULT_META_MEMO_MAX = 64;
+
 /**
  * A DI-enabled extension of the `Arbac` class for use within Moost.
  *
@@ -107,6 +110,29 @@ export class MoostArbac<TUserAttrs extends object, TScope extends object> extend
         "it reaches only your own code, and an attenuated request carrying it fails with 500.",
     );
   };
+
+  private metaMemoMax = DEFAULT_META_MEMO_MAX;
+
+  /**
+   * Configure the `/meta` projection memo of the ARBAC DB / value-help
+   * controllers. The overlay still evaluates every grant per request; only
+   * the pure pruning of the cached envelope by those decisions is reused —
+   * keyed by the decisions themselves (never by user, scopes' JSON or row
+   * filters), up to `max` projections per envelope (default 64, LRU).
+   * Memoized projections are frozen and pre-serialized with a weak ETag.
+   * `false` turns it off (every `/meta` is pruned afresh).
+   *
+   * @since 0.1.78
+   */
+  setMetaMemo(options: false | { max?: number }): this {
+    this.metaMemoMax = options === false ? 0 : Math.max(0, options.max ?? DEFAULT_META_MEMO_MAX);
+    return this;
+  }
+
+  /** Most memoized `/meta` projections per envelope (`0` = memo off). @since 0.1.78 */
+  getMetaMemoMax(): number {
+    return this.metaMemoMax;
+  }
 
   /** The registered custom scope field rules. @since 0.1.72 */
   getScopeFields(): TScopeFieldRules<TScope> {

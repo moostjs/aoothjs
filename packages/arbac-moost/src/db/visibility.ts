@@ -392,7 +392,7 @@ export function buildScopeVisibility(
           return source === undefined || alwaysVisible.has(source) || base(source);
         };
   const declared = new Map<string, MetaVisibility>();
-  return {
+  return tagBuilt({
     allowed,
     alwaysVisible,
     withGrants,
@@ -407,7 +407,24 @@ export function buildScopeVisibility(
         buildScopeVisibility(eff.withScopes(name) as ArbacDbScope[], table?.relatedTable?.(name)),
       );
     },
-  };
+  });
+}
+
+// Marks visibilities built by `buildScopeVisibility` (the value is the object
+// itself, so a spread copy — whose fields may have been replaced — is not
+// marked): their `isAllowed` / `relation` are pure functions of their data
+// (`allowed`, `alwaysVisible`, `withGrants`, `table`, the resolved relations)
+// — what the `/meta` memo keys on.
+const BUILT = Symbol("arbac.builtVisibility");
+
+function tagBuilt(vis: MetaVisibility): MetaVisibility {
+  (vis as { [BUILT]?: unknown })[BUILT] = vis;
+  return vis;
+}
+
+/** `vis` came from {@link buildScopeVisibility} as is (not hand-built, not a copy). */
+export function isBuiltVisibility(vis: MetaVisibility): boolean {
+  return (vis as { [BUILT]?: unknown })[BUILT] === vis;
 }
 
 // The scopes array is identity-stable for an event once resolved — memoize

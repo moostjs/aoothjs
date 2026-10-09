@@ -55,9 +55,10 @@ export function insertRowsVerdict(
     if (error instanceof UnsupportedCheckError) return undefined;
     throw error;
   }
+  const fieldList = [...fields];
   let verdict: true | undefined = true;
   for (const row of rows) {
-    if ([...fields].some((f) => getPath(row, f) === undefined)) verdict = undefined;
+    if (fieldList.some((f) => getPath(row, f) === undefined)) verdict = undefined;
     else if (!predicate(row)) return false;
   }
   return verdict;

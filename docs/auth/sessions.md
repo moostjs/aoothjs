@@ -89,7 +89,7 @@ new AuthCredential({ store, trackLastSeen: "refresh" });
 | `'refresh'`       | Stamp `lastSeenAt` on the credentials minted during `refresh()` — piggybacks the rotation write, no extra round-trip. Recommended.                     |
 | `'validate'`      | `store.touch(token, now)` on **every** successful `validate()` — accurate, but one write per authenticated request. Document the cost before enabling. |
 
-`'validate'` needs a store that implements the optional [`touch`](./stores#method-semantics) capability; it is a no-op on stores that don't.
+`'validate'` needs a store that implements the optional [`touch`](./stores#method-semantics) capability; it is a no-op on stores that don't. Since 0.1.78 `validate` hands `touch` the state it just read, so the write costs no second read: the atscript-db store patches only `lastSeenAt` (when its table exposes `updateOne`, as an `AtscriptDbTable` does) and the Redis store skips its `GET`. A `validateCache` hit passes no state (the cached one may predate a revocation made elsewhere), so the store reads the row first and a revoked token is never written back.
 
 ## DOs and DON'Ts
 

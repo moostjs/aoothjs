@@ -54,6 +54,11 @@ export interface AuthCredentialTable<TPayload extends object = object> {
   ): Promise<{ matchedCount: number; modifiedCount: number }>;
   deleteOne(idOrPk: unknown): Promise<{ deletedCount: number }>;
   deleteMany(filter: Record<string, unknown>): Promise<{ deletedCount: number }>;
+  /**
+   * Optional PK-addressed patch (atscript-db's `updateOne`): lets `touch`
+   * stamp `lastSeenAt` without re-reading the row. Never inserts.
+   */
+  updateOne?(patch: { token: string; lastSeenAt: number }): Promise<unknown>;
 }
 
 interface CredentialStoreAtscriptDbOptions<TPayload extends object> {
@@ -138,7 +143,14 @@ export class CredentialStoreAtscriptDb<
     await this.table.deleteOne(token);
   }
 
-  async touch(token: string, at: number): Promise<void> {
+  async touch(token: string, at: number, state?: CredentialState & TPayload): Promise<void> {
+    if (state && this.table.updateOne) {
+      // The caller just read the row: patch the one column (a missing row
+      // matches nothing — never resurrected).
+      if (state.expiresAt <= Date.now()) return;
+      await this.table.updateOne({ token, lastSeenAt: at });
+      return;
+    }
     const row = await this.table.findOne({ filter: { token } });
     if (!row) return;
     if (row.expiresAt <= Date.now()) return;

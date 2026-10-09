@@ -117,6 +117,8 @@ const users = new UserService(store, {
 });
 ```
 
+Memory-hard settings work out of the box: scrypt needs about `128 × N × r` bytes, and the hasher sizes Node's `maxmem` to the parameters (capped at 1 GiB), so OWASP-level costs such as `scryptN: 2 ** 17` hash and verify. Before 0.1.78, any `N × r` at or above `2^18` (e.g. `scryptN: 32768` with the default `r: 8`) threw `ERR_CRYPTO_INVALID_SCRYPT_PARAMS`.
+
 Because the hash string carries N/r/p/l, **existing hashes still verify**. They get re-written at the new cost the next time the user changes their password. If you need a forced re-hash, run a job that calls `setPassword` for every user (e.g. on a forced password reset).
 
 ## Surfacing policy errors after `changePassword` fails

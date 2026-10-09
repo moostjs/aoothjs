@@ -362,6 +362,21 @@ describe("applyScopeFieldFilters", () => {
     applyScopeFieldFilters([scope], rules, { onUnknownField });
     expect(unknown).toEqual(["region", "label"]);
   });
+
+  it("without row rules returns the input list and still reports unknown keys (into `with`)", () => {
+    const unknown: string[] = [];
+    const onUnknownField = (f: string) => unknown.push(f);
+    const nested = { label: "y", with: { deep: { zone: 1 } } } as unknown as T;
+    const list = [{ region: "eu", filter: { a: 1 } }, { with: { x: nested } }, {}] as T[];
+    const noRows: TScopeFieldRules<T> = { teams: { conjoin: () => undefined } };
+    expect(applyScopeFieldFilters(list, noRows, { onUnknownField })).toBe(list);
+    expect(applyScopeFieldFilters(list, undefined, { onUnknownField })).toBe(list);
+    expect(unknown).toEqual(["region", "label", "zone", "region", "label", "zone"]);
+    // a registered field (no rowFilter) is not unknown
+    applyScopeFieldFilters([{ teams: ["A"] } as T], noRows, { onUnknownField });
+    expect(unknown).toHaveLength(6);
+    expect(list[0]).toStrictEqual({ region: "eu", filter: { a: 1 } });
+  });
 });
 
 describe("stableKey", () => {

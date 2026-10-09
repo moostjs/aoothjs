@@ -38,7 +38,22 @@ The class wires these protected hooks of `@atscript/moost-db`'s base controller 
 With a constrained read projection, `/meta` no longer advertises the hidden fields (a table UI cannot even offer them as columns — previously they rendered as permanently-empty columns, and secret-bearing column NAMES leaked), and referencing one anywhere in a query (`$select`, a filter, a sort, a group, an aggregate) is indistinguishable from referencing a field that was never declared — see [Column-scope security floor](#column-scope-security-floor). PK + `preferredId` always stay visible — reads always return them (projection widening / id addressing). Unscoped read grants keep the full field envelope. Relations and their nav types follow the `$with` policy (see [Per-relation `with`](#per-relation-with-recursive)): a declared `with.<rel>` sub-scope, else the caller's own grant on the related table — none → the relation is dropped. A `ref` to a hidden field or an unreadable table is stripped.
 
 The search surface is pruned by moost-db itself (≥ 0.1.147, under the overridden `hasField`): a `searchIndexes` entry that reads a hidden field is dropped and `searchable` / `vectorSearchable` / `geoSearchable` turn off when the default index reads one. Since 0.1.74 the ARBAC overlay no longer prunes it a second time, and no longer strips `search` / `index` / `vector` from `crud.query` / `crud.pages` or drops `crud.geo` — read the flags. Each `crud` op is evaluated as the handler(s) serving it: `one` via `getOne` / `getOneComposite`, `remove` via `remove` / `removeComposite` (allowed when any is), the rest by name. An action is evaluated with the same id `useArbac` uses for its handler (`@ArbacAction`, else the `@DbAction` name, never the method `@Id`). If several methods declare it, it is allowed when any of them is. A class-level `@DbActions` / `@DbRowActions` entry has no handler method, so it is evaluated as the controller's resource plus the entry name. The same rule applies in `$actions`, `GET /meta/actions/:id` and `/meta/form/:name`.
-:::
+
+### `/meta` projection memo
+
+Since 0.1.78 the overlay memoizes the pruning. Every grant behind `/meta` (actions, crud ops, read and write scopes, relations, `ref` targets) is still evaluated on every request; only the pruning of the cached envelope by those decisions is reused. The memo key is the evaluated visibility decisions — never the user, the token, row filters or a JSON of the scopes — so two callers share a projection only when every decision `/meta` depends on is equal, and an admin role edit or a re-login with another role shows on the next request.
+
+```ts
+const arbac = (await getMoostInfact().get(MoostArbac)) as MoostArbac<UserAttrs, ArbacDbScope>;
+arbac.setMetaMemo({ max: 32 }); // projections kept per envelope (default 64, LRU)
+arbac.setMetaMemo(false); // prune every /meta afresh
+```
+
+- Memoized projections are frozen and pre-serialized with a weak ETag (wooks `prerenderJson`). A layer that serves the object unchanged answers `If-None-Match` with `304`; because the ETag comes from the final bytes, another role's body always gets a new ETag. With `@atscript/moost-db` ≤ 0.1.150 the final `/meta` object is rebuilt after the overlay, so no ETag is sent yet.
+- **Never mutate a `/meta` object an overlay returned** (the existing `applyMetaOverlay` contract): a memoized one is shared and frozen, deeply under `NODE_ENV=test` / `development`.
+- A request whose decisions cannot be keyed exactly is pruned afresh, uncached: a one-sided `with.<rel>` sub-scope of a credential attenuation, or a scope piece holding a function or a symbol-keyed property.
+- Requires `@wooksjs/event-http` ≥ 0.7.27 (peer).
+  :::
 
 ::: warning `$and: [scope, user]`, never object spread
 A user filter may constrain the same field as the scope. Merging via `{ ...scope, ...userFilter }` lets the user's value **replace** the scope's — a reader scoped to `tenantId: 'a'` who asks for `tenantId: 'b'` would be served tenant b's rows. `$and` intersects instead, so the contradiction matches nothing.

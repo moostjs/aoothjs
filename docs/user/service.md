@@ -164,6 +164,21 @@ findByIdentifier(value: string): Promise<(UserCredentials & T) | null>
 - **`findByHandle`** — the deterministic login resolver: matches `username` exactly, then each configured secondary handle field exactly, in order (e.g. `email`, then `phone` — whatever your model declares via `@aooth.user.*`; see [Credentials Model](./credentials)). Use it anywhere you have a user-supplied login handle (the login workflow's identity-resolution default delegates here).
 - **`findByIdentifier`** — permissive admin/recovery lookup: `id`, then `username`, then the configured handle fields (first match). Never use it for login — a value that is one user's username and another's handle would resolve ambiguously.
 
+### `getUserSnapshot` / `onUserWrite`
+
+```ts
+getUserSnapshot(id: string, scope: object): Promise<UserCredentials & T> // since 0.1.78
+onUserWrite(listener: (id: string | undefined) => void): () => void      // since 0.1.78
+```
+
+`getUserSnapshot` is `getUser` memoized per `scope` — pass an object that lives for one unit of work, typically the current event context (`current()` from `@wooksjs/event-core`). Repeated reads of the same user in that scope share one store read until any write goes through this service; then the next read is fresh. A rejection (e.g. `NOT_FOUND`) is not kept. Writes made around the service (another process, a direct table write) are not seen inside the scope — use `getUser` where that matters. The bundled auth workflow uses it so one login step chain reads the user once.
+
+`onUserWrite` reports every settled write made through the service (or its store) with the written user's id — the hook for evicting your own cross-request caches, e.g. the opt-in ARBAC record cache:
+
+```ts
+const off = users.onUserWrite((id) => arbacUserCache.invalidate(id));
+```
+
 ### `login`
 
 ```ts

@@ -19,13 +19,15 @@ export interface RateLimitStore {
 
 /**
  * In-memory `RateLimitStore` — the zero-config default (single process only).
- * Lazy-evicts expired counters on access; `cleanup()` sweeps the whole map for
- * periodic compaction in long-lived processes (same pattern as
- * `DenylistStoreMemory`).
+ * Lazy-evicts expired counters on access, and sweeps expired counters itself
+ * as the map grows (amortized, each time it doubles); `cleanup()` sweeps the
+ * whole map on demand (same pattern as `DenylistStoreMemory`).
  */
 export class RateLimitStoreMemory implements RateLimitStore {
   private readonly entries = new Map<string, { count: number; expiresAt: number }>();
   private readonly clock: Clock;
+  /** Map size at which `hit` next sweeps expired counters (amortized; doubles). */
+  private sweepAt = MIN_SWEEP_SIZE;
 
   constructor(opts?: { clock?: Clock }) {
     this.clock = opts?.clock ?? defaultClock;
@@ -35,6 +37,12 @@ export class RateLimitStoreMemory implements RateLimitStore {
     const now = this.clock.now();
     const entry = this.entries.get(key);
     if (!entry || entry.expiresAt <= now) {
+      // Window keys embed their start, so dead counters are never hit again:
+      // sweep them as the map grows (amortized O(1) per hit).
+      if (!entry && this.entries.size >= this.sweepAt) {
+        this.sweep(now);
+        this.sweepAt = Math.max(MIN_SWEEP_SIZE, this.entries.size * 2);
+      }
       this.entries.set(key, { count: 1, expiresAt: now + ttlMs });
       return 1;
     }
@@ -52,7 +60,10 @@ export class RateLimitStoreMemory implements RateLimitStore {
   }
 
   async cleanup(): Promise<number> {
-    const now = this.clock.now();
+    return this.sweep(this.clock.now());
+  }
+
+  private sweep(now: number): number {
     let removed = 0;
     for (const [key, entry] of this.entries) {
       if (entry.expiresAt <= now) {
@@ -63,3 +74,6 @@ export class RateLimitStoreMemory implements RateLimitStore {
     return removed;
   }
 }
+
+/** Smallest map size an amortized expiry sweep runs at. */
+const MIN_SWEEP_SIZE = 1024;

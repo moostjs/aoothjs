@@ -12,6 +12,7 @@ import type { TAtscriptAnnotatedType, TAtscriptDataType } from "@atscript/typesc
 import { Inherit } from "moost";
 
 import { ArbacAction } from "../arbac.decorator";
+import { shareMeta } from "./meta-memo";
 import { applyArbacMetaOverlay } from "./meta-projection";
 import { registerArbacValueHelpTarget } from "./relation-policy";
 import {
@@ -111,8 +112,18 @@ async function applyValueHelpMetaOverlay(
   if (!overlaid.searchable || overlaid.fields === meta.fields) return overlaid;
   // `$search` only matches visible fields — advertise it only if one survived.
   const searchable = host.searchableFields.some((f) => f in overlaid.fields);
-  return searchable ? overlaid : { ...overlaid, searchable: false };
+  if (searchable) return overlaid;
+  if (!Object.isFrozen(overlaid)) return { ...overlaid, searchable: false };
+  // A memoized (frozen) projection: keep the narrowed copy identity-stable too.
+  let perHost = unsearchable.get(overlaid);
+  if (!perHost) unsearchable.set(overlaid, (perHost = new WeakMap()));
+  let out = perHost.get(host);
+  if (!out) perHost.set(host, (out = shareMeta({ ...overlaid, searchable: false })));
+  return out;
 }
+
+// Memoized projection → host → its `searchable: false` copy.
+const unsearchable = new WeakMap<TMetaResponse, WeakMap<ValueHelpHost, TMetaResponse>>();
 
 /**
  * ARBAC-scoped mirror of `@atscript/moost-db`'s {@link AsValueHelpController}
