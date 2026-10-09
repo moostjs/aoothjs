@@ -189,6 +189,7 @@ describe("AsArbacJsonValueHelpController — column scope", () => {
   it.each([
     ["filter", "query?secret='tok-two'"],
     ["sort", "query?$sort=rank"],
+    ["sort with $nulls", "query?$sort=rank:last"],
     ["select", "query?$select=secret"],
     ["pages filter", "pages?rank>1"],
   ])("rejects a hidden field in %s like an unknown one", async (_label, path) => {
