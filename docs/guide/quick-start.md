@@ -104,7 +104,7 @@ The pattern below mirrors [`createAooth()`](https://github.com/moostjs/aoothjs/b
 
 ```ts:line-numbers
 import { AuthCredential, CredentialStoreJwt, DenylistStoreMemory } from '@aooth/auth'
-import { UserService } from '@aooth/user'
+import { UserService, definePasswordPolicy, ppHasMinLength, ppHasNumber } from '@aooth/user'
 import { UsersStoreAtscriptDb, type AuthUserTable } from '@aooth/user/atscript-db'
 import { CredentialStoreAtscriptDb } from '@aooth/auth/atscript-db'
 import type { AppUser } from './models/user.as'
@@ -119,9 +119,13 @@ const userService = new UserService<AppUser>(userStore, {
   password: {
     historyLength: 5,
     policies: [
-      { rule: 'v.length >= 8', description: 'At least 8 characters' },
-      { rule: '/[A-Za-z]/.test(v)', description: 'Contains a letter' },
-      { rule: '/[0-9]/.test(v)', description: 'Contains a digit' },
+      ppHasMinLength(8),
+      definePasswordPolicy({
+        rule: (v: string) => /[A-Za-z]/.test(v),
+        args: [],
+        description: 'Contains a letter',
+      }),
+      ppHasNumber(1),
     ],
   },
   lockout: { threshold: 5, duration: 15 * 60_000 },

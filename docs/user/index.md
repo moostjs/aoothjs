@@ -57,7 +57,7 @@ The service is **stateless** — every call hits the store. That makes horizonta
 - [`UserService`](./service) — the orchestrator. Constructor, config, every public method.
 - [`Credentials Model`](./credentials) — what `UserCredentials` looks like on disk, the `account` / `password` / `mfa` / `trustedDevices` sub-objects, and how to extend with custom columns via generic `T`.
 - [`Password Hashing`](./password) — `PasswordHasher`, self-describing hash strings, pepper, history, `generatePassword`, scrypt cost tuning, the `FAST_SCRYPT` test idiom.
-- [`Password Policies`](./policy) — the `@prostojs/ftring` string DSL, function rules, built-in factories (`ppHas*`), `getTransferablePolicies()` for client-side pre-validation.
+- [`Password Policies`](./policy) — `definePasswordPolicy` (one function, both server check and client copy), backend-only rules, built-in factories (`ppHas*`), `getTransferablePolicies()` for client-side pre-validation. String rules were removed in 0.1.4.
 - [`MFA Primitives`](./mfa) — TOTP secret + URI + code + verify, one-time MFA-code helpers, trusted devices. What's here and what's deliberately not.
 - [`Stores`](./stores) — the `UserStore<T>` contract, `UserStoreMemory<T>` for tests, the `UserStoreUpdate { set, inc }` shape, and the `@atscript/db` adapter (`@aooth/user/atscript-db`).
 - [`Errors`](./errors) — the `UserAuthError` class, every `UserAuthErrorType`, and recommended HTTP status mappings.

@@ -1,6 +1,6 @@
 # password
 
-Scrypt-based hasher with a self-describing hash string, an optional pepper, history rotation, and a transferable string-rule policy engine.
+Scrypt-based hasher with a self-describing hash string, an optional pepper, history rotation, and a function-based policy engine whose rules can be sent to the client (`definePasswordPolicy`).
 
 ## Contents
 
@@ -10,6 +10,7 @@ Scrypt-based hasher with a self-describing hash string, an optional pepper, hist
 - [History rotation](#history-rotation)
 - [`generatePassword`](#generatepassword)
 - [`PasswordPolicy`](#passwordpolicy)
+- [`definePasswordPolicy`](#definepasswordpolicy)
 - [Built-in policy factories](#built-in-policy-factories)
 - [Custom policies](#custom-policies)
 - [`getTransferablePolicies` + client-side pre-validation](#gettransferablepolicies--client-side-pre-validation)
@@ -77,57 +78,74 @@ Used by `UserService.createUser(username)` (no password argument) — the genera
 ## `PasswordPolicy`
 
 ```ts
-import { PasswordPolicy } from "@aooth/user";
+import { PasswordPolicy, definePasswordPolicy } from "@aooth/user";
 
-const p = new PasswordPolicy({
-  rule: "v.length >= 12", // string OR function
-  description: "Minimum length 12",
-  errorMessage: "Password must be at least 12 characters",
-});
+const p = new PasswordPolicy(
+  definePasswordPolicy({
+    rule: (v: string, min: number) => v.length >= min,
+    args: [12],
+    description: "Minimum length 12",
+    errorMessage: "Password must be at least 12 characters",
+  }),
+);
 
 await p.evaluate("hunter2"); // false
-p.transferable; // true
+p.transferable; // true — it has a serialized form
 ```
 
 `PasswordPolicyDef`:
 
-| Field           | Type                             | Default  | Meaning                                         |
-| --------------- | -------------------------------- | -------- | ----------------------------------------------- |
-| `rule`          | `string \| PasswordPolicyEvalFn` | required | String rule (ftring-compiled) or function rule. |
-| `description?`  | `string`                         | —        | —                                               |
-| `errorMessage?` | `string`                         | —        | —                                               |
+| Field           | Type                   | Default  | Meaning                                                                         |
+| --------------- | ---------------------- | -------- | ------------------------------------------------------------------------------- |
+| `rule`          | `PasswordPolicyEvalFn` | required | Called directly on the server (no sandbox, no eval). Function only.             |
+| `serialized?`   | `string`               | —        | Client copy `(v) => …`, built by `definePasswordPolicy`. Absent = backend-only. |
+| `description?`  | `string`               | —        | —                                                                               |
+| `errorMessage?` | `string`               | —        | —                                                                               |
 
 `PasswordPolicyEvalFn` is `(password: string, context?: PasswordPolicyContext) => boolean | Promise<boolean>`. `PasswordPolicyContext`:
 
-| Field             | Type             | Default | Meaning                                                  |
-| ----------------- | ---------------- | ------- | -------------------------------------------------------- |
-| `passwordData?`   | `PasswordData`   | —       | User's current password row (history, lastChanged, ...). |
-| `passwordConfig?` | `PasswordConfig` | —       | The resolved password config.                            |
+| Field             | Type             | Default | Meaning                                                               |
+| ----------------- | ---------------- | ------- | --------------------------------------------------------------------- |
+| `passwordData?`   | `PasswordData`   | —       | User's current password row (`history` = hashes, `lastChanged`, ...). |
+| `passwordConfig?` | `PasswordConfig` | —       | The resolved password config.                                         |
 
 Exact shapes: [docs api](https://aoothjs.dev/api/user#policy-types).
 
-**String rules** are compiled once per process via a shared `FtringsPool<boolean, { v, context? }>` from `@prostojs/ftring`:
+`policy.transferable` is `serialized !== undefined`. `normalizePolicies(policies)` is the helper `UserService` uses internally. It wraps every plain `PasswordPolicyDef` in a `PasswordPolicy` instance and leaves existing instances alone.
 
-- Variable `v` — the candidate password.
-- Variable `context` — the optional `PasswordPolicyContext` (`{ passwordData, passwordConfig }`).
-- Two policies defining the same rule string share one compiled function (the pool dedupes by rule string).
+> **String rules are gone (since 0.1.4).** Before 0.1.4, `rule` also accepted an `@prostojs/ftring` string expression (`"v.length >= 8"`). That sandbox does not block prototype-chain escapes (`constructor.constructor("return process")()`), so a rule string coming from config or an admin UI was an RCE vector. String rules were removed and there is no opt-in to bring them back. If you see `{ rule: "..." }` in old code, rewrite it with `definePasswordPolicy({ rule, args })` or a `ppHas*` factory. TypeScript rejects a string `rule`, and evaluating one throws a `TypeError`.
 
-**Function rules** are stored as-is and invoked directly. `policy.transferable` is `false` — they will not be returned by `getTransferablePolicies()`.
+## `definePasswordPolicy`
 
-`normalizePolicies(policies)` is the helper `UserService` uses internally — it wraps every plain `PasswordPolicyDef` in a `PasswordPolicy` instance and leaves existing instances alone.
+```ts
+function definePasswordPolicy<A extends readonly unknown[]>(opts: {
+  rule: (v: string, ...args: A) => boolean | Promise<boolean>;
+  args?: A;
+  description?: string;
+  errorMessage?: string;
+}): PasswordPolicyDef;
+```
+
+It builds both tiers from one function:
+
+- Backend `rule` = `(v) => rule(v, ...args)`. `PasswordPolicyContext` is **not** forwarded.
+- `serialized` = `` `(v) => (${rule.toString()})(v, ${args.map(JSON.stringify).join(", ")})` ``, set only when `args` is passed. `args: []` gives a transferable rule with no parameters.
+- No `args` means backend-only: `serialized` is undefined, `transferable` is false, and the client skips it.
+- The client copy is bundler-safe because arguments are passed by position, so a minifier renaming the rule's parameters is harmless.
+- **Constraint:** the rule body may reference only its own parameters and plain JS globals (regex literals, `String` methods). It cannot close over imports, module-level constants or helpers, and it cannot use `this`, because the shipped source would not resolve them. `args` must be JSON-serializable.
 
 ## Built-in policy factories
 
-All return `PasswordPolicyDef` with a **string** rule so they remain transferable to the client.
+All are built with `definePasswordPolicy`, so they are transferable to the client.
 
-| Factory                               | Rule                                                | Description (default args)                       |
-| ------------------------------------- | --------------------------------------------------- | ------------------------------------------------ |
-| `ppHasMinLength(min = 8)`             | `v.length >= ${min}`                                | `Minimum length 8`                               |
-| `ppHasUpperCase(n = 1)`               | `(v.match(/[A-Z]/g) \|\| []).length >= ${n}`        | `At least 1 uppercase character`                 |
-| `ppHasLowerCase(n = 1)`               | `(v.match(/[a-z]/g) \|\| []).length >= ${n}`        | `At least 1 lowercase character`                 |
-| `ppHasNumber(n = 1)`                  | `(v.match(/\d/g) \|\| []).length >= ${n}`           | `At least 1 number`                              |
-| `ppHasSpecialChar(n = 1)`             | `(v.match(/[^A-Za-z0-9]/g) \|\| []).length >= ${n}` | `At least 1 special character`                   |
-| `ppMaxRepeatedChars(maxRepeated = 2)` | `/(.)\1{${maxRepeated},}/.test(v) === false`        | `No more than 2 consecutive repeated characters` |
+| Factory                               | Rule `(v, arg) => …`                                                      | Description (default args)                       |
+| ------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------ |
+| `ppHasMinLength(min = 8)`             | `v.length >= min`                                                         | `Minimum length 8`                               |
+| `ppHasUpperCase(n = 1)`               | `(v.match(/[A-Z]/g) \|\| []).length >= n`                                 | `At least 1 uppercase character`                 |
+| `ppHasLowerCase(n = 1)`               | `(v.match(/[a-z]/g) \|\| []).length >= n`                                 | `At least 1 lowercase character`                 |
+| `ppHasNumber(n = 1)`                  | `(v.match(/\d/g) \|\| []).length >= n`                                    | `At least 1 number`                              |
+| `ppHasSpecialChar(n = 1)`             | `(v.match(/[^A-Za-z0-9]/g) \|\| []).length >= n`                          | `At least 1 special character`                   |
+| `ppMaxRepeatedChars(maxRepeated = 2)` | no run of > `maxRepeated` identical chars (`/(.)\1{maxRepeated,}/` fails) | `No more than 2 consecutive repeated characters` |
 
 Wire into the service:
 
@@ -148,17 +166,18 @@ const svc = new UserService(store, {
 
 ## Custom policies
 
-**String-form** — preferred, stays transferable:
+**Transferable.** Use this when the rule depends only on the password plus JSON-serializable values:
 
 ```ts
-const noEmailLocalpart: PasswordPolicyDef = {
-  rule: "context.passwordData ? !v.toLowerCase().includes((context.passwordData.lastChanged + '').slice(0, 4)) : true",
-  description: "Password must not echo identifying data",
-  errorMessage: "Password must not contain identifying data",
-};
+const noCommonWords = definePasswordPolicy({
+  rule: (v: string, words: string[]) => !words.some((w) => v.toLowerCase().includes(w)),
+  args: [["password", "qwerty", "letmein"]],
+  description: "No common words",
+  errorMessage: "Password must not contain common words",
+});
 ```
 
-**Function-form** — needed for breached-password APIs, regex builders that don't ftring-encode cleanly, or anything requiring async I/O:
+**Backend-only.** Use this for breached-password APIs, async I/O, imports, or anything that reads `PasswordPolicyContext`. Pass a raw def with a function `rule` (it receives `(password, context)`), or call `definePasswordPolicy` without `args`:
 
 ```ts
 const noBreached: PasswordPolicyDef = {
@@ -168,21 +187,28 @@ const noBreached: PasswordPolicyDef = {
 };
 ```
 
-`transferable` is `false` for function rules — `getTransferablePolicies()` will silently drop them. If you need both server-only and client-shippable rules, declare two policies.
+Backend-only policies are silently left out of `getTransferablePolicies()`. The client preview passes them, and the server then rejects the password on submit. If you need both a server-only check and a client-shippable one, declare two policies.
 
 ## `getTransferablePolicies` + client-side pre-validation
 
-`UserService.getTransferablePolicies(): TransferablePolicy[]` returns an array of `TransferablePolicy`:
+`UserService.getTransferablePolicies(): TransferablePolicy[]` returns the transferable policies (those with `serialized`) as `TransferablePolicy`:
 
-| Field           | Type     | Default  | Meaning                           |
-| --------------- | -------- | -------- | --------------------------------- |
-| `rule`          | `string` | required | The same `v`/`context` namespace. |
-| `description?`  | `string` | —        | —                                 |
-| `errorMessage?` | `string` | —        | —                                 |
+| Field           | Type     | Default  | Meaning                                                    |
+| --------------- | -------- | -------- | ---------------------------------------------------------- |
+| `rule`          | `string` | required | The `serialized` function literal: `(v) => (…)(v, …args)`. |
+| `description?`  | `string` | —        | —                                                          |
+| `errorMessage?` | `string` | —        | —                                                          |
 
 Exact shape: [docs api](https://aoothjs.dev/api/user#policy-types).
 
-Ship the array to the client and evaluate against `{ v: typedPassword, context }` using the same `@prostojs/ftring` machinery — the rule strings are identical to the ones the server compiles. The client preview is advisory; the server runs the full policy set again on `changePassword` / `setPassword`.
+On the client, compile each rule once and call it with the typed password. The client has no `context`:
+
+```ts
+const fn = new Function(`return (${policy.rule})`)() as (v: string) => boolean;
+fn(typedPassword); // boolean
+```
+
+The `AuthWorkflow`'s `prepare-password-rules` step puts this list on `ctx.password.policies`, and `<AsPasswordRules>` (`@atscript/vue-aooth`) evaluates it. Compiling the rules needs a CSP that allows `'unsafe-eval'`. The client preview is advisory; the server runs the full policy set again on `changePassword` / `setPassword`.
 
 ## `PolicyCheckResult` shape
 

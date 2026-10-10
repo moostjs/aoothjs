@@ -98,7 +98,7 @@ All methods are `async` unless explicitly marked `(sync)`.
 | `unlockAccount`                                                                           | `void`                          | `NOT_FOUND`                                                                               | Resets `failedLoginAttempts` too.                                                                                              |
 | `getLockStatus` (sync)                                                                    | `LockStatus`                    | —                                                                                         |                                                                                                                                |
 | `checkPolicies`                                                                           | `PolicyCheckResult`             | —                                                                                         |                                                                                                                                |
-| `getTransferablePolicies` (sync)                                                          | `TransferablePolicy[]`          | —                                                                                         | String-rule policies only.                                                                                                     |
+| `getTransferablePolicies` (sync)                                                          | `TransferablePolicy[]`          | —                                                                                         | Transferable policies only (with a `serialized` form).                                                                         |
 | `addMfaMethod` / `confirmMfaMethod` / `removeMfaMethod`                                   | `void`                          | `NOT_FOUND` / `MFA_NOT_CONFIGURED`                                                        |                                                                                                                                |
 | `setDefaultMfaMethod`                                                                     | `void`                          | `MFA_NOT_CONFIGURED`                                                                      | Empty `name` clears the default.                                                                                               |
 | `setMfaAutoSend`                                                                          | `void`                          | `NOT_FOUND`                                                                               |                                                                                                                                |
@@ -292,7 +292,7 @@ getTransferablePolicies(): TransferablePolicy[]
 // TransferablePolicy = { rule: string; description?: string; errorMessage?: string }
 ```
 
-Returns only policies whose `rule` is a string — those can be evaluated on the client in the same `v` / `context` namespace. See [Policies](./policy).
+Returns only transferable policies, meaning those built by `definePasswordPolicy` with `args` (including every `ppHas*` factory). `rule` is a self-contained function literal `(v) => …` that the client compiles and calls with the password. Backend-only policies are left out. See [Policies](./policy#transferable-policies).
 
 ### MFA — `addMfaMethod` / `confirmMfaMethod` / `removeMfaMethod`
 

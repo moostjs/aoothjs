@@ -129,7 +129,7 @@ Runs every configured policy. `passwordData` lets a policy reason about `lastCha
 
 ### `getTransferablePolicies() → TransferablePolicy[]` (sync)
 
-Filters to policies whose `rule` is a string — those compile via `@prostojs/ftring` and can be shipped to the client for pre-validation in the same `v` / `context` namespace. Function-based rules are silently excluded.
+Returns the transferable policies, meaning those with a `serialized` form: built by `definePasswordPolicy` with `args`, which includes every `ppHas*` factory. Each `rule` is a self-contained function literal `(v) => (…)(v, …args)` that the client compiles and calls with the password. Backend-only policies are silently excluded. See [password.md](./password.md#gettransferablepolicies--client-side-pre-validation).
 
 ## MFA methods
 

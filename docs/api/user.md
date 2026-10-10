@@ -82,22 +82,27 @@ Node `scrypt` wrapper. Hash strings are self-describing (`$scrypt$N=...,r=...,p=
 
 ```ts
 new PasswordPolicy(def: PasswordPolicyDef)
-policy.evaluate(password: string, ctx?: PolicyContext): boolean | Promise<boolean>
-policy.transferable: boolean   // true iff rule is a string
+policy.evaluate(password: string, ctx?: PasswordPolicyContext): boolean | Promise<boolean>
+policy.transferable: boolean   // true iff it has a serialized form
 ```
 
-Wraps one rule (string compiled via `@prostojs/ftring`, or a function). String-rule policies are transferable — they ship to the client for pre-validation. See [Password Policies](/user/policy).
+Wraps one `PasswordPolicyDef`. `rule` is a function called directly on the server. A policy with `serialized` is transferable and is sent to the client for pre-validation. String rules (`@prostojs/ftring`) were removed in 0.1.4 for security. See [Password Policies](/user/policy).
 
 ## Functions
 
 ### `definePasswordPolicy` / `normalizePolicies`
 
 ```ts
-function definePasswordPolicy(def: PasswordPolicyDef): PasswordPolicyInstance;
+function definePasswordPolicy<A extends readonly unknown[]>(opts: {
+  rule: (v: string, ...args: A) => boolean | Promise<boolean>;
+  args?: A;
+  description?: string;
+  errorMessage?: string;
+}): PasswordPolicyDef;
 function normalizePolicies(defs?: (PasswordPolicyDef | PasswordPolicyInstance)[]): PasswordPolicy[];
 ```
 
-`definePasswordPolicy` wraps one `PasswordPolicyDef` into an evaluatable instance; `normalizePolicies` compiles an array into ready-to-evaluate `PasswordPolicy` instances. See [Password Policies](/user/policy).
+`definePasswordPolicy` builds a `PasswordPolicyDef` from one function. The server calls `rule(v, ...args)` directly, and `serialized` is set to `(v) => (<rule source>)(v, <args as JSON>)` for the client. Omit `args` to make the policy backend-only. The rule must reference only its own parameters. `normalizePolicies` wraps an array into ready-to-evaluate `PasswordPolicy` instances. See [Password Policies](/user/policy).
 
 ### Built-in policy factories
 
@@ -110,7 +115,7 @@ function ppHasSpecialChar(n?: number): PasswordPolicyDef;
 function ppMaxRepeatedChars(maxRepeated?: number): PasswordPolicyDef;
 ```
 
-All emit string-rule (transferable) `PasswordPolicyDef`s. See [Password Policies](/user/policy).
+All are built with `definePasswordPolicy`, so they are transferable. See [Password Policies](/user/policy).
 
 ### TOTP / MFA primitives
 
@@ -237,7 +242,8 @@ type PasswordPolicyEvalFn = (
   ctx?: PasswordPolicyContext,
 ) => boolean | Promise<boolean>;
 interface PasswordPolicyDef {
-  rule: string | PasswordPolicyEvalFn;
+  rule: PasswordPolicyEvalFn;
+  serialized?: string; // client form; absent = backend-only
   description?: string;
   errorMessage?: string;
 }

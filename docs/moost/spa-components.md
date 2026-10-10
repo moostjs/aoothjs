@@ -58,7 +58,7 @@ When `ConsentStore.getPendingConsents(subject)` returns descriptors (the arg is 
 
 ## `AsPasswordRules` — live policy readout
 
-On `SetPasswordForm`, the phantom `passwordRules` field renders fulfillment dots that re-evaluate on every keystroke against `data.newPassword`, using the **same transferable policy expressions** the server enforces (shipped to the client via `UserService.getTransferablePolicies()`). See [Password Policies](/user/policy).
+On `SetPasswordForm`, the phantom `passwordRules` field renders fulfillment dots that re-evaluate on every keystroke against `data.newPassword`, using the **same transferable policy functions** the server enforces (shipped to the client via `UserService.getTransferablePolicies()`). See [Password Policies](/user/policy).
 
 ## `AsSsoProviders` — federated login buttons {#asssoproviders-federated-login}
 
