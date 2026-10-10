@@ -21,18 +21,25 @@ import { bearerAuth as auth, departmentIds, mintToken, resetApp, type Row, rows 
  * t2_olivia admin (no task-dict read).
  */
 
-/** Tenant A's tasks as the admin sees them: id → { status, departmentId }. */
+/** Tenant A's tasks as the admin sees them: id → { status, departmentId, updatedAt }. */
 async function tenantTasks(
   request: APIRequestContext,
   adminToken: string,
-): Promise<Map<string, { status: string; departmentId?: string }>> {
+): Promise<Map<string, { status: string; departmentId?: string; updatedAt: number }>> {
   const all = await rows(
     request,
     adminToken,
-    "/tasks/query?$select=id,status,departmentId&$limit=1000",
+    "/tasks/query?$select=id,status,departmentId,updatedAt&$limit=1000",
   );
   return new Map(
-    all.map((r) => [r.id, { status: r.status as string, departmentId: r.departmentId as string }]),
+    all.map((r) => [
+      r.id,
+      {
+        status: r.status as string,
+        departmentId: r.departmentId as string,
+        updatedAt: r.updatedAt as number,
+      },
+    ]),
   );
 }
 
@@ -168,7 +175,15 @@ test.describe("ROW-ACTIONS: view-delegated row actions and query targets", () =>
     expect(run.status(), await run.text()).toBe(201);
     expect(await run.json()).toMatchObject({ count: openOps.length });
 
-    expectOnlyOpenOpsDone(before, await tenantTasks(request, dave), ops);
+    const after = await tenantTasks(request, dave);
+    expectOnlyOpenOpsDone(before, after, ops);
+    // `updatedAt` is `number.timestamp.updated`: the update stamps it, the
+    // action does not write it.
+    for (const [id, t] of before) {
+      const touched = t.status === "open" && t.departmentId === ops;
+      if (touched) expect(after.get(id)!.updatedAt, id).toBeGreaterThan(t.updatedAt);
+      else expect(after.get(id)!.updatedAt, id).toBe(t.updatedAt);
+    }
   });
 
   test("ROW-ACT-004: a query target on the view runs the tasks route per batch — out-of-grant rows skipped", async ({

@@ -59,8 +59,9 @@ export interface Task {
     @db.default.now
     createdAt: number.timestamp
 
-    @db.default.now
-    updatedAt: number.timestamp
+    // Server-stamped on insert and on every update / replace (`@db.default.now`
+    // + `@db.onUpdate.now`); a sent value is ignored on PATCH / PUT.
+    updatedAt: number.timestamp.updated
 
     @db.rel.from
     comments?: Comment[]

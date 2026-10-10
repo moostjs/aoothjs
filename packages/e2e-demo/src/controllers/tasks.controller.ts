@@ -24,10 +24,7 @@ export class TasksController extends AsArbacDbController<typeof Task> {
     message: string,
   ): Promise<Ack> {
     const scope = await useArbacDbScope<typeof Task>();
-    const r = await this.table.updateMany(scope.filter({ id }), {
-      ...patch,
-      updatedAt: Date.now(),
-    });
+    const r = await this.table.updateMany(scope.filter({ id }), patch);
     assertWritten(r);
     return { ok: true, message };
   }
@@ -87,7 +84,6 @@ export class TasksController extends AsArbacDbController<typeof Task> {
     const scope = await useArbacDbScope<typeof Task>();
     const r = await this.table.updateMany(scope.filter({ id: { $in: ids.map((i) => i.id) } }), {
       status: "done",
-      updatedAt: Date.now(),
     });
     const count = r.matchedCount ?? 0;
     return { ok: true, message: `${count} task(s) marked done`, count };

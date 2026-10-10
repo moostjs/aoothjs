@@ -278,7 +278,7 @@ interface Task {
     internalNotes?: string
 
     @db.default.now createdAt: number.timestamp
-    @db.default.now updatedAt: number.timestamp
+    updatedAt: number.timestamp.updated  // server-stamped on insert + every update
 
     @db.rel.from comments?: Comment[]
     @db.rel.to department?: Department   // `$with` needs a read grant on `departments`
