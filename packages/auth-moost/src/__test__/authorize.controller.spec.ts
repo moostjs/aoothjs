@@ -1,16 +1,3 @@
-// Dye-token shim — see controller-utils.ts for why.
-const g = globalThis as Record<string, unknown>;
-for (const key of [
-  "__DYE_YELLOW__",
-  "__DYE_RED_BRIGHT__",
-  "__DYE_GREEN__",
-  "__DYE_DIM__",
-  "__DYE_DIM_OFF__",
-  "__DYE_COLOR_OFF__",
-]) {
-  if (!(key in g)) g[key] = "";
-}
-
 import { createHash, generateKeyPairSync } from "node:crypto";
 
 import { AuthCredential, CredentialStoreMemory, type SessionInfo } from "@aooth/auth";
@@ -113,7 +100,7 @@ async function buildApp(): Promise<Harness> {
   );
   moost.applyGlobalInterceptors(authGuardInterceptor({ cookie: { secure: false } }));
   // biome-ignore lint/suspicious/noExplicitAny: registerControllers' prefixed-tuple shape.
-  moost.registerControllers(AuthorizeController as any);
+  moost.registerControllers(AuthorizeController);
   await moost.init();
 
   return { request: makeRequester(http), auth, pending, codes };
@@ -500,7 +487,7 @@ async function buildOidcApp(opts?: { dcr?: boolean }): Promise<OidcHarness> {
   );
   moost.applyGlobalInterceptors(authGuardInterceptor({ cookie: { secure: false } }));
   // biome-ignore lint/suspicious/noExplicitAny: registerControllers' prefixed-tuple shape.
-  moost.registerControllers(OidcAuthorizeController as any);
+  moost.registerControllers(OidcAuthorizeController);
   await moost.init();
 
   return { request: makeRequester(http), auth, pending, codes, signer };
@@ -746,7 +733,7 @@ async function buildDcrApp(opts?: {
   );
   moost.applyGlobalInterceptors(authGuardInterceptor({ cookie: { secure: false } }));
   // biome-ignore lint/suspicious/noExplicitAny: registerControllers' prefixed-tuple shape.
-  moost.registerControllers(DcrAuthorizeController as any);
+  moost.registerControllers(DcrAuthorizeController);
   await moost.init();
 
   return { request: makeRequester(http), auth, pending, codes, clients };

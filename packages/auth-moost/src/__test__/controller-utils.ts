@@ -1,20 +1,3 @@
-// `@prostojs/router` injects dye color tokens via build-time constants
-// (`__DYE_YELLOW__`, etc). Vitest's transform does not substitute them, so
-// any path that hits `consoleWarn`/`consoleError` in the router throws
-// `ReferenceError`. We pre-populate the globals as empty strings — this only
-// affects test-time logs (they lose ANSI coloring).
-const g = globalThis as Record<string, unknown>;
-for (const key of [
-  "__DYE_YELLOW__",
-  "__DYE_RED_BRIGHT__",
-  "__DYE_GREEN__",
-  "__DYE_DIM__",
-  "__DYE_DIM_OFF__",
-  "__DYE_COLOR_OFF__",
-]) {
-  if (!(key in g)) g[key] = "";
-}
-
 import {
   Arbac,
   arbacAuthorizeInterceptor,
@@ -186,7 +169,7 @@ export async function prepareControllerApp(
     const Ctrl = controllerClass ?? AuthController;
     // biome-ignore lint/suspicious/noExplicitAny: registerControllers takes the
     // package-internal prefixed-tuple shape; tests pass a plain class/tuple.
-    moost.registerControllers((controllerPrefix ? [controllerPrefix, Ctrl] : Ctrl) as any);
+    moost.registerControllers(controllerPrefix ? [controllerPrefix, Ctrl] : Ctrl);
   }
   if (extraControllers && extraControllers.length > 0) {
     // biome-ignore lint/suspicious/noExplicitAny: moost.registerControllers takes the

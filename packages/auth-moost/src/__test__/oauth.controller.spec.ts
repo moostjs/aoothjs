@@ -1,16 +1,3 @@
-// Dye-token shim — see controller-utils.ts for why.
-const g = globalThis as Record<string, unknown>;
-for (const key of [
-  "__DYE_YELLOW__",
-  "__DYE_RED_BRIGHT__",
-  "__DYE_GREEN__",
-  "__DYE_DIM__",
-  "__DYE_DIM_OFF__",
-  "__DYE_COLOR_OFF__",
-]) {
-  if (!(key in g)) g[key] = "";
-}
-
 import { AuthCredential, CredentialStoreMemory } from "@aooth/auth";
 import { FakeIdentityProvider, OAuthProviderRegistry, verifyState } from "@aooth/idp";
 import { FederatedIdentityStoreMemory, UserService, UserStoreMemory } from "@aooth/user";
@@ -70,7 +57,7 @@ async function buildApp(): Promise<Harness> {
   );
   moost.applyGlobalInterceptors(authGuardInterceptor({ cookie: { secure: false } }));
   // biome-ignore lint/suspicious/noExplicitAny: registerControllers' prefixed-tuple shape.
-  moost.registerControllers(OAuthController as any);
+  moost.registerControllers(OAuthController);
   await moost.init();
 
   async function request(input: string, init: RequestInit = {}) {
