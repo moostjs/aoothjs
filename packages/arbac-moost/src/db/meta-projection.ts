@@ -657,8 +657,13 @@ function crudHandlers(op: TCrudOp, methods: ReadonlySet<string>): readonly strin
  *    still need `type` for their insert/update forms. PK + `preferredId` are
  *    never pruned.
  *
+ * 3. The capabilities (`crud[op]` control lists, field `groupable` /
+ *    `bucketable` / `numeric` / `sortable`, relation `filterable`, the
+ *    aggregate and search envelope keys) follow each read op's `controls` policy
+ *    ({@link gateMetaControls}).
+ *
  * The search surface (`searchIndexes`, `searchable`, `vectorSearchable`,
- * `geoSearchable`) is narrowed by moost-db itself (≥ 0.1.147, under the
+ * `geoSearchable`) is also narrowed by moost-db itself (≥ 0.1.147, under the
  * overridden `hasField`), after this overlay.
  *
  * @param source - the controller's `this.readable` (identifiers, relations
@@ -690,10 +695,17 @@ export async function applyArbacMetaOverlay(
   const crudBits = crudScopes.map((scopes) => scopes !== undefined);
   const readScopes: ArbacDbScope[] = [];
   const writeScopes: ArbacDbScope[] = [];
+  // Each read op's own policy: `validateControls` enforces the op's scopes, not the union.
+  const controls: Partial<Record<TCrudOp, Record<string, ControlGate>>> = {};
   for (let i = 0; i < crudKeys.length; i++) {
     const scopes = crudScopes[i];
     if (!scopes) continue;
-    (WRITE_CRUD_OPS.has(crudKeys[i]) ? writeScopes : readScopes).push(...scopes);
+    if (WRITE_CRUD_OPS.has(crudKeys[i])) {
+      writeScopes.push(...scopes);
+    } else {
+      readScopes.push(...scopes);
+      controls[crudKeys[i]] = effectiveScope(scopes).controls;
+    }
   }
   const overlay = (): TMetaResponse => {
     const crud: TMetaResponse["crud"] = {};
@@ -712,8 +724,6 @@ export async function applyArbacMetaOverlay(
         : undefined;
     return memoMetaProjection(meta, key, memoMax, overlay);
   }
-  const groupBy = effectiveScope(readScopes).controls.$groupBy;
-
   const writable = collectWritableFields(writeScopes, false);
   const nestedWrites = effectiveScope(writeScopes).nestedWrites;
   if (isIdentifierSet(source)) {
@@ -721,9 +731,9 @@ export async function applyArbacMetaOverlay(
     const vis = buildScopeVisibility(readScopes, undefined, source);
     const visible = Object.keys(vis.allowed).length > 0 || vis.withGrants.size > 0;
     const overlaid = overlay();
-    return gateGroupable(
+    return gateMetaControls(
       visible ? pruneMetaByVisibility(overlaid, { ...vis, writable, nestedWrites }) : overlaid,
-      groupBy,
+      controls,
     );
   }
 
@@ -745,7 +755,7 @@ export async function applyArbacMetaOverlay(
               tree: metaRelationNames(meta),
               writable,
               nestedWrites,
-              groupBy,
+              controls,
               refTargets,
             },
           },
@@ -753,9 +763,9 @@ export async function applyArbacMetaOverlay(
         )
       : undefined;
   return memoMetaProjection(meta, key, memoMax, () =>
-    gateGroupable(
+    gateMetaControls(
       pruneMetaByVisibility(overlay(), { ...vis, writable, nestedWrites }, refTargets),
-      groupBy,
+      controls,
     ),
   );
 }
@@ -968,30 +978,159 @@ function stripFormTargets(
   return changed ? { ...out, type: changed } : out;
 }
 
+/** A role's effective `controls` policy (`false` / whitelist per `$control`; absent ≡ allowed). */
+type ControlsPolicy = Readonly<Record<string, ControlGate>>;
+
+const NO_POLICY: ControlsPolicy = {};
+
+/** `crud[op]` entries that are query parts of their own, never seen by the controls gate. */
+const NOT_CONTROLS: ReadonlySet<string> = new Set(["filter", "insights"]);
+
 /**
- * `fields[*].groupable` follows the `controls.$groupBy` policy, mirroring the
- * 403 `applyArbacControls` raises: `false` drops the flag everywhere, a
- * whitelist keeps it only on the listed paths. Returns `meta` itself when
- * nothing is stripped.
- *
- * @since 0.1.75
+ * Whether `control` is unusable in an op listing `list` under `policy`: its
+ * gate is `false`, or everything it qualifies is unusable (`$index` /
+ * `$fuzzy` / `$vector` name how `$search` runs, `$threshold` bounds
+ * `$vector`, `$rowOrder` orders `first()` / `last()` in an aggregate
+ * `$select`, `$nulls` places NULLs in `$sort` and `$rowOrder` keys).
  */
-function gateGroupable(meta: TMetaResponse, gate: ControlGate | undefined): TMetaResponse {
-  if (gate === undefined || gate === true) return meta;
-  const stripped = (path: string, field: { groupable?: boolean }) =>
-    field.groupable && (gate === false || !gate.includes(path));
-  const entries = Object.entries(meta.fields);
-  if (!entries.some(([path, field]) => stripped(path, field))) return meta;
+function isControlOff(control: string, list: readonly string[], policy: ControlsPolicy): boolean {
+  if (!NOT_CONTROLS.has(control) && policy[`$${control}`] === false) return true;
+  const off = (c: string) => isControlOff(c, list, policy);
+  switch (control) {
+    case "index":
+    case "fuzzy":
+      return list.includes("search") && off("search");
+    case "vector":
+      return off("search");
+    case "threshold":
+      return off("vector");
+    case "rowOrder":
+      return off("groupBy") || off("select");
+    case "nulls":
+      return off("sort") && (!list.includes("rowOrder") || off("rowOrder"));
+    default:
+      return false;
+  }
+}
+
+/** Envelope keys that advertise aggregate queries (`$groupBy`, aggregate / bucket `$select`). */
+const AGGREGATE_ENVELOPE_KEYS = ["aggregateFns", "aggregateExpressions", "bucketUnits"] as const;
+
+/**
+ * The `/meta` capabilities follow each read op's `controls` policy (`policies`;
+ * an op without one is unrestricted), mirroring the 403 `applyArbacControls`
+ * raises on that op's requests:
+ *
+ * - `crud[op]` loses every control the op's policy makes unusable
+ *   ({@link isControlOff});
+ * - a capability flag stays when SOME op listing its controls keeps them
+ *   (no op lists them → left as built): `groupable` (`groupBy`, and the
+ *   field on that op's `$groupBy` whitelist, if any), `bucketable` (the same
+ *   plus `select` — a bucket is checked as the field it buckets), `numeric`
+ *   and the aggregate envelope keys (`groupBy` + `select`: every aggregate,
+ *   calendar bucket or arithmetic `$select` is `$groupBy` use), `sortable`
+ *   (`sort`), `nullsPlacement` (`nulls`), `searchable` + `searchIndexes`
+ *   (`search`), `vectorSearchable` + the vector indexes (`search` +
+ *   `vector`), the non-default text indexes (`search` + `index`), a
+ *   relation's `filterable` (`filter` + `with`, and the relation on that
+ *   op's `$with` whitelist, if any).
+ *
+ * Returns `meta` itself when nothing changes.
+ *
+ * @since 0.1.75 (`groupable`), 0.1.80 (the rest)
+ */
+export function gateMetaControls(
+  meta: TMetaResponse,
+  policies: Readonly<Partial<Record<TCrudOp, ControlsPolicy>>>,
+): TMetaResponse {
+  if (!Object.values(policies).some((p) => p && Object.keys(p).length > 0)) return meta;
+  let changed = false;
+  const crud: TMetaResponse["crud"] = {};
+  const ops: Array<{ list: readonly string[]; kept: readonly string[]; policy: ControlsPolicy }> =
+    [];
+  for (const [op, list] of Object.entries(meta.crud) as [TCrudOp, string[]][]) {
+    const policy = policies[op] ?? NO_POLICY;
+    const kept = list.filter((c) => !isControlOff(c, list, policy));
+    if (kept.length !== list.length) changed = true;
+    crud[op] = kept;
+    ops.push({ list, kept, policy });
+  }
+  /** Some op listing `controls` keeps them all (and `name` passes its `whitelist` gate). */
+  const served = (controls: readonly string[], name?: string, whitelist = "$groupBy") => {
+    const listing = ops.filter((o) => controls.every((c) => o.list.includes(c)));
+    return (
+      listing.length === 0 ||
+      listing.some(({ kept, policy }) => {
+        const gate = policy[whitelist];
+        return (
+          controls.every((c) => kept.includes(c)) &&
+          (name === undefined || !Array.isArray(gate) || gate.includes(name))
+        );
+      })
+    );
+  };
+  const aggregates = served(["groupBy", "select"]);
+  const sortable = served(["sort"]);
+
   const fields: TMetaResponse["fields"] = {};
-  for (const [path, field] of entries) {
-    if (stripped(path, field)) {
-      const { groupable: _groupable, ...rest } = field;
-      fields[path] = rest;
-    } else {
-      fields[path] = field;
+  for (const [path, field] of Object.entries(meta.fields)) {
+    let next = field;
+    const strip = (flag: "groupable" | "bucketable" | "numeric", keep: () => boolean) => {
+      if (!next[flag] || keep()) return;
+      const { [flag]: _dropped, ...rest } = next;
+      next = rest;
+    };
+    strip("groupable", () => served(["groupBy"], path));
+    strip("bucketable", () => served(["groupBy", "select"], path));
+    strip("numeric", () => aggregates);
+    if (!sortable && next.sortable) next = { ...next, sortable: false };
+    if (next !== field) changed = true;
+    fields[path] = next;
+  }
+
+  const out: TMetaResponse = { ...meta, fields, crud };
+  // A relation filter (`$some` / `$none`) is `$with` use of the relation (`enforceRelationGates`).
+  const unfilterable = (r: TMetaResponse["relations"][number]) =>
+    r.filterable && !served(["filter", "with"], r.name, "$with");
+  if (out.relations.some(unfilterable)) {
+    out.relations = out.relations.map((r) => {
+      if (!unfilterable(r)) return r;
+      const { filterable: _filterable, ...rest } = r;
+      return rest;
+    });
+    changed = true;
+  }
+  if (!aggregates) {
+    for (const key of AGGREGATE_ENVELOPE_KEYS) {
+      if (out[key] === undefined) continue;
+      delete out[key];
+      changed = true;
     }
   }
-  return { ...meta, fields };
+  if (out.nullsPlacement && !served(["nulls"])) {
+    delete out.nullsPlacement;
+    changed = true;
+  }
+  const search = served(["search"]);
+  const vector = search && served(["search", "vector"]);
+  const named = served(["search", "index"]);
+  const all = out.searchIndexes ?? [];
+  const indexes = all.filter((i) =>
+    i.type === "vector" ? vector : search && (named || !!i.isDefault),
+  );
+  if (indexes.length !== all.length) {
+    out.searchIndexes = indexes;
+    changed = true;
+  }
+  if (out.searchable && !search) {
+    out.searchable = false;
+    changed = true;
+  }
+  if (out.vectorSearchable && !vector) {
+    out.vectorSearchable = false;
+    changed = true;
+  }
+  return changed ? out : meta;
 }
 
 // Per static envelope (the base controller caches it — identity-stable).

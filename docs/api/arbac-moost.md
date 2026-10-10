@@ -54,7 +54,7 @@ class AsArbacDbController<T> extends AsDbController<T> {}
 
 Two seams enforce that a scope `projection` removes fields from existence, not just from row payloads:
 
-- **`applyMetaOverlay`** prunes the `/meta` envelope — `fields`, the serialized `type`, `relations`, `versionColumn` — down to the union of the allowed read ops' scope projections (PK + `preferredId` always survive; reads always return them). A scoped UI can no longer offer columns that would never populate, and secret-bearing column names stop leaking. Unscoped read grants keep the full envelope; write-only principals keep `type` for their insert/update forms.
+- **`applyMetaOverlay`** prunes the `/meta` envelope — `fields`, the serialized `type`, `relations`, `versionColumn` — down to the union of the allowed read ops' scope projections (PK + `preferredId` always survive; reads always return them). A scoped UI can no longer offer columns that would never populate, and secret-bearing column names stop leaking. Unscoped read grants keep the full envelope; write-only principals keep `type` for their insert/update forms. The capabilities follow the `controls` policy (since 0.1.80), each read op by its own grant's: a denied control leaves that op's `crud[op]` control list, and the flags it implies go too (`groupable` / `bucketable` / `numeric` and the aggregate keys under `$groupBy`, `sortable` under `$sort`, `searchable` under `$search`, a relation's `filterable` under `$with`) — see [`/meta`: capabilities](/moost/db-controllers#meta-capabilities-and-value-help-bindings).
 - **`hasField`** answers `false` for paths outside that union, so any query reference to a hidden field gets the **identical** `Unknown field "x"` 400 a nonexistent field gets — no existence or value oracle. A path under a relation (`$with=rel(x>1)`, `$with=rel($sort=x)`, `$with=rel($select=x)`) is checked as `x` against the relation's policy — the union of declared `with.rel` sub-scopes, else (0.1.72+) the caller's own grant on the related table; no grant → the relation is unknown. Recursive; the related table's PK / `preferredId` stay visible, and `/meta` prunes the relation's nav type the same way. Derived columns follow their source; SQL `@db.json` columns are atomic. Requirements (moost-db version, authorize interceptor, search indexes): [Column-scope security floor](/moost/db-controllers#column-scope-security-floor).
 
 ### `AsArbacDbReadableController<T>`
@@ -274,7 +274,7 @@ function enforceControlsPolicy(
 ): void;
 ```
 
-Throws `HttpError(403, 'Control "$with" is not allowed for your role')` on violations. Applied by `AsArbacDbController.validateControls` against the union of scope `controls` maps.
+Throws `HttpError(403, 'Control "$with" is not allowed for your role')` on violations. Applied by `AsArbacDbController.validateControls` against the union of scope `controls` maps. A control counts as used when it is present and not an empty array; `$groupBy` counts as used whenever it is present, so `$groupBy: []` (how moost-db marks an ungrouped aggregate) is denied by a `false` gate and passes a whitelist (since 0.1.80).
 
 ### `extractUsedControlValues`
 
@@ -435,7 +435,7 @@ interface ArbacDbScope<T = unknown> {
 }
 ```
 
-The scope shape `AsArbacDbController` understands. `check`, `nestedWrites` and `checkRefs` are enforced from 0.1.72. Pass an `.as` model as `T` (e.g. `ArbacDbScope<Task>`) to get autocomplete on `projection` / `with` / `controls` / `set` / `allowedFields` against the model's own and navigation fields. `T = unknown` (the default) keeps the legacy untyped shape for back-compat. **Open to declaration merging** — augment with custom fields if you extend the controller. See [DB Controllers](/moost/).
+The scope shape `AsArbacDbController` understands. `check`, `nestedWrites` and `checkRefs` are enforced from 0.1.72. Pass an `.as` model as `T` (e.g. `ArbacDbScope<Task>`) to get autocomplete on `projection` / `with` / `controls` / `set` / `allowedFields` against the model's own and navigation fields. Typed `controls` accept a whitelist only for `$with` (relation names) and `$groupBy` (field paths), the two controls `unionControlsPolicy` accepts one for. Every other control takes `true` / `false`, and an unknown control key is a type error. Before 0.1.80 a `$select` whitelist type-checked and then threw when scopes were merged. `T = unknown` (the default) keeps the legacy untyped shape for back-compat. **Open to declaration merging** — augment with custom fields if you extend the controller. See [DB Controllers](/moost/).
 
 ### `RefTableSource` / `RefForeignKey`
 

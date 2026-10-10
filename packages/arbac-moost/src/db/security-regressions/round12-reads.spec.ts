@@ -98,6 +98,12 @@ describe("/meta.fields[*].groupable follows controls.$groupBy", () => {
     const meta = (await get("/items/meta")).body;
     expect(meta.fields.status).toBeDefined();
     expect(groupableFields(meta)).toEqual([]);
+    // every aggregate / arithmetic `$select` is `$groupBy` use: no aggregate surface
+    expect(Object.values<any>(meta.fields).some((f) => f.numeric || f.bucketable)).toBe(false);
+    expect(meta.aggregateFns).toBeUndefined();
+    expect(meta.aggregateExpressions).toBeUndefined();
+    expect(meta.bucketUnits).toBeUndefined();
+    expect(meta.crud.query).not.toContain("groupBy");
     const r = await get("/items/query?$select=status,count(*):n&$groupBy=status");
     expect(r.status).toBe(403);
   });
@@ -107,6 +113,10 @@ describe("/meta.fields[*].groupable follows controls.$groupBy", () => {
     const meta = (await get("/items/meta")).body;
     expect(groupableFields(meta)).toEqual(["status"]);
     expect(meta.fields.owner.groupable).toBeUndefined();
+    // ungrouped aggregates and arithmetic stay allowed under a whitelist
+    expect(meta.fields.rank.numeric).toBe(true);
+    expect(meta.aggregateFns).toContain("sum");
+    expect(meta.crud.query).toContain("groupBy");
     expect((await get("/items/query?$select=status,count(*):n&$groupBy=status")).status).toBe(200);
     expect((await get("/items/query?$select=owner,count(*):n&$groupBy=owner")).status).toBe(403);
   });
@@ -118,6 +128,86 @@ describe("/meta.fields[*].groupable follows controls.$groupBy", () => {
     const r = await get("/items/query?$select=rank,count(*):n&$groupBy=rank");
     expect(r.status).toBe(400);
     expect(r.text).toContain('Unknown field \\"rank\\"');
+  });
+
+  it("$sort: false → nothing sortable in /meta (and $sort is 403); $nulls stays for $rowOrder", async () => {
+    await bootGrants({ items: { controls: { $sort: false } } });
+    const meta = (await get("/items/meta")).body;
+    expect(Object.values<any>(meta.fields).some((f) => f.sortable)).toBe(false);
+    expect(meta.crud.query).not.toContain("sort");
+    expect(meta.crud.pages).not.toContain("sort");
+    expect(meta.crud.pages).not.toContain("nulls");
+    expect((await get("/items/query?$sort=rank")).status).toBe(403);
+    // NULL placement of a `$rowOrder` key is still usable: advertised and served
+    expect(meta.crud.query).toContain("nulls");
+    expect(meta.nullsPlacement).toBe(true);
+    const r = await get(
+      "/items/query?$select=status,first(rank):f&$groupBy=status&$rowOrder=-createdAt:last",
+    );
+    expect(r.status).toBe(200);
+  });
+
+  // moost-db adds the decoration `fields` entries AFTER `applyMetaOverlay`, so
+  // the overlay cannot gate them: this holds only while moost-db serves them
+  // `sortable: false` (fails if a decoration ever becomes sortable).
+  it("$sort: false → no decoration field is sortable either", async () => {
+    await bootGrants({ decorated: { controls: { $sort: false } } });
+    const meta = (await get("/decorated/meta")).body;
+    expect(meta.fields.ownerName).toMatchObject({ decoration: true });
+    expect(Object.values<any>(meta.fields).some((f) => f.sortable)).toBe(false);
+  });
+
+  it("each read op follows its own policy: an unscoped getOne grant re-advertises nothing", async () => {
+    ({ http } = await boot(
+      [
+        readerRole("reader", { items: { controls: { $groupBy: false, $sort: false } } }),
+        defineRole<object, ArbacDbScope>()
+          .id("lookup")
+          .use(allowTableAction("items", "getOne"))
+          .build(),
+      ],
+      [DictsController, ItemsController, DecoratedController, FormItemsController],
+      ["reader", "lookup"],
+    ));
+    const meta = (await get("/items/meta")).body;
+    expect(groupableFields(meta)).toEqual([]);
+    expect(meta.aggregateFns).toBeUndefined();
+    expect(Object.values<any>(meta.fields).some((f) => f.sortable)).toBe(false);
+    expect(meta.crud.query).not.toContain("groupBy");
+    expect((await get("/items/query?$select=status,count(*):n&$groupBy=status")).status).toBe(403);
+  });
+
+  it("$sort and $groupBy false → no NULL placement in /meta", async () => {
+    await bootGrants({ items: { controls: { $sort: false, $groupBy: false } } });
+    const meta = (await get("/items/meta")).body;
+    expect(meta.nullsPlacement).toBeUndefined();
+    expect(meta.crud.query).not.toContain("nulls");
+    expect(meta.crud.query).not.toContain("rowOrder");
+  });
+
+  // moost-db's `/query` gives an ungrouped aggregate (aggregate `$select`, no
+  // `$groupBy`) `$groupBy: []` before `validateControls` runs.
+  describe("an ungrouped aggregate counts as $groupBy use", () => {
+    const sumRank = "/items/query?$select=sum(rank):total";
+
+    it("$groupBy: false → 403", async () => {
+      await bootGrants({ items: { controls: { $groupBy: false } } });
+      expect((await get(sumRank)).status).toBe(403);
+    });
+
+    it("a whitelist allows it (no column grouped on)", async () => {
+      await bootGrants({ items: { controls: { $groupBy: ["status"] } } });
+      const r = await get(sumRank);
+      expect(r.status).toBe(200);
+      expect(r.body).toEqual([{ total: 15 }]);
+    });
+
+    it("an aggregate over a hidden field is still 400", async () => {
+      await bootGrants({ items: { projection: { rank: 0 } } });
+      const r = await get(sumRank);
+      expect(r.status).toBe(400);
+      expect(r.text).toContain('Unknown field \\"rank\\"');
+    });
   });
 });
 

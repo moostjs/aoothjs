@@ -109,6 +109,10 @@ export interface ArbacDbScope<T = unknown> {
    *     `?$with=comments`, rejects `?$with=tasks`). Supported only for `$with`
    *     (relation names) and `$groupBy` (column names) in v1.
    *
+   * An ungrouped aggregate (`$select=sum(amount):total`, no `$groupBy`) counts
+   * as `$groupBy` use (0.1.80+, with atscript-db 0.1.155+): `$groupBy: false`
+   * denies it; a `$groupBy` whitelist allows it (no column is grouped on).
+   *
    * Across roles, gates union additively (silence wins) via {@link unionControlsPolicy}.
    *
    * @example `{ controls: { $with: false } }` — disable $with for this role.
@@ -491,7 +495,12 @@ const preservedFieldsCache = new WeakMap<new (...args: never[]) => unknown, read
  *   - `readonly string[]`: allow only the listed values; reject any other.
  *
  * "Used" means the control key is present AND non-empty (an empty array is
- * treated as not used, matching how the parser leaves missing controls).
+ * treated as not used, matching how the parser leaves missing controls) —
+ * except `$groupBy`, whose presence alone marks an aggregate query: moost-db
+ * (≥ 0.1.155) gives an ungrouped aggregate (`$select=sum(amount):total`, no
+ * `$groupBy`) `$groupBy: []`, so a `false` gate denies it and a whitelist
+ * passes it (no column is grouped on; the aggregated fields go through the
+ * field-visibility gate like any other read).
  */
 export function enforceControlsPolicy(
   policy: Record<string, ControlGate>,
@@ -501,7 +510,7 @@ export function enforceControlsPolicy(
   for (const [key, gate] of Object.entries(policy)) {
     const used = controls[key];
     if (used === undefined || used === null) continue;
-    if (Array.isArray(used) && used.length === 0) continue;
+    if (Array.isArray(used) && used.length === 0 && key !== "$groupBy") continue;
 
     if (gate === false) {
       throw new HttpError(403, `Control "${key}" is not allowed for your role`);

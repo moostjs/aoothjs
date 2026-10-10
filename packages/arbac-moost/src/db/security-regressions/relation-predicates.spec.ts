@@ -143,6 +143,20 @@ describe("client predicates follow the $with relation policy", () => {
     expect((await app.get("/issues/query?ticket=$some()")).status).toBe(403);
     expect((await app.get("/issues/query?$with=ticket")).status).toBe(403);
     expect(await query(app, "status=open")).toEqual([1, 2, 3, 5]);
+    // `/meta` keeps the relation listed but no longer advertises it filterable
+    const meta = (await app.get("/issues/meta")).body as {
+      relations: Array<{ name: string; filterable?: boolean }>;
+    };
+    expect(meta.relations.find((r) => r.name === "ticket")).toEqual(
+      expect.not.objectContaining({ filterable: true }),
+    );
+    expect((await (await bootIssues(["lead", "tickets-all"])).get("/issues/meta")).body).toEqual(
+      expect.objectContaining({
+        relations: expect.arrayContaining([
+          expect.objectContaining({ name: "ticket", filterable: true }),
+        ]),
+      }),
+    );
   });
 
   it("a from-relation operand is bounded by the caller's grant on the related table", async () => {

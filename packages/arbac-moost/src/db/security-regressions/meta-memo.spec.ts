@@ -3,7 +3,7 @@
 // Never a cross-role / cross-attr / cross-credential hit; unkeyable decisions
 // (a one-sided INHERITED_CONJUNCTION sub-scope, a function-valued scope piece)
 // are not memoized; memo on and off serve byte-identical bodies.
-import { allowTableRead, allowTableWrite, defineRole } from "@aooth/arbac";
+import { allowTableAction, allowTableRead, allowTableWrite, defineRole } from "@aooth/arbac";
 import type { TArbacRole } from "@aooth/arbac-core";
 import type { TMetaResponse } from "@atscript/db";
 import { TableController } from "@atscript/moost-db";
@@ -85,6 +85,35 @@ const ROLES: Array<TArbacRole<Attrs, ArbacDbScope>> = [
     .use(
       tasksRead(() => ({ with: { owner: {} } })),
       allowTableRead("users"),
+    )
+    .build(),
+  // Same fields either way; `$sort` denied under the `lo` level only.
+  defineRole<Attrs, ArbacDbScope>()
+    .id("ctl")
+    .use(
+      tasksRead((a) =>
+        a.level === "lo"
+          ? { filter: { tenant: "a" }, controls: { $sort: false } }
+          : { filter: { tenant: "a" } },
+      ),
+    )
+    .build(),
+  // Same union policy either way; `$sort` denied on `query` (lo) or on `pages` (hi).
+  defineRole<Attrs, ArbacDbScope>()
+    .id("ctl-op")
+    .use(
+      allowTableAction<Attrs, ArbacDbScope>("tasks", "query", {
+        scope: (a) => ({
+          filter: { tenant: "a" },
+          ...(a.level === "lo" && { controls: { $sort: false } }),
+        }),
+      }),
+      allowTableAction<Attrs, ArbacDbScope>("tasks", ["pages", "getOne", "meta"], {
+        scope: (a) => ({
+          filter: { tenant: "a" },
+          ...(a.level === "hi" && { controls: { $sort: false } }),
+        }),
+      }),
     )
     .build(),
   // Notes reference projects (a `ref` with no nav prop): readable or not.
@@ -285,6 +314,43 @@ describe("/meta projection memo", () => {
     expect(lo.text).toBe(await unmemoized());
     attrs.level = "hi";
     expect((await a()).text).toBe(hi.text);
+  });
+
+  it("the controls policy is part of the decision (same fields, `$sort` denied or not)", async () => {
+    user.roles = ["ctl"];
+    const a = jar();
+    attrs.level = "hi";
+    const open = await a();
+    await a();
+    attrs.level = "lo";
+    const denied = await a();
+    expect(denied.status).toBe(200);
+    const sortable = (text: string) =>
+      Object.values((JSON.parse(text) as TMetaResponse).fields).some((f) => f.sortable);
+    expect(sortable(open.text)).toBe(true);
+    expect(sortable(denied.text)).toBe(false);
+    expect(fieldsOf(denied.text)).toEqual(fieldsOf(open.text));
+    expect(denied.text).toBe(await unmemoized());
+    attrs.level = "hi";
+    expect((await a()).text).toBe(open.text);
+  });
+
+  it("each read op's policy is part of the decision (same union, `$sort` denied on another op)", async () => {
+    user.roles = ["ctl-op"];
+    const a = jar();
+    const crud = (text: string) => (JSON.parse(text) as TMetaResponse).crud;
+    attrs.level = "lo";
+    await a();
+    const lo = await a();
+    attrs.level = "hi";
+    const hi = await a();
+    expect(crud(lo.text).query).not.toContain("sort");
+    expect(crud(lo.text).pages).toContain("sort");
+    expect(crud(hi.text).query).toContain("sort");
+    expect(crud(hi.text).pages).not.toContain("sort");
+    expect(hi.text).toBe(await unmemoized());
+    attrs.level = "lo";
+    expect((await a()).text).toBe(lo.text);
   });
 
   it("declared with.<rel> sub-scopes that differ below the root never share a projection", async () => {

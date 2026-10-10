@@ -12,7 +12,7 @@ import type { MetaVisibility } from "./visibility";
  * pruning the cached envelope by the evaluated decisions — is memoized, keyed
  * by a DECISION RECORD: the normalized answers the pruning reads (allowed
  * actions / crud ops, per-level projection + identifiers + declared relations
- * + resolved relations, writable fields, nested writes, the `$groupBy` gate,
+ * + resolved relations, writable fields, nested writes, the `controls` gates,
  * the foreign `ref` targets' visibility). Never by the scopes' JSON: a
  * fingerprint drops symbols and functions and would collide across users.
  *
@@ -156,7 +156,8 @@ export interface MetaDecisionInput {
     tree: MetaNameTree;
     writable: ReadonlySet<string> | "all" | undefined;
     nestedWrites: ReadonlySet<string> | undefined;
-    groupBy: unknown;
+    /** Each allowed read op's effective `controls` policy (`false` / whitelist per key). */
+    controls: Readonly<Partial<Record<string, Readonly<Record<string, unknown>>>>>;
     refTargets: ReadonlyMap<object, MetaVisibility | null>;
   };
 }
@@ -193,15 +194,25 @@ export function metaDecisionKey(
         vis ? encodeLevel(vis, NO_TREE, ctx, seen, 1) : 0,
       );
     }
-    const { writable, nestedWrites, groupBy } = p;
-    if (groupBy !== undefined && typeof groupBy !== "boolean" && !Array.isArray(groupBy)) refuse();
+    const { writable, nestedWrites } = p;
+    const controls: unknown[] = [];
+    for (const op of Object.keys(p.controls).toSorted()) {
+      const policy = p.controls[op] ?? {};
+      const gates: unknown[] = [op];
+      for (const key of Object.keys(policy).toSorted()) {
+        const gate = policy[key];
+        if (typeof gate !== "boolean" && !Array.isArray(gate)) refuse();
+        gates.push(key, Array.isArray(gate) ? sortedNames(gate) : gate);
+      }
+      controls.push(gates);
+    }
     return JSON.stringify([
       bits(input.actions),
       bits(input.crud),
       encodeLevel(p.vis, p.tree, ctx, seen, 0),
       writable === undefined ? 0 : writable === "all" ? 1 : sortedNames(writable),
       nestedWrites ? sortedNames(nestedWrites) : 0,
-      Array.isArray(groupBy) ? sortedNames(groupBy) : (groupBy ?? 0),
+      controls,
       refTargets,
       p.vis.table?.type ? ctx.isServed(p.vis.table.type) : 0,
     ]);

@@ -171,6 +171,34 @@ describe("enforceControlsPolicy", () => {
     );
   });
 
+  // moost-db (>= 0.1.155) gives an ungrouped aggregate (`$select=sum(x):s`,
+  // no `$groupBy`) `$groupBy: []`: present means aggregate, empty or not.
+  describe("ungrouped aggregate ($groupBy: [])", () => {
+    const controls = { $select: [{ $fn: "sum", $field: "amount", $as: "total" }], $groupBy: [] };
+
+    it("false gate → 403", () => {
+      expect(() => enforceControlsPolicy({ $groupBy: false }, controls)).toThrow(
+        /Control "\$groupBy" is not allowed/,
+      );
+    });
+
+    it("whitelist gate → allowed (no column grouped on)", () => {
+      expect(() => enforceControlsPolicy({ $groupBy: ["status"] }, controls)).not.toThrow();
+      expect(() => enforceControlsPolicy({ $groupBy: [] }, controls)).not.toThrow();
+    });
+
+    it("true / absent gate → allowed", () => {
+      expect(() => enforceControlsPolicy({ $groupBy: true }, controls)).not.toThrow();
+      expect(() => enforceControlsPolicy({ $with: false }, controls)).not.toThrow();
+    });
+
+    it("an empty array of another control stays unused", () => {
+      expect(() =>
+        enforceControlsPolicy({ $with: false, $groupBy: true }, { ...controls, $with: [] }),
+      ).not.toThrow();
+    });
+  });
+
   it("integrates with unionControlsPolicy: silence + deny → allow (no throw)", () => {
     const scopes: ArbacDbScope[] = [{ controls: {} }, { controls: { $with: false } }];
     expect(() =>

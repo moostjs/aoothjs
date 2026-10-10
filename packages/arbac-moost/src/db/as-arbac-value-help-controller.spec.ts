@@ -221,6 +221,11 @@ describe("AsArbacJsonValueHelpController — column scope", () => {
     const get = await boot(["no-search"]);
     expect((await get("query")).status).toBe(200);
     expect((await get("query?$search=alpha")).status).toBe(403);
+    // `/meta` advertises no search the gate would refuse
+    const meta = (await get("meta")).body;
+    expect(meta.searchable).toBe(false);
+    expect(meta.crud.query).not.toContain("search");
+    expect(meta.crud.pages).not.toContain("search");
   });
 });
 

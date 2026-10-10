@@ -230,6 +230,8 @@ type ControlGate = boolean | readonly string[];
 - A `string[]` whitelist is **only** legal for `$with` and `$groupBy`; any other control with a whitelist throws. `$rowOrder`, like `$sort`, takes `true` / `false` only.
 - `false` works for every control key, `$rowOrder` included (since 0.1.75).
 - `$groupBy` also decides which fields `/meta` advertises as `fields[*].groupable`: `false` removes the flag everywhere, a whitelist keeps it on the listed paths (since 0.1.75).
+- Since 0.1.80 the rest of `/meta` follows the policy as well, each read op by its own grant's policy. A `false` control leaves that op's `crud[op]` control list. `$groupBy: false` also removes `bucketable`, `numeric` and the aggregate envelope keys, and a whitelist keeps `bucketable` only on the listed fields. `$sort: false` turns every `sortable` off, and `$search: false` turns search off. See [`/meta`: capabilities](/moost/db-controllers#meta-capabilities-and-value-help-bindings).
+- An ungrouped aggregate (`$select=sum(amount):total` with no `$groupBy`) counts as `$groupBy` use: `$groupBy: false` denies it with 403, and a `$groupBy` whitelist allows it, because no column is grouped on. The aggregated fields still need to be visible to the caller. Since 0.1.80 with atscript-db 0.1.155, which first serves ungrouped aggregates over `/query`.
 
 ### Resolution per control key
 

@@ -46,22 +46,41 @@ export type NavRelationKey<T> = keyof NavPropsOf<T> extends never
 export type ProjectionOf<T> =
   IsUnknown<T> extends true ? TProjection : Partial<Record<OwnFieldKey<T>, 0 | 1>>;
 
+/** The Uniquery controls a gate can only allow or deny (`true` / `false`). */
+type BooleanControl =
+  | "$select"
+  | "$sort"
+  | "$nulls"
+  | "$skip"
+  | "$limit"
+  | "$count"
+  | "$page"
+  | "$size"
+  | "$search"
+  | "$index"
+  | "$fuzzy"
+  | "$vector"
+  | "$threshold"
+  | "$actions"
+  | "$rowOrder"
+  | "$having"
+  | "$center"
+  | "$maxDistance"
+  | "$minDistance";
+
 /**
- * Typed control gates: `$with` against nav names, `$select` against own
- * fields, other `$`-prefixed controls passthrough. Falls back to the
- * legacy untyped `Record<string, ControlGate>` for `T = unknown` so
- * internal helpers (`unionControlsPolicy`) and existing untyped call
- * sites keep compiling.
+ * Typed control gates, matching what `unionControlsPolicy` accepts: only
+ * `$with` (nav relation names) and `$groupBy` (own field paths) take a
+ * whitelist; every other control is `true` / `false` (a whitelist there
+ * throws at scope merge). Unknown control keys are rejected. Falls back to
+ * the legacy untyped `Record<string, ControlGate>` for `T = unknown` so
+ * internal helpers (`unionControlsPolicy`) and existing untyped call sites
+ * keep compiling.
  */
 export type ControlsOf<T> =
   IsUnknown<T> extends true
     ? Record<string, ControlGate>
     : {
-        $with?: Array<NavRelationKey<T>> | boolean;
-        $select?: Array<OwnFieldKey<T>> | boolean;
-        $groupBy?: ControlGate;
-        $having?: ControlGate;
-        // Optional named props ($with, $select, …) widen to `T | undefined`,
-        // so the index signature must include `undefined` to accept them.
-        [key: `$${string}`]: ControlGate | Array<string> | undefined;
-      };
+        $with?: ReadonlyArray<NavRelationKey<T>> | boolean;
+        $groupBy?: ReadonlyArray<OwnFieldKey<T>> | boolean;
+      } & Partial<Record<BooleanControl, boolean>>;

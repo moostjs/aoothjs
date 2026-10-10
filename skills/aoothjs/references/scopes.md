@@ -167,7 +167,7 @@ Resolution per control key:
    - **Any scope contributes `undefined` or `true`** → key is dropped from the result (absent ≡ allowed).
    - **All scopes contribute `false`** → result is `false` (fully denied).
    - **Mix of `false` and `string[]`** → union of all whitelists, sorted and deduplicated.
-3. **`string[]` is ONLY legal for `$with` and `$groupBy`.** Any other key with a `string[]` gate throws (`$rowOrder`, like `$sort`, takes `true` / `false` only). `false` works for any key (since 0.1.75). `$groupBy` also decides `/meta.fields[*].groupable`: `false` drops the flag everywhere, a whitelist keeps it on the listed paths.
+3. **`string[]` is ONLY legal for `$with` and `$groupBy`.** Any other key with a `string[]` gate throws (`$rowOrder`, like `$sort`, takes `true` / `false` only). `false` works for any key (since 0.1.75). `$groupBy` also decides `/meta.fields[*].groupable`: `false` drops the flag everywhere, a whitelist keeps it on the listed paths. Since 0.1.80 every `/meta` capability follows `controls` (bucketable / numeric / aggregate keys, sortable, search, `crud[op]` control lists) — see db-controllers.md. An ungrouped aggregate (`$select=sum(amount):total`, no `$groupBy`; atscript-db 0.1.155+) counts as `$groupBy` use since 0.1.80: `false` → 403, a whitelist passes it (no column grouped on; aggregated fields still go through field visibility).
 
 Examples (single array arg):
 

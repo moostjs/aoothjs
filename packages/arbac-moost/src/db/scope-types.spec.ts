@@ -84,6 +84,36 @@ describe("ArbacDbScope generic typing", () => {
     expect(s).toBeDefined();
   });
 
+  // WHY: `unionControlsPolicy` throws on a whitelist for any control but
+  // `$with` / `$groupBy`, so the typed gates must reject one at compile time
+  // (a `$select` whitelist used to type-check and then throw at scope merge).
+  it("typed controls: whitelists only for $with / $groupBy, booleans elsewhere", () => {
+    const fields = ["title"] as const;
+    const _ok: ArbacDbScope<TestTask> = {
+      controls: {
+        $with: ["comments"],
+        $groupBy: fields,
+        $select: false,
+        $sort: false,
+        $rowOrder: true,
+        $search: false,
+      },
+    };
+    const _select: ArbacDbScope<TestTask> = {
+      // @ts-expect-error — `$select` takes no whitelist
+      controls: { $select: ["id"] },
+    };
+    const _having: ArbacDbScope<TestTask> = {
+      // @ts-expect-error — `$having` takes no whitelist
+      controls: { $having: ["title"] },
+    };
+    const _unknown: ArbacDbScope<TestTask> = {
+      // @ts-expect-error — not a Uniquery control (never enforced)
+      controls: { $filter: false },
+    };
+    expect([_ok, _select, _having, _unknown]).toHaveLength(4);
+  });
+
   // WHY: roles that already declare `ArbacDbScope` (no third type param to
   // `defineRole<...>`) keep their untyped scope shape — fields use the
   // legacy permissive types. Regression here means existing role files in

@@ -2,6 +2,7 @@ import type { TMetaResponse } from "@atscript/db";
 import { deserializeAnnotatedType } from "@atscript/typescript/utils";
 import type { TSerializedAnnotatedType } from "@atscript/typescript/utils";
 import { isFieldAllowed } from "@aooth/arbac";
+import type { ControlGate } from "@aooth/arbac";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { ArbacDbScope } from "./as-arbac-db-controller";
@@ -9,6 +10,7 @@ import {
   MAX_INLINED_NODES,
   applyArbacFormOverlay,
   collectMethodNames,
+  gateMetaControls,
   pruneMetaByVisibility,
 } from "./meta-projection";
 import { registerArbacDbTarget } from "./relation-policy";
@@ -1068,5 +1070,208 @@ describe("pruneMetaByVisibility — no-field ref target served-ness is stable", 
   it("a schema-declared db.table / db.view type is checked (unchanged)", () => {
     expect(run(typeWith(["db.table"])).ref).toBeUndefined();
     expect(run(typeWith(["db.view", "db.http.path"])).ref).toBeUndefined();
+  });
+});
+
+describe("gateMetaControls — /meta capabilities follow the controls policy", () => {
+  const QUERY = [
+    "filter",
+    "insights",
+    "sort",
+    "nulls",
+    "select",
+    "search",
+    "index",
+    "fuzzy",
+    "vector",
+    "threshold",
+    "with",
+    "groupBy",
+    "rowOrder",
+  ];
+  const PAGES = ["filter", "sort", "nulls", "select", "search", "index", "with"];
+  const GEO = ["filter", "center", "index", "select"];
+  const meta = {
+    searchable: true,
+    vectorSearchable: true,
+    searchIndexes: [
+      { name: "", type: "text", isDefault: true },
+      { name: "text_idx", type: "text" },
+      { name: "vec_idx", type: "vector", isDefault: true },
+    ],
+    primaryKeys: ["id"],
+    preferredId: ["id"],
+    relations: [
+      { name: "owner", direction: "to", isArray: false, filterable: true },
+      { name: "tasks", direction: "from", isArray: true, filterable: true },
+    ],
+    fields: {
+      id: { sortable: true, filterable: true, groupable: true, numeric: true },
+      status: { sortable: true, filterable: true, groupable: true },
+      openedAt: { sortable: true, filterable: true, groupable: true, bucketable: true },
+      closedAt: { sortable: true, filterable: true, groupable: true, bucketable: true },
+    },
+    type: {},
+    actions: [],
+    crud: { query: QUERY, pages: PAGES, one: ["select", "with"], geo: GEO, insert: [] },
+    bucketUnits: ["day", "month"],
+    aggregateFns: ["sum", "count"],
+    aggregateExpressions: true,
+    nullsPlacement: true,
+  } as unknown as TMetaResponse;
+  const flags = (m: TMetaResponse, flag: string) =>
+    Object.entries<any>(m.fields)
+      .filter(([, f]) => f[flag])
+      .map(([p]) => p);
+  const without = (list: string[], ...drop: string[]) => list.filter((c) => !drop.includes(c));
+  const indexNames = (m: TMetaResponse) => m.searchIndexes.map((i) => i.name);
+  /** The same policy on every read op (one role granting the whole read surface). */
+  const gate = (policy: Record<string, ControlGate>) =>
+    gateMetaControls(meta, { query: policy, pages: policy, one: policy, geo: policy });
+
+  it("no denial → the envelope itself", () => {
+    expect(gate({})).toBe(meta);
+    expect(gateMetaControls(meta, {})).toBe(meta);
+  });
+
+  it("$groupBy: false → no groupable / bucketable / numeric field, no aggregate surface", () => {
+    const out = gate({ $groupBy: false });
+    expect(flags(out, "groupable")).toEqual([]);
+    expect(flags(out, "bucketable")).toEqual([]);
+    expect(flags(out, "numeric")).toEqual([]);
+    expect(out.aggregateFns).toBeUndefined();
+    expect(out.aggregateExpressions).toBeUndefined();
+    expect(out.bucketUnits).toBeUndefined();
+    // `$rowOrder` only orders `first()` / `last()` of a grouped query
+    expect(out.crud.query).toEqual(without(QUERY, "groupBy", "rowOrder"));
+    expect(flags(out, "sortable")).toEqual(["id", "status", "openedAt", "closedAt"]);
+    expect(meta.fields.openedAt.bucketable).toBe(true); // never mutated
+  });
+
+  it("$groupBy whitelist → groupable and bucketable only on the listed (source) fields", () => {
+    const out = gate({ $groupBy: ["status", "openedAt"] });
+    expect(flags(out, "groupable")).toEqual(["status", "openedAt"]);
+    expect(flags(out, "bucketable")).toEqual(["openedAt"]);
+    // ungrouped aggregates and arithmetic stay allowed
+    expect(flags(out, "numeric")).toEqual(["id"]);
+    expect(out.aggregateFns).toEqual(["sum", "count"]);
+    expect(out.crud.query).toEqual(QUERY);
+  });
+
+  it("$select: false → no aggregate surface (it lives in $select), groupable kept", () => {
+    const out = gate({ $select: false });
+    expect(flags(out, "groupable")).toEqual(["id", "status", "openedAt", "closedAt"]);
+    expect(flags(out, "bucketable")).toEqual([]);
+    expect(flags(out, "numeric")).toEqual([]);
+    expect(out.aggregateFns).toBeUndefined();
+    expect(out.crud.query).toEqual(without(QUERY, "select", "rowOrder"));
+    expect(out.crud.one).toEqual(["with"]);
+  });
+
+  it("$sort: false → nothing sortable; $nulls stays for $rowOrder while grouping is allowed", () => {
+    const out = gate({ $sort: false });
+    expect(flags(out, "sortable")).toEqual([]);
+    expect(out.nullsPlacement).toBe(true);
+    expect(out.crud.query).toEqual(without(QUERY, "sort"));
+    expect(out.crud.pages).toEqual(without(PAGES, "sort", "nulls"));
+  });
+
+  it("$sort and $groupBy false → no NULL placement anywhere", () => {
+    const out = gate({ $sort: false, $groupBy: false });
+    expect(out.nullsPlacement).toBeUndefined();
+    expect(out.crud.query).toEqual(without(QUERY, "sort", "nulls", "groupBy", "rowOrder"));
+  });
+
+  it("$nulls: false → no NULL placement, sorting kept", () => {
+    const out = gate({ $nulls: false });
+    expect(out.nullsPlacement).toBeUndefined();
+    expect(flags(out, "sortable")).toHaveLength(4);
+    expect(out.crud.query).toEqual(without(QUERY, "nulls"));
+  });
+
+  it("$search: false → no text or vector search, no index list; geo keeps $index", () => {
+    const out = gate({ $search: false });
+    expect(out.searchable).toBe(false);
+    expect(out.vectorSearchable).toBe(false);
+    expect(out.searchIndexes).toEqual([]);
+    expect(out.crud.query).toEqual(
+      without(QUERY, "search", "index", "fuzzy", "vector", "threshold"),
+    );
+    expect(out.crud.geo).toEqual(GEO);
+  });
+
+  it("$vector: false → no vector search or vector index, text search kept", () => {
+    const out = gate({ $vector: false });
+    expect(out.vectorSearchable).toBe(false);
+    expect(out.searchable).toBe(true);
+    expect(indexNames(out)).toEqual(["", "text_idx"]);
+    expect(out.crud.query).toEqual(without(QUERY, "vector", "threshold"));
+  });
+
+  it("$index: false → only the default text index stays listed", () => {
+    const out = gate({ $index: false });
+    expect(out.searchable).toBe(true);
+    expect(indexNames(out)).toEqual(["", "vec_idx"]);
+    expect(out.crud.geo).toEqual(without(GEO, "index"));
+  });
+
+  it('$with: false → "with" leaves every read op, relations stay listed', () => {
+    const out = gate({ $with: false });
+    expect(out.crud.query).toEqual(without(QUERY, "with"));
+    expect(out.crud.pages).toEqual(without(PAGES, "with"));
+    expect(out.crud.one).toEqual(["select"]);
+    expect(out.crud.insert).toEqual([]);
+    // listed, but a relation filter is `$with` use of the relation (403)
+    expect(out.relations.map((r) => r.name)).toEqual(["owner", "tasks"]);
+    expect(out.relations.filter((r) => r.filterable)).toEqual([]);
+    expect(meta.relations[0].filterable).toBe(true); // never mutated
+  });
+
+  it("$with whitelist → filterable only on the listed relations", () => {
+    const out = gate({ $with: ["tasks"] });
+    expect(out.crud.query).toEqual(QUERY);
+    expect(out.relations.filter((r) => r.filterable).map((r) => r.name)).toEqual(["tasks"]);
+  });
+
+  it("filter / insights are not controls: a gate on them is never enforced, never advertised", () => {
+    expect(gate({ $filter: false, $insights: false })).toBe(meta);
+  });
+
+  describe("each op follows its own policy", () => {
+    it("a control denied on one op leaves that op's list only; the flag stays while another op serves it", () => {
+      const out = gateMetaControls(meta, { query: { $sort: false } });
+      expect(out.crud.query).toEqual(without(QUERY, "sort"));
+      expect(out.crud.pages).toEqual(PAGES);
+      expect(flags(out, "sortable")).toHaveLength(4);
+    });
+
+    it("an unrestricted op that cannot use a control does not keep its flag", () => {
+      // `one` takes no `$groupBy` / `$sort`: only `query` (and `pages`) decide.
+      const out = gateMetaControls(meta, {
+        query: { $groupBy: false, $sort: false },
+        pages: { $sort: false },
+      });
+      expect(flags(out, "groupable")).toEqual([]);
+      expect(out.aggregateFns).toBeUndefined();
+      expect(flags(out, "sortable")).toEqual([]);
+      expect(out.crud.one).toEqual(["select", "with"]);
+    });
+
+    it("a relation stays filterable while another op that takes filters allows $with of it", () => {
+      const out = gateMetaControls(meta, { query: { $with: false }, pages: { $with: ["owner"] } });
+      expect(out.relations.filter((r) => r.filterable).map((r) => r.name)).toEqual(["owner"]);
+      // `one` takes no filter: its unrestricted `$with` does not count
+      const one = gateMetaControls(meta, { query: { $with: false }, pages: { $with: false } });
+      expect(one.crud.one).toEqual(["select", "with"]);
+      expect(one.relations.filter((r) => r.filterable)).toEqual([]);
+    });
+
+    it("whitelists of several ops serve their union", () => {
+      const out = gateMetaControls(
+        { ...meta, crud: { ...meta.crud, pages: [...PAGES, "groupBy"] } },
+        { query: { $groupBy: ["status"] }, pages: { $groupBy: ["openedAt"] } },
+      );
+      expect(flags(out, "groupable")).toEqual(["status", "openedAt"]);
+    });
   });
 });
