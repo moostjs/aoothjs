@@ -355,9 +355,6 @@ importers:
       '@wooksjs/event-core':
         specifier: 'catalog:'
         version: 0.7.29
-      '@wooksjs/event-http':
-        specifier: 'catalog:'
-        version: 0.7.29(@prostojs/logger@0.4.3)(@prostojs/router@0.3.5)(@wooksjs/event-core@0.7.29)(wooks@0.7.29)
       moost:
         specifier: 'catalog:'
         version: 0.6.51

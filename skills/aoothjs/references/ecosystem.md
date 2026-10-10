@@ -93,7 +93,6 @@ Every ecosystem peer below is declared `catalog:` in the workspace, so each publ
 | `@aooth/arbac-moost` | `moost`                | `^0.6.37`  | no                                                                 |
 | `@aooth/arbac-moost` | `@moostjs/event-http`  | `^0.6.37`  | no                                                                 |
 | `@aooth/arbac-moost` | `@wooksjs/event-core`  | `^0.7.23`  | no                                                                 |
-| `@aooth/arbac-moost` | `@wooksjs/event-http`  | `^0.7.23`  | no                                                                 |
 | `@aooth/arbac-moost` | `@atscript/db`         | `^0.1.129` | yes (only for `AsArbacDbController` subclass)                      |
 | `@aooth/arbac-moost` | `@atscript/moost-db`   | `^0.1.129` | yes (only for `AsArbacDbController` subclass)                      |
 | `@aooth/arbac-moost` | `@atscript/typescript` | `^0.1.93`  | yes (only for `./atscript` subpath)                                |

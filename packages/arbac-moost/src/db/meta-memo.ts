@@ -1,5 +1,5 @@
 import type { TMetaResponse } from "@atscript/db";
-import { prerenderJson } from "@wooksjs/event-http";
+import { stableMeta } from "@atscript/moost-db";
 
 import { isBuiltVisibility } from "./visibility";
 import type { MetaVisibility } from "./visibility";
@@ -21,9 +21,11 @@ import type { MetaVisibility } from "./visibility";
  * one-sided `INHERITED_CONJUNCTION` sub-scope —, a non-plain value) makes the
  * request skip the memo (computed as before, uncached).
  *
- * Memoized outputs are frozen (deep in development / test) and registered
- * with wooks' `prerenderJson(obj, { etag: true })`, so a layer that serves
- * them unchanged sends pre-serialized JSON with a weak ETag.
+ * Memoized outputs go through moost-db's `stableMeta()` (deep-frozen, marked
+ * identity-stable), so moost-db's later `/meta` steps (decorations, the
+ * index-visibility narrowing, the own-mount path) memoize on them too and the
+ * final object is sent from JSON serialized once, with a weak ETag (since
+ * 0.1.81; before, those steps rebuilt it per request — no ETag, no 304).
  */
 
 /** Deepest relation nesting the decision record follows; deeper → not memoized. */
@@ -259,31 +261,11 @@ export function memoMetaProjection(
 }
 
 /**
- * Make a memoized `/meta` object shareable across requests: frozen (deeply in
- * development / test, so an in-place mutation throws instead of serving old
- * bytes) and registered for prerendering with a weak ETag.
+ * Make a memoized `/meta` object shareable across requests: moost-db's
+ * `stableMeta()` deep-freezes it and marks it identity-stable, so every later
+ * `/meta` step memoizes on it and `GET /meta` serves it (or the step's
+ * memoized output) serialized once, with a weak ETag.
  */
 export function shareMeta<T extends object>(obj: T): T {
-  if (shouldDeepFreeze()) deepFreeze(obj);
-  else Object.freeze(obj);
-  return prerenderJson(obj, { etag: true });
-}
-
-let deepFreezeOn: boolean | undefined;
-
-function shouldDeepFreeze(): boolean {
-  if (deepFreezeOn === undefined) {
-    const env = typeof process === "undefined" ? undefined : process.env.NODE_ENV;
-    deepFreezeOn = env === "test" || env === "development";
-  }
-  return deepFreezeOn;
-}
-
-const deepFrozen = new WeakSet<object>();
-
-function deepFreeze(value: unknown): void {
-  if (value === null || typeof value !== "object" || deepFrozen.has(value)) return;
-  deepFrozen.add(value);
-  Object.freeze(value);
-  for (const key of Object.keys(value)) deepFreeze((value as Record<string, unknown>)[key]);
+  return stableMeta(obj);
 }

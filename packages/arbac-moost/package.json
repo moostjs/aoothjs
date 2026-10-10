@@ -91,7 +91,6 @@
     "@atscript/typescript": "catalog:",
     "@moostjs/event-http": "catalog:",
     "@wooksjs/event-core": "catalog:",
-    "@wooksjs/event-http": "catalog:",
     "moost": "catalog:"
   },
   "peerDependenciesMeta": {

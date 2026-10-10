@@ -37,7 +37,6 @@ const config = {
         "@moostjs/event-http",
         "moost",
         "@wooksjs/event-core",
-        "@wooksjs/event-http",
       ],
     },
   },
