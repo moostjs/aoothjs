@@ -5,28 +5,28 @@ packages:
   - docs
 
 catalog:
-  "@atscript/core": ^0.1.108
-  "@atscript/db": ^0.1.161
-  "@atscript/db-client": ^0.1.161
-  "@atscript/db-sql-tools": ^0.1.161
-  "@atscript/db-sqlite": ^0.1.161
-  "@atscript/moost-db": ^0.1.161
-  "@atscript/moost-ui-presets": ^0.1.158
-  "@atscript/moost-validator": ^0.1.108
-  "@atscript/moost-wf": ^0.1.158
-  "@atscript/typescript": ^0.1.108
-  "@atscript/ui": ^0.1.158
-  "@atscript/ui-fns": ^0.1.158
-  "@atscript/ui-styles": ^0.1.158
-  "@atscript/ui-table": ^0.1.158
-  "@atscript/vue-aooth": ^0.1.158
-  "@atscript/vue-form": ^0.1.158
-  "@atscript/vue-table": ^0.1.158
-  "@atscript/vue-wf": ^0.1.158
+  "@atscript/core": ^0.1.109
+  "@atscript/db": ^0.1.163
+  "@atscript/db-client": ^0.1.163
+  "@atscript/db-sql-tools": ^0.1.163
+  "@atscript/db-sqlite": ^0.1.163
+  "@atscript/moost-db": ^0.1.163
+  "@atscript/moost-ui-presets": ^0.1.159
+  "@atscript/moost-validator": ^0.1.109
+  "@atscript/moost-wf": ^0.1.159
+  "@atscript/typescript": ^0.1.109
+  "@atscript/ui": ^0.1.159
+  "@atscript/ui-fns": ^0.1.159
+  "@atscript/ui-styles": ^0.1.159
+  "@atscript/ui-table": ^0.1.159
+  "@atscript/vue-aooth": ^0.1.159
+  "@atscript/vue-form": ^0.1.159
+  "@atscript/vue-table": ^0.1.159
+  "@atscript/vue-wf": ^0.1.159
   "@iconify/utils": ^3.1.0
-  "@moostjs/event-http": ^0.6.52
-  "@moostjs/event-wf": ^0.6.52
-  "@moostjs/vite": ^0.6.52
+  "@moostjs/event-http": ^0.6.53
+  "@moostjs/event-wf": ^0.6.53
+  "@moostjs/vite": ^0.6.53
   "@swc/core": ^1.15.18
   "@tanstack/vue-virtual": ^3.13.23
   "@tsdown/css": ^0.21.4
@@ -38,17 +38,17 @@ catalog:
   "@vitejs/plugin-vue": ^6
   "@vue/test-utils": ^2
   "@vueuse/core": ^14.2.1
-  "@wooksjs/event-core": ^0.7.30
-  "@wooksjs/event-http": ^0.7.30
-  "@wooksjs/event-wf": ^0.7.30
-  "@wooksjs/http-body": ^0.7.30
+  "@wooksjs/event-core": ^0.7.31
+  "@wooksjs/event-http": ^0.7.31
+  "@wooksjs/event-wf": ^0.7.31
+  "@wooksjs/http-body": ^0.7.31
   happy-dom: ^18
-  moost: ^0.6.52
+  moost: ^0.6.53
   reka-ui: ^2.9.2
   sirv: ^3.0.2
   typescript: ^5
   unocss: ^66.6.0
-  "unplugin-atscript": ^0.1.108
+  "unplugin-atscript": ^0.1.109
   "unplugin-swc": ^1.5.9
   vite: npm:@voidzero-dev/vite-plus-core@latest
   vite-plus: latest
@@ -57,7 +57,7 @@ catalog:
   vue-router: ^4
   vue-tsc: ^3.2.6
   vunor: ^0.3.2
-  wooks: ^0.7.30
+  wooks: ^0.7.31
 
 catalogMode: prefer
 peerDependencyRules:
