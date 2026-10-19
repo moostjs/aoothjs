@@ -51,7 +51,7 @@ interface User {
 
 // rel.from — 1:N nav prop to a roles table
 interface User {
-  @db.rel.from { table: 'user_roles', field: 'userId' }
+  @db.rel.from
   @arbac.role
   roleAssignments: UserRole[]
 }

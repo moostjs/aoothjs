@@ -173,15 +173,22 @@ Shipped at `@aooth/auth/atscript-db/model.as`:
 @db.table 'aooth_credentials'
 @db.depth.limit 0
 export interface AoothAuthCredential {
-    @meta.id              token: string
-    @db.index.plain       userId: string
-                          issuedAt: number.timestamp
-                          expiresAt: number.timestamp
-                          kind?: string
-                          parentCredentialId?: string
-                          rotatedAt?: number.timestamp
-    @db.index.plain       sessionId?: string
-                          lastSeenAt?: number.timestamp
+    @meta.id
+    token: string
+
+    @db.index.plain
+    userId: string
+
+    issuedAt: number.timestamp
+    expiresAt: number.timestamp
+    kind?: string
+    parentCredentialId?: string
+    rotatedAt?: number.timestamp
+
+    @db.index.plain
+    sessionId?: string
+
+    lastSeenAt?: number.timestamp
 }
 ```
 

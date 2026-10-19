@@ -127,7 +127,6 @@ interface Tenant {
     @expect.maxLength 128
     domain?: string
 
-    @meta.required
     @ui.form.options 'free', 'free'
     @ui.form.options 'pro', 'pro'
     @ui.form.options 'enterprise', 'enterprise'
@@ -207,7 +206,8 @@ interface Project {
     @db.default.uuid
     id: string
 
-    @meta.required tenantId: string
+    @meta.required
+    tenantId: string
 
     @meta.required
     @expect.maxLength 200
@@ -219,7 +219,6 @@ interface Project {
 
     departmentId?: string
 
-    @meta.required
     @ui.form.options 'public', 'public'
     @ui.form.options 'team', 'team'
     @ui.form.options 'private', 'private'
@@ -227,7 +226,8 @@ interface Project {
 
     secretBudget?: number
 
-    @db.default.now createdAt: number.timestamp
+    @db.default.now
+    createdAt: number.timestamp
 }
 ```
 
@@ -241,11 +241,15 @@ interface Task {
     @db.default.uuid
     id: string
 
-    @meta.required tenantId: string
+    @meta.required
+    tenantId: string
 
-    @meta.required projectId: string
+    @meta.required
+    projectId: string
 
-    departmentId?: string        // FK → departments; seeded from the task's project
+    @db.rel.FK
+    @db.index.plain 'tasks_department_idx'
+    departmentId?: Department.id // seeded from the task's project
 
     @meta.required
     @expect.maxLength 200
@@ -261,7 +265,6 @@ interface Task {
     @expect.maxLength 128
     assigneeUsername?: string
 
-    @meta.required
     @ui.form.options 'open', 'open'
     @ui.form.options 'in_progress', 'in_progress'
     @ui.form.options 'done', 'done'
@@ -277,18 +280,32 @@ interface Task {
     @expect.maxLength 4000
     internalNotes?: string
 
-    @db.default.now createdAt: number.timestamp
+    @db.default.now
+    createdAt: number.timestamp
+
     updatedAt: number.timestamp.updated  // server-stamped on insert + every update
 
-    @db.rel.from comments?: Comment[]
-    @db.rel.to department?: Department   // `$with` needs a read grant on `departments`
+    @db.rel.from
+    comments?: Comment[]
+
+    @db.rel.to
+    department?: Department   // `$with` needs a read grant on `departments`
 }
 
 interface NewTaskForm {
-    @meta.required projectId: string
-    @meta.required @expect.maxLength 200 title: string
-    @expect.maxLength 4000 description?: string
-    @expect.maxLength 128 assigneeUsername?: string
+    @meta.required
+    projectId: string
+
+    @meta.required
+    @expect.maxLength 200
+    title: string
+
+    @expect.maxLength 4000
+    description?: string
+
+    @expect.maxLength 128
+    assigneeUsername?: string
+
     @ui.form.options 'low', 'low'
     @ui.form.options 'medium', 'medium'
     @ui.form.options 'high', 'high'
@@ -297,7 +314,9 @@ interface NewTaskForm {
 }
 
 interface AssignTaskForm {
-    @meta.required @expect.maxLength 128 assigneeUsername: string
+    @meta.required
+    @expect.maxLength 128
+    assigneeUsername: string
 }
 ```
 
@@ -307,12 +326,26 @@ interface AssignTaskForm {
 @db.table 'comments'
 @db.http.path '/comments'
 interface Comment {
-    @meta.id @db.default.uuid id: string
-    @meta.required tenantId: string
-    @meta.required taskId: string
-    @meta.required @expect.maxLength 128 authorUsername: string
-    @meta.required @expect.maxLength 4000 body: string
-    @db.default.now createdAt: number.timestamp
+    @meta.id
+    @db.default.uuid
+    id: string
+
+    @meta.required
+    tenantId: string
+
+    @meta.required
+    taskId: string
+
+    @meta.required
+    @expect.maxLength 128
+    authorUsername: string
+
+    @meta.required
+    @expect.maxLength 4000
+    body: string
+
+    @db.default.now
+    createdAt: number.timestamp
 }
 ```
 
@@ -322,18 +355,33 @@ interface Comment {
 @db.table 'documents'
 @db.http.path '/documents'
 interface Document {
-    @meta.id @db.default.uuid id: string
-    @meta.required tenantId: string
-    projectId?: string
-    @meta.required @expect.maxLength 200 title: string
-    @expect.maxLength 65000 body: string
+    @meta.id
+    @db.default.uuid
+    id: string
+
     @meta.required
+    tenantId: string
+
+    projectId?: string
+
+    @meta.required
+    @expect.maxLength 200
+    title: string
+
+    @expect.maxLength 65000
+    body: string
+
     @ui.form.options 'public', 'public'
     @ui.form.options 'internal', 'internal'
     @ui.form.options 'confidential', 'confidential'
     classification: 'public' | 'internal' | 'confidential'
-    @meta.required @expect.maxLength 128 ownerUsername: string
-    @db.default.now createdAt: number.timestamp
+
+    @meta.required
+    @expect.maxLength 128
+    ownerUsername: string
+
+    @db.default.now
+    createdAt: number.timestamp
 }
 ```
 
@@ -343,14 +391,32 @@ interface Document {
 @db.table 'audit_log'
 @db.http.path '/audit'
 interface AuditEntry {
-    @meta.id @db.default.uuid id: string
-    @meta.required tenantId: string
-    @meta.required @expect.maxLength 128 actor: string
-    @meta.required @expect.maxLength 64 action: string
-    @meta.required @expect.maxLength 64 resource: string
+    @meta.id
+    @db.default.uuid
+    id: string
+
+    @meta.required
+    tenantId: string
+
+    @meta.required
+    @expect.maxLength 128
+    actor: string
+
+    @meta.required
+    @expect.maxLength 64
+    action: string
+
+    @meta.required
+    @expect.maxLength 64
+    resource: string
+
     recordId?: string
-    @expect.maxLength 8000 payload?: string
-    @db.default.now createdAt: number.timestamp
+
+    @expect.maxLength 8000
+    payload?: string
+
+    @db.default.now
+    createdAt: number.timestamp
 }
 ```
 
@@ -361,7 +427,9 @@ import { AsWfStateRecord } from '@atscript/moost-wf/store'
 
 @db.table 'wf_states'
 interface DemoWfState extends AsWfStateRecord {
-    @meta.id @db.default.uuid id: string
+    @meta.id
+    @db.default.uuid
+    id: string
 }
 ```
 
