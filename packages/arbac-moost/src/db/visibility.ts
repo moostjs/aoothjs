@@ -113,6 +113,13 @@ export interface MetaVisibility {
    */
   writable?: ReadonlySet<string> | "all";
   /**
+   * Fields the WRITE scopes pin via `set` (keys of the effective `set`
+   * overlay). The server overwrites whatever a client sends there, so a forced
+   * field is never a write affordance: hidden → pruned from `/meta`; visible →
+   * kept and stamped `meta.readonly`. A path under a forced key is forced too.
+   */
+  forced?: ReadonlySet<string>;
+  /**
    * Nav relations the WRITE scopes opt into nested writes (union of
    * `nestedWrites`). A relation path is writable only when listed here (and
    * covered by {@link writable}) — mirroring the 403 the write endpoints

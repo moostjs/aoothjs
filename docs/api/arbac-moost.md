@@ -339,12 +339,13 @@ The `/meta` field-visibility machinery behind both ARBAC controllers (see [`AsAr
 - `buildScopeVisibility` is the single builder behind `hasField`, `/meta` pruning, `$select` value stripping and the `$with` overlay.
 - `metaAlwaysVisibleFields` returns the PK + `preferredId` set; it is kept for compatibility.
 
-`MetaVisibility` is `{ allowed: TProjection; alwaysVisible: ReadonlySet<string>; withGrants: ReadonlySet<string>; relation?: (name) => MetaVisibility | undefined; relationNames?: ReadonlySet<string>; isAllowed?: (path) => boolean; scopes?; table?; writable?: … }`:
+`MetaVisibility` is `{ allowed: TProjection; alwaysVisible: ReadonlySet<string>; withGrants: ReadonlySet<string>; relation?: (name) => MetaVisibility | undefined; relationNames?: ReadonlySet<string>; isAllowed?: (path) => boolean; scopes?; table?; writable?: …; forced?: ReadonlySet<string> }`:
 
 - `allowed` is `{}` when own fields are unrestricted. It is normalized for the table: an atomic (SQL) `@db.json` column is excluded whole, a derived field with a hidden source is excluded.
 - `isAllowed` is `isFieldAllowed(path, allowed)` precompiled, plus the derived-source rule.
 - `relation(name)` is the visibility a `name.x` path is checked against: the declared `with.<name>` sub-scopes, else the resolved grant on the related table (`undefined` = hidden).
 - `relationNames` are the table's relations; an undeclared one is visible only when resolved and its name passes the projection.
+- `forced` (since 0.2) — the keys the write scopes pin via `set`. A forced path (or a path under one) is never writable in `/meta`: hidden → pruned, visible → stamped `meta.readonly`. See [`allowedFields` and `set`](/moost/db-controllers#allowedfields-and-set).
 
 `VisibilityTableSource` gained optional `type`, `fieldDescriptors`, `jsonParents` and `isSearchable()` in 0.1.72 — a moost-db `this.readable` (atscript-db ≥ 0.1.143) has them.
 
@@ -374,7 +375,7 @@ interface ConjoinArbacDbScopesOptions {
 }
 ```
 
-Credential-attenuation combiner: UNIONs each side with the additive helpers, then CONJOINS the two results facet-by-facet (`conjoinScopeFilters` `$and`, `intersectProjections` path-wise field ∩ — a parent narrows to the other side's nested whitelist; the optional `childrenOf` schema lookup (supplied by `useArbac().evaluate` for DB controllers) splits an included parent with a hidden child exactly, otherwise it is dropped; no common field → the user's projection plus a match-nothing filter, never `{}` — `intersectControlsPolicy` deny-wins, `allowedFields` intersection, recursive `with` — a relation only ONE side declares is marked `INHERITED_CONJUNCTION` and conjoined, when the request resolves it, with the caller's own grant on the related table (no grant → hidden), so a credential's declared sub-scope never stands alone as parent authority —, `checkRefs` enforced when EITHER side enforces it — `refTable`, the evaluated table, resolves the names to its foreign keys; a custom field via its `fields` rule, no rule → throws) — never the additive union helpers, which would silently widen. Returns a single-element list so downstream scope-application sites (which union the scope list per facet) see the conjunction unchanged. Consumes `credScopes` from an attenuated [`Arbac.evaluate`](/api/arbac-core#arbac-tuserattrs-tscope). See [Scope Merging](/arbac/scopes).
+Credential-attenuation combiner: UNIONs each side with the additive helpers, then CONJOINS the two results facet-by-facet (`conjoinScopeFilters` `$and`, `intersectProjections` path-wise field ∩ — a parent narrows to the other side's nested whitelist; the optional `childrenOf` schema lookup (supplied by `useArbac().evaluate` for DB controllers) splits an included parent with a hidden child exactly, otherwise it is dropped; no common field → the user's projection plus a match-nothing filter, never `{}` — `intersectControlsPolicy` deny-wins, `allowedFields` intersection, recursive `with` — a relation only ONE side declares is marked `INHERITED_CONJUNCTION` and conjoined, when the request resolves it, with the caller's own grant on the related table (no grant → hidden), so a credential's declared sub-scope never stands alone as parent authority —, `checkRefs` enforced when EITHER side enforces it — `refTable`, the evaluated table, resolves the names to its foreign keys; a custom field via its `fields` rule, no rule → throws) — never the additive union helpers, which would silently widen. Returns a single-element list so downstream scope-application sites (which union the scope list per facet) see the conjunction unchanged. Consumes `credScopes` from an attenuated [`Arbac.evaluate`](/api/arbac-core#arbac-tuserattrs-tscope). **Since 0.2 it throws when either list is empty** — an empty list is a denied pass, and the union helpers would read it as the unrestricted `{}`. See [Scope Merging](/arbac/scopes).
 
 ## Decorators
 
@@ -482,7 +483,6 @@ import {
   getArbacAttenuationSpec,
   validateAttenuationTargets,
   getAoothUserHandleSpec,
-  getAoothCredentialMetadataSpec,
 } from "@aooth/arbac-moost/atscript";
 ```
 
@@ -567,15 +567,9 @@ function getAoothUserHandleSpec(userType: TAtscriptAnnotatedType): AoothUserHand
 
 Resolves (and caches per type) the user model's `@aooth.user.email` / `@aooth.user.phone` identity-handle fields into `AoothUserHandleSpec` (`{ emailField, phoneField, handleFields, warnings }`). A handle field missing `@db.index.unique` is dropped with a warning (warn-and-disable contract) — surface `warnings` in your boot log. See [Recovery & Handles](/moost/recovery-and-handles).
 
-### `getAoothCredentialMetadataSpec`
+### `getAoothCredentialMetadataSpec` (moved)
 
-```ts
-function getAoothCredentialMetadataSpec(
-  credentialType: TAtscriptAnnotatedType,
-): AoothCredentialMetadataSpec;
-```
-
-Resolves (and caches per type) the credential model's `@aooth.auth.metadata` column into `AoothCredentialMetadataSpec` (`{ metadataField, warnings }`). Thread `metadataField` into `CredentialStoreAtscriptDb` (`@aooth/auth/atscript-db`) so the store maps the envelope's `metadata` through your fully-typed `@db.json` column (shape it as `AoothCredentialMetadataBase & { ...your keys }` — the type exported from `@aooth/auth/atscript-db/model` single-sources the framework envelope keys). At most one annotated field per type (throws on ambiguity); a field without `@db.json` is dropped with a warning (warn-and-disable contract) — surface `warnings` in your boot log. No annotated field → `metadataField: undefined`, and the atscript-db credential store persists no metadata.
+**Removed from `@aooth/arbac-moost/atscript` in 0.2** — import it from `@aooth/auth/atscript-db` (see [`@aooth/auth` API](/api/auth#getaoothcredentialmetadataspec-authority-metadata-keys)). `CredentialStoreAtscriptDb` resolves the column from `table.type` itself, so wiring code no longer needs it.
 
 ### `AoothArbacUserCredentials`
 
@@ -593,4 +587,4 @@ import arbacPlugin from "@aooth/arbac-moost/plugin";
 export default function arbacPlugin(): TAtscriptPlugin;
 ```
 
-Atscript compile-time plugin registering eight prop-level `AnnotationSpec`s across two namespaces: `@arbac.role`, `@arbac.attribute`, `@arbac.userId`, `@arbac.attenuate.role`, `@arbac.attenuate.attr "userAttrName"` (credential-attenuation field markers — see `extractAttenuation`), the identity-handle pair `@aooth.user.email` / `@aooth.user.phone` (login/recovery handle discovery — each requires `@db.index.unique`, warn-and-disable otherwise; at most one field per type), plus `@aooth.auth.metadata` (the consumer's fully-typed credential-metadata column — requires `@db.json`, warn-and-disable otherwise; at most one field per type; resolved by `getAoothCredentialMetadataSpec`). Pull into `atscript.config.ts`. **No runtime DI surface**. See [Atscript Models](/moost/) and [Recovery & Handles](/moost/recovery-and-handles).
+Atscript compile-time plugin registering eight prop-level `AnnotationSpec`s across two namespaces: `@arbac.role`, `@arbac.attribute`, `@arbac.userId`, `@arbac.attenuate.role`, `@arbac.attenuate.attr "userAttrName"` (credential-attenuation field markers — see `extractAttenuation`), the identity-handle pair `@aooth.user.email` / `@aooth.user.phone` (login/recovery handle discovery — each requires `@db.index.unique`, warn-and-disable otherwise; at most one field per type), plus `@aooth.auth.metadata` (the consumer's fully-typed credential-metadata column — requires `@db.json`, warn-and-disable otherwise; at most one field per type; found by `CredentialStoreAtscriptDb` on `table.type`). Pull into `atscript.config.ts`. **No runtime DI surface**. See [Atscript Models](/moost/) and [Recovery & Handles](/moost/recovery-and-handles).

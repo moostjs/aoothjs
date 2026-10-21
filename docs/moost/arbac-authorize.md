@@ -15,7 +15,7 @@ A `defineBeforeInterceptor` at `TInterceptorPriority.GUARD`. Algorithm:
 1. Pull `setScopes`, `evaluate`, `resource`, `action`, `isPublic` from `useArbac()`.
 2. Short-circuit (no-op) when `!action || !resource || isPublic`. Public bypass and "no metadata at all" pass through. Works across event kinds — HTTP, WF, CLI, WS.
 3. `await evaluate()`. On `allowed: false` → `throw HttpError(403, 'Insufficient privileges for action "${action}" on resource "${resource}"')`. On `allowed: true` → `setScopes(scopes)` for downstream `getScopes()` reads.
-4. Any **non-`HttpError`** raised during evaluation (e.g. the user provider couldn't find the user) is rethrown as `HttpError(401)` preserving the original message.
+4. Any **non-`HttpError`** raised during evaluation (e.g. the user provider couldn't find the user) is rethrown as `HttpError(401, "Not authorized")`. The original error is logged (warn), never sent to the caller (since 0.2 — before, its message was echoed).
 
 The interceptor is decorated with `Object.assign(..., { __authTransports: {} as TAuthTransportDeclaration })` so `@moostjs/swagger` sees it as an auth-guard with no transport requirement: ARBAC enforces **authorization, not authentication**. Pair it with `authGuardInterceptor` upstream.
 
@@ -71,7 +71,7 @@ A workflow's steps are individually ARBAC-evaluated. One bare step → `resource
 | Cause                                                                       | Response                                                                       |
 | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
 | No token / invalid token (caught by [`authGuardInterceptor`](./auth-guard)) | `401 Unauthorized` / `401 Invalid credential`                                  |
-| User provider can't find the user (e.g. JWT subject doesn't map to a row)   | `401 <original message>` — non-`HttpError` rewrapped                           |
+| User provider can't find the user (e.g. JWT subject doesn't map to a row)   | `401 Not authorized` — non-`HttpError` rewrapped, cause logged only            |
 | User found, but no role grants this `resource`/`action`                     | `403 Insufficient privileges for action "${action}" on resource "${resource}"` |
 | `@Public()` route, no token                                                 | Handler runs with null context (no 401, no 403)                                |
 

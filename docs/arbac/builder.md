@@ -135,9 +135,22 @@ Both result in the engine pushing `{}` (the universe sentinel) into the `scopes`
 The omitted form is slightly more efficient (no scope-fn call at eval time) and more honest about intent.
 :::
 
+## A scope that returns `null` / `undefined` admits nothing
+
+A scope function may return `null` or `undefined` — the rule then grants **nothing** for that user (fail closed), instead of throwing or widening to unrestricted. Use it when the attribute the scope needs is missing:
+
+```ts
+defineRole<{ tenantId?: string }, { tenantId: string }>()
+  .id("member")
+  .allow("orders", "read", (a) => (a.tenantId ? { tenantId: a.tenantId } : null))
+  .build();
+```
+
+A rule whose scope returns nothing counts as not matching: if no other rule allows, the evaluation is **denied** (`allowed: false` → 403) on every path — the authorize interceptor, attenuated credentials, DB controllers and `/meta` (since 0.2; 0.1 let such a rule through as "allowed" with an empty scope list). Another rule that does return a scope still applies. The scope type is `(attrs, userId) => TScope | null | undefined` (since 0.2 — the same applies to `allowTable*` and every [`defineTableAccess`](./privileges#definetableaccess-one-policy-per-table) part). See the [empty-scope rule](/moost/db-controllers#empty-scope-rule).
+
 ## `.deny()` has no scope argument
 
-`.deny()` accepts only `(resource, action)` — there is no third parameter. The type system reflects this: `TArbacRule` forbids `scope` alongside `effect: 'deny'`. If you find yourself wanting a "conditional deny", express it as a wildcard allow plus a tighter exception, or compute the condition inside a scope fn that returns _no matching rows_.
+`.deny()` accepts only `(resource, action)` — there is no third parameter. The type system reflects this: `TArbacRule` forbids `scope` alongside `effect: 'deny'`. If you find yourself wanting a "conditional deny", express it as a wildcard allow plus a tighter exception, or return `null` from the allow rule's scope function for the users it should not reach.
 
 ## End-to-end
 

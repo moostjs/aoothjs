@@ -166,7 +166,7 @@ type TArbacRule<TUserAttrs, TScope> =
   | {
       resource: string;
       action: string;
-      scope?: (userAttrs: TUserAttrs, userId: string) => TScope;
+      scope?: (userAttrs: TUserAttrs, userId: string) => TScope | null | undefined; // nullish = admits nothing
       effect?: never; // allow (implicit)
     }
   | {

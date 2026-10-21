@@ -136,23 +136,25 @@ Every `protected` member below is an override seam — change behavior by subcla
 
 ### Step extension-point stubs — no-op `@Step`s you override for new behavior
 
-| `@Step`                                                          | Override to                                                        | Reached from           |
-| ---------------------------------------------------------------- | ------------------------------------------------------------------ | ---------------------- |
-| `extra-step`                                                     | add input pauses / persistence to the login + invite-accept tail   | login, invite          |
-| `signup-extra-step`                                              | seed app rows / welcome email after self-signup creates the user   | signup                 |
-| `promote-to-handle`                                              | (usually leave as-is; gate via `resolvePromoteHandleField`)        | login, invite, add-mfa |
-| `magic-link-request` / `magic-link-send` / `magic-link-verified` | implement a magic-link login credential (bundled stubs are no-ops) | login                  |
-| `passkey`                                                        | implement a passkey credential (bundled stub is a no-op)           | login                  |
+| `@Step`                                                          | Override to                                                                                                                                               | Reached from           |
+| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| `extra-step`                                                     | add input pauses / persistence to the login + invite-accept tail (invite: runs BEFORE the acceptance write — prefer `afterInvitationAccepted` for writes) | login, invite          |
+| `signup-extra-step`                                              | seed app rows / welcome email after self-signup creates the user                                                                                          | signup                 |
+| `promote-to-handle`                                              | (usually leave as-is; gate via `resolvePromoteHandleField`)                                                                                               | login, invite, add-mfa |
+| `magic-link-request` / `magic-link-send` / `magic-link-verified` | implement a magic-link login credential (bundled stubs are no-ops)                                                                                        | login                  |
+| `passkey`                                                        | implement a passkey credential (bundled stub is a no-op)                                                                                                  | login                  |
 
 ### Lifecycle hooks
 
 | Hook                                             | Override to                                                                                                                                                                | Default                            |
 | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
 | `deliver(payload)`                               | route MFA / recovery / enrollment pincodes + new-device notices by `kind` + `channel` — see [below](#outbound-delivery-deliver-payload)                                    | no-op                              |
-| `prepareUser(input)`                             | supply required app columns on a freshly-created row (shared by invite + signup)                                                                                           | `{}`                               |
+| `prepareUser(input)`                             | supply required app columns on a freshly-created row (shared by invite + signup); invites also pass `app` / `form` / `invitedBy` — see [Invites](./invites)                | `{}`                               |
+| `resolveInviteContext(ctx, startFormData)`       | resolve an invite's server-side app context (e.g. a tenant id) from the start request; throw to refuse                                                                     | `undefined`                        |
 | `inferAdminRoles(input)`                         | derive roles server-side from the admin invite payload                                                                                                                     | `[]`                               |
 | `getAvailableRoles()`                            | whitelist selectable roles on the admin invite form                                                                                                                        | none                               |
-| `duplicateInviteCheck(input)`                    | override the duplicate-invitee rule (`'allow' \| 'reject' \| 'reuse'`)                                                                                                     | re-invite pending; reject accepted |
+| `duplicateInviteCheck(input)`                    | override the duplicate-invitee rule (`'allow' \| 'reject' \| 'reuse'`); receives the issuer, app context and the pending invite's issuer                                   | re-invite pending; reject accepted |
+| `msg(code, params)`                              | resolve every user-facing text — see [Messages](./messages)                                                                                                                | `opts.messages` → English          |
 | `logoutOtherSessions(username)`                  | customize the concurrency-limit eviction                                                                                                                                   | revoke all                         |
 | `loadActiveSessionsCount(username)`              | count active sessions for the concurrency prompt                                                                                                                           | store-backed                       |
 | `validateMfaAddress(ctx, method, value)`         | stricter rules on the user-typed enrolment address — ctx-first and async-capable, so record-based rules (domain allowlists, match-the-account-email) load the row directly | email-shape / permissive E.164     |
@@ -202,6 +204,33 @@ A login run pauses on one or more of these forms before issuing tokens. Which pa
 8. **Authorize consent** — only when the login was started from `GET /auth/authorize` (the [authorization-server](./authorization-server) flow). After authentication the run verifies the `aooth_authz` browser binding and pauses on `AuthorizeConsentForm`; **Authorize** mints the code, **Deny** returns `error=access_denied`. With `resolveAuthzReauthPolicy() → { mode: 'consent-only' }`, a live browser session skips steps 1–7 entirely and pauses straight here ("Signed in as …" names the acting identity). See [Consent gate & browser binding](./authorization-server#consent-gate-browser-binding) and [Consent-only for live sessions](./authorization-server#consent-only).
 
 The run finishes by issuing tokens (or a fresh-login redirect) — or, for an authorize-initiated login, by minting a single-use code to the requesting client instead of a browser session. Any user-initiated abort (`Cancel`, decline-terms) emits a structured `aborted` envelope via `abortWf`.
+
+### Failed sign-ins and lockout disclosure {#lockout-disclosure}
+
+A wrong password reads "Invalid credentials". What a **locked** account reads is set by `AuthWorkflowOpts.lockoutDisclosure`:
+
+| Mode                  | Locked account        | Unknown / inactive handle                                                                                                                                           |
+| --------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `'uniform'` (default) | "Account locked"      | the same message sequence a real account produces — "Account locked" after the same number of failures, for the same duration, re-locking after expiry the same way |
+| `'generic'`           | "Invalid credentials" | "Invalid credentials"                                                                                                                                               |
+| `'reveal'`            | "Account locked"      | "Invalid credentials" — so the lock message tells an attacker which handles exist (the pre-0.2 behaviour)                                                           |
+
+Threshold and duration come from `UserService`'s `lockout` config (and `resolveLockout`); with lockout disabled (`threshold: 0`) every mode behaves like `'generic'`. `'uniform'` keeps a shadow failure counter per unknown handle in `lockoutShadowStore`. It mirrors a real account exactly: every failure counts and the counter is not reset by a lock (like `failedLoginAttempts`), so after a lock expires the next failure locks again; a permanent lock stays on while the handle keeps being tried. Counters are keyed by a SHA-256 of the normalised handle (fixed size), slide for 30 days of inactivity, and the login form caps `username` at 256 characters. The default store is one in-memory store per process, capped at 50,000 counters (oldest dropped first, active locks last — a flood of fresh counters cannot push out the lock of a handle being probed; give your own `RateLimitStoreMemory({ maxEntries })` the same `evictLast: (k) => k.startsWith("shadow-lock:")`) — pass a shared store (e.g. `RateLimitStoreRedis` from `@aooth/auth/redis`) when several instances serve sign-ins, otherwise each instance counts on its own and the sequence differs from a real account's:
+
+```ts
+new AuthWorkflow(
+  { lockoutDisclosure: "uniform", lockoutShadowStore: new RateLimitStoreRedis({ redis }) },
+  users,
+  auth,
+  consentStore,
+);
+```
+
+`UserService.login` also spends one password hash on every early exit, so response time does not tell an unknown, inactive or locked account from a wrong password. A small difference remains: a wrong password on a real account writes its failure counter (one store round trip), which an unknown handle does not — `'uniform'` spends a shadow-counter write instead. Neither replaces a rate limit on the login route — see [Rate Limiting](./rate-limit).
+
+::: warning Since 0.2: unknown handles can read "Account locked"
+The default changed from revealing locks (`'reveal'`) to `'uniform'`. Support tooling or tests that treat "Account locked" as proof an account exists must switch to checking the account itself, or set `lockoutDisclosure: 'reveal'`.
+:::
 
 ### Device recognition — when the "new sign-in" notice fires {#device-recognition}
 
@@ -288,15 +317,17 @@ protected override async resolveRiskStepUp(ctx: AuthWfCtx) {
 }
 ```
 
-If you persist credentials through the atscript-db store, note the credential-metadata column is **consumer-declared**: the shipped `AoothAuthCredential` carries no `metadata` column. Declare a `@db.json` field on your extending model shaped as `AoothCredentialMetadataBase & { geoLat?: number, geoLon?: number, geoCity?: string }` (the exported `.as` type single-sources the framework-written envelope keys), mark it `@aooth.auth.metadata`, and thread `getAoothCredentialMetadataSpec(YourCredential).metadataField` into `CredentialStoreAtscriptDb` — the closed schema then validates your exact shape (the `.as` field is the runtime twin of the `CredentialMetadata` declaration merge above).
+If you persist credentials through the atscript-db store, note the credential-metadata column is **consumer-declared**: the shipped `AoothAuthCredential` carries no `metadata` column. Declare a `@db.json` field on your extending model shaped as `AoothCredentialMetadataBase & { geoLat?: number, geoLon?: number, geoCity?: string }` (the exported `.as` type single-sources the framework-written envelope keys), mark it `@aooth.auth.metadata`, and pass that model's table to `CredentialStoreAtscriptDb({ table })` — the store finds the column on `table.type` itself, and the closed schema then validates your exact shape (the `.as` field is the runtime twin of the `CredentialMetadata` declaration merge above).
 
 ### Invite (`auth/invite/start`)
 
-**Admin phase** (ARBAC-gated by the `invite` permission): the admin fills the invite form (email, optional name, optional roles — server-validated against `getAvailableRoles()`), then a magic link is emitted (idempotent — re-entry never double-sends) or a shareable link is returned.
+**Admin phase** (ARBAC-gated by the `auth.invite` resource): the admin fills the invite form (email, optional roles — server-validated against `getAvailableRoles()`; extend it via `forms.invite`), a pending user is created, and the link is delivered — by the email outlet, through `deliver()`, or returned to the issuer as a shareable link (`inviteDelivery`). Re-entry never double-sends.
 
-**Re-inviting a pending user just works.** When the submitted email resolves to a row still parked on `account.pendingInvitation`, the default `duplicateInviteCheck` verdict is `'reuse'`: instead of erroring, `create-user` refreshes the existing record in place (freshly-picked roles, current `prepareUser` extras, pending re-asserted; password/MFA untouched) and `send-email` mints a brand-new full-TTL magic link — so an expired or lost invite is fixed by simply inviting the same email again. An email that resolves to an **accepted** account still rejects (`"User already exists"`); a `'reuse'` verdict forced onto an accepted account 409s as a logic error (`create-user` re-validates against a fresh read). Override the hook to return `'reject'` for pending rows if you want the strict legacy "Invite already pending" error, or `'allow'` for multi-tenant re-invites of the same email into a different tenant. Note the previous run's magic link (if unexpired) stays valid until its own TTL — consumers projecting a `subject` shadow column on the wf-state store (`@wf.store.fromContext 'subject'`) can delete the stale row in their `duplicateInviteCheck` override for an exactly-one-valid-link guarantee.
+**Re-inviting a pending user** is the "resend": submit the same email again. The default `duplicateInviteCheck` verdict `'reuse'` refreshes the pending row (roles and `prepareUser` extras are **replaced**) and sends a new full-TTL link; **since 0.2 every earlier link of that account answers `410 INVITE_REPLACED`**. An accepted account rejects (`USER_ALREADY_EXISTS`).
 
-**Invitee phase** (anonymous magic-link resume): already-accepted / cancelled notices where applicable → set initial password → optional profile → optional confirmation banner → finish (auto-login when `autoLoginOnInvite`, else redirect to `loginUrl`). A re-clicked link whose state row was already evicted falls through to `GET /auth/invite/post-redemption`, which rebuilds the same idempotent "already accepted" envelope from the `uid` in the URL.
+**Invitee phase** (anonymous resume of the link): cancelled / replaced / already-accepted checks → optional username pick (`inviteUsername: 'choose'`) → set initial password → MFA enrolment when required → optional confirmation banner → finish (auto-login when `autoLoginOnInvite`, else redirect to `loginUrl`). A re-clicked link whose state row was already evicted falls through to `GET /auth/invite/post-redemption`, which rebuilds the same idempotent "already accepted" envelope from the `uid` in the URL.
+
+App context (`resolveInviteContext`), required columns, delivery modes, re-invite rules for multi-tenant apps and the error codes: **[Invites](./invites)**.
 
 ### Pre-seeded enrolment & verified-by-construction addresses {#pre-seeded-enrolment}
 
@@ -383,7 +414,7 @@ Open self-registration for anonymous users — the reciprocal of login (signup i
 
 ## Outbound delivery — `deliver(payload)`
 
-Override `protected deliver(payload: AuthDeliveryPayload)` to route direct sends (MFA / recovery / enroll pincodes, new-device notice) by `payload.kind` and `payload.channel`. The invite magic link is **not** sent through `deliver` — it goes through the email outlet on the trigger route (the resume URL is minted by the engine after the step yields). There is **no `audit()` method** — see [Audit Log](./audit) for wiring your own. See [`AuthDeliveryPayload`](/api/auth-moost#authdeliverypayload).
+Override `protected deliver(payload: AuthDeliveryPayload)` to route direct sends (MFA / recovery / enroll pincodes, new-device notice) by `payload.kind` and `payload.channel`. The invite link goes through `deliver` (`kind: 'invite-link'`) only under `inviteDelivery: 'deliver'`; by default it goes through the email outlet on the trigger route (see [Invites — delivery modes](./invites#delivery-modes)). There is **no `audit()` method** — see [Audit Log](./audit) for wiring your own. See [`AuthDeliveryPayload`](/api/auth-moost#authdeliverypayload).
 
 ## Consent collection — `ConsentStore`
 
@@ -431,6 +462,8 @@ For each OTP-via-email / OTP-via-sms channel the user enrolls, `resolveOtpDisclo
 
 The `@Injectable()` singleton owning workflow-state persistence, outlets, and the token wire. Constructor is `(wf: MoostWf, auth: AuthCredential)`. Signatures: [`WfTriggerProvider` reference](/api/auth-moost#wftriggerprovider).
 
+Default outlets: the HTTP (form) outlet and the `invite` outlet (`createInviteOutlet()`, used by `inviteDelivery: 'deliver' | 'return-link'`). Append the email outlet as in the example below; if you **replace** `this.outlets` instead, keep `createInviteOutlet()` in the list.
+
 #### Workflow state strategy
 
 State is a **named-strategy registry**, not a single strategy. Every workflow **starts** on the `encapsulated` strategy (the registry default): state rides inside the SPA-held token, so opening a login form persists **zero** server-side rows before the first validated input — a restart or eviction can no longer `410 Gone` an idle form. A later step calls `swapStrategy('store')` to move durable once there is real state worth persisting.
@@ -471,7 +504,19 @@ The encapsulated token's secret defaults to `auth.deriveStateKey("wf-state")` (H
 
 ### `WfTrigger({ allow?, token? })`
 
-Method decorator wrapping `defineAfterInterceptor` at `INTERCEPTOR` priority. When the wrapped handler returns `undefined`, the interceptor instantiates `WfTriggerProvider` and replies with `provider.handle(opts)`. `opts.allow` whitelists wfids (a request for a wfid outside `allow` is rejected). `opts.token` overrides the wire (default `{ read: ['body','query','cookie'], write: 'body', name: 'wfs' }`). Return a non-`undefined` value to short-circuit (see [Controllers — Pattern B](./controllers)).
+Method decorator wrapping `defineAfterInterceptor` at `INTERCEPTOR` priority. When the wrapped handler returns `undefined`, the interceptor instantiates `WfTriggerProvider` and replies with `provider.handle(opts)`. `opts.allow` lists the workflow ids the route may start **and resume** (below). `opts.token` overrides the wire (default `{ read: ['body','query','cookie'], write: 'body', name: 'wfs' }`). Return a non-`undefined` value to short-circuit (see [Controllers — Pattern B](./controllers)).
+
+### Trigger allow lists — start and resume {#trigger-allow-lists-start-and-resume}
+
+| `allow`               | Effect                                                      |
+| --------------------- | ----------------------------------------------------------- |
+| omitted               | any workflow may be started or resumed on this route        |
+| `["auth/login/flow"]` | only the listed ids; a leading `/` is ignored when matching |
+| `[]`                  | every workflow is refused                                   |
+
+::: warning Since 0.2: `allow` also governs resume, and `[]` denies all
+A `wfs` token minted for a workflow outside the route's list is refused with **403 before it is consumed** — it stays usable on its own route. This closes route-hopping: a login `wfs` can no longer be resumed on the authenticated `POST /auth/change-password` route (which would sidestep the login route's rate limit), and a change-password `wfs` is refused on the public `/auth/trigger`. Before 0.2, `allow` was checked on start only, and `allow: []` allowed everything. When you add a trigger route of your own, list exactly the workflows it serves.
+:::
 
 ### `createAuthEmailOutlet(deps)`
 
@@ -488,14 +533,14 @@ Steps end a run with `finishWf(opts)` (success) or `abortWf(reason, opts)` (user
 | Shape                                                             | Behaviour                                                                                                               | Use for                                                                                                                                        |
 | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | `throw wf.requireInput({ errors, formMessage? })` — **retriable** | Engine re-persists state under the SAME `wfs` handle and re-renders the form with per-field errors. The token survives. | Wrong password, invalid OTP, mismatched confirm-password, duplicate email, missing required consent, account lockout, "session limit reached". |
-| `throw new HttpError(<status>, <msg>)` — **terminal**             | The token is consumed; the SPA renders a final error. The run is over.                                                  | `500` state corruption, `501` not-implemented stubs, `410` cancelled invite, `403` feature disabled, `409` CAS exhausted.                      |
+| `throw new HttpError(<status>, <msg>)` — **terminal**             | The token is consumed; the SPA renders a final error. The run is over.                                                  | `500` state corruption, `501` not-implemented stubs, `410` cancelled / replaced invite, `403` feature disabled, `409` CAS exhausted.           |
 
 `wf` is the handle from `useAtscriptWf(FormSchema)`. The form payload + `@wf.context.pass` keys are auto-included in the re-render, so the SPA's next render sees fresh ctx without an extra round-trip.
 
 ```ts
 // ✅ Retriable — user corrects input on the same form (token survives).
-throw wf.requireInput({ formMessage: "Invalid credentials" });
-throw wf.requireInput({ errors: { confirmPassword: "Passwords do not match" } });
+throw wf.requireInput({ formMessage: this.msg("INVALID_CREDENTIALS") });
+throw wf.requireInput({ errors: { confirmPassword: this.msg("PASSWORDS_DO_NOT_MATCH") } });
 
 // ❌ Terminal — not a client error; no form to retry from.
 if (!ctx.subject) throw new HttpError(500, "Workflow state corrupted: missing subject");

@@ -122,3 +122,45 @@ describe("Set-Cookie integration — logout clears cookies cleanly", () => {
     }
   });
 });
+
+describe("A3: persistent cookies", () => {
+  function maxAgeOf(setCookie: string): number | undefined {
+    const m = /Max-Age=(\d+)/i.exec(setCookie);
+    return m ? Number(m[1]) : undefined;
+  }
+
+  it("cookies stay session-only by default", async () => {
+    const app = await prepareControllerApp({ cookie: { secure: false } });
+    const { refreshToken } = await issueRefresh(app);
+    const r = await app.request("/auth/refresh", { method: "POST", json: { refreshToken } });
+    for (const c of r.setCookies) {
+      expect(c).not.toMatch(/Max-Age=|Expires=/i);
+    }
+  });
+
+  it("refreshCookie.persistent sets Max-Age from the refresh token's expiry, renewed on rotation", async () => {
+    const app = await prepareControllerApp({
+      cookie: { secure: false },
+      refreshCookie: { persistent: true },
+    });
+    const { refreshToken } = await issueRefresh(app);
+    const r = await app.request("/auth/refresh", { method: "POST", json: { refreshToken } });
+    const session = r.setCookies.find((c) => SESSION_COOKIE_RX.test(c))!;
+    const refresh = r.setCookies.find((c) => REFRESH_COOKIE_RX.test(c))!;
+    // Access cookie stays session-only; refresh follows its 600s token TTL.
+    expect(maxAgeOf(session)).toBeUndefined();
+    const age = maxAgeOf(refresh)!;
+    expect(age).toBeGreaterThan(590);
+    expect(age).toBeLessThanOrEqual(600);
+  });
+
+  it("cookie.persistent sets the access cookie's Max-Age from the access token's expiry", async () => {
+    const app = await prepareControllerApp({ cookie: { secure: false, persistent: true } });
+    const { refreshToken } = await issueRefresh(app);
+    const r = await app.request("/auth/refresh", { method: "POST", json: { refreshToken } });
+    const session = r.setCookies.find((c) => SESSION_COOKIE_RX.test(c))!;
+    const age = maxAgeOf(session)!;
+    expect(age).toBeGreaterThan(50);
+    expect(age).toBeLessThanOrEqual(60);
+  });
+});

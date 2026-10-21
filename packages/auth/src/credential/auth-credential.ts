@@ -1,4 +1,11 @@
-import { createHash, randomUUID } from "node:crypto";
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  hkdfSync,
+  randomBytes,
+  randomUUID,
+} from "node:crypto";
 import { AuthError } from "../errors";
 import type { CredentialStore, DenylistStore } from "../stores/store";
 import { type Clock, defaultClock } from "../utils/clock";
@@ -7,6 +14,7 @@ import type {
   AuthContext,
   CredentialMetadata,
   CredentialState,
+  CredentialSuccessorRef,
   EnrichedSession,
   IssueResult,
   RefreshConfig,
@@ -48,6 +56,45 @@ function lazyCredentialId(ctx: { credentialId: string }, token: string): void {
 
 /** Smallest map size an amortized expiry sweep runs at. */
 const MIN_SWEEP_SIZE = 1024;
+
+/** A store key that is the SHA-256 hex of a token (`tokens.hashAtRest`). */
+const HASHED_KEY = /^[0-9a-f]{64}$/i;
+
+/** The token shape the bundled stores minted before `hashAtRest` (`randomUUID`). */
+const UUID_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Prefix of a successor token encrypted at rest (`tokens.hashAtRest`). */
+const SEALED_PREFIX = "enc1.";
+
+/** AES-256-GCM key for the successor pair, derived from the presented (old) refresh token. */
+function successorKey(oldRefreshToken: string): Buffer {
+  return Buffer.from(hkdfSync("sha256", oldRefreshToken, "", "aooth-refresh-successor", 32));
+}
+
+function sealToken(key: Buffer, token: string): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const body = Buffer.concat([cipher.update(token, "utf8"), cipher.final()]);
+  return `${SEALED_PREFIX}${iv.toString("base64url")}.${body.toString("base64url")}.${cipher
+    .getAuthTag()
+    .toString("base64url")}`;
+}
+
+/** Decrypt a sealed token; a plain (legacy) value passes through; `null` on a failed decrypt. */
+function openToken(key: Buffer, value: string): string | null {
+  if (!value.startsWith(SEALED_PREFIX)) return value;
+  const [iv, body, tag] = value.slice(SEALED_PREFIX.length).split(".");
+  try {
+    const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(iv, "base64url"));
+    decipher.setAuthTag(Buffer.from(tag, "base64url"));
+    return Buffer.concat([
+      decipher.update(Buffer.from(body, "base64url")),
+      decipher.final(),
+    ]).toString("utf8");
+  } catch {
+    return null;
+  }
+}
 
 /**
  * The opt-in `validateCache`: token → validated state for `ttlMs`, bounded
@@ -91,6 +138,12 @@ class ValidateCache<S extends CredentialState> {
       if (entry.state.userId === userId) this.entries.delete(token);
     }
   }
+}
+
+/** A stored credential and the store key it was found under. */
+interface Found<TPayload extends object> {
+  key: string;
+  state: CredentialState & TPayload;
 }
 
 /**
@@ -164,6 +217,43 @@ export interface AuthCredentialOptions<TPayload extends object = object> {
    * @since 0.1.78
    */
   validateCache?: { ttlMs: number; max?: number };
+  /**
+   * How tokens are minted and stored. Both options need a store with
+   * `persistAs` (memory, Redis, atscript-db — not the stateless JWT /
+   * encapsulated stores, whose token IS the state).
+   */
+  tokens?: {
+    /**
+     * Store a SHA-256 of each token instead of the token itself, so a
+     * database / backup / replica read yields no usable session, refresh token
+     * or PAT. The successor pair kept on a rotated refresh row is encrypted
+     * with a key derived from that refresh token (only its holder can read it
+     * back during the grace window), and `parentCredentialId` holds the hash.
+     * Tokens become 256-bit random strings unless `generate` is given.
+     * - `true` — hash every token; rows written before are not found (a
+     *   one-time sign-out of existing sessions).
+     * - `'migrate'` — also look up the token itself when its hash is not
+     *   found, so existing sessions keep working; a legacy refresh token is
+     *   re-issued hashed on its next rotation. Switch to `true` once the
+     *   longest refresh lifetime has passed.
+     * Default `false`.
+     */
+    hashAtRest?: boolean | "migrate";
+    /**
+     * Token generator (e.g. to add a recognisable prefix). Must return at
+     * least 128 bits of randomness — the stored SHA-256 is only as strong as
+     * the token it hashes. Default: 256 random bits, base64url.
+     */
+    generate?: () => string;
+    /**
+     * `'migrate'` only: which presented tokens may be looked up as-is (rows
+     * written before hashing). Default: the `randomUUID` shape the bundled
+     * stores minted. Pass a predicate when earlier tokens came from a custom
+     * `generate`. A 64-hex string (the shape of a stored hash) is never looked
+     * up as-is, so a value read from the database cannot be replayed as a token.
+     */
+    isLegacyToken?: (token: string) => boolean;
+  };
   /** Optional clock for testability. */
   clock?: Clock;
 }
@@ -285,8 +375,11 @@ export class AuthCredential<TPayload extends object = object> {
   >();
   /** Map size at which `consumedRefreshes` next sweeps its expired entries. */
   private consumedSweepAt = MIN_SWEEP_SIZE;
-  /** Opt-in validated-state cache (`validateCache`). */
+  /** Opt-in validated-state cache (`validateCache`), keyed by store key. */
   private readonly validated?: ValidateCache<CredentialState & TPayload>;
+  private readonly hashAtRest: boolean | "migrate";
+  private readonly generateToken?: () => string;
+  private readonly isLegacyToken: (token: string) => boolean;
 
   constructor(opts: AuthCredentialOptions<TPayload>) {
     this.store = opts.store;
@@ -298,6 +391,15 @@ export class AuthCredential<TPayload extends object = object> {
     this.onLimit = opts.onLimit ?? "reject";
     this.trackLastSeen = opts.trackLastSeen ?? false;
     this.clock = opts.clock ?? defaultClock;
+    this.hashAtRest = opts.tokens?.hashAtRest ?? false;
+    this.generateToken = opts.tokens?.generate;
+    this.isLegacyToken = opts.tokens?.isLegacyToken ?? ((token) => UUID_TOKEN.test(token));
+    if ((this.hashAtRest || this.generateToken) && !this.store.persistAs) {
+      throw new AuthError(
+        "INVALID_CONFIG",
+        "tokens.hashAtRest / tokens.generate need a store that implements persistAs (memory, Redis, atscript-db)",
+      );
+    }
     if (opts.validateCache) {
       if (!(opts.validateCache.ttlMs > 0)) {
         throw new AuthError(
@@ -434,7 +536,7 @@ export class AuthCredential<TPayload extends object = object> {
     // support concurrent writes on one connection (the sqlite adapter runs
     // each insert in a transaction on a single connection — overlapping them
     // nests transactions and throws).
-    const accessToken = await this.store.persist(accessState, accessStoreTtl);
+    const accessToken = await this.put(accessState, accessStoreTtl);
 
     let refreshToken: string | undefined;
     let refreshExpiresAt: number | undefined;
@@ -447,7 +549,7 @@ export class AuthCredential<TPayload extends object = object> {
         metadata: effectiveMetadata,
         sessionId,
       });
-      refreshToken = await this.store.persist(refreshState, refreshTtl);
+      refreshToken = await this.put(refreshState, refreshTtl);
       refreshExpiresAt = now + refreshTtl;
     }
 
@@ -460,8 +562,9 @@ export class AuthCredential<TPayload extends object = object> {
   }
 
   async validate(accessToken: string): Promise<AuthContext<TPayload> | null> {
+    let key = this.keyOf(accessToken);
     let state: (CredentialState & TPayload) | null | undefined = this.validated?.get(
-      accessToken,
+      key,
       this.clock.now(),
     );
     // Only a state read by THIS call is handed to `touch`: a cached one may
@@ -471,16 +574,17 @@ export class AuthCredential<TPayload extends object = object> {
     if (!state) {
       fresh = true;
       const epoch = this.validated?.epoch;
-      state = await this.retrieveUnlessDenied(accessToken);
-      if (!state) return null;
+      const found = await this.retrieveUnlessDenied(accessToken, key);
+      if (!found) return null;
+      ({ key, state } = found);
       if (state.expiresAt <= this.clock.now()) return null;
       if (state.kind === "refresh") return null;
       // Not when a revocation ran while this one was reading.
       if (this.validated && this.validated.epoch === epoch) {
-        this.validated.set(accessToken, state, this.clock.now());
+        this.validated.set(key, state, this.clock.now());
       }
     } else if (state.expiresAt <= this.clock.now()) {
-      this.validated!.delete(accessToken);
+      this.validated!.delete(key);
       return null;
     }
 
@@ -489,7 +593,7 @@ export class AuthCredential<TPayload extends object = object> {
       // Fire-and-forget would race the response; await keeps lastSeenAt
       // monotonic but adds a store round-trip (documented cost). A state
       // just read is passed along so a store can skip re-reading it.
-      await this.store.touch(accessToken, this.clock.now(), fresh ? state : undefined);
+      await this.store.touch(key, this.clock.now(), fresh ? state : undefined);
     }
 
     // Surface the credential's typed payload fields by name (excludes envelope
@@ -502,10 +606,12 @@ export class AuthCredential<TPayload extends object = object> {
       credentialId: "",
       // Legacy tokens predating sessionId fall back to the token fingerprint —
       // the SAME fallback listSessions uses, so "this device" matching holds.
-      sessionId: this.sessionIdOf(state.sessionId, accessToken),
+      sessionId: state.sessionId ?? this.fingerprintOfKey(key),
       expiresAt: state.expiresAt,
     } as AuthContext<TPayload>;
-    lazyCredentialId(ctx, accessToken);
+    // A hashed row key IS the fingerprint; otherwise compute it on first read.
+    if (key !== accessToken) ctx.credentialId = key;
+    else lazyCredentialId(ctx, accessToken);
     return ctx;
   }
 
@@ -515,8 +621,9 @@ export class AuthCredential<TPayload extends object = object> {
    */
   private async retrieveUnlessDenied(
     accessToken: string,
-  ): Promise<(CredentialState & TPayload) | null> {
-    const retrieving = this.store.retrieve(accessToken);
+    key: string,
+  ): Promise<Found<TPayload> | null> {
+    const retrieving = this.find(accessToken, key);
     if (!this.denylist) return await retrieving;
     // Handled at once: a store failure settling while the denylist is still
     // awaited must not surface as an unhandled rejection.
@@ -525,11 +632,58 @@ export class AuthCredential<TPayload extends object = object> {
     return await retrieving;
   }
 
+  // ── Token ↔ store key (`tokens.hashAtRest`) ──
+
+  /** The store key a token's row lives under: its SHA-256 when hashing, else the token. */
+  private keyOf(token: string): string {
+    return this.hashAtRest ? fingerprint(token) : token;
+  }
+
+  /** `credentialId` (the token's SHA-256) of a stored row, from its store key. */
+  private fingerprintOfKey(key: string): string {
+    return this.hashAtRest && HASHED_KEY.test(key) ? key : fingerprint(key);
+  }
+
+  /** Persist a new credential; returns the token the client will hold. */
+  private async put(state: CredentialState & TPayload, ttl: number | undefined): Promise<string> {
+    if (!this.hashAtRest && !this.generateToken) return await this.store.persist(state, ttl);
+    const token = this.generateToken?.() ?? randomBytes(32).toString("base64url");
+    await this.store.persistAs!(this.keyOf(token), state, ttl);
+    return token;
+  }
+
+  /**
+   * Look a token up: by its store key, and — under `hashAtRest: 'migrate'` —
+   * by the token itself for a row written before hashing was enabled.
+   */
+  private async find(token: string, key = this.keyOf(token)): Promise<Found<TPayload> | null> {
+    const state = await this.store.retrieve(key);
+    if (state) return { key, state };
+    if (!this.mayBeLegacyKey(token)) return null;
+    const legacy = await this.store.retrieve(token);
+    return legacy ? { key: token, state: legacy } : null;
+  }
+
+  /**
+   * `'migrate'`: may `token` be a row written before hashing, stored under
+   * the token itself? Never for a hash-shaped value — that is what a database
+   * read yields, and accepting it would turn a leaked row key into a session.
+   */
+  private mayBeLegacyKey(token: string): boolean {
+    return (
+      this.hashAtRest === "migrate" &&
+      !HASHED_KEY.test(token) &&
+      !/\s/.test(token) &&
+      this.isLegacyToken(token)
+    );
+  }
+
   async refresh(refreshToken: string, opts?: RefreshCallOptions<TPayload>): Promise<RefreshResult> {
     const now = this.clock.now();
 
-    const oldState = await this.store.retrieve(refreshToken);
-    if (!oldState) {
+    const found = await this.find(refreshToken);
+    const oldState = found?.state;
+    if (!found || !oldState) {
       // Stateful stores drop the consumed token; JWT stores hide it behind a
       // denylist hit on retrieve. The consumed-refreshes map preserves the
       // reuse signal across both so 'always' rotation can fire theft response.
@@ -561,9 +715,9 @@ export class AuthCredential<TPayload extends object = object> {
         // Issue new access only; keep the refresh token in place.
         return await this.refreshNone(oldState, refreshToken, now);
       case "always":
-        return await this.refreshAlways(oldState, refreshToken, now);
+        return await this.refreshAlways(oldState, refreshToken, found.key, now);
       case "sliding":
-        return await this.refreshSliding(oldState, refreshToken, now);
+        return await this.refreshSliding(oldState, refreshToken, found.key, now);
       default: {
         // Exhaustiveness guard — surfaces an explicit error if a new rotation
         // mode is added to RefreshConfig without updating this switch.
@@ -596,9 +750,10 @@ export class AuthCredential<TPayload extends object = object> {
   private async refreshSliding(
     oldState: CredentialState & TPayload,
     refreshToken: string,
+    key: string,
     now: number,
   ): Promise<RefreshResult> {
-    return await this.rotateWithGrace(oldState, refreshToken, now, /* preserveExpiry */ false);
+    return await this.rotateWithGrace(oldState, refreshToken, key, now, /* preserveExpiry */ false);
   }
 
   /**
@@ -614,13 +769,14 @@ export class AuthCredential<TPayload extends object = object> {
   private async refreshAlways(
     oldState: CredentialState & TPayload,
     refreshToken: string,
+    key: string,
     now: number,
   ): Promise<RefreshResult> {
     if (!this.store.listForUser) {
       // Stateless store: no in-place mutation → no store-backed grace. Consume
       // the old token and record the reuse signal in the process-local map so
       // a same-process replay still fires the theft response.
-      await this.store.consume(refreshToken);
+      await this.store.consume(key);
       this.sweepConsumedRefreshes();
       this.consumedRefreshes.set(refreshToken, {
         userId: oldState.userId,
@@ -628,9 +784,16 @@ export class AuthCredential<TPayload extends object = object> {
         exp: oldState.expiresAt,
         ...(oldState.sessionId !== undefined && { sessionId: oldState.sessionId }),
       });
-      return await this.issueRotatedPair(oldState, refreshToken, /* rotateOld */ false, now, true);
+      return await this.issueRotatedPair(
+        oldState,
+        refreshToken,
+        key,
+        /* rotateOld */ false,
+        now,
+        true,
+      );
     }
-    return await this.rotateWithGrace(oldState, refreshToken, now, /* preserveExpiry */ true);
+    return await this.rotateWithGrace(oldState, refreshToken, key, now, /* preserveExpiry */ true);
   }
 
   /**
@@ -651,6 +814,7 @@ export class AuthCredential<TPayload extends object = object> {
   private async rotateWithGrace(
     oldState: CredentialState & TPayload,
     refreshToken: string,
+    key: string,
     now: number,
     preserveExpiry: boolean,
   ): Promise<RefreshResult> {
@@ -664,6 +828,7 @@ export class AuthCredential<TPayload extends object = object> {
       return await this.issueRotatedPair(
         oldState,
         refreshToken,
+        key,
         /* rotateOld */ true,
         now,
         preserveExpiry,
@@ -692,9 +857,13 @@ export class AuthCredential<TPayload extends object = object> {
     // means the client already moved on (or the row predates successor
     // tracking): the presented token is superseded and dead regardless of the
     // window, so a re-presentation can only be a replay.
-    const successor = oldState.successor;
+    // An encrypted (hashAtRest) pair opens only with the presented token.
+    const successor =
+      oldState.successor === undefined
+        ? undefined
+        : this.openSuccessor(oldState.successor, refreshToken);
     const successorState =
-      successor === undefined ? null : await this.store.retrieve(successor.refreshToken);
+      successor === undefined ? null : ((await this.find(successor.refreshToken))?.state ?? null);
     if (
       successor === undefined ||
       successorState === null ||
@@ -727,11 +896,18 @@ export class AuthCredential<TPayload extends object = object> {
   // validation that starts while the write is in flight can still read the
   // old state, and must neither stay cached nor be cached after it.
   async revoke(token: string): Promise<void> {
-    this.validated?.delete(token);
+    await this.revokeKey(this.keyOf(token));
+    // A row written before hashing was enabled lives under the token itself.
+    if (this.mayBeLegacyKey(token)) await this.revokeKey(token);
+  }
+
+  /** Revoke the row stored under `key` (a store key, as `listForUser` returns it). */
+  private async revokeKey(key: string): Promise<void> {
+    this.validated?.delete(key);
     try {
-      await this.store.revoke(token);
+      await this.store.revoke(key);
     } finally {
-      this.validated?.delete(token);
+      this.validated?.delete(key);
     }
   }
 
@@ -753,26 +929,20 @@ export class AuthCredential<TPayload extends object = object> {
         ...credentialPayloadOf<TPayload>(entry),
         userId: entry.userId,
         method: this.method,
-        credentialId: fingerprint(entry.token),
+        credentialId: this.fingerprintOfKey(entry.token),
         sessionId: this.sessionKeyOf(entry),
         expiresAt: entry.expiresAt,
       }));
   }
 
   /**
-   * The session id for a credential: its stored `sessionId`, or the token
-   * fingerprint for legacy rows predating sessionId (so they surface as
-   * singleton sessions). The ONE place this fallback rule lives — shared by
-   * `validate()`, `listForUser()`, and the session-family methods so "this
-   * device" matching stays consistent across all of them.
+   * Session-grouping key for a stored credential entry (its store key
+   * attached): its stored `sessionId`, or the token fingerprint for legacy
+   * rows predating sessionId (so they surface as singleton sessions) — the
+   * same fallback `validate()` applies, so "this device" matching holds.
    */
-  private sessionIdOf(sessionId: string | undefined, token: string): string {
-    return sessionId ?? fingerprint(token);
-  }
-
-  /** Session-grouping key for a stored credential entry (token attached). */
   private sessionKeyOf(entry: CredentialState & TPayload & { token: string }): string {
-    return this.sessionIdOf(entry.sessionId, entry.token);
+    return entry.sessionId ?? this.fingerprintOfKey(entry.token);
   }
 
   /**
@@ -861,7 +1031,7 @@ export class AuthCredential<TPayload extends object = object> {
     await Promise.all(
       all
         .filter((entry) => this.sessionKeyOf(entry) === sessionId)
-        .map((entry) => this.revoke(entry.token)),
+        .map((entry) => this.revokeKey(entry.token)),
     );
   }
 
@@ -881,7 +1051,7 @@ export class AuthCredential<TPayload extends object = object> {
       const key = this.sessionKeyOf(entry);
       if (key === keepSessionId) continue;
       revokedSessions.add(key);
-      revokes.push(this.revoke(entry.token));
+      revokes.push(this.revokeKey(entry.token));
     }
     await Promise.all(revokes);
     return revokedSessions.size;
@@ -921,7 +1091,7 @@ export class AuthCredential<TPayload extends object = object> {
     const sorted = accessOnly.toSorted((a, b) => a.issuedAt - b.issuedAt);
     const toEvict = accessOnly.length - this.maxConcurrent + 1;
     for (let i = 0; i < toEvict && i < sorted.length; i++) {
-      await this.revoke(sorted[i].token);
+      await this.revokeKey(sorted[i].token);
     }
   }
 
@@ -943,7 +1113,7 @@ export class AuthCredential<TPayload extends object = object> {
       sessionId: refreshState.sessionId,
       ...(this.trackLastSeen === "refresh" && { lastSeenAt: now }),
     });
-    const token = await this.store.persist(accessState, accessTtl);
+    const token = await this.put(accessState, accessTtl);
     return { token, expiresAt: now + accessTtl };
   }
 
@@ -957,6 +1127,7 @@ export class AuthCredential<TPayload extends object = object> {
   private async issueRotatedPair(
     oldRefreshState: CredentialState & TPayload,
     oldRefreshToken: string,
+    oldKey: string,
     rotateOld: boolean,
     now: number,
     preserveExpiry = false,
@@ -983,7 +1154,8 @@ export class AuthCredential<TPayload extends object = object> {
         expiresAt: refreshExpiresAt,
         kind: "refresh",
         metadata: oldRefreshState.metadata,
-        parentCredentialId: oldRefreshToken,
+        // Never the raw token at rest under `hashAtRest`.
+        parentCredentialId: this.hashAtRest ? fingerprint(oldRefreshToken) : oldRefreshToken,
         sessionId: oldRefreshState.sessionId,
         ...(this.trackLastSeen === "refresh" && { lastSeenAt: now }),
       },
@@ -992,7 +1164,7 @@ export class AuthCredential<TPayload extends object = object> {
     // one connection (see the note there). The old-row rotation stamp comes
     // last so the new refresh is durable before the old enters grace.
     const access = await this.issueAccessFromRefresh(oldRefreshState, now);
-    const newRefreshToken = await this.store.persist(newRefreshState, refreshTtl);
+    const newRefreshToken = await this.put(newRefreshState, refreshTtl);
 
     if (rotateOld) {
       // Mark the old refresh as rotated and pin the successor pair on it; it
@@ -1002,14 +1174,17 @@ export class AuthCredential<TPayload extends object = object> {
       const rotatedState: CredentialState & TPayload = {
         ...oldRefreshState,
         rotatedAt: now,
-        successor: {
-          accessToken: access.token,
-          accessExpiresAt: access.expiresAt,
-          refreshToken: newRefreshToken,
-          refreshExpiresAt,
-        },
+        successor: this.sealSuccessor(
+          {
+            accessToken: access.token,
+            accessExpiresAt: access.expiresAt,
+            refreshToken: newRefreshToken,
+            refreshExpiresAt,
+          },
+          oldRefreshToken,
+        ),
       };
-      await this.store.update(oldRefreshToken, rotatedState);
+      await this.store.update(oldKey, rotatedState);
     }
 
     return {
@@ -1019,6 +1194,40 @@ export class AuthCredential<TPayload extends object = object> {
       refreshExpiresAt,
       userId: oldRefreshState.userId,
     };
+  }
+
+  /**
+   * Under `hashAtRest` the successor pair is stored encrypted with a key
+   * derived from the old refresh token — only a holder of that token (the
+   * grace-window re-presentation) can read the pair back.
+   */
+  private sealSuccessor(
+    successor: CredentialSuccessorRef,
+    oldRefreshToken: string,
+  ): CredentialSuccessorRef {
+    if (!this.hashAtRest) return successor;
+    const key = successorKey(oldRefreshToken);
+    return {
+      ...successor,
+      accessToken: sealToken(key, successor.accessToken),
+      refreshToken: sealToken(key, successor.refreshToken),
+    };
+  }
+
+  /** Inverse of {@link sealSuccessor}; `undefined` when the pair cannot be opened. */
+  private openSuccessor(
+    successor: CredentialSuccessorRef,
+    presentedToken: string,
+  ): CredentialSuccessorRef | undefined {
+    const sealed =
+      successor.accessToken.startsWith(SEALED_PREFIX) ||
+      successor.refreshToken.startsWith(SEALED_PREFIX);
+    if (!sealed) return successor;
+    const key = successorKey(presentedToken);
+    const accessToken = openToken(key, successor.accessToken);
+    const refreshToken = openToken(key, successor.refreshToken);
+    if (accessToken === null || refreshToken === null) return undefined;
+    return { ...successor, accessToken, refreshToken };
   }
 
   /** Amortized sweep of expired `consumedRefreshes` entries (each size doubling). */

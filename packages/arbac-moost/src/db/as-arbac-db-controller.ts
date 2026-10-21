@@ -536,8 +536,10 @@ export function enforceControlsPolicy(
  *
  * Currently supported (matches `WHITELISTABLE_CONTROLS` in `unionControlsPolicy`):
  *   - `$with` — array of `{ name, … }` objects (per `TypedWithRelation`,
- *     see `@uniqu/core` parser at `parseWithSegment`); we extract `name`.
- *     Bare strings are tolerated for forward compatibility.
+ *     see `@uniqu/core` parser at `parseWithSegment`); we extract `name`,
+ *     and walk nested `controls.$with` emitting dotted paths
+ *     (`author($with=org)` → `author`, `author.org`) so a whitelist can name
+ *     a nested relation. Bare strings are tolerated for forward compatibility.
  *   - `$groupBy` — array of column names (strings). With `controls` given,
  *     a calendar-bucket alias (`$select: [{ $bucket, $field, $as }]`) is
  *     mapped to its source `$field` (`groupByFields` from `@uniqu/core`),
@@ -553,22 +555,28 @@ export function extractUsedControlValues(
   controls?: Record<string, unknown>,
 ): string[] {
   if (!Array.isArray(value)) return [];
-  if (key === "$with") {
-    const out: string[] = [];
-    for (const entry of value) {
-      if (typeof entry === "string") out.push(entry);
-      else if (typeof (entry as { name?: unknown } | null)?.name === "string") {
-        out.push((entry as { name: string }).name);
-      }
-    }
-    return out;
-  }
+  if (key === "$with") return withPaths(value, "");
   if (key === "$groupBy") {
     return controls
       ? groupByFields({ $select: controls.$select, $groupBy: value })
       : value.filter((x): x is string => typeof x === "string");
   }
   return [];
+}
+
+/** Relation paths of a `$with` list, nested `controls.$with` as dotted paths. */
+function withPaths(list: readonly unknown[], prefix: string): string[] {
+  const out: string[] = [];
+  for (const entry of list) {
+    const rel = entry as { name?: unknown; controls?: { $with?: unknown } } | null;
+    const name = typeof entry === "string" ? entry : rel?.name;
+    if (typeof name !== "string") continue;
+    const path = prefix + name;
+    out.push(path);
+    const nested = rel?.controls?.$with;
+    if (Array.isArray(nested)) out.push(...withPaths(nested, `${path}.`));
+  }
+  return out;
 }
 
 /**

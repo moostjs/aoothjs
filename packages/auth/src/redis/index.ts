@@ -115,6 +115,11 @@ export class CredentialStoreRedis<
 
   async persist(state: CredentialState & TPayload, ttl?: number): Promise<string> {
     const token = randomUUID();
+    await this.persistAs(token, state, ttl);
+    return token;
+  }
+
+  async persistAs(token: string, state: CredentialState & TPayload, ttl?: number): Promise<void> {
     const stored: CredentialState & TPayload = { ...state };
     if (typeof ttl === "number") {
       // Mirror the memory store: caller-supplied ttl overrides the state's
@@ -131,7 +136,6 @@ export class CredentialStoreRedis<
     }
     await this.redis.set(this.tokenKey(token), JSON.stringify(stored), "PX", ttlMs);
     await this.redis.sadd(this.userKey(state.userId), token);
-    return token;
   }
 
   async retrieve(token: string): Promise<(CredentialState & TPayload) | null> {
@@ -316,6 +320,15 @@ export class RateLimitStoreRedis implements RateLimitStore {
     const count = await this.redis.incr(k);
     if (count === 1) await this.redis.pexpire(k, ttlMs);
     return count;
+  }
+
+  async get(key: string): Promise<number> {
+    const raw = await this.redis.get(this.key(key));
+    return raw ? Number(raw) || 0 : 0;
+  }
+
+  async expire(key: string, ttlMs: number): Promise<void> {
+    await this.redis.pexpire(this.key(key), ttlMs);
   }
 
   async reset(key: string): Promise<void> {

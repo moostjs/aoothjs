@@ -164,7 +164,7 @@ describe("createAuthedFetch", () => {
     expect(logoutCount).toBe(1);
   });
 
-  it("treats a refresh network error as a failed refresh (onLogout once, no retry)", async () => {
+  it("logoutOn 'any-failure' treats a refresh network error as a logout (once, no retry)", async () => {
     let appCalls = 0;
     let logoutCount = 0;
     const fetchMock: FetchFn = async (input) => {
@@ -173,7 +173,11 @@ describe("createAuthedFetch", () => {
       return res(401);
     };
 
-    const api = createAuthedFetch({ fetch: fetchMock, onLogout: () => logoutCount++ });
+    const api = createAuthedFetch({
+      fetch: fetchMock,
+      logoutOn: "any-failure",
+      onLogout: () => logoutCount++,
+    });
     const r = await api("/api/me");
 
     expect(r.status).toBe(401);
@@ -220,5 +224,81 @@ describe("createAuthedFetch", () => {
     expect(r.status).toBe(200);
     expect(refreshPathSeen).toBe("/api/auth/refresh");
     expect(appCalls).toBe(2);
+  });
+
+  describe("F69: refresh failure policy", () => {
+    function refreshAnswers(answer: () => Promise<MinimalResponse>): FetchFn {
+      return async (input) => (input === "/auth/refresh" ? answer() : res(401));
+    }
+
+    it.each([400, 401, 403])("logs out when the refresh answers %i", async (status) => {
+      const reasons: unknown[] = [];
+      const api = createAuthedFetch({
+        fetch: refreshAnswers(async () => res(status)),
+        onLogout: (reason) => reasons.push(reason),
+      });
+      const r = await api("/api/me");
+      expect(r.status).toBe(401);
+      expect(reasons).toEqual([{ status }]);
+    });
+
+    it.each([429, 500, 502, 503])(
+      "keeps the session when the refresh answers %i",
+      async (status) => {
+        let logouts = 0;
+        const errors: unknown[] = [];
+        const api = createAuthedFetch({
+          fetch: refreshAnswers(async () => res(status)),
+          onLogout: () => logouts++,
+          onRefreshError: (reason) => errors.push(reason),
+        });
+        const r = await api("/api/me");
+        expect(r.status).toBe(401); // original response, not retried
+        expect(logouts).toBe(0);
+        expect(errors).toEqual([{ status }]);
+      },
+    );
+
+    it("keeps the session on a refresh network error (offline / aborted)", async () => {
+      let logouts = 0;
+      const errors: Array<{ error?: unknown }> = [];
+      const boom = new Error("offline");
+      const api = createAuthedFetch({
+        fetch: refreshAnswers(async () => {
+          throw boom;
+        }),
+        onLogout: () => logouts++,
+        onRefreshError: (reason) => errors.push(reason),
+      });
+      const r = await api("/api/me");
+      expect(r.status).toBe(401);
+      expect(logouts).toBe(0);
+      expect(errors).toEqual([{ error: boom }]);
+    });
+
+    it("logoutOn 'any-failure' restores the old log-out-on-anything behaviour", async () => {
+      const reasons: unknown[] = [];
+      const api = createAuthedFetch({
+        fetch: refreshAnswers(async () => res(502)),
+        logoutOn: "any-failure",
+        onLogout: (reason) => reasons.push(reason),
+      });
+      await api("/api/me");
+      expect(reasons).toEqual([{ status: 502 }]);
+    });
+  });
+
+  it("F70: resolves the global fetch per call, not at creation", async () => {
+    const g = globalThis as { fetch?: unknown };
+    const original = g.fetch;
+    try {
+      g.fetch = async () => res(500);
+      const api = createAuthedFetch();
+      g.fetch = async () => res(204); // e.g. a test mock or polyfill installed later
+      const r = await api("/api/me");
+      expect(r.status).toBe(204);
+    } finally {
+      g.fetch = original;
+    }
   });
 });

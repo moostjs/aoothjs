@@ -133,6 +133,7 @@ import { AppUser } from "./models/app-user.as";
 import { UsersStoreAtscriptDb, type AuthUserTable } from "@aooth/user/atscript-db";
 import { AoothAuthCredential } from "@aooth/auth/atscript-db/model.as";
 import { CredentialStoreAtscriptDb } from "@aooth/auth/atscript-db";
+import { AuthCredential } from "@aooth/auth";
 
 const db = new DbSpace(() => new SqliteAdapter(new BetterSqlite3Driver("./app.db")));
 await syncSchema(db, [AppUser, AoothAuthCredential]);
@@ -140,8 +141,16 @@ await syncSchema(db, [AppUser, AoothAuthCredential]);
 const userStore = new UsersStoreAtscriptDb<AppUser>({
   table: db.getTable(AppUser) as unknown as AuthUserTable<AppUser>,
 });
+// `{ table }` is enough — an @aooth.auth.metadata column on your (extending) model is
+// found automatically; without one, PATs / per-mint TTLs / authz-server tokens are
+// refused (INVALID_CONFIG) — see auth-stores.md.
 const tokenStore = new CredentialStoreAtscriptDb({
   table: db.getTable(AoothAuthCredential),
+});
+const auth = new AuthCredential({
+  store: tokenStore,
+  refresh: { ttl: 30 * 24 * 3600_000 },
+  tokens: { hashAtRest: true }, // NEW apps: store token hashes; existing apps: 'migrate' first
 });
 ```
 

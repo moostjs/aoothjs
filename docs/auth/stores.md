@@ -26,6 +26,7 @@ Every store implements this exact shape:
 ```ts
 interface CredentialStore<TPayload = object> {
   persist(state: CredentialState & TPayload, ttl?: number): Promise<string>;
+  persistAs?(id: string, state: CredentialState & TPayload, ttl?: number): Promise<void>; // since 0.2
   retrieve(token: string): Promise<(CredentialState & TPayload) | null>;
   consume(token: string): Promise<(CredentialState & TPayload) | null>;
   update(token: string, state: CredentialState & TPayload): Promise<string>;
@@ -40,17 +41,18 @@ interface CredentialStore<TPayload = object> {
 
 ### Method semantics
 
-| Method             | Returns                  | On stateful store                                                                                                                               | On stateless store                                                     |
-| ------------------ | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `persist`          | the new token            | inserts row, returns generated UUID                                                                                                             | encodes state into token, returns it                                   |
-| `retrieve`         | state or `null`          | DB lookup; null on miss / expired / epoch-shadowed                                                                                              | crypto verify; null on bad sig / expired / denylisted / epoch-shadowed |
-| `consume`          | state or `null`          | atomic retrieve+delete                                                                                                                          | retrieve + `denylist.add(jti, expiresAt)`; throws without denylist     |
-| `update`           | possibly-different token | updates row in place, returns same token                                                                                                        | re-encodes state, returns new token; throws without denylist           |
-| `revoke`           | `void`                   | deletes row                                                                                                                                     | adds to denylist; throws without denylist                              |
-| `revokeAllForUser` | count                    | `deleteMany({ userId })`, real count                                                                                                            | bumps epoch, returns sentinel `1`                                      |
-| `listForUser`      | array                    | enumerated                                                                                                                                      | optional and absent on stateless                                       |
-| `touch`            | `void`                   | sets `lastSeenAt` on the row (used by `trackLastSeen: 'validate'`); `state` = the state `validate` just read, so a store may skip re-reading it | optional and absent — token is immutable once issued                   |
-| `listSessions`     | array                    | optional native session grouping (forward-compat; unused today)                                                                                 | optional and absent on stateless                                       |
+| Method             | Returns                  | On stateful store                                                                                                                                                                         | On stateless store                                                     |
+| ------------------ | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `persist`          | the new token            | inserts row, returns generated UUID                                                                                                                                                       | encodes state into token, returns it                                   |
+| `persistAs`        | `void`                   | inserts row under a caller-chosen key (memory, Redis and atscript-db implement it); required by [`tokens.hashAtRest` / `tokens.generate`](./credentials#tokens-at-rest-tokens-hashatrest) | absent — the token is the state                                        |
+| `retrieve`         | state or `null`          | DB lookup; null on miss / expired / epoch-shadowed                                                                                                                                        | crypto verify; null on bad sig / expired / denylisted / epoch-shadowed |
+| `consume`          | state or `null`          | atomic retrieve+delete                                                                                                                                                                    | retrieve + `denylist.add(jti, expiresAt)`; throws without denylist     |
+| `update`           | possibly-different token | updates row in place, returns same token                                                                                                                                                  | re-encodes state, returns new token; throws without denylist           |
+| `revoke`           | `void`                   | deletes row                                                                                                                                                                               | adds to denylist; throws without denylist                              |
+| `revokeAllForUser` | count                    | `deleteMany({ userId })`, real count                                                                                                                                                      | bumps epoch, returns sentinel `1`                                      |
+| `listForUser`      | array                    | enumerated                                                                                                                                                                                | optional and absent on stateless                                       |
+| `touch`            | `void`                   | sets `lastSeenAt` on the row (used by `trackLastSeen: 'validate'`); `state` = the state `validate` just read, so a store may skip re-reading it                                           | optional and absent — token is immutable once issued                   |
+| `listSessions`     | array                    | optional native session grouping (forward-compat; unused today)                                                                                                                           | optional and absent on stateless                                       |
 
 ::: warning `update` may return a new token
 On stateless stores, `update` re-encodes the state into a fresh token — the returned string is different from the input. **Callers must use the returned value**, not the original. The orchestrator handles this internally; if you call `update` directly, do the same.
@@ -145,6 +147,7 @@ const auth = new AuthCredential({
   accessTtl: 15 * 60 * 1000,
   refresh: { ttl: 30 * 24 * 3600 * 1000, rotation: "sliding" },
   maxConcurrent: 10,
+  tokens: { hashAtRest: true }, // Redis holds hashes, not usable tokens
 });
 ```
 
@@ -274,10 +277,11 @@ await db.sync();
 
 const auth = new AuthCredential({
   store: new CredentialStoreAtscriptDb({
-    table: db.getTable(AoothAuthCredential),
+    table: db.getTable(AoothAuthCredential), // `{ table }` is all the store needs
   }),
   accessTtl: 60 * 60 * 1000,
   refresh: { ttl: 30 * 24 * 3600 * 1000, rotation: "sliding" },
+  tokens: { hashAtRest: true }, // rows hold token hashes — see Credentials
 });
 ```
 
@@ -334,7 +338,21 @@ import { AoothAuthCredential, AoothCredentialMetadataBase } from '@aooth/auth/at
 metadata?: AoothCredentialMetadataBase & { geoLat?: number, geoLon?: number }
 ```
 
-Resolve the column name at boot with `getAoothCredentialMetadataSpec(YourCredential)` from `@aooth/arbac-moost/atscript` and pass it as the store's `metadataField` option (log `warnings`). At most one annotated field per type (throws); a field without `@db.json` is warn-and-disabled. Without a configured `metadataField`, the atscript-db store persists no metadata — memory/JWT stores are unaffected.
+Pass the table of your extending model — `new CredentialStoreAtscriptDb({ table: db.getTable(YourCredential) })` — and the store finds the annotated column on `table.type` by itself. At most one annotated field per type (throws); a field without `@db.json` is warn-and-disabled.
+:::
+
+#### Metadata column options and the fail-closed rule
+
+| `metadataField`   | Behaviour                                                                                                                                         |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| omitted (default) | Resolved from `table.type` via `getAoothCredentialMetadataSpec` (exported from `@aooth/auth/atscript-db`); resolution warnings go to `onWarning`. |
+| `'columnName'`    | Use this column; no lookup.                                                                                                                       |
+| `false`           | Explicit opt-out: no metadata column, and no "metadata dropped" warning.                                                                          |
+
+`onWarning` (default `console.warn`) receives configuration warnings.
+
+::: warning Since 0.2: no metadata column = fail closed for restricted credentials
+Some credentials carry their **restrictions** in metadata — a per-mint access TTL or rotation mode (`issue(userId, { ttl, refresh })`), `credentialKind` (PATs), and the OAuth client binding of [authorization-server](/moost/authorization-server) families. The keys are exported as `AUTHORITY_METADATA_KEYS` (`accessTtl`, `refreshRotation`, `rotationGraceMs`, `credentialKind`, `authzClientId`). Dropping them would silently widen what the token can do (e.g. a fixed-lifetime family would slide forever), so a store **without** a metadata column now throws `AuthError('INVALID_CONFIG')` when asked to persist such a credential. Other metadata (`ip`, `userAgent`, `label`, …) is dropped with a one-time warning, so ordinary sign-in sessions still persist. Fix: declare the `@aooth.auth.metadata` `@db.json` column on your credential model.
 :::
 
 ### `AuthCredentialTable<TPayload>` — structural interface
@@ -359,7 +377,7 @@ interface AuthCredentialTable<TPayload = object> {
 }
 ```
 
-Any class with those six methods is acceptable. The atscript-db generated table type satisfies the structure naturally.
+Any class with those six methods is acceptable. The atscript-db generated table type satisfies the structure naturally. The table's optional `type` (atscript-db's `table.type`, the annotated model) is read once to find the metadata column; a hand-rolled table without it should pass `metadataField` explicitly.
 
 ### Operation costs
 
@@ -402,6 +420,7 @@ Implement `CredentialStore<TPayload>`. Match these invariants:
 5. **TTL is real**. Expired entries return `null` from `retrieve` even if the row hasn't been GC'd yet.
 6. **`listForUser`** is optional. If you support it, return every live credential, including refresh.
 7. **`update`** returns the (possibly-new) token. Document whether you mutate in place or re-issue.
+8. **`persistAs`** (optional) stores a row under the given key instead of minting one. Implement it if your store should support [`tokens.hashAtRest`](./credentials#tokens-at-rest-tokens-hashatrest).
 
 Tests against your store should cover: same-millisecond `revokeAllForUser` + `issue` (the `>=` epoch gate); concurrent `consume` (only one wins); `persist` of a dead row (fail loud, in line with Redis / atscript adapters); `listForUser` returns both access and refresh kinds.
 

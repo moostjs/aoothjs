@@ -246,7 +246,7 @@ describe("AuthWorkflow construction (WF-AUTH-UNIFIED-002)", () => {
     // the box. Consumer override via `opts.forms.<field>` swaps any slot.
     // Pin a representative field-count + a key slot so a regression that
     // drops the default map is caught.
-    expect(Object.keys(opts.forms).length).toBe(25);
+    expect(Object.keys(opts.forms).length).toBe(26);
     expect(opts.forms.loginCredentials).toBeTruthy();
     expect(opts.forms.recoveryEmailIdentifier).toBeTruthy();
     // Authorization-server consent gate (AUTH-SERVER.md §6).
@@ -723,7 +723,7 @@ describe("AuthWorkflow resolver defaults", () => {
     // WHY (Request 1 acceptance): a hand-rolled (no-HTTP) wf run must issue
     // with `metadata: undefined` rather than an empty `{}` object — so the
     // store never persists a metadata key for non-HTTP issuance.
-    expect(wf.exposeIssueMetadata({} as AuthWfCtx)).toBeUndefined();
+    expect(wf.exposeIssueMetadata({})).toBeUndefined();
   });
 });
 
@@ -961,18 +961,16 @@ describe("AuthWorkflow sendSecurityAlert", () => {
 
   it("omits the context key entirely when none is passed", async () => {
     const wf = makeWorkflow();
-    await wf.exposeSendSecurityAlert({ notice: { email: "owner@x" } } as AuthWfCtx, "reauth");
+    await wf.exposeSendSecurityAlert({ notice: { email: "owner@x" } }, "reauth");
     expect(wf.deliveries).toHaveLength(1);
     expect("context" in wf.deliveries[0]).toBe(false);
   });
 
   it("is a SILENT no-op when ctx.notice.email is absent", async () => {
     const wf = makeWorkflow();
+    await expect(wf.exposeSendSecurityAlert({}, "impossible-travel")).resolves.toBeUndefined();
     await expect(
-      wf.exposeSendSecurityAlert({} as AuthWfCtx, "impossible-travel"),
-    ).resolves.toBeUndefined();
-    await expect(
-      wf.exposeSendSecurityAlert({ notice: {} } as AuthWfCtx, "impossible-travel"),
+      wf.exposeSendSecurityAlert({ notice: {} }, "impossible-travel"),
     ).resolves.toBeUndefined();
     expect(wf.deliveries).toHaveLength(0);
   });
@@ -1034,7 +1032,7 @@ describe("record-login funnel + afterLogin hook (WF-AUTH-LASTLOGIN)", () => {
     const { id } = await users.createUser("carol", "pw"); // account.locked defaults false
     const ctx: AuthWfCtx = {
       subject: id,
-      lockout: { mode: "admin-only" } as AuthWfCtx["lockout"],
+      lockout: { mode: "admin-only" },
     };
     await wf.recoveryLockCheck(ctx);
     expect(ctx.aborted).toBeFalsy();
@@ -1189,9 +1187,9 @@ describe("verified correspondence email capture", () => {
     // an enrollment-typed (yet unproven) address.
     const wf = makeWorkflow();
     // Flow-subject email alone → no recipient seeded → silently skips.
-    await wf.notifyNewDevice({ email: "subject@example.com" } as AuthWfCtx);
+    await wf.notifyNewDevice({ email: "subject@example.com" });
     expect(wf.deliveries).toEqual([]);
-    await wf.notifyNewDevice({ notice: { email: "inbox@example.com" } } as AuthWfCtx);
+    await wf.notifyNewDevice({ notice: { email: "inbox@example.com" } });
     expect(wf.deliveries).toEqual([
       expect.objectContaining({
         kind: "new-device-notice",
@@ -1282,7 +1280,7 @@ function collectStepIds(schema: SchemaNode[] | undefined): Set<string> {
 }
 
 function readSchemaFor(method: string): SchemaNode[] {
-  const meta = getMoostMate().read(AuthWorkflow.prototype as object, method) as
+  const meta = getMoostMate().read(AuthWorkflow.prototype, method) as
     | { wfSchema?: SchemaNode[] }
     | undefined;
   if (!meta?.wfSchema) throw new Error(`No wfSchema metadata on ${method}`);
@@ -1562,7 +1560,7 @@ describe("Manage-MFA shared-schema shape (WF-MANAGE-MFA)", () => {
   });
 
   it("addMfaFlow routes step-up by stepUpMode (MFA challenge vs password fallback)", () => {
-    const meta = getMoostMate().read(AuthWorkflow.prototype as object, "addMfaFlow") as
+    const meta = getMoostMate().read(AuthWorkflow.prototype, "addMfaFlow") as
       | { wfSchema?: Array<Record<string, unknown>> }
       | undefined;
     const schema = meta?.wfSchema ?? [];
@@ -1829,6 +1827,8 @@ describe("resolveEnrollPreConfirmed (verified-by-construction enrolment)", () =>
     });
     const wf = new PreConfirmingWorkflow({}, users, auth, new ConsentStore());
     const row = await users.createUser("invitee@x.co", undefined, {});
+    // A real invite-accept run: the row is still pending its invitation.
+    await users.update(row.id, { account: { pendingInvitation: true } } as never);
     const ctx: AuthWfCtx = {
       subject: row.id,
       accept: {},
@@ -2407,7 +2407,7 @@ describe("Consent-only authorize (silent session → consent)", () => {
 
   it("resolveAuthzReauthPolicy defaults to always-reauth (feature is opt-in)", async () => {
     const wf = makeWorkflow();
-    expect(await settle(wf.exposeAuthzReauthPolicy({} as AuthWfCtx))).toEqual({
+    expect(await settle(wf.exposeAuthzReauthPolicy({}))).toEqual({
       mode: "always-reauth",
     });
   });
@@ -2415,33 +2415,31 @@ describe("Consent-only authorize (silent session → consent)", () => {
   it("credentials gate: skipped only when a subject is pre-bound (silent or SSO), never for anonymous authz starts", () => {
     const credentials = findNode(loginSchema, "credentials")!;
     // Anonymous plain login + anonymous authz start → form renders (unchanged).
-    expect(evalCondition(credentials, {} as AuthWfCtx)).toBe(true);
-    expect(evalCondition(credentials, { authz: { handle: "h" } } as AuthWfCtx)).toBe(true);
+    expect(evalCondition(credentials, {})).toBe(true);
+    expect(evalCondition(credentials, { authz: { handle: "h" } })).toBe(true);
     // Silent bind → skipped; the `{ break: !ctx.subject }` gate still fails
     // closed for anonymous runs because the subject is what flips this.
     expect(
       evalCondition(credentials, {
         subject: "u-1",
         authz: { handle: "h", silent: true },
-      } as AuthWfCtx),
+      }),
     ).toBe(false);
     // Federated leg keeps its own skip.
-    expect(evalCondition(credentials, { idpInbound: { state: "s" } } as AuthWfCtx)).toBe(false);
+    expect(evalCondition(credentials, { idpInbound: { state: "s" } })).toBe(false);
   });
 
   it("record-login gate: silent runs are not login events; fresh authz logins still record", () => {
     const recordLogin = findNode(loginSchema, "record-login")!;
-    expect(evalCondition(recordLogin, { subject: "u-1" } as AuthWfCtx)).toBe(true);
+    expect(evalCondition(recordLogin, { subject: "u-1" })).toBe(true);
     // Fresh credentials-based authorize → still stamps lastLogin + afterLogin.
-    expect(
-      evalCondition(recordLogin, { subject: "u-1", authz: { handle: "h" } } as AuthWfCtx),
-    ).toBe(true);
+    expect(evalCondition(recordLogin, { subject: "u-1", authz: { handle: "h" } })).toBe(true);
     // Silent consent → no lastLogin stamp, no afterLogin fire.
     expect(
       evalCondition(recordLogin, {
         subject: "u-1",
         authz: { handle: "h", silent: true },
-      } as AuthWfCtx),
+      }),
     ).toBe(false);
   });
 
@@ -2455,7 +2453,7 @@ describe("Consent-only authorize (silent session → consent)", () => {
         defaultMethod: "email",
         autoSend: false,
       },
-    } as Partial<UserCredentials>);
+    });
     const ctx: AuthWfCtx = { authz: { handle: "h" } };
     const bound = await probe(wf, ctx, { mode: "consent-only" }, liveSession(row.id));
     expect(bound).toBe(true);

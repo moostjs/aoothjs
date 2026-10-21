@@ -64,6 +64,8 @@ The account state machine — active, locked, login counters.
 | `failedLoginAttempts` | `number`            | Shared counter across `login` and `verifyMfa`. Atomically `$inc`'d on failure.                                                              |
 | `lastLogin`           | `number` (ms epoch) | Set on successful login.                                                                                                                    |
 | `pendingInvitation`   | `boolean?`          | Reserved for the auth/invite layer; this package doesn't read it.                                                                           |
+| `invitedBy`           | `string?`           | Since 0.2. Id of the user who issued the pending invite — written by the invite flow, read by `duplicateInviteCheck` overrides.             |
+| `inviteNonce`         | `string?`           | Since 0.2. Marker of the current invite link; a re-invite rotates it so older links answer `410`. Written by the invite flow only.          |
 | `verifiedEmail`       | `string?`           | Correspondence address whose inbox the user proved — written by `setVerifiedEmail`, read by `getCorrespondenceEmail`. Never a login handle. |
 
 ::: warning `lockEnds: 0` is permanent, not "no lock"

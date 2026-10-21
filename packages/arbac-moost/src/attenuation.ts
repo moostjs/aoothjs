@@ -65,12 +65,19 @@ export interface AoothArbacClaims {
  * its `fields` rule; without one this THROWS — never dropped (fail closed).
  *
  * The third argument is the options object, or (legacy form) `childrenOf`.
+ * Either list empty THROWS (since 0.2): an empty list means that pass denied,
+ * and must not conjoin as unrestricted.
  */
 export function conjoinArbacDbScopes(
   userScopes: ArbacDbScope[],
   credScopes: ArbacDbScope[],
   opts?: TProjectionChildren | ConjoinArbacDbScopesOptions,
 ): ArbacDbScope[] {
+  // An empty list is a DENIED pass, never "unrestricted" — the union helpers
+  // read `[]` as the identity `{}`, which would widen the conjunction.
+  if (userScopes.length === 0 || credScopes.length === 0) {
+    throw new Error("conjoinArbacDbScopes: an empty scope list is a denied evaluation");
+  }
   const { childrenOf, refTable, fields } =
     typeof opts === "function" ? { childrenOf: opts } : (opts ?? {});
   return [

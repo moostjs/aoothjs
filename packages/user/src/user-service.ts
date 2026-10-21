@@ -271,13 +271,16 @@ export class UserService<T extends object = object> {
     lockoutOverride?: Partial<LockoutConfig>,
   ): Promise<LoginResult<T>> {
     const user = await this.store.findByHandle(handle);
-    if (!user) throw new UserAuthError("NOT_FOUND");
-
-    if (!user.account.active) {
-      throw new UserAuthError("INACTIVE");
+    // Every early exit still spends one password hash: response time must not
+    // tell an unknown / inactive / locked account from a wrong password.
+    try {
+      if (!user) throw new UserAuthError("NOT_FOUND");
+      if (!user.account.active) throw new UserAuthError("INACTIVE");
+      await this.ensureNotLockedOrThrow(user.id, user.account);
+    } catch (err) {
+      await this.burnPasswordHash(password);
+      throw err;
     }
-
-    await this.ensureNotLockedOrThrow(user.id, user.account);
 
     const valid = await this.hasher.verify(password, user.password.hash);
 
@@ -372,6 +375,27 @@ export class UserService<T extends object = object> {
     });
     if (!found) throw new UserAuthError("NOT_FOUND");
     return this.getUser(id);
+  }
+
+  /**
+   * Accept a pending invitation in ONE compare-and-set write: clears
+   * `account.pendingInvitation` only while the row is still pending and its
+   * `account.inviteNonce` equals `nonce` (a row without a nonce — written
+   * before 0.2 — accepts any). Returns `false` (nothing written) when the
+   * invite was already accepted or replaced by a newer one, so two links of
+   * the same account can never both complete.
+   */
+  async acceptInvitation(id: string, nonce: string | undefined): Promise<boolean> {
+    let accepted = false;
+    await this.store.withCas(id, (user) => {
+      accepted = false;
+      const account = user.account;
+      if (!account.pendingInvitation) return null;
+      if (account.inviteNonce !== undefined && account.inviteNonce !== nonce) return null;
+      accepted = true;
+      return { set: { account: { pendingInvitation: false } } };
+    });
+    return accepted;
   }
 
   /**
@@ -940,6 +964,24 @@ export class UserService<T extends object = object> {
 
   private hasConfirmedMfaMethods(mfa: MfaData): boolean {
     return mfa.methods.some((m) => m.confirmed);
+  }
+
+  /** Lazily minted hash of a random password, with the configured hasher params. */
+  private dummyHash?: Promise<string>;
+
+  /**
+   * Verify `password` against a throwaway hash — same cost as a real check.
+   * The early exits still skip the failed-attempt counter write a wrong
+   * password costs (one store round trip); `AuthWorkflow`'s `'uniform'`
+   * lockout disclosure spends a comparable shadow-counter write on them.
+   */
+  private async burnPasswordHash(password: string): Promise<void> {
+    // Memoised only once it succeeds — a failed mint is retried next time.
+    this.dummyHash ??= this.hasher.hash(this.hasher.generatePassword()).catch((err: unknown) => {
+      this.dummyHash = undefined;
+      throw err;
+    });
+    await this.hasher.verify(password, await this.dummyHash);
   }
 
   /**

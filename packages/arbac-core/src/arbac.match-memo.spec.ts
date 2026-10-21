@@ -40,7 +40,7 @@ async function reference(
     for (const rule of role.allow) {
       if (arbacPatternToRegex(rule.action).test(res.action)) {
         allowed = true;
-        scopes.push(rule.scope ? rule.scope(attrs, id) : ({} as Scope));
+        scopes.push(rule.scope ? (rule.scope(attrs, id) as Scope) : ({} as Scope));
       }
     }
   }

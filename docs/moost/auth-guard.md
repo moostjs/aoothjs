@@ -122,11 +122,11 @@ Same Bearer-wins precedence as the guard. Returns the raw token string, or `unde
 
 ### `writeCookies(issue: IssueResult)` / `clearCookies()`
 
-Writes (or clears) the `aooth_session` + `aooth_refresh` `Set-Cookie` headers. **No-op when `enableCookie === false`.** The refresh cookie is written with a narrow path scoped to `AuthController`'s actual `refresh` route — auto-derived from Moost's route table at boot so it follows any mount prefix. See [Config Reference](./config) for the rationale and override.
+Writes (or clears) the `aooth_session` + `aooth_refresh` `Set-Cookie` headers. **No-op when `enableCookie === false`.** Cookies are session cookies unless `cookie.persistent` / `refreshCookie.persistent` is set — then `Max-Age` follows the carried token's expiry and is renewed on every write ([persistent cookies](./config#persistent-cookies-stay-signed-in)). The refresh cookie is written with a narrow path scoped to `AuthController`'s actual `refresh` route — auto-derived from Moost's route table at boot so it follows any mount prefix. See [Config Reference](./config) for the rationale and override.
 
 ### `buildLoginResponse(userId, issue): AuthLoginResponse`
 
-Constructs the JSON body used by the workflow `issue` step and `/auth/refresh`. Token fields (`accessToken`, `refreshToken`) are **populated only when `enableBearer === true`**; for cookie-only deployments the body carries `userId` and the two `expiresAt` timestamps and nothing else.
+Constructs the JSON body used by the workflow `issue` step and `/auth/refresh`. Token fields (`accessToken`, `refreshToken`) are **populated only when `exposeTokensInBody` is on** — default `!enableCookie`, so with the default cookie transport the body carries `userId` and the two `expiresAt` timestamps and nothing else. Since 0.2 this no longer follows `enableBearer`, which only controls whether requests may authenticate with `Authorization: Bearer`. See [Config](./config#authoptions).
 
 ### `buildFinishedCookies(issue): WfFinishedResponse["cookies"]`
 

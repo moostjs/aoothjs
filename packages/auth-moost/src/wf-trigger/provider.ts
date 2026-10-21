@@ -10,7 +10,10 @@ import {
   type WfStateStrategy,
 } from "@moostjs/event-wf";
 import { current } from "@wooksjs/event-core";
+import { HttpError } from "@wooksjs/event-http";
 import { Injectable } from "moost";
+
+import { createInviteOutlet, reservePendingInviteLink } from "../workflow/invite-outlet";
 
 /**
  * DI singleton owning the workflow-trigger wiring: state persistence, outlets,
@@ -73,9 +76,44 @@ export function deriveWfStateSecret(secret: string): Buffer {
   return createHash("sha256").update(secret).digest();
 }
 
+/** One canonical workflow-id form for allow-list matching: no leading `/`. */
+function normalizeWfId(id: string): string {
+  return id.replace(/^\/+/, "");
+}
+
+function notAllowed(id: string): HttpError {
+  return new HttpError(403, `Workflow '${normalizeWfId(id)}' is not allowed`);
+}
+
+/**
+ * Wrap a strategy so a resume is checked against the allow list BEFORE the
+ * state is consumed: the state is peeked (`retrieve`), refused with 403 when
+ * its workflow is not allowed on this route (the token stays usable on its
+ * own route), and only then consumed.
+ */
+function guardStrategy(
+  strategy: WfStateStrategy,
+  permits: (schemaId: string) => boolean,
+): WfStateStrategy {
+  return {
+    persist: (state, options, overrides) => strategy.persist(state, options, overrides),
+    retrieve: (token) => strategy.retrieve(token),
+    consume: async (token) => {
+      const peeked = await strategy.retrieve(token);
+      if (peeked && !permits(peeked.schemaId)) throw notAllowed(peeked.schemaId);
+      return strategy.consume(token);
+    },
+  };
+}
+
 @Injectable()
 export class WfTriggerProvider {
-  protected outlets: WfOutlet[] = [createAsHttpOutlet()];
+  /**
+   * Outlets the trigger can pause on: HTTP (forms) and `invite` (the link of
+   * `AuthWorkflowOpts.inviteDelivery: 'deliver' | 'return-link'`). Append an
+   * `email` outlet (`createAuthEmailOutlet`) for the default invite delivery.
+   */
+  protected outlets: WfOutlet[] = [createAsHttpOutlet(), createInviteOutlet()];
   protected token: WfOutletTokenConfig = {
     read: ["body", "query", "cookie"],
     write: "body",
@@ -130,31 +168,58 @@ export class WfTriggerProvider {
     return this.cachedState;
   }
 
+  /**
+   * Handle one trigger request. `allow` lists the workflow ids this route may
+   * START and RESUME (matched without a leading `/`); omitted = unrestricted,
+   * `[]` = deny all. A state token minted for a workflow outside the list is
+   * refused with 403 before it is consumed.
+   */
   async handle(opts: { allow?: string[]; token?: WfOutletTokenConfig } = {}): Promise<unknown> {
     const wfApp = this.wf.getWfApp();
+    const allowed = opts.allow && new Set(opts.allow.map(normalizeWfId));
+    const permits = (schemaId: string) => !allowed || allowed.has(normalizeWfId(schemaId));
+    const registry = this.stateRegistry();
+    const stateConfig: StateRegistry = allowed
+      ? {
+          default: registry.default,
+          strategies: Object.fromEntries(
+            Object.entries(registry.strategies).map(([name, strategy]) => [
+              name,
+              guardStrategy(strategy, permits),
+            ]),
+          ),
+        }
+      : registry;
     const deps: WfOutletTriggerDeps = {
       // Forward `o.strategy` — the trigger resolves the registry default (start)
       // or the incoming token's prefix (resume) and passes it here; the wf
       // adapter sets the `wf.strategyName` slot from it, which the trigger then
       // reads back at pause time. Dropping it leaves the slot unset and the
       // trigger throws `Key "wf.strategyName" is not set` on every request.
-      start: (schemaId, context, o) =>
-        wfApp.start(schemaId, context as never, {
+      start: (schemaId, context, o) => {
+        if (!permits(schemaId)) throw notAllowed(schemaId);
+        return wfApp.start(schemaId, context, {
           input: o?.input,
           eventContext: (o?.eventContext ?? current()) as never,
           strategy: o?.strategy,
-        }),
-      resume: (state, o) =>
-        wfApp.resume(state as { schemaId: string; indexes: number[]; context: never }, {
+        });
+      },
+      resume: (state, o) => {
+        // Belt-and-braces for a strategy whose `retrieve` cannot peek.
+        if (!permits(state.schemaId)) throw notAllowed(state.schemaId);
+        return wfApp.resume(state, {
           input: o?.input,
           eventContext: (o?.eventContext ?? current()) as never,
           strategy: o?.strategy,
-        }),
+        });
+      },
     };
+    reservePendingInviteLink();
+    // The allow list is enforced here (start + resume, normalised ids, `[]` =
+    // deny all), not forwarded to the outlet handler.
     return handleAsOutletRequest(
       {
-        ...(opts.allow && { allow: opts.allow }),
-        state: this.stateRegistry(),
+        state: stateConfig,
         outlets: this.outlets,
         token: opts.token ?? this.token,
       },

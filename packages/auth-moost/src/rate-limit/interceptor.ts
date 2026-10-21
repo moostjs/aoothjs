@@ -1,5 +1,7 @@
 import {
   parseRateLimitRule,
+  pickGoverning,
+  type RateLimitDecision,
   RateLimiter,
   type RateLimitRule,
   type RateLimitRuleInput,
@@ -15,8 +17,8 @@ import {
 } from "moost";
 
 import { useAuth } from "../auth.composables";
-import { getRateLimitSubject, rateLimitDecisionKey } from "./composables";
-import type { RateLimitKeyStrategy, TRateLimitMeta } from "./mate";
+import { getRateLimitSubject, rateLimitDecisionKey, rateLimitPhasesKey } from "./composables";
+import type { RateLimitKeyStrategy, TRateLimitMeta, TRateLimitPolicy } from "./mate";
 
 export interface RateLimitInterceptorOptions {
   /**
@@ -42,20 +44,29 @@ export interface RateLimitInterceptorOptions {
 }
 
 /**
+ * One policy of a route (one `@RateLimit(...)` declaration, or the
+ * interceptor-level defaults), static across requests.
+ */
+interface PolicyConfig {
+  rules: RateLimitRule[];
+  /** `'auto'` is normalized to `'user'` here — one comparison downstream. */
+  keyStrategy: Exclude<RateLimitKeyStrategy, "auto">;
+  scope: string;
+  defaultMessage?: string;
+  /** Precomputed `RateLimit-Policy` entry — constant per policy. */
+  policyHeader: string;
+}
+
+/**
  * Everything about a route that is static across requests, resolved from
  * metadata once on the first hit and memoized per controller class + method.
  * `null` = the route opted out or has no rules — nothing to enforce.
  */
 interface RouteConfig {
-  rules: RateLimitRule[];
-  /** `'auto'` is normalized to `'user'` here — one comparison downstream. */
-  keyStrategy: Exclude<RateLimitKeyStrategy, "auto">;
-  /** True for any NAMED subject keying — the route belongs to the post-guard phase. */
-  postGuardKeyed: boolean;
-  scope: string;
-  defaultMessage?: string;
-  /** Precomputed `RateLimit-Policy` value — constant per route. */
-  policyHeader: string;
+  /** Policies owned by the pre-guard phase (`'ip'` / custom-function keys). */
+  pre: PolicyConfig[];
+  /** Policies owned by the post-guard phase (NAMED subject keys — need the auth context). */
+  post: PolicyConfig[];
 }
 
 /**
@@ -81,10 +92,10 @@ interface RouteConfig {
  *    the auth context `useAuth()` reads, and by definition target
  *    authenticated traffic where the guard must run anyway.
  *
- * Ownership is static per route (from metadata/options), so exactly one
- * phase evaluates each event; the decision event-slot additionally guards
- * against double counting when the pair is also attached per-controller
- * (see {@link RateLimited}).
+ * Ownership is static per policy (from metadata/options): a route whose
+ * stacked policies mix both kinds is evaluated by both phases, each checking
+ * its own policies. A per-event phase marker guards against double counting
+ * when the pair is also attached per-controller (see {@link RateLimited}).
  *
  * On rejection: draft `RateLimit-*` headers + `Retry-After` are written to
  * the accumulated response (they survive the throw — wooks renders the error
@@ -119,25 +130,32 @@ export function rateLimitInterceptors(opts?: RateLimitInterceptorOptions): TInte
     const mMeta = cc.getMethodMeta<TRateLimitMeta>();
     let config: RouteConfig | null = null;
     const disabled = mMeta?.rateLimitDisabled ?? cMeta?.rateLimitDisabled ?? false;
-    // Method-level rules replace class-level; class-level covers methods
+    // Method-level policies replace class-level; class-level covers methods
     // without their own; interceptor defaults cover undecorated routes.
-    const rules = mMeta?.rateLimitRules ?? cMeta?.rateLimitRules ?? defaultRules;
-    if (!disabled && rules && rules.length > 0) {
-      const metaOpts = mMeta?.rateLimitOptions ?? cMeta?.rateLimitOptions;
-      const rawKey = metaOpts?.key ?? opts?.key ?? "ip";
-      const keyStrategy = rawKey === "auto" ? "user" : rawKey;
-      config = {
-        rules,
-        keyStrategy,
-        postGuardKeyed: typeof keyStrategy === "string" && keyStrategy !== "ip",
-        scope: metaOpts?.id ?? `${ctor.name}.${method}`,
-        ...((metaOpts?.message ?? opts?.message) !== undefined && {
-          defaultMessage: metaOpts?.message ?? opts?.message,
-        }),
-        policyHeader: rules
-          .map((p) => `${p.limit};w=${Math.max(1, Math.round(p.window / 1000))}`)
-          .join(", "),
-      };
+    const declared: TRateLimitPolicy[] | undefined =
+      mMeta?.rateLimitPolicies ??
+      cMeta?.rateLimitPolicies ??
+      (defaultRules && defaultRules.length > 0 ? [{ rules: defaultRules }] : undefined);
+    if (!disabled && declared && declared.length > 0) {
+      const baseScope = `${ctor.name}.${method}`;
+      const route: RouteConfig = { pre: [], post: [] };
+      for (const [i, policy] of declared.entries()) {
+        const rawKey = policy.options?.key ?? opts?.key ?? "ip";
+        const keyStrategy = rawKey === "auto" ? "user" : rawKey;
+        const message = policy.options?.message ?? opts?.message;
+        const postGuardKeyed = typeof keyStrategy === "string" && keyStrategy !== "ip";
+        route[postGuardKeyed ? "post" : "pre"].push({
+          rules: policy.rules,
+          keyStrategy,
+          // Each stacked policy gets its own bucket unless it names one.
+          scope: policy.options?.id ?? (i === 0 ? baseScope : `${baseScope}#${i}`),
+          ...(message !== undefined && { defaultMessage: message }),
+          policyHeader: policy.rules
+            .map((p) => `${p.limit};w=${Math.max(1, Math.round(p.window / 1000))}`)
+            .join(", "),
+        });
+      }
+      config = route;
     }
     byMethod.set(method, config);
     return config;
@@ -146,24 +164,42 @@ export function rateLimitInterceptors(opts?: RateLimitInterceptorOptions): TInte
   const evaluate = async (phase: "pre" | "post"): Promise<void> => {
     const ctx = current();
     if (ctx.get(eventTypeKey) !== "http") return;
-    if (ctx.has(rateLimitDecisionKey)) return; // another registration already evaluated
+    // Another registration of the pair already evaluated this phase.
+    const done = ctx.has(rateLimitPhasesKey) ? ctx.get(rateLimitPhasesKey) : [];
+    if (done.includes(phase)) return;
 
     const config = resolveRouteConfig(useControllerContext(ctx));
     if (!config) return;
-    if (config.postGuardKeyed !== (phase === "post")) return; // the other phase owns this route
+    const owned = config[phase];
+    if (owned.length === 0) return; // the other phase owns this route
+    ctx.set(rateLimitPhasesKey, [...done, phase]);
 
-    const subject = await resolveSubject(config.keyStrategy, ipOpts, ctx);
-    const decision = await limiter.check(config.scope, subject, config.rules, {
-      ...(config.defaultMessage !== undefined && { defaultMessage: config.defaultMessage }),
-    });
+    // Every owned policy is checked (each counts its own hit) before deciding.
+    const decisions: RateLimitDecision[] = [];
+    const headers: string[] = [];
+    for (const policy of owned) {
+      const subject = await resolveSubject(policy.keyStrategy, ipOpts, ctx);
+      if (subject == null) continue; // the key function skipped this request
+      decisions.push(
+        await limiter.check(policy.scope, subject, policy.rules, {
+          ...(policy.defaultMessage !== undefined && { defaultMessage: policy.defaultMessage }),
+        }),
+      );
+      headers.push(policy.policyHeader);
+    }
+    if (ctx.has(rateLimitDecisionKey)) decisions.unshift(ctx.get(rateLimitDecisionKey));
+    if (decisions.length === 0) return;
+    const decision = pickGoverning(decisions, (d) => !d.allowed);
     ctx.set(rateLimitDecisionKey, decision);
 
     const response = useResponse(ctx);
     if (emitHeaders) {
+      const prior = response.getHeader("ratelimit-policy");
+      if (typeof prior === "string" && prior) headers.unshift(prior);
       response.setHeader("ratelimit-limit", String(decision.limit));
       response.setHeader("ratelimit-remaining", String(decision.remaining));
       response.setHeader("ratelimit-reset", String(Math.ceil(decision.resetAfterMs / 1000)));
-      response.setHeader("ratelimit-policy", config.policyHeader);
+      response.setHeader("ratelimit-policy", headers.join(", "));
     }
 
     if (!decision.allowed) {
@@ -182,7 +218,7 @@ async function resolveSubject(
   strategy: Exclude<RateLimitKeyStrategy, "auto">,
   ipOpts: { trustProxy: boolean },
   ctx: EventContext,
-): Promise<string> {
+): Promise<string | null | undefined> {
   if (typeof strategy === "function") return await strategy();
   if (strategy !== "ip") {
     // Named subject — the slot (written via `setRateLimitSubject` by a

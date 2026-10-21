@@ -28,10 +28,10 @@ constructor(
 | Method | Path                           | Decorators                                                                                                      | Body                                       | Response                      | Notes                                                                                                                                                                                                                                                                                                                                                    |
 | ------ | ------------------------------ | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `POST` | `/auth/logout`                 | `@Public()`                                                                                                     | `AuthLogoutBody { refreshToken? }`         | `AuthOkResponse { ok: true }` | Defence-in-depth 401 if null context. Revokes the current session's whole token family (`revokeSession`), with token-level revokes as fallback, then `clearCookies()`.                                                                                                                                                                                   |
-| `POST` | `/auth/refresh`                | `@Public()`                                                                                                     | `AuthRefreshBody { refreshToken? }`        | `AuthLoginResponse`           | Falls back to the refresh cookie. 401 on `AuthError`. Returns new access+refresh, writes cookies.                                                                                                                                                                                                                                                        |
+| `POST` | `/auth/refresh`                | `@Public()`                                                                                                     | `AuthRefreshBody { refreshToken? }`        | `AuthLoginResponse`           | Falls back to the refresh cookie. 401 on `AuthError`. Writes the rotated pair as cookies; the body carries the tokens under `exposeTokensInBody`, and always when the refresh token was sent in the body (that client already holds tokens).                                                                                                             |
 | `GET`  | `/auth/status`                 | `@Public()`                                                                                                     | —                                          | `AuthContext`                 | 401 when no context.                                                                                                                                                                                                                                                                                                                                     |
-| `POST` | `/auth/trigger`                | `@Public() @WfTrigger({ allow: DEFAULT_AUTH_WORKFLOWS })`                                                       | `{ wfs?, input?: { action?, formData? } }` | `WfFinished` envelope         | The single entry-point covering `auth/login/flow`, `auth/invite/start`, `auth/recovery/flow`, `auth/signup/flow`.                                                                                                                                                                                                                                        |
-| `GET`  | `/auth/invite/post-redemption` | `@Public()`                                                                                                     | `?uid=<userId>`                            | `WfFinished` envelope         | Idempotent "already accepted" envelope for re-clicked invite links after the wf state row is evicted. Needs `UserService`.                                                                                                                                                                                                                               |
+| `POST` | `/auth/trigger`                | `@Public() @WfTrigger({ allow: DEFAULT_AUTH_WORKFLOWS })`                                                       | `{ wfs?, input?: { action?, formData? } }` | `WfFinished` envelope         | The single entry-point covering `auth/login/flow`, `auth/invite/start`, `auth/recovery/flow`, `auth/signup/flow` — for both starting and resuming. A `wfs` of any other workflow is refused with 403.                                                                                                                                                    |
+| `GET`  | `/auth/invite/post-redemption` | `@Public() @RateLimit("30/5m")`                                                                                 | `?uid=<userId>`                            | `WfFinished` envelope         | Idempotent "already accepted" envelope for re-clicked invite links after the wf state row is evicted. Needs `UserService`. Unknown id and pending invite both answer the same 404.                                                                                                                                                                       |
 | `POST` | `/auth/change-password`        | `@ArbacResource("auth.change-password") @ArbacAction("self") @WfTrigger({ allow: [CHANGE_PASSWORD_WORKFLOW] })` | `{ wfs?, input?: { action?, formData? } }` | `WfFinished` envelope         | **Gated** trigger for `auth/change-password/flow` — NOT `@Public()`, NOT in `DEFAULT_AUTH_WORKFLOWS`. 401 if unauthenticated, 403 unless the role grants `allow("auth.change-password", "*")`. The method-level `@ArbacResource` overrides the class `"auth"`. See [Workflows — Change password](./workflows#change-password-auth-change-password-flow). |
 | `POST` | `/auth/add-mfa`                | `@ArbacResource("auth.add-mfa") @ArbacAction("self") @WfTrigger({ allow: [ADD_MFA_WORKFLOW] })`                 | `{ wfs?, input?: { action?, formData? } }` | `WfFinished` envelope         | **Gated** trigger for `auth/add-mfa/flow` — the "Manage MFA" flow (add / change / remove, step-up first), the profile-maintenance twin of change-password. NOT `@Public()`, NOT in `DEFAULT_AUTH_WORKFLOWS`. 401/403 identical to above but keyed on `allow("auth.add-mfa", "*")`. See [Workflows — Manage MFA](./workflows#add-mfa-auth-add-mfa-flow).  |
 
@@ -92,8 +92,8 @@ Behaviour:
 1. Pulls `refreshToken` from the body, falls back to the refresh cookie (path-scoped so it actually arrives here).
 2. If missing → 401 `Refresh token required`.
 3. Calls `auth.refresh(refreshToken)`. On `AuthError` → 401 with the original message.
-4. Writes new `Set-Cookie` for both access + refresh via `useAuth().writeCookies(issue)`.
-5. Returns `useAuth().buildLoginResponse(userId, issue)`.
+4. Writes new `Set-Cookie` for both access + refresh via `useAuth().writeCookies(issue)` (persistent cookies get a fresh `Max-Age` — see [Config — persistent cookies](./config#persistent-cookies-stay-signed-in)).
+5. Returns `useAuth().buildLoginResponse(userId, issue)` — `userId` + expiry timestamps, plus `accessToken` / `refreshToken` only when `exposeTokensInBody` is on (default `!enableCookie`).
 
 ## `GET /auth/status`
 
@@ -126,14 +126,14 @@ Content-Type: application/json
 }
 ```
 
-On **start** (no `wfs`), the workflow id is supplied by the client's `<AsWfForm :name="…">` (e.g. `auth/login/flow`) — the trigger rejects any id not in `allow`. On **resume**, the `wfs` token carries the id. Response: `WfFinished` envelope (paused form, finished, or aborted) — see [Workflows](./workflows#finish-error-envelopes).
+On **start** (no `wfs`), the workflow id is supplied by the client's `<AsWfForm :name="…">` (e.g. `auth/login/flow`) — the trigger rejects any id not in `allow`. On **resume**, the `wfs` token carries the id, and it is checked against the same `allow` list (see [Workflows — trigger allow lists](./workflows#trigger-allow-lists-start-and-resume)). Response: `WfFinished` envelope (paused form, finished, or aborted) — see [Workflows](./workflows#finish-error-envelopes).
 
 Behaviour:
 
 1. The handler body is intentionally empty (`override triggerWf(): void { }`). `@WfTrigger({ allow: DEFAULT_AUTH_WORKFLOWS })` wraps it as a `defineAfterInterceptor` that:
    - Instantiates `WfTriggerProvider`.
    - Reads the trigger payload from body/query/cookie according to the provider's `token` wire config.
-   - Dispatches into the requested workflow (rejecting any wfid not in `allow`).
+   - Dispatches into the requested workflow — a start **or** a resume of any workflow not in `allow` is refused with 403 (a refused `wfs` is not consumed).
    - Pauses on a form-input step → returns a paused envelope.
    - Finishes → returns the `WfFinished` envelope.
 2. Cookies attached by the login/auto-login finalize steps flow through the `cookies` field on the envelope (built via `useAuth().buildFinishedCookies(issue)`).
@@ -146,7 +146,18 @@ A side route for re-clicked invite magic links. When an invitee clicks an alread
 GET /auth/invite/post-redemption?uid=<userId>
 ```
 
-Resolves the user via the `@Optional()` `UserService` (500 if no `UserService` is wired), returns a `WfFinished` "already accepted" envelope when the invite is redeemed, or `404` when the invite is still pending. Override `protected resolveInvitePostRedemption()` to keep the `loginUrl` / `alreadyAcceptedRedirectUrl` in sync with your workflow opts.
+Resolves the user via the `@Optional()` `UserService` (500 if no `UserService` is wired) and returns a `WfFinished` "already accepted" envelope when the invite is redeemed.
+
+| Situation                                 | Response                                                                                           |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| invite redeemed                           | `WfFinished` "already accepted" envelope                                                           |
+| unknown `uid` **or** invite still pending | `404 "Invite not found"` — identical, so the route reveals neither which ids exist nor their state |
+| `uid` missing                             | `400`                                                                                              |
+| route switched off (see below)            | `404 "Invite not found"` for every id                                                              |
+
+- **Rate limited** — `@RateLimit("30/5m")` per client IP. Like every `@RateLimit`, it is enforced only when [`rateLimitInterceptors`](./rate-limit) are installed.
+- **Switch it off** when your app does not use magic-link invites: override `protected invitePostRedemptionEnabled(): boolean` to return `false` (a subclass cannot unregister an inherited route).
+- Override `protected resolveInvitePostRedemption()` to keep `loginUrl` / `alreadyAcceptedRedirectUrl` in sync with your workflow opts; it may also return `messages` — pass the same value as `AuthWorkflowOpts.messages` so the envelope's texts match (see [Messages](./messages)).
 
 ## DTOs
 
@@ -166,7 +177,7 @@ interface AuthLoginResponse {
   userId: string;
   accessExpiresAt: number;
   refreshExpiresAt?: number;
-  accessToken?: string; // populated only when enableBearer === true
+  accessToken?: string; // only when exposeTokensInBody (default !enableCookie)
   refreshToken?: string; // same
 }
 
@@ -176,7 +187,7 @@ interface AuthOkResponse {
 }
 ```
 
-When `enableBearer === false`, the `accessToken` and `refreshToken` fields are omitted from the response — the browser MUST rely on cookies. The `userId` and `accessExpiresAt` fields are still useful for SPAs to schedule their next status probe.
+`accessToken` and `refreshToken` are present only when the guard's `exposeTokensInBody` is on. It defaults to `!enableCookie`, so a default cookie deployment omits them — the browser relies on the httpOnly cookies, and an XSS calling `/auth/refresh` cannot read a fresh refresh token. **Since 0.2** — before, the fields followed `enableBearer` (default `true`). Token clients sharing a cookie deployment set `exposeTokensInBody: true`. The `userId` and `accessExpiresAt` fields are always present for SPAs to schedule their next status probe.
 
 ## Subclassing `AuthController`
 

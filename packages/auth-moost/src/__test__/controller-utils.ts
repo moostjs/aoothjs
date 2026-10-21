@@ -1,7 +1,6 @@
 import {
   Arbac,
   arbacAuthorizeInterceptor,
-  ArbacUserProvider,
   ArbacUserProviderToken,
   MoostArbac,
   type TArbacRole,
@@ -11,33 +10,13 @@ import { UserService, UserStoreMemory } from "@aooth/user";
 import type { UserServiceConfig } from "@aooth/user";
 import { MoostHttp } from "@moostjs/event-http";
 import { createHttpApp } from "@wooksjs/event-http";
-import {
-  createProvideRegistry,
-  createReplaceRegistry,
-  getMoostInfact,
-  Injectable,
-  Moost,
-} from "moost";
+import { createProvideRegistry, createReplaceRegistry, getMoostInfact, Moost } from "moost";
 import { Wooks } from "wooks";
 
-import { useAuth } from "../auth.composables";
 import { AuthController } from "../auth.controller";
 import type { AuthOptions } from "../auth.config";
 import { authGuardInterceptor } from "../auth.guard";
-
-// Module-level mutable role map consumed by `TestArbacUserProvider`. Updated
-// by each `prepareControllerApp({ arbac })` call BEFORE Moost wires up. The
-// SINGLETON provider class is also defined at module scope so its
-// `Symbol.for(class.toString())` is stable across tests (two locally-defined
-// classes with identical bodies collapse to the same Symbol, which would
-// freeze the FIRST test's closure-captured map). Pairing module-scope class
-// with module-scope ref keeps per-test overrides observable. The
-// `getMoostInfact()._cleanup()` call below also wipes the cached instance
-// so a fresh provider is allocated per test — both layers of defense are
-// kept because either alone is insufficient: cleanup alone wouldn't help
-// if the user later inlined the class, and the ref alone leaks state if
-// other tests in the same process call into the provider out-of-band.
-let activeUserRoles = new Map<string, string[]>();
+import { requestVia, setTestArbacUserRoles, TestArbacUserProvider } from "./test-harness";
 
 export interface MyClaims extends Record<string, unknown> {
   roles?: string[];
@@ -158,7 +137,7 @@ export async function prepareControllerApp(
     // registry returns the same instance across tests. This is the only way
     // to keep a per-test role map under the moost@0.6.x + infact@0.4.x
     // singleton model — see comment on `TestArbacUserProvider` below.
-    activeUserRoles = arbacOpts.userRoles;
+    setTestArbacUserRoles(arbacOpts.userRoles);
     moost.setReplaceRegistry(
       createReplaceRegistry([ArbacUserProviderToken, TestArbacUserProvider]),
     );
@@ -186,31 +165,7 @@ export async function prepareControllerApp(
     for (const role of arbacOpts.roles) arbac.registerRole(role);
   }
 
-  async function request(
-    input: string,
-    init: RequestInit & { json?: unknown } = {},
-  ): Promise<{ status: number; body: unknown; setCookies: string[]; response: Response | null }> {
-    const { json, ...rest } = init;
-    const headers = new Headers(rest.headers);
-    let body = rest.body;
-    if (json !== undefined) {
-      body = JSON.stringify(json);
-      if (!headers.has("content-type")) headers.set("content-type", "application/json");
-    }
-    const response = await http.request(input, { ...rest, headers, body });
-    if (!response) {
-      return { status: 0, body: null, setCookies: [], response: null };
-    }
-    const text = await response.text();
-    let parsed: unknown = text;
-    try {
-      parsed = text ? JSON.parse(text) : null;
-    } catch {
-      // not JSON; leave as text
-    }
-    const setCookies = response.headers.getSetCookie?.() ?? [];
-    return { status: response.status, body: parsed, setCookies, response };
-  }
+  const request = requestVia(http);
 
   return { moost, http, auth, users, userStore, request };
 }
@@ -225,24 +180,4 @@ export function parseCookieValue(setCookie: string, name: string): string | null
   const [n, v] = parts.split("=");
   if (n !== name) return null;
   return v ?? "";
-}
-
-/**
- * Singleton test `ArbacUserProvider` — defined once at module scope so its
- * `classSymbol` (computed by `Symbol.for(class.toString())` inside infact) is
- * stable across tests. Reads roles from the module-level `activeUserRoles`
- * ref, which each `prepareControllerApp({ arbac })` call mutates BEFORE
- * Moost initialization. See the comment on `activeUserRoles` above.
- */
-@Injectable()
-class TestArbacUserProvider extends ArbacUserProvider {
-  override getUserId(): string {
-    return useAuth().getUserId();
-  }
-  override getRoles(id: string): string[] {
-    return activeUserRoles.get(id) ?? [];
-  }
-  override getAttrs(): object {
-    return {};
-  }
 }

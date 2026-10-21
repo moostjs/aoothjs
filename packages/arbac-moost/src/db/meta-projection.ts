@@ -46,11 +46,17 @@ import type { MetaVisibility, VisibilityTableSource } from "./visibility";
 function isPathWritable(path: string, vis: MetaVisibility): boolean {
   const writable = vis.writable;
   if (!writable || tablePolicy(vis.table).derived.has(path)) return false;
+  if (isForced(path, vis)) return false;
   const dot = path.indexOf(".");
   const head = dot === -1 ? path : path.slice(0, dot);
   const isRelation = vis.relationNames?.has(head) || vis.table?.navFields?.has(head);
   if (isRelation && !vis.nestedWrites?.has(head)) return false;
   return writable === "all" || hasSelfOrAncestor(writable, path);
+}
+
+/** `path` (or an ancestor) is pinned by the write scopes' `set` — see {@link MetaVisibility.forced}. */
+function isForced(path: string, vis: MetaVisibility): boolean {
+  return !!vis.forced?.size && hasSelfOrAncestor(vis.forced, path);
 }
 
 /**
@@ -330,7 +336,13 @@ function pruneSerializedType(
         continue;
       }
       const pruned = pruneSerializedType(prop, child);
-      props[name] = withVisibleTargets(pruned, path, vis, refTargets, level.inBranch);
+      props[name] = withVisibleTargets(
+        isForced(path, vis) ? stampReadOnly(pruned) : pruned,
+        path,
+        vis,
+        refTargets,
+        level.inBranch,
+      );
     }
     const pruned = { ...node, type: { ...def, props } };
     // Wildcard props of a table-level object (a nested object's patterns are gated with its prop).
@@ -357,6 +369,10 @@ function pruneSerializedType(
 
 function stampWriteOnly(node: TSerializedAnnotatedTypeInner): TSerializedAnnotatedTypeInner {
   return { ...node, metadata: { ...node.metadata, "db.writeOnly": true } };
+}
+
+function stampReadOnly(node: TSerializedAnnotatedTypeInner): TSerializedAnnotatedTypeInner {
+  return { ...node, metadata: { ...node.metadata, "meta.readonly": true } };
 }
 
 /** A strict descendant of `path` is in the write whitelist. */
@@ -725,14 +741,18 @@ export async function applyArbacMetaOverlay(
     return memoMetaProjection(meta, key, memoMax, overlay);
   }
   const writable = collectWritableFields(writeScopes, false);
-  const nestedWrites = effectiveScope(writeScopes).nestedWrites;
+  const writeEffective = effectiveScope(writeScopes);
+  const nestedWrites = writeEffective.nestedWrites;
+  const forced = writeEffective.set ? new Set(Object.keys(writeEffective.set)) : undefined;
   if (isIdentifierSet(source)) {
     // The 0.1.67 identifier-set signature: no table to key on — not memoized.
     const vis = buildScopeVisibility(readScopes, undefined, source);
     const visible = Object.keys(vis.allowed).length > 0 || vis.withGrants.size > 0;
     const overlaid = overlay();
     return gateMetaControls(
-      visible ? pruneMetaByVisibility(overlaid, { ...vis, writable, nestedWrites }) : overlaid,
+      visible
+        ? pruneMetaByVisibility(overlaid, { ...vis, writable, nestedWrites, forced })
+        : overlaid,
       controls,
     );
   }
@@ -755,6 +775,7 @@ export async function applyArbacMetaOverlay(
               tree: metaRelationNames(meta),
               writable,
               nestedWrites,
+              forced,
               controls,
               refTargets,
             },
@@ -764,7 +785,7 @@ export async function applyArbacMetaOverlay(
       : undefined;
   return memoMetaProjection(meta, key, memoMax, () =>
     gateMetaControls(
-      pruneMetaByVisibility(overlay(), { ...vis, writable, nestedWrites }, refTargets),
+      pruneMetaByVisibility(overlay(), { ...vis, writable, nestedWrites, forced }, refTargets),
       controls,
     ),
   );

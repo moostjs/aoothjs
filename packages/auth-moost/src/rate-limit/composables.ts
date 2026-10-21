@@ -3,13 +3,13 @@ import type { EventContext } from "@wooksjs/event-core";
 import { current, key } from "@wooksjs/event-core";
 
 /**
- * Internal: the decision for this event, written by `rateLimitInterceptors`.
- * Its presence also serves as the "already evaluated" marker that prevents
- * double counting when the interceptor pair is registered more than once
- * (global + `@Intercept`) — moost runs `before` hooks sequentially, so a
- * duplicate instance always observes the first one's write.
+ * Internal: the governing decision for this event (across every policy
+ * evaluated so far), written by `rateLimitInterceptors`.
  */
 export const rateLimitDecisionKey = key<RateLimitDecision>("aooth.rateLimit.decision");
+
+/** Internal: phases (`pre` / `post`) that already evaluated this event — the double-count guard. */
+export const rateLimitPhasesKey = key<Array<"pre" | "post">>("aooth.rateLimit.phases");
 
 /**
  * Internal: named rate-limit subjects for this event — subject kind

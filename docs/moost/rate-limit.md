@@ -10,8 +10,8 @@ import { authGuardInterceptor, RateLimit, rateLimitInterceptors } from "@aooth/a
 const limiter = new RateLimiter({ store: new RateLimitStoreRedis({ redis }) });
 
 app.applyGlobalInterceptors(
-  authGuardInterceptor({ auth }),
-  ...rateLimitInterceptors({ limiter, trustProxy: true }), // NOTE the spread — it's a PAIR
+  authGuardInterceptor(),
+  ...rateLimitInterceptors({ limiter }), // NOTE the spread — it's a PAIR
 );
 
 @Controller("auth")
@@ -35,7 +35,7 @@ The primary target is **open (public) endpoints** — login, invite acceptance, 
 
 ## `@RateLimit(...rules, options?)`
 
-Method or class decorator (method-level metadata **replaces** class-level; class-level covers methods without their own). Variadic rules in the [string/object grammar](../auth/rate-limit#rules), plus an optional trailing options object:
+Method or class decorator. Variadic rules in the [string/object grammar](../auth/rate-limit#rules), plus an optional trailing options object:
 
 ```ts
 @RateLimit('6/5m | Too many attempts, wait {{delta}}')     // one rule + message
@@ -53,6 +53,26 @@ Method or class decorator (method-level metadata **replaces** class-level; class
 
 The decorator is metadata-only (the `@Public()` pattern): it writes to the moost mate and does nothing by itself — enforcement lives in the interceptors. Rules are parsed eagerly, so a bad rule string throws at decoration (boot) time, not per request.
 
+### Stacking decorators — independent policies
+
+Each `@RateLimit(...)` on the same method is an **independent policy** with its own key strategy and its own bucket; a request must pass all of them:
+
+```ts
+@Public()
+@RateLimit("20/1m")                                    // per client IP
+@RateLimit("5/15m", { key: perAccountKey, id: "login-account" }) // per submitted account
+@Post("login")
+login() { /* ... */ }
+```
+
+- Several rules inside **one** decorator (`@RateLimit('1/1s', '30/1m')`) share one key and one bucket; separate decorators do not.
+- Each stacked policy gets its own bucket (`<ControllerClass>.<methodName>`, `…#1`, `…#2`) unless it names one with `id`. The positional suffixes follow decorator order, so reordering or inserting a decorator moves counters between buckets — **give every stacked policy an explicit `id`**.
+- Method-level policies still **replace** class-level ones; class-level policies cover methods without their own.
+
+::: warning Since 0.2: a second `@RateLimit` no longer replaces the first
+Before 0.2 the bottom-most decorator silently won and the others were ignored. Code that reads the metadata directly sees a new shape: `TRateLimitMeta.rateLimitPolicies` (one `{ rules, options? }` per decorator) replaces `rateLimitRules` / `rateLimitOptions`.
+:::
+
 ## `rateLimitInterceptors(options?)` — the interceptor pair
 
 Returns **two** interceptor definitions — register with a spread, globally or via [`RateLimited`](#ratelimited-per-controller-sugar). Options:
@@ -62,9 +82,13 @@ Returns **two** interceptor definitions — register with a spread, globally or 
 | `limiter`    | —       | The shared `RateLimiter` — wire your `RateLimitStoreRedis` here. Omitted: a memory-store limiter is created once per factory call (single-process dev/test only). |
 | `rules`      | —       | App-wide default rules applied to **every** HTTP route without its own `@RateLimit` metadata. Routes opt out with `@RateLimit(false)`.                            |
 | `key`        | `'ip'`  | Default key strategy for routes whose decorator doesn't set one.                                                                                                  |
-| `trustProxy` | `false` | Use the left-most `x-forwarded-for` entry as the client IP. Enable behind a proxy/load balancer; leave off otherwise (the header is spoofable).                   |
+| `trustProxy` | `false` | Use the left-most `x-forwarded-for` entry as the client IP. See the caution below before enabling it.                                                             |
 | `headers`    | `true`  | Emit draft `RateLimit-*` headers on every response of a limited route.                                                                                            |
 | `message`    | —       | App-wide default 429 message template.                                                                                                                            |
+
+::: warning `trustProxy: true` is spoofable behind most proxies
+Many proxies and load balancers **append** the client address to an incoming `x-forwarded-for` instead of replacing it, so the left-most entry is whatever the client sent — an attacker rotates it to get a fresh budget per request. Enable `trustProxy` only when the proxy directly in front of the app overwrites the header; otherwise leave it off (every caller then shares the proxy's IP budget — size `ip` rules accordingly, or key on a named subject).
+:::
 
 ### Why a pair: flood rejection before credential work
 
@@ -75,7 +99,7 @@ Returns **two** interceptor definitions — register with a spread, globally or 
 | `BEFORE_GUARD` (before the auth guard) | `'ip'` / custom function                                 | Floods are rejected before any token/credential work.                                                |
 | `AFTER_GUARD` (after the auth guard)   | any named subject (`'user'`, `'session'`, `'tenant'`, …) | Needs the [subjects map](#the-subject-seam-setratelimitsubject) / auth context the guards establish. |
 
-Exactly one phase evaluates each request, and the decision slot doubles as a dedup marker — registering the pair both globally and per-controller never double-counts.
+The phase is decided **per policy**: a route that stacks an ip-keyed and a user-keyed policy is checked by both phases, each counting its own policies. A per-event phase marker prevents double counting when the pair is registered both globally and per-controller.
 
 ::: warning Register the PAIR, always
 `app.applyGlobalInterceptors(...rateLimitInterceptors(opts))` — with the spread. Dropping the pre-guard interceptor silently loses flood protection on ip-keyed routes; dropping the post-guard one silently disables every `key: 'user'` route.
@@ -94,17 +118,17 @@ type RateLimitKeyStrategy =
   | "auto"
   | "session"
   | (string & {}) // any named subject kind — see the subject seam below
-  | (() => string | Promise<string>);
+  | (() => string | null | undefined | Promise<string | null | undefined>);
 ```
 
-| Strategy       | Subject                   | Use for                                                                                                                                        |
-| -------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `'ip'`         | `ip:<addr>`               | Public endpoints (the default). Honors `trustProxy`. Evaluated **pre-guard**.                                                                  |
-| `'user'`       | `u:<userId>`              | Guarded endpoints — one budget per user regardless of source IP. Anonymous callers fall back to `ip:<addr>`.                                   |
-| `'session'`    | `s:<sessionId>`           | One budget per **login/device** — a stolen refresh token can't burn the whole user's budget.                                                   |
-| `'auto'`       | same as `'user'`          | Alias — reads better on mixed public/authed routes (the anonymous-fallback makes the two behaviorally identical).                              |
-| any other name | whatever the app supplied | App-defined subject kinds (`'tenant'`, `'apiKey'`, plan tier, …) populated via [`setRateLimitSubject`](#the-subject-seam-setratelimitsubject). |
-| function       | whatever it returns       | Custom resolver — runs inside the event context **pre-guard**, so it must be self-sufficient (see below).                                      |
+| Strategy       | Subject                   | Use for                                                                                                                                          |
+| -------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `'ip'`         | `ip:<addr>`               | Public endpoints (the default). Honors `trustProxy`. Evaluated **pre-guard**.                                                                    |
+| `'user'`       | `u:<userId>`              | Guarded endpoints — one budget per user regardless of source IP. Anonymous callers fall back to `ip:<addr>`.                                     |
+| `'session'`    | `s:<sessionId>`           | One budget per **login/device** — a stolen refresh token can't burn the whole user's budget.                                                     |
+| `'auto'`       | same as `'user'`          | Alias — reads better on mixed public/authed routes (the anonymous-fallback makes the two behaviorally identical).                                |
+| any other name | whatever the app supplied | App-defined subject kinds (`'tenant'`, `'apiKey'`, plan tier, …) populated via [`setRateLimitSubject`](#the-subject-seam-setratelimitsubject).   |
+| function       | whatever it returns       | Custom resolver — runs inside the event context **pre-guard**, so it must be self-sufficient (see below). `null` / `undefined` skips the policy. |
 
 Precedence: decorator `key` option → interceptor `key` option → `'ip'`. Every **named** strategy is evaluated in the post-guard phase and falls back to the IP budget when nobody populated the subject — a misconfigured kind degrades to flood protection, never to one global bucket.
 
@@ -140,11 +164,31 @@ Rules of the seam:
 
 ### Custom key functions run pre-guard
 
-The function form is pinned to the **pre-guard** phase (that's its point — flood rejection before credential work), so it cannot read anything GUARD-priority code sets, including `useAuth()` and the subjects map. Use it only for identities derivable from the raw request (an API-key header, a route param). For anything resolved by a guard, use a named subject instead.
+The function form is pinned to the **pre-guard** phase (that's its point — flood rejection before credential work), so it cannot read anything GUARD-priority code sets, including `useAuth()` and the subjects map. Use it only for identities derivable from the raw request (an API-key header, a route param, the submitted form). For anything resolved by a guard, use a named subject instead.
+
+A key function can also:
+
+- **return a composite subject** — e.g. client IP + submitted username, so one attacker cannot lock a victim out by exhausting a username-only budget;
+- **return `null` / `undefined` to skip** the policy for this request — nothing is counted. Use it to count only the requests that matter, e.g. only workflow submissions that carry a password.
+
+```ts
+import { useRequest } from "@wooksjs/event-http";
+
+@RateLimit("10/15m", {
+  id: "password-attempts",
+  key: async () => {
+    const form = await readSubmittedForm(); // your helper: the parsed body's input.formData
+    if (typeof form?.password !== "string") return null; // not a password submission — skip
+    return `ip:${useRequest().getIp()}|user:${String(form.username ?? "").toLowerCase()}`;
+  },
+})
+```
+
+When every policy of a route skips, the request carries no decision and no `RateLimit-*` headers.
 
 ## Response headers — the full 429 contract
 
-With `headers: true` (default), every response of a rate-limited route carries the draft IETF `RateLimit-*` fields, computed from the [governing rule](../auth/rate-limit#check-and-the-decision):
+With `headers: true` (default), every response of a rate-limited route carries the draft IETF `RateLimit-*` fields. `Limit` / `Remaining` / `Reset` come from the governing decision — the rejecting policy, else the one with the least budget left (the same rule [`check()`](../auth/rate-limit#check-and-the-decision) applies across rules); `RateLimit-Policy` lists every evaluated policy:
 
 ```
 RateLimit-Limit: 6
@@ -181,7 +225,7 @@ class ReportsController {
 }
 ```
 
-It attaches **both** phases via two `@Intercept`s, so you can't accidentally lose one. Combining it with a global registration is safe — the decision slot prevents double counting.
+It attaches **both** phases via two `@Intercept`s, so you can't accidentally lose one. Combining it with a global registration is safe — a per-event phase marker prevents double counting.
 
 ## `useRateLimit()` — reading the decision
 
@@ -191,18 +235,35 @@ import { useRateLimit } from "@aooth/auth-moost";
 const { decision } = useRateLimit(); // RateLimitDecision | null
 ```
 
-Returns the decision the interceptor computed for the current event, or `null` when the route has no rules (or the interceptors aren't installed). Workflow child events inherit the originating HTTP event's slot through the parent chain — same as `useAuth()`. For programmatic checks with no decorator at all (e.g. inside a login workflow step), hold a reference to the shared `RateLimiter` and call [`check()`](../auth/rate-limit#check-and-the-decision) directly.
+Returns the governing decision for the current event (across every evaluated policy), or `null` when the route has no rules, every policy skipped, or the interceptors aren't installed. Workflow child events inherit the originating HTTP event's slot through the parent chain — same as `useAuth()`. For programmatic checks with no decorator at all (e.g. inside a login workflow step), hold a reference to the shared `RateLimiter` and call [`check()`](../auth/rate-limit#check-and-the-decision) directly — or [`peek()`](../auth/rate-limit#peek-reading-the-budget-without-spending-it) to show "N left" without spending budget.
+
+## Testing
+
+Pass your own limiter to the interceptors so tests control the store, and clear it between tests:
+
+```ts
+import { RateLimiter, RateLimitStoreMemory } from "@aooth/auth";
+
+const store = new RateLimitStoreMemory();
+app.applyGlobalInterceptors(...rateLimitInterceptors({ limiter: new RateLimiter({ store }) }));
+
+afterEach(() => store.clear()); // fresh budgets for every test
+```
+
+Inject a `clock` into the `RateLimiter` (and the store) to step through windows deterministically — see [Injectable clock](../auth/rate-limit#injectable-clock).
 
 ## DOs and DON'Ts
 
 - **DO** spread the pair: `...rateLimitInterceptors(opts)` — **not** register a single element of the returned array.
 - **DO** pass a shared `limiter` backed by `RateLimitStoreRedis` in any multi-instance deployment — the fallback memory limiter is per-process **and** per-factory-call.
-- **DO** set `trustProxy: true` only when actually behind a trusted proxy — otherwise clients can rotate budgets by forging `x-forwarded-for`.
+- **DO** set `trustProxy: true` only when the proxy in front of the app overwrites `x-forwarded-for` — with an appending proxy (or none), clients rotate budgets by forging the header.
+- **DO** stack decorators for "per IP **and** per account" limits — each is its own policy — and give each an explicit `id`.
 - **DO** use `@RateLimit(false)` to exempt health checks / internal routes when app-wide default `rules` are configured.
 - **DO** give intentionally-shared budgets an explicit `id` — **not** rely on the default scope, which isolates per handler (`<ControllerClass>.<methodName>`).
 - **DO** supply app-defined subjects (`tenant`, `apiKey`, external-IAM principals) from a GUARD-priority interceptor via `setRateLimitSubject` — **not** from a custom key function, which runs pre-guard and can't see guard state.
 - **DON'T** expect `key: 'user'` to 429 anonymous floods _per user_ — anonymous callers share the IP fallback budget, and on guarded routes the auth guard 401s them before the post-guard phase runs (a missing token yields `401`, not `429`).
 - **DON'T** use this instead of account lockout — `UserService` lockout counts failed credential attempts per account; this counts requests per caller. Complementary layers.
+- **DON'T** build daily / monthly allowances ("50 exports per calendar month in the user's timezone") on `@RateLimit` — its windows are fixed, epoch-aligned durations, not calendar periods. Keep such quotas as a ledger in your database.
 
 ## See also
 

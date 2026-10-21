@@ -108,6 +108,26 @@ class ClassLevelController {
   }
 }
 
+// A4: stacked decorators are independent policies (each its own key + bucket).
+let skipFor: string | null = null;
+@Controller("rl-stacked")
+class StackedController {
+  @TestHandler()
+  @Public()
+  @RateLimit("2/1m")
+  @RateLimit("1/1m", { key: () => "global" })
+  stacked() {
+    return "ok";
+  }
+
+  @TestHandler()
+  @Public()
+  @RateLimit("1/1m", { key: () => (skipFor === "me" ? null : "k") })
+  skippable() {
+    return "ok";
+  }
+}
+
 interface RunResult {
   thrown?: HttpError;
   headers: Record<string, string | string[] | number>;
@@ -152,7 +172,7 @@ async function runChain(
       }
       return {
         thrown,
-        headers: useResponse(ctx).headers() as RunResult["headers"],
+        headers: useResponse(ctx).headers(),
         decision: useRateLimit(ctx).decision,
         validateCalls,
       };
@@ -335,6 +355,40 @@ describe("rateLimitInterceptors", () => {
     const meta = getMoostMate().read(SugarController);
     // Dropping either phase silently disables one keying mode — pin the pair.
     expect(meta?.interceptors?.length).toBe(2);
+  });
+
+  it("A4: a second @RateLimit adds an independent policy instead of overwriting the first", async () => {
+    const app = await prepareTestApp([StackedController]);
+    const pair = rateLimitInterceptors({
+      limiter: new RateLimiter({ clock: fakeClock() }),
+      trustProxy: true,
+    });
+    const hit = (ip: string) =>
+      runChain(app, pair, "StackedController", "stacked", { headers: { "x-forwarded-for": ip } });
+    // The global 1/1m policy (one bucket for everyone) rejects the second caller…
+    expect((await hit("1.1.1.1")).thrown).toBeUndefined();
+    const second = await hit("2.2.2.2");
+    expect(second.thrown?.body.statusCode).toBe(429);
+    // …and the per-IP 2/1m policy is still enforced too.
+    expect(second.headers["ratelimit-policy"]).toBe("2;w=60, 1;w=60");
+  });
+
+  it("A4: a key function returning null skips the policy (nothing is counted)", async () => {
+    const app = await prepareTestApp([StackedController]);
+    const pair = rateLimitInterceptors({ limiter: new RateLimiter({ clock: fakeClock() }) });
+    skipFor = "me";
+    try {
+      for (let i = 0; i < 3; i++) {
+        const r = await runChain(app, pair, "StackedController", "skippable");
+        expect(r.thrown).toBeUndefined();
+        expect(r.decision).toBeNull();
+      }
+    } finally {
+      skipFor = null;
+    }
+    expect((await runChain(app, pair, "StackedController", "skippable")).thrown).toBeUndefined();
+    const over = await runChain(app, pair, "StackedController", "skippable");
+    expect(over.thrown?.body.statusCode).toBe(429);
   });
 
   it("supports a custom key function running inside the event context", async () => {

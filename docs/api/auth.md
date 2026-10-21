@@ -46,9 +46,20 @@ interface AuthCredentialOptions<TPayload extends object = object> {
   onLimit?: "reject" | "evict-oldest"; // default 'reject'
   trackLastSeen?: "refresh" | "validate" | false; // default false — see Sessions
   validateCache?: { ttlMs: number; max?: number }; // since 0.1.78 — opt-in, see Credentials
+  /**
+   * Since 0.2 — opt-in. Both fields need a store with `persistAs`
+   * (memory / Redis / atscript-db); stateless stores throw INVALID_CONFIG.
+   */
+  tokens?: {
+    hashAtRest?: boolean | "migrate"; // default false — store SHA-256 of each token
+    generate?: () => string; // default: 32 random bytes, base64url (≥ 128 bits required)
+    isLegacyToken?: (token: string) => boolean; // 'migrate': exact legacy shape; default randomUUID
+  };
   clock?: Clock;
 }
 ```
+
+`tokens.hashAtRest: true` keys every row by the token's SHA-256 and encrypts the successor pair on rotated refresh rows; `'migrate'` additionally finds rows keyed by the raw token (sessions issued before the switch) — only for a token of the legacy shape (`isLegacyToken`), never a 64-hex value or one containing whitespace. See [Credentials — tokens at rest](/auth/credentials#tokens-at-rest-tokens-hashatrest).
 
 ### `CredentialStoreMemory<TPayload>`
 
@@ -56,7 +67,7 @@ interface AuthCredentialOptions<TPayload extends object = object> {
 new CredentialStoreMemory<TPayload>();
 ```
 
-Reference stateful store. Holds `Map<token, state>` + `Map<userId, Set<token>>` for O(1) `revokeAllForUser`. See [Stores](/auth/).
+Reference stateful store. Holds `Map<token, state>` + `Map<userId, Set<token>>` for O(1) `revokeAllForUser`. Implements `persistAs` (since 0.2). See [Stores](/auth/).
 
 ### `CredentialStoreJwt<TPayload>`
 
@@ -111,9 +122,17 @@ check(
   rules: RateLimitRuleInput[],
   opts?: { defaultMessage?: string },
 ): Promise<RateLimitDecision>
+
+// since 0.2 — same decision, nothing spent; needs a store with get()
+peek(
+  scope: string,
+  subject: string,
+  rules: RateLimitRuleInput[],
+  opts?: { defaultMessage?: string },
+): Promise<RateLimitDecision>
 ```
 
-Fixed-window limiter with window-aligned keys — one atomic store increment per rule decides; correctness never depends on the TTL. See [Rate Limiting (Core)](/auth/rate-limit).
+Fixed-window limiter with window-aligned keys — one atomic store increment per rule decides; correctness never depends on the TTL. `peek` reports the budget `check` would see without spending it (`remaining` = what is left, `allowed` = would a `check` now pass); it throws when the store has no `get()`. See [Rate Limiting (Core)](/auth/rate-limit).
 
 ### `RateLimitStoreMemory`
 
@@ -121,7 +140,7 @@ Fixed-window limiter with window-aligned keys — one atomic store increment per
 new RateLimitStoreMemory(opts?: { clock?: Clock })
 ```
 
-In-memory `RateLimitStore` — lazy eviction on access, an amortized sweep of dead window counters as it grows (since 0.1.78), `cleanup(): Promise<number>` sweep, `clear()` for test resets. Single process only. See [Rate Limiting (Core)](/auth/rate-limit#ratelimitstorememory).
+In-memory `RateLimitStore` — `get()` (since 0.2) for `peek`, lazy eviction on access, an amortized sweep of dead window counters as it grows (since 0.1.78), `cleanup(): Promise<number>` sweep, `clear()` for test resets. Single process only. See [Rate Limiting (Core)](/auth/rate-limit#ratelimitstorememory).
 
 ## Functions
 
@@ -171,25 +190,45 @@ function createAuthedFetch<TFetch extends FetchFn = DefaultFetch>(
 
 interface CreateAuthedFetchOptions<TFetch extends FetchFn = DefaultFetch> {
   refreshPath?: string; // default '/auth/refresh'
-  onLogout?: () => void; // fired once per failed refresh
-  fetch?: TFetch; // default: global fetch
+  logoutOn?: "auth-failure" | "any-failure"; // since 0.2, default 'auth-failure'
+  onLogout?: (reason: AuthedFetchRefreshFailure) => void; // refresh failure that ends the session
+  onRefreshError?: (reason: AuthedFetchRefreshFailure) => void; // since 0.2 — transient failure, session kept
+  fetch?: TFetch; // default: the global fetch, resolved on every call
   refreshOn?: number[]; // default [401]
+}
+
+interface AuthedFetchRefreshFailure {
+  status?: number; // the refresh endpoint's HTTP status, when it answered
+  error?: unknown; // the thrown value when the request itself failed (offline, abort, CORS)
 }
 ```
 
-A `fetch` wrapper for cookie-transport SPAs: forwards `credentials: "include"`, single-flights `POST {refreshPath}` on a matching status (single refresh for N concurrent failures), retries the original request once on success, and calls `onLogout()` once on failure. Returns a function with the same signature as the wrapped `fetch`. See [Client](/auth/client).
+A `fetch` wrapper for cookie-transport SPAs: forwards `credentials: "include"`, single-flights `POST {refreshPath}` on a matching status (single refresh for N concurrent failures), and retries the original request once on success. A failed refresh returns the original failing response and fires **one** callback per single-flight: `onLogout(reason)` when the refresh endpoint answered 400 / 401 / 403 (or on any failure under `logoutOn: 'any-failure'`), else `onRefreshError(reason)`. Returns a function with the same signature as the wrapped `fetch`. See [Client](/auth/client).
 
 ### `FetchFn` / `MinimalResponse` / `MinimalRequestInit` / `DefaultFetch`
 
 ```ts
-type FetchFn = (input: string | URL, init?: MinimalRequestInit) => Promise<MinimalResponse>;
+// method-style, so parameters compare bivariantly — the DOM / Node fetch matches
+type FetchFn = {
+  fetch(input: string | URL, init?: MinimalRequestInit): Promise<MinimalResponse>;
+}["fetch"];
 interface MinimalResponse {
   readonly ok: boolean;
   readonly status: number;
 }
+interface MinimalRequestInit {
+  method?: string;
+  headers?: unknown; // Headers instances, records, tuples — passed through untouched
+  body?: unknown;
+  credentials?: "omit" | "same-origin" | "include";
+  signal?: unknown;
+  // …and the other standard RequestInit keys, typed `unknown` and forwarded:
+  // cache, mode, redirect, referrer, referrerPolicy, integrity, keepalive,
+  // priority, window, duplex, dispatcher
+}
 ```
 
-Structural types so the subpath needs no DOM lib. The real DOM `fetch` / `Response` satisfy them; `DefaultFetch` resolves to the ambient `fetch` type when the consumer's tsconfig includes the DOM lib, so `createAuthedFetch()` returns a real `Response`.
+Structural types so the subpath needs no DOM lib. The real DOM / Node `fetch` and `RequestInit` satisfy them, so `window.fetch` can be passed as `options.fetch`. `DefaultFetch` resolves to the ambient `fetch` type when the consumer's tsconfig includes the DOM lib, so `createAuthedFetch()` returns a real `Response` (with `.json()`).
 
 ## Types — Core
 
@@ -322,6 +361,7 @@ Rotation policy. Both `'sliding'` (rolling expiry) and `'always'` (fixed session
 ```ts
 interface CredentialStore<TPayload extends object = object> {
   persist(state: CredentialState & TPayload, ttl?: number): Promise<string>;
+  persistAs?(id: string, state: CredentialState & TPayload, ttl?: number): Promise<void>; // since 0.2 — required by tokens.hashAtRest / tokens.generate
   retrieve(token: string): Promise<(CredentialState & TPayload) | null>;
   consume(token: string): Promise<(CredentialState & TPayload) | null>; // single-use
   update(token: string, state: CredentialState & TPayload): Promise<string>; // may return new token
@@ -425,11 +465,12 @@ The outcome of one `RateLimiter.check()` — everything a transport needs for he
 ```ts
 interface RateLimitStore {
   hit(key: string, ttlMs: number): Promise<number>; // atomic increment-and-get
+  get?(key: string): Promise<number>; // since 0.2 — read without incrementing (0 when missing); required by RateLimiter.peek
   reset?(key: string): Promise<void>; // optional: drop a counter
 }
 ```
 
-Storage contract for the fixed-window limiter. Implementations: `RateLimitStoreMemory` (root entry), `RateLimitStoreRedis` (`@aooth/auth/redis`).
+Storage contract for the fixed-window limiter. Implementations: `RateLimitStoreMemory` (root entry), `RateLimitStoreRedis` (`@aooth/auth/redis`) — both implement `get` and `reset`.
 
 ## Types — Transport
 
@@ -577,7 +618,7 @@ new CredentialStoreRedis<TPayload>(opts: {
 })
 ```
 
-Stateful Redis-backed store. Keys: `aooth:cred:t:<token>` (JSON state with `PX` TTL), `aooth:cred:u:<userId>` (token SET). `persist` fails loud on dead credentials. See [Stores](/auth/).
+Stateful Redis-backed store. Keys: `aooth:cred:t:<token>` (JSON state with `PX` TTL), `aooth:cred:u:<userId>` (token SET). `persist` fails loud on dead credentials. Implements `persistAs` (since 0.2), so it supports `tokens.hashAtRest`. See [Stores](/auth/).
 
 ### `DenylistStoreRedis`
 
@@ -593,7 +634,7 @@ Backing key `aooth:dl:<jti>` with `PX` TTL. `cleanup()` is a no-op — Redis sel
 new RateLimitStoreRedis(opts: { redis: RedisLike; prefix?: string }) // default prefix 'aooth:rl'
 ```
 
-Redis-backed `RateLimitStore` — `hit` is one `INCR` plus a `PEXPIRE` on a window's first increment. Correctness never depends on the TTL (the limiter's keys embed the window start). See [Rate Limiting (Core)](/auth/rate-limit#ratelimitstoreredis).
+Redis-backed `RateLimitStore` — `hit` is one `INCR` plus a `PEXPIRE` on a window's first increment; `get` (since 0.2) is one `GET`. Correctness never depends on the TTL (the limiter's keys embed the window start). See [Rate Limiting (Core)](/auth/rate-limit#ratelimitstoreredis).
 
 ### `RedisLike`
 
@@ -622,6 +663,9 @@ import {
   CredentialStoreAtscriptDb,
   AuthCredentialRow,
   AuthCredentialTable,
+  getAoothCredentialMetadataSpec, // since 0.2 (moved here from @aooth/arbac-moost/atscript)
+  AoothCredentialMetadataSpec,
+  AUTHORITY_METADATA_KEYS,
   // Durable authorization-server stores (multi-pod) — see below.
   PendingAuthorizationStoreAtscriptDb,
   PendingAuthorizationTable,
@@ -638,13 +682,14 @@ import { AoothAuthCode } from "@aooth/auth/atscript-db/auth-code";
 ```ts
 new CredentialStoreAtscriptDb<TPayload>(opts: {
   table: AuthCredentialTable<TPayload>
-  metadataField?: string // name of your @aooth.auth.metadata-annotated column
+  metadataField?: string | false // default: resolved from table.type; false = no metadata column
+  onWarning?: (message: string) => void // default console.warn
 })
 ```
 
-There is no `clock` option — time-sensitive bookkeeping (TTL checks, opportunistic GC) reads `Date.now()` directly.
+There is no `clock` option — time-sensitive bookkeeping (TTL checks, opportunistic GC) reads `Date.now()` directly. Implements `persistAs` (since 0.2), so it supports `tokens.hashAtRest`.
 
-`metadataField` is the name of the consumer-declared credential-metadata column: the fully-typed `@db.json` field on your `extends AoothAuthCredential` model, marked `@aooth.auth.metadata` and resolved at boot by [`getAoothCredentialMetadataSpec`](/api/arbac-moost#getaoothcredentialmetadataspec) (threaded here as plain config — same pattern as `UserStore.handleFields`). Shape the column as `AoothCredentialMetadataBase & { ...your keys }` — the exported `.as` type single-sources the framework-written envelope keys (see [Stores](/auth/stores)). The store maps the envelope's `metadata` through that column on every write/read. Absent → metadata is not persisted/read (memory/JWT stores are unaffected).
+The metadata column is the consumer-declared `@aooth.auth.metadata` + `@db.json` field on your `extends AoothAuthCredential` model, shaped `AoothCredentialMetadataBase & { ...your keys }`. **Since 0.2** the store resolves it from `table.type` automatically — `{ table }` is enough; pass `metadataField: 'name'` to skip the lookup or `false` to opt out explicitly. Without a column the store **fails closed**: persisting a credential whose metadata carries any of `AUTHORITY_METADATA_KEYS` throws `AuthError('INVALID_CONFIG')`; other metadata is dropped with one warning (silent under `metadataField: false`). See [Stores — metadata column](/auth/stores#metadata-column-options-and-the-fail-closed-rule).
 
 Single-table stateful store. `revokeAllForUser` uses `deleteMany({ userId })` — one round trip. `retrieve` GCs expired rows opportunistically. See [Stores](/auth/).
 
@@ -690,7 +735,26 @@ type AuthCredentialRow<TPayload extends object = object> = {
 } & TPayload; // consumer's typed columns persist flat (replaces the dropped `claims` blob)
 ```
 
-Plain TS mirror of `AoothAuthCredential.as` (envelope columns) intersected with the consumer's typed payload columns. There is **no `metadata` envelope column** — credential metadata is consumer-declared (a fully-typed `@db.json` field on the extending model, marked `@aooth.auth.metadata`) and mapped dynamically through the store's `metadataField` option. `kind` is a free-form `string` (the `.as` model intentionally does not narrow it) so the row can carry magic-link discriminators like `'magic.recovery'` alongside the orchestrator's `'access'` / `'refresh'`. See [Stores](/auth/).
+Plain TS mirror of `AoothAuthCredential.as` (envelope columns) intersected with the consumer's typed payload columns. There is **no `metadata` envelope column** — credential metadata is consumer-declared (a fully-typed `@db.json` field on the extending model, marked `@aooth.auth.metadata`) and mapped through the column the store resolves. `kind` is a free-form `string` (the `.as` model intentionally does not narrow it) so the row can carry magic-link discriminators like `'magic.recovery'` alongside the orchestrator's `'access'` / `'refresh'`. See [Stores](/auth/).
+
+### `getAoothCredentialMetadataSpec` / `AUTHORITY_METADATA_KEYS`
+
+```ts
+function getAoothCredentialMetadataSpec(credentialType: unknown): AoothCredentialMetadataSpec;
+interface AoothCredentialMetadataSpec {
+  metadataField: string | undefined;
+  warnings: string[];
+}
+const AUTHORITY_METADATA_KEYS: readonly [
+  "accessTtl",
+  "refreshRotation",
+  "rotationGraceMs",
+  "credentialKind",
+  "authzClientId",
+];
+```
+
+Since 0.2. `getAoothCredentialMetadataSpec` finds the `@aooth.auth.metadata` + `@db.json` field of a credential model (cached per model; an annotated field without `@db.json` → `undefined` + a warning; two annotated fields throw). `CredentialStoreAtscriptDb` calls it for you — use it directly only for diagnostics. Structural, so it needs no `@aooth/arbac-moost` import. **Since 0.2 this is its only home** — the former `@aooth/arbac-moost/atscript` export was removed. `AUTHORITY_METADATA_KEYS` lists the metadata keys a store without a metadata column refuses to drop.
 
 ### `AuthCredentialTable<TPayload>`
 
@@ -709,6 +773,8 @@ interface AuthCredentialTable<TPayload extends object = object> {
   /** Deletes by PK value (the token string). */
   deleteOne(idOrPk: unknown): Promise<{ deletedCount: number }>;
   deleteMany(filter: Record<string, unknown>): Promise<{ deletedCount: number }>;
+  /** atscript-db's `table.type` — read once to find the metadata column. */
+  readonly type?: unknown;
 }
 ```
 

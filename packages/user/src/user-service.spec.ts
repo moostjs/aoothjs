@@ -83,7 +83,7 @@ describe("UserService", () => {
       const user = await svc.createUser("alice", "pass123", {
         // biome-ignore lint/suspicious/noExplicitAny: cross-extending base shape in test
         id: "user-123",
-      } as any);
+      });
       expect(user.id).toBe("user-123");
     });
 
@@ -185,6 +185,43 @@ describe("UserService", () => {
       } catch (e) {
         expect((e as UserAuthError).type).toBe("NOT_FOUND");
       }
+    });
+
+    it("S5: every early-exit path (unknown / inactive / locked) still runs one password hash", async () => {
+      const locked = new UserService(new UserStoreMemory(), {
+        password: { ...FAST_SCRYPT },
+        clock: () => now,
+        lockout: { threshold: 1, duration: 60_000 },
+      });
+      await locked.createUser("inactive", "pass123");
+      await createActiveUser(locked, "lockme", "pass123");
+      await expect(locked.login("lockme", "wrong")).rejects.toThrow();
+      const hasher = locked.getPasswordHasher();
+      let verifies = 0;
+      const verify = hasher.verify.bind(hasher);
+      hasher.verify = (pw, hash) => {
+        verifies++;
+        return verify(pw, hash);
+      };
+      for (const [handle, type] of [
+        ["nobody", "NOT_FOUND"],
+        ["inactive", "INACTIVE"],
+        ["lockme", "LOCKED"],
+      ] as const) {
+        verifies = 0;
+        await expect(locked.login(handle, "pass123")).rejects.toMatchObject({ type });
+        expect(verifies, handle).toBe(1);
+      }
+    });
+
+    it("a failed dummy-hash mint is not memoised — the next early exit retries it", async () => {
+      const hasher = svc.getPasswordHasher();
+      const hash = hasher.hash.bind(hasher);
+      let calls = 0;
+      hasher.hash = (pw) => (++calls === 1 ? Promise.reject(new Error("boom")) : hash(pw));
+      await expect(svc.login("nobody", "x")).rejects.toThrow("boom");
+      await expect(svc.login("nobody", "x")).rejects.toMatchObject({ type: "NOT_FOUND" });
+      expect(calls).toBe(2);
     });
 
     it("should increment failedLoginAttempts on failure", async () => {

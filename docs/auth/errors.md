@@ -246,17 +246,19 @@ The framework then prompts the user, calls `auth.revoke(theirChoice.credentialId
 
 ## `INVALID_CONFIG`
 
-The orchestrator or a store was constructed with bad options. This always throws at construction time, before any request hits.
+The orchestrator or a store was constructed with bad options. It throws at construction time, before any request hits — with one exception: `CredentialStoreAtscriptDb` without a metadata column throws it on the first write of a credential whose restrictions it cannot store (see below).
 
 **Triggers**
 
-| Trigger                                                                       | Where                                                                         |
-| ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `accessTtl <= 0`                                                              | `new AuthCredential({ accessTtl: 0 })`                                        |
-| `accessTtl < 0`                                                               | `new AuthCredential({ accessTtl: -1 })`                                       |
-| Missing HS secret                                                             | `new CredentialStoreJwt({ algorithm: 'HS256' })` (no `secret`)                |
-| Missing key pair                                                              | `new CredentialStoreJwt({ algorithm: 'RS256', privateKey })` (no `publicKey`) |
-| Dead row on `persist` (Redis adapter — throws plain `Error`, not `AuthError`) | `store.persist({ ..., expiresAt: now - 1 })`                                  |
+| Trigger                                                                            | Where                                                                                                                                  |
+| ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `accessTtl <= 0`                                                                   | `new AuthCredential({ accessTtl: 0 })`                                                                                                 |
+| `accessTtl < 0`                                                                    | `new AuthCredential({ accessTtl: -1 })`                                                                                                |
+| Missing HS secret                                                                  | `new CredentialStoreJwt({ algorithm: 'HS256' })` (no `secret`)                                                                         |
+| Missing key pair                                                                   | `new CredentialStoreJwt({ algorithm: 'RS256', privateKey })` (no `publicKey`)                                                          |
+| Dead row on `persist` (Redis adapter — throws plain `Error`, not `AuthError`)      | `store.persist({ ..., expiresAt: now - 1 })`                                                                                           |
+| `tokens.hashAtRest` / `tokens.generate` on a store without `persistAs` (since 0.2) | `new AuthCredential({ store: jwtStore, tokens: { hashAtRest: true } })`                                                                |
+| Credential with restricting metadata, no metadata column (since 0.2)               | `issue(...)` / `refresh(...)` on `CredentialStoreAtscriptDb` — see [Stores](./stores#metadata-column-options-and-the-fail-closed-rule) |
 
 **`details`**
 
@@ -268,22 +270,22 @@ None. `INVALID_CONFIG` is always constructed with a human-readable message and n
 500 Internal Server Error
 ```
 
-These errors should never surface to a user — they're caught by `npm test` before deploy. If one _does_ reach production, log loudly and page on-call. The fix is always a code change.
+These errors should never surface to a user — they're caught by `npm test` before deploy. If one _does_ reach production, log loudly and page on-call. The fix is always a code change (or, for the metadata column, a schema change).
 
 ## Where errors are vs. aren't thrown
 
-| API                          | Throws                                                                       | Returns `null`           |
-| ---------------------------- | ---------------------------------------------------------------------------- | ------------------------ |
-| `validate(token)`            | Never (except programmer errors)                                             | Every failure mode       |
-| `issue(userId, ...)`         | `MAX_CONCURRENT_REACHED`, `INVALID_CONFIG`                                   | —                        |
-| `refresh(token)`             | `INVALID_TOKEN`, `REFRESH_REUSE_DETECTED`, `STATELESS_OPERATION_UNSUPPORTED` | —                        |
-| `revoke(token)`              | `STATELESS_OPERATION_UNSUPPORTED`                                            | —                        |
-| `revokeAllForUser(id)`       | Never                                                                        | —                        |
-| `listForUser(id)`            | Never                                                                        | Empty array on stateless |
-| `store.persist(state)`       | Plain `Error` (Redis adapter, dead state — not an `AuthError`)               | —                        |
-| `store.retrieve(token)`      | Never                                                                        | Every failure mode       |
-| `store.consume(token)`       | `STATELESS_OPERATION_UNSUPPORTED`                                            | If no state              |
-| `store.update(token, state)` | `STATELESS_OPERATION_UNSUPPORTED`, `INVALID_CONFIG`                          | —                        |
+| API                          | Throws                                                                                                              | Returns `null`           |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| `validate(token)`            | Never (except programmer errors)                                                                                    | Every failure mode       |
+| `issue(userId, ...)`         | `MAX_CONCURRENT_REACHED`, `INVALID_CONFIG`                                                                          | —                        |
+| `refresh(token)`             | `INVALID_TOKEN`, `REFRESH_REUSE_DETECTED`, `STATELESS_OPERATION_UNSUPPORTED`, `INVALID_CONFIG` (no metadata column) | —                        |
+| `revoke(token)`              | `STATELESS_OPERATION_UNSUPPORTED`                                                                                   | —                        |
+| `revokeAllForUser(id)`       | Never                                                                                                               | —                        |
+| `listForUser(id)`            | Never                                                                                                               | Empty array on stateless |
+| `store.persist(state)`       | Plain `Error` (Redis adapter, dead state — not an `AuthError`)                                                      | —                        |
+| `store.retrieve(token)`      | Never                                                                                                               | Every failure mode       |
+| `store.consume(token)`       | `STATELESS_OPERATION_UNSUPPORTED`                                                                                   | If no state              |
+| `store.update(token, state)` | `STATELESS_OPERATION_UNSUPPORTED`, `INVALID_CONFIG`                                                                 | —                        |
 
 The dividing line: **validation paths return `null`** (hot path, can't afford exception overhead), **mutation paths throw**.
 

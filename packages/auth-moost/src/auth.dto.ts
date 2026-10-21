@@ -17,9 +17,10 @@ export interface AuthLogoutBody {
  * POST /auth/refresh response body. Also returned by workflow finalize steps
  * (e.g. `AuthWorkflow`) when issuing tokens after a successful flow.
  *
- * Tokens are populated only when `enableBearer` is true. With `enableBearer=false`
- * the body still echoes `userId` + `accessExpiresAt` so the caller can schedule
- * a silent refresh; the actual tokens travel only in cookies.
+ * Tokens are populated only when `exposeTokensInBody` is true (default
+ * `!enableCookie`). Otherwise the body still echoes `userId` + `accessExpiresAt`
+ * so the caller can schedule a silent refresh; the actual tokens travel only in
+ * cookies.
  */
 export interface AuthLoginResponse {
   userId: string;

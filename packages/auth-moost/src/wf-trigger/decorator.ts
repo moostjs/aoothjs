@@ -9,7 +9,11 @@ import {
 import { WfTriggerProvider } from "./provider";
 
 export interface WfTriggerOpts {
-  /** Whitelist of workflow ids the trigger may start/resume. Defaults to the provider's setting. */
+  /**
+   * Workflow ids this trigger may START and RESUME (a leading `/` is ignored).
+   * Omitted = unrestricted; `[]` = deny every workflow. A state token minted
+   * for a workflow outside the list is refused with 403 and is not consumed.
+   */
   allow?: string[];
   /** Per-endpoint token wire override. Defaults to the provider's wire (`{read:['body','query','cookie'], write:'body', name:'wfs'}`). */
   token?: WfOutletTokenConfig;

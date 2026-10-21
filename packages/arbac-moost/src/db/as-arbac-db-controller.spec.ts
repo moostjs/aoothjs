@@ -73,6 +73,19 @@ describe("applyAllowedFieldsAndSet", () => {
 });
 
 describe("extractUsedControlValues", () => {
+  it("walks nested $with into dotted paths (top level unchanged)", () => {
+    const value = [
+      { name: "author", controls: { $with: [{ name: "org", controls: { $with: ["owner"] } }] } },
+      { name: "tags" },
+    ];
+    expect(extractUsedControlValues("$with", value)).toEqual([
+      "author",
+      "author.org",
+      "author.org.owner",
+      "tags",
+    ]);
+  });
+
   it("$with: extracts names from parsed entries (objects with .name)", () => {
     const value = [
       { name: "comments", filter: {}, controls: {} },
@@ -101,6 +114,15 @@ describe("extractUsedControlValues", () => {
 });
 
 describe("enforceControlsPolicy", () => {
+  it("a dotted whitelist entry admits a nested $with; an unlisted nested one is refused", () => {
+    const nested = { $with: [{ name: "author", controls: { $with: [{ name: "org" }] } }] };
+    expect(() => enforceControlsPolicy({ $with: ["author", "author.org"] }, nested)).not.toThrow();
+    expect(() => enforceControlsPolicy({ $with: ["author"] }, nested)).toThrow(/author\.org/);
+    expect(() =>
+      enforceControlsPolicy({ $with: ["author"] }, { $with: [{ name: "author" }] }),
+    ).not.toThrow();
+  });
+
   it("no policy → no-op", () => {
     expect(() => enforceControlsPolicy({}, { $with: [{ name: "x" }] })).not.toThrow();
   });

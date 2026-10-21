@@ -90,6 +90,8 @@ const moostSidebar = [
       { text: "REST Controllers", link: "/moost/controllers" },
       { text: "Sessions", link: "/moost/sessions" },
       { text: "Workflows", link: "/moost/workflows" },
+      { text: "Invites", link: "/moost/invites" },
+      { text: "Messages & Localization", link: "/moost/messages" },
       { text: "Phone, Recovery Channels & Handles", link: "/moost/recovery-and-handles" },
       { text: "Federated Login (OAuth)", link: "/moost/oauth" },
       { text: "Authorization Server", link: "/moost/authorization-server" },

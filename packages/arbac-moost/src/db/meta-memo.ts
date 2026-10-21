@@ -158,6 +158,8 @@ export interface MetaDecisionInput {
     tree: MetaNameTree;
     writable: ReadonlySet<string> | "all" | undefined;
     nestedWrites: ReadonlySet<string> | undefined;
+    /** Keys the write scopes pin via `set`. */
+    forced?: ReadonlySet<string>;
     /** Each allowed read op's effective `controls` policy (`false` / whitelist per key). */
     controls: Readonly<Partial<Record<string, Readonly<Record<string, unknown>>>>>;
     refTargets: ReadonlyMap<object, MetaVisibility | null>;
@@ -196,7 +198,7 @@ export function metaDecisionKey(
         vis ? encodeLevel(vis, NO_TREE, ctx, seen, 1) : 0,
       );
     }
-    const { writable, nestedWrites } = p;
+    const { writable, nestedWrites, forced } = p;
     const controls: unknown[] = [];
     for (const op of Object.keys(p.controls).toSorted()) {
       const policy = p.controls[op] ?? {};
@@ -214,6 +216,7 @@ export function metaDecisionKey(
       encodeLevel(p.vis, p.tree, ctx, seen, 0),
       writable === undefined ? 0 : writable === "all" ? 1 : sortedNames(writable),
       nestedWrites ? sortedNames(nestedWrites) : 0,
+      forced ? sortedNames(forced) : 0,
       controls,
       refTargets,
       p.vis.table?.type ? ctx.isServed(p.vis.table.type) : 0,

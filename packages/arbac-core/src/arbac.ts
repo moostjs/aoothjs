@@ -223,14 +223,19 @@ export class Arbac<TUserAttrs extends object, TScope extends object> {
     let haveAttrs = false;
     for (const match of matches) {
       for (const rule of match.allow) {
-        allowed = true;
         if (rule.scope) {
           if (!haveAttrs) {
             attrs = await getAttrs();
             haveAttrs = true;
           }
-          scopes.push(rule.scope(attrs as TUserAttrs, String(id)));
+          const scope = rule.scope(attrs as TUserAttrs, String(id));
+          // A nullish scope grants nothing: the rule neither allows nor
+          // contributes a scope (no other rule allowing → denied).
+          if (scope == null) continue;
+          allowed = true;
+          scopes.push(scope);
         } else {
+          allowed = true;
           // Universe sentinel — preserves "no restriction" grant under multi-role union.
           scopes.push({} as TScope);
         }

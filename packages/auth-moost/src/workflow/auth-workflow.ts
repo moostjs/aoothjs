@@ -20,7 +20,12 @@
  * is registerable as a Moost controller, but running any of its `@Workflow`
  * schemas would no-op every step.
  */
-import { AuthCredential, type CredentialMetadata } from "@aooth/auth";
+import {
+  AuthCredential,
+  type CredentialMetadata,
+  type RateLimitStore,
+  RateLimitStoreMemory,
+} from "@aooth/auth";
 import type { NormalizedProfile } from "@aooth/idp";
 import {
   type FederatedProfileSnapshot,
@@ -43,6 +48,7 @@ import { finishWf, type FinishWfOpts, useAtscriptWf, type WfFinished } from "@at
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
 import { HttpError } from "@moostjs/event-http";
 import {
+  outlet,
   outletEmail,
   Step,
   StepRetriableError,
@@ -54,6 +60,8 @@ import {
   WorkflowParam,
   WorkflowSchema,
 } from "@moostjs/event-wf";
+import { createHash, randomBytes } from "node:crypto";
+
 import { current } from "@wooksjs/event-core";
 import { useCookies, useHeaders, useRequest, useUrlParams } from "@wooksjs/event-http";
 import { ArbacAction, ArbacResource, useArbac } from "@aooth/arbac-moost";
@@ -80,6 +88,14 @@ import type {
 } from "./auth-workflow.ctx";
 import type { AuthWorkflowOpts, ResolvedAuthWorkflowOpts } from "./auth-workflow.opts";
 import {
+  AOOTH_MESSAGES,
+  type AoothMessageCode,
+  type AoothMessageParams,
+  type AoothMessages,
+  resolveAoothMessage,
+} from "./auth-messages";
+import { INVITE_OUTLET, setPendingInviteLink } from "./invite-outlet";
+import {
   AskEmailForm,
   AskPhoneForm,
   AuthorizeConsentForm,
@@ -90,6 +106,7 @@ import {
   EnrollConfirmForm,
   EnrollPickMethodForm,
   EnrollTotpQrForm,
+  InviteChooseUsernameForm,
   InviteForm,
   LoginCredentialsForm,
   ManageMfaForm,
@@ -208,6 +225,7 @@ const DEFAULT_FORMS: ResolvedAuthWorkflowOpts["forms"] = {
   pincode: PincodeForm,
   setPassword: SetPasswordForm,
   changePassword: ChangePasswordForm,
+  inviteChooseUsername: InviteChooseUsernameForm,
   proveControl: ProveControlForm,
   proveControlOtp: ProveControlOtpForm,
   termsBump: TermsBumpForm,
@@ -216,6 +234,34 @@ const DEFAULT_FORMS: ResolvedAuthWorkflowOpts["forms"] = {
   signup: SignupForm,
   authzConsent: AuthorizeConsentForm,
 };
+
+/**
+ * Process-wide warn-once latches (module level: `AuthWorkflow` may be
+ * event-scoped, and a per-instance flag would warn on every request).
+ */
+const warnedOnce = { openInviteWhitelist: false, crossIssuerReuse: false };
+
+/** Sliding lifetime of a shadow failure counter (and of a shadow "permanent" lock). */
+const SHADOW_TTL_MS = 30 * 24 * 60 * 60_000;
+
+/** Key prefix of an active shadow lock (kept longest by the default store). */
+const SHADOW_LOCK_PREFIX = "shadow-lock:";
+
+/** Cap of the default (process-wide, in-memory) shadow-lockout store. */
+const SHADOW_STORE_MAX_ENTRIES = 50_000;
+
+// One process-wide shadow-lockout store: `AuthWorkflow` may be event-scoped,
+// and a per-instance memory store would forget every failure between requests.
+let sharedShadowStore: RateLimitStore | undefined;
+function defaultShadowStore(): RateLimitStore {
+  sharedShadowStore ??= new RateLimitStoreMemory({
+    maxEntries: SHADOW_STORE_MAX_ENTRIES,
+    // A flood of fresh failure counters must not push out ACTIVE locks —
+    // that would unmask exactly the handles an attacker is probing.
+    evictLast: (key) => key.startsWith(SHADOW_LOCK_PREFIX),
+  });
+  return sharedShadowStore;
+}
 
 function mergeAuthWorkflowOpts(opts: Partial<AuthWorkflowOpts>): ResolvedAuthWorkflowOpts {
   // Merge deviceTrust FIRST — the recognition cookie name is derived from the
@@ -232,6 +278,12 @@ function mergeAuthWorkflowOpts(opts: Partial<AuthWorkflowOpts>): ResolvedAuthWor
     autoLoginOnRecover: opts.autoLoginOnRecover ?? false,
     invitableRoles: opts.invitableRoles ?? [],
     allowAnyInviteRole: opts.allowAnyInviteRole ?? false,
+    inviteDelivery: opts.inviteDelivery ?? "outlet-email",
+    ...(opts.inviteLinkUrl && { inviteLinkUrl: opts.inviteLinkUrl }),
+    inviteUsername: opts.inviteUsername ?? "email",
+    ...(opts.messages !== undefined && { messages: opts.messages }),
+    lockoutDisclosure: opts.lockoutDisclosure ?? "uniform",
+    lockoutShadowStore: opts.lockoutShadowStore ?? defaultShadowStore(),
     mfa: {
       pincodeLength: opts.mfa?.pincodeLength ?? 6,
       pincodeTtlMs: opts.mfa?.pincodeTtlMs ?? 5 * 60 * 1000,
@@ -366,20 +418,23 @@ export function parseInviteRoles(input?: string[]): string[] {
 export function buildInviteAlreadyAcceptedEnvelope(opts: {
   loginUrl: string;
   alreadyAcceptedRedirectUrl: string;
+  /** Text overrides (see `AuthWorkflowOpts.messages`). */
+  messages?: AoothMessages;
 }): FinishWfOpts {
   const altUrl = opts.alreadyAcceptedRedirectUrl;
+  const msg = (code: AoothMessageCode) => resolveAoothMessage(code, {}, opts.messages);
   return {
-    message: { level: "info", text: "This invite was already accepted." },
+    message: { level: "info", text: msg("INVITE_ALREADY_ACCEPTED") },
     next: {
       trigger: "manual",
       primary: {
-        label: "Go to sign-in",
+        label: msg("GO_TO_SIGN_IN"),
         action: { type: "redirect", target: opts.loginUrl, reason: "already-accepted" },
       },
       ...(altUrl && {
         options: [
           {
-            label: "Request a new invite",
+            label: msg("REQUEST_NEW_INVITE"),
             action: { type: "redirect", target: altUrl, reason: "request-new-invite" },
           },
         ],
@@ -404,6 +459,14 @@ type AltHandled = typeof ALT_HANDLED;
  * re-decorating the step in a subclass.
  */
 const INVITE_LINK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** One canonical form of a chosen username: Unicode NFKC, surrounding whitespace trimmed. */
+function normalizeUsername(raw: unknown): string {
+  return String(raw).normalize("NFKC").trim();
+}
+
+/** Loose email shape — `account.verifiedEmail` is only recorded for a value that looks like one. */
+const EMAIL_SHAPE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 /**
  * Read a single field from the raw wf input envelope without validating
@@ -473,12 +536,30 @@ export class AuthWorkflow {
   protected readonly auth: AuthCredential;
   protected readonly consentStore: ConsentStore;
 
-  /**
-   * Process-lifetime warn-once latch for the "invite role whitelist is OFF"
-   * notice. App-level (singleton) state, NOT per-event — keeps the warning from
-   * spamming on every invite while still surfacing the misconfig once.
-   */
-  private warnedOpenInviteWhitelist = false;
+  /** The invite context every invite hook receives: issuer, app context, extra form fields. */
+  private inviteHookInput(ctx: AuthWfCtx): {
+    invitedBy?: string;
+    app?: Record<string, unknown>;
+    form?: Record<string, unknown>;
+  } {
+    const admin = ctx.admin;
+    return {
+      ...(admin?.invitedBy && { invitedBy: admin.invitedBy }),
+      ...(admin?.app && { app: admin.app }),
+      ...(admin?.form && { form: admin.form }),
+    };
+  }
+
+  /** Warn once per process when a `'reuse'` re-invite crosses issuers. */
+  private warnCrossIssuerReuse(): void {
+    if (warnedOnce.crossIssuerReuse) return;
+    warnedOnce.crossIssuerReuse = true;
+    useLogger("aooth:auth", current()).warn(
+      "A re-invite ('reuse') took over a pending invite issued by another user — its " +
+        "roles and extras were replaced and the earlier link no longer works. Override " +
+        "`duplicateInviteCheck()` (it receives `invitedBy`, `app` and `pending`) to refuse it.",
+    );
+  }
 
   constructor(
     opts: Partial<AuthWorkflowOpts>,
@@ -493,6 +574,25 @@ export class AuthWorkflow {
   }
 
   // ── Protected extension surface ─────────────────────────────────────────
+
+  /**
+   * Resolve a user-facing text by code (`AOOTH_MESSAGES`) through
+   * `opts.messages`. Every form error, banner, finish message and button label
+   * the workflow produces goes through here — override for full control
+   * (e.g. to call your i18n library with the request's locale).
+   */
+  protected msg(code: AoothMessageCode, params?: AoothMessageParams): string {
+    return resolveAoothMessage(code, params, this.opts.messages);
+  }
+
+  /** An `HttpError` whose body carries the message `code` next to its (resolved) text. */
+  protected httpError(status: 409 | 410, code: AoothMessageCode): HttpError {
+    return new HttpError(status, {
+      message: this.msg(code),
+      statusCode: status,
+      code,
+    } as ConstructorParameters<typeof HttpError>[1] & object);
+  }
 
   /**
    * Unified outbound dispatch hook for direct synchronous deliveries
@@ -676,6 +776,10 @@ export class AuthWorkflow {
     email?: string;
     roles: string[];
     invitedBy?: string;
+    /** Invite only: the app context from {@link resolveInviteContext}. */
+    app?: Record<string, unknown>;
+    /** Invite only: admin-form fields beyond `email` / `roles`. */
+    form?: Record<string, unknown>;
   }): Promise<Record<string, unknown>> | Record<string, unknown> {
     return {};
   }
@@ -685,8 +789,29 @@ export class AuthWorkflow {
    * Result is set-unioned with admin-supplied roles by `infer-roles`.
    * Default: `[]`.
    */
-  protected inferAdminRoles(_input: { email: string }): Promise<string[]> | string[] {
+  protected inferAdminRoles(_input: {
+    email: string;
+    invitedBy?: string;
+    app?: Record<string, unknown>;
+    form?: Record<string, unknown>;
+  }): Promise<string[]> | string[] {
     return [];
+  }
+
+  /**
+   * App context of an invite, resolved once when the issue phase starts
+   * (`init-invite-admin`) from the trigger's START input (`{ wfid, input: {
+   * formData } }` — the `startFormData` argument) and the session. Return
+   * e.g. `{ tenantId }`; the value is kept server-side as `ctx.admin.app` and
+   * handed to `prepareUser`, `inferAdminRoles` and `duplicateInviteCheck`.
+   * Throw an `HttpError` to refuse the invite (e.g. the issuer may not invite
+   * into that tenant). Default: `undefined` (no app context).
+   */
+  protected resolveInviteContext(
+    _ctx: AuthWfCtx,
+    _startFormData: Record<string, unknown> | undefined,
+  ): Record<string, unknown> | undefined | Promise<Record<string, unknown> | undefined> {
+    return undefined;
   }
 
   /**
@@ -699,11 +824,23 @@ export class AuthWorkflow {
    * Multi-tenant apps that allow re-inviting the same email into a different
    * tenant override to `'allow'`. Apps that want the strict legacy behavior
    * ("Invite already pending" error on a duplicate invite of a pending user)
-   * return `'reject'` for pending rows.
+   * return `'reject'` for pending rows. Compare `invitedBy` / `app` with
+   * `pending` and `existingUser` to refuse taking over another issuer's (or
+   * tenant's) pending invite. On `'reuse'` the row's roles and extras are
+   * REPLACED by this invite's, and every link issued before is superseded
+   * (answers 410 "replaced").
    */
   protected duplicateInviteCheck(input: {
     email: string;
     existingUser: UserCredentials | null;
+    /** The issuer of THIS invite (session user id). */
+    invitedBy?: string;
+    /** This invite's app context ({@link resolveInviteContext}). */
+    app?: Record<string, unknown>;
+    /** This invite's extra admin-form fields. */
+    form?: Record<string, unknown>;
+    /** The pending invite already on `existingUser`, when there is one. */
+    pending?: { invitedBy?: string };
   }): Promise<"allow" | "reject" | "reuse"> | "allow" | "reject" | "reuse" {
     if (input.existingUser?.account?.pendingInvitation) return "reuse";
     return input.existingUser ? "reject" : "allow";
@@ -1535,6 +1672,12 @@ export class AuthWorkflow {
     if (ctx.password) {
       const sub = pickDefined(ctx.password, ["heading", "intro", "policies"] as const);
       if (sub) pub.password = sub;
+      // The confirm-password validator runs client-side too: ship its text
+      // when the app overrides it (the form's built-in English otherwise).
+      const mismatch = this.msg("PASSWORDS_DO_NOT_MATCH");
+      if (mismatch !== AOOTH_MESSAGES.PASSWORDS_DO_NOT_MATCH) {
+        pub.messages = { PASSWORDS_DO_NOT_MATCH: mismatch };
+      }
     }
     if (ctx.admin) {
       const sub = pickDefined(ctx.admin, ["availableRoles"] as const);
@@ -2068,8 +2211,11 @@ export class AuthWorkflow {
   @Step("init-invite-admin")
   @ArbacResource("auth.invite")
   @ArbacAction("start")
-  initInviteAdmin(@WorkflowParam("context") ctx: AuthWfCtx): void {
+  async initInviteAdmin(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     ctx.autoLogin = this.opts.autoLoginOnInvite;
+    const startFormData = useWfState().input<{ formData?: Record<string, unknown> }>()?.formData;
+    const app = await this.resolveInviteContext(ctx, startFormData);
+    if (app !== undefined) (ctx.admin ??= {}).app = app;
     return undefined;
   }
 
@@ -2081,6 +2227,7 @@ export class AuthWorkflow {
     ctx.newPasswordRequired = true;
     ctx.autoLogin = this.opts.autoLoginOnInvite;
     (ctx.password ??= {}).changeReason = "initial";
+    if (this.opts.inviteUsername === "choose") (ctx.accept ??= {}).chooseUsername = true;
     return undefined;
   }
 
@@ -2278,16 +2425,58 @@ export class AuthWorkflow {
       if (!ctx.notice?.email) await this.seedCorrespondenceEmail(ctx, result.user);
     } catch (err) {
       if (err instanceof UserAuthError) {
-        if (err.type === "LOCKED") {
-          throw this.throwPublic(ctx, wf, {
-            formMessage: "Account locked, please try again later",
-          });
-        }
-        throw this.throwPublic(ctx, wf, { formMessage: "Invalid credentials" });
+        const locked = await this.failedLoginReadsLocked(ctx, err, input.username);
+        throw this.throwPublic(ctx, wf, {
+          formMessage: this.msg(locked ? "ACCOUNT_LOCKED" : "INVALID_CREDENTIALS"),
+        });
       }
       throw err;
     }
     return undefined;
+  }
+
+  /**
+   * Whether a failed password sign-in answers "Account locked" — see
+   * `AuthWorkflowOpts.lockoutDisclosure`. Under `'uniform'` an unknown or
+   * inactive handle keeps a shadow failure counter in `lockoutShadowStore`
+   * that mirrors a real account exactly: every failure counts (the counter is
+   * not reset when it trips — like `failedLoginAttempts`), a lock starts when
+   * `failures >= threshold` and none is active, the tripping attempt still
+   * reads "Invalid credentials", and a permanent lock stays on while probed.
+   * Keys are a hash of the normalised handle (bounded size); the counter
+   * slides for 30 days of inactivity.
+   */
+  private async failedLoginReadsLocked(
+    ctx: AuthWfCtx,
+    err: UserAuthError,
+    handle: string,
+  ): Promise<boolean> {
+    const mode = this.opts.lockoutDisclosure;
+    if (mode === "generic") return false;
+    if (err.type === "LOCKED") return true;
+    if (mode !== "uniform" || (err.type !== "NOT_FOUND" && err.type !== "INACTIVE")) return false;
+    const { threshold, duration } = {
+      ...this.users.getConfig().lockout,
+      ...this.lockoutOverride(ctx),
+    };
+    if (threshold <= 0) return false;
+    const store = this.opts.lockoutShadowStore;
+    const id = createHash("sha256").update(handle.trim().toLowerCase()).digest("base64url");
+    const lockKey = `${SHADOW_LOCK_PREFIX}${id}`;
+    if (store.get && (await store.get(lockKey)) > 0) {
+      // A permanent lock never lapses while someone keeps trying.
+      if (duration <= 0) await store.expire?.(lockKey, SHADOW_TTL_MS);
+      return true;
+    }
+    const failKey = `shadow-fail:${id}`;
+    const failures = await store.hit(failKey, SHADOW_TTL_MS);
+    // A fresh counter already got the full TTL from `hit`; later ones slide.
+    if (failures > 1) await store.expire?.(failKey, SHADOW_TTL_MS);
+    if (!store.get) return failures > threshold; // no lock key without reads: count only
+    if (failures >= threshold) {
+      await store.hit(lockKey, duration > 0 ? duration : SHADOW_TTL_MS);
+    }
+    return false;
   }
 
   /**
@@ -2423,7 +2612,7 @@ export class AuthWorkflow {
   private finishGenericRecovery(): void {
     finishWf({
       data: { sent: true },
-      message: { level: "info", text: "If an account exists, you will receive instructions." },
+      message: { level: "info", text: this.msg("RECOVERY_INSTRUCTIONS_SENT") },
     });
   }
 
@@ -2720,8 +2909,8 @@ export class AuthWorkflow {
     const roles = await this.getAvailableRoles();
     if (roles) {
       (ctx.admin ??= {}).availableRoles = roles;
-    } else if (!this.warnedOpenInviteWhitelist && this.inviteWhitelistIsOpen()) {
-      this.warnedOpenInviteWhitelist = true;
+    } else if (!warnedOnce.openInviteWhitelist && this.inviteWhitelistIsOpen()) {
+      warnedOnce.openInviteWhitelist = true;
       useLogger("aooth:auth", current()).warn(
         "Invite role whitelist is OFF — the admin invite form can assign ANY role, " +
           "including privileged ones. Set `invitableRoles` (intersected with the " +
@@ -2820,33 +3009,49 @@ export class AuthWorkflow {
   @ArbacAction("start")
   async adminForm(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
     const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.invite);
-    const input = wf.resolveInput() as {
+    const { email, roles, ...extra } = wf.resolveInput() as {
       email: string;
       roles: string[];
-    };
-    const email = input.email;
-    const parsed = this.effectiveInviteRoles(ctx, input.roles);
+    } & Record<string, unknown>;
+    const parsed = this.effectiveInviteRoles(ctx, roles);
     if (Array.isArray(ctx.admin?.availableRoles)) {
       const allowed = new Set(ctx.admin.availableRoles);
       const bad = parsed.find((r) => !allowed.has(r));
       if (bad !== undefined) {
-        throw this.throwPublic(ctx, wf, { errors: { roles: "Invalid role" } });
+        throw this.throwPublic(ctx, wf, { errors: { roles: this.msg("INVALID_ROLE") } });
       }
     }
+    if (Object.keys(extra).length > 0) (ctx.admin ??= {}).form = extra;
     const existing = await this.users.findByHandle(email);
-    const action = await this.duplicateInviteCheck({ email, existingUser: existing });
+    const invitedBy = useAuth().getAuthContext()?.userId;
+    const pendingIssuer = existing?.account?.pendingInvitation
+      ? existing.account.invitedBy
+      : undefined;
+    if (invitedBy) (ctx.admin ??= {}).invitedBy = invitedBy;
+    const action = await this.duplicateInviteCheck({
+      email,
+      existingUser: existing,
+      ...this.inviteHookInput(ctx),
+      ...(existing?.account?.pendingInvitation && {
+        pending: pendingIssuer === undefined ? {} : { invitedBy: pendingIssuer },
+      }),
+    });
     if (action === "reject") {
       if (existing?.account?.pendingInvitation) {
-        throw this.throwPublic(ctx, wf, { errors: { email: "Invite already pending" } });
+        throw this.throwPublic(ctx, wf, { errors: { email: this.msg("INVITE_ALREADY_PENDING") } });
       }
-      if (existing) throw this.throwPublic(ctx, wf, { errors: { email: "User already exists" } });
-      throw this.throwPublic(ctx, wf, { errors: { email: "Duplicate invite rejected" } });
+      if (existing)
+        throw this.throwPublic(ctx, wf, { errors: { email: this.msg("USER_ALREADY_EXISTS") } });
+      throw this.throwPublic(ctx, wf, { errors: { email: this.msg("DUPLICATE_INVITE_REJECTED") } });
     }
     if (action === "reuse") {
       // Decision stamp only — `create-user` re-validates against a fresh read
       // (pending-invitation guard + vanished-row fall-through), so a stale or
       // wrong verdict can't silently re-pend an accepted account.
       (ctx.admin ??= {}).reuseExisting = true;
+      if (pendingIssuer !== undefined && invitedBy !== undefined && pendingIssuer !== invitedBy) {
+        this.warnCrossIssuerReuse();
+      }
     }
     ctx.email = email;
     if (parsed.length > 0) (ctx.admin ??= {}).roles = parsed;
@@ -2862,7 +3067,7 @@ export class AuthWorkflow {
   @ArbacAction("start")
   async inferRoles(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     if (!ctx.email) return undefined;
-    const inferred = await this.inferAdminRoles({ email: ctx.email });
+    const inferred = await this.inferAdminRoles({ email: ctx.email, ...this.inviteHookInput(ctx) });
     if (inferred.length === 0) return undefined;
     const admin = (ctx.admin ??= {});
     const merged = new Set<string>([...(admin.roles ?? []), ...inferred]);
@@ -2880,14 +3085,34 @@ export class AuthWorkflow {
   @ArbacAction("start")
   async buildUserExtras(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     if (!ctx.email) throw new HttpError(500, "Workflow state corrupted: missing email");
-    const invitedBy = useAuth().getAuthContext()?.userId;
+    // Stamped by `admin-form`; a resumed run whose admin-form predates it
+    // falls back to the session.
+    const invitedBy = ctx.admin?.invitedBy ?? useAuth().getAuthContext()?.userId;
+    if (invitedBy) (ctx.admin ??= {}).invitedBy = invitedBy;
     const preparedInput = {
       email: ctx.email,
       roles: ctx.admin?.roles ?? [],
-      ...(invitedBy && { invitedBy }),
+      ...this.inviteHookInput(ctx),
     };
-    const extras = await this.prepareUser(preparedInput);
+    // A falsy result means "no extras" — never a reason to skip creating the user.
+    const extras = (await this.prepareUser(preparedInput)) ?? {};
     (ctx.admin ??= {}).userExtras = extras;
+    return undefined;
+  }
+
+  /**
+   * Invariant of the invite issue phase: once the admin form is accepted, the
+   * pending user must exist before the link is sent. An issue phase that ends
+   * without one (a broken override, a store that silently dropped the row) is
+   * a server error — never a bare `{ finished: true }`.
+   */
+  @Step("assert-invite-created")
+  @ArbacResource("auth.invite")
+  @ArbacAction("start")
+  assertInviteCreated(@WorkflowParam("context") ctx: AuthWfCtx): undefined {
+    if (ctx.email && !ctx.subject) {
+      throw new HttpError(500, "Invite issue failed: the invited user was not created");
+    }
     return undefined;
   }
 
@@ -2914,20 +3139,29 @@ export class AuthWorkflow {
   @ArbacAction("start")
   async createUser(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     if (!ctx.email) throw new HttpError(500, "Workflow state corrupted: missing email");
-    const adminRoles = ctx.admin?.roles;
+    const admin = (ctx.admin ??= {});
+    const adminRoles = admin.roles;
     const fields: Record<string, unknown> = {
-      ...ctx.admin?.userExtras,
+      ...admin.userExtras,
       ...(adminRoles && adminRoles.length > 0 && { roles: adminRoles }),
     };
-    if (ctx.admin?.reuseExisting) {
+    // A fresh marker per issued link: a later re-invite rotates the row's
+    // marker, which supersedes this run's link (checked at accept).
+    admin.inviteNonce = randomBytes(16).toString("base64url");
+    const pendingAccount = {
+      pendingInvitation: true,
+      inviteNonce: admin.inviteNonce,
+      ...(admin.invitedBy && { invitedBy: admin.invitedBy }),
+    };
+    if (admin.reuseExisting) {
       const existing = await this.users.findByHandle(ctx.email);
       if (existing) {
         if (!existing.account?.pendingInvitation) {
-          throw new HttpError(409, "User already exists");
+          throw this.httpError(409, "USER_ALREADY_EXISTS");
         }
         await this.users.update(existing.id, {
           ...fields,
-          account: { pendingInvitation: true },
+          account: pendingAccount,
         } as Partial<UserCredentials>);
         ctx.subject = existing.id;
         return undefined;
@@ -2938,12 +3172,12 @@ export class AuthWorkflow {
       created = await this.users.createUser(ctx.email, undefined, fields);
     } catch (err) {
       if (err instanceof UserAuthError && err.type === "ALREADY_EXISTS") {
-        throw new HttpError(409, "User already exists");
+        throw this.httpError(409, "USER_ALREADY_EXISTS");
       }
       throw err;
     }
     await this.users.update(created.id, {
-      account: { pendingInvitation: true },
+      account: pendingAccount,
     } as Partial<UserCredentials>);
     // The subject is the stable id (NOT the email handle) — downstream steps
     // resolve the user via id-keyed UserService calls.
@@ -2977,13 +3211,41 @@ export class AuthWorkflow {
     const admin = (ctx.admin ??= {});
     if (admin.emailDispatched) return undefined;
     admin.emailDispatched = true;
+    const mode = this.opts.inviteDelivery;
+    admin.inviteDelivery = mode;
     // swap BEFORE the email-outlet pause so the magic-link token is a durable store handle the invitee can resume days later; the admin-form pause before this stayed encapsulated
     swapStrategy("store");
-    return outletEmail(ctx.email as string, "invite.magicLink", {
-      username: ctx.email,
-      ...(ctx.subject && { userId: ctx.subject }),
-      ...(admin.roles && { roles: admin.roles }),
+    const email = ctx.email as string;
+    if (mode === "outlet-email") {
+      return outletEmail(email, "invite.magicLink", {
+        username: email,
+        ...(ctx.subject && { userId: ctx.subject }),
+        ...(admin.roles && { roles: admin.roles }),
+      });
+    }
+    // `deliver` / `return-link`: the resume token exists only once this pause
+    // is persisted, so hand the `invite` outlet a callback that turns it into
+    // the link and delivers (or returns) it.
+    const buildUrl = this.opts.inviteLinkUrl;
+    if (!buildUrl) {
+      throw new HttpError(500, `inviteDelivery '${mode}' requires AuthWorkflowOpts.inviteLinkUrl`);
+    }
+    const userId = ctx.subject;
+    setPendingInviteLink(async (token) => {
+      const url = buildUrl(token, { ...(userId && { userId }) });
+      if (mode === "return-link") {
+        return { outlet: "invite", data: { inviteLink: url, ...(userId && { userId }) } };
+      }
+      await this.deliver({
+        kind: "invite-link",
+        channel: "email",
+        recipient: email,
+        url,
+        expiresInMs: INVITE_LINK_TTL_MS,
+      });
+      return { sent: true, outlet: "invite" };
     });
+    return outlet(INVITE_OUTLET, { target: email });
   }
 
   // ── Invite accept-tail (5) ──
@@ -2996,16 +3258,80 @@ export class AuthWorkflow {
   @Step("check-pending-invitation")
   @Public()
   async checkPendingInvitation(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
-    if (!ctx.subject) {
-      throw new HttpError(500, "Workflow state corrupted: missing subject at accept");
-    }
-    const existing = await this.users.findByIdentifier(ctx.subject);
-    if (!existing) {
-      throw new HttpError(410, "This invite has been cancelled");
-    }
+    // The superseded check comes FIRST, so a superseded link never reaches the
+    // already-accepted envelope (or anything after it) once the newer link
+    // was accepted.
+    const existing = await this.currentInviteRow(ctx);
     if (!existing.account?.pendingInvitation) {
+      // `idempotent-redirect` renders the envelope; the schema then breaks.
       (ctx.accept ??= {}).alreadyAccepted = true;
     }
+    return undefined;
+  }
+
+  /**
+   * Username policy for `inviteUsername: 'choose'`, applied to the normalised
+   * (NFKC, trimmed) pick. Return a message code to refuse it. Default: at most
+   * 256 characters, no whitespace or control characters, and no `@` unless it
+   * is the invited address itself — a chosen name must not look like someone
+   * else's email handle (sign-in resolves `username` before email columns).
+   */
+  protected validateChosenUsername(ctx: AuthWfCtx, username: string): AoothMessageCode | undefined {
+    if (username.length === 0 || username.length > 256) return "USERNAME_NOT_ALLOWED";
+    // oxlint-disable-next-line no-control-regex
+    if (/[\s\u0000-\u001f\u007f]/.test(username)) return "USERNAME_NOT_ALLOWED";
+    if (username.includes("@") && username.toLowerCase() !== ctx.email?.toLowerCase()) {
+      return "USERNAME_NOT_ALLOWED";
+    }
+    return undefined;
+  }
+
+  /**
+   * The invited account, refusing a cancelled invite (410 `INVITE_CANCELLED`,
+   * the row is gone) or a superseded link (410 `INVITE_REPLACED`, a re-invite
+   * rotated the account's marker away from this run's).
+   */
+  private async currentInviteRow(ctx: AuthWfCtx): Promise<UserCredentials> {
+    this.requireSubject(ctx);
+    const user = await this.users.findByIdentifier(ctx.subject);
+    if (!user) throw this.httpError(410, "INVITE_CANCELLED");
+    const current = user.account?.inviteNonce;
+    if (current !== undefined && current !== ctx.admin?.inviteNonce) {
+      throw this.httpError(410, "INVITE_REPLACED");
+    }
+    return user;
+  }
+
+  /**
+   * Re-check, right before an invite-accept write, that this run's link is
+   * still the current one and the invite is still pending — a re-invite or a
+   * parallel acceptance may have happened while this run was paused.
+   */
+  private async assertInviteStillOpen(ctx: AuthWfCtx): Promise<void> {
+    const user = await this.currentInviteRow(ctx);
+    if (!user.account?.pendingInvitation) throw this.httpError(410, "INVITE_ALREADY_ACCEPTED");
+  }
+
+  /**
+   * `inviteUsername: 'choose'` — the invitee picks the username they will
+   * sign in with (the invited email stays the correspondence address). The
+   * pick replaces the account's login handle; a taken one re-pauses.
+   */
+  @Step("choose-username")
+  @Public()
+  async chooseUsername(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    this.requireSubject(ctx);
+    const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.inviteChooseUsername);
+    const username = normalizeUsername((wf.resolveInput() as { username: string }).username);
+    await this.assertInviteStillOpen(ctx);
+    const refused = this.validateChosenUsername(ctx, username);
+    if (refused) throw this.throwPublic(ctx, wf, { errors: { username: this.msg(refused) } });
+    const taken = await this.users.findByHandle(username);
+    if (taken && taken.id !== ctx.subject) {
+      throw this.throwPublic(ctx, wf, { errors: { username: this.msg("CHOOSE_USERNAME_TAKEN") } });
+    }
+    await this.users.update(ctx.subject, { username });
+    (ctx.accept ??= {}).usernameChosen = true;
     return undefined;
   }
 
@@ -3020,6 +3346,7 @@ export class AuthWorkflow {
       buildInviteAlreadyAcceptedEnvelope({
         loginUrl: ctx.accept!.loginUrl!,
         alreadyAcceptedRedirectUrl: ctx.accept!.alreadyAcceptedRedirectUrl!,
+        ...(this.opts.messages !== undefined && { messages: this.opts.messages }),
       }),
     );
     return undefined;
@@ -3032,9 +3359,12 @@ export class AuthWorkflow {
   @Public()
   async unsetPendingInvitation(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     this.requireSubject(ctx);
-    await this.users.update(ctx.subject, {
-      account: { pendingInvitation: false },
-    } as Partial<UserCredentials>);
+    // Compare-and-set: only this run's (current) link of a still-pending
+    // invite may accept it — a superseded or already-used link gets 410.
+    if (!(await this.users.acceptInvitation(ctx.subject, ctx.admin?.inviteNonce))) {
+      await this.assertInviteStillOpen(ctx);
+      throw this.httpError(410, "INVITE_ALREADY_ACCEPTED");
+    }
     return undefined;
   }
 
@@ -3043,10 +3373,19 @@ export class AuthWorkflow {
   @Public()
   async activateUser(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     this.requireSubject(ctx);
+    // Invite accept: `unset-pending-invitation` just accepted THIS link — a
+    // re-invite racing in between rotated the marker; refuse then.
+    if (ctx.accept) await this.currentInviteRow(ctx);
     // The invite magic-link click (or signup's pre-create OTP — this step is
     // reused there) proved this inbox — record the correspondence address in
     // the same write that flips the account active.
-    await this.users.activateAccount(ctx.subject, ctx.email ? { verifiedEmail: ctx.email } : {});
+    // Not when the link went back to the issuer (`return-link`: a click proves
+    // nothing about the inbox), and only for an actual email address.
+    const proved =
+      ctx.email && ctx.admin?.inviteDelivery !== "return-link" && EMAIL_SHAPE.test(ctx.email)
+        ? ctx.email
+        : undefined;
+    await this.users.activateAccount(ctx.subject, proved ? { verifiedEmail: proved } : {});
     return undefined;
   }
 
@@ -3096,8 +3435,12 @@ export class AuthWorkflow {
       throw err;
     }
     if (input.newPassword !== input.confirmPassword) {
-      throw this.throwPublic(ctx, wf, { errors: { confirmPassword: "Passwords do not match" } });
+      throw this.throwPublic(ctx, wf, {
+        errors: { confirmPassword: this.msg("PASSWORDS_DO_NOT_MATCH") },
+      });
     }
+    // Invite accept: never set a password through a superseded / used link.
+    if (ctx.accept) await this.assertInviteStillOpen(ctx);
     try {
       await this.users.setPassword(ctx.subject, input.newPassword);
     } catch (err) {
@@ -3150,12 +3493,12 @@ export class AuthWorkflow {
       finishWf({
         message: {
           level: "warn",
-          text: "You changed your password too recently. Please try again later.",
+          text: this.msg("PASSWORD_CHANGE_TOO_RECENT"),
         },
         next: {
           trigger: "manual",
           primary: {
-            label: "Back",
+            label: this.msg("BACK"),
             action: {
               type: "redirect",
               target: this.opts.loginUrl,
@@ -3189,7 +3532,9 @@ export class AuthWorkflow {
       confirmPassword: string;
     };
     if (input.newPassword !== input.confirmPassword) {
-      throw this.throwPublic(ctx, wf, { errors: { confirmPassword: "Passwords do not match" } });
+      throw this.throwPublic(ctx, wf, {
+        errors: { confirmPassword: this.msg("PASSWORDS_DO_NOT_MATCH") },
+      });
     }
     try {
       await this.users.changePassword(
@@ -3230,7 +3575,7 @@ export class AuthWorkflow {
     const envelope: WfFinished = {
       finished: true,
       data: auth.buildLoginResponse(ctx.subject, issue),
-      message: { level: "success", text: "Your password has been changed." },
+      message: { level: "success", text: this.msg("PASSWORD_CHANGED") },
     };
     useWfFinished().set({
       type: "data",
@@ -3328,14 +3673,14 @@ export class AuthWorkflow {
         data: { added: false, reason: "no-methods-available" },
         message: {
           level: "info",
-          text: "You've already set up every available authentication method.",
+          text: this.msg("ALL_MFA_METHODS_SET_UP"),
         },
       };
     } else {
       envelope = {
         finished: true,
         data: { added: false, reason: "cancelled" },
-        message: { level: "info", text: "No changes were made to your two-factor methods." },
+        message: { level: "info", text: this.msg("NO_MFA_CHANGES") },
       };
     }
     return envelope;
@@ -3448,7 +3793,8 @@ export class AuthWorkflow {
     }
     const input = wf.resolveInput() as { password: string };
     const ok = await this.users.verifyPassword(username, input.password);
-    if (!ok) throw this.throwPublic(ctx, wf, { errors: { password: "Incorrect password" } });
+    if (!ok)
+      throw this.throwPublic(ctx, wf, { errors: { password: this.msg("INCORRECT_PASSWORD") } });
     (ctx.otp ??= {}).verified = true;
     return undefined;
   }
@@ -3509,14 +3855,14 @@ export class AuthWorkflow {
     const target = (sep >= 0 ? input.operation.slice(sep + 1) : "") as MfaTransport;
     if (action === "add") {
       if (!candidates.includes(target)) {
-        throw this.throwPublic(ctx, wf, { errors: { operation: "That method isn't available" } });
+        throw this.throwPublic(ctx, wf, { errors: { operation: this.msg("METHOD_UNAVAILABLE") } });
       }
     } else if (action === "replace" || action === "remove") {
       if (locked.has(target)) {
-        throw this.throwPublic(ctx, wf, { formMessage: "That method can't be changed here." });
+        throw this.throwPublic(ctx, wf, { formMessage: this.msg("METHOD_NOT_CHANGEABLE") });
       }
       if (!enrolled.some((e) => e.kind === target)) {
-        throw this.throwPublic(ctx, wf, { errors: { operation: "Unknown method" } });
+        throw this.throwPublic(ctx, wf, { errors: { operation: this.msg("UNKNOWN_METHOD") } });
       }
       // The Remove option was filtered off the menu when blocked — a submitted
       // remove here is a crafted/stale client. Re-pause on the menu (which
@@ -3524,11 +3870,11 @@ export class AuthWorkflow {
       // step's abort-to-finish.
       if (action === "remove" && addMfa.removeBlocked) {
         throw this.throwPublic(ctx, wf, {
-          formMessage: "You must keep at least one two-factor method.",
+          formMessage: this.msg("KEEP_ONE_MFA_METHOD"),
         });
       }
     } else {
-      throw this.throwPublic(ctx, wf, { errors: { operation: "Choose an option" } });
+      throw this.throwPublic(ctx, wf, { errors: { operation: this.msg("CHOOSE_OPTION") } });
     }
     addMfa.action = action;
     addMfa.target = target;
@@ -3682,7 +4028,7 @@ export class AuthWorkflow {
       if (ctx.pincode?.resendAllowedAt && ctx.pincode.resendAllowedAt > Date.now()) {
         const remainingSec = Math.ceil((ctx.pincode.resendAllowedAt - Date.now()) / 1000);
         throw this.throwPublic(ctx, pincodeWf, {
-          formMessage: `Please wait ${remainingSec}s before requesting a new code.`,
+          formMessage: this.msg("RESEND_WAIT", { seconds: remainingSec }),
         });
       }
       const recipient = (isEmail ? ctx.channel?.email : ctx.channel?.phone) as string;
@@ -3899,7 +4245,7 @@ export class AuthWorkflow {
     const mfa = (ctx.mfa ??= {});
     const picked = (mfa.enrolledMethods ?? []).find((m) => m.methodName === input.methodName);
     if (!picked) {
-      throw this.throwPublic(ctx, wf, { errors: { methodName: "Unknown MFA method" } });
+      throw this.throwPublic(ctx, wf, { errors: { methodName: this.msg("UNKNOWN_MFA_METHOD") } });
     }
     if (picked.kind === "sms" || picked.kind === "email") {
       // PER-CHANNEL cooldown — survives `useDifferentMethod` so a user
@@ -3914,7 +4260,7 @@ export class AuthWorkflow {
         // Banner — the user clicked a method radio + Submit, not a `methodName`
         // input. Inline errors on a radio group are misattributed UX.
         throw this.throwPublic(ctx, wf, {
-          formMessage: `Please wait ${waitSec}s before requesting another ${channel} code`,
+          formMessage: this.msg("RESEND_WAIT_CHANNEL", { seconds: waitSec, channel }),
         });
       }
     }
@@ -4031,7 +4377,7 @@ export class AuthWorkflow {
         if (ctx.pincode?.resendAllowedAt && ctx.pincode.resendAllowedAt > Date.now()) {
           const remainingSec = Math.ceil((ctx.pincode.resendAllowedAt - Date.now()) / 1000);
           throw this.throwPublic(ctx, wf, {
-            formMessage: `Please wait ${remainingSec}s before requesting a new code.`,
+            formMessage: this.msg("RESEND_WAIT", { seconds: remainingSec }),
           });
         }
         delete ctx.pin;
@@ -4123,11 +4469,11 @@ export class AuthWorkflow {
       if (err instanceof UserAuthError) {
         if (err.type === "LOCKED") {
           throw this.throwPublic(ctx, wf, {
-            formMessage: "Account locked, please try again later",
+            formMessage: this.msg("ACCOUNT_LOCKED"),
           });
         }
         if (err.type === "INACTIVE") {
-          throw this.throwPublic(ctx, wf, { errors: { code: "Invalid code" } });
+          throw this.throwPublic(ctx, wf, { errors: { code: this.msg("INVALID_CODE") } });
         }
         if (err.type === "MFA_NOT_CONFIGURED") {
           throw new HttpError(400, "No TOTP MFA configured");
@@ -4135,10 +4481,10 @@ export class AuthWorkflow {
         if (err.type === "MFA_INVALID") {
           if (err.details?.lockEnds !== undefined) {
             throw this.throwPublic(ctx, wf, {
-              formMessage: "Account locked, please try again later",
+              formMessage: this.msg("ACCOUNT_LOCKED"),
             });
           }
-          throw this.throwPublic(ctx, wf, { errors: { code: "Invalid code" } });
+          throw this.throwPublic(ctx, wf, { errors: { code: this.msg("INVALID_CODE") } });
         }
         if (err.type === "CAS_EXHAUSTED") throw new HttpError(409, err.message);
       }
@@ -4200,7 +4546,7 @@ export class AuthWorkflow {
       const input = wf.resolveInput() as { method: string };
       const picked = input.method as MfaTransport;
       if (!m.availableTransports.includes(picked)) {
-        throw this.throwPublic(ctx, wf, { errors: { method: "Unknown method" } });
+        throw this.throwPublic(ctx, wf, { errors: { method: this.msg("UNKNOWN_METHOD") } });
       }
       m.method = picked;
     }
@@ -4369,13 +4715,13 @@ export class AuthWorkflow {
     if (this.handleEnrollExit(ctx, action)) return undefined;
     if (action === "resend") {
       if (m.method === "totp") {
-        throw this.throwPublic(ctx, wf, { formMessage: "Resend is not applicable for TOTP" });
+        throw this.throwPublic(ctx, wf, { formMessage: this.msg("TOTP_RESEND_NOT_APPLICABLE") });
       }
       const cooldown = ctx.pincode?.resendAllowedAt;
       if (cooldown && Date.now() < cooldown) {
         const waitSec = Math.ceil((cooldown - Date.now()) / 1000);
         throw this.throwPublic(ctx, wf, {
-          formMessage: `Please wait ${waitSec}s before requesting another code`,
+          formMessage: this.msg("RESEND_WAIT_ANOTHER", { seconds: waitSec }),
         });
       }
       await this.mintAndSendEnrollPincode(ctx, m.address as string);
@@ -4386,7 +4732,7 @@ export class AuthWorkflow {
       // Verify against the wf-state secret (write-on-confirm — no user-record row
       // exists yet). verifyTotpCode returns the matched counter, or null.
       if (verifyTotpCode(m.secret as string, input.code) === null) {
-        throw this.throwPublic(ctx, wf, { errors: { code: "Invalid code" } });
+        throw this.throwPublic(ctx, wf, { errors: { code: this.msg("INVALID_CODE") } });
       }
     } else {
       const pinErr = this.verifyPin(ctx, input.code);
@@ -4407,6 +4753,8 @@ export class AuthWorkflow {
    */
   private async confirmEnrolledFactor(ctx: AuthWfCtx): Promise<void> {
     this.requireSubject(ctx);
+    // Invite accept: no factor lands through a superseded / used link.
+    if (ctx.accept) await this.assertInviteStillOpen(ctx);
     const username = ctx.subject;
     const m = (ctx.mfaEnroll ??= {});
     const methodName = m.method as MfaTransport;
@@ -4647,7 +4995,7 @@ export class AuthWorkflow {
     if (!cfg) return undefined;
     const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.concurrencyLimit);
     if (cfg.onLimit === "reject") {
-      throw this.throwPublic(ctx, wf, { formMessage: "Session limit reached" });
+      throw this.throwPublic(ctx, wf, { formMessage: this.msg("SESSION_LIMIT_REACHED") });
     }
     wf.resolveInput(); // first arrival throws requireInput (pauses); the 'Login' submit resumes here
     if (ctx.subject) await this.logoutOtherSessions(ctx.subject);
@@ -4681,6 +5029,8 @@ export class AuthWorkflow {
     const group = ctx.consents ?? {};
     const pending = group.pending ?? [];
     if (pending.length === 0) return undefined;
+    // Invite accept: no consent record lands through a superseded / used link.
+    if (ctx.accept) await this.assertInviteStillOpen(ctx);
     const accepted = new Set(group.accepted ?? []);
     const at = group.decidedAt ?? Date.now();
     const events = pending.map((p) => {
@@ -4973,7 +5323,7 @@ export class AuthWorkflow {
     const req = authz ? await pending.get(authz.handle) : null;
     if (!authz || !req) {
       finishWf({
-        message: { level: "error", text: "Authorization request expired. Please try again." },
+        message: { level: "error", text: this.msg("AUTHZ_EXPIRED") },
       });
       return undefined;
     }
@@ -4984,7 +5334,7 @@ export class AuthWorkflow {
       finishWf({
         message: {
           level: "error",
-          text: "This authorization could not be verified for your browser. Please start again.",
+          text: this.msg("AUTHZ_BROWSER_MISMATCH"),
         },
       });
       return undefined;
@@ -5061,7 +5411,7 @@ export class AuthWorkflow {
       // The pending authorization expired / is unknown (or a forged `authz`
       // handle) — fail soft: no session, no code.
       finishWf({
-        message: { level: "error", text: "Authorization request expired. Please try again." },
+        message: { level: "error", text: this.msg("AUTHZ_EXPIRED") },
       });
       return undefined;
     }
@@ -5075,7 +5425,7 @@ export class AuthWorkflow {
       finishWf({
         message: {
           level: "error",
-          text: "Authorization could not be completed. Please start again.",
+          text: this.msg("AUTHZ_FAILED"),
         },
       });
       return undefined;
@@ -5166,24 +5516,24 @@ export class AuthWorkflow {
       finishWf({
         message: {
           level: "warn",
-          text: "Password updated, but your account is still locked. Contact an administrator to regain access.",
+          text: this.msg("PASSWORD_UPDATED_STILL_LOCKED"),
         },
         next: {
           trigger: "manual",
           primary: {
-            label: "Back to sign-in",
+            label: this.msg("BACK_TO_SIGN_IN"),
             action: { type: "redirect", target, reason: "reset-locked" },
           },
         },
       });
     } else {
       finishWf({
-        message: { level: "success", text: "Password updated. Redirecting to sign-in…" },
+        message: { level: "success", text: this.msg("PASSWORD_UPDATED_REDIRECTING") },
         next: {
           trigger: "auto",
           timeoutMs: 5000,
           action: { type: "redirect", target, reason: "reset-success" },
-          skipButton: { label: "Go now" },
+          skipButton: { label: this.msg("GO_NOW") },
         },
       });
     }
@@ -5243,7 +5593,7 @@ export class AuthWorkflow {
       ctx.signup = policy;
       ctx.autoLogin = true;
       if (!policy.allowSignup) {
-        finishWf({ message: { level: "info", text: "Self-signup is currently disabled." } });
+        finishWf({ message: { level: "info", text: this.msg("SIGNUP_DISABLED") } });
       }
       return undefined;
     };
@@ -5333,7 +5683,7 @@ export class AuthWorkflow {
   /** Generic "you already have an account" finish for the signup existence collision (safe — only reached post-OTP). */
   private finishSignupAlreadyRegistered(): void {
     finishWf({
-      message: { level: "info", text: "You already have an account. Please sign in." },
+      message: { level: "info", text: this.msg("ALREADY_HAVE_ACCOUNT") },
       next: {
         trigger: "immediate",
         action: { type: "redirect", target: this.opts.loginUrl, reason: "already-registered" },
@@ -5487,7 +5837,7 @@ export class AuthWorkflow {
         throw err;
       }
       finishWf({
-        message: { level: "success", text: "Account linked." },
+        message: { level: "success", text: this.msg("ACCOUNT_LINKED") },
         next: {
           trigger: "immediate",
           action: { type: "redirect", target: redirect, reason: "oauth-linked" },
@@ -5804,7 +6154,7 @@ export class AuthWorkflow {
       if (cooldown && Date.now() < cooldown) {
         const waitSec = Math.ceil((cooldown - Date.now()) / 1000);
         throw this.throwPublic(ctx, wf, {
-          formMessage: `Please wait ${waitSec}s before requesting another code`,
+          formMessage: this.msg("RESEND_WAIT_ANOTHER", { seconds: waitSec }),
         });
       }
       const sentTo = await this.deliverPendingLinkPin(candidate, pending);
@@ -5828,10 +6178,10 @@ export class AuthWorkflow {
       } catch (err) {
         if (err instanceof UserAuthError && err.type === "LOCKED") {
           throw this.throwPublic(ctx, wf, {
-            formMessage: "Account locked, please try again later",
+            formMessage: this.msg("ACCOUNT_LOCKED"),
           });
         }
-        throw this.throwPublic(ctx, wf, { errors: { password: "Invalid password" } });
+        throw this.throwPublic(ctx, wf, { errors: { password: this.msg("INVALID_PASSWORD") } });
       }
     }
 
@@ -6074,6 +6424,7 @@ export class AuthWorkflow {
       id: "create-user",
       condition: (ctx) => !!(ctx.email && !ctx.subject && !!ctx.admin?.userExtras),
     },
+    { id: "assert-invite-created", condition: (ctx) => !!ctx.email && !ctx.subject },
     { id: "send-email", condition: (ctx) => !!ctx.subject },
 
     // ── Phase B: anonymous magic-link resume (all public) ──
@@ -6084,6 +6435,12 @@ export class AuthWorkflow {
         { id: "prepare-accept" },
         { id: "check-pending-invitation" },
         { id: "idempotent-redirect", condition: (ctx) => !!ctx.accept?.alreadyAccepted },
+        // `finishWf()` only sets the finish envelope — stop the accept tail here.
+        { break: (ctx) => !!ctx.accept?.alreadyAccepted },
+        {
+          id: "choose-username",
+          condition: (ctx) => !!ctx.accept?.chooseUsername && !ctx.accept?.usernameChosen,
+        },
         { id: "prepare-consents" },
         { id: "prepare-semantic-flags" }, // idempotent re-write
 

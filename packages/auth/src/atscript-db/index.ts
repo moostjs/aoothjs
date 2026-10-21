@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { credentialPayloadOf } from "../credential/payload";
-import type { CredentialState, CredentialSuccessorRef } from "../credential/types";
+import { AuthError } from "../errors";
+import type {
+  CredentialMetadata,
+  CredentialState,
+  CredentialSuccessorRef,
+} from "../credential/types";
 import type { CredentialStore } from "../stores/store";
 
 // Durable authorization-server stores (AUTH-SERVER.md §4.3) — same atscript-db
@@ -59,19 +64,101 @@ export interface AuthCredentialTable<TPayload extends object = object> {
    * stamp `lastSeenAt` without re-reading the row. Never inserts.
    */
   updateOne?(patch: { token: string; lastSeenAt: number }): Promise<unknown>;
+  /**
+   * The table's annotated model (atscript-db's `table.type`). Read once to
+   * find the `@aooth.auth.metadata` column when `metadataField` is not given.
+   */
+  readonly type?: unknown;
 }
 
 interface CredentialStoreAtscriptDbOptions<TPayload extends object> {
   table: AuthCredentialTable<TPayload>;
   /**
-   * Name of the consumer's `@aooth.auth.metadata`-annotated column — the
-   * fully-typed `@db.json` field declared on their `extends AoothAuthCredential`
-   * model that persists the envelope's `metadata`. Resolved at boot by
-   * `getAoothCredentialMetadataSpec` (`@aooth/arbac-moost/atscript`) and
-   * threaded here as plain config — same pattern as `UserStore.handleFields`.
-   * Absent → metadata is not persisted/read by this store.
+   * Column that persists the envelope's `metadata` — the consumer's
+   * `@aooth.auth.metadata` + `@db.json` field on their `extends
+   * AoothAuthCredential` model. Default: resolved automatically from
+   * `table.type` (see {@link getAoothCredentialMetadataSpec}). `false` = no
+   * metadata column (explicit opt-out).
+   *
+   * Without a column the store FAILS CLOSED: persisting a credential whose
+   * metadata carries a per-token restriction (`accessTtl`, `refreshRotation`,
+   * `rotationGraceMs`, `credentialKind`, `authzClientId`) throws `AuthError('INVALID_CONFIG')` — dropping
+   * it would let e.g. a fixed-lifetime token family slide forever. Other
+   * metadata (ip, user agent, label…) is dropped with a one-time warning.
    */
-  metadataField?: string;
+  metadataField?: string | false;
+  /** Receives configuration warnings. Default: `console.warn`. */
+  onWarning?: (message: string) => void;
+}
+
+/**
+ * Metadata keys that carry per-token authority — losing them on a store
+ * without a metadata column would silently widen what the token can do.
+ */
+export const AUTHORITY_METADATA_KEYS = [
+  "accessTtl",
+  "refreshRotation",
+  "rotationGraceMs",
+  "credentialKind",
+  "authzClientId",
+] as const satisfies readonly (keyof CredentialMetadata)[];
+
+/** Resolved credential-metadata column of a credential model (see {@link getAoothCredentialMetadataSpec}). */
+export interface AoothCredentialMetadataSpec {
+  /** The `@aooth.auth.metadata` + `@db.json` field, or `undefined`. */
+  metadataField: string | undefined;
+  /** Non-fatal misconfiguration notes (an annotated field without `@db.json`). */
+  warnings: string[];
+}
+
+interface StructuralAnnotatedType {
+  type?: { kind?: string; props?: Map<string, { metadata?: { get(key: string): unknown } }> };
+}
+
+const specCache = new WeakMap<object, AoothCredentialMetadataSpec>();
+
+/**
+ * Find the credential-metadata column of a credential model: the field
+ * annotated `@aooth.auth.metadata` (registered by `arbacPlugin`) that also
+ * carries `@db.json`. An annotated field without `@db.json` resolves to
+ * `undefined` with a warning; more than one annotated field throws. Cached
+ * per model.
+ */
+export function getAoothCredentialMetadataSpec(
+  credentialType: unknown,
+): AoothCredentialMetadataSpec {
+  const typed = credentialType as StructuralAnnotatedType | null;
+  const cacheable = typed !== null && typeof typed === "object";
+  if (cacheable) {
+    const cached = specCache.get(typed);
+    if (cached) return cached;
+  }
+  const spec: AoothCredentialMetadataSpec = { metadataField: undefined, warnings: [] };
+  const def = typed?.type;
+  if (def?.kind === "object" && def.props) {
+    const candidates: Array<{ field: string; json: boolean }> = [];
+    for (const [field, prop] of def.props) {
+      if (prop.metadata?.get("aooth.auth.metadata")) {
+        candidates.push({ field, json: Boolean(prop.metadata.get("db.json")) });
+      }
+    }
+    if (candidates.length > 1) {
+      throw new Error(
+        `getAoothCredentialMetadataSpec: multiple @aooth.auth.metadata fields declared (${candidates
+          .map((c) => c.field)
+          .join(", ")}) — keep the annotation on exactly one field.`,
+      );
+    }
+    const [only] = candidates;
+    if (only?.json) spec.metadataField = only.field;
+    else if (only) {
+      spec.warnings.push(
+        `@aooth.auth.metadata on field "${only.field}" has no @db.json — credential metadata will not be persisted. Add @db.json to the field.`,
+      );
+    }
+  }
+  if (cacheable) specCache.set(typed, spec);
+  return spec;
 }
 
 /**
@@ -92,17 +179,57 @@ export class CredentialStoreAtscriptDb<
 > implements CredentialStore<TPayload> {
   private readonly table: AuthCredentialTable<TPayload>;
   private readonly metadataField: string | undefined;
+  private readonly optedOut: boolean;
+  private readonly warn: (message: string) => void;
+  private warnedDroppedMetadata = false;
 
   constructor(opts: CredentialStoreAtscriptDbOptions<TPayload>) {
     this.table = opts.table;
-    this.metadataField = opts.metadataField;
+    this.warn = opts.onWarning ?? ((message) => console.warn(`[aooth] ${message}`));
+    this.optedOut = opts.metadataField === false;
+    if (typeof opts.metadataField === "string") {
+      this.metadataField = opts.metadataField;
+    } else if (!this.optedOut && opts.table.type !== undefined) {
+      const spec = getAoothCredentialMetadataSpec(opts.table.type);
+      for (const warning of spec.warnings) this.warn(warning);
+      this.metadataField = spec.metadataField;
+    }
+  }
+
+  /**
+   * No metadata column: refuse a state whose metadata carries per-token
+   * authority (fail closed); drop the rest with a one-time warning.
+   */
+  private checkMetadata(state: CredentialState): void {
+    if (this.metadataField !== undefined || state.metadata === undefined) return;
+    const meta = state.metadata as Record<string, unknown>;
+    const lost = AUTHORITY_METADATA_KEYS.filter((k) => meta[k] !== undefined);
+    if (lost.length > 0) {
+      throw new AuthError(
+        "INVALID_CONFIG",
+        `CredentialStoreAtscriptDb has no metadata column, so this credential's restrictions (${lost.join(
+          ", ",
+        )}) would be lost. Declare an @aooth.auth.metadata @db.json field on the credential model (or pass metadataField).`,
+      );
+    }
+    if (!this.optedOut && !this.warnedDroppedMetadata) {
+      this.warnedDroppedMetadata = true;
+      this.warn(
+        "CredentialStoreAtscriptDb has no metadata column — credential metadata (ip, user agent, label…) is not persisted. Declare an @aooth.auth.metadata @db.json field on the credential model, or pass metadataField: false to silence this.",
+      );
+    }
   }
 
   async persist(state: CredentialState & TPayload, ttl?: number): Promise<string> {
     const token = randomUUID();
-    const expiresAt = typeof ttl === "number" ? Date.now() + ttl : state.expiresAt;
-    await this.table.insertOne(stateToRow(state, token, expiresAt, this.metadataField));
+    await this.persistAs(token, state, ttl);
     return token;
+  }
+
+  async persistAs(id: string, state: CredentialState & TPayload, ttl?: number): Promise<void> {
+    this.checkMetadata(state);
+    const expiresAt = typeof ttl === "number" ? Date.now() + ttl : state.expiresAt;
+    await this.table.insertOne(stateToRow(state, id, expiresAt, this.metadataField));
   }
 
   async retrieve(token: string): Promise<(CredentialState & TPayload) | null> {
@@ -124,6 +251,7 @@ export class CredentialStoreAtscriptDb<
   }
 
   async update(token: string, state: CredentialState & TPayload): Promise<string> {
+    this.checkMetadata(state);
     const existing = await this.table.findOne({ filter: { token } });
     if (!existing) {
       // Mirror the memory/Redis stores: unknown tokens are no-ops.

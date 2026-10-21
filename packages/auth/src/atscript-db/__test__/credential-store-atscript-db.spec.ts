@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import type { CredentialState } from "../../credential/types";
-import { CredentialStoreAtscriptDb } from "../index";
+import { AuthError } from "../../errors";
+import { CredentialStoreAtscriptDb, getAoothCredentialMetadataSpec } from "../index";
 import { MockTable } from "./mock-table";
 
 function makeState(userId: string, overrides?: Partial<CredentialState>): CredentialState {
@@ -374,5 +375,117 @@ describe("CredentialStoreAtscriptDb — TTL expiry", () => {
     row.expiresAt = Date.now() - 1;
     expect(await store.retrieve(token)).toBeNull();
     expect(table.rows.has(token)).toBe(false);
+  });
+});
+
+describe("CredentialStoreAtscriptDb — metadata column resolution (S4)", () => {
+  /** Structural stand-in for atscript-db's `table.type`. */
+  function modelWith(fields: Record<string, Record<string, unknown>>) {
+    return {
+      type: {
+        kind: "object",
+        props: new Map(
+          Object.entries(fields).map(([name, md]) => [
+            name,
+            { metadata: new Map(Object.entries(md)) },
+          ]),
+        ),
+      },
+    };
+  }
+  const annotated = { "aooth.auth.metadata": true, "db.json": true };
+
+  function tableOf(type?: unknown): MockTable {
+    const table = new MockTable();
+    if (type) Object.assign(table, { type });
+    return table;
+  }
+
+  it("resolves the @aooth.auth.metadata column from table.type without config", async () => {
+    const table = tableOf(modelWith({ token: {}, sessionMeta: annotated }));
+    const store = new CredentialStoreAtscriptDb({ table, onWarning: () => {} });
+    const metadata = { ip: "10.0.0.1", refreshRotation: "always" as const };
+    const token = await store.persist(makeState("alice", { metadata }));
+    expect((table.rows.get(token) as Record<string, unknown>).sessionMeta).toEqual(metadata);
+    expect((await store.retrieve(token))?.metadata).toEqual(metadata);
+  });
+
+  it.each([
+    ["no column on the model", { table: tableOf(modelWith({ token: {} })) }],
+    ["an explicit metadataField: false", { table: tableOf(), metadataField: false as const }],
+  ])("fails closed on per-token restrictions with %s", async (_label, opts) => {
+    const store = new CredentialStoreAtscriptDb({ ...opts, onWarning: () => {} });
+    for (const metadata of [
+      { refreshRotation: "always" as const },
+      { accessTtl: 900_000 },
+      { credentialKind: "pat" },
+      { authzClientId: "cli" },
+    ]) {
+      const err = await store.persist(makeState("alice", { metadata })).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(AuthError);
+      expect((err as AuthError).type).toBe("INVALID_CONFIG");
+    }
+    expect(opts.table.rows.size).toBe(0);
+  });
+
+  it("drops other metadata with a single warning (none when opted out)", async () => {
+    const warnings: string[] = [];
+    const store = new CredentialStoreAtscriptDb({
+      table: tableOf(),
+      onWarning: (m) => warnings.push(m),
+    });
+    await store.persist(makeState("alice", { metadata: { ip: "1.1.1.1" } }));
+    await store.persist(makeState("bob", { metadata: { ip: "2.2.2.2" } }));
+    expect(warnings).toHaveLength(1);
+    const quiet: string[] = [];
+    const optedOut = new CredentialStoreAtscriptDb({
+      table: tableOf(),
+      metadataField: false,
+      onWarning: (m) => quiet.push(m),
+    });
+    await optedOut.persist(makeState("alice", { metadata: { ip: "1.1.1.1" } }));
+    expect(quiet).toEqual([]);
+  });
+
+  it("discovers the annotated column name-agnostically", () => {
+    expect(getAoothCredentialMetadataSpec(modelWith({ token: {}, metadata: annotated }))).toEqual({
+      metadataField: "metadata",
+      warnings: [],
+    });
+    expect(
+      getAoothCredentialMetadataSpec(modelWith({ sessionMeta: annotated })).metadataField,
+    ).toBe("sessionMeta");
+  });
+
+  it("no annotated field → undefined without warnings", () => {
+    expect(
+      getAoothCredentialMetadataSpec(modelWith({ token: {}, grants: { "db.json": true } })),
+    ).toEqual({ metadataField: undefined, warnings: [] });
+  });
+
+  it("throws on more than one @aooth.auth.metadata field", () => {
+    expect(() =>
+      getAoothCredentialMetadataSpec(modelWith({ metadata: annotated, altMetadata: annotated })),
+    ).toThrow(/multiple @aooth\.auth\.metadata/);
+  });
+
+  it("caches per model and tolerates non-object models", () => {
+    const model = modelWith({ metadata: annotated });
+    expect(getAoothCredentialMetadataSpec(model)).toBe(getAoothCredentialMetadataSpec(model));
+    expect(getAoothCredentialMetadataSpec({ type: { kind: "string" } })).toEqual({
+      metadataField: undefined,
+      warnings: [],
+    });
+    expect(getAoothCredentialMetadataSpec(null).metadataField).toBeUndefined();
+  });
+
+  it("an annotated field without @db.json is not used and warns", () => {
+    const spec = getAoothCredentialMetadataSpec(
+      modelWith({ meta: { "aooth.auth.metadata": true } }),
+    );
+    expect(spec.metadataField).toBeUndefined();
+    expect(spec.warnings).toHaveLength(1);
+    expect(spec.warnings[0]).toMatch(/@aooth\.auth\.metadata/);
+    expect(spec.warnings[0]).toMatch(/no @db\.json/);
   });
 });

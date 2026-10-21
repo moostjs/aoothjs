@@ -1,12 +1,13 @@
 import type { TArbacRole } from "@aooth/arbac-moost";
 import { type AuthContext, AuthCredential, CredentialStoreMemory } from "@aooth/auth";
 import { UserService } from "@aooth/user";
-import { Controller, Inherit, Optional } from "moost";
+import { Controller, getMoostMate, Inherit, Optional } from "moost";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { AuthController } from "../auth.controller";
 import type { AuthLoginResponse } from "../auth.dto";
-import { type MyClaims, prepareControllerApp } from "./controller-utils";
+import type { TRateLimitMeta } from "../rate-limit/mate";
+import { type MyClaims, parseCookieValue, prepareControllerApp } from "./controller-utils";
 
 // A consumer subclass — the real downstream shape (extend AuthController, add
 // app workflows). Defined once at module scope so its moost/infact identity is
@@ -145,6 +146,10 @@ describe("AuthController", () => {
     });
 
     it("rotates tokens when given a body refreshToken", async () => {
+      // Token client (no cookie transport) → tokens come back in the body.
+      const tokenApp = await prepareControllerApp({ enableCookie: false });
+      ({ refreshToken, userId } = await seedAndIssue(tokenApp, "alice", "Password123"));
+      app = tokenApp;
       const res = await app.request("/auth/refresh", {
         method: "POST",
         json: { refreshToken },
@@ -168,7 +173,56 @@ describe("AuthController", () => {
       expect(res.status).toBe(201);
       const body = res.body as AuthLoginResponse;
       expect(body.userId).toBe(userId);
+      const access = res.setCookies.find((c) => c.startsWith("aooth_session="));
+      expect(access && parseCookieValue(access, "aooth_session")).toBeTruthy();
+    });
+
+    it("S3: cookie transport keeps tokens out of the refresh body by default", async () => {
+      const cookieApp = await prepareControllerApp({ enableCookie: true });
+      const seeded = await seedAndIssue(cookieApp, "bob", "Password123");
+      const res = await cookieApp.request("/auth/refresh", {
+        method: "POST",
+        headers: { cookie: `aooth_refresh=${seeded.refreshToken}` },
+        json: {},
+      });
+      expect(res.status).toBe(201);
+      const body = res.body as AuthLoginResponse;
+      expect(body.userId).toBe(seeded.userId);
+      expect(body.accessToken).toBeUndefined();
+      expect(body.refreshToken).toBeUndefined();
+      expect(res.setCookies.some((c) => c.startsWith("aooth_session="))).toBe(true);
+    });
+
+    it("S3: exposeTokensInBody: true opts a cookie app back into body tokens", async () => {
+      const both = await prepareControllerApp({ enableCookie: true, exposeTokensInBody: true });
+      const seeded = await seedAndIssue(both, "carol", "Password123");
+      const res = await both.request("/auth/refresh", {
+        method: "POST",
+        headers: { cookie: `aooth_refresh=${seeded.refreshToken}` },
+        json: {},
+      });
+      const body = res.body as AuthLoginResponse;
       expect(typeof body.accessToken).toBe("string");
+      expect(typeof body.refreshToken).toBe("string");
+    });
+
+    it("M2: a refresh token sent in the BODY gets the rotated pair back in the body", async () => {
+      const cookieApp = await prepareControllerApp({ enableCookie: true });
+      const seeded = await seedAndIssue(cookieApp, "dave", "Password123");
+      const res = await cookieApp.request("/auth/refresh", {
+        method: "POST",
+        json: { refreshToken: seeded.refreshToken },
+      });
+      expect(res.status).toBe(201);
+      const body = res.body as AuthLoginResponse;
+      expect(typeof body.accessToken).toBe("string");
+      expect(typeof body.refreshToken).toBe("string");
+      // ...and the client keeps its session: the new refresh token rotates again.
+      const next = await cookieApp.request("/auth/refresh", {
+        method: "POST",
+        json: { refreshToken: body.refreshToken },
+      });
+      expect(next.status).toBe(201);
     });
 
     it("returns 401 on missing refresh token", async () => {
@@ -466,6 +520,52 @@ describe("AuthController", () => {
       });
       const res = await app.request("/auth/status", { method: "GET" });
       expect(res.status).toBe(401);
+    });
+  });
+
+  describe("GET /auth/invite/post-redemption (F45)", () => {
+    async function seedInvitee(
+      app: Awaited<ReturnType<typeof prepareControllerApp>>,
+      pending: boolean,
+    ): Promise<string> {
+      const user = await app.users.createUser(`u${Math.random()}@x.test`, "Password123");
+      await app.users.update(user.id, { account: { pendingInvitation: pending } } as never);
+      return user.id;
+    }
+
+    it("answers an unknown id and a pending invite identically", async () => {
+      const app = await prepareControllerApp();
+      const pending = await seedInvitee(app, true);
+      const unknown = await app.request("/auth/invite/post-redemption?uid=no-such-user");
+      const stillPending = await app.request(`/auth/invite/post-redemption?uid=${pending}`);
+      expect(unknown.status).toBe(404);
+      expect(stillPending.status).toBe(404);
+      expect(stillPending.body).toEqual(unknown.body);
+      const accepted = await seedInvitee(app, false);
+      const ok = await app.request(`/auth/invite/post-redemption?uid=${accepted}`);
+      expect(ok.status).toBe(200);
+    });
+
+    it("carries a default @RateLimit", () => {
+      const meta = getMoostMate<TRateLimitMeta>().read(
+        AuthController.prototype,
+        "invitePostRedemption",
+      );
+      expect(meta?.rateLimitPolicies?.map((p) => p.rules.map((r) => r.limit))).toEqual([[30]]);
+    });
+
+    it("can be switched off by a subclass", async () => {
+      @Inherit()
+      @Controller("auth")
+      class NoRedemption extends AuthController {
+        protected override invitePostRedemptionEnabled(): boolean {
+          return false;
+        }
+      }
+      const app = await prepareControllerApp({ controllerClass: NoRedemption });
+      const accepted = await seedInvitee(app, false);
+      const res = await app.request(`/auth/invite/post-redemption?uid=${accepted}`);
+      expect(res.status).toBe(404);
     });
   });
 });

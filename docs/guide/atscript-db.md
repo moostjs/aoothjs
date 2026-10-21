@@ -10,7 +10,7 @@ The patterns below are taken from [`packages/e2e-demo/`](https://github.com/moos
 | --------------------------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `AoothUserCredentials`      | `@aooth/user/atscript-db/model.as`      | Base credential record — the surrogate `id` (PK / token subject), the unique `username` handle, `version`, `password`, `account`, `mfa`, `trustedDevices`. Only `@db.table` is left to the app. Secondary login/recovery handles (email, phone) are consumer-declared — see [Credentials Model](../user/credentials). |
 | `AoothArbacUserCredentials` | `@aooth/arbac-moost/atscript/models.as` | Extends `AoothUserCredentials` with `@arbac.role roles: string[]`. The default user shape when ARBAC is in play.                                                                                                                                                                                                      |
-| `AoothAuthCredential`       | `@aooth/auth/atscript-db/model.as`      | Bearer-token row — `token` (PK), `userId`, `issuedAt`, `expiresAt`, `claims`, `metadata`. Already complete — apps usually do not extend it.                                                                                                                                                                           |
+| `AoothAuthCredential`       | `@aooth/auth/atscript-db/model.as`      | Credential row — `token` (PK), `userId`, `issuedAt`, `expiresAt`, `kind`, rotation and session columns. No `metadata` column: extend it to add one (needed for PATs, per-mint TTLs and authorization-server tokens — see below).                                                                                      |
 
 ::: info Subpath form
 The `package.json` exports the raw `.as` source under the `.as` suffix (e.g. `'@aooth/user/atscript-db/model.as'`). That is what `unplugin-atscript` resolves and what the e2e demo imports. There is no separate no-extension subpath — always include `.as`.
@@ -35,7 +35,8 @@ export interface AoothUserCredentials {
 
     @db.patch.strategy 'merge'
     account: { active, locked, lockReason, lockEnds,
-               failedLoginAttempts, lastLogin, pendingInvitation? }
+               failedLoginAttempts, lastLogin, pendingInvitation?,
+               invitedBy?, inviteNonce?, verifiedEmail? }
 
     @db.patch.strategy 'merge'
     mfa: { methods, defaultMethod, autoSend }
@@ -140,7 +141,7 @@ import { AoothAuthCredential } from '@aooth/auth/atscript-db/model.as'
 import { CredentialStoreAtscriptDb } from '@aooth/auth/atscript-db'
 ```
 
-You normally do not extend it. The full schema is in [`auth-credential.as`](https://github.com/moostjs/aoothjs/blob/main/packages/auth/src/atscript-db/auth-credential.as).
+Plain sign-in sessions work with the base model as-is. Extend it with an `@aooth.auth.metadata` `@db.json` column when you want credential metadata (IP, user agent, device label) persisted — and you **must** when you issue credentials whose restrictions live in metadata (PATs, per-mint TTL / rotation overrides, authorization-server tokens): without the column the store refuses them with `AuthError('INVALID_CONFIG')` (since 0.2). The store finds the column on its own — see [Stores — metadata column](/auth/stores#metadata-column-options-and-the-fail-closed-rule). The full schema is in [`auth-credential.as`](https://github.com/moostjs/aoothjs/blob/main/packages/auth/src/atscript-db/auth-credential.as).
 
 ## Sync the schema
 
@@ -186,13 +187,22 @@ The shipped adapters expect typed table handles. `AtscriptDbTable<T>` returns `R
 ```ts:line-numbers
 import { AuthUserTable, UsersStoreAtscriptDb } from '@aooth/user/atscript-db'
 import { CredentialStoreAtscriptDb } from '@aooth/auth/atscript-db'
+import { AuthCredential } from '@aooth/auth'
 
 const userStore = new UsersStoreAtscriptDb<DemoUser>({
   table: tables.users as unknown as AuthUserTable<DemoUser>,
 })
 
+// `{ table }` is enough: an `@aooth.auth.metadata` column on the model is found automatically.
 const credentialStore = new CredentialStoreAtscriptDb({
   table: tables.credentials,
+})
+
+// New app: keep only token hashes in the table.
+const authCredential = new AuthCredential({
+  store: credentialStore,
+  refresh: { ttl: 30 * 24 * 3600_000 },
+  tokens: { hashAtRest: true },
 })
 ```
 

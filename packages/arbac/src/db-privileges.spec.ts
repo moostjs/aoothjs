@@ -14,6 +14,7 @@ import {
 } from "./db-privileges";
 import * as dbPrivilegesModule from "./db-privileges";
 import { defineRole } from "./define-role";
+import { normalizeScopes } from "./scope/db-scope";
 
 type TestAttrs = { tenant: string };
 type TestScope = { tenant: string };
@@ -283,7 +284,7 @@ describe("defineTableAccess", () => {
   function scopeOf(
     rules: ReturnType<ReturnType<typeof defineTableAccess<Attrs, Scope>>>,
     action: string,
-  ): Scope | undefined {
+  ): Scope | null | undefined {
     const rule = rules.find((r) => r.action === action);
     expect(rule).toBeDefined();
     return rule!.scope?.(attrs, "u1");
@@ -308,6 +309,40 @@ describe("defineTableAccess", () => {
         projection: { secret: 0 },
       });
     }
+  });
+
+  it("F60: a nullish shared or part scope denies the composed rule instead of throwing", () => {
+    const rules = defineTableAccess<Attrs, Scope>("tasks", {
+      scope: (a) => (a.tenant === "acme" ? undefined : { filter: { tenant: a.tenant } }),
+      write: { ops: ["update"], scope: () => ({ allowedFields: ["title"] }) },
+      actions: { names: ["markDone"], scope: (a) => (a.tenant === "other" ? null : {}) },
+    })();
+    const update = rules.find((r) => r.action === "update")!;
+    expect(() => update.scope?.(attrs, "u1")).not.toThrow();
+    expect(update.scope?.(attrs, "u1")).toBeUndefined();
+    expect(update.scope?.({ tenant: "other" }, "u1")).toStrictEqual({
+      filter: { tenant: "other" },
+      allowedFields: ["title"],
+    });
+    const markDone = rules.find((r) => r.action === "markDone")!;
+    expect(markDone.scope?.({ tenant: "other" }, "u1")).toBeNull();
+  });
+
+  it("F60: a nullish composed scope makes normalizeScopes deny", async () => {
+    const arbac = new Arbac<Attrs, Scope>();
+    arbac.registerResource("tasks");
+    arbac.registerRole({
+      id: "r",
+      rules: defineTableAccess<Attrs, Scope>("tasks", {
+        scope: () => undefined,
+        write: { ops: ["update"], scope: () => ({ allowedFields: ["title"] }) },
+      })(),
+    });
+    const outcome = await arbac.evaluate(
+      { resource: "tasks", action: "update" },
+      { id: "u1", roles: ["r"], attrs: () => attrs },
+    );
+    expect(normalizeScopes(outcome)).toBeUndefined();
   });
 
   it("must omit parts that are not declared", () => {

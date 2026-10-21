@@ -269,7 +269,7 @@ The trade-off: a delivery failure no longer surfaces to the request. Build a dea
 
 `@aooth/auth-moost` does **not** ship `EmailSender` / `SmsSender` as DI tokens — the unified `AuthWorkflow` routes direct sends through a single `protected deliver(payload: AuthDeliveryPayload)` override (branch on `payload.kind` + `payload.channel`). Senders are wired by closure into that override on your `AuthWorkflow` subclass.
 
-The magic-link outlet (`createAuthEmailOutlet`) is the one place that takes an `EmailSender` directly — as a constructor dep on `WfTriggerProvider`, not via DI. Its `buildMagicLinkUrl` is the 3-arg `BuildMagicLinkUrl`:
+The magic-link outlet (`createAuthEmailOutlet`) is the one place that takes an `EmailSender` directly — as a constructor dep on `WfTriggerProvider`, not via DI. It sends the invite link under the default `inviteDelivery: 'outlet-email'`; with `'deliver'` the invite link reaches your `deliver()` override as `kind: 'invite-link'` instead (see [Invites — delivery modes](../moost/invites#delivery-modes)). Its `buildMagicLinkUrl` is the 3-arg `BuildMagicLinkUrl`:
 
 ```ts
 import { createAuthEmailOutlet } from "@aooth/auth-moost";

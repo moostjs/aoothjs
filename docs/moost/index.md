@@ -25,6 +25,8 @@ The auth guard and the ARBAC interceptor are both `defineBeforeInterceptor` at `
 | Wire up `/auth/logout` / `/auth/refresh` / `/auth/status` / `/auth/trigger`                                | [REST Controllers](./controllers)                            |
 | List a user's signed-in devices, revoke one / log out others, mount `SessionsController`                   | [Sessions](./sessions)                                       |
 | Configure the unified `AuthWorkflow`, subclass it, override `resolveXxx`, hook the email outlet            | [Workflows](./workflows)                                     |
+| Invite users — app context, delivery modes (email / `deliver()` / shareable link), re-invites, usernames   | [Invites](./invites)                                         |
+| Reword or translate the workflow's error / banner / button texts                                           | [Messages & Localization](./messages)                        |
 | Let users log in / recover by phone, deliver the recovery OTP to a verified channel, auto-promote handles  | [Phone, Recovery Channels & Handles](./recovery-and-handles) |
 | Wire "Sign in with Google" — login-form SSO button, `OAuthController`, connected accounts, callback bridge | [Federated Login (OAuth)](./oauth)                           |
 | Turn the app INTO an OAuth/OIDC provider — CLI loopback login + first-party "Sign in with the main app"    | [Authorization Server](./authorization-server)               |

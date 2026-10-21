@@ -10,27 +10,51 @@ import type { AuthOptions } from "@aooth/auth-moost";
 app.applyGlobalInterceptors(
   authGuardInterceptor({
     cookie: { secure: false, sameSite: "lax" },
-    enableBearer: true,
+    // "Stay signed in": the refresh cookie survives a browser restart.
+    refreshCookie: { persistent: true },
   }),
 );
 ```
 
-| Field | Default | Notes |
-| ------------------------ | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | -------- |
-| `cookie.name` | `'aooth_session'` | Access cookie name. |
-| `cookie.secure` | `true` | HTTPS-only — flip to `false` for local HTTP dev. |
-| `cookie.sameSite` | `'lax'` | `'lax'                                                                                                                                                                                         | 'strict' | 'none'`. |
-| `cookie.httpOnly` | `true` | JS access to the cookie is blocked. |
-| `cookie.path` | `'/'` | Sent on every request. |
-| `cookie.domain` | `undefined` | Defaults to the request host. |
-| `refreshCookie.name` | `'aooth_refresh'` | Refresh cookie name. |
-| `refreshCookie.path` | _auto-derived_ (`'/auth/refresh'`) | **Narrow path** so the refresh cookie isn't sent on other endpoints — CSRF-resistance. Auto-derived from `AuthController`'s actual mounted route (see note below); set explicitly to override. |
-| `refreshCookie.secure` | inherited from `cookie.secure` | |
-| `refreshCookie.sameSite` | inherited from `cookie.sameSite` | |
-| `refreshCookie.httpOnly` | inherited from `cookie.httpOnly` | |
-| `refreshCookie.domain` | inherited from `cookie.domain` | |
-| `enableCookie` | `true` | Master switch for cookie transport. When `false`, `writeCookies` / `clearCookies` are no-ops. |
-| `enableBearer` | `true` | Master switch for bearer transport. When both are `true`, **bearer wins**. When `false`, `accessToken` and `refreshToken` are omitted from `AuthLoginResponse` bodies. |
+| Field                      | Default                            | Notes                                                                                                                                                                                                                                                               |
+| -------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cookie.name`              | `'aooth_session'`                  | Access cookie name.                                                                                                                                                                                                                                                 |
+| `cookie.secure`            | `true`                             | HTTPS-only — flip to `false` for local HTTP dev.                                                                                                                                                                                                                    |
+| `cookie.sameSite`          | `'lax'`                            | `'lax' \| 'strict' \| 'none'`.                                                                                                                                                                                                                                      |
+| `cookie.httpOnly`          | `true`                             | JS access to the cookie is blocked.                                                                                                                                                                                                                                 |
+| `cookie.path`              | `'/'`                              | Sent on every request.                                                                                                                                                                                                                                              |
+| `cookie.domain`            | `undefined`                        | Defaults to the request host.                                                                                                                                                                                                                                       |
+| `cookie.persistent`        | `false`                            | `true` → the cookie gets a `Max-Age` equal to the access token's remaining lifetime (renewed on every issue). `false` → a session cookie, gone when the browser closes. See [persistent cookies](#persistent-cookies-stay-signed-in).                               |
+| `refreshCookie.name`       | `'aooth_refresh'`                  | Refresh cookie name.                                                                                                                                                                                                                                                |
+| `refreshCookie.path`       | _auto-derived_ (`'/auth/refresh'`) | **Narrow path** so the refresh cookie isn't sent on other endpoints — CSRF-resistance. Auto-derived from `AuthController`'s actual mounted route (see note below); set explicitly to override.                                                                      |
+| `refreshCookie.secure`     | inherited from `cookie.secure`     |                                                                                                                                                                                                                                                                     |
+| `refreshCookie.sameSite`   | inherited from `cookie.sameSite`   |                                                                                                                                                                                                                                                                     |
+| `refreshCookie.httpOnly`   | inherited from `cookie.httpOnly`   |                                                                                                                                                                                                                                                                     |
+| `refreshCookie.domain`     | inherited from `cookie.domain`     |                                                                                                                                                                                                                                                                     |
+| `refreshCookie.persistent` | `false` (**not** inherited)        | `true` → `Max-Age` follows the refresh token's expiry and is renewed on every rotation.                                                                                                                                                                             |
+| `enableCookie`             | `true`                             | Master switch for cookie transport. When `false`, `writeCookies` / `clearCookies` are no-ops.                                                                                                                                                                       |
+| `enableBearer`             | `true`                             | Whether requests may authenticate with `Authorization: Bearer`. When both transports are on, **bearer wins**. Does **not** decide whether tokens appear in response bodies — that is `exposeTokensInBody`.                                                          |
+| `exposeTokensInBody`       | `!enableCookie`                    | Put `accessToken` / `refreshToken` into JSON bodies (login finish `data`, `POST /auth/refresh`). With the default cookie transport this is `false`: tokens travel only in httpOnly cookies, so an XSS that calls `/auth/refresh` cannot read a fresh refresh token. |
+
+::: warning Since 0.2: no tokens in response bodies under the cookie default
+Before 0.2 the login-finish `data` and the `POST /auth/refresh` body carried `accessToken` / `refreshToken` whenever `enableBearer` was `true` (the default). They are now governed by `exposeTokensInBody`, which defaults to `!enableCookie` — so a default cookie deployment returns only `userId`, `accessExpiresAt` and `refreshExpiresAt`. A token client (CLI, mobile app) that sends its refresh token in the `POST /auth/refresh` **body** always gets the rotated pair back in the body — it already holds token material, so this exposes nothing new. If such a client also needs tokens from the login finish, set `exposeTokensInBody: true`, or mount a second guard for those routes with `enableCookie: false` (which flips the default back to `true`).
+:::
+
+### Persistent cookies ("stay signed in")
+
+Both cookies are session cookies by default. For an installed PWA or a "keep me signed in" device, make the **refresh** cookie persistent and pair it with sliding refresh rotation on `AuthCredential`:
+
+```ts
+authGuardInterceptor({ refreshCookie: { persistent: true } });
+
+new AuthCredential({
+  store,
+  accessTtl: 15 * 60_000,
+  refresh: { ttl: 90 * 24 * 60 * 60_000, rotation: "sliding" },
+});
+```
+
+The access cookie can stay session-only: after a browser restart the first request gets a 401 and [`createAuthedFetch`](/auth/client) refreshes silently from the persistent refresh cookie. `persistent` is not inherited from `cookie` to `refreshCookie` — set it where you want it. See [Refresh](/auth/refresh) for the rotation modes.
 
 ::: tip The refresh-cookie path follows the controller's mount prefix automatically
 You don't set `refreshCookie.path` by hand. The auth guard resolves it **once at boot** from Moost's route table — it finds `AuthController`'s actual `refresh` route and scopes the cookie to it. Mount the controller at the root (`@Controller("auth")` → `/auth/refresh`) or under a prefix (`registerControllers(['api/auth', AuthController])` → `/api/auth/refresh`) and the cookie path tracks it, so the browser always sends the refresh cookie to the real endpoint.
@@ -50,24 +74,30 @@ The package does NOT bundle a CSRF strategy. `SameSite=Lax` on the access cookie
 
 Infrastructure-only configuration passed to the `AuthWorkflow` constructor. Every field is optional; defaults are applied by `mergeAuthWorkflowOpts`. **Security policy is NOT here** — see the resolver table below. Full shape: [API reference](/api/auth-moost#authworkflowopts-resolvedauthworkflowopts).
 
-| Field                          | Default                         | Notes                                                                                                                |
-| ------------------------------ | ------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `autoLoginOnInvite`            | `true`                          | Issue tokens directly after invite acceptance (vs redirect to fresh login).                                          |
-| `autoLoginOnRecover`           | `false`                         | Issue tokens directly after password reset (vs redirect to fresh login).                                             |
-| `mfa.pincodeLength`            | `6`                             | OTP digit count. 6 is OWASP-standard.                                                                                |
-| `mfa.pincodeTtlMs`             | `5 * 60_000`                    | OTP code lifetime. Shorter = stronger.                                                                               |
-| `mfa.pincodeResendTimeoutMs`   | `60_000`                        | Resend cooldown — throttles OTP-flooding.                                                                            |
-| `mfa.pincodeMaxAttempts`       | `5`                             | Wrong-code submissions per minted pincode before invalidation.                                                       |
-| `recoveryStateTtlMs`           | `60 * 60_000`                   | Caps the window between OTP request and password reset (applied at every recovery pause).                            |
-| `loginUrl`                     | `'/login'`                      | Canonical sign-in URL (post-accept / abort-to-login / post-reset redirects).                                         |
-| `totpIssuer`                   | `'aooth'`                       | TOTP provisioning issuer label (the QR's `issuer`).                                                                  |
-| `deviceTrust.cookieName`       | `'aooth_trusted_device'`        | Trusted-device cookie name.                                                                                          |
-| `deviceTrust.ttlMs`            | `24 * 60 * 60_000`              | Trusted-device cookie + record TTL.                                                                                  |
-| `deviceTrust.bindsTo`          | `'cookie'`                      | `'cookie'` or `'cookie+ip'` (stricter — IP change invalidates trust).                                                |
-| `deviceRecognition.cookieName` | `<deviceTrust.cookieName>_seen` | Always-on recognition cookie (notification suppression only — never an MFA bypass).                                  |
-| `deviceRecognition.ttlMs`      | `180 * 24 * 60 * 60_000`        | Recognition cookie + record TTL (slid on every verified login).                                                      |
-| `deviceRecognition.maxDevices` | `5`                             | Per-user `seenDevices` ledger cap — LRU-evicted beyond it. See [Device recognition](./workflows#device-recognition). |
-| `forms.<slot>`                 | bundled `.as` defaults          | Replace any bundled form schema with your own atscript type. See [Atscript Models](./atscript).                      |
+| Field                          | Default                         | Notes                                                                                                                                          |
+| ------------------------------ | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `autoLoginOnInvite`            | `true`                          | Issue tokens directly after invite acceptance (vs redirect to fresh login).                                                                    |
+| `autoLoginOnRecover`           | `false`                         | Issue tokens directly after password reset (vs redirect to fresh login).                                                                       |
+| `mfa.pincodeLength`            | `6`                             | OTP digit count. 6 is OWASP-standard.                                                                                                          |
+| `mfa.pincodeTtlMs`             | `5 * 60_000`                    | OTP code lifetime. Shorter = stronger.                                                                                                         |
+| `mfa.pincodeResendTimeoutMs`   | `60_000`                        | Resend cooldown — throttles OTP-flooding.                                                                                                      |
+| `mfa.pincodeMaxAttempts`       | `5`                             | Wrong-code submissions per minted pincode before invalidation.                                                                                 |
+| `recoveryStateTtlMs`           | `60 * 60_000`                   | Caps the window between OTP request and password reset (applied at every recovery pause).                                                      |
+| `loginUrl`                     | `'/login'`                      | Canonical sign-in URL (post-accept / abort-to-login / post-reset redirects).                                                                   |
+| `totpIssuer`                   | `'aooth'`                       | TOTP provisioning issuer label (the QR's `issuer`).                                                                                            |
+| `deviceTrust.cookieName`       | `'aooth_trusted_device'`        | Trusted-device cookie name.                                                                                                                    |
+| `deviceTrust.ttlMs`            | `24 * 60 * 60_000`              | Trusted-device cookie + record TTL.                                                                                                            |
+| `deviceTrust.bindsTo`          | `'cookie'`                      | `'cookie'` or `'cookie+ip'` (stricter — IP change invalidates trust).                                                                          |
+| `deviceRecognition.cookieName` | `<deviceTrust.cookieName>_seen` | Always-on recognition cookie (notification suppression only — never an MFA bypass).                                                            |
+| `deviceRecognition.ttlMs`      | `180 * 24 * 60 * 60_000`        | Recognition cookie + record TTL (slid on every verified login).                                                                                |
+| `deviceRecognition.maxDevices` | `5`                             | Per-user `seenDevices` ledger cap — LRU-evicted beyond it. See [Device recognition](./workflows#device-recognition).                           |
+| `inviteDelivery`               | `'outlet-email'`                | How the invite link reaches the invitee: email outlet, `deliver()`, or `'return-link'` to the issuer. See [Invites](./invites#delivery-modes). |
+| `inviteLinkUrl`                | —                               | `(token, { userId }) => string` — builds the link for `'deliver'` / `'return-link'` (required there).                                          |
+| `inviteUsername`               | `'email'`                       | `'choose'` — the invitee picks the login username at accept. See [Invites](./invites#the-invitee-picks-a-username).                            |
+| `messages`                     | English `AOOTH_MESSAGES`        | Partial map or `(code, params) => text` resolver for every user-facing text. See [Messages](./messages).                                       |
+| `lockoutDisclosure`            | `'uniform'` (since 0.2)         | What a failed sign-in reveals about locks: `'uniform'` / `'generic'` / `'reveal'`. See [lockout disclosure](./workflows#lockout-disclosure).   |
+| `lockoutShadowStore`           | process-wide memory store       | `RateLimitStore` for `'uniform'`'s shadow counters — pass a shared store (Redis) with several instances.                                       |
+| `forms.<slot>`                 | bundled `.as` defaults          | Replace any bundled form schema with your own atscript type. See [Atscript Models](./atscript).                                                |
 
 ## Security policy — `resolveXxx(ctx)` getters, not opts
 
@@ -118,10 +148,11 @@ This is a five-line interceptor and is best left to the consumer because the tok
 
 ```ts
 interface ResolvedAuthOptions {
-  cookie: { name; secure; sameSite; httpOnly; path; domain? };
-  refreshCookie: { name; secure; sameSite; httpOnly; path; domain? };
+  cookie: { name; secure; sameSite; httpOnly; path; domain?; persistent };
+  refreshCookie: { name; secure; sameSite; httpOnly; path; domain?; persistent };
   enableCookie: boolean;
   enableBearer: boolean;
+  exposeTokensInBody: boolean;
 }
 ```
 

@@ -139,4 +139,73 @@ describe("RateLimitStoreMemory", () => {
     // "dead" (ttl 10) expired; "k" (fresh 1000ms ttl) survives the sweep.
     expect(await store.cleanup()).toBe(1);
   });
+
+  describe("peek (F79)", () => {
+    it("reports the budget left without spending it", async () => {
+      const clock = fakeClock();
+      const limiter = new RateLimiter({ clock });
+      const fresh = await limiter.peek("route", "u:1", ["3/1m"]);
+      expect(fresh).toMatchObject({ allowed: true, limit: 3, remaining: 3 });
+      await limiter.check("route", "u:1", ["3/1m"]);
+      await limiter.check("route", "u:1", ["3/1m"]);
+      for (let i = 0; i < 3; i++) {
+        expect((await limiter.peek("route", "u:1", ["3/1m"])).remaining).toBe(1);
+      }
+      await limiter.check("route", "u:1", ["3/1m"]);
+      const spent = await limiter.peek("route", "u:1", ["3/1m"]);
+      // A check made now would be rejected.
+      expect(spent).toMatchObject({ allowed: false, remaining: 0 });
+      expect(spent.retryAfterMs).toBe(60_000);
+      // Peeking never counted: the third check above was still allowed.
+      clock.advance(60_000);
+      expect((await limiter.peek("route", "u:1", ["3/1m"])).remaining).toBe(3);
+    });
+
+    it("throws when the store cannot read a counter", async () => {
+      const limiter = new RateLimiter({ store: { hit: async () => 1 } });
+      await expect(limiter.peek("r", "s", ["1/1m"])).rejects.toThrow(/get/);
+    });
+
+    it("RateLimitStoreMemory.get reads a live counter and 0 for a missing/expired one", async () => {
+      const clock = fakeClock();
+      const store = new RateLimitStoreMemory({ clock });
+      expect(await store.get("k")).toBe(0);
+      await store.hit("k", 1000);
+      await store.hit("k", 1000);
+      expect(await store.get("k")).toBe(2);
+      clock.advance(1000);
+      expect(await store.get("k")).toBe(0);
+    });
+  });
+
+  describe("RateLimitStoreMemory maxEntries", () => {
+    it("sweeps expired counters before evicting a live one", async () => {
+      const clock = fakeClock();
+      const store = new RateLimitStoreMemory({ clock, maxEntries: 2 });
+      await store.hit("short", 100);
+      await store.hit("long", 10_000);
+      clock.advance(200);
+      await store.hit("new", 10_000);
+      expect(await store.get("long")).toBe(1); // not evicted: the expired one made room
+      expect(await store.get("new")).toBe(1);
+      await store.hit("newer", 10_000); // nothing expired → the oldest live one goes
+      expect(await store.get("long")).toBe(0);
+      expect(await store.get("newer")).toBe(1);
+    });
+
+    it("evictLast keys outlive a flood of other keys (L1)", async () => {
+      const store = new RateLimitStoreMemory({
+        maxEntries: 3,
+        evictLast: (k) => k.startsWith("lock:"),
+      });
+      await store.hit("lock:victim", 60_000);
+      for (let i = 0; i < 50; i++) await store.hit(`fail:${i}`, 60_000);
+      expect(await store.get("lock:victim")).toBe(1);
+      // Only when every key is protected does the oldest protected one go.
+      const all = new RateLimitStoreMemory({ maxEntries: 2, evictLast: () => true });
+      for (const k of ["a", "b", "c"]) await all.hit(k, 60_000);
+      expect(await all.get("a")).toBe(0);
+      expect(await all.get("c")).toBe(1);
+    });
+  });
 });

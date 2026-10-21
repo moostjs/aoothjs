@@ -190,7 +190,7 @@ describe("arbac authorize HTTP integration", () => {
     expect(res?.status).toBe(403);
   });
 
-  it("rethrows non-HttpError from evaluate as HttpError(401) preserving original message (ISSUE-3)", async () => {
+  it("rethrows non-HttpError from evaluate as HttpError(401) without echoing the cause (ISSUE-3)", async () => {
     class ThrowingUserProvider extends ArbacUserProvider<DemoAttrs> {
       override getUserId(): Promise<string> {
         return Promise.reject(new Error("database unavailable"));
@@ -209,7 +209,8 @@ describe("arbac authorize HTTP integration", () => {
     expect(res?.status).toBe(401);
     const body = (await res?.json()) as { message?: string; statusCode?: number };
     expect(body.statusCode).toBe(401);
-    expect(body.message).toBe("database unavailable");
+    expect(body.message).toBe("Not authorized");
+    expect(JSON.stringify(body)).not.toContain("database unavailable");
   });
 
   it("bypasses arbac on @ArbacPublic routes", async () => {

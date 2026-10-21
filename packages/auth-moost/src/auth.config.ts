@@ -6,6 +6,15 @@ export interface ResolvedAuthCookieConfig {
   httpOnly: boolean;
   path: string;
   domain?: string;
+  /**
+   * Keep the cookie across browser restarts: `Max-Age` follows the token it
+   * carries (access / refresh expiry) and is renewed on every rotation.
+   * Default `false` — a session cookie (gone when the browser closes). Not
+   * inherited by the refresh cookie: set it on `refreshCookie` for a
+   * "stay signed in" device (the access cookie can stay session-only — a
+   * missing one is silently refreshed).
+   */
+  persistent: boolean;
 }
 
 export interface AuthOptions {
@@ -20,6 +29,15 @@ export interface AuthOptions {
   enableCookie?: boolean;
   /** Read the session token from `Authorization: Bearer ...`. Default: `true`. */
   enableBearer?: boolean;
+  /**
+   * Return `accessToken` / `refreshToken` in JSON bodies (login finish,
+   * `POST /auth/refresh`). Default: `!enableCookie` — a cookie app keeps token
+   * material out of reach of page scripts, so an XSS cannot read a fresh
+   * refresh token from `/auth/refresh`. Set `true` for token clients (CLI,
+   * mobile) that share the cookie deployment; accepting `Authorization: Bearer`
+   * on requests is controlled separately by {@link enableBearer}.
+   */
+  exposeTokensInBody?: boolean;
 }
 
 /**
@@ -37,6 +55,7 @@ export interface ResolvedAuthOptions {
   refreshCookie: ResolvedAuthCookieConfig;
   enableCookie: boolean;
   enableBearer: boolean;
+  exposeTokensInBody: boolean;
 }
 
 /**
@@ -52,6 +71,7 @@ export function resolveAuthOptions(opts: AuthOptions = {}): ResolvedAuthOptions 
     sameSite: "lax",
     httpOnly: true,
     path: "/",
+    persistent: false,
     ...opts.cookie,
   };
   const refreshCookie: ResolvedAuthCookieConfig = {
@@ -61,12 +81,15 @@ export function resolveAuthOptions(opts: AuthOptions = {}): ResolvedAuthOptions 
     httpOnly: cookie.httpOnly,
     ...(cookie.domain !== undefined && { domain: cookie.domain }),
     path: "/auth/refresh",
+    persistent: false,
     ...opts.refreshCookie,
   };
+  const enableCookie = opts.enableCookie ?? true;
   return {
     cookie,
     refreshCookie,
-    enableCookie: opts.enableCookie ?? true,
+    enableCookie,
     enableBearer: opts.enableBearer ?? true,
+    exposeTokensInBody: opts.exposeTokensInBody ?? !enableCookie,
   };
 }

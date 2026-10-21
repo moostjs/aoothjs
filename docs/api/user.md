@@ -12,7 +12,7 @@ new UserService<T>(store: UserStore<T>, config?: UserServiceConfig)
 
 Orchestrator for credential CRUD, login, lockout, password policy, MFA, and trusted devices. Generic `T` adds custom user columns to every result. See [UserService](/user/service).
 
-Async methods (selected): `createUser`, `getUser(id)`, `getUserSnapshot(id, scope)` (since 0.1.78 — `getUser` memoized per scope until a write; see [UserService](/user/service#getusersnapshot-onuserwrite)), `findByHandle(handle)`, `findByIdentifier(value)`, `login(handle, password, lockoutOverride?)`, `recordLogin(id) → Promise<number>` (stamp `lastLogin` + reset `failedLoginAttempts`; the single login-stamp writer — called by `login`, and by passwordless sign-ins that bypass it), `verifyPassword(id, …)`, `changePassword(id, …)`, `setPassword(id, …)`, `deleteUser(id)`, `update(id, patch)`, `activateAccount(id)`, `deactivateAccount(id)`, `lockAccount(id, …)`, `unlockAccount(id)`, `checkPolicies`, `addMfaMethod(id, …)`, `confirmMfaMethod(id, …)`, `removeMfaMethod(id, …)`, `setDefaultMfaMethod(id, …)`, `setMfaAutoSend(id, …)`, `verifyMfa(id, code, config?, lockoutOverride?)`, `verifyTotpSetupCode(id, …)`, `addTrustedDevice(id, …)`, `verifyTrustedDevice(userId, …)`, `revokeTrustedDevice(id, …)`, `listTrustedDevices(id)`. Sync: `onUserWrite(listener) → unsubscribe` (since 0.1.78 — settled writes with the user id).
+Async methods (selected): `createUser`, `getUser(id)`, `getUserSnapshot(id, scope)` (since 0.1.78 — `getUser` memoized per scope until a write; see [UserService](/user/service#getusersnapshot-onuserwrite)), `findByHandle(handle)`, `findByIdentifier(value)`, `login(handle, password, lockoutOverride?)` (every early exit — unknown / inactive / locked — still spends one password hash, so timing does not reveal the account), `recordLogin(id) → Promise<number>` (stamp `lastLogin` + reset `failedLoginAttempts`; the single login-stamp writer — called by `login`, and by passwordless sign-ins that bypass it), `verifyPassword(id, …)`, `changePassword(id, …)`, `setPassword(id, …)`, `deleteUser(id)`, `update(id, patch)`, `activateAccount(id)`, `acceptInvitation(id, nonce) → Promise<boolean>` (since 0.2 — compare-and-set acceptance of a pending invite), `deactivateAccount(id)`, `lockAccount(id, …)`, `unlockAccount(id)`, `checkPolicies`, `addMfaMethod(id, …)`, `confirmMfaMethod(id, …)`, `removeMfaMethod(id, …)`, `setDefaultMfaMethod(id, …)`, `setMfaAutoSend(id, …)`, `verifyMfa(id, code, config?, lockoutOverride?)`, `verifyTotpSetupCode(id, …)`, `addTrustedDevice(id, …)`, `verifyTrustedDevice(userId, …)`, `revokeTrustedDevice(id, …)`, `listTrustedDevices(id)`. Sync: `onUserWrite(listener) → unsubscribe` (since 0.1.78 — settled writes with the user id).
 
 > **Identity keying:** every method takes the stable surrogate **`id`** (the token subject), **except** `login`, which resolves a **handle** via `findByHandle` — the base `username`, then any consumer-declared secondary handle fields (e.g. `email`/`phone`) in configured order. `findByHandle` (login) and `findByIdentifier` (permissive admin/recovery) are the two handle-based reads. See [UserService](/user/service) and [Credentials Model](/user/credentials).
 
@@ -181,6 +181,10 @@ interface AccountData {
   lastLogin: number;
   /** Set by the invite workflow; cleared once the invite is accepted. */
   pendingInvitation?: boolean;
+  /** Since 0.2 — id of the user who issued the pending invite (written by the invite flow). */
+  invitedBy?: string;
+  /** Since 0.2 — marker of the current invite link; a re-invite rotates it, so older links answer 410. */
+  inviteNonce?: string;
   /** Correspondence address whose inbox the user proved — written by setVerifiedEmail; never a login handle */
   verifiedEmail?: string;
 }

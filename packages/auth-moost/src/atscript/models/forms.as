@@ -65,6 +65,7 @@ export interface LoginCredentialsForm {
     @ui.form.autocomplete 'username'
     @meta.required
     @expect.minLength 1
+    @expect.maxLength 256
     username: string
 
     @ui.form.order 20
@@ -291,7 +292,7 @@ export interface SetPasswordForm extends WithInlineConsentForm {
     @meta.sensitive
     @meta.required
     @expect.minLength 8
-    @ui.form.validate '(v, data) => v === data.newPassword || "Passwords must match"'
+    @ui.form.validate '(v, data, ctx) => v === data.newPassword || ctx?.public?.messages?.PASSWORDS_DO_NOT_MATCH || "Passwords must match"'
     confirmPassword: string
 
     /**
@@ -322,10 +323,10 @@ export interface SetPasswordForm extends WithInlineConsentForm {
  * Invite form — used by an admin to send an invite magic link.
  *
  * Bundled shape is intentionally minimal: email + roles. Admins who want to
- * collect richer profile data per invitee replace this form via
- * `setupAuthWorkflows({ forms: { invite: MyInviteForm } })` and map the
- * extra fields into their user schema via the `prepareUser({...})` hook
- * (see `InviteWorkflow.prepareUser` jsdoc).
+ * collect richer data per invitee replace this form via
+ * `AuthWorkflowOpts.forms.invite` (a form that `extends InviteForm`); the
+ * extra fields reach `prepareUser({ form })`, `inferAdminRoles({ form })` and
+ * `duplicateInviteCheck({ form })` (see `AuthWorkflow.prepareUser`).
  *
  * `@wf.context.pass 'public'` whitelists the workflow `ctx.admin` group so the
  * `inviteAdminInviteForm` step can pass the role-picker options (via
@@ -353,6 +354,25 @@ export interface InviteForm {
     @ui.form.fn.options '(_, _data, context) => Array.isArray(context.public?.admin?.availableRoles) ? context.public.admin.availableRoles.map(r => ({ key: r, label: r })) : []'
     @meta.label 'Roles'
     roles: string[]
+}
+
+/**
+ * Invite accept — the invitee picks their own username (shown only when
+ * `AuthWorkflowOpts.inviteUsername` is `'choose'`). Runs before the
+ * password step; the invited email stays the correspondence address.
+ */
+@meta.label 'Choose your username'
+@meta.description 'You will use it to sign in.'
+@ui.form.submit.text 'Continue'
+export interface InviteChooseUsernameForm {
+    @ui.form.order 10
+    @ui.form.type 'text'
+    @meta.label 'Username'
+    @ui.form.autocomplete 'username'
+    @meta.required
+    @expect.minLength 1
+    @expect.maxLength 256
+    username: string
 }
 
 /**
@@ -926,7 +946,7 @@ export interface ChangePasswordForm {
     @meta.sensitive
     @meta.required
     @expect.minLength 8
-    @ui.form.validate '(v, data) => v === data.newPassword || "Passwords must match"'
+    @ui.form.validate '(v, data, ctx) => v === data.newPassword || ctx?.public?.messages?.PASSWORDS_DO_NOT_MATCH || "Passwords must match"'
     confirmPassword: string
 
     @ui.form.order 25

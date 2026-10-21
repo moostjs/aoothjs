@@ -18,6 +18,19 @@ describe("RateLimitStoreRedis", () => {
     expect(redis.opsOf("pexpire")).toEqual([{ cmd: "pexpire", args: ["aooth:rl:k", 5000] }]);
   });
 
+  it("get() reads the counter without incrementing it (RateLimiter.peek)", async () => {
+    const redis = new MockRedis();
+    const store = new RateLimitStoreRedis({ redis });
+    expect(await store.get("k")).toBe(0);
+    await store.hit("k", 5000);
+    await store.hit("k", 5000);
+    expect(await store.get("k")).toBe(2);
+    expect(redis.opsOf("incr")).toHaveLength(2);
+    const limiter = new RateLimiter({ store, clock: fakeClock() });
+    await limiter.check("r", "s", ["3/1m"]);
+    expect((await limiter.peek("r", "s", ["3/1m"])).remaining).toBe(2);
+  });
+
   it("respects a custom prefix and reset() deletes the counter", async () => {
     const redis = new MockRedis();
     const store = new RateLimitStoreRedis({ redis, prefix: "app:rl" });

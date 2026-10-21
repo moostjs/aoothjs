@@ -17,17 +17,18 @@ Reference for the `CredentialStore<TPayload>` + `DenylistStore` contracts, every
 
 Every member deals in `CredentialState & TPayload` (envelope below). Behavioural contract every implementation MUST satisfy:
 
-| Member             | Signature                                                                            | Notes                                                                                                                                                                                                   |
-| ------------------ | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `persist`          | `(state: CredentialState & TPayload, ttl?: number) => Promise<string>`               | Generates a fresh token id. If `ttl` is supplied it overrides `state.expiresAt`. Fail-loud on already-dead state (`ttl <= 0` or `expiresAt <= now`).                                                    |
-| `retrieve`         | `(token: string) => Promise<(CredentialState & TPayload) \| null>`                   | Returns `null` for unknown / expired / wrong-kind / denied tokens. Never throws on bad input. Opportunistically GCs expired rows.                                                                       |
-| `consume`          | `(token: string) => Promise<(CredentialState & TPayload) \| null>`                   | Atomic `retrieve` + `revoke`. Single-use guarantee. Stateless stores require a `DenylistStore` — otherwise throw `STATELESS_OPERATION_UNSUPPORTED`.                                                     |
-| `update`           | `(token: string, state: CredentialState & TPayload) => Promise<string>`              | Idempotent for unknown tokens (returns input token, no-op). Returned token may differ from input — stateless stores re-issue. Pushing `state.expiresAt` past `now` is treated as a revoke, not a write. |
-| `revoke`           | `(token: string) => Promise<void>`                                                   | Unknown token is a no-op. Idempotent.                                                                                                                                                                   |
-| `revokeAllForUser` | `(userId: string) => Promise<number>`                                                | Cascade across `kind: 'access'` AND `kind: 'refresh'`. Stateful returns deletion count; stateless returns sentinel `1` ("epoch bumped, count unknown").                                                 |
-| `listForUser?`     | `(userId: string) => Promise<Array<CredentialState & TPayload & { token: string }>>` | Optional. When implemented, returns all live entries (access + refresh). The orchestrator filters refresh entries before returning to user code.                                                        |
-| `touch?`           | `(token: string, at: number) => Promise<void>`                                       | Optional. Set `lastSeenAt = at` on the token if live; no-op otherwise. Backs sessions' `trackLastSeen: 'validate'`. Stateless omit (token immutable). See [sessions.md](sessions.md).                   |
-| `listSessions?`    | `(userId: string) => Promise<Array<CredentialState & TPayload & { token: string }>>` | Optional native session grouping — reserved/unused (the orchestrator groups `listForUser` by `sessionId`). See [sessions.md](sessions.md).                                                              |
+| Member             | Signature                                                                            | Notes                                                                                                                                                                                                                                                  |
+| ------------------ | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `persist`          | `(state: CredentialState & TPayload, ttl?: number) => Promise<string>`               | Generates a fresh token id. If `ttl` is supplied it overrides `state.expiresAt`. Fail-loud on already-dead state (`ttl <= 0` or `expiresAt <= now`).                                                                                                   |
+| `persistAs?`       | `(id: string, state: CredentialState & TPayload, ttl?: number) => Promise<void>`     | Optional (since 0.2). Store under a CALLER-chosen key. Memory / Redis / atscript-db implement it; required by `AuthCredential` `tokens.hashAtRest` / `tokens.generate` (stateless JWT/encapsulated stores lack it → `INVALID_CONFIG` at construction). |
+| `retrieve`         | `(token: string) => Promise<(CredentialState & TPayload) \| null>`                   | Returns `null` for unknown / expired / wrong-kind / denied tokens. Never throws on bad input. Opportunistically GCs expired rows.                                                                                                                      |
+| `consume`          | `(token: string) => Promise<(CredentialState & TPayload) \| null>`                   | Atomic `retrieve` + `revoke`. Single-use guarantee. Stateless stores require a `DenylistStore` — otherwise throw `STATELESS_OPERATION_UNSUPPORTED`.                                                                                                    |
+| `update`           | `(token: string, state: CredentialState & TPayload) => Promise<string>`              | Idempotent for unknown tokens (returns input token, no-op). Returned token may differ from input — stateless stores re-issue. Pushing `state.expiresAt` past `now` is treated as a revoke, not a write.                                                |
+| `revoke`           | `(token: string) => Promise<void>`                                                   | Unknown token is a no-op. Idempotent.                                                                                                                                                                                                                  |
+| `revokeAllForUser` | `(userId: string) => Promise<number>`                                                | Cascade across `kind: 'access'` AND `kind: 'refresh'`. Stateful returns deletion count; stateless returns sentinel `1` ("epoch bumped, count unknown").                                                                                                |
+| `listForUser?`     | `(userId: string) => Promise<Array<CredentialState & TPayload & { token: string }>>` | Optional. When implemented, returns all live entries (access + refresh). The orchestrator filters refresh entries before returning to user code.                                                                                                       |
+| `touch?`           | `(token: string, at: number) => Promise<void>`                                       | Optional. Set `lastSeenAt = at` on the token if live; no-op otherwise. Backs sessions' `trackLastSeen: 'validate'`. Stateless omit (token immutable). See [sessions.md](sessions.md).                                                                  |
+| `listSessions?`    | `(userId: string) => Promise<Array<CredentialState & TPayload & { token: string }>>` | Optional native session grouping — reserved/unused (the orchestrator groups `listForUser` by `sessionId`). See [sessions.md](sessions.md).                                                                                                             |
 
 Exact shape: [docs api](https://aoothjs.dev/api/auth#credentialstore-tpayload).
 
@@ -132,25 +133,26 @@ import { AoothAuthCredential } from "@aooth/auth/atscript-db/model.as";
 const db = new DbSpace(() => new SqliteAdapter(new BetterSqlite3Driver("./auth.db")));
 await syncSchema(db, [AoothAuthCredential]);
 
+// `{ table }` is enough (since 0.2): the @aooth.auth.metadata @db.json column is
+// resolved from table.type. Pass YOUR extending model's table to get one.
 const store = new CredentialStoreAtscriptDb({
   table: db.getTable(AoothAuthCredential),
-  // Optional: name of YOUR @aooth.auth.metadata-annotated @db.json column
-  // (resolve at boot via getAoothCredentialMetadataSpec from
-  // @aooth/arbac-moost/atscript). Absent -> metadata is not persisted/read.
-  metadataField: undefined,
+  // metadataField: "metadata" — skip the lookup; false — explicit opt-out (silences the warning)
+  // onWarning: (msg) => log.warn(msg) — default console.warn
 });
 ```
 
 `AuthCredentialTable<TPayload>` is structural — only the methods the adapter calls are required:
 
-| Member       | Signature                                                                                                                 | Notes |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------- | ----- |
-| `insertOne`  | `(row: AuthCredentialRow<TPayload>) => Promise<{ insertedId: unknown }>`                                                  | —     |
-| `findOne`    | `(q: { filter: Record<string, unknown> }) => Promise<AuthCredentialRow<TPayload> \| null>`                                | —     |
-| `findMany`   | `(q: { filter?: Record<string, unknown>; controls?: Record<string, unknown> }) => Promise<AuthCredentialRow<TPayload>[]>` | —     |
-| `replaceOne` | `(row: AuthCredentialRow<TPayload>) => Promise<{ matchedCount: number; modifiedCount: number }>`                          | —     |
-| `deleteOne`  | `(idOrPk: unknown) => Promise<{ deletedCount: number }>`                                                                  | —     |
-| `deleteMany` | `(filter: Record<string, unknown>) => Promise<{ deletedCount: number }>`                                                  | —     |
+| Member       | Signature                                                                                                                 | Notes                                                                                       |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `insertOne`  | `(row: AuthCredentialRow<TPayload>) => Promise<{ insertedId: unknown }>`                                                  | —                                                                                           |
+| `findOne`    | `(q: { filter: Record<string, unknown> }) => Promise<AuthCredentialRow<TPayload> \| null>`                                | —                                                                                           |
+| `findMany`   | `(q: { filter?: Record<string, unknown>; controls?: Record<string, unknown> }) => Promise<AuthCredentialRow<TPayload>[]>` | —                                                                                           |
+| `replaceOne` | `(row: AuthCredentialRow<TPayload>) => Promise<{ matchedCount: number; modifiedCount: number }>`                          | —                                                                                           |
+| `deleteOne`  | `(idOrPk: unknown) => Promise<{ deletedCount: number }>`                                                                  | —                                                                                           |
+| `deleteMany` | `(filter: Record<string, unknown>) => Promise<{ deletedCount: number }>`                                                  | —                                                                                           |
+| `type?`      | `unknown` (atscript-db `table.type`)                                                                                      | Read once to find the metadata column. Hand-rolled table without it → pass `metadataField`. |
 
 Exact shape: [docs api](https://aoothjs.dev/api/auth#authcredentialtable-tpayload).
 
@@ -163,7 +165,8 @@ Implementation specifics:
 - `retrieve` opportunistically GCs the row when `expiresAt <= now`.
 - `listForUser` GCs dead rows in a background `deleteMany({ token: { $in: expired } })`.
 - `update` with `state.expiresAt <= now` calls `deleteOne`, not `replaceOne` — parity with Redis fail-loud posture.
-- The envelope's `metadata` is mapped through the configured `metadataField` column on every write/read (and excluded from the extracted typed payload). No `metadataField` → metadata silently not persisted (memory/JWT stores unaffected — they carry `metadata` natively).
+- The envelope's `metadata` is mapped through the metadata column on every write/read (and excluded from the extracted typed payload). Column = `metadataField` if a string, else auto-resolved from `table.type` (`getAoothCredentialMetadataSpec`, exported ONLY from `@aooth/auth/atscript-db` since 0.2 — removed from `@aooth/arbac-moost/atscript`); `metadataField: false` = explicit opt-out.
+- **No metadata column = FAIL CLOSED (since 0.2, BREAKING).** Persisting/updating a credential whose metadata carries any of `AUTHORITY_METADATA_KEYS` (`accessTtl`, `refreshRotation`, `rotationGraceMs`, `credentialKind`, `authzClientId` — per-mint `issue({ ttl, refresh })`, PATs, authorization-server families) throws `AuthError('INVALID_CONFIG')`. Other metadata (ip / UA / label) is dropped with ONE warning (`onWarning`; silent under `false`). Fix = declare the `@aooth.auth.metadata @db.json` column. Memory/Redis stores carry `metadata` natively.
 
 ## `AoothAuthCredential` `.as` model
 
@@ -192,7 +195,7 @@ export interface AoothAuthCredential {
 }
 ```
 
-Envelope only — NO free-form `claims` column. Carry per-token payload by `extends AoothAuthCredential` + your own typed columns (the adapter round-trips them); `@aooth/arbac-moost` consumers annotate them `@arbac.attenuate.role` / `@arbac.attenuate.attr "userAttr"` for restrict-only credential attenuation. NO `metadata` column either — credential metadata is consumer-declared: a fully-typed `@db.json` field on your extending model (the runtime/validation twin of your `CredentialMetadata` declaration merge), tagged `@aooth.auth.metadata`; resolve the name at boot with `getAoothCredentialMetadataSpec(Model)` (`@aooth/arbac-moost/atscript`, WeakMap-cached) and thread it as the store's `metadataField`, logging `warnings`. At most one annotated field per type (throws); without `@db.json` it is warn-and-disabled; absent → the atscript-db store persists no metadata.
+Envelope only — NO free-form `claims` column. Carry per-token payload by `extends AoothAuthCredential` + your own typed columns (the adapter round-trips them); `@aooth/arbac-moost` consumers annotate them `@arbac.attenuate.role` / `@arbac.attenuate.attr "userAttr"` for restrict-only credential attenuation. NO `metadata` column either — credential metadata is consumer-declared: a fully-typed `@db.json` field on your extending model (the runtime/validation twin of your `CredentialMetadata` declaration merge), tagged `@aooth.auth.metadata`; pass YOUR model's table and the store resolves the column from `table.type` itself (since 0.2 — no `getAoothCredentialMetadataSpec` / `metadataField` threading needed). At most one annotated field per type (throws); without `@db.json` it is warn-and-disabled; absent → fail closed for restricted credentials (see the store section above).
 
 Shape the column by INTERSECTING the exported `AoothCredentialMetadataBase` (same `model[.as]` subpath — the single source of the framework-written envelope keys `ip` / `userAgent` / `fingerprint` / `label` / `credentialKind`; the `.as` twin of `CredentialMetadata`, keep the two in sync) with your extension keys — never hand-mirror the base keys, or a future aooth envelope key gets rejected by your closed schema on upgrade:
 
@@ -206,15 +209,15 @@ metadata?: AoothCredentialMetadataBase & { geoLat?: number, geoLon?: number }
 
 Annotations explained:
 
-| Annotation                        | Effect                                                                                                                                                                                                             |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `@db.table 'aooth_credentials'`   | Physical table name. Override if it collides in your schema.                                                                                                                                                       |
-| `@db.depth.limit 0`               | Refuses nested writes via the moost-db REST layer. This table is auth-internal — no FK fan-out.                                                                                                                    |
-| `@meta.id` on `token`             | Token is the PK. `findOne({ filter: { token } })` and `deleteOne(token)` are O(1).                                                                                                                                 |
-| `@db.index.plain` on `userId`     | Indexed for `revokeAllForUser` / `listForUser` scans. Required for production load.                                                                                                                                |
-| `@db.json` (consumer columns)     | Stored as JSON — required on the `@aooth.auth.metadata` column and any structured payload column. Caveat: `@db.json` columns are not filterable / sortable on SQL adapters.                                        |
-| `@aooth.auth.metadata` (consumer) | Marks YOUR fully-typed credential-metadata column (`@db.json` required, warn-and-disable otherwise; at most one per type, multiple throw). Resolved by `getAoothCredentialMetadataSpec` → store's `metadataField`. |
-| `kind?: string` (not enum)        | Adapter-portable — engines without a native enum type collapse literal unions to strings anyway.                                                                                                                   |
+| Annotation                        | Effect                                                                                                                                                                                                                          |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@db.table 'aooth_credentials'`   | Physical table name. Override if it collides in your schema.                                                                                                                                                                    |
+| `@db.depth.limit 0`               | Refuses nested writes via the moost-db REST layer. This table is auth-internal — no FK fan-out.                                                                                                                                 |
+| `@meta.id` on `token`             | Token is the PK. `findOne({ filter: { token } })` and `deleteOne(token)` are O(1).                                                                                                                                              |
+| `@db.index.plain` on `userId`     | Indexed for `revokeAllForUser` / `listForUser` scans. Required for production load.                                                                                                                                             |
+| `@db.json` (consumer columns)     | Stored as JSON — required on the `@aooth.auth.metadata` column and any structured payload column. Caveat: `@db.json` columns are not filterable / sortable on SQL adapters.                                                     |
+| `@aooth.auth.metadata` (consumer) | Marks YOUR fully-typed credential-metadata column (`@db.json` required, warn-and-disable otherwise; at most one per type, multiple throw). Found by the store on `table.type` automatically (`getAoothCredentialMetadataSpec`). |
+| `kind?: string` (not enum)        | Adapter-portable — engines without a native enum type collapse literal unions to strings anyway.                                                                                                                                |
 
 Wiring requires `@atscript/db` (peer dep, optional). For consumers that use a different ORM, re-implement `AuthCredentialTable` against your own table — the structural type is the only contract.
 
@@ -222,7 +225,7 @@ Wiring requires `@atscript/db` (peer dep, optional). For consumers that use a di
 
 Implement `CredentialStore<TPayload>` directly. Required behaviours (in addition to the method-level contracts above):
 
-1. **`persist` generates the token id.** Never trust the caller to supply one — UUIDs / opaque blobs are the store's responsibility.
+1. **`persist` generates the token id.** Never trust the caller to supply one — UUIDs / opaque blobs are the store's responsibility. (`persistAs(id, …)` is the explicit exception — the orchestrator supplies the key, a token hash, under `tokens.hashAtRest`. Implement it to support that option.)
 2. **Token bytes are opaque to `AuthCredential`.** The orchestrator hashes them for `credentialId` and passes them through; no parsing.
 3. **`kind` is preserved through round-trips.** `persist` writes it, `retrieve` returns it, `update` overwrites it — without this `auth.validate()` cannot reject refresh tokens.
 4. **`expiresAt` is the source of truth for expiry.** Stores MUST reject `retrieve` when `expiresAt <= clock.now()`, opportunistically GC'ing the entry.

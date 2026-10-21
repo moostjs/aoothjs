@@ -75,10 +75,31 @@ export interface AuthBindings {
   extractToken(): string | undefined;
   writeCookies(issue: IssueResult): void;
   clearCookies(): void;
-  buildLoginResponse(userId: string, issue: IssueResult): AuthLoginResponse;
+  /**
+   * `opts.exposeTokens` overrides `exposeTokensInBody` for this response (the
+   * refresh route sets it when the refresh token arrived in the body).
+   */
+  buildLoginResponse(
+    userId: string,
+    issue: IssueResult,
+    opts?: { exposeTokens?: boolean },
+  ): AuthLoginResponse;
   buildFinishedCookies(issue: IssueResult): WfFinishedResponse["cookies"];
   /** Build cookie attrs from the resolved access-cookie config, with optional overrides. */
   cookieAttrs(extra?: TCookieAttributesInput): TCookieAttributesInput;
+}
+
+/**
+ * `Max-Age` for a persistent cookie carrying a token that expires at
+ * `expiresAt` (ms epoch). A unit-explicit `'<n>s'` string — wooks reads a
+ * bare number differently across versions.
+ */
+function persistFor(
+  c: ResolvedAuthOptions["cookie"],
+  expiresAt: number | undefined,
+): TCookieAttributesInput | undefined {
+  if (!c.persistent || expiresAt === undefined) return undefined;
+  return { maxAge: `${Math.max(0, Math.floor((expiresAt - Date.now()) / 1000))}s` };
 }
 
 /**
@@ -195,17 +216,38 @@ export const useAuth = defineWook((ctx: EventContext): AuthBindings => {
     return token;
   };
 
-  const writeCookies = (issue: IssueResult): void => {
+  /**
+   * Build the `cookies` map for `useWfFinished({ cookies })`. The outlet
+   * trigger's HTTP layer turns the entries into `Set-Cookie` headers, mirroring
+   * what `writeCookies()` does for the REST controller.
+   */
+  const buildFinishedCookies = (issue: IssueResult): WfFinishedResponse["cookies"] => {
     const options = requireOptions();
-    if (!options.enableCookie) return;
-    const response = useResponse(current());
-    response.setCookie(options.cookie.name, issue.accessToken, cookieAttrsFrom(options.cookie));
+    if (!options.enableCookie) return undefined;
+    const cookies: NonNullable<WfFinishedResponse["cookies"]> = {
+      [options.cookie.name]: {
+        value: issue.accessToken,
+        options: cookieAttrsFrom(options.cookie, persistFor(options.cookie, issue.accessExpiresAt)),
+      },
+    };
     if (issue.refreshToken) {
-      response.setCookie(
-        options.refreshCookie.name,
-        issue.refreshToken,
-        cookieAttrsFrom(options.refreshCookie),
-      );
+      cookies[options.refreshCookie.name] = {
+        value: issue.refreshToken,
+        options: cookieAttrsFrom(
+          options.refreshCookie,
+          persistFor(options.refreshCookie, issue.refreshExpiresAt),
+        ),
+      };
+    }
+    return cookies;
+  };
+
+  const writeCookies = (issue: IssueResult): void => {
+    const cookies = buildFinishedCookies(issue);
+    if (!cookies) return;
+    const response = useResponse(current());
+    for (const [name, cookie] of Object.entries(cookies)) {
+      response.setCookie(name, cookie.value, cookie.options);
     }
   };
 
@@ -222,44 +264,27 @@ export const useAuth = defineWook((ctx: EventContext): AuthBindings => {
   };
 
   /**
-   * With `enableBearer === false` the response shape still carries `userId` +
-   * `accessExpiresAt` so clients can schedule a silent refresh, but the tokens
-   * themselves travel only via the cookies set by `writeCookies`.
+   * With `exposeTokensInBody === false` (the cookie default) the response shape
+   * still carries `userId` + `accessExpiresAt` so clients can schedule a silent
+   * refresh, but the tokens themselves travel only via the cookies set by
+   * `writeCookies`.
    */
-  const buildLoginResponseFn = (userId: string, issue: IssueResult): AuthLoginResponse => {
+  const buildLoginResponseFn = (
+    userId: string,
+    issue: IssueResult,
+    opts?: { exposeTokens?: boolean },
+  ): AuthLoginResponse => {
     const options = requireOptions();
+    const expose = opts?.exposeTokens ?? options.exposeTokensInBody;
     return {
       userId,
       accessExpiresAt: issue.accessExpiresAt,
       ...(issue.refreshExpiresAt !== undefined && { refreshExpiresAt: issue.refreshExpiresAt }),
-      ...(options.enableBearer && {
+      ...(expose && {
         accessToken: issue.accessToken,
         ...(issue.refreshToken && { refreshToken: issue.refreshToken }),
       }),
     };
-  };
-
-  /**
-   * Build the `cookies` map for `useWfFinished({ cookies })`. The outlet
-   * trigger's HTTP layer turns the entries into `Set-Cookie` headers, mirroring
-   * what `writeCookies()` does for the REST controller.
-   */
-  const buildFinishedCookies = (issue: IssueResult): WfFinishedResponse["cookies"] => {
-    const options = requireOptions();
-    if (!options.enableCookie) return undefined;
-    const cookies: NonNullable<WfFinishedResponse["cookies"]> = {
-      [options.cookie.name]: {
-        value: issue.accessToken,
-        options: cookieAttrsFrom(options.cookie),
-      },
-    };
-    if (issue.refreshToken) {
-      cookies[options.refreshCookie.name] = {
-        value: issue.refreshToken,
-        options: cookieAttrsFrom(options.refreshCookie),
-      };
-    }
-    return cookies;
   };
 
   const cookieAttrs = (extra?: TCookieAttributesInput): TCookieAttributesInput => {

@@ -52,7 +52,7 @@ export {
 export type { RateLimitRule, RateLimitRuleInput } from "./rate-limit/rules";
 export { RateLimitStoreMemory } from "./rate-limit/store";
 export type { RateLimitStore } from "./rate-limit/store";
-export { RateLimiter } from "./rate-limit/rate-limiter";
+export { pickGoverning, RateLimiter } from "./rate-limit/rate-limiter";
 export type { RateLimitDecision, RateLimiterOptions } from "./rate-limit/rate-limiter";
 
 // Email transport interface (consumer provides the impl)

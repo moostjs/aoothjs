@@ -28,6 +28,10 @@ export interface AoothUserCredentials {
         failedLoginAttempts: number
         lastLogin: number.timestamp
         pendingInvitation?: boolean
+        // Id of the user who issued the pending invite (set by the invite flow)
+        invitedBy?: string
+        // Random marker of the CURRENT invite link; a re-invite rotates it, so older links answer 410
+        inviteNonce?: string
         // Correspondence address whose inbox the user proved (invite click, OTP, email confirm); auth-owned, not a login handle
         verifiedEmail?: string
     }

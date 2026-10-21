@@ -146,6 +146,10 @@ const authCredential = new AuthCredential<Record<string, unknown>>({
 })
 ```
 
+::: tip Stateful credential store? Hash tokens at rest
+With a stateful store (`CredentialStoreAtscriptDb`, Redis or memory) instead of the JWT store, add `tokens: { hashAtRest: true }` to `AuthCredential` so the table holds token hashes, not usable tokens. See [Tokens at rest](../auth/credentials#tokens-at-rest-tokens-hashatrest).
+:::
+
 The cast on `tables.users` bridges atscript-db's generic row shape (`Record<string, unknown>`) into the narrower `AuthUserTable<AppUser>` surface that `UsersStoreAtscriptDb` actually calls — copy as-is, no runtime cost. See [`aooth.ts`](https://github.com/moostjs/aoothjs/blob/main/packages/e2e-demo/src/aooth.ts).
 
 ## 6. Define a role
@@ -366,7 +370,7 @@ curl -X POST http://localhost:3000/auth/trigger \
 The first call returns a paused-form envelope containing `LoginCredentialsForm` and a `wfs` token — the workflow-session handle, **reused on every subsequent step until the run finishes**. Submit credentials (form values go under `input.formData`):
 
 ```bash
-curl -X POST http://localhost:3000/auth/trigger \
+curl -X POST http://localhost:3000/auth/trigger -c cookies.txt \
   -H 'content-type: application/json' \
   -d '{"wfs":"<wfs-from-initial-response>","input":{"formData":{"username":"alice","password":"CorrectHorse123"}}}'
 ```
@@ -375,18 +379,18 @@ curl -X POST http://localhost:3000/auth/trigger \
 On **start** there is no token — the body carries `wfid` (the workflow id). On every later step the body carries the `wfs` token instead; the engine resumes the in-flight run. The `wfs` value stays the same across `wf.requireInput` re-renders, refresh, bookmark, and multi-tab — it only changes when the run finishes or a different workflow starts. See [Workflows — state tokens](../moost/workflows#workflow-state-tokens-wfs).
 :::
 
-On success the envelope's `type` is `"data"` and the response carries `aooth_session` + `aooth_refresh` cookies plus an `accessToken` in the body (because `enableBearer` defaults to `true`).
+On success the envelope's `type` is `"data"`, the response sets the `aooth_session` + `aooth_refresh` httpOnly cookies (saved to `cookies.txt` above), and `data` carries `userId`, `accessExpiresAt` and `refreshExpiresAt` — **no token material**. Tokens appear in JSON bodies only when you set `exposeTokensInBody: true` on the guard (for CLI / mobile clients — see [Config](../moost/config#authoptions)).
 
-Hit the protected route:
+Hit the protected route with the session cookie:
 
 ```bash
-curl http://localhost:3000/me -H 'Authorization: Bearer <accessToken>'
+curl http://localhost:3000/me -b cookies.txt
 # → { "userId": "9f8c2e10-…" }   ← alice's stable id (the token subject), not her username
 ```
 
 ## What the request just did
 
-1. `authGuardInterceptor` validated the bearer token via `AuthCredential.validate()` and stashed `AuthContext { userId: '<alice-id>' }` onto the event — `userId` is the stable surrogate `id`, the token `sub`.
+1. `authGuardInterceptor` read the access token from the `aooth_session` cookie, validated it via `AuthCredential.validate()` and stashed `AuthContext { userId: '<alice-id>' }` onto the event — `userId` is the stable surrogate `id`, the token `sub`.
 2. `arbacAuthorizeInterceptor` resolved `resource = 'me'` (from class-level `@ArbacResource('me')`), `action = 'read'` (from method-level `@ArbacAction('read')`), instantiated `AppArbacUserProvider`, fetched alice's `{ roles: ['member'], attrs: { tenantId: 't1' } }` (looked up by that id via `@meta.id`), and called `Arbac.evaluate(...)`.
 3. The `memberRole`'s `.allow('me', 'read')` rule matched. Scopes were set on the event.
 4. The handler ran, `useAuth().getUserId()` returned alice's `id`, and moost serialised the response.
@@ -395,17 +399,17 @@ curl http://localhost:3000/me -H 'Authorization: Bearer <accessToken>'
 
 `AuthController` mounts seven routes under `@Controller('auth')`. These five are `@Public()` (the auth guard does not block them — they validate their own inputs):
 
-| Method + path                      | Body / Query                   | Purpose                                                                                                                               |
-| ---------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /auth/logout`                | `{ refreshToken? }` (optional) | Revokes the current access token + refresh (cookie or body). Always clears `aooth_session` / `aooth_refresh` cookies.                 |
-| `POST /auth/refresh`               | `{ refreshToken? }` (optional) | Trades a refresh token for a fresh access + refresh pair. Reads cookie if no body field.                                              |
-| `GET /auth/status`                 | —                              | Returns the resolved `AuthContext { userId, claims }` if the guard could validate; 401 otherwise.                                     |
-| `POST /auth/trigger`               | `{ wfid?, wfs?, input? }`      | Drives any workflow in `DEFAULT_AUTH_WORKFLOWS = ['auth/login/flow', 'auth/invite/start', 'auth/recovery/flow', 'auth/signup/flow']`. |
-| `GET /auth/invite/post-redemption` | `?uid=<userId>`                | Idempotent "already accepted" envelope for re-clicked invite links (needs a `UserService`).                                           |
+| Method + path                      | Body / Query                   | Purpose                                                                                                                                           |
+| ---------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /auth/logout`                | `{ refreshToken? }` (optional) | Revokes the current access token + refresh (cookie or body). Always clears `aooth_session` / `aooth_refresh` cookies.                             |
+| `POST /auth/refresh`               | `{ refreshToken? }` (optional) | Trades a refresh token for a fresh access + refresh pair (as cookies; in the body only with `exposeTokensInBody`). Reads cookie if no body field. |
+| `GET /auth/status`                 | —                              | Returns the resolved `AuthContext { userId, claims }` if the guard could validate; 401 otherwise.                                                 |
+| `POST /auth/trigger`               | `{ wfid?, wfs?, input? }`      | Drives any workflow in `DEFAULT_AUTH_WORKFLOWS = ['auth/login/flow', 'auth/invite/start', 'auth/recovery/flow', 'auth/signup/flow']`.             |
+| `GET /auth/invite/post-redemption` | `?uid=<userId>`                | Idempotent "already accepted" envelope for re-clicked invite links (needs a `UserService`; rate limited; unknown and pending ids → the same 404). |
 
 Two further routes — `POST /auth/change-password` and `POST /auth/add-mfa` — are **not** `@Public()`: they're ARBAC-gated authenticated self-service flows, each switched on by granting its resource (`allow('auth.change-password', '*')` / `allow('auth.add-mfa', '*')`). See [REST Controllers](/moost/controllers) and [Workflows](/moost/workflows#add-mfa-auth-add-mfa-flow).
 
-Subclass `AuthController` to widen the trigger allow-list (override `triggerWf()` with your own `@WfTrigger({ allow })`).
+Subclass `AuthController` to widen the trigger allow-list (override `triggerWf()` with your own `@WfTrigger({ allow })`). The list governs resuming as well as starting: a `wfs` of a workflow outside it is refused with 403.
 
 Self-signup, password reset, and invite acceptance are all flows of the same `AuthWorkflow` — drive them through the same `/auth/trigger` wire by starting `auth/signup/flow`, `auth/recovery/flow`, or `auth/invite/start`. (Self-signup is off by default — enable it via `resolveSignupPolicy().allowSignup`.) See the [Moost integration guide](../moost/) for the option + resolver surface.
 
@@ -471,18 +475,19 @@ Wire `createAuthEmailOutlet({ emailSender, buildMagicLinkUrl })` into your `WfTr
 
 ### Refresh-token flow
 
-After login, the response carries `aooth_refresh` (HTTP-only cookie, path `/auth/refresh`) and the access token. To rotate before expiry:
+After login, the response carries the `aooth_session` and `aooth_refresh` (path `/auth/refresh`) HTTP-only cookies. To rotate before expiry:
 
 ```bash
 # Browsers send the cookie automatically:
-curl -X POST http://localhost:3000/auth/refresh \
-  -b 'aooth_refresh=<refresh-token-from-login>'
+curl -X POST http://localhost:3000/auth/refresh -b cookies.txt -c cookies.txt
+# → { userId, accessExpiresAt, refreshExpiresAt } + rotated cookies
 
-# Or pass it explicitly in the body (for non-browser clients):
+# Non-browser clients (guard configured with exposeTokensInBody: true) pass it in the body
+# and read the rotated pair back from it:
 curl -X POST http://localhost:3000/auth/refresh \
   -H 'content-type: application/json' \
-  -d '{"refreshToken":"<refresh-token-from-login>"}'
-# → { accessToken, refreshToken, expiresIn, userId, ... }
+  -d '{"refreshToken":"<refresh-token>"}'
+# → { userId, accessToken, refreshToken, accessExpiresAt, refreshExpiresAt }
 ```
 
 With `refresh: { rotation: 'always' }` (the Quick Start setting) every call mints a NEW refresh and invalidates the previous one — replaying the old refresh raises `REFRESH_REUSE_DETECTED` and revokes all credentials for the user.
@@ -506,7 +511,7 @@ curl -X POST http://localhost:3000/auth/trigger \
   -d '{"wfs":"<token-from-clicked-link>"}'
 ```
 
-A successful resume drops the same cookies + access token as the password path.
+A successful resume sets the same cookies as the password path.
 
 ## Next steps
 

@@ -1,7 +1,4 @@
-import {
-  getAoothCredentialMetadataSpec,
-  getAoothUserHandleSpec,
-} from "@aooth/arbac-moost/atscript";
+import { getAoothUserHandleSpec } from "@aooth/arbac-moost/atscript";
 import { AuthCredential } from "@aooth/auth";
 import { type AuthCredentialTable, CredentialStoreAtscriptDb } from "@aooth/auth/atscript-db";
 import type { BuildMagicLinkUrl } from "@aooth/auth-moost";
@@ -10,7 +7,6 @@ import { type AuthUserTable, UsersStoreAtscriptDb } from "@aooth/user/atscript-d
 
 import type { AppDb } from "./db";
 import type { AppEnv } from "./env";
-import { DemoAuthCredential } from "./models/auth-credential.as";
 import { DemoUser } from "./models/user.as";
 import { readVariantHeader } from "./variants-server";
 
@@ -72,7 +68,7 @@ export function createAooth({ tables, env }: AppAuthOptions): AppAuth {
   // reads, so the typed `AuthUserTable` surface needs a cast at the wiring
   // seam — same pattern `wf-store.ts` uses.
   const userStore = new DemoUserStore({
-    table: tables.users as unknown as AuthUserTable<DemoUser>,
+    table: tables.users,
     handleFields: handles.handleFields,
   });
 
@@ -126,23 +122,14 @@ export function createAooth({ tables, env }: AppAuthOptions): AppAuth {
     deviceTrust: { secret: env.JWT_SECRET },
   });
 
-  // Resolve the credential-METADATA column name from the model's
-  // `@aooth.auth.metadata` annotation (WeakMap-cached, same contract as the
-  // handle spec above). Warn-and-disable: an annotated field without
-  // `@db.json` is dropped here (metadata is then not persisted).
-  // `DemoAuthCredential` annotates its typed `metadata` column, so
-  // `metadataField` is `"metadata"` and `warnings` is empty in practice.
-  const credSpec = getAoothCredentialMetadataSpec(DemoAuthCredential);
-  for (const warning of credSpec.warnings) {
-    console.warn(`[aooth] ${warning}`);
-  }
   // Stateful, enumerable credential store backed by the app's SQLite DB. A
   // stateful store is what makes the "active sessions" panel possible —
   // `listSessions` / `revokeSession` / `revokeOtherSessions` need to enumerate
   // a user's token families, which a stateless JWT store can't do.
+  // The `@aooth.auth.metadata` column of `DemoAuthCredential` is found on
+  // `table.type` automatically.
   const credentialStore = new CredentialStoreAtscriptDb<Record<string, unknown>>({
     table: tables.credentials as unknown as AuthCredentialTable<Record<string, unknown>>,
-    metadataField: credSpec.metadataField,
   });
 
   const authCredential = new AuthCredential<Record<string, unknown>>({

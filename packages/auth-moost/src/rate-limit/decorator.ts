@@ -2,7 +2,7 @@ import { parseRateLimitRule, type RateLimitRuleInput } from "@aooth/auth";
 import { Intercept } from "moost";
 
 import { rateLimitInterceptors, type RateLimitInterceptorOptions } from "./interceptor";
-import { getRateLimitMate, type RateLimitDecoratorOptions } from "./mate";
+import { getRateLimitMate, type RateLimitDecoratorOptions, type TRateLimitPolicy } from "./mate";
 
 /**
  * Declares rate-limit rules for a controller method (or every method of a
@@ -17,6 +17,10 @@ import { getRateLimitMate, type RateLimitDecoratorOptions } from "./mate";
  * RateLimit('100/1h', { key: 'user' }) // per-user budget on an authed route
  * RateLimit(false)                     // opt out of interceptor-level default rules
  * ```
+ *
+ * Stacking several `@RateLimit` decorators declares independent policies —
+ * each with its own key strategy and bucket — and a request must pass all
+ * of them (e.g. a per-IP limit plus a per-account limit).
  *
  * Rules are parsed eagerly, so a bad rule string throws at decoration
  * (boot) time, not per request.
@@ -45,9 +49,10 @@ export function RateLimit(
   }
   const rules = (inputs as RateLimitRuleInput[]).map((r) => parseRateLimitRule(r));
 
+  const policy: TRateLimitPolicy = options ? { rules, options } : { rules };
+  // Decorators apply bottom-up: prepend so the list keeps source order.
   return mate.decorate((meta) => {
-    meta.rateLimitRules = rules;
-    if (options) meta.rateLimitOptions = options;
+    meta.rateLimitPolicies = [policy, ...(meta.rateLimitPolicies ?? [])];
     return meta;
   });
 }

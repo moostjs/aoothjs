@@ -46,9 +46,10 @@ export const arbacAuthorizeInterceptor: TAuthGuardDef = Object.assign(
       if (error instanceof HttpError) {
         throw error;
       }
+      // The cause is logged, never echoed: internal error text (a failing
+      // user lookup, a scope bug) must not reach an unauthenticated caller.
       logger.warn(String(error));
-      const originalMessage = error instanceof Error ? error.message : String(error);
-      throw new HttpError(401, originalMessage);
+      throw new HttpError(401, "Not authorized");
     }
   }, TInterceptorPriority.GUARD),
   { __authTransports: {} },

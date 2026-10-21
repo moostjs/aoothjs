@@ -40,7 +40,7 @@ Double-call factory: the first `()` pins generics, the second wraps a rule-emitt
 ```ts
 function allowTableRead<TUserAttrs extends object, TScope extends object>(
   resource: string,
-  opts?: { scope?: (attrs: TUserAttrs, userId: string) => TScope },
+  opts?: { scope?: (attrs: TUserAttrs, userId: string) => TScope | null | undefined },
 ): TPrivilegeFunction<TUserAttrs, TScope>;
 ```
 
@@ -51,7 +51,7 @@ Emits 7 rules covering `AsDbController` read actions: `query`, `pages`, `getOne`
 ```ts
 function allowTableWrite<TUserAttrs extends object, TScope extends object>(
   resource: string,
-  opts?: { scope?: (attrs: TUserAttrs, userId: string) => TScope },
+  opts?: { scope?: (attrs: TUserAttrs, userId: string) => TScope | null | undefined },
 ): TPrivilegeFunction<TUserAttrs, TScope>;
 ```
 
@@ -63,7 +63,7 @@ Emits 12 rules covering reads + `insert`, `update`, `replace`, `remove`, `remove
 function allowTableAction<TUserAttrs extends object, TScope extends object>(
   resource: string,
   action: string | string[],
-  opts?: { scope?: (attrs: TUserAttrs, userId: string) => TScope },
+  opts?: { scope?: (attrs: TUserAttrs, userId: string) => TScope | null | undefined },
 ): TPrivilegeFunction<TUserAttrs, TScope>;
 ```
 
@@ -75,7 +75,7 @@ Emits one rule per action name. `allowTableAction(r, 'x')` is equivalent to `all
 function allowTableOps<TUserAttrs extends object, TScope extends object>(
   resource: string,
   ops: readonly TTableOp[],
-  opts?: { scope?: (attrs: TUserAttrs, userId: string) => TScope },
+  opts?: { scope?: (attrs: TUserAttrs, userId: string) => TScope | null | undefined },
 ): TPrivilegeFunction<TUserAttrs, TScope>;
 ```
 
@@ -344,7 +344,7 @@ interface RoleBuilder<TUserAttrs, TScope> {
   allow(
     resource: string,
     action: string,
-    scope?: (attrs: TUserAttrs, userId: string) => TScope,
+    scope?: (attrs: TUserAttrs, userId: string) => TScope | null | undefined, // nullish = admits nothing
   ): this;
   deny(resource: string, action: string): this;
   use<TScopes extends readonly unknown[]>(
@@ -382,19 +382,18 @@ interface TTableAccessScope {
 }
 
 interface TTableAccessDef<TUserAttrs, TScope> {
-  scope?: (attrs: TUserAttrs, userId: string) => TScope;
-  read?: boolean | { scope?: (attrs: TUserAttrs, userId: string) => TScope };
+  scope?: ScopeFn<TUserAttrs, TScope>;
+  read?: boolean | { scope?: ScopeFn<TUserAttrs, TScope> };
   write?:
     | boolean
     | readonly TTableWriteOp[]
-    | { ops?: readonly TTableWriteOp[]; scope?: (attrs: TUserAttrs, userId: string) => TScope };
-  actions?:
-    | readonly string[]
-    | { names: readonly string[]; scope?: (attrs: TUserAttrs, userId: string) => TScope };
+    | { ops?: readonly TTableWriteOp[]; scope?: ScopeFn<TUserAttrs, TScope> };
+  actions?: readonly string[] | { names: readonly string[]; scope?: ScopeFn<TUserAttrs, TScope> };
 }
+// ScopeFn = (attrs: TUserAttrs, userId: string) => TScope | null | undefined
 ```
 
-Input of `defineTableAccess`. `TTableAccessScope` is the minimum scope shape — the keys it conjoins. See [Privilege Factories](/arbac/privileges#definetableaccess-one-policy-per-table).
+Input of `defineTableAccess`. A nullish shared or part scope denies that part's rules (since 0.2 — before, it threw a `TypeError`). `TTableAccessScope` is the minimum scope shape — the keys it conjoins. See [Privilege Factories](/arbac/privileges#definetableaccess-one-policy-per-table).
 
 ### `TDbScope` / `TEffectiveDbScope<S>` / `TRowPolicy`
 

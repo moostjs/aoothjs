@@ -399,6 +399,24 @@ describe("pruneMetaByVisibility — writeOnly stamping", () => {
     expect(opted.fields["department.name"]?.writeOnly).toBe(true);
   });
 
+  it("F38: a field the write scopes force via `set` is no write affordance", () => {
+    type Props = Record<string, TSerializedAnnotatedType>;
+    const out = pruneMetaByVisibility(usersMeta(), {
+      ...visW("all"),
+      forced: new Set(["password", "username"]),
+    });
+    // Hidden + forced → dropped entirely (the server overwrites whatever is sent).
+    expect(out.fields["password.hash"]).toBeUndefined();
+    expect(out.fields["password.history"]).toBeUndefined();
+    const props = (out.type.type as unknown as { props: Props }).props;
+    expect(props.password).toBeUndefined();
+    // Visible + forced → kept for reads, stamped read-only for forms.
+    expect(out.fields.username).toBeDefined();
+    expect(props.username.metadata["meta.readonly"]).toBe(true);
+    // Other unreadable writable fields keep their write-only stamp.
+    expect(out.fields["account.lockReason"]?.writeOnly).toBe(true);
+  });
+
   it("ancestor grants cover nested paths (credit.credentials covers .user)", () => {
     const out = pruneMetaByVisibility(usersMeta(), visW(new Set(["password"])));
     // "password.history" sits under the "password" grant.

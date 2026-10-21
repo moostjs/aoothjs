@@ -306,27 +306,28 @@ Without a built `.as.d.ts` / `.as.js` pair, importing `MyUser` from `./models/us
 
 ## The forms model from `@aooth/auth-moost`
 
-`AuthWorkflow` consumes **18** `.as` form types from [`packages/auth-moost/src/atscript/models/forms.as`](https://github.com/moostjs/aoothjs/blob/main/packages/auth-moost/src/atscript/models/forms.as):
+`AuthWorkflow` consumes these `.as` form types (among others) from [`packages/auth-moost/src/atscript/models/forms.as`](https://github.com/moostjs/aoothjs/blob/main/packages/auth-moost/src/atscript/models/forms.as):
 
-| Form                              | Used by                                                                 |
-| --------------------------------- | ----------------------------------------------------------------------- |
-| `WithInlineConsentForm`           | Base — carries the inline `consents` field (extended by the four below) |
-| `LoginCredentialsForm`            | Login — username + password                                             |
-| `Select2faForm`                   | Login / invite — MFA method picker                                      |
-| `MfaCodeForm`                     | Login / invite — TOTP code entry                                        |
-| `PincodeForm`                     | Login / recovery — SMS/email OTP entry                                  |
-| `EmailIdentifierForm`             | Recovery — identifier (email/username)                                  |
-| `SetPasswordForm` ⁺               | Login forced change / invite set / recovery reset                       |
-| `EnrollPickMethodForm`            | MFA enrollment — pick method                                            |
-| `EnrollAddressForm`               | MFA enrollment — email/phone address                                    |
-| `EnrollConfirmForm` ⁺             | MFA enrollment — confirm (TOTP shows a QR)                              |
-| `AskEmailForm` / `AskPhoneForm` ⁺ | Login — channel enrollment carrier forms                                |
-| `TermsBumpForm` ⁺                 | Login — terms re-acceptance                                             |
-| `ConcurrencyLimitForm`            | Login — session-limit kick prompt                                       |
-| `InviteForm`                      | Invite admin form — email / name / roles                                |
-| `MagicLinkRequestForm`            | Login — `magicLink` alt-action                                          |
-| `RecoveryModeSelectForm`          | Recovery — magic-link vs OTP                                            |
-| `RecoveryFactorForm`              | Recovery — known-factor verification                                    |
+| Form                              | Used by                                                                                               |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `WithInlineConsentForm`           | Base — carries the inline `consents` field (extended by the four below)                               |
+| `LoginCredentialsForm`            | Login — username + password                                                                           |
+| `Select2faForm`                   | Login / invite — MFA method picker                                                                    |
+| `MfaCodeForm`                     | Login / invite — TOTP code entry                                                                      |
+| `PincodeForm`                     | Login / recovery — SMS/email OTP entry                                                                |
+| `EmailIdentifierForm`             | Recovery — identifier (email/username)                                                                |
+| `SetPasswordForm` ⁺               | Login forced change / invite set / recovery reset                                                     |
+| `EnrollPickMethodForm`            | MFA enrollment — pick method                                                                          |
+| `EnrollAddressForm`               | MFA enrollment — email/phone address                                                                  |
+| `EnrollConfirmForm` ⁺             | MFA enrollment — confirm (TOTP shows a QR)                                                            |
+| `AskEmailForm` / `AskPhoneForm` ⁺ | Login — channel enrollment carrier forms                                                              |
+| `TermsBumpForm` ⁺                 | Login — terms re-acceptance                                                                           |
+| `ConcurrencyLimitForm`            | Login — session-limit kick prompt                                                                     |
+| `InviteForm`                      | Invite admin form — email / roles (extend it via `forms.invite`; extra fields reach the invite hooks) |
+| `InviteChooseUsernameForm`        | Invite accept — username pick (`inviteUsername: 'choose'`, since 0.2)                                 |
+| `MagicLinkRequestForm`            | Login — `magicLink` alt-action                                                                        |
+| `RecoveryModeSelectForm`          | Recovery — magic-link vs OTP                                                                          |
+| `RecoveryFactorForm`              | Recovery — known-factor verification                                                                  |
 
 ⁺ extends `WithInlineConsentForm` (renders the inline pending-consents field).
 

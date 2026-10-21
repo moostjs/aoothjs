@@ -12,6 +12,7 @@ import { AuthCredential, CredentialStoreMemory } from "@aooth/auth";
 const auth = new AuthCredential<{ roles: string[] }>({
   store: new CredentialStoreMemory(),
   accessTtl: 15 * 60 * 1000,
+  tokens: { hashAtRest: true }, // recommended for new apps — see Tokens at rest
 });
 ```
 
@@ -28,22 +29,24 @@ interface AuthCredentialOptions<TPayload extends object> {
   onLimit?: "reject" | "evict-oldest";
   trackLastSeen?: "refresh" | "validate" | false;
   validateCache?: { ttlMs: number; max?: number }; // since 0.1.78, opt-in
+  tokens?: { hashAtRest?: boolean | "migrate"; generate?: () => string }; // since 0.2, opt-in
   clock?: Clock;
 }
 ```
 
-| Option          | Default                     | Purpose                                                                                                                                                      |
-| --------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `store`         | (required)                  | The `CredentialStore<TPayload>` instance. See [Stores](./stores).                                                                                            |
-| `method`        | `'token'`                   | Tags every issued credential. `AuthContext.method` mirrors it. Use `'session'` for long-lived server-side sessions, `'token'` for short-lived bearer access. |
-| `accessTtl`     | `60 * 60 * 1000` (1 h)      | Lifetime of access credentials, ms. Validated `> 0` at construction — throws `INVALID_CONFIG` otherwise.                                                     |
-| `refresh`       | `undefined`                 | Opt in to refresh tokens. See [Refresh & Rotation](./refresh).                                                                                               |
-| `denylist`      | `undefined`                 | Required when using a stateless store for `revoke` / `consume` / `update`.                                                                                   |
-| `maxConcurrent` | `undefined`                 | Cap on live access credentials per user. Refresh tokens don't count.                                                                                         |
-| `onLimit`       | `'reject'`                  | What happens when `maxConcurrent` is reached on `issue()` — see [the limit policies](#maxconcurrent-and-onlimit).                                            |
-| `trackLastSeen` | `false`                     | Activity stamping — see [Sessions](./sessions#activity-tracking-lastseenat).                                                                                 |
-| `validateCache` | `undefined` (off)           | Opt-in cache of validated access-token state — see [Opt-in validate cache](#opt-in-validate-cache-validatecache).                                            |
-| `clock`         | `{ now: () => Date.now() }` | Injectable clock for tests. Used everywhere — TTL expiry, JWT `iat`/`exp`, the rotation grace window, the per-user revocation epoch.                         |
+| Option          | Default                     | Purpose                                                                                                                                                                                              |
+| --------------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `store`         | (required)                  | The `CredentialStore<TPayload>` instance. See [Stores](./stores).                                                                                                                                    |
+| `method`        | `'token'`                   | Tags every issued credential. `AuthContext.method` mirrors it. Use `'session'` for long-lived server-side sessions, `'token'` for short-lived bearer access.                                         |
+| `accessTtl`     | `60 * 60 * 1000` (1 h)      | Lifetime of access credentials, ms. Validated `> 0` at construction — throws `INVALID_CONFIG` otherwise.                                                                                             |
+| `refresh`       | `undefined`                 | Opt in to refresh tokens. See [Refresh & Rotation](./refresh).                                                                                                                                       |
+| `denylist`      | `undefined`                 | Required when using a stateless store for `revoke` / `consume` / `update`.                                                                                                                           |
+| `maxConcurrent` | `undefined`                 | Cap on live access credentials per user. Refresh tokens don't count.                                                                                                                                 |
+| `onLimit`       | `'reject'`                  | What happens when `maxConcurrent` is reached on `issue()` — see [the limit policies](#maxconcurrent-and-onlimit).                                                                                    |
+| `trackLastSeen` | `false`                     | Activity stamping — see [Sessions](./sessions#activity-tracking-lastseenat).                                                                                                                         |
+| `validateCache` | `undefined` (off)           | Opt-in cache of validated access-token state — see [Opt-in validate cache](#opt-in-validate-cache-validatecache).                                                                                    |
+| `tokens`        | `undefined` (off)           | How tokens are minted and stored — `hashAtRest` keeps only a SHA-256 of each token in the store; `generate` supplies your own token format. See [Tokens at rest](#tokens-at-rest-tokens-hashatrest). |
+| `clock`         | `{ now: () => Date.now() }` | Injectable clock for tests. Used everywhere — TTL expiry, JWT `iat`/`exp`, the rotation grace window, the per-user revocation epoch.                                                                 |
 
 ::: warning `accessTtl` must be positive
 `new AuthCredential({ store, accessTtl: 0 })` throws `AuthError('INVALID_CONFIG')`. So does a negative value. The default applies only when the option is omitted entirely.
@@ -184,6 +187,32 @@ const auth = new AuthCredential({
 ::: warning Revocation lag across processes
 A revocation made on **another process**, by another `AuthCredential` instance, or by writing to the store / `denylist` directly is seen only when the entry expires — at most `ttlMs` later. Keep `ttlMs` to seconds, and leave it off where an immediate cross-node logout is a requirement.
 :::
+
+### Tokens at rest (`tokens.hashAtRest`)
+
+By default a stateful store keys each row by the token itself, so anyone who can read the credential table, a backup or a replica holds working sessions, refresh tokens and PATs. With `hashAtRest` the store only ever sees a SHA-256 of each token:
+
+```ts
+const auth = new AuthCredential({
+  store: new CredentialStoreAtscriptDb({ table }),
+  refresh: { ttl: 30 * 24 * 3600 * 1000 },
+  tokens: { hashAtRest: true }, // new app: no sessions to keep
+});
+```
+
+| Setting                         | Effect                                                                                                                                                                                                                                                                                                                                                           |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `hashAtRest: false`             | Default. Rows are keyed by the token itself.                                                                                                                                                                                                                                                                                                                     |
+| `hashAtRest: true`              | Rows are keyed by the token's SHA-256. The successor pair kept on a rotated refresh row (the [grace window](./refresh#the-grace-window-and-concurrency)) is encrypted with a key derived from that refresh token, and `parentCredentialId` holds the hash. Tokens become 256-bit random base64url strings.                                                       |
+| `hashAtRest: 'migrate'`         | As `true`, but a token of the legacy shape (the `randomUUID` the bundled stores minted) whose hash is not found is also looked up as-is, so sessions issued before the switch keep working; a legacy refresh token is re-issued hashed on its next rotation. A 64-hex value (the shape of a stored hash) is never looked up as-is.                               |
+| `generate: () => string`        | Your own token generator (default: 32 random bytes, base64url), e.g. to add a recognisable prefix that secret scanners can match. It must supply **at least 128 bits of randomness** — a plain SHA-256 of a guessable token is guessable too.                                                                                                                    |
+| `isLegacyToken: (t) => boolean` | `'migrate'` only: which presented tokens may be looked up as-is. Default: the `randomUUID` shape. Pass a predicate when your pre-migration tokens came from a custom `generate`; it must match the **exact** token shape (an anchored pattern such as `/^pat_[A-Za-z0-9_-]{43}$/`), never a prefix test. Tokens containing whitespace are never looked up as-is. |
+
+- **Store support.** Both options need a store that implements the optional `persistAs` method — `CredentialStoreMemory`, `CredentialStoreRedis` and `CredentialStoreAtscriptDb` do. The stateless JWT / encapsulated stores (the token _is_ the state) throw `AuthError('INVALID_CONFIG')` at construction.
+- **New app:** use `true`. **Existing app:** `true` signs every current session out (their rows are keyed by the raw token and are no longer found) — deploy `'migrate'` first, then switch to `true` once your longest refresh lifetime has passed.
+- **Finishing a migration.** Only refresh tokens that rotate (`'always'` / `'sliding'`) are re-issued hashed. Tokens that never rotate — PATs and other access-only credentials, and refresh tokens under `rotation: 'none'` — stay keyed by the raw token for their whole life. Before switching to `true`, list the user's credentials (`listForUser`) and re-issue the ones whose row key is not a 64-hex hash, or accept that those credentials stop working at the switch.
+- **A database read is not a session.** Under `true` and `'migrate'`, presenting a row key (the hash) to `validate`, `refresh` or `revoke` matches nothing.
+- `credentialId` and session ids stay the same SHA-256 fingerprints described below, so audit logs and session lists are unaffected.
 
 ### The `credentialId` fingerprint
 

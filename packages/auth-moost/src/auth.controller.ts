@@ -18,6 +18,7 @@ import {
 import { type AuthBindings, useAuth } from "./auth.composables";
 import { Public } from "./auth.decorator";
 import { normalizeCookiePath, RefreshCookiePathHolder } from "./auth.route";
+import { RateLimit } from "./rate-limit/decorator";
 import type {
   AuthLoginResponse,
   AuthLogoutBody,
@@ -25,6 +26,7 @@ import type {
   AuthRefreshBody,
 } from "./auth.dto";
 import { WfTrigger } from "./wf-trigger/decorator";
+import type { AoothMessages } from "./workflow/auth-messages";
 import { buildInviteAlreadyAcceptedEnvelope } from "./workflow/auth-workflow";
 
 /** Workflows allowed by the bundled `/auth/trigger` endpoint. Subclasses override `triggerWf()` to extend. */
@@ -53,6 +55,11 @@ export const CHANGE_PASSWORD_WORKFLOW = "auth/change-password/flow";
  * `/auth/trigger`.
  */
 export const ADD_MFA_WORKFLOW = "auth/add-mfa/flow";
+
+/** The post-redemption route's single "not found" answer. */
+function inviteNotFound(): HttpError {
+  return new HttpError(404, "Invite not found");
+}
 
 /** Prefer an explicit body field, fall back to the refresh cookie when enabled. */
 function resolveRefreshToken(auth: AuthBindings, body: { refreshToken?: string } | undefined) {
@@ -190,7 +197,15 @@ export class AuthController {
     auth.writeCookies(issue);
     // userId is preserved across refresh — recover it from the new access token.
     const validated = await this.auth.validate(issue.accessToken);
-    return auth.buildLoginResponse(validated?.userId ?? "", issue);
+    // A client that SENT its refresh token in the body already holds token
+    // material (a CLI / mobile client on a cookie deployment): hand the
+    // rotated pair back the same way, or it would lose its session.
+    const fromBody = typeof body?.refreshToken === "string";
+    return auth.buildLoginResponse(
+      validated?.userId ?? "",
+      issue,
+      fromBody ? { exposeTokens: true } : undefined,
+    );
   }
 
   // `@Public()` bypasses ARBAC — status is a self-scoped primitive ("tell
@@ -265,7 +280,9 @@ export class AuthController {
    * but the user-id baked into the magic-link URL by `buildMagicLinkUrl(…, {
    * userId })` lets the SPA resolve the "already accepted" condition itself.
    *
-   * `@Public()` — invitees aren't signed in at this point.
+   * `@Public()` — invitees aren't signed in at this point. Rate limited
+   * (`30/5m` per IP, enforced when `rateLimitInterceptors` are installed); an
+   * unknown id and a still-pending invite get the same 404.
    *
    * Defaults for `loginUrl` / `alreadyAcceptedRedirectUrl` mirror the unified
    * `AuthWorkflow` defaults (`/login` / `/login`). Subclasses override
@@ -273,7 +290,11 @@ export class AuthController {
    */
   @Get("invite/post-redemption")
   @Public()
+  @RateLimit("30/5m")
   async invitePostRedemption(@Query("uid") uid: string | undefined): Promise<WfFinished> {
+    // One answer for "switched off", "unknown id" and "still pending": the
+    // route must not tell an anonymous caller which ids exist.
+    if (!this.invitePostRedemptionEnabled()) throw inviteNotFound();
     if (!uid) throw new HttpError(400, "Missing uid query parameter");
     if (!this.users) {
       throw new HttpError(500, "UserService not wired — cannot resolve post-redemption state");
@@ -282,17 +303,13 @@ export class AuthController {
     try {
       user = await this.users.getUser(uid);
     } catch (err) {
-      if (err instanceof UserAuthError && err.type === "NOT_FOUND") {
-        throw new HttpError(404, "User not found");
-      }
+      if (err instanceof UserAuthError && err.type === "NOT_FOUND") throw inviteNotFound();
       throw err;
     }
     // Still pending → the magic link genuinely failed for some other reason
     // (wf state store eviction, etc.). Return 404 so the SPA keeps showing
     // the actual error rather than masking it with an idempotent envelope.
-    if (user.account?.pendingInvitation) {
-      throw new HttpError(404, "Invite still pending");
-    }
+    if (user.account?.pendingInvitation) throw inviteNotFound();
     // Wire shape parity with the workflow path: the SPA's `<AsWfFinish>`
     // expects a `WfFinished` (with `finished: true`); the workflow gets that
     // marker from `finishWf()`, the side route adds it directly.
@@ -303,6 +320,16 @@ export class AuthController {
   }
 
   /**
+   * Whether `GET auth/invite/post-redemption` is served. Default `true`.
+   * Override to return `false` when the app does not use magic-link invites —
+   * the route then answers 404 for every id (a subclass cannot unregister an
+   * inherited route).
+   */
+  protected invitePostRedemptionEnabled(): boolean {
+    return true;
+  }
+
+  /**
    * URLs used by `invitePostRedemption`. Defaults mirror the unified
    * `AuthWorkflow` resolved opts so subclasses that customize either of
    * those options can override here to keep the side route in sync.
@@ -310,6 +337,8 @@ export class AuthController {
   protected resolveInvitePostRedemption(): {
     loginUrl: string;
     alreadyAcceptedRedirectUrl: string;
+    /** Text overrides — pass the same value as `AuthWorkflowOpts.messages`. */
+    messages?: AoothMessages;
   } {
     return { loginUrl: "/login", alreadyAcceptedRedirectUrl: "/login" };
   }

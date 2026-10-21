@@ -33,6 +33,7 @@ export type {
 } from "./auth.dto";
 export { WfTrigger, type WfTriggerOpts } from "./wf-trigger/decorator";
 export { deriveWfStateSecret, WfTriggerProvider } from "./wf-trigger/provider";
+export { createInviteOutlet, INVITE_OUTLET } from "./workflow/invite-outlet";
 
 // ── Rate limiting (RL.spec.md) — @RateLimit metadata + enforcing interceptor
 //    pair + composable. The limiter/stores are framework-agnostic and live in
@@ -129,6 +130,14 @@ export {
   stripReservedUserKeys,
 } from "./workflow/auth-workflow";
 export type { AuthWorkflowOpts, ResolvedAuthWorkflowOpts } from "./workflow/auth-workflow.opts";
+export {
+  AOOTH_MESSAGES,
+  type AoothMessageCode,
+  type AoothMessageParams,
+  type AoothMessages,
+  renderAoothMessage,
+  resolveAoothMessage,
+} from "./workflow/auth-messages";
 export type {
   AuthWfCtx,
   AuthWfCompletionState,

@@ -373,6 +373,10 @@ export interface AuthWfAcceptState {
   showConfirmation?: boolean;
   confirmationMessage?: string;
   alreadyAccepted?: boolean;
+  /** `inviteUsername: 'choose'` — the invitee picks their username at accept. */
+  chooseUsername?: boolean;
+  /** Set once `choose-username` stored the invitee's pick. */
+  usernameChosen?: boolean;
 }
 
 /**
@@ -429,6 +433,22 @@ export interface AuthWfAdminState {
    * second email and re-pausing. See `sendInviteEmail` for the why.
    */
   emailDispatched?: boolean;
+  /**
+   * App context for this invite, from `resolveInviteContext(ctx, startFormData)`
+   * at `init-invite-admin` (e.g. a tenant / household id). Server-only.
+   */
+  app?: Record<string, unknown>;
+  /** Admin-form fields beyond `email` / `roles` (a consumer's extended invite form). Server-only. */
+  form?: Record<string, unknown>;
+  /** User id of the issuer (from the session at `build-user-extras`). */
+  invitedBy?: string;
+  /**
+   * Marker of THIS invite link, mirrored on `account.inviteNonce`. A re-invite
+   * rotates the account's nonce, so this run's link then answers 410.
+   */
+  inviteNonce?: string;
+  /** How the link was delivered (`AuthWorkflowOpts.inviteDelivery`), read at accept. */
+  inviteDelivery?: "outlet-email" | "deliver" | "return-link";
 }
 
 /**
@@ -698,6 +718,11 @@ export interface AuthWfPublicState {
   manage?: { candidates?: MfaTransport[]; locked?: MfaTransport[]; removeBlocked?: boolean };
   /** Mirrors `ctx.defaults` — prefill source for the recovery email field. */
   defaults?: { email?: string };
+  /**
+   * Client-side form texts overridden through `AuthWorkflowOpts.messages`
+   * (only codes a form validator reads; present only when overridden).
+   */
+  messages?: { PASSWORDS_DO_NOT_MATCH?: string };
   /**
    * Mirrors `ctx.pendingLink` display fields — the proof `mode`, the masked
    * account `hint` ("an account for a***@x.com exists"), the masked delivery

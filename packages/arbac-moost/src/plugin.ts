@@ -148,12 +148,13 @@ export default function arbacPlugin(): TAtscriptPlugin {
                 description:
                   "Marks the consumer's fully-typed credential-metadata column (@db.json) on their " +
                   "`extends AoothAuthCredential` model — the runtime/validation twin of the " +
-                  "`CredentialMetadata` declaration merge. Resolved by `getAoothCredentialMetadataSpec` " +
-                  "and threaded to `CredentialStoreAtscriptDb` as `metadataField`. The field MUST carry " +
+                  "`CredentialMetadata` declaration merge. `CredentialStoreAtscriptDb` finds it on " +
+                  "`table.type` automatically (`getAoothCredentialMetadataSpec` from `@aooth/auth/atscript-db`). The field MUST carry " +
                   "@db.json (a structured metadata object needs a json column — without it, metadata " +
                   "persistence is DISABLED with a warning). At most one @aooth.auth.metadata field per " +
-                  "type — multiple declarations throw at boot. Absent → the atscript-db credential " +
-                  "store persists no metadata (non-fatal, warned at boot by the wiring).",
+                  "type — multiple declarations throw at boot. Absent → the store refuses credentials " +
+                  "whose metadata carries per-token restrictions (refresh rotation, access TTL, " +
+                  "credential kind, OAuth client binding) and drops the rest with a warning.",
                 nodeType: ["prop"],
                 // Role/handle markers bind to the DECLARING type (one-per-type contracts)
                 // — they must not ride into referring models across field refs.

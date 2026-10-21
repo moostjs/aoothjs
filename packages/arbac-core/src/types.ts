@@ -37,7 +37,12 @@ export type TArbacRule<TUserAttrs, TScope> =
   | {
       resource: string;
       action: string;
-      scope?: (userAttrs: TUserAttrs, userId: string) => TScope;
+      /**
+       * Scope of this grant. `null` / `undefined` = this rule grants nothing
+       * for the user (as if it did not match): with no other rule allowing,
+       * the evaluation is denied.
+       */
+      scope?: (userAttrs: TUserAttrs, userId: string) => TScope | null | undefined;
       effect?: never;
     }
   | {

@@ -8,7 +8,10 @@
  * totpIssuer) have been merged in. Policy continues to live on
  * `protected resolveXxx(ctx)` methods on `AuthWorkflow`.
  */
+import type { RateLimitStore } from "@aooth/auth";
 import type { TAtscriptAnnotatedType } from "@atscript/typescript/utils";
+
+import type { AoothMessages } from "./auth-messages";
 
 export interface AuthWorkflowOpts {
   // ── Finalize behavior (cross-flow) ──
@@ -38,6 +41,65 @@ export interface AuthWorkflowOpts {
    * itself relax or tighten enforcement. Default `false`.
    */
   allowAnyInviteRole?: boolean;
+  /**
+   * How the invite link reaches the invitee:
+   * - `'outlet-email'` (default) — the workflow pauses on the `email` outlet
+   *   (`invite.magicLink` template); register an email outlet on the trigger
+   *   provider (`createAuthEmailOutlet`).
+   * - `'deliver'` — the link is handed to `deliver({ kind: 'invite-link', … })`,
+   *   the same seam as every other notice.
+   * - `'return-link'` — nothing is sent; the issuer's trigger response carries
+   *   `data.inviteLink` to share by hand. A click then does not prove the
+   *   invitee's inbox, so accepting does not record `account.verifiedEmail`.
+   * `'deliver'` and `'return-link'` need {@link inviteLinkUrl}.
+   */
+  inviteDelivery?: "outlet-email" | "deliver" | "return-link";
+  /**
+   * Builds the invite link from the resume token for `inviteDelivery:
+   * 'deliver' | 'return-link'` (the `email` outlet builds its own). Put the
+   * token in the `wfs` query parameter of the SPA page that renders the
+   * invite workflow; `userId` lets that page resolve a re-click after
+   * acceptance (`GET auth/invite/post-redemption?uid=`).
+   */
+  inviteLinkUrl?: (token: string, info: { userId?: string }) => string;
+  /**
+   * Who picks the login handle of an invited account:
+   * - `'email'` (default) — the invited email address is the username.
+   * - `'choose'` — the invitee picks a username on the accept page (the
+   *   `InviteChooseUsernameForm` step, before the password); the email stays
+   *   the correspondence address.
+   */
+  inviteUsername?: "email" | "choose";
+
+  // ── Messages ──
+  /**
+   * Overrides for the user-facing texts (`AOOTH_MESSAGES`, keyed by code): a
+   * partial map of templates, or a resolver `(code, params) => text` (return
+   * `undefined` to keep the English default). The resolver runs inside the
+   * request, so it can read the caller's locale.
+   */
+  messages?: AoothMessages;
+
+  // ── Login lockout disclosure ──
+  /**
+   * What a failed sign-in tells the caller about locked accounts:
+   * - `'uniform'` (default) — a locked account answers "Account locked", and
+   *   so does an unknown (or inactive) handle after the same number of failed
+   *   attempts (a shadow counter, see `lockoutShadowStore`) — so the lock
+   *   message does not reveal which accounts exist.
+   * - `'generic'` — every failure, locked or not, answers "Invalid credentials".
+   * - `'reveal'` — only real locked accounts answer "Account locked" (the
+   *   pre-0.2 behaviour; reveals which handles exist).
+   * The threshold and duration come from `UserService`'s `lockout` config; with
+   * lockout disabled (`threshold: 0`) all three behave like `'generic'`.
+   */
+  lockoutDisclosure?: "uniform" | "generic" | "reveal";
+  /**
+   * Counter store for the `'uniform'` shadow lockout of unknown handles.
+   * Default: one process-wide in-memory store — pass a shared store (e.g.
+   * `RateLimitStoreRedis`) when several instances serve sign-ins.
+   */
+  lockoutShadowStore?: RateLimitStore;
 
   // ── Cross-workflow infra ──
   /** Pincode infrastructure shared by login MFA, invite MFA, and recovery OTP. */
@@ -119,6 +181,10 @@ export interface AuthWorkflowOpts {
     /** Authenticated self-service "change my password" form (current + new + confirm). */
     changePassword?: TAtscriptAnnotatedType;
 
+    // Invite accept
+    /** Username picker shown at invite accept when `inviteUsername: 'choose'`. */
+    inviteChooseUsername?: TAtscriptAnnotatedType;
+
     // Federated needs-link proof-of-control (interactive completion)
     /** Password-proof form rendered by `prove-control` when the matched account has a real password. */
     proveControl?: TAtscriptAnnotatedType;
@@ -155,6 +221,12 @@ export interface ResolvedAuthWorkflowOpts {
   autoLoginOnRecover: boolean;
   invitableRoles: string[];
   allowAnyInviteRole: boolean;
+  inviteDelivery: "outlet-email" | "deliver" | "return-link";
+  inviteLinkUrl?: (token: string, info: { userId?: string }) => string;
+  inviteUsername: "email" | "choose";
+  messages?: AoothMessages;
+  lockoutDisclosure: "uniform" | "generic" | "reveal";
+  lockoutShadowStore: RateLimitStore;
   mfa: {
     pincodeLength: number;
     pincodeTtlMs: number;
@@ -193,6 +265,7 @@ export interface ResolvedAuthWorkflowOpts {
     pincode: TAtscriptAnnotatedType;
     setPassword: TAtscriptAnnotatedType;
     changePassword: TAtscriptAnnotatedType;
+    inviteChooseUsername: TAtscriptAnnotatedType;
     proveControl: TAtscriptAnnotatedType;
     proveControlOtp: TAtscriptAnnotatedType;
     termsBump: TAtscriptAnnotatedType;

@@ -1142,7 +1142,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   const rateLimitStore = new RateLimitStoreMemory();
   const rateLimiter = new RateLimiter({ store: rateLimitStore });
   app.applyGlobalInterceptors(
-    authGuardInterceptor({ cookie: { secure: false } }),
+    // The SPA replays `data.accessToken` as a Bearer (see `ui/demoToken.ts`), so
+    // the demo opts back into body tokens — a cookie app hides them by default.
+    authGuardInterceptor({ cookie: { secure: false }, exposeTokensInBody: true }),
     ...rateLimitInterceptors({ limiter: rateLimiter }),
   );
 

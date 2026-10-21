@@ -15,6 +15,13 @@ import type { CredentialState } from "../credential/types";
 export interface CredentialStore<TPayload extends object = object> {
   /** Persist state, return token. For stateless stores, token IS the state. */
   persist(state: CredentialState & TPayload, ttl?: number): Promise<string>;
+  /**
+   * Optional: persist `state` under a caller-chosen `id` instead of minting
+   * one. Stateful stores implement it; `AuthCredential`'s
+   * `tokens.hashAtRest` requires it (the row is keyed by a hash of the token
+   * the client holds, so a database read yields no usable token).
+   */
+  persistAs?(id: string, state: CredentialState & TPayload, ttl?: number): Promise<void>;
   /** Retrieve state from token. Returns null if expired/invalid/revoked. */
   retrieve(token: string): Promise<(CredentialState & TPayload) | null>;
   /** Retrieve + invalidate (single-use). For stateless: needs denylist. */

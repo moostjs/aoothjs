@@ -14,7 +14,10 @@ import { getMoostMate } from "moost";
  *    `'user'`. Apps supply their own kinds (`'tenant'`, `'apiKey'`, …) via
  *    `setRateLimitSubject`.
  *  - custom function — runs inside the event context PRE-guard; must be
- *    self-sufficient (it cannot read what GUARD-priority code sets).
+ *    self-sufficient (it cannot read what GUARD-priority code sets). Return
+ *    a composite subject (e.g. client IP + submitted username) to key on
+ *    several things at once, or `null` / `undefined` to SKIP the policy for
+ *    this request (nothing is counted).
  */
 export type RateLimitKeyStrategy =
   | "ip"
@@ -23,7 +26,7 @@ export type RateLimitKeyStrategy =
   | "session"
   // (string & {}) keeps literal autocomplete while accepting any subject kind
   | (string & {})
-  | (() => string | Promise<string>);
+  | (() => string | null | undefined | Promise<string | null | undefined>);
 
 /** Trailing options object accepted by `@RateLimit(...rules, opts)`. */
 export interface RateLimitDecoratorOptions {
@@ -38,15 +41,25 @@ export interface RateLimitDecoratorOptions {
   id?: string;
 }
 
+/** One `@RateLimit(...)` declaration: its rules and options. */
+export interface TRateLimitPolicy {
+  /** Rules normalized at decoration time — bad grammar fails at boot. */
+  rules: RateLimitRule[];
+  options?: RateLimitDecoratorOptions;
+}
+
 /**
  * Rate-limit metadata written by `@RateLimit()` and read by
  * `rateLimitInterceptors`. Merged into `TMoostMetadata` so other moost-aware
  * tooling sees it.
  */
 export interface TRateLimitMeta {
-  /** Rules normalized at decoration time — bad grammar fails at boot. */
-  rateLimitRules?: RateLimitRule[];
-  rateLimitOptions?: RateLimitDecoratorOptions;
+  /**
+   * One entry per stacked `@RateLimit(...)` decorator, in source order. Each
+   * is an independent policy (own key strategy and bucket); a request must
+   * pass all of them.
+   */
+  rateLimitPolicies?: TRateLimitPolicy[];
   /** `@RateLimit(false)` — opt this route out of interceptor-level default rules. */
   rateLimitDisabled?: boolean;
 }
@@ -61,5 +74,5 @@ type RateLimitMate = Mate<
 >;
 
 export function getRateLimitMate(): RateLimitMate {
-  return getMoostMate<TRateLimitMeta, TRateLimitMeta>() as RateLimitMate;
+  return getMoostMate<TRateLimitMeta, TRateLimitMeta>();
 }

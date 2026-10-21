@@ -110,6 +110,8 @@ The default. The first `refresh()` marks the old token's `rotatedAt` and pins th
 
 **Strict mode** — an explicit `rotationGraceMs: 0` disables the window entirely: every re-presentation of a rotated token is treated as theft.
 
+**At rest** — the pinned successor pair is a working access + refresh token sitting on the old row. With [`tokens.hashAtRest`](./credentials#tokens-at-rest-tokens-hashatrest) it is stored encrypted with a key derived from the old refresh token, so only a client that still holds that token can read it back; a database read alone yields nothing usable.
+
 **Observability** — wire `onRotationGraceHit` to the same sink as `onRotationReuse` (e.g. a `refresh-grace-hit` audit event). A trickle of grace hits correlated with deploys is expected; a spike means someone is replaying tokens:
 
 ```ts
@@ -253,6 +255,10 @@ Four related seams, all used by the authorization server's [`refresh_token` gran
 - A per-mint `graceMs` stamps the family's grace window (`metadata.rotationGraceMs`) the same way — the seam behind [`TokenPolicy.refresh.graceMs`](../moost/authorization-server#refresh-token-grant), so an OAuth grant's lost-response tolerance is the policy's decision, not the session posture's.
 - `auth.refresh(token, { guard })` accepts a pre-rotation **guard**: it sees the stored refresh credential before anything rotates, and throwing aborts the refresh with the family untouched — the seam for caller-level binding checks.
 
+::: warning These stamps live in credential metadata
+On `CredentialStoreAtscriptDb` the stamps above need the model's `@aooth.auth.metadata` column. Since 0.2 a store without one refuses such a mint with `AuthError('INVALID_CONFIG')` instead of silently dropping the restriction — see [Stores — metadata column](./stores#metadata-column-options-and-the-fail-closed-rule). Memory and Redis stores keep the whole state and need nothing.
+:::
+
 ## `maxConcurrent` and refresh tokens
 
 `maxConcurrent` enforces a cap on **access** credentials only. Refresh tokens never count toward the limit.
@@ -311,6 +317,7 @@ const auth = new AuthCredential({
     onRotationReuse: (s) => log.warn("reuse", s.userId),
   },
   maxConcurrent: 10,
+  tokens: { hashAtRest: true }, // the successor pair kept for the grace window is encrypted at rest
 });
 ```
 

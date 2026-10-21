@@ -86,7 +86,9 @@ The bundled forms' **cross-flow navigation** actions — login's `signup` ("Don'
 <AsWfForm path="/auth/trigger" :name="wfId" :initial-token="initialToken" ... />
 ```
 
-For a re-clicked invite link whose state row has already been evicted, fall through to `GET /auth/invite/post-redemption?uid=<userId>` and hand the returned `WfFinished` to `<AsWfFinish>` for envelope-shape parity. See [REST Controllers — post-redemption](./controllers#get-auth-invite-post-redemption).
+For a re-clicked invite link whose state row has already been evicted, fall through to `GET /auth/invite/post-redemption?uid=<userId>` and hand the returned `WfFinished` to `<AsWfFinish>` for envelope-shape parity; on a `404` keep showing the original error (the route answers unknown and still-pending ids alike). See [REST Controllers — post-redemption](./controllers#get-auth-invite-post-redemption).
+
+An invite link answers `410` when the invite was cancelled or **replaced by a newer one** — branch on the body's `code` (`INVITE_CANCELLED` / `INVITE_REPLACED`) to tell the invitee to use their latest link. With `inviteUsername: 'choose'` the first pause is `InviteChooseUsernameForm`; with `inviteDelivery: 'return-link'` the issuer's response carries `data.inviteLink` to display. See [Invites](./invites).
 
 ## Custom config per request — variant headers
 

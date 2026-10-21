@@ -48,7 +48,8 @@ export const TABLE_OP_ACTIONS: Readonly<Record<TTableOp, readonly string[]>> = {
 
 const ALL_WRITE_OPS: readonly TTableOp[] = ["insert", "update", "replace", "remove"];
 
-type ScopeFn<TUserAttrs, TScope> = (attrs: TUserAttrs, userId: string) => TScope;
+/** A rule scope; `null` / `undefined` = this rule admits nothing (deny for it). */
+type ScopeFn<TUserAttrs, TScope> = (attrs: TUserAttrs, userId: string) => TScope | null | undefined;
 
 interface ScopeOpts<TUserAttrs, TScope> {
   scope?: ScopeFn<TUserAttrs, TScope>;
@@ -180,7 +181,13 @@ function composeScope<TUserAttrs, TScope extends TTableAccessScope>(
 ): ScopeFn<TUserAttrs, TScope> | undefined {
   if (!part) return shared;
   if (!shared) return part;
-  return (attrs, userId) => mergePartScope(shared(attrs, userId), part(attrs, userId));
+  // A nullish side denies the rule — the composition admits nothing.
+  return (attrs, userId) => {
+    const s = shared(attrs, userId);
+    if (s == null) return s;
+    const p = part(attrs, userId);
+    return p == null ? p : mergePartScope(s, p);
+  };
 }
 
 type Part<TUserAttrs, TScope> = [

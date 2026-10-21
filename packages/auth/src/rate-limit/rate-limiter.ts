@@ -45,6 +45,22 @@ export interface RateLimitDecision {
  * key and one atomic store increment decides. All rules are hit on every
  * check (rejected requests count too — they cannot extend a fixed window).
  */
+/**
+ * The item that governs a combined decision: among the rejected ones (when
+ * any), the one whose window frees capacity LAST — the request only becomes
+ * allowed once every one passes, so a shorter hint would invite
+ * guaranteed-rejected retries; otherwise the one with the least remaining
+ * budget. Used across the rules of one check and across stacked policies.
+ */
+export function pickGoverning<T extends { resetAt: number; remaining: number }>(
+  items: readonly T[],
+  rejected: (item: T) => boolean,
+): T {
+  const failing = items.filter(rejected);
+  if (failing.length > 0) return failing.reduce((a, b) => (b.resetAt > a.resetAt ? b : a));
+  return items.reduce((a, b) => (b.remaining < a.remaining ? b : a));
+}
+
 export class RateLimiter {
   private readonly store: RateLimitStore;
   private readonly clock: Clock;
@@ -71,8 +87,42 @@ export class RateLimiter {
     rules: RateLimitRuleInput[],
     opts?: { defaultMessage?: string },
   ): Promise<RateLimitDecision> {
+    return this.evaluate(scope, subject, rules, opts, (key, rule) =>
+      this.store.hit(key, rule.window * 2),
+    );
+  }
+
+  /**
+   * Read the budget `check()` would see — without spending it. `remaining`
+   * is what is left in each window; `allowed` says whether a `check()` made
+   * now would pass. Use it for a "N left today" status line. Requires a store
+   * with `get()` (both bundled stores have it).
+   */
+  async peek(
+    scope: string,
+    subject: string,
+    rules: RateLimitRuleInput[],
+    opts?: { defaultMessage?: string },
+  ): Promise<RateLimitDecision> {
+    if (!this.store.get) {
+      throw new Error("RateLimiter.peek: the rate-limit store does not implement get()");
+    }
+    const get = this.store.get.bind(this.store);
+    // A peek "spends" one hypothetical request: violated when nothing is left.
+    return this.evaluate(scope, subject, rules, opts, async (key) => (await get(key)) + 1, 1);
+  }
+
+  private async evaluate(
+    scope: string,
+    subject: string,
+    rules: RateLimitRuleInput[],
+    opts: { defaultMessage?: string } | undefined,
+    count: (key: string, rule: RateLimitRule) => Promise<number>,
+    /** Added back to `remaining` — a peek counts one hypothetical request it never spends. */
+    offset = 0,
+  ): Promise<RateLimitDecision> {
     if (rules.length === 0) {
-      throw new Error("RateLimiter.check: at least one rule is required");
+      throw new Error("RateLimiter: at least one rule is required");
     }
     const parsed = rules.map((r) => parseRateLimitRule(r));
     const now = this.clock.now();
@@ -82,21 +132,18 @@ export class RateLimiter {
       parsed.map(async (rule, i) => {
         const windowStart = Math.floor(now / rule.window) * rule.window;
         const key = `${keyBase}:${i}:${windowStart}`;
-        const count = await this.store.hit(key, rule.window * 2);
+        const n = await count(key, rule);
         return {
           rule,
-          remaining: Math.max(0, rule.limit - count),
+          remaining: Math.max(0, rule.limit - n + offset),
           resetAt: windowStart + rule.window,
-          violated: count > rule.limit,
+          violated: n > rule.limit,
         };
       }),
     );
 
-    const violated = evaluated.filter((e) => e.violated);
-    const rejected = violated.length > 0;
-    const governing = rejected
-      ? violated.reduce((a, b) => (b.resetAt > a.resetAt ? b : a))
-      : evaluated.reduce((a, b) => (b.remaining < a.remaining ? b : a));
+    const governing = pickGoverning(evaluated, (e) => e.violated);
+    const rejected = governing.violated;
     const resetAfterMs = governing.resetAt - now;
     return {
       allowed: !rejected,

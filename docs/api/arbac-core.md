@@ -68,13 +68,13 @@ type TArbacRule<TUserAttrs, TScope> =
   | {
       resource: string;
       action: string;
-      scope?: (userAttrs: TUserAttrs, userId: string) => TScope;
+      scope?: (userAttrs: TUserAttrs, userId: string) => TScope | null | undefined;
       effect?: never;
     } // allow (implicit)
   | { resource: string; action: string; effect: "deny"; scope?: never }; // deny — cannot carry scope
 ```
 
-Discriminated union by presence of `effect`. Allow rules implicitly default to allow; their `scope` fn returns a `TScope` the caller treats as a data filter. `deny` rules cannot carry a scope. See [Core Engine](/arbac/core).
+Discriminated union by presence of `effect`. Allow rules implicitly default to allow; their `scope` fn returns a `TScope` the caller treats as a data filter — or `null` / `undefined` (since 0.2), which the scope layer drops so the rule admits nothing. `deny` rules cannot carry a scope. See [Core Engine](/arbac/core).
 
 ::: warning Advanced — internal cache shapes
 The two types below (`TArbacCompiledRule` and `TArbacRoleForResource`) are only useful when introspecting `Arbac` internals or building a custom evaluator. App code does not construct these.

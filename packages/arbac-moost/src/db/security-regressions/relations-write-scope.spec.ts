@@ -3,7 +3,7 @@
 // unique key), the 409 disambiguation never reading an out-of-scope row,
 // USING on a mixed bulk PUT, a top-level `set` pin, and dotted payload keys
 // against an `allowedFields` whitelist.
-import { allowTableWrite, defineRole } from "@aooth/arbac";
+import { allowTableOps, allowTableRead, allowTableWrite, defineRole } from "@aooth/arbac";
 import { TableController } from "@atscript/moost-db";
 import type { MoostHttp } from "@moostjs/event-http";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
@@ -29,6 +29,16 @@ const ROLES = [
   tasks("dotted", { allowedFields: ["title", "profile.name"] }),
   tasks("parent", { allowedFields: ["title", "profile"] }),
   tasks("set-tenant", { set: { tenant: "a" } }),
+  // F38: reads hide `tenant`, writes pin it — `/meta` must not offer it as input.
+  defineRole<object, ArbacDbScope>()
+    .id("read-hidden-set")
+    .use(allowTableRead("tasks", { scope: () => ({ projection: { tenant: 0, profile: 0 } }) }))
+    .use(
+      allowTableOps("tasks", ["insert", "update", "replace"], {
+        scope: () => ({ set: { tenant: "a", title: "x" } }),
+      }),
+    )
+    .build(),
 ];
 
 @TableController(RpTask, "tasks")
@@ -137,5 +147,21 @@ describe("allowedFields / set", () => {
     const res = await send(http, "PATCH", "/tasks", { id: 1, [key]: "b" });
     expect(res.status, JSON.stringify(res.body)).toBe(status);
     expect(await task(1)).toMatchObject({ profile: { name: "pa", tenant: "a" } });
+  });
+});
+
+describe("F38: `/meta` and `set`-forced fields", () => {
+  it("drops a hidden forced field and marks a visible forced field read-only", async () => {
+    ({ http } = await boot(ROLES, [TasksController, SlugsController], ["read-hidden-set"]));
+    const res = await send(http, "GET", "/tasks/meta");
+    expect(res.status).toBe(200);
+    const fields = res.body.fields as Record<string, { writeOnly?: boolean }>;
+    // Hidden by the read projection AND forced by `set`: no write affordance left.
+    expect(fields.tenant).toBeUndefined();
+    // Hidden but genuinely writable: still offered write-only.
+    expect(fields["profile.name"]?.writeOnly).toBe(true);
+    const props = res.body.type.type.props as Record<string, { metadata: Record<string, unknown> }>;
+    expect(props.tenant).toBeUndefined();
+    expect(props.title.metadata["meta.readonly"]).toBe(true);
   });
 });

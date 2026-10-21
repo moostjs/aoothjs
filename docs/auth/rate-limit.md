@@ -72,6 +72,18 @@ When several rules are violated at once, the governing rule is the one whose win
 The limiter runs on an injectable clock. Re-subtracting the wall clock drifts under injected clocks (tests) and duplicates work — `resetAfterMs` is the delta the limiter already computed.
 :::
 
+## `peek()` — reading the budget without spending it
+
+`peek()` takes the same arguments as `check()` and returns the same `RateLimitDecision`, but counts nothing — use it for a "3 attempts left" hint or a status endpoint:
+
+```ts
+const status = await limiter.peek("export", `u:${userId}`, ["20/1h"]);
+// status.remaining — what is left in the current window
+// status.allowed   — whether a check() made now would pass
+```
+
+`peek()` needs a store that implements the optional `get()`; both bundled stores do (since 0.2). A custom store without `get()` makes `peek()` throw.
+
 ## How counting works (and why TTL doesn't matter for correctness)
 
 The algorithm is a **fixed window with window-aligned keys**: for each rule the current window starts at `floor(now / window) * window`, and that start timestamp is embedded in the store key (`<scope>:<subject>:<ruleIndex>:<windowStart>`, scope/subject URI-encoded so IPv6 addresses and `:`-containing ids can't collide). Consequences you can rely on:
@@ -90,6 +102,10 @@ The storage contract is minimal — implement it to back the limiter with anythi
 interface RateLimitStore {
   /** Atomically increment `key`, setting `ttlMs` expiry when the key is created; returns the new count. */
   hit(key: string, ttlMs: number): Promise<number>;
+  /** Optional (since 0.2): read the count without incrementing — 0 when missing or expired. Required by `peek()`. */
+  get?(key: string): Promise<number>;
+  /** Optional (since 0.2): reset `key`'s expiry to `ttlMs` from now (sliding); no-op when missing. */
+  expire?(key: string, ttlMs: number): Promise<void>;
   /** Optional: drop a counter (tests / admin unblock). */
   reset?(key: string): Promise<void>;
 }
@@ -97,7 +113,7 @@ interface RateLimitStore {
 
 ### `RateLimitStoreMemory`
 
-The zero-config default (`new RateLimiter()` creates one). In-process `Map` with lazy eviction on access, an automatic amortized sweep of dead window counters as the map grows (since 0.1.78 — no timer needed), a `cleanup()` sweep on demand (same pattern as `DenylistStoreMemory`), and `clear()` for test-harness resets. **Single process only** — each instance/pod counts independently.
+The zero-config default (`new RateLimiter()` creates one). In-process `Map` with lazy eviction on access, an automatic amortized sweep of dead window counters as the map grows (since 0.1.78 — no timer needed), a `cleanup()` sweep on demand (same pattern as `DenylistStoreMemory`), and `clear()` for test-harness resets. **Single process only** — each instance/pod counts independently. `new RateLimitStoreMemory({ maxEntries })` (since 0.2) caps the live counters: at the cap a new key first sweeps expired ones, then drops the oldest — use it where anonymous input chooses the keys. `evictLast: (key) => boolean` marks keys to drop only when nothing else is left (e.g. active lock markers a flood must not push out). The cap check is O(1) while nothing can have expired. `pickGoverning(items, rejected)` (exported) is the rule the limiter uses to pick the governing decision across rules or stacked policies.
 
 ### `RateLimitStoreRedis`
 
@@ -113,7 +129,7 @@ const limiter = new RateLimiter({
 });
 ```
 
-Keys are `aooth:rl:<limiter key>` (prefix configurable via `prefix`). Each `hit` is one `INCR`, plus one `PEXPIRE` on the first increment of a window. This is the store to use for any multi-instance deployment — budgets are shared across pods.
+Keys are `aooth:rl:<limiter key>` (prefix configurable via `prefix`). Each `hit` is one `INCR`, plus one `PEXPIRE` on the first increment of a window; `get` (for `peek()`) is one `GET`. This is the store to use for any multi-instance deployment — budgets are shared across pods.
 
 ::: tip `RedisLike` requires `pexpire` and `incr`
 The structural interface deliberately exposes `pexpire(key, ttlMs)` (milliseconds) instead of `expire` — a raw seconds-based client would satisfy an `expire` shape while silently setting 1000× TTLs. `ioredis` matches by shape; `node-redis` (`redis@4+`) users wrap the camelCase methods — see [Stores](./stores#redislike-structural-typing) for the adapter snippet.
@@ -130,7 +146,7 @@ const limiter = new RateLimiter({ clock: { now: () => now } });
 now += 60_000; // next window — budget restored, no waiting
 ```
 
-The memory store shares the limiter's clock automatically when created by the limiter; pass the same clock explicitly if you construct the store yourself.
+The memory store shares the limiter's clock automatically when created by the limiter; pass the same clock explicitly if you construct the store yourself. Construct the store yourself when tests need to reset budgets: keep a reference and call `store.clear()` between tests (see [Rate Limiting in Moost — Testing](../moost/rate-limit#testing) for the interceptor wiring).
 
 ## DOs and DON'Ts
 
@@ -138,6 +154,7 @@ The memory store shares the limiter's clock automatically when created by the li
 - **DO** wire `RateLimitStoreRedis` for anything multi-instance — the memory store is per-process, so N pods silently multiply every budget by N.
 - **DO** derive retry hints from `resetAfterMs` / `retryAfterMs` — not by re-subtracting `Date.now()`.
 - **DON'T** re-parse rule strings per request in your own call paths — parse once at startup with `parseRateLimitRule` and pass the normalized objects (`check()` fast-paths already-normalized rules).
+- **DON'T** model calendar quotas (a daily or monthly allowance that resets at midnight in the user's timezone) with rules — windows are fixed durations aligned to the Unix epoch, not to calendar days. Keep such allowances as a ledger in your database.
 - **DON'T** use this as account lockout. `UserService` lockout ([Password & Lockout](../user/policy)) is per-account and persistent, and only counts failed credential attempts; this limiter is per-caller and windowed. They are complementary layers.
 
 ## See also

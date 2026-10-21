@@ -7,6 +7,12 @@ import type { ArbacDbScope } from "./db/as-arbac-db-controller";
 const childrenOf = (p: string) => (p === "a" ? ["a.b", "a.c"] : []);
 
 describe("conjoinArbacDbScopes — composite restrict-only conjunction", () => {
+  it("refuses an empty side instead of conjoining it as unrestricted (L4)", () => {
+    expect(() => conjoinArbacDbScopes([], [])).toThrow(/empty scope list/);
+    expect(() => conjoinArbacDbScopes([], [{ filter: { a: 1 } }])).toThrow(/empty scope list/);
+    expect(() => conjoinArbacDbScopes([{ filter: { a: 1 } }], [])).toThrow(/empty scope list/);
+  });
+
   it("filter: $and of the two unions ({} side is the identity)", () => {
     // user restricts by tenant; cred adds an owner restriction → both must hold.
     const out = conjoinArbacDbScopes([{ filter: { tenant: "a" } }], [{ filter: { owner: "u" } }]);

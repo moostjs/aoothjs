@@ -67,6 +67,14 @@ export interface AccountData {
    * the invite has been accepted.
    */
   pendingInvitation?: boolean;
+  /** Id of the user who issued the pending invite (written by the invite flow). */
+  invitedBy?: string;
+  /**
+   * Random marker of the current invite link. A re-invite rotates it, so a
+   * link issued before the re-invite answers 410 ("replaced") instead of
+   * activating the account. Absent on rows created before 0.2.
+   */
+  inviteNonce?: string;
   /**
    * Correspondence address whose inbox the user PROVED ownership of — written
    * at every inbox-proof moment (invite magic-link click, signup / recovery

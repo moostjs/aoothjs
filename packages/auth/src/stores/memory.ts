@@ -28,13 +28,17 @@ export class CredentialStoreMemory<
 
   async persist(state: CredentialState & TPayload, ttl?: number): Promise<string> {
     const token = randomUUID();
+    await this.persistAs(token, state, ttl);
+    return token;
+  }
+
+  async persistAs(id: string, state: CredentialState & TPayload, ttl?: number): Promise<void> {
     const stored: CredentialState & TPayload = { ...state };
     if (typeof ttl === "number") {
       stored.expiresAt = this.clock.now() + ttl;
     }
-    this.states.set(token, stored);
-    this.indexAdd(stored.userId, token);
-    return token;
+    this.states.set(id, stored);
+    this.indexAdd(stored.userId, id);
   }
 
   async retrieve(token: string): Promise<(CredentialState & TPayload) | null> {

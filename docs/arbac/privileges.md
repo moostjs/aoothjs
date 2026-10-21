@@ -104,22 +104,22 @@ All helpers return `TPrivilegeFunction<TUserAttrs, TScope>` — i.e. they slot d
 ```ts
 function allowTableRead<TUserAttrs extends object, TScope extends object>(
   resource: string,
-  opts?: { scope?: (attrs: TUserAttrs, userId: string) => TScope },
+  opts?: { scope?: (attrs: TUserAttrs, userId: string) => TScope | null | undefined },
 ): TPrivilegeFunction<TUserAttrs, TScope>;
 
 function allowTableWrite<TUserAttrs extends object, TScope extends object>(
   resource: string,
-  opts?: { scope?: (attrs: TUserAttrs, userId: string) => TScope },
+  opts?: { scope?: (attrs: TUserAttrs, userId: string) => TScope | null | undefined },
 ): TPrivilegeFunction<TUserAttrs, TScope>;
 
 function allowTableAction<TUserAttrs extends object, TScope extends object>(
   resource: string,
   action: string | readonly string[],
-  opts?: { scope?: (attrs: TUserAttrs, userId: string) => TScope },
+  opts?: { scope?: (attrs: TUserAttrs, userId: string) => TScope | null | undefined },
 ): TPrivilegeFunction<TUserAttrs, TScope>;
 ```
 
-`opts.scope`, when provided, is attached to **every** generated rule. Omit it for unrestricted access.
+`opts.scope`, when provided, is attached to **every** generated rule. Omit it for unrestricted access. A scope returning `null` / `undefined` makes the rule admit nothing for that user ([details](./builder#a-scope-that-returns-null-undefined-admits-nothing)).
 
 ### Examples
 
@@ -229,6 +229,8 @@ How a part's scope merges over the shared one:
 | Everything else (`projection`, `allowedFields`, `set`, `controls`, `with`, `nestedWrites`, …) | The part's value when it sets the key, else the shared one. Arrays are not merged.                                                                                                                                                                     |
 
 Before 0.1.72, a shared `{ filter }` with a part `{ check }` produced the part's `check` alone — written rows only had to match it, not the shared filter.
+
+A shared or part scope that returns `null` / `undefined` denies that part's rules for the user — the composition admits nothing. **Since 0.2**; before, a nullish shared or part scope threw a `TypeError` at request time (a 500).
 
 An action listed by an earlier part (`read` → `write` → `actions`) is not repeated by a later one — e.g. `write: ["update", "meta"]` next to `read: true` keeps `meta` under the read scope.
 

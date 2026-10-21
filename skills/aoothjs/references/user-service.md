@@ -208,6 +208,9 @@ Where security notices go. PROVEN-first chain: `account.verifiedEmail` → first
 1. Look up the user by handle — throw `NOT_FOUND` if missing.
 2. Reject if `account.active === false` — throw `INACTIVE`.
 3. Reject if locked — auto-unlocks when `lockEnds > 0 && lockEnds < clock()`; otherwise throws `LOCKED` with `details = { reason, lockEnds }`.
+
+   Steps 1–3 still verify the password against a throwaway hash before throwing (same cost), so timing does not reveal account existence / state. Callers of `login()` must map `NOT_FOUND` / `INACTIVE` (and, unless deliberately revealing, `LOCKED`) to one client answer — `AuthWorkflow` does this via `lockoutDisclosure` ([workflows.md](workflows.md) #26).
+
 4. Verify the password using the parameters baked into the stored hash + the configured pepper.
 5. On success:
    - Persist `{ set: { account: { lastLogin: clock(), failedLoginAttempts: 0 } } }`.

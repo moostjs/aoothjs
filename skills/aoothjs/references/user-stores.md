@@ -241,6 +241,9 @@ export interface AoothUserCredentials {
         active: boolean; locked: boolean; lockReason: string
         lockEnds: number.timestamp; failedLoginAttempts: number; lastLogin: number.timestamp
         pendingInvitation?: boolean
+        invitedBy?: string     // since 0.2 — invite issuer
+        inviteNonce?: string   // since 0.2 — current invite-link marker; schema sync adds both columns
+        verifiedEmail?: string
     }
 
     @db.patch.strategy 'merge'
