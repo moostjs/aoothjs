@@ -3,7 +3,7 @@ import { AuthCredential } from "@aooth/auth";
 import { type AuthCredentialTable, CredentialStoreAtscriptDb } from "@aooth/auth/atscript-db";
 import type { BuildMagicLinkUrl } from "@aooth/auth-moost";
 import { definePasswordPolicy, type UserCredentials, UserService } from "@aooth/user";
-import { type AuthUserTable, UsersStoreAtscriptDb } from "@aooth/user/atscript-db";
+import { UsersStoreAtscriptDb } from "@aooth/user/atscript-db";
 
 import type { AppDb } from "./db";
 import type { AppEnv } from "./env";
@@ -64,9 +64,6 @@ export function createAooth({ tables, env }: AppAuthOptions): AppAuth {
   for (const warning of handles.warnings) {
     console.warn(`[aooth] ${warning}`);
   }
-  // `AtscriptDbTable` returns `Record<string, unknown>` from its structural
-  // reads, so the typed `AuthUserTable` surface needs a cast at the wiring
-  // seam — same pattern `wf-store.ts` uses.
   const userStore = new DemoUserStore({
     table: tables.users,
     handleFields: handles.handleFields,
