@@ -110,6 +110,8 @@ export interface PrepareFlowOpts extends AuthOptions {
   workflowClass?: typeof FlowWorkflow;
   userConfig?: UserServiceConfig;
   controllerClass?: typeof AuthController;
+  /** Use this credential orchestrator instead of the default memory-store one. */
+  credential?: AuthCredential;
   /** Wire ARBAC (the authorize interceptor runs on every event, workflow steps included). */
   arbac?: { roles: TArbacRole<object, object>[]; userRoles: Map<string, string[]> };
 }
@@ -152,6 +154,7 @@ export async function prepareFlowApp(opts: PrepareFlowOpts = {}): Promise<Prepar
     userConfig,
     controllerClass,
     arbac: arbacOpts,
+    credential,
     ...authOptions
   } = opts;
 
@@ -159,12 +162,14 @@ export async function prepareFlowApp(opts: PrepareFlowOpts = {}): Promise<Prepar
   const http = moost.adapter(new MoostHttp(createHttpApp(undefined, new Wooks())));
   moost.adapter(new MoostWf());
 
-  const auth = new AuthCredential({
-    store: new CredentialStoreMemory(),
-    method: "token",
-    accessTtl: 60_000,
-    refresh: { ttl: 600_000, rotation: "always" },
-  });
+  const auth =
+    credential ??
+    new AuthCredential({
+      store: new CredentialStoreMemory(),
+      method: "token",
+      accessTtl: 60_000,
+      refresh: { ttl: 600_000, rotation: "always" },
+    });
   const users = new UserService(new UserStoreMemory(), userConfig);
   const consentStore = new ConsentStore();
   moost.setProvideRegistry(

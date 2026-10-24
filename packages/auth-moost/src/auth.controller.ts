@@ -180,18 +180,21 @@ export class AuthController {
   async refresh(@Body() body: AuthRefreshBody | undefined): Promise<AuthLoginResponse> {
     const auth = useAuth();
     const refreshToken = resolveRefreshToken(auth, body);
-    if (!refreshToken) {
-      throw new HttpError(401, "Missing refresh token");
-    }
+    if (!refreshToken) throw new HttpError(401, "Missing refresh token");
+    const fromBody = typeof body?.refreshToken === "string";
 
     let issue: IssueResult;
     try {
       issue = await this.auth.refresh(refreshToken);
     } catch (err) {
-      if (err instanceof AuthError) {
-        throw new HttpError(401, "Invalid refresh token");
-      }
-      throw err;
+      if (!(err instanceof AuthError)) throw err;
+      // A refused refresh COOKIE clears both auth cookies, so a dead refresh
+      // cookie (and its stale access cookie) does not linger in a persistent
+      // jar. Only when the cookie itself was refused: a refused body token says
+      // nothing about the cookie pair, and a request that carried no refresh
+      // cookie (e.g. a cross-site form POST) must not be able to sign anyone out.
+      if (!fromBody) auth.clearCookies();
+      throw new HttpError(401, "Invalid refresh token");
     }
 
     auth.writeCookies(issue);
@@ -200,7 +203,6 @@ export class AuthController {
     // A client that SENT its refresh token in the body already holds token
     // material (a CLI / mobile client on a cookie deployment): hand the
     // rotated pair back the same way, or it would lose its session.
-    const fromBody = typeof body?.refreshToken === "string";
     return auth.buildLoginResponse(
       validated?.userId ?? "",
       issue,

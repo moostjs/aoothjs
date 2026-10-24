@@ -186,7 +186,7 @@ test.describe("Active sessions (auth.sessions)", () => {
 
     // The other device is logged out…
     expect((await page2.request.get("/auth/status")).status()).toBe(401);
-    // …and the current device is still authenticated (token rotated in place).
+    // …and the current device is still authenticated (moved onto a fresh session).
     expect((await page.request.get("/auth/status")).status()).toBe(200);
 
     await ctx2.close();

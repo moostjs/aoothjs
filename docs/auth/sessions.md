@@ -73,7 +73,7 @@ revokeSession(userId: string, sessionId: string): Promise<void>;          // one
 revokeOtherSessions(userId: string, keepSessionId: string): Promise<number>; // all but one; returns count
 ```
 
-`revokeSession` kills every token in one family — its access and refresh stop validating immediately; other sessions keep working. `revokeOtherSessions` is the "log out everywhere else" primitive: it revokes every family except `keepSessionId` and returns the number of sessions revoked. Both are no-ops on stores that can't enumerate. `revokeAllForUser` (kill everything, including the caller) stays for the nuclear case.
+`revokeSession` kills every token in one family — its access and refresh stop validating immediately; other sessions keep working. `revokeOtherSessions` is the "log out everywhere else" primitive: it revokes every family except `keepSessionId` and returns the number of sessions revoked. Both are no-ops on stores that can't enumerate; check `auth.canEnumerateSessions` (`false` for the stateless JWT / encapsulated stores) and fall back to `revokeAllForUser` when you must not leave a session alive. `revokeAllForUser` (kill everything, including the caller) stays for the nuclear case.
 
 ## Activity tracking (`lastSeenAt`)
 

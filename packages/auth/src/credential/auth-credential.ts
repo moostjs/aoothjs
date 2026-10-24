@@ -1021,6 +1021,16 @@ export class AuthCredential<TPayload extends object = object> {
   }
 
   /**
+   * Whether the store can enumerate a user's credentials — i.e. whether
+   * {@link listSessions}, {@link revokeSession} and {@link revokeOtherSessions}
+   * act at all. `false` for stateless stores (JWT, encapsulated), where those
+   * are no-ops and {@link revokeAllForUser} is the only bulk revocation.
+   */
+  get canEnumerateSessions(): boolean {
+    return this.store.listForUser !== undefined;
+  }
+
+  /**
    * Revoke a single session — every token in its family (access + refresh +
    * rotations). No-op for stores that can't enumerate. Other sessions keep
    * validating.

@@ -1165,7 +1165,8 @@ export class AuthWorkflow {
    * successful change (OWASP Session Management) and applies NO rate limit —
    * current-password re-entry (enforced by `UserService.changePassword`) is the
    * primary protection, not throttling. Customers override to add a min-interval
-   * (`rateLimit.minIntervalMs`) or to keep other sessions alive.
+   * (`rateLimit.minIntervalMs`) or to keep other sessions alive. The session the
+   * change was made from is always ended (see `finish-change-password`).
    *
    * Whether the flow may be STARTED at all is governed by arbac on the trigger
    * route (deny the `change-password` action to forbid it for SSO-only orgs) —
@@ -3559,19 +3560,48 @@ export class AuthWorkflow {
   }
 
   /**
-   * Change-password terminal — rotate the acting session's token (so the
-   * current device stays signed in on a FRESH credential) and emit a success
-   * message. Runs AFTER the optional `revoke-sessions` step, so the net effect
-   * is "kill every other session, keep this one on a new token" (OWASP Session
-   * Management: no ghost sessions survive a credential change).
+   * Change-password terminal — sign the current device in on a FRESH session
+   * and end the one the change was made from, then emit a success message.
+   * The new pair is minted under a new session id, so the pre-change session
+   * (its access token, refresh token and every rotation) is revoked here —
+   * whatever `revokeOtherSessions` says, since that policy covers only the
+   * user's OTHER sessions. Runs AFTER the optional `revoke-sessions` step, so
+   * the default net effect is "kill every old session, keep this device on a
+   * new one" (OWASP Session Management: no ghost sessions survive a credential
+   * change).
+   *
+   * The pre-change session is revoked BEFORE the issue, so a failed issue
+   * (store error, `maxConcurrent` refusal) leaves the user signed out, never on
+   * the old session; it is swept again after the issue to catch rows a refresh
+   * in flight wrote after the first sweep listed the session.
+   *
+   * When one session can't be targeted — a stateless store (JWT /
+   * encapsulated), or a legacy credential minted before `sessionId` existed
+   * (its fallback id, the access token's fingerprint, never reaches the refresh
+   * row) — ALL of the user's sessions are revoked (`revokeAllForUser`, also
+   * under `revokeOtherSessions: false`). A stateless store also denylists the
+   * presented access token (best effort): its revocation epoch is process-local.
    */
   @Step("finish-change-password")
   @ArbacResource("auth.change-password")
   @ArbacAction("self")
   async finishChangePassword(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     this.requireSubject(ctx);
-    const issue = await this.issueForContext(ctx);
     const auth = useAuth();
+    const prior = auth.getAuthContext();
+    const priorSessionId = prior?.sessionId;
+    const stateful = this.auth.canEnumerateSessions;
+    const targeted =
+      stateful && priorSessionId !== undefined && priorSessionId !== prior?.credentialId;
+    if (targeted) {
+      await this.auth.revokeSession(ctx.subject, priorSessionId);
+    } else {
+      await this.auth.revokeAllForUser(ctx.subject);
+      const accessToken = stateful ? undefined : auth.extractToken();
+      if (accessToken) await this.auth.revoke(accessToken).catch(() => undefined);
+    }
+    const issue = await this.issueForContext(ctx);
+    if (targeted) await this.auth.revokeSession(ctx.subject, priorSessionId);
     const envelope: WfFinished = {
       finished: true,
       data: auth.buildLoginResponse(ctx.subject, issue),
@@ -5054,10 +5084,13 @@ export class AuthWorkflow {
    * by `ctx.changePassword.revokeOtherSessions`).
    *
    * - Change-password runs in an authenticated context, so we KEEP the caller's
-   *   current device via `revokeOtherSessions(username, currentSessionId)` —
+   *   current session via `revokeOtherSessions(username, currentSessionId)` —
    *   OWASP "invalidate other sessions" without logging the user out of the tab
-   *   they just changed their password in. If the current session can't be
-   *   resolved (no session id), fall back to revoking everything (fail-secure).
+   *   they just changed their password in. `finish-change-password` then moves
+   *   that tab onto a fresh session and revokes the kept one (and covers stores
+   *   that cannot enumerate, where `revokeOtherSessions` is a no-op). If the
+   *   current session can't be resolved (no session id), fall back to revoking
+   *   everything (fail-secure).
    * - Recovery is anonymous (no current session to keep) → `revokeAllForUser`.
    */
   @Step("revoke-sessions")
@@ -6561,8 +6594,9 @@ export class AuthWorkflow {
     },
     { break: (ctx) => !!ctx.aborted }, // rate-limit emitted a terminal
     { id: "change-password-form" },
-    // Revoke the user's OTHER sessions, then re-issue the acting one on a fresh
-    // token (finish step) — net: no ghost sessions survive the change.
+    // Revoke the user's OTHER sessions, then move the acting device onto a fresh
+    // session and revoke the pre-change one (finish step, regardless of
+    // `revokeOtherSessions`) — net: no ghost sessions survive the change.
     { id: "revoke-sessions", condition: (ctx) => !!ctx.changePassword?.revokeOtherSessions },
     { id: "finish-change-password" },
   ])

@@ -99,7 +99,7 @@ No side effects, bypasses lockout. Useful for re-auth confirmations (e.g. "confi
 
 ### `setPassword(id, new) → Promise<void>`
 
-Admin-style. Same policy + history checks, no current-password verification.
+Admin-style. Same policy + history checks, no current-password verification. Neither `setPassword` nor `changePassword` touches sessions → an admin reset / hand-built change MUST follow with `auth.revokeAllForUser(id)` or old-password sessions stay valid (bundled change-password + recovery flows already revoke).
 
 ## Account lifecycle
 

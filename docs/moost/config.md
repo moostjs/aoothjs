@@ -54,7 +54,7 @@ new AuthCredential({
 });
 ```
 
-The access cookie can stay session-only: after a browser restart the first request gets a 401 and [`createAuthedFetch`](/auth/client) refreshes silently from the persistent refresh cookie. `persistent` is not inherited from `cookie` to `refreshCookie` — set it where you want it. See [Refresh](/auth/refresh) for the rotation modes.
+The access cookie can stay session-only: after a browser restart the first request gets a 401 and [`createAuthedFetch`](/auth/client) refreshes silently from the persistent refresh cookie. `persistent` is not inherited from `cookie` to `refreshCookie` — set it where you want it. When `POST /auth/refresh` refuses the refresh cookie it clears both cookies, so a dead refresh cookie never outlives its session. For installed PWAs and mobile web apps also raise `rotationGraceMs` — see [Refresh — mobile and home-screen web apps](/auth/refresh#the-grace-window-and-concurrency). See [Refresh](/auth/refresh) for the rotation modes.
 
 ::: tip The refresh-cookie path follows the controller's mount prefix automatically
 You don't set `refreshCookie.path` by hand. The auth guard resolves it **once at boot** from Moost's route table — it finds `AuthController`'s actual `refresh` route and scopes the cookie to it. Mount the controller at the root (`@Controller("auth")` → `/auth/refresh`) or under a prefix (`registerControllers(['api/auth', AuthController])` → `/api/auth/refresh`) and the cookie path tracks it, so the browser always sends the refresh cookie to the real endpoint.

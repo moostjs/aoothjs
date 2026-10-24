@@ -39,6 +39,12 @@ async function seedAndIssue(
   };
 }
 
+/** Both auth cookies were cleared (`Max-Age=0`) on this response. */
+function expectBothCleared(setCookies: string[]): void {
+  expect(setCookies.some((c) => /^aooth_session=;.*Max-Age=0/i.test(c))).toBe(true);
+  expect(setCookies.some((c) => /^aooth_refresh=;.*Max-Age=0/i.test(c))).toBe(true);
+}
+
 describe("AuthController", () => {
   // The historical `/auth/login` and `/auth/password` REST endpoints were
   // dropped in AUTH-MOOST-5. The login + recovery + invite flows now go
@@ -236,6 +242,49 @@ describe("AuthController", () => {
         json: { refreshToken: "not-a-real-token" },
       });
       expect(res.status).toBe(401);
+    });
+
+    // F119: a refused refresh must not leave a dead refresh cookie (or a stale
+    // access cookie) behind in a persistent jar.
+    it("clears both auth cookies when the refresh cookie is refused", async () => {
+      await app.auth.revoke(refreshToken);
+      const res = await app.request("/auth/refresh", {
+        method: "POST",
+        headers: { cookie: `aooth_refresh=${refreshToken}; aooth_session=stale` },
+        json: {},
+      });
+      expect(res.status).toBe(401);
+      expectBothCleared(res.setCookies);
+    });
+
+    it("leaves cookies alone when no refresh cookie arrived (a cross-site POST can't sign anyone out)", async () => {
+      const res = await app.request("/auth/refresh", {
+        method: "POST",
+        headers: { cookie: "aooth_session=still-valid" },
+        json: {},
+      });
+      expect(res.status).toBe(401);
+      expect(res.setCookies).toEqual([]);
+    });
+
+    it("leaves the cookie pair alone when a BODY refresh token is refused", async () => {
+      const res = await app.request("/auth/refresh", {
+        method: "POST",
+        headers: { cookie: `aooth_refresh=${refreshToken}` },
+        json: { refreshToken: "not-a-real-token" },
+      });
+      expect(res.status).toBe(401);
+      expect(res.setCookies).toEqual([]);
+    });
+
+    it("sets no cookies on a refused refresh when cookie transport is off", async () => {
+      const tokenApp = await prepareControllerApp({ enableCookie: false });
+      const res = await tokenApp.request("/auth/refresh", {
+        method: "POST",
+        json: { refreshToken: "not-a-real-token" },
+      });
+      expect(res.status).toBe(401);
+      expect(res.setCookies).toEqual([]);
     });
   });
 

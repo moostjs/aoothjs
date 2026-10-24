@@ -323,9 +323,12 @@ export interface AuthWfSessionPolicy {
  * `UserService.changePassword`), NOT rate limiting — so `rateLimit` is
  * optional and off by default.
  *
- * - `revokeOtherSessions` — on success, revoke every session for the user then
- *   re-issue the acting session a fresh token (OWASP Session Management: kill
- *   ghost sessions after a credential change). Default `true`.
+ * - `revokeOtherSessions` — on success, revoke the user's OTHER sessions (OWASP
+ *   Session Management: kill ghost sessions after a credential change). Default
+ *   `true`. Either way the acting device moves onto a fresh session and the
+ *   session the change was made from is revoked; when that session can't be
+ *   targeted (stateless JWT / encapsulated store, legacy pre-sessionId
+ *   credential) every session is revoked.
  * - `rateLimit.minIntervalMs` — minimum gap between successive password changes
  *   (Okta "minimum password age"). Enforced against `password.lastChanged` with
  *   ZERO extra storage. Omit to disable.
