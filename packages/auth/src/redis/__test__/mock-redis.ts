@@ -18,8 +18,15 @@ export class MockRedis implements RedisLike {
   ttls = new Map<string, number>();
   ops: Array<{ cmd: string; args: unknown[] }> = [];
 
-  async set(key: string, value: string, mode?: "PX", ttlMs?: number): Promise<string | null> {
-    this.ops.push({ cmd: "set", args: [key, value, mode, ttlMs] });
+  async set(
+    key: string,
+    value: string,
+    mode?: "PX",
+    ttlMs?: number,
+    condition?: "XX",
+  ): Promise<string | null> {
+    this.ops.push({ cmd: "set", args: [key, value, mode, ttlMs, condition] });
+    if (condition === "XX" && !this.kv.has(key)) return null;
     this.kv.set(key, value);
     if (mode === "PX" && typeof ttlMs === "number") this.ttls.set(key, ttlMs);
     return "OK";

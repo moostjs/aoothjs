@@ -313,3 +313,49 @@ describe("CredentialStoreRedis — custom prefix", () => {
     expect(redis.setMembers("myapp:c:u:alice")).toContain(token);
   });
 });
+
+describe("CredentialStoreRedis — writes never resurrect a revoked key", () => {
+  /** Runs `beforeSet` once, right before the next `SET` reaches Redis. */
+  class InterleavedRedis extends MockRedis {
+    beforeSet?: () => Promise<void>;
+    override async set(...args: Parameters<MockRedis["set"]>): Promise<string | null> {
+      const hook = this.beforeSet;
+      this.beforeSet = undefined;
+      if (hook) await hook();
+      return super.set(...args);
+    }
+  }
+
+  it("touch after a concurrent revoke does not bring the token back", async () => {
+    const redis = new MockRedis();
+    const store = new CredentialStoreRedis({ redis });
+    const token = await store.persist(makeState("alice"));
+    // validate() read the state, then the session was revoked, then the
+    // lastSeenAt stamp landed.
+    const read = await store.retrieve(token);
+    await store.revoke(token);
+    await store.touch(token, Date.now(), read!);
+    expect(await store.retrieve(token)).toBeNull();
+    expect(await store.listForUser("alice")).toEqual([]);
+  });
+
+  it("update racing a revoke (between its read and its write) does not bring the token back", async () => {
+    const redis = new InterleavedRedis();
+    const store = new CredentialStoreRedis({ redis });
+    const token = await store.persist(makeState("alice", { kind: "refresh" }));
+    redis.beforeSet = () => store.revoke(token);
+    await store.update(token, makeState("alice", { kind: "refresh", rotatedAt: Date.now() }));
+    expect(await store.retrieve(token)).toBeNull();
+  });
+
+  it("update and touch pass XX so Redis itself refuses to create the key", async () => {
+    const redis = new MockRedis();
+    const store = new CredentialStoreRedis({ redis });
+    const token = await store.persist(makeState("alice"));
+    await store.update(token, makeState("alice", { lastSeenAt: 1 }));
+    await store.touch(token, Date.now());
+    const writes = redis.opsOf("set").slice(1);
+    expect(writes).toHaveLength(2);
+    for (const w of writes) expect(w.args[4]).toBe("XX");
+  });
+});

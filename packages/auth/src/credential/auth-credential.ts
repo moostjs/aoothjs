@@ -30,6 +30,18 @@ const DEFAULT_ACCESS_TTL = 60 * 60 * 1000; // 1 hour
 const DEFAULT_ROTATION_GRACE_MS = 30_000;
 
 /**
+ * Upper bound on list-then-delete passes in one revocation. Two is the norm;
+ * more only while refreshes keep minting off the session being revoked.
+ */
+const MAX_REVOKE_PASSES = 8;
+
+function revocationDidNotConverge(): Error {
+  return new Error(
+    `aooth: revocation did not converge after ${MAX_REVOKE_PASSES} passes (refreshes kept minting); retry it`,
+  );
+}
+
+/**
  * Stable, non-reversible fingerprint of a token used as `credentialId` in
  * {@link AuthContext}. Hashing avoids leaking a live bearer token whenever
  * downstream consumers log or persist `ctx.credentialId`.
@@ -713,7 +725,7 @@ export class AuthCredential<TPayload extends object = object> {
     switch (rotation) {
       case "none":
         // Issue new access only; keep the refresh token in place.
-        return await this.refreshNone(oldState, refreshToken, now);
+        return await this.refreshNone(oldState, refreshToken, found.key, now);
       case "always":
         return await this.refreshAlways(oldState, refreshToken, found.key, now);
       case "sliding":
@@ -730,9 +742,11 @@ export class AuthCredential<TPayload extends object = object> {
   private async refreshNone(
     oldState: CredentialState & TPayload,
     refreshToken: string,
+    key: string,
     now: number,
   ): Promise<RefreshResult> {
     const newAccess = await this.issueAccessFromRefresh(oldState, now);
+    await this.assertStillLive(key, [newAccess.token]);
     return {
       accessToken: newAccess.token,
       accessExpiresAt: newAccess.expiresAt,
@@ -914,7 +928,16 @@ export class AuthCredential<TPayload extends object = object> {
   async revokeAllForUser(userId: string): Promise<number> {
     this.validated?.deleteUser(userId);
     try {
-      return await this.store.revokeAllForUser(userId);
+      const listForUser = this.store.listForUser?.bind(this.store);
+      let revoked = await this.store.revokeAllForUser(userId);
+      // Stateless stores bump an epoch instead — repeating would only move it.
+      // Stateful: repeat until a listing finds nothing, see {@link sweepUntilEmpty}.
+      if (!listForUser) return revoked;
+      for (let pass = 1; (await listForUser(userId)).length > 0; pass++) {
+        revoked += await this.store.revokeAllForUser(userId);
+        if (pass >= MAX_REVOKE_PASSES) throw revocationDidNotConverge();
+      }
+      return revoked;
     } finally {
       this.validated?.deleteUser(userId);
     }
@@ -1036,13 +1059,7 @@ export class AuthCredential<TPayload extends object = object> {
    * validating.
    */
   async revokeSession(userId: string, sessionId: string): Promise<void> {
-    if (!this.store.listForUser) return;
-    const all = await this.store.listForUser(userId);
-    await Promise.all(
-      all
-        .filter((entry) => this.sessionKeyOf(entry) === sessionId)
-        .map((entry) => this.revokeKey(entry.token)),
-    );
+    await this.sweepUntilEmpty(userId, (key) => key === sessionId);
   }
 
   /**
@@ -1051,20 +1068,44 @@ export class AuthCredential<TPayload extends object = object> {
    * (returns 0) for stores that can't enumerate.
    */
   async revokeOtherSessions(userId: string, keepSessionId: string): Promise<number> {
-    if (!this.store.listForUser) return 0;
-    const all = await this.store.listForUser(userId);
-    // Single pass: compute each family key once (it hashes the token for legacy
-    // rows), collecting the distinct revoked sessions for the count.
-    const revokedSessions = new Set<string>();
-    const revokes: Array<Promise<void>> = [];
-    for (const entry of all) {
-      const key = this.sessionKeyOf(entry);
-      if (key === keepSessionId) continue;
-      revokedSessions.add(key);
-      revokes.push(this.revokeKey(entry.token));
+    return (await this.sweepUntilEmpty(userId, (key) => key !== keepSessionId)).size;
+  }
+
+  /**
+   * Revoke every credential of `userId` whose session key matches, repeating
+   * list-then-delete until a listing finds no match; returns the distinct
+   * session keys revoked. No-op on stores that can't enumerate.
+   *
+   * Paired with the post-mint re-check in {@link assertStillLive}, this closes
+   * the race with refreshes in flight. A refresh re-reads the row it was
+   * minted from AFTER persisting its new rows, and revokes them if that row is
+   * gone. So a row surviving the final (empty) listing would have to be minted
+   * after that listing off a parent still alive after it — a parent that, not
+   * being listed, was itself minted after it, and so on down a chain that
+   * must start at a row that existed before the listing: a contradiction.
+   * Typically two passes (the second finds nothing); capped, failing loudly
+   * rather than spinning against a refresh loop.
+   */
+  private async sweepUntilEmpty(
+    userId: string,
+    matches: (sessionKey: string) => boolean,
+  ): Promise<Set<string>> {
+    const revoked = new Set<string>();
+    const listForUser = this.store.listForUser?.bind(this.store);
+    if (!listForUser) return revoked;
+    for (let pass = 0; ; pass++) {
+      const revokes: Array<Promise<void>> = [];
+      for (const entry of await listForUser(userId)) {
+        // Computed once per entry: it hashes the token for legacy rows.
+        const key = this.sessionKeyOf(entry);
+        if (!matches(key)) continue;
+        revoked.add(key);
+        revokes.push(this.revokeKey(entry.token));
+      }
+      if (revokes.length === 0) return revoked;
+      await Promise.all(revokes);
+      if (pass >= MAX_REVOKE_PASSES) throw revocationDidNotConverge();
     }
-    await Promise.all(revokes);
-    return revokedSessions.size;
   }
 
   /**
@@ -1176,6 +1217,7 @@ export class AuthCredential<TPayload extends object = object> {
     const access = await this.issueAccessFromRefresh(oldRefreshState, now);
     const newRefreshToken = await this.put(newRefreshState, refreshTtl);
 
+    let liveKey = oldKey;
     if (rotateOld) {
       // Mark the old refresh as rotated and pin the successor pair on it; it
       // stays valid until grace expires (its expiresAt remains as originally
@@ -1194,8 +1236,9 @@ export class AuthCredential<TPayload extends object = object> {
           oldRefreshToken,
         ),
       };
-      await this.store.update(oldKey, rotatedState);
+      liveKey = await this.store.update(oldKey, rotatedState);
     }
+    await this.assertStillLive(liveKey, [access.token, newRefreshToken]);
 
     return {
       accessToken: access.token,
@@ -1204,6 +1247,23 @@ export class AuthCredential<TPayload extends object = object> {
       refreshExpiresAt,
       userId: oldRefreshState.userId,
     };
+  }
+
+  /**
+   * Post-mint half of the revocation protocol (see {@link sweepUntilEmpty}): after
+   * a refresh persisted new credentials, the refresh row it was minted from
+   * must still exist. If a revocation deleted it meanwhile, the new
+   * credentials belong to a revoked session — revoke them and refuse.
+   * Stateful stores only: a stateless refresh consumed (or keeps) a
+   * self-contained token, and its revocation epoch already rejects a mint
+   * stamped before the revocation.
+   */
+  private async assertStillLive(oldKey: string, minted: string[]): Promise<void> {
+    if (!this.store.listForUser || (await this.store.retrieve(oldKey))) return;
+    // Best effort: a failed revoke still refuses (the tokens are never handed
+    // out); a leftover row is swept by the revocation's next pass.
+    await Promise.allSettled(minted.map((token) => this.revoke(token)));
+    throw new AuthError("INVALID_TOKEN");
   }
 
   /**

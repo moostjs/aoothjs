@@ -21,7 +21,7 @@ import type { CredentialStore, DenylistStore } from "../stores/store";
  *
  * ```ts
  * const redisLike: RedisLike = {
- *   set: (k, v, _px, ttlMs) => client.set(k, v, ttlMs !== undefined ? { PX: ttlMs } : {}),
+ *   set: (k, v, _px, ttlMs, xx) => client.set(k, v, { PX: ttlMs, ...(xx && { XX: true }) }),
  *   get: (k) => client.get(k),
  *   del: (...k) => client.del(k),
  *   exists: (k) => client.exists(k),
@@ -48,10 +48,17 @@ import type { CredentialStore, DenylistStore } from "../stores/store";
  *      overload (it collides with the `set(key, value, cb?)` overload
  *      instead), which is exactly what broke structural assignment before.
  *      Every adapter call site already passes all four arguments.
+ *   3. The conditional `set(key, value, "PX", ms, "XX")` overload is REQUIRED
+ *      (since 0.2.1): `CredentialStoreRedis` rewrites existing credentials
+ *      (rotation stamp, `lastSeenAt`) only if the key still exists, so a write
+ *      racing a revocation can never re-create a deleted credential. An
+ *      adapter must forward `XX` and resolve `null` when the key is missing.
+ *      ioredis exposes exactly this overload.
  *
  * Return types are chosen as a supertype of what real clients resolve, so an
  * ioredis client stays assignable while the types remain useful to callers:
- *   - `set` returns `string | null` (ioredis resolves `"OK"`)
+ *   - `set` returns `string | null` (ioredis resolves `"OK"`, or `null` when
+ *     an `XX` write found no key)
  *   - `del` / `pexpire` / `exists` / `incr` / `sadd` / `srem` return `number`
  *   - `get` returns `string | null`
  *   - `smembers` returns `string[]`
@@ -59,6 +66,17 @@ import type { CredentialStore, DenylistStore } from "../stores/store";
 export interface RedisLike {
   /** `SET key value PX ms` — `mode`/`ttlMs` are a required pair (see above). */
   set(key: string, value: string, mode: "PX", ttlMs: number): Promise<string | null>;
+  /**
+   * `SET key value PX ms XX` — write only if `key` exists; resolves `null`
+   * (and writes nothing) when it doesn't. Required since 0.2.1.
+   */
+  set(
+    key: string,
+    value: string,
+    mode: "PX",
+    ttlMs: number,
+    condition: "XX",
+  ): Promise<string | null>;
   get(key: string): Promise<string | null>;
   del(...keys: string[]): Promise<number>;
   exists(key: string): Promise<number>;
@@ -165,15 +183,22 @@ export class CredentialStoreRedis<
       return token;
     }
     const existing = JSON.parse(existingRaw) as CredentialState & TPayload;
-    if (existing.userId !== state.userId) {
+    const ttlMs = Math.max(0, state.expiresAt - Date.now());
+    if (ttlMs <= 0) {
+      await this.revoke(token);
+      return token;
+    }
+    // `XX`: a revoke that landed since the read above wins — never re-create.
+    const written = await this.redis.set(
+      this.tokenKey(token),
+      JSON.stringify(state),
+      "PX",
+      ttlMs,
+      "XX",
+    );
+    if (written !== null && existing.userId !== state.userId) {
       await this.redis.srem(this.userKey(existing.userId), token);
       await this.redis.sadd(this.userKey(state.userId), token);
-    }
-    const ttlMs = Math.max(0, state.expiresAt - Date.now());
-    if (ttlMs > 0) {
-      await this.redis.set(this.tokenKey(token), JSON.stringify(state), "PX", ttlMs);
-    } else {
-      await this.revoke(token);
     }
     return token;
   }
@@ -201,7 +226,9 @@ export class CredentialStoreRedis<
     // touching never resurrects or extends a credential past its expiry.
     const ttlMs = Math.max(0, state.expiresAt - Date.now());
     if (ttlMs <= 0) return;
-    await this.redis.set(this.tokenKey(token), JSON.stringify(state), "PX", ttlMs);
+    // `XX`: the state may have been read before a concurrent revoke — never
+    // re-create a deleted credential.
+    await this.redis.set(this.tokenKey(token), JSON.stringify(state), "PX", ttlMs, "XX");
   }
 
   async revokeAllForUser(userId: string): Promise<number> {
