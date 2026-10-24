@@ -6,6 +6,11 @@ import {
   type TArbacRole,
 } from "@aooth/arbac-moost";
 import { AuthCredential, CredentialStoreMemory } from "@aooth/auth";
+import {
+  AuthCodeStoreMemory,
+  LoopbackClientPolicy,
+  PendingAuthorizationStoreMemory,
+} from "@aooth/auth/authz";
 import { UserService, UserStoreMemory } from "@aooth/user";
 import type { UserServiceConfig } from "@aooth/user";
 import { MoostHttp } from "@moostjs/event-http";
@@ -32,6 +37,12 @@ import { Wooks } from "wooks";
 import type { AuthOptions } from "../auth.config";
 import { AuthController } from "../auth.controller";
 import { authGuardInterceptor } from "../auth.guard";
+import { AuthorizeController } from "../authz/authorize.controller";
+import {
+  AUTH_CODE_STORE_TOKEN,
+  CLIENT_REDIRECT_POLICY_TOKEN,
+  PENDING_AUTHORIZATION_STORE_TOKEN,
+} from "../authz/authz-tokens";
 import { ConsentStore } from "../consent.store";
 import { deriveWfStateSecret, WfTriggerProvider } from "../wf-trigger/provider";
 import { AuthWorkflow } from "../workflow/auth-workflow";
@@ -112,6 +123,8 @@ export interface PrepareFlowOpts extends AuthOptions {
   controllerClass?: typeof AuthController;
   /** Use this credential orchestrator instead of the default memory-store one. */
   credential?: AuthCredential;
+  /** Also mount `AuthorizeController` (loopback clients, memory pending/code stores). */
+  authorizationServer?: boolean;
   /** Wire ARBAC (the authorize interceptor runs on every event, workflow steps included). */
   arbac?: { roles: TArbacRole<object, object>[]; userRoles: Map<string, string[]> };
 }
@@ -155,6 +168,7 @@ export async function prepareFlowApp(opts: PrepareFlowOpts = {}): Promise<Prepar
     controllerClass,
     arbac: arbacOpts,
     credential,
+    authorizationServer,
     ...authOptions
   } = opts;
 
@@ -172,11 +186,17 @@ export async function prepareFlowApp(opts: PrepareFlowOpts = {}): Promise<Prepar
     });
   const users = new UserService(new UserStoreMemory(), userConfig);
   const consentStore = new ConsentStore();
+  const pending = new PendingAuthorizationStoreMemory();
+  const codes = new AuthCodeStoreMemory();
+  const clientPolicy = new LoopbackClientPolicy();
   moost.setProvideRegistry(
     createProvideRegistry(
       [AuthCredential, () => auth],
       [UserService, () => users],
       [ConsentStore, () => consentStore],
+      [CLIENT_REDIRECT_POLICY_TOKEN, () => clientPolicy],
+      [PENDING_AUTHORIZATION_STORE_TOKEN, () => pending],
+      [AUTH_CODE_STORE_TOKEN, () => codes],
     ),
   );
   moost.setReplaceRegistry(
@@ -192,7 +212,11 @@ export async function prepareFlowApp(opts: PrepareFlowOpts = {}): Promise<Prepar
     setTestArbacUserRoles(arbacOpts.userRoles);
     moost.applyGlobalInterceptors(arbacAuthorizeInterceptor);
   }
-  moost.registerControllers(controllerClass ?? AuthController, workflowClass ?? FlowWorkflow);
+  moost.registerControllers(
+    controllerClass ?? AuthController,
+    workflowClass ?? FlowWorkflow,
+    ...(authorizationServer ? [AuthorizeController] : []),
+  );
   await moost.init();
   if (arbacOpts) {
     const arbac = (await getMoostInfact().get(MoostArbac)) as Arbac<object, object>;

@@ -2382,6 +2382,7 @@ export class AuthWorkflow {
         this.lockoutOverride(ctx),
       );
       ctx.subject = result.user.id;
+      ctx.passwordStamp = result.user.password.lastChanged ?? 0;
       // `users.login()` already stamped `account.lastLogin` on this valid verify,
       // so latch the `record-login` funnel to a no-op stamp (it still fires
       // `afterLogin`) — no redundant second write. Federated / auto-login paths
@@ -3453,6 +3454,9 @@ export class AuthWorkflow {
     this.processInlineConsent(ctx, input, wf);
     ctx.isPasswordInitial = false;
     ctx.isPasswordExpired = false;
+    // login.flow: gates the post-MFA `revoke-sessions` and exempts the run
+    // from `check-password-unchanged`. Other flows ignore it.
+    ctx.passwordChanged = true;
     // Clear the forced-change flag now that the user has set a fresh
     // password — without this, downstream forms keep seeing the gate as
     // active. Notably `PincodeForm.rememberDevice` is hidden while
@@ -3572,8 +3576,9 @@ export class AuthWorkflow {
    *
    * The pre-change session is revoked BEFORE the issue, so a failed issue
    * (store error, `maxConcurrent` refusal) leaves the user signed out, never on
-   * the old session; it is swept again after the issue to catch rows a refresh
-   * in flight wrote after the first sweep listed the session.
+   * the old session. A refresh in flight during the change is covered by
+   * `AuthCredential`'s revocation protocol (it can't leave live credentials in
+   * a revoked session).
    *
    * When one session can't be targeted — a stateless store (JWT /
    * encapsulated), or a legacy credential minted before `sessionId` existed
@@ -3601,7 +3606,6 @@ export class AuthWorkflow {
       if (accessToken) await this.auth.revoke(accessToken).catch(() => undefined);
     }
     const issue = await this.issueForContext(ctx);
-    if (targeted) await this.auth.revokeSession(ctx.subject, priorSessionId);
     const envelope: WfFinished = {
       finished: true,
       data: auth.buildLoginResponse(ctx.subject, issue),
@@ -5080,8 +5084,9 @@ export class AuthWorkflow {
 
   /**
    * Revoke the user's existing sessions. Shared by recovery (gated upstream by
-   * `ctx.postReset.revokeAllSessions`) and authenticated change-password (gated
-   * by `ctx.changePassword.revokeOtherSessions`).
+   * `ctx.postReset.revokeAllSessions`), authenticated change-password (gated
+   * by `ctx.changePassword.revokeOtherSessions`) and the forced password change
+   * at login / invite (gated by `ctx.passwordChanged`).
    *
    * - Change-password runs in an authenticated context, so we KEEP the caller's
    *   current session via `revokeOtherSessions(username, currentSessionId)` —
@@ -5091,7 +5096,8 @@ export class AuthWorkflow {
    *   that cannot enumerate, where `revokeOtherSessions` is a no-op). If the
    *   current session can't be resolved (no session id), fall back to revoking
    *   everything (fail-secure).
-   * - Recovery is anonymous (no current session to keep) → `revokeAllForUser`.
+   * - Recovery and the forced change are anonymous (no current session to
+   *   keep) → `revokeAllForUser`.
    */
   @Step("revoke-sessions")
   @Public()
@@ -5130,6 +5136,27 @@ export class AuthWorkflow {
   }
 
   // ── Finalize (5) ──
+
+  /**
+   * Login-only guard before the `record-login` funnel (and again before
+   * `mint-authz-code`, past the consent pause): the account's
+   * `password.lastChanged` must still be the one the `credentials` step
+   * verified (`ctx.passwordStamp`). A run paused after the password check (MFA,
+   * enrolment, consents …) and resumed after the password was changed
+   * elsewhere finishes with an error instead of issuing tokens or minting an
+   * authorization code. Skipped when this run changed the password itself.
+   */
+  @Step("check-password-unchanged")
+  @Public()
+  async checkPasswordUnchanged(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    this.requireSubject(ctx);
+    const user = await this.users.getUser(ctx.subject);
+    if ((user.password.lastChanged ?? 0) !== ctx.passwordStamp) {
+      ctx.aborted = true;
+      finishWf({ message: { level: "error", text: this.msg("PASSWORD_CHANGED_SIGN_IN_AGAIN") } });
+    }
+    return undefined;
+  }
 
   /**
    * The SINGLE login-completion funnel. Every flow that establishes an
@@ -6355,6 +6382,11 @@ export class AuthWorkflow {
     // MFA loop (shared)
     ...mfaLoopSchema,
 
+    // Forced password change completed (password phase above) → end every
+    // session opened with the old password. Placed AFTER the MFA loop: the old
+    // password alone must not be able to sign the user out everywhere.
+    { id: "revoke-sessions", condition: (ctx) => !!ctx.passwordChanged && !ctx.aborted },
+
     // Post-MFA device-trust
     {
       id: "device-trust",
@@ -6396,6 +6428,13 @@ export class AuthWorkflow {
     // is NOT a login event — nothing was proved on this leg (the session did
     // the proving at its own login, which already stamped) — so it skips the
     // funnel: no second `lastLogin` write, no `afterLogin` fire.
+    // A run that verified the password, paused, and resumes after that
+    // password was changed elsewhere must not finish on it (no tokens, no code).
+    {
+      id: "check-password-unchanged",
+      condition: (ctx) => ctx.passwordStamp !== undefined && !ctx.passwordChanged,
+    },
+    { break: (ctx) => !!ctx.aborted },
     { id: "record-login", condition: (ctx) => !!ctx.subject && !ctx.authz?.silent },
 
     // Finalize — EXACTLY ONE terminal. An authorization-server login (started
@@ -6430,6 +6469,14 @@ export class AuthWorkflow {
     // `mint-authz-code` re-run after a deny and clobber the redirect with
     // "expired"; the `approved` gate is what keeps the deny/binding finish intact.)
     { id: "authz-consent", condition: (ctx) => !!ctx.authz },
+    // `authz-consent` pauses (up to the pending-authorization TTL): re-check
+    // the password right before the code is minted.
+    {
+      id: "check-password-unchanged",
+      condition: (ctx) =>
+        ctx.authz?.approved === true && ctx.passwordStamp !== undefined && !ctx.passwordChanged,
+    },
+    { break: (ctx) => !!ctx.aborted },
     { id: "mint-authz-code", condition: (ctx) => ctx.authz?.approved === true },
   ])
   loginFlow(): void {}

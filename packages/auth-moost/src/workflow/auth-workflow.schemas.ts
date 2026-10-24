@@ -202,6 +202,9 @@ export const mfaLoopSchema: TWorkflowSchema<AuthWfCtx> = [
 /**
  * Forced password change — used by login.flow + invite.start (NOT recovery — recovery's
  * gating differs: gated directly on `otp.verified`, NOT `newPasswordRequired`).
+ * login.flow revokes the user's existing sessions after its MFA loop (gated on
+ * `ctx.passwordChanged`), never here: the old password alone must not be
+ * enough to sign the user out everywhere.
  */
 export const passwordPhaseSchema: TWorkflowSchema<AuthWfCtx> = [
   {

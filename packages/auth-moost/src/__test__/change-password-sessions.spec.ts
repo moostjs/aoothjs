@@ -239,3 +239,102 @@ describe("F120: change-password ends the pre-change session", () => {
     });
   });
 });
+
+describe("forced password change at login revokes the user's existing sessions", () => {
+  it.each([
+    ["initial", { password: { isInitial: true } }],
+    ["expired", { password: { lastChanged: 1 } }],
+  ])("%s password", async (_label, patch) => {
+    const app = await prepareFlowApp({
+      userConfig: { password: { maxAgeMs: 30 * 24 * 3600_000 } },
+    });
+    const userId = await app.seedUser("alice", OLD_PASSWORD);
+    const old = await issuePair(app, userId);
+    await app.users.update(userId, patch as never);
+
+    const atForm = await app.login("alice", OLD_PASSWORD);
+    expect(atForm.status).toBe(201);
+    expect(atForm.body.inputRequired).toBeDefined();
+    const enrol = await app.submit(atForm.body.wfs, {
+      formData: { newPassword: NEW_PASSWORD, confirmPassword: NEW_PASSWORD, consents: [] },
+    });
+    // The optional MFA enrolment offer follows; skip it.
+    const done = await app.submit(enrol.body.wfs, { action: "skip" });
+    expect(done.status).toBe(201);
+    expect(done.body.finished).toBe(true);
+    const fresh = done.body.data as Pair;
+
+    await expectPairDead(app, old);
+    await expectPairAlive(app, fresh, userId);
+  });
+});
+
+describe("forced password change at login: ordering against MFA", () => {
+  it("does not revoke anything before the second factor is verified", async () => {
+    const app = await prepareFlowApp();
+    const userId = await app.seedUser("alice", OLD_PASSWORD);
+    const old = await issuePair(app, userId);
+    await app.users.update(userId, {
+      password: { isInitial: true },
+      mfa: { methods: [{ name: "email", value: "alice@example.com", confirmed: true }] },
+    } as never);
+
+    const atForm = await app.login("alice", OLD_PASSWORD);
+    const atMfa = await app.submit(atForm.body.wfs, {
+      formData: { newPassword: NEW_PASSWORD, confirmPassword: NEW_PASSWORD, consents: [] },
+    });
+    // Paused on the MFA challenge: whoever holds only the old password must
+    // not be able to sign the user out everywhere.
+    expect(atMfa.body.inputRequired?.context?.public?.pincode).toBeDefined();
+    await expectPairAlive(app, old, userId);
+  });
+});
+
+describe("a login run paused across a password change", () => {
+  it("does not sign in with the password that was replaced meanwhile", async () => {
+    const app = await prepareFlowApp();
+    const userId = await app.seedUser("alice", OLD_PASSWORD);
+    // Verified the (old) password, now paused on the optional MFA offer.
+    const paused = await app.login("alice", OLD_PASSWORD);
+    expect(paused.body.inputRequired).toBeDefined();
+    await app.users.setPassword(userId, NEW_PASSWORD);
+
+    const resumed = await app.submit(paused.body.wfs, { action: "skip" });
+    expect(resumed.body.data?.accessToken).toBeUndefined();
+    expect(resumed.body.message?.level).toBe("error");
+    expect(await app.auth.listSessions(userId)).toEqual([]);
+  });
+});
+
+describe("an authorize-initiated login paused on consent across a password change", () => {
+  it("mints no authorization code", async () => {
+    const app = await prepareFlowApp({ authorizationServer: true });
+    const userId = await app.seedUser("alice", OLD_PASSWORD);
+    const loopback = "http://127.0.0.1:5000/callback";
+    const authorize = await app.get(
+      `/auth/authorize?response_type=code&redirect_uri=${encodeURIComponent(loopback)}` +
+        "&state=cs&code_challenge=chal&code_challenge_method=S256",
+    );
+    expect(authorize.status).toBe(302);
+    const location = authorize.response!.headers.get("location")!;
+    const handle = new URLSearchParams(location.split("?")[1]).get("authz")!;
+    const cookie = authorize.setCookies.map((c) => c.split(";")[0]).join("; ");
+
+    const started = await app.start("auth/login/flow", { cookie }, { formData: { authz: handle } });
+    let res = await app.submit(
+      started.body.wfs,
+      { formData: { username: "alice", password: OLD_PASSWORD } },
+      { cookie },
+    );
+    if (res.body.inputRequired?.context?.public?.mfaEnroll) {
+      res = await app.submit(res.body.wfs, { action: "skip" }, { cookie });
+    }
+    // Parked on the consent prompt; the password changes elsewhere meanwhile.
+    expect(res.body.inputRequired?.context?.public?.authz).toBeDefined();
+    await app.users.setPassword(userId, NEW_PASSWORD);
+
+    const approved = await app.submit(res.body.wfs, { formData: {} }, { cookie });
+    expect(JSON.stringify(approved.body)).not.toContain("code=");
+    expect(approved.body.message?.level).toBe("error");
+  });
+});

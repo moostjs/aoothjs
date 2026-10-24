@@ -140,6 +140,60 @@ describe("AuthController", () => {
     });
   });
 
+  describe("POST /auth/logout racing an in-flight refresh", () => {
+    /** Memory store whose next `persist` waits until `release()` — the refresh's mint. */
+    class HoldingStore extends CredentialStoreMemory<MyClaims> {
+      private gate?: { reached: () => void; open: Promise<void> };
+      holdNextPersist(): { reached: Promise<void>; release: () => void } {
+        let reached!: () => void;
+        let release!: () => void;
+        const reachedP = new Promise<void>((r) => {
+          reached = r;
+        });
+        const open = new Promise<void>((r) => {
+          release = r;
+        });
+        this.gate = { reached, open };
+        return { reached: reachedP, release };
+      }
+      override async persist(...args: Parameters<CredentialStoreMemory<MyClaims>["persist"]>) {
+        const gate = this.gate;
+        this.gate = undefined;
+        if (gate) {
+          gate.reached();
+          await gate.open;
+        }
+        return super.persist(...args);
+      }
+    }
+
+    it("a refresh that mints after the logout leaves no live session behind", async () => {
+      const store = new HoldingStore();
+      const app = await prepareControllerApp({ authOptions: { store } });
+      const alice = await app.users.createUser("alice", "Password123");
+      await app.users.activateAccount(alice.id);
+      const device = await app.auth.issue(alice.id);
+
+      const hold = store.holdNextPersist();
+      const refreshing = app.request("/auth/refresh", {
+        method: "POST",
+        json: { refreshToken: device.refreshToken as string },
+      });
+      await hold.reached;
+      const out = await app.request("/auth/logout", {
+        method: "POST",
+        headers: { authorization: `Bearer ${device.accessToken}` },
+        json: {},
+      });
+      expect(out.status).toBe(201);
+      hold.release();
+
+      const refreshed = await refreshing;
+      expect(refreshed.status).toBe(401);
+      expect(await app.auth.listSessions(alice.id)).toEqual([]);
+    });
+  });
+
   describe("POST /auth/refresh", () => {
     let app: Awaited<ReturnType<typeof prepareControllerApp>>;
     let refreshToken: string;

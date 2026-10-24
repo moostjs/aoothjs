@@ -780,6 +780,20 @@ export interface AuthWfCtx {
   isFirstLogin?: boolean;
   newPasswordRequired?: boolean;
   /**
+   * Set by `create-password-form` once it stored a new password. In login.flow
+   * it gates the `revoke-sessions` step after the MFA loop (sessions opened
+   * with the old password end) and exempts the run from
+   * `check-password-unchanged`. Server-only flow control.
+   */
+  passwordChanged?: boolean;
+  /**
+   * `password.lastChanged` of the account as the `credentials` step verified
+   * it. `check-password-unchanged` compares it before the login is recorded,
+   * so a run paused across a password change can't finish on the replaced
+   * password. Server-only flow control.
+   */
+  passwordStamp?: number;
+  /**
    * Idempotency latch for the single `record-login` funnel step. Set true once
    * a login has been stamped this run — by the `credentials` step (the password
    * path stamps eagerly via `users.login()`) or by `record-login` itself — so

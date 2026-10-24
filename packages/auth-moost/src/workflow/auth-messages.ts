@@ -14,6 +14,7 @@ export const AOOTH_MESSAGES = {
   INVALID_PASSWORD: "Invalid password",
   INCORRECT_PASSWORD: "Incorrect password",
   SESSION_LIMIT_REACHED: "Session limit reached",
+  PASSWORD_CHANGED_SIGN_IN_AGAIN: "Your password was changed. Please sign in again.",
 
   // ── Codes (MFA / OTP) ──
   INVALID_CODE: "Invalid code",
