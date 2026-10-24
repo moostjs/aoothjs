@@ -171,7 +171,7 @@ Use the subpath import:
 import { CredentialStoreRedis, DenylistStoreRedis } from "@aooth/auth/redis";
 ```
 
-The package declares a structural `RedisLike` interface (8 methods used) — any client that matches the shape works.
+The package declares a structural `RedisLike` interface (9 methods, plus the conditional `SET … XX` form) — `ioredis` matches as-is; other clients need a small wrapper, see [Stores — `RedisLike`](/auth/stores#redislike-structural-typing).
 
 ### Memory (testing only)
 

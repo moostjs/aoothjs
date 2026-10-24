@@ -641,7 +641,14 @@ Redis-backed `RateLimitStore` — `hit` is one `INCR` plus a `PEXPIRE` on a wind
 
 ```ts
 interface RedisLike {
-  set(key: string, value: string, mode?: "PX", ttlMs?: number): Promise<string | null>;
+  set(key: string, value: string, mode: "PX", ttlMs: number): Promise<string | null>;
+  set(
+    key: string,
+    value: string,
+    mode: "PX",
+    ttlMs: number,
+    condition: "XX",
+  ): Promise<string | null>; // required since 0.2.1
   get(key: string): Promise<string | null>;
   del(...keys: string[]): Promise<number>;
   exists(key: string): Promise<number>;
@@ -655,7 +662,7 @@ interface RedisLike {
 }
 ```
 
-Structural Redis interface — only the 9 methods the adapters use. All TTLs are milliseconds (hence `pexpire`, not `expire` — a raw seconds-based client would silently set 1000× TTLs). `ioredis` matches by shape; `node-redis` (`redis@4+`) needs a small camelCase wrapper. See [Stores](/auth/stores#redislike-structural-typing).
+Structural Redis interface — only the 9 methods the adapters use. The conditional `SET … PX ms XX` overload is required since 0.2.1 (resolve `null` when the key is missing); credential rewrites use it so they never re-create a revoked key. All TTLs are milliseconds (hence `pexpire`, not `expire` — a raw seconds-based client would silently set 1000× TTLs). `ioredis` matches by shape; `node-redis` (`redis@4+`) needs a small camelCase wrapper. See [Stores](/auth/stores#redislike-structural-typing).
 
 ## Subpath: `@aooth/auth/atscript-db`
 

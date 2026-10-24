@@ -54,6 +54,12 @@ interface CredentialStore<TPayload = object> {
 | `touch`            | `void`                   | sets `lastSeenAt` on the row (used by `trackLastSeen: 'validate'`); `state` = the state `validate` just read, so a store may skip re-reading it                                           | optional and absent — token is immutable once issued                   |
 | `listSessions`     | array                    | optional native session grouping (forward-compat; unused today)                                                                                                                           | optional and absent on stateless                                       |
 
+::: warning `update` and `touch` must never re-create a deleted row
+On a stateful store, `update` and `touch` rewrite a row that exists — a missing token is a no-op. That must also hold when the row is deleted **between** the store's read and its write (a logout or session revocation racing a refresh or a `lastSeenAt` stamp): write conditionally — a matched-only `UPDATE … WHERE`, Redis `SET … XX` — never an upsert. The shipped stores do (Redis since 0.2.1). A custom store that upserts here can bring revoked credentials back.
+
+Revocation also relies on read-your-writes: `listForUser` must see every row whose `persist` completed, and `retrieve` must see a completed delete (see [Sessions — revoking sessions](./sessions#revoking-sessions)). Don't serve either from an eventually consistent replica.
+:::
+
 ::: warning `update` may return a new token
 On stateless stores, `update` re-encodes the state into a fresh token — the returned string is different from the input. **Callers must use the returned value**, not the original. The orchestrator handles this internally; if you call `update` directly, do the same.
 :::
@@ -157,8 +163,16 @@ The adapters don't depend on any specific Redis client. They accept anything tha
 
 ```ts
 interface RedisLike {
-  /** `SET key value [PX ms]` — `mode` and `ttlMs` are optional. */
-  set(key: string, value: string, mode?: "PX", ttlMs?: number): Promise<string | null>;
+  /** `SET key value PX ms` */
+  set(key: string, value: string, mode: "PX", ttlMs: number): Promise<string | null>;
+  /** `SET key value PX ms XX` — write only if the key exists, else resolve `null`. */
+  set(
+    key: string,
+    value: string,
+    mode: "PX",
+    ttlMs: number,
+    condition: "XX",
+  ): Promise<string | null>;
   get(key: string): Promise<string | null>;
   del(...keys: string[]): Promise<number>;
   exists(key: string): Promise<number>;
@@ -172,13 +186,15 @@ interface RedisLike {
 }
 ```
 
+**The `XX` form is required (since 0.2.1).** `CredentialStoreRedis` rewrites an existing credential (the rotation stamp, `lastSeenAt`) with `SET … XX`, so a write that races a logout or session revocation can never re-create the deleted key. Your adapter must pass `XX` through and resolve `null` when the key is missing — returning `"OK"` without honouring `XX` silently brings revoked credentials back.
+
 All TTLs are **milliseconds** — that's why the interface exposes `pexpire` rather than `expire`: redis's `EXPIRE` takes seconds, and a raw client passed by shape would satisfy an `expire` signature while silently setting a 1000× TTL. With `pexpire`, a seconds-based double fails to typecheck instead of misbehaving.
 
 `ioredis` and `keydb` clients satisfy this shape as-is. `node-redis` (`redis@4+`) uses camelCase method names — wrap it:
 
 ```ts
 const redisLike: RedisLike = {
-  set: (k, v, _px, ttlMs) => client.set(k, v, ttlMs !== undefined ? { PX: ttlMs } : {}),
+  set: (k, v, _px, ttlMs, xx?: "XX") => client.set(k, v, { PX: ttlMs, ...(xx && { XX: true }) }),
   get: (k) => client.get(k),
   del: (...k) => client.del(k),
   exists: (k) => client.exists(k),

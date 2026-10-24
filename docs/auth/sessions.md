@@ -75,6 +75,10 @@ revokeOtherSessions(userId: string, keepSessionId: string): Promise<number>; // 
 
 `revokeSession` kills every token in one family — its access and refresh stop validating immediately; other sessions keep working. `revokeOtherSessions` is the "log out everywhere else" primitive: it revokes every family except `keepSessionId` and returns the number of sessions revoked. Both are no-ops on stores that can't enumerate; check `auth.canEnumerateSessions` (`false` for the stateless JWT / encapsulated stores) and fall back to `revokeAllForUser` when you must not leave a session alive. `revokeAllForUser` (kill everything, including the caller) stays for the nuclear case.
 
+**A refresh in flight can't outlive a revocation** (since 0.2.1, stateful stores). `revokeSession`, `revokeOtherSessions` and `revokeAllForUser` — and so logout and a password change — repeat list-then-delete until a listing comes back with nothing to revoke (normally two passes), and every refresh re-reads the refresh row it was minted from after persisting the new pair; if that row is gone, the refresh revokes what it just minted and fails with `INVALID_TOKEN`. Together they hold even against a chain of refreshes each minting off the previous one. The cost is one extra store read per refresh and one extra listing per revocation. A revocation that still finds rows after 8 passes (refreshes minting on every pass) throws instead of spinning — retry it. This relies on the store's `listForUser` seeing every completed write and `retrieve` seeing deletes at once: point the store at a primary, not a lagging replica.
+
+On stateless stores only `revokeAllForUser` revokes (it bumps the per-user epoch, and a refresh stamps its mint time when it starts, so a racing mint predates the epoch); `revokeSession` / `revokeOtherSessions` do nothing there, and logout falls back to denylisting the tokens it is shown.
+
 ## Activity tracking (`lastSeenAt`)
 
 Off by default — `lastSeenAt` is `undefined` and `listSessions` falls back to `createdAt`. Opt in via the constructor:

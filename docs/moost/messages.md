@@ -45,7 +45,7 @@ The helpers are exported for your own UI: `renderAoothMessage(template, params)`
 
 | Group                | Codes                                                                                                                                                                                   |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sign-in              | `INVALID_CREDENTIALS`, `ACCOUNT_LOCKED`, `INVALID_PASSWORD`, `INCORRECT_PASSWORD`, `SESSION_LIMIT_REACHED`                                                                              |
+| Sign-in              | `INVALID_CREDENTIALS`, `ACCOUNT_LOCKED`, `INVALID_PASSWORD`, `INCORRECT_PASSWORD`, `SESSION_LIMIT_REACHED`, `PASSWORD_CHANGED_SIGN_IN_AGAIN`                                            |
 | Codes (MFA / OTP)    | `INVALID_CODE`, `RESEND_WAIT` `{seconds}`, `RESEND_WAIT_ANOTHER` `{seconds}`, `RESEND_WAIT_CHANNEL` `{seconds, channel}`, `TOTP_RESEND_NOT_APPLICABLE`                                  |
 | MFA management       | `UNKNOWN_MFA_METHOD`, `UNKNOWN_METHOD`, `METHOD_UNAVAILABLE`, `METHOD_NOT_CHANGEABLE`, `KEEP_ONE_MFA_METHOD`, `CHOOSE_OPTION`, `ALL_MFA_METHODS_SET_UP`, `NO_MFA_CHANGES`               |
 | Passwords            | `PASSWORDS_DO_NOT_MATCH`, `PASSWORD_CHANGE_TOO_RECENT`, `PASSWORD_CHANGED`, `PASSWORD_UPDATED_REDIRECTING`, `PASSWORD_UPDATED_STILL_LOCKED`                                             |

@@ -247,7 +247,7 @@ Admin path — skips current-password verification, still enforces policies and 
 setPassword(id: string, newPassword: string): Promise<void>
 ```
 
-`UserService` knows nothing about tokens, so neither password method ends the user's sessions. In an admin reset (or any password change you build yourself), revoke them afterwards with `AuthCredential.revokeAllForUser(id)` — otherwise a session opened with the old password stays valid. The bundled change-password and recovery workflows already do this; see [Workflows](/moost/workflows#change-password-auth-change-password-flow).
+`UserService` knows nothing about tokens, so neither password method ends the user's sessions. In an admin reset (or any password change you build yourself), revoke them afterwards with `AuthCredential.revokeAllForUser(id)` — otherwise a session opened with the old password stays valid. The bundled change-password, recovery and forced-change-at-login workflows already do this; see [Workflows](/moost/workflows#change-password-auth-change-password-flow).
 
 ### `update`
 
