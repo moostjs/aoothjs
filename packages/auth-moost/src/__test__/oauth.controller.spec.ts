@@ -208,9 +208,9 @@ describe("OAuthController unlink", () => {
       method: "DELETE",
       ...bearer(issued.accessToken),
     });
-    // moost defaults a body-returning DELETE to 202 (same as the shipped
+    // moost defaults a body-returning DELETE to 200 (same as the shipped
     // `SessionsController.revokeSession`).
-    expect(res.status).toBe(202);
+    expect(res.status).toBe(200);
     expect(res.body).toEqual({ ok: true });
     expect(await h.federated.find("google", "sub-a")).toBeNull();
     expect(await h.federated.find("github", "sub-b")).not.toBeNull();

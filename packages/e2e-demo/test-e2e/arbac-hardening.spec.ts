@@ -227,7 +227,7 @@ test.describe("ARBAC-HARD: DB-controller hardening (actions, WITH CHECK, nested,
       headers: auth(carol),
       data: { id: own.id, title: "renamed in ops" },
     });
-    expect(ok.status()).toBe(202);
+    expect(ok.status()).toBe(200);
 
     // Moving it out — alone, or together with another change — is refused and
     // the WHOLE update is rolled back (the title change does not stick either).
@@ -413,7 +413,7 @@ test.describe("ARBAC-HARD: DB-controller hardening (actions, WITH CHECK, nested,
       headers: auth(dave),
       data: { id: victim.id, title: "renamed by 015" },
     });
-    expect(renamed.status()).toBe(202);
+    expect(renamed.status()).toBe(200);
 
     // The "New task" action, per role — the form's projectId is validated too.
     for (const [who, token, projectId] of [

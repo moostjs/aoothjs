@@ -240,14 +240,20 @@ describe("/meta HTTP caching through the ARBAC memo", () => {
 
 describe("metaHttpCaching() → false", () => {
   for (const path of ["/tasks-nocache/meta", "/vh-nocache/meta"]) {
-    it(`${path}: no ETag, never 304`, async () => {
+    it(`${path}: no ETag, no tag ever matched`, async () => {
       for (const roles of [["admin"], ["viewer"]]) {
         user.roles = roles;
         const { first, third, conditional } = await settle(path);
         expect(third.text).toBe(first.text);
         expect(third.etag, roles.join()).toBeUndefined();
-        expect((await get(path, 'W/"x", *')).status).toBe(200);
+        expect((await get(path, 'W/"x"')).status).toBe(200);
         expect(conditional.status).toBe(200);
+        // wooks 0.8 answers `If-None-Match: *` with 304 for any GET 200, ETag
+        // or not — an empty answer with no validator, nothing of the body.
+        const star = await get(path, "*");
+        expect(star.status).toBe(304);
+        expect(star.etag).toBeUndefined();
+        expect(star.text).toBe("");
       }
     });
   }

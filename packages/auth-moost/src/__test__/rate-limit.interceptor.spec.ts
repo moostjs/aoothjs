@@ -1,7 +1,7 @@
 import type { Clock, RateLimitDecision } from "@aooth/auth";
 import { RateLimiter } from "@aooth/auth";
 import { current } from "@wooksjs/event-core";
-import { HttpError, useResponse } from "@wooksjs/event-http";
+import { HttpError, useRequest, useResponse } from "@wooksjs/event-http";
 import type { TInterceptorDef } from "moost";
 import { getMoostMate } from "moost";
 import { describe, expect, it } from "vite-plus/test";
@@ -159,6 +159,9 @@ async function runChain(
   try {
     return await withHandlerContext(app, controllerName, method, httpOpts, async () => {
       const ctx = current();
+      // A test context has no socket peer (wooks 0.8: unknown peer → no IP,
+      // nothing trusted); give it the proxy's address, as a real socket has.
+      Object.defineProperty(useRequest(ctx).raw.socket, "remoteAddress", { value: "10.0.0.1" });
       let thrown: HttpError | undefined;
       const noop = (): void => undefined;
       try {
@@ -291,6 +294,16 @@ describe("rateLimitInterceptors", () => {
       headers: { "x-forwarded-for": "2.2.2.2" },
     });
     expect(otherBucket.thrown).toBeUndefined();
+
+    // Only the right-most entry (the one the trusted proxy wrote) counts: a
+    // forged left-most entry buys no fresh budget.
+    await runChain(app, trusted, "RlController", "sharedB", {
+      headers: { "x-forwarded-for": "9.9.9.9, 3.3.3.3" },
+    });
+    const forged = await runChain(app, trusted, "RlController", "sharedB", {
+      headers: { "x-forwarded-for": "8.8.8.8, 3.3.3.3" },
+    });
+    expect(forged.thrown?.body.statusCode).toBe(429);
   });
 
   it("applies interceptor-level default rules to undecorated routes; @RateLimit(false) opts out", async () => {

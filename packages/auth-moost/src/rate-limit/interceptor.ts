@@ -8,7 +8,7 @@ import {
 } from "@aooth/auth";
 import type { EventContext } from "@wooksjs/event-core";
 import { current, eventTypeKey } from "@wooksjs/event-core";
-import { HttpError, useRequest, useResponse } from "@wooksjs/event-http";
+import { HttpError, resolveForwarded, useRequest, useResponse } from "@wooksjs/event-http";
 import {
   defineBeforeInterceptor,
   type TInterceptorDef,
@@ -35,7 +35,12 @@ export interface RateLimitInterceptorOptions {
   rules?: RateLimitRuleInput[];
   /** Default key strategy for routes whose `@RateLimit` doesn't set one. Default: `'ip'`. */
   key?: RateLimitKeyStrategy;
-  /** Trust `x-forwarded-for` for the client IP (behind a proxy). Default: `false`. */
+  /**
+   * Trust exactly ONE reverse proxy in front of the app: the client IP is the
+   * right-most `x-forwarded-for` entry (the one that proxy wrote). Default:
+   * `false` — the client IP as the HTTP app resolves it (`useRequest().getIp()`:
+   * the socket peer, unless the wooks HTTP app configures `trustProxy`).
+   */
   trustProxy?: boolean;
   /** Emit draft `RateLimit-*` headers on every response of a limited route. Default: `true`. */
   headers?: boolean;
@@ -108,7 +113,7 @@ export function rateLimitInterceptors(opts?: RateLimitInterceptorOptions): TInte
   // per event, which would silently give every request a fresh empty budget.
   const limiter = opts?.limiter ?? new RateLimiter();
   const emitHeaders = opts?.headers ?? true;
-  const ipOpts = { trustProxy: opts?.trustProxy ?? false };
+  const trustProxy = opts?.trustProxy ?? false;
 
   // Route metadata is static, so the resolved config is memoized per
   // controller class + method — after the first hit each request pays one
@@ -178,7 +183,7 @@ export function rateLimitInterceptors(opts?: RateLimitInterceptorOptions): TInte
     const decisions: RateLimitDecision[] = [];
     const headers: string[] = [];
     for (const policy of owned) {
-      const subject = await resolveSubject(policy.keyStrategy, ipOpts, ctx);
+      const subject = await resolveSubject(policy.keyStrategy, trustProxy, ctx);
       if (subject == null) continue; // the key function skipped this request
       decisions.push(
         await limiter.check(policy.scope, subject, policy.rules, {
@@ -216,7 +221,7 @@ export function rateLimitInterceptors(opts?: RateLimitInterceptorOptions): TInte
 
 async function resolveSubject(
   strategy: Exclude<RateLimitKeyStrategy, "auto">,
-  ipOpts: { trustProxy: boolean },
+  trustProxy: boolean,
   ctx: EventContext,
 ): Promise<string | null | undefined> {
   if (typeof strategy === "function") return await strategy();
@@ -237,5 +242,18 @@ async function resolveSubject(
     // misconfigured custom kind) — fall back to the per-IP budget rather
     // than lumping everyone into one bucket.
   }
-  return `ip:${useRequest(ctx).getIp(ipOpts)}`;
+  return `ip:${clientIp(trustProxy, ctx)}`;
+}
+
+/** Hop 0 (the socket peer) is the one trusted proxy. */
+const trustOneHop = (_addr: string, hop: number): boolean => hop < 1;
+
+/**
+ * `trustProxy: true` resolves like wooks' deprecated `getIp({ trustProxy: true })`
+ * (one trusted hop, the right-most forwarded entry; `''` with no known peer)
+ * without its deprecation notice; otherwise the app's own `getIp()`.
+ */
+function clientIp(trustProxy: boolean, ctx: EventContext): string {
+  const req = useRequest(ctx);
+  return trustProxy ? resolveForwarded(req.raw, trustOneHop).ip : req.getIp();
 }

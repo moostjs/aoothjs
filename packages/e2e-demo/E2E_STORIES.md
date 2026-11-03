@@ -673,7 +673,7 @@ Playwright, API-level: `test-e2e/arbac-hardening.spec.ts`. Tasks carry `departme
 
 ### ARBAC-HARD-010 — WITH CHECK on update (move out of department)
 
-**Acceptance:** manager PATCH of an own task: title-only → 202; with `departmentId` = another department or `null` (plus a title change) → 403 and the whole update rolls back (department AND title unchanged); PATCH of an eng task → 404 (USING), unchanged.
+**Acceptance:** manager PATCH of an own task: title-only → 200; with `departmentId` = another department or `null` (plus a title change) → 403 and the whole update rolls back (department AND title unchanged); PATCH of an eng task → 404 (USING), unchanged.
 
 ### ARBAC-HARD-011 — WITH CHECK on insert (single + bulk)
 
@@ -693,7 +693,7 @@ Playwright, API-level: `test-e2e/arbac-hardening.spec.ts`. Tasks carry `departme
 
 ### ARBAC-HARD-015 — a task's project must be readable by the caller (`checkRefs`)
 
-**Acceptance:** t1_dave `POST /tasks` with a tenant-B `projectId` → 403 `Referenced row "projectId" is outside your scope`; a bulk insert with one such row → 403, nothing written; `PATCH` moving a task to a tenant-B project → 403 (project + title unchanged), a title-only PATCH → 202. `POST /tasks/actions/new` with a tenant-B project → 403 for admin, manager and member; member with a private tenant-A project they cannot read → 403. No `hard-015` row written. In-scope projects → 201 (CRUD insert, and `new` for admin / manager / member).
+**Acceptance:** t1_dave `POST /tasks` with a tenant-B `projectId` → 403 `Referenced row "projectId" is outside your scope`; a bulk insert with one such row → 403, nothing written; `PATCH` moving a task to a tenant-B project → 403 (project + title unchanged), a title-only PATCH → 200. `POST /tasks/actions/new` with a tenant-B project → 403 for admin, manager and member; member with a private tenant-A project they cannot read → 403. No `hard-015` row written. In-scope projects → 201 (CRUD insert, and `new` for admin / manager / member).
 
 ### ARBAC-HARD-020 — nested writes through nav props
 

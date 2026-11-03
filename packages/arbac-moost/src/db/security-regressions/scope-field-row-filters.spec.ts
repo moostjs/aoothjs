@@ -159,7 +159,7 @@ describe("rowFilter — writes", () => {
 
   it("default WITH CHECK: moving a row out of the team is rejected (403), nothing written", async () => {
     await bootAs(["triage"]);
-    expect((await send(http, "PATCH", "/tasks", { id: 1, title: "ok" })).status).toBe(202);
+    expect((await send(http, "PATCH", "/tasks", { id: 1, title: "ok" })).status).toBe(200);
     const res = await send(http, "PATCH", "/tasks", { id: 1, tenant: "b" });
     expect(res.status).toBe(403);
     expect((await one(h, RpTask, { id: 1 })).tenant).toBe("a");
@@ -167,7 +167,7 @@ describe("rowFilter — writes", () => {
 
   it("an explicit check is left as written (here `{}`: moving out is allowed; USING still applies)", async () => {
     await bootAs(["no-check"]);
-    expect((await send(http, "PATCH", "/tasks", { id: 1, tenant: "b" })).status).toBe(202);
+    expect((await send(http, "PATCH", "/tasks", { id: 1, tenant: "b" })).status).toBe(200);
     expect((await one(h, RpTask, { id: 1 })).tenant).toBe("b");
     expect((await send(http, "PATCH", "/tasks", { id: 2, title: "x" })).status).toBe(404);
   });

@@ -690,13 +690,13 @@ describe("writes by a scope-hidden unique key answer like a nonexistent key", ()
   it("the key is a real identification for a role that sees it", async () => {
     user.roles = ["keyed-admin"];
     const res = await send("PATCH", "", { code: "K1", title: "renamed" });
-    expect(res.status).toBe(202);
+    expect(res.status).toBe(200);
     expect(JSON.parse(res.body)).toMatchObject({ matchedCount: 1 });
   });
 
   it("the scoped role still writes through the visible primary key", async () => {
     const res = await send("PATCH", "", { id: 1, title: "by-pk" });
-    expect(res.status).toBe(202);
+    expect(res.status).toBe(200);
     expect(JSON.parse(res.body)).toMatchObject({ matchedCount: 1 });
   });
 });

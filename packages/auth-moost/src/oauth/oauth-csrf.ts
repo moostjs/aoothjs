@@ -26,9 +26,9 @@ export function oauthCsrfCookieAttrs(opts: {
     secure: opts.secure,
     sameSite: "Lax",
     path: opts.path ?? "/",
-    // wooks' `maxAge` is MILLISECONDS (it renders `Max-Age` in seconds by
-    // dividing by 1000), so convert from the seconds-based knob.
-    maxAge: (opts.maxAgeSec ?? 600) * 1000,
+    // A unit-explicit `'<n>s'` string — wooks reads a bare number differently
+    // across versions (milliseconds before 0.8, seconds since).
+    maxAge: `${opts.maxAgeSec ?? 600}s`,
   };
 }
 

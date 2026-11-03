@@ -229,7 +229,7 @@ interface RateLimitInterceptorOptions {
   limiter?: RateLimiter; // default: memory-store limiter created once per factory call
   rules?: RateLimitRuleInput[]; // app-wide defaults for routes without @RateLimit metadata
   key?: RateLimitKeyStrategy; // default 'ip'
-  trustProxy?: boolean; // default false — left-most x-forwarded-for; spoofable behind appending proxies
+  trustProxy?: boolean; // default false (app's getIp()); true — one proxy hop, right-most x-forwarded-for
   headers?: boolean; // default true — draft RateLimit-* headers
   message?: string; // app-wide default 429 template
 }

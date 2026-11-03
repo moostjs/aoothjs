@@ -82,12 +82,12 @@ Returns **two** interceptor definitions — register with a spread, globally or 
 | `limiter`    | —       | The shared `RateLimiter` — wire your `RateLimitStoreRedis` here. Omitted: a memory-store limiter is created once per factory call (single-process dev/test only). |
 | `rules`      | —       | App-wide default rules applied to **every** HTTP route without its own `@RateLimit` metadata. Routes opt out with `@RateLimit(false)`.                            |
 | `key`        | `'ip'`  | Default key strategy for routes whose decorator doesn't set one.                                                                                                  |
-| `trustProxy` | `false` | Use the left-most `x-forwarded-for` entry as the client IP. See the caution below before enabling it.                                                             |
+| `trustProxy` | `false` | Trust exactly one proxy in front: the client IP is the right-most `x-forwarded-for` entry. `false`: the IP the HTTP app resolves (`useRequest().getIp()`).        |
 | `headers`    | `true`  | Emit draft `RateLimit-*` headers on every response of a limited route.                                                                                            |
 | `message`    | —       | App-wide default 429 message template.                                                                                                                            |
 
-::: warning `trustProxy: true` is spoofable behind most proxies
-Many proxies and load balancers **append** the client address to an incoming `x-forwarded-for` instead of replacing it, so the left-most entry is whatever the client sent — an attacker rotates it to get a fresh budget per request. Enable `trustProxy` only when the proxy directly in front of the app overwrites the header; otherwise leave it off (every caller then shares the proxy's IP budget — size `ip` rules accordingly, or key on a named subject).
+::: warning `trustProxy: true` means exactly one proxy, always in front
+It trusts one hop — the socket peer — and takes the right-most `x-forwarded-for` entry, the address that proxy wrote (wooks 0.8; before, the left-most entry, which a client forges). Enable it only when **every** request reaches the app through exactly one reverse proxy: reached directly, a client picks its own IP; behind two proxies, every caller shares the inner proxy's budget. For other topologies configure `trustProxy` on the wooks HTTP app (hop count, CIDR list, predicate) and leave this option off — the limiter then uses the app's `useRequest().getIp()`.
 :::
 
 ### Why a pair: flood rejection before credential work
@@ -256,7 +256,7 @@ Inject a `clock` into the `RateLimiter` (and the store) to step through windows 
 
 - **DO** spread the pair: `...rateLimitInterceptors(opts)` — **not** register a single element of the returned array.
 - **DO** pass a shared `limiter` backed by `RateLimitStoreRedis` in any multi-instance deployment — the fallback memory limiter is per-process **and** per-factory-call.
-- **DO** set `trustProxy: true` only when the proxy in front of the app overwrites `x-forwarded-for` — with an appending proxy (or none), clients rotate budgets by forging the header.
+- **DO** set `trustProxy: true` only when every request passes exactly one reverse proxy — reached directly, clients rotate budgets by forging `x-forwarded-for`; for other topologies configure `trustProxy` on the wooks HTTP app instead.
 - **DO** stack decorators for "per IP **and** per account" limits — each is its own policy — and give each an explicit `id`.
 - **DO** use `@RateLimit(false)` to exempt health checks / internal routes when app-wide default `rules` are configured.
 - **DO** give intentionally-shared budgets an explicit `id` — **not** rely on the default scope, which isolates per handler (`<ControllerClass>.<methodName>`).

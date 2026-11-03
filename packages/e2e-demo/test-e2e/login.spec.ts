@@ -473,14 +473,13 @@ test.describe("LoginWorkflow / variant=device-trust", () => {
     const trust = cookies.find((c) => c.name === "aooth_trusted_device");
     expect(trust).toBeDefined();
 
-    // Unit-bug regression (TRUSTED.md): wooks' setCookie `maxAge` is in
-    // MILLISECONDS, so the `issue` step must pass `deviceTrust.ttlMs` straight
-    // through — NOT pre-divided by 1000. Pre-fix the cookie's effective
-    // lifetime was `ttlMs / 1e6` (~86s for the default 24h TTL), re-challenging
-    // MFA on essentially every login. `expires` is epoch seconds (-1 =
-    // session). The `device-trust` variant inherits the 24h default, so the
-    // live lifetime must sit in a tight band around 24h — decisively above the
-    // ~86s the bug produced and below a no-divide (1000-day) over-stamp.
+    // Unit-bug regression (TRUSTED.md): the `issue` step converts
+    // `deviceTrust.ttlMs` to a unit-explicit `'<n>s'` cookie `maxAge` (wooks
+    // read a bare number as milliseconds before 0.8, as seconds since). A unit
+    // slip either way is off by 1000x: ~86s for the default 24h TTL, or a
+    // 1000-day over-stamp. `expires` is epoch seconds (-1 = session). The
+    // `device-trust` variant inherits the 24h default, so the live lifetime
+    // must sit in a tight band around 24h.
     const lifetimeSec = trust!.expires - Date.now() / 1000;
     expect(lifetimeSec).toBeGreaterThan(23 * 60 * 60);
     expect(lifetimeSec).toBeLessThan(25 * 60 * 60);

@@ -137,7 +137,7 @@ describe("allowedFields / set", () => {
 
   it.each<[role: string, key: string, status: number]>([
     // Not whitelisted → stripped; the remaining empty patch is a no-op.
-    ["dotted", "profile.tenant", 202],
+    ["dotted", "profile.tenant", 200],
     // Whitelisted (as a leaf or under its parent) → kept, and atscript-db
     // refuses dotted payload keys.
     ["dotted", "profile.name", 400],
