@@ -7,23 +7,30 @@ import {
   unionOutcomes,
 } from "@aooth/arbac";
 import type { FilterExpr } from "@atscript/db";
-import { badRequest, discoverRowLevelActions, hasActionDelegations } from "@atscript/moost-db";
+import {
+  badRequest,
+  DB_CRUD_HANDLERS,
+  discoverRowLevelActions,
+  hasActionDelegations,
+} from "@atscript/moost-db";
 import type { TDbRequestContext } from "@atscript/moost-db";
 import { cached, current, key, tryGetCurrent } from "@wooksjs/event-core";
 import type { EventContext } from "@wooksjs/event-core";
-import { getConstructor, useControllerContext } from "moost";
+import { HttpError } from "@moostjs/event-http";
+import { getConstructor, getMoostMate, useControllerContext, useLogger } from "moost";
 import type { Moost, TConsoleBase } from "moost";
 
 import { useArbac } from "../arbac.composables";
 import { evaluateArbacCached, insufficientPrivileges, scopesOwnedBy } from "../arbac.evaluate";
 import type { ArbacDbScope } from "./as-arbac-db-controller";
-import { getOrCreate } from "./helpers";
-import { actionArbacIds, grantedActions, readHandlerIds } from "./meta-projection";
+import { getOrCreate, isKeyObject } from "./helpers";
+import { actionArbacIds, grantedActions, readHandlerIds, WRITE_CRUD_OPS } from "./meta-projection";
 import { enforceRelationGates } from "./shared-read-helpers";
 import {
   evaluateHandlerOutcomes,
   evaluateHandlers,
   requestRelations,
+  resolveHandlerArbacIds,
   resolveRequestRelations,
 } from "./relation-policy";
 import type { ArbacHandlerIds } from "./relation-policy";
@@ -56,6 +63,8 @@ interface ResolvedScopes {
   visibility: Map<VisibilityTableSource, MetaVisibility>;
   /** An insert in ignore mode (`POST /?$onConflict=ignore`) — set by {@link prepareArbacRequest}. */
   insertIgnore?: true;
+  /** The read grant installed for an insert's read-back by {@link readBackUnderReadGrant}. */
+  readBack?: true;
 }
 
 const requestScopesKey = key<ResolvedScopes>("arbac.db.scopes");
@@ -115,6 +124,9 @@ export function cachedRequestScopes(): ArbacDbScope[] | undefined {
  */
 export async function resolveRequestScopes(): Promise<ArbacDbScope[]> {
   const ctx = current();
+  const prior = resolved();
+  // An insert's read-back runs under the read grant installed for it.
+  if (prior?.readBack) return prior.scopes;
   const arbac = useArbac(ctx);
   // Only scopes cached for THIS handler (never ones read through from a
   // delegating parent event — a `@DbActionsFrom` view's request).
@@ -125,7 +137,6 @@ export async function resolveRequestScopes(): Promise<ArbacDbScope[]> {
       : undefined;
   // Reused while the handler (a WF event dispatches several steps) and the
   // interceptor's slot are the ones it was resolved for.
-  const prior = resolved();
   if (
     prior &&
     prior.resource === arbac.resource &&
@@ -233,6 +244,13 @@ export function isScopedFieldVisible(
  * caller's readable rows match the query; the action itself is authorized
  * by its source controller on every batch.
  *
+ * A read endpoint (`query`, `pages`, `geo`, `one`) under a moost-db write
+ * handler (`insert`, `update`, `replace`, `remove`, `removeComposite`) is
+ * served only inside {@link readBackUnderReadGrant} (since 0.2.4), under the
+ * read grant it installs — otherwise a 403, never the write grant. moost-db's
+ * insert read-back (`Prefer: return=representation`) then answers the plain
+ * insert result.
+ *
  * @since 0.1.72
  */
 export async function prepareArbacRequest(
@@ -247,11 +265,78 @@ export async function prepareArbacRequest(
     await authorizeDelegatedQueryTarget();
     return;
   }
+  if (READ_ENDPOINTS.has(ctx.endpoint) && !resolved()?.readBack && underWriteHandler()) {
+    const { resource, action } = useArbac();
+    throw insufficientPrivileges(resource, action);
+  }
   const scopes = await resolveRequestScopes();
   if (ctx.endpoint === "insert" && ctx.onConflict === "ignore") resolved()!.insertIgnore = true;
   if (READ_ENDPOINTS.has(ctx.endpoint)) {
     const names = await resolveRequestRelations(scopes, ctx.controls, readable, ctx.filter);
     enforceRelationGates(names, visibilityFor(scopes, readable));
+  }
+}
+
+/** moost-db's write handler methods — a read under one of them must be a read-back. */
+const WRITE_HANDLERS: ReadonlySet<string> = new Set(
+  [...WRITE_CRUD_OPS].flatMap((op) => DB_CRUD_HANDLERS[op]),
+);
+
+function underWriteHandler(): boolean {
+  const method = useControllerContext().getMethod();
+  return method !== undefined && WRITE_HANDLERS.has(method);
+}
+
+/**
+ * Read back the row `id` after a write, exactly as `GET /one/:id` would
+ * answer the caller (since 0.2.4) — the body of
+ * `AsArbacDbController._readRepresentation`, and the way for a write handler
+ * override to answer the written row:
+ *
+ * ```ts
+ * await super.update(payload);
+ * return readBackUnderReadGrant(id, () => this.getOne(String(id), ""));
+ * ```
+ *
+ * `read` calls the controller's `/one` handler: `getOne` for a scalar `id`,
+ * `getOneComposite` for a key object. The caller's grant on that handler is
+ * evaluated (its `@ArbacResource` / `@ArbacAction`, credential attenuation
+ * included) and installed as the request's scopes while `read` runs — its
+ * row filter, projection and controls apply, and an overridden handler body
+ * runs too — then the write's scopes are restored.
+ *
+ * Answers `undefined` instead of the row when: the caller has no grant on
+ * that handler; the handler carries method-level interceptors (they would
+ * not run on a direct call); `read` answers or throws an `HttpError` (e.g.
+ * the row is outside the read filter → 404); or anything else fails (logged
+ * as a warning, never answered — the write is already committed).
+ */
+export async function readBackUnderReadGrant<R>(
+  id: unknown,
+  read: () => Promise<R>,
+): Promise<Exclude<R, HttpError> | undefined> {
+  const ctx = current();
+  const prior = resolved();
+  if (!prior) return undefined;
+  try {
+    const instance = useControllerContext(ctx).getController();
+    const method = isKeyObject(id) ? "getOneComposite" : "getOne";
+    if (getMoostMate().read(instance, method)?.interceptors?.length) return undefined;
+    const ids = resolveHandlerArbacIds(instance, method);
+    const [outcome] = await evaluateHandlerOutcomes([ids]);
+    const scopes = normalizeScopes(outcome);
+    if (!scopes) return undefined;
+    storeResolved(ctx, ids, undefined, scopes);
+    ctx.get(requestScopesKey).readBack = true;
+    const row = await read();
+    return row instanceof HttpError ? undefined : (row as Exclude<R, HttpError>);
+  } catch (error) {
+    if (!(error instanceof HttpError)) {
+      useLogger("arbac", ctx).warn(`Read-back of the written row failed: ${String(error)}`);
+    }
+    return undefined;
+  } finally {
+    ctx.set(requestScopesKey, prior);
   }
 }
 

@@ -2,6 +2,18 @@
 
 Load when bumping `@aooth/*`, when an app "worked before" an upgrade, or when writing code against an older aooth. All `@aooth/*` packages share one version — bump them together, with the matching ecosystem line ([ecosystem.md](./ecosystem.md) § Peer dependencies).
 
+## 0.2.4 — insert read-back; reads under write handlers 403
+
+**Breaking:** on an ARBAC DB controller, a read (`this.getOne/getOneComposite/query/pages/geo`) inside an `insert` / `update` / `replace` / `remove` / `removeComposite` override → **403** (it used to run under the WRITE grant; the 403 comes after the committed write). Migration: `await super.update(payload); return readBackUnderReadGrant(id, () => this.getOne(String(id), ""))` — the read grant on the `/one` handler; `undefined` when not allowed.
+
+Additive: `returnRepresentation()` → `true` on an `AsArbacDbController` subclass: `POST /` + `Prefer: return=representation` answers `row` = what `GET /one/:id` answers the caller (READ grant, not the insert grant). Default off. See [db-controllers.md](./db-controllers.md) § Protected hook table.
+
+## 0.2.3 — moost 0.7.2 line; additive features
+
+Peers: `moost` / `@moostjs/*` `^0.7.2`, `@atscript/typescript` `^0.2.4`, `@atscript/moost-wf` `^0.1.164`, `@atscript/db` + `moost-db` `^0.1.168`. moost 0.7.2 accumulates class-level interceptors, pipes and auth transports along `extends` under `@Inherit()` — a subclass of an aooth controller keeps the base's guards and error mapping.
+
+Additive: `WfTriggerProvider.triggerHooks()` / `@WfTrigger({ around, beforePersist, renderEnvelope, restoreOnError, maxRestores })` (see [workflows.md](./workflows.md)); coded 429 `code: "RATE_LIMITED"` with `params` `limit` / `window` / `retryAfter` (seconds) (see [rate-limit.md](./rate-limit.md)); `userAuthErrorToHttp()` / `userAuthErrorInterceptor` map `UserAuthError` → coded 4xx `HttpError`; `UserService.revokeInvitation(id)` (invite link then 410, see [invites.md](./invites.md)); `useArbac().principal()` → user id, effective roles, attrs.
+
 ## 0.2.2 — dependency update
 
 Peers: `moost` / `@moostjs/*` `^0.7.1`, `@atscript/typescript` `^0.2.3` (0.2.2 is not installable), `@atscript/moost-wf` `^0.1.163`, `@atscript/db` + `moost-db` `^0.1.167`. No API change. Remove any `@atscript/core>glob` override (core 0.2.3 depends on glob 14).

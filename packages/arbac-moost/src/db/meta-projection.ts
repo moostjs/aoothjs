@@ -633,7 +633,7 @@ function isNavProp(prop: TSerializedAnnotatedTypeInner): boolean {
  * fails closed (a principal whose only read grant is the new op still gets
  * a pruned envelope rather than the full field map).
  */
-const WRITE_CRUD_OPS: ReadonlySet<TCrudOp> = new Set<TCrudOp>([
+export const WRITE_CRUD_OPS: ReadonlySet<TCrudOp> = new Set<TCrudOp>([
   "insert",
   "update",
   "replace",

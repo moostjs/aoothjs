@@ -52,6 +52,7 @@ export {
   cachedRequestScopes,
   isScopedFieldVisible,
   prepareArbacRequest,
+  readBackUnderReadGrant,
   requestFieldVisible,
   requireRequestScopes,
   resolveRequestScopes,

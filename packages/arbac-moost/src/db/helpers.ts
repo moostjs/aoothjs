@@ -20,6 +20,16 @@ export function hasSelfOrAncestor(set: ReadonlySet<string>, path: string): boole
   return set.has(path) || findAncestorInSet(path, set) !== undefined;
 }
 
+/**
+ * A key object (a composite id, read by `getOneComposite`) — a plain object.
+ * A class instance such as a MongoDB `ObjectId` is a scalar id: `String(id)`.
+ */
+export function isKeyObject(id: unknown): id is object {
+  if (id === null || typeof id !== "object") return false;
+  const proto = Object.getPrototypeOf(id);
+  return proto === Object.prototype || proto === null;
+}
+
 /** A patch (`update` / `updateMany`) — only the keys it carries are written. */
 export function isPatchAction(action: TDbWriteAction): boolean {
   return action === "update" || action === "updateMany";

@@ -21,7 +21,7 @@ import { groupByFields } from "@uniqu/core";
 import { Inherit } from "moost";
 
 import { ARBAC_DELEGATED_AUTH } from "../arbac.mate";
-import { isPatchAction } from "./helpers";
+import { isKeyObject, isPatchAction } from "./helpers";
 import { registerArbacDbTarget } from "./relation-policy";
 import {
   arbacActionRowScope,
@@ -31,6 +31,7 @@ import {
   authorizeArbacForm,
   isInsertIgnoreRequest,
   prepareArbacRequest,
+  readBackUnderReadGrant,
   requestFieldVisible,
   requireRequestScopes,
 } from "./request-scopes";
@@ -223,6 +224,18 @@ export class AsArbacDbController<
    */
   protected prepareRequest(ctx: TDbRequestContext): Promise<void> {
     return prepareArbacRequest(ctx, this.readable);
+  }
+
+  /**
+   * The read-back of `Prefer: return=representation` on `POST /` (since
+   * 0.2.4; opt in with `returnRepresentation()`): this controller's own
+   * `/one` handler under the caller's grant on it — see
+   * {@link readBackUnderReadGrant}.
+   */
+  protected _readRepresentation(id: unknown): Promise<TAtscriptDataType<T> | undefined> {
+    return readBackUnderReadGrant(id, () =>
+      isKeyObject(id) ? this.getOneComposite(textKey(id), "") : this.getOne(String(id), ""),
+    );
   }
 
   /**
@@ -471,6 +484,11 @@ export class AsArbacDbController<
     preservedFieldsCache.set(ctor, arr);
     return arr;
   }
+}
+
+/** A key object as `GET /one?…` receives it — every value as text. */
+function textKey(id: object): Record<string, string> {
+  return Object.fromEntries(Object.entries(id).map(([k, v]) => [k, String(v)]));
 }
 
 // WeakMap so test harnesses that throw away the controller class also throw

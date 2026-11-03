@@ -92,6 +92,55 @@ A post-write check cannot roll back there, so the controller checks **before** t
 Everything else is a **403** (fail closed): an operator (`$inc`, array ops) or a nested object over a checked field, or an operator outside `$eq` / `$ne` / `$in` / `$nin` / `$gt(e)` / `$lt(e)` / `$exists` / `$and` / `$or` / `$not` (e.g. `$regex`) in `check`.
 :::
 
+### Returning the inserted row (`Prefer: return=representation`)
+
+Since 0.2.4, with `@atscript/moost-db` 0.1.168 or later. A single-object `POST /` that sends `Prefer: return=representation` can get the stored row back as `row`, with server defaults and `set` values filled in. It is off by default. Turn it on per controller:
+
+```ts
+@TableController(Comment)
+@ArbacResource("comments")
+export class CommentsController extends AsArbacDbController<typeof Comment> {
+  protected returnRepresentation(): boolean {
+    return true;
+  }
+}
+```
+
+The read-back calls the controller's own `getOne` handler (`getOneComposite` for a composite key), so an overridden handler body runs too. It runs with the caller's **read** grant on that handler, not the insert grant. A method-level `@ArbacAction` / `@ArbacResource` on the handler decides which grant. The result is exactly what `GET /one/:id` would answer the same caller:
+
+| The caller's grant on the `/one` handler  | Response                                                       |
+| ----------------------------------------- | -------------------------------------------------------------- |
+| None (an insert-only role)                | `{ insertedId }` without `row` or `Preference-Applied`; no 403 |
+| A row `filter` the new row does not match | `{ insertedId }` without `row` or `Preference-Applied`         |
+| A `projection` that hides fields          | `row` without those fields, plus `Preference-Applied`          |
+| An unrestricted read                      | The full row, plus `Preference-Applied: return=representation` |
+
+- **The insert always stands.** A read-back that is denied or fails, including a scope predicate that throws, never turns the insert into an error. The failure is logged as a warning, and the response is the plain `{ insertedId }`.
+- **Method-level interceptors switch the read-back off.** A direct call does not run interceptors or guards declared on the `getOne` / `getOneComposite` method (for example `@Intercept(...)` or `@Authenticate(...)` on an override). When the handler carries any, the response is the plain `{ insertedId }`. Class-level and global interceptors already ran for the insert request.
+- **Hooks see the read grant during the read-back.** Use `useArbacDbScope()` (or `cachedRequestScopes()`) in a hook: it answers the read scopes while the row is read, and the insert scopes again afterwards. `useArbac()` (`resource`, `action`, `getScopes()`) and `useControllerContext().getMethod()` still report the insert handler.
+- **Without the opt-in the header is ignored.** The response is the plain `{ insertedId }`, as before 0.2.4.
+
+#### Reading inside a write handler override
+
+Since 0.2.4, a read (`/one`, `/query`, `/pages`, `/geo`) that runs inside a `POST`, `PUT`, `PATCH` or `DELETE` handler of an ARBAC DB controller answers **403**. Before 0.2.4 such a read ran with the write grant, which could show rows and fields the caller's read grant hides. The 403 comes after the write has committed.
+
+To answer the written row from a write override, read it with `readBackUnderReadGrant`. It runs the read with the caller's read grant on the `/one` handler and returns `undefined` when that grant does not allow the read:
+
+```ts
+import { readBackUnderReadGrant } from "@aooth/arbac-moost";
+
+@TableController(Task)
+@ArbacResource("tasks")
+export class TasksController extends AsArbacDbController<typeof Task> {
+  @Patch("")
+  async update(@Body() payload: { id: string }) {
+    await super.update(payload);
+    const row = await readBackUnderReadGrant(payload.id, () => this.getOne(payload.id, ""));
+    return { row: row ?? null };
+  }
+}
+```
+
 ### Nested writes
 
 A write payload that carries a nav prop (`TO` / `FROM` / `VIA`) is a **403** unless a write scope lists that relation in `nestedWrites`. This covers `{ owner: {...} }`, `{ comments: [...] }` and patch operators like `{ tags: { $insert: [...] } }`. Bulk payloads are checked row by row.
@@ -589,6 +638,7 @@ Every built-in route (`/query`, `/pages`, `/geo`, `/one`, `/meta`, `/meta/form`,
 - `@Public()` (`arbacPublic`) does **not** bypass an ARBAC DB controller. It only skips the interceptor. Grant the actions to a public role instead.
 - `GET /meta/actions/:id` is authorized by row-level action grants, not a read grant. See [Row actions](#row-actions-run-only-where-their-grant-reaches).
 - `POST /delegated-actions/:name` (a view's delegated query target) is authorized by the read grant on the view; the source route authorizes each batch. See [Query targets](#query-targets-read-and-action).
+- A read inside a write handler (an override of `insert` / `update` / `replace` / `remove` that calls `this.getOne()` or `this.query()`) answers 403 since 0.2.4. Use `readBackUnderReadGrant`, see [Reading inside a write handler override](#reading-inside-a-write-handler-override).
 
 Before 0.1.72, a controller without the interceptor ran writes unscoped, and reads returned rows with hidden columns.
 

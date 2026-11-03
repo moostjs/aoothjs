@@ -2,6 +2,25 @@
 
 What to check when you move to a newer aooth release. Each entry lists the changes that can break an app or change what users see, and links to the page that documents the current behaviour. All `@aooth/*` packages share one version number — upgrade them together.
 
+## To 0.2.4
+
+### Reads inside write handlers answer 403
+
+On an ARBAC DB controller, a read (`this.getOne()`, `this.getOneComposite()`, `this.query()`, `this.pages()`, `this.geo()`) inside an override of `insert`, `update`, `replace`, `remove` or `removeComposite` now answers **403**. Before 0.2.4 that read ran with the write grant, so a caller could see rows and fields their read grant hides. The 403 comes after the write has committed.
+
+If an override answers the written row, read it with `readBackUnderReadGrant`. It uses the caller's read grant on the `/one` handler and returns `undefined` when that grant does not allow the read:
+
+```ts
+await super.update(payload);
+const row = await readBackUnderReadGrant(payload.id, () => this.getOne(String(payload.id), ""));
+```
+
+See [Reading inside a write handler override](/moost/db-controllers#reading-inside-a-write-handler-override).
+
+### Additive
+
+- **Inserted row on an ARBAC DB controller.** A controller that overrides `returnRepresentation()` to return `true` answers `POST /` with `Prefer: return=representation` with the stored row as `row`, exactly as `GET /one/:id` would answer the caller. Off by default. See [Returning the inserted row](/moost/db-controllers#returning-the-inserted-row-prefer-return-representation).
+
 ## To 0.2.3
 
 The moost-facing packages peer on `moost` / `@moostjs/*` `^0.7.2`, `@atscript/typescript` `^0.2.4`, `@atscript/moost-wf` `^0.1.164` and `@atscript/db` / `@atscript/moost-db` `^0.1.168` ([Installation — peer dependencies](./installation#per-package-peer-dependencies)). moost 0.7.2 accumulates class-level interceptors, pipes and auth transports along `extends` under `@Inherit()`, so a subclass of an aooth controller keeps the base class's guards and error mapping.
