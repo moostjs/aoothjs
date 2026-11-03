@@ -2,6 +2,10 @@
 
 Load when bumping `@aooth/*`, when an app "worked before" an upgrade, or when writing code against an older aooth. All `@aooth/*` packages share one version — bump them together, with the matching ecosystem line ([ecosystem.md](./ecosystem.md) § Peer dependencies).
 
+## 0.2.2 — dependency update
+
+Peers: `moost` / `@moostjs/*` `^0.7.1`, `@atscript/typescript` `^0.2.3` (0.2.2 is not installable), `@atscript/moost-wf` `^0.1.163`, `@atscript/db` + `moost-db` `^0.1.167`. No API change. Remove any `@atscript/core>glob` override (core 0.2.3 depends on glob 14).
+
 ## 0.2.1 — moost 0.7 / wooks 0.8 / atscript 0.2 line
 
 | #   | Change                                                                                                                                                                                                                                                                                                     | Action                                                                                                                 |

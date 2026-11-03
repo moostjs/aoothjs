@@ -2,6 +2,10 @@
 
 What to check when you move to a newer aooth release. Each entry lists the changes that can break an app or change what users see, and links to the page that documents the current behaviour. All `@aooth/*` packages share one version number — upgrade them together.
 
+## To 0.2.2
+
+Dependency update only. The moost-facing packages peer on `moost` / `@moostjs/*` `^0.7.1`, `@atscript/typescript` `^0.2.3`, `@atscript/moost-wf` `^0.1.163` and `@atscript/db` / `@atscript/moost-db` `^0.1.167` ([Installation — peer dependencies](./installation#per-package-peer-dependencies)). Use `@atscript/typescript` 0.2.3: 0.2.2 is not installable from npm. If you added an `@atscript/core>glob` override for the glob advisories, remove it — `@atscript/core` 0.2.3 depends on glob 14.
+
 ## To 0.2.1
 
 ### Ecosystem line: moost 0.7, wooks 0.8, atscript 0.2
