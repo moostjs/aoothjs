@@ -34,3 +34,6 @@ TODO.md
 /rfc-credential-claims-arbac-bridge.md
 /REFRESH_TOKEN.md
 /AUTHZ_CONSENT.md
+
+# Vitest 5 local state
+.vitest/

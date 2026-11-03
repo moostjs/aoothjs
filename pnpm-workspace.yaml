@@ -42,7 +42,7 @@ catalog:
   "@wooksjs/event-http": ^0.8.0
   "@wooksjs/event-wf": ^0.8.0
   "@wooksjs/http-body": ^0.8.0
-  happy-dom: ^18
+  happy-dom: ^21.0.4
   moost: ^0.7.0
   reka-ui: ^2.9.2
   sirv: ^3.0.2
@@ -50,17 +50,30 @@ catalog:
   unocss: ^66.6.0
   "unplugin-atscript": ^0.2.1
   "unplugin-swc": ^1.5.9
-  vite: npm:@voidzero-dev/vite-plus-core@latest
-  vite-plus: latest
-  vitest: npm:@voidzero-dev/vite-plus-test@latest
-  vue: ^3.5.0
+  vite: npm:@voidzero-dev/vite-plus-core@1.4.0
+  vite-plus: 1.4.0
+  vue: ^3.5.44
   vue-router: ^4
   vue-tsc: ^3.2.6
   vunor: ^0.3.2
   wooks: ^0.8.0
 
 catalogMode: prefer
+onlyBuiltDependencies:
+  - better-sqlite3
+  - "@atscript/db"
+  - "@atscript/db-sqlite"
+overrides:
+  # @atscript/core 0.2.1 (latest) pins glob ^13 -> vulnerable glob/minimatch/brace-expansion
+  # (GHSA-3g3m-2fjr-6pw4, GHSA-g3hv-75wg-m249, brace-expansion ReDoS). No parent update exists;
+  # drop once @atscript/core ships glob >=14.0.2.
+  "@atscript/core>glob": ^14.0.3
+  vite@*: "catalog:"
+  # docs: vitepress 2.0.0-alpha.17 hard-deps real vite ^7; keep it off vite-plus-core
+  # and on the patched 7.3.7+ line (GHSA-9jrq-w75r-8gcw and earlier vite 7 advisories).
+  "vitepress>vite": ^7.3.7
 peerDependencyRules:
   allowAny:
     - vite
-    - vitest
+  allowedVersions:
+    vite: "*"

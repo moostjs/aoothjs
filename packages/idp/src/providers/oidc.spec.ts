@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import type { FetchLike } from "../types";
 import { OidcProvider, type OidcProviderOptions } from "./oidc";
 import {

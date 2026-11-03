@@ -48,9 +48,7 @@
     "check": "vp check"
   },
   "dependencies": {},
-  "devDependencies": {
-    "vitest": "catalog:"
-  },
+  "devDependencies": {},
   "engines": {
     "node": ">=18"
   }

@@ -52,7 +52,5 @@
     "@aooth/user": "workspace:*",
     "jose": "^6.2.3"
   },
-  "devDependencies": {
-    "vitest": "catalog:"
-  }
+  "devDependencies": {}
 }

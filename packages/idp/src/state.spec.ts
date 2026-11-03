@@ -1,5 +1,5 @@
 import { SignJWT } from "jose";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { OAuthError } from "./errors";
 import { type OAuthStatePayload, signState, verifyState } from "./state";
 

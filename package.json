@@ -47,16 +47,5 @@
   "engines": {
     "node": ">=22.12.0"
   },
-  "packageManager": "pnpm@10.32.1",
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "better-sqlite3",
-      "@atscript/db",
-      "@atscript/db-sqlite"
-    ],
-    "overrides": {
-      "vite": "8.0.14",
-      "vitepress>vite": "^7.3.1"
-    }
-  }
+  "packageManager": "pnpm@10.32.1"
 }

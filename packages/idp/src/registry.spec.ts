@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { OAuthError } from "./errors";
 import { FakeIdentityProvider } from "./providers/fake";
 import { OAuthProviderRegistry } from "./registry";

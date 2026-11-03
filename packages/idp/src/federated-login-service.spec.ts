@@ -1,5 +1,5 @@
 import { FederatedIdentityStoreMemory, UserService, UserStoreMemory } from "@aooth/user";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 import { FederatedLoginService } from "./federated-login-service";
 import type { FederatedPolicy, NormalizedProfile } from "./types";
 

@@ -5,9 +5,9 @@
   "description": "End-to-end test harness for @aooth/* packages",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vp dev",
     "dev:api": "SKIP_MOOST_VITE=1 vite-node --watch src/main.ts",
-    "build": "vite build",
+    "build": "vp build",
     "start": "SKIP_MOOST_VITE=1 vite-node src/main.ts",
     "test": "vp test",
     "test:e2e": "playwright test",
@@ -66,6 +66,7 @@
     "@unocss/vite": "^66.6.8",
     "@vitejs/plugin-vue": "^6.0.5",
     "unplugin-atscript": "catalog:",
+    "vite": "catalog:",
     "vite-node": "^3.0.0",
     "vite-plus": "catalog:"
   }

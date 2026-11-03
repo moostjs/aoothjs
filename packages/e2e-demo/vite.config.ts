@@ -27,6 +27,11 @@ export default defineConfig({
   // `test()` runner — exclude them from `vp test` (vitest) so they only run
   // under `pnpm test:e2e`.
   test: {
+    // Vitest v4 compatibility: preserve mock call history.
+    // Remove after tests no longer rely on calls from setup or earlier tests.
+    // https://viteplus.dev/guide/vitest-v5#remove-unneeded-compatibility-settings
+    // https://vitest.dev/guide/migration/#clearmocks-is-enabled-by-default
+    clearMocks: false,
     exclude: ["test-e2e/**", "node_modules/**", "dist/**"],
     // This package's tests are Playwright (`test-e2e/`, run via `pnpm test:e2e`);
     // it ships no vitest specs, so a recursive `vp test` must not fail it.

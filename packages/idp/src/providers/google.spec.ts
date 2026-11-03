@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { GoogleProvider } from "./google";
 import { type TestSigner, makeRs256Signer, signIdToken, tokenFetch } from "./oidc-test-utils";
 
