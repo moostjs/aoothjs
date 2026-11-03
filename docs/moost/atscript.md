@@ -263,7 +263,7 @@ userService.onUserWrite((id) => arbacUserCache.invalidate(id));
 - A role / attribute change made on **another process**, or written **around** `UserService` (e.g. through a DB controller or a script), is seen only after the entry expires — at most `ttlMs` later. `invalidate(userId)` (or `invalidate()` for all) evicts on the current process only.
 - Only the stored record (roles + attributes) is cached. Credential attenuation is read from the token on every request, and every policy evaluation still runs per request.
 - A missing user and a failed fetch are never cached. Share one cache instance per provider class.
-  :::
+:::
 
 ## Injectable inheritance gotcha
 

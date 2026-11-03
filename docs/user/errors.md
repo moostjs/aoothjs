@@ -5,15 +5,15 @@ Every failure path in `@aooth/user` funnels through a single error class: `UserA
 ## The class
 
 ```ts
-import { UserAuthError } from "@aooth/user"
+import { UserAuthError } from "@aooth/user";
 
 class UserAuthError extends Error {
-  readonly name = "UserAuthError"
+  readonly name = "UserAuthError";
   constructor(
     public type: UserAuthErrorType,
     message?: string,
     public details?: Record<string, unknown>,
-  )
+  );
 }
 ```
 

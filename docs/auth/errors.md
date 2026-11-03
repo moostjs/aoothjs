@@ -8,7 +8,7 @@ This page lists every error type, what triggers it, what the `details` look like
 
 ```ts
 class AuthError extends Error {
-  readonly name = 'AuthError';
+  readonly name = "AuthError";
   constructor(
     readonly type: AuthErrorType,
     message?: string,
@@ -17,13 +17,13 @@ class AuthError extends Error {
 }
 
 type AuthErrorType =
-  | 'INVALID_TOKEN'
-  | 'TOKEN_EXPIRED'
-  | 'TOKEN_REVOKED'
-  | 'REFRESH_REUSE_DETECTED'
-  | 'STATELESS_OPERATION_UNSUPPORTED'
-  | 'MAX_CONCURRENT_REACHED'
-  | 'INVALID_CONFIG';
+  | "INVALID_TOKEN"
+  | "TOKEN_EXPIRED"
+  | "TOKEN_REVOKED"
+  | "REFRESH_REUSE_DETECTED"
+  | "STATELESS_OPERATION_UNSUPPORTED"
+  | "MAX_CONCURRENT_REACHED"
+  | "INVALID_CONFIG";
 ```
 
 Catching:

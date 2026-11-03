@@ -238,14 +238,13 @@ export function conjoinForTable(
   );
 }
 
-const scopeFieldsSlot = cached(
-  async (ctx): Promise<TScopeFieldRules<ArbacDbScope>> =>
-    (
-      (await arbacDeps(useControllerContext(ctx).getController(), ctx))[1] as MoostArbac<
-        object,
-        ArbacDbScope
-      >
-    ).getScopeFields(),
+const scopeFieldsSlot = cached(async (ctx): Promise<TScopeFieldRules<ArbacDbScope>> =>
+  (
+    (await arbacDeps(useControllerContext(ctx).getController(), ctx))[1] as MoostArbac<
+      object,
+      ArbacDbScope
+    >
+  ).getScopeFields(),
 );
 
 /** The current controller's `MoostArbac` — resolved once per (event, controller). */

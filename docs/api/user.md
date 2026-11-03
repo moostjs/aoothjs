@@ -361,12 +361,12 @@ See [Errors](/user/errors).
 
 ```ts
 class UserAuthError extends Error {
-  readonly name: 'UserAuthError'
+  readonly name: "UserAuthError";
   constructor(
     public type: UserAuthErrorType,
     message?: string,
-    public details?: Record<string, unknown>
-  )
+    public details?: Record<string, unknown>,
+  );
 }
 ```
 

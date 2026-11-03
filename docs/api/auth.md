@@ -572,12 +572,12 @@ Time abstraction injected into stores and `AuthCredential`. Replace for tests or
 
 ```ts
 class AuthError extends Error {
-  readonly name: 'AuthError'
+  readonly name: "AuthError";
   constructor(
     public type: AuthErrorType,
     message?: string,
-    public details?: Record<string, unknown>
-  )
+    public details?: Record<string, unknown>,
+  );
 }
 ```
 
