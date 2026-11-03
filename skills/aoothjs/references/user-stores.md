@@ -155,8 +155,11 @@ class MyStore<T extends object = object> extends UserStore<T> {
     const { matched } = await db.deepMergeAndIncrement(id, update.set, update.inc);
     return matched;
   }
-  async delete(id: string): Promise<boolean> {
-    const { matched } = await db.delete({ id });
+  async delete(id: string, opts?: { expectedVersion?: number }): Promise<boolean> {
+    // honour expectedVersion (delete only while unchanged) — revokeInvitation relies on it
+    const filter =
+      opts?.expectedVersion === undefined ? { id } : { id, version: opts.expectedVersion };
+    const { matched } = await db.delete(filter);
     return matched;
   }
   async withCas(id, mutator, opts) {

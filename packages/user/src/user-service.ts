@@ -184,8 +184,8 @@ export class UserService<T extends object = object> {
 
   /**
    * Creates a user with `account.active: false`. The invite workflow relies
-   * on this default (see `InviteWorkflow.acceptInvite` — pending invitees stay
-   * inactive until they accept). For setup scripts / seeders / tests that
+   * on this default (pending invitees stay inactive until they accept the
+   * invite). For setup scripts / seeders / tests that
    * don't go through invite, follow up with `activateAccount(id)` or `login()`
    * will throw `UserAuthError("INACTIVE")` — which the login workflow
    * deliberately re-maps to `"Invalid credentials"` to avoid account
@@ -355,8 +355,9 @@ export class UserService<T extends object = object> {
 
   /**
    * Hard-delete the user row by `id`. Returns nothing on success. Throws
-   * `UserAuthError("NOT_FOUND")` when no row matches. Used by the invite
-   * workflow's `auth/invite/cancel` to revoke a pending invitation.
+   * `UserAuthError("NOT_FOUND")` when no row matches. To revoke a pending
+   * invitation use {@link revokeInvitation}, which never deletes an account
+   * whose invite was accepted meanwhile.
    */
   async deleteUser(id: string): Promise<void> {
     const removed = await this.store.delete(id);
@@ -367,7 +368,6 @@ export class UserService<T extends object = object> {
    * Deep-merge `patch` into the user record (top-level fields are shallow-
    * merged; `account` / `mfa` / `password` are merged per their
    * `@db.patch.strategy 'merge'` declaration). Returns the patched record.
-   * Used by the invite workflow's `applyProfile` default fallback.
    */
   async update(id: string, patch: Partial<UserCredentials & T>): Promise<UserCredentials & T> {
     const found = await this.store.update(id, {
@@ -396,6 +396,37 @@ export class UserService<T extends object = object> {
       return { set: { account: { pendingInvitation: false } } };
     });
     return accepted;
+  }
+
+  /**
+   * Revoke a pending invitation: delete the invited account, so its invite
+   * link stops working (the invite workflow answers it with 410
+   * `INVITE_CANCELLED`). Returns `false` and deletes nothing when the account
+   * is not pending — the invite was already accepted — or when the row
+   * changed while the revoke ran. Throws `UserAuthError("NOT_FOUND")` when no
+   * row matches `id`.
+   *
+   * Safe against a concurrent acceptance or re-invite: one compare-and-set
+   * write first rotates `account.inviteNonce` while the row is still pending
+   * (an accept racing it fails), and the delete is conditional on the row's
+   * `version` still being the one that write produced — any write in between
+   * (a re-invite, an acceptance) makes it delete nothing. The bundled stores
+   * honour the conditional delete; a custom store whose `delete()` ignores
+   * `expectedVersion` leaves a window of one round-trip between the re-check
+   * and the delete.
+   */
+  async revokeInvitation(id: string): Promise<boolean> {
+    const nonce = randomBytes(16).toString("base64url");
+    let pending = false;
+    await this.store.withCas(id, (user) => {
+      pending = user.account.pendingInvitation === true;
+      if (!pending) return null;
+      return { set: { account: { inviteNonce: nonce } } };
+    });
+    if (!pending) return false;
+    const claimed = await this.store.findById(id);
+    if (!claimed?.account.pendingInvitation || claimed.account.inviteNonce !== nonce) return false;
+    return this.store.delete(id, { expectedVersion: claimed.version ?? 0 });
   }
 
   /**

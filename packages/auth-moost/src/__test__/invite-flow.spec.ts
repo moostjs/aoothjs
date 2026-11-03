@@ -211,6 +211,46 @@ describe("A1: invitee chooses the username (F31)", () => {
   });
 });
 
+describe("revoking a pending invite (UserService.revokeInvitation)", () => {
+  it("the revoked link answers 410 INVITE_CANCELLED and the account is gone", async () => {
+    const app = await prepareFlowApp();
+    await issueInvite(app, "r@x.test");
+    const pending = await app.users.findByHandle("r@x.test");
+    expect(pending?.account.pendingInvitation).toBe(true);
+
+    expect(await app.users.revokeInvitation(pending!.id)).toBe(true);
+    expect(await app.users.findByHandle("r@x.test")).toBeNull();
+    const res = await openLink(app, app.emails[0].token);
+    expect(res.status).toBe(410);
+    expect(res.body).toMatchObject({ code: "INVITE_CANCELLED" });
+  });
+
+  it("a link revoked while its password form is open answers 410 INVITE_CANCELLED", async () => {
+    const app = await prepareFlowApp();
+    await issueInvite(app, "o@x.test");
+    const opened = await openLink(app, app.emails[0].token);
+    expect(opened.body.inputRequired?.payload?.id).toBe("SetPasswordForm");
+    const pending = await app.users.findByHandle("o@x.test");
+    expect(await app.users.revokeInvitation(pending!.id)).toBe(true);
+    const res = await openLink(app, opened.body.wfs, {
+      formData: { newPassword: "Str0ng!Passw0rd", confirmPassword: "Str0ng!Passw0rd" },
+    });
+    expect(res.status).toBe(410);
+    expect(res.body).toMatchObject({ code: "INVITE_CANCELLED" });
+  });
+
+  it("an accepted invite is not revoked", async () => {
+    const app = await prepareFlowApp({ workflowOpts: { autoLoginOnInvite: false } });
+    await issueInvite(app, "a@x.test");
+    const opened = await openLink(app, app.emails[0].token);
+    await completeAccept(app, opened.body.wfs);
+    const user = await app.users.findByHandle("a@x.test");
+    expect(user?.account.pendingInvitation).toBe(false);
+    expect(await app.users.revokeInvitation(user!.id)).toBe(false);
+    expect(await app.users.findByHandle("a@x.test")).not.toBeNull();
+  });
+});
+
 describe("S7 (F43): a re-invite supersedes earlier links", () => {
   it("an older link answers 410 'replaced' and never activates the account", async () => {
     const app = await prepareFlowApp({ workflowOpts: { autoLoginOnInvite: false } });

@@ -73,7 +73,11 @@ Deep-merge `patch` via `store.update(id, { set })`, then re-read. Top-level fiel
 
 ### `deleteUser(id) → Promise<void>`
 
-Hard-delete by `id`. Throws `NOT_FOUND` when no row matched (`store.delete` returned `false`).
+Hard-delete by `id`. Throws `NOT_FOUND` when no row matched (`store.delete` returned `false`). To cancel a pending invite use `revokeInvitation` instead.
+
+### `revokeInvitation(id) → Promise<boolean>`
+
+Cancel a pending invite: one CAS write rotates `account.inviteNonce` while `account.pendingInvitation` is still set (a racing `acceptInvitation` then fails), then deletes the row only while its `version` is unchanged (`store.delete(id, { expectedVersion })`) → `true`. Not pending (accepted / never invited) or changed meanwhile (re-invite, accept) → `false`, nothing deleted. Unknown id → `NOT_FOUND`. See [invites.md](./invites.md) #13.
 
 ## Login + password flow
 

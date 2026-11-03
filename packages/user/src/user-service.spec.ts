@@ -686,6 +686,68 @@ describe("UserService", () => {
     });
   });
 
+  describe("revokeInvitation", () => {
+    async function pendingInvite(username: string, nonce = "n-1") {
+      const user = await svc.createUser(username);
+      await svc.update(user.id, {
+        account: { pendingInvitation: true, inviteNonce: nonce },
+      } as never);
+      return user.id;
+    }
+
+    it("deletes a pending account and returns true", async () => {
+      const id = await pendingInvite("invitee@example.com");
+      expect(await svc.revokeInvitation(id)).toBe(true);
+      expect(await store.findById(id)).toBeNull();
+    });
+
+    it("leaves an accepted account alone and returns false", async () => {
+      const id = await pendingInvite("invitee@example.com");
+      expect(await svc.acceptInvitation(id, "n-1")).toBe(true);
+      expect(await svc.revokeInvitation(id)).toBe(false);
+      expect(await store.findById(id)).not.toBeNull();
+    });
+
+    it("never deletes a regular (never invited) account", async () => {
+      const user = await createActiveUser(svc, "alice");
+      expect(await svc.revokeInvitation(user.id)).toBe(false);
+      expect(await store.findById(user.id)).not.toBeNull();
+    });
+
+    it("throws NOT_FOUND for an unknown id", async () => {
+      await expect(svc.revokeInvitation("nope")).rejects.toMatchObject({ type: "NOT_FOUND" });
+    });
+
+    it("a re-invite + accept landing between the claim and the delete keeps the account", async () => {
+      const id = await pendingInvite("invitee@example.com");
+      // Between the revoke's claim and its delete: a re-invite rotates the
+      // nonce and the invitee accepts the new link — the account is live now.
+      const realDelete = store.delete.bind(store);
+      store.delete = async (rowId, opts) => {
+        await svc.update(rowId, { account: { inviteNonce: "n-2" } } as never);
+        expect(await svc.acceptInvitation(rowId, "n-2")).toBe(true);
+        return realDelete(rowId, opts);
+      };
+      expect(await svc.revokeInvitation(id)).toBe(false);
+      expect(await store.findById(id)).not.toBeNull();
+    });
+
+    it("an accept racing the revoke (same nonce) fails once the revoke claimed the row", async () => {
+      const id = await pendingInvite("invitee@example.com");
+      // Stall the delete: the revoke has claimed the row (rotated the nonce) but
+      // not removed it yet — the invitee's accept lands in this gap.
+      const realDelete = store.delete.bind(store);
+      let accepted: boolean | undefined;
+      store.delete = async (rowId: string) => {
+        accepted = await svc.acceptInvitation(rowId, "n-1");
+        return realDelete(rowId);
+      };
+      expect(await svc.revokeInvitation(id)).toBe(true);
+      expect(accepted).toBe(false);
+      expect(await store.findById(id)).toBeNull();
+    });
+  });
+
   describe("getLockStatus", () => {
     it("should return unlocked status", () => {
       const status = svc.getLockStatus({

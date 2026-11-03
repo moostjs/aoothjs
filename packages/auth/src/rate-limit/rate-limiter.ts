@@ -2,6 +2,8 @@ import { type Clock, defaultClock } from "../utils/clock";
 import {
   DEFAULT_RATE_LIMIT_MESSAGE,
   parseRateLimitRule,
+  type RateLimitErrorCode,
+  type RateLimitParams,
   type RateLimitRule,
   type RateLimitRuleInput,
   renderRateLimitMessage,
@@ -33,6 +35,10 @@ export interface RateLimitDecision {
   retryAfterMs?: number;
   /** Present when `!allowed`: rendered from the violated rule's message template. */
   message?: string;
+  /** Present when `!allowed`: the machine-readable code of the rejection. */
+  code?: RateLimitErrorCode;
+  /** Present when `!allowed`: the violated rule's values, for translating {@link code}. */
+  params?: RateLimitParams;
   /** Every evaluated rule (for the `RateLimit-Policy` header). */
   policies: RateLimitRule[];
 }
@@ -154,6 +160,13 @@ export class RateLimiter {
       policies: parsed,
       ...(rejected && {
         retryAfterMs: resetAfterMs,
+        code: "RATE_LIMITED" as const,
+        params: {
+          policy: scope,
+          limit: governing.rule.limit,
+          window: governing.rule.window / 1000,
+          retryAfter: Math.ceil(resetAfterMs / 1000),
+        },
         message: renderRateLimitMessage(
           governing.rule.message ?? opts?.defaultMessage ?? DEFAULT_RATE_LIMIT_MESSAGE,
           governing.rule,

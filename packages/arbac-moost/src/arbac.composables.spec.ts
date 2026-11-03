@@ -395,6 +395,89 @@ describe("useArbac().evaluate live-read of roles", () => {
   });
 });
 
+describe("useArbac().principal()", () => {
+  beforeEach(() => {
+    clearGlobalWooks();
+  });
+
+  const ProbePrincipal = () =>
+    Resolve(async () => {
+      const p = await useArbac().principal<{ tenant: string }>();
+      return {
+        userId: p.userId,
+        roles: p.roles,
+        effectiveRoles: p.effectiveRoles,
+        attrs: await p.attrs(),
+        attenuation: p.attenuation,
+        ownerCheck: p.effectiveRoles.includes("owner"),
+      };
+    });
+
+  @Controller("principal")
+  class PrincipalController {
+    @Get("a")
+    handler(@ProbePrincipal() result?: unknown) {
+      return { result };
+    }
+  }
+
+  async function boot(provider: FakeUserProvider<{ tenant: string }>) {
+    const app = new Moost();
+    app.setReplaceRegistry(createReplaceRegistry([ArbacUserProviderToken, FakeUserProvider]));
+    app.setProvideRegistry(
+      createProvideRegistry(
+        [FakeUserProvider, () => provider],
+        [MoostArbac, () => new MoostArbac()],
+      ),
+    );
+    const http = new MoostHttp();
+    app.adapter(http);
+    app.registerControllers(PrincipalController);
+    await app.init();
+    return async () => {
+      const res = await http.request("/principal/a");
+      expect(res?.status).toBe(200);
+      return ((await res!.json()) as { result: Record<string, unknown> }).result;
+    };
+  }
+
+  it("returns the provider's user id, roles and attributes", async () => {
+    const provider = new FakeUserProvider("u1", ["owner", "member"], { tenant: "t-1" });
+    const read = await boot(provider);
+    expect(await read()).toEqual({
+      userId: "u1",
+      roles: ["owner", "member"],
+      effectiveRoles: ["owner", "member"],
+      attrs: { tenant: "t-1" },
+      ownerCheck: true,
+    });
+    // Fresh per call, like evaluate(): a role change applies immediately.
+    provider.roles = ["member"];
+    expect((await read()).roles).toEqual(["member"]);
+  });
+
+  it("includes the credential attenuation when it narrows", async () => {
+    const provider = new FakeUserProvider("u1", ["owner", "member"], { tenant: "t-1" });
+    provider.attenuation = { roles: ["member"] };
+    const read = await boot(provider);
+    const result = await read();
+    expect(result.attenuation).toEqual({ roles: ["member"] });
+    // An owner's credential attenuated to "member" must not pass an owner check.
+    expect(result.roles).toEqual(["owner", "member"]);
+    expect(result.effectiveRoles).toEqual(["member"]);
+    expect(result.ownerCheck).toBe(false);
+  });
+
+  it("an unheld claimed role never becomes effective, even with allowUnheldRoles", async () => {
+    const provider = new FakeUserProvider("u2", ["member"], { tenant: "t-1" });
+    provider.attenuation = { roles: ["owner"], allowUnheldRoles: true };
+    const read = await boot(provider);
+    const result = await read();
+    expect(result.effectiveRoles).toEqual([]);
+    expect(result.ownerCheck).toBe(false);
+  });
+});
+
 describe("useArbac integration: @DbAction('new') resolves to action 'new'", () => {
   beforeEach(() => {
     clearGlobalWooks();

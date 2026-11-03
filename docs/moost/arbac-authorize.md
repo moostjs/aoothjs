@@ -86,6 +86,7 @@ arbac.getScopes(); // TScope[] | undefined — set by the interceptor on allow
 arbac.setScopes(s); // back-channel used by the interceptor itself
 arbac.evaluate(); // returns { allowed, scopes?, userId }
 arbac.evaluateOrThrow(); // same but throws 403 on deny
+arbac.principal(); // Promise<{ userId, roles, effectiveRoles, attrs(), attenuation? }>
 ```
 
 ::: warning `useArbac` is intentionally NOT a wook
@@ -151,6 +152,31 @@ async publish(@Param("id") id: string) {
   return articles.publish(id);
 }
 ```
+
+### `principal()`
+
+Returns the current user as ARBAC sees it, read through your `ArbacUserProvider` — the same source `evaluate()` uses — so a handler or workflow step can use the user's roles or attributes without a second read of its own. Authorize with `evaluate()` / `evaluateOrThrow()`; when app logic needs a role check, use `effectiveRoles`:
+
+```ts
+await useArbac().evaluateOrThrow({ resource: "invites", action: "issue" }); // authorization
+
+const { effectiveRoles, attrs } = await useArbac().principal<UserAttrs>();
+const { tenantId } = await attrs(); // loaded on first call
+const label = effectiveRoles.includes("owner") ? "Owner invite" : "Member invite";
+```
+
+| Field            | Value                                                                                                                      |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `userId`         | `provider.getUserId()`                                                                                                     |
+| `roles`          | `provider.getRoles(userId)` — the roles the user **holds**, before credential attenuation                                  |
+| `effectiveRoles` | The roles this request acts with: `roles` narrowed by `attenuation.roles` (all held roles when the attenuation names none) |
+| `attrs()`        | `provider.getAttrs(userId)`, loaded on the first call                                                                      |
+| `attenuation`    | `provider.getAttenuation()` when it narrows (`roles` / `attrs`); absent otherwise                                          |
+
+Loaded fresh on every call, like `evaluate()` — a role change applies to the next call.
+
+- **DON'T** decide on `roles`: an owner's token attenuated to `{ roles: ["member"] }` still lists `"owner"` there. `effectiveRoles` is `["member"]` for it.
+- A claimed role the user does not hold never appears in `effectiveRoles`, even with `allowUnheldRoles` ("view as" narrows only through `evaluate()`).
 
 ## Per-request flow
 

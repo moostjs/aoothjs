@@ -44,7 +44,7 @@ export interface RateLimitInterceptorOptions {
   trustProxy?: boolean;
   /** Emit draft `RateLimit-*` headers on every response of a limited route. Default: `true`. */
   headers?: boolean;
-  /** App-wide default 429 message template. */
+  /** App-wide default 429 message template (placeholders `{{limit}}`, `{{window}}`, `{{delta}}`). */
   message?: string;
 }
 
@@ -104,7 +104,9 @@ interface RouteConfig {
  *
  * On rejection: draft `RateLimit-*` headers + `Retry-After` are written to
  * the accumulated response (they survive the throw — wooks renders the error
- * onto the same `HttpResponse`), then `HttpError(429, message)` is thrown.
+ * onto the same `HttpResponse`), then an `HttpError(429)` is thrown whose body
+ * carries the rendered `message`, `code: "RATE_LIMITED"` and
+ * `params: { policy, limit, window, retryAfter }` (seconds) — translate by code.
  */
 export function rateLimitInterceptors(opts?: RateLimitInterceptorOptions): TInterceptorDef[] {
   // Parse eagerly — invalid default rules fail at registration, not per request.
@@ -209,7 +211,11 @@ export function rateLimitInterceptors(opts?: RateLimitInterceptorOptions): TInte
 
     if (!decision.allowed) {
       response.setHeader("retry-after", String(Math.ceil(decision.resetAfterMs / 1000)));
-      throw new HttpError(429, decision.message ?? "Too many requests");
+      throw new HttpError(429, {
+        message: decision.message ?? "Too many requests",
+        code: decision.code ?? "RATE_LIMITED",
+        ...(decision.params && { params: decision.params }),
+      });
     }
   };
 

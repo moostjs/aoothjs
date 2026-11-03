@@ -6,7 +6,7 @@ import { Controller, Inherit } from "moost";
 import { Public } from "../auth.decorator";
 import { AuthController } from "../auth.controller";
 import { WfTrigger } from "../wf-trigger/decorator";
-import { prepareFlowApp } from "./flow-utils";
+import { pauseOnForcedPasswordChange, prepareFlowApp, setPasswordInput } from "./flow-utils";
 
 // F42 / S2: a trigger's `allow` list governs RESUME too — a state token minted
 // for one workflow must never run on a route that does not allow it — and
@@ -55,6 +55,23 @@ describe("F42: @WfTrigger allow list on resume", () => {
     expect(start.status).toBe(201);
     const res = await app.submit(start.body.wfs, {});
     expect(res.status).toBe(403);
+  });
+
+  it("a refused DURABLE state token is not consumed either", async () => {
+    // Store-backed tokens are single-use, so a refusal that consumed one would
+    // burn the link; the check runs before `consumeEntry()` as well.
+    const app = await prepareFlowApp();
+    const wfs = await pauseOnForcedPasswordChange(app, "victim");
+    const attacker = await app.seedUser("attacker", "Password123!");
+    const { accessToken } = await app.auth.issue(attacker);
+
+    const res = await app.post(
+      "/auth/change-password",
+      { wfs, input: {} },
+      { authorization: `Bearer ${accessToken}` },
+    );
+    expect(res.status).toBe(403);
+    expect((await app.submit(wfs, setPasswordInput)).status).toBe(201);
   });
 
   it("matches ids with or without a leading slash", async () => {

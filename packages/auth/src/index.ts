@@ -47,9 +47,15 @@ export {
   formatDurationMs,
   parseDurationMs,
   parseRateLimitRule,
+  RATE_LIMIT_MESSAGES,
   renderRateLimitMessage,
 } from "./rate-limit/rules";
-export type { RateLimitRule, RateLimitRuleInput } from "./rate-limit/rules";
+export type {
+  RateLimitErrorCode,
+  RateLimitParams,
+  RateLimitRule,
+  RateLimitRuleInput,
+} from "./rate-limit/rules";
 export { RateLimitStoreMemory } from "./rate-limit/store";
 export type { RateLimitStore } from "./rate-limit/store";
 export { pickGoverning, RateLimiter } from "./rate-limit/rate-limiter";

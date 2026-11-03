@@ -160,7 +160,7 @@ Every `protected` member below is an override seam — change behavior by subcla
 | `validateMfaAddress(ctx, method, value)`         | stricter rules on the user-typed enrolment address — ctx-first and async-capable, so record-based rules (domain allowlists, match-the-account-email) load the row directly | email-shape / permissive E.164     |
 | `beginSso` / `oauthRuntime` / `authorizeRuntime` | federated-login wiring — see [Federated Login](./oauth)                                                                                                                    | runtime-resolved                   |
 
-[`ConsentStore`](#consent-collection-consentstore) (`getPendingConsents` / `save` / `read` / `recordOtpChannelConsent`) and the [`WfTriggerProvider`](#wf-trigger-workflow-trigger-machinery) overrides (`storeStrategy` / `wfStateSecret` / `wfStateEncapsulatedTtlMs` / `stateRegistry`) are separate provider classes, documented in their own sections below.
+[`ConsentStore`](#consent-collection-consentstore) (`getPendingConsents` / `save` / `read` / `recordOtpChannelConsent`) and the [`WfTriggerProvider`](#wf-trigger-workflow-trigger-machinery) overrides (`storeStrategy` / `wfStateSecret` / `wfStateEncapsulatedTtlMs` / `stateRegistry` / `triggerHooks`) are separate provider classes, documented in their own sections below.
 
 ### Event hooks
 
@@ -508,9 +508,9 @@ app.setReplaceRegistry(createReplaceRegistry([WfTriggerProvider, MyWfTriggerProv
 
 The encapsulated token's secret defaults to `auth.deriveStateKey("wf-state")` (HKDF-derived from the auth secret, stable across restarts) — override `wfStateSecret()` for a dedicated secret, or `wfStateEncapsulatedTtlMs()` to expire idle forms. `HandleStateStrategy` / `EncapsulatedStateStrategy` come from `@moostjs/event-wf`; `AsWfStore` (a `@atscript/db`-table-backed store) from `@atscript/moost-wf`.
 
-### `WfTrigger({ allow?, token? })`
+### `WfTrigger({ allow?, token?, ...hooks })`
 
-Method decorator wrapping `defineAfterInterceptor` at `INTERCEPTOR` priority. When the wrapped handler returns `undefined`, the interceptor instantiates `WfTriggerProvider` and replies with `provider.handle(opts)`. `opts.allow` lists the workflow ids the route may start **and resume** (below). `opts.token` overrides the wire (default `{ read: ['body','query','cookie'], write: 'body', name: 'wfs' }`). Return a non-`undefined` value to short-circuit (see [Controllers — Pattern B](./controllers)).
+Method decorator wrapping `defineAfterInterceptor` at `INTERCEPTOR` priority. When the wrapped handler returns `undefined`, the interceptor instantiates `WfTriggerProvider` and replies with `provider.handle(opts)`. `opts.allow` lists the workflow ids the route may start **and resume** (below). `opts.token` overrides the wire (default `{ read: ['body','query','cookie'], write: 'body', name: 'wfs' }`). The [trigger hooks](#trigger-hooks) can be set per route too. Return a non-`undefined` value to short-circuit (see [Controllers — Pattern B](./controllers)).
 
 ### Trigger allow lists — start and resume {#trigger-allow-lists-start-and-resume}
 
@@ -523,6 +523,44 @@ Method decorator wrapping `defineAfterInterceptor` at `INTERCEPTOR` priority. Wh
 ::: warning Since 0.2: `allow` also governs resume, and `[]` denies all
 A `wfs` token minted for a workflow outside the route's list is refused with **403 before it is consumed** — it stays usable on its own route. This closes route-hopping: a login `wfs` can no longer be resumed on the authenticated `POST /auth/change-password` route (which would sidestep the login route's rate limit), and a change-password `wfs` is refused on the public `/auth/trigger`. Before 0.2, `allow` was checked on start only, and `allow: []` allowed everything. When you add a trigger route of your own, list exactly the workflows it serves.
 :::
+
+### Trigger hooks — transactions, pre-persist checks, rendering, retryable links {#trigger-hooks}
+
+The trigger passes the `@moostjs/event-wf` trigger hooks through. Set them app-wide by overriding `triggerHooks()` on your `WfTriggerProvider` subclass, or per route on `@WfTrigger({...})` — a route's hook replaces the provider's hook of the same name, the others still apply.
+
+```ts
+import { WfTriggerProvider, type WfTriggerHooks } from "@aooth/auth-moost";
+
+@Injectable()
+class MyWfTriggerProvider extends WfTriggerProvider {
+  protected override triggerHooks(): WfTriggerHooks {
+    return {
+      // State row + the steps' writes + outlet side effects in ONE transaction.
+      around: (run) => db.transaction(() => run()),
+      // Throw to refuse a pause: nothing is persisted, the outlet is not called.
+      beforePersist: (state, pause) => {
+        if (JSON.stringify(state.context).length > 64_000) throw new Error("context too large");
+      },
+    };
+  }
+}
+```
+
+| Hook                             | Runs                                                                                                                    | Use for                                                                                                |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `around(run)`                    | Wraps everything the request does to state and the outside world: allow checks, consume/start/resume, persist, delivery | A database transaction (`(run) => db.transaction(run)`); may call `run()` again — each run starts over |
+| `beforePersist(state, pause)`    | Right before a paused state is persisted, inside `around`; not on finish                                                | Validating or counting before the pause is saved; throw to abort                                       |
+| `renderEnvelope(body, info)`     | On every body the trigger answers with — paused envelopes (`info.phase: 'paused'`, `info.outlet`) and finished values   | Translating form texts and messages per request                                                        |
+| `restoreOnError` / `maxRestores` | When a resume fails after its single-use token was consumed                                                             | Keeping a durable link usable after a transient step failure (opt-in)                                  |
+
+`restoreOnError` is **off by default**. With `true` (or a predicate `(error) => boolean` choosing which errors qualify) a resume that throws puts the pre-step state back under the same token, so the same link can be retried — at most `maxRestores` times (default 3), never extending its lifetime. It works only with a durable strategy that reports expiries (`HandleStateStrategy` over a store that does); encapsulated tokens are never consumed, so they need no restore.
+
+- **DO** keep the workflow-state store inside the `around` transaction — if the commit fails after `run()` succeeded and the store is outside it, the token is spent while the steps' writes roll back.
+- **DON'T** enable `restoreOnError` on a route whose steps have side effects that must not run twice (sent emails, charged payments): a restore rolls back the workflow context, not the outside world.
+- **DO** enable it per route (`@WfTrigger({ restoreOnError })`), or pass a predicate that accepts only transient store errors, e.g. `restoreOnError: (error) => isTransientStoreError(error)` with your own check. A provider-wide `true` also covers aooth's own credential-changing steps (set password, recovery reset, MFA enrolment): a failure after such a step puts its single-use link back. The bundled password forms refuse a restored state once the password has changed (`410`, `code: "PASSWORD_CHANGED_SIGN_IN_AGAIN"`), but other effects of the failed request stay done.
+- **DON'T** use `renderEnvelope` for errors — refused requests and step errors go through the HTTP app's error-body hook.
+
+Exact semantics: the wooks outlets guide — [Transactions and envelopes](https://wooks.moost.org/wf/outlets#transactions-and-envelopes) and [Retrying a failed resume](https://wooks.moost.org/wf/outlets#retrying-a-failed-resume-restoreonerror).
 
 ### `createAuthEmailOutlet(deps)`
 
@@ -539,7 +577,7 @@ Steps end a run with `finishWf(opts)` (success) or `abortWf(reason, opts)` (user
 | Shape                                                             | Behaviour                                                                                                               | Use for                                                                                                                                        |
 | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | `throw wf.requireInput({ errors, formMessage? })` — **retriable** | Engine re-persists state under the SAME `wfs` handle and re-renders the form with per-field errors. The token survives. | Wrong password, invalid OTP, mismatched confirm-password, duplicate email, missing required consent, account lockout, "session limit reached". |
-| `throw new HttpError(<status>, <msg>)` — **terminal**             | The token is consumed; the SPA renders a final error. The run is over.                                                  | `500` state corruption, `501` not-implemented stubs, `410` cancelled / replaced invite, `403` feature disabled, `409` CAS exhausted.           |
+| `throw new HttpError(<status>, <msg>)` — **terminal**             | The token is consumed (unless [`restoreOnError`](#trigger-hooks) restores it); the SPA renders a final error.           | `500` state corruption, `501` not-implemented stubs, `410` cancelled / replaced invite, `403` feature disabled, `409` CAS exhausted.           |
 
 `wf` is the handle from `useAtscriptWf(FormSchema)`. The form payload + `@wf.context.pass` keys are auto-included in the re-render, so the SPA's next render sees fresh ctx without an extra round-trip.
 

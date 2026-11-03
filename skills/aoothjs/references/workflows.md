@@ -113,6 +113,7 @@ app.setReplaceRegistry(createReplaceRegistry([WfTriggerProvider, MyWfTriggerProv
 - `createAuthEmailOutlet({ emailSender, buildMagicLinkUrl, magicLinkTtlMs })` — `buildMagicLinkUrl` is 3-arg `(kind, token, ctx?:{userId?})`.
 - Default `outlets` = `[httpOutlet, createInviteOutlet()]`. APPEND as above; if you replace the array, keep `createInviteOutlet()` (needed by `inviteDelivery: 'deliver' | 'return-link'`).
 - `handle({ allow })`: allow list for start AND resume; omitted = unrestricted, `[]` = deny all (since 0.2; was allow-all).
+- Trigger hooks (`around` transaction, `beforePersist`, `renderEnvelope`, opt-in `restoreOnError` / `maxRestores`): override `triggerHooks()` or pass per route in `@WfTrigger({...})` — rules in [moost.md](./moost.md) #26–27.
 
 ## Finish envelopes
 

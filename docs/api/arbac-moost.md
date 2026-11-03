@@ -109,6 +109,15 @@ interface ArbacBindings {
   evaluateOrThrow<TScope>(
     over?: ArbacEvaluateOptions,
   ): Promise<{ allowed: true; scopes?: TScope[]; userId: string }>;
+  principal<TUserAttrs extends object = object>(): Promise<ArbacPrincipal<TUserAttrs>>;
+}
+
+interface ArbacPrincipal<TUserAttrs extends object = object> {
+  userId: string;
+  roles: string[]; // held roles, before credential attenuation — don't authorize on it
+  effectiveRoles: string[]; // roles ∩ attenuation.roles — the roles this request acts with
+  attrs: () => Promise<TUserAttrs>; // loaded on first call
+  attenuation?: { roles?: string[]; attrs?: Record<string, unknown>; allowUnheldRoles?: boolean };
 }
 
 interface ArbacEvaluateOptions {
@@ -120,6 +129,8 @@ interface ArbacEvaluateOptions {
 ```
 
 Pass `table` when you evaluate a grant on a different table than the current controller's, so a credential-attenuated projection subtracts nested exclusions against that table's schema.
+
+`principal()` reads the current user through the `ArbacUserProvider` (fresh on every call, like `evaluate()`). Role checks go on `effectiveRoles` (or `evaluate()`), never on `roles`. See [ARBAC Authorize — `principal()`](/moost/arbac-authorize#principal).
 
 ### `getArbacScopes`
 

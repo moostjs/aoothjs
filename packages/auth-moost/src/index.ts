@@ -31,8 +31,13 @@ export type {
   AuthOkResponse,
   AuthRefreshBody,
 } from "./auth.dto";
+export {
+  userAuthErrorInterceptor,
+  userAuthErrorToHttp,
+  type UserAuthErrorBody,
+} from "./user-errors";
 export { WfTrigger, type WfTriggerOpts } from "./wf-trigger/decorator";
-export { deriveWfStateSecret, WfTriggerProvider } from "./wf-trigger/provider";
+export { deriveWfStateSecret, WfTriggerProvider, type WfTriggerHooks } from "./wf-trigger/provider";
 export { createInviteOutlet, INVITE_OUTLET } from "./workflow/invite-outlet";
 
 // ── Rate limiting (RL.spec.md) — @RateLimit metadata + enforcing interceptor

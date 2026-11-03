@@ -13,7 +13,7 @@ abstract class UserStore<T extends object = object> {
   abstract findByIdentifier(value: string): Promise<(UserCredentials & T) | null>;
   abstract create(data: UserCredentials & T): Promise<void>;
   abstract update(id: string, update: UserStoreUpdate): Promise<boolean>; // false = no row
-  abstract delete(id: string): Promise<boolean>; // false = no row
+  abstract delete(id: string, opts?: { expectedVersion?: number }): Promise<boolean>; // false = no row (or version moved on)
   abstract withCas(id, mutator, opts?): Promise<void>; // read-modify-write under OCC
 }
 ```
@@ -164,8 +164,13 @@ export class PostgresUserStore<T extends object = object> extends UserStore<T> {
     // (implementation depends on your schema — JSON columns vs. flat columns)
   }
 
-  async delete(id: string) {
-    const r = await this.sql`DELETE FROM users WHERE id = ${id}`;
+  async delete(id: string, opts?: { expectedVersion?: number }) {
+    // With `expectedVersion`, delete only while the row is unchanged — this is
+    // what makes `UserService.revokeInvitation()` race-free.
+    const r =
+      opts?.expectedVersion === undefined
+        ? await this.sql`DELETE FROM users WHERE id = ${id}`
+        : await this.sql`DELETE FROM users WHERE id = ${id} AND version = ${opts.expectedVersion}`;
     return r.count > 0;
   }
 

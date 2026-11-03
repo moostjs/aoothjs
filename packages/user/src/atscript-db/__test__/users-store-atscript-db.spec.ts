@@ -98,6 +98,23 @@ describe("UsersStoreAtscriptDb", () => {
     });
   });
 
+  describe("delete", () => {
+    it("deletes only while the row's version still equals expectedVersion", async () => {
+      await store.create(makeUserData());
+      const before = await store.findById("test-id-1");
+      await store.update("test-id-1", { set: { account: { lastLogin: 5 } } });
+      expect(await store.delete("test-id-1", { expectedVersion: before!.version ?? 0 })).toBe(
+        false,
+      );
+      expect(await store.findById("test-id-1")).not.toBeNull();
+      const current = await store.findById("test-id-1");
+      expect(await store.delete("test-id-1", { expectedVersion: current!.version ?? 0 })).toBe(
+        true,
+      );
+      expect(await store.findById("test-id-1")).toBeNull();
+    });
+  });
+
   describe("findByHandle", () => {
     it("returns full record", async () => {
       await store.create(makeUserData());
@@ -139,7 +156,7 @@ describe("UsersStoreAtscriptDb", () => {
 
     it("applies set operation", async () => {
       await store.update("test-id-1", {
-        set: { account: { active: true } } as any,
+        set: { account: { active: true } },
       });
       const data = await store.findByHandle("alice");
       expect(data!.account.active).toBe(true);
@@ -149,7 +166,7 @@ describe("UsersStoreAtscriptDb", () => {
       await store.update("test-id-1", {
         set: {
           account: { locked: true, lockReason: "too many attempts", lockEnds: 9999 },
-        } as any,
+        },
       });
       const data = await store.findByHandle("alice");
       expect(data!.account.locked).toBe(true);
@@ -173,7 +190,7 @@ describe("UsersStoreAtscriptDb", () => {
 
     it("applies mixed set and inc operations", async () => {
       await store.update("test-id-1", {
-        set: { account: { locked: true } } as any,
+        set: { account: { locked: true } },
         inc: { "account.failedLoginAttempts": 3 },
       });
       const data = await store.findByHandle("alice");
@@ -184,7 +201,7 @@ describe("UsersStoreAtscriptDb", () => {
     it("applies set on password history (JSON field)", async () => {
       const newHistory = ["$scrypt$N=1024,r=1,p=1,l=32$oldsalt$oldhash"];
       await store.update("test-id-1", {
-        set: { password: { history: newHistory } } as any,
+        set: { password: { history: newHistory } },
       });
       const data = await store.findByHandle("alice");
       expect(data!.password.history).toEqual(newHistory);
@@ -199,7 +216,7 @@ describe("UsersStoreAtscriptDb", () => {
 
     it("returns false for unknown user", async () => {
       const result = await store.update("nobody", {
-        set: { account: { active: true } } as any,
+        set: { account: { active: true } },
       });
       expect(result).toBe(false);
     });
@@ -354,7 +371,7 @@ describe("UsersStoreAtscriptDb", () => {
       await store.withCas("test-id-1", (user) => {
         calls++;
         expect(user.version).toBe(0);
-        return { set: { account: { active: true } } as any };
+        return { set: { account: { active: true } } };
       });
       expect(calls).toBe(1);
       const after = await store.findByHandle("alice");
@@ -371,7 +388,7 @@ describe("UsersStoreAtscriptDb", () => {
 
     it("withCas: throws NOT_FOUND when the user does not exist", async () => {
       try {
-        await store.withCas("ghost", () => ({ set: { account: { active: true } } as any }));
+        await store.withCas("ghost", () => ({ set: { account: { active: true } } }));
         expect.unreachable();
       } catch (e) {
         expect((e as UserAuthError).type).toBe("NOT_FOUND");
@@ -404,7 +421,7 @@ describe("UsersStoreAtscriptDb", () => {
       try {
         await failStore.withCas("test-id-1", () => {
           calls++;
-          return { set: { account: { active: true } } as any };
+          return { set: { account: { active: true } } };
         });
         expect.unreachable();
       } catch (e) {

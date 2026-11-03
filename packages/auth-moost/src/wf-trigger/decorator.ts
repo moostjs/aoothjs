@@ -1,4 +1,3 @@
-import type { WfOutletTokenConfig } from "@moostjs/event-wf";
 import {
   defineAfterInterceptor,
   Intercept,
@@ -6,18 +5,9 @@ import {
   useControllerContext,
 } from "moost";
 
-import { WfTriggerProvider } from "./provider";
+import { WfTriggerProvider, type WfTriggerOpts } from "./provider";
 
-export interface WfTriggerOpts {
-  /**
-   * Workflow ids this trigger may START and RESUME (a leading `/` is ignored).
-   * Omitted = unrestricted; `[]` = deny every workflow. A state token minted
-   * for a workflow outside the list is refused with 403 and is not consumed.
-   */
-  allow?: string[];
-  /** Per-endpoint token wire override. Defaults to the provider's wire (`{read:['body','query','cookie'], write:'body', name:'wfs'}`). */
-  token?: WfOutletTokenConfig;
-}
+export type { WfTriggerOpts };
 
 /**
  * Method decorator that turns a handler into a workflow trigger.
@@ -26,6 +16,11 @@ export interface WfTriggerOpts {
  * `WfTriggerProvider.handle()` when the handler returns `undefined`. Subclasses
  * that need to short-circuit (e.g. emit a custom error response) just return a
  * non-undefined value from the overridden handler and the trigger is skipped.
+ *
+ * `opts` also takes the workflow-trigger hooks (`around`, `beforePersist`,
+ * `renderEnvelope`, `restoreOnError`, `maxRestores` — see `WfTriggerHooks`);
+ * each one set here replaces the provider's `triggerHooks()` hook of the
+ * same name for this route.
  *
  * The single `useControllerContext().instantiate(...)` call is the one
  * documented escape hatch: interceptors are functions, not classes, so there's

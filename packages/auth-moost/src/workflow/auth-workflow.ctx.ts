@@ -794,6 +794,12 @@ export interface AuthWfCtx {
    */
   passwordStamp?: number;
   /**
+   * `password.lastChanged` when a password form was first reached; a replay
+   * after the password changed answers 410 `PASSWORD_CHANGED_SIGN_IN_AGAIN`.
+   * Cleared once the password is stored. Server-only flow control.
+   */
+  passwordFormStamp?: number;
+  /**
    * Idempotency latch for the single `record-login` funnel step. Set true once
    * a login has been stamped this run — by the `credentials` step (the password
    * path stamps eagerly via `users.login()`) or by `record-login` itself — so

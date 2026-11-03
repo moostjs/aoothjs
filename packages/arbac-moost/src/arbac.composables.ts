@@ -3,7 +3,12 @@ import type { EventContext } from "@wooksjs/event-core";
 import { current, key } from "@wooksjs/event-core";
 import { useControllerContext } from "moost";
 
-import { arbacIdsFromMeta, evaluateArbac, tagScopesOwner } from "./arbac.evaluate";
+import {
+  arbacIdsFromMeta,
+  evaluateArbac,
+  loadCurrentPrincipal,
+  tagScopesOwner,
+} from "./arbac.evaluate";
 import type { TArbacMeta } from "./arbac.mate";
 import type { VisibilityTableSource } from "./db/visibility";
 
@@ -47,6 +52,34 @@ export interface ArbacEvaluateOptions {
   table?: VisibilityTableSource;
 }
 
+/** The current user as ARBAC sees it — what `useArbac().principal()` returns. */
+export interface ArbacPrincipal<TUserAttrs extends object = object> {
+  /** The user id the `ArbacUserProvider` resolved for this event. */
+  userId: string;
+  /**
+   * The roles the user HOLDS (`ArbacUserProvider.getRoles`), before
+   * credential attenuation. Don't authorize on it — an attenuated credential
+   * may act with fewer roles; use {@link effectiveRoles} or `evaluate()`.
+   */
+  roles: string[];
+  /**
+   * The roles this request acts with: {@link roles} narrowed by the
+   * credential's attenuation (`roles ∩ attenuation.roles`; all held roles when
+   * the attenuation names none). A claimed role the user does not hold is
+   * never included, even with `allowUnheldRoles` — that "view as" mode only
+   * ever narrows through `evaluate()`. Use this for role checks in app code.
+   */
+  effectiveRoles: string[];
+  /** The user's attributes (`ArbacUserProvider.getAttrs`), loaded on the first call. */
+  attrs: () => Promise<TUserAttrs>;
+  /**
+   * The credential's restrict-only attenuation
+   * (`ArbacUserProvider.getAttenuation`), when it narrows the user's
+   * authority; absent otherwise.
+   */
+  attenuation?: { roles?: string[]; attrs?: Record<string, unknown>; allowUnheldRoles?: boolean };
+}
+
 interface ArbacBindings {
   getScopes: <TScope extends object>() => TScope[] | undefined;
   setScopes: <TScope extends object>(scope: TScope[] | undefined) => void;
@@ -69,6 +102,14 @@ interface ArbacBindings {
   evaluateOrThrow: <TScope extends object>(
     opts?: ArbacEvaluateOptions,
   ) => Promise<{ allowed: true; scopes?: TScope[]; userId: string }>;
+  /**
+   * The current principal — user id, held and effective roles, lazy
+   * attributes and credential attenuation — read through the
+   * `ArbacUserProvider`, the same source `evaluate()` uses. Loaded fresh on
+   * every call (like `evaluate()`), so a role change applies immediately.
+   * Decide on `effectiveRoles` (or `evaluate()`), never on `roles`.
+   */
+  principal: <TUserAttrs extends object = object>() => Promise<ArbacPrincipal<TUserAttrs>>;
   resource: string;
   action: string;
   isPublic: boolean;
@@ -158,11 +199,28 @@ export const useArbac = (_ctx?: EventContext): ArbacBindings => {
     return { ...result, allowed: true };
   };
 
+  // TUserAttrs: caller-side type witness, like TScope on `evaluate`.
+  // oxlint-disable-next-line typescript/no-unnecessary-type-parameters
+  const principal = async <TUserAttrs extends object = object>(): Promise<
+    ArbacPrincipal<TUserAttrs>
+  > => {
+    const p = await loadCurrentPrincipal(ctx);
+    const claimed = p.attenuate?.roles;
+    return {
+      userId: p.userId,
+      roles: p.roles,
+      effectiveRoles: claimed ? p.roles.filter((r) => claimed.includes(r)) : p.roles,
+      attrs: () => p.attrs(p.userId) as Promise<TUserAttrs>,
+      ...(p.attenuate && { attenuation: p.attenuate }),
+    };
+  };
+
   return {
     getScopes,
     setScopes,
     evaluate,
     evaluateOrThrow,
+    principal,
     resource,
     action,
     isPublic,

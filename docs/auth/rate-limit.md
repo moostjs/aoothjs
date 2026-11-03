@@ -45,7 +45,7 @@ Each rule may carry its own 429 message after `|`; `check()` also accepts a `def
 | `{{window}}`            | Humanized window: `"5 minutes"`, `"1 hour"`          |
 | `{{delta}}`             | Humanized time until retry: `"4 minutes 32 seconds"` |
 
-The built-in default is `"Too many requests. Please try again in {{delta}}."` Humanization shows at most the two largest units and rounds sub-second values up to `"1 second"`.
+The built-in default is `RATE_LIMIT_MESSAGES.RATE_LIMITED` — `"Too many requests. Please try again in {{delta}}."` Humanization is English, shows at most the two largest units and rounds sub-second values up to `"1 second"`. For other languages, don't template the text: translate the decision's `code` + `params` (below).
 
 ## `check()` and the decision
 
@@ -55,16 +55,18 @@ const decision = await limiter.check(scope, subject, rules, { defaultMessage });
 
 `RateLimitDecision` carries everything a transport needs:
 
-| Field          | Meaning                                                                                  |
-| -------------- | ---------------------------------------------------------------------------------------- |
-| `allowed`      | `false` once any rule's count exceeds its limit                                          |
-| `limit`        | Limit of the **governing rule** — the violated one, else the lowest-remaining one        |
-| `remaining`    | Remaining budget of the governing rule                                                   |
-| `resetAt`      | ms epoch when the governing window resets                                                |
-| `resetAfterMs` | ms until reset, **measured with the limiter's own clock** — derive header math from this |
-| `retryAfterMs` | Present when rejected: ms until the governing window frees capacity                      |
-| `message`      | Present when rejected: rendered from the violated rule's template                        |
-| `policies`     | Every evaluated (normalized) rule — feeds the `RateLimit-Policy` header                  |
+| Field          | Meaning                                                                                                                                                                                                                                |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `allowed`      | `false` once any rule's count exceeds its limit                                                                                                                                                                                        |
+| `limit`        | Limit of the **governing rule** — the violated one, else the lowest-remaining one                                                                                                                                                      |
+| `remaining`    | Remaining budget of the governing rule                                                                                                                                                                                                 |
+| `resetAt`      | ms epoch when the governing window resets                                                                                                                                                                                              |
+| `resetAfterMs` | ms until reset, **measured with the limiter's own clock** — derive header math from this                                                                                                                                               |
+| `retryAfterMs` | Present when rejected: ms until the governing window frees capacity                                                                                                                                                                    |
+| `message`      | Present when rejected: rendered from the violated rule's template                                                                                                                                                                      |
+| `code`         | Present when rejected: `"RATE_LIMITED"` — the key to translate by                                                                                                                                                                      |
+| `params`       | Present when rejected: `{ policy, limit, window, retryAfter }` — `policy` is the `scope` passed to `check()`; the rest come from the violated rule — `window` and `retryAfter` in **seconds** (`retryAfter` = the `Retry-After` value) |
+| `policies`     | Every evaluated (normalized) rule — feeds the `RateLimit-Policy` header                                                                                                                                                                |
 
 When several rules are violated at once, the governing rule is the one whose window frees capacity **last** — a shorter hint would invite retries that are guaranteed to be rejected. When all pass, it's the rule with the lowest `remaining` (the most restrictive one), so headers always describe the tightest budget.
 

@@ -90,7 +90,7 @@ export interface ArbacTarget {
   table?: VisibilityTableSource;
 }
 
-interface Principal {
+export interface Principal {
   userId: string;
   roles: string[];
   attenuate?: { roles?: string[]; attrs?: Record<string, unknown>; allowUnheldRoles?: boolean };
@@ -130,6 +130,12 @@ const arbacDeps = cachedBy((_controller: object | undefined, ctx: EventContext) 
     useControllerContext(ctx).instantiate(MoostArbac),
   ]),
 );
+
+/** Load the current principal through the controller's user provider (fresh, no memo). */
+export async function loadCurrentPrincipal(ctx: EventContext): Promise<Principal> {
+  const [user] = await arbacDeps(useControllerContext(ctx).getController(), ctx);
+  return loadPrincipal(user);
+}
 
 // Per-event principal memo — only the DB layer opts in, and only on HTTP
 // events: a WF event spans steps whose principal may change, so neither the

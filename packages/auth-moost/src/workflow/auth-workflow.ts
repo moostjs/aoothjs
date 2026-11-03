@@ -77,6 +77,7 @@ import { OAUTH_CSRF_COOKIE, oauthCsrfCookieAttrs, safeEqual } from "../oauth/oau
 import { resolveOAuthRedirect } from "../oauth/oauth-redirect";
 import { AuthorizeRuntime } from "../authz/authorize-runtime";
 import { OAuthRuntime } from "../oauth/oauth-runtime";
+import { userAuthErrorField, userAuthErrorToHttp } from "../user-errors";
 import type {
   AuthWfCtx,
   AuthWfAltCredsPolicy,
@@ -1777,7 +1778,7 @@ export class AuthWorkflow {
       return await op();
     } catch (err) {
       if (err instanceof UserAuthError && err.type === "CAS_EXHAUSTED") {
-        throw new HttpError(409, err.message);
+        throw userAuthErrorToHttp(err);
       }
       throw err;
     }
@@ -3428,6 +3429,7 @@ export class AuthWorkflow {
     // field at whatever an earlier step staged.
     if (copy.heading !== undefined) password.heading = copy.heading;
     if (copy.intro !== undefined) password.intro = copy.intro;
+    const user = await this.refusePasswordFormReplay(ctx);
     const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.setPassword);
     let input: { newPassword: string; confirmPassword: string; consents?: string[] };
     try {
@@ -3441,8 +3443,11 @@ export class AuthWorkflow {
         errors: { confirmPassword: this.msg("PASSWORDS_DO_NOT_MATCH") },
       });
     }
-    // Invite accept: never set a password through a superseded / used link.
-    if (ctx.accept) await this.assertInviteStillOpen(ctx);
+    // Invite accept: never set a password through a used link (a superseded
+    // or cancelled one was already refused when `user` was read).
+    if (ctx.accept && !user?.account?.pendingInvitation) {
+      throw this.httpError(410, "INVITE_ALREADY_ACCEPTED");
+    }
     try {
       await this.users.setPassword(ctx.subject, input.newPassword);
     } catch (err) {
@@ -3457,6 +3462,7 @@ export class AuthWorkflow {
     // login.flow: gates the post-MFA `revoke-sessions` and exempts the run
     // from `check-password-unchanged`. Other flows ignore it.
     ctx.passwordChanged = true;
+    delete ctx.passwordFormStamp;
     // Clear the forced-change flag now that the user has set a fresh
     // password — without this, downstream forms keep seeing the gate as
     // active. Notably `PincodeForm.rememberDevice` is hidden while
@@ -3530,6 +3536,7 @@ export class AuthWorkflow {
   @ArbacAction("self")
   async changePasswordForm(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
     this.requireSubject(ctx);
+    await this.refusePasswordFormReplay(ctx);
     const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.changePassword);
     const input = wf.resolveInput() as {
       currentPassword: string;
@@ -3550,17 +3557,44 @@ export class AuthWorkflow {
       );
     } catch (err) {
       if (err instanceof UserAuthError) {
-        const field =
-          err.type === "INVALID_CREDENTIALS"
-            ? "currentPassword"
-            : err.type === "PASSWORDS_MISMATCH"
-              ? "confirmPassword"
-              : "newPassword";
+        const field = userAuthErrorField(err.type) ?? "newPassword";
         throw this.throwPublic(ctx, wf, { errors: { [field]: err.message } });
       }
       throw err;
     }
+    delete ctx.passwordFormStamp;
     return undefined;
+  }
+
+  /**
+   * Refuse a password form whose account password changed after the form was
+   * first reached: the first visit stamps `password.lastChanged`
+   * (`ctx.passwordFormStamp`); a later visit that finds another value is a
+   * replay of an already-used form — a single-use token put back by the
+   * trigger's `restoreOnError` after a later failure, or a re-submitted
+   * encapsulated token — and answers 410 `PASSWORD_CHANGED_SIGN_IN_AGAIN`
+   * instead of changing the password again. Returns the account row; on an
+   * invite accept it is read through {@link currentInviteRow}, so a cancelled
+   * or superseded invite answers 410. A deleted account returns `null` and is
+   * not checked: the step's own password write then answers it as a form error.
+   */
+  private async refusePasswordFormReplay(
+    ctx: AuthWfCtx & { subject: string },
+  ): Promise<UserCredentials | null> {
+    const user = ctx.accept
+      ? await this.currentInviteRow(ctx)
+      : await this.users.getUser(ctx.subject).catch((err: unknown) => {
+          if (err instanceof UserAuthError && err.type === "NOT_FOUND") return null;
+          throw err;
+        });
+    if (!user) return null;
+    const current = user.password.lastChanged ?? 0;
+    if (ctx.passwordFormStamp === undefined) {
+      ctx.passwordFormStamp = current;
+    } else if (ctx.passwordFormStamp !== current) {
+      throw this.httpError(410, "PASSWORD_CHANGED_SIGN_IN_AGAIN");
+    }
+    return user;
   }
 
   /**
@@ -4493,7 +4527,9 @@ export class AuthWorkflow {
     const input = wf.resolveInput() as { code: string; rememberDevice?: boolean };
     this.requireSubject(ctx);
     try {
-      await this.users.verifyMfa(ctx.subject, input.code, undefined, this.lockoutOverride(ctx));
+      await this.withStoreErrorTranslation(() =>
+        this.users.verifyMfa(ctx.subject, input.code, undefined, this.lockoutOverride(ctx)),
+      );
       (ctx.otp ??= {}).verified = true;
       (ctx.session ??= {}).riskStepUpEvaluated = false;
       if (ctx.deviceTrust?.enabled && ctx.deviceTrust?.optIn) {
@@ -4520,7 +4556,6 @@ export class AuthWorkflow {
           }
           throw this.throwPublic(ctx, wf, { errors: { code: this.msg("INVALID_CODE") } });
         }
-        if (err.type === "CAS_EXHAUSTED") throw new HttpError(409, err.message);
       }
       throw err;
     }

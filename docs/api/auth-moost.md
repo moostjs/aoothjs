@@ -58,8 +58,9 @@ The single unified workflow class. Replaces the former `LoginWorkflow` / `Recove
 @Injectable()
 class WfTriggerProvider {
   constructor(wf: MoostWf, auth: AuthCredential);
-  handle(opts?: { allow?: string[]; token?: WfOutletTokenConfig }): Promise<unknown>; // allow governs start AND resume
+  handle(opts?: WfTriggerOpts): Promise<unknown>; // allow governs start AND resume
   // override seams:
+  protected triggerHooks(): WfTriggerHooks; // default {} — app-wide trigger hooks
   protected storeStrategy(): WfStateStrategy;
   protected wfStateSecret(): string | Buffer;
   protected wfStateEncapsulatedTtlMs(): number | undefined;
@@ -68,6 +69,20 @@ class WfTriggerProvider {
   protected token: WfOutletTokenConfig;
 }
 ```
+
+```ts
+type WfTriggerHooks = Pick<
+  WfOutletTriggerConfig, // from @moostjs/event-wf
+  "around" | "beforePersist" | "renderEnvelope" | "restoreOnError" | "maxRestores"
+>;
+
+interface WfTriggerOpts extends WfTriggerHooks {
+  allow?: string[];
+  token?: WfOutletTokenConfig;
+}
+```
+
+`triggerHooks()` returns the workflow-trigger hooks applied to every trigger request; a hook set in `handle(opts)` / `@WfTrigger(opts)` replaces the provider's hook of the same name. `restoreOnError` is opt-in (default off). See [Workflows — trigger hooks](/moost/workflows#trigger-hooks).
 
 `handle({ allow })` checks the workflow id on **start and resume** (since 0.2): a `wfs` minted for a workflow outside `allow` is refused with 403 before it is consumed. Ids match with or without a leading `/`; omitted `allow` = unrestricted, `allow: []` = deny every workflow. See [Workflows — trigger allow lists](/moost/workflows#trigger-allow-lists-start-and-resume).
 
@@ -235,7 +250,7 @@ interface RateLimitInterceptorOptions {
 }
 ```
 
-Factory returning the enforcement **pair** — a `BEFORE_GUARD` interceptor for `'ip'` / custom-keyed policies and an `AFTER_GUARD` one for named-subject (`'user'` / `'auto'` / `'session'` / …) policies; a route with stacked policies of both kinds is checked by both. Register with a spread: `app.applyGlobalInterceptors(...rateLimitInterceptors(opts))`. HTTP-only; emits `RateLimit-*` (+ `Retry-After` on rejection) and throws `HttpError(429)`. See [Rate Limiting](/moost/rate-limit).
+Factory returning the enforcement **pair** — a `BEFORE_GUARD` interceptor for `'ip'` / custom-keyed policies and an `AFTER_GUARD` one for named-subject (`'user'` / `'auto'` / `'session'` / …) policies; a route with stacked policies of both kinds is checked by both. Register with a spread: `app.applyGlobalInterceptors(...rateLimitInterceptors(opts))`. HTTP-only; emits `RateLimit-*` (+ `Retry-After` on rejection) and throws `HttpError(429)` whose body carries `code: "RATE_LIMITED"` and `params: { policy, limit, window, retryAfter }` (seconds; `policy` = the policy `id`) next to the rendered `message`. See [Rate Limiting](/moost/rate-limit#response-headers-the-full-429-contract).
 
 ### `useRateLimit`
 
@@ -329,6 +344,22 @@ function resolveAoothMessage(
 
 Since 0.2. The code-keyed catalogue of every user-facing `AuthWorkflow` text (English templates with `{name}` placeholders) and the lookup helpers. `renderAoothMessage` fills placeholders (unknown ones are kept); `resolveAoothMessage` applies `messages` (map or resolver; `undefined` from a resolver falls back to English). Pass overrides as `AuthWorkflowOpts.messages`. Code list and usage: [Messages & Localization](/moost/messages).
 
+### `userAuthErrorToHttp` / `userAuthErrorInterceptor`
+
+```ts
+function userAuthErrorToHttp(err: UserAuthError): HttpError<UserAuthErrorBody>;
+const userAuthErrorInterceptor: TInterceptorDef; // CATCH_ERROR priority
+
+interface UserAuthErrorBody {
+  message: string;
+  code: UserAuthErrorType; // the UserAuthError type
+  params?: Record<string, unknown>; // POLICY_VIOLATION: { policies }
+  field?: "currentPassword" | "newPassword" | "confirmPassword";
+}
+```
+
+Map a `UserAuthError` from `UserService` to a coded 4xx `HttpError`; the interceptor answers every `UserAuthError` a handler throws with it (other errors pass through). Status table: [User errors — HTTP mapping](/user/errors#http-mapping).
+
 ### `deriveWfStateSecret`
 
 ```ts
@@ -397,10 +428,10 @@ Attaches the `rateLimitInterceptors(opts)` **pair** via two `@Intercept`s — th
 ### `@WfTrigger`
 
 ```ts
-function WfTrigger(opts?: { allow?: string[]; token?: WfOutletTokenConfig }): MethodDecorator;
+function WfTrigger(opts?: WfTriggerOpts): MethodDecorator;
 ```
 
-Method decorator wrapping `defineAfterInterceptor` at `INTERCEPTOR` priority. When the handler returns `undefined`, the interceptor instantiates `WfTriggerProvider` and replies with `provider.handle(opts)`. `opts.allow` lists the workflow ids the route may start **and resume** (omitted = unrestricted, `[]` = deny all; since 0.2). Return a non-`undefined` value from the handler to short-circuit. `opts.token` overrides the provider's default wire (`WfOutletTokenConfig` from `@moostjs/event-wf`). See [Workflows](/moost/workflows).
+Method decorator wrapping `defineAfterInterceptor` at `INTERCEPTOR` priority. When the handler returns `undefined`, the interceptor instantiates `WfTriggerProvider` and replies with `provider.handle(opts)`. `opts.allow` lists the workflow ids the route may start **and resume** (omitted = unrestricted, `[]` = deny all; since 0.2). Return a non-`undefined` value from the handler to short-circuit. `opts.token` overrides the provider's default wire (`WfOutletTokenConfig` from `@moostjs/event-wf`). The trigger hooks (`around`, `beforePersist`, `renderEnvelope`, `restoreOnError`, `maxRestores`) set here apply to this route only. See [Workflows](/moost/workflows) and [trigger hooks](/moost/workflows#trigger-hooks).
 
 ## REST endpoints
 

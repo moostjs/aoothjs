@@ -29,7 +29,39 @@ export type RateLimitRuleInput =
   | string
   | { limit: number; window: number | string; message?: string };
 
-export const DEFAULT_RATE_LIMIT_MESSAGE = "Too many requests. Please try again in {{delta}}.";
+/** Machine-readable code of a rate-limit rejection (the 429 body's `code`). */
+export type RateLimitErrorCode = "RATE_LIMITED";
+
+/**
+ * Default English message template per rate-limit code. The 429 body carries
+ * the `code` and its {@link RateLimitParams}, so a client or a server-side
+ * error-body hook can translate the rejection without parsing this text.
+ */
+export const RATE_LIMIT_MESSAGES: Readonly<Record<RateLimitErrorCode, string>> = {
+  RATE_LIMITED: "Too many requests. Please try again in {{delta}}.",
+};
+
+/** The built-in 429 message template (`RATE_LIMIT_MESSAGES.RATE_LIMITED`). */
+export const DEFAULT_RATE_LIMIT_MESSAGE = RATE_LIMIT_MESSAGES.RATE_LIMITED;
+
+/**
+ * Values of a rate-limit rejection, sent as the 429 body's `params` next to
+ * its `code`. Durations are in seconds.
+ */
+export type RateLimitParams = {
+  /**
+   * The limited bucket — the `scope` passed to `RateLimiter.check()`; with the
+   * moost interceptor, the policy's `id` (default `<Class>.<method>`, `#<n>`
+   * for stacked policies). Tells rules apart when translating.
+   */
+  policy: string;
+  /** Max requests per window of the violated rule. */
+  limit: number;
+  /** Window length of the violated rule, in seconds. */
+  window: number;
+  /** Seconds until a retry can pass — the same value as the `Retry-After` header. */
+  retryAfter: number;
+};
 
 const DURATION_UNITS: Record<string, number> = {
   ms: 1,

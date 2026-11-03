@@ -97,6 +97,21 @@ describe("RateLimiter", () => {
     expect(builtIn.message).toBe("Too many requests. Please try again in 30 seconds.");
   });
 
+  it("a rejection carries code RATE_LIMITED and the violated rule's params (seconds)", async () => {
+    const clock = fakeClock();
+    const limiter = new RateLimiter({ clock });
+    const allowed = await limiter.check("r", "s", ["2/5m", "10/1h"]);
+    expect(allowed.code).toBeUndefined();
+    expect(allowed.params).toBeUndefined();
+    await limiter.check("r", "s", ["2/5m", "10/1h"]);
+    clock.advance(27_500);
+    const rejected = await limiter.check("r", "s", ["2/5m", "10/1h"]);
+    expect(rejected.allowed).toBe(false);
+    expect(rejected.code).toBe("RATE_LIMITED");
+    // The governing (violated) rule is 2/5m; 27.5s into its window → 272.5s left, rounded up.
+    expect(rejected.params).toEqual({ policy: "r", limit: 2, window: 300, retryAfter: 273 });
+  });
+
   it("reports the lowest-remaining rule as governing when allowed", async () => {
     const limiter = new RateLimiter({ clock: fakeClock() });
     const d = await limiter.check("r", "s", ["2/1s", "100/1h"]);

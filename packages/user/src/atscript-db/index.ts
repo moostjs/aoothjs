@@ -87,22 +87,22 @@ export class UsersStoreAtscriptDb<
 
   async findById(id: string): Promise<(UserCredentials & TUserCustom) | null> {
     const result = await this.table.findOne({ filter: { id } });
-    return result as (UserCredentials & TUserCustom) | null;
+    return result;
   }
 
   async findByHandle(handle: string): Promise<(UserCredentials & TUserCustom) | null> {
     const byUsername = await this.table.findOne({ filter: { username: handle } });
-    if (byUsername) return byUsername as UserCredentials & TUserCustom;
+    if (byUsername) return byUsername;
     for (const field of this.handleFields) {
       const byHandle = await this.table.findOne({ filter: { [field]: handle } });
-      if (byHandle) return byHandle as UserCredentials & TUserCustom;
+      if (byHandle) return byHandle;
     }
     return null;
   }
 
   async findByIdentifier(value: string): Promise<(UserCredentials & TUserCustom) | null> {
     const byId = await this.table.findOne({ filter: { id: value } });
-    if (byId) return byId as UserCredentials & TUserCustom;
+    if (byId) return byId;
     return this.findByHandle(value);
   }
 
@@ -153,8 +153,10 @@ export class UsersStoreAtscriptDb<
     }
   }
 
-  async delete(id: string): Promise<boolean> {
-    const result = await this.table.deleteMany({ id });
+  async delete(id: string, opts?: { expectedVersion?: number }): Promise<boolean> {
+    const filter: Record<string, unknown> = { id };
+    if (opts?.expectedVersion !== undefined) filter.version = opts.expectedVersion;
+    const result = await this.table.deleteMany(filter);
     return result.deletedCount > 0;
   }
 

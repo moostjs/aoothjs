@@ -31,7 +31,8 @@ type UserAuthErrorType =
   | "POLICY_VIOLATION"
   | "PASSWORDS_MISMATCH"
   | "PASSWORD_IN_HISTORY"
-  | "MFA_REQUIRED";
+  | "MFA_REQUIRED"
+  | "CAS_EXHAUSTED";
 ```
 
 The narrowing pattern in handlers:
@@ -55,19 +56,20 @@ try {
 
 ## Full table
 
-| `type`                | Triggered by                                                                                                                                                                     | `details` shape                                                                                                  | Recommended HTTP                       |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
-| `NOT_FOUND`           | `getUser`, `login`, `verifyPassword`, `verifyMfa`, `update`, `activate*`, `deactivate*`, `lock*`, `unlock*`, `deleteUser`, MFA / trusted-device methods when the user is missing | —                                                                                                                | `404 Not Found`                        |
-| `ALREADY_EXISTS`      | `createUser` when the `username` **or** any configured secondary handle field is taken (`UserStoreMemory.create` throws it directly; `UsersStoreAtscriptDb` maps CONFLICT)       | —                                                                                                                | `409 Conflict`                         |
-| `INACTIVE`            | `login`, `verifyMfa` when `account.active === false`                                                                                                                             | —                                                                                                                | `403 Forbidden`                        |
-| `LOCKED`              | `ensureNotLockedOrThrow` in `login` / `verifyMfa` after the auto-unlock check, before password / TOTP verification                                                               | `{ reason: string, lockEnds: number }`                                                                           | `403 Forbidden`                        |
-| `INVALID_CREDENTIALS` | bad password in `login`; bad current password in `changePassword`                                                                                                                | `{ lockEnds: number }` **only** when the failure tripped the lock; otherwise absent                              | `401 Unauthorized`                     |
-| `MFA_INVALID`         | bad TOTP in `verifyMfa`                                                                                                                                                          | `{ lockEnds: number }` **only** when the failure tripped the lock                                                | `401 Unauthorized`                     |
-| `MFA_NOT_CONFIGURED`  | `confirmMfaMethod` / `setDefaultMfaMethod` with an unknown `name`; `verifyMfa` when no confirmed `totp` method exists                                                            | —                                                                                                                | `400 Bad Request` (or `409`)           |
-| `POLICY_VIOLATION`    | failing policy in `changePassword` / `setPassword`                                                                                                                               | `{ policies: { description: string, passed: boolean }[] }` (failure reasons are joined into the error `message`) | `422 Unprocessable Entity`             |
-| `PASSWORDS_MISMATCH`  | `repeatPassword !== newPassword` in `changePassword`                                                                                                                             | —                                                                                                                | `400 Bad Request`                      |
-| `PASSWORD_IN_HISTORY` | new password matches current hash or any `password.history[]` entry                                                                                                              | —                                                                                                                | `400 Bad Request`                      |
-| `MFA_REQUIRED`        | **never thrown by this package**; reserved for higher layers (`@aooth/auth`)                                                                                                     | —                                                                                                                | `401 Unauthorized` with challenge body |
+| `type`                | Triggered by                                                                                                                                                                     | `details` shape                                                                                                  | HTTP ([mapping](#http-mapping)) |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| `NOT_FOUND`           | `getUser`, `login`, `verifyPassword`, `verifyMfa`, `update`, `activate*`, `deactivate*`, `lock*`, `unlock*`, `deleteUser`, MFA / trusted-device methods when the user is missing | —                                                                                                                | `404`                           |
+| `ALREADY_EXISTS`      | `createUser` when the `username` **or** any configured secondary handle field is taken (`UserStoreMemory.create` throws it directly; `UsersStoreAtscriptDb` maps CONFLICT)       | —                                                                                                                | `409`                           |
+| `INACTIVE`            | `login`, `verifyMfa` when `account.active === false`                                                                                                                             | —                                                                                                                | `403`                           |
+| `LOCKED`              | `ensureNotLockedOrThrow` in `login` / `verifyMfa` after the auto-unlock check, before password / TOTP verification                                                               | `{ reason: string, lockEnds: number }`                                                                           | `403`                           |
+| `INVALID_CREDENTIALS` | bad password in `login`; bad current password in `changePassword`                                                                                                                | `{ lockEnds: number }` **only** when the failure tripped the lock; otherwise absent                              | `400`                           |
+| `MFA_INVALID`         | bad TOTP in `verifyMfa`                                                                                                                                                          | `{ lockEnds: number }` **only** when the failure tripped the lock                                                | `400`                           |
+| `MFA_NOT_CONFIGURED`  | `confirmMfaMethod` / `setDefaultMfaMethod` with an unknown `name`; `verifyMfa` when no confirmed `totp` method exists                                                            | —                                                                                                                | `400`                           |
+| `POLICY_VIOLATION`    | failing policy in `changePassword` / `setPassword`                                                                                                                               | `{ policies: { description: string, passed: boolean }[] }` (failure reasons are joined into the error `message`) | `422`                           |
+| `PASSWORDS_MISMATCH`  | `repeatPassword !== newPassword` in `changePassword`                                                                                                                             | —                                                                                                                | `400`                           |
+| `PASSWORD_IN_HISTORY` | new password matches current hash or any `password.history[]` entry                                                                                                              | —                                                                                                                | `400`                           |
+| `MFA_REQUIRED`        | **never thrown by this package**; reserved for higher layers (`@aooth/auth`)                                                                                                     | —                                                                                                                | `403`                           |
+| `CAS_EXHAUSTED`       | a store write that keeps losing its optimistic-concurrency retries (`withCas`)                                                                                                   | —                                                                                                                | `409`                           |
 
 ::: warning `MFA_REQUIRED` is a contract, not a throw site
 `@aooth/user` signals "MFA is needed" via the `mfaRequired: true` field on `LoginResult` — not by throwing. The `MFA_REQUIRED` enum member exists so higher layers (the auth orchestrator, controllers) can throw it when **they** decide the session must complete MFA. Don't expect this package to emit it.
@@ -186,33 +188,55 @@ throw new UserAuthError("PASSWORD_IN_HISTORY", "Password was used recently");
 
 Triggered when the new password matches the current hash or any entry in `password.history[]`. History size is `config.password.historyLength` (default `0` = current-hash only).
 
-## HTTP mapping helper
+## HTTP mapping {#http-mapping}
 
-A reasonable controller-side helper:
+`@aooth/auth-moost` ships the mapping: `userAuthErrorToHttp(err)` turns a `UserAuthError` into an `HttpError` whose body carries `code` (the error `type`), the message and, for password errors, the form `field`; `userAuthErrorInterceptor` applies it to every `UserAuthError` a handler throws.
 
 ```ts
-import { UserAuthError } from "@aooth/user";
+import { userAuthErrorInterceptor } from "@aooth/auth-moost";
+import { UserService } from "@aooth/user";
+import { Body, Post } from "@moostjs/event-http";
+import { Controller, Intercept } from "moost";
 
-const STATUS: Record<UserAuthErrorType, number> = {
-  NOT_FOUND: 404,
-  ALREADY_EXISTS: 409,
-  INACTIVE: 403,
-  LOCKED: 403,
-  INVALID_CREDENTIALS: 401,
-  MFA_INVALID: 401,
-  MFA_NOT_CONFIGURED: 400,
-  POLICY_VIOLATION: 422,
-  PASSWORDS_MISMATCH: 400,
-  PASSWORD_IN_HISTORY: 400,
-  MFA_REQUIRED: 401,
-};
+@Controller("admin/users")
+@Intercept(userAuthErrorInterceptor)
+export class AdminUsersController {
+  constructor(private readonly users: UserService) {}
 
-export function httpStatusFor(err: UserAuthError): number {
-  return STATUS[err.type] ?? 500;
+  @Post("set-password")
+  async setPassword(@Body() body: { id: string; password: string }) {
+    await this.users.setPassword(body.id, body.password); // POLICY_VIOLATION → 422, NOT_FOUND → 404
+    return { ok: true };
+  }
 }
 ```
 
-`@aooth/auth-moost` ships a built-in mapper for this — see the moost integration docs.
+| `type`                               | Status | `field`           | `params`       |
+| ------------------------------------ | ------ | ----------------- | -------------- |
+| `NOT_FOUND`                          | `404`  |                   |                |
+| `ALREADY_EXISTS`, `CAS_EXHAUSTED`    | `409`  |                   |                |
+| `INVALID_CREDENTIALS`                | `400`  | `currentPassword` |                |
+| `PASSWORD_IN_HISTORY`                | `400`  | `newPassword`     |                |
+| `POLICY_VIOLATION`                   | `422`  | `newPassword`     | `{ policies }` |
+| `PASSWORDS_MISMATCH`                 | `400`  | `confirmPassword` |                |
+| `MFA_INVALID`, `MFA_NOT_CONFIGURED`  | `400`  |                   |                |
+| `INACTIVE`, `LOCKED`, `MFA_REQUIRED` | `403`  |                   |                |
+
+```json
+{
+  "statusCode": 422,
+  "error": "Unprocessable Entity",
+  "message": "Password must be at least 12 characters long",
+  "code": "POLICY_VIOLATION",
+  "field": "newPassword",
+  "params": { "policies": [{ "description": "Minimum length 12", "passed": false }] }
+}
+```
+
+- **DO** use it for admin and self-service routes (set / change password, profile updates).
+- **DO** attach the interceptor per controller (`@Intercept(userAuthErrorInterceptor)`) — **DON'T** install it with `app.applyGlobalInterceptors(...)`.
+- **DON'T** use it on a sign-in or recovery endpoint: distinct answers for unknown, inactive and locked accounts (404 / 403 from `login()` / `verifyMfa()`) let a caller enumerate accounts and defeat `lockoutDisclosure: 'uniform'` — the bundled login workflow answers them uniformly. A global install does exactly that to every custom sign-in handler.
+- Wrong passwords and codes map to `400`, not `401`: `createAuthedFetch` answers a `401` with a token refresh and a retry, which would re-submit the wrong value. `details` other than `policies` (e.g. `LOCKED`'s `reason`) are not sent.
 
 ## Detecting `UserAuthError` across module copies
 

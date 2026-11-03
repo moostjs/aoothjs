@@ -215,6 +215,25 @@ describe("rateLimitInterceptors", () => {
     expect(rejected.decision?.allowed).toBe(false);
   });
 
+  it("the 429 body carries code RATE_LIMITED and params { policy, limit, window, retryAfter } (seconds)", async () => {
+    const clock = fakeClock();
+    const app = await prepareTestApp([RlController]);
+    const pair = rateLimitInterceptors({ limiter: new RateLimiter({ clock }) });
+
+    await runChain(app, pair, "RlController", "publicRoute");
+    await runChain(app, pair, "RlController", "publicRoute");
+    clock.advance(15_000);
+    const rejected = await runChain(app, pair, "RlController", "publicRoute");
+    expect(rejected.thrown?.body).toMatchObject({
+      statusCode: 429,
+      code: "RATE_LIMITED",
+      params: { policy: "RlController.publicRoute", limit: 2, window: 60, retryAfter: 45 },
+      message: "Too many requests. Please try again in 45 seconds.",
+    });
+    // `retryAfter` is the Retry-After header's value.
+    expect(rejected.headers["retry-after"]).toBe(String(rejected.thrown?.body.params?.retryAfter));
+  });
+
   it("renders the violated rule's inline message with humanized placeholders", async () => {
     const app = await prepareTestApp([RlController]);
     const pair = rateLimitInterceptors({ limiter: new RateLimiter({ clock: fakeClock() }) });
@@ -281,6 +300,8 @@ describe("rateLimitInterceptors", () => {
       headers: { "x-forwarded-for": "2.2.2.2" },
     });
     expect(sameBucket.thrown?.body.statusCode).toBe(429);
+    // A policy with an explicit `id` names its bucket in the 429 params.
+    expect(sameBucket.thrown?.body.params?.policy).toBe("shared-bucket");
 
     // trustProxy: true — distinct forwarded IPs get distinct budgets.
     const trusted = rateLimitInterceptors({

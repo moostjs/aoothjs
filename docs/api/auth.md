@@ -173,7 +173,8 @@ function renderRateLimitMessage(
   rule: RateLimitRule,
   retryAfterMs: number,
 ): string;
-const DEFAULT_RATE_LIMIT_MESSAGE: string; // 'Too many requests. Please try again in {{delta}}.'
+const RATE_LIMIT_MESSAGES: Readonly<Record<RateLimitErrorCode, string>>; // { RATE_LIMITED: 'Too many requests. Please try again in {{delta}}.' }
+const DEFAULT_RATE_LIMIT_MESSAGE: string; // RATE_LIMIT_MESSAGES.RATE_LIMITED
 ```
 
 The parsing/formatting layer behind the rule grammar and `{{limit}}` / `{{max}}` / `{{window}}` / `{{delta}}` message placeholders. All parsing is eager — invalid rules throw at config time. See [Rate Limiting (Core)](/auth/rate-limit#rules).
@@ -455,11 +456,22 @@ interface RateLimitDecision {
   resetAfterMs: number; // delta under the limiter's own clock — use for header math
   retryAfterMs?: number; // present when !allowed
   message?: string; // present when !allowed — rendered template
+  code?: RateLimitErrorCode; // present when !allowed — "RATE_LIMITED"
+  params?: RateLimitParams; // present when !allowed — the violated rule's values
   policies: RateLimitRule[]; // all evaluated rules (RateLimit-Policy header)
 }
+
+type RateLimitErrorCode = "RATE_LIMITED";
+
+type RateLimitParams = {
+  policy: string; // the checked scope (moost: the policy id)
+  limit: number; // max hits per window of the violated rule
+  window: number; // its window, seconds
+  retryAfter: number; // seconds until a retry can pass (= Retry-After)
+};
 ```
 
-The outcome of one `RateLimiter.check()` — everything a transport needs for headers + 429. See [Rate Limiting (Core)](/auth/rate-limit#check-and-the-decision).
+The outcome of one `RateLimiter.check()` — everything a transport needs for headers + 429; `code` + `params` let a client translate the rejection without parsing `message`. See [Rate Limiting (Core)](/auth/rate-limit#check-and-the-decision).
 
 ### `RateLimitStore`
 

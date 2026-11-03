@@ -1,3 +1,5 @@
+import { expect } from "vite-plus/test";
+
 import {
   type Arbac,
   arbacAuthorizeInterceptor,
@@ -44,7 +46,11 @@ import {
   PENDING_AUTHORIZATION_STORE_TOKEN,
 } from "../authz/authz-tokens";
 import { ConsentStore } from "../consent.store";
-import { deriveWfStateSecret, WfTriggerProvider } from "../wf-trigger/provider";
+import {
+  deriveWfStateSecret,
+  WfTriggerProvider,
+  type WfTriggerHooks,
+} from "../wf-trigger/provider";
 import { AuthWorkflow } from "../workflow/auth-workflow";
 import type { AuthWorkflowOpts } from "../workflow/auth-workflow.opts";
 import {
@@ -77,6 +83,7 @@ export interface CapturedEmail {
 class FlowTriggerProvider extends WfTriggerProvider {
   static store = new WfStateStoreMemory();
   static emails: CapturedEmail[] = [];
+  static hooks: WfTriggerHooks = {};
   constructor(wf: MoostWf, auth: AuthCredential) {
     super(wf, auth);
     const outbox: WfOutlet = {
@@ -99,6 +106,9 @@ class FlowTriggerProvider extends WfTriggerProvider {
   }
   protected override storeStrategy(): WfStateStrategy {
     return new HandleStateStrategy({ store: FlowTriggerProvider.store });
+  }
+  protected override triggerHooks(): WfTriggerHooks {
+    return FlowTriggerProvider.hooks;
   }
 }
 
@@ -125,6 +135,8 @@ export interface PrepareFlowOpts extends AuthOptions {
   credential?: AuthCredential;
   /** Also mount `AuthorizeController` (loopback clients, memory pending/code stores). */
   authorizationServer?: boolean;
+  /** App-wide workflow-trigger hooks (`WfTriggerProvider.triggerHooks()`). */
+  triggerHooks?: WfTriggerHooks;
   /** Wire ARBAC (the authorize interceptor runs on every event, workflow steps included). */
   arbac?: { roles: TArbacRole<object, object>[]; userRoles: Map<string, string[]> };
 }
@@ -160,6 +172,7 @@ export async function prepareFlowApp(opts: PrepareFlowOpts = {}): Promise<Prepar
   clearGlobalWooks();
   FlowTriggerProvider.store = new WfStateStoreMemory();
   FlowTriggerProvider.emails = [];
+  FlowTriggerProvider.hooks = opts.triggerHooks ?? {};
   activeOpts = opts.workflowOpts ?? {};
   const {
     workflowOpts: _w,
@@ -169,6 +182,7 @@ export async function prepareFlowApp(opts: PrepareFlowOpts = {}): Promise<Prepar
     arbac: arbacOpts,
     credential,
     authorizationServer,
+    triggerHooks: _h,
     ...authOptions
   } = opts;
 
@@ -251,3 +265,26 @@ export async function prepareFlowApp(opts: PrepareFlowOpts = {}): Promise<Prepar
     },
   };
 }
+
+/**
+ * Seed `username` with an initial (must-change) password and sign in: returns
+ * the durable (`store.`) token paused at the set-password form.
+ */
+export async function pauseOnForcedPasswordChange(
+  app: PreparedFlowApp,
+  username = "alice",
+  password = "Password123!",
+): Promise<string> {
+  const userId = await app.seedUser(username, password);
+  await app.users.update(userId, { password: { isInitial: true } } as never);
+  const atForm = await app.login(username, password);
+  expect(atForm.status).toBe(201);
+  expect(atForm.body.inputRequired).toBeDefined();
+  expect(atForm.body.wfs).toMatch(/^store\./);
+  return atForm.body.wfs as string;
+}
+
+/** Valid input for the set-password form (new password `NewPassword456!`). */
+export const setPasswordInput = {
+  formData: { newPassword: "NewPassword456!", confirmPassword: "NewPassword456!", consents: [] },
+};

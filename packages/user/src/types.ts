@@ -61,10 +61,11 @@ export interface AccountData {
   lastLogin: number;
   /**
    * True while the user record exists from an admin-issued invite but the
-   * invitee has not yet accepted (set password + activate). Used by
-   * `InviteWorkflow` to gate the accept tail, reject duplicate invites, and
-   * power `auth/invite/resend` / `auth/invite/cancel`. Absent / `false` once
-   * the invite has been accepted.
+   * invitee has not yet accepted (set password + activate). The invite
+   * workflow uses it to gate the accept tail and to detect re-invites
+   * (`'reuse'` refreshes the pending row and sends a new link);
+   * `UserService.revokeInvitation()` deletes only rows that still have it.
+   * Absent / `false` once the invite has been accepted.
    */
   pendingInvitation?: boolean;
   /** Id of the user who issued the pending invite (written by the invite flow). */

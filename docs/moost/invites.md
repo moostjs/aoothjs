@@ -119,6 +119,40 @@ protected override duplicateInviteCheck(input: {
 
 Without such an override, a `'reuse'` that crosses issuers logs a one-time warning.
 
+## Revoking an invite {#revoking-an-invite}
+
+`UserService.revokeInvitation(userId)` cancels a pending invite: it deletes the still-pending invited account, so the link answers **`410` with `code: "INVITE_CANCELLED"`**. It returns `false` and deletes nothing when the invite was already accepted, or when the account changed while the revoke ran (a re-invite, an acceptance); it throws `UserAuthError("NOT_FOUND")` for an unknown id. The row is claimed in one compare-and-set write, and the delete only goes through while the row's `version` is still the one that write produced — so a racing accept or re-invite either fails or makes the revoke delete nothing. Both bundled stores support this conditional delete; a [custom store](/user/stores) must honour `delete(id, { expectedVersion })` for the same guarantee (one that ignores it leaves a window of one round-trip). The paused workflow state of the link stays in the store until its TTL; opening the link consumes it.
+
+There is no bundled revoke route — mount one on your admin controller, behind the same ARBAC resource as the invite issue phase and your own tenant checks:
+
+```ts
+import { ArbacAction, ArbacResource } from "@aooth/arbac-moost";
+import { userAuthErrorInterceptor } from "@aooth/auth-moost";
+import { UserService } from "@aooth/user";
+import { Body, HttpError, Post } from "@moostjs/event-http";
+import { Controller, Intercept } from "moost";
+
+@Controller("admin/invites")
+@Intercept(userAuthErrorInterceptor) // unknown id → 404 NOT_FOUND
+export class InviteAdminController {
+  constructor(private readonly users: UserService) {}
+
+  @Post("revoke")
+  @ArbacResource("auth.invite")
+  @ArbacAction("revoke")
+  async revoke(@Body() body: { userId: string }): Promise<{ ok: true }> {
+    // Multi-tenant: check the row's `account.invitedBy` / tenant before revoking.
+    if (!(await this.users.revokeInvitation(body.userId))) {
+      throw new HttpError(409, {
+        message: "Invite already accepted",
+        code: "INVITE_ALREADY_ACCEPTED",
+      });
+    }
+    return { ok: true };
+  }
+}
+```
+
 ## Accept phase
 
 The invitee opens the link (an anonymous resume of the same run): already-accepted / cancelled / replaced checks → optional username pick → set password → MFA enrolment when required → consents → the account is activated → finish (auto-login when `autoLoginOnInvite`, default `true`; otherwise a redirect to `loginUrl`). `account.verifiedEmail` is recorded only when the handle looks like an email address and the link was not returned to the issuer.
@@ -142,6 +176,7 @@ The `HttpError` bodies carry the message `code` next to the text, so an SPA can 
 - **DO** run your schema sync after upgrading (`account.invitedBy`, `account.inviteNonce`).
 - **DON'T** replace `WfTriggerProvider.outlets` without keeping `createInviteOutlet()` if you use `'deliver'` or `'return-link'`.
 - **DON'T** build a separate "resend invite" flow — invite the same email again.
+- **DON'T** revoke with `deleteUser` — it deletes an account even when its invite was accepted meanwhile; use `revokeInvitation`.
 
 ## See also
 

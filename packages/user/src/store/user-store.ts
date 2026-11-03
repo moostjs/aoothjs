@@ -52,9 +52,12 @@ export abstract class UserStore<T extends object = object> {
   abstract update(id: string, update: UserStoreUpdate): Promise<boolean>;
   /**
    * Hard-delete the row by `id`. Returns `true` when a row was removed, `false`
-   * when the id was not found.
+   * when the id was not found. With `opts.expectedVersion`, delete only while
+   * the row's `version` still equals it (`false` otherwise) — a custom store
+   * that ignores it makes `UserService.revokeInvitation()` delete
+   * unconditionally after its re-check.
    */
-  abstract delete(id: string): Promise<boolean>;
+  abstract delete(id: string, opts?: { expectedVersion?: number }): Promise<boolean>;
   /**
    * Run a read-modify-write cycle under optimistic concurrency, keyed by `id`.
    * Each attempt re-reads (via `findById`), calls `mutator`, and applies the

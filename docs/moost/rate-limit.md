@@ -202,10 +202,16 @@ On rejection, additionally:
 ```
 HTTP/1.1 429 Too Many Requests
 Retry-After: 272
-{ "statusCode": 429, "message": "Too many login attempts, please wait 4 minutes 32 seconds" }
+{
+  "statusCode": 429,
+  "error": "Too Many Requests",
+  "message": "Too many login attempts, please wait 4 minutes 32 seconds",
+  "code": "RATE_LIMITED",
+  "params": { "policy": "AuthController.triggerWf", "limit": 6, "window": 300, "retryAfter": 272 }
+}
 ```
 
-The body is the standard moost `HttpError` JSON with the rule's rendered [message template](../auth/rate-limit#message-templates). `headers: false` suppresses the `RateLimit-*` fields but keeps `Retry-After` and the 429 body. Legacy `X-RateLimit-*` names are deliberately not emitted.
+The body is the standard moost `HttpError` JSON: `message` is the rule's rendered [message template](../auth/rate-limit#message-templates) (English by default), `code` is always `RATE_LIMITED`, and `params` holds the limited `policy` (its `id`, default `<Class>.<method>` and `#<n>` for stacked policies — set an `id` to give it a stable public name), the violated rule's `limit`, its `window` in seconds and `retryAfter` in seconds (the `Retry-After` value). To localize, translate by `code` + `params` — on the client, or on the server in the HTTP app's error-body hook — instead of parsing `message`. `headers: false` suppresses the `RateLimit-*` fields but keeps `Retry-After` and the 429 body. Legacy `X-RateLimit-*` names are deliberately not emitted.
 
 ## `RateLimited()` — per-controller sugar
 

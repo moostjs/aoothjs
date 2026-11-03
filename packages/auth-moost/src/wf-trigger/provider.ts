@@ -6,6 +6,7 @@ import {
   MoostWf,
   type WfOutlet,
   type WfOutletTokenConfig,
+  type WfOutletTriggerConfig,
   type WfOutletTriggerDeps,
   type WfStateStrategy,
 } from "@moostjs/event-wf";
@@ -15,37 +16,53 @@ import { Injectable } from "moost";
 
 import { createInviteOutlet, reservePendingInviteLink } from "../workflow/invite-outlet";
 
+const HOOK_NAMES = [
+  "around",
+  "beforePersist",
+  "renderEnvelope",
+  "restoreOnError",
+  "maxRestores",
+] as const satisfies ReadonlyArray<keyof WfOutletTriggerConfig>;
+
 /**
- * DI singleton owning the workflow-trigger wiring: state persistence, outlets,
- * and token wire. Consumers subclass to swap the durable state strategy, add
- * outlets (email, SMS, ...), or override `handle()` for per-request dispatch.
+ * Workflow-trigger hooks passed through to the wooks trigger
+ * (`handleWfOutletRequest`). Set them app-wide by overriding
+ * {@link WfTriggerProvider.triggerHooks}, or per route on `@WfTrigger(...)`
+ * (a route's hook replaces the provider's hook of the same name).
  *
- * State is a NAMED STRATEGY REGISTRY rather than a single strategy. Every
- * workflow STARTS on the `encapsulated` strategy (the registry default): state
- * rides inside the SPA-held token, so opening a login form persists ZERO
- * server-side rows before the first validated input — a restart/eviction can no
- * longer 410 GONE an idle form. A later step swaps to the durable `store`
- * strategy (`swapStrategy('store')`) once there is real state worth persisting.
- *
- * Per product decision BOTH registry entries default to `EncapsulatedStateStrategy`
- * — customers override only `storeStrategy()` to supply a real Redis/DB-backed
- * `HandleStateStrategy`, so `swapStrategy('store')` never crashes on the bundled
- * default. The encapsulated secret reuses the auth secret via
- * `AuthCredential.deriveStateKey("wf-state")` (HKDF-derived, stable across
- * restarts) unless `wfStateSecret()` is overridden with a dedicated secret.
- *
- * Outlets default to the HTTP outlet only; production deployments add the ones
- * they need by extending this class and re-binding via `setReplaceRegistry`.
- *
- * Uses `handleAsOutletRequest` (not `MoostWf.handleOutlet`) because the atscript
- * wrapper restores the `finished: true` marker that `<AsWfForm>` keys off — the
- * bare wooks request handler strips it during `useWfFinished()` unwrap.
- *
- * The trigger is a thin pass-through to `handleAsOutletRequest`: the new
- * `@atscript/moost-wf` wire envelope is `{ wfs, input: { action?, formData? } }`,
- * and the wf engine reads action + form data directly from `body.input`. No
- * app-level bridging of `body.action` is needed.
+ * - `around(run)` — wraps everything the request does to workflow state and
+ *   the outside world (allow checks, consume/start/resume, `beforePersist`,
+ *   persist, outlet delivery), e.g. `(run) => db.transaction(run)`. It may
+ *   call `run()` again after a failure; each run starts over from the request.
+ * - `beforePersist(state, pause)` — runs right before a paused state is
+ *   persisted, inside `around`; throw to abort (nothing persisted, no delivery).
+ * - `renderEnvelope(envelope, info)` — maps every body the trigger answers
+ *   with (paused envelopes and finished values), e.g. to translate texts.
+ * - `restoreOnError` — opt-in (default off): when a resume fails after its
+ *   token was consumed, put the pre-step state back under the same token so
+ *   the link can be retried (at most `maxRestores` times, default 3, never
+ *   extending its lifetime). Needs a durable strategy that reports expiries
+ *   (`HandleStateStrategy`); it rolls back everything the step wrote to the
+ *   workflow context. Leave it off for steps with side effects that must not
+ *   run twice. Set provider-wide, it also covers the bundled credential steps
+ *   (set password, recovery reset, MFA enrolment) — prefer enabling it per
+ *   route, or a predicate that accepts only transient store errors. The
+ *   bundled password forms refuse a restored state once the password changed.
  */
+export type WfTriggerHooks = Pick<WfOutletTriggerConfig, (typeof HOOK_NAMES)[number]>;
+
+/** Per-request options of {@link WfTriggerProvider.handle} (what `@WfTrigger(...)` passes). */
+export interface WfTriggerOpts extends WfTriggerHooks {
+  /**
+   * Workflow ids this trigger may START and RESUME (a leading `/` is ignored).
+   * Omitted = unrestricted; `[]` = deny every workflow. A state token minted
+   * for a workflow outside the list is refused with 403 and is not consumed.
+   */
+  allow?: string[];
+  /** Per-endpoint token wire override. Defaults to the provider's wire (`{read:['body','query','cookie'], write:'body', name:'wfs'}`). */
+  token?: WfOutletTokenConfig;
+}
+
 /** Named state-strategy registry: the shape `handleAsOutletRequest` reads off `state`. */
 type StateRegistry = { strategies: Record<string, WfStateStrategy>; default: string };
 
@@ -89,23 +106,80 @@ function notAllowed(id: string): HttpError {
  * Wrap a strategy so a resume is checked against the allow list BEFORE the
  * state is consumed: the state is peeked (`retrieve`), refused with 403 when
  * its workflow is not allowed on this route (the token stays usable on its
- * own route), and only then consumed.
+ * own route), and only then consumed. The optional expiry-reporting methods
+ * (`persistEntry` / `consumeEntry`, which `restoreOnError` needs) are kept
+ * when the wrapped strategy has them.
  */
 function guardStrategy(
   strategy: WfStateStrategy,
   permits: (schemaId: string) => boolean,
 ): WfStateStrategy {
-  return {
+  const check = async (token: string): Promise<void> => {
+    const peeked = await strategy.retrieve(token);
+    if (peeked && !permits(peeked.schemaId)) throw notAllowed(peeked.schemaId);
+  };
+  const guarded: WfStateStrategy = {
     persist: (state, options, overrides) => strategy.persist(state, options, overrides),
     retrieve: (token) => strategy.retrieve(token),
     consume: async (token) => {
-      const peeked = await strategy.retrieve(token);
-      if (peeked && !permits(peeked.schemaId)) throw notAllowed(peeked.schemaId);
+      await check(token);
       return strategy.consume(token);
     },
   };
+  if (strategy.persistEntry) {
+    guarded.persistEntry = (state, options, overrides) =>
+      strategy.persistEntry!(state, options, overrides);
+  }
+  if (strategy.consumeEntry) {
+    guarded.consumeEntry = async (token) => {
+      await check(token);
+      return strategy.consumeEntry!(token);
+    };
+  }
+  return guarded;
 }
 
+/**
+ * Run one trigger attempt. The invite outlet reads the link callback from a
+ * slot reserved on the HTTP event; it is reserved per run, so a run that
+ * `around` retries starts clean.
+ */
+function runTrigger(run: () => Promise<unknown>): Promise<unknown> {
+  reservePendingInviteLink();
+  return run();
+}
+
+/**
+ * DI singleton owning the workflow-trigger wiring: state persistence, outlets,
+ * and token wire. Consumers subclass to swap the durable state strategy, add
+ * outlets (email, SMS, ...), or override `handle()` for per-request dispatch.
+ *
+ * State is a NAMED STRATEGY REGISTRY rather than a single strategy. Every
+ * workflow STARTS on the `encapsulated` strategy (the registry default): state
+ * rides inside the SPA-held token, so opening a login form persists ZERO
+ * server-side rows before the first validated input — a restart/eviction can no
+ * longer 410 GONE an idle form. A later step swaps to the durable `store`
+ * strategy (`swapStrategy('store')`) once there is real state worth persisting.
+ *
+ * Per product decision BOTH registry entries default to `EncapsulatedStateStrategy`
+ * — customers override only `storeStrategy()` to supply a real Redis/DB-backed
+ * `HandleStateStrategy`, so `swapStrategy('store')` never crashes on the bundled
+ * default. The encapsulated secret reuses the auth secret via
+ * `AuthCredential.deriveStateKey("wf-state")` (HKDF-derived, stable across
+ * restarts) unless `wfStateSecret()` is overridden with a dedicated secret.
+ *
+ * Outlets default to the HTTP outlet only; production deployments add the ones
+ * they need by extending this class and re-binding via `setReplaceRegistry`.
+ *
+ * Uses `handleAsOutletRequest` (not `MoostWf.handleOutlet`) because the atscript
+ * wrapper restores the `finished: true` marker that `<AsWfForm>` keys off — the
+ * bare wooks request handler strips it during `useWfFinished()` unwrap.
+ *
+ * The trigger is a thin pass-through to `handleAsOutletRequest`: the new
+ * `@atscript/moost-wf` wire envelope is `{ wfs, input: { action?, formData? } }`,
+ * and the wf engine reads action + form data directly from `body.input`. No
+ * app-level bridging of `body.action` is needed.
+ */
 @Injectable()
 export class WfTriggerProvider {
   /**
@@ -155,6 +229,22 @@ export class WfTriggerProvider {
     });
   }
 
+  /**
+   * App-wide workflow-trigger hooks ({@link WfTriggerHooks}): `around`,
+   * `beforePersist`, `renderEnvelope`, `restoreOnError` / `maxRestores`.
+   * Default: none. A route's `@WfTrigger({...})` option of the same name
+   * replaces the hook returned here. Called once per trigger request.
+   *
+   * ```ts
+   * protected override triggerHooks(): WfTriggerHooks {
+   *   return { around: (run) => db.transaction(run) };
+   * }
+   * ```
+   */
+  protected triggerHooks(): WfTriggerHooks {
+    return {};
+  }
+
   private cachedState?: StateRegistry;
 
   /** Named strategy registry: every wf starts on `encapsulated` (default); a step calls swapStrategy('store') to move durable. Built lazily so subclass overrides (storeStrategy/wfStateSecret) are in effect. */
@@ -172,9 +262,10 @@ export class WfTriggerProvider {
    * Handle one trigger request. `allow` lists the workflow ids this route may
    * START and RESUME (matched without a leading `/`); omitted = unrestricted,
    * `[]` = deny all. A state token minted for a workflow outside the list is
-   * refused with 403 before it is consumed.
+   * refused with 403 before it is consumed. Trigger hooks set in `opts`
+   * replace the {@link triggerHooks} of the same name.
    */
-  async handle(opts: { allow?: string[]; token?: WfOutletTokenConfig } = {}): Promise<unknown> {
+  async handle(opts: WfTriggerOpts = {}): Promise<unknown> {
     const wfApp = this.wf.getWfApp();
     const allowed = opts.allow && new Set(opts.allow.map(normalizeWfId));
     const permits = (schemaId: string) => !allowed || allowed.has(normalizeWfId(schemaId));
@@ -214,11 +305,21 @@ export class WfTriggerProvider {
         });
       },
     };
-    reservePendingInviteLink();
+    // Only the hook options pass through — never other trigger config (state,
+    // outlets, allow…) a subclass might return by mistake.
+    const base = this.triggerHooks();
+    const hooks: Record<string, unknown> = {};
+    for (const name of HOOK_NAMES) {
+      const value = opts[name] ?? base[name];
+      if (value !== undefined) hooks[name] = value;
+    }
+    const around = opts.around ?? base.around;
     // The allow list is enforced here (start + resume, normalised ids, `[]` =
     // deny all), not forwarded to the outlet handler.
     return handleAsOutletRequest(
       {
+        ...hooks,
+        around: around ? (run) => around(() => runTrigger(run)) : runTrigger,
         state: stateConfig,
         outlets: this.outlets,
         token: opts.token ?? this.token,

@@ -119,8 +119,8 @@ export class UserStoreMemory<T extends object = object> extends UserStore<T> {
       // Enforce handle uniqueness on writes that touch a handle column (mirrors
       // the atscript-db store's unique index) — excluding the record being
       // patched, since re-writing its own value is not a collision.
-      this.assertHandlesUnique(update.set as Record<string, unknown>, id);
-      deepMerge(user, update.set as Record<string, unknown>);
+      this.assertHandlesUnique(update.set, id);
+      deepMerge(user, update.set);
     }
     if (update.inc) {
       for (const [path, amount] of Object.entries(update.inc)) {
@@ -131,7 +131,12 @@ export class UserStoreMemory<T extends object = object> extends UserStore<T> {
     return true;
   }
 
-  async delete(id: string): Promise<boolean> {
+  async delete(id: string, opts?: { expectedVersion?: number }): Promise<boolean> {
+    const user = this.store.get(id);
+    if (!user) return false;
+    if (opts?.expectedVersion !== undefined && (user.version ?? 0) !== opts.expectedVersion) {
+      return false;
+    }
     return this.store.delete(id);
   }
 
