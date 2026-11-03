@@ -2,6 +2,18 @@
 
 What to check when you move to a newer aooth release. Each entry lists the changes that can break an app or change what users see, and links to the page that documents the current behaviour. All `@aooth/*` packages share one version number — upgrade them together.
 
+## To 0.2.3
+
+The moost-facing packages peer on `moost` / `@moostjs/*` `^0.7.2`, `@atscript/typescript` `^0.2.4`, `@atscript/moost-wf` `^0.1.164` and `@atscript/db` / `@atscript/moost-db` `^0.1.168` ([Installation — peer dependencies](./installation#per-package-peer-dependencies)). moost 0.7.2 accumulates class-level interceptors, pipes and auth transports along `extends` under `@Inherit()`, so a subclass of an aooth controller keeps the base class's guards and error mapping.
+
+Additive, no action needed:
+
+- **Workflow trigger hooks.** `WfTriggerProvider.triggerHooks()` and `@WfTrigger({ around, beforePersist, renderEnvelope, restoreOnError, maxRestores })` — transactions around a step, pre-persist checks, custom rendering and retryable links. `restoreOnError` is opt-in and also works on allow-listed routes. See [Trigger hooks](/moost/workflows#trigger-hooks).
+- **Coded 429.** A rate-limited request answers `code: "RATE_LIMITED"` with `params` (`limit`, `window` and `retryAfter` in seconds), so clients translate by code instead of parsing `message`. See [Rate Limiting](/moost/rate-limit).
+- **`userAuthErrorToHttp()` / `userAuthErrorInterceptor`** map a `UserAuthError` to a coded 4xx `HttpError`. See [Errors — HTTP mapping](/user/errors#http-mapping).
+- **`UserService.revokeInvitation(id)`** cancels a pending invite, safely against a racing acceptance; the invite link then answers `410`. See [Revoking an invite](/moost/invites#revoking-an-invite).
+- **`useArbac().principal()`** returns the user id, effective roles and attributes. See [`principal()`](/moost/arbac-authorize#principal).
+
 ## To 0.2.2
 
 Dependency update only. The moost-facing packages peer on `moost` / `@moostjs/*` `^0.7.1`, `@atscript/typescript` `^0.2.3`, `@atscript/moost-wf` `^0.1.163` and `@atscript/db` / `@atscript/moost-db` `^0.1.167` ([Installation — peer dependencies](./installation#per-package-peer-dependencies)). Use `@atscript/typescript` 0.2.3: 0.2.2 is not installable from npm. If you added an `@atscript/core>glob` override for the glob advisories, remove it — `@atscript/core` 0.2.3 depends on glob 14.
