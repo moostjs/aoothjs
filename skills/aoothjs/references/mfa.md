@@ -56,7 +56,7 @@ RFC-4226 HOTP at the current TOTP step. `TotpConfig`:
 | `window?` | `number`       | `1` (verify ±1 step) | Verify-only.                              |
 | `clock?`  | `() => number` | —                    | Injectable clock for deterministic tests. |
 
-Exact shape: [docs api](https://aoothjs.dev/api/user#mfa-types).
+Exact shape: [docs api](https://aooth.moost.org/api/user#mfa-types).
 
 Counter is `Math.floor((clock() / 1000) / period)`. Dynamic truncation per RFC 4226 §5.3. Output is zero-padded to `digits`.
 

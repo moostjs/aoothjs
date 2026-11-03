@@ -29,7 +29,7 @@ Signature: `extractResourceActions(roles: TArbacRole<unknown, unknown>[], option
 | `allResources` | `Set<string>`              | —       | —                                     |
 | `allActions`   | `Set<string>`              | —       | —                                     |
 
-Exact shapes: [extractResourceActions](https://aoothjs.dev/api/arbac#extractresourceactions) · [TResourceActionMap](https://aoothjs.dev/api/arbac#tresourceactionmap).
+Exact shapes: [extractResourceActions](https://aooth.moost.org/api/arbac#extractresourceactions) · [TResourceActionMap](https://aooth.moost.org/api/arbac#tresourceactionmap).
 
 **By default it skips any rule whose `resource` OR `action` contains `*`.** Wildcards aren't sound literal types — `com.resource.db.*` doesn't enumerate to a fixed set. Pass `{ includeWildcards: true }` to include them verbatim.
 
@@ -44,7 +44,7 @@ Emits a TypeScript source string from the map. Signature: `generateResourceTypes
 | `resourceActionMap?` | `boolean` | `true`       | Emit the `ResourceActionMap` type.                              |
 | `header?`            | `string`  | —            | Prepended to the file (e.g. `// AUTO-GENERATED — do not edit`). |
 
-Exact shapes: [generateResourceTypes](https://aoothjs.dev/api/arbac#generateresourcetypes) · [TCodegenOptions](https://aoothjs.dev/api/arbac#tcodegenoptions).
+Exact shapes: [generateResourceTypes](https://aooth.moost.org/api/arbac#generateresourcetypes) · [TCodegenOptions](https://aooth.moost.org/api/arbac#tcodegenoptions).
 
 Inline usage:
 

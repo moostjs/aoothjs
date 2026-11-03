@@ -121,7 +121,7 @@ The denylist key for stateless stores is the `jti` (random UUID per token), not 
 
 ## `BuildMagicLinkUrl`
 
-The package does not assume your domain, scheme, or route shape. Consumers supply a builder — `BuildMagicLinkUrl = (kind: AuthEmailKind, token: string, ctx?: { userId?: string }) => string`. Exact shape: [docs api](https://aoothjs.dev/api/auth#buildmagiclinkurl).
+The package does not assume your domain, scheme, or route shape. Consumers supply a builder — `BuildMagicLinkUrl = (kind: AuthEmailKind, token: string, ctx?: { userId?: string }) => string`. Exact shape: [docs api](https://aooth.moost.org/api/auth#buildmagiclinkurl).
 
 ```ts
 // Convention used by `@aooth/auth-moost` + `@atscript/vue-wf`:
@@ -228,7 +228,7 @@ Three invariants in this recipe map to [auth.md](auth.md)'s invariants table:
 
 `EmailSender` is the single-method contract `send(event: AuthEmailEvent): Promise<void>`.
 
-Exact shapes: [AuthEmailKind](https://aoothjs.dev/api/auth#authemailkind) · [AuthEmailEvent](https://aoothjs.dev/api/auth#authemailevent) · [EmailSender](https://aoothjs.dev/api/auth#emailsender).
+Exact shapes: [AuthEmailKind](https://aooth.moost.org/api/auth#authemailkind) · [AuthEmailEvent](https://aooth.moost.org/api/auth#authemailevent) · [EmailSender](https://aooth.moost.org/api/auth#emailsender).
 
 SMS uses the parallel `AuthSmsKind` + `AuthSmsEvent` + `SmsSender` triple. No `url` field on SMS — SMS magic-link delivery isn't supported; use pincode kinds for SMS.
 

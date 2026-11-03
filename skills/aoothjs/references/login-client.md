@@ -54,4 +54,4 @@ import type { AuthorizeOptions, AuthorizeResult, AuthorizeErrorCode } from "@aoo
 
 ## See also
 
-Docs: https://aoothjs.dev/api/login-client. Source: `packages/login-client/src/index.ts`.
+Docs: https://aooth.moost.org/api/login-client. Source: `packages/login-client/src/index.ts`.

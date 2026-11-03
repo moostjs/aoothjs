@@ -131,7 +131,7 @@ Inside `AtscriptArbacUserProvider`, `getRoles(id)` and `getAttrs(id)` both call 
 - Two distinct events do **NOT** share the cache by default — role / attribute revocation takes effect on the **next** request.
 - Need a field that is not `@arbac.attribute` (e.g. `username`)? Pass `{ extraSelect: ["username"] }` as the 3rd constructor arg and read it in `extractAttrs` — never fetch the user a second time in `getAttrs` (since 0.1.78).
 - OPT-IN cross-request cache: `{ cache: new ArbacUserRecordCache({ ttlMs, max? }) }` (from `@aooth/arbac-moost/atscript`, since 0.1.78). Off by default. Staleness ≤ `ttlMs` for changes on other processes or written around `UserService`; wire `userService.onUserWrite((id) => cache.invalidate(id))` for local eviction. Only the record is cached — attenuation + evaluations stay per request; missing users / failed fetches never cached. One cache per provider class.
-- Provider class stays SINGLETON (`@Injectable()` re-applied — moost@0.6.x does not inherit injectable metadata across `extends`).
+- Provider class stays SINGLETON (`@Injectable()` re-applied — moost does not carry class metadata across `extends` without `@Inherit()`).
 - Missing record → `getRoles` returns `[]`, `getAttrs` returns `{}`. **Fail-closed**, not fail-throw.
 
 The `extractRoles` / `extractAttrs` protected seams let you override the extraction shape — e.g. transform inline `roles: 'admin' | 'editor'` (string discriminator) into `['admin']`, or post-process attributes.

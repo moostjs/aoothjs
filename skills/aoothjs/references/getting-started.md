@@ -34,6 +34,7 @@ pnpm add ioredis                                            # Redis
 # Moost integration (production target)
 pnpm add @aooth/auth-moost @aooth/arbac-moost
 pnpm add moost @moostjs/event-http @moostjs/event-wf @atscript/moost-wf
+pnpm add @wooksjs/event-core @wooksjs/event-http @wooksjs/http-body   # moost 0.7 / wooks 0.8 line
 
 # Atscript build
 pnpm add -D unplugin-atscript @atscript/typescript @atscript/core
@@ -98,7 +99,7 @@ No `@aooth/auth` involved — that layer kicks in once you need tokens / cookies
 2. **Replace** `ArbacUserProviderToken` with your concrete provider via `app.setReplaceRegistry(createReplaceRegistry(...))`.
 3. **Apply globally** `authGuardInterceptor(opts)`, `arbacAuthorizeInterceptor`, and `formInputInterceptor()` (the last is from `@atscript/moost-wf`, required for workflow form pauses).
 4. **Register controllers** — `AuthController` ships the `/auth/{logout,refresh,status,trigger}` routes plus `GET /auth/invite/post-redemption`; subclass it to extend the workflow allow-list.
-5. **Subclass the workflow** — one class, `AuthWorkflow`, declares all six flows (`auth/login/flow`, `auth/invite/start`, `auth/recovery/flow`, `auth/signup/flow`, `auth/change-password/flow`, `auth/add-mfa/flow`). Its 4-arg ctor is `(opts: Partial<AuthWorkflowOpts>, users: UserService, auth: AuthCredential, consentStore: ConsentStore)`. Override `protected deliver(payload: AuthDeliveryPayload)` to forward MFA / recovery / enroll pincodes + new-device notices to your sender (there is **no** `audit()` method — wire your own audit sink). Re-apply `@Inherit() @Controller()` and re-declare the ctor on the subclass — moost@0.6.x does NOT inherit decorators / `design:paramtypes` across `extends` (add `@Injectable("FOR_EVENT")` only if the ctor reads request-scoped composables).
+5. **Subclass the workflow** — one class, `AuthWorkflow`, declares all six flows (`auth/login/flow`, `auth/invite/start`, `auth/recovery/flow`, `auth/signup/flow`, `auth/change-password/flow`, `auth/add-mfa/flow`). Its 4-arg ctor is `(opts: Partial<AuthWorkflowOpts>, users: UserService, auth: AuthCredential, consentStore: ConsentStore)`. Override `protected deliver(payload: AuthDeliveryPayload)` to forward MFA / recovery / enroll pincodes + new-device notices to your sender (there is **no** `audit()` method — wire your own audit sink). Re-apply `@Inherit() @Controller()` and re-declare the ctor on the subclass — without `@Inherit()` no base steps register, and DI cannot resolve the base's plain `opts` param (add `@Injectable("FOR_EVENT")` only if the ctor reads request-scoped composables).
 
 See the umbrella SKILL `## Quick start` for a 30-line example.
 

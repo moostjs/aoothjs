@@ -261,7 +261,7 @@ class AppArbacUserProvider extends AtscriptArbacUserProvider<DemoUser> {
 }
 ```
 
-`@Injectable()` must be **re-applied** on the subclass — moost@0.6.x does not inherit injectable metadata across `extends`.
+`@Injectable()` must be **re-applied** on the subclass — moost does not carry class metadata across `extends` without `@Inherit()`, so an undecorated subclass is not injectable.
 
 ::: tip The stable `id` is the auth subject
 `useAuth().getUserId()` returns the surrogate **`id`** — what `AuthWorkflow` passes to `auth.issue(subject)` (the token `sub` claim), not the username. Because that id is the model's `@meta.id`, the provider's identifier chain already matches the subject with no annotation. `db.getTable(DemoUser)` is structurally compatible with `ArbacUserTable<DemoUser>` but typed wider — the cast is required at compile time only.

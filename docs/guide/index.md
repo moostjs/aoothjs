@@ -1,6 +1,6 @@
 # What is aoothjs?
 
-`aoothjs` is the authentication and authorization stack for the [moost](https://moost.org) + [atscript](https://atscript.dev) ecosystem. It ships seven packages that split cleanly across two concerns — **who you are** (authn) and **what you can do** (authz) — and two integration layers — **framework-agnostic core** and **moost glue**.
+`aoothjs` is the authentication and authorization stack for the [moost](https://moost.org) + [atscript](https://atscript.dev) ecosystem. It ships eight packages. Six of them split cleanly across two concerns — **who you are** (authn) and **what you can do** (authz) — and two integration layers — **framework-agnostic core** and **moost glue**.
 
 This page sketches the shape of the stack and points you at the right package for each problem. When you are ready to write code, jump to [Quick Start](./quick-start) or [Installation](./installation).
 
@@ -21,14 +21,16 @@ This page sketches the shape of the stack and points you at the right package fo
 
 ## What each package owns
 
-| Package                                          | Concern       | Owns                                                                                                                                               |
-| ------------------------------------------------ | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`@aooth/user`](../user/)                        | authn         | Credential CRUD, password hashing (scrypt+pepper), password policies, TOTP/MFA primitives, lockout, trusted devices, pluggable `UserStore`.        |
-| [`@aooth/auth`](../auth/)                        | authn         | Issue/validate/refresh/revoke bearer credentials (sessions or JWT), refresh rotation with reuse detection, magic-link tokens, email/SMS contracts. |
-| [`@aooth/arbac-core`](../arbac/core)             | authz         | Zero-dep RBAC evaluator — `TArbacRole`, `Arbac.evaluate()`, deny-wins, wildcard matching, dynamic scopes.                                          |
-| [`@aooth/arbac`](../arbac/)                      | authz         | Fluent `defineRole()` builder, `definePrivilege()` + `allowTable*` factories, scope-merge helpers, type codegen.                                   |
-| [`@aooth/auth-moost`](../moost/)                 | authn / moost | `AuthController`, `authGuardInterceptor`, the unified `AuthWorkflow` (login / invite / recovery), `ConsentStore`, `@Public`, `@UserId`, `useAuth`. |
-| [`@aooth/arbac-moost`](../moost/arbac-authorize) | authz / moost | `arbacAuthorizeInterceptor`, `@ArbacResource` / `@ArbacAction`, `useArbac`, `AtscriptArbacUserProvider`.                                           |
+| Package                                          | Concern        | Owns                                                                                                                                                                         |
+| ------------------------------------------------ | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`@aooth/user`](../user/)                        | authn          | Credential CRUD, password hashing (scrypt+pepper), password policies, TOTP/MFA primitives, lockout, trusted devices, pluggable `UserStore`.                                  |
+| [`@aooth/auth`](../auth/)                        | authn          | Issue/validate/refresh/revoke bearer credentials (sessions or JWT), refresh rotation with reuse detection, magic-link tokens, email/SMS contracts.                           |
+| [`@aooth/arbac-core`](../arbac/core)             | authz          | Zero-dep RBAC evaluator — `TArbacRole`, `Arbac.evaluate()`, deny-wins, wildcard matching, dynamic scopes.                                                                    |
+| [`@aooth/arbac`](../arbac/)                      | authz          | Fluent `defineRole()` builder, `definePrivilege()` + `allowTable*` factories, scope-merge helpers, type codegen.                                                             |
+| [`@aooth/auth-moost`](../moost/)                 | authn / moost  | `AuthController`, `authGuardInterceptor`, the unified `AuthWorkflow` (login / invite / recovery), `ConsentStore`, `@Public`, `@UserId`, `useAuth`.                           |
+| [`@aooth/arbac-moost`](../moost/arbac-authorize) | authz / moost  | `arbacAuthorizeInterceptor`, `@ArbacResource` / `@ArbacAction`, `useArbac`, `AtscriptArbacUserProvider`.                                                                     |
+| [`@aooth/idp`](../idp/)                          | authn          | Federated login core — OAuth2/OIDC provider clients, ID-token verification, PKCE / signed state, account resolution and linking. HTTP wiring comes from `@aooth/auth-moost`. |
+| [`@aooth/login-client`](../api/login-client)     | authn / client | Client side of the [authorization server](../moost/authorization-server) — a CLI signs in through the browser (loopback). Zero dependencies.                                 |
 
 ## How they compose at runtime
 
@@ -100,3 +102,4 @@ See [Using atscript-db Models](./atscript-db).
 - [Installation](./installation) — which packages to install for which use case.
 - [Ecosystem & Packages](./ecosystem) — package map, dependency graph, codegen requirements.
 - [Using atscript-db Models](./atscript-db) — extend the bundled `.as` models for your app.
+- [Upgrading](./upgrading) — breaking and behaviour changes per release.

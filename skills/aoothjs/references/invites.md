@@ -79,4 +79,4 @@ import { InviteForm, InviteChooseUsernameForm } from "@aooth/auth-moost/atscript
 
 ## See also
 
-Docs: https://aoothjs.dev/moost/invites · source: `packages/auth-moost/src/workflow/auth-workflow.ts`
+Docs: https://aooth.moost.org/moost/invites · source: `packages/auth-moost/src/workflow/auth-workflow.ts`

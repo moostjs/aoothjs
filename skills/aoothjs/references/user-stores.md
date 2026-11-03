@@ -27,7 +27,7 @@ Abstract class — every member below is `abstract`:
 | `delete`           | `(id: string) => Promise<boolean>`                           | —                            |
 | `withCas`          | `(id, mutator, opts?) => Promise<void>`                      | Read-modify-write under OCC. |
 
-Exact shape: [docs api](https://aoothjs.dev/api/user#userstore-t-extends-object-object-abstract).
+Exact shape: [docs api](https://aooth.moost.org/api/user#userstore-t-extends-object-object-abstract).
 
 **All reads-by-identity and ALL writes key on the surrogate `id`** (the token subject, `getUserId()`). The three reads differ by resolution:
 
@@ -51,7 +51,7 @@ The secondary handle fields are the consumer-declared, `@db.index.unique` column
 | `set?` | `DeepPartial<UserCredentials>` | unset   | Deep-merge target.    |
 | `inc?` | `Record<string, number>`       | unset   | Dot-path → increment. |
 
-Exact shape: [docs api](https://aoothjs.dev/api/user#store-update-payload).
+Exact shape: [docs api](https://aooth.moost.org/api/user#store-update-payload).
 
 Examples actually emitted by `UserService`:
 
@@ -211,7 +211,7 @@ How it maps the contract:
 
 `UserCredentialsRow<TUserCustom>` is the alias `UserCredentials & TUserCustom`.
 
-Exact shapes: [docs api](https://aoothjs.dev/api/user#authusertable-tusercustom-usercredentialsrow-tusercustom).
+Exact shapes: [docs api](https://aooth.moost.org/api/user#authusertable-tusercustom-usercredentialsrow-tusercustom).
 
 `db.getTable(AppUser)` returns `AtscriptDbTable<Record<string, unknown>>` — TypeScript doesn't know the row shape carries `UserCredentials`. The `as unknown as AuthUserTable<CustomFields>` cast is intentional and load-bearing: it tells the adapter "trust me, the row shape matches `UserCredentials & CustomFields`" — which holds by construction because `AppUser extends AoothUserCredentials`.
 

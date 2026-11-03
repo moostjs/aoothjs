@@ -117,7 +117,7 @@ The zero-config default (`new RateLimiter()` creates one). In-process `Map` with
 
 ### `RateLimitStoreRedis`
 
-Lives on the `@aooth/auth/redis` subpath next to the other Redis adapters, and uses the same structural [`RedisLike`](./stores#redislike-structural-typing) seam — no dependency on a specific Redis client:
+Lives on the `@aooth/auth/redis` subpath next to the other Redis adapters, and uses the same structural [`RedisLike`](./stores#redislike-—-structural-typing) seam — no dependency on a specific Redis client:
 
 ```ts
 import { Redis } from "ioredis";
@@ -132,7 +132,7 @@ const limiter = new RateLimiter({
 Keys are `aooth:rl:<limiter key>` (prefix configurable via `prefix`). Each `hit` is one `INCR`, plus one `PEXPIRE` on the first increment of a window; `get` (for `peek()`) is one `GET`. This is the store to use for any multi-instance deployment — budgets are shared across pods.
 
 ::: tip `RedisLike` requires `pexpire` and `incr`
-The structural interface deliberately exposes `pexpire(key, ttlMs)` (milliseconds) instead of `expire` — a raw seconds-based client would satisfy an `expire` shape while silently setting 1000× TTLs. `ioredis` matches by shape; `node-redis` (`redis@4+`) users wrap the camelCase methods — see [Stores](./stores#redislike-structural-typing) for the adapter snippet.
+The structural interface deliberately exposes `pexpire(key, ttlMs)` (milliseconds) instead of `expire` — a raw seconds-based client would satisfy an `expire` shape while silently setting 1000× TTLs. `ioredis` matches by shape; `node-redis` (`redis@4+`) users wrap the camelCase methods — see [Stores](./stores#redislike-—-structural-typing) for the adapter snippet.
 :::
 
 ## Injectable clock

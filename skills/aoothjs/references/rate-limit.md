@@ -80,4 +80,4 @@ import type {
 
 ## See also
 
-Docs: https://aoothjs.dev/auth/rate-limit · https://aoothjs.dev/moost/rate-limit
+Docs: https://aooth.moost.org/auth/rate-limit · https://aooth.moost.org/moost/rate-limit

@@ -56,4 +56,4 @@ Options: `{ refreshPath?, logoutOn?, onLogout?, onRefreshError?, fetch?, refresh
 | Controllers        | [controllers.md](controllers.md) | `/auth/refresh`, `/auth/status`, `/auth/logout`, auto-derived refresh cookie path |
 | Sessions / devices | [sessions.md](sessions.md)       | `sessionId` token-family, per-device revoke                                       |
 
-Reference docs: https://aoothjs.dev/auth/client. Source: `packages/auth/src/client/index.ts`.
+Reference docs: https://aooth.moost.org/auth/client. Source: `packages/auth/src/client/index.ts`.

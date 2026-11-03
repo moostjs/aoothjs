@@ -109,7 +109,7 @@ p.transferable; // true — it has a serialized form
 | `passwordData?`   | `PasswordData`   | —       | User's current password row (`history` = hashes, `lastChanged`, ...). |
 | `passwordConfig?` | `PasswordConfig` | —       | The resolved password config.                                         |
 
-Exact shapes: [docs api](https://aoothjs.dev/api/user#policy-types).
+Exact shapes: [docs api](https://aooth.moost.org/api/user#policy-types).
 
 `policy.transferable` is `serialized !== undefined`. `normalizePolicies(policies)` is the helper `UserService` uses internally. It wraps every plain `PasswordPolicyDef` in a `PasswordPolicy` instance and leaves existing instances alone.
 
@@ -199,7 +199,7 @@ Backend-only policies are silently left out of `getTransferablePolicies()`. The 
 | `description?`  | `string` | —        | —                                                          |
 | `errorMessage?` | `string` | —        | —                                                          |
 
-Exact shape: [docs api](https://aoothjs.dev/api/user#policy-types).
+Exact shape: [docs api](https://aooth.moost.org/api/user#policy-types).
 
 On the client, compile each rule once and call it with the typed password. The client has no `context`:
 
@@ -220,6 +220,6 @@ The `AuthWorkflow`'s `prepare-password-rules` step puts this list on `ctx.passwo
 | `policies` | `{ description: string, passed: boolean }[]` | —       | One entry per configured policy, in order. |
 | `errors`   | `string[]`                                   | —       | `errorMessage` of each failed policy.      |
 
-Exact shape: [docs api](https://aoothjs.dev/api/user#policy-types).
+Exact shape: [docs api](https://aooth.moost.org/api/user#policy-types).
 
 `changePassword` / `setPassword` throw `UserAuthError("POLICY_VIOLATION", errors.join("; "), { policies })` when `passed === false`. The structured `details.policies` lets a UI render per-rule checkmarks without re-running the policy engine.

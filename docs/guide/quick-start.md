@@ -256,7 +256,7 @@ app.registerControllers(AuthController, AppAuth)
 ```
 
 ::: warning Re-apply decorators + re-declare the constructor
-TypeScript emits fresh `design:paramtypes` per class — without the explicit 4-arg constructor, moost cannot resolve DI on the subclass. `@Inherit()` carries the parent's `@Workflow` / `@WorkflowSchema` / `@Step` / `@Public` metadata; `@Controller()` re-applies the SINGLETON scope (moost@0.6.x does not inherit it). Add `@Injectable("FOR_EVENT")` ONLY if the constructor reads request-scoped composables.
+The base constructor's first parameter is the plain options object, which DI cannot resolve — so the subclass declares its own constructor (DI resolves only the subclass's own parameters) and passes the options to `super(...)`. `@Inherit()` carries the parent's `@Workflow` / `@WorkflowSchema` / `@Step` / `@Public` metadata — without it the subclass serves no workflow steps; `@Controller()` keeps the SINGLETON scope. Add `@Injectable("FOR_EVENT")` ONLY if the constructor reads request-scoped composables.
 :::
 
 ### 7b. ARBAC user provider

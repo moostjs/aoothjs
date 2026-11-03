@@ -56,4 +56,4 @@ import { getAoothUserHandleSpec, type AoothUserHandleSpec } from "@aooth/arbac-m
 
 - [workflows.md](workflows.md) — the recovery / login / add-mfa flows + `deliver(payload)` + the full extension-point set.
 - [mfa.md](mfa.md) — TOTP / MFA-code primitives the enrolled methods are built on.
-- Docs: https://aoothjs.dev/moost/recovery-and-handles — Phone, recovery channels & handle promotion.
+- Docs: https://aooth.moost.org/moost/recovery-and-handles — Phone, recovery channels & handle promotion.

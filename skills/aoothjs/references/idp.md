@@ -129,4 +129,4 @@ import type { FederatedIdentityTable } from "@aooth/user/atscript-db";
 
 ## See also
 
-Docs: https://aoothjs.dev/idp/ · Source: https://github.com/moostjs/aoothjs/tree/main/packages/idp
+Docs: https://aooth.moost.org/idp/ · Source: https://github.com/moostjs/aoothjs/tree/main/packages/idp

@@ -142,9 +142,9 @@ const policy = new CompositeClientPolicy({
   }),
 });
 
-// 4. Subclass the controller to wire the signer + claims resolver. moost@0.6.x does
-//    NOT inherit @Inject / design:paramtypes across `extends`, so re-declare the ctor
-//    with the SAME three tokens and forward to super().
+// 4. Subclass the controller to wire the signer + claims resolver. @Inherit() carries
+//    the routes; a re-declared ctor uses only its own parameter metadata, so repeat
+//    the SAME three tokens and forward to super().
 @Inherit()
 @Controller("auth")
 class OidcAuthorizeController extends AuthorizeController {

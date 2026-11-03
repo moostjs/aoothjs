@@ -30,7 +30,7 @@ Every member deals in `CredentialState & TPayload` (envelope below). Behavioural
 | `touch?`           | `(token: string, at: number) => Promise<void>`                                       | Optional. Set `lastSeenAt = at` on the token if live; no-op otherwise — also when the row was deleted after the caller read it (never re-create). Backs sessions' `trackLastSeen: 'validate'`. Stateless omit (token immutable). See [sessions.md](sessions.md).                                                                       |
 | `listSessions?`    | `(userId: string) => Promise<Array<CredentialState & TPayload & { token: string }>>` | Optional native session grouping — reserved/unused (the orchestrator groups `listForUser` by `sessionId`). See [sessions.md](sessions.md).                                                                                                                                                                                             |
 
-Exact shape: [docs api](https://aoothjs.dev/api/auth#credentialstore-tpayload).
+Exact shape: [docs api](https://aooth.moost.org/api/auth#credentialstore-tpayload).
 
 `CredentialState & TPayload` — fixed envelope intersected with the consumer's typed payload (flat root fields; no `claims` container):
 
@@ -48,7 +48,7 @@ Exact shape: [docs api](https://aoothjs.dev/api/auth#credentialstore-tpayload).
 
 Payload fields ride flat on the same object and round-trip automatically — Memory/Redis serialize the whole state; atscript-db persists the typed columns the consumer added to their model.
 
-Exact shape: [docs api](https://aoothjs.dev/api/auth#credentialstate).
+Exact shape: [docs api](https://aooth.moost.org/api/auth#credentialstate).
 
 ## `DenylistStore` contract
 
@@ -58,7 +58,7 @@ Exact shape: [docs api](https://aoothjs.dev/api/auth#credentialstate).
 | `has`     | `(jti: string) => Promise<boolean>`                 | Returns `false` once `expiresAt` has passed (lazy expiry on memory / TTL-eviction on Redis).                    |
 | `cleanup` | `() => Promise<number>`                             | Returns count of removed entries. No-op on Redis (server self-evicts).                                          |
 
-Exact shape: [docs api](https://aoothjs.dev/api/auth#denyliststore).
+Exact shape: [docs api](https://aooth.moost.org/api/auth#denyliststore).
 
 ## `CredentialStoreMemory`
 
@@ -111,7 +111,7 @@ Defaults: `prefix: 'aooth:cred'`. Token id = `randomUUID()`.
 | `srem`     | `(key: string, ...members: string[]) => Promise<number>`                               | —                                                 |
 | `smembers` | `(key: string) => Promise<string[]>`                                                   | —                                                 |
 
-Exact shape: [docs api](https://aoothjs.dev/api/auth#redislike).
+Exact shape: [docs api](https://aooth.moost.org/api/auth#redislike).
 
 - `ioredis`, `redis@4+`, `@redis/client`, `ioredis-mock`, ad-hoc test doubles — all match by shape.
 - TTL is **always milliseconds via `PX`**, never `EX`. The package does not translate seconds.
@@ -155,7 +155,7 @@ const store = new CredentialStoreAtscriptDb({
 | `deleteMany` | `(filter: Record<string, unknown>) => Promise<{ deletedCount: number }>`                                                  | —                                                                                           |
 | `type?`      | `unknown` (atscript-db `table.type`)                                                                                      | Read once to find the metadata column. Hand-rolled table without it → pass `metadataField`. |
 
-Exact shape: [docs api](https://aoothjs.dev/api/auth#authcredentialtable-tpayload).
+Exact shape: [docs api](https://aooth.moost.org/api/auth#authcredentialtable-tpayload).
 
 `AuthCredentialRow<TPayload>` mirrors the `.as` model field-for-field as a plain TS interface — re-declared so the auth package builds without `@atscript/typescript`. Shapes match by construction.
 

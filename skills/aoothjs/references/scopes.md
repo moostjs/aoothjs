@@ -192,7 +192,7 @@ The "back door" semantic in (1) is intentional: roles that don't care about cont
 
 ## Attenuation conjunction — the restrictive mirror
 
-Everything above UNIONS (additive RBAC: more roles = more access). Credential attenuation (scoped tokens / PATs — see the [attenuation docs page](https://aoothjs.dev/arbac/attenuation)) needs the OPPOSITE: `assigned ∩ presented`. Dedicated combiners, exported from `@aooth/arbac` + `@aooth/arbac-moost`:
+Everything above UNIONS (additive RBAC: more roles = more access). Credential attenuation (scoped tokens / PATs — see the [attenuation docs page](https://aooth.moost.org/arbac/attenuation)) needs the OPPOSITE: `assigned ∩ presented`. Dedicated combiners, exported from `@aooth/arbac` + `@aooth/arbac-moost`:
 
 ```ts
 import { conjoinScopeFilters, intersectControlsPolicy } from "@aooth/arbac";

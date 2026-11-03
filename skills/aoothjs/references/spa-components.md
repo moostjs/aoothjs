@@ -79,4 +79,4 @@ import { AsConsentArray, AsPasswordRules, AsQrCode, AsSsoProviders } from "@atsc
 
 ## See also
 
-Docs: https://aoothjs.dev/moost/spa-components · component APIs: atscript-ui-wf / atscript-ui-forms skills · reference impl: `packages/e2e-demo/src/ui/pages/WfPage.vue`
+Docs: https://aooth.moost.org/moost/spa-components · component APIs: atscript-ui-wf / atscript-ui-forms skills · reference impl: `packages/e2e-demo/src/ui/pages/WfPage.vue`

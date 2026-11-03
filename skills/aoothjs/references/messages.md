@@ -62,4 +62,4 @@ import type { AoothMessageCode, AoothMessageParams, AoothMessages } from "@aooth
 
 ## See also
 
-Docs: https://aoothjs.dev/moost/messages
+Docs: https://aooth.moost.org/moost/messages

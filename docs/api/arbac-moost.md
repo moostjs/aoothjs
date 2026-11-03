@@ -34,7 +34,7 @@ abstract class ArbacUserProvider<TUserAttrs extends object = object> {
 }
 ```
 
-Abstract base. Every concrete subclass MUST re-apply `@Injectable()` — moost@0.6.x does not inherit injectable metadata across `extends`. Bind your concrete class via `setReplaceRegistry([ArbacUserProviderToken, MyProvider])`. See [ARBAC Authorize](/moost/arbac-authorize).
+Abstract base. Every concrete subclass MUST carry its own class decorator — re-apply `@Injectable()` (or put `@Inherit()` on it to take the parent's): moost does not carry class metadata across `extends` on its own, so an undecorated subclass is not injectable. Bind your concrete class via `setReplaceRegistry([ArbacUserProviderToken, MyProvider])`. See [ARBAC Authorize](/moost/arbac-authorize).
 
 ### `ArbacUserProviderToken`
 

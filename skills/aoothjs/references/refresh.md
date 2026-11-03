@@ -24,7 +24,7 @@ Reference for `RefreshConfig`, the three rotation modes, refresh-reuse detection
 | `onRotationReuse?`    | `(state: CredentialState) => void` | unset        | Reuse (theft) hook — see below.                                            |
 | `onRotationGraceHit?` | `(state: CredentialState) => void` | unset        | Benign within-grace re-delivery hook — audit twin of `onRotationReuse`.    |
 
-Exact shape: [docs api](https://aoothjs.dev/api/auth#refreshconfig).
+Exact shape: [docs api](https://aooth.moost.org/api/auth#refreshconfig).
 
 Omitting `refresh` from `AuthCredentialOptions` disables refresh for ordinary mints — but per-mint families ([below](#per-mint-refresh-issueoptionsrefresh)) still mint and redeem without it; an unknown token then throws `INVALID_TOKEN`, not `INVALID_CONFIG`. `refresh.ttl <= 0` throws `INVALID_CONFIG` at construction.
 

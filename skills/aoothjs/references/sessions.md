@@ -62,4 +62,4 @@ import {
 - [refresh.md](refresh.md) — `sessionId`/`metadata`/`claims` carried across rotation; `'refresh'` lastSeen stamping.
 - [auth-stores.md](auth-stores.md) — `touch?` / `listSessions?` store capabilities, `CredentialState.sessionId`/`lastSeenAt`.
 - [controllers.md](controllers.md) — `useAuth()`, `AuthController`, guard/ARBAC split.
-- API: https://aoothjs.dev/auth/sessions · https://aoothjs.dev/moost/sessions
+- API: https://aooth.moost.org/auth/sessions · https://aooth.moost.org/moost/sessions

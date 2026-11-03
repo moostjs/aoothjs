@@ -26,7 +26,7 @@ Reference for the two stateless stores (`CredentialStoreJwt`, `CredentialStoreEn
 | `denylist?`   | `DenylistStore`                     | unset     | Required for `revoke` / `consume` / `update`.  |
 | `clock?`      | `Clock`                             | unset     | Testability.                                   |
 
-Exact shape: [docs api](https://aoothjs.dev/api/auth#credentialstorejwt-tpayload).
+Exact shape: [docs api](https://aooth.moost.org/api/auth#credentialstorejwt-tpayload).
 
 Missing HS `secret` → `AuthError('INVALID_CONFIG')`. Missing asymmetric `privateKey` or `publicKey` → `AuthError('INVALID_CONFIG')`. `clock` propagates from `AuthCredential` only if you wire it explicitly — pass the same instance to both for deterministic tests.
 
@@ -102,7 +102,7 @@ AES-256-GCM. Token = `base64url(iv(12) || ciphertext || authTag(16))` of `JSON.s
 | `denylist?` | `DenylistStore`                  | unset        | —                                                       |
 | `clock?`    | `Clock`                          | unset        | —                                                       |
 
-Exact shape: [docs api](https://aoothjs.dev/api/auth#credentialstoreencapsulated-tpayload).
+Exact shape: [docs api](https://aooth.moost.org/api/auth#credentialstoreencapsulated-tpayload).
 
 KDF rules:
 

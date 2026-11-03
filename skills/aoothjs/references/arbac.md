@@ -139,4 +139,4 @@ import type { TCodegenOptions, TResourceActionMap } from "@aooth/arbac";
 
 ## See also
 
-Reference docs: https://aoothjs.dev/arbac/. Source: https://github.com/moostjs/aoothjs.
+Reference docs: https://aooth.moost.org/arbac/. Source: https://github.com/moostjs/aoothjs.

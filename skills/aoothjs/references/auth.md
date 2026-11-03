@@ -146,4 +146,4 @@ import type { BuildMagicLinkUrl } from "@aooth/auth";
 
 ## See also
 
-Reference docs: https://aoothjs.dev (pre-release — see `TODO.md` in repo). Source: https://github.com/moostjs/aoothjs/tree/main/packages/auth.
+Reference docs: https://aooth.moost.org. Source: https://github.com/moostjs/aoothjs/tree/main/packages/auth.

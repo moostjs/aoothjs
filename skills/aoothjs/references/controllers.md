@@ -41,7 +41,7 @@ Class-decorated `@Controller("auth") @ArbacResource("auth")`. Constructor `(auth
 | `AuthLoginResponse` | `refreshToken?`     | `string` | Same.                                                                                     |
 | `AuthOkResponse`    | `ok`                | `true`   | Literal `true`.                                                                           |
 
-Exact shapes: [docs api](https://aoothjs.dev/api/auth-moost#dtos).
+Exact shapes: [docs api](https://aooth.moost.org/api/auth-moost#dtos).
 
 ## Subclassing `AuthController.triggerWf()`
 

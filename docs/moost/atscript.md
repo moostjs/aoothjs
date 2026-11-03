@@ -267,7 +267,7 @@ userService.onUserWrite((id) => arbacUserCache.invalidate(id));
 
 ## Injectable inheritance gotcha
 
-::: warning `@Injectable()` does NOT inherit across `extends` in moost@0.6.x
+::: warning `@Injectable()` does NOT carry across `extends` on its own
 Every concrete subclass of `AtscriptArbacUserProvider` MUST re-apply `@Injectable()`. Without it, Moost's DI fails to instantiate the provider with an opaque "could not instantiate" error.
 :::
 

@@ -4,18 +4,18 @@
 
 ## Decision table
 
-| Use case                                                                  | aoothjs packages                                                     | Required peer deps                                                                        |
-| ------------------------------------------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| Hash passwords / manage credentials, no HTTP                              | `@aooth/user`                                                        | —                                                                                         |
-| Above + issue/validate JWT tokens, no HTTP                                | `@aooth/user`, `@aooth/auth`                                         | — (`jose` is a regular dep of `@aooth/auth`, auto-installed)                              |
-| Full HTTP auth stack on moost (sessions, login/recovery/invite workflows) | `@aooth/user`, `@aooth/auth`, `@aooth/auth-moost`                    | `moost`, `@moostjs/event-http`, `@moostjs/event-wf`, `@atscript/moost-wf`                 |
-| Above + "Sign in with Google / OIDC" federated login                      | + `@aooth/idp` (on the moost stack)                                  | — (no new peers; `jose` ships with `@aooth/auth`; HTTP wiring via `@aooth/auth-moost`)    |
-| RBAC only — no auth, no HTTP                                              | `@aooth/arbac` (re-exports `arbac-core`)                             | —                                                                                         |
-| RBAC + moost integration                                                  | `@aooth/arbac`, `@aooth/arbac-moost`                                 | `moost`                                                                                   |
-| atscript-first user model + auto-derived ARBAC                            | above + `@aooth/arbac-moost/atscript`                                | `@atscript/db`, `@atscript/typescript`, `unplugin-atscript`                               |
-| Persist users + tokens + workflow state in a database                     | add `@aooth/user/atscript-db` and `@aooth/auth/atscript-db` subpaths | `@atscript/db` and one driver (`@atscript/db-sqlite`, `@atscript/db-postgres`, ...)       |
-| Persist tokens in Redis                                                   | use `@aooth/auth/redis` subpath                                      | a `RedisLike` client (`ioredis`, `redis`, ...)                                            |
-| CLI tool that logs in against an aoothjs authorization server             | `@aooth/login-client` (client side only — zero deps)                 | — (Node built-ins + global `fetch`; server side is `@aooth/auth-moost`'s authorize stack) |
+| Use case                                                                  | aoothjs packages                                                     | Required peer deps                                                                               |
+| ------------------------------------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Hash passwords / manage credentials, no HTTP                              | `@aooth/user`                                                        | —                                                                                                |
+| Above + issue/validate JWT tokens, no HTTP                                | `@aooth/user`, `@aooth/auth`                                         | — (`jose` is a regular dep of `@aooth/auth`, auto-installed)                                     |
+| Full HTTP auth stack on moost (sessions, login/recovery/invite workflows) | `@aooth/user`, `@aooth/auth`, `@aooth/auth-moost`                    | `moost`, `@moostjs/event-http`, `@moostjs/event-wf`, `@wooksjs/event-http`, `@atscript/moost-wf` |
+| Above + "Sign in with Google / OIDC" federated login                      | + `@aooth/idp` (on the moost stack)                                  | — (no new peers; `jose` ships with `@aooth/auth`; HTTP wiring via `@aooth/auth-moost`)           |
+| RBAC only — no auth, no HTTP                                              | `@aooth/arbac` (re-exports `arbac-core`)                             | —                                                                                                |
+| RBAC + moost integration                                                  | `@aooth/arbac`, `@aooth/arbac-moost`                                 | `moost`                                                                                          |
+| atscript-first user model + auto-derived ARBAC                            | above + `@aooth/arbac-moost/atscript`                                | `@atscript/db`, `@atscript/typescript`, `unplugin-atscript`                                      |
+| Persist users + tokens + workflow state in a database                     | add `@aooth/user/atscript-db` and `@aooth/auth/atscript-db` subpaths | `@atscript/db` and one driver (`@atscript/db-sqlite`, `@atscript/db-postgres`, ...)              |
+| Persist tokens in Redis                                                   | use `@aooth/auth/redis` subpath                                      | a `RedisLike` client (`ioredis`, `redis`, ...)                                                   |
+| CLI tool that logs in against an aoothjs authorization server             | `@aooth/login-client` (client side only — zero deps)                 | — (Node built-ins + global `fetch`; server side is `@aooth/auth-moost`'s authorize stack)        |
 
 ## Recommended starting point
 
@@ -26,6 +26,7 @@ A full moost HTTP app with `.as`-modelled users, sqlite-backed credentials/token
 pnpm add @aooth/user @aooth/auth @aooth/auth-moost \
          @aooth/arbac @aooth/arbac-moost \
          moost @moostjs/event-http @moostjs/event-wf \
+         @wooksjs/event-core @wooksjs/event-http @wooksjs/http-body \
          @atscript/db @atscript/db-sqlite @atscript/moost-wf \
          better-sqlite3
 
@@ -45,28 +46,25 @@ pnpm add @aooth/idp
 
 The list below names the `peerDependencies` each package declares (versions resolve from your `package.json`). Anything labelled `optional` is only required when you use the matching subpath.
 
-Every `@atscript/*`, `@moostjs/*`, `@wooksjs/*` and `moost` peer is pinned to the ecosystem version that aooth release was built and tested against — the ranges below are the ones published by aooth 0.1.62. Keep the whole stack on one release line rather than mixing versions across families.
+Every `@atscript/*`, `@moostjs/*`, `@wooksjs/*` and `moost` peer is pinned to the ecosystem version that aooth release was built and tested against — the ranges below are the ones published by aooth 0.2.1: moost 0.7, wooks 0.8, atscript 0.2 (aooth 0.2.0 and earlier peer on moost 0.6 / wooks 0.7). Keep the whole stack on one release line rather than mixing versions across families. Moving between lines: [Upgrading](./upgrading).
 
 ### `@aooth/user`
 
 | Peer                    | Required when                              |
 | ----------------------- | ------------------------------------------ |
-| `@atscript/db ^0.1.129` | optional — using `@aooth/user/atscript-db` |
+| `@atscript/db ^0.1.166` | optional — using `@aooth/user/atscript-db` |
 
 ### `@aooth/auth`
 
 | Peer                    | Required when                              |
 | ----------------------- | ------------------------------------------ |
-| `@atscript/db ^0.1.129` | optional — using `@aooth/auth/atscript-db` |
+| `@atscript/db ^0.1.166` | optional — using `@aooth/auth/atscript-db` |
 
 `jose ^6.2.3` is shipped as a regular dependency (not a peer) since `CredentialStoreJwt` always uses it — no manual install required.
 
 ### `@aooth/idp`
 
-| Peer          | Required when |
-| ------------- | ------------- |
-| `@aooth/user` | always        |
-| `@aooth/auth` | always        |
+No peers — `@aooth/user`, `@aooth/auth` and `jose` are regular dependencies, installed with it.
 
 The framework-agnostic OAuth2/OIDC federated-login core (provider clients, ID-token verification, PKCE/state, `FederatedLoginService.resolveUser`). `jose ^6.2.3` ships as a regular dependency (shared with `@aooth/auth`) — no manual install. It has no HTTP transport of its own: mount it through `@aooth/auth-moost` (`OAuthController` + the federated leg of the `auth/login/flow` workflow). The `(provider, subject) → userId` link store is `FederatedIdentityStoreAtscriptDb` from `@aooth/user/atscript-db`.
 
@@ -80,23 +78,31 @@ Single dependency — `@aooth/arbac-core`. Re-exports everything from it; no add
 
 ### `@aooth/auth-moost`
 
-| Peer                  | Required when                                                                  |
-| --------------------- | ------------------------------------------------------------------------------ |
-| `moost`               | always                                                                         |
-| `@moostjs/event-http` | always                                                                         |
-| `@moostjs/event-wf`   | always — workflows are mandatory for the bundled `AuthController`              |
-| `@atscript/moost-wf`  | always — provides `formInputInterceptor`, `AsWfStore`, the form-input plumbing |
-| `@aooth/auth`         | always                                                                         |
-| `@aooth/user`         | always                                                                         |
+| Peer                          | Required when                                                                  |
+| ----------------------------- | ------------------------------------------------------------------------------ |
+| `moost ^0.7.0`                | always                                                                         |
+| `@moostjs/event-http ^0.7.0`  | always                                                                         |
+| `@moostjs/event-wf ^0.7.0`    | always — workflows are mandatory for the bundled `AuthController`              |
+| `@wooksjs/event-core ^0.8.0`  | always                                                                         |
+| `@wooksjs/event-http ^0.8.0`  | always                                                                         |
+| `@wooksjs/http-body ^0.8.0`   | always                                                                         |
+| `@atscript/moost-wf ^0.1.162` | always — provides `formInputInterceptor`, `AsWfStore`, the form-input plumbing |
+| `@atscript/typescript ^0.2.1` | optional — using the `/atscript` subpath                                       |
+
+`@aooth/auth`, `@aooth/user`, `@aooth/idp` and `@aooth/arbac-moost` are regular dependencies, installed with it.
 
 ### `@aooth/arbac-moost`
 
-| Peer                   | Required when                                                          |
-| ---------------------- | ---------------------------------------------------------------------- |
-| `moost`                | always                                                                 |
-| `@aooth/arbac-core`    | always                                                                 |
-| `@atscript/moost-db`   | optional — using `AsArbacDbController` / `AsArbacDbReadableController` |
-| `@atscript/typescript` | optional — using the `/atscript` subpath (`AtscriptArbacUserProvider`) |
+| Peer                          | Required when                                                          |
+| ----------------------------- | ---------------------------------------------------------------------- |
+| `moost ^0.7.0`                | always                                                                 |
+| `@moostjs/event-http ^0.7.0`  | always                                                                 |
+| `@wooksjs/event-core ^0.8.0`  | always                                                                 |
+| `@atscript/db ^0.1.166`       | optional — using `AsArbacDbController` / `AsArbacDbReadableController` |
+| `@atscript/moost-db ^0.1.166` | optional — same                                                        |
+| `@atscript/typescript ^0.2.1` | optional — using the `/atscript` subpath (`AtscriptArbacUserProvider`) |
+
+`@aooth/arbac`, `@aooth/arbac-core` and `@aooth/user` are regular dependencies, installed with it.
 
 ::: warning Subpath compile-time deps
 `@aooth/arbac-moost/plugin` is **compile-time only** — it goes in `atscript.config.ts` so the `@arbac.*` annotations type-check. It contributes no runtime code.
@@ -171,7 +177,7 @@ Use the subpath import:
 import { CredentialStoreRedis, DenylistStoreRedis } from "@aooth/auth/redis";
 ```
 
-The package declares a structural `RedisLike` interface (9 methods, plus the conditional `SET … XX` form) — `ioredis` matches as-is; other clients need a small wrapper, see [Stores — `RedisLike`](/auth/stores#redislike-structural-typing).
+The package declares a structural `RedisLike` interface (9 methods, plus the conditional `SET … XX` form) — `ioredis` matches as-is; other clients need a small wrapper, see [Stores — `RedisLike`](/auth/stores#redislike-—-structural-typing).
 
 ### Memory (testing only)
 

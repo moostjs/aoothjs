@@ -10,6 +10,7 @@ const guideSidebar = [
       { text: "Installation", link: "/guide/installation" },
       { text: "Ecosystem & Packages", link: "/guide/ecosystem" },
       { text: "Using atscript-db Models", link: "/guide/atscript-db" },
+      { text: "Upgrading", link: "/guide/upgrading" },
     ],
   },
 ];

@@ -75,29 +75,30 @@ Notable edges:
 
 ## Peer dependencies
 
-Every ecosystem peer below is declared `catalog:` in the workspace, so each publishes pinned to the exact version that aooth release was built and tested against — one release line across `@atscript/*`, `@moostjs/*`, `@wooksjs/*` and `moost`. The concrete ranges are those published by aooth 0.1.62.
+Every ecosystem peer below is declared `catalog:` in the workspace, so each publishes pinned to the exact version that aooth release was built and tested against — one release line across `@atscript/*`, `@moostjs/*`, `@wooksjs/*` and `moost`. The concrete ranges are those published by aooth 0.2.1 (moost 0.7 / wooks 0.8 / atscript 0.2 line — aooth 0.2.0 and earlier peer on moost 0.6 / wooks 0.7).
 
 | Package              | peerDep                | Range      | Optional?                                                          |
 | -------------------- | ---------------------- | ---------- | ------------------------------------------------------------------ |
-| `@aooth/user`        | `@atscript/db`         | `^0.1.129` | yes (only for `./atscript-db` subpath)                             |
-| `@aooth/auth`        | `@atscript/db`         | `^0.1.129` | yes (only for `./atscript-db` subpath)                             |
+| `@aooth/user`        | `@atscript/db`         | `^0.1.166` | yes (only for `./atscript-db` subpath)                             |
+| `@aooth/auth`        | `@atscript/db`         | `^0.1.166` | yes (only for `./atscript-db` subpath)                             |
 | `@aooth/auth`        | `jose` (regular dep)   | `^6.2.3`   | n/a — bundled as a regular dependency, not a peer (auto-installed) |
-| `@aooth/auth-moost`  | `moost`                | `^0.6.37`  | no                                                                 |
-| `@aooth/auth-moost`  | `@moostjs/event-http`  | `^0.6.37`  | no                                                                 |
-| `@aooth/auth-moost`  | `@moostjs/event-wf`    | `^0.6.37`  | no                                                                 |
-| `@aooth/auth-moost`  | `@wooksjs/event-core`  | `^0.7.23`  | no                                                                 |
-| `@aooth/auth-moost`  | `@wooksjs/event-http`  | `^0.7.23`  | no                                                                 |
-| `@aooth/auth-moost`  | `@wooksjs/http-body`   | `^0.7.23`  | no                                                                 |
-| `@aooth/auth-moost`  | `@atscript/moost-wf`   | `^0.1.135` | no (`formInputInterceptor`, `AsWfStore`)                           |
-| `@aooth/auth-moost`  | `@atscript/typescript` | `^0.1.93`  | yes (only for `./atscript` subpath)                                |
-| `@aooth/arbac-moost` | `moost`                | `^0.6.37`  | no                                                                 |
-| `@aooth/arbac-moost` | `@moostjs/event-http`  | `^0.6.37`  | no                                                                 |
-| `@aooth/arbac-moost` | `@wooksjs/event-core`  | `^0.7.23`  | no                                                                 |
-| `@aooth/arbac-moost` | `@atscript/db`         | `^0.1.129` | yes (only for `AsArbacDbController` subclass)                      |
-| `@aooth/arbac-moost` | `@atscript/moost-db`   | `^0.1.129` | yes (only for `AsArbacDbController` subclass)                      |
-| `@aooth/arbac-moost` | `@atscript/typescript` | `^0.1.93`  | yes (only for `./atscript` subpath)                                |
+| `@aooth/idp`         | — (regular deps)       | —          | n/a — `@aooth/auth`, `@aooth/user`, `jose` are regular deps        |
+| `@aooth/auth-moost`  | `moost`                | `^0.7.0`   | no                                                                 |
+| `@aooth/auth-moost`  | `@moostjs/event-http`  | `^0.7.0`   | no                                                                 |
+| `@aooth/auth-moost`  | `@moostjs/event-wf`    | `^0.7.0`   | no                                                                 |
+| `@aooth/auth-moost`  | `@wooksjs/event-core`  | `^0.8.0`   | no                                                                 |
+| `@aooth/auth-moost`  | `@wooksjs/event-http`  | `^0.8.0`   | no                                                                 |
+| `@aooth/auth-moost`  | `@wooksjs/http-body`   | `^0.8.0`   | no                                                                 |
+| `@aooth/auth-moost`  | `@atscript/moost-wf`   | `^0.1.162` | no (`formInputInterceptor`, `AsWfStore`)                           |
+| `@aooth/auth-moost`  | `@atscript/typescript` | `^0.2.1`   | yes (only for `./atscript` subpath)                                |
+| `@aooth/arbac-moost` | `moost`                | `^0.7.0`   | no                                                                 |
+| `@aooth/arbac-moost` | `@moostjs/event-http`  | `^0.7.0`   | no                                                                 |
+| `@aooth/arbac-moost` | `@wooksjs/event-core`  | `^0.8.0`   | no                                                                 |
+| `@aooth/arbac-moost` | `@atscript/db`         | `^0.1.166` | yes (only for `AsArbacDbController` subclass)                      |
+| `@aooth/arbac-moost` | `@atscript/moost-db`   | `^0.1.166` | yes (only for `AsArbacDbController` subclass)                      |
+| `@aooth/arbac-moost` | `@atscript/typescript` | `^0.2.1`   | yes (only for `./atscript` subpath)                                |
 
-`@atscript/moost-db` is a security floor for `@aooth/arbac-moost` (`^0.1.134` from 0.1.68; 0.1.67 peers on `^0.1.133`) — see [column-scope security floor](https://aoothjs.dev/moost/db-controllers#column-scope-security-floor).
+Upgrading across these lines: [upgrading.md](./upgrading.md).
 
 ## Build-step requirements
 

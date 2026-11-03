@@ -64,10 +64,10 @@ import { ConsentStore } from "@aooth/auth-moost";
 import { Controller, Inherit } from "moost";
 
 @Inherit() // flows @Workflow / @WorkflowSchema / @Step / @Public metadata
-@Controller() // SINGLETON — re-applied (moost@0.6.x does NOT inherit decorators)
+@Controller() // SINGLETON, like the base
 class MyAuth extends AuthWorkflow {
-  // RE-DECLARE the 4-arg constructor — TS emits design:paramtypes per class,
-  // and without it moost's DI cannot resolve the constructor.
+  // Declare a constructor that supplies the options — DI cannot resolve the
+  // base's plain `opts` parameter; it resolves only this constructor's params.
   constructor(users: UserService, auth: AuthCredential, consentStore: ConsentStore) {
     super({ loginUrl: "/sign-in", totpIssuer: "MyApp" }, users, auth, consentStore);
   }
@@ -86,7 +86,7 @@ app.setReplaceRegistry(createReplaceRegistry([AuthWorkflow, MyAuth]));
 ```
 
 ::: warning Re-apply `@Inherit() @Controller()` and re-declare the constructor
-`@Inherit()` carries `@Workflow` / `@WorkflowSchema` / `@Step` / `@Public` metadata, but moost@0.6.x does **not** inherit `@Injectable`/`@Controller` across `extends`, and TS emits fresh `design:paramtypes` per class. A subclass missing either gets paramtypes `[]` and DI fails. Add `@Injectable("FOR_EVENT")` ONLY if the constructor reads request-scoped composables — `AuthWorkflow` holds no per-event state on `this`, so SINGLETON is correct.
+`@Inherit()` carries `@Workflow` / `@WorkflowSchema` / `@Step` / `@Public` metadata — without it the subclass serves none of the base's steps. The base constructor's first parameter is the plain options object, which DI cannot resolve, and a re-declared constructor uses only its own parameter metadata: declare one that takes the three injectables and passes the options to `super(...)`. Add `@Injectable("FOR_EVENT")` ONLY if the constructor reads request-scoped composables — `AuthWorkflow` holds no per-event state on `this`, so SINGLETON is correct.
 :::
 
 ::: warning Step IDs are registered globally
