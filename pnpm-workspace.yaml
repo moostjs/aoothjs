@@ -6,11 +6,11 @@ packages:
 
 catalog:
   "@atscript/core": ^0.2.4
-  "@atscript/db": ^0.1.168
-  "@atscript/db-client": ^0.1.168
-  "@atscript/db-sql-tools": ^0.1.168
-  "@atscript/db-sqlite": ^0.1.168
-  "@atscript/moost-db": ^0.1.168
+  "@atscript/db": ^0.1.169
+  "@atscript/db-client": ^0.1.169
+  "@atscript/db-sql-tools": ^0.1.169
+  "@atscript/db-sqlite": ^0.1.169
+  "@atscript/moost-db": ^0.1.169
   "@atscript/moost-ui-presets": ^0.1.164
   "@atscript/moost-validator": ^0.2.4
   "@atscript/moost-wf": ^0.1.164
