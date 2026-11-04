@@ -10,7 +10,7 @@ import { DbSpace } from "@atscript/db";
 import { BetterSqlite3Driver, SqliteAdapter } from "@atscript/db-sqlite";
 import { AsDbController, clearDbSpaces, provideDbSpace, TableController } from "@atscript/moost-db";
 import type { MoostHttp } from "@moostjs/event-http";
-import { Body, Delete, Get, Patch, Post, Put, Url } from "@moostjs/event-http";
+import { Body, Delete, Get, Patch, Put, Url } from "@moostjs/event-http";
 import { clearGlobalWooks, defineBeforeInterceptor, Intercept, Param } from "moost";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 
@@ -55,16 +55,15 @@ const insertOpenOnly = defineRole<object, ArbacDbScope>()
   .use(allowTableRead("rb", { scope: () => ({ filter: { status: "open" } }) }))
   .build();
 const full = defineRole<object, ArbacDbScope>().id("full").use(allowTableWrite("rb")).build();
-// The composite table (driven through `PairsController.readBack`): `getOne`
-// only (no `getOneComposite`), and a read grant hiding `secret`.
-const readBackRoute = () => [{ resource: "rb-pairs", action: "readBack" }];
+// The composite table: insert plus `getOne` only (no `getOneComposite`), and
+// insert plus a read grant hiding `secret`.
 const pairsNoComposite = defineRole<object, ArbacDbScope>()
   .id("pairs-no-composite")
-  .use(readBackRoute, () => [{ resource: "rb-pairs", action: "getOne" }])
+  .use(allowTableOps("rb-pairs", ["insert"]), () => [{ resource: "rb-pairs", action: "getOne" }])
   .build();
 const pairsHidden = defineRole<object, ArbacDbScope>()
   .id("pairs-hidden")
-  .use(readBackRoute)
+  .use(allowTableOps("rb-pairs", ["insert"]))
   .use(allowTableRead("rb-pairs", { scope: hideSecret }))
   .build();
 
@@ -266,15 +265,11 @@ class MigratedController extends AsArbacDbController<typeof ScopedDoc> {
 }
 
 // A composite key's read-back is the `GET /one?…` read (`getOneComposite`).
-// SQLite reports a composite-key insert's `insertedId` as the rowid, so the
-// route below drives the read-back with the key object directly.
 @TableController(RbPair, "rb-pairs")
 @ArbacResource("rb-pairs")
 class PairsController extends AsArbacDbController<typeof RbPair> {
-  @Post("read-back")
-  async readBack(@Body() id: Record<string, unknown>) {
-    await this.prepareRequest({ endpoint: "insert" });
-    return { row: (await this._readRepresentation(id)) ?? null };
+  protected returnRepresentation(): boolean {
+    return true;
   }
 }
 
@@ -372,7 +367,7 @@ const visible = (id: number, status = "open") => ({ id, title: `t${id}`, status,
 const get = (path: string) => call("GET", path, undefined, false);
 
 /** The plain insert result: no `row`, no `Preference-Applied`. */
-function expectPlain(res: Res, insertedId: number): void {
+function expectPlain(res: Res, insertedId: unknown): void {
   expect(res.status).toBe(201);
   expect(res.body).toEqual({ insertedId });
   expect(res.applied).toBeNull();
@@ -453,16 +448,21 @@ describe("AsArbacDbController — insert read-back under the caller's read grant
   });
 
   it("a composite id reads back through getOneComposite's grant", async () => {
-    await space.getTable(RbPair).insertOne({ left: 1, right: 2, label: "p", secret: "x" });
     await boot(["pairs-no-composite"]);
-    const denied = await call("POST", "/rb-pairs/read-back", { left: 1, right: 2 }, false);
-    expect(denied.status).toBe(201);
-    expect(denied.body).toEqual({ row: null });
+    const denied = await call("POST", "/rb-pairs", { left: 1, right: 2, label: "p", secret: "x" });
+    expectPlain(denied, { left: 1, right: 2 });
+    expect(
+      await space.getTable(RbPair).findOne({ filter: { left: 1, right: 2 }, controls: {} }),
+    ).toMatchObject({ label: "p", secret: "x" });
 
     await boot(["pairs-hidden"]);
-    const res = await call("POST", "/rb-pairs/read-back", { left: 1, right: 2 }, false);
-    expect(res.body).toEqual({ row: { left: 1, right: 2, label: "p" } });
-    const one = await get("/rb-pairs/one?left=1&right=2");
+    const res = await call("POST", "/rb-pairs", { left: 3, right: 4, label: "q", secret: "y" });
+    expect(res.status).toBe(201);
+    expect(res.applied).toBe("return=representation");
+    expect(res.body.insertedId).toEqual({ left: 3, right: 4 });
+    expect(res.body.row).toEqual({ left: 3, right: 4, label: "q" });
+    const one = await get("/rb-pairs/one?left=3&right=4");
+    expect(one.status).toBe(200);
     expect(one.body).toEqual(res.body.row);
   });
 });
