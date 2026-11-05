@@ -13,6 +13,7 @@ import { useArbac } from "./arbac.composables";
 import { insufficientPrivileges } from "./arbac.evaluate";
 import { ARBAC_DELEGATED_AUTH, getArbacMate } from "./arbac.mate";
 import type { ArbacDelegatedAuth } from "./arbac.mate";
+import { arbacHttpError } from "./messages";
 
 /**
  * ARBAC checks authorization, not authentication, so the transport
@@ -49,7 +50,7 @@ export const arbacAuthorizeInterceptor: TAuthGuardDef = Object.assign(
       // The cause is logged, never echoed: internal error text (a failing
       // user lookup, a scope bug) must not reach an unauthenticated caller.
       logger.warn(String(error));
-      throw new HttpError(401, "Not authorized");
+      throw arbacHttpError(401, "ARBAC_NOT_AUTHORIZED");
     }
   }, TInterceptorPriority.GUARD),
   { __authTransports: {} },

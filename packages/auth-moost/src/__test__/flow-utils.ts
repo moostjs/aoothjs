@@ -23,7 +23,8 @@ import {
   type WfStateStrategy,
   WfStateStoreMemory,
 } from "@moostjs/event-wf";
-import { createHttpApp } from "@wooksjs/event-http";
+import { createEventContext, useLocale } from "@wooksjs/event-core";
+import { createHttpApp, type TWooksHttpOptions, useAcceptLanguage } from "@wooksjs/event-http";
 import {
   clearGlobalWooks,
   Controller,
@@ -33,6 +34,7 @@ import {
   Inherit,
   Injectable,
   Moost,
+  translateErrorBody,
 } from "moost";
 import { Wooks } from "wooks";
 
@@ -67,6 +69,31 @@ import {
  * the SPA does (`{ wfid }` to start, `{ wfs, input }` to resume).
  */
 
+export const quietLogger = { info() {}, warn() {}, error() {}, debug() {}, log() {} };
+
+/** Runs `fn` in a bare event context whose locale is `locale`. */
+export function inLocale<R>(locale: string | undefined, fn: () => R): R {
+  return createEventContext({ logger: quietLogger }, () => {
+    useLocale().set(locale);
+    return fn();
+  });
+}
+
+/** The HTTP app options `MoostHttp` installs when it creates the app itself (`en` / `de`). */
+export const localizedHttpApp: TWooksHttpOptions = {
+  resolveLocale: () => useAcceptLanguage().negotiate(["en", "de"], "en"),
+  transformErrorBody: (body, _error, ctx) => translateErrorBody(body, ctx),
+};
+
+/** A memory wf-state store that also keeps a copy of every state it persists. */
+class RecordingStateStore extends WfStateStoreMemory {
+  readonly saved: unknown[] = [];
+  override set(...args: Parameters<WfStateStoreMemory["set"]>): Promise<void> {
+    this.saved.push(structuredClone(args[1]));
+    return super.set(...args);
+  }
+}
+
 // Per-boot workflow opts, read by the workflow subclass constructor.
 let activeOpts: Partial<AuthWorkflowOpts> = {};
 
@@ -81,7 +108,7 @@ export interface CapturedEmail {
 
 @Injectable()
 class FlowTriggerProvider extends WfTriggerProvider {
-  static store = new WfStateStoreMemory();
+  static store = new RecordingStateStore();
   static emails: CapturedEmail[] = [];
   static hooks: WfTriggerHooks = {};
   constructor(wf: MoostWf, auth: AuthCredential) {
@@ -139,6 +166,8 @@ export interface PrepareFlowOpts extends AuthOptions {
   triggerHooks?: WfTriggerHooks;
   /** Wire ARBAC (the authorize interceptor runs on every event, workflow steps included). */
   arbac?: { roles: TArbacRole<object, object>[]; userRoles: Map<string, string[]> };
+  /** Options of the HTTP app (e.g. `resolveLocale`, `transformErrorBody`). */
+  httpApp?: TWooksHttpOptions;
 }
 
 export type FlowResponse = HarnessResponse;
@@ -147,6 +176,8 @@ export interface PreparedFlowApp {
   moost: Moost;
   /** Emails the workflow paused on (`outletEmail`), oldest first. */
   emails: CapturedEmail[];
+  /** Every workflow state the durable store persisted, oldest first (copies). */
+  savedStates: unknown[];
   users: UserService;
   auth: AuthCredential;
   /** Create an ACTIVE user with a password; returns its id. */
@@ -170,7 +201,7 @@ export async function prepareFlowApp(opts: PrepareFlowOpts = {}): Promise<Prepar
   // MoostWf registers steps on the global Wooks router, where the first
   // registration wins — reset it so each boot runs its own workflow instance.
   clearGlobalWooks();
-  FlowTriggerProvider.store = new WfStateStoreMemory();
+  FlowTriggerProvider.store = new RecordingStateStore();
   FlowTriggerProvider.emails = [];
   FlowTriggerProvider.hooks = opts.triggerHooks ?? {};
   activeOpts = opts.workflowOpts ?? {};
@@ -183,11 +214,12 @@ export async function prepareFlowApp(opts: PrepareFlowOpts = {}): Promise<Prepar
     credential,
     authorizationServer,
     triggerHooks: _h,
+    httpApp,
     ...authOptions
   } = opts;
 
   const moost = new Moost();
-  const http = moost.adapter(new MoostHttp(createHttpApp(undefined, new Wooks())));
+  const http = moost.adapter(new MoostHttp(createHttpApp(httpApp, new Wooks())));
   moost.adapter(new MoostWf());
 
   const auth =
@@ -248,6 +280,7 @@ export async function prepareFlowApp(opts: PrepareFlowOpts = {}): Promise<Prepar
   return {
     moost,
     emails: FlowTriggerProvider.emails,
+    savedStates: FlowTriggerProvider.store.saved,
     users,
     auth,
     seedUser: async (username, password, extras) => {

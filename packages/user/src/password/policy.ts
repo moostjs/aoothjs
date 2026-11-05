@@ -3,6 +3,7 @@ import type {
   PasswordPolicyDef,
   PasswordPolicyEvalFn,
   PasswordPolicyInstance,
+  PasswordPolicyParams,
 } from "../types";
 
 export function normalizePolicies(
@@ -37,8 +38,12 @@ export function definePasswordPolicy<A extends readonly unknown[]>(opts: {
   args?: A;
   description?: string;
   errorMessage?: string;
+  /** Message code of the texts (see {@link PasswordPolicyDef.code}). */
+  code?: string;
+  /** Values of the code's `{name}` placeholders. */
+  params?: PasswordPolicyParams;
 }): PasswordPolicyDef {
-  const { rule, args, description, errorMessage } = opts;
+  const { rule, args, description, errorMessage, code, params } = opts;
   const bound: PasswordPolicyEvalFn = args
     ? (v) => rule(v, ...args)
     : (v) => rule(v, ...([] as unknown as A));
@@ -52,6 +57,8 @@ export function definePasswordPolicy<A extends readonly unknown[]>(opts: {
   }
   if (description !== undefined) def.description = description;
   if (errorMessage !== undefined) def.errorMessage = errorMessage;
+  if (code !== undefined) def.code = code;
+  if (params !== undefined) def.params = params;
   return def;
 }
 
@@ -60,12 +67,16 @@ export class PasswordPolicy implements PasswordPolicyInstance {
   readonly serialized?: string;
   readonly description: string;
   readonly errorMessage: string;
+  readonly code?: string;
+  readonly params?: PasswordPolicyParams;
 
   constructor(config: PasswordPolicyDef) {
     this.rule = config.rule;
     if (config.serialized !== undefined) this.serialized = config.serialized;
     this.description = config.description || "";
     this.errorMessage = config.errorMessage || "";
+    if (config.code !== undefined) this.code = config.code;
+    if (config.params !== undefined) this.params = config.params;
   }
 
   evaluate(password: string, context?: PasswordPolicyContext): boolean | Promise<boolean> {

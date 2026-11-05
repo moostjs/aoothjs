@@ -6,6 +6,7 @@ import {
   type RateLimitParams,
   type RateLimitRule,
   type RateLimitRuleInput,
+  rateLimitParams,
   renderRateLimitMessage,
 } from "./rules";
 import { type RateLimitStore, RateLimitStoreMemory } from "./store";
@@ -161,12 +162,7 @@ export class RateLimiter {
       ...(rejected && {
         retryAfterMs: resetAfterMs,
         code: "RATE_LIMITED" as const,
-        params: {
-          policy: scope,
-          limit: governing.rule.limit,
-          window: governing.rule.window / 1000,
-          retryAfter: Math.ceil(resetAfterMs / 1000),
-        },
+        params: { policy: scope, ...rateLimitParams(governing.rule, resetAfterMs) },
         message: renderRateLimitMessage(
           governing.rule.message ?? opts?.defaultMessage ?? DEFAULT_RATE_LIMIT_MESSAGE,
           governing.rule,

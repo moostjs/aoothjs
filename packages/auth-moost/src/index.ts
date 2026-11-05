@@ -132,6 +132,7 @@ export {
   humanizeUserAgent,
   parseInviteRoles,
   RESERVED_USER_KEYS,
+  type SetPasswordCopy,
   stripReservedUserKeys,
 } from "./workflow/auth-workflow";
 export type { AuthWorkflowOpts, ResolvedAuthWorkflowOpts } from "./workflow/auth-workflow.opts";
@@ -143,6 +144,7 @@ export {
   renderAoothMessage,
   resolveAoothMessage,
 } from "./workflow/auth-messages";
+export { AOOTH_HTTP_MESSAGES, type AoothHttpMessageCode } from "./http-messages";
 export type {
   AuthWfCtx,
   AuthWfCompletionState,

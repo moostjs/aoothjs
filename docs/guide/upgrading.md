@@ -2,6 +2,34 @@
 
 What to check when you move to a newer aooth release. Each entry lists the changes that can break an app or change what users see, and links to the page that documents the current behaviour. All `@aooth/*` packages share one version number — upgrade them together.
 
+## To 0.2.5
+
+The moost-facing packages need `moost` / `@moostjs/*` `^0.7.3` (its translator API), `@wooksjs/*` `^0.8.1` and `@atscript/typescript` `^0.2.6`.
+
+### Localization through the moost translator
+
+aooth's texts now go through moost's translator. Nothing changes until you register one with `setTranslator`; then:
+
+- The auth workflow resolves each text through `AuthWorkflowOpts.messages`, then the translator in the request's locale, then the English template. An existing `messages` override keeps winning.
+- Every 4xx `HttpError` aooth raises carries a `code` and `params` (new catalogues `AOOTH_HTTP_MESSAGES` and `ARBAC_MESSAGES`), and `MoostHttp` translates error bodies by code. With a translator registered, `message` can be in the user's language — branch on `code` in clients and tests, never on `message`.
+- The built-in password policies carry `PP_*` codes and `params` (`PASSWORD_POLICY_MESSAGES`); the set-password forms list their rules and failures in the request's language. `PolicyCheckResult.policies` entries and `POLICY_VIOLATION`'s `params.policies` gain `errorMessage`, `code` and `params` (all optional in the type).
+- Workflow texts that were hard-coded are catalogue codes now — the password screens' headings and intros (`CHANGE_PASSWORD_*`, `SET_PASSWORD_*`), the invite confirmation (`ACCOUNT_CREATED`), pincode and address checks, the OTP disclosure and the manage-MFA results. The English wording is unchanged.
+- Texts are resolved per response: the workflow state keeps codes (or your own text), never a translation, so a flow resumed in another language answers in that language. `WfTriggerProvider` strips the rendered `ctx.public` projection before a paused state is persisted; your own `beforePersist` hook still runs, after the strip. **Changed hooks:** `resolveSetPasswordCopy()` returns `SetPasswordCopy` — by default the codes (`headingCode` / `introCode`) instead of English text; `heading` / `intro` you return are shown as is and win over the codes. `resolveAccept()` no longer returns a default `confirmationMessage` (the confirmation renders `ACCOUNT_CREATED`); a `confirmationMessage` you return is shown as is. An override that read the default text from `super` now gets codes.
+- The rate limiter's default 429 text is `RATE_LIMIT_MESSAGES.RATE_LIMITED` (`@aooth/auth`), now `"Too many requests. Retry after {retryAfter} s."` — plural-safe, with the 429's own `retryAfter` (seconds); it read "Too many requests. Please try again in 4 minutes 32 seconds." before. Rule messages may use `{limit}`, `{window}`, `{retryAfter}` (seconds) besides the `{{…}}` placeholders. Under a translator a rule's own English `message` is replaced by the `RATE_LIMITED` translation.
+- `AuthEmailEvent`, `AuthSmsEvent` and `AuthDeliveryPayload` carry `locale` — copy `payload.locale` across when your `deliver()` builds your own events.
+
+The catalogues are registered with moost's `registerMessages` on import. See [Messages & Localization](/moost/messages).
+
+### ARBAC and two-level aggregates
+
+For atscript-db's two-level aggregates (`$from`) and conditional aggregates:
+
+- A scope may gate `$from` like any boolean control: `controls: { $from: false }` answers 403 `CONTROL_NOT_ALLOWED`.
+- Under a `$groupBy` whitelist the outer level of a two-level aggregate may group by the inner level's columns (its keys and aliases); before 0.2.5 an outer `$groupBy` on an inner alias answered 403. The inner keys still meet the whitelist.
+- `/meta` drops `nestedAggregates` (and `from`) when `$from`, `$groupBy` or `$select` is denied, and `conditionalAggregates` / `distinctFieldLists` when `$groupBy` or `$select` is.
+
+See [DB Controllers — control gates](/moost/db-controllers#control-gates).
+
 ## To 0.2.4
 
 ### Reads inside write handlers answer 403

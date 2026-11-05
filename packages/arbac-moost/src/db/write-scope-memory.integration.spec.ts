@@ -116,6 +116,7 @@ describe("non-transactional WITH CHECK (validated before the write)", () => {
     const res = await send("PATCH", { id: 1, tenant: "b" });
     expect(res.status).toBe(403);
     expect(res.body.message).toBe("Row outside your write scope");
+    expect(res.body.code).toBe("ROW_OUT_OF_SCOPE");
     expect(await doc(1)).toMatchObject({ tenant: "a" });
   });
 

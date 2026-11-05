@@ -95,12 +95,14 @@ p.transferable; // true — it has a serialized form
 
 `PasswordPolicyDef`:
 
-| Field           | Type                   | Default  | Meaning                                                                         |
-| --------------- | ---------------------- | -------- | ------------------------------------------------------------------------------- |
-| `rule`          | `PasswordPolicyEvalFn` | required | Called directly on the server (no sandbox, no eval). Function only.             |
-| `serialized?`   | `string`               | —        | Client copy `(v) => …`, built by `definePasswordPolicy`. Absent = backend-only. |
-| `description?`  | `string`               | —        | —                                                                               |
-| `errorMessage?` | `string`               | —        | —                                                                               |
+| Field           | Type                               | Default  | Meaning                                                                                                  |
+| --------------- | ---------------------------------- | -------- | -------------------------------------------------------------------------------------------------------- |
+| `rule`          | `PasswordPolicyEvalFn`             | required | Called directly on the server (no sandbox, no eval). Function only.                                      |
+| `serialized?`   | `string`                           | —        | Client copy `(v) => …`, built by `definePasswordPolicy`. Absent = backend-only.                          |
+| `description?`  | `string`                           | —        | —                                                                                                        |
+| `errorMessage?` | `string`                           | —        | —                                                                                                        |
+| `code?`         | `string`                           | —        | Message code (since 0.2.5): `errorMessage` translated by `code`, `description` by `${code}_DESCRIPTION`. |
+| `params?`       | `Record<string, string \| number>` | —        | The code's placeholder values (since 0.2.5).                                                             |
 
 `PasswordPolicyEvalFn` is `(password: string, context?: PasswordPolicyContext) => boolean | Promise<boolean>`. `PasswordPolicyContext`:
 
@@ -123,6 +125,8 @@ function definePasswordPolicy<A extends readonly unknown[]>(opts: {
   args?: A;
   description?: string;
   errorMessage?: string;
+  code?: string; // since 0.2.5
+  params?: PasswordPolicyParams; // since 0.2.5
 }): PasswordPolicyDef;
 ```
 
@@ -136,7 +140,7 @@ It builds both tiers from one function:
 
 ## Built-in policy factories
 
-All are built with `definePasswordPolicy`, so they are transferable to the client.
+All are built with `definePasswordPolicy`, so they are transferable to the client. Since 0.2.5 each carries a `PP_*` code + params, English templates in `PASSWORD_POLICY_MESSAGES` — codes and translation: [messages.md](messages.md) #9.
 
 | Factory                               | Rule `(v, arg) => …`                                                      | Description (default args)                       |
 | ------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------ |
@@ -214,11 +218,11 @@ The `AuthWorkflow`'s `prepare-password-rules` step puts this list on `ctx.passwo
 
 `UserService.checkPolicies(password, passwordData?) → Promise<PolicyCheckResult>` returns:
 
-| Field      | Type                                         | Default | Meaning                                    |
-| ---------- | -------------------------------------------- | ------- | ------------------------------------------ |
-| `passed`   | `boolean`                                    | —       | AND across all policies.                   |
-| `policies` | `{ description: string, passed: boolean }[]` | —       | One entry per configured policy, in order. |
-| `errors`   | `string[]`                                   | —       | `errorMessage` of each failed policy.      |
+| Field      | Type                                                      | Default | Meaning                                                                                     |
+| ---------- | --------------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------- |
+| `passed`   | `boolean`                                                 | —       | AND across all policies.                                                                    |
+| `policies` | `{ description, passed, errorMessage, code?, params? }[]` | —       | One entry per configured policy, in order (`errorMessage` / `code` / `params` since 0.2.5). |
+| `errors`   | `string[]`                                                | —       | `errorMessage` of each failed policy.                                                       |
 
 Exact shape: [docs api](https://aooth.moost.org/api/user#policy-types).
 

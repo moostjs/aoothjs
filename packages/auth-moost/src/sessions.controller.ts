@@ -1,9 +1,10 @@
 import { ArbacAction, ArbacResource } from "@aooth/arbac-moost";
 import { AuthCredential, type EnrichedSession, type SessionInfo } from "@aooth/auth";
-import { Delete, Get, HttpError, Query } from "@moostjs/event-http";
+import { Delete, Get, Query } from "@moostjs/event-http";
 import { Controller, Injectable, Param } from "moost";
 
 import { useAuth } from "./auth.composables";
+import { aoothHttpError } from "./http-messages";
 
 /**
  * Injectable read-time session enricher. Default is identity — aooth ships NO
@@ -93,7 +94,7 @@ export class SessionsController {
       ...(kind !== undefined && { kind }),
     });
     // No `current` flag — these are not the admin's own sessions.
-    return sessions as EnrichedSession[];
+    return sessions;
   }
 
   @Delete("sessions/:sessionId")
@@ -113,11 +114,11 @@ export class SessionsController {
   @ArbacAction("revoke")
   async revokeOthers(@Query("others") others: string | undefined): Promise<{ revoked: number }> {
     if (others !== "true") {
-      throw new HttpError(400, "Pass ?others=true to log out other sessions");
+      throw aoothHttpError(400, "LOGOUT_OTHERS_REQUIRED");
     }
     const auth = useAuth();
     const current = auth.getSessionId();
-    if (!current) throw new HttpError(401, "No current session to keep");
+    if (!current) throw aoothHttpError(401, "NO_CURRENT_SESSION");
     const revoked = await this.auth.revokeOtherSessions(auth.getUserId(), current);
     return { revoked };
   }

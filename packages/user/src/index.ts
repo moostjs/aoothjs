@@ -17,6 +17,7 @@ export type {
   UserAuthErrorType,
   LoginResult,
   LockStatus,
+  PasswordPolicyParams,
   PolicyCheckResult,
   TransferablePolicy,
   MfaMethodInfo,
@@ -53,6 +54,8 @@ export {
   ppHasNumber,
   ppHasSpecialChar,
   ppMaxRepeatedChars,
+  PASSWORD_POLICY_MESSAGES,
+  type PasswordPolicyMessageCode,
 } from "./password/policies";
 
 // MFA — TOTP + code helpers + backup codes

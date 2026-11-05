@@ -173,7 +173,7 @@ function renderRateLimitMessage(
   rule: RateLimitRule,
   retryAfterMs: number,
 ): string;
-const RATE_LIMIT_MESSAGES: Readonly<Record<RateLimitErrorCode, string>>; // { RATE_LIMITED: 'Too many requests. Please try again in {{delta}}.' }
+const RATE_LIMIT_MESSAGES: Readonly<Record<RateLimitErrorCode, string>>; // { RATE_LIMITED: 'Too many requests. Retry after {retryAfter} s.' } (since 0.2.5)
 const DEFAULT_RATE_LIMIT_MESSAGE: string; // RATE_LIMIT_MESSAGES.RATE_LIMITED
 ```
 
@@ -513,6 +513,7 @@ interface AuthEmailEvent {
   expiresAt: number;
   username?: string;
   metadata?: Record<string, unknown>;
+  locale?: string; // since 0.2.5 — the sending request's locale
 }
 ```
 
@@ -545,6 +546,7 @@ interface AuthSmsEvent {
   code: string;
   ttlMs: number;
   userId?: string;
+  locale?: string; // since 0.2.5 — the sending request's locale
 }
 ```
 

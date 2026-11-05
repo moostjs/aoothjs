@@ -57,6 +57,7 @@ import {
 } from "./write-policy";
 import type { ArbacWriteTable } from "./write-policy";
 import { prefetchRefTargets } from "./write-refs";
+import { arbacHttpError } from "../messages";
 
 export { applyAllowedFieldsAndSet } from "./write-fields";
 
@@ -531,13 +532,13 @@ export function enforceControlsPolicy(
     if (Array.isArray(used) && used.length === 0 && key !== "$groupBy") continue;
 
     if (gate === false) {
-      throw new HttpError(403, `Control "${key}" is not allowed for your role`);
+      throw arbacHttpError(403, "CONTROL_NOT_ALLOWED", { control: key });
     }
     if (Array.isArray(gate)) {
       const usedValues = extractUsedControlValues(key, used, controls);
       for (const v of usedValues) {
         if (!gate.includes(v)) {
-          throw new HttpError(403, `Control "${key}=${v}" is not allowed for your role`);
+          throw arbacHttpError(403, "CONTROL_VALUE_NOT_ALLOWED", { control: key, value: v });
         }
       }
     }
@@ -562,6 +563,10 @@ export function enforceControlsPolicy(
  *     a calendar-bucket alias (`$select: [{ $bucket, $field, $as }]`) is
  *     mapped to its source `$field` (`groupByFields` from `@uniqu/core`),
  *     so the whitelist is checked against the column actually grouped on.
+ *     The outer level of a two-level aggregate (`controls.$from`) may group
+ *     by the inner level's columns — its `$groupBy` keys and `$select`
+ *     aliases: those are left out (the inner level, checked on its own as
+ *     `"nested"`, grouped on whitelisted columns only).
  *
  * For unknown controls we return an empty array; the caller then enforces
  * `false`-only semantics (controlled by `unionControlsPolicy`'s whitelist
@@ -575,11 +580,29 @@ export function extractUsedControlValues(
   if (!Array.isArray(value)) return [];
   if (key === "$with") return withPaths(value, "");
   if (key === "$groupBy") {
-    return controls
-      ? groupByFields({ $select: controls.$select, $groupBy: value })
-      : value.filter((x): x is string => typeof x === "string");
+    if (!controls) return value.filter((x): x is string => typeof x === "string");
+    const names = groupByFields({ $select: controls.$select, $groupBy: value });
+    const inner = innerColumns(controls.$from);
+    return inner ? names.filter((name) => !inner.has(name)) : names;
   }
   return [];
+}
+
+/** The columns a two-level aggregate's inner level (`$from`) yields: its `$groupBy` keys and `$select` aliases. */
+function innerColumns(from: unknown): Set<string> | undefined {
+  if (!from || typeof from !== "object" || Array.isArray(from)) return undefined;
+  const { $groupBy, $select } = from as { $groupBy?: unknown; $select?: unknown };
+  const out = new Set<string>();
+  if (Array.isArray($groupBy)) {
+    for (const k of $groupBy) if (typeof k === "string") out.add(k);
+  }
+  if (Array.isArray($select)) {
+    for (const entry of $select) {
+      const alias = (entry as { $as?: unknown } | null)?.$as;
+      if (typeof alias === "string") out.add(alias);
+    }
+  }
+  return out;
 }
 
 /** Relation paths of a `$with` list, nested `controls.$with` as dotted paths. */
@@ -613,5 +636,5 @@ function remapUniquUrlSyntaxError(err: unknown): unknown {
   if (!(err instanceof SyntaxError)) return err;
   const msg = err.message;
   if (!/at (?:pos )?\d+/.test(msg)) return err;
-  return new HttpError(400, `Invalid query string: ${msg}`);
+  return arbacHttpError(400, "INVALID_QUERY_STRING", { error: msg });
 }

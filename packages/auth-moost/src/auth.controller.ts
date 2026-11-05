@@ -28,6 +28,7 @@ import type {
 import { WfTrigger } from "./wf-trigger/decorator";
 import type { AoothMessages } from "./workflow/auth-messages";
 import { buildInviteAlreadyAcceptedEnvelope } from "./workflow/auth-workflow";
+import { aoothHttpError } from "./http-messages";
 
 /** Workflows allowed by the bundled `/auth/trigger` endpoint. Subclasses override `triggerWf()` to extend. */
 export const DEFAULT_AUTH_WORKFLOWS = [
@@ -58,7 +59,7 @@ export const ADD_MFA_WORKFLOW = "auth/add-mfa/flow";
 
 /** The post-redemption route's single "not found" answer. */
 function inviteNotFound(): HttpError {
-  return new HttpError(404, "Invite not found");
+  return aoothHttpError(404, "INVITE_NOT_FOUND");
 }
 
 /** Prefer an explicit body field, fall back to the refresh cookie when enabled. */
@@ -134,7 +135,7 @@ export class AuthController {
   async logout(@Body() body: AuthLogoutBody | undefined): Promise<AuthOkResponse> {
     const auth = useAuth();
     if (!auth.getAuthContext()) {
-      throw new HttpError(401, "Not authenticated");
+      throw aoothHttpError(401, "NOT_AUTHENTICATED");
     }
     // End THIS device's whole session — every token in the family (access +
     // refresh + all rotations), keyed by sessionId — on stores that can
@@ -180,7 +181,7 @@ export class AuthController {
   async refresh(@Body() body: AuthRefreshBody | undefined): Promise<AuthLoginResponse> {
     const auth = useAuth();
     const refreshToken = resolveRefreshToken(auth, body);
-    if (!refreshToken) throw new HttpError(401, "Missing refresh token");
+    if (!refreshToken) throw aoothHttpError(401, "MISSING_REFRESH_TOKEN");
     const fromBody = typeof body?.refreshToken === "string";
 
     let issue: IssueResult;
@@ -194,7 +195,7 @@ export class AuthController {
       // nothing about the cookie pair, and a request that carried no refresh
       // cookie (e.g. a cross-site form POST) must not be able to sign anyone out.
       if (!fromBody) auth.clearCookies();
-      throw new HttpError(401, "Invalid refresh token");
+      throw aoothHttpError(401, "INVALID_REFRESH_TOKEN");
     }
 
     auth.writeCookies(issue);
@@ -218,7 +219,7 @@ export class AuthController {
   status(): AuthContext {
     const auth = useAuth().getAuthContext();
     if (!auth) {
-      throw new HttpError(401, "Not authenticated");
+      throw aoothHttpError(401, "NOT_AUTHENTICATED");
     }
     return auth;
   }
@@ -297,7 +298,7 @@ export class AuthController {
     // One answer for "switched off", "unknown id" and "still pending": the
     // route must not tell an anonymous caller which ids exist.
     if (!this.invitePostRedemptionEnabled()) throw inviteNotFound();
-    if (!uid) throw new HttpError(400, "Missing uid query parameter");
+    if (!uid) throw aoothHttpError(400, "MISSING_UID");
     if (!this.users) {
       throw new HttpError(500, "UserService not wired — cannot resolve post-redemption state");
     }

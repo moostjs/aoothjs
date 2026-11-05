@@ -44,7 +44,8 @@ The single unified workflow class. Replaces the former `LoginWorkflow` / `Recove
 - `resolveInviteContext(ctx: AuthWfCtx, startFormData: Record<string, unknown> | undefined): Record<string, unknown> | undefined | Promise<…>` — since 0.2. App context of an invite (e.g. `{ tenantId }`), resolved at `init-invite-admin` from the trigger's start input (`{ wfid, input: { formData } }`); kept server-side as `ctx.admin.app`. Throw an `HttpError` to refuse. Default `undefined`. See [Invites](/moost/invites#issue-phase).
 - `validateChosenUsername(ctx: AuthWfCtx, username: string): AoothMessageCode | undefined` — since 0.2. Policy for `inviteUsername: 'choose'`, applied to the normalised (NFKC, trimmed) pick; return a code (e.g. `"USERNAME_NOT_ALLOWED"`) to refuse. Default: ≤ 256 characters, no whitespace / control characters, no `@` unless it is the invited address. See [Invites](/moost/invites).
 - `prepareUser(input: { email?: string; roles: string[]; invitedBy?: string; app?: Record<string, unknown>; form?: Record<string, unknown> })` / `inferAdminRoles(input: { email: string; invitedBy?: string; app?: Record<string, unknown>; form?: Record<string, unknown> })` — invite / signup row extras and server-derived invite roles. `app` = the `resolveInviteContext` result, `form` = extra fields of an extended `forms.invite` (both since 0.2). A falsy `prepareUser` result means "no extras".
-- `msg(code: AoothMessageCode, params?: AoothMessageParams): string` — since 0.2. Resolves every user-facing text through `opts.messages`; override for full control. See [Messages](/moost/messages).
+- `resolveSetPasswordCopy(ctx): SetPasswordCopy | Promise<SetPasswordCopy>` — the set-password screen's heading and intro: `{ heading?, intro?, headingCode?, introCode? }`. Default (since 0.2.5): the `SET_PASSWORD_*` codes, rendered per response in the request's language; `heading` / `intro` text you return is shown as is and wins over the codes. See [Messages](/moost/messages#how-a-workflow-text-is-resolved).
+- `msg(code: AoothMessageCode, params?: AoothMessageParams): string` — since 0.2. Resolves every user-facing text: `opts.messages`, then the moost translator in the request's locale (since 0.2.5), then the English template; override for full control. See [Messages](/moost/messages).
 - `loadActiveSessionsCount(username)` — async data fetcher for concurrency-limit policy.
 - `validateMfaAddress(ctx: AuthWfCtx, method: MfaTransport, value: string): string | undefined | Promise<string | undefined>` — server-side validation of the user-typed enrolment address (returned string = the form error). Ctx-first + async-capable so record-based rules (domain allowlists, match-the-account-email) load the row directly. Default: email-shape check / permissive E.164. To pin the address outright use `resolveEnrollAddress` instead.
 - `buildAddMfaFinishEnvelope(ctx): WfFinished` — pure construction of `finish-add-mfa`'s outcome envelope (priority: removed → changed → added → blocked → nothing-available → cancelled); override to customize the manage-flow terminal copy/data.
@@ -342,7 +343,14 @@ function resolveAoothMessage(
 ): string;
 ```
 
-Since 0.2. The code-keyed catalogue of every user-facing `AuthWorkflow` text (English templates with `{name}` placeholders) and the lookup helpers. `renderAoothMessage` fills placeholders (unknown ones are kept); `resolveAoothMessage` applies `messages` (map or resolver; `undefined` from a resolver falls back to English). Pass overrides as `AuthWorkflowOpts.messages`. Code list and usage: [Messages & Localization](/moost/messages).
+Since 0.2. The code-keyed catalogue of every user-facing `AuthWorkflow` text (English templates with `{name}` placeholders) and the lookup helpers. `renderAoothMessage` fills placeholders (unknown ones are kept); `resolveAoothMessage` applies `messages` (map or resolver; `undefined` from a resolver falls through), then — inside a request, since 0.2.5 — the moost translator in the request's locale, then the English template. Pass overrides as `AuthWorkflowOpts.messages`. Registered with moost's `registerMessages` on import (since 0.2.5). Code list and usage: [Messages & Localization](/moost/messages).
+
+```ts
+const AOOTH_HTTP_MESSAGES: { readonly AUTH_REQUIRED: "Unauthorized" /* … every code */ };
+type AoothHttpMessageCode = keyof typeof AOOTH_HTTP_MESSAGES;
+```
+
+Since 0.2.5. English templates of the coded `HttpError`s auth-moost raises outside the workflow (guard, controllers, `useAuth()`, workflow trigger, rate limiter); each body carries `code` and `params`. Registered with `registerMessages` on import; `MoostHttp` translates the bodies by code. See [Error bodies](/moost/messages#error-bodies).
 
 ### `userAuthErrorToHttp` / `userAuthErrorInterceptor`
 
@@ -353,7 +361,7 @@ const userAuthErrorInterceptor: TInterceptorDef; // CATCH_ERROR priority
 interface UserAuthErrorBody {
   message: string;
   code: UserAuthErrorType; // the UserAuthError type
-  params?: Record<string, unknown>; // POLICY_VIOLATION: { policies }
+  params?: Record<string, unknown>; // POLICY_VIOLATION: { policies: [{ description, passed, errorMessage, code?, params? }] }
   field?: "currentPassword" | "newPassword" | "confirmPassword";
 }
 ```
@@ -555,7 +563,7 @@ interface AuthWorkflowOpts {
 ### `AuthDeliveryPayload`
 
 ```ts
-type AuthDeliveryPayload =
+type AuthDeliveryPayload = (
   | {
       kind: "mfa-pincode";
       channel: "sms" | "email";
@@ -599,10 +607,13 @@ type AuthDeliveryPayload =
       reason: string; // machine-readable trigger, e.g. "impossible-travel"
       loginAt: number;
       context?: Record<string, unknown>; // free-form template data (distances, cities)
-    };
+    }
+) & {
+  locale?: string; // since 0.2.5 — the sending request's locale
+};
 ```
 
-The discriminated union passed to `AuthWorkflow.deliver(payload)`. Branch on `kind` for per-purpose templates and on `channel` for transport. See [Delivery](/auth/delivery).
+The discriminated union passed to `AuthWorkflow.deliver(payload)`. Branch on `kind` for per-purpose templates and on `channel` for transport. Every variant carries `locale` — the locale of the request it is sent from (moost `useLocale()`), absent when the request has none — so a sender can localize ([Localized emails and SMS](/moost/messages#localized-emails-and-sms)). See [Delivery](/auth/delivery).
 
 ### Workflow context types
 

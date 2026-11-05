@@ -289,7 +289,7 @@ function enforceControlsPolicy(
 ): void;
 ```
 
-Throws `HttpError(403, 'Control "$with" is not allowed for your role')` on violations. Applied by `AsArbacDbController.validateControls` against the union of scope `controls` maps. A control counts as used when it is present and not an empty array; `$groupBy` counts as used whenever it is present, so `$groupBy: []` (how moost-db marks an ungrouped aggregate) is denied by a `false` gate and passes a whitelist (since 0.1.80).
+Throws `HttpError(403, 'Control "$with" is not allowed for your role')` on violations, with `code` `CONTROL_NOT_ALLOWED` / `CONTROL_VALUE_NOT_ALLOWED` and `params` (since 0.2.5). Applied by `AsArbacDbController.validateControls` against the union of scope `controls` maps. A control counts as used when it is present and not an empty array; `$groupBy` counts as used whenever it is present, so `$groupBy: []` (how moost-db marks an ungrouped aggregate) is denied by a `false` gate and passes a whitelist (since 0.1.80).
 
 ### `extractUsedControlValues`
 
@@ -297,7 +297,7 @@ Throws `HttpError(403, 'Control "$with" is not allowed for your role')` on viola
 function extractUsedControlValues(key: string, value: unknown): string[];
 ```
 
-Normalizes a control value into the list of names it references — used to feed `enforceControlsPolicy` for `$with` / `$groupBy` whitelist checks. Pass the query's `controls` as the third argument to map `$groupBy` calendar-bucket aliases to their source fields (`groupByFields` from `@uniqu/core`); `enforceControlsPolicy` does this.
+Normalizes a control value into the list of names it references — used to feed `enforceControlsPolicy` for `$with` / `$groupBy` whitelist checks. Pass the query's `controls` as the third argument to map `$groupBy` calendar-bucket aliases to their source fields (`groupByFields` from `@uniqu/core`); `enforceControlsPolicy` does this. With a two-level aggregate (`controls.$from`), outer `$groupBy` names that are inner columns (inner `$groupBy` keys, inner `$select` aliases) are left out — the inner level is checked on its own (since 0.2.5).
 
 ### `applyAllowedFieldsAndSet`
 
@@ -392,6 +392,15 @@ interface ConjoinArbacDbScopesOptions {
 
 Credential-attenuation combiner: UNIONs each side with the additive helpers, then CONJOINS the two results facet-by-facet (`conjoinScopeFilters` `$and`, `intersectProjections` path-wise field ∩ — a parent narrows to the other side's nested whitelist; the optional `childrenOf` schema lookup (supplied by `useArbac().evaluate` for DB controllers) splits an included parent with a hidden child exactly, otherwise it is dropped; no common field → the user's projection plus a match-nothing filter, never `{}` — `intersectControlsPolicy` deny-wins, `allowedFields` intersection, recursive `with` — a relation only ONE side declares is marked `INHERITED_CONJUNCTION` and conjoined, when the request resolves it, with the caller's own grant on the related table (no grant → hidden), so a credential's declared sub-scope never stands alone as parent authority —, `checkRefs` enforced when EITHER side enforces it — `refTable`, the evaluated table, resolves the names to its foreign keys; a custom field via its `fields` rule, no rule → throws) — never the additive union helpers, which would silently widen. Returns a single-element list so downstream scope-application sites (which union the scope list per facet) see the conjunction unchanged. Consumes `credScopes` from an attenuated [`Arbac.evaluate`](/api/arbac-core#arbac-tuserattrs-tscope). **Since 0.2 it throws when either list is empty** — an empty list is a denied pass, and the union helpers would read it as the unrestricted `{}`. See [Scope Merging](/arbac/scopes).
 
+### `ARBAC_MESSAGES`
+
+```ts
+const ARBAC_MESSAGES: { readonly INSUFFICIENT_PRIVILEGES: 'Insufficient privileges for action "{action}" on resource "{resource}"' /* … */ };
+type ArbacMessageCode = keyof typeof ARBAC_MESSAGES;
+```
+
+Since 0.2.5. English templates of the coded `HttpError`s arbac-moost raises; each body carries `code` and `params`. Registered with moost's `registerMessages` on import; `MoostHttp` translates the bodies by code. Codes: [Messages & Localization — error bodies](/moost/messages#error-bodies).
+
 ## Decorators
 
 ### `@ArbacResource`
@@ -451,7 +460,7 @@ interface ArbacDbScope<T = unknown> {
 }
 ```
 
-The scope shape `AsArbacDbController` understands. `check`, `nestedWrites` and `checkRefs` are enforced from 0.1.72. Pass an `.as` model as `T` (e.g. `ArbacDbScope<Task>`) to get autocomplete on `projection` / `with` / `controls` / `set` / `allowedFields` against the model's own and navigation fields. Typed `controls` accept a whitelist only for `$with` (relation names) and `$groupBy` (field paths), the two controls `unionControlsPolicy` accepts one for. Every other control takes `true` / `false`, and an unknown control key is a type error. Before 0.1.80 a `$select` whitelist type-checked and then threw when scopes were merged. `T = unknown` (the default) keeps the legacy untyped shape for back-compat. **Open to declaration merging** — augment with custom fields if you extend the controller. See [DB Controllers](/moost/).
+The scope shape `AsArbacDbController` understands. `check`, `nestedWrites` and `checkRefs` are enforced from 0.1.72. Pass an `.as` model as `T` (e.g. `ArbacDbScope<Task>`) to get autocomplete on `projection` / `with` / `controls` / `set` / `allowedFields` against the model's own and navigation fields. Typed `controls` accept a whitelist only for `$with` (relation names) and `$groupBy` (field paths), the two controls `unionControlsPolicy` accepts one for. Every other control takes `true` / `false` (`$from` since 0.2.5), and an unknown control key is a type error. Before 0.1.80 a `$select` whitelist type-checked and then threw when scopes were merged. `T = unknown` (the default) keeps the legacy untyped shape for back-compat. **Open to declaration merging** — augment with custom fields if you extend the controller. See [DB Controllers](/moost/).
 
 ### `RefTableSource` / `RefForeignKey`
 

@@ -107,6 +107,7 @@ import { type AppDb, createAppDb, syncAppSchema } from "./db";
 import { ConsoleEmailSender } from "./email/console-email-sender";
 import { ConsoleSmsSender } from "./sms/console-sms-sender";
 import { type AppEnv, ENV } from "./env";
+import { installDemoTranslator } from "./i18n";
 import {
   AuditController,
   CommentsController,
@@ -533,7 +534,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     },
   });
   const federatedStore = new FederatedIdentityStoreAtscriptDb({
-    table: appDb.tables.federatedIdentities as unknown as FederatedIdentityTable,
+    table: appDb.tables.federatedIdentities,
   });
   const federatedLogin = new FederatedLoginService<DemoUser>({
     users: aooth.userService,
@@ -541,6 +542,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     policy: oauthRegistry.policy,
   });
 
+  // Before `MoostHttp`: its default locale negotiation reads the translator's locales.
+  installDemoTranslator();
   const app = new Moost();
   const moostHttp = new MoostHttp();
   app.adapter(moostHttp);
@@ -584,6 +587,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
           metadata: { reason: payload.reason, ...payload.context },
         }),
         expiresAt: expiresInMs !== undefined ? Date.now() + expiresInMs : Date.now(),
+        ...(payload.locale && { locale: payload.locale }),
       });
       return;
     }
@@ -594,6 +598,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       recipient: payload.recipient,
       code: payload.code,
       ttlMs: payload.expiresInMs ?? 0,
+      ...(payload.locale && { locale: payload.locale }),
     });
   };
 
@@ -1018,10 +1023,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // exercising the durable path end-to-end (the auth-code consume is a real
   // atomic check-and-delete against SQLite).
   const pendingAuthStore = new PendingAuthorizationStoreAtscriptDb({
-    table: appDb.tables.pendingAuthorizations as unknown as PendingAuthorizationTable,
+    table: appDb.tables.pendingAuthorizations,
   });
   const authCodeStore = new AuthCodeStoreAtscriptDb({
-    table: appDb.tables.authCodes as unknown as AuthCodeTable,
+    table: appDb.tables.authCodes,
   });
 
   // Tier 2: a fresh RSA keypair signs `id_token`s; its public half is published
@@ -1080,7 +1085,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // (the OAuth 2.1 refresh_token grant — a connector silently refreshes at
   // access expiry instead of re-running browser consent).
   const dynamicClientStore = new DynamicClientStoreAtscriptDb({
-    table: appDb.tables.dynamicClients as unknown as DynamicClientTable,
+    table: appDb.tables.dynamicClients,
   });
   const dynamicClientRegistration = new DynamicClientRegistration({
     store: dynamicClientStore,

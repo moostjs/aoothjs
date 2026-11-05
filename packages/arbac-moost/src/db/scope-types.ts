@@ -64,6 +64,7 @@ type BooleanControl =
   | "$actions"
   | "$rowOrder"
   | "$having"
+  | "$from"
   | "$center"
   | "$maxDistance"
   | "$minDistance";

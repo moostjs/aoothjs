@@ -68,12 +68,14 @@ A workflow's steps are individually ARBAC-evaluated. One bare step → `resource
 
 ## The 401 vs 403 split
 
-| Cause                                                                       | Response                                                                       |
-| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| No token / invalid token (caught by [`authGuardInterceptor`](./auth-guard)) | `401 Unauthorized` / `401 Invalid credential`                                  |
-| User provider can't find the user (e.g. JWT subject doesn't map to a row)   | `401 Not authorized` — non-`HttpError` rewrapped, cause logged only            |
-| User found, but no role grants this `resource`/`action`                     | `403 Insufficient privileges for action "${action}" on resource "${resource}"` |
-| `@Public()` route, no token                                                 | Handler runs with null context (no 401, no 403)                                |
+| Cause                                                                       | Response                                                                                                                                   |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| No token / invalid token (caught by [`authGuardInterceptor`](./auth-guard)) | `401 Unauthorized` / `401 Invalid credential` (`AUTH_REQUIRED` / `CREDENTIAL_INVALID`)                                                     |
+| User provider can't find the user (e.g. JWT subject doesn't map to a row)   | `401 Not authorized` (`ARBAC_NOT_AUTHORIZED`) — non-`HttpError` rewrapped, cause logged only                                               |
+| User found, but no role grants this `resource`/`action`                     | `403 Insufficient privileges for action "${action}" on resource "${resource}"` (`INSUFFICIENT_PRIVILEGES`, `params: { resource, action }`) |
+| `@Public()` route, no token                                                 | Handler runs with null context (no 401, no 403)                                                                                            |
+
+The `code` on each body (since 0.2.5) is what clients branch on and what a translator translates — see [Messages & Localization — error bodies](./messages#error-bodies).
 
 ## `useArbac()` — the composable
 
@@ -143,7 +145,7 @@ Throws if `resource` or `action` cannot be resolved through their resolution cha
 
 ### `evaluateOrThrow(...)`
 
-Identical to `evaluate(...)` but throws `HttpError(403, "Forbidden: ${r}/${a}")` on deny. Use it in handlers that perform a secondary ARBAC check against a different resource:
+Identical to `evaluate(...)` but throws `HttpError(403, "Forbidden: ${r}/${a}")` on deny (`code: "ARBAC_FORBIDDEN"`, `params: { resource, action }` since 0.2.5). Use it in handlers that perform a secondary ARBAC check against a different resource:
 
 ```ts
 @Post("publish")

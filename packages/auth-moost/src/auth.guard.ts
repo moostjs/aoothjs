@@ -1,6 +1,5 @@
 import { AuthCredential } from "@aooth/auth";
 import { current, eventTypeKey } from "@wooksjs/event-core";
-import { HttpError } from "@wooksjs/event-http";
 import {
   defineBeforeInterceptor,
   Intercept,
@@ -13,6 +12,7 @@ import { type AuthOptions, resolveAuthOptions } from "./auth.config";
 import { authOptionsKey, setAuthContext, setAuthCredential, useAuth } from "./auth.composables";
 import type { TAuthMeta } from "./auth.mate";
 import { RefreshCookiePathHolder } from "./auth.route";
+import { aoothHttpError } from "./http-messages";
 
 /**
  * `GUARD`-priority interceptor factory that authenticates incoming requests.
@@ -76,7 +76,7 @@ export function authGuardInterceptor(opts?: AuthOptions): TInterceptorDef {
         setAuthContext(ctx, null);
         return;
       }
-      throw new HttpError(401, "Unauthorized");
+      throw aoothHttpError(401, "AUTH_REQUIRED");
     }
 
     const credential = await cc.instantiate(AuthCredential);
@@ -89,7 +89,7 @@ export function authGuardInterceptor(opts?: AuthOptions): TInterceptorDef {
         setAuthContext(ctx, null);
         return;
       }
-      throw new HttpError(401, "Invalid credential");
+      throw aoothHttpError(401, "CREDENTIAL_INVALID");
     }
 
     setAuthContext(ctx, authContext);

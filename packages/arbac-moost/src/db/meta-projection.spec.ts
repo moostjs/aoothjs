@@ -1176,6 +1176,56 @@ describe("gateMetaControls — /meta capabilities follow the controls policy", (
     expect(out.crud.query).toEqual(QUERY);
   });
 
+  describe("two-level / conditional aggregates (/meta flags since atscript-db 0.1.168)", () => {
+    const meta2 = {
+      ...meta,
+      crud: { ...meta.crud, query: [...QUERY, "from"] },
+      conditionalAggregates: true,
+      distinctFieldLists: true,
+      nestedAggregates: true,
+    } as unknown as TMetaResponse;
+    const gate2 = (policy: Record<string, ControlGate>) =>
+      gateMetaControls(meta2, { query: policy });
+
+    it("no denial → the envelope itself", () => {
+      expect(gate2({})).toBe(meta2);
+    });
+
+    it("$from: false → no `from`, no nestedAggregates; the rest of the aggregate surface kept", () => {
+      const out = gate2({ $from: false });
+      expect(out.crud.query).toEqual(QUERY);
+      expect(out.nestedAggregates).toBeUndefined();
+      expect(out.conditionalAggregates).toBe(true);
+      expect(out.distinctFieldLists).toBe(true);
+      expect(out.aggregateFns).toEqual(["sum", "count"]);
+    });
+
+    it("$groupBy: false → no `from` and none of the aggregate flags", () => {
+      const out = gate2({ $groupBy: false });
+      expect(out.crud.query).toEqual(without(QUERY, "groupBy", "rowOrder"));
+      expect(out.nestedAggregates).toBeUndefined();
+      expect(out.conditionalAggregates).toBeUndefined();
+      expect(out.distinctFieldLists).toBeUndefined();
+    });
+
+    it("$select: false → no `from` and none of the aggregate flags", () => {
+      const out = gate2({ $select: false });
+      expect(out.crud.query).toEqual(without(QUERY, "select", "rowOrder"));
+      expect(out.nestedAggregates).toBeUndefined();
+      expect(out.conditionalAggregates).toBeUndefined();
+      expect(out.distinctFieldLists).toBeUndefined();
+    });
+
+    it("a $groupBy whitelist keeps them all", () => {
+      expect(gate2({ $groupBy: ["status"] })).toMatchObject({
+        nestedAggregates: true,
+        conditionalAggregates: true,
+        distinctFieldLists: true,
+        crud: { query: [...QUERY, "from"] },
+      });
+    });
+  });
+
   it("$select: false → no aggregate surface (it lives in $select), groupable kept", () => {
     const out = gate({ $select: false });
     expect(flags(out, "groupable")).toEqual(["id", "status", "openedAt", "closedAt"]);

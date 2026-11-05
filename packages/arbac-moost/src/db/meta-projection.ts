@@ -1012,7 +1012,8 @@ const NOT_CONTROLS: ReadonlySet<string> = new Set(["filter", "insights"]);
  * gate is `false`, or everything it qualifies is unusable (`$index` /
  * `$fuzzy` / `$vector` name how `$search` runs, `$threshold` bounds
  * `$vector`, `$rowOrder` orders `first()` / `last()` in an aggregate
- * `$select`, `$nulls` places NULLs in `$sort` and `$rowOrder` keys).
+ * `$select`, `$nulls` places NULLs in `$sort` and `$rowOrder` keys, `$from`
+ * is the inner level of an aggregate `$select`).
  */
 function isControlOff(control: string, list: readonly string[], policy: ControlsPolicy): boolean {
   if (!NOT_CONTROLS.has(control) && policy[`$${control}`] === false) return true;
@@ -1026,6 +1027,7 @@ function isControlOff(control: string, list: readonly string[], policy: Controls
     case "threshold":
       return off("vector");
     case "rowOrder":
+    case "from":
       return off("groupBy") || off("select");
     case "nulls":
       return off("sort") && (!list.includes("rowOrder") || off("rowOrder"));
@@ -1035,7 +1037,14 @@ function isControlOff(control: string, list: readonly string[], policy: Controls
 }
 
 /** Envelope keys that advertise aggregate queries (`$groupBy`, aggregate / bucket `$select`). */
-const AGGREGATE_ENVELOPE_KEYS = ["aggregateFns", "aggregateExpressions", "bucketUnits"] as const;
+const AGGREGATE_ENVELOPE_KEYS = [
+  "aggregateFns",
+  "aggregateExpressions",
+  "bucketUnits",
+  "conditionalAggregates",
+  "distinctFieldLists",
+  "nestedAggregates",
+] as const;
 
 /**
  * The `/meta` capabilities follow each read op's `controls` policy (`policies`;
@@ -1049,7 +1058,9 @@ const AGGREGATE_ENVELOPE_KEYS = ["aggregateFns", "aggregateExpressions", "bucket
  *   field on that op's `$groupBy` whitelist, if any), `bucketable` (the same
  *   plus `select` — a bucket is checked as the field it buckets), `numeric`
  *   and the aggregate envelope keys (`groupBy` + `select`: every aggregate,
- *   calendar bucket or arithmetic `$select` is `$groupBy` use), `sortable`
+ *   calendar bucket or arithmetic `$select` is `$groupBy` use — conditional
+ *   aggregates and field lists included), `nestedAggregates` (those plus
+ *   `from`), `sortable`
  *   (`sort`), `nullsPlacement` (`nulls`), `searchable` + `searchIndexes`
  *   (`search`), `vectorSearchable` + the vector indexes (`search` +
  *   `vector`), the non-default text indexes (`search` + `index`), a
@@ -1058,7 +1069,8 @@ const AGGREGATE_ENVELOPE_KEYS = ["aggregateFns", "aggregateExpressions", "bucket
  *
  * Returns `meta` itself when nothing changes.
  *
- * @since 0.1.75 (`groupable`), 0.1.80 (the rest)
+ * @since 0.1.75 (`groupable`), 0.1.80 (the rest), 0.2.5 (`conditionalAggregates`,
+ *   `distinctFieldLists`, `nestedAggregates` and `from`)
  */
 export function gateMetaControls(
   meta: TMetaResponse,
@@ -1127,6 +1139,10 @@ export function gateMetaControls(
       delete out[key];
       changed = true;
     }
+  }
+  if (out.nestedAggregates !== undefined && !served(["from"])) {
+    delete out.nestedAggregates;
+    changed = true;
   }
   if (out.nullsPlacement && !served(["nulls"])) {
     delete out.nullsPlacement;

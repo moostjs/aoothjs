@@ -19,6 +19,7 @@ import type { WfFinishedResponse } from "@wooksjs/event-wf";
 
 import type { ResolvedAuthOptions } from "./auth.config";
 import type { AuthLoginResponse } from "./auth.dto";
+import { aoothHttpError } from "./http-messages";
 
 // `null` means the guard ran on a `@Public()` route with no valid credential.
 // Absent means the guard never ran.
@@ -153,7 +154,7 @@ export const useAuth = defineWook((ctx: EventContext): AuthBindings => {
 
   const getUserId = (): string => {
     const auth = getAuthContext();
-    if (!auth) throw new HttpError(401, "Not authenticated");
+    if (!auth) throw aoothHttpError(401, "NOT_AUTHENTICATED");
     return auth.userId;
   };
 
@@ -182,7 +183,7 @@ export const useAuth = defineWook((ctx: EventContext): AuthBindings => {
 
   const revokeOtherSessions = (): Promise<number> => {
     const sessionId = getSessionId();
-    if (!sessionId) throw new HttpError(401, "No current session to keep");
+    if (!sessionId) throw aoothHttpError(401, "NO_CURRENT_SESSION");
     return requireCredential().revokeOtherSessions(getUserId(), sessionId);
   };
 

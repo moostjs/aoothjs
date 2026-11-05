@@ -8,6 +8,8 @@ import {
   type WfOutletTokenConfig,
   type WfOutletTriggerConfig,
   type WfOutletTriggerDeps,
+  type WfPauseRequest,
+  type WfState,
   type WfStateStrategy,
 } from "@moostjs/event-wf";
 import { current } from "@wooksjs/event-core";
@@ -15,6 +17,8 @@ import { HttpError } from "@wooksjs/event-http";
 import { Injectable } from "moost";
 
 import { createInviteOutlet, reservePendingInviteLink } from "../workflow/invite-outlet";
+import { withoutPublicProjection } from "../workflow/public-projection";
+import { aoothHttpError } from "../http-messages";
 
 const HOOK_NAMES = [
   "around",
@@ -36,6 +40,8 @@ const HOOK_NAMES = [
  *   call `run()` again after a failure; each run starts over from the request.
  * - `beforePersist(state, pause)` — runs right before a paused state is
  *   persisted, inside `around`; throw to abort (nothing persisted, no delivery).
+ *   `AuthWorkflow`'s rendered `ctx.public` projection is already stripped
+ *   from `state.context` then (it is never persisted).
  * - `renderEnvelope(envelope, info)` — maps every body the trigger answers
  *   with (paused envelopes and finished values), e.g. to translate texts.
  * - `restoreOnError` — opt-in (default off): when a resume fails after its
@@ -99,7 +105,7 @@ function normalizeWfId(id: string): string {
 }
 
 function notAllowed(id: string): HttpError {
-  return new HttpError(403, `Workflow '${normalizeWfId(id)}' is not allowed`);
+  return aoothHttpError(403, "WORKFLOW_NOT_ALLOWED", { workflow: normalizeWfId(id) });
 }
 
 /**
@@ -313,6 +319,12 @@ export class WfTriggerProvider {
       const value = opts[name] ?? base[name];
       if (value !== undefined) hooks[name] = value;
     }
+    // Strip `AuthWorkflow`'s rendered `ctx.public`, then run the app's hook.
+    const beforePersist = opts.beforePersist ?? base.beforePersist;
+    hooks.beforePersist = (state: WfState, pause: WfPauseRequest) => {
+      state.context = withoutPublicProjection(state.context);
+      return beforePersist?.(state, pause);
+    };
     const around = opts.around ?? base.around;
     // The allow list is enforced here (start + resume, normalised ids, `[]` =
     // deny all), not forwarded to the outlet handler.

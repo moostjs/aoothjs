@@ -21,6 +21,12 @@ export interface AuthSmsEvent {
   ttlMs: number;
   /** User id when known (omitted for pre-resolved flows). */
   userId?: string;
+  /**
+   * The locale of the request that emitted the event (moost `useLocale()`),
+   * for a localized text. Absent outside a request or when the request has
+   * no locale.
+   */
+  locale?: string;
 }
 
 /**

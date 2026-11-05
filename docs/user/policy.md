@@ -18,6 +18,8 @@ interface PasswordPolicyDef {
   serialized?: string; // client copy, built by definePasswordPolicy; absent = backend-only
   description?: string; // shown in PolicyCheckResult / POLICY_VIOLATION details
   errorMessage?: string; // user-friendly failure message
+  code?: string; // since 0.2.5 — message code for translation (built-ins: PP_*)
+  params?: Readonly<Record<string, string | number>>; // the code's placeholder values
 }
 
 type PasswordPolicyEvalFn = (
@@ -55,11 +57,14 @@ function definePasswordPolicy<A extends readonly unknown[]>(opts: {
   args?: A;
   description?: string;
   errorMessage?: string;
+  code?: string; // since 0.2.5
+  params?: Readonly<Record<string, string | number>>; // since 0.2.5
 }): PasswordPolicyDef;
 ```
 
 - **Server side:** `rule` is called directly as `rule(password, ...args)`. There is no sandbox and no `eval`.
 - **Client side:** when you pass `args`, the policy gets a `serialized` string, `(v) => (<rule source>)(v, <args as JSON>)`. `getTransferablePolicies()` sends this string to the client. Arguments are passed by position, so the serialized form keeps working when a bundler or minifier renames the function's parameters.
+- **Translation:** `code` names the policy's texts for a translator — `errorMessage` by `code`, `description` by `<code>_DESCRIPTION`, both filled with `params`; the English texts are the fallback. See [Messages & Localization — password policies](/moost/messages#password-policies).
 - **Backend-only:** if you omit `args`, the policy has no `serialized` form and `transferable` is `false`. The client skips it and only the server enforces it. Use `args: []` for a transferable rule that takes no arguments.
 
 ```ts
@@ -135,6 +140,8 @@ const users = new UserService(store, {
 });
 ```
 
+Each factory carries a `PP_*` code and params (since 0.2.5); their English templates are exported as `PASSWORD_POLICY_MESSAGES`. Codes and params: [Messages & Localization](/moost/messages#password-policies).
+
 Source: [`packages/user/src/password/policies.ts`](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/password/policies.ts).
 
 ## How `UserService` runs policies
@@ -142,7 +149,7 @@ Source: [`packages/user/src/password/policies.ts`](https://github.com/moostjs/ao
 `changePassword` / `setPassword`:
 
 1. Call `checkPolicies(newPassword, passwordData)` — runs every policy, collects results.
-2. If any policy returns `false`, throw `UserAuthError("POLICY_VIOLATION", message, { policies: [{ description, passed }, ...] })`. The `message` is the failing policies' `errorMessage`s joined with `"; "`.
+2. If any policy returns `false`, throw `UserAuthError("POLICY_VIOLATION", message, { policies: [{ description, passed, errorMessage, code?, params? }, ...] })` (`errorMessage`, `code`, `params` since 0.2.5). The `message` is the failing policies' `errorMessage`s joined with `"; "`.
 3. Then check history (`PASSWORD_IN_HISTORY`).
 
 ```ts
@@ -174,6 +181,8 @@ interface TransferablePolicy {
   rule: string; // the serialized function literal: "(v) => (...)(v, ...args)"
   description?: string;
   errorMessage?: string;
+  code?: string; // since 0.2.5
+  params?: Readonly<Record<string, string | number>>; // since 0.2.5
 }
 
 users.getTransferablePolicies(); // → TransferablePolicy[]

@@ -1,6 +1,7 @@
 import {
   parseRateLimitRule,
   pickGoverning,
+  RATE_LIMIT_MESSAGES,
   type RateLimitDecision,
   RateLimiter,
   type RateLimitRule,
@@ -8,9 +9,11 @@ import {
 } from "@aooth/auth";
 import type { EventContext } from "@wooksjs/event-core";
 import { current, eventTypeKey } from "@wooksjs/event-core";
-import { HttpError, resolveForwarded, useRequest, useResponse } from "@wooksjs/event-http";
+import { resolveForwarded, useRequest, useResponse } from "@wooksjs/event-http";
 import {
   defineBeforeInterceptor,
+  formatMessage,
+  registerMessages,
   type TInterceptorDef,
   TInterceptorPriority,
   useControllerContext,
@@ -19,6 +22,9 @@ import {
 import { useAuth } from "../auth.composables";
 import { getRateLimitSubject, rateLimitDecisionKey, rateLimitPhasesKey } from "./composables";
 import type { RateLimitKeyStrategy, TRateLimitMeta, TRateLimitPolicy } from "./mate";
+import { codedHttpError } from "../http-messages";
+
+registerMessages(RATE_LIMIT_MESSAGES);
 
 export interface RateLimitInterceptorOptions {
   /**
@@ -44,7 +50,12 @@ export interface RateLimitInterceptorOptions {
   trustProxy?: boolean;
   /** Emit draft `RateLimit-*` headers on every response of a limited route. Default: `true`. */
   headers?: boolean;
-  /** App-wide default 429 message template (placeholders `{{limit}}`, `{{window}}`, `{{delta}}`). */
+  /**
+   * App-wide default 429 message template (placeholders `{{limit}}`,
+   * `{{window}}`, `{{delta}}` humanized; `{limit}`, `{window}`, `{retryAfter}`
+   * in seconds). Under a moost translator the body is translated by its
+   * `RATE_LIMITED` code, which replaces this English text.
+   */
   message?: string;
 }
 
@@ -211,11 +222,12 @@ export function rateLimitInterceptors(opts?: RateLimitInterceptorOptions): TInte
 
     if (!decision.allowed) {
       response.setHeader("retry-after", String(Math.ceil(decision.resetAfterMs / 1000)));
-      throw new HttpError(429, {
-        message: decision.message ?? "Too many requests",
-        code: decision.code ?? "RATE_LIMITED",
-        ...(decision.params && { params: decision.params }),
-      });
+      throw codedHttpError(
+        429,
+        decision.code ?? "RATE_LIMITED",
+        decision.message ?? formatMessage(RATE_LIMIT_MESSAGES.RATE_LIMITED, decision.params),
+        decision.params,
+      );
     }
   };
 

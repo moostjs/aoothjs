@@ -1,4 +1,3 @@
-import { HttpError } from "@moostjs/event-http";
 import type { EventContext } from "@wooksjs/event-core";
 import { current, key } from "@wooksjs/event-core";
 import { useControllerContext } from "moost";
@@ -11,6 +10,7 @@ import {
 } from "./arbac.evaluate";
 import type { TArbacMeta } from "./arbac.mate";
 import type { VisibilityTableSource } from "./db/visibility";
+import { arbacHttpError } from "./messages";
 
 /**
  * Writable slot holding the evaluated scopes for the current event.
@@ -194,7 +194,7 @@ export const useArbac = (_ctx?: EventContext): ArbacBindings => {
     if (!result.allowed) {
       const r = opts?.resource || resource;
       const a = opts?.action || action;
-      throw new HttpError(403, `Forbidden: ${r}/${a}`);
+      throw arbacHttpError(403, "ARBAC_FORBIDDEN", { resource: r, action: a });
     }
     return { ...result, allowed: true };
   };

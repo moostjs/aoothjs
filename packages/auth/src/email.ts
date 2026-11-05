@@ -35,6 +35,12 @@ export interface AuthEmailEvent {
   username?: string;
   /** Free-form payload (e.g. invite-side `roles: string[]`, notify-side `ip`). */
   metadata?: Record<string, unknown>;
+  /**
+   * The locale of the request that emitted the event (moost `useLocale()`),
+   * for a localized email. Absent outside a request or when the request has
+   * no locale.
+   */
+  locale?: string;
 }
 
 /**

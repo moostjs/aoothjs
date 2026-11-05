@@ -33,6 +33,8 @@
 import type { AuthEmailEvent, AuthEmailKind, BuildMagicLinkUrl, EmailSender } from "@aooth/auth";
 import { createEmailOutlet, type WfOutlet } from "@moostjs/event-wf";
 
+import { currentLocale } from "../workflow/auth-messages";
+
 export interface AuthEmailOutletDeps {
   emailSender: EmailSender;
   buildMagicLinkUrl: BuildMagicLinkUrl;
@@ -71,6 +73,8 @@ export function createAuthEmailOutlet(deps: AuthEmailOutletDeps): WfOutlet {
     if (typeof opts.context?.username === "string") {
       event.username = opts.context.username;
     }
+    const locale = currentLocale();
+    if (locale !== undefined) event.locale = locale;
     const rolesRaw = opts.context?.roles;
     if (Array.isArray(rolesRaw)) {
       const roles = rolesRaw.filter((r): r is string => typeof r === "string");

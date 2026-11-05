@@ -7,6 +7,7 @@ import { HttpError } from "@moostjs/event-http";
 import type { ArbacDbScope } from "./as-arbac-db-controller";
 import { getOrCreate, isPatchAction, isScalar } from "./helpers";
 import { evaluateTypeRead } from "./relation-policy";
+import { arbacHttpError } from "../messages";
 
 /*
  * `checkRefs` — FK target checks (opt-in per write scope, since 0.1.72).
@@ -114,7 +115,7 @@ function readPath(row: Record<string, unknown>, path: string): unknown {
 }
 
 function outOfScope(fk: RefForeignKey): HttpError {
-  return new HttpError(403, `Referenced row "${fk.fields.join(", ")}" is outside your scope`);
+  return arbacHttpError(403, "REFERENCE_OUT_OF_SCOPE", { fields: fk.fields.join(", ") });
 }
 
 /** A patch row touches `fk` in part only — its tuple is completed from the pre-image. */

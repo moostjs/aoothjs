@@ -2,6 +2,20 @@
 
 Load when bumping `@aooth/*`, when an app "worked before" an upgrade, or when writing code against an older aooth. All `@aooth/*` packages share one version — bump them together, with the matching ecosystem line ([ecosystem.md](./ecosystem.md) § Peer dependencies).
 
+## 0.2.5 — localization through the moost translator; `$from` gates
+
+Peers: `moost` / `@moostjs/*` `^0.7.3` (translator API), `@wooksjs/*` `^0.8.1`, `@atscript/typescript` `^0.2.6`. No action needed until the app calls moost `setTranslator`; then:
+
+- Workflow texts: `messages` → translator (request locale) → English. Every 4xx `HttpError` has `code` + `params` (new `AOOTH_HTTP_MESSAGES`, `ARBAC_MESSAGES`); `MoostHttp` translates error bodies by code → `message` may be localized: branch on `code`.
+- Password policies carry `PP_*` codes; `PolicyCheckResult.policies[]` / `POLICY_VIOLATION` `params.policies[]` gain `errorMessage?`, `code?`, `params?`.
+- New workflow codes (English unchanged): `SET_PASSWORD_*_{HEADING,INTRO}`, `CHANGE_PASSWORD_{HEADING,INTRO}`, `ACCOUNT_CREATED`, `UNKNOWN_SSO_PROVIDER`, `TOTP_NOT_CONFIGURED`, `CODE_EXPIRED`, `TOO_MANY_CODE_ATTEMPTS`, `ADDRESS_REQUIRED`, `INVALID_EMAIL_ADDRESS`, `INVALID_PHONE_NUMBER`, `OTP_DISCLOSURE_{EMAIL,PHONE}`, `LAST_MFA_METHOD_NOT_REMOVABLE`, `MFA_METHOD_*`.
+- **Hook change:** `resolveSetPasswordCopy()` default returns codes (`{ headingCode, introCode }`, type `SetPasswordCopy`), not text; returned `heading`/`intro` text wins and is shown as is. `resolveAccept()` default has no `confirmationMessage` (rendered from `ACCOUNT_CREATED`). State never holds translations: `WfTriggerProvider` strips the rendered `ctx.public` projection in `beforePersist` (an app's own `beforePersist` still runs, after the strip).
+- Rate limiter: default 429 text `RATE_LIMIT_MESSAGES.RATE_LIMITED` = `"Too many requests. Retry after {retryAfter} s."` (was "Please try again in {{delta}}", humanized); rule messages accept `{limit}`/`{window}`/`{retryAfter}`; under a translator a rule's English `message` is replaced by the `RATE_LIMITED` translation.
+- `AuthEmailEvent` / `AuthSmsEvent` / `AuthDeliveryPayload` gain `locale?` — copy it when mapping `deliver()` payloads.
+- ARBAC: `controls.$from` boolean gate (403 `CONTROL_NOT_ALLOWED`); outer `$groupBy` on inner columns passes a `$groupBy` whitelist (was 403); `/meta` prunes `nestedAggregates` / `from` / `conditionalAggregates` / `distinctFieldLists` with the gates.
+
+See [messages.md](./messages.md), [db-controllers.md](./db-controllers.md).
+
 ## 0.2.4 — insert read-back; reads under write handlers 403
 
 **Breaking:** on an ARBAC DB controller, a read (`this.getOne/getOneComposite/query/pages/geo`) inside an `insert` / `update` / `replace` / `remove` / `removeComposite` override → **403** (it used to run under the WRITE grant; the 403 comes after the committed write). Migration: `await super.update(payload); return readBackUnderReadGrant(id, () => this.getOne(String(id), ""))` — the read grant on the `/one` handler; `undefined` when not allowed.

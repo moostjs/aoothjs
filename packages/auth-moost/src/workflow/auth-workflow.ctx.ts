@@ -8,6 +8,8 @@
  */
 import type { FederatedProfileSnapshot, TransferablePolicy } from "@aooth/user";
 
+import type { AoothMessageCode } from "./auth-messages";
+
 export type MfaTransport = "sms" | "email" | "totp";
 
 /** Per-user MFA method summary surfaced to forms via `@wf.context.pass 'mfa'`. */
@@ -127,8 +129,14 @@ export interface AuthWfMfaEnrollState {
 export interface AuthWfPasswordUiState {
   policies?: TransferablePolicy[];
   changeReason?: "initial" | "expired" | "reset";
+  /** The app's own heading (`resolveSetPasswordCopy`), shown as is; wins over `headingCode`. */
   heading?: string;
+  /** The app's own intro, shown as is; wins over `introCode`. */
   intro?: string;
+  /** The default heading's message code — rendered through `msg()` in each request's language. */
+  headingCode?: AoothMessageCode;
+  /** The default intro's message code. */
+  introCode?: AoothMessageCode;
 }
 
 /**
@@ -374,6 +382,7 @@ export interface AuthWfAcceptState {
   alreadyAcceptedRedirectUrl?: string;
   loginUrl?: string;
   showConfirmation?: boolean;
+  /** The app's own confirmation text, shown as is; default: `ACCOUNT_CREATED`, rendered per request. */
   confirmationMessage?: string;
   alreadyAccepted?: boolean;
   /** `inviteUsername: 'choose'` — the invitee picks their username at accept. */

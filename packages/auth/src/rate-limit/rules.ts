@@ -33,13 +33,16 @@ export type RateLimitRuleInput =
 export type RateLimitErrorCode = "RATE_LIMITED";
 
 /**
- * Default English message template per rate-limit code. The 429 body carries
- * the `code` and its {@link RateLimitParams}, so a client or a server-side
- * error-body hook can translate the rejection without parsing this text.
+ * Default English message template per rate-limit code, with `{name}`
+ * placeholders filled from the 429's {@link RateLimitParams}. The 429 body
+ * carries the `code` and those params, so a client or a server-side
+ * error-body hook can translate the rejection without parsing this text
+ * (`@aooth/auth-moost` registers this catalogue with moost's
+ * `registerMessages`).
  */
-export const RATE_LIMIT_MESSAGES: Readonly<Record<RateLimitErrorCode, string>> = {
-  RATE_LIMITED: "Too many requests. Please try again in {{delta}}.",
-};
+export const RATE_LIMIT_MESSAGES: Readonly<Record<RateLimitErrorCode, string>> = Object.freeze({
+  RATE_LIMITED: "Too many requests. Retry after {retryAfter} s.",
+});
 
 /** The built-in 429 message template (`RATE_LIMIT_MESSAGES.RATE_LIMITED`). */
 export const DEFAULT_RATE_LIMIT_MESSAGE = RATE_LIMIT_MESSAGES.RATE_LIMITED;
@@ -162,16 +165,29 @@ export function parseRateLimitRule(input: RateLimitRuleInput): RateLimitRule {
 
 /**
  * Render a 429 message template. Placeholders: `{{limit}}` (alias `{{max}}`),
- * `{{window}}` and `{{delta}}` — both humanized via {@link formatDurationMs}.
+ * `{{window}}` and `{{delta}}` — both humanized via {@link formatDurationMs};
+ * and the 429's params `{limit}`, `{window}` and `{retryAfter}` (seconds),
+ * the `{name}` form a translator uses.
  */
 export function renderRateLimitMessage(
   template: string,
   rule: RateLimitRule,
   retryAfterMs: number,
 ): string {
+  const params: Record<string, number> = rateLimitParams(rule, retryAfterMs);
   return template
     .replaceAll("{{limit}}", String(rule.limit))
     .replaceAll("{{max}}", String(rule.limit))
     .replaceAll("{{window}}", formatDurationMs(rule.window))
-    .replaceAll("{{delta}}", formatDurationMs(retryAfterMs));
+    .replaceAll("{{delta}}", formatDurationMs(retryAfterMs))
+    .replace(/\{(limit|window|retryAfter)\}/g, (_, name: string) => String(params[name]));
+}
+
+/** The 429's `{limit}`, `{window}` (s) and `{retryAfter}` (s) params. */
+export function rateLimitParams(rule: RateLimitRule, retryAfterMs: number) {
+  return {
+    limit: rule.limit,
+    window: rule.window / 1000,
+    retryAfter: Math.ceil(retryAfterMs / 1000),
+  };
 }

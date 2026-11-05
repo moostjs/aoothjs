@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { fakeClock } from "../__test__/fake-clock";
 import { RateLimiter } from "./rate-limiter";
+import { RATE_LIMIT_MESSAGES } from "./rules";
 import { RateLimitStoreMemory } from "./store";
 
 describe("RateLimiter", () => {
@@ -94,7 +95,7 @@ describe("RateLimiter", () => {
 
     await limiter.check("r3", "s", ["1/1m"]);
     const builtIn = await limiter.check("r3", "s", ["1/1m"]);
-    expect(builtIn.message).toBe("Too many requests. Please try again in 30 seconds.");
+    expect(builtIn.message).toBe("Too many requests. Retry after 30 s.");
   });
 
   it("a rejection carries code RATE_LIMITED and the violated rule's params (seconds)", async () => {
@@ -133,6 +134,36 @@ describe("RateLimiter", () => {
     await limiter.check("r", "s", ["1/1m"]);
     const second = new RateLimiter({ store, clock });
     expect((await second.check("r", "s", ["1/1m"])).allowed).toBe(false);
+  });
+});
+
+describe("RATE_LIMIT_MESSAGES", () => {
+  // The code's template (moost `{name}` syntax, what translators and `$i18n`
+  // see) fills to exactly the English body with the 429's own params.
+  const fill = (template: string, params: Record<string, unknown>) =>
+    template.replace(/\{(\w+)\}/g, (m, name: string) =>
+      name in params ? String(params[name]) : m,
+    );
+
+  it("the built-in body is the RATE_LIMITED template filled with the body's params", async () => {
+    const clock = fakeClock();
+    const limiter = new RateLimiter({ clock });
+    await limiter.check("r", "s", ["1/5m"]);
+    clock.advance(28_000);
+    const rejected = await limiter.check("r", "s", ["1/5m"]);
+    expect(rejected.params).toMatchObject({ retryAfter: 272 });
+    expect(rejected.message).toBe("Too many requests. Retry after 272 s.");
+    expect(fill(RATE_LIMIT_MESSAGES.RATE_LIMITED, rejected.params!)).toBe(rejected.message);
+  });
+
+  it("custom messages may use the same {limit} / {window} / {retryAfter} placeholders (seconds)", async () => {
+    const clock = fakeClock();
+    const limiter = new RateLimiter({ clock });
+    const rule = "1/1m | {limit} per {window}s, retry in {retryAfter}s ({{delta}})";
+    await limiter.check("r", "s", [rule]);
+    clock.advance(30_000);
+    const rejected = await limiter.check("r", "s", [rule]);
+    expect(rejected.message).toBe("1 per 60s, retry in 30s (30 seconds)");
   });
 });
 

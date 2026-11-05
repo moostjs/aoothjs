@@ -12,6 +12,7 @@ export { conjoinScopeFilters } from "@aooth/arbac";
 export * from "./arbac.composables";
 export * from "./arbac.decorator";
 export * from "./arbac.mate";
+export { ARBAC_MESSAGES, type ArbacMessageCode } from "./messages";
 export {
   type AoothArbacClaims,
   conjoinArbacDbScopes,

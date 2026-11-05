@@ -1,11 +1,16 @@
+import { tryGetCurrent, useLocale } from "@wooksjs/event-core";
+import { formatMessage, registerMessages, useTranslate } from "moost";
+
 /**
  * Code-keyed catalogue of every user-facing text `AuthWorkflow` produces —
  * form errors, banners, finish envelopes and button labels. Templates are
  * English; `{name}` placeholders are filled from the message params.
  *
+ * Registered with moost's `registerMessages` on import, so a moost translator
+ * (`setTranslator`) translates every code and `$i18n` serves the templates.
  * Override per app with `AuthWorkflowOpts.messages` (a partial map, or a
- * function that receives the code and params and returns the text — e.g. a
- * lookup in your own i18n library), or override `AuthWorkflow.msg()`.
+ * function that receives the code and params and returns the text), or
+ * override `AuthWorkflow.msg()`.
  */
 export const AOOTH_MESSAGES = {
   // ── Sign-in ──
@@ -18,6 +23,8 @@ export const AOOTH_MESSAGES = {
 
   // ── Codes (MFA / OTP) ──
   INVALID_CODE: "Invalid code",
+  CODE_EXPIRED: "Code expired",
+  TOO_MANY_CODE_ATTEMPTS: "Too many invalid attempts. Please request a new code.",
   /** Params: `seconds`. */
   RESEND_WAIT: "Please wait {seconds}s before requesting a new code.",
   /** Params: `seconds`. */
@@ -25,6 +32,17 @@ export const AOOTH_MESSAGES = {
   /** Params: `seconds`, `channel` (`SMS` / `email`). */
   RESEND_WAIT_CHANNEL: "Please wait {seconds}s before requesting another {channel} code",
   TOTP_RESEND_NOT_APPLICABLE: "Resend is not applicable for TOTP",
+  /** HTTP 400 — a TOTP code submitted for an account without TOTP. */
+  TOTP_NOT_CONFIGURED: "No TOTP MFA configured",
+
+  // ── Contact addresses (MFA / channel enrolment) ──
+  ADDRESS_REQUIRED: "This field is required",
+  INVALID_EMAIL_ADDRESS: "Enter a valid email address",
+  INVALID_PHONE_NUMBER: "Enter a valid phone number",
+  OTP_DISCLOSURE_EMAIL:
+    "By providing your email address, you consent to receive one-time security codes from us via email. Standard email delivery may apply.",
+  OTP_DISCLOSURE_PHONE:
+    "By providing your phone number, you consent to receive one-time security codes from us via SMS. Message and data rates may apply.",
 
   // ── MFA management ──
   UNKNOWN_MFA_METHOD: "Unknown MFA method",
@@ -35,6 +53,17 @@ export const AOOTH_MESSAGES = {
   CHOOSE_OPTION: "Choose an option",
   ALL_MFA_METHODS_SET_UP: "You've already set up every available authentication method.",
   NO_MFA_CHANGES: "No changes were made to your two-factor methods.",
+  LAST_MFA_METHOD_NOT_REMOVABLE:
+    "You must keep at least one two-factor method, so this one can't be removed.",
+  MFA_METHOD_TOTP: "Authenticator app",
+  MFA_METHOD_EMAIL: "Email code",
+  MFA_METHOD_SMS: "Text-message code",
+  /** Params: `method` (the method's label). */
+  MFA_METHOD_ADDED: "{method} added.",
+  /** Params: `method`. */
+  MFA_METHOD_UPDATED: "{method} updated.",
+  /** Params: `method`. */
+  MFA_METHOD_REMOVED: "{method} removed.",
 
   // ── Passwords ──
   PASSWORDS_DO_NOT_MATCH: "Passwords do not match",
@@ -44,13 +73,30 @@ export const AOOTH_MESSAGES = {
   PASSWORD_UPDATED_STILL_LOCKED:
     "Password updated, but your account is still locked. Contact an administrator to regain access.",
 
+  // ── Password screens (heading + intro) ──
+  CHANGE_PASSWORD_HEADING: "Change your password",
+  CHANGE_PASSWORD_INTRO: "Enter your current password, then choose a new one.",
+  SET_PASSWORD_EXPIRED_HEADING: "Your password has expired",
+  SET_PASSWORD_EXPIRED_INTRO:
+    "Choose a new password to continue. The previous one is no longer valid.",
+  SET_PASSWORD_RESET_HEADING: "Reset your password",
+  SET_PASSWORD_RESET_INTRO: "Choose a new password for your account.",
+  SET_PASSWORD_INVITE_HEADING: "Welcome — set your password",
+  SET_PASSWORD_INVITE_INTRO: "Choose a password to activate your account.",
+  SET_PASSWORD_INITIAL_HEADING: "Set your initial password",
+  SET_PASSWORD_INITIAL_INTRO:
+    "Your account was created without a password. Choose one to continue.",
+
   // ── Recovery / signup ──
   RECOVERY_INSTRUCTIONS_SENT: "If an account exists, you will receive instructions.",
   SIGNUP_DISABLED: "Self-signup is currently disabled.",
   ALREADY_HAVE_ACCOUNT: "You already have an account. Please sign in.",
   ACCOUNT_LINKED: "Account linked.",
+  /** HTTP 400 — the SSO alt action named a provider that is not offered. */
+  UNKNOWN_SSO_PROVIDER: "Unknown SSO provider",
 
   // ── Invites ──
+  ACCOUNT_CREATED: "Your account has been created.",
   INVALID_ROLE: "Invalid role",
   INVITE_ALREADY_PENDING: "Invite already pending",
   USER_ALREADY_EXISTS: "User already exists",
@@ -75,6 +121,8 @@ export const AOOTH_MESSAGES = {
   GO_NOW: "Go now",
 } as const;
 
+registerMessages(AOOTH_MESSAGES);
+
 /** A message code of {@link AOOTH_MESSAGES}. */
 export type AoothMessageCode = keyof typeof AOOTH_MESSAGES;
 
@@ -91,13 +139,15 @@ export type AoothMessages =
   | ((code: AoothMessageCode, params: AoothMessageParams) => string | undefined);
 
 /** Fill `{name}` placeholders from `params`; unknown placeholders are kept. */
-export function renderAoothMessage(template: string, params: AoothMessageParams = {}): string {
-  return template.replace(/\{(\w+)\}/g, (whole, name: string) =>
-    Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : whole,
-  );
+export function renderAoothMessage(template: string, params?: AoothMessageParams): string {
+  return formatMessage(template, params);
 }
 
-/** Resolve `code` through `messages` (when given), falling back to the English template. */
+/**
+ * Resolve `code`: `messages` (the app's override, when given), then moost's
+ * translator in the current event's locale (`useTranslate`), then the English
+ * template. Outside an event the translator is skipped.
+ */
 export function resolveAoothMessage(
   code: AoothMessageCode,
   params: AoothMessageParams = {},
@@ -109,5 +159,24 @@ export function resolveAoothMessage(
   } else if (messages?.[code] !== undefined) {
     return renderAoothMessage(messages[code], params);
   }
-  return renderAoothMessage(AOOTH_MESSAGES[code], params);
+  return translateCode(code, params, renderAoothMessage(AOOTH_MESSAGES[code], params));
+}
+
+/** The current event's locale (`useLocale()`); `undefined` outside an event. */
+export function currentLocale(): string | undefined {
+  const event = tryGetCurrent();
+  return event ? useLocale(event).get() : undefined;
+}
+
+/**
+ * `code` through moost's translator in the current event's locale, else
+ * `english` (the filled English text). Outside an event: `english`.
+ */
+export function translateCode(
+  code: string,
+  params: Readonly<Record<string, unknown>> | undefined,
+  english: string,
+): string {
+  const event = tryGetCurrent();
+  return event ? useTranslate(event)(code, params, english) : english;
 }

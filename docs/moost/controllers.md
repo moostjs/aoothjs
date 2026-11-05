@@ -63,7 +63,7 @@ Response: `{ "ok": true }`.
 
 Behaviour:
 
-1. If `useAuth().getAuthContext()` is null → `throw HttpError(401, "Not authenticated")`. (Defence-in-depth — the route is `@Public()` only so the handler is reachable.)
+1. If `useAuth().getAuthContext()` is null → `throw HttpError(401, "Not authenticated")` (`code: "NOT_AUTHENTICATED"`). (Defence-in-depth — the route is `@Public()` only so the handler is reachable.)
 2. **Ends THIS device's whole session family.** Resolves the current `sessionId` from the auth context and best-effort calls `auth.revokeSession(userId, sessionId)` — revoking every token in the family (access + refresh + all rotations) on a store that can enumerate. This is what "log out" means now that a session is a token family: the SPA can't read the httpOnly refresh cookie, and that cookie's narrow path keeps it off `/auth/logout`, so the token-level revokes below can't reach the refresh credential on their own.
 3. **Token-level fallback.** Pulls the access token via `useAuth().extractToken()` and a `refreshToken` from the body, and best-effort revokes each. This covers stateless stores (where `revokeSession` is a no-op) and is a harmless no-op once the family is already gone. Failures are silently swallowed (logout must not block on a denied revoke).
 4. Calls `useAuth().clearCookies()` to clear both `Set-Cookie` headers.
@@ -90,8 +90,8 @@ Response: `AuthLoginResponse`.
 Behaviour:
 
 1. Pulls `refreshToken` from the body, falls back to the refresh cookie (path-scoped so it actually arrives here).
-2. If missing → 401 `Missing refresh token`.
-3. Calls `auth.refresh(refreshToken)`. On `AuthError` → 401 `Invalid refresh token`.
+2. If missing → 401 `Missing refresh token` (`MISSING_REFRESH_TOKEN`).
+3. Calls `auth.refresh(refreshToken)`. On `AuthError` → 401 `Invalid refresh token` (`INVALID_REFRESH_TOKEN`).
    When the refused token came from the refresh **cookie**, the 401 also clears **both** auth cookies (`Max-Age=0`, since 0.2.1), so a dead refresh cookie doesn't linger in a [persistent](./config#persistent-cookies-stay-signed-in) jar. A refused body token, or a request that carried no refresh token at all (such as a cross-site form POST), leaves the cookies alone. Either way, treat a 401 here as "signed out" and send the user to login.
 4. Writes new `Set-Cookie` for both access + refresh via `useAuth().writeCookies(issue)` (persistent cookies get a fresh `Max-Age` — see [Config — persistent cookies](./config#persistent-cookies-stay-signed-in)).
 5. Returns `useAuth().buildLoginResponse(userId, issue)` — `userId` + expiry timestamps, plus `accessToken` / `refreshToken` only when `exposeTokensInBody` is on (default `!enableCookie`).

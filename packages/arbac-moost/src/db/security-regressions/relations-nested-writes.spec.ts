@@ -150,6 +150,7 @@ describe("nested writes are forbidden unless the scope lists the relation", () =
     const res = await send(http, method, path, body);
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.message).toBe(`Nested writes through "${rel}" are not allowed`);
+    expect(res.body).toMatchObject({ code: "NESTED_WRITE_NOT_ALLOWED", params: { relation: rel } });
     expect(await snapshot()).toEqual(before);
   });
 });

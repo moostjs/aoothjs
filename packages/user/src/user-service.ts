@@ -14,6 +14,7 @@ import type {
   MfaMethodInfo,
   PasswordConfig,
   PasswordData,
+  PasswordPolicyDef,
   PolicyCheckResult,
   TotpConfig,
   TransferablePolicy,
@@ -509,7 +510,12 @@ export class UserService<T extends object = object> {
         passwordConfig: this.config.password,
       });
       result.passed = result.passed && passed;
-      result.policies.push({ description: policy.description, passed });
+      result.policies.push({
+        description: policy.description,
+        passed,
+        errorMessage: policy.errorMessage,
+        ...policyCodeOf(policy),
+      });
       if (!passed) result.errors.push(policy.errorMessage);
     }
     return result;
@@ -525,6 +531,7 @@ export class UserService<T extends object = object> {
         rule: p.serialized as string,
         description: p.description,
         errorMessage: p.errorMessage,
+        ...policyCodeOf(p),
       }));
   }
 
@@ -1123,4 +1130,9 @@ function observeWrites<T extends object>(
       return fn;
     },
   });
+}
+
+/** A policy's message `code` / `params`, when it has them. */
+function policyCodeOf({ code, params }: Pick<PasswordPolicyDef, "code" | "params">) {
+  return { ...(code !== undefined && { code }), ...(params !== undefined && { params }) };
 }

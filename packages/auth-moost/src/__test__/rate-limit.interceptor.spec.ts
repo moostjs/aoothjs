@@ -228,7 +228,7 @@ describe("rateLimitInterceptors", () => {
       statusCode: 429,
       code: "RATE_LIMITED",
       params: { policy: "RlController.publicRoute", limit: 2, window: 60, retryAfter: 45 },
-      message: "Too many requests. Please try again in 45 seconds.",
+      message: "Too many requests. Retry after 45 s.",
     });
     // `retryAfter` is the Retry-After header's value.
     expect(rejected.headers["retry-after"]).toBe(String(rejected.thrown?.body.params?.retryAfter));

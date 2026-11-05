@@ -1,13 +1,30 @@
-import { UserAuthError, type UserAuthErrorType } from "@aooth/user";
+import {
+  PASSWORD_POLICY_MESSAGES,
+  type TransferablePolicy,
+  UserAuthError,
+  type UserAuthErrorType,
+} from "@aooth/user";
 import { HttpError } from "@wooksjs/event-http";
-import { defineErrorInterceptor, type TInterceptorDef, TInterceptorPriority } from "moost";
+import {
+  defineErrorInterceptor,
+  registerMessages,
+  type TInterceptorDef,
+  TInterceptorPriority,
+} from "moost";
+
+import { translateCode } from "./workflow/auth-messages";
+
+registerMessages(PASSWORD_POLICY_MESSAGES);
 
 /** The body of an `HttpError` made by {@link userAuthErrorToHttp}. */
 export interface UserAuthErrorBody {
   message: string;
   /** The `UserAuthError` type (`"PASSWORD_IN_HISTORY"`, `"NOT_FOUND"`, …). */
   code: UserAuthErrorType;
-  /** `POLICY_VIOLATION`: `{ policies: [{ description, passed }] }` — every policy and its result. */
+  /**
+   * `POLICY_VIOLATION`: `{ policies: [{ description, passed, errorMessage, code?, params? }] }`
+   * — every policy and its result (`code` / `params`: the built-in policies' `PP_*` codes).
+   */
   params?: Record<string, unknown>;
   /** The form field the error belongs to (password errors only). */
   field?: "currentPassword" | "newPassword" | "confirmPassword";
@@ -67,11 +84,59 @@ export function userAuthErrorToHttp(err: UserAuthError): HttpError<UserAuthError
   const field = userAuthErrorField(err.type);
   const policies = err.type === "POLICY_VIOLATION" ? err.details?.policies : undefined;
   return new HttpError(STATUS[err.type], {
-    message: err.message,
+    message: userAuthErrorText(err),
     code: err.type,
     ...(policies !== undefined && { params: { policies } }),
     ...(field && { field }),
   });
+}
+
+/** A password policy's texts, as `checkPolicies` / `getTransferablePolicies` give them. */
+type PolicyTexts = Omit<TransferablePolicy, "rule">;
+
+/**
+ * A policy's texts in the request's locale (moost translator): `errorMessage`
+ * by its `code`, `description` by `${code}_DESCRIPTION` — by the text itself
+ * when the policy has no code. Unchanged without a translation.
+ */
+export function translatePolicyTexts<T extends PolicyTexts>(policy: T): T {
+  const { code, params, description, errorMessage } = policy;
+  const out = { ...policy };
+  if (description) {
+    out.description = translateCode(
+      code ? `${code}_DESCRIPTION` : description,
+      params,
+      description,
+    );
+  }
+  if (errorMessage) out.errorMessage = translatePolicyError(policy);
+  return out;
+}
+
+/** A policy's `errorMessage` in the request's locale, by its `code` (or the text itself). */
+function translatePolicyError({ code, params, errorMessage }: PolicyTexts): string | undefined {
+  return errorMessage && translateCode(code ?? errorMessage, params, errorMessage);
+}
+
+/**
+ * A `UserAuthError`'s text in the request's locale: a `POLICY_VIOLATION` lists
+ * its failed policies' translated `errorMessage`s (`; `-joined, like the
+ * English message) when at least one of them has a translation; otherwise —
+ * and for any other type — the error is translated by its type, its own
+ * message the fallback.
+ */
+export function userAuthErrorText(err: UserAuthError): string {
+  const policies = err.type === "POLICY_VIOLATION" ? err.details?.policies : undefined;
+  const failed = Array.isArray(policies)
+    ? (policies as Array<PolicyTexts & { passed?: boolean }>).filter((p) => p?.passed === false)
+    : [];
+  // Only when some failure actually gets translated: otherwise (no translator,
+  // or a hand-thrown error whose details lack texts) the error's own message.
+  if (failed.length > 0 && failed.every((p) => typeof p.errorMessage === "string")) {
+    const texts = failed.map((p) => translatePolicyError(p) as string);
+    if (texts.some((text, i) => text !== failed[i].errorMessage)) return texts.join("; ");
+  }
+  return translateCode(err.type, undefined, err.message);
 }
 
 /**

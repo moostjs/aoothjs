@@ -13,6 +13,7 @@ import type { VisibilityTableSource } from "./db/visibility";
 import type { RefTableSource } from "./db/write-refs";
 import { MoostArbac } from "./moost-arbac";
 import { ArbacUserProvider, ArbacUserProviderToken } from "./user.provider";
+import { arbacHttpError } from "./messages";
 
 /*
  * Internal evaluation core shared by `useArbac().evaluate()` and the DB
@@ -70,10 +71,7 @@ export function scopesOwnedBy(scopes: object, resource: string, action: string):
 
 /** The 403 every ARBAC deny answers. */
 export function insufficientPrivileges(resource: string, action: string): HttpError {
-  return new HttpError(
-    403,
-    `Insufficient privileges for action "${action}" on resource "${resource}"`,
-  );
+  return arbacHttpError(403, "INSUFFICIENT_PRIVILEGES", { action, resource });
 }
 
 /** An evaluation outcome as `useArbac().evaluate()` returns it. */

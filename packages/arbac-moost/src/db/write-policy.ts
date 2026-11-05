@@ -18,8 +18,7 @@ import {
 } from "./write-check";
 import { assertRefsInScope } from "./write-refs";
 import type { RefTableSource } from "./write-refs";
-
-const OUT_OF_SCOPE = "Row outside your write scope";
+import { arbacHttpError } from "../messages";
 
 /**
  * Nested writes through nav props are denied unless a write scope opts the
@@ -39,7 +38,7 @@ export function assertNestedWritesAllowed(
       const dot = key.indexOf(".");
       const rel = dot === -1 ? key : key.slice(0, dot);
       if (navFields.has(rel) && !effectiveScope(scopes).nestedWrites.has(rel)) {
-        throw new HttpError(403, `Nested writes through "${rel}" are not allowed`);
+        throw arbacHttpError(403, "NESTED_WRITE_NOT_ALLOWED", { relation: rel });
       }
     }
   }
@@ -89,7 +88,7 @@ export async function assertCheckBeforeWrite(
   try {
     predicate = compileScopeCheck(check);
   } catch (error) {
-    if (error instanceof UnsupportedCheckError) throw new HttpError(403, OUT_OF_SCOPE);
+    if (error instanceof UnsupportedCheckError) throw arbacHttpError(403, "ROW_OUT_OF_SCOPE");
     throw error;
   }
   const fields = isPatchAction(ctx.action) ? checkFields(check) : undefined;
@@ -99,7 +98,7 @@ export async function assertCheckBeforeWrite(
       )
     : ctx.rows;
   for (const image of images) {
-    if (!image || !predicate(image)) throw new HttpError(403, OUT_OF_SCOPE);
+    if (!image || !predicate(image)) throw arbacHttpError(403, "ROW_OUT_OF_SCOPE");
   }
 }
 
@@ -111,7 +110,7 @@ export async function assertWrittenRowsInCheck(
   if (ctx.filters.length === 0) return;
   const written = ctx.filters.length === 1 ? ctx.filters[0] : { $or: [...ctx.filters] };
   const n = await ctx.count({ $and: [written, check] });
-  if (n !== ctx.filters.length) throw new HttpError(403, OUT_OF_SCOPE);
+  if (n !== ctx.filters.length) throw arbacHttpError(403, "ROW_OUT_OF_SCOPE");
 }
 
 /**
@@ -160,7 +159,7 @@ export async function guardArbacWrite(
     // hides them from it: fail closed.
     const verdict = insertRowsVerdict(ctx.rows, eff.check);
     if (verdict === false || (verdict === undefined && ignoreConflicts)) {
-      throw new HttpError(403, OUT_OF_SCOPE);
+      throw arbacHttpError(403, "ROW_OUT_OF_SCOPE");
     }
   }
 }

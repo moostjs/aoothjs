@@ -97,7 +97,12 @@ describe("ArbacDbScope generic typing", () => {
         $sort: false,
         $rowOrder: true,
         $search: false,
+        $from: false,
       },
+    };
+    const _from: ArbacDbScope<TestTask> = {
+      // @ts-expect-error — `$from` takes no whitelist
+      controls: { $from: ["title"] },
     };
     const _select: ArbacDbScope<TestTask> = {
       // @ts-expect-error — `$select` takes no whitelist
@@ -111,7 +116,7 @@ describe("ArbacDbScope generic typing", () => {
       // @ts-expect-error — not a Uniquery control (never enforced)
       controls: { $filter: false },
     };
-    expect([_ok, _select, _having, _unknown]).toHaveLength(4);
+    expect([_ok, _select, _having, _unknown, _from]).toHaveLength(5);
   });
 
   // WHY: roles that already declare `ArbacDbScope` (no third type param to

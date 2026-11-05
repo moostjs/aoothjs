@@ -7,4 +7,6 @@ export {
   ppHasNumber,
   ppHasSpecialChar,
   ppMaxRepeatedChars,
+  PASSWORD_POLICY_MESSAGES,
+  type PasswordPolicyMessageCode,
 } from "./policies";

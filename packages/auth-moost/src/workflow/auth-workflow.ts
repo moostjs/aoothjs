@@ -68,6 +68,7 @@ import { ArbacAction, ArbacResource, useArbac } from "@aooth/arbac-moost";
 import { Controller, Inherit, Param, useControllerContext, useLogger } from "moost";
 
 import { useAuth } from "../auth.composables";
+import { codedHttpError } from "../http-messages";
 import { ConsentStore } from "../consent.store";
 import { Public } from "../auth.decorator";
 import { buildOAuthAuthorizeRequest, OAUTH_TTL_SEC } from "../oauth/oauth-authorize";
@@ -77,10 +78,16 @@ import { OAUTH_CSRF_COOKIE, oauthCsrfCookieAttrs, safeEqual } from "../oauth/oau
 import { resolveOAuthRedirect } from "../oauth/oauth-redirect";
 import { AuthorizeRuntime } from "../authz/authorize-runtime";
 import { OAuthRuntime } from "../oauth/oauth-runtime";
-import { userAuthErrorField, userAuthErrorToHttp } from "../user-errors";
+import {
+  translatePolicyTexts,
+  userAuthErrorField,
+  userAuthErrorText,
+  userAuthErrorToHttp,
+} from "../user-errors";
 import type {
   AuthWfCtx,
   AuthWfAltCredsPolicy,
+  AuthWfPasswordUiState,
   AuthWfPublicState,
   AuthzReauthPolicy,
   ConsentDescriptorLike,
@@ -88,11 +95,13 @@ import type {
   MfaTransport,
 } from "./auth-workflow.ctx";
 import type { AuthWorkflowOpts, ResolvedAuthWorkflowOpts } from "./auth-workflow.opts";
+import { markPublicProjection } from "./public-projection";
 import {
   AOOTH_MESSAGES,
   type AoothMessageCode,
   type AoothMessageParams,
   type AoothMessages,
+  currentLocale,
   resolveAoothMessage,
 } from "./auth-messages";
 import { INVITE_OUTLET, setPendingInviteLink } from "./invite-outlet";
@@ -133,12 +142,36 @@ import {
 } from "./auth-workflow.schemas";
 
 /**
+ * The set-password screen's copy ({@link AuthWorkflow.resolveSetPasswordCopy}):
+ * your own `heading` / `intro` text (shown as is), or message codes rendered
+ * through `msg()` in each request's language. Text wins over a code.
+ */
+export type SetPasswordCopy = Pick<AuthWfPasswordUiState, SetPasswordCopyKey>;
+
+type SetPasswordCopyKey = "heading" | "intro" | "headingCode" | "introCode";
+const SET_PASSWORD_COPY_KEYS: readonly SetPasswordCopyKey[] = [
+  "heading",
+  "intro",
+  "headingCode",
+  "introCode",
+];
+
+/**
  * Unified outbound-dispatch payload. Customers override `deliver(payload)` on
  * the `AuthWorkflow` subclass to route by `kind` (per-purpose templates) and
  * `channel` (email vs SMS). Replaces the prior workflow-specific deliver
  * payloads which carried slightly different field sets per call site.
  */
-export type AuthDeliveryPayload =
+export type AuthDeliveryPayload = AuthDeliveryPayloadOf & {
+  /**
+   * The locale of the request the delivery is sent from (moost
+   * `useLocale()`), for a localized message. Absent when the request has none.
+   */
+  locale?: string;
+};
+
+/** The {@link AuthDeliveryPayload} variants, by `kind`. */
+type AuthDeliveryPayloadOf =
   | {
       kind: "mfa-pincode";
       channel: "sms" | "email";
@@ -495,6 +528,13 @@ function readUsernameQueryParam(): string | undefined {
   }
 }
 
+/** The message code of each MFA method's label. */
+const MFA_METHOD_LABEL_CODES = {
+  totp: "MFA_METHOD_TOTP",
+  email: "MFA_METHOD_EMAIL",
+  sms: "MFA_METHOD_SMS",
+} as const satisfies Record<MfaTransport, AoothMessageCode>;
+
 /**
  * Subset-copy of `src` keyed by `keys`, omitting any key whose value is
  * `undefined`. Returns `undefined` when no key carries a value — keeps
@@ -577,22 +617,25 @@ export class AuthWorkflow {
   // ── Protected extension surface ─────────────────────────────────────────
 
   /**
-   * Resolve a user-facing text by code (`AOOTH_MESSAGES`) through
-   * `opts.messages`. Every form error, banner, finish message and button label
-   * the workflow produces goes through here — override for full control
-   * (e.g. to call your i18n library with the request's locale).
+   * Resolve a user-facing text by code (`AOOTH_MESSAGES`): `opts.messages`
+   * first, then moost's translator in the request's locale, then the English
+   * template. Every form error, banner, finish message and button label the
+   * workflow produces goes through here — override for full control.
    */
   protected msg(code: AoothMessageCode, params?: AoothMessageParams): string {
     return resolveAoothMessage(code, params, this.opts.messages);
   }
 
-  /** An `HttpError` whose body carries the message `code` next to its (resolved) text. */
-  protected httpError(status: 409 | 410, code: AoothMessageCode): HttpError {
-    return new HttpError(status, {
-      message: this.msg(code),
-      statusCode: status,
-      code,
-    } as ConstructorParameters<typeof HttpError>[1] & object);
+  /**
+   * An `HttpError` whose body carries the message `code` and `params` next to
+   * its (resolved) text, so an error-body translator can translate it by code.
+   */
+  protected httpError(
+    status: 400 | 409 | 410,
+    code: AoothMessageCode,
+    params?: AoothMessageParams,
+  ): HttpError {
+    return codedHttpError(status, code, this.msg(code, params), params);
   }
 
   /**
@@ -606,6 +649,12 @@ export class AuthWorkflow {
    */
   protected deliver(_payload: AuthDeliveryPayload): void | Promise<void> {
     return undefined;
+  }
+
+  /** {@link deliver} with the request's locale stamped on the payload. */
+  private dispatch(payload: AuthDeliveryPayload): void | Promise<void> {
+    const locale = currentLocale();
+    return this.deliver(locale === undefined ? payload : { ...payload, locale });
   }
 
   /**
@@ -624,7 +673,7 @@ export class AuthWorkflow {
   ): Promise<void> {
     const recipient = ctx.notice?.email;
     if (!recipient) return;
-    await this.deliver({
+    await this.dispatch({
       kind: "security-alert",
       channel: "email",
       recipient,
@@ -1292,17 +1341,18 @@ export class AuthWorkflow {
   /**
    * Resolve the channel-OTP disclosure copy rendered beneath the email/phone
    * input on `AskEmailForm` / `AskPhoneForm`. Reached from login.flow Phase 3.
-   * Default returns a TCPA / PECR / CASL / GDPR-safe English paragraph that is
+   * Default returns a TCPA / PECR / CASL / GDPR-safe paragraph that is
    * GENERIC per channel (no target templated in — the user hasn't submitted
-   * yet at ask-time).
+   * yet at ask-time): `OTP_DISCLOSURE_EMAIL` / `OTP_DISCLOSURE_PHONE` in the
+   * request's language. The text is kept in the workflow state as shown and
+   * recorded with the consent (`recordOtpChannelConsent`) — the one text the
+   * state keeps translated, because the record must be what the user saw.
    */
   protected resolveOtpDisclosure(
     _ctx: AuthWfCtx,
     channel: "email" | "phone",
   ): string | Promise<string> {
-    return channel === "phone"
-      ? "By providing your phone number, you consent to receive one-time security codes from us via SMS. Message and data rates may apply."
-      : "By providing your email address, you consent to receive one-time security codes from us via email. Standard email delivery may apply.";
+    return this.msg(channel === "phone" ? "OTP_DISCLOSURE_PHONE" : "OTP_DISCLOSURE_EMAIL");
   }
 
   /**
@@ -1341,7 +1391,10 @@ export class AuthWorkflow {
    * Resolve the invite accept-tail policy. Reached from invite.start accept
    * phase. `loginUrl` defaults to `this.opts.loginUrl`. Note: today's
    * `freshLoginRequired` field is GONE — the auto-login choice is the static
-   * `AuthWorkflowOpts.autoLoginOnInvite` boolean (per §2 decision).
+   * `AuthWorkflowOpts.autoLoginOnInvite` boolean (per §2 decision). Return
+   * `confirmationMessage` to replace the default confirmation text
+   * (`ACCOUNT_CREATED`, rendered in the finishing request's language) with your
+   * own, shown as is.
    */
   protected resolveAccept(
     _ctx: AuthWfCtx,
@@ -1350,40 +1403,36 @@ export class AuthWorkflow {
       alreadyAcceptedRedirectUrl: this.opts.loginUrl,
       loginUrl: this.opts.loginUrl,
       showConfirmation: true,
-      confirmationMessage: "Your account has been created.",
     };
   }
 
   /**
    * Copy (heading + intro) for the unified set-password screen, staged by
-   * `create-password-form` BEFORE the pause. Branches on the resolved
-   * `ctx.password.changeReason` (`expired` / `reset`), then invite-accept
-   * (`ctx.accept`), then the initial-password fallback. Override to re-brand any
-   * phase; return a partial (`{ heading }` only) to change one field and leave
-   * the other at whatever an earlier step staged, or `{}` to keep both as-is.
+   * `create-password-form` BEFORE the pause. The default picks message codes
+   * — `SET_PASSWORD_{EXPIRED,RESET,INVITE,INITIAL}_{HEADING,INTRO}` by the
+   * resolved `ctx.password.changeReason` (`expired` / `reset`), then
+   * invite-accept (`ctx.accept`), then the initial-password fallback — which
+   * are rendered through `msg()` in each request's language.
+   *
+   * Override to re-brand any phase: `heading` / `intro` are your own text,
+   * shown as is (they win over the codes); `headingCode` / `introCode` pick
+   * other codes. Return a partial to change one field and leave the other at
+   * whatever an earlier step staged (spread `super`'s result to keep the
+   * default for it), or `{}` to keep both as-is.
    */
-  protected resolveSetPasswordCopy(
-    ctx: AuthWfCtx,
-  ): { heading?: string; intro?: string } | Promise<{ heading?: string; intro?: string }> {
+  protected resolveSetPasswordCopy(ctx: AuthWfCtx): SetPasswordCopy | Promise<SetPasswordCopy> {
     const reason = ctx.password?.changeReason;
-    if (reason === "expired") {
-      return {
-        heading: "Your password has expired",
-        intro: "Choose a new password to continue. The previous one is no longer valid.",
-      };
-    }
-    if (reason === "reset") {
-      return { heading: "Reset your password", intro: "Choose a new password for your account." };
-    }
-    if (ctx.accept) {
-      return {
-        heading: "Welcome — set your password",
-        intro: "Choose a password to activate your account.",
-      };
-    }
+    const phase =
+      reason === "expired"
+        ? "EXPIRED"
+        : reason === "reset"
+          ? "RESET"
+          : ctx.accept
+            ? "INVITE"
+            : "INITIAL";
     return {
-      heading: "Set your initial password",
-      intro: "Your account was created without a password. Choose one to continue.",
+      headingCode: `SET_PASSWORD_${phase}_HEADING`,
+      introCode: `SET_PASSWORD_${phase}_INTRO`,
     };
   }
 
@@ -1638,6 +1687,7 @@ export class AuthWorkflow {
    *
    * Called via `throwPublic` immediately before every `requireInput`-style
    * pause so the FE always reads a fresh projection of the post-step ctx.
+   * `WfTriggerProvider` strips the projection before persisting the state.
    */
   protected populatePublic(ctx: AuthWfCtx): void {
     // wf state-token serialization rejects `undefined` (only string / number
@@ -1672,7 +1722,16 @@ export class AuthWorkflow {
       if (sub) pub.trust = sub;
     }
     if (ctx.password) {
-      const sub = pickDefined(ctx.password, ["heading", "intro", "policies"] as const);
+      // Texts in the request's language — persisted state holds codes / English only.
+      const { heading, headingCode, intro, introCode, policies } = ctx.password;
+      const sub = pickDefined(
+        {
+          heading: heading ?? (headingCode ? this.msg(headingCode) : undefined),
+          intro: intro ?? (introCode ? this.msg(introCode) : undefined),
+          policies: policies?.map(translatePolicyTexts),
+        },
+        ["heading", "intro", "policies"] as const,
+      );
       if (sub) pub.password = sub;
       // The confirm-password validator runs client-side too: ship its text
       // when the app overrides it (the form's built-in English otherwise).
@@ -1738,6 +1797,7 @@ export class AuthWorkflow {
       if (sub) pub.authz = sub;
     }
     ctx.public = pub;
+    markPublicProjection(pub);
   }
 
   /**
@@ -1818,17 +1878,19 @@ export class AuthWorkflow {
     ctx: { pin?: string; pinExpire?: number; pinAttempts?: number },
     submitted: string | undefined,
   ): { code: string } | null {
-    if (!ctx.pin || !ctx.pinExpire || Date.now() > ctx.pinExpire) return { code: "Code expired" };
+    if (!ctx.pin || !ctx.pinExpire || Date.now() > ctx.pinExpire) {
+      return { code: this.msg("CODE_EXPIRED") };
+    }
     if (submitted !== ctx.pin) {
       const attempts = (ctx.pinAttempts ?? 0) + 1;
       if (attempts >= this.opts.mfa.pincodeMaxAttempts) {
         delete ctx.pin;
         delete ctx.pinExpire;
         delete ctx.pinAttempts;
-        return { code: "Too many invalid attempts. Please request a new code." };
+        return { code: this.msg("TOO_MANY_CODE_ATTEMPTS") };
       }
       ctx.pinAttempts = attempts;
-      return { code: "Invalid code" };
+      return { code: this.msg("INVALID_CODE") };
     }
     delete ctx.pinAttempts;
     return null;
@@ -1894,7 +1956,7 @@ export class AuthWorkflow {
     const pincode = (ctx.pincode ??= {});
     const channel = ctx.mfaEnroll?.method === "email" ? "email" : "sms";
     pincode.sentTo = this.maskAddress(address, channel);
-    await this.deliver({
+    await this.dispatch({
       kind: "enroll-pincode",
       channel,
       recipient: address,
@@ -2001,13 +2063,13 @@ export class AuthWorkflow {
     value: string,
   ): string | undefined | Promise<string | undefined> {
     const v = (value ?? "").trim();
-    if (!v) return "This field is required";
+    if (!v) return this.msg("ADDRESS_REQUIRED");
     if (method === "email") {
-      return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v) ? undefined : "Enter a valid email address";
+      return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v) ? undefined : this.msg("INVALID_EMAIL_ADDRESS");
     }
     if (method === "sms") {
       const digits = v.replace(/[\s()+.-]/g, "");
-      return /^[1-9]\d{6,14}$/.test(digits) ? undefined : "Enter a valid phone number";
+      return /^[1-9]\d{6,14}$/.test(digits) ? undefined : this.msg("INVALID_PHONE_NUMBER");
     }
     return undefined;
   }
@@ -2257,8 +2319,8 @@ export class AuthWorkflow {
   initChangePassword(@WorkflowParam("context") ctx: AuthWfCtx): void {
     ctx.subject = useAuth().getUserId();
     const password = (ctx.password ??= {});
-    password.heading = "Change your password";
-    password.intro = "Enter your current password, then choose a new one.";
+    password.headingCode = "CHANGE_PASSWORD_HEADING";
+    password.introCode = "CHANGE_PASSWORD_INTRO";
     return undefined;
   }
 
@@ -2522,7 +2584,7 @@ export class AuthWorkflow {
       const sso = providerId ? alt.ssoProviders.find((p) => p.id === providerId) : undefined;
       // A missing / unoffered id is a malformed request — the bundled component
       // only ever submits an offered provider.
-      if (!sso) throw new HttpError(400, "Unknown SSO provider");
+      if (!sso) throw this.httpError(400, "UNKNOWN_SSO_PROVIDER");
       await this.beginSso(sso.id, authzHandle);
       return ALT_HANDLED;
     }
@@ -3239,7 +3301,7 @@ export class AuthWorkflow {
       if (mode === "return-link") {
         return { outlet: "invite", data: { inviteLink: url, ...(userId && { userId }) } };
       }
-      await this.deliver({
+      await this.dispatch({
         kind: "invite-link",
         channel: "email",
         recipient: email,
@@ -3402,7 +3464,10 @@ export class AuthWorkflow {
   confirmation(@WorkflowParam("context") ctx: AuthWfCtx): undefined {
     finishWf({
       data: { confirmed: true },
-      message: { level: "success", text: ctx.accept!.confirmationMessage! },
+      message: {
+        level: "success",
+        text: ctx.accept?.confirmationMessage ?? this.msg("ACCOUNT_CREATED"),
+      },
     });
     return undefined;
   }
@@ -3427,8 +3492,7 @@ export class AuthWorkflow {
     // Guarded assigns — never write `undefined` (wf state-token persistence
     // rejects it; see CLAUDE.md), so a partial override leaves the untouched
     // field at whatever an earlier step staged.
-    if (copy.heading !== undefined) password.heading = copy.heading;
-    if (copy.intro !== undefined) password.intro = copy.intro;
+    Object.assign(password, pickDefined(copy, SET_PASSWORD_COPY_KEYS));
     const user = await this.refusePasswordFormReplay(ctx);
     const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.setPassword);
     let input: { newPassword: string; confirmPassword: string; consents?: string[] };
@@ -3452,7 +3516,7 @@ export class AuthWorkflow {
       await this.users.setPassword(ctx.subject, input.newPassword);
     } catch (err) {
       if (err instanceof UserAuthError) {
-        throw this.throwPublic(ctx, wf, { errors: { newPassword: err.message } });
+        throw this.throwPublic(ctx, wf, { errors: { newPassword: userAuthErrorText(err) } });
       }
       throw err;
     }
@@ -3472,8 +3536,7 @@ export class AuthWorkflow {
     // `delete` (not `= undefined`) — wf state-token persistence rejects
     // explicit undefined.
     delete password.changeReason;
-    delete password.heading;
-    delete password.intro;
+    for (const key of SET_PASSWORD_COPY_KEYS) delete password[key];
     return undefined;
   }
 
@@ -3558,7 +3621,7 @@ export class AuthWorkflow {
     } catch (err) {
       if (err instanceof UserAuthError) {
         const field = userAuthErrorField(err.type) ?? "newPassword";
-        throw this.throwPublic(ctx, wf, { errors: { [field]: err.message } });
+        throw this.throwPublic(ctx, wf, { errors: { [field]: userAuthErrorText(err) } });
       }
       throw err;
     }
@@ -3691,11 +3754,7 @@ export class AuthWorkflow {
    * cancelled) is unit-testable without a wf event context.
    */
   protected buildAddMfaFinishEnvelope(ctx: AuthWfCtx): WfFinished {
-    const labels: Record<MfaTransport, string> = {
-      totp: "Authenticator app",
-      email: "Email code",
-      sms: "Text-message code",
-    };
+    const label = (method: MfaTransport) => this.msg(MFA_METHOD_LABEL_CODES[method]);
     const m = ctx.mfaEnroll;
     const addMfa = ctx.addMfa;
     const method = m?.method;
@@ -3705,19 +3764,28 @@ export class AuthWorkflow {
       envelope = {
         finished: true,
         data: { removed: true, method: addMfa.removed },
-        message: { level: "success", text: `${labels[addMfa.removed]} removed.` },
+        message: {
+          level: "success",
+          text: this.msg("MFA_METHOD_REMOVED", { method: label(addMfa.removed) }),
+        },
       };
     } else if (m?.done && method && addMfa?.action === "replace") {
       envelope = {
         finished: true,
         data: { changed: true, method },
-        message: { level: "success", text: `${labels[method]} updated.` },
+        message: {
+          level: "success",
+          text: this.msg("MFA_METHOD_UPDATED", { method: label(method) }),
+        },
       };
     } else if (m?.done && method) {
       envelope = {
         finished: true,
         data: { added: true, method },
-        message: { level: "success", text: `${labels[method]} added.` },
+        message: {
+          level: "success",
+          text: this.msg("MFA_METHOD_ADDED", { method: label(method) }),
+        },
       };
     } else if (addMfa?.blocked) {
       // `confirm-remove-mfa` aborted an un-removable operation (stale/crafted
@@ -3731,8 +3799,8 @@ export class AuthWorkflow {
           level: "info",
           text:
             addMfa.blocked === "last-required-factor"
-              ? "You must keep at least one two-factor method, so this one can't be removed."
-              : "That method can't be changed here.",
+              ? this.msg("LAST_MFA_METHOD_NOT_REMOVABLE")
+              : this.msg("METHOD_NOT_CHANGEABLE"),
         },
       };
     } else if (candidates.length === 0 && !addMfa?.stepUpRequired) {
@@ -4048,7 +4116,7 @@ export class AuthWorkflow {
       (ctx.channel ??= {}).phone = value;
     }
     const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
-    await this.deliver({
+    await this.dispatch({
       kind: "enroll-pincode",
       channel: isEmail ? "email" : "sms",
       recipient: value,
@@ -4101,7 +4169,7 @@ export class AuthWorkflow {
       }
       const recipient = (isEmail ? ctx.channel?.email : ctx.channel?.phone) as string;
       const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
-      await this.deliver({
+      await this.dispatch({
         kind: "enroll-pincode",
         channel: isEmail ? "email" : "sms",
         recipient,
@@ -4377,7 +4445,7 @@ export class AuthWorkflow {
     // routes it (the address is the typed identifier either way). Signup is
     // always email.
     if (ctx.mfa?.method) {
-      await this.deliver({
+      await this.dispatch({
         kind: "mfa-pincode",
         channel: target.channel,
         recipient: target.address,
@@ -4387,7 +4455,7 @@ export class AuthWorkflow {
     } else if (ctx.signup) {
       // Signup verify-first: prove email ownership before the row exists. The
       // target is always email (`resolvePincodeTarget`'s non-MFA branch).
-      await this.deliver({
+      await this.dispatch({
         kind: "signup-pincode",
         channel: "email",
         recipient: target.address,
@@ -4395,7 +4463,7 @@ export class AuthWorkflow {
         expiresInMs: this.opts.mfa.pincodeTtlMs,
       });
     } else {
-      await this.deliver({
+      await this.dispatch({
         kind: "recovery-pincode",
         channel: target.channel,
         recipient: target.address,
@@ -4546,7 +4614,7 @@ export class AuthWorkflow {
           throw this.throwPublic(ctx, wf, { errors: { code: this.msg("INVALID_CODE") } });
         }
         if (err.type === "MFA_NOT_CONFIGURED") {
-          throw new HttpError(400, "No TOTP MFA configured");
+          throw this.httpError(400, "TOTP_NOT_CONFIGURED");
         }
         if (err.type === "MFA_INVALID") {
           if (err.details?.lockEnds !== undefined) {
@@ -5356,7 +5424,7 @@ export class AuthWorkflow {
   async notifyNewDevice(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     const recipient = ctx.notice?.email;
     if (!recipient) return undefined;
-    await this.deliver({
+    await this.dispatch({
       kind: "new-device-notice",
       channel: "email",
       recipient,
@@ -6165,7 +6233,7 @@ export class AuthWorkflow {
     const method = candidate.mfa.methods.find((m) => m.name === pending.otpChannel && m.confirmed);
     if (!method) return null;
     const code = this.mintPin(pending, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
-    await this.deliver({
+    await this.dispatch({
       kind: "mfa-pincode",
       channel: pending.otpChannel as "email" | "sms",
       recipient: method.value,

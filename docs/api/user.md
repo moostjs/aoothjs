@@ -98,6 +98,8 @@ function definePasswordPolicy<A extends readonly unknown[]>(opts: {
   args?: A;
   description?: string;
   errorMessage?: string;
+  code?: string; // since 0.2.5 — message code for translation
+  params?: PasswordPolicyParams; // since 0.2.5 — the code's placeholder values
 }): PasswordPolicyDef;
 function normalizePolicies(defs?: (PasswordPolicyDef | PasswordPolicyInstance)[]): PasswordPolicy[];
 ```
@@ -115,7 +117,15 @@ function ppHasSpecialChar(n?: number): PasswordPolicyDef;
 function ppMaxRepeatedChars(maxRepeated?: number): PasswordPolicyDef;
 ```
 
-All are built with `definePasswordPolicy`, so they are transferable. See [Password Policies](/user/policy).
+All are built with `definePasswordPolicy`, so they are transferable. Since 0.2.5 each carries a `PP_*` `code` and `params`.
+
+```ts
+const PASSWORD_POLICY_MESSAGES: { readonly PP_MIN_LENGTH: "Password must be at least {min} characters long" /* … */ };
+type PasswordPolicyMessageCode = keyof typeof PASSWORD_POLICY_MESSAGES;
+type PasswordPolicyParams = Readonly<Record<string, string | number>>;
+```
+
+Since 0.2.5. The English templates of the built-in policies' failures (`PP_*`) and rule texts (`PP_*_DESCRIPTION`); `@aooth/auth-moost` registers them with moost's `registerMessages`. See [Password Policies](/user/policy) and [Messages & Localization](/moost/messages#password-policies).
 
 ### TOTP / MFA primitives
 

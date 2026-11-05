@@ -238,6 +238,7 @@ describe("A2 WITH CHECK — written rows must match `check` (default `filter`)",
     const res = await send("POST", "/wr-docs", { id: 10, title: "x", tenant: "b" });
     expect(res.status).toBe(403);
     expect(res.body.message).toBe("Row outside your write scope");
+    expect(res.body.code).toBe("ROW_OUT_OF_SCOPE");
     expect(await doc(10)).toBeNull();
   });
 

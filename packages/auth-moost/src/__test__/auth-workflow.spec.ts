@@ -587,7 +587,9 @@ describe("AuthWorkflow resolver defaults", () => {
     // showConfirmation ON: invite accept-tail renders a confirmation screen
     // before redirecting. Turning OFF skips the `confirmation` step.
     expect(r.showConfirmation).toBe(true);
-    expect(r.confirmationMessage).toBe("Your account has been created.");
+    // No text in state: the confirmation step renders ACCOUNT_CREATED in the
+    // finishing request's language.
+    expect(r.confirmationMessage).toBeUndefined();
   });
 
   it("resolvePostReset — revoke all sessions, login URL inherits from opts", async () => {
@@ -741,26 +743,29 @@ describe("AuthWorkflow set-password copy (TODO #3 — resolveSetPasswordCopy)", 
 
   it("expired changeReason → expired copy", async () => {
     const c = await settle(wf.exposeSetPasswordCopy({ password: { changeReason: "expired" } }));
-    expect(c.heading).toBe("Your password has expired");
-    expect(c.intro).toBe("Choose a new password to continue. The previous one is no longer valid.");
+    // Codes, rendered per request (`AOOTH_MESSAGES` holds the English).
+    expect(c).toEqual({
+      headingCode: "SET_PASSWORD_EXPIRED_HEADING",
+      introCode: "SET_PASSWORD_EXPIRED_INTRO",
+    });
   });
 
   it("reset changeReason → reset copy", async () => {
     const c = await settle(wf.exposeSetPasswordCopy({ password: { changeReason: "reset" } }));
-    expect(c.heading).toBe("Reset your password");
-    expect(c.intro).toBe("Choose a new password for your account.");
+    expect(c.headingCode).toBe("SET_PASSWORD_RESET_HEADING");
+    expect(c.introCode).toBe("SET_PASSWORD_RESET_INTRO");
   });
 
   it("invite-accept (ctx.accept present) → welcome copy", async () => {
     const c = await settle(wf.exposeSetPasswordCopy({ accept: {} }));
-    expect(c.heading).toBe("Welcome — set your password");
-    expect(c.intro).toBe("Choose a password to activate your account.");
+    expect(c.headingCode).toBe("SET_PASSWORD_INVITE_HEADING");
+    expect(c.introCode).toBe("SET_PASSWORD_INVITE_INTRO");
   });
 
   it("no reason, no accept → initial-password fallback copy", async () => {
     const c = await settle(wf.exposeSetPasswordCopy({}));
-    expect(c.heading).toBe("Set your initial password");
-    expect(c.intro).toBe("Your account was created without a password. Choose one to continue.");
+    expect(c.headingCode).toBe("SET_PASSWORD_INITIAL_HEADING");
+    expect(c.introCode).toBe("SET_PASSWORD_INITIAL_INTRO");
   });
 
   it("changeReason takes precedence over ctx.accept (expired beats accept)", async () => {
@@ -769,7 +774,7 @@ describe("AuthWorkflow set-password copy (TODO #3 — resolveSetPasswordCopy)", 
     );
     // Order matters: the reason branch is checked before the accept branch, so
     // an expired/reset accept-phase set-password still shows the reason copy.
-    expect(c.heading).toBe("Your password has expired");
+    expect(c.headingCode).toBe("SET_PASSWORD_EXPIRED_HEADING");
   });
 
   it("override can re-brand a single phase; partial return leaves the other field", async () => {

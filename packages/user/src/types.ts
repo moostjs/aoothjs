@@ -190,7 +190,19 @@ export interface PasswordPolicyDef {
   serialized?: string;
   description?: string;
   errorMessage?: string;
+  /**
+   * Message code of the policy's texts, for translation: `errorMessage` is
+   * translated by `code`, `description` by `${code}_DESCRIPTION`, both with
+   * `params` — the English texts are the fallback. The built-in `pp*`
+   * policies carry `PP_*` codes (`PASSWORD_POLICY_MESSAGES`).
+   */
+  code?: string;
+  /** Values of the code's `{name}` placeholders (e.g. `{ min: 8 }`). */
+  params?: PasswordPolicyParams;
 }
+
+/** Values of a password policy's message placeholders. */
+export type PasswordPolicyParams = Readonly<Record<string, string | number>>;
 
 export type PasswordPolicyEvalFn = (
   password: string,
@@ -262,7 +274,15 @@ export interface LockStatus {
 
 export interface PolicyCheckResult {
   passed: boolean;
-  policies: { description: string; passed: boolean }[];
+  /** Every policy and its result, with its texts and (when set) message `code` + `params`. */
+  policies: {
+    description: string;
+    passed: boolean;
+    /** The policy's failure text (always set by `checkPolicies`). */
+    errorMessage?: string;
+    code?: string;
+    params?: PasswordPolicyParams;
+  }[];
   errors: string[];
 }
 
@@ -270,6 +290,10 @@ export interface TransferablePolicy {
   rule: string;
   description?: string;
   errorMessage?: string;
+  /** The policy's message code ({@link PasswordPolicyDef.code}). */
+  code?: string;
+  /** The code's placeholder values ({@link PasswordPolicyDef.params}). */
+  params?: PasswordPolicyParams;
 }
 
 export interface MfaMethodInfo {

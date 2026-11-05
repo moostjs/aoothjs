@@ -1,7 +1,7 @@
 import { AuthCredential } from "@aooth/auth";
 import { OAuthError, OAuthProviderRegistry } from "@aooth/idp";
 import { FederatedIdentityStore, UserService, type FederatedIdentity } from "@aooth/user";
-import { Body, Delete, Get, HttpError, Post, Query } from "@moostjs/event-http";
+import { Body, Delete, Get, Post, Query } from "@moostjs/event-http";
 import { current } from "@wooksjs/event-core";
 import { useResponse } from "@wooksjs/event-http";
 import { Controller, Inject, Param } from "moost";
@@ -12,6 +12,7 @@ import { buildOAuthAuthorizeRequest, OAUTH_TTL_SEC } from "./oauth-authorize";
 import { OAUTH_CSRF_COOKIE, oauthCsrfCookieAttrs } from "./oauth-csrf";
 import { resolveOAuthRedirect } from "./oauth-redirect";
 import { FEDERATED_IDENTITY_STORE_TOKEN } from "./oauth-tokens";
+import { aoothHttpError } from "../http-messages";
 
 /**
  * REST surface for federated-login ACCOUNT MANAGEMENT (OAuth2 / OIDC), RFC
@@ -196,17 +197,14 @@ export class OAuthController {
     const target = owned.find((i) => i.provider === providerId && i.subject === subject);
     // 404 whether the row is absent OR owned by someone else — never confirm the
     // existence of another user's link.
-    if (!target) throw new HttpError(404, "Linked identity not found");
+    if (!target) throw aoothHttpError(404, "LINKED_IDENTITY_NOT_FOUND");
 
     // Last-credential guard: block if this is the only sign-in method left.
     const otherIdentities = owned.length - 1;
     if (otherIdentities === 0) {
       const user = await this.users.getUser(userId);
       if (user.password.isInitial) {
-        throw new HttpError(
-          409,
-          "Cannot remove your only sign-in method. Set a password first, or link another provider.",
-        );
+        throw aoothHttpError(409, "LAST_SIGN_IN_METHOD");
       }
     }
 
@@ -223,7 +221,7 @@ export class OAuthController {
       return this.registry.require(providerId);
     } catch (err) {
       if (err instanceof OAuthError && err.type === "UNKNOWN_PROVIDER") {
-        throw new HttpError(404, `Unknown provider '${providerId}'`);
+        throw aoothHttpError(404, "UNKNOWN_PROVIDER", { provider: providerId });
       }
       throw err;
     }

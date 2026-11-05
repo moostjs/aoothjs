@@ -45,23 +45,25 @@ interface AuthEmailEvent {
   expiresAt: number; // ms since epoch
   username?: string;
   metadata?: Record<string, unknown>;
+  locale?: string; // since 0.2.5
 }
 ```
 
 `metadata` is intentionally a free-form `Record<string, unknown>` — workflows push notify-side ip / user-agent, invite-side `roles: string[]`, locale hints, etc. It is **not** the per-credential `CredentialMetadata` shape.
 
-| Field       | Always present          | Notes                                                         |
-| ----------- | ----------------------- | ------------------------------------------------------------- |
-| `kind`      | yes                     | Discriminator. Use it to route to the right template.         |
-| `recipient` | yes                     | Email address. The package never validates the format.        |
-| `url`       | for magic-link kinds    | Pre-built by `BuildMagicLinkUrl`.                             |
-| `code`      | for pincode / MFA kinds | Plain string — the workflow generates and stores.             |
-| `expiresAt` | yes                     | Absolute ms timestamp. Render as a relative duration.         |
-| `username`  | when known              | Display name / email — workflows pass it for personalisation. |
-| `metadata`  | for `'notifyNewDevice'` | IP / UA / fingerprint / label of the new session.             |
+| Field       | Always present           | Notes                                                                                         |
+| ----------- | ------------------------ | --------------------------------------------------------------------------------------------- |
+| `kind`      | yes                      | Discriminator. Use it to route to the right template.                                         |
+| `recipient` | yes                      | Email address. The package never validates the format.                                        |
+| `url`       | for magic-link kinds     | Pre-built by `BuildMagicLinkUrl`.                                                             |
+| `code`      | for pincode / MFA kinds  | Plain string — the workflow generates and stores.                                             |
+| `expiresAt` | yes                      | Absolute ms timestamp. Render as a relative duration.                                         |
+| `username`  | when known               | Display name / email — workflows pass it for personalisation.                                 |
+| `metadata`  | for `'notifyNewDevice'`  | IP / UA / fingerprint / label of the new session.                                             |
+| `locale`    | when the request has one | The sending request's locale (moost `useLocale()`, e.g. from `Accept-Language`). Since 0.2.5. |
 
 ::: tip One sender, many templates
-`EmailSender` is a single method. Branch on `event.kind` inside the implementation to pick a template, subject line, and locale. Keep one sender per provider, not one per kind.
+`EmailSender` is a single method. Branch on `event.kind` inside the implementation to pick a template and subject line, and on `event.locale` for the language ([Localized emails and SMS](/moost/messages#localized-emails-and-sms)). Keep one sender per provider, not one per kind.
 :::
 
 ### Implementing `EmailSender` (SES)
@@ -185,16 +187,18 @@ interface AuthSmsEvent {
   code: string;
   ttlMs: number;
   userId?: string;
+  locale?: string; // since 0.2.5 — set by the app from AuthDeliveryPayload.locale
 }
 ```
 
-| Field       | Notes                                                                          |
-| ----------- | ------------------------------------------------------------------------------ |
-| `kind`      | One of the three kinds above.                                                  |
-| `recipient` | E.164 phone number. The package never validates the format.                    |
-| `code`      | Plain pincode — the workflow generates and stores it.                          |
-| `ttlMs`     | Pincode lifetime in milliseconds. Render as a relative duration.               |
-| `userId`    | Available when the recipient already has an account; absent during invitation. |
+| Field       | Notes                                                                                                                                                 |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kind`      | One of the three kinds above.                                                                                                                         |
+| `recipient` | E.164 phone number. The package never validates the format.                                                                                           |
+| `code`      | Plain pincode — the workflow generates and stores it.                                                                                                 |
+| `ttlMs`     | Pincode lifetime in milliseconds. Render as a relative duration.                                                                                      |
+| `userId`    | Available when the recipient already has an account; absent during invitation.                                                                        |
+| `locale`    | Set by your app (aooth doesn't build this event): copy `AuthDeliveryPayload.locale` into it when your `deliver()` override sends an SMS. Since 0.2.5. |
 
 ### Implementing `SmsSender` (Twilio)
 

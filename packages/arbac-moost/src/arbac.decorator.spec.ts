@@ -207,9 +207,10 @@ describe("arbac authorize HTTP integration", () => {
     });
     const res = await http.request("/read");
     expect(res?.status).toBe(401);
-    const body = (await res?.json()) as { message?: string; statusCode?: number };
+    const body = (await res?.json()) as { message?: string; statusCode?: number; code?: string };
     expect(body.statusCode).toBe(401);
     expect(body.message).toBe("Not authorized");
+    expect(body.code).toBe("ARBAC_NOT_AUTHORIZED");
     expect(JSON.stringify(body)).not.toContain("database unavailable");
   });
 
