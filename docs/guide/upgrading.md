@@ -43,7 +43,7 @@ Under a `$groupBy` whitelist, the outer level of a two-level aggregate may now g
 
 ### ARBAC 404s carry `code: "NOT_FOUND"`
 
-Needs `@atscript/db` / `@atscript/moost-db` `^0.1.173`, `@atscript/typescript` `^0.2.9` and `@atscript/moost-wf` `^0.1.168` (the atscript-ui client packages at `^0.1.168` too). The 404s of ARBAC-scoped tables (a write or delete outside the scope, `assertRowsInScope`) now use moost-db's `notFoundError()`, so they are byte-identical with a missing row: `{ statusCode: 404, message: "Not found", code: "NOT_FOUND", error: "Not Found" }`. An action identifier that matches no row answers the same body (it said "Row not found for action identifier"). Branch on `code`.
+Needs `@atscript/db` / `@atscript/moost-db` `^0.1.174`, `@atscript/typescript` `^0.2.9` and `@atscript/moost-wf` `^0.1.169` (the atscript-ui client packages at `^0.1.169` too). The 404s of ARBAC-scoped tables (a write or delete outside the scope, `assertRowsInScope`) now use moost-db's `notFoundError()`, so they are byte-identical with a missing row: `{ statusCode: 404, message: "Not found", code: "NOT_FOUND", error: "Not Found" }`. An action identifier that matches no row answers the same body (it said "Row not found for action identifier"). Branch on `code`.
 
 ### Recovery no longer tells whether an account exists
 
