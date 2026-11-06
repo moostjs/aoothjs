@@ -161,6 +161,14 @@ describe("AsArbacJsonValueHelpController — row scope", () => {
     expect((await get("one/1")).status).toBe(200);
     expect((await get("one/2")).status).toBe(404);
     expect((await get("one?id=2")).status).toBe(404);
+    // …and exactly like a missing row.
+    for (const [foreign, missing] of [
+      ["one/2", "one/99"],
+      ["one?id=2", "one?id=99"],
+      ["custom/one/2", "custom/one/99"],
+    ]) {
+      expect(await get(foreign), foreign).toEqual(await get(missing));
+    }
   });
 });
 

@@ -48,11 +48,16 @@ export async function createSpace(types: readonly unknown[] = TYPES): Promise<Ha
   };
 }
 
-/** Wipe + seed (children first on wipe, parents first on insert). */
-export async function seed(h: Harness): Promise<void> {
-  for (const t of [...TYPES].toReversed()) {
+/** Empties the tables of `types` (pass children before parents). */
+export function wipe(h: Harness, types: readonly unknown[]): void {
+  for (const t of types) {
     h.driver.exec(`DELETE FROM "${(h.table(t) as { tableName: string }).tableName}"`);
   }
+}
+
+/** Wipe + seed (children first on wipe, parents first on insert). */
+export async function seed(h: Harness): Promise<void> {
+  wipe(h, [...TYPES].toReversed());
   await h.table(RpOrg).insertMany([
     { id: 1, name: "orgA", tenant: "a", budget: 100 },
     { id: 2, name: "orgB", tenant: "b", budget: 999999 },

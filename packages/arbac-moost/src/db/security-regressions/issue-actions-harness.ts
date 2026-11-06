@@ -24,7 +24,7 @@ import {
   TableController,
 } from "@atscript/moost-db";
 import type { TDbActionScopeContext, TDbRequestContext } from "@atscript/moost-db";
-import { Body, Post } from "@moostjs/event-http";
+import { Body, type MoostHttp, Post } from "@moostjs/event-http";
 import { clearGlobalWooks, Controller, getMoostInfact, useControllerContext } from "moost";
 
 import { bootArbacHttp } from "../../__testing__/arbac-http";
@@ -334,6 +334,8 @@ export async function createIssueSpace(): Promise<IssueSpace> {
 
 export interface IssueApp {
   user: FakeUserProvider;
+  /** The booted adapter, for requests that need headers. */
+  http: MoostHttp;
   send: (method: string, path: string, body?: unknown) => Promise<TestResponse>;
   get: (path: string) => Promise<TestResponse>;
 }
@@ -369,7 +371,7 @@ export async function bootIssues(
     authorize: opts.authorize ?? true,
   });
   const send = (method: string, path: string, body?: unknown) => request(http, method, path, body);
-  return { user, send, get: (path) => send("GET", path) };
+  return { user, http, send, get: (path) => send("GET", path) };
 }
 
 /** Row id → its `$actions` (sorted) from a `$actions=true` read. */
