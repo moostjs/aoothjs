@@ -6,11 +6,11 @@ packages:
 
 catalog:
   "@atscript/core": ^0.2.8
-  "@atscript/db": ^0.1.171
-  "@atscript/db-client": ^0.1.171
-  "@atscript/db-sql-tools": ^0.1.171
-  "@atscript/db-sqlite": ^0.1.171
-  "@atscript/moost-db": ^0.1.171
+  "@atscript/db": ^0.1.172
+  "@atscript/db-client": ^0.1.172
+  "@atscript/db-sql-tools": ^0.1.172
+  "@atscript/db-sqlite": ^0.1.172
+  "@atscript/moost-db": ^0.1.172
   "@atscript/moost-ui-presets": ^0.1.167
   "@atscript/moost-validator": ^0.2.8
   "@atscript/moost-wf": ^0.1.167
@@ -24,9 +24,9 @@ catalog:
   "@atscript/vue-table": ^0.1.167
   "@atscript/vue-wf": ^0.1.167
   "@iconify/utils": ^3.1.0
-  "@moostjs/event-http": ^0.7.3
-  "@moostjs/event-wf": ^0.7.3
-  "@moostjs/vite": ^0.7.3
+  "@moostjs/event-http": ^0.7.4
+  "@moostjs/event-wf": ^0.7.4
+  "@moostjs/vite": ^0.7.4
   "@swc/core": ^1.15.18
   "@tanstack/vue-virtual": ^3.13.23
   "@tsdown/css": ^0.21.4
@@ -43,7 +43,7 @@ catalog:
   "@wooksjs/event-wf": ^0.8.1
   "@wooksjs/http-body": ^0.8.1
   happy-dom: ^21.0.4
-  moost: ^0.7.3
+  moost: ^0.7.4
   reka-ui: ^2.9.2
   sirv: ^3.0.2
   typescript: ^5
