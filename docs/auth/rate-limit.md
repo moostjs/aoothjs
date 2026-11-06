@@ -39,16 +39,16 @@ A rule is a string in the compact grammar, or an equivalent object:
 
 Each rule may carry its own 429 message after `|`; `check()` also accepts a `defaultMessage` for rules without one. Placeholders:
 
-| Placeholder             | Renders as                                           |
-| ----------------------- | ---------------------------------------------------- |
-| `{{limit}}` / `{{max}}` | The rule's limit, e.g. `6`                           |
-| `{{window}}`            | Humanized window: `"5 minutes"`, `"1 hour"`          |
-| `{{delta}}`             | Humanized time until retry: `"4 minutes 32 seconds"` |
-| `{limit}`               | The rule's limit, e.g. `6` (since 0.2.5)             |
-| `{window}`              | The window in seconds, e.g. `300` (since 0.2.5)      |
-| `{retryAfter}`          | Seconds until retry, e.g. `272` (since 0.2.5)        |
+| Placeholder                                               | Renders as                                           |
+| --------------------------------------------------------- | ---------------------------------------------------- |
+| <code v-pre>{{limit}}</code> / <code v-pre>{{max}}</code> | The rule's limit, e.g. `6`                           |
+| <code v-pre>{{window}}</code>                             | Humanized window: `"5 minutes"`, `"1 hour"`          |
+| <code v-pre>{{delta}}</code>                              | Humanized time until retry: `"4 minutes 32 seconds"` |
+| `{limit}`                                                 | The rule's limit, e.g. `6` (since 0.2.5)             |
+| `{window}`                                                | The window in seconds, e.g. `300` (since 0.2.5)      |
+| `{retryAfter}`                                            | Seconds until retry, e.g. `272` (since 0.2.5)        |
 
-The built-in default is `RATE_LIMIT_MESSAGES.RATE_LIMITED` — `"Too many requests. Retry after {retryAfter} s."` (since 0.2.5; before, `"Too many requests. Please try again in {{delta}}."`). The `{name}` placeholders are the decision's `params`, the form a translator uses; `{{…}}` humanization is English, shows at most the two largest units and rounds sub-second values up to `"1 second"`. For other languages, don't template the text: translate the decision's `code` + `params` (below) — with a moost translator, the 429 is translated by its `RATE_LIMITED` code, which replaces a rule's own English message.
+The built-in default is `RATE_LIMIT_MESSAGES.RATE_LIMITED` — `"Too many requests. Retry after {retryAfter} s."` (since 0.2.5; before, <code v-pre>"Too many requests. Please try again in {{delta}}."</code>). The `{name}` placeholders are the decision's `params`, the form a translator uses; <code v-pre>{{…}}</code> humanization is English, shows at most the two largest units and rounds sub-second values up to `"1 second"`. For other languages, don't template the text: translate the decision's `code` + `params` (below) — with a moost translator, the 429 is translated by its `RATE_LIMITED` code, which replaces a rule's own English message.
 
 ## `check()` and the decision
 

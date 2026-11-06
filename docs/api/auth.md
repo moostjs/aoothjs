@@ -177,7 +177,7 @@ const RATE_LIMIT_MESSAGES: Readonly<Record<RateLimitErrorCode, string>>; // { RA
 const DEFAULT_RATE_LIMIT_MESSAGE: string; // RATE_LIMIT_MESSAGES.RATE_LIMITED
 ```
 
-The parsing/formatting layer behind the rule grammar and `{{limit}}` / `{{max}}` / `{{window}}` / `{{delta}}` message placeholders. All parsing is eager — invalid rules throw at config time. See [Rate Limiting (Core)](/auth/rate-limit#rules).
+The parsing/formatting layer behind the rule grammar and <code v-pre>{{limit}}</code> / <code v-pre>{{max}}</code> / <code v-pre>{{window}}</code> / <code v-pre>{{delta}}</code> message placeholders. All parsing is eager — invalid rules throw at config time. See [Rate Limiting (Core)](/auth/rate-limit#rules).
 
 ## Client
 
