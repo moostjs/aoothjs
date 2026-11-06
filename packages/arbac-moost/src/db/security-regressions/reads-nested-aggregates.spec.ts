@@ -85,12 +85,17 @@ describe("$from under a $groupBy whitelist", () => {
     });
   });
 
-  it("an outer name that is not an inner column meets the whitelist", async () => {
+  it("an outer name that is not an inner column is refused", async () => {
+    // atscript-db ≥ 0.1.170 rejects it as an invalid query (the outer level
+    // reads only the inner columns) before any whitelist question — never served.
     const get = await bootWith(WHITELIST);
     const r = await get(
       "/read-accounts/query?$from=($groupBy=deptId&$select=count(*):n)&$groupBy=owner&$select=owner,count(*):c",
     );
-    expect(r.status).toBe(403);
-    expect(r.body).toMatchObject({ params: { control: "$groupBy", value: "owner" } });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "INVALID_QUERY",
+      errors: [{ path: "$groupBy", code: "AGG_NESTED_UNKNOWN_COLUMN" }, expect.anything()],
+    });
   });
 });

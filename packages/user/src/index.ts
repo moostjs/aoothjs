@@ -26,7 +26,7 @@ export type {
 } from "./types";
 
 // Error
-export { UserAuthError } from "./errors";
+export { USER_AUTH_ERROR_MESSAGES, UserAuthError } from "./errors";
 
 // Service
 export { UserService, SEEN_DEVICES_DEFAULT_CAP } from "./user-service";

@@ -4,7 +4,7 @@ What to check when you move to a newer aooth release. Each entry lists the chang
 
 ## To 0.2.5
 
-The moost-facing packages need `moost` / `@moostjs/*` `^0.7.3` (its translator API), `@wooksjs/*` `^0.8.1` and `@atscript/typescript` `^0.2.6`.
+The moost-facing packages need `moost` / `@moostjs/*` `^0.7.3` (its translator API), `@wooksjs/*` `^0.8.1`, `@atscript/typescript` `^0.2.7`, `@atscript/moost-wf` `^0.1.166` and `@atscript/db` / `@atscript/moost-db` `^0.1.170`. The SPA that renders the bundled workflow forms needs the atscript-ui client packages (`@atscript/ui-fns`, `@atscript/vue-form`, `@atscript/vue-wf`) at `^0.1.166`: the forms' expressions call `t`, the argument those versions pass. **Clients below 0.1.165 fail to render the sign-in and other workflow forms** — upgrade the client packages together with the server. An app that compiles the forms itself (an `extends` of a bundled form, or the `.as` source) needs `@atscript/ui-fns` ≥ 0.1.166 in its atscript config; with 0.1.165 the paragraph texts (`fn.value`) are not served translated and stay English.
 
 ### Localization through the moost translator
 
@@ -17,6 +17,8 @@ aooth's texts now go through moost's translator. Nothing changes until you regis
 - Texts are resolved per response: the workflow state keeps codes (or your own text), never a translation, so a flow resumed in another language answers in that language. `WfTriggerProvider` strips the rendered `ctx.public` projection before a paused state is persisted; your own `beforePersist` hook still runs, after the strip. **Changed hooks:** `resolveSetPasswordCopy()` returns `SetPasswordCopy` — by default the codes (`headingCode` / `introCode`) instead of English text; `heading` / `intro` you return are shown as is and win over the codes. `resolveAccept()` no longer returns a default `confirmationMessage` (the confirmation renders `ACCOUNT_CREATED`); a `confirmationMessage` you return is shown as is. An override that read the default text from `super` now gets codes.
 - The rate limiter's default 429 text is `RATE_LIMIT_MESSAGES.RATE_LIMITED` (`@aooth/auth`), now `"Too many requests. Retry after {retryAfter} s."` — plural-safe, with the 429's own `retryAfter` (seconds); it read "Too many requests. Please try again in 4 minutes 32 seconds." before. Rule messages may use `{limit}`, `{window}`, `{retryAfter}` (seconds) besides the `{{…}}` placeholders. Under a translator a rule's own English `message` is replaced by the `RATE_LIMITED` translation.
 - `AuthEmailEvent`, `AuthSmsEvent` and `AuthDeliveryPayload` carry `locale` — copy `payload.locale` across when your `deliver()` builds your own events.
+- The workflow forms are served in the request's language: labels, action and option labels and validator messages are translated, and the texts the forms' expressions build go through `t(text, params)`, keyed by the English text, and are served with the form. The English wording is unchanged. To show them translated in the browser, provide the locale with atscript-ui's `provideAsLocale` — see [Forms in the user's language](/moost/messages#forms-in-the-user-s-language).
+- `UserAuthError`'s default messages are exported as `USER_AUTH_ERROR_MESSAGES` (`@aooth/user`), keyed by type, and registered by `@aooth/auth-moost`.
 
 The catalogues are registered with moost's `registerMessages` on import. See [Messages & Localization](/moost/messages).
 

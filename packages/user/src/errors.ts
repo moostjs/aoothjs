@@ -1,6 +1,14 @@
 import type { UserAuthErrorType } from "./types";
 
-const defaultMessages: Record<UserAuthErrorType, string> = {
+/**
+ * The default English message of each `UserAuthError` type — the error's
+ * `type` is its message code.
+ *
+ * `@aooth/auth-moost` registers it with moost's `registerMessages`, so a moost
+ * translator (`setTranslator`) translates a `UserAuthError` by its type and the
+ * texts reach the `$i18n` the server sends with form schemas and `/meta`.
+ */
+export const USER_AUTH_ERROR_MESSAGES: Readonly<Record<UserAuthErrorType, string>> = Object.freeze({
   NOT_FOUND: "User not found",
   ALREADY_EXISTS: "User already exists",
   LOCKED: "Account is locked",
@@ -13,7 +21,7 @@ const defaultMessages: Record<UserAuthErrorType, string> = {
   MFA_INVALID: "Invalid MFA code",
   MFA_NOT_CONFIGURED: "MFA method is not configured",
   CAS_EXHAUSTED: "Update conflict — please retry",
-};
+});
 
 export class UserAuthError extends Error {
   override readonly name = "UserAuthError";
@@ -23,6 +31,6 @@ export class UserAuthError extends Error {
     message?: string,
     public readonly details?: Record<string, unknown>,
   ) {
-    super(message ?? defaultMessages[type]);
+    super(message ?? USER_AUTH_ERROR_MESSAGES[type]);
   }
 }

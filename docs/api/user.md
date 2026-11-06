@@ -382,6 +382,12 @@ class UserAuthError extends Error {
 
 Every error path in `@aooth/user` funnels through this single class. The `type` field drives HTTP mapping at the controller layer. `details` carries `{ reason, lockEnds }` for `LOCKED`, `{ policies }` for `POLICY_VIOLATION`, and `{ lockEnds }` for `INVALID_CREDENTIALS` / `MFA_INVALID` when the failure tripped the lock. See [Errors](/user/errors).
 
+```ts
+const USER_AUTH_ERROR_MESSAGES: Readonly<Record<UserAuthErrorType, string>>; // { NOT_FOUND: "User not found", … }
+```
+
+Since 0.2.5. The default English message of each type — the type is its message code. `@aooth/auth-moost` registers it with moost's `registerMessages`, so a translator translates `UserAuthError`s by type. See [Messages & Localization](/moost/messages).
+
 ## Federated identity store
 
 The account-linking table for federated login — maps a provider account `(provider, subject)` to a user `id`. The narrative + policy live in [IdP — Account resolution](/idp/account-resolution); `@aooth/idp`'s `FederatedLoginService` is the consumer.

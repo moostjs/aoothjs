@@ -35,6 +35,8 @@ type UserAuthErrorType =
   | "CAS_EXHAUSTED";
 ```
 
+Without a `message` argument the error carries its type's default English message from `USER_AUTH_ERROR_MESSAGES` (exported, keyed by type). The type is also the error's message code: `@aooth/auth-moost` registers the catalogue with moost, so under a moost translator `userAuthErrorToHttp()` answers in the request's language ([Messages & Localization](/moost/messages)). Using `@aooth/user` on a moost server without `@aooth/auth-moost`? Call `registerMessages(USER_AUTH_ERROR_MESSAGES)` yourself. `NOT_FOUND` is an id shared with atscript-db — see the shared-ids note in [Messages & Localization](/moost/messages#localizing-with-the-moost-translator).
+
 The narrowing pattern in handlers:
 
 ```ts

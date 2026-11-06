@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
-import { UserAuthError } from "./errors";
+import { USER_AUTH_ERROR_MESSAGES, UserAuthError } from "./errors";
+import { USER_AUTH_ERROR_MESSAGES as EXPORTED } from "./index";
 
 describe("UserAuthError", () => {
   it("should set type and default message", () => {
@@ -36,5 +37,16 @@ describe("UserAuthError", () => {
     );
     expect(new UserAuthError("MFA_INVALID").message).toBe("Invalid MFA code");
     expect(new UserAuthError("MFA_NOT_CONFIGURED").message).toBe("MFA method is not configured");
+  });
+
+  it("USER_AUTH_ERROR_MESSAGES is the exported, type-keyed catalogue of the default messages", () => {
+    // The type is the message code a translator keys on; the catalogue is
+    // the English source list registered for $i18n.
+    expect(EXPORTED).toBe(USER_AUTH_ERROR_MESSAGES);
+    expect(Object.isFrozen(USER_AUTH_ERROR_MESSAGES)).toBe(true);
+    for (const [type, text] of Object.entries(USER_AUTH_ERROR_MESSAGES)) {
+      expect(new UserAuthError(type as keyof typeof USER_AUTH_ERROR_MESSAGES).message).toBe(text);
+    }
+    expect(Object.keys(USER_AUTH_ERROR_MESSAGES)).toHaveLength(12);
   });
 });

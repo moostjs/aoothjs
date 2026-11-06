@@ -65,7 +65,7 @@ To offer providers on the login form, return them from `resolveAlternateCredenti
 
 ## The login form's SSO button {#the-login-form-s-sso-button}
 
-The bundled `LoginCredentialsForm.ssoProvider` field renders through **`AsSsoProviders`** (from `@atscript/vue-aooth`, registered on `<AsWfForm :components>`): a one-click picker that paints each provider as a button labelled with its server-owned `text` ("Continue with Google"), applies the provider's `icon` class verbatim, and on click both selects the id and fires the field's **data-carrying** `sso` action — there is no separate submit button. The selected `ssoProvider` rides the partial submit (`@wf.action.withData 'sso'`), and `AuthWorkflow.beginSso` turns it into the provider 302.
+The bundled `LoginCredentialsForm.ssoProvider` field renders through **`AsSsoProviders`** (from `@atscript/vue-aooth`, registered on `<AsWfForm :components>`): a one-click picker that paints each provider as a button labelled with its `text` ("Continue with Google" — built by the form with `t("Continue with {provider}")`, so it follows the user's language), applies the provider's `icon` class verbatim, and on click both selects the id and fires the field's **data-carrying** `sso` action — there is no separate submit button. The selected `ssoProvider` rides the partial submit (`@wf.action.withData 'sso'`), and `AuthWorkflow.beginSso` turns it into the provider 302.
 
 Providers come from `ctx.public.altActions.ssoProviders`, which mirrors what `resolveAlternateCredentials(ctx)` returns:
 

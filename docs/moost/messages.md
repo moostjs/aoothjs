@@ -6,9 +6,12 @@ Every text aooth shows a user has a **message code**:
 - the `HttpError`s auth-moost raises outside the workflow (guard, controllers, workflow trigger) — `AOOTH_HTTP_MESSAGES` (`@aooth/auth-moost`);
 - the rate limiter's 429 — `RATE_LIMIT_MESSAGES` (`@aooth/auth`), the `RATE_LIMITED` code;
 - the `HttpError`s of the ARBAC layer (authorize interceptor, DB controller gates) — `ARBAC_MESSAGES` (`@aooth/arbac-moost`);
-- the built-in password policies — `PASSWORD_POLICY_MESSAGES` (`@aooth/user`), the `PP_*` codes.
+- the built-in password policies — `PASSWORD_POLICY_MESSAGES` (`@aooth/user`), the `PP_*` codes;
+- the default messages of `UserAuthError` — `USER_AUTH_ERROR_MESSAGES` (`@aooth/user`), the error's `type` is its code.
 
 Each catalogue holds the English templates, with `{name}` placeholders filled from the message params. Localize them all with one moost translator, or reword workflow texts per app with `AuthWorkflowOpts.messages`.
+
+The bundled workflow forms are translated by their **text**: labels, descriptions, action and option labels, and the texts their expressions build with `t(…)` — see [Forms in the user's language](#forms-in-the-user-s-language).
 
 ## Localizing with the moost translator
 
@@ -34,7 +37,11 @@ A function translator (i18next, FormatJS, …) works the same way — see the mo
 - The workflow translates its texts in the request's locale ([resolution order](#how-a-workflow-text-is-resolved)).
 - `MoostHttp` translates every error body by its `code`, filling `params` — the English `message` is the fallback. Untranslated codes stay English.
 
-The catalogues are registered with moost's `registerMessages` on import — `@aooth/auth-moost` also registers `RATE_LIMIT_MESSAGES` and `PASSWORD_POLICY_MESSAGES`. Every registered template is available to moost's translation helpers, and atscript-db's `/meta` serves them, translated, in `$i18n` (atscript-db versions that serve `$i18n`).
+The catalogues are registered with moost's `registerMessages` on import — `@aooth/auth-moost` also registers `RATE_LIMIT_MESSAGES`, `PASSWORD_POLICY_MESSAGES`, and `USER_AUTH_ERROR_MESSAGES`. Every registered template is available to moost's translation helpers and is served, translated, in the `$i18n` of the workflow form schemas and of atscript-db's `/meta` (`@atscript/moost-db` ≥ 0.1.170). Registered templates are public: register only texts a user may see.
+
+::: warning Shared ids
+Codes live in one id space shared by every package. `NOT_FOUND` (a `UserAuthError` type) is also the code of atscript-db's "record not found" errors, and `INVALID_CREDENTIALS` is both a workflow and a `UserAuthError` code. Translate such ids neutrally — `NOT_FOUND: "Nicht gefunden"`, never "Benutzer nicht gefunden" — or a database error reads as a user error. The codes in error bodies are public API and never change.
+:::
 
 ::: tip Your own `WooksHttp`
 `MoostHttp` sets up the locale and the error-body translation only when it creates the HTTP app itself (`new MoostHttp()` or `new MoostHttp(options)`). If you pass a `WooksHttp` you built, add both yourself:
@@ -86,6 +93,55 @@ An unknown placeholder is left as-is. For full control — e.g. a per-tenant cat
 
 The helpers are exported for your own UI: `renderAoothMessage(template, params)` fills placeholders, `resolveAoothMessage(code, params, messages?)` applies the same order as the workflow (the translator only inside a request). Types: `AoothMessageCode`, `AoothMessageParams`, `AoothMessages`.
 
+## Forms in the user's language
+
+With a translator, every form step of the auth workflows is served in the request's language (by `@atscript/moost-wf`):
+
+| What                                                                                              | Translator id                                    |
+| ------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `@meta.label`, `@meta.description`, `@ui.form.submit.text`, action labels, static option labels   | the English text (`"Username"`)                  |
+| Validation messages of `@expect.*` / `@meta.required`, server-side and in the browser             | the validator code (`MIN_LENGTH`)                |
+| Texts the forms' expressions build — hints, notices, MFA method labels, dynamic titles and labels | the English text (`"Code sent to {recipient}."`) |
+| Workflow errors and banners                                                                       | the `AOOTH_MESSAGES` code                        |
+
+```ts
+setTranslator({
+  en: {},
+  de: {
+    Username: "Benutzername", // a form label: the text is its id
+    "Forgot password?": "Passwort vergessen?", // an action label
+    MIN_LENGTH: "Mindestens {min} Zeichen", // a validator message: by code
+    "Code sent to {recipient}.": "Code an {recipient} gesendet.", // an expression text
+    "Continue with {provider}": "Weiter mit {provider}",
+    INVALID_CREDENTIALS: "Ungültige Anmeldedaten", // a workflow error: by code
+  },
+});
+```
+
+The browser only says which language it wants: `<AsWfForm>` sends the locale of atscript-ui's `provideAsLocale` as `Accept-Language` and merges the `$i18n` texts of each form schema it receives — see atscript-ui's [Language & Translations](https://ui.atscript.dev/guide/i18n).
+
+```vue
+<!-- App.vue -->
+<script setup lang="ts">
+import { provideAsLocale } from "@atscript/vue-form";
+
+provideAsLocale(() => userLocale.value);
+</script>
+```
+
+**Expression texts.** The forms build some texts at render time from the workflow context — the "Code sent to …" hint, the MFA method labels, the SSO buttons. They call `t(text, params)`, the last argument of every `@ui.form.fn.*` / `@ui.form.validate` expression, with a whole sentence and `{name}` placeholders, so a translation can reorder the words:
+
+```atscript
+@ui.form.fn.value '(_, _d, ctx, _e, t) => t("Code sent to {recipient}.", { recipient: ctx.public.pincode.sentTo })'
+transportHint?: ui.paragraph
+```
+
+The server collects the string literals of these expressions and serves their translations in the form schema's `$i18n`; the browser's `t` reads them. Nothing to register. The texts are the `t("…")` literals of the bundled forms' source (`@aooth/auth-moost/atscript/models`) — the source list for your translation files. Without a translation the English text is shown, unchanged.
+
+**Your own forms.** A form you pass through `setupAuthWorkflows({ forms })` (usually `extends` a bundled one) is translated the same way: in its expressions write `t("Whole sentence {name}", { name })`, never `"Whole " + name`. Every text expression is collected — `fn.label`, `fn.title`, `fn.options`, `fn.attr`, `fn.value` (a `ui.paragraph`'s text), `@ui.form.validate`, …. `fn.value` and `fn.attr` results are shown as returned, so wrap their texts in `t`; a static `@ui.form.attr` text is not translated — add a `@ui.form.fn.attr` with `t`, as the bundled forms do. Compile such forms with `@atscript/ui-fns` ≥ 0.1.166 in your atscript config ([Upgrading](/guide/upgrading#to-0-2-5)).
+
+Values never change with the language: option values, the workflow state and context, the `key` of an MFA option. Branch on those, never on a label.
+
 ## Error bodies
 
 Every 4xx `HttpError` aooth raises carries a `code` and, where the text names a value, `params`. Branch on `code` in clients and tests, never on `message`:
@@ -99,39 +155,39 @@ Every 4xx `HttpError` aooth raises carries a `code` and, where the text names a 
 }
 ```
 
-| Catalogue             | Code                             | Status | Params                                                 |
-| --------------------- | -------------------------------- | ------ | ------------------------------------------------------ |
-| `AOOTH_HTTP_MESSAGES` | `AUTH_REQUIRED`                  | 401    | — (guarded route, no credential)                       |
-|                       | `CREDENTIAL_INVALID`             | 401    | — (guarded route, invalid credential)                  |
-|                       | `NOT_AUTHENTICATED`              | 401    | — (`useAuth().getUserId()`, `AuthController`)          |
-|                       | `NO_CURRENT_SESSION`             | 401    |                                                        |
-|                       | `MISSING_REFRESH_TOKEN`          | 401    |                                                        |
-|                       | `INVALID_REFRESH_TOKEN`          | 401    |                                                        |
-|                       | `LOGOUT_OTHERS_REQUIRED`         | 400    |                                                        |
-|                       | `INVITE_NOT_FOUND`               | 404    |                                                        |
-|                       | `MISSING_UID`                    | 400    |                                                        |
-|                       | `LINKED_IDENTITY_NOT_FOUND`      | 404    |                                                        |
-|                       | `LAST_SIGN_IN_METHOD`            | 409    |                                                        |
-|                       | `UNKNOWN_PROVIDER`               | 404    | `provider`                                             |
-|                       | `WORKFLOW_NOT_ALLOWED`           | 403    | `workflow`                                             |
-| `RATE_LIMIT_MESSAGES` | `RATE_LIMITED`                   | 429    | `policy`, `limit`, `window`, `retryAfter` (seconds)    |
-| `AOOTH_MESSAGES`      | `USER_ALREADY_EXISTS`            | 409    |                                                        |
-|                       | `INVITE_CANCELLED`               | 410    |                                                        |
-|                       | `INVITE_REPLACED`                | 410    |                                                        |
-|                       | `INVITE_ALREADY_ACCEPTED`        | 410    |                                                        |
-|                       | `PASSWORD_CHANGED_SIGN_IN_AGAIN` | 410    |                                                        |
-|                       | `UNKNOWN_SSO_PROVIDER`           | 400    |                                                        |
-|                       | `TOTP_NOT_CONFIGURED`            | 400    |                                                        |
-| `ARBAC_MESSAGES`      | `INSUFFICIENT_PRIVILEGES`        | 403    | `resource`, `action`                                   |
-|                       | `ARBAC_FORBIDDEN`                | 403    | `resource`, `action` (`evaluateOrThrow()`)             |
-|                       | `ARBAC_NOT_AUTHORIZED`           | 401    |                                                        |
-|                       | `CONTROL_NOT_ALLOWED`            | 403    | `control`                                              |
-|                       | `CONTROL_VALUE_NOT_ALLOWED`      | 403    | `control`, `value`                                     |
-|                       | `NESTED_WRITE_NOT_ALLOWED`       | 403    | `relation`                                             |
-|                       | `ROW_OUT_OF_SCOPE`               | 403    |                                                        |
-|                       | `REFERENCE_OUT_OF_SCOPE`         | 403    | `fields`                                               |
-|                       | `INVALID_QUERY_STRING`           | 400    | `error` (the parser's text)                            |
-| `UserAuthError` types | `POLICY_VIOLATION`, …            | 4xx    | see [Errors — HTTP mapping](/user/errors#http-mapping) |
+| Catalogue                  | Code                             | Status | Params                                                 |
+| -------------------------- | -------------------------------- | ------ | ------------------------------------------------------ |
+| `AOOTH_HTTP_MESSAGES`      | `AUTH_REQUIRED`                  | 401    | — (guarded route, no credential)                       |
+|                            | `CREDENTIAL_INVALID`             | 401    | — (guarded route, invalid credential)                  |
+|                            | `NOT_AUTHENTICATED`              | 401    | — (`useAuth().getUserId()`, `AuthController`)          |
+|                            | `NO_CURRENT_SESSION`             | 401    |                                                        |
+|                            | `MISSING_REFRESH_TOKEN`          | 401    |                                                        |
+|                            | `INVALID_REFRESH_TOKEN`          | 401    |                                                        |
+|                            | `LOGOUT_OTHERS_REQUIRED`         | 400    |                                                        |
+|                            | `INVITE_NOT_FOUND`               | 404    |                                                        |
+|                            | `MISSING_UID`                    | 400    |                                                        |
+|                            | `LINKED_IDENTITY_NOT_FOUND`      | 404    |                                                        |
+|                            | `LAST_SIGN_IN_METHOD`            | 409    |                                                        |
+|                            | `UNKNOWN_PROVIDER`               | 404    | `provider`                                             |
+|                            | `WORKFLOW_NOT_ALLOWED`           | 403    | `workflow`                                             |
+| `RATE_LIMIT_MESSAGES`      | `RATE_LIMITED`                   | 429    | `policy`, `limit`, `window`, `retryAfter` (seconds)    |
+| `AOOTH_MESSAGES`           | `USER_ALREADY_EXISTS`            | 409    |                                                        |
+|                            | `INVITE_CANCELLED`               | 410    |                                                        |
+|                            | `INVITE_REPLACED`                | 410    |                                                        |
+|                            | `INVITE_ALREADY_ACCEPTED`        | 410    |                                                        |
+|                            | `PASSWORD_CHANGED_SIGN_IN_AGAIN` | 410    |                                                        |
+|                            | `UNKNOWN_SSO_PROVIDER`           | 400    |                                                        |
+|                            | `TOTP_NOT_CONFIGURED`            | 400    |                                                        |
+| `ARBAC_MESSAGES`           | `INSUFFICIENT_PRIVILEGES`        | 403    | `resource`, `action`                                   |
+|                            | `ARBAC_FORBIDDEN`                | 403    | `resource`, `action` (`evaluateOrThrow()`)             |
+|                            | `ARBAC_NOT_AUTHORIZED`           | 401    |                                                        |
+|                            | `CONTROL_NOT_ALLOWED`            | 403    | `control`                                              |
+|                            | `CONTROL_VALUE_NOT_ALLOWED`      | 403    | `control`, `value`                                     |
+|                            | `NESTED_WRITE_NOT_ALLOWED`       | 403    | `relation`                                             |
+|                            | `ROW_OUT_OF_SCOPE`               | 403    |                                                        |
+|                            | `REFERENCE_OUT_OF_SCOPE`         | 403    | `fields`                                               |
+|                            | `INVALID_QUERY_STRING`           | 400    | `error` (the parser's text)                            |
+| `USER_AUTH_ERROR_MESSAGES` | `POLICY_VIOLATION`, …            | 4xx    | see [Errors — HTTP mapping](/user/errors#http-mapping) |
 
 Under a translator, a rate-limit rule's own English `message` is replaced by the `RATE_LIMITED` translation — the 429 is translated by its code. Use `{limit}`, `{window}` and `{retryAfter}` (seconds) in your translations.
 
@@ -210,7 +266,9 @@ Read the English wording from the catalogues themselves (or the [source](https:/
 - **DO** localize with one moost translator; keep `messages` for app-specific wording.
 - **DO** pass one `messages` value to both `AuthWorkflowOpts` and `resolveInvitePostRedemption()`.
 - **DON'T** match on English strings in the SPA or in tests that may run with a translator — use the `code` on error bodies.
-- **DON'T** expect field labels and form titles here — those live on the `.as` form models; replace a form via `forms.<slot>` to relabel it (see [Atscript Models](./atscript)).
+- **DO** translate form texts by their English text and messages by their code — both in the same translator.
+- **DON'T** concatenate texts in your own form expressions: `t("… {name}", { name })` keeps them translatable.
+- **DO** replace a form via `forms.<slot>` to change its English wording (see [Atscript Models](./atscript)).
 
 ## See also
 

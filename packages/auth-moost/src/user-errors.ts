@@ -2,6 +2,7 @@ import {
   PASSWORD_POLICY_MESSAGES,
   type TransferablePolicy,
   UserAuthError,
+  USER_AUTH_ERROR_MESSAGES,
   type UserAuthErrorType,
 } from "@aooth/user";
 import { HttpError } from "@wooksjs/event-http";
@@ -15,6 +16,7 @@ import {
 import { translateCode } from "./workflow/auth-messages";
 
 registerMessages(PASSWORD_POLICY_MESSAGES);
+registerMessages(USER_AUTH_ERROR_MESSAGES);
 
 /** The body of an `HttpError` made by {@link userAuthErrorToHttp}. */
 export interface UserAuthErrorBody {

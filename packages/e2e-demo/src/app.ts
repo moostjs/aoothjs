@@ -36,11 +36,8 @@ import {
 } from "@aooth/auth/authz";
 import {
   AuthCodeStoreAtscriptDb,
-  type AuthCodeTable,
   DynamicClientStoreAtscriptDb,
-  type DynamicClientTable,
   PendingAuthorizationStoreAtscriptDb,
-  type PendingAuthorizationTable,
 } from "@aooth/auth/atscript-db";
 import {
   type AuditEvent,
@@ -80,10 +77,7 @@ import {
 import { FakeIdentityProvider, FederatedLoginService, OAuthProviderRegistry } from "@aooth/idp";
 import { HandleStateStrategy, Step, type WfStateStrategy, WorkflowParam } from "@moostjs/event-wf";
 import { type UserCredentials, UserService } from "@aooth/user";
-import {
-  FederatedIdentityStoreAtscriptDb,
-  type FederatedIdentityTable,
-} from "@aooth/user/atscript-db";
+import { FederatedIdentityStoreAtscriptDb } from "@aooth/user/atscript-db";
 import { Get, MoostHttp, Post } from "@moostjs/event-http";
 import { useHeaders } from "@wooksjs/event-http";
 import { MoostWf } from "@moostjs/event-wf";

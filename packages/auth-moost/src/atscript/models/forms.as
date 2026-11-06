@@ -83,6 +83,7 @@ export interface LoginCredentialsForm {
     @ui.form.order 30
     @ui.form.action 'signup', 'Sign up'
     @ui.form.attr 'text', 'Don’t have an account?'
+    @ui.form.fn.attr 'text', '(_, _d, _c, _e, t) => t("Don’t have an account?")'
     @ui.form.attr 'align', 'center'
     @ui.form.pushDown
     @ui.form.fn.hidden '(_, _d, ctx) => !ctx.public?.altActions?.signup'
@@ -97,8 +98,9 @@ export interface LoginCredentialsForm {
 
     // SSO providers — rendered from `ctx.public.altActions.ssoProviders` by the
     // `AsSsoProviders` one-click picker (registered on `<AsWfForm :components>`).
-    // Each provider becomes a full-width button whose VERBATIM `text` the server
-    // owns ("Continue with {label}"); a click both selects the provider id and
+    // Each provider becomes a full-width button whose `text` the expression
+    // builds with `t("Continue with {provider}")` (translatable, served in the
+    // schema's `$i18n`); a click both selects the provider id and
     // fires the `sso` action — the component is chromeless and suppresses the
     // shell's footer action link, so there is NO separate submit button (the
     // `'Continue'` action label is inert here, kept only because the action
@@ -113,7 +115,7 @@ export interface LoginCredentialsForm {
     // Swap the component via `setupAuthWorkflows({ forms })`.
     @ui.form.order 50
     @ui.form.component 'AsSsoProviders'
-    @ui.form.fn.attr 'providers', '(_, _d, ctx) => Array.isArray(ctx.public?.altActions?.ssoProviders) ? ctx.public.altActions.ssoProviders.map((p) => ({ id: p.id, text: "Continue with " + p.label, icon: p.icon })) : []'
+    @ui.form.fn.attr 'providers', '(_, _d, ctx, _e, t) => Array.isArray(ctx.public?.altActions?.ssoProviders) ? ctx.public.altActions.ssoProviders.map((p) => ({ id: p.id, text: t("Continue with {provider}", { provider: p.label }), icon: p.icon })) : []'
     @ui.form.fn.hidden '(_, _d, ctx) => (ctx.public?.altActions?.ssoProviders?.length ?? 0) === 0'
     @meta.label 'Or sign in with'
     @ui.form.action 'sso', 'Continue'
@@ -135,7 +137,7 @@ export interface LoginCredentialsForm {
 @wf.context.pass 'public'
 @ui.form.submit.text 'Verify'
 export interface MfaCodeForm {
-    @ui.form.fn.value '(_, _d, ctx) => ctx.public?.mfa?.method === "totp" ? "Enter the current 6-digit code from your authenticator app." : ctx.public?.pincode?.sentTo ? "Code sent to " + ctx.public.pincode.sentTo + "." : "Enter your verification code."'
+    @ui.form.fn.value '(_, _d, ctx, _e, t) => ctx.public?.mfa?.method === "totp" ? t("Enter the current 6-digit code from your authenticator app.") : ctx.public?.pincode?.sentTo ? t("Code sent to {recipient}.", { recipient: ctx.public.pincode.sentTo }) : t("Enter your verification code.")'
     transportHint?: ui.paragraph
 
     @ui.form.type 'text'
@@ -216,6 +218,7 @@ export interface SignupForm {
     @ui.form.order 20
     @ui.form.action 'backToLogin', 'Sign in'
     @ui.form.attr 'text', 'Already have an account?'
+    @ui.form.fn.attr 'text', '(_, _d, _c, _e, t) => t("Already have an account?")'
     @ui.form.attr 'align', 'center'
     @ui.form.pushDown
     backToLogin?: ui.action
@@ -259,7 +262,7 @@ export interface SignupForm {
  * wants to abandon the flow closes / refreshes the page (the wf state token
  * expires per the engine's TTL).
  */
-@ui.form.fn.title '(_, ctx) => ctx.public?.password?.heading || "Set your password"'
+@ui.form.fn.title '(_, ctx, t) => ctx.public?.password?.heading || t("Set your password")'
 @wf.context.pass 'public'
 export interface SetPasswordForm extends WithInlineConsentForm {
     /**
@@ -292,7 +295,7 @@ export interface SetPasswordForm extends WithInlineConsentForm {
     @meta.sensitive
     @meta.required
     @expect.minLength 8
-    @ui.form.validate '(v, data, ctx) => v === data.newPassword || ctx?.public?.messages?.PASSWORDS_DO_NOT_MATCH || "Passwords must match"'
+    @ui.form.validate '(v, data, ctx, _e, t) => v === data.newPassword || ctx?.public?.messages?.PASSWORDS_DO_NOT_MATCH || t("Passwords must match")'
     confirmPassword: string
 
     /**
@@ -395,7 +398,7 @@ export interface Select2faForm {
     // always the empty string, so authenticator entries render bare).
     @ui.form.order 10
     @ui.form.type 'radio'
-    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.public?.mfa?.enrolledMethods) ? ctx.public.mfa.enrolledMethods.map(m => ({ key: m.methodName, label: (m.kind === "totp" ? "TOTP (Authenticator app)" : m.kind === "email" ? "Email" : m.kind === "sms" ? "SMS" : m.kind) + (m.masked && (m.kind === "email" || m.kind === "sms") ? " (" + m.masked + ")" : "") })) : []'
+    @ui.form.fn.options '(_, _d, ctx, _e, t) => Array.isArray(ctx.public?.mfa?.enrolledMethods) ? ctx.public.mfa.enrolledMethods.map(m => { const method = m.kind === "totp" ? t("TOTP (Authenticator app)") : m.kind === "email" ? t("Email") : m.kind === "sms" ? t("SMS") : m.kind; return { key: m.methodName, label: m.masked && (m.kind === "email" || m.kind === "sms") ? t("{method} ({recipient})", { method, recipient: m.masked }) : method }; }) : []'
     @meta.label 'MFA method'
     @meta.required
     methodName: string
@@ -439,7 +442,7 @@ export interface Select2faForm {
 @wf.context.pass 'public'
 @ui.form.submit.text 'Verify'
 export interface PincodeForm {
-    @ui.form.fn.value '(_, _d, ctx) => ctx.public?.mfa?.method === "totp" ? "Enter the current 6-digit code from your authenticator app." : ctx.public?.pincode?.sentTo ? "Code sent to " + ctx.public.pincode.sentTo + "." : "Enter your verification code."'
+    @ui.form.fn.value '(_, _d, ctx, _e, t) => ctx.public?.mfa?.method === "totp" ? t("Enter the current 6-digit code from your authenticator app.") : ctx.public?.pincode?.sentTo ? t("Code sent to {recipient}.", { recipient: ctx.public.pincode.sentTo }) : t("Enter your verification code.")'
     transportHint?: ui.paragraph
 
     @ui.form.type 'text'
@@ -534,7 +537,7 @@ export interface AskPhoneForm extends WithInlineConsentForm {
 export interface EnrollPickMethodForm {
     @ui.form.order 10
     @ui.form.type 'radio'
-    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.public?.mfaEnroll?.availableTransports) ? ctx.public.mfaEnroll.availableTransports.map(t => ({ key: t, label: t === "totp" ? "Authenticator app (TOTP)" : t === "sms" ? "SMS" : t === "email" ? "Email" : t })) : []'
+    @ui.form.fn.options '(_, _d, ctx, _e, t) => Array.isArray(ctx.public?.mfaEnroll?.availableTransports) ? ctx.public.mfaEnroll.availableTransports.map(k => ({ key: k, label: k === "totp" ? t("Authenticator app (TOTP)") : k === "sms" ? t("SMS") : k === "email" ? t("Email") : k })) : []'
     @meta.label 'Choose a verification method'
     @meta.required
     method: string
@@ -561,7 +564,7 @@ export interface EnrollPickMethodForm {
  * forbids backing out mid-flow). `useDifferentMethod` is hidden when the
  * consumer has only one transport configured (nothing to switch to).
  */
-@ui.form.fn.title '(_, ctx) => ctx.public?.mfaEnroll?.method === "sms" ? "Add your phone number" : "Add your email"'
+@ui.form.fn.title '(_, ctx, t) => ctx.public?.mfaEnroll?.method === "sms" ? t("Add your phone number") : t("Add your email")'
 @meta.description 'We will send you a one-time code to confirm.'
 @wf.context.pass 'public'
 @ui.form.submit.text 'Send code'
@@ -574,12 +577,12 @@ export interface EnrollAddressForm {
     // fallback when `@atscript/ui-fns` is absent (the fn key overrides it when
     // present — fn wins over static, else static is the fallback).
     @meta.label 'Address'
-    @ui.form.fn.label '(_, _d, ctx) => ctx.public?.mfaEnroll?.method === "sms" ? "Phone number" : ctx.public?.mfaEnroll?.method === "email" ? "Email address" : "Address"'
+    @ui.form.fn.label '(_, _d, ctx, _e, t) => ctx.public?.mfaEnroll?.method === "sms" ? t("Phone number") : ctx.public?.mfaEnroll?.method === "email" ? t("Email address") : t("Address")'
     @meta.required
     // Client-side format hint — email branch must look like an email; the SMS
     // branch stays free-form (server-side E.164 normalization). The robust
     // check is server-side in the `enroll-address` step regardless of client.
-    @ui.form.validate '(v, _d, ctx) => ctx.public?.mfaEnroll?.method !== "email" || /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v) || "Enter a valid email address"'
+    @ui.form.validate '(v, _d, ctx, _e, t) => ctx.public?.mfaEnroll?.method !== "email" || /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v) || t("Enter a valid email address")'
     address: string
 
     @ui.form.action 'skip', 'Skip for now'
@@ -613,7 +616,7 @@ export interface EnrollAddressForm {
 @ui.form.submit.text 'Confirm'
 export interface EnrollConfirmForm {
     @ui.form.order 1
-    @ui.form.fn.value '(_, _d, ctx) => ctx.public?.mfaEnroll?.method === "totp" ? "Enter the 6-digit code from your authenticator app." : ctx.public?.pincode?.sentTo ? "Code sent to " + ctx.public.pincode.sentTo + ". Enter it below to confirm." : "Enter the code to confirm enrollment."'
+    @ui.form.fn.value '(_, _d, ctx, _e, t) => ctx.public?.mfaEnroll?.method === "totp" ? t("Enter the 6-digit code from your authenticator app.") : ctx.public?.pincode?.sentTo ? t("Code sent to {recipient}. Enter it below to confirm.", { recipient: ctx.public.pincode.sentTo }) : t("Enter the code to confirm enrollment.")'
     transportHint?: ui.paragraph
 
     @ui.form.order 10
@@ -706,18 +709,18 @@ export interface EnrollTotpQrForm {
 @ui.form.submit.text 'Continue'
 export interface ManageMfaForm {
     @ui.form.order 5
-    @ui.form.fn.value '(_, _d, ctx) => (ctx.public?.manage?.locked?.length ?? 0) > 0 ? "Some methods are also used to sign in and can’t be changed here." : ""'
+    @ui.form.fn.value '(_, _d, ctx, _e, t) => (ctx.public?.manage?.locked?.length ?? 0) > 0 ? t("Some methods are also used to sign in and can’t be changed here.") : ""'
     @ui.form.fn.hidden '(_, _d, ctx) => (ctx.public?.manage?.locked?.length ?? 0) === 0'
     lockedNote: ui.paragraph
 
     @ui.form.order 6
-    @ui.form.fn.value '(_, _d, ctx) => ctx.public?.manage?.removeBlocked ? "Two-factor authentication is required for your account, so your last method can be changed but not removed." : ""'
+    @ui.form.fn.value '(_, _d, ctx, _e, t) => ctx.public?.manage?.removeBlocked ? t("Two-factor authentication is required for your account, so your last method can be changed but not removed.") : ""'
     @ui.form.fn.hidden '(_, _d, ctx) => !ctx.public?.manage?.removeBlocked'
     requiredNote: ui.paragraph
 
     @ui.form.order 10
     @ui.form.type 'radio'
-    @ui.form.fn.options '(_, _d, ctx) => { const lbl = (t) => t === "totp" ? "authenticator app" : t === "sms" ? "SMS" : t === "email" ? "email" : t; const locked = ctx.public?.manage?.locked ?? []; const out = []; for (const t of (ctx.public?.manage?.candidates ?? [])) out.push({ key: "add:" + t, label: "Add " + lbl(t) }); for (const m of (ctx.public?.mfa?.enrolledMethods ?? [])) { if (locked.includes(m.kind)) continue; out.push({ key: "replace:" + m.kind, label: "Change " + lbl(m.kind) + (m.masked ? " (" + m.masked + ")" : "") }); if (!ctx.public?.manage?.removeBlocked) out.push({ key: "remove:" + m.kind, label: "Remove " + lbl(m.kind) }); } return out; }'
+    @ui.form.fn.options '(_, _d, ctx, _e, t) => { const lbl = (k) => k === "totp" ? t("authenticator app") : k === "sms" ? t("SMS") : k === "email" ? t("email") : k; const locked = ctx.public?.manage?.locked ?? []; const out = []; for (const k of (ctx.public?.manage?.candidates ?? [])) out.push({ key: "add:" + k, label: t("Add {method}", { method: lbl(k) }) }); for (const m of (ctx.public?.mfa?.enrolledMethods ?? [])) { if (locked.includes(m.kind)) continue; const method = lbl(m.kind); out.push({ key: "replace:" + m.kind, label: m.masked ? t("Change {method} ({recipient})", { method, recipient: m.masked }) : t("Change {method}", { method }) }); if (!ctx.public?.manage?.removeBlocked) out.push({ key: "remove:" + m.kind, label: t("Remove {method}", { method }) }); } return out; }'
     @meta.label 'What would you like to do?'
     @meta.required
     operation: string
@@ -740,7 +743,7 @@ export interface ManageMfaForm {
 @ui.form.submit.text 'Remove'
 export interface RemoveMfaConfirmForm {
     @ui.form.order 1
-    @ui.form.fn.value '(_, _d, ctx) => { const t = ctx.public?.mfaEnroll?.method; const lbl = t === "totp" ? "your authenticator app" : t === "sms" ? "SMS codes" : t === "email" ? "email codes" : "this method"; return "Remove " + lbl + " as a two-factor method? You can set it up again later."; }'
+    @ui.form.fn.value '(_, _d, ctx, _e, t) => { const k = ctx.public?.mfaEnroll?.method; return k === "totp" ? t("Remove your authenticator app as a two-factor method? You can set it up again later.") : k === "sms" ? t("Remove SMS codes as a two-factor method? You can set it up again later.") : k === "email" ? t("Remove email codes as a two-factor method? You can set it up again later.") : t("Remove this method as a two-factor method? You can set it up again later."); }'
     notice: ui.paragraph
 
     // Hidden built-in cancel — host renders its own and fires `cancel` on
@@ -794,7 +797,7 @@ export interface PasswordReauthForm {
 @ui.form.submit.text 'Continue'
 export interface StepUpConfirmForm {
     @ui.form.order 1
-    @ui.form.fn.value '(_, _d, ctx) => { const kind = ctx.public?.mfa?.method; const m = (ctx.public?.mfa?.enrolledMethods ?? []).find(e => e.kind === kind); const to = m && m.masked ? " to " + m.masked : kind === "sms" ? " to your phone" : " to your email"; return "To continue, we will send a verification code" + to + "."; }'
+    @ui.form.fn.value '(_, _d, ctx, _e, t) => { const kind = ctx.public?.mfa?.method; const m = (ctx.public?.mfa?.enrolledMethods ?? []).find(e => e.kind === kind); return m && m.masked ? t("To continue, we will send a verification code to {recipient}.", { recipient: m.masked }) : kind === "sms" ? t("To continue, we will send a verification code to your phone.") : t("To continue, we will send a verification code to your email."); }'
     notice: ui.paragraph
 
     @ui.form.action 'useDifferentMethod', 'Use a different method'
@@ -877,6 +880,8 @@ export interface RecoveryModeSelectForm {
  * built from `ctx.public.preReset.availableRecoveryFactors` (workflow whitelist ∩
  * user's enrolled factors), so users only see factors they can actually
  * verify AND that the admin hasn't disabled via `opts.preReset.allowedFactors`.
+ * The staged options are shown as given — not passed through `t` — so whoever
+ * stages them supplies labels already in the request's language.
  */
 @meta.label 'Verify your identity'
 @meta.description 'Confirm a detail we have on file before resetting your password.'
@@ -912,7 +917,7 @@ export interface RecoveryFactorForm {
  * `SetPasswordForm`, so the live `AsPasswordRules` renderer and dynamic copy
  * work identically. Heading/intro are staged by `change-password-form`.
  */
-@ui.form.fn.title '(_, ctx) => ctx.public?.password?.heading || "Change your password"'
+@ui.form.fn.title '(_, ctx, t) => ctx.public?.password?.heading || t("Change your password")'
 @ui.form.submit.text 'Change password'
 @wf.context.pass 'public'
 export interface ChangePasswordForm {
@@ -946,7 +951,7 @@ export interface ChangePasswordForm {
     @meta.sensitive
     @meta.required
     @expect.minLength 8
-    @ui.form.validate '(v, data, ctx) => v === data.newPassword || ctx?.public?.messages?.PASSWORDS_DO_NOT_MATCH || "Passwords must match"'
+    @ui.form.validate '(v, data, ctx, _e, t) => v === data.newPassword || ctx?.public?.messages?.PASSWORDS_DO_NOT_MATCH || t("Passwords must match")'
     confirmPassword: string
 
     @ui.form.order 25
@@ -982,7 +987,7 @@ export interface ChangePasswordForm {
 @ui.form.submit.text 'Verify and link'
 export interface ProveControlForm {
     @ui.form.order 5
-    @ui.form.fn.value '(_, _d, ctx) => ctx.public?.proveControl?.hint ? "An account for " + ctx.public.proveControl.hint + " already exists. Enter its password to link this sign-in method." : "Enter your existing account password to link this sign-in method."'
+    @ui.form.fn.value '(_, _d, ctx, _e, t) => ctx.public?.proveControl?.hint ? t("An account for {account} already exists. Enter its password to link this sign-in method.", { account: ctx.public.proveControl.hint }) : t("Enter your existing account password to link this sign-in method.")'
     intro: ui.paragraph
 
     @ui.form.order 10
@@ -1017,7 +1022,7 @@ export interface ProveControlForm {
 @ui.form.submit.text 'Verify and link'
 export interface ProveControlOtpForm {
     @ui.form.order 5
-    @ui.form.fn.value '(_, _d, ctx) => ctx.public?.proveControl?.sentTo ? "We sent a verification code to " + ctx.public.proveControl.sentTo + ". Enter it to link this sign-in method to your existing account." : "Enter the verification code to link this sign-in method to your existing account."'
+    @ui.form.fn.value '(_, _d, ctx, _e, t) => ctx.public?.proveControl?.sentTo ? t("We sent a verification code to {recipient}. Enter it to link this sign-in method to your existing account.", { recipient: ctx.public.proveControl.sentTo }) : t("Enter the verification code to link this sign-in method to your existing account.")'
     intro: ui.paragraph
 
     @ui.form.order 10
@@ -1069,12 +1074,12 @@ export interface ProveControlOtpForm {
 @ui.form.submit.text 'Authorize'
 export interface AuthorizeConsentForm {
     @ui.form.order 1
-    @ui.form.fn.value '(_, _d, ctx) => { const a = ctx.public?.authz; const host = a?.clientName && a?.redirectHost ? " (" + a.redirectHost + ")" : ""; const who = a?.clientName ? "“" + a.clientName + "”" + host : "A local application"; const sc = a?.scope ? " It is requesting access to: " + a.scope + "." : ""; return who + " wants to sign in to your account." + sc + " Authorize this only if you started it."; }'
+    @ui.form.fn.value '(_, _d, ctx, _e, t) => { const a = ctx.public?.authz; const who = a?.clientName && a?.redirectHost ? t("“{client}” ({host}) wants to sign in to your account.", { client: a.clientName, host: a.redirectHost }) : a?.clientName ? t("“{client}” wants to sign in to your account.", { client: a.clientName }) : t("A local application wants to sign in to your account."); const sc = a?.scope ? " " + t("It is requesting access to: {scope}.", { scope: a.scope }) : ""; return who + sc + " " + t("Authorize this only if you started it."); }'
     notice: ui.paragraph
 
     @ui.form.order 2
     @ui.form.fn.hidden '(_, _d, ctx) => !ctx.public?.authz?.signedInAs'
-    @ui.form.fn.value '(_, _d, ctx) => "Signed in as " + (ctx.public?.authz?.signedInAs || "") + "."'
+    @ui.form.fn.value '(_, _d, ctx, _e, t) => t("Signed in as {account}.", { account: ctx.public?.authz?.signedInAs || "" })'
     signedIn: ui.paragraph
 
     @ui.form.order 10

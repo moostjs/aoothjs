@@ -79,8 +79,8 @@ Every ecosystem peer below is declared `catalog:` in the workspace, so each publ
 
 | Package              | peerDep                | Range      | Optional?                                                          |
 | -------------------- | ---------------------- | ---------- | ------------------------------------------------------------------ |
-| `@aooth/user`        | `@atscript/db`         | `^0.1.169` | yes (only for `./atscript-db` subpath)                             |
-| `@aooth/auth`        | `@atscript/db`         | `^0.1.169` | yes (only for `./atscript-db` subpath)                             |
+| `@aooth/user`        | `@atscript/db`         | `^0.1.170` | yes (only for `./atscript-db` subpath)                             |
+| `@aooth/auth`        | `@atscript/db`         | `^0.1.170` | yes (only for `./atscript-db` subpath)                             |
 | `@aooth/auth`        | `jose` (regular dep)   | `^6.2.3`   | n/a — bundled as a regular dependency, not a peer (auto-installed) |
 | `@aooth/idp`         | — (regular deps)       | —          | n/a — `@aooth/auth`, `@aooth/user`, `jose` are regular deps        |
 | `@aooth/auth-moost`  | `moost`                | `^0.7.3`   | no                                                                 |
@@ -89,14 +89,14 @@ Every ecosystem peer below is declared `catalog:` in the workspace, so each publ
 | `@aooth/auth-moost`  | `@wooksjs/event-core`  | `^0.8.1`   | no                                                                 |
 | `@aooth/auth-moost`  | `@wooksjs/event-http`  | `^0.8.1`   | no                                                                 |
 | `@aooth/auth-moost`  | `@wooksjs/http-body`   | `^0.8.1`   | no                                                                 |
-| `@aooth/auth-moost`  | `@atscript/moost-wf`   | `^0.1.164` | no (`formInputInterceptor`, `AsWfStore`)                           |
-| `@aooth/auth-moost`  | `@atscript/typescript` | `^0.2.6`   | yes (only for `./atscript` subpath)                                |
+| `@aooth/auth-moost`  | `@atscript/moost-wf`   | `^0.1.166` | no (`formInputInterceptor`, `AsWfStore`)                           |
+| `@aooth/auth-moost`  | `@atscript/typescript` | `^0.2.7`   | yes (only for `./atscript` subpath)                                |
 | `@aooth/arbac-moost` | `moost`                | `^0.7.3`   | no                                                                 |
 | `@aooth/arbac-moost` | `@moostjs/event-http`  | `^0.7.3`   | no                                                                 |
 | `@aooth/arbac-moost` | `@wooksjs/event-core`  | `^0.8.1`   | no                                                                 |
-| `@aooth/arbac-moost` | `@atscript/db`         | `^0.1.169` | yes (only for `AsArbacDbController` subclass)                      |
-| `@aooth/arbac-moost` | `@atscript/moost-db`   | `^0.1.169` | yes (only for `AsArbacDbController` subclass)                      |
-| `@aooth/arbac-moost` | `@atscript/typescript` | `^0.2.6`   | yes (only for `./atscript` subpath)                                |
+| `@aooth/arbac-moost` | `@atscript/db`         | `^0.1.170` | yes (only for `AsArbacDbController` subclass)                      |
+| `@aooth/arbac-moost` | `@atscript/moost-db`   | `^0.1.170` | yes (only for `AsArbacDbController` subclass)                      |
+| `@aooth/arbac-moost` | `@atscript/typescript` | `^0.2.7`   | yes (only for `./atscript` subpath)                                |
 
 Upgrading across these lines: [upgrading.md](./upgrading.md).
 
